@@ -81,6 +81,7 @@ path of a file with the full result; read only what you need from that file.
   claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
   know <words>           your lived memories matching <words>; run it before saying you don't remember.
   look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
+  watch [off|on] --why "..."  watch a person's game or decline.
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
@@ -1701,6 +1702,33 @@ def cmd_look_check(act_id: str, verdict: str, seen: str, record_id: str, out: Ou
     return capped(lines, tail=f"full result: {path}")
 
 
+def cmd_watch(args: list[str], out: Out, runner=None, publish=None) -> str:
+    """`watch`: Orion's own switch for watching a person's game (game company patch 2)."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import watch as wt
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    runner = runner or ReadOnlyPsql(timeout_sec=30.0)
+
+    def rows(sql: str) -> list[dict]:
+        return psql_rows(runner, sql)
+
+    try:
+        req = wt.parse(args)
+        if req["action"] == "status":
+            lines, payload = wt.status(rows=rows)
+            name = "watch-status"
+        else:
+            lines, payload = wt.set_choice(req["mode"], req["why"], rows=rows, game=req["game"], publish=publish)
+            name = f"watch-{req['mode']}"
+    except (wt.WatchError, ValueError) as exc:
+        raise DigError(f"watch: {exc}") from exc
+    except RuntimeError as exc:
+        raise DigError(f"watch: {exc}") from exc
+    path = out.write(name, payload)
+    return capped(lines, tail=f"full result: {path}")
+
+
 def cmd_look(word: str | None, out: Out) -> str:
     """`look`: each camera's newest frame age; `look <camera>`: copy its newest frame for Read."""
     from orion.dig import look as lk
@@ -2135,6 +2163,8 @@ def main(argv: list[str] | None = None) -> int:
             raise DigError('usage: look check <act> matches|differs|cannot-tell "<what you see>" because <record id>')
         elif ns.command == "look" and len(a) <= 1:
             text = cmd_look(a[0] if a else None, out)
+        elif ns.command == "watch":
+            text = cmd_watch(a, out)
         elif ns.command in REF_COMMANDS and len(a) == 1:
             text = cmd_ref(ns.command, a[0], out)
         elif ns.command == "notes" and (not a or a[0] == "append"):

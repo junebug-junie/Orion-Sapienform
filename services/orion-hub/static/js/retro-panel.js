@@ -639,8 +639,25 @@
     try{sessionStorage.setItem('retroSittingAsked',id);}catch(_){}
     screen.focus();                                                          // the game keeps the keys
   };
+  // Orion's look (game company design, patch 2). The server says whether Orion is watching and, if not,
+  // why: the text is the server's, never composed here, so the page cannot claim more than the record.
+  function renderWatch(w){
+    const box=el('watch');
+    if(!w || !w.enabled){box.hidden=true;return;}
+    box.hidden=false;
+    el('watchText').textContent=(w.status && w.status.text)||'';
+    el('watchSwitch').checked=w.juniper_mode!=='off';
+  }
+  el('watchSwitch').onchange=async()=>{
+    const sw=el('watchSwitch');sw.disabled=true;
+    try{renderWatch((await api('sitting/watch',{mode:sw.checked?'on':'off'})).watch);}
+    catch(err){sw.checked=!sw.checked;report(err.message);}
+    finally{sw.disabled=false;screen.focus();}                              // the game keeps the keys
+  };
   async function pollSitting(){
-    const s=(await api('sitting')).sitting;
+    const got=await api('sitting');
+    renderWatch(got.watch);
+    const s=got.sitting;
     el('whoPlays').dataset.sitting=s?.sitting_id||'';
     // Only the page that holds the controller is asked: a second screen that only watches is not.
     el('whoPlays').hidden=!(s && lease && !s.player_stated && s.sitting_id!==sittingAsked);

@@ -43,6 +43,9 @@ BINDING_PRODUCERS = frozenset({
     # Family C experiments (prediction.experiment, 2026-11-16), services/orion-prediction/app/town_hold.py. Stricter
     # than bind_verdict: only ``funded`` runs a block; a deferral or no answer skips the decision.
     "orion-prediction.experiment.binding",
+    # Game company patch 2 (hub.retro_watch, 2026-11-18), services/orion-hub/scripts/retro_watch.py. Stricter than
+    # bind_verdict: only ``funded`` runs a look; a deferral or no answer skips it.
+    "orion-hub.retro_watch.binding",
 })
 # The market could not decide: these are "no answer", not deferrals.
 NO_ANSWER_REASONS = frozenset({"physiology_unavailable", "unknown_family", "family_never_bids"})

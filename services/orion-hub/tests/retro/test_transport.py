@@ -189,3 +189,28 @@ def test_shared_router_keeps_other_http_routes_responsive(tmp_path, monkeypatch)
             assert blocked.wait(1), 'media write never entered the blocked state'
             assert client.get('/unrelated/status').json() == {'ok': True}
             assert client.post('/unrelated/chat').json() == {'reply': 'fixture'}
+
+
+def test_the_look_tap_sees_every_video_packet_even_ones_a_slow_viewer_skips_and_never_breaks_the_relay():
+    # Game company patch 2: on_media gets each binary packet as it arrives (the look keeps one in 2 s);
+    # a text frame is not a video packet, and a tap that raises changes nothing for the browser.
+    async def check():
+        ws, native = Browser(), Native()
+        seen = []
+        def tap(data):
+            seen.append(data)
+            if data == b'boom': raise RuntimeError('tap fault')
+        task = asyncio.create_task(transport.relay_messages(ws, native, 'media', 'fixture', on_media=tap))
+        native.frame(b'first')
+        await asyncio.wait_for(ws.started.wait(), 1)
+        native.frame(b'boom')
+        native.frame('{"text":1}', kind=aiohttp.WSMsgType.TEXT)
+        for i in range(3): native.frame(str(i).encode())
+        for _ in range(20): await asyncio.sleep(0)
+        assert seen == [b'first', b'boom', b'0', b'1', b'2']
+        ws.release.set()
+        for _ in range(10): await asyncio.sleep(0)
+        assert ws.sent[0] == b'first' and ws.sent[-1] == b'2'      # the browser's stream is unchanged
+        ws.incoming.put_nowait(WebSocketDisconnect(1000))
+        assert await asyncio.wait_for(task, 1) == 'browser_disconnected'
+    asyncio.run(check())

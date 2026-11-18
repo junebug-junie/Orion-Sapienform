@@ -137,6 +137,11 @@ SYNC_PREFIXES = (
     # Session threads (2026-11-15): Hub's hourly round-up of coding-session messages
     # (scripts/session_roundup_loop.py).
     "HUB_SESSION_ROUNDUP_",
+    # Game company (2026-11-17/18): the sitting record (patch 1) and Orion's look at the game screen
+    # (patch 2), both in Hub's Retro gateway. No prefix matched them before, so a default run added none.
+    "HUB_RETRO_SITTING_",
+    "HUB_RETRO_WATCH_",
+    "HUB_RETRO_LOOK_",
     "ROOM_COMPANION_CONSULT_",
     # Claude's tools gated by Orion's consent (2026-11-13, Patch 1b): the companion's per-turn MCP server,
     # the governor's broker (CLAUDE_TOOLS_*, CHANNEL_CLAUDE_TOOL_REQUEST). orion-mind's PRIME_CONSENT_* keys

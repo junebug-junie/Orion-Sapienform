@@ -4,6 +4,9 @@ services:
   # event loop also serves every Hub page; game input queued behind it (live
   # 2026-10-20: 720 ms acks vs 17 ms here). Loopback only; tailscale serve routes
   # /api/retro to it.
+  # Since game company patch 2 it also runs Orion's look at the game screen (scripts/retro_watch.py):
+  # it reads HUB_RETRO_WATCH_*, PERCEPT_STORE_BASE_URL/TOKEN, ORION_BUS_URL, ORION_PHYSIOLOGY_BID_URL
+  # and RECALL_PG_DSN from the same .env (env_file below), so no key is repeated here.
   hub-retro-gateway:
     logging:
       driver: journald

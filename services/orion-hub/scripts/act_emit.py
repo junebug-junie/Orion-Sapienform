@@ -20,6 +20,10 @@ orion/hub/turn_orchestrator.py):
   at least one real planner decision within PLAY_HORIZON_SEC; closed by
   scripts/retro_memory_export.py at session end (1, or 0 for an empty or unexportable session),
   expired at 0 by the writer if neither arrives.
+- Retro look -> ``look`` (actor ``hub.retro_watch``, game company patch 2, 2026-11-18). Orion looks at a
+  person's game screen. Opened by scripts/retro_watch.py only after the market funded the look; closed by the
+  same module when the look ends (1: a stored note; 0: no seat, a failed call, or an empty, unclear or copied
+  note). Key and correlation id: the want id, which the look's GPU hold and model call carry too.
 - Retro co-play handoff -> ``play`` (actor ``hub.retro_coplay``, 2026-10-23). Juniper hands her
   controller to Orion's goal motor from the Retro page. Opened by scripts/retro_routes.py
   watch_coplay when it first sees a Zelda cognition policy on the grant (key: the session row key
@@ -334,4 +338,63 @@ async def publish_play_closed(bus: Any, *, dispatch_id: str, session_id: str | N
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("play_act_close_failed dispatch_id=%s error=%s", dispatch_id, exc)
+        return False
+
+
+# Look: Orion's look at a person's game screen (game company patch 2, 2026-11-18, spec section 3). Actor
+# hub.retro_watch, verb look, object retro_sitting:<id>. Opened only after the market FUNDED the look (a refused
+# bid opens no act); closed by scripts/retro_watch.py the moment the look ends: 1 when a note and its frame hashes
+# were stored, 0 when the seat or the lane failed or the note was empty, "unclear" or a copy. The act's id and its
+# correlation id are the want id, which the look's GPU hold and its model call also carry, so the ledger charges
+# the act its own lease (fill_close_cost). 120 s: the hold waits at most 30 s for a seat and the call is bounded
+# at 60 s (step 0: 5.6 s median on an idle lane), so a look that has not closed by then died with its process.
+LOOK_HORIZON_SEC = 120.0
+LOOK_BASIS = (
+    "artifact_produced (a stored note with its frame hashes) by 120s after the funded bid: <= 30s seat wait + "
+    "<= 60s model call (step 0 median 5.6s, 11 looks, idle lane, 2026-11-17); empty/unclear/copied notes are 0"
+)
+LOOK_ACTOR = "hub.retro_watch"
+
+
+def _look_act(want_id: str, sitting_id: str):
+    from orion.grammar.acts import build_act
+
+    return build_act(
+        actor=LOOK_ACTOR, verb="look", key=str(want_id), signal_id="artifact_produced",
+        horizon_sec=LOOK_HORIZON_SEC, basis=LOOK_BASIS,
+        object_ref=f"retro_sitting:{sitting_id}", test_before=f"retro_watch_look:{want_id}",
+    )
+
+
+async def publish_look_opened(bus: Any, *, want_id: str, sitting_id: str) -> bool:
+    """Open one look's act, now (its bid was just funded)."""
+    if bus is None or not _enabled():
+        return False
+    try:
+        from orion.grammar.acts import act_opened_event
+        from orion.grammar.publish import publish_grammar_event
+
+        event = act_opened_event(_look_act(want_id, sitting_id), source_service="orion-hub",
+                                 source_component="retro_watch.act", correlation_id=str(want_id))
+        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=UUID(str(want_id)))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("look_act_open_failed want_id=%s error=%s", want_id, exc)
+        return False
+
+
+async def publish_look_closed(bus: Any, *, want_id: str, sitting_id: str, produced: bool, note: str = "") -> bool:
+    if bus is None or not _enabled():
+        return False
+    try:
+        from orion.grammar.acts import act_closed_event
+        from orion.grammar.publish import publish_grammar_event
+
+        event = act_closed_event(_look_act(want_id, sitting_id), produced=produced, note=note[:500],
+                                 source_service="orion-hub", source_component="retro_watch.act",
+                                 correlation_id=str(want_id))
+        await publish_grammar_event(bus, event, source_name="orion-hub", correlation_id=UUID(str(want_id)))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("look_act_close_failed want_id=%s error=%s", want_id, exc)
         return False

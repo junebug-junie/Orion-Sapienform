@@ -1,7 +1,12 @@
-"""Hub network-boundary Retro access and same-origin UDS proxy; no chat/bus path.
+"""Hub network-boundary Retro access and same-origin UDS proxy; no chat path.
 
-The relay and the proxy also tell the sitting record what the player did (scripts/retro_sitting.py:
-input messages, save/load/pause/stop). That record is an observer: it never changes what is relayed."""
+Two observers ride on the relay, through its two callbacks, and never change what is relayed:
+
+* the sitting record (scripts/retro_sitting.py, ``on_input`` and the proxy's save/load/pause/stop): who
+  plays, from the controller's input;
+* Orion's look (scripts/retro_watch.py, ``on_media``, game company patch 2): one video packet in 2 s
+  kept in memory; while a sitting is open, a look may send up to 4 stills to the percept store and
+  one model call through the bus (the GPU pool and orion-llm-gateway), and store only the note."""
 import asyncio
 from pathlib import Path
 import time
@@ -25,6 +30,16 @@ class NoSitting:
     def status(self): return {'enabled': False, 'sitting': None}
     async def state_player(self, *a): return False
     async def recover(self): return 0
+    async def close(self): pass
+
+
+class NoWatch:
+    """Stands in when scripts.retro_watch cannot be loaded (or the sitting record is missing): the game
+    page and the relay work as before patch 2, and the page says the watch is off."""
+    enabled = False
+    def note_media(self, *a): pass
+    def status(self): return {'enabled': False, 'mode': 'off', 'status': {'code': 'disabled', 'text': "Orion's watch is not running."}}
+    async def set_juniper(self, *a): return False
     async def close(self): pass
 
 
@@ -84,6 +99,19 @@ def create_router(config, presence=None, experience=None, sitting=None):
             logging.getLogger('orion-hub.retro.sitting').error('retro_sitting_unavailable', exc_info=True)
             sitting = NoSitting()
     router.retro_sitting = sitting   # the gateway's lifespan reads it (recovery at start, close at shutdown)
+
+    watcher = NoWatch()
+    if getattr(sitting, 'enabled', False):
+        try:
+            from scripts.retro_watch import WatchService
+            watcher = WatchService(
+                config, sitting=sitting,
+                pool_provider=lambda: getattr(getattr(app_ref.get('app'), 'state', None), 'memory_pg_pool', None))
+        except Exception:  # an observer: a fault in it must not take the game page down
+            import logging
+            logging.getLogger('orion-hub.retro.watch').error('retro_watch_unavailable', exc_info=True)
+            watcher = NoWatch()
+    router.retro_watch = watcher     # the gateway's lifespan writes its counters at shutdown
 
     def bind(app):
         # Shutdown (the gateway's lifespan) closes the open sitting through app.state.retro_sitting.
@@ -159,7 +187,22 @@ def create_router(config, presence=None, experience=None, sitting=None):
             redis = getattr(store(), 'redis', None)
             copy = await read_sitting(redis) if redis is not None else None
             if copy is not None and copy.get('ended_at') is None: status = dict(status, sitting=copy)
+        try: status = dict(status, watch=watcher.status())
+        except Exception: status = dict(status, watch=NoWatch().status())
         return JSONResponse(status, headers={'Cache-Control': 'no-store'})
+
+    @router.post('/api/retro/sitting/watch')
+    async def sitting_watch(request: Request):
+        # Juniper's switch on the game page: 'on' or 'off', for every game, kept in Postgres. The lower of
+        # her setting and Orion's own (dig watch) is in force: this switch can never turn Orion's "off" on.
+        await authorize(request); bind(request.app)
+        import json
+        try: data = json.loads(await body(request))
+        except ValueError: raise HTTPException(422, 'invalid_watch')
+        mode = data.get('mode') if isinstance(data, dict) and set(data) == {'mode'} else None
+        if mode not in ('on', 'off'): raise HTTPException(422, 'invalid_watch')
+        if not await watcher.set_juniper(mode): raise HTTPException(503, 'watch_unavailable')
+        return JSONResponse(dict(sitting.status(), watch=watcher.status()), headers={'Cache-Control': 'no-store'})
 
     @router.post('/api/retro/sitting/player')
     async def sitting_player(request: Request):
@@ -448,7 +491,8 @@ def create_router(config, presence=None, experience=None, sitting=None):
                     beating=asyncio.create_task(beat())
                     try: await relay_messages(ws, upstream, channel, sid,
                                               media_ack=channel=='media' and ws.query_params.get('flow')=='ack-v1',
-                                              on_input=(lambda m: sitting.note_input(sid, m)) if channel=='input' else None)
+                                              on_input=(lambda m: sitting.note_input(sid, m)) if channel=='input' else None,
+                                              on_media=(lambda d: watcher.note_media(sid, d)) if channel=='media' else None)
                     finally:
                         beating.cancel();await asyncio.gather(beating,return_exceptions=True)
         except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError) as exc:

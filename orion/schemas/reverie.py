@@ -305,3 +305,82 @@ class ResonanceAlertV1(BaseModel):
     occurrences: int = Field(default=0, ge=0)
     sample_ats: list[datetime] = Field(default_factory=list, max_length=MAX_RESONANCE_SAMPLES)
     created_at: datetime = Field(default_factory=_utc_now)
+
+
+# --- Reveries that ask (docs/superpowers/specs/2026-11-18-reverie-questions-design.md) -------------
+#
+# A reverie starts, in a quiet stretch, from ONE piece of real material (a seed) and leaves one question
+# for curiosity to dig, or a reason there is none. One `reverie_question` row per reverie
+# (services/orion-sql-db/manual_migration_reverie_question.sql); the chronicle reads that table as the
+# `reverie_question` experience (orion/temporal_self/sources.py).
+
+ReverieSeedKind = Literal["absence", "lost_bet", "far_memory"]
+# Patch 1 builds the three world seeds. Rehearse, body change and contradiction are Patch 2.
+REVERIE_SEED_KINDS: tuple[str, ...] = ("absence", "lost_bet", "far_memory")
+
+MAX_REVERIE_QUESTION_CHARS = 300
+MAX_REVERIE_WHY_CHARS = 200
+MAX_REVERIE_NONE_REASON_CHARS = 300
+MAX_REVERIE_SEED_REFS = 8
+MAX_REVERIE_SEED_MATERIAL_CHARS = 4000
+
+ReverieRefusal = Literal[
+    "no_refs",             # the question names none of the seed's refs
+    "ref_not_in_seed",     # it names a ref the seed did not carry
+    "near_duplicate",      # the same question is already open (focus, self-question, or a recent reverie)
+    "machinery_words",     # it is about attention / substrate machinery, not the material
+    "too_long",            # question or why over its cap
+    "unparseable",         # the model's answer was not the JSON asked for
+]
+
+
+class ReverieSeedV1(BaseModel):
+    """The one piece of real material a reverie starts from (code-picked, no LLM).
+
+    ``thread_key`` names what the seed is about (a person's routine, a bet template and probability bin, a
+    memory pair). Two reveries on the same thread_key within ORION_REVERIE_THREAD_LAPSE_DAYS share a
+    ``thread_id``. Every ref resolves to a stored row: ``vision_percept_expectation:<id>``,
+    ``self_bet_bin:<faculty>:<bin>``, ``episode_memory:<id>`` / ``stance:<id>`` / ``person_fact:<id>``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["reverie.seed.v1"] = "reverie.seed.v1"
+    kind: ReverieSeedKind
+    material: str = Field(min_length=1, max_length=MAX_REVERIE_SEED_MATERIAL_CHARS)
+    refs: list[str] = Field(min_length=1, max_length=MAX_REVERIE_SEED_REFS)
+    thread_key: str = Field(min_length=1, max_length=300)
+    thread_id: str | None = None
+
+
+class ReverieQuestionV1(BaseModel):
+    """One reverie's product: a question (with why and refs), or ``none_reason``. Code checks it before it
+    is routed; a refused question keeps its text and ``refused_reason`` and is routed nowhere."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["reverie.question.v1"] = "reverie.question.v1"
+    question_id: str
+    thread_id: str
+    thread_key: str
+    seed_kind: ReverieSeedKind
+    seed_refs: list[str] = Field(default_factory=list, max_length=MAX_REVERIE_SEED_REFS)
+    seed_material: str = Field(default="", max_length=MAX_REVERIE_SEED_MATERIAL_CHARS)
+    question: str | None = Field(default=None, max_length=MAX_REVERIE_QUESTION_CHARS)
+    why: str | None = Field(default=None, max_length=MAX_REVERIE_WHY_CHARS)
+    refs: list[str] = Field(default_factory=list, max_length=MAX_REVERIE_SEED_REFS)
+    cites: list[str] = Field(default_factory=list, max_length=MAX_EXPERIENCE_CITES)
+    none_reason: str | None = Field(default=None, max_length=MAX_REVERIE_NONE_REASON_CHARS)
+    refused_reason: ReverieRefusal | None = None
+    refused_detail: str | None = Field(default=None, max_length=300)
+    # focus:<focus_id> | none. Set after the route; a question is written first with "none".
+    routed_to: str = "none"
+    route_note: str | None = Field(default=None, max_length=300)
+    correlation_id: str | None = None
+    model_id: str | None = None
+    created_at: datetime = Field(default_factory=_utc_now)
+
+    @property
+    def accepted(self) -> bool:
+        """A question code let through (it may still be routed nowhere, e.g. at the focus cap)."""
+        return bool(self.question) and self.refused_reason is None and self.none_reason is None

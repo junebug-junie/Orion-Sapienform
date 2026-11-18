@@ -1,7 +1,9 @@
 """`dig attention` (issue #3600): relative attention rates. No DB: live rows are a pinned fixture.
 
-The fixture is the real query output for the 24 h to 2026-11-17T08:23Z (the issue's baseline window),
-captured read-only on 2026-11-17. Frames are pruned after ~72 h, so it cannot be re-read later.
+The fixture is what ``frames_sql`` returns for the issue's baseline window (24 h to 2026-11-17T08:00Z,
+whole hours), built on 2026-11-18 by running every real frame of that window and its kept prior (read-only,
+before the 72 h prune) through ``orion.attention.frame_rollup.frame_increments`` -- the same function
+orion-attention-runtime now uses to write the rollup -- and summing per side.
 """
 from __future__ import annotations
 
@@ -41,7 +43,7 @@ class Runner:
         self.seen.append(sql)
         if self.fail:
             return self.fail, 1
-        if "min(generated_at)" in sql:
+        if "min(hour)" in sql:
             return _csv(self.fx["coverage"]), 0
         if "FROM temporal_self_event" in sql:
             return _csv(self.fx["events"]), 0
@@ -71,7 +73,8 @@ def test_the_checker_catches_raw_cross_source_counts():
     assert bare_counts("body won 3,915 frames, chat only 834") == ["3,915", "834"]
     assert bare_counts("  node:prediction.body: won 1,805 frames") == ["1,805"]
     assert bare_counts("  world:chat: won 100% (834 of 834)") == []
-    assert bare_counts("  1 in 4 frames sampled, about 2.2 s a frame") == []
+    assert bare_counts("  whole UTC hours, every frame, about 2.2 s a frame") == []
+    assert bare_counts("  1 in 4 frames sampled") == ["1", "4"]  # nothing is sampled any more: no exception for it
     # a count glued to a ref or written as a bare ratio is still a raw count (review 2026-11-17)
     assert bare_counts("world:chat=834 frames") == ["834"]
     assert bare_counts("chat won 834/40846") == ["834", "40846"]
@@ -114,8 +117,10 @@ def test_won_when_eligible_matches_the_issue_baseline(tmp_path, monkeypatch):
 
 def test_rest_and_perception_eligibility_match_the_issue_baseline(tmp_path, monkeypatch):
     text = _baseline_text(tmp_path, monkeypatch)
-    assert "rest (no eligible target): 70% (28,643 of 40,836) of frames" in text
-    assert "eligible 10.7% (4,368 of 40,836) vs design 10.0%" in text
+    # issue (24 h to 08:23Z, from raw frames): rest 70% (28,641 of 40,835), perception eligible 10.7%.
+    # The rollup reads whole hours, so the window ends 08:00Z: 23 minutes earlier, 5 more frames.
+    assert "rest (no eligible target): 70% (28,724 of 40,840) of frames" in text
+    assert "eligible 10.6% (4,321 of 40,840) vs design 10.0%" in text
 
 
 def test_event_sources_are_measured_against_their_own_events():
@@ -129,7 +134,7 @@ def test_event_sources_are_measured_against_their_own_events():
     assert (street.num, street.den) == (96, 792) and street.reference == "7 street_event x 300 s, overlaps merged"
     reading = A.eligibility(r.cur, "world:reading", "event")
     # 39 readings, merged windows 25,459 s; only one 15-min link window lit it (loose source, see EVENT_SOURCES)
-    assert reading.reference == "39 reading_turn x 900 s, overlaps merged" and (reading.num, reading.den) == (426, 12033)
+    assert reading.reference == "39 reading_turn x 900 s, overlaps merged" and (reading.num, reading.den) == (426, 12034)
 
 
 def test_lit_seconds_merges_overlapping_windows_and_counts_window_edges():
@@ -152,9 +157,9 @@ def test_contested_frames_and_wins_inside_them_are_reported():
 
 def test_not_attended_causes_are_counted_per_target(tmp_path, monkeypatch):
     r = _read()
-    assert r.cur.causes["world:chat"] == {"quiet for itself": 40002}
+    assert r.cur.causes["world:chat"] == {"quiet for itself": 40006}
     walk = r.cur.causes["node:substrate.perception_walkway"]
-    assert walk["below its band floor"] == 37802 and walk["absent"] == 2598
+    assert walk["below its band floor"] == 37798 and walk["absent"] == 2592
 
 
 # --- causes ------------------------------------------------------------------------------------------
@@ -180,21 +185,25 @@ def test_classify(reason, cause):
     assert A.classify(reason) == cause
 
 
-def test_sql_case_is_built_from_the_same_cause_table():
-    sql = A.frames_sql(A.parse_window("24h", "2026-11-17T08:23Z"))
-    for label, pattern in A.CAUSES:
-        assert f"LIKE '{pattern.replace('_', '!_')}' ESCAPE '!' THEN '{label}'" in sql
+def test_the_rollup_is_classified_at_write_time_by_the_shared_rule():
+    # dig reads causes as written; the one rule lives in orion.attention.frame_rollup
+    from orion.attention import frame_rollup
+
+    assert A.CAUSES is frame_rollup.CAUSES and A.classify is frame_rollup.classify
+    assert "frame_json" not in A.frames_sql(A.parse_window("24h", "2026-11-17T08:23Z"))
 
 
 # --- window, coverage, sampling --------------------------------------------------------------------
 
 NOW = datetime(2026, 11, 17, 8, 23, tzinfo=timezone.utc)
+HOUR = datetime(2026, 11, 17, 8, 0, tzinfo=timezone.utc)
 
 
 def test_parse_window():
     w = A.parse_window(None, None, now=NOW)
     assert (w.label, w.end - w.start, w.start - w.base_start) == ("24h", timedelta(hours=24), timedelta(days=7))
-    assert A.parse_window("7d", "2026-11-17T08:23Z").end == NOW
+    assert w.end == HOUR  # whole hours: the current hour is still filling
+    assert A.parse_window("7d", "2026-11-17T08:23Z").end == HOUR
     for bad in ("31d", "0h", "week", "24"):
         with pytest.raises(ValueError):
             A.parse_window(bad, None, now=NOW)
@@ -202,19 +211,12 @@ def test_parse_window():
         A.parse_end("yesterday")
 
 
-def test_coverage_clamps_both_sides_to_the_kept_frames():
+def test_coverage_clamps_both_sides_to_the_first_rollup_hour():
     w = A.parse_window("24h", None, now=NOW)
-    c = w.covered(NOW - timedelta(hours=60))  # 72 h retention: 36 h of baseline, not 7 days
-    assert c.start == w.start and c.base_seconds == 36 * 3600 and c.k_base == 3 and c.k_cur == 1
-    c = A.parse_window("7d", None, now=NOW).covered(NOW - timedelta(hours=72))
-    assert c.seconds == 72 * 3600 and c.base_seconds == 0 and c.k_cur == 3
-
-
-def test_sampled_rates_equal_unsampled_rates():
-    full = A.Side(seconds=86400, k=1, frames=40000, present={"world:chat": 800}, events={"chat_turn": 2})
-    half = A.Side(seconds=86400, k=2, frames=20000, present={"world:chat": 400}, events={"chat_turn": 2})
-    assert A.eligibility(full, "world:chat", "event").rate == pytest.approx(A.eligibility(half, "world:chat", "event").rate)
-    assert full.interval == pytest.approx(half.interval)
+    c = w.covered(HOUR - timedelta(hours=60))  # rollup started 60 h ago: 36 h of baseline, not 7 days
+    assert c.start == w.start and c.base_seconds == 36 * 3600
+    c = A.parse_window("7d", None, now=NOW).covered(HOUR - timedelta(hours=72))
+    assert c.seconds == 72 * 3600 and c.base_seconds == 0
 
 
 def test_a_clamped_window_and_a_missing_baseline_are_said(tmp_path, monkeypatch):
@@ -223,8 +225,8 @@ def test_a_clamped_window_and_a_missing_baseline_are_said(tmp_path, monkeypatch)
               frames=[r for r in FIXTURE["frames"] if r["cur"] == "t"],
               events=[r for r in FIXTURE["events"] if r["cur"] == "t"])
     text = dig.cmd_attention("24h", FIXTURE["end"], dig.Out("t"), runner=Runner(fx))
-    assert "frames kept only from 2026-11-16T20:00" in text
-    assert "drift: n/a, no kept frames before the window" in text
+    assert "counted only from 2026-11-16T20:00Z: the hourly rollup starts there" in text
+    assert "drift: n/a, no counted hours before the window yet" in text
 
 
 def test_no_frames_reads_as_unread_not_calm(tmp_path, monkeypatch):
@@ -233,7 +235,7 @@ def test_no_frames_reads_as_unread_not_calm(tmp_path, monkeypatch):
     run = Runner(fx)
     text = dig.cmd_attention("24h", FIXTURE["end"], dig.Out("t"), runner=run)
     assert "no attention frames in this window: unread, not calm" in text
-    assert len(run.seen) == 1  # no frame pass when nothing is kept
+    assert len(run.seen) == 1  # no count read when the rollup has nothing
 
 
 # --- kinds come from the semantic layer, events from the experience contract ------------------------
@@ -272,7 +274,9 @@ def test_every_query_is_read_only_single_pass_and_time_bounded(tmp_path, monkeyp
     run = Runner()
     dig.cmd_attention("24h", FIXTURE["end"], dig.Out("t"), runner=run)
     assert len(run.seen) == 3
-    assert sum("FROM substrate_attention_frames" in s and "frame_json" in s for s in run.seen) == 1
+    # never the frame documents: the rollup, its coverage, and events (2026-11-18: frame_json reads timed out)
+    assert not any("substrate_attention_frames" in s or "frame_json" in s for s in run.seen)
+    assert sum("FROM substrate_attention_hour_rollup" in s for s in run.seen) == 2
     for sql in run.seen:
         assert f"SET LOCAL statement_timeout = '{A.STATEMENT_TIMEOUT}'" in sql
         assert "\\" not in sql
@@ -302,7 +306,7 @@ def test_result_file_holds_both_sides(tmp_path, monkeypatch):
     data = json.loads(path.read_text())
     chat = data["rates"]["world:chat"]
     assert chat["kind"] == "event" and chat["cur"]["won_when_eligible"] == 1.0
-    assert data["base"]["frames"] > 0 and data["cur"]["frames"] == 40836
+    assert data["base"]["frames"] > 0 and data["cur"]["frames"] == 40840
 
 
 def test_a_target_judged_only_before_the_window_is_not_called_attended():
@@ -317,7 +321,7 @@ def test_drift_carries_the_prior_rate_with_its_numerator_and_denominator():
     assert re.search(r"drift won [+-]\d+%, eligible [+-]\d+%$", A.target_line(r, "node:substrate.perception"))
     prior = A.prior_line(r, "node:substrate.perception")
     assert re.fullmatch(r"  node:substrate.perception: won \d+% \([\d,]+ of [\d,]+\), eligible [\d.]+% \([\d,]+ of [\d,]+\)", prior), prior
-    assert "prior rates each drift is against (sampled frames):" in A.render(r)
+    assert "prior rates each drift is against:" in A.render(r)
 
 
 def test_eligible_share_is_of_the_frames_the_target_was_judged():

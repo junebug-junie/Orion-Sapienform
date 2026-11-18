@@ -3,7 +3,7 @@
 "end": "2026-11-17T08:23Z",
 "coverage": [
 {
-"first": "2026-11-14 19:27:27.862952+00"
+"first": "2026-11-15T01:00:00+00:00"
 }
 ],
 "frames": [
@@ -12,9 +12,9 @@
 "cur": "f",
 "target": "",
 "cause": "",
-"a": "14867",
-"b": "9192",
-"c": "1697",
+"a": "48839",
+"b": "32418",
+"c": "4099",
 "d": "0"
 },
 {
@@ -22,8 +22,8 @@
 "cur": "t",
 "target": "",
 "cause": "",
-"a": "40836",
-"b": "28643",
+"a": "40840",
+"b": "28724",
 "c": "3047",
 "d": "0"
 },
@@ -32,7 +32,7 @@
 "cur": "f",
 "target": "node:prediction.body",
 "cause": "quiet for itself",
-"a": "8980",
+"a": "29887",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -42,7 +42,7 @@
 "cur": "f",
 "target": "node:prediction.body",
 "cause": "stale reading",
-"a": "280",
+"a": "1085",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -52,7 +52,7 @@
 "cur": "f",
 "target": "node:prediction.body",
 "cause": "usual for itself",
-"a": "3829",
+"a": "13152",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -62,7 +62,7 @@
 "cur": "f",
 "target": "node:prediction.chat_turn",
 "cause": "insufficient history",
-"a": "14867",
+"a": "48839",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -72,7 +72,7 @@
 "cur": "f",
 "target": "node:prediction.room",
 "cause": "quiet for itself",
-"a": "8391",
+"a": "27635",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -82,7 +82,7 @@
 "cur": "f",
 "target": "node:prediction.room",
 "cause": "usual for itself",
-"a": "4689",
+"a": "15906",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -92,7 +92,7 @@
 "cur": "f",
 "target": "node:substrate.biometrics",
 "cause": "not sustained",
-"a": "2387",
+"a": "8856",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -102,7 +102,7 @@
 "cur": "f",
 "target": "node:substrate.biometrics",
 "cause": "quiet for itself",
-"a": "7152",
+"a": "21865",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -112,7 +112,7 @@
 "cur": "f",
 "target": "node:substrate.biometrics",
 "cause": "usual for itself",
-"a": "5167",
+"a": "17605",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -122,7 +122,7 @@
 "cur": "f",
 "target": "node:substrate.cabinet",
 "cause": "quiet for itself",
-"a": "14457",
+"a": "48839",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -132,7 +132,7 @@
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "past the orienting window",
-"a": "1943",
+"a": "6595",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -142,7 +142,7 @@
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "quiet for itself",
-"a": "7603",
+"a": "24414",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -152,7 +152,7 @@
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "stale reading",
-"a": "276",
+"a": "1113",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -162,7 +162,7 @@
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "usual for itself",
-"a": "4359",
+"a": "14482",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -172,7 +172,7 @@
 "cur": "f",
 "target": "node:substrate.harness_closure",
 "cause": "insufficient history",
-"a": "13420",
+"a": "43830",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -182,7 +182,7 @@
 "cur": "f",
 "target": "node:substrate.perception",
 "cause": "absent",
-"a": "132",
+"a": "248",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -192,7 +192,7 @@
 "cur": "f",
 "target": "node:substrate.perception",
 "cause": "quiet for itself",
-"a": "8834",
+"a": "28724",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -202,7 +202,7 @@
 "cur": "f",
 "target": "node:substrate.perception",
 "cause": "usual for itself",
-"a": "4521",
+"a": "15215",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -212,7 +212,7 @@
 "cur": "f",
 "target": "node:substrate.perception_walkway",
 "cause": "absent",
-"a": "126",
+"a": "195",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -222,7 +222,7 @@
 "cur": "f",
 "target": "node:substrate.perception_walkway",
 "cause": "below its band floor",
-"a": "14603",
+"a": "48247",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -232,7 +232,7 @@
 "cur": "f",
 "target": "node:substrate.strain",
 "cause": "past the orienting window",
-"a": "162",
+"a": "707",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -242,7 +242,7 @@
 "cur": "f",
 "target": "node:substrate.strain",
 "cause": "quiet for itself",
-"a": "14705",
+"a": "48132",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -252,7 +252,7 @@
 "cur": "f",
 "target": "node:substrate.street",
 "cause": "absent",
-"a": "48",
+"a": "72",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -262,7 +262,7 @@
 "cur": "f",
 "target": "node:substrate.street",
 "cause": "quiet for itself",
-"a": "14819",
+"a": "48767",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -272,17 +272,7 @@
 "cur": "f",
 "target": "world:chat",
 "cause": "quiet for itself",
-"a": "13753",
-"b": "0",
-"c": "0",
-"d": "0"
-},
-{
-"part": "not",
-"cur": "f",
-"target": "world:reading",
-"cause": "other",
-"a": "92",
+"a": "46057",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -292,7 +282,7 @@
 "cur": "f",
 "target": "world:reading",
 "cause": "quiet for itself",
-"a": "14246",
+"a": "47645",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -302,7 +292,7 @@
 "cur": "f",
 "target": "world:reading",
 "cause": "usual for itself",
-"a": "297",
+"a": "780",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -312,7 +302,7 @@
 "cur": "t",
 "target": "node:prediction.body",
 "cause": "quiet for itself",
-"a": "24572",
+"a": "24806",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -332,7 +322,7 @@
 "cur": "t",
 "target": "node:prediction.body",
 "cause": "usual for itself",
-"a": "10531",
+"a": "10301",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -342,7 +332,7 @@
 "cur": "t",
 "target": "node:prediction.chat_turn",
 "cause": "insufficient history",
-"a": "40836",
+"a": "40840",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -352,7 +342,7 @@
 "cur": "t",
 "target": "node:prediction.room",
 "cause": "quiet for itself",
-"a": "24630",
+"a": "24689",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -362,7 +352,7 @@
 "cur": "t",
 "target": "node:prediction.room",
 "cause": "usual for itself",
-"a": "13063",
+"a": "13008",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -372,7 +362,7 @@
 "cur": "t",
 "target": "node:substrate.biometrics",
 "cause": "not sustained",
-"a": "4231",
+"a": "4059",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -382,7 +372,7 @@
 "cur": "t",
 "target": "node:substrate.biometrics",
 "cause": "quiet for itself",
-"a": "18826",
+"a": "18910",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -392,7 +382,7 @@
 "cur": "t",
 "target": "node:substrate.biometrics",
 "cause": "usual for itself",
-"a": "17499",
+"a": "17610",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -402,7 +392,7 @@
 "cur": "t",
 "target": "node:substrate.cabinet",
 "cause": "quiet for itself",
-"a": "40836",
+"a": "40840",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -412,7 +402,7 @@
 "cur": "t",
 "target": "node:substrate.execution",
 "cause": "past the orienting window",
-"a": "8713",
+"a": "8827",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -422,7 +412,7 @@
 "cur": "t",
 "target": "node:substrate.execution",
 "cause": "quiet for itself",
-"a": "18597",
+"a": "18443",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -442,7 +432,7 @@
 "cur": "t",
 "target": "node:substrate.execution",
 "cause": "usual for itself",
-"a": "8913",
+"a": "8982",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -452,7 +442,7 @@
 "cur": "t",
 "target": "node:substrate.perception",
 "cause": "absent",
-"a": "2583",
+"a": "2577",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -462,7 +452,7 @@
 "cur": "t",
 "target": "node:substrate.perception",
 "cause": "quiet for itself",
-"a": "22926",
+"a": "22951",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -472,7 +462,7 @@
 "cur": "t",
 "target": "node:substrate.perception",
 "cause": "usual for itself",
-"a": "10959",
+"a": "10991",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -482,7 +472,7 @@
 "cur": "t",
 "target": "node:substrate.perception_walkway",
 "cause": "absent",
-"a": "2598",
+"a": "2592",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -492,7 +482,7 @@
 "cur": "t",
 "target": "node:substrate.perception_walkway",
 "cause": "below its band floor",
-"a": "37802",
+"a": "37798",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -512,7 +502,7 @@
 "cur": "t",
 "target": "node:substrate.strain",
 "cause": "quiet for itself",
-"a": "40657",
+"a": "40661",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -532,7 +522,7 @@
 "cur": "t",
 "target": "node:substrate.street",
 "cause": "quiet for itself",
-"a": "39172",
+"a": "39176",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -542,7 +532,7 @@
 "cur": "t",
 "target": "world:chat",
 "cause": "quiet for itself",
-"a": "40002",
+"a": "40006",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -552,7 +542,7 @@
 "cur": "t",
 "target": "world:reading",
 "cause": "quiet for itself",
-"a": "40410",
+"a": "40414",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -562,90 +552,80 @@
 "cur": "f",
 "target": "node:prediction.body",
 "cause": "",
-"a": "1778",
-"b": "1093",
-"c": "1169",
-"d": "484"
+"a": "4715",
+"b": "3528",
+"c": "2800",
+"d": "1613"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:prediction.room",
 "cause": "",
-"a": "1787",
-"b": "1159",
-"c": "1053",
-"d": "425"
+"a": "5298",
+"b": "3612",
+"c": "2605",
+"d": "919"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:substrate.biometrics",
 "cause": "",
-"a": "161",
-"b": "116",
-"c": "61",
-"d": "16"
-},
-{
-"part": "won",
-"cur": "f",
-"target": "node:substrate.cabinet",
-"cause": "",
-"a": "410",
-"b": "410",
-"c": "213",
-"d": "213"
+"a": "513",
+"b": "443",
+"c": "146",
+"d": "76"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "",
-"a": "686",
-"b": "530",
-"c": "243",
-"d": "87"
+"a": "2235",
+"b": "1785",
+"c": "738",
+"d": "288"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:substrate.perception",
 "cause": "",
-"a": "1380",
-"b": "981",
-"c": "514",
-"d": "115"
+"a": "4652",
+"b": "3637",
+"c": "1479",
+"d": "464"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:substrate.perception_walkway",
 "cause": "",
-"a": "138",
-"b": "138",
-"c": "72",
-"d": "72"
+"a": "397",
+"b": "397",
+"c": "152",
+"d": "152"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "world:chat",
 "cause": "",
-"a": "1114",
-"b": "1029",
-"c": "351",
-"d": "266"
+"a": "2782",
+"b": "2605",
+"c": "705",
+"d": "528"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "world:reading",
 "cause": "",
-"a": "232",
-"b": "219",
-"c": "32",
-"d": "19"
+"a": "414",
+"b": "414",
+"c": "59",
+"d": "59"
 },
 {
 "part": "won",
@@ -672,8 +652,8 @@
 "cur": "t",
 "target": "node:substrate.biometrics",
 "cause": "",
-"a": "280",
-"b": "247",
+"a": "261",
+"b": "228",
 "c": "196",
 "d": "163"
 },
@@ -682,8 +662,8 @@
 "cur": "t",
 "target": "node:substrate.execution",
 "cause": "",
-"a": "3176",
-"b": "2173",
+"a": "3151",
+"b": "2148",
 "c": "1131",
 "d": "128"
 },
@@ -692,8 +672,8 @@
 "cur": "t",
 "target": "node:substrate.perception",
 "cause": "",
-"a": "4368",
-"b": "3971",
+"a": "4321",
+"b": "3924",
 "c": "1118",
 "d": "721"
 },
@@ -702,8 +682,8 @@
 "cur": "t",
 "target": "node:substrate.perception_walkway",
 "cause": "",
-"a": "436",
-"b": "419",
+"a": "450",
+"b": "433",
 "c": "227",
 "d": "210"
 },
@@ -770,14 +750,14 @@
 {
 "cur": "f",
 "kind": "street_event",
-"n": "17",
-"lit": "3429.605969"
+"n": "12",
+"lit": "2415.068040"
 },
 {
 "cur": "f",
 "kind": "chat_turn",
-"n": "12",
-"lit": "9696.784362"
+"n": "6",
+"lit": "5994.568145"
 },
 {
 "cur": "f",

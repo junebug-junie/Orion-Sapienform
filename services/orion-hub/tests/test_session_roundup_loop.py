@@ -784,3 +784,60 @@ def test_no_questions_does_not_use_the_round_and_an_unparsed_reply_does(mode, mo
         assert turns[-1]["meta"]["closing_note"] is True and turns[-1]["meta"]["unparsed"] is True
 
     run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_a_failed_round_does_not_use_the_threads_one_question_round(mode, monkeypatch):
+    # Orion's round-up times out (and then comes back empty): no Orion turn is stored, so the next
+    # good round is still the thread's FIRST question round, not an answer phase.
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        w.durable.replies = [RuntimeError("timeout"), ""]
+        for why in ("orion_run_failed:timeout", "orion_run_completed_empty"):
+            w.clock.to_next_hour()
+            assert (await w.loop.tick())["why"] == why
+            thread, turns = await state(w, tid)
+            assert thread["status"] == "held" and not any(t["speaker"] == "orion" for t in turns)
+            assert core.in_answer_phase(turns) is False
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "1. Why hourly?"))]
+        tick = await w.loop.tick()
+        assert tick["asked"] == 1 and tick["closed"] == 0 and tick["pr_comments"] == 1
+        assert core.ANSWER_PHASE_NOTE not in w.durable.submits[-1]["prompt"]
+        assert SPEC.strip() in w.durable.submits[-1]["prompt"]
+        thread, turns = await state(w, tid)
+        assert thread["status"] == "asked" and not turns[-1]["meta"].get("closing_note")
+        # Only now is the round used: a reply is read as answers.
+        got = await w.loop.intake(session_id="sess-A", title="reply", body="Juniper's rule.", thread_id=tid)
+        assert got["answer_phase"] is True
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_orions_questions_reach_the_session_after_a_later_push_amends_the_thread(mode, monkeypatch):
+    # Delivery is keyed to the thread (its sender sessions and its branch), not to the `gh pr create`
+    # event: a second push for the same PR, even from another session, still gets the open questions.
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "1. Why hourly?"))]
+        assert (await w.loop.tick())["asked"] == 1
+        _, turns = await state(w, tid)
+        question = turns[-1]
+        second = await send_pr(w, session="sess-B", body="Pushed rev 2.", spec=SPEC + "rev 2\n")
+        assert second["thread"]["thread_id"] == tid and second["answer_phase"] is True
+        for who in ({"session_id": "sess-B", "branch": ""}, {"session_id": "sess-A", "branch": ""},
+                    {"session_id": "", "branch": "feat/a"}):
+            [row] = await srl.pending_for(w.pool, **who)
+            assert row["turn_id"] == question["turn_id"] and row["body"] == "1. Why hourly?"
+        # Handed back once, to whichever session claims it first.
+        assert await srl.mark_delivered(w.pool, [question["turn_id"]]) == 1
+        assert await srl.pending_for(w.pool, session_id="sess-A", branch="feat/a") == []
+        # The amended spec is read at the next round, as answers (the round is used).
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "NO QUESTIONS"))]
+        tick = await w.loop.tick()
+        assert tick["closed"] == 1 and "rev 2" in w.durable.submits[-1]["prompt"]
+
+    run(mode, monkeypatch, scenario)

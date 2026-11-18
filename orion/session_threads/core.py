@@ -382,6 +382,36 @@ def is_no_questions(text: str) -> bool:
     return len(lines) == 1 and bool(_NO_QUESTIONS_RE.match(lines[0]))
 
 
+# A data fence Orion copied into its reply, opening line to closing line (any nonce). Only a CLOSED
+# fence is cut: an opening line with no closing line after it is left as text.
+_ECHOED_DATA_RE = re.compile(r"^[^\n]*<<<SESSION_DATA[^\n]*\n(?:(?!<<<SESSION_DATA).)*?^[^\n]*<<<END_SESSION_DATA[^\n]*>>>[^\n]*$",
+                             re.MULTILINE | re.DOTALL)
+ECHOED_DATA_NOTE = "[Hub removed session data Orion quoted back here.]"
+_CODE_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def strip_echoed_data(text: str) -> str:
+    """``text`` with every closed session-data fence Orion quoted back replaced by one Hub line: that
+    text is the session's, not Orion's, and a heading inside it must not split Orion's reply."""
+    return _ECHOED_DATA_RE.sub(ECHOED_DATA_NOTE, str(text or ""))
+
+
+def _code_spans(text: str) -> List[Tuple[int, int]]:
+    """(start, end) of each CLOSED markdown code block (``` or ~~~) in ``text``. A heading line inside
+    one is quoted text, never a section heading."""
+    spans: List[Tuple[int, int]] = []
+    pos, start, marker = 0, None, ""
+    for line in text.splitlines(keepends=True):
+        m = _CODE_FENCE_RE.match(line)
+        if m and start is None:
+            start, marker = pos, m.group(1)
+        elif m and m.group(1) == marker:
+            spans.append((start, pos + len(line)))
+            start = None
+        pos += len(line)
+    return spans
+
+
 def parse_roundup_reply(text: str, thread_ids: Sequence[str],
                         answer_phase_ids: Sequence[str] = ()) -> List[ThreadAnswer]:
     """Orion's reply as one answer per thread of the round.
@@ -398,13 +428,17 @@ def parse_roundup_reply(text: str, thread_ids: Sequence[str],
     Headings must be trustworthy before a section goes to one thread's session and pull request: a
     thread id under two headings, or headings out of the prompt's order, means some text may sit
     under the wrong heading (Orion quoting a heading a session wrote), so EVERY thread of the round
-    then gets the whole reply, marked ``unparsed``."""
-    whole = str(text or "").strip()
-    if not whole:
+    then gets the whole reply, marked ``unparsed``.
+
+    Session text Orion quotes back never splits the reply: a closed session-data fence is cut out first
+    (``strip_echoed_data``), and a heading line inside a closed markdown code block is not a heading."""
+    whole = strip_echoed_data(str(text or "")).strip()
+    if not whole.replace(ECHOED_DATA_NOTE, "").strip():
         raise ValueError("empty_reply")
     wanted = {tid.lower(): tid for tid in thread_ids}
     found: Dict[str, str] = {}
-    matches = list(_HEADER_RE.finditer(whole))
+    spans = _code_spans(whole)
+    matches = [m for m in _HEADER_RE.finditer(whole) if not any(a <= m.start() < b for a, b in spans)]
     seen: List[str] = []
     for i, m in enumerate(matches):
         tid = wanted.get(m.group(1).lower())

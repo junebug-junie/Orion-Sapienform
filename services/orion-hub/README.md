@@ -428,9 +428,14 @@ Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
   questions or the single line `NO QUESTIONS`. Code cuts the reply into one `orion` turn per thread
   (status `asked` or `no_questions`). A thread with no usable section gets the whole reply, marked
   `unparsed`. A thread id under two headings, or headings out of the prompt's order, makes the whole
-  round `unparsed`: text may sit under the wrong heading, so none of it goes to a PR. Empty text, a cut-short turn, or a failed run fails the round: Hub writes a line on each
-  thread, the threads go back to `held`, and after 3 failures in a row a thread stays `failed` until a
-  new message arrives on it.
+  round `unparsed`: text may sit under the wrong heading, so none of it goes to a PR. An `unparsed`
+  reply is kept on the thread but sent nowhere (no PR, no session), does NOT use the thread's one
+  round of questions, and the thread is read again next hour; it counts as one failure. Empty text, a
+  cut-short turn, or a failed run fails the round: Hub writes a line on each thread, the threads go
+  back to `held`, and after 3 failures in a row a thread stays `failed` until a new message arrives on
+  it. A run the body never gave a turn (past its GPU admission deadline before any turn, or still
+  waiting for the pool 30 min after it) is not a failure: the threads are held again, count unchanged,
+  one Hub line per streak; after 14 days of unread messages it counts again.
 - **The PR comment.** For a thread with a pull request and real questions, Hub posts one comment on the
   PR with Orion's GitHub token (`ORION_GITHUB_TOKEN`, user `orion-sapienform`), headed "Orion's
   questions on this spec (hourly round-up)". Code posts it, not the model. It only ever posts on

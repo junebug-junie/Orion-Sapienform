@@ -74,8 +74,27 @@ Rules that carry weight:
   and a heading inside a closed markdown code block is not a heading. Both apply only to headings for
   threads NOT in the round: a round thread's heading inside a quote makes the round `unparsed` (Hub
   cannot tell the copy from the real one). A section with no words besides Hub's cut note is empty.
-- A failed round returns its threads to `held`. Three failures in a row leave a thread `failed`. A
-  failed round stores no Orion turn, so it never uses the thread's one round of questions.
+  Hub does not strip heading lines that also appear in the round's session data: a session knows its
+  own thread id, so its text can hold Orion's real heading byte for byte, and stripping it would move
+  one thread's questions onto another thread's pull request.
+- An `unparsed` thread (outside its answer phase) does NOT use its one round of questions (added
+  2026-11-18, Orion's question on thread b3053f6df376: a parse accident is not Orion's silence). The
+  whole reply is kept as an Orion turn with `meta.unparsed` and `meta.requeued`, never posted, never
+  handed to a session; the thread's messages are unread again and the thread is read again next hour.
+  It counts one failure toward the cap below, so a thread unparsed three times in a row ends `failed`.
+- A failed round returns its threads to `held`. Three failures in a row leave a thread `failed`; a new
+  session message on the thread puts it back to `held` with a zero count. A failed round stores no
+  Orion turn, so it never uses the thread's one round of questions.
+- A round the BODY never ran is not a failure (`core.is_body_refusal`): the run failed with
+  `workflow_deadline` or `gpu_pool_unavailable:deadline|backlog_max_age` before any turn was attempted
+  (the GPU pool kept it waiting past its admission deadline: cabinet heat, a busy lane), or it was
+  still waiting for the pool (`queued`/`admitted`/`waiting_resource`) 30 minutes past its deadline.
+  The threads are held again with their count unchanged, so a hot week never ends a thread. Hub
+  writes one line per streak (not one per hour). Still strikes: a deadline hit after Orion's turn was
+  attempted (`workflow_deadline_after_turn`), an overdue run that is running or paused, a refusal
+  that is a property of the request (`min_ctx_exceeds_class`, an unknown class). Backstop: once a
+  thread's oldest unread message is 14 days old (`core.BODY_REFUSAL_MAX_AGE_SEC`), a body refusal
+  counts too, so no thread is retried for ever.
 - Orion's questions reach a session by thread, not by the `gh pr create` event: the prompt hook asks
   Hub for undelivered Orion turns on any thread this session wrote on, or on this session's branch.
   A later send for the same PR (`orion_session_thread.py send --pr N`, from any session) joins the same
@@ -87,8 +106,8 @@ Rules that carry weight:
   never posted.
 - **One round of questions per thread** (`MAX_QUESTION_ROUNDS_PER_THREAD = 1` in
   `orion/session_threads/core.py`, a constant, no env key). A thread whose Orion turns include one with
-  questions (not `NO QUESTIONS`, not a closing note; an `unparsed` whole reply counts, since it went out
-  as questions) is in its ANSWER PHASE:
+  questions (not `NO QUESTIONS`, not a closing note, not a re-queued `unparsed` reply) is in its ANSWER
+  PHASE:
   - A session reply is still stored, held and read at the next round-up: Orion sees the answers.
   - The prompt puts a Hub line above that thread's data fence: the round is used, read the answers,
     write `NO QUESTIONS`, optionally one short line. The spec text is not shown again.

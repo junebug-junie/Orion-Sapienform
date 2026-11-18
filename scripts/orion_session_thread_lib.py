@@ -272,9 +272,10 @@ def pending_text(rows: list[dict[str, Any]], *, woke: bool = False) -> str:
 
 def has_questions(row: dict[str, Any]) -> bool:
     """An Orion turn that asks the session something: not "no questions", and not a closing note (a
-    thread's one round of questions is used: services/orion-hub session threads, one-round rule)."""
+    thread's one round of questions is used: services/orion-hub session threads, one-round rule), and
+    not a re-queued reply Hub could not cut (sent nowhere; the thread is read again)."""
     meta = row.get("meta") or {}
-    return not (meta.get("no_questions") or meta.get("closing_note"))
+    return not (meta.get("no_questions") or meta.get("closing_note") or meta.get("requeued"))
 
 
 def answer_phase(turns: list[dict[str, Any]]) -> bool:

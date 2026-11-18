@@ -425,18 +425,112 @@ def test_durable_runs_down_waits_and_a_refused_run_counts_as_a_failure(mode, mon
 
 
 @pytest.mark.parametrize("mode", BOTH)
-def test_an_unparseable_reply_is_stored_whole_on_every_thread_and_not_posted(mode, monkeypatch):
+def test_an_unparseable_reply_is_kept_sent_nowhere_and_read_again_without_using_the_round(mode, monkeypatch):
+    # Session thread b3053f6df376 (Orion, 2026-11-18): a parse accident is not Orion's silence. The whole
+    # reply is kept on every thread, posted nowhere, handed to no session, and the threads are read again
+    # next hour as a FIRST question round. It is a failure toward the cap: 3 in a row end the thread.
     async def scenario(w):
         a = (await send_pr(w, pr=1))["thread"]["thread_id"]
-        b = (await send_pr(w, pr=2, branch="feat/b"))["thread"]["thread_id"]
+        b = (await send_pr(w, pr=2, branch="feat/b", session="sess-B"))["thread"]["thread_id"]
+        frames(w)
         w.clock.to_next_hour()
         whole = "I read both specs. My worry is the GitHub token."
         w.durable.replies = [whole]
         tick = await w.loop.tick()
-        assert tick["unparsed"] == 2 and tick["pr_comments"] == 0 and w.commenter.posts == []
+        assert tick["unparsed"] == 2 and tick["asked"] == 0 and tick["pr_comments"] == 0 and w.commenter.posts == []
         for tid in (a, b):
             thread, turns = await state(w, tid)
-            assert thread["status"] == "asked" and turns[-1]["body"] == whole and turns[-1]["meta"]["unparsed"] is True
+            assert thread["status"] == "held" and thread["roundup_failures"] == 1
+            assert thread["status_reason"] == srl.UNPARSED_REASON
+            orion = [t for t in turns if t["speaker"] == "orion"]
+            assert len(orion) == 1 and orion[0]["body"] == whole
+            assert orion[0]["meta"]["unparsed"] is True and orion[0]["meta"]["requeued"] is True
+            assert turns[-1]["speaker"] == "hub" and turns[-1]["meta"]["reply_unparsed"] is True
+            assert "does not use this thread's one round of questions" in turns[-1]["body"]
+            assert "Failure 1 of 3" in turns[-1]["body"]
+            assert turns[0]["roundup_id"] is None            # the message is unread again
+            assert core.in_answer_phase(turns) is False
+        assert [f["speaker"] for f in frames(w)] == ["orion", "hub", "orion", "hub"]
+        # Handed to no session, by session or by branch.
+        assert await srl.pending_for(w.pool, session_id="sess-A", branch="feat/a") == []
+        assert await srl.pending_for(w.pool, session_id="sess-B", branch="feat/b") == []
+        # A reply sent now is NOT read as answers: the round is unused.
+        got = await w.loop.intake(session_id="sess-A", title="more", body="One more detail.", thread_id=a)
+        assert got["answer_phase"] is False and "Orion's questions will appear" in got["receipt"]["body"]
+        # Next hour: both threads read again as a first round, the spec shown again; a good reply asks.
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((a, "1. Which token?"), (b, "1. Why hourly?"))]
+        tick = await w.loop.tick()
+        prompt = w.durable.submits[-1]["prompt"]
+        assert core.ANSWER_PHASE_NOTE not in prompt and SPEC.strip() in prompt
+        assert "Please read the spec." in prompt and whole not in prompt   # the re-queued reply is not shown again
+        assert tick["asked"] == 2 and tick["unparsed"] == 0 and tick["pr_comments"] == 2
+        for tid in (a, b):
+            thread, turns = await state(w, tid)
+            assert thread["status"] == "asked" and thread["roundup_failures"] == 0 and thread["status_reason"] is None
+        [for_a] = await srl.pending_for(w.pool, session_id="sess-A", branch="")
+        assert for_a["body"] == "1. Which token?"   # only the parsed questions reach the session
+        # The re-queued turn cannot be claimed as delivered either (the answer-wait hook claims by id).
+        _, turns = await state(w, a)
+        rq = [t for t in turns if (t.get("meta") or {}).get("requeued")]
+        assert len(rq) == 1 and await srl.mark_delivered(w.pool, [rq[0]["turn_id"]]) == 0
+        # Answer phase, a later round: the uncut reply (other threads' sections) is never shown again.
+        await w.loop.intake(session_id="sess-A", title="answers", body="It is the Hub token.", thread_id=a)
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((a, "NO QUESTIONS"))]
+        await w.loop.tick()
+        prompt = w.durable.submits[-1]["prompt"]
+        assert core.ANSWER_PHASE_NOTE in prompt and "1. Which token?" in prompt and whole not in prompt
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_requeue_is_once_per_round_and_a_message_sent_while_reading_is_read_next_round(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        rid = (await w.loop.tick())["started"]
+        # A reply arrives while Orion reads: intake keeps `reading` and zeroes the count.
+        await w.loop.intake(session_id="sess-A", title="more", body="Also see the cap.", thread_id=tid)
+        w.durable.finish(rid, "no headings at all")
+        assert (await w.loop.tick())["unparsed"] == 1
+        thread, turns = await state(w, tid)
+        assert thread["status"] == "held" and thread["roundup_failures"] == 1
+        assert all(t["roundup_id"] is None for t in turns if t["speaker"] == "session")
+        # A second apply of the same round (a crash midway) stores nothing new and counts nothing.
+        again = await srl.requeue_unparsed(w.pool, thread_id=tid, roundup_id=rid, body="x", meta={},
+                                           reason=srl.UNPARSED_REASON, text_for=lambda n: "line")
+        assert again[3] is False and again[2] is None and again[0]["roundup_failures"] == 1
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "1. ok?"))]
+        assert (await w.loop.tick())["asked"] == 1
+        prompt = w.durable.submits[-1]["prompt"]
+        assert "Please read the spec." in prompt and "Also see the cap." in prompt
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_a_thread_unparsed_three_times_in_a_row_ends_failed_and_a_new_message_revives_it(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        w.durable.replies = ["no headings 1", RuntimeError("timeout"), "no headings 3"]
+        for n in (1, 2, 3):
+            w.clock.to_next_hour()
+            await w.loop.tick()
+            thread, turns = await state(w, tid)
+            assert thread["roundup_failures"] == n and thread["status"] == ("failed" if n == 3 else "held")
+        assert "Hub stopped trying" in turns[-1]["body"] and turns[-1]["meta"]["reply_unparsed"] is True
+        assert thread["status_reason"] == srl.UNPARSED_REASON and core.in_answer_phase(turns) is False
+        w.clock.to_next_hour()
+        assert (await w.loop.tick())["skipped"] == "nothing_held" and len(w.durable.new_runs) == 3
+        got = await w.loop.intake(session_id="sess-A", title="reply", body="try again", thread_id=tid)
+        assert got["thread"]["status"] == "held" and got["thread"]["roundup_failures"] == 0
+        assert got["answer_phase"] is False
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "1. now?"))]
+        assert (await w.loop.tick())["asked"] == 1
 
     run(mode, monkeypatch, scenario)
 
@@ -596,13 +690,102 @@ def test_a_run_that_never_ends_does_not_block_later_rounds(mode, monkeypatch):
         assert (await w.loop.tick())["for"] == "orion_run:paused"   # inside deadline + grace: wait
         w.clock.advance(minutes=40)
         tick = await w.loop.tick()
-        assert tick["why"] == "orion_run_overdue:paused"
+        assert tick["why"] == "orion_run_overdue:paused" and tick["strike"] is True
         thread, _ = await state(w, tid)
+        # Paused is not waiting for the pool: a strike, as before (a hung run must not retry for ever).
         assert thread["status"] == "held" and thread["roundup_failures"] == 1
         # An abandoned run is final too.
         w.clock.to_next_hour()
         w.durable.replies = [{"status": "abandoned", "error": "retired"}]
         assert (await w.loop.tick())["why"] == "orion_run_abandoned:retired"
+        thread, _ = await state(w, tid)
+        assert thread["roundup_failures"] == 2   # abandoned is the run's own end: a strike
+        # A run still waiting for the pool well past its deadline is the body's: not a strike.
+        w.clock.to_next_hour()
+        rid = (await w.loop.tick())["started"]
+        w.durable.runs[rid] = {"status": "waiting_resource"}
+        w.clock.advance(hours=3, minutes=40)
+        tick = await w.loop.tick()
+        assert tick["why"] == "orion_run_overdue:waiting_resource" and tick["strike"] is False
+        thread, _ = await state(w, tid)
+        assert thread["status"] == "held" and thread["roundup_failures"] == 2
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_a_hot_week_never_ends_a_thread_and_retries_quietly(mode, monkeypatch):
+    # Session thread b3053f6df376 Q3: the body's refusals (the GPU pool kept the run waiting past its
+    # deadline) are not strikes. Five in a row leave the thread held with a zero count, one Hub line
+    # for the streak, and the next good round asks as usual.
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        frames(w)
+        errors = ["workflow_deadline", "gpu_pool_unavailable:deadline", "RuntimeError: gpu_pool_unavailable:backlog_max_age",
+                  "gpu_pool_unavailable:deadline", "workflow_deadline"]
+        w.durable.replies = [RuntimeError(e) for e in errors]
+        for e in errors:
+            w.clock.to_next_hour()
+            tick = await w.loop.tick()
+            assert tick["why"] == f"orion_run_failed:{e}" and tick["strike"] is False
+            thread, turns = await state(w, tid)
+            assert thread["status"] == "held" and thread["roundup_failures"] == 0 and turns[0]["roundup_id"] is None
+        hub_lines = [t for t in turns if t["speaker"] == "hub" and t["meta"].get("body_refusal")]
+        assert len(hub_lines) == 1 and "not counted as a failure" in hub_lines[0]["body"]
+        assert [f["speaker"] for f in frames(w)] == ["hub"]
+        # A strike after the streak still counts and writes its line; the next body refusal writes again.
+        w.durable.replies = [RuntimeError("timeout"), RuntimeError("workflow_deadline")]
+        w.clock.to_next_hour()
+        assert (await w.loop.tick())["strike"] is True
+        w.clock.to_next_hour()
+        await w.loop.tick()
+        thread, turns = await state(w, tid)
+        assert thread["roundup_failures"] == 1 and thread["status"] == "held"
+        assert len([t for t in turns if t["speaker"] == "hub" and t["meta"].get("body_refusal")]) == 2
+        # A request the pool can never place is the round's own fault: it counts.
+        w.durable.replies = [RuntimeError("gpu_pool_unavailable:min_ctx_exceeds_class")]
+        w.clock.to_next_hour()
+        assert (await w.loop.tick())["strike"] is True
+        thread, _ = await state(w, tid)
+        assert thread["roundup_failures"] == 2
+        # A deadline hit after Orion's turn was attempted is the round's failure: a strike.
+        w.durable.replies = [{"status": "failed", "error": "workflow_deadline", "harness_turn_meta": {"step_key": "turn"}}]
+        w.clock.to_next_hour()
+        tick = await w.loop.tick()
+        assert tick["why"] == "orion_run_failed:workflow_deadline_after_turn" and tick["strike"] is True
+        thread, _ = await state(w, tid)
+        assert thread["roundup_failures"] == 3 and thread["status"] == "failed"
+        await w.loop.intake(session_id="sess-A", title="again", body="please retry", thread_id=tid)
+        w.durable.replies = [answer((tid, "1. finally?"))]
+        w.clock.to_next_hour()
+        assert (await w.loop.tick())["asked"] == 1
+
+    run(mode, monkeypatch, scenario)
+
+
+async def age_messages(w, tid, days):
+    """Make the thread's session messages ``days`` old (the body-refusal backstop reads their age)."""
+    if w.mode == "fake":
+        for u in w.store.turns:
+            if u["thread_id"] == tid and u["speaker"] == "session":
+                u["created_at"] = datetime.now(timezone.utc) - timedelta(days=days)
+    else:
+        await w.pool.execute("UPDATE orion_session_turn SET created_at = now() - make_interval(days => $2) "
+                             "WHERE thread_id = $1 AND speaker = 'session'", tid, days)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_a_body_refusal_on_a_very_old_message_counts_so_no_thread_retries_for_ever(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        rid = (await w.loop.tick())["started"]   # pending: the run fails only after the messages are old
+        await age_messages(w, tid, core.BODY_REFUSAL_MAX_AGE_SEC // 86400 + 1)
+        w.durable.runs[rid] = {"status": "failed", "error": "workflow_deadline"}
+        await w.loop.tick()
+        thread, turns = await state(w, tid)
+        assert thread["roundup_failures"] == 1 and not turns[-1]["meta"].get("body_refusal")
+        assert turns[-1]["speaker"] == "hub" and "Failure 1 of 3" in turns[-1]["body"]
 
     run(mode, monkeypatch, scenario)
 
@@ -759,7 +942,7 @@ def test_a_new_thread_still_gets_its_round_beside_an_answer_phase_thread(mode, m
 
 
 @pytest.mark.parametrize("mode", BOTH)
-def test_no_questions_does_not_use_the_round_and_an_unparsed_reply_does(mode, monkeypatch):
+def test_neither_no_questions_nor_an_unparsed_reply_uses_the_round(mode, monkeypatch):
     async def scenario(w):
         tid = (await send_pr(w))["thread"]["thread_id"]
         w.clock.to_next_hour()
@@ -772,7 +955,14 @@ def test_no_questions_does_not_use_the_round_and_an_unparsed_reply_does(mode, mo
         w.durable.replies = ["no headings at all, 1. why the cap?"]
         tick = await w.loop.tick()
         assert core.ANSWER_PHASE_NOTE not in w.durable.submits[-1]["prompt"] and tick["unparsed"] == 1
-        # The unparsed whole reply went to the session as questions: the round is used.
+        # The unparsed whole reply went nowhere: the round is NOT used, the thread is read again.
+        _, turns = await state(w, tid)
+        assert core.in_answer_phase(turns) is False
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "1. why the cap?"))]
+        tick = await w.loop.tick()
+        assert core.ANSWER_PHASE_NOTE not in w.durable.submits[-1]["prompt"] and tick["asked"] == 1
+        # Now the round is used: an answer-phase reply that is unparsed is a closing note, as before.
         await w.loop.intake(session_id="sess-A", title="reply", body="Answers.", thread_id=tid)
         w.clock.to_next_hour()
         w.durable.replies = ["again no headings. 1. one more?"]

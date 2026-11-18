@@ -14,8 +14,14 @@ Pure rules (caps, the hour bucket, receipt, prompt, parser, PR comment text): ``
    so a Hub restart finds the round and never submits a second one for the same hour.
 3. **Orion's reply** is cut into one section per thread by code and stored as an ``orion`` turn on
    each thread. A reply with no usable section for a thread is stored whole on it, marked
-   ``unparsed``. Empty text, a cut-short turn or a failed run fails the round: the threads go back to
-   ``held`` for the next hour, and after 3 failures in a row a thread stays ``failed``.
+   ``unparsed`` and ``requeued``: it is sent nowhere, it does NOT use the thread's one question round,
+   and the thread is read again next hour (a parse accident is not Orion's silence). It counts as a
+   failure toward the cap below. Empty text, a cut-short turn or a failed run fails the round: the
+   threads go back to ``held`` for the next hour, and after 3 failures in a row a thread stays
+   ``failed`` until a new session message re-holds it. A run the body never gave a turn in time
+   (``core.is_body_refusal``: past its admission deadline before any turn, or still waiting for the
+   pool 30 min after it) is not a failure: the threads are held again with their count unchanged,
+   until the oldest unread message is ``core.BODY_REFUSAL_MAX_AGE_SEC`` old.
 4. **The PR comment**: for a thread with a pull request and real questions Hub posts one comment on
    the PR with Orion's GitHub token. Code does it, not the model.
 5. **One round of questions per thread** (``core.MAX_QUESTION_ROUNDS_PER_THREAD``): once Orion has asked
@@ -61,6 +67,7 @@ _FENCE_SECRET = secrets.token_hex(16)
 # A run with no end in sight this long after its own deadline: Hub stops waiting for it.
 OVERDUE_GRACE_SEC = 1800.0
 MIN_PROMPT_CHARS = 8000
+UNPARSED_REASON = "orion_reply_unparsed"
 
 
 class IntakeRefused(ValueError):
@@ -263,30 +270,95 @@ async def store_answer(pool, *, thread_id: str, roundup_id: str, body: str, meta
     return _thread(thread), _turn(rec), created
 
 
-async def fail_round(pool, roundup_id: str, *, reason: str,
-                     text_for: Callable[[int], str]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
-    """A failed round: its session turns are unread again, each thread counts one failure and gets a
-    Hub line that says so. Under the cap the thread is ``held`` again; at the cap it stays ``failed``."""
+async def fail_round(pool, roundup_id: str, *, reason: str, text_for: Callable[[int], str],
+                     strike: bool = True, refusal_text_for: Optional[Callable[[int], str]] = None
+                     ) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """A failed round: its session turns are unread again, and each thread gets a Hub line that says so.
+
+    ``strike`` (the round's own failure): the thread counts one failure; under the cap it is ``held``
+    again, at the cap it stays ``failed``. Not a strike (the body never ran it, ``core.is_body_refusal``):
+    ``held`` again, count unchanged. A thread whose previous round was ALSO a body refusal (its
+    ``status_reason`` is one; a message or an answer clears it) gets no second Hub line: a hot week
+    retries quietly instead of filling every chat window. ``text_for`` writes a strike's line,
+    ``refusal_text_for`` (default ``text_for``) a body refusal's. Returns (thread, Hub turn) per line."""
     out: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # A body refusal on a thread whose oldest message of this round is older than the backstop
+            # counts after all (``core.BODY_REFUSAL_MAX_AGE_SEC``): ``o.n`` is the strike per thread. Read
+            # before the round's turns are released below (the age is taken from them).
+            rows = await conn.fetch(
+                "UPDATE orion_session_thread h SET roundup_failures = h.roundup_failures + o.n, "
+                "status = CASE WHEN h.roundup_failures + o.n >= $2 THEN 'failed' ELSE 'held' END, status_reason = $3, "
+                "updated_at = now() FROM (SELECT x.thread_id, x.status_reason, CASE WHEN $4::int = 1 OR "
+                "(SELECT min(s.created_at) FROM orion_session_turn s WHERE s.thread_id = x.thread_id "
+                "AND s.roundup_id = $1 AND s.speaker = 'session') < now() - make_interval(secs => $5::float8) "
+                "THEN 1 ELSE 0 END AS n FROM orion_session_thread x "
+                "WHERE x.last_roundup_id = $1 AND x.status = 'reading' FOR UPDATE OF x) o "
+                f"WHERE h.thread_id = o.thread_id RETURNING {', '.join('h.' + c.strip() for c in _THREAD_COLUMNS.split(','))}, "
+                "o.status_reason AS prior_reason, o.n AS strike",
+                roundup_id, core.MAX_CONSECUTIVE_FAILURES, reason[:300], 1 if strike else 0,
+                float(core.BODY_REFUSAL_MAX_AGE_SEC))
             await conn.execute(
                 "UPDATE orion_session_turn SET roundup_id = NULL WHERE roundup_id = $1 AND speaker = 'session'",
                 roundup_id)
-            rows = await conn.fetch(
-                "UPDATE orion_session_thread SET roundup_failures = roundup_failures + 1, "
-                "status = CASE WHEN roundup_failures + 1 >= $2 THEN 'failed' ELSE 'held' END, status_reason = $3, "
-                f"updated_at = now() WHERE last_roundup_id = $1 AND status = 'reading' RETURNING {_THREAD_COLUMNS}",
-                roundup_id, core.MAX_CONSECUTIVE_FAILURES, reason[:300])
             for rec in rows:
                 thread = _thread(rec)
+                prior = thread.pop("prior_reason", None)
+                struck = bool(thread.pop("strike", 1))
+                if not struck and core.is_body_refusal(prior or ""):
+                    continue
                 turn = await conn.fetchrow(
                     "INSERT INTO orion_session_turn (turn_id, thread_id, speaker, body, roundup_id, meta, created_at) "
                     f"VALUES ($1, $2, 'hub', $3, $4, $5::jsonb, clock_timestamp()) RETURNING {_TURN_COLUMNS}",
-                    _new_id(), thread["thread_id"], text_for(int(thread["roundup_failures"])), roundup_id,
-                    json.dumps({"roundup_failed": True, "reason": reason[:300]}))
+                    _new_id(), thread["thread_id"],
+                    (text_for if struck else (refusal_text_for or text_for))(int(thread["roundup_failures"])), roundup_id,
+                    json.dumps({"roundup_failed": True, "reason": reason[:300],
+                                **({} if struck else {"body_refusal": True})}))
                 out.append((thread, _turn(turn)))
     return out
+
+
+async def requeue_unparsed(pool, *, thread_id: str, roundup_id: str, body: str, meta: Dict[str, Any],
+                           reason: str, text_for: Callable[[int], str]
+                           ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
+    """A thread of the round whose reply Hub could not cut: Orion's whole reply is kept as an
+    ``orion`` turn (``meta.requeued``: never handed to a session, never a question round), the
+    thread's session turns of this round are unread again, and the thread counts one failure (held
+    under the cap, ``failed`` at it) with a Hub line. Once per (thread, round). Returns
+    (thread, Orion turn, Hub turn or None, Orion turn created)."""
+    meta = {**meta, "unparsed": True, "requeued": True}
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rec = await conn.fetchrow(
+                f"SELECT {_TURN_COLUMNS} FROM orion_session_turn WHERE thread_id = $1 AND roundup_id = $2 "
+                "AND speaker = 'orion' LIMIT 1", thread_id, roundup_id)
+            created = rec is None
+            if created:
+                rec = await conn.fetchrow(
+                    "INSERT INTO orion_session_turn (turn_id, thread_id, speaker, body, roundup_id, meta, created_at) "
+                    f"VALUES ($1, $2, 'orion', $3, $4, $5::jsonb, clock_timestamp()) RETURNING {_TURN_COLUMNS}",
+                    _new_id(), thread_id, body, roundup_id, json.dumps(meta))
+            thread = await conn.fetchrow(
+                "UPDATE orion_session_thread SET roundup_failures = roundup_failures + 1, "
+                "status = CASE WHEN roundup_failures + 1 >= $3 THEN 'failed' ELSE 'held' END, status_reason = $4, "
+                f"updated_at = now() WHERE thread_id = $1 AND status = 'reading' AND last_roundup_id = $2 "
+                f"RETURNING {_THREAD_COLUMNS}",
+                thread_id, roundup_id, core.MAX_CONSECUTIVE_FAILURES, reason[:300])
+            hub = None
+            if thread is None:   # already applied (or the thread left the round): nothing more to do
+                thread = await conn.fetchrow(
+                    f"SELECT {_THREAD_COLUMNS} FROM orion_session_thread WHERE thread_id = $1", thread_id)
+            else:
+                await conn.execute(
+                    "UPDATE orion_session_turn SET roundup_id = NULL WHERE roundup_id = $1 AND thread_id = $2 "
+                    "AND speaker = 'session'", roundup_id, thread_id)
+                hub = _turn(await conn.fetchrow(
+                    "INSERT INTO orion_session_turn (turn_id, thread_id, speaker, body, roundup_id, meta, created_at) "
+                    f"VALUES ($1, $2, 'hub', $3, $4, $5::jsonb, clock_timestamp()) RETURNING {_TURN_COLUMNS}",
+                    _new_id(), thread_id, text_for(int(thread["roundup_failures"])), roundup_id,
+                    json.dumps({"reply_unparsed": True, "reason": reason[:300]})))
+    return _thread(thread), _turn(rec), hub, created
 
 
 async def set_pr_comment_url(pool, turn_id: str, url: str) -> None:
@@ -300,7 +372,8 @@ async def pending_for(pool, *, session_id: str = "", branch: str = "", limit: in
         "SELECT t.turn_id, t.thread_id, t.body, t.meta, t.roundup_id, t.pr_comment_url, t.created_at, "
         "h.title, h.branch, h.pr_number, h.pr_url, h.status "
         "FROM orion_session_turn t JOIN orion_session_thread h ON h.thread_id = t.thread_id "
-        "WHERE t.speaker = 'orion' AND t.delivered_at IS NULL AND ("
+        "WHERE t.speaker = 'orion' AND t.delivered_at IS NULL "
+        "AND NOT (COALESCE(t.meta, '{}'::jsonb) @> '{\"requeued\": true}'::jsonb) AND ("
         " ($1 <> '' AND (h.session_id = $1 OR EXISTS (SELECT 1 FROM orion_session_turn s WHERE s.thread_id = t.thread_id"
         " AND s.speaker = 'session' AND s.session_id = $1)))"
         " OR ($2 <> '' AND h.branch = $2)) ORDER BY t.seq LIMIT $3",
@@ -311,7 +384,8 @@ async def pending_for(pool, *, session_id: str = "", branch: str = "", limit: in
 async def mark_delivered(pool, turn_ids: Sequence[str]) -> int:
     rows = await pool.fetch(
         "UPDATE orion_session_turn SET delivered_at = now() WHERE turn_id = ANY($1::text[]) AND speaker = 'orion' "
-        "AND delivered_at IS NULL RETURNING turn_id", list(turn_ids))
+        "AND delivered_at IS NULL AND NOT (COALESCE(meta, '{}'::jsonb) @> '{\"requeued\": true}'::jsonb) "
+        "RETURNING turn_id", list(turn_ids))
     return len(rows)
 
 
@@ -598,7 +672,9 @@ class SessionRoundupLoop:
         Orion turns except this round's own): the prompt and the parser both read that one flag."""
         out = []
         for thread in threads:
-            mine = [t for t in turns if t["thread_id"] == thread["thread_id"] and t["speaker"] != core.SPEAKER_HUB]
+            # A re-queued uncut reply is never shown again: it holds other threads' sections.
+            mine = [t for t in turns if t["thread_id"] == thread["thread_id"] and t["speaker"] != core.SPEAKER_HUB
+                    and not (t.get("meta") or {}).get("requeued")]
             new = [t for t in mine if t["speaker"] == core.SPEAKER_SESSION and t.get("roundup_id") == roundup_id]
             first = min((t["seq"] for t in new), default=None)
             phase = core.in_answer_phase(mine, exclude_roundup=roundup_id)
@@ -702,6 +778,9 @@ class SessionRoundupLoop:
         status = str(run.get("status") or "")
         if status in ("failed", "cancelled", "abandoned"):
             error = core.one_line(run.get("error") or status, 200)
+            if error == "workflow_deadline" and run.get("harness_turn_meta"):
+                # The deadline came after Orion's turn was attempted: the round's failure, not the body's.
+                error = "workflow_deadline_after_turn"
             return await self._fail(pool, roundup_id, f"orion_run_{status}:{error}")
         if status != "completed":
             # durable-runs fails a run at its admission deadline. A run still not ended well past it
@@ -754,8 +833,23 @@ class SessionRoundupLoop:
         by_id = {t["thread_id"]: t for t in threads}
         counts = {"asked": 0, "no_questions": 0, "unparsed": 0, "closed": 0, "dropped_question_lines": 0,
                   "pr_comments": 0}
+        next_at = core.next_roundup_at(self._clock(), self.interval_sec)
         for answer in answers:
             meta: Dict[str, Any] = {"model": model} if model else {}
+            if answer.unparsed and not answer.closing:
+                # A parse accident is not Orion asking: keep the words, send them nowhere, read again.
+                thread, turn, hub, created = await requeue_unparsed(
+                    pool, thread_id=answer.thread_id, roundup_id=roundup_id, body=answer.text, meta=meta,
+                    reason=UNPARSED_REASON,
+                    text_for=lambda n: core.unparsed_text(failures=n, next_at=next_at, tz_name=self.tz_name))
+                counts["unparsed"] += 1
+                if created:
+                    self._push_turn(thread, turn)
+                if hub is not None:
+                    self._push_turn(thread, hub)
+                logger.info("session_thread_reply_unparsed thread=%s roundup=%s failures=%s status=%s",
+                            answer.thread_id, roundup_id, thread.get("roundup_failures"), thread.get("status"))
+                continue
             if answer.unparsed:
                 meta["unparsed"] = True
             if answer.no_questions:
@@ -803,13 +897,16 @@ class SessionRoundupLoop:
 
     async def _fail(self, pool, roundup_id: str, reason: str) -> Dict[str, Any]:
         next_at = core.next_roundup_at(self._clock(), self.interval_sec)
+        strike = not core.is_body_refusal(reason)
         failed = await fail_round(
-            pool, roundup_id, reason=reason,
-            text_for=lambda n: core.failure_text(reason=reason, failures=n, next_at=next_at, tz_name=self.tz_name))
+            pool, roundup_id, reason=reason, strike=strike,
+            text_for=lambda n: core.failure_text(reason=reason, failures=n, next_at=next_at, tz_name=self.tz_name),
+            refusal_text_for=lambda n: core.body_refusal_text(reason=reason, next_at=next_at, tz_name=self.tz_name))
         for thread, turn in failed:
             self._push_turn(thread, turn)
-        logger.warning("session_roundup_failed roundup=%s reason=%s threads=%s", roundup_id, reason, len(failed))
-        return {"failed": roundup_id, "why": reason, "threads": len(failed)}
+        logger.warning("session_roundup_failed roundup=%s reason=%s strike=%s lines=%s", roundup_id, reason,
+                       strike, len(failed))
+        return {"failed": roundup_id, "why": reason, "strike": strike, "threads": len(failed)}
 
     # -- Hub chat -------------------------------------------------------------------------------
 

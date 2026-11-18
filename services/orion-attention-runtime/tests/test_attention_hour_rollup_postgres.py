@@ -54,7 +54,7 @@ QUIET = "world-first: not attended -- world quiet for itself: not busy; x"
 
 
 def read_back(store, end):
-    w = A.parse_window("2h", end)
+    w = A.parse_window("3h", end)
     with store._engine.connect() as c:
         def q(sql):
             body = sql.split(";\n", 1)[1]  # drop SET LOCAL (outside a transaction block it warns)
@@ -71,6 +71,8 @@ def test_frames_land_in_the_rollup_once_and_dig_reads_the_rates(store):
         frame(2, [target("node:p", ATT)], [target("world:chat", QUIET)]),
         frame(3, [], [target("world:chat", QUIET)]),
     ]
+    # the deploy hour (06): the rollup's first hour, only partly counted, so dig skips it
+    assert store.save_attention_frame(frame(-1, [target("node:p", ATT)], []))
     for f in frames:
         assert store.save_attention_frame(f)
     assert not store.save_attention_frame(frames[0])  # duplicate frame: no second count
@@ -82,7 +84,8 @@ def test_frames_land_in_the_rollup_once_and_dig_reads_the_rates(store):
     assert c.causes["world:chat"] == {"quiet for itself": 3}
     with store._engine.connect() as conn:
         hours = conn.execute(text("SELECT DISTINCT hour FROM substrate_attention_hour_rollup ORDER BY 1")).scalars().all()
-    assert [h.astimezone(timezone.utc).hour for h in hours] == [7, 8]
+    assert [h.astimezone(timezone.utc).hour for h in hours] == [6, 7, 8]
+    assert r.start.startswith("2026-11-17T07:00")  # read from the first whole hour
 
 
 def test_a_rollup_failure_never_stops_the_frame(store, caplog):

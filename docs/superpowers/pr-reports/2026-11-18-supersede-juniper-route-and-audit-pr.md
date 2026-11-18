@@ -6,6 +6,8 @@ This answers Orion's five questions on #3735. Investigating them turned up one l
 - **The run audit counts why pairs abstained.** The plan and each `memory_supersede_run.counts` row carry an `abstained` count by reason, and linked pairs are not counted. Each pair's reason was already in `decisions[].abstain`. Juniper-only numbered pairs get the reason `numbered_item_juniper_path_only`.
 - **The meaning-index lookup gets one retry.** At 11:10Z the nightly check refused as `dense_unavailable`: Chroma's collection lookup took 25 s once, against a 20 s timeout (#3747). There is now one retry per plan, for transient faults only, and each attempt is bounded at 40 s in total. If the retry fails, it still refuses.
 - **Spec status lines are updated.** The #3593 and #3611 grants are applied (checked live; #3611 closed). The spec now separates write time (automatic, behind the eval) from the hand-run pass `apply`; the #3721 approval mark applies only to the hand-run command.
+- **The audit records the meaning-index lookups.** `memory_supersede_run.counts` gains `dense_calls`, `dense_ms` (total wall time) and `dense_retries`. `counts.abstained` is now derived from `decisions` on every path, so the nightly distill, the pass dry-run, and the hand-run pass apply (whose per-pair decisions #3751 adds) all land the same count in one table.
+- **The eval scores the clear-target rule.** A new item type is a group: one new row against several older rows, run through `check_pairs`. The made-up case `syn:juniper-two-targets` checks that Juniper's words with two qualifying targets retire nothing.
 - **The check version is now `supersede_classify.v3.5`.** One made-up fixture was added: Juniper corrects a numbered fix without restating its number.
 
 ## Outcome moved
@@ -29,7 +31,7 @@ In v3.4, `classify_pair` returned `numbered_item_not_in_b` before any vote for e
 
 ## Schema / bus / API changes
 
-- Added: the plan key `abstained`, and `counts.abstained` in `memory_supersede_run` (JSONB, no migration).
+- Added: the plan keys `abstained`, `dense_calls`, `dense_ms` and `dense_retries`. All four are copied into `memory_supersede_run.counts` (JSONB, no migration). `abstained` is derived from `decisions` when a caller does not give it. The eval item field `others` holds the group items.
 - Removed: none. Renamed: none.
 - Behavior changed: v3.5. The gate is per version and needs a recorded v3.5 pass.
 - Compatibility notes: none.

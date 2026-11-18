@@ -68,7 +68,7 @@ ACTOR_DISTILL = "memory.episode_distill"
 ACTOR_PASS = "memory.supersede_pass"
 OP_SUPERSEDED = "superseded"
 OP_UNDONE = "supersede_undone"
-CHECK_VERSION = "supersede_classify.v3"
+CHECK_VERSION = "supersede_classify.v3.1"
 SUPERSEDE_NAMESPACE = uuid.UUID("6f1d3c52-2b8e-4f7a-9d41-3587a0c0ffee")
 
 # Candidate limits. bge-large cosines are compressed (live 2026-11-17: median pair 0.56, 90th
@@ -323,6 +323,14 @@ VOTES = 3
 VOTE_TEMPERATURE = 0.7
 MIN_CONFIDENCE = 0.8
 
+# What A describes. Only a lasting state can be UPDATED (a later change makes it no longer current);
+# an event, a plan, a measurement or count at a moment, an explicitly past period, or a view stays
+# true at its own date. Eval 2026-11-18: without this field the model called a plan-then-what-
+# happened pair an "update" and two counts on different days a "correction", unanimously.
+A_KINDS = ("lasting_state", "event", "plan", "measurement", "past_period", "view")
+UPDATABLE_KINDS = frozenset({"lasting_state"})
+CORRECTABLE_KINDS = frozenset({"lasting_state", "event", "measurement"})
+
 CLASSIFY_PROMPT = """You compare two memories that Orion (an AI) wrote about conversations with
 Juniper. Decide how the NEWER memory B relates to the OLDER memory A. A wrong "update" or
 "correction" hides a true memory, so when in doubt choose "compatible".
@@ -330,24 +338,32 @@ Juniper. Decide how the NEWER memory B relates to the OLDER memory A. A wrong "u
 A (older, about {a_date}): {a}
 B (newer, about {b_date}): {b}
 
-Relations, pick exactly one:
+First, what kind of thing does A describe?
+- "lasting_state": something true now and ongoing as of A's date (where someone lives, a job, a
+  pet's name or species, a preference, how something is set up).
+- "event": one thing that happened once.
+- "plan": something someone intends or is about to do.
+- "measurement": a number, count, or reading at a moment or for a window of time.
+- "past_period": something A itself places in an earlier period ("in 2019", "as a child").
+- "view": an opinion or interpretation.
+
+Second, does B itself say that A is wrong, or that A's state has since changed? Answer "yes" only
+when B's own words say so (for example "not X", "actually", "was a mistake", "moved", "no longer",
+"sold", "now"). A different event, a different day or window, or more detail is "no".
+
+Then pick exactly one relation:
 - "correction": B says A was wrong from the start: a different value for the same attribute of
-  the same thing (person, pet, place, object, count) at the same time, or B says A was a mistake.
-- "update": A was true at its date, and B says that same attribute of the same thing has since
-  changed for good, so A is no longer current (a move, a new job, a status that ended).
+  the same thing, for the same time or occasion.
+- "update": A was a lasting state, and B says that same attribute of the same thing has since
+  changed for good.
 - "refine": B adds detail to A or narrows it; both stay true.
 - "compatible": both can be true, each at its own date. Examples: a trip or visit versus where
-  someone lives; a plan versus what happened; different measurements, parts, people, or times;
-  B repeats or agrees with A.
+  someone lives; a plan versus what happened; counts or readings for different days or windows;
+  different parts, people, or times; B repeats or agrees with A.
 - "unrelated": different things that only share a word, a name, or a topic.
 
-Rules:
-- "correction" and "update" need the SAME attribute of the SAME thing.
-- A temporary state (a trip, a visit, a mood, a plan, one evening) never updates or corrects a
-  lasting one, and the reverse.
-
 Reply with one JSON object and nothing else:
-{{"relation": "<one of the five>", "same_attribute": "yes" or "no", "confidence": <0.0 to 1.0>, "reason": "<one short sentence>"}}
+{{"a_kind": "<one of the six kinds>", "b_says_a_wrong_or_changed": "yes" or "no", "same_attribute": "yes" or "no", "relation": "<one of the five>", "confidence": <0.0 to 1.0>, "reason": "<one short sentence>"}}
 """
 
 
@@ -362,14 +378,24 @@ class Vote:
     confidence: float
     reason: str = ""
     error: Optional[str] = None
+    a_kind: Optional[str] = None
+    b_says_changed: Optional[bool] = None
 
     @property
     def acting(self) -> bool:
-        return self.error is None and self.relation in ACTING_RELATIONS and self.same_attribute is True
+        """An update or correction whose own checklist agrees: same attribute, B's words say A is
+        wrong or changed, and A is a kind of thing that relation can retire."""
+        if self.error is not None or self.relation not in ACTING_RELATIONS:
+            return False
+        if self.same_attribute is not True or self.b_says_changed is not True:
+            return False
+        kinds = UPDATABLE_KINDS if self.relation == REL_UPDATE else CORRECTABLE_KINDS
+        return self.a_kind in kinds
 
     def audit(self) -> dict[str, Any]:
-        return {"relation": self.relation, "same_attribute": self.same_attribute,
-                "confidence": round(self.confidence, 3), "reason": self.reason, "error": self.error}
+        return {"relation": self.relation, "same_attribute": self.same_attribute, "a_kind": self.a_kind,
+                "b_says_changed": self.b_says_changed, "confidence": round(self.confidence, 3),
+                "reason": self.reason, "error": self.error}
 
 
 def parse_vote(text: str) -> Vote:
@@ -378,14 +404,17 @@ def parse_vote(text: str) -> Vote:
         return Vote(None, None, 0.0, error=error)
     rel = str(data.get("relation") or "").strip().lower()
     same = _yes(data.get("same_attribute"))
+    changed = _yes(data.get("b_says_a_wrong_or_changed"))
+    kind = str(data.get("a_kind") or "").strip().lower()
     reason = " ".join(str(data.get("reason") or "").split())[:300]
     try:
         conf = float(data.get("confidence"))
     except (TypeError, ValueError):
-        return Vote(rel or None, same, 0.0, reason, error="bad_confidence")
-    if rel not in RELATIONS or same is None or not (0.0 <= conf <= 1.0):
-        return Vote(rel or None, same, max(0.0, min(1.0, conf)), reason, error="bad_answer_value")
-    return Vote(rel, same, conf, reason)
+        return Vote(rel or None, same, 0.0, reason, error="bad_confidence", a_kind=kind or None, b_says_changed=changed)
+    if rel not in RELATIONS or same is None or changed is None or kind not in A_KINDS or not (0.0 <= conf <= 1.0):
+        return Vote(rel or None, same, max(0.0, min(1.0, conf)), reason, error="bad_answer_value",
+                    a_kind=kind or None, b_says_changed=changed)
+    return Vote(rel, same, conf, reason, a_kind=kind, b_says_changed=changed)
 
 
 @dataclass(frozen=True)
@@ -445,10 +474,14 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
     juniper = all_acting and new.juniper_quoted
     if any(v.error for v in got):
         why = "error"
+    elif not complete and all(v.acting for v in got):
+        why = "budget_spent"
     elif not complete:
-        why = "budget_spent" if all(v.acting for v in got) else f"vote:{got[-1].relation}"
+        last = got[-1]
+        why = f"checklist:{last.relation}" if last.relation in ACTING_RELATIONS else f"vote:{last.relation}"
     elif not all_acting:
-        why = f"vote:{got[-1].relation}"
+        last = got[-1]
+        why = f"checklist:{last.relation}" if last.relation in ACTING_RELATIONS else f"vote:{last.relation}"
     elif not unanimous:
         why = "split_update_correction"
     elif not strict:

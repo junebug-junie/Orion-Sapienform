@@ -34,13 +34,14 @@ def answers(*texts):
     return ask, seen
 
 
-def vote(relation, conf=0.9, same="yes", reason="r"):
-    return json.dumps({"relation": relation, "same_attribute": same, "confidence": conf, "reason": reason})
+def vote(relation, conf=0.9, same="yes", reason="r", kind="lasting_state", changed="yes"):
+    return json.dumps({"a_kind": kind, "b_says_a_wrong_or_changed": changed, "same_attribute": same,
+                       "relation": relation, "confidence": conf, "reason": reason})
 
 
 COR = vote("correction", reason="B says the pet is a dog, A said a cat.")
 UPD = vote("update")
-COMPAT = vote("compatible", same="no")
+COMPAT = vote("compatible", same="no", changed="no")
 LOWC = vote("correction", conf=0.5)
 COR3 = (COR, COR, COR)
 
@@ -121,6 +122,19 @@ def test_parse_vote_refuses_anything_malformed():
         assert s.parse_vote(bad).error, bad
     assert not s.parse_vote(vote("correction", same="no")).acting   # not the same attribute
     assert not s.parse_vote(vote("refine")).acting
+    assert s.parse_vote(vote("correction", kind="weird")).error == "bad_answer_value"
+
+
+def test_the_checklist_must_agree_with_an_acting_relation():
+    assert not s.parse_vote(vote("update", kind="plan")).acting          # a plan is never updated
+    assert not s.parse_vote(vote("update", kind="event")).acting
+    assert not s.parse_vote(vote("correction", kind="past_period")).acting
+    assert not s.parse_vote(vote("correction", kind="view")).acting
+    assert not s.parse_vote(vote("correction", changed="no")).acting      # B's words must say so
+    assert s.parse_vote(vote("correction", kind="measurement")).acting
+    ask, _ = answers(vote("update", kind="plan"))
+    v = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert not v.acts and v.abstain == "checklist:update"
 
 
 def test_three_unanimous_confident_votes_act_above_temperature_zero():
@@ -131,7 +145,7 @@ def test_three_unanimous_confident_votes_act_above_temperature_zero():
 
 
 def test_any_non_acting_vote_abstains_and_stops_asking():
-    for votes in ((COMPAT,), (COR, vote("refine")), (COR, COR, vote("unrelated", same="no"))):
+    for votes in ((COMPAT,), (COR, vote("refine")), (COR, COR, vote("unrelated", same="no", changed="no"))):
         ask, seen = answers(*votes)
         v = asyncio.run(s.classify_pair(OLD, NEW, ask))
         assert not v.acts and not v.juniper_acts and len(seen) == len(votes)

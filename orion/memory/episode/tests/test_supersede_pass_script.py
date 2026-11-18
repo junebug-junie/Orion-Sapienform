@@ -118,5 +118,5 @@ def test_two_runs_leave_two_history_lines_and_watched_trace_has_legs_not_text(tm
 
 def test_a_malformed_answer_is_never_cached():
     assert not P.cacheable("garbage") and not P.cacheable('{"relation": "maybe"}')
-    assert P.cacheable(json.dumps({"relation": "compatible", "same_attribute": "no", "confidence": 0.9,
-                                   "reason": "r"}))
+    assert P.cacheable(json.dumps({"a_kind": "event", "b_says_a_wrong_or_changed": "no", "relation": "compatible",
+                                   "same_attribute": "no", "confidence": 0.9, "reason": "r"}))

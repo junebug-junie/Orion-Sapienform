@@ -74,7 +74,8 @@ def test_the_rules_layer_stops_protected_rows_before_the_model():
 
     async def ask(prompt, *, temperature=0.0):
         asked.append(prompt)
-        return json.dumps({"relation": "correction", "same_attribute": "yes", "confidence": 1.0, "reason": "r"})
+        return json.dumps({"a_kind": "lasting_state", "b_says_a_wrong_or_changed": "yes", "relation": "correction",
+                           "same_attribute": "yes", "confidence": 1.0, "reason": "r"})
 
     d = asyncio.run(mod.decide_v3(pending, ask, 3))
     assert not d.acted and d.stopped_by == "rule" and asked == []

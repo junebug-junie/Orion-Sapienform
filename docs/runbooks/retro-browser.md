@@ -610,8 +610,8 @@ at most 10% of the still checks and at least 90% of the played checks at or abov
 hand. A game with no floor gets no look, and the page says "No looks for this game yet". On The Legend of Zelda
 (NES) no value separated still from walking in step 0, so that game may stay without looks.
 
-**The switch.** Juniper's checkbox on the game page ("Let Orion watch", `POST /api/retro/sitting/watch
-{"mode": "on"|"off"}`, a standing setting for every game) and Orion's own `dig watch` (`orion/dig/watch.py`:
+**The switch.** Juniper's switch on the game page (Off / Watch quietly / Watch and talk: `POST /api/retro/sitting/watch
+{"mode": "off"|"quiet"|"on"}`, a standing setting for every game; "quiet" means looks and no lines) and Orion's own `dig watch` (`orion/dig/watch.py`:
 `watch off --why "..."`, `watch default <game> off --why "..."`, `watch status`). Orion's choice is an act on
 its ledger (actor `orion.watch_choice`); the gateway copies it into `retro_watch_preference` before every bid.
 The lower of the two is in force. Neither side can turn the other's "off" back on.
@@ -620,9 +620,9 @@ The lower of the two is in force. Neither side can turn the other's "off" back o
 not: the watch is off (by Orion, with Orion's words, or by the switch), no floor for this game, a refused bid
 or seat (with the reason), the screen has not changed for N min, or no button press for N min.
 
-**What Orion gets.** In patch 2 the notes reach no prompt and no Temporal Self event: only a note a line turn
-checked and found to hold will become an event (patch 3). The sitting's play row and its label say "Orion
-watched: N notes".
+**What Orion gets.** The notes reach a line turn's game block (patch 3, below). Only a note a line turn checked
+against its frames and found to hold becomes a Temporal Self event (`retro_look`). The sitting's play row and its
+label say "Orion watched: N notes".
 
 **Checks.**
 
@@ -646,3 +646,62 @@ the watch could not be loaded; the game page works without it.
 
 **Turn it off.** `HUB_RETRO_WATCH_ENABLED=false` in `services/orion-hub/.env`, then rebuild `hub-retro-gateway`:
 no packet is kept, no bid, no call.
+
+
+## Orion speaks (game company design, patch 3)
+
+Design: [Game company](../superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md), revision 4,
+sections 4, 5, 6 (seams 1-3) and 8. Code: `scripts/retro_commentary.py` (hub-app), rules in
+`orion/retro/commentary.py`.
+
+**A line.** Every 15 s while a sitting is open, hub-app checks the gates: the watch mode in force is `on` (watch
+and talk), no turn of Juniper's runs, no line runs, no look is in flight, the last line or chat-box exchange ended
+`HUB_RETRO_LINE_MIN_GAP_SEC` (120) ago, and a note was stored since then. Then one bid in family
+`hub.retro_commentary` (tier 1). Only `funded` runs a line:
+
+1. A `retro_line` row with outcome `running` (no row, no line) and the Redis key `orion:retro:line_turn`, so the
+   gateway bids for no look meanwhile.
+2. The newest frames: hub-app asks the gateway `GET /api/retro/sitting/frames` (loopback, with the Retro hub
+   token). No ring (the browser closed or reconnected): outcome `no_frames`, no turn.
+3. Orion's now: `GET /temporal-self/now?organ=play` on durable-runs, up to 3 items in the game block.
+4. A GPU pool hold of class `chat` at priority `system` (waits at most `HUB_RETRO_LINE_SEAT_WAIT_SEC`). The turn
+   carries the hold (`gpu_lease`): its pre-turn check, stance, motor and finalize all attach to it at the held
+   route's priority (`system`). A line never runs at `interactive`.
+5. A real unified turn through the outreach door (`EndogenousOutreach.compose`), limit
+   `HUB_RETRO_LINE_TIMEOUT_SEC` (240): the Prime block, the game block (game, minutes, who plays as stated -- no
+   name and "may be a child" when nobody said --, up to 12 notes with near-copies grouped, earlier lines) and the
+   frames, staged from the percept store and introduced as "frames of the game screen".
+6. The turn's CHECKS block judges each note whose frame window overlaps the turn's frames (`checked_holds` or
+   `contradicted`); every shown note gets `checkable` and `settled_at`. Also when Orion passes.
+7. PASS: outcome `passed`, one decision row (`orion_passed`), no act. Otherwise delivery claims the row
+   (running -> delivered) and pushes the line to every chat socket (the game page's strip), writes Orion's own
+   chat history row (no prompt, `client_meta.source = retro_commentary`) and opens and closes the act
+   `hub.retro_commentary say retro_sitting:<id>`. No notification.
+
+**Juniper goes first.** A message from any chat socket while a line runs marks the row `yielded` first, then
+cancels the turn (Hub task, motor, hold). Delivery refuses a yielded row, even when its draft finished later. The
+stance call (orion-thought) has no cancel listener (#3658): one in-flight stance call can finish on the GPU, and
+nothing it returns is said.
+
+**The chat box** (on the game page, inside the fullscreen area; T or the Chat button). It uses Hub's `/ws` with
+`disable_tts: true` and `surface_context.surface = "retro"`. hub-app reads who plays from the open sitting at each
+message: Juniper stated -> her normal turn in her session; anyone else -> utterance origin none, history source
+`retro_guest` (never read as "Juniper spoke"). Both get the game's newest frames. A chat reply within 2 minutes of a
+line marks it answered; thumbs (`POST /api/retro/lines/{id}/thumb`) are stored with who gave them (a guest's is a
+guest's).
+
+**Checks.**
+
+```sh
+# lease priorities of each line turn (FAIL on interactive), outcomes, pass share, error rate, stage seconds
+python3 scripts/analysis/check_retro_lines_live.py --hours 24
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \
+  "select decided_at, outcome, failure, looks_shown, looks_checkable, looks_contradicted, stance_sec, motor_sec, finalize_sec, thumb, thumb_by, replied_by from retro_line order by decided_at desc limit 10"
+```
+
+Hub log lines: `retro_commentary_gate sitting=... gate=`, `retro_commentary_bid_refused`, `retro_commentary_line
+line_id=... outcome=`, `retro_commentary_yielded`, `retro_chat_turn player=... frames=`; gateway:
+`retro_watch_frames_for_turn`, `retro_watch_no_bid ... reason=line_running`.
+
+**Turn it off.** `HUB_RETRO_COMMENTARY_ENABLED=false` in `services/orion-hub/.env`, then rebuild `hub-app`: no line
+and no bid; the chat box still answers. Orion can stop lines itself with `dig watch quiet --why "..."`.

@@ -4865,6 +4865,14 @@ private Unix socket. Disabled by default. See [setup and acceptance](../../docs/
 for exact-origin configuration, credentials, browser checks and known limits, and for
 Zelda play (planner v2, the play panel and solo leisure, `scripts/retro_leisure.py`).
 
+Game company (a person plays inside Orion; spec `docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md`):
+the sitting record (patch 1, `scripts/retro_sitting.py`), Orion's look at the screen (patch 2, `scripts/retro_watch.py`,
+in the Retro gateway) and Orion's lines plus the game page's chat box (patch 3, `scripts/retro_commentary.py`, in
+hub-app: a funded `hub.retro_commentary` bid runs a real unified turn under a `system` GPU hold with the game's
+frames; a person's message cancels a running line first; a guest's chat-box turn is stored with source
+`retro_guest`). Flags `HUB_RETRO_SITTING_*`, `HUB_RETRO_WATCH_*`, `HUB_RETRO_COMMENTARY_ENABLED`,
+`HUB_RETRO_LINE_*`; the runbook has the path, the checks and the off switch for each.
+
 Retro media recovery is independent of the controller: `scripts/retro_transport.py`
 keeps one latest complete video/PCM packet per viewer and bounds sends at 750 ms.
 The page reconnects media at most three times in ten seconds, sends neutral human

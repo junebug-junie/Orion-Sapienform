@@ -225,6 +225,9 @@ WHERE day_id = $1 AND event_id = ANY($2::text[]) AND ingested_at <= $3
 # Juniper's turns and Orion's unsolicited messages to her. created_at is UTC with no zone.
 # Only rows that are hers: Hub chat sources, or a NULL source sent from her browser (client_meta has
 # an origin; live 07-31..09-28). Not an agent's rpc ping (source 'hub') nor a Collapse Mirror block.
+# Not a game line either (game company patch 3, client_meta.source 'retro_commentary'): a line is said to whoever
+# holds the controller, often not her, and a 4-hour sitting can hold 30 of them; the sitting reaches the letter as
+# its play arc. A guest's chat-box turn (source 'retro_guest') never matches the source list.
 JUNIPER_CHAT_SOURCES = ["hub_orion", "hub_ws", "hub_http"]
 JUNIPER_CHAT_SQL = """
 SELECT id, correlation_id, created_at, prompt, response,
@@ -232,7 +235,8 @@ SELECT id, correlation_id, created_at, prompt, response,
 FROM chat_history_log
 WHERE created_at >= ($1::timestamptz AT TIME ZONE 'UTC') AND created_at < ($2::timestamptz AT TIME ZONE 'UTC')
   AND (
-    COALESCE((client_meta->>'unsolicited')::boolean, false)
+    (COALESCE((client_meta->>'unsolicited')::boolean, false)
+     AND COALESCE(client_meta->>'source', '') <> 'retro_commentary')
     OR (COALESCE(prompt, '') <> '' AND (source = ANY($3::text[])
                                         OR (source IS NULL AND client_meta ? 'origin')))
   )

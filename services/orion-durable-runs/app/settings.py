@@ -219,6 +219,9 @@ class Settings(BaseSettings):
     # chronicle reads orion-hub's retro_play_sessions as source `retro_play`, one `play` arc per
     # finished Retro session (chat stance cue, recent arcs, Day letter count). Off: not read.
     temporal_self_retro_play_enabled: bool = Field(True, alias="TEMPORAL_SELF_RETRO_PLAY_ENABLED")
+    # Game company patch 3: the chronicle reads orion-hub's retro_watch_look as source `retro_look` (only notes a
+    # line turn checked and found to hold), opening and refreshing the sitting's `play` arc. false -> not read.
+    temporal_self_retro_look_enabled: bool = Field(True, alias="TEMPORAL_SELF_RETRO_LOOK_ENABLED")
     # Episodes from the street (walkway follow-ups spec PR #2763 item 1): the chronicle reads notable
     # outside events as source `street_event` (spot-check-gated motion stories, doorbell rings, graded
     # handoffs with p < 0.05), one `street` arc each, labelled "Outside (<camera>)". Off: not read,

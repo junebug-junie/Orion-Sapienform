@@ -337,6 +337,10 @@ class HarnessAttachmentV1(BaseModel):
     mime: str
     sha256: str
     filename: str | None = None
+    # "game_screen": a still of a game screen staged from orion-percept-store (game company patch 3); the prompt
+    # names it as a frame of the game, never as something Juniper attached. None: a person's upload. Optional
+    # and ignored by an older reader (this model does not forbid extra fields).
+    source: str | None = None
 
 
 from orion.schemas.reading import ReadingToolBindingV1

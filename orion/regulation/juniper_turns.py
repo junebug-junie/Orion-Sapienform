@@ -16,10 +16,16 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-# SQL fragment over chat_history_log (prompt text, client_meta jsonb).
+# A guest's message from the game page's chat box (game company patch 3, services/orion-hub/scripts/
+# retro_commentary.py): it carries a prompt, but the person who typed it did not say they are Juniper. Its history row
+# has this source and its turn this chat_history_source; no reader of "Juniper spoke" may count it.
+GUEST_SOURCE = "retro_guest"
+
+# SQL fragment over chat_history_log (prompt text, client_meta jsonb, source).
 JUNIPER_TURN_PREDICATE = (
     "NULLIF(btrim(prompt), '') IS NOT NULL "
-    "AND COALESCE(client_meta->>'unsolicited', 'false') <> 'true'"
+    "AND COALESCE(client_meta->>'unsolicited', 'false') <> 'true' "
+    f"AND COALESCE(source, '') <> '{GUEST_SOURCE}'"
 )
 
 # chat_history_log.created_at is `timestamp without time zone` defaulted by the server's now(),
@@ -52,7 +58,8 @@ SMOKE_SURFACE = "operator_review"  # a SurfaceContextV1.surface value (orion/sch
 JUNIPER_INGRESS_PREDICATE = (
     "stage = 'ingress' AND seq = 0 AND raw->'surface_context' IS NOT NULL "
     "AND raw->'surface_context' <> '{}'::jsonb "
-    f"AND COALESCE(raw->'surface_context'->>'surface', '') <> '{SMOKE_SURFACE}'"
+    f"AND COALESCE(raw->'surface_context'->>'surface', '') <> '{SMOKE_SURFACE}' "
+    f"AND COALESCE(raw->>'chat_history_source', '') <> '{GUEST_SOURCE}'"
 )
 
 
@@ -63,7 +70,7 @@ def is_browser_surface_turn(payload: Mapping[str, Any] | None) -> bool:
     test, that ``turn_orchestrator._ingress_hop`` copies into the ingress raw. A coding session's message
     posted to ``/api/chat`` (live 2026-11-15: two of them, persisted as ``hub_orion`` in Juniper's own
     session) and a ``no_write`` eval turn carry none."""
-    if not payload:
+    if not payload or payload.get("chat_history_source") == GUEST_SOURCE:
         return False
     surface = payload.get("surface_context")
     return isinstance(surface, Mapping) and bool(surface) and surface.get("surface") != SMOKE_SURFACE
@@ -71,7 +78,7 @@ def is_browser_surface_turn(payload: Mapping[str, Any] | None) -> bool:
 
 def is_juniper_turn(payload: Mapping[str, Any] | None) -> bool:
     """The same rule for a ``chat.history.turn`` bus payload (``ChatHistoryTurnV1`` dict)."""
-    if not payload:
+    if not payload or payload.get("source") == GUEST_SOURCE:
         return False
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -81,5 +88,5 @@ def is_juniper_turn(payload: Mapping[str, Any] | None) -> bool:
     return not (unsolicited is True or str(unsolicited).lower() == "true")
 
 
-__all__ = ["JUNIPER_IDLE_MINUTES_SQL", "JUNIPER_INGRESS_PREDICATE", "SMOKE_SURFACE", "JUNIPER_TURN_PREDICATE", "is_browser_surface_turn",
+__all__ = ["GUEST_SOURCE", "JUNIPER_IDLE_MINUTES_SQL", "JUNIPER_INGRESS_PREDICATE", "SMOKE_SURFACE", "JUNIPER_TURN_PREDICATE", "is_browser_surface_turn",
            "is_juniper_turn"]

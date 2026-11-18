@@ -398,3 +398,46 @@ async def publish_look_closed(bus: Any, *, want_id: str, sitting_id: str, produc
     except Exception as exc:  # noqa: BLE001
         logger.warning("look_act_close_failed want_id=%s error=%s", want_id, exc)
         return False
+
+
+# Line: Orion speaks to a person who plays (game company patch 3, 2026-11-18, spec section 4). Actor
+# hub.retro_commentary, verb say, object retro_sitting:<id>. Published only on DELIVERY (a pass, a yield, no frames or
+# a failed turn opens no act), opened and closed in one step: the line was said, produced 1. What the player made of
+# it (thumb, a reply within 2 min) is stored on the line's own retro_line row, not on this act. The act's id and
+# correlation id are the line id, which the line's GPU hold and want also carry.
+LINE_ACTOR = "hub.retro_commentary"
+LINE_HORIZON_SEC = 60.0
+LINE_BASIS = "artifact_produced (the line pushed to the game page and written to chat history) at delivery"
+
+
+def _line_act(line_id: str, sitting_id: str):
+    from orion.grammar.acts import build_act
+
+    return build_act(
+        actor=LINE_ACTOR, verb="say", key=str(line_id), signal_id="artifact_produced",
+        horizon_sec=LINE_HORIZON_SEC, basis=LINE_BASIS,
+        object_ref=f"retro_sitting:{sitting_id}", test_before=f"retro_line:{line_id}",
+    )
+
+
+async def publish_line_said(bus: Any, *, line_id: str, sitting_id: str, text: str = "") -> bool:
+    """Open and close one delivered line's act (produced 1). Best-effort: False when not published."""
+    if bus is None or not _enabled():
+        return False
+    try:
+        from orion.grammar.acts import act_closed_event, act_opened_event
+        from orion.grammar.publish import publish_grammar_event
+
+        act = _line_act(line_id, sitting_id)
+        corr = UUID(str(line_id))
+        opened = act_opened_event(act, source_service="orion-hub", source_component="retro_commentary.act",
+                                  correlation_id=str(line_id))
+        await publish_grammar_event(bus, opened, source_name="orion-hub", correlation_id=corr)
+        closed = act_closed_event(act, produced=True, note=f"line delivered: {' '.join(str(text).split())}"[:500],
+                                  source_service="orion-hub", source_component="retro_commentary.act",
+                                  correlation_id=str(line_id))
+        await publish_grammar_event(bus, closed, source_name="orion-hub", correlation_id=corr)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("line_act_failed line_id=%s error=%s", line_id, exc)
+        return False

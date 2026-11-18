@@ -32,7 +32,7 @@ Constraints and their sources (design doc, Organ 1 table; A3 scope, no forecast,
   how long that queue has been non-empty. That is hunger, the seed of Appetite; it is not strain and not a
   price input.
 * ``attention:juniper``: Orion's outreach messages today (local date) that the Hub's daily cap
-  counts: every door except ``attention_pacing.CAP_EXEMPT_SOURCES`` (the strain report) and forced
+  counts: every door except ``attention_pacing.CAP_EXEMPT_SOURCES`` (the strain report, game lines) and forced
   sends (2026-11-10, one attention budget; every send is in ``detail``). Line: that cap
   (``orion.physiology.attention_pacing.JUNIPER_DAILY_CAP``).
 * ``claude``: ``ClaudeLimitObservationV1`` (``orion:substrate:claude_limit``) state and limit

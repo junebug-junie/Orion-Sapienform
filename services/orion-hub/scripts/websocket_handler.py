@@ -1340,6 +1340,35 @@ async def websocket_endpoint(websocket: WebSocket):
             if not transcript:
                 continue
 
+            # Game company patch 3 (scripts/retro_commentary.py): a person spoke. A running game line yields
+            # first (its row is marked before it is killed; in the background, never in front of this turn). A
+            # message from the game page (surface "retro") gets the game's frames, and a guest's gets its own
+            # history source and no Juniper origin.
+            retro_origin: Optional[str] = "juniper"
+            _retro_commentary = getattr(scripts.main, "retro_commentary", None)
+            if _retro_commentary is not None:
+                _retro_commentary.person_spoke()      # the yield starts now, before any other await
+            _surface_ctx = data.get("surface_context") if isinstance(data.get("surface_context"), dict) else {}
+            _retro_player: Optional[str] = None
+            if _surface_ctx.get("surface") != "retro":
+                # Only the game page's path sets these, server side; a client cannot borrow them.
+                if data.get("source") in ("retro_commentary", "retro_guest") or data.get("chat_history_source") == "retro_guest":
+                    data = {k: v for k, v in data.items() if k not in ("source", "chat_history_source")}
+            if _surface_ctx.get("surface") == "retro":
+                try:
+                    from scripts.retro_commentary import prepare_retro_turn
+
+                    data, retro_origin, transcript, _retro_player = await prepare_retro_turn(
+                        data, transcript, bus=bus, commentary=_retro_commentary)
+                except Exception:  # noqa: BLE001 -- unknown speaker: never recorded as Juniper
+                    logger.warning("retro_chat_turn_prepare_failed session=%s", session_id, exc_info=True)
+                    data = dict(data, chat_history_source="retro_guest")
+                    data.pop("source", None)
+                    retro_origin, _retro_player = None, "guest"
+            if _retro_commentary is not None:
+                _retro_commentary.note_human_message(surface=_surface_ctx.get("surface"), player=_retro_player,
+                                                     text=data.get("text_input") or data.get("text") or transcript)
+
             if not is_text_input:
                 await websocket.send_json(
                     await _with_biometrics(
@@ -1525,13 +1554,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 # then, so there is no transcript belonging to that window,
                 # and reusing this one would present her opening words as if
                 # they were her reaction to Orion's reply.
-                chat_turn_affect.fire(
-                    settings=settings,
-                    trigger=chat_turn_affect.TRIGGER_PRE,
-                    correlation_id=trace_id,
-                    is_voice_turn=not is_text_input,
-                    subtitle=transcript,
-                )
+                if retro_origin == "juniper":     # a guest's chat-box turn is not a read of Juniper
+                    chat_turn_affect.fire(
+                        settings=settings,
+                        trigger=chat_turn_affect.TRIGGER_PRE,
+                        correlation_id=trace_id,
+                        is_voice_turn=not is_text_input,
+                        subtitle=transcript,
+                    )
                 orion_turn_frames: list[dict] = []
                 try:
                     orion_turn_frames = await run_awaitable_cancel_on_ws_disconnect(
@@ -1554,6 +1584,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             harness_rpc_bus=rpc_bus or bus,
                             harness_step_relay=harness_step_relay,
                             client_meta=reply_stamp or None,
+                            # A guest on the game page is never Juniper (scripts/retro_commentary.py).
+                            utterance_origin="juniper" if retro_origin == "juniper" else None,
                         ),
                         bus=rpc_bus or bus,
                         correlation_id=trace_id,
@@ -1580,7 +1612,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     # finding, 2026-08-26). A disconnect is the one case
                     # where the missing half of the pair is the correct
                     # outcome.
-                    if websocket.client_state == WebSocketState.CONNECTED:
+                    if websocket.client_state == WebSocketState.CONNECTED and retro_origin == "juniper":
                         chat_turn_affect.fire(
                             settings=settings,
                             trigger=chat_turn_affect.TRIGGER_POST,
@@ -1620,6 +1652,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 # leg is: synthesizing speech for a socket that is already
                 # gone is pure waste, and the client_state check is already
                 # right here.
+                if _retro_commentary is not None and _surface_ctx.get("surface") == "retro":
+                    # The game page's chat: the reply joins the sitting's recent chat (a line turn shows it).
+                    _retro_commentary.note_reply_frames(orion_turn_frames)
                 if websocket.client_state == WebSocketState.CONNECTED:
                     orion_final_text = extract_unified_turn_final_text(orion_turn_frames)
                     dispatch_tts_reply(
@@ -1662,7 +1697,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     source_label="hub_ws",
                     prompt=prompt_with_ctx,
                     messages=continuity_messages,
-                    utterance_origin="juniper",
+                    utterance_origin="juniper" if retro_origin == "juniper" else None,
                 )
             except HubRequestValidationError as exc:
                 await websocket.send_json(

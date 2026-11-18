@@ -9,6 +9,15 @@ Orion asked 8 questions on the PR #3734 thread about the memory-correction pass.
 - **Read-only is now real.** The dry run's `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` ran inside an already-open transaction, so it covered nothing. Both read-only commands now use `SET TRANSACTION READ ONLY` as the first statement. A Postgres test proves this, and a mutation back to the old form fails the test.
 - **The write-time meaning-index failure is logged with its cause** (`supersede_dense_unavailable`). The first live v3.4 distill run refused with `dense_unavailable` and recorded no reason (#3693).
 
+### Merge with main (after #3750)
+
+`orion/memory/episode/supersede.py` conflicted with #3750. Both sides are kept:
+
+- **The meaning-index retry and the failure log are combined.** #3750's bounded retry stays: each attempt is capped at 40 s in total, with one retry per plan. This branch's `supersede_dense_unavailable` warning now logs every failed attempt with its cause.
+- **The apply audit row counts what apply did.** `record_run` now adds `counts.outcomes` (for example `{"applied": 2, "undone_never_reapplied": 1}`), taken from apply's per-pair decisions. That sits next to #3750's `counts.abstained` and the `dense_calls` / `dense_ms` / `dense_retries` counts, so nightly, dry-run and apply rows all have the same shape.
+  - Test: `test_record_run_counts_apply_outcomes_from_per_pair_decisions`.
+- **Tests after the merge:** 411 episode tests passed, Postgres-backed included, and 14 durable distill-graph tests passed.
+
 ## Outcome moved
 
 The manifest stops claiming that undone corrections are in effect. Each future undo carries a reason and a decider that Orion can read. Each pass apply leaves a per-pair trace in a table that Orion can already read (`orion_readonly` has SELECT on `memory_supersede_run` and `episode_memory_event`, checked live 2026-11-18).

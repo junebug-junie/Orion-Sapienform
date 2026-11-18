@@ -74,9 +74,9 @@ def overlap_reranker(query: str, docs: List[str]):
 
 
 def fixed_rewriter(queries: List[str], seen: List[Any] | None = None):
-    async def rw(message, context):
+    async def rw(message, context, short=False):
         if seen is not None:
-            seen.append((message, list(context)))
+            seen.append((message, list(context)) if not short else (message, list(context), "short"))
         return list(queries)
 
     return rw
@@ -162,13 +162,16 @@ def test_an_implicit_message_finds_its_memory_through_the_rewrite(no_dense):
     assert asyncio.run(plain.recall(msg)).lines == []
 
 
-def test_short_messages_are_neither_rewritten_nor_searched(no_dense):
+def test_short_messages_get_the_short_question_not_the_general_rewrite(no_dense):
+    # Issue #3613 (was: short messages are never rewritten). A short message with no known entity
+    # is asked the short-message question; when it answers NONE nothing is searched.
     calls: List[Any] = []
     reader = LivedMemoryRecall(Pool({"episode_memory": [GAME]}), _cfg(), reranker=overlap_reranker,
-                               rewriter=fixed_rewriter(["castle adventure game final dungeon"], calls), clock=lambda: NOW)
+                               rewriter=fixed_rewriter([], calls), clock=lambda: NOW)
     out = asyncio.run(reader.recall("okay, I beat it!"))
     assert out.lines == [] and out.rendered == "" and out.debug["skipped"] == "few_content_words"
-    assert calls == []
+    assert out.debug["gate"] == "short_none"
+    assert [c[2] for c in calls] == ["short"]
 
 
 def test_small_talk_stays_empty_when_the_rewrite_says_none(no_dense):

@@ -82,9 +82,13 @@ def score_bar(results: Sequence[Dict[str, Any]], noise: Sequence[Dict[str, Any]]
         k = by_kind.setdefault(r.get("kind") or "explicit", [0, 0])
         k[0] += int(hit)
         k[1] += 1
-        per_item.append({"label": r["label"], "kind": r.get("kind"), "hit": hit, "lines": len(ids),
+        per_item.append({"label": r["label"], "kind": r.get("kind"), "hit": hit, "lines": len(ids), "gate": r.get("gate"),
                          "target_rank_before_bar": r.get("target_rank")})
     lines_all, small, small_inject = [], 0, 0
+    # Issue #3613: small-talk injection split by the short-message gate that let the search run,
+    # and the share among pure social messages (is_low_info_social) alone.
+    by_gate: Dict[str, List[int]] = {}
+    social, social_inject = 0, 0
     for n in noise:
         if n.get("chosen_ids") is not None:
             chosen = list(n["chosen_ids"])[:MAX_LINES]
@@ -94,6 +98,12 @@ def score_bar(results: Sequence[Dict[str, Any]], noise: Sequence[Dict[str, Any]]
         if n["small_talk"]:
             small += 1
             small_inject += int(bool(chosen))
+            g = by_gate.setdefault(n.get("gate") or "none", [0, 0])
+            g[0] += int(bool(chosen))
+            g[1] += 1
+        if n.get("social"):
+            social += 1
+            social_inject += int(bool(chosen))
     return {
         "min_fit": min_fit,
         "hit_rate": round(hits / len(results), 3) if results else None,
@@ -106,6 +116,9 @@ def score_bar(results: Sequence[Dict[str, Any]], noise: Sequence[Dict[str, Any]]
         "noise_share_any_line": round(sum(1 for x in lines_all if x) / len(lines_all), 3) if lines_all else None,
         "small_talk_messages": small,
         "small_talk_share_injecting": round(small_inject / small, 3) if small else None,
+        "small_talk_injecting_by_gate": {k: f"{v[0]}/{v[1]}" for k, v in sorted(by_gate.items())},
+        "social_messages": social,
+        "social_share_injecting": round(social_inject / social, 3) if social else None,
     }
 
 
@@ -128,18 +141,20 @@ class _CachedRewriter:
         self.errors = 0
 
     @staticmethod
-    def key(message: str) -> str:
-        return hashlib.sha256(message.encode("utf-8")).hexdigest()
+    def key(message: str, short: bool = False) -> str:
+        # The short-message prompt (issue #3613) is a different question: its own cache entry.
+        return ("short:" if short else "") + hashlib.sha256(message.encode("utf-8")).hexdigest()
 
-    async def __call__(self, message: str, context: Any) -> List[str]:
-        if self.key(message) in self.cache:
-            return self.cache[self.key(message)]
+    async def __call__(self, message: str, context: Any, *, short: bool = False) -> List[str]:
+        key = self.key(message, short)
+        if key in self.cache:
+            return self.cache[key]
         try:
-            out = await self.inner(message, context)
+            out = await (self.inner(message, context, short=True) if short else self.inner(message, context))
         except Exception:
             self.errors += 1
             raise
-        self.cache[self.key(message)] = list(out)
+        self.cache[key] = list(out)
         return out
 
 
@@ -204,6 +219,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
         results: List[Dict[str, Any]] = []
         noise: List[Dict[str, Any]] = []
         outcomes: Dict[str, int] = {}
+        gates: Dict[str, int] = {}
         backends: Dict[str, int] = {}
         degraded_reasons: Dict[str, int] = {}
         partial = 0
@@ -218,6 +234,8 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
                 err = str(out.debug["rerank_error"]).split(":", 1)[0]
                 rerank_errors[err] = rerank_errors.get(err, 0) + 1
             timings.append(out.debug.get("timings_ms") or {})
+            g = out.debug.get("gate") or "none"
+            gates[g] = gates.get(g, 0) + 1
             o = (out.debug.get("rewrite") or {}).get("outcome") or "none"
             outcomes[o] = outcomes.get(o, 0) + 1
             b = out.backend or "no_search"
@@ -232,6 +250,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
                 ordered = sorted(out.reranked, key=lambda x: -x[1])
                 rank_of = next((i + 1 for i, (rec, _l) in enumerate(ordered) if rec.doc_id in item["targets"]), None)
                 results.append({"label": item["label"], "kind": item.get("kind"), "targets": item["targets"],
+                                "gate": out.debug.get("gate"),
                                 "reranked": out.reranked, "now": at, "target_rank": rank_of,
                                 "chosen_ids": [c.rec.doc_id for c in out.chosen] if dead else None,
                                 "target_in_pool": rank_of is not None or any(
@@ -242,6 +261,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
                 out = await lm.recall(row["prompt"], client=client, as_of=at, session_id=row["session_id"])
                 note(out)
                 noise.append({"reranked": out.reranked, "now": at, "small_talk": is_small_talk(row["prompt"]),
+                              "social": is_low_info_social(row["prompt"]), "gate": out.debug.get("gate"),
                               "chosen_ids": [c.rec.doc_id for c in out.chosen] if dead else None})
 
         print(f"variant {name} done: {len(results)} referring, {len(noise)} noise", file=sys.stderr, flush=True)
@@ -258,6 +278,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
                                           for k in sorted({r['kind'] for r in results})},
             "errors": [r["label"] for r in results if r["errors"]],
             "rewrite_outcomes": outcomes,
+            "gates": gates,
             "backends": backends,
             # Share of searched messages that fell back to exact words (issue #3662 bar: < 2%).
             "degraded_rate": round(backends.get("degraded", 0) / searched, 3) if searched else None,

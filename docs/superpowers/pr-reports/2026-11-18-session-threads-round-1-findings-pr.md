@@ -145,6 +145,6 @@ scripts/safe_docker_build.sh orion-hub up -d --build   # from clean primary main
 
 ## PR link
 
-(see GitHub)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3718
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

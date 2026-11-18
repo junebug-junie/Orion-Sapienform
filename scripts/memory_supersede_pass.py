@@ -16,7 +16,11 @@ Three commands. Every file goes to --dir (default /tmp/memory-supersede-pass/, m
     .venv/bin/python scripts/memory_supersede_pass.py apply --pairs /tmp/memory-supersede-pass/pairs.jsonl --yes
 
     # 3. Undo one pair: the old row active again, the pointer cleared, an event logged.
-    .venv/bin/python scripts/memory_supersede_pass.py undo --old <old memory_id> --new <new memory_id>
+    .venv/bin/python scripts/memory_supersede_pass.py undo --old <old memory_id> --new <new memory_id> \
+        --actor juniper --note "<why>"
+
+    # 4. Rewrite the manifest from the database (read-only; e.g. after an undo by hand SQL).
+    .venv/bin/python scripts/memory_supersede_pass.py manifest
 
 Manifest (ids and statuses only, never statements): --manifest, default
 /mnt/orion-fcc/notes/memory_supersede_pass_manifest.json, so Orion can verify the pass ran. It lists
@@ -292,9 +296,10 @@ async def cmd_dry_run(args: argparse.Namespace) -> int:
     if not args.no_manifest:
         async with await psycopg.AsyncConnection.connect(args.dsn, row_factory=dict_row) as conn:
             await write_manifest(conn, Path(args.manifest), mode="dry_run", proposed=[l.as_dict() for l in links],
-                                 applied=None, watch=parse_watch(args.watch), run_id=run_id, dense=dense_state,
+                                 applied=None, watch=parse_watch(args.watch) or None, run_id=run_id, dense=dense_state,
                                  records=records, counts={"asked": len(records), "proposed": len(links),
-                                                          "check_errors": plan["check_errors"]})
+                                                          "check_errors": plan["check_errors"]},
+                                 undone=await undone_events(conn))
     print(f"{len(links)} proposed pairs from {len(records)} checks; files in {out}")
     return 0
 
@@ -380,7 +385,8 @@ def write_outputs(out: Path, links: list[Link], records: list[CheckRecord], by_i
         "Juniper reviews pairs.md. Then, from the primary checkout:", "",
         f"    .venv/bin/python scripts/memory_supersede_pass.py apply --pairs {out}/pairs.jsonl --yes", "",
         "(--exclude OLD_ID:NEW_ID,... drops pairs she rejects.) Undo one pair:", "",
-        "    .venv/bin/python scripts/memory_supersede_pass.py undo --old <OLD_ID> --new <NEW_ID>", "",
+        "    .venv/bin/python scripts/memory_supersede_pass.py undo --old <OLD_ID> --new <NEW_ID> "
+        "--actor juniper --note \"<why>\"", "",
         f"Needs another pass: {'yes, after apply (expect 0 pairs: the idempotency check)' if links else 'no'}.",
     ]
     write_private(out / "report.md", "\n".join(report) + "\n")
@@ -396,6 +402,20 @@ WATCH_SQL = ("SELECT memory_id::text AS memory_id, status, confirmation_state, "
 VERIFY_SQL = ("SELECT e.memory_id AS old_id, e.evidence->>'superseded_by' AS new_id, m.status, e.actor, e.created_at "
               "FROM episode_memory_event e JOIN episode_memory m USING (memory_id) "
               "WHERE e.op = 'superseded' ORDER BY e.created_at")
+# Every undone pair, who undid it, when, and the note they gave (the note is the undo event's
+# evidence->>'note', supersede.py undo_link). An undone pair is never re-applied.
+UNDONE_EVENTS_SQL = ("SELECT memory_id::text AS old_id, evidence->>'superseded_by' AS new_id, actor, "
+                     "created_at, coalesce(evidence->>'note', '') AS note "
+                     "FROM episode_memory_event WHERE op = 'supersede_undone' ORDER BY created_at, event_id")
+
+
+async def undone_events(conn: Any) -> list[dict[str, Any]]:
+    """The undone pairs for the manifest: ids, actor, time and note (no statements)."""
+    cur = await conn.execute(UNDONE_EVENTS_SQL)
+    rows = [r if isinstance(r, dict) else dict(zip([d.name for d in cur.description], r))
+            for r in await cur.fetchall()]
+    return [{"old_id": str(r["old_id"]), "new_id": str(r["new_id"]), "actor": r["actor"],
+             "undone_at": str(r["created_at"]), "note": r["note"]} for r in rows]
 
 
 def parse_watch(items: list[str]) -> list[tuple[str, str]]:
@@ -454,22 +474,46 @@ async def record_db(dsn: str, run_id: str, source: str, plan: dict[str, Any], ap
         print(f"run audit row NOT written: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dict[str, Any]],
-                         applied: list[dict[str, Any]] | None, watch: list[tuple[str, str]],
+async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dict[str, Any]] | None,
+                         applied: list[dict[str, Any]] | None, watch: list[tuple[str, str]] | None,
                          run_id: str = "", dense: str = "", records: Optional[list[CheckRecord]] = None,
-                         counts: Optional[dict[str, Any]] = None) -> None:
+                         counts: Optional[dict[str, Any]] = None,
+                         undone: Optional[list[dict[str, Any]]] = None) -> None:
     """Ids and statuses only -- never statements -- so Orion can verify the pass ran.
 
     Written where Orion's FCC turns can read it (default under /mnt/orion-fcc/notes, mode 644). The
     database is the other proof: once orion_readonly has SELECT on episode_memory (PR #3593's grant)
     and episode_memory_event (scripts/sql/2026-11-17_grant_orion_readonly_supersede_events.sql),
-    ``verify_sql`` below reads every applied pair directly."""
+    ``verify_sql`` below reads every applied pair directly.
+
+    ``proposed`` / ``applied`` / ``watch`` / ``undone`` None keep the previous manifest's value (an
+    undo or a refresh rewrites the file without a new proposal). ``undone`` lists every undone pair;
+    an ``applied`` entry whose pair was undone carries ``undone_at``, so the file never says a pair
+    is in effect after someone put it back."""
     previous: dict[str, Any] = {}
     if path.exists():
         try:
             previous = json.loads(path.read_text(encoding="utf-8"))
         except ValueError:
             previous = {}
+    applied_this_run = list(applied or [])  # the history line records only what this run did
+    proposed_this_run = proposed or []
+    # The check version that found the proposed pairs: an undo or a refresh proposes nothing new,
+    # so it keeps the version of the run that did.
+    check_version = CHECK_VERSION if proposed is not None else str(previous.get("check_version") or CHECK_VERSION)
+    if proposed is None:
+        proposed = list(previous.get("proposed") or [])
+    dense = dense or str(previous.get("dense") or "")
+    if applied is None:
+        applied = [{k: v for k, v in a.items() if k != "undone_at"} for a in previous.get("applied") or []]
+    if watch is None:
+        watch = [(str(w.get("label")), str(w.get("memory_id"))) for w in previous.get("watched") or []
+                 if w.get("memory_id")]
+    if undone is None:
+        undone = list(previous.get("undone") or [])
+    undone_at = {(u["old_id"], u["new_id"]): u["undone_at"] for u in undone}
+    applied_now = [{**a, **({"undone_at": undone_at[(a["old_id"], a["new_id"])]}
+                            if (a["old_id"], a["new_id"]) in undone_at else {})} for a in applied]
     rows = {}
     if watch:
         cur = await conn.execute(WATCH_SQL, ([m for _, m in watch],))
@@ -479,13 +523,16 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
         "issue": 3587,
         "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "last_mode": mode,
-        "check_version": CHECK_VERSION,
+        "check_version": check_version,
         "pair_handled_key": "episode_memory_event row with op='superseded' and event_id = "
                             "uuid5(SUPERSEDE_NAMESPACE, 'superseded|<old_id>|<new_id>') "
                             "(orion/memory/episode/supersede.py superseded_event_id); "
                             "re-applying a handled pair writes nothing",
         "proposed": [{"old_id": p["old_id"], "new_id": p["new_id"]} for p in proposed],
-        "applied": applied if applied is not None else previous.get("applied", []),
+        "applied": applied_now,
+        "in_effect": [{"old_id": a["old_id"], "new_id": a["new_id"]} for a in applied_now if "undone_at" not in a],
+        "undone": undone,
+        "undone_rule": "an undone pair is never re-applied (supersede.py apply_link; issue #3629)",
         "run_id": run_id,
         "dense": dense,
         "history": str(history_path(path)),
@@ -499,8 +546,9 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
     }
     append_history(history_path(path), {
         "run_id": run_id, "mode": mode, "written_at": manifest["written_at"], "check_version": CHECK_VERSION,
-        "dense": dense, "counts": counts or {}, "proposed": manifest["proposed"],
-        "applied": [{"old_id": a["old_id"], "new_id": a["new_id"]} for a in (applied or [])]})
+        "dense": dense, "counts": counts or {},
+        "proposed": [{"old_id": p["old_id"], "new_id": p["new_id"]} for p in proposed_this_run],
+        "applied": [{"old_id": a["old_id"], "new_id": a["new_id"]} for a in applied_this_run]})
     text = json.dumps(manifest, indent=2, default=str) + "\n"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -525,6 +573,17 @@ def _pair_set(spec: str) -> set[tuple[str, str]]:
             a, b = item.strip().split(":", 1)
             out.add((a.strip(), b.strip()))
     return out
+
+
+def pair_decision(pair: dict[str, Any], outcome: str) -> dict[str, Any]:
+    """One reviewed pair's decision trace for the apply run's ``memory_supersede_run`` row: the
+    candidate legs (cosine, shared rare words/referents), the votes, the reason and what apply did.
+    No statements: the shared words are the same ones a ``superseded`` event's evidence keeps."""
+    return {"old_id": pair["old_id"], "new_id": pair["new_id"],
+            "legs": {"cosine": pair.get("dense"), "shared": list(pair.get("shared") or [])},
+            "relation": pair.get("relation"), "path": pair.get("path"), "votes": list(pair.get("votes") or []),
+            "reason": str(pair.get("reason") or "")[:400], "check_version": pair.get("check_version"),
+            "outcome": outcome}
 
 
 async def cmd_apply(args: argparse.Namespace) -> int:
@@ -569,6 +628,7 @@ async def cmd_apply(args: argparse.Namespace) -> int:
 
     applied = skipped = 0
     applied_ids: list[dict[str, Any]] = []
+    decisions: list[dict[str, Any]] = []
     started = datetime.now(timezone.utc)
     async with await psycopg.AsyncConnection.connect(args.dsn, row_factory=dict_row, autocommit=True) as conn:
         undone = await undone_pairs(conn)
@@ -577,6 +637,7 @@ async def cmd_apply(args: argparse.Namespace) -> int:
             if (only and key not in only) or key in exclude:
                 continue
             if key in undone:  # someone put this pair back: never re-applied, never reported applied
+                decisions.append(pair_decision(p, "undone_never_reapplied"))
                 with log.open("a", encoding="utf-8") as f:
                     f.write(f"{datetime.now(timezone.utc).isoformat()} undone_never_reapplied "
                             f"old={key[0]} new={key[1]}\n")
@@ -587,6 +648,7 @@ async def cmd_apply(args: argparse.Namespace) -> int:
             done = await cur.fetchone()
             if done:  # already handled: a no-op, no second event
                 applied_ids.append({"old_id": key[0], "new_id": key[1], "applied_at": str(done["created_at"])})
+                decisions.append(pair_decision(p, "already_handled"))
                 with log.open("a", encoding="utf-8") as f:
                     f.write(f"{datetime.now(timezone.utc).isoformat()} already_handled old={key[0]} new={key[1]}\n")
                 skipped += 1
@@ -602,6 +664,7 @@ async def cmd_apply(args: argparse.Namespace) -> int:
                     why = "applied" if result else "skipped_state_changed"
             applied += bool(result)
             skipped += not result
+            decisions.append(pair_decision(p, why))
             if result:
                 applied_ids.append({"old_id": key[0], "new_id": key[1],
                                     "applied_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
@@ -612,11 +675,12 @@ async def cmd_apply(args: argparse.Namespace) -> int:
         if not args.no_manifest:
             await write_manifest(conn, Path(args.manifest), mode="apply",
                                  proposed=[{"old_id": p["old_id"], "new_id": p["new_id"]} for p in pairs],
-                                 applied=applied_ids, watch=parse_watch(args.watch), run_id=run_id,
-                                 dense="on", counts={"applied": applied, "skipped": skipped})
+                                 applied=applied_ids, watch=parse_watch(args.watch) or None, run_id=run_id,
+                                 dense="on", counts={"applied": applied, "skipped": skipped},
+                                 undone=await undone_events(conn))
     await record_db(args.dsn, run_id, "pass_apply",
                     {"links": [{"old_id": p["old_id"], "new_id": p["new_id"]} for p in pairs],
-                     "apply": "on", "dense": "on", "check_version": CHECK_VERSION, "decisions": []},
+                     "apply": "on", "dense": "on", "check_version": CHECK_VERSION, "decisions": decisions},
                     applied_ids, started)
     print(f"applied {applied}, skipped {skipped}; log {log}")
     return 0
@@ -628,14 +692,40 @@ async def cmd_undo(args: argparse.Namespace) -> int:
 
     from orion.memory.episode.supersede import undo_link
 
+    note = " ".join(str(args.note or "").split())
+    if not note:
+        raise SystemExit("undo needs --note: why the pair is put back (stored in the undo event; Orion reads it)")
+    started = datetime.now(timezone.utc)
     async with await psycopg.AsyncConnection.connect(args.dsn, row_factory=dict_row, autocommit=True) as conn:
         async with conn.transaction():
-            restored = await undo_link(conn, old_id=args.old, new_id=args.new, actor=args.actor, note=args.note)
-    if restored is None:
-        print("nothing to undo: that pair is not superseded by this mechanism", file=sys.stderr)
-        return 1
+            restored = await undo_link(conn, old_id=args.old, new_id=args.new, actor=args.actor, note=note)
+        if restored is None:
+            print("nothing to undo: that pair is not superseded by this mechanism", file=sys.stderr)
+            return 1
+        if not args.no_manifest:  # the manifest must not keep saying the pair is applied
+            await write_manifest(conn, Path(args.manifest), mode="undo", proposed=None, applied=None, watch=None,
+                                 run_id=f"pass_undo:{started.strftime('%Y%m%dT%H%M%SZ')}:{uuid.uuid4().hex[:6]}",
+                                 counts={"undone": 1, "old_id": args.old, "new_id": args.new, "actor": args.actor},
+                                 undone=await undone_events(conn))
     print(f"restored old={args.old} to active ({restored['restored_confirmation_state']}); "
           f"pointer on new={args.new} cleared")
+    return 0
+
+
+async def cmd_manifest(args: argparse.Namespace) -> int:
+    """Rewrite the manifest from the database (read-only): every undo, and which applied pairs are
+    still in effect. For a manifest written before undo kept it current."""
+    import psycopg
+    from psycopg.rows import dict_row
+
+    started = datetime.now(timezone.utc)
+    async with await psycopg.AsyncConnection.connect(args.dsn, row_factory=dict_row) as conn:
+        await conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        await write_manifest(conn, Path(args.manifest), mode="refresh", proposed=None, applied=None,
+                             watch=parse_watch(args.watch) or None,
+                             run_id=f"pass_refresh:{started.strftime('%Y%m%dT%H%M%SZ')}:{uuid.uuid4().hex[:6]}",
+                             undone=await undone_events(conn))
+    print(f"manifest rewritten: {args.manifest}")
     return 0
 
 
@@ -665,20 +755,23 @@ def main() -> int:
                    help="apply although no passing precision eval is recorded (refused by default, issue #3659)")
     a.add_argument("--allow-no-dense", action="store_true",
                    help="apply pairs found without the meaning index (refused by default, issue #3659)")
-    for sp in (d, a):
+    u = sub.add_parser("undo", help="put one pair back")
+    u.add_argument("--old", required=True)
+    u.add_argument("--new", required=True)
+    u.add_argument("--actor", required=True,
+                   help="who decided: 'juniper' when it is her rejection, else 'operator' (issue #3629: "
+                        "only an operator undo may be reopened)")
+    u.add_argument("--note", required=True, help="why the pair is put back (stored in the undo event)")
+    m = sub.add_parser("manifest", help="rewrite the manifest from the database (read-only)")
+    for sp in (d, a, u, m):
         sp.add_argument("--manifest", default=str(DEFAULT_MANIFEST),
                         help="ids-only manifest Orion can read (no statements)")
         sp.add_argument("--no-manifest", action="store_true")
         sp.add_argument("--watch", action="append", default=[], metavar="LABEL=MEMORY_ID",
                         help="report this row's final status in the manifest (repeatable)")
-    u = sub.add_parser("undo", help="put one pair back")
-    u.add_argument("--old", required=True)
-    u.add_argument("--new", required=True)
-    u.add_argument("--actor", default="operator")
-    u.add_argument("--note", default="")
     args = ap.parse_args()
     args.dsn = args.dsn or default_dsn()
-    return asyncio.run({"dry-run": cmd_dry_run, "apply": cmd_apply, "undo": cmd_undo}[args.cmd](args))
+    return asyncio.run({"dry-run": cmd_dry_run, "apply": cmd_apply, "undo": cmd_undo, "manifest": cmd_manifest}[args.cmd](args))
 
 
 if __name__ == "__main__":

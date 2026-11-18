@@ -424,3 +424,44 @@ def test_an_update_that_points_backwards_is_refused():
         assert old["status"] == "active"
 
     asyncio.run(_with_db(body))
+
+
+def test_pass_undo_stores_the_note_and_rewrites_the_manifest(tmp_path):
+    """Orion's questions on PR #3734: the undo's note lands in the event, and the manifest stops
+    saying the pair is applied."""
+    import argparse
+    import importlib.util
+    import json
+
+    script = Path(__file__).resolve().parents[4] / "scripts" / "memory_supersede_pass.py"
+    spec = importlib.util.spec_from_file_location("memory_supersede_pass_pg_undo", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    async def body(pool, dsn):
+        old_id = await _old_row(pool, "Juniper told me her pet Biscuit is a cat.")
+        result = _correction()
+        new_id = result.memories[0].memory_id
+        link = s.Link(old_id=old_id, new_id=new_id, reason="r", dense=0.7, shared=("pet:biscuit",)).as_dict()
+        assert (await _persist(pool, result, [link]))["superseded"] == 1
+        manifest = tmp_path / "m.json"
+        manifest.write_text(json.dumps({"check_version": "supersede_classify.v3.1", "last_mode": "apply",
+                                        "proposed": [{"old_id": old_id, "new_id": new_id}],
+                                        "applied": [{"old_id": old_id, "new_id": new_id, "applied_at": "t0"}]}))
+        args = argparse.Namespace(dsn=dsn, old=old_id, new=new_id, actor="juniper", note="  a different pet  ",
+                                  manifest=str(manifest), no_manifest=False, watch=[])
+        assert await mod.cmd_undo(args) == 0
+        ev = await _one(pool, "SELECT actor, evidence FROM episode_memory_event WHERE op = 'supersede_undone' "
+                              "AND memory_id = %s", (old_id,))
+        assert ev["actor"] == "juniper" and ev["evidence"]["note"] == "a different pet"
+        m = json.loads(manifest.read_text())
+        assert m["last_mode"] == "undo" and m["check_version"] == "supersede_classify.v3.1"
+        assert m["in_effect"] == [] and m["applied"][0]["undone_at"]
+        assert m["undone"] == [{"old_id": old_id, "new_id": new_id, "actor": "juniper",
+                                "undone_at": m["undone"][0]["undone_at"], "note": "a different pet"}]
+        # A second undo of the same pair finds nothing and leaves the manifest alone.
+        written = manifest.read_text()
+        assert await mod.cmd_undo(args) == 1
+        assert manifest.read_text() == written
+
+    asyncio.run(_with_db(body))

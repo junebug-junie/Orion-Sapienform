@@ -210,3 +210,85 @@ def test_gateway_ask_retries_a_dropped_connection(monkeypatch):
         return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
 
     assert _ask_with(flaky, monkeypatch) == "{}" and len(calls) == 2
+
+
+def test_an_undo_rewrites_the_manifest_so_it_never_says_an_undone_pair_is_in_effect(tmp_path):
+    """Orion's question on PR #3734: the manifest still said 2 applied after both pairs were undone."""
+    conn = FakeConn([])
+    path = tmp_path / "m.json"
+    pairs = [{"old_id": "o1", "new_id": "n1"}, {"old_id": "o2", "new_id": "n2"}]
+    asyncio.run(P.write_manifest(conn, path, mode="apply", proposed=pairs, dense="on", run_id="apply-1",
+                                 applied=[{**p, "applied_at": "t0"} for p in pairs], watch=[], undone=[]))
+    before = json.loads(path.read_text())
+    assert before["in_effect"] == pairs and before["undone"] == []
+    # A later check version must not relabel the old proposal.
+    before["check_version"] = "supersede_classify.v3.1"
+    path.write_text(json.dumps(before))
+    undone = [{"old_id": "o1", "new_id": "n1", "actor": "juniper", "undone_at": "t1", "note": "different slice"}]
+    asyncio.run(P.write_manifest(conn, path, mode="undo", proposed=None, applied=None, watch=None,
+                                 run_id="undo-1", counts={"undone": 1}, undone=undone))
+    m = json.loads(path.read_text())
+    assert m["last_mode"] == "undo" and m["check_version"] == "supersede_classify.v3.1" and m["dense"] == "on"
+    assert m["proposed"] == pairs
+    assert m["applied"][0] == {"old_id": "o1", "new_id": "n1", "applied_at": "t0", "undone_at": "t1"}
+    assert "undone_at" not in m["applied"][1]
+    assert m["in_effect"] == [{"old_id": "o2", "new_id": "n2"}]
+    assert m["undone"] == undone and "never re-applied" in m["undone_rule"]
+    # The history line records what this run did, not the previous proposal or apply.
+    lines = [json.loads(x) for x in P.history_path(path).read_text().splitlines()]
+    assert [x["mode"] for x in lines] == ["apply", "undo"]
+    assert lines[1]["applied"] == [] and lines[1]["proposed"] == [] and lines[1]["counts"] == {"undone": 1}
+    # A refresh with no new undo list keeps the old one.
+    asyncio.run(P.write_manifest(conn, path, mode="refresh", proposed=None, applied=None, watch=None))
+    assert json.loads(path.read_text())["undone"] == undone
+
+
+def test_undone_events_reads_ids_actor_time_and_note():
+    class Conn:
+        async def execute(self, sql, params=None):
+            assert "supersede_undone" in sql and params is None
+
+            class Cur:
+                description = None
+
+                async def fetchall(self_inner):
+                    return [{"old_id": "o1", "new_id": "n1", "actor": "operator", "created_at": "t", "note": ""}]
+
+            return Cur()
+
+    assert asyncio.run(P.undone_events(Conn())) == [
+        {"old_id": "o1", "new_id": "n1", "actor": "operator", "undone_at": "t", "note": ""}]
+
+
+def test_undo_refuses_without_a_note_before_touching_the_database():
+    import argparse
+
+    import pytest
+
+    args = argparse.Namespace(dsn="postgresql://nowhere.invalid/x", old="o1", new="n1", actor="juniper", note="  ",
+                              manifest="/nonexistent/m.json", no_manifest=True, watch=[])
+    with pytest.raises(SystemExit, match="--note"):
+        asyncio.run(P.cmd_undo(args))
+
+
+def test_undo_cli_requires_actor_and_note(monkeypatch, capsys):
+    import sys
+
+    import pytest
+
+    monkeypatch.setattr(sys, "argv", ["memory_supersede_pass.py", "--dsn", "x", "undo", "--old", "o", "--new", "n"])
+    with pytest.raises(SystemExit):
+        P.main()
+    err = capsys.readouterr().err
+    assert "--actor" in err and "--note" in err
+
+
+def test_apply_decision_trace_has_legs_votes_and_outcome_but_no_statements():
+    secret = "a private statement"
+    pair = {"old_id": "o1", "new_id": "n1", "dense": 0.6415, "shared": ["project:circe"], "relation": "correction",
+            "path": "model", "votes": ["correction"] * 3, "reason": "r", "check_version": "v",
+            "old_statement": secret, "new_statement": secret}
+    d = P.pair_decision(pair, "applied")
+    assert secret not in json.dumps(d)
+    assert d["legs"] == {"cosine": 0.6415, "shared": ["project:circe"]}
+    assert d["votes"] == ["correction"] * 3 and d["outcome"] == "applied"

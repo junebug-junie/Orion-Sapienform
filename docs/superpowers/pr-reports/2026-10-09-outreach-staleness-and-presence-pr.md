@@ -10,7 +10,7 @@
 
 ## Outcome moved
 
-Live 2026-10-09. Hub restarted at 01:58:05. An outreach composed at 01:58:20; Juniper wrote 01:58:27–01:59:56; the outreach was sent at 02:04:07 from a prompt that never saw her message. It told her she was "working on the mesh from Chicago tonight": the history it saw was two days old and undated, and she had flown home on 10-07.
+Live 2026-10-09. Hub restarted at 01:58:05. An outreach composed at 01:58:20; Juniper wrote 01:58:27–01:59:56; the outreach was sent at 02:04:07 from a prompt that never saw her message. It told her she was "working on the mesh from [removed: private memory] tonight": the history it saw was two days old and undated, and she was no longer away.
 
 Replayed against live data:
 - the drop check finds her 01:59:56 message after the 01:58:20 compose start, so that outreach would now be dropped;
@@ -19,8 +19,8 @@ Replayed against live data:
 ```text
 Where Juniper is right now, from your running situation:
 - Nothing on record says she is away from home right now.
-- She said 2 days ago: Juniper told me she has an early wakeup at 4:30am CDT for a 7:30am flight home.
-- No longer true (ended 36 hours ago): Juniper told me she is staying in Chicago for another night and will fly back to [home airport] at 7:30am.
+- She said 2 days ago: [removed: private memory]
+- No longer true (ended 36 hours ago): [removed: private memory]
 Trust this over anything older in the conversation history below.
 ```
 
@@ -81,7 +81,7 @@ Not built from this branch. Deploy Hub from the primary checkout on main after m
 - Finding: a whereabouts fact past its end date was still shown as current. The projection only writes on change, so a stale key is possible.
   - Fix: past `valid_until`, it renders as "No longer true".
   - Evidence: `test_whereabouts_past_its_end_is_never_shown_as_current`.
-- Finding: the block ignored what Juniper said recently. On 10-09 the "flight home" fact lived only in `recent`.
+- Finding: the block ignored what Juniper said recently. On 10-09 the fact that she was no longer away lived only in `recent`.
   - Fix: `juniper_said` recent facts are listed with their age.
   - Evidence: `test_what_she_said_recently_is_listed_with_its_age`, plus the live replay.
 - Finding: dream-cycle and Collapse Mirror automation rows counted as Juniper speaking.

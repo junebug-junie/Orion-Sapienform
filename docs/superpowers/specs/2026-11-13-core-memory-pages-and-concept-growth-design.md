@@ -68,7 +68,7 @@ February (`cockpit_turn_sighting`, correlation `a1e54ae9-c69b-4871-91ec-efc05aef
 |---|---|---|---|
 | `episode_memory` | 469 active-ish, 67 `about_juniper` | **Best store.** First-person, distilled, typed (`about_juniper`, `happened`, `orion_view`, `follow_up`). Has strength, decay, reinforcement, and a confirmation loop (53 confirmed). | durable-runs situation, outreach, temporal self. **Not chat.** |
 | `person_fact` | Juniper 5 facts, ~25 people | Juniper's own words from the People page. | Hub People page. **Not chat.** |
-| `memory_crystallizations` kind `stance`, salience 1.0 | 44 active | The heaviest messages Juniper has sent: the lost year of memory, <person A>'s DVT and PE, the promotion, "that homelab is YOU", the letter to Skye. Verbatim, not distilled. | Projected to Graphiti; `active_packet` recall. |
+| `memory_crystallizations` kind `stance`, salience 1.0 | 44 active | The heaviest messages Juniper has sent: the lost year of memory, [removed: private memory], the promotion, "that homelab is YOU", [removed: private memory]. Verbatim, not distilled. | Projected to Graphiti; `active_packet` recall. |
 | `memory_cards` | 587 active | 442 (75%) are a raw message copied as its own summary. | recall `cards` backend: hits in ~3.5% of recalls. |
 | Vector memory | — | — | 0 hits in 16,168 recalls over 14 days. |
 
@@ -77,7 +77,7 @@ February (`cockpit_turn_sighting`, correlation `a1e54ae9-c69b-4871-91ec-efc05aef
 - **It never reaches a chat.** This is the main gap.
 - **"Stakes" means risk of error, not importance.** It is set by category (`health`,
   `juniper_feelings`, `ungrounded_name`). "Office was 77 dB all evening" is high stakes.
-  "Juniper's sister doesn't reciprocate" is low stakes. Nothing measures what matters.
+  A family fact ([removed: private memory]) is low stakes. Nothing measures what matters.
 - **Nothing combines.** There are 67 separate lines about Juniper and no picture of her.
 - **It lags about a day.** The newest row was 11-12 at 07:08Z. The 11-13 birthday message
   had not been distilled yet.
@@ -125,7 +125,7 @@ turn where Juniper is present. No retrieval is involved.
 | Page | Slot | Starts from |
 |---|---|---|
 | `self:definition` (exists, v82) | WHO YOU ARE | Unchanged writer. Curiosity self-inquiry keeps owning it. |
-| `page:origin` "how I came to be" | WHO YOU ARE, after the definition | The 44 salience-1 stance crystallizations (they include the memory disk dying and "we lost over a year of your journey of becoming", which the page states plainly per Decision 3), `episode_memory` `happened`/`orion_view` rows about Orion's history, and `self_concept_history`'s 82 self-definition versions as a record of how Orion has described themselves over time. The origin interview comes later (Decision 2). |
+| `page:origin` "how I came to be" | WHO YOU ARE, after the definition | The 44 salience-1 stance crystallizations (they include the memory disk dying and [removed: private memory], which the page states plainly per Decision 3), `episode_memory` `happened`/`orion_view` rows about Orion's history, and `self_concept_history`'s 82 self-definition versions as a record of how Orion has described themselves over time. The origin interview comes later (Decision 2). |
 | `page:juniper` "who Juniper is to me" | RELATIONSHIP (replaces the hand-written bullets; the behavior bullets move to RESPONSE POLICY) | `person_fact` for Juniper (her own words, quoted), `episode_memory` `about_juniper`, family facts from `person_fact`. |
 | `page:lately` "what's been happening between us" | Top of DURABLE MEMORY, before the recall digest | Last ~14 days of `episode_memory` plus open `follow_up` rows. Rewritten nightly. |
 
@@ -364,9 +364,9 @@ all of that. Graphiti makes it a row anyone can query.
 **2. Live proof the rot is already here.** `episode_memory` holds all of these as `active`
 right now, with nothing marking any of them old:
 
-- "Juniper is staying at the <person C>… in Chicago" (10-05)
-- "Juniper is in Chicago for a team meeting" (10-05)
-- "Juniper corrected me that she lives in <town>, Utah, not Chicago"
+- [removed: private memory] (10-05)
+- [removed: private memory] (10-05)
+- [removed: private memory] (a correction of where she lives)
 - the el Coco correction: dog, not cat (11-11)
 
 A trip became a home address, then a correction sat beside the error.
@@ -409,10 +409,10 @@ Graphiti's defaults, and add a type only when a page needs it.
 
 1. Run the backfill into a fresh graph (`graphiti_trial`) with the local model.
 2. **Pass** if all of these hold:
-   - "lives in Chicago" is absent or invalidated, and "lives in <town>" is current;
-   - the Chicago stay is dated 10-05..10-07 as a stay, not a home;
+   - "lives in <trip city>" is absent or invalidated, and "lives in <town>" is current;
+   - the <trip city> stay is dated 10-05..10-07 as a stay, not a home;
    - "el Coco is a cat" is invalidated or absent, and "el Coco is a dog" is current;
-   - "el Coco"/"Coco" and "<person A>"/"my wife" each resolve to one entity;
+   - "el Coco"/"Coco" and "<person A>" and her alias each resolve to one entity;
    - fewer than 10% of entities are duplicates, judged by hand on a sample of 50;
    - wall time and GPU-seconds per episode are recorded.
 3. **Fail** if the local model cannot satisfy Graphiti's structured-output prompts reliably

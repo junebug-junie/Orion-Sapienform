@@ -9,16 +9,16 @@ Evidence: read-only queries on `conjourney`, code on main @ bbc51703a.
 Orion keeps no picture of the current situation between chat turns. Each turn rebuilds context from scratch: 8 turns of raw text, plus three memory searches that each use Juniper's raw message as the search query. When the message is casual ("just chilling"), nothing relevant comes back.
 
 **Incident, 2026-10-05 → 10-06.**
-- **What happened:** Juniper said "I'm in Chicago till Wednesday." 44 hours later, Orion asked whether she'd make it back to the basement before bed (`3af6a31d…`).
+- **What happened:** Juniper said where she was traveling and until when ([removed: private memory]). 44 hours later, Orion asked whether she'd make it back home before bed (`3af6a31d…`).
 - **The fact was saved three times:**
   - in the chat log;
   - as a crystallization (raw text, salience 0.662, the same as "wowza so many prs");
-  - correctly, as an episode memory ("Juniper is in Chicago for a team meeting until Wednesday").
+  - correctly, as an episode memory ([removed: private memory]).
 - **None of the copies reached the turn:**
   - The chat log copy was outside the 8-turn window.
   - The crystallization was in the belief search's candidate pool, but the open-loop bucket filter dropped it (`services/orion-recall/app/collectors/active_packet.py:19,185-186`). Over 7 days, belief recall picked that open-loop profile on 634 of 634 turns.
   - Episode memory has no chat reader, and `validate.py:406-407` drops `expires_at` unless `purpose=follow_up`.
-- **The distiller also stored a confabulated row:** "Juniper corrected me that she lives in [her city], not Chicago" (`c0dc86c8…`). Its only evidence quote grounds "lives in [her city]". The "correction" came from Orion's own reply.
+- **The distiller also stored a confabulated row:** "Juniper corrected me that she lives in [her city], not <trip city>" (`c0dc86c8…`). Its only evidence quote grounds "lives in [her city]". The "correction" came from Orion's own reply.
 
 **Per-turn search cost today** (`recall_telemetry`, 7-day averages):
 
@@ -152,7 +152,7 @@ Primed   {memory_id, gist ≤160, voice, confirmation, why: referent_id, score}
 - **Concept induction and the topic model:** the slow layer. Profile and topic deltas update `shared.themes`, and a referent's concept neighbors (bounded read, 16 nodes max) widen the cues. This replaces the per-stance concept reload.
 - **Curiosity:** self-definitions, lived answers and in-flight runs become `orion.self_view` and `orion.working_on`, so Orion's concepts about themself sit in the same "now" as Juniper's day. Curiosity also reads the situation before choosing what to investigate.
 - **Reading:** finished reading turns become `orion.recently_read` with the `orion_read` voice. Their landed concepts become cues.
-- **Episode memory:** the one offline writer of facts. Lapsed facts come back to it as history ("was in Chicago, 10-04 to 10-08").
+- **Episode memory:** the one offline writer of facts. Lapsed facts come back to it as history ("was in <trip city>, 10-04 to 10-08").
 
 ## 7. Writer fixes (prerequisite)
 

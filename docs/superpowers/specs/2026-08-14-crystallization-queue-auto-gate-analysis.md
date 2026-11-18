@@ -154,10 +154,9 @@ Content separates the 16 decisions cleanly, and the split is legible:
 | | pattern | examples |
 |---|---|---|
 | **Rejected** | imperatives, test artifacts, dev-infra narration | "Run github compactor" · "Compact the last 24 hours of chat into a memory digest" · "you want to take a crack? Please add a worktree before you modify" · "burst test 1" · "just sending through a test turn" · "Added a trust entry to the host's ~/.claude.json" · "blerg. Applied another fix to your permissions" |
-| **Approved** | relational, biographical, affective | "juneipurs daghter" · "congrats, Orion! We did it!!!" · "Just curious about your take on me, yourself, the world?" · "Gosh such wonderful questions. Love your curiosity" · "Good news... Found a disk repair place" |
+| **Approved** | relational, biographical, affective | [removed: private memory] · "congrats, Orion! We did it!!!" · [removed: private memory] · "Gosh such wonderful questions. Love your curiosity" · "Good news... Found a disk repair place" |
 
-One counterexample: *"Thanks for your kinds words, Orion. I'll try to save up a
-few hundred"* was rejected despite being relational — plausibly hand-deduplicated
+One counterexample: *[removed: private memory]* was rejected despite being relational — plausibly hand-deduplicated
 against the approved "Good news... disk repair place" item covering the same
 episode.
 

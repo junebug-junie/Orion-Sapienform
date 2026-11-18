@@ -95,6 +95,10 @@ jobs:
           python -m pip install "PyYAML>=6.0"
           python -m pytest -q -p no:cacheprovider orion/orion_day/tests/test_organ_roundup_letter.py \
             orion/orion_day/tests/test_daily_digest_retired.py
+      - name: Last night's day dream in the letter and the email (day-dream Patch 3 -- a bad night is visible)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider orion/orion_day/tests/test_dream_day_letter.py
       - name: Email full-text eval (fixture day)
         run: python services/orion-hub/evals/run_orion_day_email_eval.py
       - name: Reread eval (orion_day tool, fixture letter, 10 planted references)

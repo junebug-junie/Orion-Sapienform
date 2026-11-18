@@ -19,9 +19,15 @@ The night tick (app/dream_day_poll.py) and POST /dream-day/run submit these runs
   of the day, read inside the governor, the only place the background half of the digs is readable. Inside the
   attempt, code checks (a) the read receipt that command leaves (``<self>/dream_day/<day>.json``) was written
   after this run was requested, and (b) the reply ends with a parseable answer. Either missing is one failed
-  attempt (retried), never a success. The answer and the receipt are checkpointed with the step record; the hold
-  is released as soon as they are: ``persist`` needs no GPU.
-* ``persist`` (code): every ref resolves or its item is dropped and counted; at most 5 memories go through
+  attempt (retried), never a success. Then, still under the hold, the grounding gate
+  (DREAM_DAY_GROUNDING_GATE_ENABLED): the answer's refs are resolved to their records' text and the same local
+  route is asked, once per memory, with its own short prompt (orion/memory/dream_day.py ``grounding_prompt``): is
+  every specific claim shown by these records? A strict JSON verdict per memory; a failed call or an unparseable
+  verdict is ``unjudged``. The answer, the receipt and the verdicts are checkpointed with the step record; the
+  hold is released as soon as they are: ``persist`` needs no GPU.
+* ``persist`` (code): every ref resolves or its item is dropped and counted; with the gate on, only a memory
+  judged ``supported`` goes on (unsupported and unjudged are counted and kept, with their claims, in the row's
+  ``grounding`` column, never written); at most 5 memories go through
   orion.memory.episode.validate and are written with the ``dream_day`` row in ONE transaction (first run to
   persist a day wins). ``produced`` = at least one memory row written and read back. The now's ``experience:``
   cites go to ``POST /temporal-self/now/use`` (record_use keeps only shown ids).
@@ -32,6 +38,7 @@ grades 0 with the note "no lasting trace".
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -46,7 +53,8 @@ from app.harness_step import (
     TURN_REPLY_GRACE_SEC, HarnessStepFailed, RunTurn, harness_step_correlation_id, run_harness_step,
 )
 from orion.memory.dream_day import (
-    ParsedAnswer, answer_refs, build_memories, check_answer, day_window, experience_cites, parse_answer,
+    ParsedAnswer, answer_refs, apply_grounding, build_memories, check_answer, day_window, experience_cites,
+    grounding_summary, judge_memories, parse_answer,
 )
 from orion.memory.episode.validate import ValidationResult
 from orion.schemas.dream_day import (
@@ -64,6 +72,13 @@ RECEIPT_CLOCK_SLACK_SEC = 120.0
 PROMPT_PAIRS_PER_CYCLE = 6
 PROMPT_TEXT_CHARS = 220
 CITES_MAX_ATTEMPTS = 3
+# The grounding gate runs inside the attempt, after the turn: the turn's limit leaves this much of the attempt
+# for it, each judge call gets at most GROUNDING_CALL_TIMEOUT_SEC, and none starts within GROUNDING_MARGIN_SEC of
+# the attempt's end (a memory reached then is unjudged, never written). Live 2026-11-18: the turn took 423 s
+# of 900.
+GROUNDING_RESERVE_SEC = 180.0
+GROUNDING_CALL_TIMEOUT_SEC = 60.0
+GROUNDING_MARGIN_SEC = 15.0
 
 
 class DreamDayState(TypedDict, total=False):
@@ -90,6 +105,8 @@ class DreamDayState(TypedDict, total=False):
     material: dict[str, Any]         # DreamDayMaterialV1
     answer: dict[str, Any] | None    # DreamDayAnswerV1
     answer_malformed: int
+    grounding: list[dict[str, Any]] | None   # one verdict per checked memory (None: gate off for this run)
+    grounding_enabled: bool
     read: dict[str, Any] | None      # DreamDayReadV1
     persisted: bool
     persist_outcome: str | None      # written | already_written
@@ -119,6 +136,12 @@ class DreamDayDeps:
     persist: Callable[[dict[str, Any], ValidationResult, str], Awaitable[dict[str, Any]]]
     # (shown_id, cites, citing_ref) -> the use endpoint's result (ExperienceUseResultV1 json).
     record_cites: Callable[[str, list[str], str], Awaitable[dict[str, Any]]]
+    # The grounding gate's model call: (prompt, held state, timeout_sec) -> {"text", "finish_reason"} on the run's
+    # own hold (DREAM_DAY_ROUTE, the local lane). None = the gate is off (DREAM_DAY_GROUNDING_GATE_ENABLED=false).
+    judge: Optional[Callable[[str, dict[str, Any], float], Awaitable[dict[str, Any]]]] = None
+    # (canonical refs) -> {canonical ref: the record's FULL text} for the judge (short text + detail). None: the
+    # judge reads ``resolve_refs``' text.
+    resolve_ref_texts: Optional[Callable[[list[str]], Awaitable[dict[str, str]]]] = None
 
 
 # --------------------------------------------------------------------------- the prompt
@@ -227,7 +250,8 @@ def check_reply(text: str) -> ParsedAnswer:
 # --------------------------------------------------------------------------- persist
 
 
-def row_fields(state: dict[str, Any], brief: DreamDayBriefV1, check, now: datetime) -> dict[str, Any]:
+def row_fields(state: dict[str, Any], brief: DreamDayBriefV1, check, now: datetime,
+               grounding: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     step = (state.get("steps") or {}).get(DREAM_DAY_STEP_KEY) or {}
     material = state.get("material") or {}
     return {
@@ -248,6 +272,9 @@ def row_fields(state: dict[str, Any], brief: DreamDayBriefV1, check, now: dateti
         "now_shown_id": material.get("now_shown_id"),
         "turn_correlation_id": step.get("turn_correlation_id"),
         "created_at": now,
+        "memories_unsupported": int((grounding or {}).get("unsupported") or 0),
+        "memories_unjudged": int((grounding or {}).get("unjudged") or 0),
+        "grounding": grounding,
     }
 
 
@@ -294,6 +321,35 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
         material = await deps.gather(brief, state["run_id"])
         return {"material": material.model_dump(mode="json"), "status": "running"}
 
+    async def ground(held: dict[str, Any], parsed: ParsedAnswer, material: DreamDayMaterialV1,
+                     attempt_end: datetime) -> list[dict[str, Any]]:
+        """The grounding gate, under the hold: every checked memory's verdict. A resolve failure leaves every
+        memory unjudged (never written); it never fails the attempt (the turn's answer is kept)."""
+        deadline = attempt_end - timedelta(seconds=GROUNDING_MARGIN_SEC)
+
+        def time_left() -> float:
+            return (deadline - admission.now()).total_seconds()
+
+        try:
+            resolve = deps.resolve_ref_texts or deps.resolve_refs
+            # Bounded: a hung read here must not outlast the attempt (that would re-run the turn).
+            resolved = await asyncio.wait_for(resolve(answer_refs(parsed.answer)), timeout=max(1.0, time_left()))
+        except Exception as exc:  # noqa: BLE001 -- includes the timeout: every memory unjudged
+            logger.warning("dream_day_grounding_resolve_failed run=%s", held.get("run_id"), exc_info=True)
+            return [{"statement": " ".join(m.statement.split()), "purpose": m.purpose, "refs": list(m.refs),
+                     "status": "unjudged", "unsupported_claims": [], "raw": None,
+                     "error": f"resolve_failed: {type(exc).__name__}"} for m in parsed.answer.memories]
+        check = check_answer(parsed, resolved, [c.concern_id for c in material.concerns])
+
+        async def ask(prompt: str) -> dict[str, Any]:
+            timeout = max(1.0, min(GROUNDING_CALL_TIMEOUT_SEC, time_left()))
+            return await asyncio.wait_for(deps.judge(prompt, held, timeout), timeout=timeout + 5.0)
+
+        verdicts = await judge_memories(check.memories, resolved, ask, time_left=time_left)
+        logger.info("dream_day_grounding run=%s %s", held.get("run_id"),
+                    {k: v for k, v in grounding_summary(verdicts, enabled=True).items() if k != "verdicts"})
+        return verdicts
+
     async def dream(state: DreamDayState) -> dict:
         state = dict(state)
         if DREAM_DAY_STEP_KEY in (state.get("steps") or {}) and state.get("answer") is not None:
@@ -301,7 +357,9 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
         brief = DreamDayBriefV1.model_validate(state["brief"])
         material = DreamDayMaterialV1.model_validate(state["material"])
         window = attempt_timeout_sec(state, brief.timeout_sec, admission.now())
-        turn_timeout = max(1.0, window - TURN_REPLY_GRACE_SEC)
+        # A quarter of the window at most: a late retry with a short window still gets most of it for the turn.
+        reserve = min(GROUNDING_RESERVE_SEC, 0.25 * window) if deps.judge is not None else 0.0
+        turn_timeout = max(1.0, window - TURN_REPLY_GRACE_SEC - reserve)
         correlation_id = harness_step_correlation_id(state, DREAM_DAY_STEP_KEY)
         turn_meta = {"turn_correlation_id": correlation_id, "step_key": DREAM_DAY_STEP_KEY}
         async def operation(held: dict[str, Any]) -> dict[str, Any]:
@@ -315,8 +373,11 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             # failed attempt, never a checkpointed one.
             read = check_receipt(await deps.read_receipt(brief.day), attempt_started)
             parsed = check_reply(record["text"])
+            grounding = None
+            if deps.judge is not None:
+                grounding = await ground(held, parsed, material, attempt_started + timedelta(seconds=window))
             return {"record": record, "answer": parsed.answer.model_dump(mode="json"), "malformed": parsed.malformed,
-                    "read": read.model_dump(mode="json")}
+                    "read": read.model_dump(mode="json"), "grounding": grounding}
 
         try:
             result = await admission.execute({**state, "step_correlation_id": correlation_id}, operation)
@@ -341,6 +402,7 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
         record["attempts"] = int(state.get("attempt") or 0) + 1
         update = {"steps": {**(state.get("steps") or {}), DREAM_DAY_STEP_KEY: record}, "answer": result["answer"],
                   "answer_malformed": int(result["malformed"]), "read": result["read"],
+                  "grounding": result.get("grounding"), "grounding_enabled": deps.judge is not None,
                   "harness_turn_meta": turn_meta, "status": "running", "attempt": 0, "retry_at": None,
                   "retry_node": None, "last_error": None}
         try:   # the answer is checkpointed with this update: persist needs no GPU
@@ -362,8 +424,15 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
                 resolved = await deps.resolve_refs(answer_refs(answer))
                 check = check_answer(ParsedAnswer(answer, int(state.get("answer_malformed") or 0)), resolved,
                                      [c.concern_id for c in material.concerns])
+                checked = len(check.memories)
+                gate_on = bool(state.get("grounding_enabled")) or deps.judge is not None
+                verdicts = None
+                if gate_on:
+                    # Only a memory judged supported is written; a run checkpointed with no verdicts writes none.
+                    check, verdicts = apply_grounding(check, state.get("grounding"))
+                grounding = grounding_summary(verdicts, enabled=gate_on)
                 result = build_memories(check, resolved, brief.day, known_referents=await deps.known_referents())
-                stored = await deps.persist(row_fields(state, brief, check, now), result, brief.llm_route)
+                stored = await deps.persist(row_fields(state, brief, check, now, grounding), result, brief.llm_route)
             except RunControlPending:
                 raise
             except Exception as exc:  # noqa: BLE001 -- no row yet: back off and retry, then fail
@@ -384,6 +453,10 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
                 "summary": {"memories_written": stored["memories_written"], "memory_ids": stored["memory_ids"],
                             "memories_proposed": len(answer.memories),
                             "memories_rejected": len(result.rejections) + check.memories_over_cap,
+                            "memories_checked": checked,
+                            "memories_unsupported": grounding["unsupported"],
+                            "memories_unjudged": grounding["unjudged"],
+                            "grounding_enabled": gate_on,
                             "items_dropped": check.items_dropped, "refs_dropped": check.refs_dropped,
                             "malformed": check.malformed, "plan_rejected": check.plan_rejected,
                             "kept": check.kept, "dropped": check.dropped, "new": check.new,

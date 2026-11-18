@@ -73,6 +73,7 @@ on:
       - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
       - "orion/schemas/dream_day.py"           # dream.day (the day dream Patch 2)
       - "orion/memory/dream_day.py"            # its parse / ref check / memories / grade
+      - "services/orion-sql-db/manual_migration_dream_day*.sql"   # test_dream_day_postgres.py applies them
       - "orion/memory/episode/**"              # dream memories go through validate + store
       - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"
@@ -173,6 +174,7 @@ on:
       - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
       - "orion/schemas/dream_day.py"           # dream.day (the day dream Patch 2)
       - "orion/memory/dream_day.py"            # its parse / ref check / memories / grade
+      - "services/orion-sql-db/manual_migration_dream_day*.sql"   # test_dream_day_postgres.py applies them
       - "orion/memory/episode/**"              # dream memories go through validate + store
       - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"

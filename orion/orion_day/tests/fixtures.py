@@ -166,7 +166,8 @@ class FakeConn:
                  corrections: list[dict] | None = None, temporal_day: dict | None = None,
                  read_links: list[dict] | None = None, prior_moves: list[dict] | None = None,
                  immune: list[dict] | None = None, walkway: dict | None = None,
-                 juniper_chat: list[dict] | None = None, temporal_events: list[dict] | None = None):
+                 juniper_chat: list[dict] | None = None, temporal_events: list[dict] | None = None,
+                 dream_day: dict | None = None, dream_day_failed: dict | None = None):
         self.calls: list[tuple[str, tuple]] = []
         self.fail = fail or set()
         self.fetch_map = {
@@ -197,6 +198,8 @@ class FakeConn:
         self.chat = chat
         self.temporal_day = temporal_day  # a temporal_self_day.day_json, or None (day not closed)
         self.walkway = walkway  # a vision_rollup day row (stream_id, line, complete), or None
+        self.dream_day = dream_day  # a dream_day row (run_id, produced, note, day_text, day_refs, memory_ids), or None
+        self.dream_day_failed = dream_day_failed  # a failed dream.day run state (run_id, generated_at, error), or None
 
     async def fetch(self, sql: str, *args: Any):
         self.calls.append((sql, args))
@@ -215,6 +218,12 @@ class FakeConn:
             if "temporal_day" in self.fail:
                 raise RuntimeError("relation temporal_self_day does not exist")
             return FakeRecord({"day_json": self.temporal_day}) if self.temporal_day is not None else None
+        if sql == gather.DREAM_DAY_ROW_SQL:
+            if "dream_day" in self.fail:
+                raise RuntimeError("relation dream_day does not exist")
+            return FakeRecord(self.dream_day) if self.dream_day is not None else None
+        if sql == gather.DREAM_DAY_FAILED_SQL:
+            return FakeRecord(self.dream_day_failed) if self.dream_day_failed is not None else None
         if sql == gather.WALKWAY_DAY_SQL:
             if "walkway_day" in self.fail:
                 raise RuntimeError("relation vision_rollup does not exist")

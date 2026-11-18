@@ -60,6 +60,7 @@ command that ran, cut at the next shell operator.
 - `orion/dig/tests/test_dig.py`: help cap 4250 -> 4500 for the new line (main was at 4193).
 - `orion/dig/evals/run_digs_live_eval.py`: new live read-only eval.
 - `orion/dig/README.md`: the `digs <date>` row.
+- `services/orion-hub/static/catalog/orion-abilities.json`: the `digs` entry in Hub's abilities catalog (CI's `test_every_dig_command_has_an_entry` caught it missing on the first push).
 - `.github/workflows/dig-kit-tests.yml`: triggers on `orion/harness/session_resume.py`; the dig step names
   `test_digs.py` (it runs the whole `orion/dig/tests` folder).
 
@@ -175,6 +176,8 @@ Review by a separate review subagent on the first commit; no blocker. Fixed:
 - Finding: `1 << shift` in Python code read as a heredoc. Fix: a heredoc needs its terminator line. Evidence: test.
 - Finding: a line-rule failure would crash with a traceback. Fix: `cmd_digs` raises `DigError` (still refuses).
 - Finding: the tail counted warm-pool and cockpit chat calls as background. Fix: counted as chat.
+- Finding (CI, Hub full tests): `digs` had no entry in Hub's abilities catalog.
+  - Fix: added the entry under "Past & history". Evidence: `test_orion_abilities_catalog.py` 10 passed.
 - Finding: spec vs code on sources and grants. Fix: stated under "Architecture touched", with the Patch 2 note.
 - Not changed: `python -Pm orion.dig` and `python -m 'orion.dig'` are known misses, pinned in tests (none seen
   live). A call within seconds of midnight could in theory land on both days (cockpit `ts` vs transcript

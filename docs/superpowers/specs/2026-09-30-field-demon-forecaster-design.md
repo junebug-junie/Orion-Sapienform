@@ -2,7 +2,9 @@
 
 Status: design, rev 2 (2026-11-18). Rev 1 (2026-09-30) is replaced. See "What changed from rev 1".
 Tracks: #3296 (integration rung, Φ). Depends on: #3290 (whole-body replay, organ modes).
-Proposal mode: yes. This changes self-modeling, so Juniper signs off before any build.
+Proposal mode: approved 2026-11-18. Juniper said "sure hit it", accepting every default under
+"Missing questions" and asking for `demon.py` to be built before #3290 lands. The demon readout
+rides in #3296's patches.
 
 ## Arsonist summary
 
@@ -118,8 +120,9 @@ exists only because organs carry information about each other.
   error eventually costs more than that shrinking signal is worth. The horizon is where that
   happens, so it measures how much of Orion's dynamics is learnable from a day of its own history,
   not only how fast the dynamics forget.
-- **Horizon** H is the largest k where the whole model's point skill against the better baseline
-  is above 0, times 5 minutes. Uncertainty comes from a moving-block bootstrap over origins
+- **Horizon** H is the number of steps before the whole model's point skill against the better
+  baseline first drops to 0 or below, times 5 minutes. The first drop counts, not the last
+  positive step, so a stray positive at a far k can't stretch the horizon. Uncertainty comes from a moving-block bootstrap over origins
   (1-hour blocks, 1,000 resamples). It gives H's median and 80% interval, and P(S(k) > 0) for each
   k. **No alpha line** (Juniper's rule): the horizon is a point estimate with its spread, not a
   significance call.
@@ -300,7 +303,10 @@ existing `prediction` organ in `config/integration/organs.yaml`, with an `exempt
 - A known stable A: the measured out-of-sample skill curve against the clock matches the
   analytic `tr(A^k Γ_0 A^kᵀ) / tr(Γ_0)` within its bootstrap interval at small k. A smaller
   spectral radius gives a shorter horizon, and more training data gives a longer one.
-- A clock-only series, pure time-of-day: zero skill against baseline 1 after the residual.
+- White noise, which is what a perfect time-of-day residual leaves: no horizon. Removing the
+  clock itself is #3290's residual builder's job, and its tests cover it.
+- Slow, near-random-walk organs: persistence beats the clock, and skill is measured against
+  persistence.
 - A geometric-decay input: the hygiene gate refuses and names it.
 - The direct and iterated lag-k models agree on a true VAR(1), and diverge on a VAR(2).
 

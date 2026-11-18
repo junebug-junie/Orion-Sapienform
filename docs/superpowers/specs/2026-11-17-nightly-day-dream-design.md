@@ -115,6 +115,12 @@ hand back. The morning letter then starts from what Orion consolidated overnight
 
 ### Patch 2: the `dream.day` durable run
 
+**Built-in constraint from Patch 1 (PR #3675).** Background runs' dig calls exist only in the claude
+transcripts inside the governor (`/root/.claude/projects/*/<session>.jsonl`, linked by Hub's resume
+registry); `harness_turn_trace.run_artifact` holds no tool steps. So the brief's `dig digs` read must
+run inside the governor (where the turn itself runs). Anywhere else the background half prints
+`UNREAD`, never 0. Live size: 117-241 executed dig calls a day, read in 1.6-2.3 s.
+
 **Start.** orion-dream's sleep loop gets one extra check: during the night window, if no `dream.day`
 run exists for the Denver day that just closed, it submits one through the same path
 `dream.carry` uses (`app/carry_submit.py`). It runs once a day, whatever the sleep pressure says. It
@@ -244,5 +250,5 @@ paragraph and the memory ids, placed before the roundup. The letter can cite `[d
 
 ## Recommended next patch
 
-Patch 1 (`dig digs`). Patch 0 is done. Patch 1 is read-only and model-free, so it is safe to build before
-Juniper answers the six questions above.
+Patch 2 (`dream.day`). Patch 0 is done (#3636, #3665, #3670) and Patch 1 is built (#3675). Juniper
+took every bracketed default on 2026-11-17.

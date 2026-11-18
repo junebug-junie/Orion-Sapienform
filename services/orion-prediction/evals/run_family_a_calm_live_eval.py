@@ -14,6 +14,9 @@ Served p, static p and adaptive p are reported side by side (both are stored on 
 
     cd services/orion-prediction
     POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --hours 168
+    # a known outage left out (repeatable), one joint group (body / room) instead of the blend:
+    POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --hours 168 \
+        --exclude 2026-11-14T17:50Z..2026-11-15T06:50Z --family family_a_body
     # dry run of the live loop itself, nothing written anywhere: replays the last N hours through
     # FamilyALive with an in-memory store, reading raw history read-only
     POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --replay-hours 24
@@ -47,6 +50,28 @@ MAX_HOURS_HIGH = 6
 # The served p falls back to the static p for the first hour after a restart or a refusal stretch
 # (calibration 'static:no_difficulty'); the verdict is about the adaptive score, so most rows must be it.
 MIN_ADAPTIVE_SHARE = 0.90
+
+
+def parse_window(text: str) -> tuple[datetime, datetime]:
+    """'START..END' (ISO 8601, 'Z' allowed) -> (start, end), both UTC-aware; start < end."""
+    a, sep, b = str(text).partition("..")
+    if not sep:
+        raise ValueError(f"window {text!r}: want START..END")
+    def utc(x: str) -> pd.Timestamp:
+        t = pd.Timestamp(x.strip())
+        return t.tz_convert("UTC") if t.tzinfo else t.tz_localize("UTC")
+
+    start, end = utc(a), utc(b)
+    if not start < end:
+        raise ValueError(f"window {text!r}: start must be before end")
+    return start.to_pydatetime(), end.to_pydatetime()
+
+
+def drop_windows(rows: list[dict], windows: list[tuple[datetime, datetime]], key: str = "target_ts") -> list[dict]:
+    """Rows whose ``key`` falls in none of the [start, end) windows (a known outage left out of the check)."""
+    if not windows:
+        return rows
+    return [r for r in rows if not any(a <= r[key] < b for a, b in windows)]
 
 
 def summarize(rows: list[dict], grain_min: int, seed: int = 0) -> dict:
@@ -203,13 +228,23 @@ def main() -> int:
     ap.add_argument("--replay-hours", type=float, default=None,
                     help="dry run: replay the live loop over the last N hours in memory instead of reading stored rows")
     ap.add_argument("--select-every-hours", type=float, default=6.0, help="replay only")
+    ap.add_argument("--family", default=fl.FAMILY, choices=(fl.FAMILY, *fl.GROUP_FAMILIES.values(), "all"),
+                    help="the blended joint (family_a), one joint group (family_a_body / family_a_room), or all three "
+                         "(one report each; exit = the worst verdict). Each group needs its own calm check (#3575).")
+    ap.add_argument("--exclude", action="append", default=[], metavar="START..END",
+                    help="leave out joint rows whose target falls in this window (repeatable); reported")
     args = ap.parse_args()
+    try:
+        windows = [parse_window(w) for w in args.exclude]
+    except ValueError as exc:
+        ap.error(str(exc))
     uri = os.environ.get("POSTGRES_URI")
     if not uri:
         ap.error("POSTGRES_URI is required")
     cfg = fa.parse_config(yaml.safe_load(CONFIG.read_text()))
+    families = [fl.FAMILY, *fl.GROUP_FAMILIES.values()] if args.family == "all" else [args.family]
     if args.replay_hours:
-        joints, readings, _info = replay(uri, args.replay_hours, args.select_every_hours)
+        all_joints, readings, _info = replay(uri, args.replay_hours, args.select_every_hours)
         print(f"\n# Replay dry run, last {args.replay_hours:g} h (in memory; nothing stored)")
     else:
         import psycopg
@@ -218,15 +253,29 @@ def main() -> int:
         since = datetime.now(timezone.utc) - timedelta(hours=args.hours)
         with psycopg.connect(uri, row_factory=dict_row) as conn:
             conn.execute("SET TRANSACTION READ ONLY")
-            joints = conn.execute("SELECT * FROM prediction_joint_surprise WHERE family = %s AND target_ts >= %s "
-                                  "ORDER BY horizon_min, target_ts", (fl.FAMILY, since)).fetchall()
+            all_joints = conn.execute("SELECT * FROM prediction_joint_surprise WHERE family = ANY(%s) AND target_ts >= %s "
+                                      "ORDER BY horizon_min, target_ts", (families, since)).fetchall()
             readings = conn.execute(
                 "SELECT series_id, score_status, in_80, in_95 FROM prediction_forecast "
                 "WHERE starts_with(series_id, %s) AND target_ts >= %s AND scored_at IS NOT NULL",
                 (fl.PREFIX, since)).fetchall()
-        print(f"# Stored rows, last {args.hours:g} h: {len(joints)} joint rows, {len(readings)} scored reading rows")
-    return print_report(summarize(joints, cfg.grain_min), coverage(readings), args.min_days)
-
+        print(f"# Stored rows, last {args.hours:g} h: {len(all_joints)} joint rows, {len(readings)} scored reading rows")
+    codes = []
+    for fam in families:
+        joints = [j for j in all_joints if j["family"] == fam]
+        print(f"\n# {fam}: {len(joints)} joint rows")
+        if windows:
+            n0 = len(joints)
+            joints = drop_windows(joints, windows)
+            print("# Left out: " + "; ".join(f"{a:%Y-%m-%d %H:%M}Z..{b:%Y-%m-%d %H:%M}Z" for a, b in windows)
+                  + f" ({n0 - len(joints)} joint rows)")
+        if not joints:
+            print("\nVerdict: NOT YET\n- no rows")
+            codes.append(3)
+            continue
+        codes.append(print_report(summarize(joints, cfg.grain_min), coverage(readings), args.min_days))
+    # worst verdict wins: FAIL (1) over NOT YET (3) over PASS (0)
+    return 1 if 1 in codes else (3 if 3 in codes else 0)
 
 if __name__ == "__main__":
     raise SystemExit(main())

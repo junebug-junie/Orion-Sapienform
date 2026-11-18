@@ -82,9 +82,14 @@ class Settings(BaseSettings):
     # Family A (app/family_a_live.py): every raw body and room reading forecast at once, 5 and 15 min
     # ahead, with the hygiene gate on every issue and one joint surprise per bucket
     # (prediction_joint_surprise). Rides PREDICTION_TICK_SEC / _SETTLE_SEC / _SELECT_INTERVAL_SEC.
-    # false = no family A loop (the other forecasts are unaffected). No consumer reads it yet.
+    # false = no family A loop (the other forecasts are unaffected).
     family_a_enabled: bool = Field(True, alias="PREDICTION_FAMILY_A_ENABLED")
     family_a_config_path: str = Field("/app/config/prediction/family_a.v1.yaml", alias="PREDICTION_FAMILY_A_CONFIG_PATH")
+    # Publish prediction.joint_surprise.v1 (orion:prediction:joint_surprise) for each scored family A joint-group
+    # row (body / room) with the adaptive p and a target <= 30 min old. substrate-runtime folds it into
+    # node:prediction.body_joint / node:prediction.room_joint (successor of node:substrate.biometrics).
+    # false = rows are still stored, nothing is published (both nodes age to stale = absent, never calm).
+    joint_surprise_events_enabled: bool = Field(True, alias="PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED")
 
     # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
     weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")

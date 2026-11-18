@@ -105,6 +105,38 @@ async def _publish_turn_surprise() -> int:
     return sent
 
 
+async def _publish_joint_surprise() -> int:
+    """Publish the family A joint-group events queued by the last tick (app/family_a_live.py). Never raises;
+    a failed publish drops that event (the stored row is the record) and keeps going."""
+    pending = family_a.take_pending_events()
+    if not pending:
+        return 0
+    if _bus is None or not _settings.publish_enabled:
+        family_a.state.counts["events_dropped_publish_disabled"] = (
+            family_a.state.counts.get("events_dropped_publish_disabled", 0) + len(pending))
+        return 0
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.prediction import (PREDICTION_JOINT_SURPRISE_CHANNEL, PREDICTION_JOINT_SURPRISE_KIND,
+                                          PredictionJointSurpriseV1)
+
+    source = ServiceRef(name=_settings.service_name, version=_settings.service_version, node=_settings.node_name)
+    sent = 0
+    for raw in pending:
+        try:
+            ev = PredictionJointSurpriseV1.model_validate(raw)
+            await _bus.publish(PREDICTION_JOINT_SURPRISE_CHANNEL, BaseEnvelope(
+                kind=PREDICTION_JOINT_SURPRISE_KIND, source=source, payload=ev.model_dump(mode="json")))
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            family_a.state.counts["events_publish_failed"] = family_a.state.counts.get("events_publish_failed", 0) + 1
+            logger.error("joint_surprise_publish_failed joint_id=%s err=%s", raw.get("joint_id"), exc)
+    family_a.state.counts["events_published"] = family_a.state.counts.get("events_published", 0) + sent
+    if sent:
+        logger.info("joint_surprise_published n=%d excess=%s", sent,
+                    [(r["group"], r["horizon_min"], round(r["excess"], 2)) for r in pending])
+    return sent
+
+
 async def _settle_self_bets_forever() -> None:
     while not _stop.is_set():
         try:
@@ -170,6 +202,7 @@ async def _family_a_forever() -> None:
             await asyncio.to_thread(family_a.tick)
             _last_family_a.update(at=datetime.now(timezone.utc), ok=not family_a.state.errors,
                                   error=None if not family_a.state.errors else dict(family_a.state.errors))
+            await _publish_joint_surprise()
         except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
             _last_family_a.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
             logger.exception("family_a_tick_failed")
@@ -254,7 +287,8 @@ async def lifespan(app: FastAPI):
                 _store, fa_cfg,
                 lambda start, end: load_frame(_settings.postgres_uri, fa_cfg.inputs, fa_cfg.grain_min, start, end),
                 settle_sec=_settings.settle_sec, select_interval_sec=_settings.select_interval_sec,
-                adaptive_intervals=_settings.adaptive_intervals_enabled)
+                adaptive_intervals=_settings.adaptive_intervals_enabled,
+                events_enabled=_settings.joint_surprise_events_enabled)
             # Family C's effect table measures every reading family A reads (read-only, on demand).
             effect_table = EffectTable(
                 _store,

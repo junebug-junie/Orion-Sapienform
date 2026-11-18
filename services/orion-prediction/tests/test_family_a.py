@@ -48,8 +48,8 @@ def test_checked_in_config_loads_and_reads_only_raw_tables():
 
 def _doc(**inp):
     base = yaml.safe_load(CONFIG_PATH.read_text())
-    base["inputs"] = [{"id": "x.reading_c", "unit": "C", "source": {"table": "biometrics", "node": "athena",
-                                                                    "key": "cabinet_temp_c"}, **inp}]
+    base["inputs"] = [{"id": "x.reading_c", "unit": "C", "group": "body",
+                       "source": {"table": "biometrics", "node": "athena", "key": "cabinet_temp_c"}, **inp}]
     return base
 
 

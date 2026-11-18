@@ -116,6 +116,6 @@ No restart required.
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3706
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

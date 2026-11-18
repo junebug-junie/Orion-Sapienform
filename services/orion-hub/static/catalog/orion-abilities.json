@@ -259,6 +259,16 @@
           "source": "orion/dig/__main__.py:cmd_digs; orion/dig/digs.py"
         },
         {
+          "id": "dream-day",
+          "title": "Read a whole day for the night's dream",
+          "description": "Orion reads one closed day on one page: what each of their organs did, and every dig command they ran. It leaves a read receipt the nightly day dream checks before it keeps any memory of that day. The day dream runs it on its own each night; asked by hand, it is just a read.",
+          "message": "Please read this whole day the way your nightly dream would, and tell me what stands out: ",
+          "hint": "(dig: `python -P -m orion.dig dream-day <date>`, date YYYY-MM-DD)",
+          "keywords": ["dream", "day dream", "whole day", "daily", "nightly"],
+          "covers": {"dig": ["dream-day"]},
+          "source": "orion/dig/__main__.py:cmd_dream_day; services/orion-durable-runs/app/dream_day_graph.py"
+        },
+        {
           "id": "field-note",
           "title": "Write a note on a PR",
           "description": "Orion reads one merged PR as code sees it (which parts of their body it touched) and writes a short field note about it, with every claim labelled by its source.",

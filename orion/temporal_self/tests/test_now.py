@@ -4,7 +4,7 @@ and the integration metric. Pure: no database, no clock."""
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import get_args
 
 import pytest
@@ -61,7 +61,8 @@ def test_registry_refuses_a_kind_claimed_twice_an_unknown_kind_and_an_unknown_ru
 
 
 def test_new_kinds_never_fold_into_an_arc():
-    assert S.EXPERIENCE_ONLY_KINDS == {"reading_turn", "prediction_surprise", "prime_thought", "experiment_result"}
+    assert S.EXPERIENCE_ONLY_KINDS == {"reading_turn", "prediction_surprise", "prime_thought", "experiment_result",
+                                       "dream_day"}
     for k in S.EXPERIENCE_ONLY_KINDS:
         assert k not in PROCESS_KINDS and k not in CONTEXT_KINDS and k not in CONSTRAINT_KINDS
 
@@ -69,7 +70,8 @@ def test_new_kinds_never_fold_into_an_arc():
 def test_experience_only_tables_are_exactly_the_new_kinds_tables():
     base = {"act_id": "act_" + "c" * 24, "opened_at": T, "closed_at": T + timedelta(seconds=5), "object_ref": "x",
             "exceedance_id": 1, "scored_at": T, "hit_raw": False, "probability": 0.1, "n_paths": 40,
-            "estimate_id": "e1", "created_at": T, "details": {"estimator": "family_c_pooled_run", "effect_z": 2.0}}
+            "estimate_id": "e1", "created_at": T, "details": {"estimator": "family_c_pooled_run", "effect_z": 2.0},
+            "day": "2026-11-17"}
     tables = {S.ADAPTERS[k](base).source_table for k in S.EXPERIENCE_ONLY_KINDS}
     assert tables == S.EXPERIENCE_ONLY_TABLES
 
@@ -255,6 +257,21 @@ def test_experiment_result_is_one_run_with_its_effect_z_as_magnitude():
     assert MAGNITUDE_RULES["effect_z"]({"payload": e.payload}) == 2.5
     # Other effect rows (an observational estimate, a heat fit) are not experiences.
     assert S.experiment_result({**row, "details": {"estimator": "heat_per_watt"}}) is None
+
+
+def test_dream_day_is_one_night_with_its_paragraph_and_memories():
+    row = {"day": date(2026, 11, 17), "run_id": "dream-day-2026-11-17", "produced": True, "note": "2 memories written",
+           "memories_written": 2, "memory_ids": ["m1", "m2"], "kept": 1, "dropped": 1, "new": 0, "items_dropped": 1,
+           "refs_dropped": 1, "day_text": "A quiet day of reading.", "created_at": T}
+    e = S.dream_day(row)
+    assert e.source_kind == "dream_day" and e.event_id == "dream_day:2026-11-17" and e.source_table == "dream_day"
+    assert e.label == "A quiet day of reading." and e.verdict == "produced"
+    assert e.related_refs == ["durable_run:dream-day-2026-11-17", "episode_memory:m1", "episode_memory:m2"]
+    assert e.payload["memories_written"] == 2 and e.payload["memory_ids"] == ["m1", "m2"]
+    quiet = S.dream_day({**row, "produced": False, "memories_written": 0, "memory_ids": [], "day_text": None,
+                         "note": "no lasting trace"})
+    assert quiet.label == "no lasting trace" and quiet.verdict == "no_lasting_trace"
+    assert S.dream_day({**row, "created_at": None}) is None
 
 
 def test_prime_thought_labels_with_its_own_outcome_note():

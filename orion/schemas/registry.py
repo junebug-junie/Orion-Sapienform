@@ -841,6 +841,7 @@ from orion.schemas.intention import (
 )
 from orion.schemas.pr_field_note_run import PrFieldNoteBriefV1
 from orion.schemas.reminiscence_run import ReminiscenceRunBriefV1
+from orion.schemas.dream_day import DreamDayAnswerV1, DreamDayBriefV1, DreamDayV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
 from orion.schemas.orion_day import (
     MissedLetterV1, OrionDayLetterOrderResultV1, OrionDayLetterOrderV1, OrionDayLetterStatusV1,
@@ -1099,6 +1100,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "IntentionSourceV1": IntentionSourceV1,
     "PrFieldNoteBriefV1": PrFieldNoteBriefV1,
     "ReminiscenceRunBriefV1": ReminiscenceRunBriefV1,
+    "DreamDayBriefV1": DreamDayBriefV1,
+    "DreamDayAnswerV1": DreamDayAnswerV1,
+    "DreamDayV1": DreamDayV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,
     "CompactorDigestRunBriefV1": CompactorDigestRunBriefV1,
     "CompactorDigestResultV1": CompactorDigestResultV1,
@@ -2311,6 +2315,11 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=DispositionNamingPacketV1,
         kind="personality.naming.packet.v1",
     ),
+    # The day dream Patch 2 (orion/schemas/dream_day.py): the dream.day run's brief, the turn's parsed answer,
+    # and one dream_day row. None rides a bus channel; registered so every contract is resolvable.
+    "DreamDayBriefV1": SchemaRegistration(model=DreamDayBriefV1, kind="dream.day.brief.v1"),
+    "DreamDayAnswerV1": SchemaRegistration(model=DreamDayAnswerV1, kind="dream.day.answer.v1"),
+    "DreamDayV1": SchemaRegistration(model=DreamDayV1, kind="dream.day.v1"),
 }
 
 

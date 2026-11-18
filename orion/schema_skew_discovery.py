@@ -83,6 +83,12 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "run by Bash in the governor); the governor's Claude tools broker and Hub's /api/claude-tools/grants read "
         "it from the shared /mnt/orion-fcc mount",
     ),
+    "orion.schemas.dream_day:DreamDayReadV1": (
+        "orion-harness-governor",
+        "Orion's dream.day turn writes $ORION_DIG_HOME/self/dream_day/<day>.json with `dig dream-day <day>` "
+        "(orion/dig, run by Bash in the governor); orion-durable-runs' dream_day graph reads it back from the "
+        "shared /mnt/orion-fcc/self mount (app/dream_day_store.py read_receipt)",
+    ),
     "orion.prime.state:PrimeStateV1": (
         "orion-mind",
         "app/prime_loop.py writes Redis orion:prime:state every tick; hub's room_claude_context reads it "

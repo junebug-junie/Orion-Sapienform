@@ -73,6 +73,8 @@ path of a file with the full result; read only what you need from that file.
   organs <date> [<end>]  what each organ did (yesterday is the usual ask): counts, quotes with
                          [experience:<id>] refs, cites, breaks, use rate. At most 7 days.
   digs <date>            each dig command you ran that day: time, chat or workflow, result, ref.
+  dream-day <date>       organs + digs of that day on one page, for the nightly day dream (leaves
+                         a read receipt the dream checks; run it in a turn).
   attention [<window>]   what you attended to, as rates vs each source's own activity (24h, 7d).
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   take-ons [<days>]      sub-agents each take-on started.
@@ -1780,13 +1782,12 @@ def cmd_organs(start: date, end: date, out: Out, runner=None) -> str:
 
 # --- digs (the day's executed dig commands; day-dream spec Patch 1) --------------------------
 
-def cmd_digs(day: date, out: Out, runner=None, claude_home: Path | None = None) -> str:
-    """Read-only: every dig command Orion ran on one Denver day (orion/dig/digs.py)."""
+def _read_digs(day: date, runner, claude_home: Path | None) -> tuple[list, dict[str, str], float, int]:
+    """(calls, unread, seconds, transcripts scanned): the day's executed dig commands and the parts that could
+    not be read."""
     from orion.body_atlas.sources import psql_rows
     from orion.dig import digs
-    from orion.evals.model_replay.sandbox import ReadOnlyPsql
 
-    runner = runner or ReadOnlyPsql(timeout_sec=60.0)
     lo, hi = digs.window(day)
     t0 = time.monotonic()
     unread: dict[str, str] = {}
@@ -1800,11 +1801,13 @@ def cmd_digs(day: date, out: Out, runner=None, claude_home: Path | None = None) 
 
         claude_home = _home()
     transcript: list = []
+    paths: list = []
     if not (claude_home / "projects").is_dir() or not os.access(claude_home / "projects", os.R_OK | os.X_OK):
         unread["background runs (claude transcripts)"] = (
             f"{claude_home / 'projects'} is not readable here; run this in a turn's Bash")
     else:
-        transcript = digs.read_transcripts(digs.candidate_transcripts(claude_home, lo, hi), lo, hi)
+        paths = digs.candidate_transcripts(claude_home, lo, hi)
+        transcript = digs.read_transcripts(paths, lo, hi)
     calls = digs.merge(cockpit, transcript)
     sql = digs.lookup_sql(c.correlation_id for c in calls if c.source == "transcript")
     if sql:
@@ -1814,7 +1817,15 @@ def cmd_digs(day: date, out: Out, runner=None, claude_home: Path | None = None) 
             unread["where each run ran (harness_turn_trace)"] = str(exc)[:200]
     if any(c.needs_link for c in calls):
         digs.link_by_resume_key(calls, digs.read_resume_registry(claude_home))
-    took = time.monotonic() - t0
+    return calls, unread, time.monotonic() - t0, len(paths)
+
+
+def cmd_digs(day: date, out: Out, runner=None, claude_home: Path | None = None) -> str:
+    """Read-only: every dig command Orion ran on one Denver day (orion/dig/digs.py)."""
+    from orion.dig import digs
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    calls, unread, took, _n = _read_digs(day, runner or ReadOnlyPsql(timeout_sec=60.0), claude_home)
     path = out.write(f"digs-{day.isoformat()}", digs.to_file(day, calls, unread))
     chat = sum(1 for c in calls if c.chat_id or c.chat_pool or c.source == "cockpit" or c.workflow == "chat")
     tail = [f"{len(calls)} dig command(s) ran on {day.isoformat()} (times Denver): {chat} in chat, "
@@ -1826,6 +1837,59 @@ def cmd_digs(day: date, out: Out, runner=None, claude_home: Path | None = None) 
     except ValueError as exc:  # the line rule holds: refuse the page, never print a line that breaks it
         raise DigError(f"digs: {exc} (full list still written: {path})") from exc
     return capped(lines, tail="\n".join(tail))
+
+
+# --- dream-day (the day dream's read of one day; day-dream spec Patch 2) ------------------------
+
+def dream_day_receipt_path(day: date) -> Path:
+    """Where `dig dream-day <day>` leaves its read receipt (orion/schemas/dream_day.py DreamDayReadV1); the
+    `dream.day` durable run reads it after its turn (orion-durable-runs mounts the same self dir)."""
+    from orion.schemas.dream_day import DREAM_DAY_RECEIPT_DIR
+
+    return home() / "self" / DREAM_DAY_RECEIPT_DIR / f"{day.isoformat()}.json"
+
+
+def cmd_dream_day(day: date, out: Out, runner=None, claude_home: Path | None = None) -> str:
+    """Read-only on Orion's records: the organ roundup and every dig Orion ran on one Denver day, on one page,
+    for the nightly day dream. Writes one read receipt (which parts were read, which were UNREAD). Run it in a
+    turn's Bash: the background half of the digs is readable only inside the governor."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import digs, organs
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+    from orion.integration.organs import load_organs
+    from orion.schemas.dream_day import DreamDayReadV1
+
+    runner = runner or ReadOnlyPsql(timeout_sec=60.0)
+    unread: dict[str, str] = {}
+    try:
+        roundup = organs.read_sync(day, lambda sql: psql_rows(runner, sql), load_organs())
+    except Exception as exc:  # noqa: BLE001 -- named in an UNREAD line, never shown as empty
+        roundup = organs.Roundup(day=day.isoformat(), unread={"organ roundup": f"{type(exc).__name__}: {exc}"[:300]})
+    unread.update({f"roundup {k}": v for k, v in roundup.unread.items()})
+    calls, digs_unread, took, n_transcripts = _read_digs(day, runner, claude_home)
+    unread.update(digs_unread)
+    chat = sum(1 for c in calls if c.chat_id or c.chat_pool or c.source == "cockpit" or c.workflow == "chat")
+    out.write(f"organs-{day.isoformat()}-{day.isoformat()}", [dataclasses.asdict(roundup)])
+    digs_path = out.write(f"digs-{day.isoformat()}", digs.to_file(day, calls, digs_unread))
+    try:
+        dig_lines = digs.render(calls)
+    except ValueError as exc:   # the line rule holds: never print a line that breaks it
+        dig_lines, unread["dig lines"] = [], f"refused: {exc}"[:300]
+    receipt = DreamDayReadV1(
+        day=day, read_at=datetime.now(timezone.utc), roundup_lines=len(roundup.lines), roundup_refs=len(roundup.refs),
+        digs_total=len(calls), digs_chat=chat, digs_background=len(calls) - chat, unread=unread)
+    path = dream_day_receipt_path(day)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(receipt.model_dump_json(indent=1), encoding="utf-8")
+    tmp.replace(path)
+    page = capped(roundup.lines, tail=f"(organ roundup: {len(roundup.lines)} lines, {len(roundup.refs)} refs)").split("\n")
+    page += ["", f"digs on {day.isoformat()} (times Denver; {n_transcripts} transcript(s) read):"]
+    page += capped(dig_lines, tail=f"{len(calls)} dig command(s): {chat} in chat, {len(calls) - chat} in background "
+                                    f"runs; read in {took:.1f} s; full list: {digs_path}").split("\n")
+    tail = [f"UNREAD {name}: {why} (that part is missing, not empty)" for name, why in unread.items()]
+    tail.append(f"read receipt: {path} ({'whole day read' if not unread else f'{len(unread)} part(s) UNREAD'})")
+    return "\n".join(page + tail)
 
 
 # --- attention (relative rates, issue #3600) -----------------------------------------------
@@ -2048,6 +2112,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_organs(first, _parse_day(a[1]) if len(a) == 2 else first, out)
         elif ns.command == "digs" and len(a) == 1:
             text = cmd_digs(_parse_day(a[0]), out)
+        elif ns.command == "dream-day" and len(a) == 1:
+            text = cmd_dream_day(_parse_day(a[0]), out)
         elif ns.command == "attention" and len(a) <= 2:
             text = cmd_attention(a[0] if a else None, a[1] if len(a) == 2 else None, out)
         elif ns.command == "turn-steps" and len(a) in (1, 2):

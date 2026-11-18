@@ -9,6 +9,7 @@ on:
       - "orion/body_atlas/**"
       - "orion/privacy/**"
       - "orion/schemas/reminiscence_run.py"   # test_reminisce_cmd.py pins the daily run's receipt contract
+      - "orion/schemas/dream_day.py"          # test_dream_day_cmd.py pins the day dream's read receipt
       - "orion/harness/prefix.py"
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
       - "orion/harness/working_notes.py"
@@ -41,6 +42,7 @@ on:
       - "orion/body_atlas/**"
       - "orion/privacy/**"
       - "orion/schemas/reminiscence_run.py"   # test_reminisce_cmd.py pins the daily run's receipt contract
+      - "orion/schemas/dream_day.py"          # test_dream_day_cmd.py pins the day dream's read receipt
       - "orion/harness/prefix.py"
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
       - "orion/harness/working_notes.py"

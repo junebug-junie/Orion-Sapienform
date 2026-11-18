@@ -320,7 +320,9 @@ def two_live_domains(monkeypatch):
     """execution is the one live domain since biometrics was retired 2026-11-18 (#3575), and with
     one domain any delta is within one domain's full swing. The divergence rule is about MORE than
     one domain moving, so these tests add a test-only second domain, "probe"."""
-    from scripts import attention_organ_routes as routes_mod
+    # The module that holds the functions under test, not whatever `scripts` resolves to now: in the
+    # full hub folder another test can rebind the `scripts` package.
+    routes_mod = sys.modules[reconcile_confidence.__module__]
 
     domains = frozenset(routes_mod.ACTIVE_INFERENCE_DOMAINS | {"probe"})
     monkeypatch.setattr(routes_mod, "ACTIVE_INFERENCE_DOMAINS", domains)

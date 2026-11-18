@@ -138,7 +138,30 @@
 ## Tests run
 
 ```text
-TESTS_PLACEHOLDER
+Local runs, repo .venv, PYTHONDONTWRITEBYTECODE=1, -p no:cacheprovider.
+
+Affected-test sweep: 172 files that name the retired node, its domain, or a changed registry, run per service. Results:
+- root + orion + scripts: 1,437 passed. 7 failed: 4 were fixed after the sweep (metacog vehicle); 3 also fail on main (test_autonomy_goals_bus_catalog, test_metric_lineage x2).
+- orion-equilibrium-service tests + evals: 289 passed.
+- orion-thought tests + evals: 922 passed, 32 skipped.
+- orion-attention-runtime: 35 passed, 5 skipped.
+- orion-hub (affected files): 141 passed.
+- orion-field-digester: 58 passed.
+- orion-cortex-exec: 170 passed.
+- orion-sql-writer: 90 passed, 15 skipped.
+- orion-signal-gateway: 24 passed.
+- orion-mind: 3 passed.
+- orion-substrate-runtime: 590 passed. The 10 failed + 9 errors also fail on main (cursor_reset_auth / quarantine_truth fixtures, cursor_tail_seed, reducer_health, falkor_routed_store, worker_reducer, 2 self_model_tick).
+- orion-biometrics: 2 fail, both also on main (hecate / circe expected_offline).
+- orion-prediction: tests/test_family_a_live.py + test_family_a.py, 29 + others passed. 27 failures elsewhere in the suite (heat_balance etc.) are a ModuleNotFoundError in the local venv. They are not touched by this PR; CI runs this suite in its own image.
+
+New tests:
+- orion/substrate/tests/test_prediction_joint_surprise.py: calm rest point by theory, one spike, shortest horizon wins, groups never mix, refusals.
+- services/orion-substrate-runtime/tests/test_prediction_joint_surprise_listener.py: node write, evidence, room goes to its own node, calm writes 0, backlog and overlap refused, invalid payload, write failure, /health.
+- tests/test_room_joint_world_source.py: world vs body, 600 s age, ids agree, retired predecessor.
+- services/orion-prediction/tests/test_family_a_live.py: 10 group tests (calibration per group, one row per group per bucket, fresh adaptive events only, backlog never published, events off, no-target group skipped, refused rows per group, old run gets no_group, group none, unclassified input refused).
+
+Static gates: check_integration_seam OK, check_pe_alarm_readers OK, check_definition_drift --gate PASS (re-locked), agent_trace schema registry + env sync tests 24 passed, resolve("PredictionJointSurpriseV1") OK.
 ```
 
 ## Evals run
@@ -215,6 +238,6 @@ scripts/safe_docker_build.sh orion-cortex-exec up -d --build
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3732
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

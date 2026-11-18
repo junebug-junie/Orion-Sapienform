@@ -61,6 +61,7 @@ from memory_scoreboard import (  # noqa: E402
     render_table,
     score_answers,
     score_retrieval,
+    search_causes,
     summary_line,
 )
 
@@ -209,7 +210,7 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
             continue
         cs = corrs.get(it.qid) or []
         rows = [dict(r) for r in await pool.fetch(
-            "SELECT profile, deadline_hit, backend_counts, timings_ms FROM recall_telemetry "
+            "SELECT profile, deadline_hit, backend_counts, timings_ms, lived_status, lived_trace FROM recall_telemetry "
             "WHERE corr_id = ANY($1::text[])", cs)] if cs else []
         for r in rows:
             if r.get("profile") == CONTINUITY_PROFILE:
@@ -296,9 +297,18 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
                     break
                 await asyncio.sleep(5)
         if corr:
-            rows = await pool.fetch(
-                "SELECT selected_ids FROM recall_telemetry WHERE corr_id = $1 AND profile = ANY($2::text[])",
-                corr, [CONTINUITY_PROFILE, *PROFILE_FOR_INTENT.values()])
+            rows = []
+            for _ in range(2):   # recall persists its row after it replies; give it one beat
+                rows = await pool.fetch(
+                    "SELECT profile, selected_ids, deadline_hit, lived_status, lived_trace FROM recall_telemetry "
+                    "WHERE corr_id = $1 AND profile = ANY($2::text[])",
+                    corr, [CONTINUITY_PROFILE, *PROFILE_FOR_INTENT.values()])
+                if rows:
+                    break
+                await asyncio.sleep(3)
+            # Did this turn's own recall run in full? A denial after a skipped or degraded search
+            # is still a false denial, reported under its cause (#3536 comment).
+            turn["search_causes"] = search_causes([dict(r) for r in rows])
             ids: set[str] = set()
             for r in rows:
                 sel = r["selected_ids"]
@@ -363,7 +373,7 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
     for turn in turns:
         outcomes.setdefault(turn["qid"], "unjudged")
         turn["outcome"] = outcomes[turn["qid"]]
-    report = score_answers(items, outcomes)
+    report = score_answers(items, outcomes, {t["qid"]: t.get("search_causes") or [] for t in turns})
     report["judge_lane"] = args.judge_lane
     report["target_in_prompt"] = {
         "known": sum(1 for t in turns if t.get("target_in_prompt") is not None),

@@ -115,6 +115,55 @@ def test_degraded_reasons_from_trace_rows(rows, reasons):
     assert ms.degraded_reasons(rows, lived_timeout_ms=4000) == reasons
 
 
+@pytest.mark.parametrize("row,reasons", [
+    ({"lived_status": "ok", "backend_counts": {"lived_memory": 2}}, []),
+    ({"lived_status": "below_bar", "backend_counts": {"lived_memory": 0},
+      "timings_ms": {"lived_memory_wait": 3990}}, []),   # #3628 status wins over the timing guess
+    ({"lived_status": "skipped_short"}, ["lived:skipped_short"]),
+    ({"lived_status": "degraded", "lived_trace": json.dumps({"degraded": ["rerank_timeout"]})},
+     ["lived:degraded", "lived:rerank_timeout"]),
+    ({"lived_status": "ok", "lived_trace": {"rerank_partial": {"scored": 8, "of": 20}, "degraded": ["rerank_partial"]}},
+     ["lived:rerank_partial", "lived:rerank_partial:8/20"]),
+    ({"lived_status": "timeout"}, ["lived:timeout"]),
+])
+def test_degraded_reasons_read_lived_status(row, reasons):
+    assert ms.degraded_reasons([{"profile": "chat.continuity.v1", **row}], lived_timeout_ms=4000) == reasons
+
+
+def test_denial_after_a_skipped_search_is_a_false_denial_under_its_cause():
+    """#3536 comment: status skipped_short + a stored target + a denial = false denial, cause skipped_short."""
+    _, items, _ = _fixture()
+    outcomes = {it.qid: "correct" for it in items}
+    outcomes["fact_city"] = ms.outcome_for(next(it for it in items if it.qid == "fact_city"), "no_memory")
+    outcomes["fact_page_only"] = "false_no_memory"
+    outcomes["event_kiln"] = "false_no_memory"
+    causes = {
+        "fact_city": ms.search_causes([{"profile": "chat.continuity.v1", "lived_status": "skipped_short"},
+                                       {"profile": "chat.belief.open_loop.v1", "lived_status": None}]),
+        "fact_page_only": ms.search_causes([{"profile": "chat.continuity.v1", "lived_status": "ok"}]),
+        "event_kiln": ms.search_causes([]),
+    }
+    report = ms.score_answers(items, outcomes, causes)
+    assert outcomes["fact_city"] == "false_no_memory"
+    assert sorted(report["false_no_memory"]) == ["event_kiln", "fact_city", "fact_page_only"]
+    assert report["passes"]["false_no_memory"] is False
+    assert report["false_no_memory_by_cause"] == {
+        "lived:skipped_short": ["fact_city"], "search_full": ["fact_page_only"], "recall:no_trace": ["event_kiln"]}
+    table = ms.render_table(None, report, run_date="2026-11-18", bank_items=len(items))
+    assert "lived:skipped_short 1 (fact_city)" in table
+    assert ms.summary_line("2026-11-18", None, report)["answer"]["false_no_memory_by_cause"]["search_full"] == 1
+
+
+def test_implicit_items_get_their_own_row():
+    _, items, replay = _fixture()
+    report = ms.score_retrieval(items, _observations(items, replay))
+    assert report["implicit"]["items"] == 1 and report["implicit"]["scored"] == 1
+    answers = ms.score_answers(items, {it.qid: "correct" for it in items})
+    assert answers["implicit"]["correct"] == 1
+    table = ms.render_table(report, answers, run_date="2026-11-18", bank_items=len(items))
+    assert table.count("| implicit (subset of the above) |") == 2
+
+
 def test_degraded_reasons_rpc_error():
     assert ms.degraded_reasons([], lived_timeout_ms=4000, rpc_error="TimeoutError") == ["rpc:TimeoutError"]
 

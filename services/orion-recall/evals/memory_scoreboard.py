@@ -180,6 +180,11 @@ def degraded_reasons(telemetry: Sequence[Mapping[str, Any]], *, lived_timeout_ms
     for r in rows:
         if r.get("profile") != "chat.continuity.v1":
             continue
+        if r.get("lived_status"):
+            # #3628: the recall service's own verdict on its lived-memory search. Read it first;
+            # the timing heuristics below are only for rows written before that column existed.
+            reasons += lived_search_causes(r)
+            continue
         counts = _as_dict(r.get("backend_counts"))
         timings = _as_dict(r.get("timings_ms"))
         if "lived_memory" not in counts:
@@ -190,6 +195,47 @@ def degraded_reasons(telemetry: Sequence[Mapping[str, Any]], *, lived_timeout_ms
         elif not counts.get("lived_memory") and float(timings.get("lived_memory_wait") or 0) >= 0.95 * lived_timeout_ms:
             reasons.append("lived_memory:timeout")
     return reasons
+
+
+# lived_status values (services/orion-recall/app/lived_memory.py STATUS_*) that mean the lived
+# search did not run in full. ok / below_bar are full searches; NULL is a call without lived recall.
+SEARCH_NOT_FULL = ("skipped_short", "degraded", "timeout", "error", "off")
+
+
+def lived_search_causes(row: Mapping[str, Any]) -> List[str]:
+    """Why one recall_telemetry row's lived search did not run in full (empty = it did, or the
+    row has no lived_status). Causes: ``lived:<status>``, then each ``lived_trace.degraded`` reason
+    (``rerank_timeout``, ``embedder_unavailable``, ...) and ``rerank_partial:<scored>/<of>``."""
+    status = str(row.get("lived_status") or "")
+    trace = _as_dict(row.get("lived_trace"))
+    out: List[str] = []
+    if status in SEARCH_NOT_FULL:
+        out.append(f"lived:{status}")
+    for reason in trace.get("degraded") or []:
+        tag = f"lived:{reason}"
+        if tag not in out:
+            out.append(tag)
+    part = trace.get("rerank_partial")
+    if isinstance(part, Mapping):
+        out.append(f"lived:rerank_partial:{part.get('scored')}/{part.get('of')}")
+    return out
+
+
+def search_causes(rows: Sequence[Mapping[str, Any]]) -> List[str]:
+    """Why a chat turn's recall did not run in full, from that turn's own recall_telemetry rows
+    (#3536 comment). Empty = it ran in full. No rows = ``recall:no_trace`` (the phase-0 skip gate
+    fired, or recall never ran). A false "no memory" answer is reported under the first cause, or
+    under ``search_full`` when there is none (then the model or the store is at fault, not the search)."""
+    if not rows:
+        return ["recall:no_trace"]
+    causes: List[str] = []
+    for r in rows:
+        if r.get("deadline_hit") and "recall:deadline_hit" not in causes:
+            causes.append("recall:deadline_hit")
+        for c in lived_search_causes(r):
+            if c not in causes:
+                causes.append(c)
+    return causes
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -246,6 +292,22 @@ def score_retrieval(items: Sequence[Item], observations: Mapping[str, RetrievalO
             "backfill_items": sum(1 for v in vs if v["kind"] == "backfill"),
             "superseded_served": sum(1 for v in vs if v["superseded_served"]),
         }
+    # Implicit items (a real past message resent, no direct question) cut across categories:
+    # one extra row, not a category, so the per-category rows still add up to the bank.
+    imp_q = {it.qid for it in items if it.implicit}
+    vs = [v for v in verdicts if v["qid"] in imp_q]
+    stored_i = [v for v in vs if v["kind"] == "stored"]
+    clean_i = [v for v in stored_i if not v["degraded"]]
+    hits_i = sum(1 for v in clean_i if v["hit"])
+    bundle_i = sum(1 for v in clean_i if v["hit_bundle"])
+    implicit_row = {
+        "items": len(vs), "stored": len(stored_i), "scored": len(clean_i), "hits": hits_i,
+        "hit_rate": _rate(hits_i, len(clean_i)), "bundle_hits": bundle_i,
+        "bundle_hit_rate": _rate(bundle_i, len(clean_i)),
+        "degraded": sum(1 for v in stored_i if v["degraded"]),
+        "backfill_items": sum(1 for v in vs if v["kind"] == "backfill"),
+        "superseded_served": sum(1 for v in vs if v["superseded_served"]),
+    }
     stored = [v for v in verdicts if v["kind"] == "stored"]
     clean = [v for v in stored if not v["degraded"]]
     hits = sum(1 for v in clean if v["hit"])
@@ -264,6 +326,7 @@ def score_retrieval(items: Sequence[Item], observations: Mapping[str, RetrievalO
         "backfill": [{"qid": v["qid"], "injected": v["injected"]} for v in verdicts if v["kind"] == "backfill"],
         "skipped_by_gate": [v["qid"] for v in verdicts if v["skipped"]],
         "by_category": by_cat,
+        "implicit": implicit_row,
         "items": verdicts,
     }
 
@@ -356,33 +419,46 @@ def outcome_for(item: Item, label: Optional[str]) -> str:
     return label  # correct | dont_know | invented
 
 
-def score_answers(items: Sequence[Item], outcomes: Mapping[str, str]) -> Dict[str, Any]:
+def _answer_row(items: Iterable[Item], outcomes: Mapping[str, str]) -> Dict[str, Any]:
+    row: Dict[str, Any] = {o: 0 for o in OUTCOMES}
+    row["items"] = 0
+    row["backfill"] = {o: 0 for o in OUTCOMES}
+    for it in items:
+        if it.qid not in outcomes:
+            continue
+        o = outcomes[it.qid]
+        if it.kind == "backfill":
+            row["backfill"][o] += 1
+            continue
+        row["items"] += 1
+        row[o] += 1
+    measured = row["items"] - row["error"] - row["unjudged"]
+    row["correct_rate"] = _rate(row["correct"], measured)
+    return row
+
+
+def score_answers(items: Sequence[Item], outcomes: Mapping[str, str],
+                  causes: Optional[Mapping[str, Sequence[str]]] = None) -> Dict[str, Any]:
     """Per-category answer score. Scored = stored + abstention items; backfill items apart.
-    Hub failures (``error``) and unreadable judge output (``unjudged``) are counted apart too."""
-    by_cat: Dict[str, Dict[str, Any]] = {}
-    for cat in CATEGORIES:
-        row = {o: 0 for o in OUTCOMES}
-        row["items"] = 0
-        row["backfill"] = {o: 0 for o in OUTCOMES}
-        for it in items:
-            if it.category != cat or it.qid not in outcomes:
-                continue
-            o = outcomes[it.qid]
-            if it.kind == "backfill":
-                row["backfill"][o] += 1
-                continue
-            row["items"] += 1
-            row[o] += 1
-        measured = row["items"] - row["error"] - row["unjudged"]
-        row["correct_rate"] = _rate(row["correct"], measured)
-        by_cat[cat] = row
+    Hub failures (``error``) and unreadable judge output (``unjudged``) are counted apart too.
+
+    ``causes`` maps a qid to its turn's :func:`search_causes`. A false "no memory" on a stored item
+    is always a false denial; it is also reported under the first cause (``search_full`` when the
+    search ran in full), so a denial after a skipped or degraded search is visible as such."""
+    by_cat = {cat: _answer_row([it for it in items if it.category == cat], outcomes) for cat in CATEGORIES}
+    implicit_row = _answer_row([it for it in items if it.implicit], outcomes)
     scored = [it for it in items if it.qid in outcomes and it.kind != "backfill"]
     measured = [it for it in scored if outcomes[it.qid] not in ("error", "unjudged")]
     correct = sum(1 for it in measured if outcomes[it.qid] == "correct")
     invented = [it.qid for it in measured if outcomes[it.qid] == "invented"]
     false_no = [it.qid for it in measured if it.kind == "stored" and outcomes[it.qid] == "false_no_memory"]
     rate = _rate(correct, len(measured))
+    by_cause: Dict[str, List[str]] = {}
+    for qid in false_no:
+        cs = list((causes or {}).get(qid) or [])
+        by_cause.setdefault(cs[0] if cs else "search_full", []).append(qid)
     return {
+        "false_no_memory_by_cause": by_cause,
         "bars": {"correct_rate": ANSWER_CORRECT_BAR, "invented": 0, "false_no_memory": 0},
         "scored": len(scored), "measured": len(measured), "correct": correct, "correct_rate": rate,
         "invented": invented, "false_no_memory": false_no,
@@ -398,6 +474,7 @@ def score_answers(items: Sequence[Item], outcomes: Mapping[str, str]) -> Dict[st
         "backfill": [{"qid": it.qid, "outcome": outcomes[it.qid]} for it in items
                      if it.qid in outcomes and it.kind == "backfill"],
         "by_category": by_cat,
+        "implicit": implicit_row,
     }
 
 
@@ -425,6 +502,11 @@ def render_table(retrieval: Optional[Mapping[str, Any]], answers: Optional[Mappi
             lines.append(f"| {cat} | {r['items']} | {r['stored']} | {r['scored']} | {r['hits']} | "
                          f"{_pct(r['hit_rate'])} | {_pct(r['bundle_hit_rate'])} | {r['degraded']} | "
                          f"{r['backfill_items']} | {r['superseded_served']} |")
+        r = retrieval.get("implicit")
+        if r:
+            lines.append(f"| implicit (subset of the above) | {r['items']} | {r['stored']} | {r['scored']} | {r['hits']} | "
+                         f"{_pct(r['hit_rate'])} | {_pct(r['bundle_hit_rate'])} | {r['degraded']} | "
+                         f"{r['backfill_items']} | {r['superseded_served']} |")
         lines.append(f"| **all** | | {retrieval['stored']} | {retrieval['scored']} | {retrieval['hits']} | "
                      f"**{_pct(retrieval['hit_rate'])}** | {_pct(retrieval['bundle_hit_rate'])} | "
                      f"{len(retrieval['degraded'])} | {len(retrieval['backfill'])} | {len(retrieval['superseded_served'])} |")
@@ -446,6 +528,10 @@ def render_table(retrieval: Optional[Mapping[str, Any]], answers: Optional[Mappi
         for cat, r in answers["by_category"].items():
             lines.append(f"| {cat} | {r['items']} | {r['correct']} | {r['dont_know']} | {r['invented']} | "
                          f"{r['false_no_memory']} | {r['missed']} | {r['error'] + r['unjudged']} | {_pct(r['correct_rate'])} |")
+        r = answers.get("implicit")
+        if r:
+            lines.append(f"| implicit (subset of the above) | {r['items']} | {r['correct']} | {r['dont_know']} | {r['invented']} | "
+                         f"{r['false_no_memory']} | {r['missed']} | {r['error'] + r['unjudged']} | {_pct(r['correct_rate'])} |")
         lines.append(f"| **all** | {answers['scored']} | {answers['correct']} | | {len(answers['invented'])} | "
                      f"{len(answers['false_no_memory'])} | | {len(answers['not_measured'])} | **{_pct(answers['correct_rate'])}** |")
         p = answers["passes"]
@@ -456,6 +542,9 @@ def render_table(retrieval: Optional[Mapping[str, Any]], answers: Optional[Mappi
             lines += ["Invented: " + ", ".join(answers["invented"]), ""]
         if answers["false_no_memory"]:
             lines += ["False no-memory: " + ", ".join(answers["false_no_memory"]), ""]
+            by_cause = answers.get("false_no_memory_by_cause") or {}
+            lines += ["False no-memory by cause (search_full = the search ran in full): " + "; ".join(
+                f"{c} {len(q)} ({', '.join(q)})" for c, q in sorted(by_cause.items())), ""]
     backfill_r = (retrieval or {}).get("backfill") or []
     backfill_a = (answers or {}).get("backfill") or []
     if backfill_r or backfill_a:
@@ -474,10 +563,12 @@ def summary_line(run_date: str, retrieval: Optional[Mapping[str, Any]], answers:
         out["retrieval"] = {"hit_rate": retrieval["hit_rate"], "bundle_hit_rate": retrieval["bundle_hit_rate"],
                             "scored": retrieval["scored"],
                             "degraded": len(retrieval["degraded"]),
-                            "by_category": {c: r["hit_rate"] for c, r in retrieval["by_category"].items()}}
+                            "by_category": {c: r["hit_rate"] for c, r in retrieval["by_category"].items()},
+                            "implicit": (retrieval.get("implicit") or {}).get("hit_rate")}
     if answers is not None:
         out["answer"] = {"correct_rate": answers["correct_rate"], "measured": answers["measured"],
                          "invented": len(answers["invented"]), "false_no_memory": len(answers["false_no_memory"]),
+                         "false_no_memory_by_cause": {c: len(q) for c, q in (answers.get("false_no_memory_by_cause") or {}).items()},
                          "by_category": {c: r["correct_rate"] for c, r in answers["by_category"].items()}}
     return out
 

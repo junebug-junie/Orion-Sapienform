@@ -146,3 +146,67 @@ def test_gateway_ask_retries_a_transient_5xx(monkeypatch):
             return await P.gateway_ask(client, "http://gw", "memory_distill", "p", timeout=5)
 
     assert asyncio.run(run()) == "{\"ok\": 1}" and len(calls) == 3
+
+
+def _ask_with(handler, monkeypatch):
+    import httpx
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(P.asyncio, "sleep", no_sleep)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await P.gateway_ask(client, "http://gw", "memory_distill", "p", timeout=5)
+
+    return asyncio.run(run())
+
+
+def test_gateway_ask_caps_retries_and_never_retries_a_4xx_or_timeout(monkeypatch):
+    import httpx
+    import pytest
+
+    calls = []
+
+    def always_502(request):
+        calls.append(1)
+        return httpx.Response(502, json={})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _ask_with(always_502, monkeypatch)
+    assert len(calls) == 4
+
+    calls.clear()
+
+    def bad_request(request):
+        calls.append(1)
+        return httpx.Response(400, json={})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _ask_with(bad_request, monkeypatch)
+    assert len(calls) == 1
+
+    calls.clear()
+
+    def timeout(request):
+        calls.append(1)
+        raise httpx.ReadTimeout("slow")
+
+    with pytest.raises(httpx.ReadTimeout):
+        _ask_with(timeout, monkeypatch)
+    assert len(calls) == 1
+
+
+def test_gateway_ask_retries_a_dropped_connection(monkeypatch):
+    import httpx
+
+    calls = []
+
+    def flaky(request):
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ReadError("dropped")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    assert _ask_with(flaky, monkeypatch) == "{}" and len(calls) == 2

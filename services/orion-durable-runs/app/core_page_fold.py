@@ -102,8 +102,10 @@ class CorePageFolder:
         # The Denver date this process last published a page. orion-sql-writer writes the row
         # asynchronously; a slow or rejecting writer must not make the next tick fold again.
         self._folded_on: date | None = None
-        # An over-cap rejection today: the next attempt's prompt says the word count and asks for a
-        # shorter page (fold.retry_note). Cleared on the next Denver day.
+        # The last real attempt today was over the cap: the next attempt's prompt says the word count
+        # and asks for a shorter page (fold.retry_note). Replaced by the next real reject (cleared when
+        # that one is not over the cap), cleared on a fold, ignored on another Denver day; dry runs
+        # never set it.
         self._retry_note: tuple[date, str] | None = None
         # Shared by every page's folder (main.py passes one lock), so the nightly loop and a manual
         # trigger for another page never hold the fold seat at the same time.
@@ -183,9 +185,9 @@ class CorePageFolder:
         result.stored_text = check.stored_text
         if not check.ok:
             result.decision = "rejected"
-            fresh = retry_note(check.errors)
-            if fresh:
-                self._retry_note = (today, fresh)
+            if not dry_run:   # a dry run never shapes the nightly prompt
+                fresh = retry_note(check.errors, check.sentence_count)
+                self._retry_note = (today, fresh) if fresh else None
             logger.warning("core_page_fold_rejected %s", json.dumps(result.as_dict(with_text=False)))
             return result
         version = top_version + 1
@@ -199,6 +201,7 @@ class CorePageFolder:
             result.decision, result.error = "publish_failed", "bus publish failed"
             return result
         self._folded_on = today
+        self._retry_note = None
         result.decision = "folded"
         logger.info("core_page_folded %s", json.dumps(result.as_dict(with_text=False)))
         return result

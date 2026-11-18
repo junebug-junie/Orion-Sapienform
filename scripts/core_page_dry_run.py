@@ -127,7 +127,7 @@ def main() -> int:
             break
         for err in check.errors[:10]:
             print(f"  - {err}", file=sys.stderr)
-        note = retry_note(check.errors) or note
+        note = retry_note(check.errors, check.sentence_count)
     print("\n=== %s (would be version %d; NOT written) ===\n" % (spec.concept_id, top + 1))
     print("(page text withheld: --no-page)" if args.no_page else check.clean_text)
     print("\n=== check ===")

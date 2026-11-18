@@ -664,7 +664,9 @@ an overnight overhead slice against whole-host totals, and one fix's deploy agai
 two weeks later. Shared project words are not the same thing. Every acting vote now also needs
 `same_referent: yes` (the same PR, fix, pet, or measured quantity over the same scope). Pairs a person
 undid become eval hard negatives automatically, and the eval runs every item twice, because sampled
-votes vary.
+votes vary. **v3.4:** the model alone still said "same referent: yes" on one of them, so a fixed rule
+runs first. When the old row names a PR or issue number that the new row never names, no vote is asked
+and nothing acts.
 
 ### Vetoes attach to the claim
 

@@ -194,8 +194,10 @@ async def read_receipt(self_dir: str, day: date) -> Optional[DreamDayReadV1]:
 # --------------------------------------------------------------------------- refs
 
 
-async def resolve_refs(pool: Any, refs: list[str]) -> dict[str, str]:
-    """{canonical ref: text} for every ref that names a real row. Unknown kinds resolve to nothing."""
+async def resolve_refs(pool: Any, refs: list[str], *, full: bool = False) -> dict[str, str]:
+    """{canonical ref: text} for every ref that names a real row. Unknown kinds resolve to nothing. ``full``: the
+    record's short text plus its detail (what the grounding judge reads); otherwise the short text alone (the
+    memory's stored evidence quote). See orion/memory/dream_day.py RESOLVE_SQL for each kind."""
     out: dict[str, str] = {}
     by_kind = refs_by_kind(refs)
     async with pool.connection() as conn:
@@ -207,7 +209,10 @@ async def resolve_refs(pool: Any, refs: list[str]) -> dict[str, str]:
             for row in await (await conn.execute(sql, params)).fetchall():
                 rid = str(dict(row)["id"])
                 if rid in ids:
-                    out[f"{kind}:{rid}"] = str(dict(row)["text"] or "")
+                    r = dict(row)
+                    text = str(r["text"] or "")
+                    detail = str(r.get("detail") or "")
+                    out[f"{kind}:{rid}"] = f"{text} {detail}".strip() if full and detail else text
     return out
 
 

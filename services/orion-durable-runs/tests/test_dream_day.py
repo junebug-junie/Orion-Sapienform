@@ -320,6 +320,7 @@ class World:
         self.receipt_at = None   # fixed receipt time (an old read), else "now"
         self.judge = judge       # async (prompt, held, timeout) -> {"text", ...}; None = gate off
         self.judged: list[tuple[str, dict, float]] = []
+        self.resolve_fail = 0    # the next N resolves raise (the gate's read comes first)
 
     async def turn(self, req):
         self.turns.append(req)
@@ -338,6 +339,9 @@ class World:
                               digs_chat=4, digs_background=8)
 
     async def resolve(self, refs):
+        if self.resolve_fail:
+            self.resolve_fail -= 1
+            raise RuntimeError("db away")
         return {r: RESOLVED[r] for r in refs if r in RESOLVED}
 
     async def referents(self):
@@ -696,7 +700,8 @@ def test_the_gate_refuses_an_over_claim_and_writes_the_supported_one():
         # The judge ran inside the hold, on the run's lease, once per memory, before the hold was released.
         assert len(world.judged) == 2 and all(h["lease"]["lease_id"] == "h" for _, h, _ in world.judged)
         assert world.releases == ["completed"]
-        assert all(t <= 60.0 for _, _, t in world.judged)
+        from app.dream_day_graph import GROUNDING_CALL_TIMEOUT_SEC
+        assert all(0 < t <= GROUNDING_CALL_TIMEOUT_SEC for _, _, t in world.judged)
         stored = world.stored
         assert [m.statement for m in stored["result"].memories] == [SUPPORTED]
         fields = stored["fields"]
@@ -743,3 +748,83 @@ def test_gate_off_keeps_the_ref_check_alone():
         assert world.stored["fields"]["grounding"]["enabled"] is False
         assert world.turns[0].timeout_sec > 900 - 30 - 1
     asyncio.run(scenario())
+
+
+def test_the_gate_stops_asking_when_the_attempt_runs_out_of_time():
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    async def scenario():
+        world = _gate_world([verdict(True), verdict(True)])
+        inner = world.judge
+
+        async def slow(prompt):
+            world.now += timedelta(seconds=900)      # the first call eats the rest of the attempt
+            return await inner(prompt)
+        world.judge = slow
+        result = await start_and_grant(world, InMemorySaver())
+        g = world.stored["fields"]["grounding"]
+        assert len(world.judged) == 1                  # the second memory was never asked
+        assert [v["status"] for v in g["verdicts"]] == ["supported", "unjudged"]
+        assert g["verdicts"][1]["error"] == "no_time_left"
+        assert [m.statement for m in world.stored["result"].memories] == [OVERCLAIM]
+        assert result["status"] == "completed"
+    asyncio.run(scenario())
+
+
+def test_a_failed_read_in_the_gate_leaves_every_memory_unjudged():
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    async def scenario():
+        world = _gate_world([verdict(True), verdict(True)])
+        world.resolve_fail = 1                         # the gate's own read fails; persist's read works
+        result = await start_and_grant(world, InMemorySaver())
+        assert result["status"] == "completed" and world.judged == [] and len(world.turns) == 1
+        assert world.stored["result"].memories == [] and result["produced"] is False
+        g = world.stored["fields"]["grounding"]
+        assert g["unjudged"] == 2 and g["supported"] == 0
+    asyncio.run(scenario())
+
+
+def test_a_flag_flip_between_dream_and_persist_never_opens_the_gate():
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    async def scenario():
+        # Dreamt with the gate off (or before it existed), persisted with it on: no verdicts, nothing written.
+        world = _gate_world([verdict(True), verdict(True)])
+        judge, world.judge, world.persist_fail = world.judge, None, 1
+        saver = InMemorySaver()
+        result = await start_and_grant(world, saver)
+        assert result["retry_node"] == "persist" and world.stored is None
+        world.judge = judge
+        result = await after_backoff(world, saver)
+        assert result["status"] == "completed" and world.judged == []
+        assert world.stored["result"].memories == [] and world.stored["fields"]["grounding"]["unjudged"] == 2
+
+        # Dreamt with the gate on, persisted after it was turned off: the run's own verdicts still gate it.
+        world = _gate_world([verdict(False, ["the kids"]), verdict(True)])
+        world.persist_fail = 1
+        saver = InMemorySaver()
+        result = await start_and_grant(world, saver)
+        assert result["retry_node"] == "persist" and len(world.judged) == 2
+        world.judge = None
+        result = await after_backoff(world, saver)
+        assert result["status"] == "completed"
+        assert [m.statement for m in world.stored["result"].memories] == [SUPPORTED]
+        assert world.stored["fields"]["memories_unsupported"] == 1
+    asyncio.run(scenario())
+
+
+def test_a_nul_in_a_verdict_never_reaches_the_jsonb_row():
+    # Postgres jsonb refuses a real NUL character (it would fail the night's row on every retry).
+    answers = [{"text": '{"supported": false, "unsupported_claims": ["the kids\\u0000"]}', "finish_reason": "stop"},
+               {"text": '{"supported": false, "unsupported_claims": ["x"]}\x00', "finish_reason": "stop"}]
+
+    async def ask(prompt):
+        return answers.pop(0)
+    out = asyncio.run(judge_memories([CheckedMemory(OVERCLAIM, "happened", [EXP]),
+                                      CheckedMemory(SUPPORTED, "happened", [ACT])], RESOLVED, ask))
+    assert out[0]["unsupported_claims"] == ["the kids"] and out[1]["unsupported_claims"] == ["x"]
+    assert all("\x00" not in str(v) for row in out for v in row.values())

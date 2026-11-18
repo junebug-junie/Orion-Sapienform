@@ -185,7 +185,7 @@ def rejudge(memories: list[dict[str, Any]], dsn: str, gateway: str, route: str) 
         for m in memories:
             refs = [c for c in (canonical_ref(e["ref"]) for e in (m.get("evidence") or [])) if c]
             checked.append(CheckedMemory(statement=" ".join(m["statement"].split()), purpose=m["purpose"], refs=refs))
-        resolved = await resolve_refs(ReadOnlyPool(dsn), sorted({r for c in checked for r in c.refs}))
+        resolved = await resolve_refs(ReadOnlyPool(dsn), sorted({r for c in checked for r in c.refs}), full=True)
         verdicts = await judge_memories(checked, resolved, gateway_ask(gateway, route))
         for m, v in zip(memories, verdicts):
             v["memory_id"] = m["memory_id"]

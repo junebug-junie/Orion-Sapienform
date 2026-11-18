@@ -139,6 +139,9 @@ class DreamDayDeps:
     # The grounding gate's model call: (prompt, held state, timeout_sec) -> {"text", "finish_reason"} on the run's
     # own hold (DREAM_DAY_ROUTE, the local lane). None = the gate is off (DREAM_DAY_GROUNDING_GATE_ENABLED=false).
     judge: Optional[Callable[[str, dict[str, Any], float], Awaitable[dict[str, Any]]]] = None
+    # (canonical refs) -> {canonical ref: the record's FULL text} for the judge (short text + detail). None: the
+    # judge reads ``resolve_refs``' text.
+    resolve_ref_texts: Optional[Callable[[list[str]], Awaitable[dict[str, str]]]] = None
 
 
 # --------------------------------------------------------------------------- the prompt
@@ -328,8 +331,10 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             return (deadline - admission.now()).total_seconds()
 
         try:
-            resolved = await deps.resolve_refs(answer_refs(parsed.answer))
-        except Exception as exc:  # noqa: BLE001
+            resolve = deps.resolve_ref_texts or deps.resolve_refs
+            # Bounded: a hung read here must not outlast the attempt (that would re-run the turn).
+            resolved = await asyncio.wait_for(resolve(answer_refs(parsed.answer)), timeout=max(1.0, time_left()))
+        except Exception as exc:  # noqa: BLE001 -- includes the timeout: every memory unjudged
             logger.warning("dream_day_grounding_resolve_failed run=%s", held.get("run_id"), exc_info=True)
             return [{"statement": " ".join(m.statement.split()), "purpose": m.purpose, "refs": list(m.refs),
                      "status": "unjudged", "unsupported_claims": [], "raw": None,
@@ -352,7 +357,8 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
         brief = DreamDayBriefV1.model_validate(state["brief"])
         material = DreamDayMaterialV1.model_validate(state["material"])
         window = attempt_timeout_sec(state, brief.timeout_sec, admission.now())
-        reserve = GROUNDING_RESERVE_SEC if deps.judge is not None else 0.0
+        # A quarter of the window at most: a late retry with a short window still gets most of it for the turn.
+        reserve = min(GROUNDING_RESERVE_SEC, 0.25 * window) if deps.judge is not None else 0.0
         turn_timeout = max(1.0, window - TURN_REPLY_GRACE_SEC - reserve)
         correlation_id = harness_step_correlation_id(state, DREAM_DAY_STEP_KEY)
         turn_meta = {"turn_correlation_id": correlation_id, "step_key": DREAM_DAY_STEP_KEY}

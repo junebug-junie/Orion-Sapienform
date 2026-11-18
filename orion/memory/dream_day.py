@@ -12,7 +12,10 @@ Rules, all code:
 * **Every ref must resolve.** An item (memory, plan item, the day paragraph) with a ref of an unsupported
   kind, or one that does not resolve, is dropped and counted. A memory and a ``new`` concern need at least
   one ref; a ``keep``/``drop`` needs a reason and a held ``concern_id``, and its refs (if any) must resolve.
-* **At most 5 memories** (``DREAM_DAY_MAX_MEMORIES``) and **at most 1 new concern**: the rest are counted.
+* **At most 5 memories** (``DREAM_DAY_MAX_MEMORIES``) and **at most 1 new concern**: the rest are counted. The
+  cap is applied before the grounding gate on purpose: only the first 5 are judged, and an unsupported one still
+  uses its slot (fail-closed; the judge's calls stay bounded inside the hold).
+* **The grounding gate** (bottom of this module): only a memory the local judge says its records show is written.
 * **Memories go through orion.memory.episode.validate** (statement length, duplicates, voice/channel,
   stakes, names Juniper never said), with each resolved ref's own text as its evidence. Voice is
   ``orion_thought`` (Orion's own), channel ``dream``. Ids are deterministic from (day, index), so a replayed
@@ -49,35 +52,39 @@ EVIDENCE_SOURCE_KIND = "dream_ref"
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n\s*```", re.S | re.I)
 
-# One SELECT per ref kind: (ref id) -> the record's text. Every query reads ids only from the ``ids`` array
-# parameter. ``chat`` and ``chat_turn`` both open a chat_history_log row by id or correlation id. The text is
-# what the grounding judge (``grounding_prompt``) and the validator's evidence quote read, so each kind gives
-# the most of its own record it can (cut in SQL, so one huge row never floods the prompt):
-#   experience        source_kind: label [verdict] + the event's payload_json (many kinds carry no label;
-#                     the payload holds their facts: entities seen, minutes played, waited ms)
-#   act               actor verb object + its outcome note
-#   dream_cycle       trigger, status, link count and the cycle's note
-#   dream_hypothesis  the claim and why
-#   harness_turn_trace  the turn's workflow and time + its final reply text (run_artifact.final_text)
-#   chat_turn         Juniper's prompt and Orion's response (up to 1,000 characters each)
+# One SELECT per ref kind: (ref id) -> ``text``, the record's short text (what a memory's stored evidence quote
+# and the validator's names check read, unchanged since Patch 2), and ``detail``, the rest of the record the
+# grounding judge also reads (``resolve_refs(..., full=True)``: text + " " + detail). Every query reads ids only
+# from the ``ids`` array parameter. ``chat`` and ``chat_turn`` both open a chat_history_log row by id or
+# correlation id. What each kind gives (cut in SQL, so one huge row never floods the judge's prompt):
+#   experience          text: source_kind: label [verdict]   detail: the event's payload_json (many kinds carry no
+#                       label; the payload holds their facts: entities seen, minutes played, waited ms)
+#   act                 text: actor verb object: outcome note           detail: none
+#   dream_cycle         text: trigger, status, link count, the note     detail: none
+#   dream_hypothesis    text: the claim because why                     detail: none
+#   harness_turn_trace  text: the turn's workflow and time   detail: its final reply text (run_artifact.final_text)
+#   chat_turn           text: Juniper's prompt and Orion's response, 300 characters each
+#                       detail: the same turn up to 1,000 characters each
 REF_TEXT_CHARS = 1500
 RESOLVE_SQL: dict[str, str] = {
-    "experience": "SELECT event_id AS id, left(coalesce(source_kind, '') || ': ' || coalesce(label, '') "
-                  "|| coalesce(' [' || verdict || ']', '') || ' ' || coalesce(payload_json::text, ''), 1500) AS text "
-                  "FROM temporal_self_event WHERE event_id = ANY(%s)",
-    "act": "SELECT act_id AS id, left(actor || ' ' || verb || ' ' || coalesce(object_ref, '') "
-           "|| coalesce(': ' || outcome_note, ''), 1500) AS text FROM grammar_acts WHERE act_id = ANY(%s)",
+    "experience": "SELECT event_id AS id, coalesce(source_kind, '') || ': ' || coalesce(label, '') "
+                  "|| coalesce(' [' || verdict || ']', '') AS text, left(coalesce(payload_json::text, ''), 1200) "
+                  "AS detail FROM temporal_self_event WHERE event_id = ANY(%s)",
+    "act": "SELECT act_id AS id, actor || ' ' || verb || ' ' || coalesce(object_ref, '') "
+           "|| coalesce(': ' || outcome_note, '') AS text, '' AS detail FROM grammar_acts WHERE act_id = ANY(%s)",
     "dream_cycle": "SELECT cycle_id AS id, 'sleep ' || coalesce(trigger, '') || ' ' || status || ', '"
-                   " || coalesce(hypothesis_count, 0) || ' links: ' || coalesce(cycle_json->>'note', '') AS text "
-                   "FROM dream_cycle WHERE cycle_id = ANY(%s)",
-    "dream_hypothesis": "SELECT hypothesis_id AS id, coalesce(claim, '') || ' because ' || coalesce(why, '') AS text "
-                        "FROM dream_hypothesis WHERE hypothesis_id = ANY(%s)",
+                   " || coalesce(hypothesis_count, 0) || ' links: ' || coalesce(cycle_json->>'note', '') AS text, "
+                   "'' AS detail FROM dream_cycle WHERE cycle_id = ANY(%s)",
+    "dream_hypothesis": "SELECT hypothesis_id AS id, coalesce(claim, '') || ' because ' || coalesce(why, '') AS text, "
+                        "'' AS detail FROM dream_hypothesis WHERE hypothesis_id = ANY(%s)",
     "harness_turn_trace": "SELECT correlation_id AS id, 'harness turn ' || coalesce(workflow, 'chat') || ' at ' "
-                          "|| created_at::text || coalesce(': ' || left(run_artifact->>'final_text', 1200), '') "
-                          "AS text FROM harness_turn_trace WHERE correlation_id = ANY(%s)",
-    "chat_turn": "SELECT x.id, x.text FROM (SELECT unnest(ARRAY[c.id, c.correlation_id]) AS id, "
-                 "'Juniper: ' || left(coalesce(c.prompt, ''), 1000) || ' / Orion: ' || left(coalesce(c.response, ''), 1000) "
-                 "AS text FROM chat_history_log c WHERE c.id = ANY(%s) OR c.correlation_id = ANY(%s)) x",
+                          "|| created_at::text AS text, coalesce('reply: ' || left(run_artifact->>'final_text', 1200), '') "
+                          "AS detail FROM harness_turn_trace WHERE correlation_id = ANY(%s)",
+    "chat_turn": "SELECT x.id, x.text, x.detail FROM (SELECT unnest(ARRAY[c.id, c.correlation_id]) AS id, "
+                 "'Juniper: ' || left(coalesce(c.prompt, ''), 300) || ' / Orion: ' || left(coalesce(c.response, ''), 300) "
+                 "AS text, 'full turn: Juniper: ' || left(coalesce(c.prompt, ''), 1000) || ' / Orion: ' "
+                 "|| left(coalesce(c.response, ''), 1000) AS detail "
+                 "FROM chat_history_log c WHERE c.id = ANY(%s) OR c.correlation_id = ANY(%s)) x",
 }
 REF_KIND_ALIASES = {"chat": "chat_turn"}
 
@@ -467,7 +474,8 @@ async def judge_memories(memories: Iterable[CheckedMemory], resolved: Mapping[st
         except Exception as exc:  # noqa: BLE001 -- a failed call: unjudged, never written
             row["error"] = f"call_failed: {type(exc).__name__}: {exc}"[:300]
             continue
-        text = str((answer or {}).get("text") or "")
+        # Postgres jsonb refuses NUL: one in a verdict would fail the night's row insert on every retry.
+        text = str((answer or {}).get("text") or "").replace("\x00", "")
         row["raw"] = text[:GROUNDING_RAW_CHARS]
         if (answer or {}).get("finish_reason") == "length":
             row["error"] = "verdict_cut_at_max_tokens"
@@ -477,7 +485,7 @@ async def judge_memories(memories: Iterable[CheckedMemory], resolved: Mapping[st
             row["error"] = "verdict_unparseable"
             continue
         row["status"] = "supported" if verdict.supported else "unsupported"
-        row["unsupported_claims"] = verdict.unsupported_claims
+        row["unsupported_claims"] = [c.replace("\x00", "") for c in verdict.unsupported_claims]
     return out
 
 

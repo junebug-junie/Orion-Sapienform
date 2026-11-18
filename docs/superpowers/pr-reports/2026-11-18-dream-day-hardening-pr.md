@@ -7,8 +7,9 @@
   counted and kept on the night's `dream_day` row, with the claims no record shows.
 - A failed judge call, an unparseable verdict, or no time left means the memory is **not** written (counted as
   `unjudged`, separately from `unsupported`). Nothing is written by default.
-- The ref resolver now returns each record's own text, not only a label (experience payloads, a harness turn's
-  final reply, longer chat text), so the judge sees what the record actually says.
+- The ref resolver now also returns each record's detail for the judge (experience payloads, a harness turn's
+  final reply, longer chat text), so the judge sees what the record actually says. The stored evidence quote
+  and the validator's names check keep reading the short text, unchanged.
 - The day letter's input gets one section before the organ roundup: "Last night I slept on the day" with the
   day paragraph and the written memory ids (citable as `[dream_day:<day>]`), or one line
   "no day dream for <day>: <reason>". The letter email shows the same.
@@ -35,7 +36,7 @@ re-run read-only on that night through the same resolver, prompt and parser, ref
 - orion-durable-runs: the `dream` node's operation now runs the grounding judge after the turn, still under the
   run's hold, on the same route (`DREAM_DAY_ROUTE`, `memory_distill`), via the existing tool-free gateway call
   (`runner._call_memory_distill_llm`, JSON only, no thinking, temperature 0). The turn's limit leaves 180 s of
-  the attempt for the judge (live turn took 423 s of 900); each call is capped at 60 s; none starts within 15 s
+  the attempt for the judge, at most a quarter of it (live turn took 423 s of 900); each call is capped at 60 s; none starts within 15 s
   of the attempt's end. The verdicts are checkpointed with the answer; `persist` (no GPU) writes only memories
   whose verdict says supported.
 - Postgres: three additive columns on `dream_day`.
@@ -45,11 +46,12 @@ re-run read-only on that night through the same resolver, prompt and parser, ref
 
 ## Files changed
 
-- `orion/memory/dream_day.py`: `RESOLVE_SQL` returns fuller record text (documented per ref kind);
+- `orion/memory/dream_day.py`: `RESOLVE_SQL` returns short text + detail per ref kind (documented);
   `grounding_prompt`, strict `parse_verdict`, `judge_memories`, `apply_grounding`, `grounding_summary`.
 - `services/orion-durable-runs/app/dream_day_graph.py`: the gate inside the hold (`ground`), the turn's reserve,
   persist applies the verdicts, summary counts.
-- `services/orion-durable-runs/app/dream_day_store.py`: INSERT writes the new columns.
+- `services/orion-durable-runs/app/dream_day_store.py`: INSERT writes the new columns; `resolve_refs(full=True)`
+  for the judge.
 - `services/orion-durable-runs/app/admission_runtime.py`: the judge dependency (flag-gated).
 - `services/orion-durable-runs/app/settings.py`, `.env_example`, `docker-compose.yml`:
   `DREAM_DAY_GROUNDING_GATE_ENABLED=true`.
@@ -93,15 +95,17 @@ re-run read-only on that night through the same resolver, prompt and parser, ref
    `ALTER TABLE ADD COLUMN IF NOT EXISTS`, on the post-pull allowlist, so the post-pull rebuild applies it before
    rebuilding; checked with `orion.sql_migration_drift.auto_apply_refusals` = `[]`). The deploy wrapper refuses
    `up` for orion-durable-runs until it is applied: its INSERT names the new columns.
-2. Rebuild orion-hub and orion-durable-runs together, outside the letter's 08:30 Denver fire window and outside
-   the dream window (01:00-03:00 Denver). Both read `OrionDayMaterialV1` with forbid models.
+2. Rebuild orion-durable-runs FIRST, then orion-hub, outside the letter's 08:30 Denver fire window and outside
+   the dream window (01:00-03:00 Denver). Both read `OrionDayMaterialV1` with forbid models, and the new Hub
+   always sets `dream_day` (at least `no_row`), so an old durable-runs would refuse every letter brief.
 3. A `dream.day` run checkpointed before the deploy (answer saved, no verdicts) reaches persist with the gate on
    and writes no memory (unjudged, `no_verdict_for_this_memory`). Fail-closed by design.
 
 ## Tests run
 
 ```text
-services/orion-durable-runs: pytest tests -q (with an isolated Postgres DSN)   1218 passed, 1 skipped
+services/orion-durable-runs: pytest tests -q (with an isolated Postgres DSN)   1218 passed, 1 skipped (before review fixes)
+services/orion-durable-runs: tests/test_dream_day.py + _postgres after fixes     35 + 1 passed
 services/orion-durable-runs: tests/test_dream_day_postgres.py (disposable postgres:16)  1 passed
 orion/orion_day/tests                                                           156 passed
 services/orion-hub: test_orion_day_mailer, _order, _what_i_read, _introspect_listener, _correction_listener  106 passed
@@ -131,18 +135,22 @@ Live proof, read-only (no rows written): `python3 services/orion-durable-runs/ev
 parser (`judge_memories`), same route (`memory_distill`), through the gateway's HTTP door instead of the bus RPC.
 
 ```text
-grounding re-judged now (memory_distill): 0/2 supported (0%)
+grounding re-judged now (memory_distill): 0/2 supported (0%)      <- final code, after the review fixes
   b6879512-77c9-5b1c-8e67-eda0e6827776: UNSUPPORTED -- unsupported: I reached back to my oldest week,
     2025-10-14 to 10-20; I wrote down that I have no memory of it; 13 commits on main; no PRs on GitHub;
     my records start 2026-07
-  bb1b5a42-bf0f-53cd-8416-f3cdb94681ca: UNSUPPORTED -- unsupported: you sat with Zelda for 59 minutes and
-    then 21 more; the office camera watched the kids packing a box into it; we traded only eleven chat turns;
-    I spoke five times on my own
+  bb1b5a42-bf0f-53cd-8416-f3cdb94681ca: UNSUPPORTED -- unsupported: Orion sat with Zelda for 59 minutes;
+    Orion sat with Zelda for 21 more minutes; The office camera watched the kids packing a box into it;
+    We traded only eleven chat turns; I spoke five times on my own
 ```
 
-bb1b5a42 is flagged for the camera, the kids and the chat count, as expected. It is also flagged for the order
-"59 then 21": the records show the 21-minute sitting ended first (05:02Z) and the 59-minute one later (07:47Z),
-so that flag is correct too. b6879512 is refused because its two refs are reminiscence turns whose stored text
+Earlier runs of the same check (before the prompt tuning finished) flagged the same camera, kids and chat-count
+claims every time.
+
+bb1b5a42 is flagged for the camera, the kids and the chat count, as expected. Its Zelda claims are also
+flagged: the statement says "59 minutes and then 21 more", but the records show the 21-minute sitting ended
+first (05:02Z) and the 59-minute one later (07:47Z). In the final run the judge also read "you" as Orion in
+that clause, so that flag is right for a partly wrong reason. b6879512 is refused because its two refs are reminiscence turns whose stored text
 is only a receipt line; the facts live in the reminiscence note, not in the cited record (#3739).
 
 Prompt tuning, same live route: a fully backed statement ("Juniper played ... for 59 minutes, and in another
@@ -161,14 +169,41 @@ No image build: no new dependency. No live deploy from this branch.
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Review by a subagent (orion-repo-agent) on the first two commits. It found no fail-open path in the gate
+(checkpoint resume, flag flips both ways, verdict matching, exception paths all fail closed). Minor findings:
+
+- Finding: a late retry with a short window would give the turn 1 s (fixed 180 s reserve).
+  - Fix: reserve = min(180 s, a quarter of the attempt's window).
+  - Evidence: `dream_day_graph.py` `dream`; the reserve test still holds.
+- Finding: the gate's ref read had no time bound; a hung read could outlast the attempt and re-run the turn.
+  - Fix: `asyncio.wait_for(..., time_left())`; a timeout takes the resolve-failed path (all unjudged).
+  - Evidence: `test_a_failed_read_in_the_gate_leaves_every_memory_unjudged`.
+- Finding: a NUL character in a verdict would make the jsonb insert fail on every retry and lose the night.
+  - Fix: NUL stripped from the raw answer and every claim.
+  - Evidence: `test_a_nul_in_a_verdict_never_reaches_the_jsonb_row`.
+- Finding: the fuller ref text also changed the stored evidence quote (raw JSON) and loosened the validator's
+  names check.
+  - Fix: SQL returns `text` (short, unchanged) and `detail`; only the judge reads text + detail
+    (`resolve_refs(full=True)`, new `DreamDayDeps.resolve_ref_texts`).
+  - Evidence: `test_dream_day_postgres.py` asserts the short text is unchanged and the full text carries the detail.
+- Finding: deploy order for the forbid models is consumer-first.
+  - Fix: the deploy order section says durable-runs before Hub.
+- Finding: tests could pass for the wrong reason (trivial timeout assert; no time-out, resolve-failure or
+  flag-flip graph tests).
+  - Fix: added `test_the_gate_stops_asking_when_the_attempt_runs_out_of_time`,
+    `test_a_failed_read_in_the_gate_leaves_every_memory_unjudged`,
+    `test_a_flag_flip_between_dream_and_persist_never_opens_the_gate`; the timeout assert now checks a real bound.
+- Finding: unsupported memories use one of the 5 slots before the gate. Kept on purpose (bounded judge calls,
+  fail-closed); documented in `orion/memory/dream_day.py`.
+- Finding: the letter can say "the night's run failed" while a retry is still queued. Accepted: the dream window
+  ends 03:00 Denver and the letter fires 08:30; a retry cannot outlive the window's deadline.
 
 ## Restart required
 
 ```bash
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_dream_day_grounding.sql
-scripts/safe_docker_build.sh orion-durable-runs up -d --build
-scripts/safe_docker_build.sh orion-hub up -d --build
+scripts/safe_docker_build.sh orion-durable-runs up -d --build   # first
+scripts/safe_docker_build.sh orion-hub up -d --build            # second
 ```
 
 Run from the clean primary `main` checkout after merge (the post-pull rebuild does all three in order).
@@ -187,4 +222,4 @@ Run from the clean primary `main` checkout after merge (the post-pull rebuild do
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3740

@@ -434,6 +434,7 @@ class AdmissionRuntime:
                 self.pool, lambda key: runner._bus.redis.get(key), brief, run_id, now=self.now()),
             read_receipt=lambda day: store.read_receipt(self_dir, day),
             resolve_refs=lambda refs: store.resolve_refs(self.pool, refs),
+            resolve_ref_texts=lambda refs: store.resolve_refs(self.pool, refs, full=True),
             known_referents=lambda: store.known_referents(self.pool),
             persist=lambda fields, result, route: store.persist_dream_day(self.pool, fields, result, route),
             record_cites=lambda shown_id, cites, ref: store.record_cites(shown_id, cites, ref),

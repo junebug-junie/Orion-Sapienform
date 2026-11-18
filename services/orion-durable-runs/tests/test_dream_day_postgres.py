@@ -81,10 +81,17 @@ def test_every_ref_kind_resolves_and_persist_writes_once():
     async def body(pool):
         resolved = await resolve_refs(pool, refs)
         assert set(resolved) == set(refs[:7])
-        # The grounding judge reads each record's own text, not only a label (orion/memory/dream_day.py RESOLVE_SQL).
-        assert "3588.8" in resolved["experience:reverie_chain:r1"]
-        assert resolved["harness_turn_trace:c-1"].endswith(": saved rm:2026-11-17:otherwise")
+        # The short text (the stored evidence quote) is unchanged; the grounding judge reads the record's detail too
+        # (orion/memory/dream_day.py RESOLVE_SQL).
+        assert resolved["experience:reverie_chain:r1"] == "reverie_chain: an open loop"
         assert resolved["chat_turn:chat-1"] == "Juniper: hello / Orion: hi"
+        full = await resolve_refs(pool, refs, full=True)
+        assert set(full) == set(resolved)
+        assert full["experience:reverie_chain:r1"].startswith("reverie_chain: an open loop ")
+        assert "3588.8" in full["experience:reverie_chain:r1"]
+        assert full["harness_turn_trace:c-1"].endswith("reply: saved rm:2026-11-17:otherwise")
+        assert full["act:act_1"] == resolved["act:act_1"]
+        assert full["chat_turn:chat-1"].endswith("full turn: Juniper: hello / Orion: hi")
         text = ('{"memories": [{"statement": "I read a paper and my reverie kept an open loop.", '
                 '"refs": ["act:act_1", "experience:reverie_chain:r1"]}], "plan": [], '
                 '"day": {"text": "A quiet day.", "refs": ["dream_cycle:dc-1"]}}')

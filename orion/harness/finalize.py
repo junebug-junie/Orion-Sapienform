@@ -1868,8 +1868,13 @@ async def emit_finalize_failure_artifacts(
     system_error_publish_fn: PublishFn | None = None,
     finalize_loop_retried: bool = False,
     finalize_loop_tool: str | None = None,
+    response_repair_ran: bool = False,
+    response_repair_reason: str | None = None,
 ) -> HarnessFinalizePartialState:
-    """Emit degraded 6b outcome + 7 closure + homeostatic system error on 5c failure."""
+    """Emit degraded 6b outcome + 7 closure + homeostatic system error on 5c failure.
+
+    ``response_repair_ran``: the failure happened in a repair 5b required, so the
+    outcome says a repair ran and failed (finalize_failed + failure_reason)."""
     outcome_molecule = await emit_turn_outcome_molecule(
         correlation_id=correlation_id,
         thought=thought,
@@ -1879,6 +1884,8 @@ async def emit_finalize_failure_artifacts(
         draft_text=draft_text,
         final_text="",
         finalize_changed=False,
+        response_repair_ran=response_repair_ran,
+        response_repair_reason=response_repair_reason,
         grammar_receipts=grammar_receipts,
         finalize_failed=True,
         failure_reason=_excerpt(error, max_len=500),
@@ -2065,6 +2072,9 @@ async def run_harness_finalize_chain(
     )
     verdict_molecule_id = _verdict_molecule_id(verdict_molecule)
 
+    repair_required = (
+        not preserve_structured_output and not cut_short and needs_response_repair(reflection)
+    )
     try:
         if preserve_structured_output:
             # Reading Stage 1/2 are machine-to-machine calls. Their consumer
@@ -2181,6 +2191,10 @@ async def run_harness_finalize_chain(
             system_error_publish_fn=system_error_publish_fn,
             finalize_loop_retried=finalize_loop_retried,
             finalize_loop_tool=finalize_loop_tool,
+            # The try block above is only the repair / passthrough step: when 5b required
+            # repair, this failure is that repair failing, and the trace must say it ran.
+            response_repair_ran=repair_required,
+            response_repair_reason=response_repair_reason_for(reflection) if repair_required else None,
         )
         raise HarnessFinalizeFailedError(str(exc), partial=partial) from exc
     grounded_final_text = enforce_reading_receipt_grounding(

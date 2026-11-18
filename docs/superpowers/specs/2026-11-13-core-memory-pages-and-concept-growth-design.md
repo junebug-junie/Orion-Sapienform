@@ -659,6 +659,13 @@ Juniper: "don't turn it off, make it world class." What changed, all on local mo
 - **Audit trail.** One append-only `memory_supersede_run` row per run (ids, legs, votes, verdicts;
   no statements) and an append-only pass history next to the manifest, with a per-watched-row trace.
 
+**v3.2 (2026-11-18).** Juniper rejected both v3.1 dry-run proposals, each a unanimous "correction":
+an overnight overhead slice against whole-host totals, and one fix's deploy against a different fix
+two weeks later. Shared project words are not the same thing. Every acting vote now also needs
+`same_referent: yes` (the same PR, fix, pet, or measured quantity over the same scope). Pairs a person
+undid become eval hard negatives automatically, and the eval runs every item twice, because sampled
+votes vary.
+
 ### Vetoes attach to the claim
 
 *(Changes "Corrections, not approval" above.)* A Hub veto rejects the **claim**, not only the

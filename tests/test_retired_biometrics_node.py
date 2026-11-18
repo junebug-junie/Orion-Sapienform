@@ -5,13 +5,13 @@ report 2026-08-20T22:43:26Z, yet still a node in `substrate_node_biometrics_proj
 (cached `expected_online: true`, 8 frozen `pressure_hints`) and in
 `substrate_active_node_pressure_projection` (stale `availability` pressure, `strain`
 re-reinforced on every tick). Its frozen keys added zero deltas to every
-`biometrics_prediction_error()` mean. Nothing rewrote the entry because a host that
-no longer exists never sends the event that would.
+`biometrics_prediction_error()` mean (that metric was retired 2026-11-18, #3575). Nothing
+rewrote the entry because a host that no longer exists never sends the event that would.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -36,7 +36,6 @@ from orion.substrate.biometrics_loop.pressure_organ import (
     sweep_suppressible_nodes,
 )
 from orion.substrate.biometrics_loop.pressure_reducer import reduce_node_pressure_candidates
-from orion.substrate.prediction_error import biometrics_prediction_error
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO_ROOT / "config" / "biometrics" / "node_catalog.yaml"
@@ -258,32 +257,6 @@ def test_sweeps_never_target_a_retired_host(catalog: NodeCatalog) -> None:
     assert "atlas" not in sweep_suppressible_nodes(
         node_bio=bio, active_pressure=pressure, catalog=catalog, now=NOW
     )
-
-
-# ------------------------------------------------ the metric it was diluting
-
-
-def test_frozen_retired_keys_no_longer_dilute_biometrics_prediction_error(
-    catalog: NodeCatalog,
-) -> None:
-    """With atlas present, its 8 frozen keys add 8 zero deltas to the mean."""
-    prev, _ = _live_shape()
-    curr = prev.model_copy(deep=True)
-    curr.nodes["circe"].pressure_hints = {"strain": 0.59, "gpu": 0.84}  # +0.30, +0.60
-
-    diluted = biometrics_prediction_error(prev, curr)
-    pruned_prev, _, _ = prune_retired_nodes(
-        node_bio=prev, pressure=_pressure({}), catalog=catalog, now=NOW
-    )
-    pruned_curr, _, _ = prune_retired_nodes(
-        node_bio=curr, pressure=_pressure({}), catalog=catalog, now=NOW
-    )
-    clean = biometrics_prediction_error(pruned_prev, pruned_curr)
-
-    # mean(|d|) = 0.90/10 = 0.09 -> 0.30 with atlas; 0.90/2 = 0.45 -> saturates without.
-    assert diluted == pytest.approx(0.09 / 0.30)
-    assert clean == pytest.approx(1.0)
-    assert ATLAS_LAST_SEEN < NOW - timedelta(days=50)
 
 
 def test_absence_sweep_path_does_not_claim_a_node_bio_prune_it_never_saves(

@@ -237,10 +237,11 @@ def test_retired_pe_step5_producers_stay_deleted(name):
     assert name not in defined
 
 
-def test_active_inference_domains_are_exactly_the_two_live_ones():
-    # chat left 2026-11-13 (PE suite rebuild step 6; successor node:prediction.chat_turn).
-    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution", "biometrics"}
-    assert set(_domain_map().values()) == {"execution", "biometrics"}
+def test_active_inference_domains_are_exactly_the_live_one():
+    # chat left 2026-11-13 (PE suite rebuild step 6; successor node:prediction.chat_turn),
+    # biometrics 2026-11-18 (step 6, #3575; successors node:prediction.body_joint / .room_joint).
+    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution"}
+    assert set(_domain_map().values()) == {"execution"}
 
 
 class TestTheGateHasTeeth:
@@ -254,7 +255,6 @@ class TestTheGateHasTeeth:
     _LITERAL = (
         "_PREDICTION_ERROR_DOMAIN_NODE_IDS = {\n"
         '    "node:substrate.execution": "execution",\n'
-        '    "node:substrate.biometrics": "biometrics",\n'
         "}\n"
     )
 

@@ -2,9 +2,10 @@
 
 athena's ``cabinet_*`` pressure hints (cabinet sensor board + ambient microphone) read the
 room around the machines. Live 2026-11-12 they were 8 of the 26 keys averaged into
-``node:substrate.biometrics``. These tests pin that the two generic readers of node hints
--- the biometrics surprise number and the pressure organ -- no longer see them, while the
-projection still carries them for the named consumers (field digester, spike consumer).
+``node:substrate.biometrics``. These tests pin that the generic reader of node hints -- the
+pressure organ -- no longer sees them, while the projection still carries them for the named
+consumers (field digester, spike consumer). (The biometrics surprise number, the other reader,
+was retired 2026-11-18 with its node, #3575.)
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from orion.schemas.biometrics_projection import (
     NodeBiometricsProjectionV1,
     NodeBiometricsStateV1,
 )
-from orion.schemas.prediction_error_definitions import prediction_error_definition_version
 from orion.substrate.biometrics_loop.grammar_extract import _CABINET_ROLE_TO_HINT
 from orion.substrate.biometrics_loop.pressure_organ import (
     build_absence_trigger_event,
@@ -34,7 +34,6 @@ from orion.substrate.biometrics_loop.room_hints import (
     machine_body_hints,
 )
 from orion.substrate.cabinet_ambient_spike_consumer import HINT_KEY as SPIKE_HINT_KEY
-from orion.substrate.prediction_error import _THRESHOLD, biometrics_prediction_error
 
 REPO = Path(__file__).resolve().parents[1]
 T0 = datetime(2026, 11, 12, 3, 0, 0, tzinfo=timezone.utc)
@@ -103,31 +102,17 @@ def test_a_new_cabinet_key_is_still_kept_out() -> None:
     assert machine_body_hints({"cabinet_co2_activity": 0.9, "gpu": 0.1}) == {"gpu": 0.1}
 
 
-def test_room_only_change_reads_calm() -> None:
-    """Someone walks past the cabinet and talks: the machines did not change."""
-    prev = _proj({"athena": {**ATHENA_BODY, **ATHENA_ROOM}})
-    loud = {**ATHENA_ROOM, "cabinet_proximity_activity": 0.95,
-            "cabinet_ambient_audio_activity": 0.9, "cabinet_vibration_activity": 0.7}
-    curr = _proj({"athena": {**ATHENA_BODY, **loud}})
-    assert biometrics_prediction_error(prev, curr) == 0.0
-
-
-def test_body_change_is_not_diluted_by_room_keys() -> None:
-    prev = _proj({"athena": {**ATHENA_BODY, **ATHENA_ROOM}, "circe": dict(ATHENA_BODY)})
-    curr_body = {**ATHENA_BODY, "gpu": 0.18}
-    curr = _proj({"athena": {**curr_body, **ATHENA_ROOM}, "circe": dict(ATHENA_BODY)})
-    # 18 machine keys (9 + 9), one moved by 0.18. Before v3 the 8 room keys made it 26.
-    assert biometrics_prediction_error(prev, curr) == pytest.approx((0.18 / 18) / _THRESHOLD)
-
-
 def test_room_hints_stay_on_the_projection() -> None:
     """Retired from the body reading, not deleted: field digester and Hub read them."""
     curr = _proj({"athena": {**ATHENA_BODY, **ATHENA_ROOM}})
     assert set(ATHENA_ROOM) <= set(curr.nodes["athena"].pressure_hints)
 
 
-def test_definition_version_is_three() -> None:
-    assert prediction_error_definition_version("node_biometrics") == 3
+def test_no_node_biometrics_prediction_error_definition_is_live() -> None:
+    """node:substrate.biometrics and its receipt were retired (#3575): no live definition."""
+    from orion.schemas.prediction_error_definitions import PREDICTION_ERROR_DEFINITION_VERSIONS
+
+    assert "node_biometrics" not in PREDICTION_ERROR_DEFINITION_VERSIONS
 
 
 @pytest.fixture

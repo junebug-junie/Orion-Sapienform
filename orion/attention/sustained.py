@@ -2,8 +2,9 @@
 
 Spec: docs/superpowers/specs/2026-10-16-attention-continuous-signal-quota-design.md, option (b).
 
-A signal that reads every tick (``node:substrate.biometrics``, ``node:substrate.bus_synaptic``)
-is in the top decile of its own week ~10% of the time whatever happens, so "high now" alone is a
+A signal that reads every tick (``node:substrate.biometrics`` and ``node:substrate.bus_synaptic``
+were the two; both retired 2026-11, so no glossary node qualifies today -- a future per-tick level
+source would) is in the top decile of its own week ~10% of the time whatever happens, so "high now" alone is a
 quota, not a verdict. The rule here: such a signal counts only when it has been hot for MORE than
 ``SUSTAIN_DWELL_SEC`` within the trailing ``SUSTAIN_WINDOW_SEC`` AND is hot now.
 

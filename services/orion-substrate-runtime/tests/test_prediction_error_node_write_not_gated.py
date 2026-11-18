@@ -97,11 +97,11 @@ def test_every_prediction_error_domain_still_writes_its_node() -> None:
             if kw.arg == "node_id" and isinstance(kw.value, ast.Constant):
                 written.add(str(kw.value.value))
 
-    for domain in ("biometrics", "execution"):
+    for domain in ("execution",):
         assert f"node:substrate.{domain}" in written, (
             f"node:substrate.{domain} has no _write_prediction_error_node() call at all"
         )
-    for retired in ("route", "bus_synaptic", "chat"):
+    for retired in ("route", "bus_synaptic", "chat", "biometrics"):
         assert f"node:substrate.{retired}" not in written, (
             f"node:substrate.{retired} was retired 2026-11 but is written again"
         )

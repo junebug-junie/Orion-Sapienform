@@ -23,7 +23,6 @@ on:
       - 'tests/test_biometrics_grammar_extract.py'
       - 'tests/test_fleet_roster_coverage.py'
       - 'tests/test_offline_node_stuck_pressure.py'
-      - 'tests/test_biometrics_silent_node_exclusion.py'
       - 'tests/test_biometrics_room_hints_excluded.py'
       - 'orion/schemas/prediction_error_definitions.py'
       - 'orion/telemetry/biometrics_pipeline.py'
@@ -50,7 +49,6 @@ on:
       - 'tests/test_biometrics_grammar_extract.py'
       - 'tests/test_fleet_roster_coverage.py'
       - 'tests/test_offline_node_stuck_pressure.py'
-      - 'tests/test_biometrics_silent_node_exclusion.py'
       - 'tests/test_biometrics_room_hints_excluded.py'
       - 'orion/schemas/prediction_error_definitions.py'
       - 'orion/telemetry/biometrics_pipeline.py'
@@ -83,7 +81,6 @@ jobs:
             tests/test_biometrics_grammar_extract.py \
             tests/test_fleet_roster_coverage.py \
             tests/test_offline_node_stuck_pressure.py \
-            tests/test_biometrics_silent_node_exclusion.py \
             tests/test_biometrics_room_hints_excluded.py
       # Act energy cost (2026-10-29): per-card watts/VRAM, per-container CPU watt split, and the
       # collector's cgroup read.

@@ -157,7 +157,7 @@ unmonitored_nodes:
 # on the next tick (orion/substrate/biometrics_loop/pipeline.py::prune_retired_nodes).
 # Without that drop a dead host's last reading stays in the projection forever: atlas's
 # 8 frozen pressure_hints were still averaged into every node:substrate.biometrics
-# prediction-error tick and its stale `availability` pressure was re-reinforced every
+# prediction-error tick (that node was retired 2026-11-18, #3575) and its stale `availability` pressure was re-reinforced every
 # sweep, two months after the box was gone (live check 2026-10-16).
 retired_nodes:
   atlas:

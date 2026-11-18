@@ -166,7 +166,7 @@ class AttentionCandidateV1(BaseModel):
     # value is unchanged. None = a level read every tick, or decay disabled.
     event_window_sec: float | None = Field(default=None, gt=0.0)
     # Set for an INTERNAL source the semantic layer marks as read every tick
-    # (biometrics: orion.attention.world_first.
+    # (was biometrics, retired 2026-11-18: orion.attention.world_first.
     # node_prediction_error_continuous). Such a source is high for itself ~10%
     # of the time by construction, so it competes only when it has been hot for
     # more than orion.attention.sustained.SUSTAIN_DWELL_SEC of the trailing

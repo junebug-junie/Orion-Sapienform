@@ -18,6 +18,10 @@ Pure rules (caps, the hour bucket, receipt, prompt, parser, PR comment text): ``
    ``held`` for the next hour, and after 3 failures in a row a thread stays ``failed``.
 4. **The PR comment**: for a thread with a pull request and real questions Hub posts one comment on
    the PR with Orion's GitHub token. Code does it, not the model.
+5. **One round of questions per thread** (``core.MAX_QUESTION_ROUNDS_PER_THREAD``): once Orion has asked
+   on a thread, a session reply is still read at the next round-up, but the prompt marks the thread
+   ANSWER PHASE and what Orion writes for it is stored as a closing note (status ``closed``): never a
+   PR comment, never handed to a session as questions. Question-like lines in it are counted in the log.
 
 Not the consult queue (scripts/consult_loop.py): no Claude, no weekly cap, its own workflow and act
 family. Turns are NOT written to ``chat_history_log``.
@@ -118,8 +122,12 @@ async def intake_precheck(pool, *, thread_id: Optional[str], source_ref: str) ->
         f"SELECT {_THREAD_COLUMNS} FROM orion_session_thread WHERE thread_id = $1::text OR "
         "($1::text IS NULL AND source_ref = $2)", thread_id, source_ref)
     out: Dict[str, Any] = {"held_threads": int(held["n"]) if held else 0, "thread": _thread(rec) if rec else None,
-                           "unread": 0, "last_digest": None}
+                           "unread": 0, "last_digest": None, "answer_phase": False}
     if rec is not None:
+        orion = await pool.fetch(
+            "SELECT speaker, roundup_id, meta FROM orion_session_turn WHERE thread_id = $1 AND speaker = 'orion'",
+            rec["thread_id"])
+        out["answer_phase"] = core.in_answer_phase([_turn(r) for r in orion])
         row = await pool.fetchrow(
             "SELECT (SELECT count(*) FROM orion_session_turn t WHERE t.thread_id = $1 AND t.speaker = 'session' "
             "AND t.roundup_id IS NULL) AS unread, (SELECT t.meta->>'digest' FROM orion_session_turn t "
@@ -511,7 +519,9 @@ class SessionRoundupLoop:
             pr_url=core.one_line(pr_url, 300) or None, spec_paths=[s["path"] for s in specs], body=body_text,
             meta={"spec": specs, "digest": digest} if specs else {"digest": digest},
             receipt=lambda tid: core.receipt_text(thread_id=tid, next_at=next_at, roundup_enabled=self.enabled,
-                                                  cut_notes=notes, tz_name=self.tz_name))
+                                                  cut_notes=notes, tz_name=self.tz_name,
+                                                  answer_phase=bool(before["answer_phase"]),
+                                                  reading_now=bool(existing and existing["status"] == core.STATUS_READING)))
         if result is None:
             return None
         thread = result["thread"]
@@ -522,7 +532,8 @@ class SessionRoundupLoop:
                         existing["session_id"], thread["session_id"])
         logger.info("session_thread_message thread=%s kind=%s session=%s pr=%s specs=%s", thread["thread_id"],
                     thread["kind"], thread["session_id"], thread.get("pr_number"), len(specs))
-        return {**result, "duplicate": False, "next_roundup_at": next_at, "roundup_enabled": self.enabled}
+        return {**result, "duplicate": False, "next_roundup_at": next_at, "roundup_enabled": self.enabled,
+                "answer_phase": bool(before["answer_phase"])}
 
     # -- the tick -------------------------------------------------------------------------------
 
@@ -581,14 +592,26 @@ class SessionRoundupLoop:
     def _candidates(threads: Sequence[Dict[str, Any]], turns: Sequence[Dict[str, Any]], *,
                     roundup_id: Optional[str] = None):
         """(thread, new session turns, earlier turns) per thread. New = not yet shown to Orion, or
-        (``roundup_id`` given) the turns of that round. Hub's own lines are never shown to Orion."""
+        (``roundup_id`` given) the turns of that round. Hub's own lines are never shown to Orion.
+
+        The thread comes back as a copy with ``answer_phase`` set (``core.in_answer_phase`` over ALL its
+        Orion turns except this round's own): the prompt and the parser both read that one flag."""
         out = []
         for thread in threads:
             mine = [t for t in turns if t["thread_id"] == thread["thread_id"] and t["speaker"] != core.SPEAKER_HUB]
             new = [t for t in mine if t["speaker"] == core.SPEAKER_SESSION and t.get("roundup_id") == roundup_id]
             first = min((t["seq"] for t in new), default=None)
-            earlier = [t for t in mine if first is not None and t["seq"] < first]
-            out.append((thread, new, earlier))
+            phase = core.in_answer_phase(mine, exclude_roundup=roundup_id)
+            if phase and first is not None:
+                # Orion's question turn may sit AFTER a new message (one sent while Orion was reading):
+                # every turn that is not new is shown, so Orion always sees its own questions.
+                new_ids = {t["turn_id"] for t in new}
+                earlier = [t for t in mine if t["turn_id"] not in new_ids
+                           and not (t["speaker"] == core.SPEAKER_ORION and t.get("roundup_id") == roundup_id
+                                    and roundup_id is not None)]
+            else:
+                earlier = [t for t in mine if first is not None and t["seq"] < first]
+            out.append(({**thread, "answer_phase": phase}, new, earlier))
         return out
 
     async def _round(self, pool, roundup_id: str):
@@ -716,22 +739,43 @@ class SessionRoundupLoop:
         # round that has no turn left to show.
         ordered = [c[0]["thread_id"] for c in cands]
         ordered += [t["thread_id"] for t in threads if t["thread_id"] not in ordered]
+        # A thread of the round with no turn left to show has no candidate: judge it on all its turns.
+        phase = {c[0]["thread_id"]: c[0]["answer_phase"] for c in cands}
+        missing = [tid for tid in ordered if tid not in phase]
+        if missing:
+            all_turns = await thread_turns(pool, missing)
+            for tid in missing:
+                phase[tid] = core.in_answer_phase([t for t in all_turns if t["thread_id"] == tid],
+                                                  exclude_roundup=roundup_id)
         try:
-            answers = core.parse_roundup_reply(text, ordered)
+            answers = core.parse_roundup_reply(text, ordered, [tid for tid in ordered if phase.get(tid)])
         except ValueError:
             return await self._fail(pool, roundup_id, "orion_run_completed_empty")
         by_id = {t["thread_id"]: t for t in threads}
-        counts = {"asked": 0, "no_questions": 0, "unparsed": 0, "pr_comments": 0}
+        counts = {"asked": 0, "no_questions": 0, "unparsed": 0, "closed": 0, "dropped_question_lines": 0,
+                  "pr_comments": 0}
         for answer in answers:
             meta: Dict[str, Any] = {"model": model} if model else {}
             if answer.unparsed:
                 meta["unparsed"] = True
             if answer.no_questions:
                 meta["no_questions"] = True
-            status = core.STATUS_NO_QUESTIONS if answer.no_questions else core.STATUS_ASKED
+            if answer.closing:
+                meta["closing_note"] = True
+                meta["dropped_question_lines"] = answer.dropped_question_lines
+                status = core.STATUS_CLOSED
+            else:
+                status = core.STATUS_NO_QUESTIONS if answer.no_questions else core.STATUS_ASKED
             thread, turn, created = await store_answer(pool, thread_id=answer.thread_id, roundup_id=roundup_id,
                                                        body=answer.text, meta=meta, status=status)
-            counts["unparsed" if answer.unparsed else status] += 1
+            if answer.closing:
+                counts["closed"] += 1
+                counts["dropped_question_lines"] += answer.dropped_question_lines
+                if answer.dropped_question_lines:
+                    logger.info("session_thread_questions_dropped thread=%s roundup=%s lines=%s why=answer_phase",
+                                answer.thread_id, roundup_id, answer.dropped_question_lines)
+            else:
+                counts["unparsed" if answer.unparsed else status] += 1
             if created:
                 self._push_turn(thread, turn)
             if await self._comment(pool, by_id[answer.thread_id], turn, answer):
@@ -742,7 +786,7 @@ class SessionRoundupLoop:
     async def _comment(self, pool, thread: Dict[str, Any], turn: Dict[str, Any], answer: core.ThreadAnswer) -> bool:
         """One PR comment for real, parsed questions. Never fails the round."""
         if (not self.pr_comments or self._commenter is None or not thread.get("pr_number")
-                or answer.no_questions or answer.unparsed or turn.get("pr_comment_url")):
+                or answer.no_questions or answer.unparsed or answer.closing or turn.get("pr_comment_url")):
             return False
         try:
             url = await self._commenter.post(

@@ -522,6 +522,32 @@ Graphiti ran twice on the local agent-lane model (PR #3341, reports
   The test is part of step 1 and runs in CI. The scoreboard's knowledge-update questions
   check the same rule end to end.
 
+### Corrections rev 2: classify, vote, end validity, measure (Juniper, 2026-11-17, #3659 #3660)
+
+Juniper: "don't turn it off, make it world class." What changed, all on local models:
+
+- **Never act degraded.** No meaning index, an index failure, or a failed/malformed model answer:
+  the plan proposes, holds its links, and logs `refused_because`. No word-only fallback for
+  applying. A cosine alone never makes a candidate (the 0.80 "dense alone" leg is gone).
+- **Classify, don't pair** (Mem0 ADD/UPDATE/NOOP). The local model names the relation: update,
+  correction, refine, compatible, or unrelated, with "same attribute" and a confidence, in JSON
+  mode. **Self-consistency:** 3 votes above temperature 0. Act only on a unanimous, confident
+  update or correction. Anything else abstains; abstaining is always safe.
+- **Bi-temporal validity** (Zep/Graphiti). The old row gets `invalid_at`, `invalidated_by`,
+  `invalid_reason`. An update was true until the new row's time; a correction was never true.
+  Recall's default stays "currently true" (`status = 'active'`). `EPISODE_VALID_AT_SQL` reads
+  "true then". Undo clears all three.
+- **Measured before trusted.** `scripts/memory_supersede_eval.py` scores a labelled set: synthetic
+  fixtures in the repo, and real items host-side (Juniper's own confirmation revisions as positives;
+  the watched trip/home and pet rows, the 11-17 dry-run vetoes, and near-duplicates as hard
+  negatives). Bar: zero false acts. Write time applies only while the latest recorded run for the
+  current check version passed (`memory_supersede_eval_run`).
+- **Juniper's words outrank abstention.** A new row in her voice with a verified quote from her own
+  prompt acts when every vote says update/correction (any confidence) and there is exactly one such
+  candidate (a clear target).
+- **Audit trail.** One append-only `memory_supersede_run` row per run (ids, legs, votes, verdicts;
+  no statements) and an append-only pass history next to the manifest, with a per-watched-row trace.
+
 ### Vetoes attach to the claim
 
 *(Changes "Corrections, not approval" above.)* A Hub veto rejects the **claim**, not only the

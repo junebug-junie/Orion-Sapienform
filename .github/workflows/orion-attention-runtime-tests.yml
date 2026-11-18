@@ -64,6 +64,7 @@ jobs:
           tests/test_attention_runtime_worker.py tests/test_attention_runtime_store.py
           tests/test_attention_field_goal_provenance.py
           tests/test_attention_world_first_field_frame.py
+          tests/test_attention_frame_rollup.py
       - name: Goal gate (world goals unlock readonly fetch/recall)
         run: >-
           python -m pytest -q orion/autonomy/tests/test_capability_policy.py

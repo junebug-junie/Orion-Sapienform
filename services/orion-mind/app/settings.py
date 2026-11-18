@@ -174,6 +174,12 @@ class Settings(BaseSettings):
     # Event wants decided in this many hours are considered; at most this many are shown (highest net first).
     PRIME_EVENT_WANTS_HOURS: float = Field(default=24.0, gt=0.0, le=72.0, alias="PRIME_EVENT_WANTS_HOURS")
     PRIME_EVENT_WANTS_LIMIT: int = Field(default=8, ge=1, le=50, alias="PRIME_EVENT_WANTS_LIMIT")
+    # The concern evidence clock (design docs/superpowers/specs/2026-11-17-prime-concerns-decided-by-attention-design.md
+    # patch 1, #3574): a bare "keep" no longer renews a concern's last_evidence_at, and no longer answers its horizon
+    # need. A question Prime sent about it or a take-on does (orion/prime/state.py touch_concern). Since 10-30 the
+    # model kept every concern on every thought: 0 of 54 concern acts faded and new letter threads found no room.
+    # false: a keep renews, as before (instant rollback; no state migration either way).
+    PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED: bool = Field(default=True, alias="PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED")
     # Living Prime Part 2, every turn ends back in Prime (orion/prime/handback.py, app/prime_loop.py): Prime listens
     # to the cockpit hops Hub already publishes (orion:cockpit:hop) and folds each finished chat, curiosity, consult
     # and letter turn into its state on the tick. A turn that made a promise opens a concern (at most 1 held, 4 a
@@ -198,6 +204,10 @@ class Settings(BaseSettings):
     # (PRIME_HUB_URL); the reply goes back into the originating chat thread. false = no move, no frame section, no
     # order, nothing watched (runs already ordered finish or expire). Shipped ON.
     PRIME_INTENTION_TAKE_ON_ENABLED: bool = Field(default=True, alias="PRIME_INTENTION_TAKE_ON_ENABLED")
+    # The carry turn's budget per attempt (the order's timeout_sec; the run's attempt timer and the FCC motor's limit
+    # derive from it). 3600 (#3354): a dig-style promise on the agent lane needed ~1,757 s of FCC work live.
+    PRIME_INTENTION_TURN_TIMEOUT_SEC: float = Field(default=3600.0, ge=60.0, le=3600.0,
+                                                    alias="PRIME_INTENTION_TURN_TIMEOUT_SEC")
     # Prime hunger (integration design Part B, orion/prime/hunger.py): needs with content (a concern near its horizon,
     # an uncited surprise, Juniper's silence past her usual gap) wake Prime when the strongest damped need reaches
     # PRIME_HUNGER_THRESHOLD, at most PRIME_HUNGER_DAILY_BUDGET thoughts in any 24 h (past that only a change wakes).
@@ -208,6 +218,8 @@ class Settings(BaseSettings):
     PRIME_HUNGER_THRESHOLD: float = Field(default=0.5, gt=0.0, le=1.0, alias="PRIME_HUNGER_THRESHOLD")
     PRIME_HUNGER_DAILY_BUDGET: int = Field(default=24, ge=1, alias="PRIME_HUNGER_DAILY_BUDGET")
     PRIME_HUNGER_READ_SEC: float = Field(default=300.0, ge=15.0, alias="PRIME_HUNGER_READ_SEC")
+    # orion-prediction base URL for the learning need (GET /learning-progress, choice-as-EFE Step 1). Empty = off.
+    PRIME_PREDICTION_URL: str = Field(default="http://orion-athena-prediction:8132", alias="PRIME_PREDICTION_URL")
     # Personality rev 4 (docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md): Prime's
     # thought frame shows at most 2 "tending:" lines (orion/prime/tending.py), read from durable-runs
     # PRIME_DURABLE_RUNS_URL/personality/frame: choice-built tendencies with >= 10 weighted choices. No shadow.

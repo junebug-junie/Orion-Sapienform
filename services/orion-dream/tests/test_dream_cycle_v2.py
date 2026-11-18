@@ -12,26 +12,34 @@ import pytest
 NOW = datetime(2026, 9, 25, 4, 0, tzinfo=timezone.utc)
 
 
+_T = datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc)
+
+
 def _rows():
+    # Every source query returns the row's time as occurred_at; the dream arm pairs by it (#3664).
+    t = lambda m: _T + timedelta(minutes=m)  # noqa: E731
     return {
         "metacog": [
             {"id": "m1", "summary": "Recall returned empty for three turns in a row", "severity": "critical",
-             "trigger_kind": "recall_empty", "tags": ["recall", "memory"]},
+             "trigger_kind": "recall_empty", "tags": ["recall", "memory"], "occurred_at": t(0)},
             {"id": "m2", "summary": "Latency spike on the chat lane", "severity": "degraded",
-             "trigger_kind": "latency", "tags": ["latency"]},
-            {"id": "m3", "summary": "all fine", "severity": "nominal", "trigger_kind": "x", "tags": []},
+             "trigger_kind": "latency", "tags": ["latency"], "occurred_at": t(20)},
+            {"id": "m3", "summary": "all fine", "severity": "nominal", "trigger_kind": "x", "tags": [],
+             "occurred_at": t(30)},
         ],
         "compaction_request": [
-            {"request_id": "r1", "theme": "juniper's sleep schedule", "reason": "recurs across chains"},
+            {"request_id": "r1", "theme": "juniper's sleep schedule", "reason": "recurs across chains",
+             "occurred_at": t(10)},
         ],
         "resonance": [
-            {"alert_id": "a1", "theme_key": "being watched", "violation_count": 4},
+            {"alert_id": "a1", "theme_key": "being watched", "violation_count": 4, "occurred_at": t(40)},
         ],
         "crystallization": [
             {"crystallization_id": "c1", "subject": "Juniper prefers plain English",
-             "summary": "dense answers get asked to be re-said", "salience": 0.8, "tags": ["style"]},
+             "summary": "dense answers get asked to be re-said", "salience": 0.8, "tags": ["style"],
+             "occurred_at": t(50)},
             {"crystallization_id": "c2", "subject": "GPU5 contention", "summary": "metacog lane shares a GPU",
-             "salience": 0.0, "tags": ["gpu"]},
+             "salience": 0.0, "tags": ["gpu"], "occurred_at": t(60)},
         ],
     }
 
@@ -150,11 +158,89 @@ def _replay():
 def test_dream_pairs_are_disjoint_and_prefer_cross_source():
     from app.recombine import dream_pairs
 
-    pairs = dream_pairs(_replay(), 3)
+    pairs = dream_pairs(_replay(), 3, window_minutes=120)
     refs = [r for p in pairs for r in (p.a.ref_id, p.b.ref_id)]
     assert len(refs) == len(set(refs))
     assert all(p.a.source_kind != p.b.source_kind for p in pairs)
     assert all(p.arm == "dream" for p in pairs)
+
+
+def _item(ref, kind, minute, weight=1.0, until=None):
+    from orion.schemas.dream_cycle import ReplayItemV1
+
+    return ReplayItemV1(
+        ref_id=ref, source_kind=kind, text=f"fragment {ref}", weight=weight, reason="test",
+        occurred_at=None if minute is None else _T + timedelta(minutes=minute),
+        occurred_until=None if until is None else _T + timedelta(minutes=until),
+    )
+
+
+def test_dream_pairs_only_pair_coincident_fragments_from_different_organs():
+    # #3664: the dream arm asks about things that happened near each other in different organs.
+    from app.recombine import dream_pairs
+
+    items = [
+        _item("metacog:near", "metacog", 0),
+        _item("compaction_request:near", "compaction_request", 30),
+        _item("metacog:same_kind", "metacog", 2),             # 2 min from metacog:near, same organ: not a pair
+        _item("walkway:far", "walkway", 600),                 # 9.5 h after anything else: never paired
+        _item("crystallization:untimed", "crystallization", None),  # no time: never paired by this arm
+    ]
+    pairs = dream_pairs(items, 3, window_minutes=120)
+    # One compaction fragment, so one pair: the nearer metacog (28 min) beats the farther (30 min).
+    assert [(p.a.ref_id, p.b.ref_id) for p in pairs] == [("compaction_request:near", "metacog:same_kind")]
+    assert all(p.a.source_kind != p.b.source_kind for p in pairs)
+    # No fallback: with nothing coincident the arm asks nothing, rather than a distant pair.
+    assert dream_pairs([items[3], items[4], items[0]], 3, window_minutes=120) == []
+
+
+def test_dream_pairs_prefer_weight_then_nearness_and_use_each_item_once():
+    from app.recombine import dream_pairs
+
+    items = [
+        _item("metacog:a", "metacog", 0, weight=1.0),
+        _item("arc:b", "arc", 100, weight=0.5),
+        _item("compaction_request:c", "compaction_request", 90, weight=0.9),
+        _item("walkway:d", "walkway", 5, weight=0.9),
+    ]
+    pairs = dream_pairs(items, 3, window_minutes=120)
+    keys = [frozenset((p.a.ref_id, p.b.ref_id)) for p in pairs]
+    # a-c and a-d both weigh 0.9; d is nearer (5 min vs 90), so a-d wins; then c-b (0.45) over nothing else.
+    assert keys[0] == frozenset(("metacog:a", "walkway:d"))
+    assert keys[1] == frozenset(("compaction_request:c", "arc:b"))
+    assert len(keys) == 2
+
+
+def test_an_arc_span_overlapping_a_point_is_zero_minutes_apart():
+    from app.recombine import time_gap_minutes
+
+    arc = _item("arc:x", "arc", 0, until=300)      # 12:00 to 17:00
+    inside = _item("metacog:y", "metacog", 200)    # 15:20, inside the span
+    after = _item("metacog:z", "metacog", 330)     # 30 min after the span ends
+    assert time_gap_minutes(arc, inside) == 0.0
+    assert time_gap_minutes(arc, after) == 30.0
+    assert time_gap_minutes(arc, _item("metacog:n", "metacog", None)) is None
+    # Longer than the window: only its end counts, so it does not swallow everything inside it.
+    assert time_gap_minutes(arc, inside, max_span_minutes=120) == 100.0
+    assert time_gap_minutes(arc, after, max_span_minutes=120) == 30.0
+
+
+def test_a_night_long_arc_does_not_take_every_pair():
+    from app.recombine import dream_pairs
+
+    night = _item("arc:night", "arc", 0, weight=1.0, until=480)     # 8 h body arc
+    items = [night, _item("metacog:m", "metacog", 60, weight=0.9),
+             _item("compaction_request:c", "compaction_request", 70, weight=0.9)]
+    pairs = dream_pairs(items, 3, window_minutes=120)
+    assert [frozenset((p.a.ref_id, p.b.ref_id)) for p in pairs] == [
+        frozenset(("metacog:m", "compaction_request:c"))]
+
+
+def test_every_builder_carries_the_rows_time():
+    from app.replay import build_candidates
+
+    for c in build_candidates(_rows()):
+        assert c.occurred_at is not None and c.occurred_at.tzinfo is not None, c.ref_id
 
 
 def test_control_pairs_are_seeded_and_exclude_dream_pairs():
@@ -162,7 +248,7 @@ def test_control_pairs_are_seeded_and_exclude_dream_pairs():
     from app.replay import build_candidates
 
     pool = build_candidates(_rows())
-    d = dream_pairs(_replay(), 2)
+    d = dream_pairs(_replay(), 2, window_minutes=120)
     one = control_pairs(pool, 2, seed="dc-abc", exclude=d)
     two = control_pairs(list(reversed(pool)), 2, seed="dc-abc", exclude=d)
     assert [(p.a.ref_id, p.b.ref_id) for p in one] == [(p.a.ref_id, p.b.ref_id) for p in two]
@@ -210,9 +296,15 @@ def test_recombine_counts_no_link_failures_and_rejects_echo():
 
     res = asyncio.run(recombine(pairs, complete, cycle_id="dc-1", ttl_hours=72, now=NOW))
     assert len(res.hypotheses) == 1
-    assert res.no_link == 2  # explicit no + echo
+    assert res.no_link == 1  # the explicit no only
+    assert res.echo == 1  # the pasted-back fragment is counted apart (#3412)
     assert res.failures == 1
     assert res.unparseable == 0
+    # Every pair asked leaves one stored answer, in order, with what it was counted as.
+    assert [a.outcome for a in res.answers] == ["linked", "no_link", "failed", "echo"]
+    assert [(a.ref_a, a.ref_b, a.arm) for a in res.answers] == [(p.a.ref_id, p.b.ref_id, p.arm) for p in pairs]
+    assert res.answers[1].answer == json.dumps({"link": False})
+    assert res.answers[2].answer == ""
     h = res.hypotheses[0]
     assert h.arm == "dream" and h.cycle_id == "dc-1"
     assert h.expires_at == NOW + timedelta(hours=72)
@@ -333,6 +425,34 @@ def test_unparseable_answers_are_not_counted_as_declines():
     cycle = asyncio.run(run_cycle_once(f.deps()))
     assert cycle.status == "completed"
     assert cycle.no_link_count == 0 and cycle.unparseable_count > 0
+    # The answers that produced those counts are saved with the sleep, cut to 300 characters.
+    assert len(cycle.pair_answers) == cycle.unparseable_count
+    assert {a.outcome for a in cycle.pair_answers} == {"unparseable"}
+    assert cycle.pair_answers[0].answer == "I think they are related, honestly"
+
+
+def test_pair_answers_are_capped_and_survive_the_stored_json():
+    from app.cycle import run_cycle_once
+    from orion.schemas.dream_cycle import PAIR_ANSWER_CHARS, DreamCycleV1
+
+    f = _Fakes(_rows(), answer=json.dumps({"link": False}) + " " + "x" * 2000)
+    cycle = asyncio.run(run_cycle_once(f.deps()))
+    assert cycle.pair_answers and all(len(a.answer) == PAIR_ANSWER_CHARS for a in cycle.pair_answers)
+    assert cycle.no_link_count == len(cycle.pair_answers) and cycle.echo_count == 0
+    # cycle_json is model_dump(mode="json"): it must read back whole.
+    back = DreamCycleV1.model_validate(json.loads(json.dumps(cycle.model_dump(mode="json"))))
+    assert back.pair_answers == cycle.pair_answers
+
+
+def test_old_cycle_json_without_pair_answers_still_loads():
+    from orion.schemas.dream_cycle import DreamCycleV1
+
+    f = _Fakes(_rows())
+    from app.cycle import run_cycle_once
+    raw = asyncio.run(run_cycle_once(f.deps())).model_dump(mode="json")
+    raw.pop("pair_answers"); raw.pop("echo_count")
+    old = DreamCycleV1.model_validate(raw)
+    assert old.pair_answers == [] and old.echo_count == 0
 
 
 def test_window_uses_last_good_cycle_start_not_attempt_end():
@@ -932,3 +1052,95 @@ def test_curiosity_failure_does_not_fail_sleep_and_switch_wires_hook(monkeypatch
     monkeypatch.setattr(main.settings, "DREAM_STORY_AFTER_SLEEP_ENABLED", False)
     monkeypatch.setattr(main.settings, "DREAM_CARRY_ENABLED", False)
     assert main.build_cycle_deps().compact_curiosity is not None
+
+
+def test_an_answer_with_nul_or_lone_surrogate_is_stored_clean():
+    # jsonb refuses \u0000 ("cannot be converted to text"), which would lose the whole sleep's
+    # one-transaction persist; a lone surrogate cannot be encoded as UTF-8 at all.
+    from app.recombine import Pair, recombine
+
+    items = _replay()
+    pairs = [Pair(items[0], items[1], "dream"), Pair(items[1], items[2], "control")]
+    answers = iter(['garbled\x00answer', '{"link": false} \ud800 tail'])
+
+    async def complete(_prompt):
+        return next(answers)
+
+    res = asyncio.run(recombine(pairs, complete, cycle_id="dc-1", ttl_hours=72, now=NOW))
+    assert [a.outcome for a in res.answers] == ["unparseable", "no_link"]
+    assert res.answers[0].answer == "garbledanswer"
+    stored = json.dumps([a.model_dump(mode="json") for a in res.answers])
+    assert "\\u0000" not in stored and "\\ud800" not in stored
+    stored.encode("utf-8")  # must not raise
+
+
+def test_the_pair_caps_fit_the_stored_lists():
+    # pair_answers and hypotheses share MAX_HYPOTHESES; raising a settings cap past it would make
+    # DreamCycleV1 refuse the sleep before it is saved.
+    from app.settings import Settings
+    from orion.schemas.dream_cycle import MAX_HYPOTHESES
+
+    def le(name):
+        return next(m.le for m in Settings.model_fields[name].metadata if hasattr(m, "le"))
+
+    assert le("DREAM_HYPOTHESES_PER_CYCLE") + le("DREAM_CONTROL_PER_CYCLE") <= MAX_HYPOTHESES
+
+
+def test_metacog_fragment_carries_its_time_and_evidence():
+    # #3412: the summary alone is prose the model rightly declines to link; the facts and the time
+    # are what make a claimed link checkable.
+    from app.replay import candidate_from_metacog
+
+    item = candidate_from_metacog({
+        "id": "m1", "summary": "The motor burned out before the reply could form.", "severity": "critical",
+        "trigger_kind": "chat_turn", "occurred_at": datetime(2026, 11, 17, 23, 2, 14, tzinfo=timezone.utc),
+        "evidence": "compliance failed; grounding: finalize_reply_deadline",
+    })
+    assert item.text == ("[11-17 23:02 UTC] The motor burned out before the reply could form. "
+                         "Evidence: compliance failed; grounding: finalize_reply_deadline.")
+    # An ISO string (orion_metacog.timestamp is producer-written text) reads the same.
+    same = candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical",
+                                   "occurred_at": "2026-11-17T23:02:14Z"})
+    assert same.text == "[11-17 23:02 UTC] s"
+    # A row without them keeps the old text; a bad time is dropped, not guessed.
+    assert candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical"}).text == "s"
+    assert candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical",
+                                   "occurred_at": "not a time"}).text == "s"
+    assert candidate_from_metacog({"id": "m1", "summary": "", "severity": "critical", "evidence": "e"}) is None
+    # Evidence that already ends in a full stop gets one, not two; long evidence fits the cap whole-ended.
+    assert candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical",
+                                   "evidence": "done."}).text == "s Evidence: done."
+    from app.replay import TEXT_CAP
+    fits = candidate_from_metacog({"id": "m1", "summary": "y" * 272, "severity": "critical",
+                                   "occurred_at": "2026-11-17T23:02:14Z", "evidence": "z" * 300})
+    assert len(fits.text) <= TEXT_CAP and fits.text.endswith("….")  # evidence cut, its close kept
+    full = candidate_from_metacog({"id": "m1", "summary": "y" * 700, "severity": "critical", "evidence": "z"})
+    assert len(full.text) == TEXT_CAP and "Evidence" not in full.text  # no room: summary only, capped
+
+
+def test_compaction_fragment_carries_what_the_chain_thought():
+    from app.replay import candidate_from_compaction_request
+
+    item = candidate_from_compaction_request({
+        "request_id": "r1", "theme": "open-loop-x", "reason": "reverie_chain_settled",
+        "title": "Orion is reading", "occurred_at": datetime(2026, 11, 17, 22, 45, tzinfo=timezone.utc),
+        "interpretation": "The reading loop is stalling because of a GPU backlog.",
+    })
+    assert item.text == "[11-17 22:45 UTC] Orion is reading: The reading loop is stalling because of a GPU backlog."
+    # No thought (chain missing): the old label, with the time.
+    bare = candidate_from_compaction_request({
+        "request_id": "r1", "theme": "open-loop-x", "reason": "reverie_chain_settled", "title": "Orion is reading",
+        "occurred_at": datetime(2026, 11, 17, 22, 45, tzinfo=timezone.utc), "interpretation": None,
+    })
+    assert bare.text == "[11-17 22:45 UTC] Orion is reading: reverie_chain_settled"
+    assert bare.ref_id == item.ref_id and bare.tags == item.tags  # keys unchanged: novelty and tiredness hold
+
+
+def test_source_queries_read_the_content_behind_the_label():
+    from app.cycle_store import SOURCE_QUERIES
+
+    meta = " ".join(SOURCE_QUERIES["metacog"].split())
+    assert "what_changed->'evidence'" in meta and "AS occurred_at" in meta and "evidence FROM" in meta
+    comp = " ".join(SOURCE_QUERIES["compaction_request"].split())
+    assert "substrate_reverie_chain ch" in comp and "ch.chain_id = d.origin_chain_id" in comp
+    assert "chain_json->'thought_ids'->>-1" in comp and "r.interpretation" in comp

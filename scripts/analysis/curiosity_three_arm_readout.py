@@ -70,6 +70,9 @@ DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/
 # Pre-registered (design section 6). Changing any of these after the start invalidates the test.
 STOP_RUNS_PER_ARM = 250
 STOP_DAYS = 180
+# The database guard that hides the arm from Orion's read-only role (#3458). It stays until a person lifts it at
+# the stop; render() names it once the test is read.
+BLIND_GUARD_SQL = "scripts/sql/2026-11-18_blind_experiment_arms_orion_readonly.sql"
 WIN_ALPHA = 0.05
 PERMUTATIONS = 10_000
 HARM_ALPHA = 0.01
@@ -521,6 +524,9 @@ def render(report: dict[str, Any]) -> str:
         lines.append(f"  Stopped because {stop['reason']}. p (replica beats value) = {_num(prim['p'][ARM_VALUE_ORDER], '.4f')},"
                      f" p (replica beats uncertainty) = {_num(prim['p'][ARM_UNCERTAINTY_ORDER], '.4f')}.")
     lines.append(f"  {prim['verdict']}")
+    if prim["read"]:
+        lines.append(f"  If Orion's SQL is still blind to the curiosity arm, lift it with the curiosity block under LIFT in"
+                     f" {BLIND_GUARD_SQL} (#3458).")
     h = report["harm"]
     if h["look"] is not None:
         lines.append(f"Harm look of {h['look']:%Y-%m-%d} (replica vs both rules pooled, one-sided, p < {HARM_ALPHA}):"

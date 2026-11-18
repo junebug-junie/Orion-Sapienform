@@ -52,10 +52,10 @@ FCC motor (includes all speech / response policy + former finalize_overlay conte
 structured output
     → validate and canonicalize; no prose repair
 
-aligned AND NOT strain_unresolved
+aligned (strain open or not) AND no unsupported-claim note
     → exact draft passthrough (no repair LLM)
 
-misaligned OR uncertain OR strain_unresolved
+misaligned OR uncertain OR unsupported-claim note
     → minimal orion_response_repair
         ↓
 6b outcome + closure
@@ -66,9 +66,13 @@ misaligned OR uncertain OR strain_unresolved
 ```python
 needs_repair = (
     reflection.alignment_verdict in {"misaligned", "uncertain"}
-    or reflection.strain_unresolved
+    or has_unsupported_claim(reflection)
 )
 ```
+
+The gate decides only whether the FIRST repair runs. A draft repaired for an `unsupported claim:` note (with Situation notes) is then re-checked once by 5b and, if the claim is still there, repaired once more from the re-check's notes: `_recheck_unsupported_claim_repair` in `orion/harness/finalize.py`, called from `run_harness_finalize_chain`, bounded to one re-check and one second repair, skipped when the reply budget is short, and failing open to the first repair (`unsupported_claim_unchecked`).
+
+Changed 2026-11-18 (#3618): open strain alone (`strain_unresolved` on an aligned draft) no longer repairs. 56% of those repairs returned the draft unchanged and none edited anything about the strain. The skip is recorded as `response_repair_ran=false`, `response_repair_reason=strain_only_not_repaired`. A cut-off repair always fails closed now (`_kept_draft:truncated` no longer occurs).
 
 **Not** in the gate:
 
@@ -149,7 +153,7 @@ Add on `HarnessRunV1` (and outcome molecule if consumers need it):
 | Field | Meaning |
 |-------|---------|
 | `response_repair_ran: bool` | Repair LLM was invoked |
-| `response_repair_reason: str \| None` | Why: e.g. `misaligned`, `uncertain`, `strain_unresolved`, or `null` when skipped. Since 2026-11-04 a repair that 5b asked for because of an `unsupported claim:` note (with Situation notes) replaces the verdict reason with the perception re-check's outcome: `unsupported_claim` (re-check passed), `unsupported_claim_repaired_twice` (re-check still found one; repaired again), `unsupported_claim_unchecked` (re-check failed, degraded, or no reply budget left). Count all four with `misaligned` when watching how often 5b rejects drafts. |
+| `response_repair_reason: str \| None` | Why: e.g. `misaligned`, `uncertain`; `strain_only_not_repaired` when 5b accepted the draft with only strain open (repair skipped, `response_repair_ran=false`, #3618); `null` when skipped otherwise. `strain_unresolved` was a reason before 2026-11-18. Since 2026-11-04 a repair that 5b asked for because of an `unsupported claim:` note (with Situation notes) replaces the verdict reason with the perception re-check's outcome: `unsupported_claim` (re-check passed), `unsupported_claim_repaired_twice` (re-check still found one; repaired again), `unsupported_claim_unchecked` (re-check failed, degraded, no reply budget left, or no Situation notes to check against). Count all four with `misaligned` when watching how often 5b rejects drafts. |
 | `finalize_changed: bool` | Draft text ≠ final text (still useful; no longer the surprise proxy) |
 
 Passthrough: `finalize_ran=true`, `response_repair_ran=false`, `finalize_changed=false`.  
@@ -160,7 +164,11 @@ Log line for skip: `response_repair_skipped reason=aligned` (or equivalent).
 
 ## Fail-closed
 
-If `needs_repair` and the repair call fails (timeout, error-shaped text, missing final_text): **do not publish the known-bad draft**. Keep existing failure artifact / outcome / closure / turn-error behavior (`HarnessFinalizeFailedError` path).
+If `needs_repair` and the repair call fails (timeout, error-shaped text, missing final_text, cut off at max_tokens): **do not publish the known-bad draft as Orion's final reply**. Keep existing failure artifact / outcome / closure / turn-error behavior (`HarnessFinalizeFailedError` path).
+
+What Juniper sees (Hub, `services/orion-hub/static/js/app.js` `turn_error` branch): no final reply. If the draft preview was already on screen, it stays and its badge changes to "draft, not checked (the turn failed before the check finished)" (`draft-revision.js` `settleWithoutFinal`). Otherwise the turn_error frame's `partial_draft` (the gated motor draft, truncated) is shown in yellow as a partial draft. A red "Turn error (phase): ..." line follows in both cases. So the draft is shown flagged, never as a checked reply.
+
+What the trace records (since 2026-11-18, #3686): outcome `finalize_failed=true`, `failure_reason=<error>`, `final_text=""`, `response_repair_ran=true`, `response_repair_reason=<the verdict reason>`; the run artifact carries the same two repair fields and `compliance_verdict=failed`. Pinned by `test_a_failed_required_repair_is_recorded_as_ran_and_failed` (chain), `test_harness_finalize_chain_failure_preserves_draft_and_partial_finalize` in `services/orion-harness-governor/tests/test_harness_governor_rpc.py` (run artifact), `test_draft_first_display.py` (turn_error after a shown draft) and `draft-revision.test.js` ("not checked" label).
 
 Structured-output path unchanged: validate/canonicalize; never run prose repair.
 
@@ -209,8 +217,8 @@ Gate tests (deterministic):
 1. **Aligned casual passthrough** — fixture reflection `aligned`, `strain_unresolved=false`: cortex repair never called; `final_text == draft_text`; `response_repair_ran=false`.
 2. **Misaligned runs repair** — repair client invoked once; fail-closed if it raises.
 3. **Uncertain runs repair**.
-4. **Strain unresolved runs repair** even if verdict were somehow aligned (gate uses OR).
-5. **Overlay non-default does not force repair** when aligned + strain resolved.
+4. **Open strain alone does not repair** (changed 2026-11-18, #3618): aligned + `strain_unresolved=true` → no repair call, `response_repair_ran=false`, `response_repair_reason=strain_only_not_repaired` (`test_open_strain_alone_does_not_repair_an_aligned_draft`, `test_an_aligned_letter_with_only_strain_open_ships_without_repair`). An `unsupported claim:` note repairs even when aligned (`test_an_unsupported_claim_repairs_an_aligned_draft`).
+5. **Overlay non-default does not force repair** when aligned.
 6. **Structured reading** still skips prose repair.
 7. **surprise_resolved** true for aligned passthrough with high surprise_level and `finalize_changed=false`.
 8. **Motor prefix** contains `response_policy_summary` when present on capsule.

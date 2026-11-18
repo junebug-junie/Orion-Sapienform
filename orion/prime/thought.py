@@ -189,10 +189,19 @@ Rules:
 - A question is read later by a curiosity run that cannot see this frame. Never write an id in "question" or
   "why". To point it at an arc or an act, put it in "refs" ({"kind": "arc", "id": "<arc_id>"} or
   {"kind": "act", "id": "<act_...>"}); the run is told how to open each one. Any other id refuses the move.
+- A concern's own event (a letter thread, a turn, an event_id) has no ref a run can open: point a move at it with
+  the move's concern_id, and describe the thread in words.
 - Reply with ONE JSON object and nothing else:
 {"reading": "...", "pick": "<concern_id> | none", "concerns": {"keep": ["<concern_id>"], "add": [{"text": "...", "arc_id": null}], "drop": [{"concern_id": "...", "why": "..."}]},
  "move": null | {"kind": "curiosity_focus", "question": "...", "why": "...", "concern_id": "<concern_id> | new | null",
                  "refs": [{"kind": "arc" | "act", "id": "..."}]}}""".replace("<HORIZON_DAYS>", f"{CONCERN_HORIZON_SEC / 86400:g}")
+
+
+# The evidence clock (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED, design 2026-11-17 patch 1, #3574): keeping no longer
+# renews a concern. Swapped into SYSTEM_PROMPT by system_prompt(evidence_clock=True).
+_KEEP_RENEWS = "A concern you do not keep fades after a day (a promise: after 3 days);"
+_EVIDENCE_RENEWS = ("Keeping a concern does not renew it: a concern fades a day (a promise: 3 days)\n"
+                    "   after you last acted on it -- a question you sent about it (its concern_id), or taking it on;")
 
 
 REGULATE_PROMPT = """
@@ -265,13 +274,16 @@ organ, not a command: you may ask differently, wait, or drop the concern."""
 
 def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False,
                   organ_replies: bool = False, take_on: bool = False, experiences: bool = False,
-                  needs: bool = False) -> str:
+                  needs: bool = False, evidence_clock: bool = False) -> str:
     """The base prompt, plus the regulate move only when regulation is on and some family receives it, plus
     the organ-replies paragraph when that section is in the frame, plus the take-on move when it is on
     (PRIME_INTENTION_TAKE_ON_ENABLED). ``events``: concerns come from funded event wants (event_id), not arcs.
     ``experiences``: the now was read (``shows_now``), so the frame lists experiences Prime may cite.
-    ``needs``: hunger is on and the frame has the WHAT IS PULLING AT YOU section (orion/prime/hunger.py)."""
+    ``needs``: hunger is on and the frame has the WHAT IS PULLING AT YOU section (orion/prime/hunger.py).
+    ``evidence_clock``: a keep no longer renews a concern (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED); say what does."""
     base = SYSTEM_PROMPT
+    if evidence_clock:
+        base = base.replace(_KEEP_RENEWS, _EVIDENCE_RENEWS)
     if events:
         base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
                 .replace(_ARC_REFS, _EVENT_REFS).replace(_ARC_REFS_JSON, _EVENT_REFS_JSON))
@@ -331,6 +343,8 @@ class FrameInputs:
     # Intentions (Step -1, PRIME_INTENTION_TAKE_ON_ENABLED): the take-on move is offered and concerns with an
     # adapter are marked. ``intentions``: lines for WHAT I TOOK ON (None: the section is not shown).
     take_on: bool = False
+    # PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED: a concern line says when something last touched it, not when it was kept.
+    evidence_clock: bool = False
     intentions: Optional[list[str]] = None
     # Concerns already taken on (open or ended): never marked "you can take this on".
     no_take_on: set[str] = field(default_factory=set)
@@ -529,7 +543,7 @@ def _now_lines(inputs: FrameInputs) -> list[str]:
 
 
 def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
-                  no_take_on: frozenset[str] = frozenset()) -> str:
+                  no_take_on: frozenset[str] = frozenset(), evidence_clock: bool = False) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
     if take_on and c.graded != "settled" and c.concern_id not in no_take_on and has_adapter(c):
         graded += "; you can take this on"
@@ -537,7 +551,8 @@ def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
     about = (f"from turn {ref[len('turn:'):]}" if ref.startswith("turn:")
              else f"event {ref}" if ref else f"arc {c.arc_id or 'none'}")
     line = (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
-            f"{_age(now, c.opened_at.isoformat())}, last kept {_age(now, c.last_evidence_at.isoformat())}{graded})")
+            f"{_age(now, c.opened_at.isoformat())}, {'last touched' if evidence_clock else 'last kept'} "
+            f"{_age(now, c.last_evidence_at.isoformat())}{graded})")
     # A promise concern's own sentence (orion/prime/handback.py promise_text): only here, never in the Prime block.
     return f"{line}\n  PROMISE: {c.promise_text}" if c.promise_text else line
 
@@ -612,7 +627,8 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
         *(["WHAT IS PULLING AT YOU (your needs, strongest first):\n" + "\n".join(inputs.needs)]
           if inputs.needs is not None else []),
         "YOUR CONCERNS:\n" + ("\n".join(_concern_line(c, inputs.now, take_on=inputs.take_on,
-                                                       no_take_on=frozenset(inputs.no_take_on))
+                                                       no_take_on=frozenset(inputs.no_take_on),
+                                                       evidence_clock=inputs.evidence_clock)
                                          for c in state.concerns) or "(none)"),
         "HOW YOUR CONCERNS HAVE ENDED:\n" + track_record(state),
         "YOUR LAST READING:\n" + (state.last_reading or "(none yet)"),
@@ -708,6 +724,23 @@ def _split_experience(raw: list[Any]) -> tuple[list[Any], list[str], list[str]]:
     return rest, cites, problems
 
 
+def _split_concern_refs(raw: list[Any], concerns: Sequence[PrimeConcernV1]) -> tuple[list[Any], list[str]]:
+    """(other items, concern_ids): a ref whose id is a held concern's event_ref (a letter thread
+    ``orion_day_letter:<date>#thread<i>``, a ``turn:`` ref, a funded event) names that concern, not something a
+    curiosity run can open. Split off whatever kind it was written as (11-16 Prime wrote one as an act, #3609)."""
+    by_event = {c.event_ref: c.concern_id for c in concerns if c.event_ref}
+    rest: list[Any] = []
+    named: list[str] = []
+    for item in raw:
+        rid = item.get("id") if isinstance(item, Mapping) else None
+        cid = by_event.get(rid.strip()) if isinstance(rid, str) else None
+        if cid is None:
+            rest.append(item)
+        else:
+            named.append(cid)
+    return rest, named
+
+
 def shown_cites(cites: Sequence[str], shown: Optional[Sequence[str]]) -> tuple[list[str], list[str]]:
     """(cites to record, warnings): only ids the frame showed, in cite order, at most NOW_MAX_CITES."""
     if not cites:
@@ -755,6 +788,7 @@ def apply_answer(
     take_on_check: Optional[Callable[[TakeOnMoveV1, PrimeStateV1], Optional[str]]] = None,
     focus_unread: Optional[str] = None,
     shown_experience: Optional[Sequence[str]] = None,
+    evidence_clock: bool = False,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
     ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
@@ -770,7 +804,11 @@ def apply_answer(
 
     ``shown_experience``: the event ids this frame showed under WHAT YOUR ORGANS LIVED (None: the now was not
     read). Experience cites (the answer's top-level refs, and any inside a move's refs) are kept only when shown,
-    at most NOW_MAX_CITES; the rest are warnings. A bad cite never refuses the move or fails the thought."""
+    at most NOW_MAX_CITES; the rest are warnings. A bad cite never refuses the move or fails the thought.
+
+    ``evidence_clock`` (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED, #3574): a keep is recorded (``Applied.kept``) but no
+    longer renews ``last_evidence_at``. Only real evidence does, and the runtime applies it after the move is
+    actually sent (orion/prime/state.py ``touch_concern``): a refused move renews nothing. Off: a keep renews."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -789,7 +827,9 @@ def apply_answer(
     kept_ids = set(answer.concerns.keep) & {c.concern_id for c in concerns}
     for cid in set(answer.concerns.keep) - {c.concern_id for c in concerns}:
         warnings.append(f"keep of unknown concern {cid!r} ignored")
-    concerns = [c.model_copy(update={"last_evidence_at": now}) if c.concern_id in kept_ids else c for c in concerns]
+    if not evidence_clock:
+        concerns = [c.model_copy(update={"last_evidence_at": now}) if c.concern_id in kept_ids else c
+                    for c in concerns]
     added: list[str] = []
     for add in answer.concerns.add:
         if len(concerns) >= MAX_CONCERNS:
@@ -837,8 +877,10 @@ def apply_answer(
             move = move.model_copy(update={"hours": clamp_hours(move.hours), "why": move.why[:600]})
     elif move is not None:
         # A bad experience ref in a move is a warning (never refuses the move); a bad arc/act ref refuses it.
+        concern_refs: list[str] = []
         if isinstance(move.refs, list):
             rest, move_cites, exp_problems = _split_experience(move.refs)
+            rest, concern_refs = _split_concern_refs(rest, concerns)
             refs, problems = parse_openable_refs(rest)
         else:
             move_cites, exp_problems = [], []
@@ -848,6 +890,17 @@ def apply_answer(
         cited.extend(c for c in move_cites if c not in cited)
         stray = id_tokens_not_in(f"{move.question}\n{move.why}", refs)
         cited_tokens = {t.lower() for c in move_cites for t in id_tokens_not_in(c, [])}
+        if not problems and concern_refs:
+            # A held concern's event (a letter thread, a turn, a funded event) has no openable ref: the move's
+            # concern_id is how a move points at it (#3609). Unambiguous -> the move takes that concern_id.
+            agrees = move.concern_id in (None, concern_refs[0]) or (
+                move.concern_id == NEW_CONCERN and concern_refs[0] in added)
+            if len(set(concern_refs)) > 1 or not agrees:
+                problems = [f"refs name the event of concern {', '.join(sorted(set(concern_refs)))}, but the move's "
+                            f"concern_id is {move.concern_id!r}; a concern's event has no openable ref, point the "
+                            "move at it with its concern_id and leave it out of refs"]
+            else:
+                move = move.model_copy(update={"concern_id": concern_refs[0]})
         if problems:
             refusal = "; ".join(problems)
         elif stray and any(t in cited_tokens for t in stray):
@@ -871,6 +924,9 @@ def apply_answer(
         if refusal is None and move.concern_id and move.concern_id not in {c.concern_id for c in concerns}:
             warnings.append(f"move cites unknown concern {move.concern_id!r}; kept without it")
             move = move.model_copy(update={"concern_id": None})
+        if refusal is None and concern_refs:
+            warnings.append(f"move refs named the event of concern {concern_refs[0]}; used it as the move's "
+                            "concern_id (a concern's event has no openable ref)")
     new_state = state.model_copy(update={
         "concerns": concerns,
         "last_reading": answer.reading[:READING_CAP],

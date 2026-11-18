@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 from orion.prime import intention as it
 from orion.prime.state import PrimeConcernV1, PrimeStateV1
-from orion.schemas.intention import IntentionDeliverV1, IntentionOrderV1, intention_run_id
+from orion.schemas.intention import INTENTION_TURN_TIMEOUT_SEC, IntentionDeliverV1, IntentionOrderV1, intention_run_id
 from test_prime_loop import T0, runtime
 
 CID = "d8db9d7b1bba4cf7"
@@ -128,6 +128,27 @@ def test_a_reply_held_by_quiet_hours_still_counts_when_it_is_stored_in_the_threa
     closed = make_acts(rt.bus)[-1][1]
     assert closed["outcome"]["value"] == 1.0 and "quiet_hours" in closed["outcome"]["note"]
     assert rt.intentions.done[-1].pinged is False
+
+
+def test_the_order_carries_the_carry_turn_budget_from_settings():
+    """#3354: the carry turn's budget per attempt rides on the order (the attempt timer and the FCC motor's limit
+    derive from it). The default is 3600 s; the setting overrides it."""
+    rt = rt_with(take_on())
+    asyncio.run(rt.tick())
+    [order] = rt.orders
+    assert order.timeout_sec == INTENTION_TURN_TIMEOUT_SEC == 3600.0
+
+    rt = rt_with(take_on())
+    rt.s = SimpleNamespace(**{**vars(rt.s), "PRIME_INTENTION_TURN_TIMEOUT_SEC": 2400.0})
+    asyncio.run(rt.tick())
+    [order] = rt.orders
+    assert order.timeout_sec == 2400.0
+
+
+def test_the_settings_default_matches_the_contract_default():
+    from app.settings import Settings
+
+    assert Settings.model_fields["PRIME_INTENTION_TURN_TIMEOUT_SEC"].default == INTENTION_TURN_TIMEOUT_SEC
 
 
 def test_not_before_holds_the_order_until_its_time():

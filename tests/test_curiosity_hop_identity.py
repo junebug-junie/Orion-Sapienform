@@ -244,8 +244,11 @@ def _material() -> StudyMaterial:
 
 def test_kickoff_template_stamps_written_at_with_the_graph_clock():
     text = build_kickoff_prompt(_material(), view=WorldviewSnapshot(), run_id="abc123")
-    assert 'CREATE (:Hop {run_id: "abc123", n: 1, note:' in text
-    assert "written_at: timestamp()})" in text
+    # MERGE keyed only on identity (#3543): note and clock go in ON CREATE SET,
+    # so a resent command finds the first node instead of minting a second.
+    assert 'MERGE (h:Hop {run_id: "abc123", n: 1}) ON CREATE SET h.note =' in text
+    assert "h.written_at = timestamp()" in text
+    assert "CREATE (:Hop" not in text
     assert "`n` counts up from 1 within this sitting" in text
     # the worked example always shows n: 1 -- this defers to a resume
     # preamble when one is present, so the two don't silently contradict
@@ -256,6 +259,7 @@ def test_kickoff_without_a_writable_graph_says_nothing_about_written_at():
     text = build_kickoff_prompt(_material(), run_id="abc123", graph_enabled=False)
     assert "written_at" not in text
     assert "CREATE (:Hop" not in text
+    assert "(h:Hop" not in text
 
 
 def test_resume_preamble_is_empty_when_nothing_to_resume():

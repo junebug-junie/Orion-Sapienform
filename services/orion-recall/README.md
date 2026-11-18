@@ -32,6 +32,35 @@ It then **fuses** candidates into a prompt-ready `MemoryBundleV1` with per-sourc
 
 - `POST /recall` — runs recall for a query and returns `MemoryBundleV1`
 - `GET /health` / `GET /ready` — liveness/readiness
+- `POST /lived/know` — `{"words", "turn_id"?, "max_hits"?}`. A deliberate lived-memory lookup:
+  the same retriever a chat turn uses, on Orion's own words (no 5-word floor, no rewrite). Hits are
+  `strong` (cleared the bar) or `weak` (below it, but share a word with the search), each re-checked
+  by the serving gate. Returns `status` (below, plus `busy` when another lookup is running and
+  `unverified` when matches were found but the re-check failed) and `degraded` reasons. Called by
+  `python -P -m orion.dig know <words>` (`orion/dig/know.py`, issue #3535). One lookup runs at a
+  time. Each lookup writes one `recall_telemetry` row off the reply path: verb `dig.know`,
+  `corr_id` = the turn id, `selected_ids` = the **strong** hits only (those count toward read
+  demand), weak ids in `lived_trace.weak_ids`. A call with no turn id gets `corr_id` `adhoc:<uuid>`
+  and profile `lived_memory.know.adhoc`, so operator runs can be left out of read demand. Reached at `RECALL_SERVICE_URL` from Hub (host
+  network) and at `http://orion-athena-recall:8260` from the harness governor (`app-net`);
+  `ORION_DIG_RECALL_URL` overrides both.
+
+**Lived-recall status per call** (`recall_telemetry.lived_status`, issue #3628;
+migration `services/orion-sql-db/manual_migration_recall_telemetry_lived_status_v1.sql`):
+`ok` (served by the full search) · `below_bar` (searched, nothing cleared the bar) ·
+`skipped_short` (too few content words) · `degraded` (exact words only; `backend_counts.lived_memory`
+says whether it served) · `timeout` / `error` (nothing served) · `off`. NULL = lived recall did not
+run on that call. `lived_trace` (jsonb) holds the rewritten queries, every candidate id that reached
+the rerank, the injected ids and the backend: ids and Orion's own search text only.
+
+Count the calls that could produce a false "no memory" on Hub turns:
+
+```sql
+SELECT lived_status, count(DISTINCT corr_id) AS turns
+FROM recall_telemetry
+WHERE verb = 'stance_react' AND created_at > now() - interval '14 days' AND lived_status IS NOT NULL
+GROUP BY 1 ORDER BY 2 DESC;
+```
 - `POST /debug/recall/compare` — Recall V1 vs shadow Recall V2 comparison (read-only)
 - `GET /debug/recall/eval-suite` — run built-in Recall V1/V2 evaluation corpus
 - `POST /debug/recall/eval-case` — run a single ad-hoc evaluation case
@@ -1056,6 +1085,13 @@ or hangs, the exact-word candidates are still reranked, and the block still says
 degraded search that finds nothing puts a one-line note in the prompt ("not proof there is no
 memory"), except for small talk the rewrite answered NONE. If the whole lived recall misses the
 worker's deadline, the worker runs the same exact-word fallback from the in-memory snapshot.
+The reranker gets the candidates in chunks of 8 (`RERANK_CHUNK`), best-retrieved first, with the
+message's own meaning and exact-word hits taking turns (issue #3662). If the deadline or an error
+stops it after at least one chunk, the scored chunks are kept and served (`rerank_partial` in the
+trace, status `ok`). If nothing in the scored chunks clears the bar, the unscored exact-word hits
+are served degraded (reason `rerank_partial`), so a part-search never reads as "below the bar".
+Cause found 2026-11-17: 5 of 7 degraded chat turns overlapped orion-whisper-tts synthesis on the
+same Tesla P4; the other 2 lost 1.8-2.6 s to the query rewrite first.
 Telemetry: `recall_telemetry.backend_counts.lived_memory_degraded = 1`, and
 `recall_telemetry.timings_ms.lived_memory_{rewrite,rerank,total}`; `recall_debug.lived_memory`
 carries `backend`, `degraded` reasons and the rewritten searches.

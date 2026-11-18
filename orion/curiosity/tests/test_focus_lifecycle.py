@@ -426,9 +426,9 @@ def test_the_kickoff_template_value_is_a_placeholder_that_reads_unknown():
     from orion.curiosity.kickoff_prompt import _outcome_section
 
     text = "\n".join(_outcome_section(run_id="abcdef123456", focus=True))
-    assert 'focus_disposition: "explored"' not in text
+    assert 'focus_disposition = "explored"' not in text
     copied = '<explored | set_aside: why not>'
-    assert f'focus_disposition: "{copied}"' in text
+    assert f't.focus_disposition = "{copied}"' in text
     assert cf.parse_disposition(copied) == (None, copied)
 
 

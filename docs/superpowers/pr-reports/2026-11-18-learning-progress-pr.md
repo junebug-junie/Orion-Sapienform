@@ -128,6 +128,6 @@ After merge, the post-pull rebuild covers both services. Order: orion-prediction
 
 ## PR link
 
-PLACEHOLDER_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3692
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -154,6 +154,21 @@ def test_denial_after_a_skipped_search_is_a_false_denial_under_its_cause():
     assert ms.summary_line("2026-11-18", None, report)["answer"]["false_no_memory_by_cause"]["search_full"] == 1
 
 
+def test_too_short_for_lived_search_is_scored_not_degraded():
+    """skipped_short is the real chat path's own rule, so a miss there is a real miss."""
+    _, items, replay = _fixture()
+    obs = _observations(items, replay)
+    obs["fact_city"].injected_ids = set()
+    obs["fact_city"].degraded = ["lived:skipped_short"]
+    report = ms.score_retrieval(items, obs)
+    assert "fact_city" not in [d["qid"] for d in report["degraded"]]
+    assert report["lived_skipped_short"] == [{"qid": "fact_city", "hit": False}]
+    assert report["by_category"]["fact"]["lived_skipped_short"] == 1
+    assert report["by_category"]["fact"]["hits"] == 1   # fact_page_only still hits via the page
+    table = ms.render_table(report, None, run_date="2026-11-18", bank_items=len(items))
+    assert "| fact | 3 | 2 | 2 | 1 | 50% |" in table
+
+
 def test_implicit_items_get_their_own_row():
     _, items, replay = _fixture()
     report = ms.score_retrieval(items, _observations(items, replay))

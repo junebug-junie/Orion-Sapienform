@@ -256,16 +256,24 @@ class RetrievalObservation:
     degraded: List[str] = field(default_factory=list)
 
 
+# Search causes that are the chat path working as designed, not a failure: they are scored (a miss
+# is a miss) and counted in their own column. lived:skipped_short = too few content words for the
+# lived search (lived_memory.py min_query_tokens), which a real turn with that message also does.
+SCORED_CAUSES = ("lived:skipped_short",)
+
+
 def retrieval_verdict(item: Item, obs: RetrievalObservation) -> Dict[str, Any]:
     seen = set(obs.injected_ids) | set(obs.page_ids)
     found = [t for t in item.targets if t in seen]
+    degraded = [r for r in obs.degraded if r not in SCORED_CAUSES]
+    short = any(r in SCORED_CAUSES for r in obs.degraded)
     return {
         "qid": item.qid, "category": item.category, "kind": item.kind,
         "hit": bool(found), "targets_found": len(found), "targets": len(item.targets),
         "hit_bundle": any(t in obs.injected_ids for t in item.targets),
         "via_page": any(t in obs.page_ids for t in item.targets),
         "superseded_served": [s for s in item.superseded if s in seen],
-        "skipped": obs.skipped, "degraded": list(obs.degraded),
+        "skipped": obs.skipped, "degraded": degraded, "lived_skipped_short": short,
         "injected": len(obs.injected_ids),
     }
 
@@ -289,6 +297,8 @@ def score_retrieval(items: Sequence[Item], observations: Mapping[str, RetrievalO
             "hit_rate": _rate(hits, len(clean)), "bundle_hits": bundle_hits,
             "bundle_hit_rate": _rate(bundle_hits, len(clean)),
             "degraded": sum(1 for v in stored if v["degraded"]),
+            "lived_skipped_short": sum(1 for v in clean if v["lived_skipped_short"]),
+            "lived_skipped_short_hits": sum(1 for v in clean if v["lived_skipped_short"] and v["hit"]),
             "backfill_items": sum(1 for v in vs if v["kind"] == "backfill"),
             "superseded_served": sum(1 for v in vs if v["superseded_served"]),
         }
@@ -305,6 +315,8 @@ def score_retrieval(items: Sequence[Item], observations: Mapping[str, RetrievalO
         "hit_rate": _rate(hits_i, len(clean_i)), "bundle_hits": bundle_i,
         "bundle_hit_rate": _rate(bundle_i, len(clean_i)),
         "degraded": sum(1 for v in stored_i if v["degraded"]),
+        "lived_skipped_short": sum(1 for v in clean_i if v["lived_skipped_short"]),
+        "lived_skipped_short_hits": sum(1 for v in clean_i if v["lived_skipped_short"] and v["hit"]),
         "backfill_items": sum(1 for v in vs if v["kind"] == "backfill"),
         "superseded_served": sum(1 for v in vs if v["superseded_served"]),
     }
@@ -325,6 +337,7 @@ def score_retrieval(items: Sequence[Item], observations: Mapping[str, RetrievalO
         "superseded_served": [{"qid": v["qid"], "ids": v["superseded_served"]} for v in verdicts if v["superseded_served"]],
         "backfill": [{"qid": v["qid"], "injected": v["injected"]} for v in verdicts if v["kind"] == "backfill"],
         "skipped_by_gate": [v["qid"] for v in verdicts if v["skipped"]],
+        "lived_skipped_short": [{"qid": v["qid"], "hit": v["hit"]} for v in clean if v["lived_skipped_short"]],
         "by_category": by_cat,
         "implicit": implicit_row,
         "items": verdicts,
@@ -495,23 +508,29 @@ def render_table(retrieval: Optional[Mapping[str, Any]], answers: Optional[Mappi
     if retrieval is not None:
         lines += [
             f"## Retrieval (bar {_pct(RETRIEVAL_BAR)} of stored items, degraded recalls apart)", "",
-            "| category | items | stored | scored | hits | hit rate | recall-only hit rate | degraded | backfill items | superseded served |",
-            "|---|---|---|---|---|---|---|---|---|---|",
+            "| category | items | stored | scored | hits | hit rate | recall-only hit rate | too short for lived search (hits) | degraded | backfill items | superseded served |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
         ]
-        for cat, r in retrieval["by_category"].items():
+
+        def _short(r: Mapping[str, Any]) -> str:
+            return f"{r.get('lived_skipped_short', 0)} ({r.get('lived_skipped_short_hits', 0)})"
+
+        rows = list(retrieval["by_category"].items())
+        if retrieval.get("implicit"):
+            rows.append(("implicit (subset of the above)", retrieval["implicit"]))
+        for cat, r in rows:
             lines.append(f"| {cat} | {r['items']} | {r['stored']} | {r['scored']} | {r['hits']} | "
-                         f"{_pct(r['hit_rate'])} | {_pct(r['bundle_hit_rate'])} | {r['degraded']} | "
+                         f"{_pct(r['hit_rate'])} | {_pct(r['bundle_hit_rate'])} | {_short(r)} | {r['degraded']} | "
                          f"{r['backfill_items']} | {r['superseded_served']} |")
-        r = retrieval.get("implicit")
-        if r:
-            lines.append(f"| implicit (subset of the above) | {r['items']} | {r['stored']} | {r['scored']} | {r['hits']} | "
-                         f"{_pct(r['hit_rate'])} | {_pct(r['bundle_hit_rate'])} | {r['degraded']} | "
-                         f"{r['backfill_items']} | {r['superseded_served']} |")
+        short = retrieval.get("lived_skipped_short") or []
         lines.append(f"| **all** | | {retrieval['stored']} | {retrieval['scored']} | {retrieval['hits']} | "
                      f"**{_pct(retrieval['hit_rate'])}** | {_pct(retrieval['bundle_hit_rate'])} | "
+                     f"{len(short)} ({sum(1 for x in short if x['hit'])}) | "
                      f"{len(retrieval['degraded'])} | {len(retrieval['backfill'])} | {len(retrieval['superseded_served'])} |")
         lines += ["", "Hit = a target id is in DURABLE MEMORY (both chat recall phases) or cited by the core page. "
-                  "Recall-only = DURABLE MEMORY alone.", "",
+                  "Recall-only = DURABLE MEMORY alone. "
+                  "Too short = the lived search skipped the message for too few content words (the real chat "
+                  "path does the same, so these are scored).", "",
                   f"Retrieval bar: {_verdict(retrieval['passes'])} (coverage {_pct(retrieval['coverage'])}).", ""]
         if retrieval["degraded"]:
             lines.append("Degraded recalls (not scored): " + ", ".join(

@@ -61,7 +61,8 @@ an async prompt -> answer text on the run's own hold."""
 logger = logging.getLogger(__name__)
 
 EPISODE_DISTILL_MIN_ATTEMPTS = 4
-# The supersede check: one short JSON answer per pair (no thinking), on its own node budget.
+# The supersede check: short JSON votes per pair (no thinking, up to supersede.VOTES each), on its
+# own node budget.
 SUPERSEDE_CHECK_MAX_TOKENS = 200
 SUPERSEDE_CHECK_TIMEOUT_SEC = 120.0
 SUPERSEDE_NODE_BUDGET_SEC = 300.0
@@ -190,10 +191,11 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
             "max_tokens": SUPERSEDE_CHECK_MAX_TOKENS,
             "timeout_sec": min(float(brief.timeout_sec), SUPERSEDE_CHECK_TIMEOUT_SEC)})
 
-        async def ask(prompt: str) -> str:
+        async def ask(prompt: str, *, temperature: float = 0.0) -> str:
+            # The classifier samples several votes above temperature 0 (self-consistency, #3659).
             answer = await call_llm(prompt, brief=check_brief, run_id=state["run_id"],
                                     correlation_id=state["correlation_id"], gpu_lease=ref,
-                                    purpose=SUPERSEDE_CHECK_PURPOSE, temperature=0.0)
+                                    purpose=SUPERSEDE_CHECK_PURPOSE, temperature=float(temperature))
             return str(answer.get("text") or "")
 
         # Its own bound too (execute's node_timeout_sec is the pool-side one).
@@ -266,13 +268,15 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
         # applies anything; a degraded or pre-#3659 checkpoint applies nothing.
         from orion.memory.episode.supersede import links_to_apply
 
-        links = links_to_apply(state.get("supersede"))
+        plan = state.get("supersede")
+        links = links_to_apply(plan)
         counts = await persist(
             episode_id=brief.episode_id, run_id=state["run_id"], result=result, model_route=brief.llm_route,
             model=state.get("model"), prompt_version=prompt_version, usage=state.get("usage") or {},
             llm_latency_ms=state.get("llm_latency_ms"), hold_wait_ms=_hold_wait_ms(dict(state)),
             coverage=coverage(result, turns)["coverage"],
             **({"supersede_links": links} if links else {}),
+            **({"supersede_plan": plan} if plan else {}),
         )
         return {**released, "persisted": dict(counts), "status": "running"}
 

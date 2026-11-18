@@ -249,7 +249,7 @@ def build_carry_request(order: IntentionOrderV1, src: IntentionSourceV1) -> Any:
             intention="intention.carry", concern_id=order.concern_id, source=src.source,
             prime_act_id=order.prime_act_id, prompt=carry_prompt(order.concern_id, src.prompt), route=src.route,
             route_target=src.route_target, quote_ref=src.quote_ref, horizon_at=src.horizon_at,
-            retrieval_query=src.retrieval_query, timeout_sec=order.timeout_sec),
+            retrieval_query=src.retrieval_query, timeout_sec=order.timeout_sec, promised_at=src.promised_at),
         # The concern's horizon is the run's deadline: the binding family's window ``latest`` (hold end = it - 1800 s).
         admission=ResourceRequirementV1(preferred_lane="agent", resource="llm.route.agent", priority="background",
                                         deadline_at=src.horizon_at),

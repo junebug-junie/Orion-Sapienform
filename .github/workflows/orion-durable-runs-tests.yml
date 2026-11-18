@@ -30,6 +30,7 @@ on:
       - "orion/regulation/**"
       - "orion/schemas/regulation.py"
       - "orion/physiology/**"
+      - "orion/schemas/intention.py"   # #3640: brief.promised_at opens the intention want
       - "orion/schemas/physiology.py"
       - "orion/schemas/physiology_want.py"
       - "orion/schemas/physiology_report.py"
@@ -135,6 +136,7 @@ on:
       - "services/orion-sql-writer/evals/ask_bind_mutations.py"   # attention 4b: Prime's menu mutant lane
       - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger
       - "orion/physiology/**"
+      - "orion/schemas/intention.py"   # #3640: brief.promised_at opens the intention want
       - "config/physiology/**"
       - "scripts/analysis/body_economy_binding_replay.py"
       - "scripts/analysis/outreach_binding_replay.py"
@@ -310,6 +312,10 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python services/orion-durable-runs/evals/reading_binding_replay.py
+      - name: Intention promise-age replay (#3640 -- a take-on ranks by the promise's age; the 11-13 run, fixture)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python services/orion-durable-runs/evals/intention_promise_age_replay.py
       - name: Outreach binding-bid eval (body economy Patch D for hub.outreach -- holds bounded, no answer never holds)
         env:
           PYTHONPATH: ${{ github.workspace }}

@@ -427,6 +427,7 @@ def test_close_summary_splits_void_by_settle_class_and_keeps_them_out_of_the_kee
     assert out["void_by_kind"] == {"no_juniper_turn": 1, "not_due": 1, "not_chat": 1, "absence_unchecked": 1}
     assert out["void_with_later_carry_acts"] == ["act_5"]
     assert out["keep_rate"]["n"] == 2  # graded class only
+    assert out["settle_class_void_share"] == round(3 / 6, 3)
 
 
 def test_prime_vs_acts_counts_each_disagreement():

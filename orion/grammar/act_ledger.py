@@ -836,7 +836,7 @@ _CONDITION_MET_SQL = text(
 )
 
 
-def _promise_item(conn: Any, test_before: str | None) -> dict | None:
+def _promise_item(conn: Any, test_before: str | None, unread: dict[str, int] | None = None) -> dict | None:
     """The stored promise item, or None (no ref, no row, index past the end, a read error). A read error
     runs in its own savepoint so it cannot abort the resolver's transaction; None reads as the v1 rule."""
     parsed = parse_promise_ref(str(test_before or ""))
@@ -851,6 +851,8 @@ def _promise_item(conn: Any, test_before: str | None) -> dict | None:
         if nested is not None:
             nested.rollback()
         logger.warning("promise_item_unread ref=%s", test_before)
+        if unread is not None:
+            unread["item"] = unread.get("item", 0) + 1
         return None
     if isinstance(raw, str):
         try:
@@ -861,7 +863,7 @@ def _promise_item(conn: Any, test_before: str | None) -> dict | None:
 
 
 def _condition_met(conn: Any, act_id: str, *, opened_at: datetime, horizon_at: datetime,
-                   correlation_id: str | None) -> bool:
+                   correlation_id: str | None, unread: dict[str, int] | None = None) -> bool:
     """Whether a judged reply inside the window listed this act in promise_conditions_met. A read error
     reads as MET (fail toward the v1 rule: a graded close, never a silent not-due)."""
     nested = conn.begin_nested() if hasattr(conn, "begin_nested") else None
@@ -875,6 +877,8 @@ def _condition_met(conn: Any, act_id: str, *, opened_at: datetime, horizon_at: d
         if nested is not None:
             nested.rollback()
         logger.warning("promise_condition_unread act_id=%s", act_id)
+        if unread is not None:
+            unread["condition"] = unread.get("condition", 0) + 1
         return True
 
 
@@ -909,6 +913,10 @@ class ResolveSummary:
     closed_promises_not_due: int = 0
     closed_promises_not_chat: int = 0
     closed_promises_absence_unchecked: int = 0
+    # Read errors on the settle-class path (each falls back: an unread item -> the v1 rule, an unread
+    # condition scan -> "met", i.e. graded). Counted so a silent fallback shows in the resolver's summary.
+    promise_item_unread: int = 0
+    promise_condition_unread: int = 0
 
 
 # A camera ask's act is graded from its orion_ask row (orion/grammar/camera_ask_acts.py ask_grade):
@@ -1041,6 +1049,7 @@ def resolve_due_acts(
     replied = not_replied = expired = recovered = asks_graded = asks_withdrawn = 0
     promises_expired = promises_void = 0
     void_kinds: dict[str, int] = {}
+    unread: dict[str, int] = {}
     for row in rows:
         act = _act_from_row(row)
         opened_at = _aware(row["opened_at"])
@@ -1082,10 +1091,10 @@ def resolve_due_acts(
                 # Settle classes first (#3595): a conditional promise whose condition never arose is
                 # not due, and a run or absence promise cannot be shown kept by a chat reply's absence.
                 # Each closes void (censored, never graded), with its own kind in the note.
-                item = _promise_item(conn, row.get("test_before"))
+                item = _promise_item(conn, row.get("test_before"), unread)
                 met = promise_condition(item) is None or _condition_met(
                     conn, act.act_id, opened_at=opened_at, horizon_at=horizon_at,
-                    correlation_id=row["correlation_id"])
+                    correlation_id=row["correlation_id"], unread=unread)
                 class_void = horizon_void_note(item, condition_met=met)
                 if class_void is not None:
                     outcome = ActOutcomeV1(value=0.0, observed_at=horizon_at, source="expired", note=class_void)
@@ -1119,7 +1128,9 @@ def resolve_due_acts(
                           promises_expired, promises_void,
                           closed_promises_not_due=void_kinds.get("not_due", 0),
                           closed_promises_not_chat=void_kinds.get("not_chat", 0),
-                          closed_promises_absence_unchecked=void_kinds.get("absence_unchecked", 0))
+                          closed_promises_absence_unchecked=void_kinds.get("absence_unchecked", 0),
+                          promise_item_unread=unread.get("item", 0),
+                          promise_condition_unread=unread.get("condition", 0))
 
 
 # --- late cost fill (attention patch 3a, "reading's real cost") ------------------------------------

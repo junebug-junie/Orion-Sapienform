@@ -45,12 +45,16 @@ logger = logging.getLogger("sql-writer.harness_turn_trace")
 # reflection.promises_made is kept (first stored list wins, #3596). jsonb_set on '{reflection}' also
 # creates the key when the incoming artifact has no reflection object.
 _STORED_MADE = "harness_turn_trace.run_artifact #> '{reflection,promises_made}'"
+# A re-publish with no reflection object (a judge failure, an artifact without one) keeps the stored reflection
+# whole, so no promise list ever sits on a turn without the reflection_source that says it was judged.
+_STORED_REFLECTION = "harness_turn_trace.run_artifact -> 'reflection'"
 RUN_ARTIFACT_ON_CONFLICT_SQL = f"""CASE
   WHEN jsonb_typeof({_STORED_MADE}) = 'array' AND jsonb_array_length({_STORED_MADE}) > 0
   THEN jsonb_set(excluded.run_artifact, '{{reflection}}',
-                 (CASE WHEN jsonb_typeof(excluded.run_artifact -> 'reflection') = 'object'
-                       THEN excluded.run_artifact -> 'reflection' ELSE '{{}}'::jsonb END)
-                 || jsonb_build_object('promises_made', {_STORED_MADE}))
+                 CASE WHEN jsonb_typeof(excluded.run_artifact -> 'reflection') = 'object'
+                      THEN (excluded.run_artifact -> 'reflection')
+                           || jsonb_build_object('promises_made', {_STORED_MADE})
+                      ELSE {_STORED_REFLECTION} END)
   ELSE excluded.run_artifact
 END"""
 
@@ -108,6 +112,8 @@ def _log_if_kept_first(corr_id: str, payload: dict[str, Any], result: Any) -> No
         return
     incoming = ((payload.get("reflection") or {}) if isinstance(payload.get("reflection"), dict) else {}).get(
         "promises_made")
+    # A longer incoming list means a re-run promised more: those extra items have no stored quote, so their acts
+    # read as unreadable in the view (and as the v1 rule at the horizon). Logged the same way.
     if stored and stored != incoming:
         logger.warning("harness_turn_trace_promises_kept_first corr=%s stored=%d incoming=%s", corr_id,
                        len(stored), len(incoming) if isinstance(incoming, list) else "none")

@@ -315,6 +315,10 @@ def close_summary(acts: Sequence[Mapping[str, Any]], *, unclosable: set[str],
             # class only (kept + expired: a chat-showable promise, or a conditional one whose condition arose);
             # these voids sit beside it, never in it.
             "void_by_kind": dict(void_kinds),
+            # The judge's settle-class labels decide which unkept promises are graded at all: their share of closed
+            # acts is printed so a drift toward "run"/"absence"/conditions (which shrinks n) is visible (#3595 review).
+            "settle_class_void_share": (round(sum(v for k, v in void_kinds.items() if k != "no_juniper_turn") / closed, 3)
+                                        if closed else None),
             "void_with_later_carry": len(void_later_carry), "void_with_later_carry_acts": void_later_carry,
             "keep_rate": beta_summary(kept, expired)}
 
@@ -812,7 +816,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"void by kind: {led['void_by_kind'] or '-'} (no_juniper_turn = she wrote nothing in 72 h; not_due = a "
           "condition no judged reply saw arise; not_chat = delivered by a run or outside chat; absence_unchecked = "
           "an abstention, no breach check yet; all censored, none graded, #3595)")
-    print(f"void acts a carry run delivered later (a note, never a reopen): {led['void_with_later_carry']}"
+    print(f"settle-class void share of closed acts (not graded by the judge's label; watch for drift): "
+          f"{_or_dash(led['settle_class_void_share'])}")
+    print(f"void acts a carry run for the same turn delivered after the act opened (a note, never a reopen): "
+          f"{led['void_with_later_carry']}"
           + _ids(led["void_with_later_carry_acts"]))
     kr = led["keep_rate"]
     print(f"HEADLINE keep rate over the graded class (chat-showable, or conditional with its condition met): "
@@ -856,7 +863,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           "before #3602 deployed reads not_handed_back here if it had no browser surface)")
     pv = out["prime_vs_acts"]
     if pv.get("read"):
-        print(f"Prime concern vs act (shadow: may disagree, counted only): concern with no act {pv['concern_no_act']}"
+        print(f"Prime concern vs act (shadow: may disagree, counted only; Prime's concerns are its state now, acts only "
+              f"those opened in the window): concern with no act {pv['concern_no_act']}"
               + _ids(pv["concern_no_act_ids"]) + f"; act with no concern {pv['act_no_concern']}"
               + _ids(pv["act_no_concern_ids"]) + f"; concern still open while its act closed "
               f"{pv['concern_open_act_closed']}" + _ids(pv["concern_open_act_closed_ids"]))

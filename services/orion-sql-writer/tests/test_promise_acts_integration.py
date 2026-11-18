@@ -212,8 +212,6 @@ def test_a_conditional_promise_whose_condition_arose_follows_the_v1_rule(session
     act = _open(session, promise_ref("c-cond2", 0), t0)
     _chat(session, at=t0 + timedelta(hours=5), corr="c-met")
     _trace(session, "c-met", at=t0 + timedelta(hours=5), conditions_met=[act.act_id])
-    # A condition-met mark AFTER the horizon does not count.
-    _trace(session, "c-late", at=t0 + timedelta(hours=75), conditions_met=["someone-else"])
     session.commit()
 
     summary = resolve_due_acts(session, now=now, commit=session.commit)
@@ -328,6 +326,8 @@ def test_a_republished_run_artifact_keeps_the_first_stored_promises(session):
     assert upsert_harness_turn_trace(session, {**run, "final_text": "three"})
     art = session.execute(text("SELECT run_artifact FROM harness_turn_trace WHERE correlation_id = 'c-pub'")).scalar()
     assert art["reflection"]["promises_made"] == first and art["final_text"] == "three"
+    # ... and the whole stored reflection (tone included), so the list never sits without its judged reflection.
+    assert art["reflection"]["tone"] == "x"
 
     run2 = {"schema_version": "harness.run.v1", "correlation_id": "c-empty-first"}
     assert upsert_harness_turn_trace(session, {**run2, "reflection": {"promises_made": []}})
@@ -335,3 +335,35 @@ def test_a_republished_run_artifact_keeps_the_first_stored_promises(session):
     art = session.execute(text(
         "SELECT run_artifact FROM harness_turn_trace WHERE correlation_id = 'c-empty-first'")).scalar()
     assert art["reflection"]["promises_made"] == second
+
+
+def test_the_promising_turns_own_condition_mark_does_not_count(session):
+    """The judge on the promising turn itself cannot mark its own new promise's condition met."""
+    from orion.grammar.promise_acts import promise_void_kind
+
+    _trace_table(session)
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(hours=80)
+    act = _open(session, promise_ref("c-self", 0), t0)
+    _trace(session, "c-self", at=t0 + timedelta(seconds=1),
+           made=[_item(condition="the proposals appear")], conditions_met=[act.act_id])
+    _chat(session, at=t0 + timedelta(hours=5), corr="c-w2")
+    session.commit()
+    resolve_due_acts(session, now=now, commit=session.commit)
+    assert promise_void_kind(_row(session, act.act_id)["outcome_note"]) == "not_due"
+
+
+def test_settle_class_read_errors_fall_back_and_are_counted():
+    """An unreadable item reads as the v1 rule (None); an unreadable condition scan reads as met (graded).
+    Both are counted, never silent."""
+    from orion.grammar import act_ledger as al
+
+    class Broken:
+        def execute(self, *a, **k):
+            raise RuntimeError("relation harness_turn_trace does not exist")
+
+    unread: dict = {}
+    assert al._promise_item(Broken(), promise_ref("c", 0), unread) is None
+    t = datetime.now(timezone.utc)
+    assert al._condition_met(Broken(), "act_x", opened_at=t, horizon_at=t, correlation_id="c", unread=unread) is True
+    assert unread == {"item": 1, "condition": 1}

@@ -553,6 +553,11 @@ go-live is not flipped; `THOUGHT_OPEN_PROMISES_CUE_ENABLED` stays off.
   - `run`: `void:not_chat` (a chat reply's silence is not a break);
   - otherwise the v1 rule: expired 0 if Juniper wrote, `void:` if she did not.
   Every settle-class void is censored (`void:` prefix): never graded, never a bet, never a posterior update.
+- Known bias toward `not_due`: only promises the judge is shown (oldest first, `PROMISE_JUDGE_VIEW_MAX` = 8) can be
+  marked condition-met, so with more than 8 open promises a newer conditional one closes `not_due`. Read errors fall
+  back the other way (an unread item = the v1 rule; an unread condition scan = met, graded) and are counted in the
+  resolver summary (`promise_item_unread`, `promise_condition_unread`). The report prints the settle-class void share
+  of closed acts so a judge drift toward ungraded labels is visible.
   A chat reply that delivers a run or absence promise still keeps it (`evidence=reply`).
 - Later delivery (#3595 rec 2): the report lists void acts that a carry run for the same turn delivered later.
   It never reopens the act; the act is the record of truth.
@@ -577,6 +582,10 @@ matched no offer the view read; should stay 0).
 The ref format `harness_turn_trace:<corr>#promises_made[<i>]` does not change (Prime's hand-back uses it).
 Instead, sql-writer's upsert keeps the first non-empty `reflection.promises_made` stored for a corr; a
 re-published run artifact updates everything else and logs `harness_turn_trace_promises_kept_first`.
+Limit: this pins the FIRST run's refs only. If a re-run's Hub opens acts from its own reflection, a promise at an
+index past the stored list reads as `unreadable` (and the v1 rule at the horizon), and one at an index the first
+list had is merged into the first run's act. Whether a Juniper turn is ever re-run is UNVERIFIED; the log line
+counts it if it happens.
 
 ### Long quotes (#3530)
 

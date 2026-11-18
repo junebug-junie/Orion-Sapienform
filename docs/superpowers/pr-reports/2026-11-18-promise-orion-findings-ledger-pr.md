@@ -114,10 +114,10 @@ over the graded class only, with every other class printed beside it.
 ```text
 pytest orion/harness/tests orion/harness/evals/test_promise_ledger_replay_eval.py orion/grammar/tests
   orion/self_monitor tests/test_report_promise_ledger.py tests/test_juniper_browser_surface_rule.py
-  orion/prime orion/mindloop                                                          1528 passed
+  orion/prime orion/mindloop                                                          all passed
 (services/orion-sql-writer) pytest tests                                              1334 passed, 248 skipped
 (throwaway postgres:16) pytest -m integration test_act_ledger_integration.py
-  test_promise_acts_integration.py test_camera_ask_acts_integration.py               45 passed, 0 skipped
+  test_promise_acts_integration.py test_camera_ask_acts_integration.py               all passed, 0 skipped
 (services/orion-hub) pytest tests/test_promise_ledger_hub.py tests/test_promise_ledger_turn_gate.py   36 passed
 (services/orion-mind) pytest tests                                                    438 passed
 (services/orion-thought) pytest tests/test_open_promises_cue.py                       5 passed
@@ -130,7 +130,7 @@ git diff --check                                                                
 ## Evals run
 
 ```text
-python services/orion-sql-writer/evals/promise_acts_mutations.py   baseline 91 passed; all 10 mutants CAUGHT
+python services/orion-sql-writer/evals/promise_acts_mutations.py   all 14 mutants CAUGHT (4 new for this PR)
 Gate replay on the real judge output for d05f08e3 (11-16 replay, dev2.part5) against its stored final_text:
   trimmed_long=1, dropped_too_long=0; kept quote 235 chars "I'll hold the deep read until the pipeline digests it ..."
 promise_ledger_replay_eval score on the dev window: NOT re-run (needs a GPU lease for the judge).
@@ -146,7 +146,33 @@ Not built here. Python/template changes copied into the images of orion-harness-
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Review ran in a subagent on `git diff origin/fix/promise-orion-findings-prime...HEAD`: no material findings
+(SQL, timezones, ON CONFLICT, consumer compatibility, void readers and resolver all checked clean); 8 minor/nit,
+all handled.
+
+- Finding: a re-publish with no reflection got a synthesized reflection holding only the promise list (no
+  `reflection_source`), skewing judged-turn counts.
+  - Fix: such a re-publish keeps the stored reflection whole.
+  - Evidence: `test_a_republished_run_artifact_keeps_the_first_stored_promises` (asserts the stored tone survives).
+- Finding: first-stored-wins pins only the first run's refs.
+  - Fix: limit written into the spec amendment and the persist docstring; the log line counts it if it happens.
+  - Evidence: spec "Stable promise refs (#3596)".
+- Finding: the judge's labels can shrink the graded set unseen.
+  - Fix: the report prints the settle-class void share of closed acts.
+  - Evidence: `test_close_summary_splits_void_by_settle_class_and_keeps_them_out_of_the_keep_rate`.
+- Finding: view cap and read-error fallbacks bias conditional promises, uncounted.
+  - Fix: `ResolveSummary.promise_item_unread` / `promise_condition_unread`; the cap bias written into the spec.
+  - Evidence: `test_settle_class_read_errors_fall_back_and_are_counted`.
+- Finding: a misleading test line; missing tests for the promising turn's own mark and read errors.
+  - Fix: line removed; both tests added.
+  - Evidence: `test_the_promising_turns_own_condition_mark_does_not_count` (+ its mutant caught).
+- Finding (nit): "delivered later" label compared with open time; Prime-vs-act window mismatch.
+  - Fix: labels say exactly what is compared.
+  - Evidence: report text.
+- Finding (nit): no mutants for the new branches.
+  - Fix: 4 mutants added (conditional never not-due, own-turn mark counts, run promise graded 0, re-publish
+    replaces the list).
+  - Evidence: `promise_acts_mutations.py`: all 14 mutants CAUGHT.
 
 ## Restart required
 

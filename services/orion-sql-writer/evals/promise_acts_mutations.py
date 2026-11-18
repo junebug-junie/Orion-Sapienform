@@ -7,7 +7,9 @@ Each mutant breaks one guard, and the tests must FAIL on every one:
   promise acts given a cost; the self-monitor building a bet from a shadow act;
 * void vs expired: the resolver's "did Juniper write in the horizon" check removed or inverted;
 * honesty: a kept mark accepted without its delivering quote in the reply, or one that only repeats the promise; an offer opening an act
-  before Juniper accepts it; an item without force/done_when opening an act.
+  before Juniper accepts it; an item without force/done_when opening an act;
+* settle classes / stable refs (#3595, #3596): a conditional promise never closing not-due, the promising turn's
+  own condition mark counting, a run promise graded 0, a re-publish replacing the stored promise list.
 
 Files are rewritten IN PLACE and restored in a ``finally``; a SIGKILL mid-run would leave a mutant in the
 tree (``git diff`` shows it). Needs a throwaway Postgres for the lifecycle tests:
@@ -32,6 +34,7 @@ LEDGER = "orion/grammar/act_ledger.py"
 ACTS = "orion/grammar/promise_acts.py"
 GATE = "orion/harness/promise_gate.py"
 ADAPTERS = "orion/self_monitor/adapters.py"
+WRITER = "services/orion-sql-writer/app/harness_turn_trace_persist.py"
 MUTANTS = {
     "shadow signal graded": (LEDGER, "or is_shadow_signal(exp.signal_id) or is_void_note(outcome.note)",
                              "or is_void_note(outcome.note)"),
@@ -48,6 +51,12 @@ MUTANTS = {
     "re-promise counts as kept": (GATE, "if own and (norm_quote in own or own in norm_quote):", "if False:"),
     "offer opens before acceptance": (ACTS, "        if promise.offer:\n            plan.offers_not_opened += 1\n            continue\n", ""),
     "old row without force opens": (ACTS, "        if not is_firm_ledger_promise(promise):\n            plan.skipped_no_force += 1\n            continue\n", ""),
+    # Settle classes and stable refs (#3595, #3596, 2026-11-18).
+    "conditional never not-due": (ACTS, "    if promise_condition(item) is not None and not condition_met:",
+                                  "    if False:"),
+    "condition-met counts the promising turn": (LEDGER, "       AND t.correlation_id <> coalesce(:correlation_id, '')\n", ""),
+    "run promise graded 0": (ACTS, '    if cls == "run":\n        return VOID_NOT_CHAT_NOTE\n', ""),
+    "re-publish replaces the promise list": (WRITER, "    if column == \"run_artifact\":\n        set_[\"run_artifact\"] = literal_column(RUN_ARTIFACT_ON_CONFLICT_SQL)\n", ""),
 }
 originals = {rel: (W / rel).read_text() for rel in {f for f, _, _ in MUTANTS.values()}}
 env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1",

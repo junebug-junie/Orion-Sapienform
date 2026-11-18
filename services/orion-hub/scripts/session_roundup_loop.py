@@ -557,7 +557,8 @@ class SessionRoundupLoop:
                 continue
             text, cut = core.cap_spec(text, core.SPEC_MAX_CHARS, path=path, branch=core.one_line(branch, 300))
             if cut:
-                notes.append(f"Hub cut the spec {path} to {core.SPEC_MAX_CHARS} characters.")
+                notes.append(f"Hub cut the spec {path} to at most {core.SPEC_MAX_CHARS} characters "
+                             "(its last line says where, and where the full text is).")
             specs.append({"path": path, "text": text, "cut": cut})
         if len(list(spec or [])) > core.MAX_SPECS:
             notes.append(f"Hub kept the first {core.MAX_SPECS} spec files and dropped the rest.")

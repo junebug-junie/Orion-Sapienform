@@ -88,7 +88,7 @@ MESH_EDGE_MAX_WITHHELD_FRACTION = 0.5
 MESH_EDGE_MOSTLY_WITHHELD = "mesh_edge_mostly_withheld"
 # Claude's copy says what the marker is and how many there are, so a blank reads as withheld on
 # purpose, not as lost text. One line, first, never repeated on a resend.
-MESH_EDGE_NOTE_PREFIX = "[Hub: "
+MESH_EDGE_NOTE_PREFIX = "[Hub mesh-edge note: "
 MAX_CLAUDE_RESENDS = 1
 
 

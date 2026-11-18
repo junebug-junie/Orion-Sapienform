@@ -88,20 +88,22 @@ def cap_text(text: str, limit: int, *, what: str) -> Tuple[str, bool]:
 
 
 _MD_HEADING_RE = re.compile(r"^[^\S\n]{0,3}#{1,6}[^\S\n]+(\S[^\n]*)$")
-_FENCE_RE = re.compile(r"^[^\S\n]{0,3}(```|~~~)")
+_FENCE_RE = re.compile(r"^[^\S\n]{0,3}(`{3,}|~{3,})")
 
 
-def _md_headings(text: str, *, in_fence: bool = False) -> Tuple[List[str], bool]:
-    """Markdown heading texts in ``text`` (outside code fences), and whether it ends inside a fence."""
+def _md_headings(text: str, *, fence: str = "") -> Tuple[List[str], str]:
+    """Markdown heading texts in ``text`` outside code fences, and the fence still open at its end
+    ("" when none). A fence closes only on the marker that opened it."""
     out: List[str] = []
     for line in text.split("\n"):
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-        elif not in_fence:
-            m = _MD_HEADING_RE.match(line)
-            if m:
-                out.append(m.group(1))
-    return out, in_fence
+        m = _FENCE_RE.match(line)
+        if m and (not fence or m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence)):
+            fence = "" if fence else m.group(1)
+        elif not fence:
+            h = _MD_HEADING_RE.match(line)
+            if h:
+                out.append(h.group(1))
+    return out, fence
 
 
 # The cut line stays short (it is paid for out of the same prompt budget): at most this many
@@ -123,10 +125,13 @@ def cap_spec(text: str, limit: int, *, path: str = "", branch: str = "", what: s
     at = text.rfind("\n", max(0, limit - SPEC_CUT_LINE_SLACK), limit)
     at = limit if at <= 0 else at
     kept, rest = text[:at], text[at:]
-    inside, fenced = _md_headings(kept)
-    left_out, _ = _md_headings(rest, in_fence=fenced)
+    inside, fence = _md_headings(kept)
+    left_out, _ = _md_headings(rest, fence=fence)
     note = [f"[Hub cut this {what} here: {len(kept)} of {len(text)} characters kept."]
-    if inside and not (left_out and _MD_HEADING_RE.match(rest.lstrip("\n").split("\n", 1)[0])):
+    at_heading = not fence and bool(_MD_HEADING_RE.match(rest.lstrip("\n").split("\n", 1)[0]))
+    if fence:
+        kept += "\n" + fence   # close a code block the cut left open, so the note reads as Hub's words
+    if inside and not at_heading:
         note.append(f'The cut falls inside the section "{one_line(inside[-1], SPEC_CUT_HEADING_CHARS)}".')
     if left_out:
         shown = "; ".join(f'"{one_line(h, SPEC_CUT_HEADING_CHARS)}"' for h in left_out[:SPEC_CUT_HEADINGS_LISTED])

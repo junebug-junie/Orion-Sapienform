@@ -58,6 +58,16 @@ def test_a_cut_spec_says_where_it_cut_what_is_left_out_and_where_the_full_text_i
     assert "falls inside" not in at_heading.rsplit("\n\n[", 1)[1] and '"Section 3"' in at_heading
 
 
+def test_a_cut_inside_a_code_fence_closes_the_fence_before_hubs_note():
+    text = "# T\n\n## A\n```\ncode one\n~~~\n# comment, not a heading\ncode two\n```\n\n## B\ntext"
+    out, cut = core.cap_spec(text, text.index("# comment") + 3, path="p")
+    assert cut
+    kept, note = out.rsplit("\n\n[", 1)
+    assert kept.endswith("~~~\n```"), "the open ``` block is closed; a ~~~ inside it does not close it"
+    assert 'falls inside the section "A"' in note and 'Sections not shown: "B"' in note
+    assert "comment" not in note
+
+
 def test_a_cut_spec_note_stays_short_and_works_without_a_branch():
     text = _spec(sections=60, para=100)
     out, _ = core.cap_spec(text, 300, path="docs/x.md")

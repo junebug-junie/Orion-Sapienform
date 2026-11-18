@@ -359,6 +359,8 @@ def test_a_seat_the_pool_refuses_for_heat_closes_the_act_at_zero_and_writes_no_r
         assert [a[0] for a in rig.acts] == ["opened", "closed"] and rig.acts[1][3] is False
         assert "no_seat" in rig.acts[1][4] and not rig.calls and not rig.db.looks
         assert rig.watch.status()["status"]["code"] == "refused_heat"
+        c = rig.watch.state.counters
+        assert c["bids_funded"] == 1 and c["failed_looks"] == 1 and c["model_calls"] == 0
     run(go())
 
 

@@ -456,6 +456,7 @@ class WatchService:
             if "cabinet_hot" in reason:          # the pool's heat reflex (orion/gpu_pool/shed.py), not the price
                 reason = W.HEAT_PREFIX + reason
             st.last_refusal = (reason, self.clock())
+            st.counters["failed_looks"] += 1      # funded but never seated: a failed look, not an invisible one
             logger.info("retro_watch_no_seat sitting=%s want_id=%s reason=%s", st.sitting_id, want_id, reason)
             return False, f"look no_seat: {reason}"
         error: Optional[BaseException] = None

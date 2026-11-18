@@ -179,6 +179,12 @@ A read-only review ran in a subagent on `origin/main...HEAD`: 3 must-fix, 6 shou
 - Finding: a look could start between the gate and the lock and waste a funded line. Fix: lock before the bid; `look_in_flight` is `no_frames`, not `failed`.
 - Nits fixed: the held route read fails closed and is cached; `max(..., default=None)`; an inline `CHECKS:` is cut from the line; a note left `unchecked` by a passed turn can be judged later; no affect capture for a guest's turn; a client cannot send the game sources from a main chat socket.
 
+- Finding (Orion's review of PR #3727, point 5): a funded look that got no GPU seat (heat reflex, pool timeout) counted nowhere.
+  - Fix: it now counts as a failed look.
+  - Evidence: `test_a_seat_the_pool_refuses_for_heat_...` asserts bids_funded 1, failed_looks 1, model_calls 0.
+- Finding (same review, point 2): `retro_watch_change_hist` was left out of the patch 2 read grant.
+  - Fix: added to `scripts/sql/2026-11-18_grant_orion_readonly_retro_line.sql` (hand-applied).
+
 ## Restart required
 
 After merge, the post-pull rebuild applies the migration and rebuilds `orion-hub` (hub-app and hub-retro-gateway) and `orion-durable-runs` (and every service whose image holds `orion/schemas`). Then, by hand, on Juniper's word:

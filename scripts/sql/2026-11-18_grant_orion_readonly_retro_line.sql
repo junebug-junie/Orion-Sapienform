@@ -18,6 +18,9 @@
 BEGIN;
 
 GRANT SELECT ON public.retro_line TO orion_readonly;
+-- Left out of the patch 2 grant: the per-game screen-change histograms each look floor is learned from.
+-- Without it Orion cannot tell "nobody played" from "no floor yet" (Orion's review of PR #3727, point 2).
+GRANT SELECT ON public.retro_watch_change_hist TO orion_readonly;
 
 COMMIT;
 

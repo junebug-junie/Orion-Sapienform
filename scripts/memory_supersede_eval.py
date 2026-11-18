@@ -40,6 +40,7 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -60,6 +61,7 @@ DEFAULT_MANIFEST = Path("/mnt/orion-fcc/notes/memory_supersede_pass_manifest.jso
 # checks.csv format): the source of the dry-run-veto and near-duplicate hard negatives.
 DEFAULT_CHECKS = EVAL_DIR / "supersede_v2_checks_2026-11-17.csv"
 PRODUCTION_ROUTE = S.EVAL_ROUTE
+MIN_RECORD_REPEATS = 2
 SEEN_MODELS: set[str] = set()   # model ids the gateway reported for the route during this run
 # The rows #3587/#3660 watch (ids only, already public in those issues). The live manifest is
 # rewritten by every pass run and may carry no --watch list, so the set never depends on it.
@@ -206,9 +208,10 @@ async def cmd_build(args: argparse.Namespace) -> int:
             items.append(_item(f"dup:{c['old_id'][:8]}:{c['new_id'][:8]}", "near_duplicate", "no_act", "compatible",
                                True, old, new, apply_rules=True))
     seen, out = set(), []
-    for it in items:
-        if it.item_id not in seen:
-            seen.add(it.item_id)
+    for it in items:  # one item per pair (the first source wins: Juniper's own undo before a veto)
+        key = (it.old.memory_id, it.new.memory_id)
+        if key not in seen:
+            seen.add(key)
             out.append(it)
     private_write(Path(args.out), "".join(json.dumps(item_to_dict(it), default=str) + "\n" for it in out))
     counts: dict[str, int] = {}
@@ -286,6 +289,11 @@ async def cmd_run(args: argparse.Namespace) -> int:
         items += load_items(HELDOUT_PATH)
     if args.set in ("all", "real"):
         items += load_items(Path(args.real))
+    # Votes are sampled above temperature 0, so one pass is noisy (2026-11-18: a held-out negative
+    # that passed at 00:44 acted at 05:25). Every item runs --repeats times, scored pooled: one
+    # false act in any repeat fails the run.
+    if args.repeats > 1:
+        items = [replace(it, item_id=f"{it.item_id}@{r}") for r in range(args.repeats) for it in items]
     decide = {"v2": decide_v2, "v3": decide_v3}[args.checker]
     started = datetime.now(timezone.utc)
     decisions: list[Decision] = []
@@ -310,7 +318,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
     run = {"run_id": str(uuid.uuid4()), "checker": args.checker, "check_version": check_version,
            "started_at": started.isoformat(timespec="seconds"),
            "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-           "route": args.route, "votes": args.votes, "calls": calls[0], "model": ",".join(sorted(SEEN_MODELS)),
+           "route": args.route, "votes": args.votes, "repeats": args.repeats, "calls": calls[0], "model": ",".join(sorted(SEEN_MODELS)),
            "summary": result,
            "decisions": [decision_dict(d) for d in decisions]}
     out = RUNS_DIR / f"{started.strftime('%Y%m%dT%H%M%SZ')}-{args.checker}.json"
@@ -323,8 +331,10 @@ async def cmd_run(args: argparse.Namespace) -> int:
     if args.record_db:
         # Only a run that matches production counts for the gate: the current checker, the votes
         # write time uses, and the production route.
-        if args.checker != "v3" or args.votes != S.VOTES or args.route != PRODUCTION_ROUTE or args.set != "all":
-            raise SystemExit(f"only a full v3 run with --votes {S.VOTES} on {PRODUCTION_ROUTE} is recorded")
+        if (args.checker != "v3" or args.votes != S.VOTES or args.route != PRODUCTION_ROUTE or args.set != "all"
+                or args.repeats < MIN_RECORD_REPEATS):
+            raise SystemExit(f"only a full v3 run with --votes {S.VOTES} and --repeats >= {MIN_RECORD_REPEATS} "
+                             f"on {PRODUCTION_ROUTE} is recorded")
         await record(args.dsn, run)
         print(f"recorded eval run {run['run_id']} passed={result['passed']}")
     return 0 if result["passed"] else 1
@@ -364,6 +374,8 @@ def main() -> int:
     r.add_argument("--set", choices=("all", "synthetic", "heldout", "real"), default="all")
     r.add_argument("--real", default=str(REAL_PATH))
     r.add_argument("--votes", type=int, default=S.VOTES)
+    r.add_argument("--repeats", type=int, default=MIN_RECORD_REPEATS,
+                   help="run every item this many times (sampled votes vary); any false act fails")
     r.add_argument("--gateway", default=os.environ.get("ORION_GATEWAY_URL", "http://localhost:8210"))
     r.add_argument("--route", default=PRODUCTION_ROUTE)
     r.add_argument("--timeout", type=float, default=180.0)

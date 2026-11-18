@@ -22,9 +22,10 @@
 # at repo root (see scripts/git_hooks/post-merge).
 # Every compose step is logged (start/end/exit code) to $ORION_REBUILD_LOG,
 # default ~/.orion/post_pull_rebuild.log.
-# A fully successful deploy run records its head in post_pull_deployed_head
-# (next to the log; ORION_REBUILD_STATE overrides). The next run plans from that
-# head when an earlier pull's rebuild never finished (#3704).
+# Each completed run records its head and failed services in
+# post_pull_deployed_head (next to the log; ORION_REBUILD_STATE overrides). The
+# next run plans from that head when an earlier pull's rebuild never finished,
+# and retries the failed services (#3704).
 #
 # After a successful deploy run, Orion's FCC sandbox (/mnt/orion-fcc/repo) is
 # reset to origin/main (scripts/sync_fcc_sandbox_after_deploy.sh; one
@@ -126,9 +127,15 @@ rebuild_log() {
 # ORION_REBUILD_LOCK_WAIT_S, default 7200 s; on timeout it logs LOCK_TIMEOUT and
 # runs anyway, as before this lock). Dry-run and --list-only never wait. The
 # lock file sits next to the run log.
+# fd 9 holds the lock: any child that outlives this script (a detached
+# background process) must close it with 9>&- or it holds the lock forever.
 REBUILD_LOCK="${ORION_REBUILD_LOCK:-$(dirname "$REBUILD_LOG")/post_pull_rebuild.lock}"
-if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] && command -v flock >/dev/null 2>&1 &&
-    mkdir -p "$(dirname "$REBUILD_LOCK")" 2>/dev/null && { exec 9>>"$REBUILD_LOCK"; } 2>/dev/null; then
+LOCK_TIMED_OUT=0
+if [ "$DRY_RUN" = "1" ] || [ "$LIST_ONLY" = "1" ] || ! command -v flock >/dev/null 2>&1; then
+    :
+elif ! { mkdir -p "$(dirname "$REBUILD_LOCK")" && exec 9>>"$REBUILD_LOCK"; } 2>/dev/null; then
+    rebuild_log "LOCK_UNAVAILABLE lock=$REBUILD_LOCK (cannot open; running without the lock)"
+else
     if ! flock -n 9; then
         echo "rebuild_services_from_git_diff.sh: another rebuild run holds $REBUILD_LOCK; waiting for it (max ${ORION_REBUILD_LOCK_WAIT_S:-7200}s)"
         rebuild_log "LOCK_WAIT lock=$REBUILD_LOCK"
@@ -137,6 +144,7 @@ if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] && command -v flock >/dev/nu
         else
             echo "rebuild_services_from_git_diff.sh: lock wait timed out; running anyway" >&2
             rebuild_log "LOCK_TIMEOUT wait_s=${ORION_REBUILD_LOCK_WAIT_S:-7200}"
+            LOCK_TIMED_OUT=1
         fi
         # main may have moved while we waited.
         REBUILD_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -160,19 +168,40 @@ if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] &&
 fi
 export ORION_DEPLOY_PINNED_HEAD
 
-# Last deployed head (#3704). The planner's default base is the previous pull
+# Deploy state (#3704). The planner's default base is the previous pull
 # (ORIG_HEAD), so a pull whose rebuild never ran lost its services for good
 # (2026-11-18 02:28Z: the `git pull` was interrupted 3 s after the fast-forward,
 # before the post-merge rebuild wrote its RUN line; the next pull diffed only
 # its own commits and orion-prediction/orion-mind stayed on old containers).
-# A run that fully succeeds records the head it deployed in this file. The next
-# run plans from that head instead when it is a strict ancestor of the default
-# base -- it only ever widens the diff, never narrows it. No file, an unknown
-# commit, or a non-ancestor: exactly the default base, as before.
+# Every completed planner run in the primary checkout records two lines:
+#   <head this run planned to>
+#   pending=<services that FAILED in that run>
+# The next run (1) plans from the recorded head when it is a strict ancestor of
+# the default base -- a run that never finished, so the diff only ever widens --
+# and (2) adds the pending services to its plan, so a failed stack is retried
+# without re-planning everything since. A --services run that deploys a pending
+# service clears it. No file, an unknown commit, or a non-ancestor: the default
+# base and no extra services, exactly as before.
 DEPLOYED_STATE="${ORION_REBUILD_STATE:-$(dirname "$REBUILD_LOG")/post_pull_deployed_head}"
+STATE_HEAD=""
+STATE_PENDING=""
+if [ -f "$DEPLOYED_STATE" ]; then
+    STATE_HEAD=$(head -n 1 "$DEPLOYED_STATE" 2>/dev/null | tr -d '[:space:]') || STATE_HEAD=""
+    STATE_PENDING=$(sed -n 's/^pending=//p' "$DEPLOYED_STATE" 2>/dev/null | head -n 1) || STATE_PENDING=""
+    if ! STATE_HEAD=$(git -C "$REPO_ROOT" rev-parse -q --verify "${STATE_HEAD:-none}^{commit}" 2>/dev/null); then
+        STATE_HEAD=""
+        STATE_PENDING=""
+    fi
+    _valid=""
+    for _svc in $STATE_PENDING; do
+        if printf '%s' "$_svc" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' && [ -d "$REPO_ROOT/services/$_svc" ]; then
+            _valid="$_valid $_svc"
+        fi
+    done
+    STATE_PENDING="${_valid# }"
+fi
 PLAN_BASE=""
-if [ -z "$BASE_REF" ] && [ -z "$ONLY_SERVICES" ] && [ -f "$DEPLOYED_STATE" ]; then
-    _deployed=$(head -n 1 "$DEPLOYED_STATE" 2>/dev/null | tr -d '[:space:]') || _deployed=""
+if [ -z "$BASE_REF" ] && [ -z "$ONLY_SERVICES" ] && [ -n "$STATE_HEAD" ]; then
     _default_base=""
     for _cand in ORIG_HEAD MERGE_HEAD 'HEAD@{1}' 'HEAD~1'; do
         if _default_base=$(git -C "$REPO_ROOT" rev-parse -q --verify "$_cand^{commit}" 2>/dev/null); then
@@ -180,14 +209,12 @@ if [ -z "$BASE_REF" ] && [ -z "$ONLY_SERVICES" ] && [ -f "$DEPLOYED_STATE" ]; th
         fi
         _default_base=""
     done
-    if [ -n "$_deployed" ] && [ -n "$_default_base" ] &&
-        _deployed=$(git -C "$REPO_ROOT" rev-parse -q --verify "$_deployed^{commit}" 2>/dev/null) &&
-        [ "$_deployed" != "$_default_base" ] &&
-        git -C "$REPO_ROOT" merge-base --is-ancestor "$_deployed" "$_default_base" 2>/dev/null; then
-        PLAN_BASE="$_deployed"
-        echo "rebuild_services_from_git_diff.sh: last deployed head ${_deployed:0:9} is older than the default base ${_default_base:0:9}: an earlier pull's rebuild did not finish; planning from ${_deployed:0:9}"
+    if [ -n "$_default_base" ] && [ "$STATE_HEAD" != "$_default_base" ] &&
+        git -C "$REPO_ROOT" merge-base --is-ancestor "$STATE_HEAD" "$_default_base" 2>/dev/null; then
+        PLAN_BASE="$STATE_HEAD"
+        echo "rebuild_services_from_git_diff.sh: last planned head ${STATE_HEAD:0:9} is older than the default base ${_default_base:0:9}: an earlier pull's rebuild never finished; planning from ${STATE_HEAD:0:9}"
         if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
-            rebuild_log "CATCHUP from=${_deployed:0:9} default_base=${_default_base:0:9} state=$DEPLOYED_STATE"
+            rebuild_log "CATCHUP from=${STATE_HEAD:0:9} default_base=${_default_base:0:9} state=$DEPLOYED_STATE"
         fi
     fi
 fi
@@ -197,23 +224,42 @@ if [ -n "$PLAN_BASE" ]; then
     LOG_BASE="deployed:${PLAN_BASE:0:9}"
 fi
 
-# record_deployed_head: after a run that deployed everything it planned from the
-# planner's own base. Never on dry-run/--list-only/--services/--base, never on
-# an unpinned run (the wrapper refused its deploys), never moves backwards.
-record_deployed_head() {
-    [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] || return 0
-    [ -z "$BASE_REF" ] && [ -z "$ONLY_SERVICES" ] || return 0
+# record_deploy_state: after a completed (DONE or NOTHING) run. Only from the
+# primary checkout (a linked worktree's run must not hide a missed pull), only
+# when pinned (an unpinned run's deploys were refused), never on dry-run,
+# --list-only or --base. A planner run records its pinned head + its FAILED
+# services, never moving the head backwards. A --services run keeps the head
+# and drops the services it deployed from pending.
+record_deploy_state() {
+    [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] && [ -z "$BASE_REF" ] || return 0
     [ -n "$ORION_DEPLOY_PINNED_HEAD" ] || return 0
-    local prev tmp
-    prev=$(head -n 1 "$DEPLOYED_STATE" 2>/dev/null | tr -d '[:space:]') || prev=""
-    if [ -n "$prev" ] && git -C "$REPO_ROOT" rev-parse -q --verify "$prev^{commit}" >/dev/null 2>&1 &&
-        ! git -C "$REPO_ROOT" merge-base --is-ancestor "$prev" "$ORION_DEPLOY_PINNED_HEAD" 2>/dev/null; then
-        return 0
+    local git_dir common_dir new_head new_pending tmp _svc
+    git_dir=$(cd "$REPO_ROOT" && git rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 0
+    common_dir=$(cd "$REPO_ROOT" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+    [ "$git_dir" = "$common_dir" ] || return 0
+    if [ -n "$ONLY_SERVICES" ]; then
+        [ -n "$STATE_HEAD" ] || return 0
+        new_head="$STATE_HEAD"
+        new_pending=""
+        for _svc in $STATE_PENDING; do
+            if ! printf '%s\n' $ONLY_SERVICES | grep -qx "$_svc" ||
+                printf '%s\n' $FAILED | grep -qx "$_svc"; then
+                new_pending="$new_pending $_svc"
+            fi
+        done
+    else
+        if [ -n "$STATE_HEAD" ] &&
+            ! git -C "$REPO_ROOT" merge-base --is-ancestor "$STATE_HEAD" "$ORION_DEPLOY_PINNED_HEAD" 2>/dev/null; then
+            return 0
+        fi
+        new_head="$ORION_DEPLOY_PINNED_HEAD"
+        new_pending=$(printf '%s\n' $FAILED | awk 'NF && !seen[$0]++' | tr '\n' ' ')
     fi
+    new_pending=$(printf '%s' "$new_pending" | xargs 2>/dev/null) || new_pending=""
     tmp="$DEPLOYED_STATE.tmp.$$"
     (
         mkdir -p "$(dirname "$DEPLOYED_STATE")" &&
-            printf '%s\n' "$ORION_DEPLOY_PINNED_HEAD" >"$tmp" && mv -f "$tmp" "$DEPLOYED_STATE"
+            printf '%s\npending=%s\n' "$new_head" "$new_pending" >"$tmp" && mv -f "$tmp" "$DEPLOYED_STATE"
     ) 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
@@ -243,7 +289,9 @@ done
 # so at the start of the next run, once: the step in flight, the services
 # never rebuilt, and the command that finishes them (scripts/check_rebuild_log.py
 # appends a DIED line so the same run is not reported twice). Never fails the run.
-if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] && [ -f "$REPO_ROOT/scripts/check_rebuild_log.py" ]; then
+# Skipped after LOCK_TIMEOUT: the run holding the lock is still alive.
+if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] && [ "$LOCK_TIMED_OUT" != "1" ] &&
+    [ -f "$REPO_ROOT/scripts/check_rebuild_log.py" ]; then
     ORION_REBUILD_LOG="$REBUILD_LOG" python3 "$REPO_ROOT/scripts/check_rebuild_log.py" --mark </dev/null || true
 fi
 
@@ -271,6 +319,23 @@ if [ "$PY_RC" -ne 0 ]; then
         rebuild_log "PLANNER_FAILED rc=$PY_RC base=$LOG_BASE"
     fi
     exit "$PY_RC"
+fi
+# Services that failed in the last recorded run are retried with this one.
+if [ -z "$ONLY_SERVICES" ] && [ -z "$BASE_REF" ] && [ -n "$STATE_PENDING" ]; then
+    _added=""
+    for _svc in $STATE_PENDING; do
+        if ! printf '%s\n' "$PLAN" | awk -F'\t' '{print $1}' | grep -qx "$_svc"; then
+            PLAN="$PLAN
+$_svc	build"
+            _added="$_added $_svc"
+        fi
+    done
+    if [ -n "$_added" ]; then
+        echo "rebuild_services_from_git_diff.sh: retrying services that failed in the last run:$_added"
+        if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
+            rebuild_log "PENDING_RETRY services=${_added# }"
+        fi
+    fi
 fi
 SERVICES=$(printf '%s\n' "$PLAN" | awk -F'\t' 'NF {print $1}')
 RECREATE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$2 == "recreate" {print $1}')
@@ -487,7 +552,7 @@ if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
     if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
         rebuild_log "NOTHING base=$LOG_BASE (no affected services on this host)"
     fi
-    record_deployed_head
+    record_deploy_state
     export_consult_source
     sync_fcc_sandbox ok
     exit 0
@@ -863,13 +928,14 @@ fi
 
 if [ -n "${FAILED//[$'\n\r\t ']}" ]; then
     echo "rebuild_services_from_git_diff.sh: failures:$FAILED" >&2
+    record_deploy_state
     # Some stack did not deploy; the operator finishes it with --services, and
     # that run's success refreshes the sandbox.
     sync_fcc_sandbox rebuild_failures
     exit 1
 fi
 
-record_deployed_head
+record_deploy_state
 export_consult_source
 sync_fcc_sandbox ok
 exit 0

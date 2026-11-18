@@ -23,8 +23,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "rebuild_services_from_git_diff.sh"
 
 _DIFF_PLANNER = """\
-import subprocess, sys
+import os, subprocess, sys
 args = sys.argv[1:]
+with open(os.environ["FAKE_PLANNER_ARGV"], "a") as fh:
+    fh.write(" ".join(args) + "\\n")
 if any(a in args for a in ("--running-profile-services", "--running-extra-compose",
                             "--pool-held-services", "--migrations")):
     raise SystemExit(0)
@@ -71,7 +73,7 @@ class Host:
         safe.write_text(
             "#!/bin/sh\n"
             'printf \'%s\\n\' "$*" >> "$REBUILD_TEST_CAPTURE"\n'
-            'case "$1" in $FAKE_FAIL_SVC) exit 1;; esac\n'
+            'for f in $FAKE_FAIL_SVC; do [ "$1" = "$f" ] && exit 1; done\n'
             "exit 0\n"
         )
         safe.chmod(0o755)
@@ -89,6 +91,7 @@ class Host:
         _git("clone", "-q", "-b", "main", str(remote), str(self.other), cwd=tmp_path)
         self.log = tmp_path / "orion" / "post_pull_rebuild.log"
         self.state = tmp_path / "orion" / "post_pull_deployed_head"
+        self.planner_argv = tmp_path / "planner-argv.txt"
         self._n = 0
 
     def merge_upstream(self, svc: str) -> str:
@@ -108,7 +111,11 @@ class Host:
     def head(self) -> str:
         return _git("rev-parse", "HEAD", cwd=self.repo)
 
-    def rebuild(self, *args: str, fail: str = "", env_extra: dict[str, str] | None = None):
+    def state_lines(self) -> list[str]:
+        return self.state.read_text().splitlines()
+
+    def rebuild(self, *args: str, fail: str = "", env_extra: dict[str, str] | None = None,
+                repo: Path | None = None):
         if self.capture.exists():
             self.capture.unlink()
         env = os.environ.copy()
@@ -117,6 +124,7 @@ class Host:
             env.pop(key, None)
         env.update({
             "REBUILD_TEST_CAPTURE": str(self.capture),
+            "FAKE_PLANNER_ARGV": str(self.planner_argv),
             "FAKE_FAIL_SVC": fail or "__none__",
             "ORION_REBUILD_LOG": str(self.log),
             "ORION_POST_PULL_SANDBOX_SYNC": "0",
@@ -125,8 +133,8 @@ class Host:
         })
         env.update(env_extra or {})
         done = subprocess.run(
-            [str(self.repo / "scripts" / SCRIPT.name), *args],
-            cwd=self.repo, env=env, text=True, capture_output=True, check=False,
+            [str((repo or self.repo) / "scripts" / SCRIPT.name), *args],
+            cwd=repo or self.repo, env=env, text=True, capture_output=True, check=False,
         )
         calls = self.capture.read_text().splitlines() if self.capture.exists() else []
         rebuilt = sorted({c.split()[0] for c in calls})
@@ -141,7 +149,7 @@ def test_skipped_pull_services_are_rebuilt_by_the_next_pull(tmp_path: Path) -> N
     done, rebuilt = h.rebuild()
     assert done.returncode == 0, done.stdout + done.stderr
     assert rebuilt == ["svc-c"]
-    assert h.state.read_text().strip() == deployed
+    assert h.state_lines()[0] == deployed
 
     h.merge_upstream("svc-a")
     h.pull()  # interrupted: the post-merge rebuild never ran
@@ -154,7 +162,9 @@ def test_skipped_pull_services_are_rebuilt_by_the_next_pull(tmp_path: Path) -> N
     log = h.log.read_text()
     assert f"CATCHUP from={deployed[:9]}" in log
     assert f"RUN base=deployed:{deployed[:9]} services=svc-a svc-b " in log
-    assert h.state.read_text().strip() == head
+    # The migration step widens with the plan: same base.
+    assert f"--migrations --base {deployed}" in h.planner_argv.read_text()
+    assert h.state_lines()[0] == head
 
 
 def test_first_run_without_state_file_behaves_as_before(tmp_path: Path) -> None:
@@ -169,7 +179,7 @@ def test_first_run_without_state_file_behaves_as_before(tmp_path: Path) -> None:
     assert rebuilt == ["svc-b"]
     assert "CATCHUP" not in h.log.read_text()
     assert "RUN base=default services=svc-b " in h.log.read_text()
-    assert h.state.read_text().strip() == head
+    assert h.state_lines()[0] == head
 
 
 def test_state_at_default_base_changes_nothing(tmp_path: Path) -> None:
@@ -184,24 +194,73 @@ def test_state_at_default_base_changes_nothing(tmp_path: Path) -> None:
     assert "CATCHUP" not in h.log.read_text()
 
 
-def test_failed_run_keeps_the_old_deployed_head(tmp_path: Path) -> None:
-    """A stack that failed is retried by the next pull (05:10Z refusals)."""
+def test_failed_service_is_retried_without_replanning_the_rest(tmp_path: Path) -> None:
+    """A failed stack is retried by the next pull (05:10Z refusals); the ones
+    that deployed fine are not rebuilt again."""
     h = Host(tmp_path)
     h.merge_upstream("svc-c")
-    deployed = h.pull()
+    h.pull()
     assert h.rebuild()[0].returncode == 0
 
     h.merge_upstream("svc-a")
-    h.pull()
+    failed_head = h.pull()
     done, rebuilt = h.rebuild(fail="svc-a")
     assert done.returncode == 1
-    assert h.state.read_text().strip() == deployed
+    assert h.state_lines() == [failed_head, "pending=svc-a"]
 
     h.merge_upstream("svc-b")
-    h.pull()
+    head = h.pull()
     done, rebuilt = h.rebuild()
     assert done.returncode == 0, done.stdout + done.stderr
     assert rebuilt == ["svc-a", "svc-b"]
+    assert "CATCHUP" not in h.log.read_text()
+    assert "PENDING_RETRY services=svc-a" in h.log.read_text()
+    assert h.state_lines() == [head, "pending="]
+
+    # Nothing pending any more: the next pull plans only its own change.
+    h.merge_upstream("svc-c")
+    h.pull()
+    assert h.rebuild()[1] == ["svc-c"]
+
+
+def test_services_run_clears_what_it_deployed_from_pending(tmp_path: Path) -> None:
+    h = Host(tmp_path)
+    h.merge_upstream("svc-a")
+    h.merge_upstream("svc-b")
+    head = h.pull()
+    done, _ = h.rebuild(fail="svc-a svc-b")
+    assert done.returncode == 1
+    assert h.state_lines() == [head, "pending=svc-a svc-b"]
+    done, rebuilt = h.rebuild("--services", "svc-a")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert rebuilt == ["svc-a"]
+    assert h.state_lines() == [head, "pending=svc-b"]
+
+
+def test_nothing_to_rebuild_still_records_the_head(tmp_path: Path) -> None:
+    h = Host(tmp_path)
+    (h.other / "README").write_text("docs only\n")
+    _git("add", "README", cwd=h.other)
+    _git("commit", "-qm", "docs", cwd=h.other)
+    _git("push", "-q", "origin", "main", cwd=h.other)
+    head = h.pull()
+    done, rebuilt = h.rebuild()
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert rebuilt == []
+    assert "NOTHING base=default" in h.log.read_text()
+    assert h.state_lines() == [head, "pending="]
+
+
+def test_linked_worktree_run_never_records(tmp_path: Path) -> None:
+    """Only the primary checkout's runs describe what is deployed."""
+    h = Host(tmp_path)
+    h.merge_upstream("svc-a")
+    h.pull()
+    wt = tmp_path / "wt"
+    _git("worktree", "add", "-q", "--detach", str(wt), "HEAD", cwd=h.repo)
+    done, _ = h.rebuild(repo=wt)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not h.state.exists()
 
 
 def test_dry_run_list_only_services_and_base_never_record(tmp_path: Path) -> None:
@@ -236,7 +295,7 @@ def test_state_never_moves_backwards(tmp_path: Path) -> None:
     done, rebuilt = h.rebuild()
     assert done.returncode == 0, done.stdout + done.stderr
     assert rebuilt == ["svc-a"]  # not an ancestor of ORIG_HEAD: default base
-    assert h.state.read_text().strip() == newer
+    assert h.state_lines()[0] == newer
 
 
 def test_garbage_state_file_falls_back_to_default_base(tmp_path: Path) -> None:
@@ -250,7 +309,7 @@ def test_garbage_state_file_falls_back_to_default_base(tmp_path: Path) -> None:
     done, rebuilt = h.rebuild()
     assert done.returncode == 0, done.stdout + done.stderr
     assert rebuilt == ["svc-b"]
-    assert h.state.read_text().strip() == head
+    assert h.state_lines()[0] == head
 
 
 def test_second_run_waits_for_the_lock_then_proceeds(tmp_path: Path) -> None:
@@ -276,3 +335,26 @@ def test_second_run_waits_for_the_lock_then_proceeds(tmp_path: Path) -> None:
     log = h.log.read_text()
     assert "LOCK_WAIT" in log and "LOCK_TIMEOUT wait_s=1" in log
     assert log.index("LOCK_TIMEOUT") < log.index("RUN base=")
+
+
+def test_waiting_run_pins_the_head_it_finds_after_the_wait(tmp_path: Path) -> None:
+    """The holder releases; the waiting run pins and records the current head."""
+    h = Host(tmp_path)
+    h.merge_upstream("svc-a")
+    h.pull()
+    lock = tmp_path / "orion" / "post_pull_rebuild.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen(["flock", str(lock), "sleep", "2"])
+    try:
+        for _ in range(100):
+            if subprocess.run(["flock", "-n", str(lock), "true"]).returncode != 0:
+                break
+            subprocess.run(["sleep", "0.05"])
+        done, rebuilt = h.rebuild(env_extra={"ORION_REBUILD_LOCK_WAIT_S": "30"})
+    finally:
+        holder.kill()
+        holder.wait()
+    assert done.returncode == 0, done.stdout + done.stderr
+    log = h.log.read_text()
+    assert "LOCK_WAIT" in log and "LOCK_ACQUIRED" in log and "LOCK_TIMEOUT" not in log
+    assert h.state_lines()[0] == h.head()

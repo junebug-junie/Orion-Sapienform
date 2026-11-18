@@ -108,8 +108,10 @@ def test_save_attention_frame_idempotent(monkeypatch) -> None:
     store.save_attention_frame(_frame())
     conn = fake_engine.begin.return_value.__enter__.return_value
     assert conn.execute.called
-    sql = str(conn.execute.call_args[0][0])
-    assert "ON CONFLICT (frame_id)" in sql
+    sqls = [str(c[0][0]) for c in conn.execute.call_args_list]
+    assert "ON CONFLICT (frame_id)" in sqls[0]
+    # then the hourly rollup `dig attention` reads (only after the frame row was new)
+    assert any("substrate_attention_hour_rollup" in s for s in sqls[1:])
 
 
 # -- advance_node_prediction_error_baseline (2026-07-30 fix) -------------------

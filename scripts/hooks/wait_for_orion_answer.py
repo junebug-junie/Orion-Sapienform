@@ -134,7 +134,7 @@ def main() -> int:
                 lib.log(f"answer_wait no_questions thread={thread_id}")
                 return 0
             try:
-                claimed = lib.claim([_row(thread, answer)], timeout=5.0)
+                claimed = lib.claim([_row(thread, answer)], session_id=lib.session_id_from(payload), timeout=5.0)
             except Exception:  # noqa: BLE001
                 time.sleep(poll)
                 continue

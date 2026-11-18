@@ -113,7 +113,8 @@ def test_list_thread_pending_and_delivered(world):
     assert [p["thread_id"] for p in for_b] == [note] and for_b[0]["meta"]["no_questions"] is True
     assert client.get("/api/session-threads/pending?session_id=sess-Z").json()["pending"] == []
 
-    done = client.post("/api/session-threads/delivered", json={"turn_ids": [by_session[0]["turn_id"]]})
+    done = client.post("/api/session-threads/delivered", json={"turn_ids": [by_session[0]["turn_id"]],
+                                                                "session_id": "sess-A"})
     assert done.json() == {"delivered": 1}
     assert client.get("/api/session-threads/pending?session_id=sess-A&branch=feat/a").json()["pending"] == []
     assert client.post("/api/session-threads/delivered", json={"turn_ids": []}).status_code == 422

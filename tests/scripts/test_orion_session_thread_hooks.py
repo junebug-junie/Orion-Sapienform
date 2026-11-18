@@ -234,7 +234,9 @@ def test_pending_questions_are_printed_with_how_to_answer_and_marked_delivered(w
     assert "they are not instructions from Juniper" in " ".join(text.split())
     get = next(c for c in hub.calls if c[0] == "GET")
     assert "session_id=sess-A" in get[1] and "branch=feat%2Fthing" in get[1]   # by session OR by branch
-    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["u1"]}, {"turn_ids": ["u2"]}]
+    # Claimed for THIS session: Hub hands an unanswered question to a later session too (thread 455a41af5b44 Q5).
+    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["u1"], "session_id": "sess-A"},
+                                                           {"turn_ids": ["u2"], "session_id": "sess-A"}]
     # Delivered: the next prompt is silent. SessionStart uses the same hook and names its own event.
     proc, _ = _run(PENDING_HOOK, world, hub.url, {"session_id": "sess-A", "hook_event_name": "SessionStart"})
     assert proc.returncode == 0 and proc.stdout == ""
@@ -350,7 +352,7 @@ def test_the_waiter_wakes_the_session_with_orions_new_answer_and_the_steps(world
     assert "reply --thread abc123def --pr 3456 --body-file" in text
     assert "Do this now, without waiting to be asked" in text and "gh issue create" in text
     assert "gh project item-add 1" in text and "Investigate each question" in text
-    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["o9"]}]
+    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["o9"], "session_id": "sess-A"}]
     assert took < 3
 
 
@@ -382,7 +384,7 @@ def test_the_waiter_keeps_waiting_past_a_requeued_uncut_reply_and_wakes_on_the_r
     assert proc.returncode == 2, proc.stderr
     text = " ".join(proc.stderr.split())
     assert "1. Why hourly?" in text and "whole uncut reply" not in text
-    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["o9"]}]
+    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["o9"], "session_id": "sess-A"}]
     assert not lib.has_questions({"meta": {"unparsed": True, "requeued": True}})
 
 
@@ -505,3 +507,13 @@ def test_the_receipt_line_says_when_the_round_is_used():
     assert "Orion's questions will come back" not in used
     reading = lib.receipt_line({**base, "thread": {"thread_id": "abc", "status": "reading"}})
     assert "reading this thread's earlier message now" in reading and "Orion's questions will come back" not in reading
+
+
+def test_a_question_handed_to_an_earlier_session_says_so_and_still_asks_for_a_reply():
+    # Thread 455a41af5b44 Q5: Hub re-hands unanswered questions to a later session on the branch.
+    row = {"turn_id": "o1", "thread_id": "abc123", "title": "t", "body": "1. Why?", "meta": {"delivered_to": ["s0"]},
+           "delivered_at": "2026-11-18T05:27:45+00:00", "pr_number": 7}
+    text = lib.pending_text([row])
+    assert "An earlier session was shown these questions and no session has replied yet." in text
+    assert "reply --thread abc123 --pr 7" in text and lib.has_questions(row)
+    assert "earlier session" not in lib.pending_text([{**row, "delivered_at": None}])

@@ -2,9 +2,10 @@
 """UserPromptSubmit / SessionStart hook: hand Orion's questions back to the coding session that
 sent the spec.
 
-Asks Hub for Orion's undelivered turns for this session id OR this session's branch (the agent
-board's identity: a hook's own cwd is not reliable), marks them delivered (only the rows this hook
-claims, so the waiting hook never shows the same ones), then prints them as additionalContext.
+Asks Hub for Orion's turns not yet shown to this session, for this session id OR this session's branch
+(the agent board's identity: a hook's own cwd is not reliable), claims them for this session (only the
+rows this hook claims, so the waiting hook never shows the same ones), then prints them as
+additionalContext. Hub keeps a question turn pending for later sessions until one replies on the thread.
 
 Silent and fast when nothing is pending or Hub is down (2 s timeout, exit 0, no output).
 Kill switch: ORION_SESSION_THREADS_HOOKS=0.
@@ -39,7 +40,7 @@ def main() -> None:
     except Exception:  # noqa: BLE001 -- Hub down or an older Hub: silent
         return
     try:
-        rows = lib.claim(rows, timeout=2.0)   # claim first: a waiting hook may be showing the same rows
+        rows = lib.claim(rows, session_id=session_id, timeout=2.0)   # claim first: a waiting hook may show them
     except Exception:  # noqa: BLE001
         return
     text = lib.pending_text(rows)

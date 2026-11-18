@@ -166,3 +166,65 @@ def test_prime_never_reads_the_promise_acts_while_they_are_shadow():
             src = path.read_text(encoding="utf-8")
             hits += [f"{path.relative_to(repo)}: {b}" for b in banned if b in src]
     assert hits == [], hits
+
+
+# --- 2026-11-18: settle classes, not-due, offer window (#3595) ----------------------------------------
+
+def test_horizon_void_note_by_settle_class_and_condition() -> None:
+    from orion.grammar.promise_acts import (
+        VOID_ABSENCE_NOTE,
+        VOID_NOT_CHAT_NOTE,
+        VOID_NOT_DUE_NOTE,
+        horizon_void_note,
+        is_void_note,
+        promise_void_kind,
+    )
+
+    cond = {"condition": "the proposals appear"}
+    assert horizon_void_note(None, condition_met=True) is None                       # unreadable: v1 rule
+    assert horizon_void_note({}, condition_met=False) is None                        # pre-#3595 row: chat, unconditional
+    assert horizon_void_note({"settles_in": "chat"}, condition_met=True) is None
+    assert horizon_void_note({"settles_in": "run"}, condition_met=True) == VOID_NOT_CHAT_NOTE
+    assert horizon_void_note({"settles_in": "absence"}, condition_met=True) == VOID_ABSENCE_NOTE
+    assert horizon_void_note({**cond, "settles_in": "chat"}, condition_met=False) == VOID_NOT_DUE_NOTE
+    assert horizon_void_note({**cond, "settles_in": "run"}, condition_met=False) == VOID_NOT_DUE_NOTE
+    assert horizon_void_note({**cond, "settles_in": "chat"}, condition_met=True) is None
+    assert horizon_void_note({"condition": "  "}, condition_met=False) is None       # blank = unconditional
+    # Every class void is a void to every existing reader, and keeps its own kind for the report.
+    for note, kind in ((VOID_NOTE, "no_juniper_turn"), (VOID_NOT_DUE_NOTE, "not_due"),
+                       (VOID_NOT_CHAT_NOTE, "not_chat"), (VOID_ABSENCE_NOTE, "absence_unchecked")):
+        assert is_void_note(note) and promise_close_kind("expired", note) == "void"
+        assert promise_void_kind(note) == kind
+    assert promise_void_kind("no keep within horizon") is None
+
+
+def test_offer_window_is_one_clock_with_the_promise_horizon() -> None:
+    from orion.grammar.promise_acts import OFFER_ACCEPT_TTL_SEC, PROMISE_HORIZON_SEC
+    from orion.grammar.promise_view import offers_visible
+
+    assert OFFER_ACCEPT_TTL_SEC == PROMISE_HORIZON_SEC
+    row = {"correlation_id": "c1", "is_juniper": True}
+    assert offers_visible({**row, "within_ttl": True})
+    assert not offers_visible({**row, "within_ttl": False})       # older than the window: shown nothing
+    assert not offers_visible({**row, "is_juniper": False, "within_ttl": True})
+    assert not offers_visible(None)
+
+
+def test_conditions_met_are_counted_on_the_hub_line_but_open_and_close_nothing() -> None:
+    plan = plan_promise_events(correlation_id="c3", session_id="s",
+                               reflection=_reflection(promise_conditions_met=["act-1"]))
+    assert plan.events == [] and plan.counts()["conditions_met"] == 1
+    assert plan.outcome() == "nothing_opened"
+
+
+def test_the_view_shows_each_promises_condition() -> None:
+    from orion.grammar.promise_view import view_from_rows
+
+    made = [{"quote": "I'll read the proposals closely.", "offer": False, "doer": "orion", "force": "commits",
+             "act": "read", "done_when": DONE, "settles_in": "chat", "condition": " the  proposals appear "},
+            {"quote": "I'll send the list tomorrow.", "offer": False, "doer": "orion", "force": "commits",
+             "act": "send", "done_when": DONE}]
+    rows = [{"act_id": "a0", "test_before": promise_ref("c9", 0)}, {"act_id": "a1", "test_before": promise_ref("c9", 1)}]
+    shown, unreadable = view_from_rows(rows, [{"correlation_id": "c9", "made": made}])
+    assert unreadable == 0
+    assert [(p.id, p.condition) for p in shown] == [("a0", "the proposals appear"), ("a1", None)]

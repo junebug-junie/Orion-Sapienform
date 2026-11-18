@@ -177,3 +177,38 @@ async def test_a_failed_background_publish_logs_a_failed_ledger_line(caplog, mon
             MagicMock(), correlation_id="c9", session_id="s1", source_label="hub_orion", client_meta=None,
             reflection=object(), promise_view=PromiseView())
     assert _ledger_lines(caplog) == ["promise_ledger corr=c9 outcome=failed reason=KeyError"]
+
+
+# --- #3560: the request wiring -----------------------------------------------------------------------
+
+def _view_with_promises():
+    from orion.schemas.harness_finalize import OpenPromiseRefV1
+
+    return PromiseView(open_promises=[OpenPromiseRefV1(id="act-1", quote="I'll send the list tomorrow.",
+                                                       condition="the export finishes")],
+                       offers=[("harness_turn_trace:c0#promises_made[1]", "If you want, I'll re-read it.")])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload,origin,flag_on,carried", [
+    (BROWSER, "juniper", True, True),     # Juniper's browser turn, ledger on: the judge gets the view
+    (BROWSER, "juniper", False, False),   # HUB_PROMISE_LEDGER_ENABLED off
+    (BROWSER, "orion", True, False),      # Orion's own turn
+    ({}, "juniper", True, False),         # /api/chat (no surface)
+])
+async def test_the_harness_request_carries_open_promises_and_offers_only_on_a_viewed_turn(
+        monkeypatch, payload, origin, flag_on, carried):
+    """#3560 (1): execute_unified_turn puts the pre-turn view on HarnessRunRequestV1.open_promises /
+    pending_offers (judge only) exactly when the turn reads the view."""
+    from scripts.settings import settings
+
+    monkeypatch.setattr(settings, "HUB_PROMISE_LEDGER_ENABLED", flag_on, raising=False)
+    run_mock = AsyncMock(return_value=_run())
+    await _turn(payload=payload, origin=origin, harness_run=run_mock, view=_view_with_promises())
+    req = run_mock.await_args.args[0]
+    if carried:
+        assert [(p.id, p.quote, p.condition) for p in req.open_promises] == [
+            ("act-1", "I'll send the list tomorrow.", "the export finishes")]
+        assert req.pending_offers == ["If you want, I'll re-read it."]
+    else:
+        assert req.open_promises == [] and req.pending_offers == []

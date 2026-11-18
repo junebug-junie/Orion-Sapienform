@@ -25,6 +25,19 @@ The step's precision is now measured, and write time trusts it only while the me
 - The v2 run used the made-up fixtures before their invented place names were changed to neutral ones. The cases are the same.
 - Self-consistency at temperature 0.7 rarely splits on this model; nearly every vote carried confidence 0.95-1.0. The votes mostly guard against a one-off malformed or odd answer. They are not what fixed the false acts.
 
+### Live-store dry run (v3.1, read-only, 2026-11-18 00:56-02:09Z)
+
+`scripts/memory_supersede_pass.py dry-run` ran over the live store. It wrote nothing to the database. Its private files are in `/tmp/memory-supersede-pass-v3/` (directory mode 700).
+
+- 485 live rows, 735 candidate pairs (cosine plus a shared rare word or referent), every one classified, 0 errors in the end. The first pass lost 61 calls: 55 dropped connections when the gateway went away at 01:45Z, and 6 HTTP 5xx. A cached re-run finished them. The pass now retries both a dropped connection and a 5xx up to 3 times. It does not retry a timeout.
+- Final relation per pair (majority vote): unrelated 355, compatible 349, refine 20, correction 6, update 2, no majority 3.
+- **Proposed: 2, both corrections, both unanimous at 3/3.** Neither is applied. The pass needs Juniper's review, and `apply` also needs a passing recorded eval. Both are borderline, and Juniper should read them before any apply:
+  - The first is an energy-numbers correction. The newer row gives a whole-host figure; the older row gives an overhead figure.
+  - The second is a "deployed" against "nothing deployed yet" pair that is two weeks apart. It is the same single pair the v2 check proposed on 11-17.
+- The checklist blocked 5 pairs where the votes said correction or update. One of them was trip row 1 against the home correction.
+- **Watched rows: all six stay active, and none is proposed.** The trip rows and the home correction were asked and abstained (checklist or compatible). The two pending pet rows are never candidates (the open-ask rule). The pet correction was asked 6 times: unrelated 3, compatible 3.
+- #3660 live: the two dry runs left two lines in `memory_supersede_pass_runs.jsonl`. Each watched row's `trace` lists every pair it was in, with its legs and votes and no text.
+
 ## Current architecture
 
 PR #3617 added write-time supersede: the distill's check node asked a two-question yes/no check per candidate pair. A cosine of 0.80 alone could make a candidate. A "yes" set `status = 'superseded'`, which is binary, with no notion of when the fact stopped being true. Precision was never measured. The pass manifest was overwritten on every run. PR #3669 (merged) already stopped degraded applies and closed the eval gate.
@@ -186,4 +199,4 @@ Write time stays proposal-only until that eval run is recorded and passed.
 
 ## PR link
 
-(set after open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3677 (merged 2026-11-18 01:25Z). Follow-up with this report's dry-run section and the pass 5xx retry: see the next PR.

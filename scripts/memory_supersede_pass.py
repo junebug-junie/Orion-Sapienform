@@ -110,15 +110,32 @@ class Progress:
 
 async def gateway_ask(client: Any, url: str, route: str, prompt: str, *, timeout: float,
                       temperature: float = 0.0, queue_wait: float = 1800.0) -> str:
-    """One vote on the gateway's OpenAI passthrough (leased per call), JSON mode. 503 = seat busy: wait."""
-    started = time.monotonic()
+    """One vote on the gateway's OpenAI passthrough (leased per call), JSON mode. 503 = seat busy: wait.
+    A transient fault -- another 5xx, or a dropped connection -- is retried up to 3 times (5, 10,
+    15 s); a timeout is not (it already spent the full budget). A read-only vote, so safe to repeat."""
+    import httpx
+
+    started, tries = time.monotonic(), 0
     while True:
-        resp = await client.post(f"{url.rstrip('/')}/v1/chat/completions", timeout=timeout, json={
-            "model": route, "messages": [{"role": "user", "content": prompt}], "max_tokens": 200,
-            "temperature": float(temperature), "response_format": {"type": "json_object"},
-            "chat_template_kwargs": {"enable_thinking": False}})
+        try:
+            resp = await client.post(f"{url.rstrip('/')}/v1/chat/completions", timeout=timeout, json={
+                "model": route, "messages": [{"role": "user", "content": prompt}], "max_tokens": 200,
+                "temperature": float(temperature), "response_format": {"type": "json_object"},
+                "chat_template_kwargs": {"enable_thinking": False}})
+        except httpx.TimeoutException:
+            raise
+        except httpx.TransportError:
+            if tries >= 3:
+                raise
+            tries += 1
+            await asyncio.sleep(5.0 * tries)
+            continue
         if resp.status_code == 503 and time.monotonic() - started < queue_wait:
             await asyncio.sleep(15.0)
+            continue
+        if resp.status_code >= 500 and tries < 3:  # a transient gateway fault: retried, not an error vote
+            tries += 1
+            await asyncio.sleep(5.0 * tries)
             continue
         break
     resp.raise_for_status()

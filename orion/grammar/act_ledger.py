@@ -67,8 +67,12 @@ from orion.grammar.promise_acts import (
     EXPIRED_NOTE as PROMISE_EXPIRED_NOTE,
     PROMISE_SIGNAL,
     VOID_NOTE as PROMISE_VOID_NOTE,
+    horizon_void_note,
     is_shadow_signal,
     is_void_note,
+    parse_promise_ref,
+    promise_condition,
+    promise_void_kind,
 )
 from orion.grammar.reply_base_rate import ReplyBaseRate, juniper_reply_base_rate
 from orion.grammar.reply_base_rate import applies as reply_base_rate_applies
@@ -800,10 +804,88 @@ _JUNIPER_REPLY_SQL = text(
     """
 )
 
+# The stored promise an act's ref points at (harness_turn_trace:<corr>#promises_made[<i>]): one
+# primary-key probe. Read only for a promise act at its horizon (#3595 settle classes).
+_PROMISE_ITEM_SQL = text(
+    "SELECT run_artifact -> 'reflection' -> 'promises_made' -> CAST(:i AS int) AS item "
+    "FROM harness_turn_trace WHERE correlation_id = :c"
+)
+
+# Did any judged reply inside the act's window list this act's condition as met (#3595 option b)? The
+# window scan reads only (created_at) and is MATERIALIZED, so the wide run_artifact jsonb is detoasted
+# only for the in-window rows (live 2026-11-18: ~690 rows in 72 h of 8.8k; the unscoped jsonb filter
+# was a 1.4 s seq scan). created_at is naive on the server's clock, like _JUNIPER_REPLY_SQL.
+_CONDITION_MET_SQL = text(
+    """
+    WITH bounds AS (
+        SELECT CAST(:opened_at AS timestamptz) AT TIME ZONE current_setting('TimeZone') AS lo,
+               CAST(:horizon_at AS timestamptz) AT TIME ZONE current_setting('TimeZone') AS hi
+    ),
+    window_turns AS MATERIALIZED (
+        SELECT t.correlation_id
+          FROM harness_turn_trace t, bounds b
+         WHERE t.created_at > b.lo AND t.created_at <= b.hi
+    )
+    SELECT 1 FROM harness_turn_trace t
+     WHERE t.correlation_id IN (SELECT correlation_id FROM window_turns)
+       AND t.correlation_id <> coalesce(:correlation_id, '')
+       AND jsonb_typeof(t.run_artifact -> 'reflection' -> 'promise_conditions_met') = 'array'
+       AND (t.run_artifact -> 'reflection' -> 'promise_conditions_met') ? :act_id
+     LIMIT 1
+    """
+)
+
+
+def _promise_item(conn: Any, test_before: str | None, unread: dict[str, int] | None = None) -> dict | None:
+    """The stored promise item, or None (no ref, no row, index past the end, a read error). A read error
+    runs in its own savepoint so it cannot abort the resolver's transaction; None reads as the v1 rule."""
+    parsed = parse_promise_ref(str(test_before or ""))
+    if parsed is None:
+        return None
+    nested = conn.begin_nested() if hasattr(conn, "begin_nested") else None
+    try:
+        raw = conn.execute(_PROMISE_ITEM_SQL, {"c": parsed[0], "i": parsed[1]}).scalar()
+        if nested is not None:
+            nested.commit()
+    except Exception:  # noqa: BLE001
+        if nested is not None:
+            nested.rollback()
+        logger.warning("promise_item_unread ref=%s", test_before)
+        if unread is not None:
+            unread["item"] = unread.get("item", 0) + 1
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _condition_met(conn: Any, act_id: str, *, opened_at: datetime, horizon_at: datetime,
+                   correlation_id: str | None, unread: dict[str, int] | None = None) -> bool:
+    """Whether a judged reply inside the window listed this act in promise_conditions_met. A read error
+    reads as MET (fail toward the v1 rule: a graded close, never a silent not-due)."""
+    nested = conn.begin_nested() if hasattr(conn, "begin_nested") else None
+    try:
+        hit = conn.execute(_CONDITION_MET_SQL, {"opened_at": opened_at, "horizon_at": horizon_at,
+                                                "correlation_id": correlation_id, "act_id": act_id}).scalar()
+        if nested is not None:
+            nested.commit()
+        return hit is not None
+    except Exception:  # noqa: BLE001
+        if nested is not None:
+            nested.rollback()
+        logger.warning("promise_condition_unread act_id=%s", act_id)
+        if unread is not None:
+            unread["condition"] = unread.get("condition", 0) + 1
+        return True
+
+
 _DUE_SQL = text(
     """
     SELECT act_id, level, actor, verb, signal_id, direction, horizon_sec, expect_basis,
-           opened_at, horizon_at, correlation_id
+           opened_at, horizon_at, correlation_id, test_before
       FROM grammar_acts
      WHERE closed_at IS NULL AND opened_at IS NOT NULL AND signal_id IS NOT NULL
        AND (signal_id IN ('juniper_replied', 'juniper_answered') OR horizon_at < :expired_before)
@@ -826,6 +908,15 @@ class ResolveSummary:
     # promise_kept (intention ledger D2): no keep by the horizon. void = Juniper wrote no chat turn in it.
     closed_promises_expired: int = 0
     closed_promises_void: int = 0
+    # Of closed_promises_void, the settle-class voids (#3595): a condition never met, a run-class
+    # promise, an abstention. The rest of closed_promises_void are "Juniper wrote no chat turn".
+    closed_promises_not_due: int = 0
+    closed_promises_not_chat: int = 0
+    closed_promises_absence_unchecked: int = 0
+    # Read errors on the settle-class path (each falls back: an unread item -> the v1 rule, an unread
+    # condition scan -> "met", i.e. graded). Counted so a silent fallback shows in the resolver's summary.
+    promise_item_unread: int = 0
+    promise_condition_unread: int = 0
 
 
 # A camera ask's act is graded from its orion_ask row (orion/grammar/camera_ask_acts.py ask_grade):
@@ -957,6 +1048,8 @@ def resolve_due_acts(
     ).mappings().all()
     replied = not_replied = expired = recovered = asks_graded = asks_withdrawn = 0
     promises_expired = promises_void = 0
+    void_kinds: dict[str, int] = {}
+    unread: dict[str, int] = {}
     for row in rows:
         act = _act_from_row(row)
         opened_at = _aware(row["opened_at"])
@@ -995,6 +1088,21 @@ def resolve_due_acts(
                     recovered += 1
                 continue
             if row["signal_id"] == PROMISE_SIGNAL:
+                # Settle classes first (#3595): a conditional promise whose condition never arose is
+                # not due, and a run or absence promise cannot be shown kept by a chat reply's absence.
+                # Each closes void (censored, never graded), with its own kind in the note.
+                item = _promise_item(conn, row.get("test_before"), unread)
+                met = promise_condition(item) is None or _condition_met(
+                    conn, act.act_id, opened_at=opened_at, horizon_at=horizon_at,
+                    correlation_id=row["correlation_id"], unread=unread)
+                class_void = horizon_void_note(item, condition_met=met)
+                if class_void is not None:
+                    outcome = ActOutcomeV1(value=0.0, observed_at=horizon_at, source="expired", note=class_void)
+                    if _one_close(conn, commit, None, act, outcome, f"resolver:{act.act_id}"):
+                        promises_void += 1
+                        kind = promise_void_kind(class_void) or "unknown"
+                        void_kinds[kind] = void_kinds.get(kind, 0) + 1
+                    continue
                 # A promise can only be marked kept by the judge reading a reply to Juniper. With no
                 # Juniper chat turn inside the horizon there was no such reply: the outcome is unseen
                 # (void, not graded), not a broken promise (intention ledger amendment 7).
@@ -1017,7 +1125,12 @@ def resolve_due_acts(
             expired += 1
         _one_close(conn, commit, None, act, outcome, f"resolver:{act.act_id}")
     return ResolveSummary(len(rows), replied, not_replied, expired, recovered, asks_graded, asks_withdrawn,
-                          promises_expired, promises_void)
+                          promises_expired, promises_void,
+                          closed_promises_not_due=void_kinds.get("not_due", 0),
+                          closed_promises_not_chat=void_kinds.get("not_chat", 0),
+                          closed_promises_absence_unchecked=void_kinds.get("absence_unchecked", 0),
+                          promise_item_unread=unread.get("item", 0),
+                          promise_condition_unread=unread.get("condition", 0))
 
 
 # --- late cost fill (attention patch 3a, "reading's real cost") ------------------------------------

@@ -62,6 +62,7 @@ JUDGEMENT = {
     "promises_made": [],
     "offers_accepted": [],
     "promises_kept": [],
+    "promise_conditions_met": [],
 }
 
 
@@ -397,9 +398,10 @@ def test_schema_requires_act_and_done_when_and_the_prompt_defines_them() -> None
     schema = finalize_reflect_json_schema(True)
     item = schema["properties"]["promises_made"]["items"]
     assert {"act", "done_when"} <= set(item["required"])
-    base = {"quote": REAL, "offer": False, "force": "commits", "doer": "orion", "act": "compare"}
+    base = {"quote": REAL, "offer": False, "force": "commits", "doer": "orion", "act": "compare",
+            "settles_in": "chat", "condition": None}
     jsonschema.validate({**JUDGEMENT, "promises_made": [{**base, "done_when": None}]}, schema)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{**base, "done_when": DONE_WHEN}]}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{**base, "done_when": DONE_WHEN, "settles_in": "chat", "condition": None}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [base]}, schema)
     section = _render(_ctx()).split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
@@ -454,7 +456,8 @@ def test_schema_requires_a_force_from_the_closed_set_and_the_prompt_defines_each
     item = schema["properties"]["promises_made"]["items"]
     assert "force" in item["required"]
     assert set(item["properties"]["force"]["enum"]) == {"commits", "reports", "predicts", "suggests", "wishes"}
-    good = {"quote": REAL, "offer": False, "doer": "orion", "act": ACT, "done_when": DONE_WHEN}
+    good = {"quote": REAL, "offer": False, "doer": "orion", "act": ACT, "done_when": DONE_WHEN,
+            "settles_in": "chat", "condition": None}
     jsonschema.validate({**JUDGEMENT, "promises_made": [{**good, "force": "commits"}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [{**good, "force": "promise"}]}, schema)
@@ -494,12 +497,12 @@ def test_acceptance_is_asked_from_the_next_user_message_not_a_word_list() -> Non
 
 def test_flag_on_schema_asks_for_promise_fields_and_validates_them() -> None:
     schema = finalize_reflect_json_schema(True)
-    assert list(schema["properties"])[-3:] == list(PROMISE_FIELDS)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]}, schema)
+    assert list(schema["properties"])[-len(PROMISE_FIELDS):] == list(PROMISE_FIELDS)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN, "settles_in": "chat", "condition": None}]}, schema)
     # No caps in the schema: Strata 502s an answer that breaks it, which would sink the
     # verdict. Four promises or a long quote must pass the schema; the gate caps them.
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}] * 4}, schema)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN, "settles_in": "chat", "condition": None}] * 4}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN, "settles_in": "chat", "condition": None}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM}]}, schema)
     rendered = _render(_ctx())
@@ -598,3 +601,114 @@ def test_quote_match_folds_emphasis_apostrophes_and_invisible_spacing(judge_copy
 
     assert quote_in_text(judge_copy, reply)
     assert not quote_in_text("I'll compare the three runs tomorrow.", reply)
+
+
+# --- 2026-11-18: long quotes (#3530), settle classes and conditions (#3595) ----------------------------
+
+# Faithful to replay turn d05f08e3 (11-16 replay, dev2.part5): the judge quoted the whole 2-clause
+# sentence (backticks, an em dash, ~250 chars), and the 240 cap dropped the hand-found hold-deep-read.
+LONG_PROMISE = (
+    "I'll hold the deep read until the pipeline digests it — then pull it back through `reading_results` "
+    "and we can see what it actually says about feasibility on hardware like circe's V100s before we get "
+    "excited about applying it to my own cortex."
+)
+LONG_REPLY = "Queued it.\n\n" + LONG_PROMISE.replace("hardware like", "hardware  like") + " Sleep well."
+
+
+def test_a_long_literal_quote_is_kept_as_its_leading_part_and_counted_trimmed() -> None:
+    from orion.harness.promise_gate import leading_quote, normalize_for_quote_match
+    from orion.schemas.harness_finalize import PROMISE_QUOTE_MAX_CHARS
+
+    assert len(LONG_PROMISE) > PROMISE_QUOTE_MAX_CHARS
+    item = PromiseV1(force="commits", quote=LONG_PROMISE, doer="orion", done_when=DONE_WHEN)
+    result = gate_promises(_reflection(promises_made=[item]), reply_text=LONG_REPLY, enabled=True)
+    [kept] = result.reflection.promises_made
+    assert result.trimmed_long == 1 and result.dropped_too_long == 0
+    assert len(kept.quote) <= PROMISE_QUOTE_MAX_CHARS
+    assert LONG_PROMISE.startswith(kept.quote) and kept.quote == leading_quote(LONG_PROMISE)
+    assert not kept.quote.endswith((" ", ",", "-", "—"))           # cut at a word boundary, tail tidied
+    assert normalize_for_quote_match(kept.quote) in normalize_for_quote_match(LONG_REPLY)
+    # The second pass (against the text Juniper saw) keeps it unchanged: it is within the cap now.
+    again = gate_promises(result.reflection, reply_text=LONG_REPLY, enabled=True)
+    assert [p.quote for p in again.reflection.promises_made] == [kept.quote] and again.trimmed_long == 0
+
+
+def test_a_long_quote_that_is_not_literal_is_still_dropped_too_long() -> None:
+    invented = LONG_PROMISE.replace("hold the deep read", "keep the deep read")
+    item = PromiseV1(force="commits", quote=invented, doer="orion", done_when=DONE_WHEN)
+    result = gate_promises(_reflection(promises_made=[item]), reply_text=LONG_REPLY, enabled=True)
+    assert result.reflection.promises_made == []
+    assert result.dropped_too_long == 1 and result.trimmed_long == 0
+
+
+def test_leading_quote_edges() -> None:
+    from orion.harness.promise_gate import leading_quote
+
+    assert leading_quote("short and fine") == "short and fine"
+    assert leading_quote("x" * 300) is None                      # no word boundary under the cap
+    assert leading_quote("a " + "x" * 300) is None                # the only cut leaves a fragment
+    words = ("word " * 60).strip()                                # 299 chars
+    cut = leading_quote(words, cap=240)
+    assert cut is not None and len(cut) <= 240 and words.startswith(cut) and cut.endswith("word")
+
+
+def test_settles_in_and_condition_parse_leniently() -> None:
+    from orion.harness.promise_gate import coerce_promise_fields
+
+    base = {"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}
+    parsed = coerce_promise_fields({"promises_made": [
+        {**base, "settles_in": "run", "condition": "  the three proposals appear "},
+        {**base, "settles_in": "someday", "condition": 7},
+        base,
+    ], "promise_conditions_met": ["act-1", 3, " ", "act-2"]})
+    made = parsed["promises_made"]
+    assert [(p.settles_in, p.condition) for p in made] == [
+        ("run", "the three proposals appear"), (None, None), (None, None)]
+    assert parsed["promise_conditions_met"] == ["act-1", "act-2"]
+
+
+def test_only_shown_ids_survive_as_conditions_met_and_the_final_pass_keeps_them() -> None:
+    shown = [OpenPromiseRefV1(id="act-cond", quote="I'll read the proposals.", condition="the proposals appear"),
+             OpenPromiseRefV1(id="act-plain", quote="I'll send the list.")]
+    reflection = _reflection(promise_conditions_met=["act-cond", "act-cond", "act-unknown"])
+    first = gate_promises(reflection, reply_text=REPLY, open_promises=shown, enabled=True)
+    assert first.reflection.promise_conditions_met == ["act-cond"]
+    assert first.dropped_unknown_condition == ["act-unknown"]
+    # The chain's second pass gives only ids (kept + conditions met), as run_harness_finalize_chain does.
+    r = first.reflection
+    second = gate_promises(r, reply_text="different final text", enabled=True,
+                           open_promises=[*r.promises_kept, *r.promise_conditions_met])
+    assert second.reflection.promise_conditions_met == ["act-cond"]
+
+
+def test_flag_off_clears_conditions_met() -> None:
+    gated = gate_promises(_reflection(promise_conditions_met=["act-cond"]), reply_text=REPLY, enabled=False)
+    assert gated.reflection.promise_conditions_met == []
+
+
+def test_schema_asks_for_settles_in_condition_and_conditions_met_and_the_prompt_defines_them() -> None:
+    schema = finalize_reflect_json_schema(True)
+    item = schema["properties"]["promises_made"]["items"]
+    assert {"settles_in", "condition"} <= set(item["required"])
+    assert set(item["properties"]["settles_in"]["enum"]) == {"chat", "run", "absence"}
+    good = {"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN,
+            "settles_in": "run", "condition": "the run lands"}
+    jsonschema.validate({**JUDGEMENT, "promises_made": [good]}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**JUDGEMENT, "promises_made": [{**good, "settles_in": "later"}]}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({k: v for k, v in JUDGEMENT.items() if k != "promise_conditions_met"}, schema)
+    section = _render(_ctx()).split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
+    assert "- settles_in:" in section and "- condition:" in section
+    for cls in ("chat", "run", "absence"):
+        assert f'- "{cls}":' in section
+    assert "- promise_conditions_met: [] (no promises are open)." in section
+
+
+def test_the_judge_sees_each_open_promises_condition() -> None:
+    open_refs = [OpenPromiseRefV1(id="act-cond", quote="I'll read the proposals.", condition="the proposals appear"),
+                 OpenPromiseRefV1(id="act-plain", quote="I'll send the list.")]
+    section = _render(_ctx(open_promises=open_refs)).split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
+    assert '[act-cond] "I\'ll read the proposals." (waits on: the proposals appear)\n' in section
+    assert '[act-plain] "I\'ll send the list."\n' in section
+    assert "- promise_conditions_met: for each open promise above marked \"waits on\"" in section

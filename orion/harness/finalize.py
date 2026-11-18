@@ -40,6 +40,7 @@ from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.harness_finalize import (
     PROMISE_DOERS,
     PROMISE_FORCES,
+    PROMISE_SETTLE_CLASSES,
     REFLECTION_SOURCE_JUDGE_FAILED,
     FinalizeReflectionV1,
     OpenPromiseRefV1,
@@ -564,8 +565,10 @@ _PROMISE_SCHEMA: dict[str, dict[str, Any]] = {
                 "doer": {"type": "string", "enum": list(PROMISE_DOERS)},
                 "act": {"type": "string"},
                 "done_when": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "settles_in": {"type": "string", "enum": list(PROMISE_SETTLE_CLASSES)},
+                "condition": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             },
-            "required": ["quote", "offer", "force", "doer", "act", "done_when"],
+            "required": ["quote", "offer", "force", "doer", "act", "done_when", "settles_in", "condition"],
             "additionalProperties": False,
         },
     },
@@ -581,6 +584,8 @@ _PROMISE_SCHEMA: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    # Ids of open conditional promises whose condition this turn saw arise (#3595).
+    "promise_conditions_met": {"type": "array", "items": {"type": "string"}},
 }
 
 
@@ -2208,12 +2213,13 @@ async def run_harness_finalize_chain(
     # rewrite the draft, so the quotes are checked again against the final text.
     # Offers and kept ids were already checked against what the judge was shown.
     # Kept ids were already checked against what the judge was shown; their delivering quotes
-    # are checked again here, against the final text, like a made promise's.
+    # are checked again here, against the final text, like a made promise's. Condition-met ids
+    # (#3595) were checked against the view too and do not depend on the text: passed through.
     reflection = gate_promises(
         reflection,
         reply_text=final_text,
         pending_offers=reflection.offers_accepted,
-        open_promises=reflection.promises_kept,
+        open_promises=[*reflection.promises_kept, *reflection.promise_conditions_met],
         correlation_id=correlation_id,
     ).reflection
     response_repair_ran = bool(voice_meta.get("response_repair_ran"))

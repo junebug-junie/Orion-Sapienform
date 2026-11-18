@@ -6,7 +6,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from orion.grammar.promise_acts import VOID_NOTE, promise_ref
+from orion.grammar.promise_acts import (VOID_ABSENCE_NOTE, VOID_NOTE, VOID_NOT_CHAT_NOTE, VOID_NOT_DUE_NOTE,
+                                       promise_ref)
 from orion.prime.handback import turn_concern_id
 
 REPO = Path(__file__).resolve().parents[1]
@@ -411,3 +412,38 @@ def test_prime_by_ref_an_api_chat_post_in_her_own_session_is_not_handed_back():
 def test_prime_turns_file_needs_the_state_file():
     with pytest.raises(SystemExit):
         rpt.main(["--dsn", "x", "--prime-turns", "t.json"])
+
+
+def test_close_summary_splits_void_by_settle_class_and_keeps_them_out_of_the_keep_rate():
+    acts = [_act(1, opened=T0, closed=T0 + timedelta(hours=5), source="producer", note="kept_in:cx evidence=reply"),
+            _act(2, opened=T0, closed=T0 + H, source="expired", note="no keep within horizon"),
+            _act(3, opened=T0, closed=T0 + H, source="expired", note=VOID_NOTE),
+            _act(4, opened=T0, closed=T0 + H, source="expired", note=VOID_NOT_DUE_NOTE),
+            _act(5, opened=T0, closed=T0 + H, source="expired", note=VOID_NOT_CHAT_NOTE),
+            _act(6, opened=T0, closed=T0 + H, source="expired", note=VOID_ABSENCE_NOTE)]
+    # A carry for act 5's turn lands after its horizon: a later-delivery note, the act stays void.
+    out = rpt.close_summary(acts, unclosable=set(), carry_concerns={turn_concern_id("c5"): [T0 + H + timedelta(hours=2)]})
+    assert out["void"] == 4 and out["kept"] == 1 and out["expired"] == 1
+    assert out["void_by_kind"] == {"no_juniper_turn": 1, "not_due": 1, "not_chat": 1, "absence_unchecked": 1}
+    assert out["void_with_later_carry_acts"] == ["act_5"]
+    assert out["keep_rate"]["n"] == 2  # graded class only
+    assert out["settle_class_void_share"] == round(3 / 6, 3)
+
+
+def test_prime_vs_acts_counts_each_disagreement():
+    acts = [_act(1, opened=T0, closed=T0 + H, source="expired", note=VOID_NOTE, corr="both-closed"),
+            _act(2, opened=T0, corr="act-only"),
+            _act(3, opened=T0, corr="both-open")]
+    state = {"concerns": [{"concern_id": turn_concern_id("both-closed"), "event_ref": "turn:both-closed"},
+                          {"concern_id": turn_concern_id("both-open"), "event_ref": "turn:both-open"},
+                          {"concern_id": turn_concern_id("concern-only"), "event_ref": "turn:concern-only"},
+                          {"concern_id": "letter", "event_ref": "orion_day_letter:2026-11-16#thread0"}],
+             "concern_record": []}
+    out = rpt.prime_vs_acts(acts, state)
+    assert out["concern_no_act_ids"] == [turn_concern_id("concern-only")]
+    assert out["act_no_concern_ids"] == ["act_2"]
+    assert out["concern_open_act_closed_ids"] == [turn_concern_id("both-closed")]
+    assert rpt.prime_vs_acts(acts, None) == {"read": False}
+    # A concern Prime already closed is in concern_record: its act is not "with no concern".
+    state["concern_record"] = [{"concern_id": turn_concern_id("act-only")}]
+    assert rpt.prime_vs_acts(acts, state)["act_no_concern"] == 0

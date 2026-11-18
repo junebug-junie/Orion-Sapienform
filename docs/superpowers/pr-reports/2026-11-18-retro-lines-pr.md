@@ -83,4 +83,122 @@ After (once deployed): each funded line leaves a `retro_line` row with the looks
 - local `.env` synced with `python scripts/sync_local_env_from_example.py`: yes (orion-hub: the 4 keys; orion-durable-runs: the flag).
 - skipped keys requiring operator action: none. No bus URL changed.
 
-REVIEW_AND_RESULTS_PLACEHOLDER
+## Metric quality gate: the note error rate (contradicted / checkable)
+
+1. **Provenance.** `orion/retro/commentary.py` `settle` and `error_rate`, from the line turn's CHECKS block (`parse_reply`); stored per line as `retro_line.looks_checkable` / `looks_contradicted` and per note as `retro_watch_look.checkable` / `verdict`. A note is checkable when its frames' window (the 30 s before its grant) overlaps the window of the frames the turn saw (`is_checkable`).
+2. **Independence.** It shares the look with every look count, but not the instrument: the look's own model wrote the note; a later unified turn with fresh frames judges it. It is not a transform of `similar_to_previous` or of the screen change.
+3. **Theory anchor.** Inter-rater agreement on a checkable subset: a second reading of overlapping evidence, as step 0's per-note verdicts did by hand (9 of 10 place/action right, 4 of 10 with one wrong detail). Spec rev 4, open question 1 and third round point 1.
+4. **Live data.** None: no line has run (retro_watch_look held 0 rows on 2026-11-18). The dry eval proves the parsing and the checkable rule on the step 0 notes only. Its rest state is a real 0 (no note contradicted). Expected checkable share is about 8% (spec section 8), so the rate is noisy until many lines have run; it is reported with its count, never alone. UNVERIFIED.
+5. **Existing mechanism.** None: `verdict` existed on `retro_watch_look` (patch 2) with nothing setting it.
+6. **Reversibility.** Columns on two tables; nothing reads it into a model, a price or a prompt. Cheap to drop.
+
+## Tests run
+
+```text
+tests/retro/test_commentary_rules.py (pure rules)                                            28 passed
+services/orion-hub tests/test_retro_commentary_service.py (line service, outreach door, guest path,
+  review regressions; real EndogenousOutreach.deliver_line)                                  31 passed
+services/orion-hub tests/test_retro_line_pg.py + test_retro_watch_pg.py + test_retro_sitting_pg.py
+  + test_retro_watch_service.py + tests/retro + test_mind_tier_by_caller + test_orion_unified_turn_tts
+  (Postgres tests on a throwaway Postgres 16, port 55989, stopped after)                     331 passed
+tests/retro tests/test_harness_attachment_staging.py tests/test_juniper_turns_guest.py orion/physiology/tests
+  orion/temporal_self/tests orion/prime/tests orion/orion_day/tests orion/hub                1382 passed
+services/orion-durable-runs -k "temporal or retro or chronicle or experience or now or guest"
+  (throwaway Postgres for the chronicle and the guest-reader SQL)                             120 passed
+services/orion-dream tests/test_idle_counts_only_juniper.py                                  1 passed, 1 skipped
+services/orion-sql-writer tests/test_act_downstream_use.py                                   6 passed
+retro-preflight CI job simulated in a clean venv with its exact pins:
+  tests/retro services/orion-retro/tests 274 passed; services/orion-hub/tests/retro 263 passed, 2 skipped
+whole services/orion-hub/tests folder                                                        5198 passed, 6 failed, 4 errors
+  (3 failures were mine and are fixed: test_mind_tier_by_caller, test_orion_unified_turn_tts,
+   test_boundary route list. The rest fail the same on main: test_check_async_routes_not_blocking and
+   test_attention_loops_ui_smoke need the repo root as cwd, test_fcc_model_labels_api reads ~/.fcc/.env,
+   test_consult_belief_store_sql needs its own database.)
+all steps of .github/workflows/orion-static-gates.yml, run locally: 1 failed (the chat route poacher gate on
+  a docstring), fixed, re-run OK; check_integration_seam --require-base OK (31 kinds); env template parity PASS;
+  check_settings_defaults orion-hub OK; check_migration_required_by OK; body economy contract OK
+post-pull migration classifier (dry run, live DB, read-only): manual_migration_retro_lines_v1.sql "would apply"
+rtk proxy git diff --check: clean
+```
+
+## Evals run
+
+```text
+python services/orion-hub/evals/retro_line_dry_eval.py      PASS (also as evals/test_retro_line_dry_eval.py)
+  near-copy cut-off 0.45: 284 different-scene pairs, max 0.4043 (1 word-for-word copy aside);
+    5 of 15 same-scene pairs grouped
+  synthetic sitting of 28 notes: 12 groups shown, the stuck player's 4 repeats grouped, only N12 checkable,
+    no name with nobody stated, "Attached: 4 frames"
+  5 reply shapes parsed (plain, markdown, PASS + CHECKS, no block, "CHECKS: none"); a not-checkable note is
+    never settled; the CHECKS block never reaches the line
+python services/orion-hub/evals/retro_play_panel.py          PASS, 3 of 3 runs after a de-flake (real browser)
+  chat box opens with T and with the button in fullscreen; a held button is released by one neutral input
+  and the game pauses (no controller); typing sends no non-zero mask; the /ws frame is exactly the contract
+  (mode orion, disable_tts true, surface retro, sitting id); reply in panel and strip; reconnect keeps focus;
+  a line shows thumbs and a thumb POSTs; a guest never sees Juniper's outreach; after the flip, other
+  outreach shows in the panel only; the three-position switch posts quiet.
+  Before the de-flake 2 of 5 runs failed: one 50 ms repeat of the held button could land between the
+  eval's snapshot and the key press. The eval now checks "a neutral input is sent and nothing held after it".
+python3 scripts/analysis/check_retro_lines_live.py           against the live DB: "UNVERIFIED: table
+  retro_line does not exist" (exit 0); against a throwaway DB with seeded rows: PASS/FAIL as designed
+  (a seeded interactive event made it FAIL).
+```
+
+## Docker/build/smoke checks
+
+```text
+Not run. Deploys happen only from the clean primary main checkout, after merge.
+The new SQL (migration twice, every statement the line service and the thumb route send) ran against a
+throwaway Postgres 16. The Dockerfile now copies config/gpu_pool.yaml (the line reads the held route's priority).
+```
+
+## Review findings fixed
+
+A read-only review ran in a subagent on `origin/main...HEAD`: 3 must-fix, 6 should-fix, 5 nits. All fixed.
+
+- Finding (must-fix): delivered lines counted on Juniper's daily outreach cap and raised the attention price.
+  - Fix: `retro_commentary` joins `CAP_EXEMPT_SOURCES` (`orion/physiology/attention_pacing.py`).
+  - Evidence: `orion/physiology/tests/test_attention_pacing.py`.
+- Finding (must-fix): a message right after delivery's claim cancelled a line already being said (history row or act lost, text NULL).
+  - Fix: the claim marks the line claimed and stores its words at once; a later message no longer yields it.
+  - Evidence: `test_a_message_after_the_claim_does_not_cut_a_line_being_said`.
+- Finding (must-fix): the yield waited behind the chat-box frames fetch (up to 20 s).
+  - Fix: `person_spoke()` sets the yield flag synchronously before anything awaits; chat-box frames wait at most 6 s.
+  - Evidence: `test_a_guest_message_on_a_main_chat_socket_cannot_borrow_the_game_sources` (order check), `test_her_message_mid_turn_...`.
+- Finding: a message during the bid, or a turn of Juniper's starting before the seat, still let a line run.
+  - Fix: the lock and the yield window open before the bid; the turn checks again before it takes its seat.
+  - Evidence: `test_a_message_while_the_bid_is_weighed_means_no_line_at_all`, `test_a_turn_of_juniper_running_before_the_seat_yields_the_line`.
+- Finding: an outer cancel (Hub stop) could be swallowed and hang shutdown.
+  - Fix: the line waits with `asyncio.wait`; an outer cancel cancels the line and re-raises.
+  - Evidence: `test_stopping_hub_mid_line_does_not_hang`.
+- Finding: a prompt could name frames that staging dropped, and its verdicts could still become events.
+  - Fix: the final frame carries `staged_attachment_count`; fewer than named voids the line and its judgments (`frames_not_staged`).
+  - Evidence: `test_frames_the_turn_did_not_carry_void_the_line_and_its_judgments`.
+- Finding: a timed-out line left its motor running. Fix: `HarnessGovernorClient.cancel` on timeout. Evidence: `test_a_timed_out_line_stops_its_motor`.
+- Finding: the game page showed Orion's outreach to Juniper to a guest. Fix: only a line, or Juniper stated, reaches the panel. Evidence: the browser eval.
+- Finding: a look could start between the gate and the lock and waste a funded line. Fix: lock before the bid; `look_in_flight` is `no_frames`, not `failed`.
+- Nits fixed: the held route read fails closed and is cached; `max(..., default=None)`; an inline `CHECKS:` is cut from the line; a note left `unchecked` by a passed turn can be judged later; no affect capture for a guest's turn; a client cannot send the game sources from a main chat socket.
+
+## Restart required
+
+After merge, the post-pull rebuild applies the migration and rebuilds `orion-hub` (hub-app and hub-retro-gateway) and `orion-durable-runs` (and every service whose image holds `orion/schemas`). Then, by hand, on Juniper's word:
+
+```bash
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -f - < scripts/sql/2026-11-18_grant_orion_readonly_retro_line.sql
+```
+
+## Risks / concerns
+
+- Severity: medium. Concern: a line cancelled mid-stance lets that one stance call finish on the GPU (orion-thought has no cancel listener, #3658). Juniper's first call can wait for it (11 s median, 19 s p90). Mitigation: the row is yielded first and nothing it returns is said (tested); live check #3741 item 3 measures her wait.
+- Severity: medium. Concern: the line holds the chat lane's hold for the whole turn (60 to 90 s estimated). Juniper's interactive calls may use the hold's gaps (pool rule H3), and her message cancels the line. Mitigation: one play call at a time (the gateway bids for no look while a line runs); live check #3741.
+- Severity: low. Concern: deploy order. `TemporalNowItemV1` forbids unknown kinds, so the now's readers must run the new schema before durable-runs writes the first `retro_look` event, and durable-runs needs the migration's `settled_at`. Mitigation: one post-pull run rebuilds all; the REQUIRED-BY header refuses durable-runs until the migration is applied; a `retro_look` event needs a delivered or passed line first.
+- Severity: low. Concern: the near-copy cut-off (0.45) and the expected checkable share (about 8%) come from step 0, not live play. Mitigation: the dry eval recomputes the cut-off; the live check reports the checkable share.
+- Severity: low. Concern: `hub.retro_commentary` keeps the spec's `deferrable_window_s: 300` (families.py accepts it; the brief's "smallest accepted value" note applied to a 0 the spec never set for this family). The producer never holds a want: only `funded` runs.
+- Departures from spec, stated: see the spec's "Patch 3 is built" note (any person's message yields, frames route needs the hub token, line act opens and closes at delivery, lines out of the letter's chat gather, the per-turn game block with notes and the stance cancel listener not built).
+- Issues opened: #3741 (verify-live, needs-juniper), #3742 (chat turns see no look notes), #3743 (play arc staleness close), #3744 (watch switch not in fullscreen). Commented: #3658. Issues closed: none (the play part of #3457 closes when #3741 proves the read-back live).
+
+## PR link
+
+PR_LINK_PLACEHOLDER
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

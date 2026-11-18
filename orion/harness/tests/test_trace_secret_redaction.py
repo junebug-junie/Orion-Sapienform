@@ -9,7 +9,7 @@ from orion.core import redact
 from orion.core.redact import redact_secrets, redact_secrets_deep, secret_env_values
 from orion.harness.fcc_motor import build_step_frame, extract_final_from_stream_event
 
-DSN = "postgresql://orion_readonly:4b4bf2ed563fcfda@orion-athena-sql-db:5432/conjourney"
+DSN = "postgresql://orion_readonly:fake-test-password-not-real@orion-athena-sql-db:5432/conjourney"
 
 
 def _tool_result_event(text: str) -> dict:
@@ -22,7 +22,7 @@ def _tool_result_event(text: str) -> dict:
 def test_dsn_password_stripped_from_step_but_host_kept():
     step = build_step_frame(_tool_result_event(f"DSN: '{DSN}'"))
     body = step["raw"]["message"]["content"][0]["content"]
-    assert "4b4bf2ed563fcfda" not in body
+    assert "fake-test-password-not-real" not in body
     assert "postgresql://[REDACTED]@orion-athena-sql-db:5432/conjourney" in body
 
 
@@ -43,12 +43,12 @@ def test_tool_use_input_is_stripped_too():
         {"type": "tool_use", "name": "Bash", "input": {"command": f'psql "{DSN}" -c "select 1"'}},
     ]}}
     command = build_step_frame(event)["raw"]["message"]["content"][0]["input"]["command"]
-    assert "4b4bf2ed563fcfda" not in command and "orion-athena-sql-db" in command
+    assert "fake-test-password-not-real" not in command and "orion-athena-sql-db" in command
 
 
 def test_final_reply_is_stripped():
     text, _, _ = extract_final_from_stream_event({"type": "result", "result": f"the dsn is {DSN}"}, accumulated="")
-    assert "4b4bf2ed563fcfda" not in text
+    assert "fake-test-password-not-real" not in text
 
 
 def test_shell_variable_userinfo_is_left_readable():

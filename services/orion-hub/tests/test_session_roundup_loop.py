@@ -143,7 +143,7 @@ def test_size_caps_cut_and_say_so_and_an_empty_message_is_refused(mode, monkeypa
         assert specs[0]["text"].startswith("x" * 40000) and "40000 of 50000 characters kept" in specs[0]["text"]
         assert "20000 of 20005 characters kept" in turns[0]["body"]
         receipt = turns[1]["body"]
-        assert "Hub cut the spec docs/superpowers/specs/0.md to 40000 characters" in receipt
+        assert "Hub cut the spec docs/superpowers/specs/0.md to at most 40000 characters" in receipt
         assert "Hub cut the message to 20000 characters" in receipt and "kept the first 5 spec files" in receipt
         for bad in (dict(title="t", body="   ", spec=[{"path": "p", "text": " "}]), dict(title="  ", body="words")):
             with pytest.raises(ValueError):

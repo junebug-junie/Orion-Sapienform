@@ -31,6 +31,56 @@ def test_a_cut_text_says_it_was_cut():
     assert core.cap_text("short", 40, what="spec") == ("short", False)
 
 
+def _spec(sections=6, para=900):
+    parts = ["# Title", "intro line"]
+    for i in range(sections):
+        parts += [f"## Section {i}", ("word " * (para // 5)).strip() + ".", "```", "# not a heading", "```"]
+    return "\n".join(parts)
+
+
+def test_a_cut_spec_says_where_it_cut_what_is_left_out_and_where_the_full_text_is():
+    # Thread cf5d4218097a (PR #3698): Orion got "40,000 of 64,564 kept", cut mid-sentence, with no
+    # word on which sections were missing or where the whole file lives.
+    text = _spec()
+    out, cut = core.cap_spec(text, text.index("## Section 2") + 300, path="docs/superpowers/specs/x.md",
+                             branch="feat/a")
+    assert cut
+    kept, note = out.rsplit("\n\n[", 1)
+    assert text.startswith(kept) and text[len(kept)] == "\n"   # cut on a line break, never mid-line
+    assert f"{len(kept)} of {len(text)} characters kept" in note
+    assert 'The cut falls inside the section "Section 2"' in note
+    assert 'Sections not shown: "Section 3"; "Section 4"; "Section 5".' in note
+    assert "not a heading" not in note   # a `#` line inside a code fence is not a heading
+    assert "git show origin/feat/a:docs/superpowers/specs/x.md" in note
+    assert core.cap_spec("short", 40, path="p", branch="b") == ("short", False)
+    # A cut right before a heading does not claim to fall inside the section above it.
+    at_heading, _ = core.cap_spec(text, text.index("## Section 3"), path="p")
+    assert "falls inside" not in at_heading.rsplit("\n\n[", 1)[1] and '"Section 3"' in at_heading
+
+
+def test_a_cut_inside_a_code_fence_closes_the_fence_before_hubs_note():
+    text = "# T\n\n## A\n```\ncode one\n~~~\n# comment, not a heading\ncode two\n```\n\n## B\ntext"
+    out, cut = core.cap_spec(text, text.index("# comment") + 3, path="p")
+    assert cut
+    kept, note = out.rsplit("\n\n[", 1)
+    assert kept.endswith("~~~\n```"), "the open ``` block is closed; a ~~~ inside it does not close it"
+    assert 'falls inside the section "A"' in note and 'Sections not shown: "B"' in note
+    assert "comment" not in note
+
+
+def test_a_cut_spec_note_stays_short_and_works_without_a_branch():
+    text = _spec(sections=60, para=100)
+    out, _ = core.cap_spec(text, 300, path="docs/x.md")
+    note = out[out.rindex("\n\n["):]
+    listed = note.split("Sections not shown:")[1].split("Full text:")[0]
+    assert listed.count('"Section ') == core.SPEC_CUT_HEADINGS_LISTED and " more." in listed
+    assert "Full text: docs/x.md in the repo." in note and "git show" not in note
+    assert len(note) < 2000
+    # No line break near the limit: still cut at the limit.
+    flat, cut = core.cap_spec("s" * 5000, 100, path="p")
+    assert cut and flat.startswith("s" * 100 + "\n\n[Hub cut this spec here: 100 of 5000")
+
+
 def test_the_bucket_is_the_utc_hour_and_the_next_roundup_is_its_end():
     assert core.bucket_start(NOW, 3600) == datetime(2026, 11, 15, 10, 0, tzinfo=timezone.utc)
     assert core.next_roundup_at(NOW, 3600) == datetime(2026, 11, 15, 11, 0, tzinfo=timezone.utc)

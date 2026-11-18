@@ -87,6 +87,67 @@ def cap_text(text: str, limit: int, *, what: str) -> Tuple[str, bool]:
     return text[:limit] + f"\n\n[Hub cut this {what} here: {limit} of {len(text)} characters kept.]", True
 
 
+_MD_HEADING_RE = re.compile(r"^[^\S\n]{0,3}#{1,6}[^\S\n]+(\S[^\n]*)$")
+_FENCE_RE = re.compile(r"^[^\S\n]{0,3}(`{3,}|~{3,})")
+
+
+def _md_headings(text: str, *, fence: str = "") -> Tuple[List[str], str]:
+    """Markdown heading texts in ``text`` outside code fences, and the fence still open at its end
+    ("" when none). A fence closes only on the marker that opened it."""
+    out: List[str] = []
+    for line in text.split("\n"):
+        m = _FENCE_RE.match(line)
+        if m and (not fence or m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence)):
+            fence = "" if fence else m.group(1)
+        elif not fence:
+            h = _MD_HEADING_RE.match(line)
+            if h:
+                out.append(h.group(1))
+    return out, fence
+
+
+# The cut line stays short (it is paid for out of the same prompt budget): at most this many
+# left-out headings, each at most SPEC_CUT_HEADING_CHARS.
+SPEC_CUT_HEADINGS_LISTED = 12
+SPEC_CUT_HEADING_CHARS = 80
+# A spec is cut at the last line break this close to the limit, so the cut never lands mid-sentence.
+SPEC_CUT_LINE_SLACK = 2000
+
+
+def cap_spec(text: str, limit: int, *, path: str = "", branch: str = "", what: str = "spec") -> Tuple[str, bool]:
+    """``cap_text`` for a spec file, with a cut line Orion can act on (thread cf5d4218097a, PR #3698).
+
+    The cut lands on a line break, and the closing line says which section it fell inside, which
+    sections were left out, and where the full file is (the path, and the branch it is on)."""
+    text = str(text or "")
+    if len(text) <= limit:
+        return text, False
+    at = text.rfind("\n", max(0, limit - SPEC_CUT_LINE_SLACK), limit)
+    at = limit if at <= 0 else at
+    kept, rest = text[:at], text[at:]
+    inside, fence = _md_headings(kept)
+    left_out, _ = _md_headings(rest, fence=fence)
+    note = [f"[Hub cut this {what} here: {len(kept)} of {len(text)} characters kept."]
+    at_heading = not fence and bool(_MD_HEADING_RE.match(rest.lstrip("\n").split("\n", 1)[0]))
+    if fence:
+        kept += "\n" + fence   # close a code block the cut left open, so the note reads as Hub's words
+    if inside and not at_heading:
+        note.append(f'The cut falls inside the section "{one_line(inside[-1], SPEC_CUT_HEADING_CHARS)}".')
+    if left_out:
+        shown = "; ".join(f'"{one_line(h, SPEC_CUT_HEADING_CHARS)}"' for h in left_out[:SPEC_CUT_HEADINGS_LISTED])
+        more = (f" and {len(left_out) - SPEC_CUT_HEADINGS_LISTED} more"
+                if len(left_out) > SPEC_CUT_HEADINGS_LISTED else "")
+        note.append(f"Sections not shown: {shown}{more}.")
+    path = one_line(path, 300)
+    branch = one_line(branch, 200)
+    if path and branch:
+        note.append(f"Full text: `git show origin/{branch}:{path}` (or that path in your checkout once the "
+                    "branch is merged).")
+    elif path:
+        note.append(f"Full text: {path} in the repo.")
+    return kept + "\n\n" + " ".join(note) + "]", True
+
+
 def one_line(text: Any, limit: int) -> str:
     return " ".join(str(text or "").split())[:limit]
 

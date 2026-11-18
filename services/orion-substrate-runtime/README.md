@@ -481,8 +481,8 @@ From 2026-10-16 to 2026-11-03 this service recorded each execution, chat and
 street-handoff raw reading to `substrate_prediction_raw_reading` and read
 Orion's self-tuned smoothing rate and variance floor from the control surface.
 That tuner proposed 16 times and adopted once; its input reading was mostly
-zeros. It is retired: this service no longer writes the table (kept, not
-dropped) and scores all three domains with their calibrated constants
+zeros. It is retired: this service no longer writes the table (drop staged
+in `manual_migration_retire_prediction_raw_reading_drop.sql`, issue #3505) and scores all three domains with their calibrated constants
 (`prediction_error.py`, `street_attention.py`). Successor: the self-monitor
 organ (design PR #2827, not yet merged).
 

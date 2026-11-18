@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass
 
+from orion.harness.cut_short import CUT_SHORT_MARKER
+
 # Code is not voice, so it is removed before measuring. Fences are tracked
 # line by line (see _strip_code): a regex over the whole text mistook the
 # closing line of a fence opened mid-line ("Here: ```python") for a new
@@ -43,6 +45,21 @@ _QUESTION_TRAIL = "\"')]”’*_"
 # en dash with whitespace on both sides. A hyphen inside a word
 # ("well-known") has no surrounding space and is not counted.
 _DASH_RE = re.compile(r"—|(?<=\S)[ \t]+(?:--?|–)[ \t]+(?=\S)")
+# Contrast frame ("that's physiology, not hierarchy"; "a zero — not missing
+# data"): a comma, an em dash, or a spaced hyphen / double hyphen / en dash,
+# then "not" as the first word of the next clause, then a word. Forms where
+# "not" is not right after the separator ("whether or not", "if not",
+# "or not", "but not") never match, by shape. The lookahead drops the fixed
+# idioms where the comma + "not" opens no contrast: the paired list
+# "not only ... but (also)" (only when a "but" follows in the same sentence;
+# a bare ", not only a number" is the contrast tic), "not to mention", and
+# "not least". Fixed; do not extend -- a miss is fixed by changing the shape,
+# not by adding words.
+_CONTRAST_NOT_RE = re.compile(
+    r"(?:,|—|(?<=\S)[ \t]+(?:--?|–)(?=[ \t]))[ \t]*"
+    r"\bnot[ \t]+(?!only\b(?=[^.!?\n]*\bbut\b)|to[ \t]+mention\b|least\b)(?=\w)",
+    re.IGNORECASE,
+)
 # Closed grammatical class: first-person singular. Fixed; do not extend.
 _FIRST_PERSON_CASED = frozenset({"I", "I'm", "I've", "I'd", "I'll"})
 _FIRST_PERSON_FOLDED = frozenset({"me", "my"})
@@ -57,6 +74,8 @@ class ToneDials:
     bold_span_count: int  # **bold** spans
     question_count: int  # sentences ending in '?'
     em_dash_per_100_words: float  # em dashes plus spaced ' - ' / ' -- ' / ' en-dash ' per 100 words
+    contrast_not_count: int  # ", not X" / "— not X" / " - not X" contrast frames (see _CONTRAST_NOT_RE)
+    contrast_not_per_100_words: float  # contrast_not_count per 100 words
     first_person_singular_per_100_words: float  # I, I'm, I've, I'd, I'll, me, my per 100 words
     opener_words: int  # words in the first paragraph if the reply has >1 paragraph, else 0 (preamble proxy)
     word_count: int  # words outside code fences
@@ -114,6 +133,8 @@ def measure_tone_dials(text: str) -> ToneDials | None:
 
 
 def _measure(text: str) -> ToneDials | None:
+    # The harness's cut-short marker is code-written text, not voice.
+    text = text.replace(CUT_SHORT_MARKER, "")
     body = _strip_code(text.replace("\r\n", "\n").replace("\r", "\n")).replace("’", "'")
     # A URL is one word, not ten.
     body = _URL_RE.sub("link", body)
@@ -127,12 +148,14 @@ def _measure(text: str) -> ToneDials | None:
     sentences: list[str] = []
     words: list[str] = []
     dash_count = 0
+    contrast_not = 0
     for ln in lines:
         # Drop list / heading markers so they are neither words nor dashes.
         # Every word-based dial counts from this same stripped text.
         content = _HEADING_RE.sub("", _LIST_RE.sub("", ln)).strip()
         words.extend(_words(content))
         dash_count += len(_DASH_RE.findall(content))
+        contrast_not += len(_CONTRAST_NOT_RE.findall(content))
         for piece in _SENT_SPLIT_RE.split(content):
             piece = piece.strip()
             if _words(piece):
@@ -161,6 +184,8 @@ def _measure(text: str) -> ToneDials | None:
         bold_span_count=len(_BOLD_RE.findall(body)),
         question_count=sum(1 for s in sentences if s.rstrip(_QUESTION_TRAIL).endswith("?")),
         em_dash_per_100_words=_per_100(dash_count, word_count),
+        contrast_not_count=contrast_not,
+        contrast_not_per_100_words=_per_100(contrast_not, word_count),
         first_person_singular_per_100_words=_per_100(first_person, word_count),
         opener_words=opener_words,
         word_count=word_count,

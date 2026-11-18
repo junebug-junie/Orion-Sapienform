@@ -145,3 +145,67 @@ def test_question_wrapped_in_emphasis_counts() -> None:
 
 def test_leading_heading_is_not_a_preamble() -> None:
     assert measure_tone_dials("# Title\n\nBody text here.").opener_words == 0
+
+
+# ", not X" contrast frame (the LLM voice tic Juniper flagged, 2026-11-18).
+
+@pytest.mark.parametrize(
+    "text, hits",
+    [
+        ("That's physiology, not hierarchy.", 1),
+        ("It is a reported zero, not missing data.", 1),
+        ("The cache is cold — not broken.", 1),
+        ("The cache is cold —not broken.", 1),
+        ("The cache is cold - not broken.", 1),
+        ("The cache is cold -- not broken.", 1),
+        ("The cache is cold – not broken.", 1),
+        ("Read the log, Not the config.", 1),
+        ("It's a bug, not just a quirk.", 1),
+        ("It's merged, not yet deployed, not live.", 2),
+        ("A signal, not noise. A choice — not a rule.", 2),
+        ("- a reading, not a guess\n- a fact, not a vibe", 2),
+        ("A concept node I can reach, not only a number in a description.", 1),
+        ("It matters — not just because it corrects the record, but because it holds.", 1),
+    ],
+)
+def test_contrast_not_true_positives(text, hits):
+    d = measure_tone_dials(text)
+    assert d.contrast_not_count == hits
+    assert d.contrast_not_per_100_words == pytest.approx(100 * hits / d.word_count, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I can't tell whether or not the worker restarted.",
+        "Tell me if not, and I'll check again.",
+        "Should I restart it or not?",
+        "It works, but not on hecate.",
+        "That is not the cache.",
+        "It's the cache, nothing else.",
+        "Three reasons, notably the heat.",
+        "The fix, not only patches the parser but also adds a test.",
+        "It costs power, not to mention the noise.",
+        "Several causes, not least the heat in the closet.",
+        "A well-known-not-great idea.",
+        "Use the flag x-not y here.",
+        "Ready, not.",
+        "It helps, not only with speed but also with memory.",
+        "Partial reply here.\n\n[Cut short - not a finished answer.]",
+    ],
+)
+def test_contrast_not_false_positives(text):
+    assert measure_tone_dials(text).contrast_not_count == 0
+
+
+def test_contrast_not_inside_code_is_ignored():
+    d = measure_tone_dials("Run it.\n```\nx = a, not b\n```\nInline ```y, not z``` too.")
+    assert d.contrast_not_count == 0
+
+
+def test_contrast_not_is_independent_of_dash_count():
+    # A comma frame adds no dash; a dash frame adds both.
+    comma = measure_tone_dials("A fact, not a vibe.")
+    dash = measure_tone_dials("A fact — not a vibe.")
+    assert comma.em_dash_per_100_words == 0.0 and comma.contrast_not_count == 1
+    assert dash.em_dash_per_100_words > 0.0 and dash.contrast_not_count == 1

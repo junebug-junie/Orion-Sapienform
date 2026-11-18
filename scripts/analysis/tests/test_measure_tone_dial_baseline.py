@@ -11,6 +11,7 @@ from measure_tone_dial_baseline import (  # noqa: E402
     MIN_SEPARATION_N,
     build_report,
     cliffs_delta,
+    contrast_not_by_week,
     dial_stats,
     percentile,
     render_summary,
@@ -105,3 +106,49 @@ def test_turn_rated_both_ways_is_contested_and_left_out():
     assert sep["n_good"] == 0 and sep["n_bad"] == 0
     thumbs = r["separation"]["thumbs_up_vs_down"]
     assert thumbs["n_good"] == 0 and thumbs["n_bad"] == 0
+
+
+def test_contrast_not_by_week_groups_by_iso_week_and_filters_short_replies():
+    from datetime import datetime, timezone
+
+    tic = "That reading is physiology, not hierarchy, and the queue is fine today."
+    calm = "That reading is physiology. The queue is fine today and nothing is wrong."
+    dash = "That reading is physiology — the queue is fine today and nothing is wrong."
+    mon = datetime(2026, 11, 9, 1, tzinfo=timezone.utc)
+    sun = datetime(2026, 11, 15, 23, tzinfo=timezone.utc)
+    history = [
+        {"prompt": "q", "response": tic, "created_at": mon, "served_model": "flash-next"},
+        {"prompt": "q", "response": calm, "created_at": sun, "served_model": "qwen35b"},
+        {"prompt": "", "response": dash, "created_at": sun},
+        {"prompt": "q", "response": "ok, not now", "created_at": mon},  # <= 40 chars: skipped
+        {"prompt": "q", "response": tic, "created_at": "2026-11-16T00:00:00+00:00"},
+        {"prompt": "q", "response": tic, "created_at": None},  # no timestamp: skipped
+    ]
+    weekly = contrast_not_by_week(history)
+    chat = weekly["chat_replies"]
+    assert [r["week"] for r in chat] == ["2026-11-09", "2026-11-16"]
+    assert chat[0]["iso_week"] == "2026-W46"
+    assert chat[0]["n"] == 2 and chat[0]["share_with_contrast_not"] == 0.5
+    assert chat[1]["n"] == 1 and chat[1]["share_with_contrast_not"] == 1.0
+    assert weekly["outreach"][0]["share_with_dash"] == 1.0
+    assert weekly["outreach"][0]["share_with_contrast_not"] == 0.0
+    allw = weekly["all"][0]
+    assert allw["n"] == 3
+    assert allw["contrast_not_per_100_words"] > 0
+    assert weekly["model:flash-next"][0]["share_with_contrast_not"] == 1.0
+    assert weekly["model:qwen35b"][0]["share_with_contrast_not"] == 0.0
+    assert weekly["model:(no finalize sighting)"][0]["n"] == 1  # the outreach row
+
+
+def test_build_report_carries_weekly_trend_into_summary():
+    from datetime import datetime, timezone
+
+    history = [{
+        "correlation_id": "c1", "prompt": "q",
+        "response": "That reading is physiology, not hierarchy, and the queue is fine.",
+        "created_at": datetime(2026, 11, 9, tzinfo=timezone.utc),
+    }]
+    r = build_report(history, [], window_days=7)
+    assert r["contrast_not_by_week"]["chat_replies"][0]["share_with_contrast_not"] == 1.0
+    assert "contrast_not_by_week:chat_replies" in render_summary(r)
+    assert "contrast=100.0%" in render_summary(r)

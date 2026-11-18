@@ -114,7 +114,7 @@ Checked fine by the review:
 - the read is one primary-key SELECT, throttled to 15 min, and never raises;
 - no reader parses concern-record notes.
 
-Live dry run after the fixes: same result (2 kept, 1 opened).
+Live dry run after the fixes: 1 kept, 1 opened, and the other keep skipped as "not held" (Prime had closed concern 3d5f2e70b45d3db9 between the night and the dry run; the skip is the intended handling).
 
 ## Restart required
 

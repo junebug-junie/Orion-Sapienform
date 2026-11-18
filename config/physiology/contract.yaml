@@ -138,8 +138,8 @@ readers:
     note: 2026-11-07, already the Patch D shape
   - module: services/orion-hub/scripts/retro_watch.py
     role: bidder
-    reason: Orion's look at a person's game screen BINDS (game company patch 2, hub.retro_watch) -- only a funded bid runs a look (orion.physiology.binding names the producer). Reads no regulation or price state of its own; the heat reason it shows on the game page is the pool's own refusal text.
-    note: 2026-11-18, already the Patch D shape (stricter: deferred and no answer skip the look)
+    reason: "Orion's look at a person's game screen BINDS (game company patch 2, hub.retro_watch) -- only a funded bid runs a look (orion.physiology.binding names the producer). Reads no regulation or price state of its own; the heat reason it shows on the game page is the pool's own refusal text."
+    note: "2026-11-18, already the Patch D shape (stricter: deferred and no answer skip the look)"
   - module: services/orion-sql-writer/app/ask_bind.py
     role: bidder
     reason: camera asks' BINDING bid (attention patch 4b) -- every camera opener obeys the market's decision (orion.physiology.binding) before a card opens; held re-bids with a backoff, no deadline (#3285). Reads no regulation or price state of its own.

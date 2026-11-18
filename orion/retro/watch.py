@@ -69,6 +69,7 @@ N_EDGES = 81                                      # 1e-4 .. 1.0
 EDGES = tuple(BIN_LOW * 10 ** (k / BINS_PER_DECADE) for k in range(N_EDGES))
 N_BINS = N_EDGES + 1
 
+HEAT_PREFIX = "heat:"        # a refusal the heat reflex caused (the gateway tags it; the page names it)
 COUNTERS = ("ring_checks", "checks_over_floor", "input_stale_skips", "under_floor_with_input", "static_skips",
             "bids_funded", "model_calls", "notes_stored", "failed_looks")
 OUTCOMES = ("stored", "empty", "unclear", "copied", "failed")
@@ -333,7 +334,7 @@ def status(*, enabled: bool, sitting_open: bool, mode: Mode, calibration: Option
         return out("watching", "Orion is watching.")
     if last_refusal is not None and (last_stored_at is None or last_refusal[1] > last_stored_at):
         reason = last_refusal[0]
-        if "cabinet_hot" in reason or reason.startswith("shed"):
+        if reason.startswith(HEAT_PREFIX):        # set by the gateway from the pool's own refusal text
             return out("refused_heat", f"Orion is not looking: the body is too hot ({reason}).")
         return out("refused", f"Orion is not looking: bid refused ({reason}).")
     since_change = last_over_floor_at if last_over_floor_at is not None else sitting_started_at

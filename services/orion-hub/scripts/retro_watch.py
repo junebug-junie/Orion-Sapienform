@@ -411,6 +411,8 @@ class WatchService:
             lease = await seat_cm.__aenter__()
         except Exception as exc:  # noqa: BLE001 -- LeaseUnavailable, a pool timeout, no bus
             reason = f"pool:{getattr(exc, 'reason', None) or type(exc).__name__}"
+            if "cabinet_hot" in reason:          # the pool's heat reflex (orion/gpu_pool/shed.py), not the price
+                reason = W.HEAT_PREFIX + reason
             st.last_refusal = (reason, self.clock())
             logger.info("retro_watch_no_seat sitting=%s want_id=%s reason=%s", st.sitting_id, want_id, reason)
             return False, f"look no_seat: {reason}"

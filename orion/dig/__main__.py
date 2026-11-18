@@ -75,7 +75,7 @@ path of a file with the full result; read only what you need from that file.
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
   look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
-  watch [status|off|on|default <game> off] --why "<words>"   watch a person's game, or decline.
+  watch [off|on] --why "..."  watch a person's game or decline.
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).

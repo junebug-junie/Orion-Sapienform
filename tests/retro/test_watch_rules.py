@@ -172,7 +172,7 @@ def test_why_orion_is_not_watching():
     assert status(calibration=None)["text"].startswith("No looks for this game yet")
     assert "no screen-change value" in status(calibration=W.Calibration(None, "no_separation", 500, 500, 2000.0))["text"]
     assert status(last_refusal=("deferred:price", 9_999.0))["text"] == "Orion is not looking: bid refused (deferred:price)."
-    assert status(last_refusal=("pool:shed:cabinet_hot", 9_999.0))["code"] == "refused_heat"
+    assert status(last_refusal=(W.HEAT_PREFIX + "pool:shed:cabinet_hot", 9_999.0))["code"] == "refused_heat"
     assert status(last_over_floor_at=10_000.0 - 360)["text"] == "Orion is looking; the screen has not changed for 6 min."
     assert status(last_over_floor_at=10_000.0, last_input_at=10_000.0 - 130)["code"] == "input_stale"
     assert status(enabled=False)["code"] == "disabled" and status(sitting_open=False)["code"] == "no_sitting"

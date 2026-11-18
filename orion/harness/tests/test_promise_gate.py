@@ -62,6 +62,7 @@ JUDGEMENT = {
     "promises_made": [],
     "offers_accepted": [],
     "promises_kept": [],
+    "promise_conditions_met": [],
 }
 
 
@@ -397,9 +398,10 @@ def test_schema_requires_act_and_done_when_and_the_prompt_defines_them() -> None
     schema = finalize_reflect_json_schema(True)
     item = schema["properties"]["promises_made"]["items"]
     assert {"act", "done_when"} <= set(item["required"])
-    base = {"quote": REAL, "offer": False, "force": "commits", "doer": "orion", "act": "compare"}
+    base = {"quote": REAL, "offer": False, "force": "commits", "doer": "orion", "act": "compare",
+            "settles_in": "chat", "condition": None}
     jsonschema.validate({**JUDGEMENT, "promises_made": [{**base, "done_when": None}]}, schema)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{**base, "done_when": DONE_WHEN}]}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{**base, "done_when": DONE_WHEN, "settles_in": "chat", "condition": None}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [base]}, schema)
     section = _render(_ctx()).split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
@@ -454,7 +456,8 @@ def test_schema_requires_a_force_from_the_closed_set_and_the_prompt_defines_each
     item = schema["properties"]["promises_made"]["items"]
     assert "force" in item["required"]
     assert set(item["properties"]["force"]["enum"]) == {"commits", "reports", "predicts", "suggests", "wishes"}
-    good = {"quote": REAL, "offer": False, "doer": "orion", "act": ACT, "done_when": DONE_WHEN}
+    good = {"quote": REAL, "offer": False, "doer": "orion", "act": ACT, "done_when": DONE_WHEN,
+            "settles_in": "chat", "condition": None}
     jsonschema.validate({**JUDGEMENT, "promises_made": [{**good, "force": "commits"}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [{**good, "force": "promise"}]}, schema)
@@ -494,12 +497,12 @@ def test_acceptance_is_asked_from_the_next_user_message_not_a_word_list() -> Non
 
 def test_flag_on_schema_asks_for_promise_fields_and_validates_them() -> None:
     schema = finalize_reflect_json_schema(True)
-    assert list(schema["properties"])[-3:] == list(PROMISE_FIELDS)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]}, schema)
+    assert list(schema["properties"])[-len(PROMISE_FIELDS):] == list(PROMISE_FIELDS)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN, "settles_in": "chat", "condition": None}]}, schema)
     # No caps in the schema: Strata 502s an answer that breaks it, which would sink the
     # verdict. Four promises or a long quote must pass the schema; the gate caps them.
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}] * 4}, schema)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN, "settles_in": "chat", "condition": None}] * 4}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN, "settles_in": "chat", "condition": None}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM}]}, schema)
     rendered = _render(_ctx())

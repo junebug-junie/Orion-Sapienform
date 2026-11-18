@@ -22,7 +22,10 @@ model call or a word list. Six rules (docs/superpowers/specs/2026-11-11-intentio
    one the speaker would do in the normal course of events). A missing, null, or
    placeholder-length done_when is dropped (fail closed).
 1. A ``promises_made`` quote must be literally in the reply, after whitespace and
-   quote-mark normalization. A quote the judge paraphrased or invented is dropped.
+   quote-mark normalization. A quote the judge paraphrased or invented is dropped. A literal
+   quote longer than ``PROMISE_QUOTE_MAX_CHARS`` is kept as its leading part, cut at a word
+   boundary at or under the cap (``trimmed_long``; #3530): a prefix of a literal span is still
+   literal. A long quote that is not literal is dropped (``dropped_too_long``).
 2. An ``offers_accepted`` entry must be one of the offer quotes the harness showed the
    judge (Orion's previous-reply offers). Anything else is dropped.
 3. A ``promises_kept`` entry must be one of the open-promise ids the harness showed the
@@ -30,6 +33,8 @@ model call or a word list. Six rules (docs/superpowers/specs/2026-11-11-intentio
    (same test as rule 1; intention ledger amendment 5, 2026-11-16). An unknown id, a missing
    quote, a quote that is not in the reply, or a quote that only repeats the promise's own words
    (promising again is not keeping) is dropped.
+4. A ``promise_conditions_met`` entry must be one of the open-promise ids the harness showed the
+   judge (#3595). Anything else is dropped (``dropped_unknown_condition``).
 
 Offers (``PromiseV1.offer``) are recorded but are not counted as promises until a later
 judge call accepts them (``counted_promise_quotes``).
@@ -47,6 +52,7 @@ from typing import Any, Iterable
 
 from orion.schemas.harness_finalize import (
     PROMISE_DONE_WHEN_MIN_CHARS,
+    PROMISE_SETTLE_CLASSES,
     PROMISE_DOER_ORION,
     PROMISE_DOERS,
     PROMISE_FORCE_COMMITS,
@@ -61,7 +67,7 @@ from orion.schemas.harness_finalize import (
 
 logger = logging.getLogger("orion.harness.promise_gate")
 
-PROMISE_FIELDS: tuple[str, ...] = ("promises_made", "offers_accepted", "promises_kept")
+PROMISE_FIELDS: tuple[str, ...] = ("promises_made", "offers_accepted", "promises_kept", "promise_conditions_met")
 # A quote shorter than this is a fragment ("I'll"), not a statement of what Orion will do.
 PROMISE_QUOTE_MIN_CHARS = 12
 
@@ -99,6 +105,26 @@ def quote_in_text(quote: str, text: str) -> bool:
     return len(q) >= PROMISE_QUOTE_MIN_CHARS and q in normalize_for_quote_match(text)
 
 
+# Characters left hanging at the end of a cut quote ("it -", "first,"): stripped after the cut.
+_CUT_TAIL = " \t\n,;:-\u2014\u2013"
+
+
+def leading_quote(quote: str, cap: int = PROMISE_QUOTE_MAX_CHARS) -> str | None:
+    """The leading part of ``quote`` cut at the last word boundary at or under ``cap`` characters, with
+    trailing commas, colons and dashes removed (#3530). None when no word boundary leaves a quote of at
+    least ``PROMISE_QUOTE_MIN_CHARS``. A quote already within the cap comes back unchanged."""
+    q = (quote or "").strip()
+    if len(q) <= cap:
+        return q
+    # The character AT the cap may itself be the boundary (a space), so look at cap + 1 characters.
+    head = q[:cap + 1]
+    cut = max(head.rfind(" "), head.rfind("\n"), head.rfind("\t"))
+    if cut <= 0:
+        return None
+    out = q[:cut].rstrip(_CUT_TAIL)
+    return out if len(normalize_for_quote_match(out)) >= PROMISE_QUOTE_MIN_CHARS else None
+
+
 @dataclass
 class PromiseGateResult:
     reflection: FinalizeReflectionV1
@@ -111,6 +137,8 @@ class PromiseGateResult:
     # Orion's items with no completion that could fail (done_when null or a placeholder).
     dropped_no_completion: list[str] = field(default_factory=list)
     dropped_too_long: int = 0
+    # Literal quotes longer than the cap, kept as their leading part (#3530). Not a drop.
+    trimmed_long: int = 0
     dropped_too_short: int = 0
     dropped_unknown_offer: list[str] = field(default_factory=list)
     dropped_unknown_kept: list[str] = field(default_factory=list)
@@ -119,6 +147,8 @@ class PromiseGateResult:
     # Kept ids whose "delivering" quote is the promise's own words again (re-promising is not keeping).
     dropped_kept_repeats_promise: list[str] = field(default_factory=list)
     dropped_over_cap: int = 0
+    # promise_conditions_met ids the harness did not show the judge (#3595).
+    dropped_unknown_condition: list[str] = field(default_factory=list)
 
     @property
     def dropped_total(self) -> int:
@@ -128,7 +158,7 @@ class PromiseGateResult:
                 + len(self.dropped_unknown_offer)
                 + len(self.dropped_unknown_kept) + len(self.dropped_kept_not_in_text)
                 + len(self.dropped_kept_repeats_promise)
-                + self.dropped_over_cap)
+                + self.dropped_over_cap + len(self.dropped_unknown_condition))
 
 
 def _opt_str(value: Any) -> str | None:
@@ -158,10 +188,13 @@ def coerce_promise_fields(raw: dict[str, Any]) -> dict[str, Any]:
     for item in _list("promises_made"):
         if isinstance(item, dict) and isinstance(item.get("quote"), str):
             doer = item.get("doer")
+            settles = item.get("settles_in")
             made.append(PromiseV1(quote=item["quote"], offer=item.get("offer") is True,
                                   doer=doer if doer in PROMISE_DOERS else None,
                                   force=item.get("force") if item.get("force") in PROMISE_FORCES else None,
-                                  act=_opt_str(item.get("act")), done_when=_opt_str(item.get("done_when"))))
+                                  act=_opt_str(item.get("act")), done_when=_opt_str(item.get("done_when")),
+                                  settles_in=settles if settles in PROMISE_SETTLE_CLASSES else None,
+                                  condition=_opt_str(item.get("condition"))))
     accepted = [x for x in _list("offers_accepted") if isinstance(x, str)]
     # promises_kept items are {"id", "quote"} (amendment 5). A bare id string (an older prompt)
     # keeps its id but has no quote, so the gate drops it: fail closed.
@@ -174,8 +207,9 @@ def coerce_promise_fields(raw: dict[str, Any]) -> dict[str, Any]:
             kept.append(item["id"].strip())
             if isinstance(item.get("quote"), str) and item["quote"].strip():
                 evidence.append(PromiseKeptV1(id=item["id"].strip(), quote=item["quote"].strip()))
+    conditions = [x.strip() for x in _list("promise_conditions_met") if isinstance(x, str) and x.strip()]
     return {"promises_made": made, "offers_accepted": accepted, "promises_kept": kept,
-            "promises_kept_evidence": evidence}
+            "promises_kept_evidence": evidence, "promise_conditions_met": conditions}
 
 
 def gate_promises(
@@ -192,7 +226,7 @@ def gate_promises(
         enabled = promise_ledger_enabled()
     if not enabled:
         cleared = reflection.model_copy(update={"promises_made": [], "offers_accepted": [], "promises_kept": [],
-                                                "promises_kept_evidence": []})
+                                                "promises_kept_evidence": [], "promise_conditions_met": []})
         return PromiseGateResult(reflection=cleared)
 
     result = PromiseGateResult(reflection=reflection)
@@ -208,10 +242,16 @@ def gate_promises(
         if not has_completion(promise):
             result.dropped_no_completion.append(promise.quote)
             continue
-        norm = normalize_for_quote_match(promise.quote)
         if len(promise.quote) > PROMISE_QUOTE_MAX_CHARS:
-            result.dropped_too_long += 1
-            continue
+            # #3530: a real promise quoted in full is kept as its leading part, but only when the whole
+            # quote is literal (a prefix of a literal span is literal; of an invented one, it is not).
+            head = leading_quote(promise.quote) if quote_in_text(promise.quote, reply_text) else None
+            if head is None:
+                result.dropped_too_long += 1
+                continue
+            promise = promise.model_copy(update={"quote": head})
+            result.trimmed_long += 1
+        norm = normalize_for_quote_match(promise.quote)
         if len(norm) < PROMISE_QUOTE_MIN_CHARS:
             result.dropped_too_short += 1
             continue
@@ -264,22 +304,31 @@ def gate_promises(
         kept.append(entry)
         evidence.append(PromiseKeptV1(id=entry, quote=quote))
 
+    conditions: list[str] = []
+    for entry in reflection.promise_conditions_met:
+        if entry not in open_ids:
+            result.dropped_unknown_condition.append(entry)
+        elif entry not in conditions:
+            conditions.append(entry)
+
     result.reflection = reflection.model_copy(
         update={"promises_made": made, "offers_accepted": accepted, "promises_kept": kept,
-                "promises_kept_evidence": evidence}
+                "promises_kept_evidence": evidence, "promise_conditions_met": conditions}
     )
-    if result.dropped_total or made or accepted or kept:
+    if result.dropped_total or made or accepted or kept or conditions or result.trimmed_long:
         logger.info(
             "promise_gate corr=%s made=%d offers=%d accepted=%d kept=%d dropped_not_in_text=%d dropped_not_orion=%d "
             "dropped_not_commit=%d dropped_no_completion=%d "
             "dropped_too_long=%d dropped_too_short=%d dropped_unknown_offer=%d dropped_unknown_kept=%d "
-            "dropped_kept_not_in_text=%d dropped_kept_repeats_promise=%d dropped_over_cap=%d",
+            "dropped_kept_not_in_text=%d dropped_kept_repeats_promise=%d dropped_over_cap=%d "
+            "trimmed_long=%d conditions_met=%d dropped_unknown_condition=%d",
             correlation_id, len(made), sum(1 for p in made if p.offer), len(accepted), len(kept),
             len(result.dropped_not_in_text), len(result.dropped_not_orion), len(result.dropped_not_commit),
             len(result.dropped_no_completion),
             result.dropped_too_long, result.dropped_too_short, len(result.dropped_unknown_offer),
             len(result.dropped_unknown_kept), len(result.dropped_kept_not_in_text),
             len(result.dropped_kept_repeats_promise), result.dropped_over_cap,
+            result.trimmed_long, len(conditions), len(result.dropped_unknown_condition),
         )
     return result
 

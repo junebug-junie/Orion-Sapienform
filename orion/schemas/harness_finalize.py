@@ -88,6 +88,18 @@ PROMISE_FORCES: tuple[str, ...] = get_args(PromiseForce)
 PROMISE_FORCE_COMMITS = "commits"
 # A done_when shorter than this is a placeholder ("n/a", "none"), not a completion test.
 PROMISE_DONE_WHEN_MIN_CHARS = 12
+# Where a promise's keep can be seen (#3595; intention ledger amendments 2026-11-18). The judge fills it
+# for every item:
+# - "chat": a later chat reply to Juniper can show it done (the only class the ledger grades in v1);
+# - "run": a run or work outside chat delivers it (a queued curiosity run, a commit, a brief), so a chat
+#   reply rarely quotes the delivery: unkept at the horizon it closes ``void:not_chat`` (censored);
+# - "absence": keeping it means something does NOT happen ("I won't ... while you're asleep"): no reply
+#   can show it kept, so unkept at the horizon it closes ``void:absence_unchecked`` until a breach
+#   check exists.
+# None (rows written before the field) reads as "chat", the v1 rule.
+PromiseSettlesIn = Literal["chat", "run", "absence"]
+PROMISE_SETTLE_CLASSES: tuple[str, ...] = get_args(PromiseSettlesIn)
+PROMISE_SETTLES_CHAT = "chat"
 
 
 class PromiseV1(BaseModel):
@@ -127,6 +139,13 @@ class PromiseV1(BaseModel):
     # completion that could fail; the gate drops those, so a stored promise has one (rows
     # written before the field existed have None and were gated without it).
     done_when: str | None = None
+    # Where the keep can be seen (PROMISE_SETTLE_CLASSES). None on rows written before the field:
+    # read as "chat". The resolver closes an unkept run or absence promise void, never 0 (#3595).
+    settles_in: PromiseSettlesIn | None = None
+    # The trigger a conditional promise waits on ("when the proposals appear"), in the judge's words;
+    # None when the promise is unconditional (and on rows written before the field). A conditional
+    # promise whose condition no judged reply inside the horizon saw arise closes ``void:not_due``.
+    condition: str | None = None
 
 
 # How many open promises the judge is shown (oldest first). Wider than PROMISE_ITEMS_MAX on
@@ -144,6 +163,10 @@ class OpenPromiseRefV1(BaseModel):
 
     id: str
     quote: str
+    # The trigger the promise waits on (PromiseV1.condition), so the judge can say this turn saw it
+    # arise (FinalizeReflectionV1.promise_conditions_met). None: unconditional. An older governor
+    # ignores the key (this model ignores unknown keys).
+    condition: str | None = None
 
 
 class PromiseKeptV1(BaseModel):
@@ -224,6 +247,11 @@ class FinalizeReflectionV1(BaseModel):
     # with no quote that passes the substring test is dropped by the gate, so every id in
     # promises_kept has exactly one entry here. Empty on rows written before the field.
     promises_kept_evidence: list[PromiseKeptV1] = Field(default_factory=list)
+    # Ids of open conditional promises (shown with a condition) whose condition this turn saw arise
+    # (#3595 option b). Only ids the harness showed the judge survive the gate. The resolver reads them
+    # from the stored run artifacts: a conditional promise no judged reply in its horizon listed here
+    # closes ``void:not_due`` (not due, censored), never a graded 0. Empty on rows written before the field.
+    promise_conditions_met: list[str] = Field(default_factory=list)
 
 
 class HarnessVerdictMoleculeV1(BaseModel):

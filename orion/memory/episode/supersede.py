@@ -57,6 +57,7 @@ import asyncio
 import json
 import math
 import re
+import time
 import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
@@ -829,6 +830,7 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
     links: list[Link] = []
     decisions: list[dict[str, Any]] = []
     asked = refused = 0
+    dense_ms = dense_calls = 0
     reasons: list[str] = []
     if dense is None:
         reasons.append(REFUSED_DENSE_OFF)
@@ -836,12 +838,16 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
         for new in new_rows:
             if budget[0] <= 0:
                 break  # no calls left: an index fault on a row never asked must not hold proven links
+            started = time.monotonic()
             try:
                 scores = await dense(new.statement)
             except Exception as exc:  # noqa: BLE001 -- no fallback: a degraded search never acts
                 scores, why = None, f"{REFUSED_DENSE_UNAVAILABLE}:{type(exc).__name__}"
             else:
                 why = REFUSED_DENSE_UNAVAILABLE
+            finally:
+                dense_ms += int((time.monotonic() - started) * 1000)
+                dense_calls += 1
             if scores is None:
                 reasons.append(why)
                 break
@@ -863,6 +869,10 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
             "apply": "refused" if reasons else "on", "refused_because": reasons,
             "asked": asked, "check_errors": refused, "dense": dense_state, "budget_left": budget[0],
             "check_version": CHECK_VERSION, "decisions": decisions,
+            # The meaning-index lookups: how many, total wall time, and how many retries fired
+            # (index_dense exposes its retry count; a failed retry shows as refused_because dense_unavailable).
+            "dense_calls": dense_calls, "dense_ms": dense_ms,
+            "dense_retries": int(getattr(dense, "retries", lambda: 0)()) if dense is not None else 0,
             # Why each asked pair did not link, counted (the numbered-item rule shows as its own reason).
             "abstained": dict(Counter(d["abstain"] for d in decisions if d.get("abstain") and not d.get("linked")))}
 
@@ -887,8 +897,17 @@ async def record_run(conn: Any, *, run_id: str, source: str, plan: Mapping[str, 
     counts["links"] = len(plan.get("links") or [])
     counts["held_links"] = len(plan.get("held_links") or [])
     counts["applied"] = len(applied)
-    if plan.get("abstained"):
-        counts["abstained"] = dict(plan["abstained"])
+    for k in ("dense_calls", "dense_ms", "dense_retries"):
+        if k in plan:
+            counts[k] = plan[k]
+    # Every path (nightly distill, pass dry-run, pass apply with per-pair decisions) gets the same
+    # count, derived from decisions when the caller did not give one.
+    abstained = plan.get("abstained")
+    if abstained is None:
+        abstained = dict(Counter(d.get("abstain") for d in (plan.get("decisions") or [])
+                                 if isinstance(d, Mapping) and d.get("abstain") and not d.get("linked")))
+    if abstained:
+        counts["abstained"] = dict(abstained)
     if plan.get("error"):
         counts["error"] = str(plan["error"])
     await conn.execute(RECORD_RUN_SQL, (
@@ -948,6 +967,7 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
     embed the statement, take the n nearest episode_memory docs. ``cfg`` is a
     ``orion.introspect.semantic_index.SearchConfig``. None when the index cannot answer."""
     retried = [False]   # one retry per plan (index_dense is built per plan), not per row
+    retry_count = [0]
 
     async def run(statement: str) -> Optional[dict[str, float]]:
         import httpx
@@ -971,6 +991,7 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
                 transient = isinstance(exc, TimeoutError) or "unavailable:" in str(exc)
                 if attempt + 1 < DENSE_ATTEMPTS and transient and not retried[0]:
                     retried[0] = True
+                    retry_count[0] += 1
                     await asyncio.sleep(DENSE_RETRY_SLEEP_SEC)
                     continue
                 break
@@ -983,6 +1004,7 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
                 out[parts[1]] = float(sim)
         return out
 
+    run.retries = lambda: retry_count[0]  # type: ignore[attr-defined]  # read by plan_for_new_rows
     return run
 
 

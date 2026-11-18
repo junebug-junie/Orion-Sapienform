@@ -556,3 +556,29 @@ def test_index_dense_retries_once_then_refuses(monkeypatch):
     dense = s.index_dense(cfg)
     assert asyncio.run(dense("one")) is None and len(calls) == 2           # one retry
     assert asyncio.run(dense("two")) is None and len(calls) == 3           # the plan's retry is spent
+
+
+def test_plan_records_dense_time_and_retries():
+    async def dense(_statement):
+        return {"old": 0.75}
+    dense.retries = lambda: 1
+    ask, _ = answers(*COR3)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=dense, apply_gate=OPEN))
+    assert plan["dense_calls"] == 1 and plan["dense_ms"] >= 0 and plan["dense_retries"] == 1
+
+
+def test_record_run_derives_abstained_from_decisions_on_every_path():
+    class Conn:
+        def __init__(self):
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.params = params
+
+    conn = Conn()
+    plan = {"apply": "on", "check_version": s.CHECK_VERSION,
+            "decisions": [{"old_id": "a", "new_id": "b", "abstain": "vote:compatible", "linked": False},
+                          {"old_id": "c", "new_id": "b", "abstain": "", "linked": True}]}
+    asyncio.run(s.record_run(conn, run_id="pass_apply:x", source="pass_apply", plan=plan))
+    counts = conn.params[9].obj
+    assert counts["abstained"] == {"vote:compatible": 1}

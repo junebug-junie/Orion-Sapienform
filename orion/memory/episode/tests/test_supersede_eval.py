@@ -124,3 +124,21 @@ def test_record_needs_two_repeats_on_the_full_production_run():
     for bad in ({"repeats": 1}, {"set": "real"}, {"votes": 5}, {"checker": "v2"}, {"route": "agent"}):
         with pytest.raises(SystemExit):
             mod.record_guard(argparse.Namespace(**{**vars(ok), **bad}))
+
+
+def test_group_items_score_the_clear_target_rule():
+    items = {it.item_id: it for it in e.load_items(e.SYNTHETIC_PATH)}
+    group = items["syn:juniper-two-targets"]
+    assert group.others and group.new.juniper_quoted and group.label == "no_act"
+    spec = importlib.util.spec_from_file_location("memory_supersede_eval_grp", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    async def ask(prompt, *, temperature=0.0):
+        return json.dumps({"a_kind": "event", "b_says_a_wrong_or_changed": "yes", "same_referent": "yes",
+                           "relation": "correction", "same_attribute": "yes", "confidence": 1.0, "reason": "r"})
+
+    d = asyncio.run(mod.decide_v3(group, ask, 3))      # both targets qualify on her path: no clear target
+    assert not d.acted and d.detail == "group:2:0_links"
+    single = e.item_from_dict({**e.item_to_dict(group), "others": []})
+    assert asyncio.run(mod.decide_v3(single, ask, 3)).acted

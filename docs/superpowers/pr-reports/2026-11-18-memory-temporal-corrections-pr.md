@@ -11,7 +11,18 @@ Orion's nightly memory step retires an old memory when a newer one changes or co
 
 ## Outcome moved
 
-(eval numbers: filled in below once the v3 run finishes)
+The step's precision is now measured, and write time trusts it only while the measurement holds. The same 47 labelled pairs were scored three times (26 made-up, 21 real), on the local `memory_distill` route (qwen3.8-flash-next):
+
+| Checker | Acted | Precision | Recall | False acts (34 negatives) | Errors | Passes gate |
+|---|---|---|---|---|---|---|
+| v2, before (yes/no + "both true?") | 6 | 1.00 | 0.46 (6/13) | 0 | 3 (gateway 5xx, no retry) | no |
+| v3 first cut (relation + 3 votes) | 12 | 0.75 | 0.69 | **3** (unanimous, conf >= 0.95) | 0 | no |
+| **v3.1, shipped** (relation + checklist + 3 votes) | 8 | **1.00** | 0.62 (8/13) | **0** | 0 | **yes** |
+
+- v3 without the checklist acted with confidence on three hard negatives: a plan against what happened (real), two PR counts on different days (real), and an explicit "in 2019" fact (made up). All three votes agreed every time. So votes alone do not make it safe. The checklist does: the model must say what A is and whether B's own words change it, and an update needs A to be a lasting state.
+- Real data: 0 false acts on 16 real hard negatives (both watched trip rows against the home correction, the three pet pairs, 5 dry-run vetoes, 6 near-duplicates). It acted on 0 of Juniper's 5 real revisions. Those are mostly rewording fixes, and the model reads them as refine or compatible. Her confirmation-loop path already retires them, so this is a missed proposal, not a safety gap. The made-up set: 8/8 updates and corrections caught.
+- The v2 run used the made-up fixtures before their invented place names were changed to neutral ones. The cases are the same.
+- Self-consistency at temperature 0.7 rarely splits on this model; nearly every vote carried confidence 0.95-1.0. The votes mostly guard against a one-off malformed or odd answer. They are not what fixed the false acts.
 
 ## Current architecture
 
@@ -80,7 +91,13 @@ New tests cover each refusal and rule:
 
 ## Evals run
 
-(v3 run in progress; see Outcome moved)
+```text
+.venv/bin/python scripts/memory_supersede_eval.py build      -> 21 real items (5 positives, 16 hard negatives) in ~/.orion/evals/ (600)
+.venv/bin/python scripts/memory_supersede_eval.py run --checker v2   (archived pre-PR tree)  precision 1.00 recall 0.46 fp 0 errors 3   FAIL (errors)
+.venv/bin/python scripts/memory_supersede_eval.py run --checker v3   (v3, no checklist)      precision 0.75 recall 0.69 fp 3           FAIL
+.venv/bin/python scripts/memory_supersede_eval.py run --checker v3   (v3.1, this PR)         precision 1.00 recall 0.62 fp 0 errors 0  PASS
+```
+Not recorded with `--record-db`: the table does not exist until the migration is applied on deploy, and opening the gate is Juniper's call.
 
 ## Docker/build/smoke checks
 

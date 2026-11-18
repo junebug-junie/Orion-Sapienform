@@ -323,7 +323,8 @@ def test_every_distill_run_leaves_one_append_only_audit_row_without_text():
         plan = {"links": [link], "held_links": [], "apply": "on", "refused_because": [], "asked": 1,
                 "check_errors": 0, "dense": "on", "check_version": s.CHECK_VERSION,
                 "decisions": [{"old_id": old_id, "new_id": new_id, "legs": {"cosine": 0.7}, "relation": "correction",
-                               "votes": [{"relation": "correction", "confidence": 0.9}], "linked": True}]}
+                               "votes": [{"relation": "correction", "confidence": 0.9}], "linked": True}],
+                "abstained": {"vote:compatible": 1}}
         for _ in range(2):  # a replayed persist writes no second row
             await persist_episode(
                 pool, episode_id="ep-new", run_id="memdistill-ep-new", result=result, model_route="memory_distill",
@@ -333,6 +334,7 @@ def test_every_distill_run_leaves_one_append_only_audit_row_without_text():
         r = await _one(pool, "SELECT source, apply, dense, counts, decisions, applied FROM memory_supersede_run")
         assert rows["n"] == 1 and r["source"] == "distill" and r["apply"] == "on" and r["dense"] == "on"
         assert r["counts"]["applied"] == 1 and r["applied"][0]["relation"] == "correction"
+        assert r["counts"]["abstained"] == {"vote:compatible": 1}
         assert r["decisions"][0]["legs"]["cosine"] == 0.7
         assert "Biscuit" not in str(r)
 

@@ -121,6 +121,9 @@ def test_no_change_spelled_as_words_is_read_as_no_change(reply: str) -> None:
 
 @pytest.mark.parametrize("reply", [
     "No change on the cabinet since this morning: it held at 31 C, and I said it ran hot without checking that reading.",
+    "No change on the cabinet: still 31 C.",
+    "No changes since this morning, Juniper.",
+    "No change yet -- the walkway is quiet.",
     "There was no change in the walkway counts today.",
 ])
 def test_a_real_reply_that_mentions_no_change_is_not_no_change(reply: str) -> None:

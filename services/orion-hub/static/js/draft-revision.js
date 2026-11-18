@@ -16,6 +16,8 @@
   const DRAFT_ATTR_KEY = 'draftPreviewFor';
 
   const REASON_TEXT = {
+    // No longer produced since #3618 (open strain alone does not repair); kept so
+    // turns saved before that still read in plain words.
     strain_unresolved: 'the check found an unresolved strain',
     misaligned: 'the check found it out of line with the stance',
     uncertain: 'the check was unsure about it',

@@ -1311,8 +1311,13 @@ def extract_response_repair_text(result: dict[str, Any]) -> str:
 
 # The repair step's answer when the draft needs no change (orion_response_repair.j2).
 REPAIR_NO_CHANGE = "NO_CHANGE"
-_NO_CHANGE_WORDS_MAX_CHARS = 80
-_NO_CHANGE_WORDS_RE = re.compile(r"[\s*_`\"'>#-]*no[\s_-]+changes?\b", re.IGNORECASE)
+# A reply that is ONLY the verdict ("No change needed.", "**No changes required.**"):
+# a short answer that opens with the words and goes on ("No change on the cabinet:
+# still 31 C.") is content, not a verdict.
+_NO_CHANGE_WORDS_RE = re.compile(
+    r"[\s*_`\"'>#-]*no[\s_-]+changes?(?:\s+(?:is\s+|are\s+)?(?:needed|required|necessary))?[\s.!*_`\"']*",
+    re.IGNORECASE,
+)
 # Words from the repair prompt's own scaffolding. A reply that uses one the draft and
 # Juniper's message never used is the model talking about its task, not to Juniper:
 # live 2026-10-04 ("The rejected draft was actually aligned according to the reflection
@@ -1350,15 +1355,11 @@ def is_repair_no_change(text: str, *, draft_text: str) -> bool:
     token = REPAIR_NO_CHANGE.casefold()
     if token in (text or "").casefold() and token not in (draft_text or "").casefold():
         return True
-    # The token spelled as words, opening the reply: live 363a9723 (2026-11-10) shipped
-    # "No change needed." in place of a 1,567-char answer. "no change" is the prompt's own
-    # instruction ("If the draft needs no change"), so only a short reply that STARTS with it,
-    # from a draft that does not, is the model's verdict on its task.
-    stripped = (text or "").strip()
-    return (
-        len(stripped) <= _NO_CHANGE_WORDS_MAX_CHARS
-        and bool(_NO_CHANGE_WORDS_RE.match(stripped))
-        and not _NO_CHANGE_WORDS_RE.match((draft_text or "").strip())
+    # The token spelled as words, as the whole reply: live 363a9723 (2026-11-10) shipped
+    # "No change needed." in place of a 1,567-char answer.
+    # A draft that itself opens with the words makes a short reply of them ambiguous: keep it.
+    return bool(_NO_CHANGE_WORDS_RE.fullmatch((text or "").strip())) and not re.match(
+        r"[\s*_`\"'>#-]*no[\s_-]+changes?\b", (draft_text or "").strip(), re.IGNORECASE
     )
 
 
@@ -2112,6 +2113,9 @@ async def run_harness_finalize_chain(
                 deadline_monotonic=deadline_monotonic,
             )
             kept = voice_meta.get("repair_kept_draft")
+            if has_unsupported_claim(reflection) and not situation_notes and reason == UNSUPPORTED_CLAIM_REASON:
+                # No notes to re-check against: the reason must not read as "re-check passed".
+                reason = UNSUPPORTED_CLAIM_UNCHECKED_REASON
             if situation_notes and has_unsupported_claim(reflection):
                 kept = None   # the re-check's own reason says what happened
                 final_text, reason = await _recheck_unsupported_claim_repair(

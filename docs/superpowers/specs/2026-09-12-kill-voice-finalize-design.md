@@ -52,10 +52,10 @@ FCC motor (includes all speech / response policy + former finalize_overlay conte
 structured output
     → validate and canonicalize; no prose repair
 
-aligned AND NOT strain_unresolved
+aligned (strain open or not) AND no unsupported-claim note
     → exact draft passthrough (no repair LLM)
 
-misaligned OR uncertain OR strain_unresolved
+misaligned OR uncertain OR unsupported-claim note
     → minimal orion_response_repair
         ↓
 6b outcome + closure
@@ -66,9 +66,11 @@ misaligned OR uncertain OR strain_unresolved
 ```python
 needs_repair = (
     reflection.alignment_verdict in {"misaligned", "uncertain"}
-    or reflection.strain_unresolved
+    or has_unsupported_claim(reflection)
 )
 ```
+
+Changed 2026-11-18 (#3618): open strain alone (`strain_unresolved` on an aligned draft) no longer repairs. 56% of those repairs returned the draft unchanged and none edited anything about the strain. The skip is recorded as `response_repair_ran=false`, `response_repair_reason=strain_only_not_repaired`. A cut-off repair always fails closed now (`_kept_draft:truncated` no longer occurs).
 
 **Not** in the gate:
 
@@ -149,7 +151,7 @@ Add on `HarnessRunV1` (and outcome molecule if consumers need it):
 | Field | Meaning |
 |-------|---------|
 | `response_repair_ran: bool` | Repair LLM was invoked |
-| `response_repair_reason: str \| None` | Why: e.g. `misaligned`, `uncertain`, `strain_unresolved`, or `null` when skipped. Since 2026-11-04 a repair that 5b asked for because of an `unsupported claim:` note (with Situation notes) replaces the verdict reason with the perception re-check's outcome: `unsupported_claim` (re-check passed), `unsupported_claim_repaired_twice` (re-check still found one; repaired again), `unsupported_claim_unchecked` (re-check failed, degraded, or no reply budget left). Count all four with `misaligned` when watching how often 5b rejects drafts. |
+| `response_repair_reason: str \| None` | Why: e.g. `misaligned`, `uncertain`; `strain_only_not_repaired` when 5b accepted the draft with only strain open (repair skipped, `response_repair_ran=false`, #3618); `null` when skipped otherwise. `strain_unresolved` was a reason before 2026-11-18. Since 2026-11-04 a repair that 5b asked for because of an `unsupported claim:` note (with Situation notes) replaces the verdict reason with the perception re-check's outcome: `unsupported_claim` (re-check passed), `unsupported_claim_repaired_twice` (re-check still found one; repaired again), `unsupported_claim_unchecked` (re-check failed, degraded, no reply budget left, or no Situation notes to check against). Count all four with `misaligned` when watching how often 5b rejects drafts. |
 | `finalize_changed: bool` | Draft text ≠ final text (still useful; no longer the surprise proxy) |
 
 Passthrough: `finalize_ran=true`, `response_repair_ran=false`, `finalize_changed=false`.  

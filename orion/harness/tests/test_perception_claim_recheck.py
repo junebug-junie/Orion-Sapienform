@@ -156,3 +156,25 @@ async def test_no_change_twice_on_a_flagged_claim_is_reported_kept_not_repaired(
     assert chain.response_repair_reason == UNSUPPORTED_CLAIM_KEPT_REASON
     assert "NO_CHANGE" not in chain.final_text
     assert len(calls) == 4  # still bounded
+
+
+def _aligned_with_claim():
+    # #3618: an unsupported-claim note repairs even under an aligned verdict.
+    return make_reflection(alignment_verdict="aligned", strain_unresolved=True, alignment_notes=[CLAIM])
+
+
+@pytest.mark.asyncio
+async def test_an_aligned_draft_with_a_claim_is_repaired_and_rechecked() -> None:
+    chain, calls = await _run([_aligned_with_claim(), make_reflection(alignment_verdict="aligned")], ["fixed once"])
+    assert chain.response_repair_ran is True
+    assert chain.final_text == "fixed once"
+    assert chain.response_repair_reason == UNSUPPORTED_CLAIM_REASON
+    assert calls[-1] == "reflect:fixed once"  # the re-check ran
+
+
+@pytest.mark.asyncio
+async def test_an_aligned_claim_repair_without_notes_says_unchecked() -> None:
+    chain, calls = await _run([_aligned_with_claim()], ["fixed once"], notes=None)
+    assert len(calls) == 2  # reflect + repair, no re-check
+    assert chain.final_text == "fixed once"
+    assert chain.response_repair_reason == UNSUPPORTED_CLAIM_UNCHECKED_REASON

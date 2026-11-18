@@ -5,7 +5,7 @@
 - The response-repair pass no longer runs when the 5b judge accepted the draft (`aligned`) and only flagged open strain (`strain_unresolved`). The draft ships as written.
 - The skip is recorded: `response_repair_ran=false`, `response_repair_reason=strain_only_not_repaired`, and the log line `response_repair_skipped reason=strain_only_not_repaired`.
 - An `unsupported claim:` note now sends the draft to repair even under an `aligned` verdict. Before, that happened only when strain was open too.
-- `is_repair_no_change` now also reads a short reply that opens with "no change" (live 363a9723 shipped "No change needed." in place of a 1,567-char answer).
+- `is_repair_no_change` now also reads a reply that is only the verdict in words ("No change needed.", "No changes required."). Live 363a9723 shipped "No change needed." in place of a 1,567-char answer. A short reply that opens with "No change" and goes on is still a reply.
 - Removed `repair_may_keep_draft_on_truncation` and its keep-on-truncation branch. After this change it could never return True. A cut-off repair always fails closed.
 
 ## Outcome moved
@@ -46,7 +46,10 @@ All repairs with draft and final text, `cockpit_turn_sighting` stage `finalize`,
 - `orion/hub/turn_orchestrator.py`: revision label guard.
 - `services/orion-harness-governor/app/bus_listener.py`: same guard in the revision log.
 - `orion/cognition/verbs/orion_response_repair.yaml`, `services/orion-harness-governor/README.md`: describe the new trigger.
-- Tests: `orion/harness/tests/test_response_repair_gate.py`, `test_response_repair_budget.py`, `test_response_repair_scaffold_echo.py`, `services/orion-hub/tests/test_draft_first_display.py`, `services/orion-harness-governor/tests/test_draft_preview.py`.
+- `orion/cognition/prompts/orion_response_repair.j2`: "rejected or flagged" (aligned drafts with a claim note now reach it).
+- `docs/superpowers/specs/2026-09-12-kill-voice-finalize-design.md`: new gate and reason table.
+- `services/orion-hub/static/js/draft-revision.js` (+ test): comment that the `strain_unresolved` label is kept only for old turns.
+- Tests: `orion/harness/tests/test_response_repair_gate.py`, `test_response_repair_budget.py`, `test_response_repair_scaffold_echo.py`, `test_perception_claim_recheck.py`, `services/orion-hub/tests/test_draft_first_display.py`, `services/orion-harness-governor/tests/test_draft_preview.py`.
 
 ## Schema / bus / API changes
 
@@ -64,7 +67,8 @@ All repairs with draft and final text, `cockpit_turn_sighting` stage `finalize`,
 ## Tests run
 
 ```text
-pytest orion/harness                                  979 passed
+pytest orion/harness + test_draft_first_display       999 passed
+node --test draft-revision.test.js                    8 passed
 pytest services/orion-harness-governor/tests          106 passed, 1 failed (test_fcc_warm_pool_wiring, fails on main too)
 pytest orion/harness/evals services/orion-hub/tests -k "orchestrator or draft or revis or repair or finalize"   210 passed, 6 skipped
 pytest services/orion-equilibrium-service/tests       266 passed
@@ -86,7 +90,26 @@ Live effect is UNVERIFIED until deploy: check that response_repair_reason='strai
 
 ## Review findings fixed
 
-See the PR description (review ran in a subagent).
+Review ran in a subagent on ebdb7207c. All findings fixed:
+
+- Finding: the "no change" words check matched short real replies ("No change on the cabinet: still 31 C."), which would ship a rejected draft.
+  - Fix: the reply must be only the verdict (fullmatch of "no change(s) [is/are] [needed/required/necessary]").
+  - Evidence: new cases in `test_response_repair_scaffold_echo.py`; live replay over 927 replies still catches only 363a9723.
+- Finding: a test passed only because of the 80-char cap.
+  - Fix: cap removed; short real-reply cases added.
+  - Evidence: same test file.
+- Finding: aligned + claim with no Situation notes recorded `unsupported_claim`, which reads as "re-check passed".
+  - Fix: that case now records `unsupported_claim_unchecked`.
+  - Evidence: `test_an_aligned_claim_repair_without_notes_says_unchecked`.
+- Finding: no chain test for aligned + claim through the re-check.
+  - Fix: `test_an_aligned_draft_with_a_claim_is_repaired_and_rechecked`.
+  - Evidence: passes.
+- Finding: design spec still stated the old gate.
+  - Fix: spec updated (gate, reason table, truncation note).
+- Finding (nit): Hub JS label and its test fixture used `strain_unresolved`.
+  - Fix: fixture uses `misaligned`; label kept with a comment for old turns.
+- Finding (nit): repair prompt said "rejected" only.
+  - Fix: "rejected or flagged".
 
 ## Restart required
 

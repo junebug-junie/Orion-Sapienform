@@ -177,10 +177,7 @@ Pass when all of these hold:
 - Severity: low. Concern: `dig digs` on a host whose claude home is readable but is not the governor's reads 0 background calls, not UNREAD. This bug predates this patch. Mitigation: the receipt records the transcript count in the page, and the run only ever executes in the governor.
 - Severity: low. Concern: the dream turn's GPU cost (up to about 900 s) now pools with the cheap sleep-cycle acts in the `dream.cycle` family's measured costs and bids. Mitigation: read the first `dream.cycle` cost after deploy with this in mind. The spec chose no new family.
 - Severity: low. Concern: in the full durable-runs suite, `test_physiology_market_replay_off_loop.py` is a timing flake under host load. It passes alone and on main.
-- Issues opened: ISSUES_PLACEHOLDER. Closed: none.
+- Issues opened: #3702 (verify-live: the first night). Closed: none.
 
-## PR link
-
-PR_LINK_PLACEHOLDER
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

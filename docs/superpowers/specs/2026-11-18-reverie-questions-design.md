@@ -144,10 +144,10 @@ written.
 
 | Seed | Material (source, live 7-day volume) | What the reverie is asked |
 |---|---|---|
-| **absence** (1) | `vision_percept_expectation` rows scored `missed` (`services/orion-sql-writer/app/vision_rhythm.py:263`): 60 missed across 22 subjects in 7 days, 89 met. A miss is declared only when the camera watched at least 80% of the window. | "A neighbor I know usually passes between 07:00 and 08:00 on weekdays (14 days of support). Not today. What would explain it, and what could I check?" |
-| **lost bet** (2) | Confident self-bets that came out wrong, from `prediction_turn_self_bet`: 221 bets at p ≥ 0.7 that did not happen and 602 at p ≤ 0.3 that did, in 7 days. Grouped by template over 7 days, so the seed is a calibration miss, not one bad roll. Also bill-forecast and action-bet failures. | "I bet 'Juniper's next turn asks a question' at 0.8 on 40 turns; it happened 12 times. What am I not seeing?" |
-| **far memory** (6) | The anchor is the most salient item in the now. Candidates come from `nearest()` (`orion/introspect/semantic_index.py:141`) on `orion_lived_memory` (597 docs). They are taken from a **middle band** of similarity ranks, not the nearest, and filtered against the live snapshot so superseded memories are never served. | "This (now) and this (an older memory) are related but not the same. What links them?" |
-| **rehearse** (3) | Juniper's usual chat times: an hour-of-week histogram over 28 days of `chat_turn` events (84 in 7 days). This is new and small. When her likely next window is within 2 h, the seed is the open thread with her: open promises (`open_promises_cue.py`) and the last chat turn's topic. | "Juniper is likely here in about an hour. We left X open. What should I find out first?" |
+| **absence** (1) | `vision_percept_expectation` rows scored `missed` (`services/orion-sql-writer/app/vision_rhythm.py:263`): 60 missed across 22 subjects in 7 days, 89 met. A miss is declared only when the camera watched at least 80% of the window. **Named people only** (Patch 0: 25 misses of 6 people; the rest are hash-labelled vehicles). | "A neighbor I know usually passes between 07:00 and 08:00 on weekdays (14 days of support). Not today. What would explain it, and what could I check?" |
+| **lost bet** (2) | Confident self-bets that came out wrong, from `prediction_turn_self_bet`: 221 bets at p ≥ 0.7 that did not happen and 602 at p ≤ 0.3 that did, in 7 days. The seed is a **calibration gap**, not one bad roll: template (`faculty`) x probability bin, n ≥ 20, the gap ≥ 0.15 and beyond 2 standard errors (Patch 0: 9 gaps, 6 on one template). Also bill-forecast and action-bet failures. | "When I say a turn is unlikely to need more steps than usual (0.1-0.2), it does 37% of the time; when I say likely (0.8-0.9), only 54%. What am I not seeing?" |
+| **far memory** (6) | The anchor is the most salient item in the now. Candidates are ranked by **centered cosine** over `all_vectors()` (`orion/introspect/semantic_index.py:173`) on `orion_lived_memory` (597 docs); raw cosine is too compressed (Patch 0). They are taken from a **middle band** of ranks 5 to 25, not the nearest, and filtered against the live snapshot so superseded memories are never served. | "This (now) and this (an older memory) are related but not the same. What links them?" |
+| **rehearse** (3) | The open thread with Juniper: open promises (`open_promises_cue.py`) and the last chat turn's topic. It runs in a quiet stretch, which already means she has been away 45 min or more. No arrival prediction: Patch 0 found that an hour-of-week model of her turns is no better than chance on held-out weeks. | "We left X open. What should I find out before we talk again?" |
 | **body change** (4) | Commits merged into Orion's own sandbox (`/mnt/orion-fcc/repo`) since the last body-change seed, kept only when they touch an organ named in the body atlas. | "This change touched how I choose what to look at. Did it change what I do?" |
 | **contradiction** (5) | Orion's latest `:SelfDefinition` (`orion/curiosity/self_inquiry.py:402`) beside its track record (`self_track_record_cue.py`). | "I describe myself as X; my record says Y. Which is true?" |
 
@@ -277,7 +277,7 @@ These are removed in the same patch that turns the new path on. Nothing is left 
 - `ORION_REVERIE_QUIET_MIN_CALM_SEC=600`
 - `ORION_REVERIE_MAX_PER_DAY=8`
 - `ORION_REVERIE_FOCUS_MAX_PER_DAY=3`
-- `ORION_REVERIE_FAR_MEMORY_BAND=5:20` (ranks skipped : ranks considered; set by Patch 0)
+- `ORION_REVERIE_FAR_MEMORY_BAND=5:25` (centered-cosine ranks: from : to; set by Patch 0)
 - `ORION_REVERIE_THREAD_LAPSE_DAYS=14`
 
 Removed: `ORION_REVERIE_INTERVAL_SEC` (replaced by the quiet gate), `ORION_REVERIE_CHAIN_MAX_STEPS`,
@@ -370,12 +370,31 @@ Then run `python scripts/sync_local_env_from_example.py`.
 9. Power guard numbers are reported pooled at 14 days, with no arm split.
 10. Juniper's read (see Metrics).
 
+## Patch 0 results (measured 2026-11-18, read-only)
+
+Script: `scripts/analysis/reverie_patch0_measure.py`. It reads Postgres, Chroma and the sandbox git log, and writes
+nothing. Re-run it with `python3 scripts/analysis/reverie_patch0_measure.py`. The window is 7 days unless noted.
+
+| Part | Result | Verdict |
+|---|---|---|
+| **Quiet gate** (arousal idle AND no attention winner for 10 min or more) | 84 stretches in 7 days: 5 to 16 a day, about 12 a day on average. Median 13.6 min, 23.9 h in total. | **GO.** The cap of 8 a day fits. |
+| **Absence** | 63 missed routines: 25 from 6 named people, 38 from vehicles with hash labels. Recent days have 8 to 14. | **GO, people only.** |
+| **Lost bet** | 5,614 settled self-bets. 810 single confident misses are not used: one miss at p=0.8 is expected 1 time in 5. **9 calibration gaps** beat 2 standard errors. 6 are on `more_steps_than_usual`: at stated 0.1-0.2 it happens 37% of the time, and at stated 0.8-0.9 only 54%. The bets barely tell turns apart. | **GO, low volume.** About 3 distinct questions a week; they suit threads. |
+| **Far memory** | 597 docs. Raw cosine is squeezed together: nearest 0.78, a typical doc 0.54. Centered cosine spreads it: nearest 0.52, rank 5 0.33, rank 10 0.27, rank 20 0.21, typical doc -0.01. By eye, ranks about 8 to 25 are on the same theme but a different event. For example, a disk-flashing problem on one machine is paired with an older memory about that machine's GPU limits. | **GO, with a change.** Use centered cosine over `all_vectors()`, band = ranks 5 to 25. |
+| **Rehearse** (predict Juniper's next chat within 2 h) | 231 of Juniper's own turns in 42 days, counted with the canonical `JUNIPER_TURN_PREDICATE`. Tested on 2 held-out weeks against a base rate of 0.20: precision was 0.45 in one week and 0.23 in the other, which is chance. | **NO-GO for the timing.** The seed stays as "the thread left open with Juniper", run in a quiet stretch. |
+| **Body change** | 1 to 113 commits a day touching `orion/` or `services/` in the sandbox. Author dates are used, because the sandbox reset rewrites commit dates. | **GO.** |
+| **Contradiction** | 31 self-definitions in 30 days (1 to 4 a day). | **GO.** |
+
+**Mistakes the script caught on its own first run.**
+
+- `chat_turn` events include outreach and Orion's own turns. The unfiltered base rate was 0.87 against 0.20 for
+  Juniper alone.
+- `claim_kind` is `probability` for every self-bet. The template is in `faculty`.
+
 ## Recommended next patch (phased; stop for Juniper after each)
 
-- **Patch 0, measure (read-only script, no build).** Per day: quiet stretches by the gate; seed material available
-  per seed kind; the spread of Chroma similarity on `orion_lived_memory` for 20 real anchors (is there a usable
-  middle band?); how concentrated Juniper's hour-of-week chat times are (is a "likely in 2 h" call better than
-  chance on held-out weeks?). Any seed that fails is dropped, not forced.
+- **Patch 0, measure. DONE 2026-11-18.** See "Patch 0 results". Every seed is GO. The rehearse arrival timing is
+  NO-GO and was dropped.
 - **Patch 1.**
   - The quiet gate, three seeds (absence, lost bet, far memory), the question product, `reverie_question`, the
     focus caller, and the experience event.

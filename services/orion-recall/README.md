@@ -1131,8 +1131,10 @@ measured: `make eval-memory-scoreboard` (weekly; `ARGS=--phases retrieval` for t
   Bars: 70% or more correct, 0 invented, 0 false "no memory" on stored items. The turn's own
   `recall_telemetry` rows say whether the target was in its prompt and whether the search ran in
   full. A "no memory" answer on a stored item is a false denial even when the search was skipped
-  or degraded; it is also reported under that cause (`lived:skipped_short`, `lived:degraded`,
-  `lived:rerank_timeout`, `recall:no_trace`, ... or `search_full`).
+  or degraded; it is also reported under its most specific cause (`lived:rerank_timeout`,
+  `lived:embedder_unavailable`, `lived:rerank_partial:N/M`, then `lived:skipped_short` /
+  `lived:degraded` / `lived:timeout`, then `recall:skip_gate` / `recall:no_trace`), `search_full`
+  when the search ran in full, or `cause:unknown` when the turn's trace was never read.
 - **Output.** `~/.orion/evals/memory_scoreboard_runs/<date>.json` (everything, includes replies)
   and `<date>.md` (per-category table, counts and qids only), plus one line per run in
   `history.jsonl`. All mode 600.

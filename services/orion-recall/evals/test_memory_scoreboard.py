@@ -122,8 +122,13 @@ def test_degraded_reasons_from_trace_rows(rows, reasons):
     ({"lived_status": "skipped_short"}, ["lived:skipped_short"]),
     ({"lived_status": "degraded", "lived_trace": json.dumps({"degraded": ["rerank_timeout"]})},
      ["lived:degraded", "lived:rerank_timeout"]),
-    ({"lived_status": "ok", "lived_trace": {"rerank_partial": {"scored": 8, "of": 20}, "degraded": ["rerank_partial"]}},
-     ["lived:rerank_partial", "lived:rerank_partial:8/20"]),
+    # Real shapes (lived_memory.py): ok + a partial-rerank dict (fit-scored lines served) ...
+    ({"lived_status": "ok", "lived_trace": {"rerank_partial": {"scored": 8, "of": 20, "reason": "timeout"}}},
+     ["lived:rerank_partial:8/20"]),
+    # ... and degraded + rerank_partial in the reasons + the dict (nothing scored fit; exact words served).
+    ({"lived_status": "degraded",
+      "lived_trace": {"degraded": ["rerank_partial"], "rerank_partial": {"scored": 8, "of": 20, "reason": "timeout"}}},
+     ["lived:degraded", "lived:rerank_partial:8/20"]),
     ({"lived_status": "timeout"}, ["lived:timeout"]),
 ])
 def test_degraded_reasons_read_lived_status(row, reasons):
@@ -152,6 +157,19 @@ def test_denial_after_a_skipped_search_is_a_false_denial_under_its_cause():
     table = ms.render_table(None, report, run_date="2026-11-18", bank_items=len(items))
     assert "lived:skipped_short 1 (fact_city)" in table
     assert ms.summary_line("2026-11-18", None, report)["answer"]["false_no_memory_by_cause"]["search_full"] == 1
+
+
+@pytest.mark.parametrize("causes,bucket", [
+    (None, "cause:unknown"),
+    ([], "search_full"),
+    (["recall:no_trace"], "recall:no_trace"),
+    (["lived:skipped_short"], "lived:skipped_short"),
+    (["recall:deadline_hit", "lived:degraded", "lived:rerank_timeout"], "lived:rerank_timeout"),
+    (["lived:degraded", "lived:embedder_unavailable"], "lived:embedder_unavailable"),
+    (["recall:deadline_hit", "lived:timeout"], "lived:timeout"),
+])
+def test_primary_cause_is_the_most_specific(causes, bucket):
+    assert ms.primary_cause(causes) == bucket
 
 
 def test_too_short_for_lived_search_is_scored_not_degraded():
@@ -420,3 +438,99 @@ def test_runner_resume_keeps_good_turns_and_redoes_failed_ones(monkeypatch):
     out = {t["qid"]: t["outcome"] for t in turns}
     assert out == {"fact_city": "correct", "event_kiln": "dont_know", "abstain_volcano": "correct"}
     assert report["measured"] == 3 and report["not_measured"] == []
+
+
+def test_runner_retrieval_reads_lived_status_rows(monkeypatch):
+    """The #3628 columns through run_retrieval: skipped_short stays scored, degraded goes apart."""
+    _, items, replay = _fixture()
+    items = [it for it in items if it.qid in ("fact_city", "event_kiln")]
+    rows = {"fact_city": {"lived_status": "skipped_short", "lived_trace": None},
+            "event_kiln": {"lived_status": "degraded", "lived_trace": json.dumps({"degraded": ["rerank_timeout"]})}}
+    telemetry = {}
+
+    async def fake_rpc(bus, *, text, profile, phase, intent, deadline_ms, timeout_sec):
+        qid = next(q for q, t in texts.items() if t == text)
+        corr = f"{qid}:{phase}"
+        ids = replay["observations"][qid]["injected"] if phase == "continuity" else []
+        row = {"profile": profile, "deadline_hit": False, "backend_counts": {"lived_memory": len(ids)},
+               "timings_ms": {}, **(rows[qid] if phase == "continuity" else {"lived_status": None})}
+        telemetry[corr] = [row]
+        return {"bundle": {"items": [{"id": i} for i in ids]}}, corr
+
+    class _Bus:
+        def __init__(self, url):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def close(self):
+            pass
+
+    async def no_sleep(_s):
+        return None
+
+    import orion.core.bus.async_service as bus_mod
+
+    monkeypatch.setattr(runner, "_recall_rpc", fake_rpc)
+    monkeypatch.setattr(bus_mod, "OrionBusAsync", _Bus)
+    monkeypatch.setattr(runner.asyncio, "sleep", no_sleep)
+    texts = {"fact_city": "Which city does the gardener live in these days, do you remember?",
+             "event_kiln": "How did the pottery kiln project go in the end, after the firings?"}
+    args = Namespace(bus_url="redis://fake", phase3_intent="open_loop", deadline_ms=1000, rpc_timeout=1.0)
+    report = asyncio.run(runner.run_retrieval(items, texts, _FakePool("", telemetry), args))
+    assert report["lived_skipped_short"] == [{"qid": "fact_city", "hit": True}]
+    assert report["degraded"] == [{"qid": "event_kiln", "reasons": ["lived:degraded", "lived:rerank_timeout"], "hit": True}]
+    assert report["scored"] == 1 and report["hits"] == 1
+
+
+def test_runner_answers_report_false_denials_by_their_turn_cause(monkeypatch):
+    """run_answers -> search_causes -> score_answers: the SELECT must carry lived_status."""
+    import contextlib
+
+    import orion.evals.leased_llm as leased
+
+    _, items, _ = _fixture()
+    items = [it for it in items if it.qid in ("fact_city", "event_kiln", "time_market")]
+    texts = {it.qid: it.question for it in items}
+    corr_of = {t: f"c-{q}" for q, t in texts.items()}
+    rows = {"c-fact_city": [{"profile": "chat.continuity.v1", "selected_ids": [], "deadline_hit": False,
+                             "lived_status": "skipped_short", "lived_trace": None}],
+            "c-event_kiln": [{"profile": "chat.continuity.v1", "selected_ids": "[]", "deadline_hit": False,
+                              "lived_status": "degraded", "lived_trace": {"degraded": ["embedder_unavailable"]}}],
+            "c-time_market": [{"profile": "chat.continuity.v1", "selected_ids": [], "deadline_hit": False,
+                               "lived_status": "below_bar", "lived_trace": {}}]}
+
+    def fake_ask(base, text, timeout):
+        return {"text": "I have no memory of that.", "correlation_id": corr_of[text]}
+
+    class _Lane:
+        def chat(self, body, timeout_sec):
+            return {"choices": [{"message": {"content": '{"label": "no_memory"}'}}]}
+
+    @contextlib.contextmanager
+    def fake_lane(*a, **k):
+        yield _Lane()
+
+    class _Pool:
+        async def fetchrow(self, sql, *args):
+            return None
+
+        async def fetch(self, sql, *args):
+            assert "lived_status" in sql and "lived_trace" in sql
+            return rows.get(args[0], [])
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(runner, "ask_hub", fake_ask)
+    monkeypatch.setattr(runner, "wait_for_hub", lambda *a, **k: None)
+    monkeypatch.setattr(runner.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(leased, "operator_lane_sync", fake_lane)
+    args = Namespace(hub_url="http://hub", hub_wait=1.0, turn_timeout=1.0, judge_lane="agent",
+                     bus_url="redis://fake", prior_turns=[])
+    report, turns = asyncio.run(runner.run_answers(items, texts, {}, _Pool(), args))
+    assert sorted(report["false_no_memory"]) == ["event_kiln", "fact_city", "time_market"]
+    assert report["false_no_memory_by_cause"] == {
+        "lived:skipped_short": ["fact_city"], "lived:embedder_unavailable": ["event_kiln"],
+        "search_full": ["time_market"]}

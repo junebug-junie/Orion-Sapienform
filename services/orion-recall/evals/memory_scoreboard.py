@@ -211,14 +211,36 @@ def lived_search_causes(row: Mapping[str, Any]) -> List[str]:
     out: List[str] = []
     if status in SEARCH_NOT_FULL:
         out.append(f"lived:{status}")
+    part = trace.get("rerank_partial")
     for reason in trace.get("degraded") or []:
         tag = f"lived:{reason}"
+        if reason == "rerank_partial" and isinstance(part, Mapping):
+            continue   # the dict below says the same thing, with the counts
         if tag not in out:
             out.append(tag)
-    part = trace.get("rerank_partial")
     if isinstance(part, Mapping):
+        # Status ok + this dict: the rerank stopped early and only fit-scored lines served. Not a
+        # full search, so it is reported apart, never scored as a clean miss (#3663).
         out.append(f"lived:rerank_partial:{part.get('scored')}/{part.get('of')}")
     return out
+
+
+_STATUS_TAGS = tuple(f"lived:{st}" for st in SEARCH_NOT_FULL)
+
+
+def primary_cause(causes: Optional[Sequence[str]]) -> str:
+    """The bucket a false denial is reported under: the most specific cause. A lived_trace reason
+    (``lived:rerank_timeout``, ``lived:embedder_unavailable``, ``lived:rerank_partial:8/20``) beats
+    the bare status (``lived:degraded``), which beats ``recall:*``. ``None`` = the turn's search
+    was never checked (``cause:unknown``); an empty list = it ran in full (``search_full``)."""
+    if causes is None:
+        return "cause:unknown"
+    cs = list(causes)
+    if not cs:
+        return "search_full"
+    specific = [c for c in cs if c.startswith("lived:") and c not in _STATUS_TAGS]
+    status = [c for c in cs if c in _STATUS_TAGS]
+    return (specific or status or cs)[0]
 
 
 def search_causes(rows: Sequence[Mapping[str, Any]]) -> List[str]:
@@ -227,7 +249,7 @@ def search_causes(rows: Sequence[Mapping[str, Any]]) -> List[str]:
     fired, or recall never ran). A false "no memory" answer is reported under the first cause, or
     under ``search_full`` when there is none (then the model or the store is at fault, not the search)."""
     if not rows:
-        return ["recall:no_trace"]
+        return ["recall:no_trace"]   # the runner says recall:skip_gate when the gate fired
     causes: List[str] = []
     for r in rows:
         if r.get("deadline_hit") and "recall:deadline_hit" not in causes:
@@ -468,10 +490,11 @@ def score_answers(items: Sequence[Item], outcomes: Mapping[str, str],
     rate = _rate(correct, len(measured))
     by_cause: Dict[str, List[str]] = {}
     for qid in false_no:
-        cs = list((causes or {}).get(qid) or [])
-        by_cause.setdefault(cs[0] if cs else "search_full", []).append(qid)
+        by_cause.setdefault(primary_cause((causes or {}).get(qid)), []).append(qid)
     return {
         "false_no_memory_by_cause": by_cause,
+        "false_no_memory_causes": {q: (list((causes or {}).get(q)) if (causes or {}).get(q) is not None else None)
+                                   for q in false_no},
         "bars": {"correct_rate": ANSWER_CORRECT_BAR, "invented": 0, "false_no_memory": 0},
         "scored": len(scored), "measured": len(measured), "correct": correct, "correct_rate": rate,
         "invented": invented, "false_no_memory": false_no,

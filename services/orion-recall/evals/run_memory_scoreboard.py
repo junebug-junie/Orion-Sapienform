@@ -297,8 +297,12 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
                     break
                 await asyncio.sleep(5)
         if corr:
+            from orion.memory.recall_skip_gate import recall_skip_gate
+
+            gate = recall_skip_gate(user_message=texts[it.qid], appraisal=None, has_repair_grammar_signal=False,
+                                    max_novelty=SKIP_MAX_NOVELTY, shift_novelty_floor=SKIP_SHIFT_NOVELTY_FLOOR)
             rows = []
-            for _ in range(2):   # recall persists its row after it replies; give it one beat
+            for _ in range(1 if gate.skip else 5):   # recall persists its row after it replies
                 rows = await pool.fetch(
                     "SELECT profile, selected_ids, deadline_hit, lived_status, lived_trace FROM recall_telemetry "
                     "WHERE corr_id = $1 AND profile = ANY($2::text[])",
@@ -308,7 +312,8 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
                 await asyncio.sleep(3)
             # Did this turn's own recall run in full? A denial after a skipped or degraded search
             # is still a false denial, reported under its cause (#3536 comment).
-            turn["search_causes"] = search_causes([dict(r) for r in rows])
+            turn["search_causes"] = (["recall:skip_gate"] if not rows and gate.skip
+                                     else search_causes([dict(r) for r in rows]))
             ids: set[str] = set()
             for r in rows:
                 sel = r["selected_ids"]
@@ -373,7 +378,7 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
     for turn in turns:
         outcomes.setdefault(turn["qid"], "unjudged")
         turn["outcome"] = outcomes[turn["qid"]]
-    report = score_answers(items, outcomes, {t["qid"]: t.get("search_causes") or [] for t in turns})
+    report = score_answers(items, outcomes, {t["qid"]: t.get("search_causes") for t in turns})
     report["judge_lane"] = args.judge_lane
     report["target_in_prompt"] = {
         "known": sum(1 for t in turns if t.get("target_in_prompt") is not None),

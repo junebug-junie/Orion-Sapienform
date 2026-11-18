@@ -92,13 +92,13 @@ branch `fix/promise-orion-findings-ledger`. Either can merge first.
    no dormant close path; the companion ledger PR prints the divergence count. The go-live PR should wire it
    (sql-writer's resolver closes expired/void acts directly in Postgres, so Prime would need a read of
    `grammar_acts`, not only the bus). Reverse: ask for it now and it becomes its own patch.
-5. **The operator smoke is not Juniper.** `scripts/trace_hub_skill_runner_e2e.py` now marks itself
-   `operator_review`, and every "Juniper's browser turn" reader (promise resolver's void rule, report, curiosity
-   readout, Hub promise view, Prime) leaves it out. Reverse: drop `SMOKE_SURFACE` from both rules.
-6. **A carry turn settles only the concern its prompt starts with.**
 4. **"One settled bet" is read as: Prime's concern is never a bet; the act is the only bet.** Taking a promise on
    (Prime's `make` act on `intention:<concern_id>`) is a separate bet on a different question ("did my carry run
    produce something"), so one promise taken on and kept can still settle two bets on two different questions.
+5. **The operator smoke is not Juniper.** `scripts/trace_hub_skill_runner_e2e.py` now marks itself
+   `operator_review`, and every "Juniper's browser turn" reader (promise resolver's void rule, report, curiosity
+   readout, Hub promise view, Prime) leaves it out. Reverse: drop `SMOKE_SURFACE` from both rules.
+6. **A carry turn settles only the concern its prompt starts with.** Refs quoted further down settle nothing. Reverse: use `_concern_ids` for `intention` too.
 
 ## Tests run
 

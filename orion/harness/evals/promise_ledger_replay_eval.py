@@ -75,10 +75,11 @@ from orion.schemas.harness_finalize import (
     PROMISE_ITEMS_MAX,
     OpenPromiseRefV1,
 )
+from orion.schemas.promise_horizon import PROMISE_HORIZON_SEC
 
 LABELS = Path(__file__).resolve().parent / "fixtures" / "promise_ledger_labels.json"
 OUT_DIR = Path("/tmp/promise-ledger-replay")
-HORIZON = timedelta(hours=72)
+HORIZON = timedelta(seconds=PROMISE_HORIZON_SEC)  # the promise act's clock (#3595)
 MAX_TOKENS = 2000
 DEFAULT_LANES = "agent"  # Flash-Next on circe GPU 1; add chat (GPU 0) only while Juniper lends it
 HOLDER = "operator:promise-ledger-replay"

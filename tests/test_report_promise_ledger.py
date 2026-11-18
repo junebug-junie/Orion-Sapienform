@@ -349,7 +349,8 @@ def test_void_share_is_void_over_every_closed_act():
 
 
 def test_prime_by_ref_joins_on_the_exact_turn_concern_id():
-    chat = {"session": "9c91", "mode": True}  # Prime's classify_who: a non-orion_ session with ``mode``
+    # Prime's classify_who: a non-orion_ session sent from a Hub browser surface (#3602).
+    chat = {"session": "9c91", "mode": True, "browser": True}
     stored = [_stored("open-c", [FIRM], **chat), _stored("closed-c", [FIRM], session="orion_curiosity"),
               _stored("refused-c", [FIRM], **chat), _stored("none-c", [FIRM], **chat),
               _stored("unread-c", [FIRM], session="self-sense-eval"),  # no mode: never handed back
@@ -394,7 +395,17 @@ def test_text_report_prints_the_window_lanes_expected_and_prime_lines(monkeypatc
             in out) and "memory-scoreboard-eval 1t/1i/1f" in out
     assert "Prime by exact key (turn_concern_id) on 1 item-bearing turns" in out and "not read" in out
     assert "void share of closed acts: -" in out
-    assert "who=chat_juniper not_read" in out  # an eval session with ``mode`` reads as Juniper's chat to Prime (#3602)
+    # An eval session with ``mode`` and no browser surface is not Juniper's chat to Prime (#3602, fixed).
+    assert "who=None not_handed_back" in out and "who=chat_juniper" not in out
+
+
+def test_prime_by_ref_an_api_chat_post_in_her_own_session_is_not_handed_back():
+    """#3602: a coding session's note posted to /api/chat lands in Juniper's own session with ``mode`` and no
+    browser surface; Prime does not hand it back, so the report does not expect a concern for it."""
+    stored = [_stored("api-note", [FIRM], session="9c91", mode=True, browser=False),
+              _stored("typed", [FIRM], session="9c91", mode=True, browser=True)]
+    out = rpt.prime_by_ref(stored, {}, None, None)
+    assert {r["corr"]: r["prime_who"] for r in out["rows"]} == {"api-note": None, "typed": "chat_juniper"}
 
 
 def test_prime_turns_file_needs_the_state_file():

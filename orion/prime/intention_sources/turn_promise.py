@@ -22,10 +22,11 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, Union
 
 from orion.schemas.intention import INTENTION_SESSION_ID, IntentionSourceV1, aware
+from orion.schemas.promise_horizon import PROMISE_HORIZON_SEC
 
 PREFIX = "turn:"
 SOURCE = "turn_promise"
-HORIZON_SEC = 72 * 3600.0
+HORIZON_SEC = PROMISE_HORIZON_SEC  # the same clock as the promise act (#3595)
 SYSTEM_SESSION_PREFIX = "orion_"
 PROMPT_CAP = 3000
 REPLY_CAP = 6000

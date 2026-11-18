@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional, TypedDict
 
 from app.admitted_graph import (
@@ -220,11 +220,16 @@ def check_reply(text: str) -> ParsedAnswer:
     return parsed
 
 
-def _requested_at(state: dict[str, Any]) -> datetime:
+def _requested_at(state: dict[str, Any], day: date) -> datetime:
+    """When the run was requested (the receipt must be newer); the end of the dreamt day if the state lacks it."""
     raw = state.get("requested_at")
     if isinstance(raw, datetime):
-        return raw
-    return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    try:
+        at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return day_window(day)[1]
 
 
 # --------------------------------------------------------------------------- persist
@@ -306,7 +311,7 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
         turn_timeout = max(1.0, window - TURN_REPLY_GRACE_SEC)
         correlation_id = harness_step_correlation_id(state, DREAM_DAY_STEP_KEY)
         turn_meta = {"turn_correlation_id": correlation_id, "step_key": DREAM_DAY_STEP_KEY}
-        requested_at = _requested_at(state)
+        requested_at = _requested_at(state, brief.day)
 
         async def operation(held: dict[str, Any]) -> dict[str, Any]:
             record = await run_harness_step(

@@ -543,7 +543,9 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
             except Exception as exc:
                 logger.warning("dream_cycle rem compaction failed err=%s", exc)
 
-        d_pairs = dream_pairs(replay, settings.DREAM_HYPOTHESES_PER_CYCLE)
+        d_pairs = dream_pairs(
+            replay, settings.DREAM_HYPOTHESES_PER_CYCLE, window_minutes=settings.DREAM_PAIR_WINDOW_MINUTES,
+        )
         c_pairs = control_pairs(
             pool, settings.DREAM_CONTROL_PER_CYCLE, seed=cycle_id, exclude=d_pairs
         )

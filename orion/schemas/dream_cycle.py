@@ -7,7 +7,7 @@ exists so a dream can be *scored*: every hypothesis carries the two memory refs
 it linked and which experimental arm produced it.
 
 Arms:
-  dream    pairs chosen from the replay set (salient, distant).
+  dream    pairs chosen from the replay set: different organs, near in time (#3664).
   control  pairs drawn at random from the whole candidate pool, same prompt.
 
 Hub offers both arms to Orion's curiosity loop blind (arm is never shown). If
@@ -115,6 +115,11 @@ class ReplayItemV1(BaseModel):
     weight: float = Field(ge=0.0, le=1.0)
     reason: str
     tags: list[str] = Field(default_factory=list, max_length=32)
+    # When it happened: a point, or [occurred_at, occurred_until] for a span (an arc). The dream arm
+    # pairs fragments whose times fall near each other (#3664). None: no known time; never paired by
+    # the dream arm, still drawable by the random control arm.
+    occurred_at: Optional[AwareDatetime] = None
+    occurred_until: Optional[AwareDatetime] = None
 
 
 class DreamHypothesisV1(BaseModel):

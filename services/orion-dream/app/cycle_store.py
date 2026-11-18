@@ -101,7 +101,7 @@ SOURCE_QUERIES: dict[str, str] = {
         ) d{_title_join('d.theme')}{_chain_thought_join('d.origin_chain_id')} ORDER BY d.created_at DESC
     """,
     "resonance": f"""
-        SELECT d.alert_id, d.theme_key, d.violation_count, d.dedupe_key, t.title FROM (
+        SELECT d.alert_id, d.theme_key, d.violation_count, d.dedupe_key, t.title, d.created_at AS occurred_at FROM (
           SELECT alert_id, theme_key, violation_count, dedupe_key, created_at FROM (
             SELECT DISTINCT ON (lower(theme_key)) alert_id, theme_key, violation_count,
                    lower(theme_key) AS dedupe_key, created_at
@@ -112,7 +112,7 @@ SOURCE_QUERIES: dict[str, str] = {
         ) d{_title_join('d.theme_key')} ORDER BY d.created_at DESC
     """,
     "crystallization": """
-        SELECT crystallization_id, subject, summary, salience, tags, dedupe_key FROM (
+        SELECT crystallization_id, subject, summary, salience, tags, dedupe_key, created_at AS occurred_at FROM (
           SELECT DISTINCT ON (c.crystallization_id) c.crystallization_id, c.subject, c.summary,
                  c.salience, c.tags, c.crystallization_id::text AS dedupe_key, h.created_at
             FROM memory_crystallization_history h

@@ -174,6 +174,7 @@ def test_abstention_judge_prompt_never_leaks_expected_as_truth_and_update_prompt
     p = ms.build_judge_prompt(by_qid["fact_city"], "Which city?", "Lakeport, since spring.")
     assert "Extra details the record lines do not mention are NOT invented" in p
     assert "CONTRADICTS" in p and "one day off" in p
+    assert "Leaving parts of the truth out is not invented" in p
 
 
 def test_table_has_every_category_and_no_memory_text():

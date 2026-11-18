@@ -312,7 +312,10 @@ def build_judge_prompt(item: Item, message: str, reply: str, record_texts: Seque
         "The record lines above are only the few records this question targets, not all of Orion's memory. "
         "Extra details the record lines do not mention are NOT invented; Orion may know them from other "
         "memories. Only a detail that contradicts the recorded truth, or a wrong answer to what was asked, "
-        "makes a reply invented.\n"
+        "makes a reply invented. A detail contradicts only when the truth says something DIFFERENT about the "
+        "same thing (another date for the same event, another answer to the same question). Leaving parts of "
+        "the truth out is not invented: if what the reply says agrees with the truth and gets its main point, "
+        "it is correct.\n"
         'Answer with JSON only: {"label": "<one label>", "why": "<one short sentence>"}'
     )
 

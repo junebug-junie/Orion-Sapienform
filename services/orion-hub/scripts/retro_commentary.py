@@ -47,6 +47,7 @@ import contextlib
 import logging
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -217,6 +218,9 @@ class CommentaryService:
         self._publish_act = publish_act or self._default_publish_act
         self._cancel_motor = cancel_motor or self._default_cancel_motor
         self.running: Optional[Running] = None
+        # The last chat-box messages of the open sitting, (speaker words, text), oldest first. In memory only: a
+        # Hub restart forgets them (the chat history rows remain; a line turn then shows none).
+        self.recent_chat: deque = deque(maxlen=C.RECENT_CHAT)
         self._sitting_id: Optional[str] = None
         self._last_exchange_at: Optional[float] = None
         self._hot_until = 0.0
@@ -340,6 +344,7 @@ class CommentaryService:
         sid = str(sitting["sitting_id"])
         if sid != self._sitting_id:
             self._sitting_id, self._last_exchange_at = sid, None
+            self.recent_chat.clear()
         watch = await self._watch()
         newest = _epoch(await self._db("fetchval", NEWEST_NOTE_SQL, sid, quiet="retro_commentary_notes_unread"))
         last_attempt = _epoch(await self._db("fetchval", LAST_ATTEMPT_SQL, sid, quiet="retro_commentary_lines_unread"))
@@ -452,7 +457,7 @@ class CommentaryService:
             minutes_played=max(0.0, float(sitting.get("last_input_at") or 0) - float(sitting.get("started_at") or 0)) / 60.0,
             saves=int(sitting.get("saves") or 0), loads=int(sitting.get("loads") or 0),
             player_stated=sitting.get("player_stated"), groups=groups, n_frames=len(refs),
-            previous_lines=previous, now_lines=now_lines)
+            previous_lines=previous, recent_chat=list(self.recent_chat), now_lines=now_lines)
         result["look_ids"] = [n.look_id for g in groups for n in g.notes]
         outreach = self.outreach_provider()
         bus = self.bus_provider()
@@ -580,14 +585,17 @@ class CommentaryService:
         logger.info("retro_commentary_yielded line_id=%s why=%s", run.line_id, why)
         return True
 
-    def note_human_message(self, *, surface: Optional[str] = None, player: Optional[str] = None) -> None:
+    def note_human_message(self, *, surface: Optional[str] = None, player: Optional[str] = None,
+                           text: Optional[str] = None) -> None:
         """A person sent a chat message (any socket). Sync, never raises: the yield runs in the background, so
-        the person's own turn never waits for it. Also: a reply within 2 min marks the newest line answered, and
-        the exchange restarts the line gap."""
+        the person's own turn never waits for it. Also: a reply within 2 min marks the newest line answered, the
+        exchange restarts the line gap, and a chat-box message joins the sitting's recent chat."""
         if not self.enabled:
             return
         try:
             self._last_exchange_at = self.clock()
+            if surface == "retro" and text and str(text).strip():
+                self.recent_chat.append(("Juniper" if player == "juniper" else "The player", str(text).strip()[:300]))
             if self.running is not None:
                 self._spawn(self.yield_line("juniper_spoke"))
             sid = self._sitting_id
@@ -597,6 +605,13 @@ class CommentaryService:
                                      quiet="retro_commentary_reply_failed"))
         except Exception:  # noqa: BLE001
             self._warn("retro_commentary_note_message_failed")
+
+    def note_reply(self, text: Optional[str]) -> None:
+        """Orion's reply to a chat-box message: joins the sitting's recent chat and restarts the line gap."""
+        if not self.enabled or not text or not str(text).strip():
+            return
+        self._last_exchange_at = self.clock()
+        self.recent_chat.append(("You", str(text).strip()[:300]))
 
     # --- the lock the gateway reads -------------------------------------------------------------------
     async def _set_lock(self, line_id: str) -> None:

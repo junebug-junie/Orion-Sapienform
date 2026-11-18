@@ -1360,7 +1360,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     data.pop("source", None)
                     retro_origin, _retro_player = None, "guest"
             if _retro_commentary is not None:
-                _retro_commentary.note_human_message(surface=_surface_ctx.get("surface"), player=_retro_player)
+                _retro_commentary.note_human_message(surface=_surface_ctx.get("surface"), player=_retro_player,
+                                                     text=data.get("text_input") or data.get("text") or transcript)
 
             if not is_text_input:
                 await websocket.send_json(
@@ -1656,6 +1657,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                 # Orion's reply joins history (see append_live_assistant_reply).
                 append_live_assistant_reply(history, extract_unified_turn_final_text(orion_turn_frames))
+                if _retro_commentary is not None and _surface_ctx.get("surface") == "retro":
+                    # The game page's chat: the reply joins the sitting's recent chat (a line turn shows it).
+                    _retro_commentary.note_reply(extract_unified_turn_final_text(orion_turn_frames))
                 trim_history_window(history, turns)
                 continue
 

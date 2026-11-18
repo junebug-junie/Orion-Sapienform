@@ -33,9 +33,14 @@ The whole path, in order:
 9. **Note.** stored / empty / unclear / copied (or failed), one ``retro_watch_look`` row, the act closed 1 only
    for stored. The hold and the want are released.
 
-Patch 2 writes no Temporal Self event for a look: only a look a line turn checked and found to hold becomes
-one, and judging arrives with patch 3. The sitting's play row carries the count ("Orion watched: N notes").
-Nothing here speaks, and nothing here touches a person record.
+No look writes a Temporal Self event here: a line turn (patch 3, scripts/retro_commentary.py in hub-app) judges the
+notes it was shown, and only a note it checked and found to hold becomes one (source kind retro_look,
+orion-durable-runs). The sitting's play row carries the count ("Orion watched: N notes"). Nothing here speaks, and
+nothing here touches a person record.
+
+Patch 3 adds two things here: ``frames_for_turn`` (hub-app's line and chat-box turns ask for the newest frames over
+``GET /api/retro/sitting/frames``), and the line lock: no look is bid for while hub-app holds ``LINE_LOCK_KEY``
+(one play call at a time on the chat lane).
 
 Every failure is logged and swallowed: the game never waits for a look.
 """

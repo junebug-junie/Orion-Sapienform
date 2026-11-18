@@ -550,3 +550,20 @@ def test_deliver_line_refuses_a_named_internal_signal_before_claiming(monkeypatc
     out = asyncio.run(outreach.deliver_line(text="my prediction_error is up", correlation_id="c",
                                             source_tag="retro_commentary", claim=claim))
     assert out["reason"] == "named_ungrounded_signal" and claimed == [] and drain(queue) == []
+
+
+def test_chat_box_messages_and_replies_reach_the_next_line_turn(monkeypatch):
+    t = make_service(monkeypatch)
+    t.svc._sitting_id = SID
+
+    async def go():
+        t.svc.note_human_message(surface="retro", player="guest", text="how do I get past this?")
+        t.svc.note_reply("Try the bombable wall on the left.")
+        t.svc.note_human_message(surface=None, player=None, text="main window message")   # not the chat box
+        await asyncio.gather(*list(t.svc._jobs))
+        t.svc._last_exchange_at = NOW - 600                    # the gap has passed
+        return await t.svc.run_line(SITTING)
+    assert asyncio.run(go()) == "delivered"
+    prompt = t.calls["compose"][0][0]
+    assert "The player: how do I get past this?" in prompt and "You: Try the bombable wall" in prompt
+    assert "main window message" not in prompt

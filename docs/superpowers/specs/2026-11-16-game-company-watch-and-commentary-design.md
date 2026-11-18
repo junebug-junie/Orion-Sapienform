@@ -915,3 +915,13 @@ Patch 2 is built on branch `feat/retro-look` (report `docs/superpowers/pr-report
 
 - `hub.retro_watch` has `deferrable_window_s: 60`, not 0. `orion/physiology/families.py` refuses 0 for a bidding family: the window is also its hunger clock. The producer still never holds a want: only `funded` runs a look.
 - The calibration histogram uses each check's change over the last 30 s (the look's own window), not its 2-second step. On the step 0 frames the 30-second value separates still from play on A Link to the Past and the 2-second step does not (`services/orion-hub/evals/retro_look_replay.py`).
+
+Patch 3 is built on branch `feat/retro-lines` (report `docs/superpowers/pr-reports/2026-11-18-retro-lines-pr.md`). Choices made while building it, each with its reason:
+
+- **The outreach door carries the line's own GPU hold.** `compose` gained `gpu_lease` (with `attachments`, `source`, a cockpit sink and a session). The line takes a hold of class `chat` at priority `system` and the turn rides it, as a durable turn does: pre-turn check, stance, motor and finalize attach to the hold through the held route, whose priority is `system` in `config/gpu_pool.yaml`. A test reads that file; the line refuses to start if it ever reads `interactive`.
+- **Every person's message yields a running line**, a guest's chat-box message too: the chat lane runs one turn at a time, and the player's turn goes first whoever the player is.
+- **The frames route is loopback plus the Retro hub token.** tailscale serve also reaches the gateway from loopback, so the address alone would admit a browser.
+- **The near-copy cut-off is 0.45**, from the step 0 notes (no live look existed): every pair of notes about different sequences scored at most 0.404. `services/orion-hub/evals/retro_line_dry_eval.py` recomputes it.
+- **A line's act opens and closes at delivery** (`hub.retro_commentary say`, produced 1). What the player made of the line (thumb, a reply within 2 min) is stored on its `retro_line` row; wiring it into the family's weight waits for patch 4's receptors.
+- **Game lines are not in the day letter's chat gather**, and a guest's turn is excluded from every "Juniper spoke" rule in `orion/regulation/juniper_turns.py` (dream idle gate, arousal, the act and promise ledgers), beyond the three readers this spec names.
+- **Not built:** the last 6 look notes in every turn's game block (section 5, "What the server adds"; the line turn has them); a cancel listener in orion-thought (#3658: a line cancelled mid-stance lets that one call finish, and nothing it returns is said).

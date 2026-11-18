@@ -110,6 +110,6 @@ Then `curl -X POST 'http://localhost:8124/core-pages/lately/fold?dry_run=false'`
 
 ## PR link
 
-(see PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3761
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

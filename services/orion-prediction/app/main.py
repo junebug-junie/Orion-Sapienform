@@ -484,7 +484,7 @@ def _learning_progress_read(today: date, series: tuple[str, ...]) -> dict[str, A
             "prior": {"start": p.prior.start.isoformat(), "end": p.prior.end.isoformat(),
                       "days": p.prior.days, "mean_skill": p.prior.mean_skill},
             "roster_changed_on": p.roster_changed_on.isoformat() if p.roster_changed_on else None,
-            "rho": p.rho, "rho_pairs": p.rho_pairs, "se_iid": p.se_iid,
+            "rho": p.rho, "rho_pairs": p.rho_pairs, "rho_source": p.rho_source, "se_iid": p.se_iid,
         })
     return {"as_of": today.isoformat(), "horizon_min": lp.HORIZON_MIN, "window_days": lp.WINDOW_DAYS,
             "alpha": lp.ALPHA, "min_effect": lp.MIN_EFFECT, "series": out}

@@ -14,18 +14,23 @@ independent days (``rho=0``, the plain Welch rule it replaced). A "false move" i
 
     cd services/orion-prediction && POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_learning_progress_null_eval.py
 
-Exit 1 if the shipped rule's simulated per-look rate at the live rho estimate is over 5% (+1 point of seed noise).
+Exit 1 if the shipped rule's simulated per-look rate at the live rho (14 or 56 days of history) is over 5% (+1
+point of seed noise).
 
 Baseline 2026-11-18 (live: cabinet and office, 14 usable days each, 11-04..11-17; shipped / Welch):
   lag-1 raw: cabinet +0.070, office +0.377 (office's 0.0 days 11-04..05 before the champion served are a step;
   over 11-06..11-17 alone it is +0.21). Moment-matched rho (detrended 7-day blocks, 12 pairs): cabinet 0.37,
-  office 0.00. 12 pairs is noisy; mean 0.18 is the "live" rho below.
-  Shuffled labels, per look: cabinet 0.005 / 0.010, office 0.031 / 0.041 (1000 shuffles each).
+  office 0.00; used after shrinking toward the 0.3 prior: 0.32 and 0.20 (mean 0.26 = "live" below).
+  Shuffled labels, per look: cabinet 0.000 / 0.010, office 0.016 / 0.041 (1000 shuffles each).
   Circular shifts: cabinet 0/14 / 0/14, office 0/14 / 8/14 (office's real 11-06 step is in the data).
-  Simulated AR(1), sd 0.156, 56 days, per look: rho 0 0.049 / 0.059; rho 0.18 (live) 0.047 / 0.089;
-  rho 0.2 0.053 / 0.092; rho 0.3 0.050 / 0.119; rho 0.5 0.067 / 0.198.
-  Per week (any of 7 daily looks): rho 0 0.187 / 0.233; live 0.180 / 0.293; rho 0.3 0.230 / 0.400.
-  PASS (0.047). Runtime about 2 min.
+  Simulated AR(1), sd 0.156, per look, 14 days | 56 days of history:
+    rho 0    0.017 / 0.042 | 0.020 / 0.040
+    rho 0.2  0.039 / 0.089 | 0.041 / 0.092
+    rho 0.26 0.038 / 0.104 | 0.041 / 0.106   (live)
+    rho 0.3  0.037 / 0.122 | 0.051 / 0.133
+    rho 0.5  0.094 / 0.209 | 0.069 / 0.201
+  Per week (any of 7 daily looks, 56 days): rho 0 0.120 / 0.193; live 0.193 / 0.417; rho 0.5 0.303 / 0.557.
+  PASS (0.041). Runtime about 3 min.
 """
 from __future__ import annotations
 
@@ -68,7 +73,7 @@ def ar1(rng: random.Random, rho: float, n: int, sd: float, level: float = 0.3) -
     return out[-n:]
 
 
-def live_segments() -> dict[str, list[float]]:
+def live_segments() -> dict[str, list[tuple[int, float]]]:
     from app.store import PostgresStore
 
     store = PostgresStore(os.environ["POSTGRES_URI"])
@@ -82,9 +87,9 @@ def live_segments() -> dict[str, list[float]]:
         change = lp.last_roster_change(roster)
         days = sorted((r for r in pairs if r["series_id"] == sid and r["day"] < today
                        and (change is None or r["day"] > change)), key=lambda r: r["day"])
-        skills = [d.skill for d in (lp.DayStat(r["day"], int(r["pairs"]), float(r["mae_champion"]),
-                                               float(r["mae_baseline"])) for r in days)]
-        out[sid] = [s for s in skills if s is not None]
+        stats = [lp.DayStat(r["day"], int(r["pairs"]), float(r["mae_champion"]), float(r["mae_baseline"]))
+                 for r in days]
+        out[sid] = [(d.day.toordinal(), d.skill) for d in stats if d.skill is not None]  # real days: gaps stay gaps
         print(f"{sid}: {len(out[sid])} usable days after the {change} roster change")
     return out
 
@@ -94,13 +99,16 @@ def main() -> int:
     segs = live_segments()
     rhos, sds = [], []
     print("\n== live day-to-day correlation")
-    for sid, xs in segs.items():
-        end = len(xs)
-        rho, npairs = lp.estimate_rho(list(enumerate(xs)), end)
-        sd = (sum((x - sum(xs) / end) ** 2 for x in xs) / (end - 1)) ** 0.5
+    for sid, pts in segs.items():
+        xs, end = [v for _, v in pts], pts[-1][0] + 1
+        raw, npairs = lp.moment_rho(pts, end)
+        rho, _, source = lp.estimate_rho(pts, end)
+        sd = (sum((x - sum(xs) / len(xs)) ** 2 for x in xs) / (len(xs) - 1)) ** 0.5
         rhos.append(rho)
         sds.append(sd)
-        print(f"{sid}: n {end}  lag-1 raw {lag1(xs):+.3f}  rho (moment-matched, {npairs} pairs) {rho:.3f}  sd {sd:.3f}")
+        print(f"{sid}: n {len(xs)}  lag-1 raw {lag1(xs):+.3f}  moment-matched {raw if raw is None else round(raw, 3)} "
+              f"({npairs} pairs)  used {rho:.3f} ({source})  sd {sd:.3f}")
+    segs = {sid: [v for _, v in pts] for sid, pts in segs.items()}
 
     print("\n== live, shuffled labels (false-move rate per look: shipped / Welch)")
     for sid, xs in segs.items():
@@ -125,9 +133,18 @@ def main() -> int:
 
     live_rho = sum(rhos) / len(rhos)
     sd = sum(sds) / len(sds)
-    print(f"\n== simulated AR(1), sd {sd:.3f}, {lp.RHO_HISTORY_DAYS} days of history (shipped / Welch)")
+    print(f"\n== simulated AR(1), sd {sd:.3f} (shipped / Welch); 14 days = the live history today")
     worst = 0.0
     for rho in sorted({0.0, round(live_rho, 2), 0.2, 0.3, 0.5}):
+        for hist in (2 * lp.WINDOW_DAYS,):
+            n, a, b = 1000, 0, 0
+            for _ in range(n):
+                xs = ar1(rng, rho, hist, sd)
+                a += moved(xs, None)
+                b += moved(xs, 0.0)
+            print(f"rho {rho:.2f}: {hist} days, per look {a / n:.3f} / {b / n:.3f}")
+            if rho == round(live_rho, 2):
+                worst = max(worst, a / n)
         n, a, b = 1500, 0, 0
         for _ in range(n):
             xs = ar1(rng, rho, lp.RHO_HISTORY_DAYS, sd)
@@ -141,8 +158,8 @@ def main() -> int:
             wb += any(moved(x, 0.0, d) for x, d in looks)
         tag = "  <- live" if rho == round(live_rho, 2) else ""
         if rho == round(live_rho, 2):
-            worst = a / n
-        print(f"rho {rho:.2f}: per look {a / n:.3f} / {b / n:.3f}   per week {wa / wn:.3f} / {wb / wn:.3f}{tag}")
+            worst = max(worst, a / n)
+        print(f"rho {rho:.2f}: {lp.RHO_HISTORY_DAYS} days, per look {a / n:.3f} / {b / n:.3f}   per week {wa / wn:.3f} / {wb / wn:.3f}{tag}")
     ok = worst <= 0.06
     print(f"\n{'PASS' if ok else 'FAIL'}: shipped per-look false-move at live rho {live_rho:.2f}: {worst:.3f} (target 0.05)")
     return 0 if ok else 1

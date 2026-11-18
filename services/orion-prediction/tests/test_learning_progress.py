@@ -145,7 +145,8 @@ def test_http_route_reads_both_series_and_refuses_others(monkeypatch):
     assert all(s["direction"] == "better" for s in body["series"])
     # The day-to-day correlation is estimated from RHO_HISTORY_DAYS of history, not just the two windows.
     assert seen["pairs"][1] == 15 and seen["pairs"][2] == datetime(2026, 9, 24, tzinfo=timezone.utc)
-    assert all(s["rho"] is not None and s["se_iid"] is not None and s["rho_pairs"] == 12 for s in body["series"])
+    assert all(s["rho"] is not None and s["se_iid"] is not None and s["rho_pairs"] == 12
+               and s["rho_source"] == "estimated" for s in body["series"])
     assert c.get("/learning-progress", params={"series_id": "office.temp_c"}).json()["series"][0]["series_id"] \
         == "office.temp_c"
     assert c.get("/learning-progress", params={"series_id": "node:prediction.chat_turn"}).status_code == 404
@@ -170,24 +171,26 @@ def test_planted_weather_spell_fires_iid_rule_but_reads_flat():
     p = lp.progress("s", d, rosters(56), TODAY)
     assert iid.direction == "better" and iid.t > iid.t_crit
     assert p.direction == "flat" and abs(p.t) < p.t_crit
-    assert p.rho > 0.4 and p.rho_pairs == 48 and p.se > p.se_iid
+    assert p.rho > 0.4 and p.rho_pairs == 48 and p.rho_source == "estimated" and p.se > p.se_iid
     assert p.learning_progress == iid.learning_progress and p.p_value > lp.ALPHA
 
 
 def test_null_false_move_rate_holds_under_spells():
-    # Seeded null at the live-measured scale: the corrected rule stays near 5% per look; independent days do not.
-    n, fired, fired_iid = 120, 0, 0
-    for seed in range(n):
-        d = days_from(ar1(1000 + seed, 0.3))
-        fired += lp.progress("s", d, {}, TODAY).direction != "flat"
-        fired_iid += lp.progress("s", d, {}, TODAY, rho=0.0).direction != "flat"
-    assert fired / n <= 0.07 and fired_iid > fired
+    # Seeded null at the live scale: the corrected rule stays near 5% per look; independent days do not. Both the
+    # live regime today (14 days since the roster change: 12 pairs) and a full history (56 days: 48 pairs).
+    for n_days in (14, 56):
+        n, fired, fired_iid = 120, 0, 0
+        for seed in range(n):
+            d = days_from(ar1(1000 + seed, 0.3, n=n_days))
+            fired += lp.progress("s", d, {}, TODAY).direction != "flat"
+            fired_iid += lp.progress("s", d, {}, TODAY, rho=0.0).direction != "flat"
+        assert fired / n <= 0.07 and fired_iid > fired, (n_days, fired, fired_iid)
 
 
 def test_rho_zero_is_the_plain_welch_test():
     skills = [0.10 + 0.02 * i + w for i, w in enumerate(WIGGLE * 2)]
     p = lp.progress("s", days_from(skills), rosters(14), TODAY, rho=0.0)
-    assert p.rho == 0.0 and math.isclose(p.se, p.se_iid)
+    assert p.rho == 0.0 and p.rho_source == "given" and math.isclose(p.se, p.se_iid)
 
 
 def test_estimate_rho_sees_spells_but_not_steps_or_trends():
@@ -196,14 +199,18 @@ def test_estimate_rho_sees_spells_but_not_steps_or_trends():
     def pts(xs):
         return [(end - len(xs) + i, x) for i, x in enumerate(xs)]
 
-    assert lp.estimate_rho(pts(ar1(5, 0.6, n=196)), end)[0] > 0.4  # 28 weeks of spells
-    assert lp.estimate_rho(pts(ar1(6, 0.0, n=196)), end)[0] == 0.0
-    assert lp.estimate_rho(pts([0.3 + w for w in WIGGLE] * 8), end) == (0.0, 48)
+    assert lp.moment_rho(pts(ar1(5, 0.6, n=196)), end)[0] > 0.4  # 28 weeks of spells
+    assert lp.moment_rho(pts(ar1(6, 0.0, n=196)), end)[0] == 0.0
+    assert lp.moment_rho(pts([0.3 + w for w in WIGGLE] * 8), end) == (0.0, 48)
     # A step at a window edge, or a steady trend, is change, not persistence.
-    assert lp.estimate_rho(pts([0.05 + w for w in WIGGLE] * 4 + [0.35 + w for w in WIGGLE] * 4), end)[0] == 0.0
-    assert lp.estimate_rho(pts([0.1 + 0.01 * i + w for i, w in enumerate(WIGGLE * 8)]), end)[0] == 0.0
+    assert lp.moment_rho(pts([0.05 + w for w in WIGGLE] * 4 + [0.35 + w for w in WIGGLE] * 4), end)[0] == 0.0
+    assert lp.moment_rho(pts([0.1 + 0.01 * i + w for i, w in enumerate(WIGGLE * 8)]), end)[0] == 0.0
+    # The used rho is shrunk toward the prior: 12 pairs alone are too noisy to trust down to 0.
+    rho, pairs, source = lp.estimate_rho(pts([0.3 + w for w in WIGGLE] * 2), end)
+    assert source == "estimated" and pairs == 12
+    assert math.isclose(rho, lp.RHO_PRIOR_WEIGHT * lp.RHO_PRIOR / (12 + lp.RHO_PRIOR_WEIGHT))
     # Too few consecutive pairs: the prior, not a guess from 3 points.
-    assert lp.estimate_rho(pts([0.3, 0.2, 0.4, 0.3, 0.25]), end) == (lp.RHO_PRIOR, 4)
+    assert lp.estimate_rho(pts([0.3, 0.2, 0.4, 0.3, 0.25]), end) == (lp.RHO_PRIOR, 4, "prior")
 
 
 def test_roster_keys_see_a_config_change_under_the_same_names():

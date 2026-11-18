@@ -12,8 +12,9 @@ Baseline 2026-11-18 (before #3691): cabinet flat 8, insufficient 12 (model chang
 (cut 2.33) flat; office better once (11-16, +0.228 t 2.86, cut 2.18), today +0.031 t 0.34 flat.
 
 Baseline 2026-11-18 (after #3691: roster key carries gate_version + covariates; AR(1) standard error):
-cabinet flat 3, insufficient 17 (also the 10-23 gate v2->v3 change now counts), today -0.073 se 0.114 (Welch 0.078)
-t -0.64 (cut 2.41) rho 0.37 flat; office flat 3, today +0.031 t 0.34 (cut 2.19) rho 0.00 flat. Office's 11-16
+cabinet flat 3, insufficient 17 (also the 10-23 gate v2->v3 change now counts), today -0.073 se 0.109 (Welch 0.078)
+t -0.67 (cut 2.43) rho 0.32 flat; office flat 3, today +0.031 se 0.112 (Welch 0.092) t 0.28 (cut 2.22) rho 0.20
+flat. Office's 11-16
 "better" is gone because of the roster key, not rho: the gate rule changed on 11-03 (v4), the champion started
 serving on 11-06, so the prior window loses 11-02..11-03 (+0.183; Welch t 2.03 < 2.32 even at rho 0).
 """

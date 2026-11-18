@@ -31,11 +31,12 @@ Rules, each from the metric gate (recorded in the PR report):
   quadratic form. ``rho`` comes from the longer history (``RHO_HISTORY_DAYS``, same roster only): residuals of each
   7-day block after removing its own mean and linear trend (so a real trend or step does not read as persistence),
   lag-1 over consecutive days, then the ``rho`` whose exact expected value of that statistic matches (moment
-  matching, so it is not biased low at small n). Clamped to [0, ``RHO_MAX``]; under ``RHO_MIN_PAIRS`` pairs it is
-  ``RHO_PRIOR``. At ``rho`` = 0 every number equals the plain Welch test. Simulated null false-move rate per daily
-  look (``evals/run_learning_progress_null_eval.py``, 2026-11-18): 4.7-5.3% at rho 0-0.3 (Welch 5.9-11.9%), 6.7% at
-  rho 0.5 (Welch 19.8%). Known limit: the reading is still re-checked daily on overlapping windows. Prime reads each
-  look's ``p_value``, so the 5% is a per-look rate; per week (any of 7 looks) it is about 18-23% (Welch 23-40%).
+  matching, so it is not biased low at small n), clamped to [0, ``RHO_MAX``], then shrunk toward ``RHO_PRIOR``
+  (worth ``RHO_PRIOR_WEIGHT`` pairs); under ``RHO_MIN_PAIRS`` pairs it is ``RHO_PRIOR``. At ``rho`` = 0 every number equals the plain Welch test. Simulated null false-move rate per daily
+  look (``evals/run_learning_progress_null_eval.py``, 2026-11-18), 14 or 56 days of history: 1.7-5.1% at rho 0-0.3
+  (Welch 4.0-13.3%), 6.9-9.4% at rho 0.5 (Welch 20-21%). Known limit: the reading is still re-checked daily on
+  overlapping windows. Prime reads each look's ``p_value``, so the 5% is a per-look rate; per week (any of 7 looks)
+  it is about 12-21% at rho 0-0.3 (Welch 19-47%).
 * **Too small to matter reads flat too.** While the champion serves the baseline, skill sits at about 0 with almost
   no spread, so a 0.02 drift passes the t rule (cabinet "worse" on 2026-11-02, live replay). A change must also be
   at least ``MIN_EFFECT`` in skill.
@@ -62,7 +63,9 @@ MIN_EFFECT = 0.05  # [default] |progress| below this reads flat: 5% of the basel
 RHO_HISTORY_DAYS = 56  # days of history (same roster) the day-to-day correlation is estimated from
 RHO_BLOCK_DAYS = 7  # residual blocks, aligned to the comparison windows
 RHO_MIN_PAIRS = 12  # consecutive-day residual pairs needed to estimate rho; fewer: RHO_PRIOR
-RHO_PRIOR = 0.3  # [default] live bias-corrected lag-1 2026-11-18 was about 0.2 (cabinet) and 0.4 (office)
+RHO_PRIOR = 0.3  # [default] live 2026-11-18, 12 pairs each: moment-matched 0.37 (cabinet), 0.00 (office); raw
+#                  lag-1 +0.07 / +0.21. In simulation the Welch rule's false moves double by rho 0.3.
+RHO_PRIOR_WEIGHT = 24  # [default] the prior counts as this many day pairs: 12 live pairs alone swing 0 <-> 0.4
 RHO_MAX = 0.6  # [default] clamp: 7-day blocks cannot tell rho above this apart
 
 Direction = Literal["better", "worse", "flat"]
@@ -104,11 +107,13 @@ class SeriesProgress:
     recent: Window
     prior: Window
     roster_changed_on: Optional[date]
-    # Day-to-day correlation used for the standard error, and how many consecutive-day residual pairs estimated it
-    # (0: too few, ``RHO_PRIOR`` used, or given by the caller). ``se_iid`` is the plain Welch SE, for comparison.
+    # Day-to-day correlation used for the standard error; how many consecutive-day residual pairs informed it; and
+    # where it came from: "estimated" (history, shrunk toward RHO_PRIOR), "prior" (too few pairs), "given" (caller).
+    # ``se_iid`` is the plain Welch SE, for comparison.
     rho: Optional[float] = None
     rho_pairs: Optional[int] = None
     se_iid: Optional[float] = None
+    rho_source: Optional[Literal["estimated", "prior", "given"]] = None
 
 
 def last_roster_change(rosters: dict[date, frozenset[str]]) -> Optional[date]:
@@ -165,13 +170,14 @@ def _residual_maker(ts: Sequence[int]) -> np.ndarray:
     return np.eye(len(t)) - x @ np.linalg.pinv(x)
 
 
-def estimate_rho(points: Sequence[tuple[int, float]], end: int) -> tuple[float, int]:
-    """Day-to-day AR(1) correlation of skill, from ``(day ordinal, skill)`` points before ``end``.
+def moment_rho(points: Sequence[tuple[int, float]], end: int) -> tuple[Optional[float], int]:
+    """Day-to-day AR(1) correlation of skill, from ``(day ordinal, skill)`` points before ``end``, unshrunk.
 
     Each ``RHO_BLOCK_DAYS`` block (aligned to ``end``) loses its own mean and linear trend, so a step between
     windows or a real trend does not read as persistence. The statistic is lag-1 over consecutive days pooled over
     blocks; ``rho`` is the value whose exact AR(1) expectation of that statistic (ratio of quadratic-form
-    expectations) equals it. Returns (rho, pairs); pairs under ``RHO_MIN_PAIRS``: (``RHO_PRIOR``, pairs)."""
+    expectations) equals it, clamped to [0, ``RHO_MAX``]. Returns (rho, pairs); (None, pairs) under
+    ``RHO_MIN_PAIRS`` pairs or with no residual spread."""
     by_block: dict[int, list[tuple[int, float]]] = {}
     for o, v in points:
         if o < end:
@@ -192,7 +198,7 @@ def estimate_rho(points: Sequence[tuple[int, float]], end: int) -> tuple[float, 
         num, den = num + float(e @ lag @ e), den + float(e @ e)
         parts.append((ts, m, m @ lag @ m))
     if pairs < RHO_MIN_PAIRS or not den > 0:
-        return RHO_PRIOR, pairs
+        return None, pairs
     r = num / den
 
     def expected(rho: float) -> float:
@@ -209,6 +215,16 @@ def estimate_rho(points: Sequence[tuple[int, float]], end: int) -> tuple[float, 
         mid = (lo + hi) / 2
         lo, hi = (mid, hi) if expected(mid) < r else (lo, mid)
     return (lo + hi) / 2, pairs
+
+
+def estimate_rho(points: Sequence[tuple[int, float]], end: int) -> tuple[float, int, Literal["estimated", "prior"]]:
+    """``moment_rho`` shrunk toward ``RHO_PRIOR`` (weight ``RHO_PRIOR_WEIGHT`` pairs); the prior alone when it has
+    no estimate. 12 pairs (two weeks, live today) give a third of the weight to the data, 48 pairs two thirds:
+    without shrinkage a 12-pair estimate clamps to 0 (plain Welch) about 30% of the time."""
+    r, pairs = moment_rho(points, end)
+    if r is None:
+        return RHO_PRIOR, pairs, "prior"
+    return (pairs * r + RHO_PRIOR_WEIGHT * RHO_PRIOR) / (pairs + RHO_PRIOR_WEIGHT), pairs, "estimated"
 
 
 def _window_moments(ts: Sequence[int], xs: Sequence[float], rho: float) -> tuple[float, float, float]:
@@ -252,9 +268,9 @@ def progress(series_id: str, days: Sequence[DayStat], rosters: dict[date, frozen
         return SeriesProgress(series_id, "insufficient", why, None, None, None, None, None, None, rw, pw, change)
     if rho is None:
         history = usable(today - timedelta(days=RHO_HISTORY_DAYS), recent_end)
-        rho, rho_pairs = estimate_rho(history, today.toordinal())
+        rho, rho_pairs, rho_source = estimate_rho(history, today.toordinal())
     else:
-        rho_pairs = 0
+        rho_pairs, rho_source = 0, "given"
     lp = rw.mean_skill - pw.mean_skill  # type: ignore[operator]
     se_iid = math.sqrt(_var(recent) / len(recent) + _var(prior) / len(prior))
     rt, pt = [o for o, _ in recent_pts], [o for o, _ in prior_pts]
@@ -264,7 +280,7 @@ def progress(series_id: str, days: Sequence[DayStat], rosters: dict[date, frozen
     se = math.sqrt(max(vr + vp - 2 * cov, 0.0))
     if se > 0:
         t = lp / se
-        df = (vr + vp) ** 2 / ((vr ** 2 / dfr if vr else 0.0) + (vp ** 2 / dfp if vp else 0.0))
+        df = se ** 4 / ((vr ** 2 / dfr if vr else 0.0) + (vp ** 2 / dfp if vp else 0.0))
         t_crit = float(student_t.ppf(1 - ALPHA / 2, df))
         p_value = float(2 * student_t.sf(abs(t), df))
     else:  # no spread on either side: any difference is exact
@@ -273,4 +289,4 @@ def progress(series_id: str, days: Sequence[DayStat], rosters: dict[date, frozen
     moved = abs(lp) >= MIN_EFFECT and abs(t) > t_crit
     direction: Direction = ("better" if lp > 0 else "worse") if moved else "flat"
     return SeriesProgress(series_id, "ok", None, lp, se, t if math.isfinite(t) else None, t_crit, p_value, direction,
-                          rw, pw, change, rho, rho_pairs, se_iid)
+                          rw, pw, change, rho, rho_pairs, se_iid, rho_source)

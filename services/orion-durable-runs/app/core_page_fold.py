@@ -37,7 +37,8 @@ from zoneinfo import ZoneInfo
 from orion.memory.pages import juniper as _juniper
 from orion.memory.pages.registry import FOLD_SPECS, selected_specs  # noqa: F401 -- re-exported for main.py
 from orion.memory.pages.fold import (
-    CURRENT_PAGE_SQL, MAX_VERSION_SQL, PRODUCED_BY, FoldSpec, current_page_from_row, handle_map,
+    CURRENT_PAGE_SQL, MAX_VERSION_SQL, PRODUCED_BY, FoldSpec, current_page_from_row, handle_map, retry_note,
+    with_retry_note,
 )
 
 logger = logging.getLogger("orion-durable-runs.core_page_fold")
@@ -101,6 +102,9 @@ class CorePageFolder:
         # The Denver date this process last published a page. orion-sql-writer writes the row
         # asynchronously; a slow or rejecting writer must not make the next tick fold again.
         self._folded_on: date | None = None
+        # An over-cap rejection today: the next attempt's prompt says the word count and asks for a
+        # shorter page (fold.retry_note). Cleared on the next Denver day.
+        self._retry_note: tuple[date, str] | None = None
         # Shared by every page's folder (main.py passes one lock), so the nightly loop and a manual
         # trigger for another page never hold the fold seat at the same time.
         self._lock = lock or asyncio.Lock()
@@ -159,7 +163,8 @@ class CorePageFolder:
             result.decision = "no_sources"
             return result
         handles = handle_map(sources)
-        prompt = self.spec.prompt(sources, current)
+        note = self._retry_note[1] if self._retry_note and self._retry_note[0] == today else None
+        prompt = with_retry_note(self.spec.prompt(sources, current), note)
         if not dry_run:
             self._attempts = {today: self._attempts.get(today, 0) + 1}
         started = time.monotonic()
@@ -178,6 +183,9 @@ class CorePageFolder:
         result.stored_text = check.stored_text
         if not check.ok:
             result.decision = "rejected"
+            fresh = retry_note(check.errors)
+            if fresh:
+                self._retry_note = (today, fresh)
             logger.warning("core_page_fold_rejected %s", json.dumps(result.as_dict(with_text=False)))
             return result
         version = top_version + 1

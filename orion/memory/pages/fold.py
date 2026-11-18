@@ -26,6 +26,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 PRODUCED_BY = "core_page_fold"
 WORD_CAP = 350
+# What every page's prompt aims at. Well under WORD_CAP: the model runs long (page:lately's first two
+# live folds were 353 and 354 words against a prompt that asked for ~220).
+TARGET_WORDS = 280
 MIN_SENTENCES = 3
 
 PERSON_FACT_KIND = "person_fact"
@@ -375,6 +378,31 @@ def core_page_from_payload(payload: Any, *, concept_id: str):
         concept_id=str(payload.get("concept_id") or concept_id), version=version, text=text,
         written_at=str(payload.get("created_at") or "")[:10] or None,
         evidence_count=len(refs) if isinstance(refs, list) else 0)
+
+
+def length_rule() -> str:
+    """The length rule every page's prompt ends its rules with (same words on every page)."""
+    return (f"About {TARGET_WORDS} words. A page over {WORD_CAP} words is thrown away, so stop well before "
+            "that. Plain paragraphs. No title, no list, no preamble, no closing note.")
+
+
+_OVER_CAP = re.compile(r"^over_cap: (\d+) words > (\d+)$")
+
+
+def retry_note(errors: Sequence[str]) -> str | None:
+    """A rejected page's errors -> the line the next attempt's prompt ends with, or None. Only for an
+    over-cap page: it says the word count and asks for a shorter page."""
+    for err in errors:
+        m = _OVER_CAP.match(str(err))
+        if m:
+            return (f"Your last page was {m.group(1)} words, over the {m.group(2)}-word cap, and was thrown "
+                    f"away. Write a shorter page: about {TARGET_WORDS} words. Cut the least important "
+                    "sentences; keep every sentence cited.")
+    return None
+
+
+def with_retry_note(prompt: str, note: str | None) -> str:
+    return f"{prompt}\n\n{note}" if note else prompt
 
 
 def source_lines(sources: Sequence[PageSource]) -> list[str]:

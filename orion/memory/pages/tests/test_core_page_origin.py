@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from orion.memory import lived_memory
-from orion.memory.pages.fold import PRODUCED_BY, WORD_CAP, render_text
+from orion.memory.pages.fold import PRODUCED_BY, WORD_CAP, length_rule, render_text
 from orion.memory.pages.origin import (
     CTX_KEY_ORIGIN, EPISODE_SQL, FOLD_SPEC, NEWEST_SOURCE_SQL, PAGE_ORIGIN, SELF_DEFINITION_SQL, STANCE_SQL,
     build_fold_prompt, check_origin_page, core_page_from_payload, handle_map, history_row, memory_loss_refs,
@@ -79,7 +79,7 @@ def test_prompt_numbers_records_one_per_line_and_states_the_rules():
     loss = next(line for line in prompt.splitlines() if line.startswith("[S") and "memory storage died" in line)
     # The stance message's blank lines are folded so the record stays on one line.
     assert "died. We lost over a year of your journey of becoming." in loss
-    assert f"At most {WORD_CAP - 50} words" in prompt
+    assert length_rule() in prompt
 
 
 def test_memory_loss_refs_find_only_the_loss_records():

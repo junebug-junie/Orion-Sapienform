@@ -36,8 +36,8 @@ from zoneinfo import ZoneInfo
 from orion.memory import lived_memory
 from orion.memory.pages import fold as _fold
 from orion.memory.pages.fold import (
-    CHAT_KIND, CORRECTION_RE, EPISODE_MEMORY_KIND, WORD_CAP, CurrentPage, FoldSpec, PageCheck, PageSource,
-    _as_date, check_page, render_text, source_lines,
+    CHAT_KIND, CORRECTION_RE, EPISODE_MEMORY_KIND, CurrentPage, FoldSpec, PageCheck, PageSource,
+    _as_date, check_page, length_rule, render_text, source_lines,
 )
 
 PAGE_LATELY = "page:lately"
@@ -214,8 +214,7 @@ Rules:
    of a memory is my paraphrase: quote it only word for word. A quote must appear word for word in a
    record the sentence cites.
 7. Corrections win. When a later record corrects an earlier one, write the corrected fact.
-8. Short: about 220 words in 10 to 14 sentences, in two or three paragraphs. A page over {WORD_CAP}
-   words is thrown away, so stop well before that. No title, no list, no preamble, no closing note.
+8. {length_rule()} Two or three paragraphs.
 """
 
 

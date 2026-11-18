@@ -31,7 +31,8 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from orion.memory.pages.fold import (  # noqa: E402
-    CURRENT_PAGE_SQL, MAX_VERSION_SQL, PRODUCED_BY, current_page_from_row, handle_map,
+    CURRENT_PAGE_SQL, MAX_VERSION_SQL, PRODUCED_BY, current_page_from_row, handle_map, retry_note,
+    with_retry_note,
 )
 from orion.memory.pages.registry import FOLD_SPECS as SPECS  # noqa: E402
 
@@ -114,8 +115,10 @@ def main() -> int:
         print(prompt)
         return 0
     tries = []
+    note = None   # like the nightly fold: an over-cap retry says the word count and asks for less
     for attempt in range(1, max(1, args.attempts) + 1):
-        reply = call_gateway(args.gateway, args.route, prompt, max_tokens=args.max_tokens, timeout=args.timeout)
+        reply = call_gateway(args.gateway, args.route, with_retry_note(prompt, note), max_tokens=args.max_tokens,
+                             timeout=args.timeout)
         check = spec.check(reply["text"], handles)
         tries.append({"attempt": attempt, "reply": reply, "check": check.as_dict(), "errors": check.errors})
         print(f"attempt {attempt}: model={reply['model']} latency_ms={reply['latency_ms']} "
@@ -124,6 +127,7 @@ def main() -> int:
             break
         for err in check.errors[:10]:
             print(f"  - {err}", file=sys.stderr)
+        note = retry_note(check.errors) or note
     print("\n=== %s (would be version %d; NOT written) ===\n" % (spec.concept_id, top + 1))
     print("(page text withheld: --no-page)" if args.no_page else check.clean_text)
     print("\n=== check ===")

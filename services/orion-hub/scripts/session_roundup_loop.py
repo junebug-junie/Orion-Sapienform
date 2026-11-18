@@ -555,7 +555,7 @@ class SessionRoundupLoop:
             path = core.one_line((item or {}).get("path"), 500)
             if not text:
                 continue
-            text, cut = core.cap_text(text, core.SPEC_MAX_CHARS, what="spec")
+            text, cut = core.cap_spec(text, core.SPEC_MAX_CHARS, path=path, branch=core.one_line(branch, 300))
             if cut:
                 notes.append(f"Hub cut the spec {path} to {core.SPEC_MAX_CHARS} characters.")
             specs.append({"path": path, "text": text, "cut": cut})

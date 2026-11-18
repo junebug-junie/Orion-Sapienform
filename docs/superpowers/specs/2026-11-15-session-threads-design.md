@@ -102,16 +102,20 @@ Rules that carry weight:
   the strike count (2026-11-18, thread 455a41af5b44 Q3; it was the oldest message before).
 - A prompt the GPU pool refuses as bigger than the lane (`min_ctx_exceeds_class`,
   `core.is_sizing_refusal`) is Hub's sizing, not the thread's (2026-11-18, Q6): no strike, Hub halves
-  its prompt budget (`SessionRoundupLoop.budget_chars`, floor 8,000 characters, back to
-  `HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS` on restart). At the floor it is a strike.
+  its prompt budget, and caps it at 2 characters per token of the lane's largest window when the
+  refusal names it (`core.shrunk_budget`; `SessionRoundupLoop.budget_chars`, floor 8,000 characters).
+  The budget returns to `HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS` 24 h after the last such refusal, or on
+  restart. At the floor it is a strike.
 - Orion's questions reach a session by thread, not by the `gh pr create` event: the prompt hook asks
   Hub for undelivered Orion turns on any thread this session wrote on, or on this session's branch.
   A later send for the same PR (`orion_session_thread.py send --pr N`, from any session) joins the same
   thread, so its sender still gets the open questions. A plain `git push` sends nothing.
 - Delivery is once per SESSION, not once per thread (2026-11-18, Q5): `POST .../delivered` carries the
   claiming session id (`meta.delivered_to`). A question turn stays pending for a new session on the
-  thread or branch until a session writes on the thread after it (at most 20 sessions). "No questions"
-  and closing notes ask nothing: handed back once in total.
+  thread or branch until the thread moves on: a session writes on it after the questions, or Orion
+  writes a later turn there (a closing note). At most 20 sessions, at most 14 days old, and only turns
+  claimed under this rule (a turn delivered before it shipped stays delivered). "No questions" and
+  closing notes ask nothing: handed back once in total.
 - The prompt tells Orion when a thread's pull request is closed or merged (a `[Hub]` line above its
   fence, from GitHub's `GET /pulls/<n>`): Hub posts a PR comment only on an open PR, so there the
   questions reach only the session hook and Hub chat (2026-11-18, Q2).

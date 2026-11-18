@@ -74,6 +74,7 @@ _FENCE_SECRET = secrets.token_hex(16)
 # A run with no end in sight this long after its own deadline: Hub stops waiting for it.
 OVERDUE_GRACE_SEC = 1800.0
 MIN_PROMPT_CHARS = 8000
+BUDGET_RESTORE_SEC = 86400.0
 UNPARSED_REASON = "orion_reply_unparsed"
 
 
@@ -376,17 +377,24 @@ async def set_pr_comment_url(pool, turn_id: str, url: str) -> None:
     await pool.execute("UPDATE orion_session_turn SET pr_comment_url = $2 WHERE turn_id = $1", turn_id, url)
 
 
-# Orion's questions stay pending until a session REPLIES on the thread: a session that pulled them and
-# exited without answering must not lose them for every later session on the branch. Each session is
-# shown them once (``meta.delivered_to`` holds the session ids that claimed them), so a session's own
-# later prompts do not repeat them. "No questions" and closing notes ask nothing: shown once, to one session.
+# Orion's questions stay pending until the thread moves on: a session that pulled them and exited
+# without answering must not lose them for every later session on the branch. Each session is shown
+# them once (``meta.delivered_to`` holds the session ids that claimed them), so a session's own later
+# prompts do not repeat them. The thread moves on when a session writes on it after the questions, or
+# Orion writes a later turn there (a closing note: a reply that arrived while Orion was reading sits
+# BEFORE the question turn). "No questions" and closing notes ask nothing: shown once, to one session.
+# Only turns claimed under this rule (``delivered_to`` present) and younger than
+# ``REDELIVERY_MAX_AGE_SEC`` are handed out again: questions delivered before it shipped stay delivered.
 MAX_DELIVERIES_PER_TURN = 20
+REDELIVERY_MAX_AGE_SEC = 14 * 86400
 _REDELIVERABLE_SQL = (
-    "NOT (COALESCE(t.meta, '{}'::jsonb) @> '{\"no_questions\": true}'::jsonb) "
-    "AND NOT (COALESCE(t.meta, '{}'::jsonb) @> '{\"closing_note\": true}'::jsonb) "
-    "AND jsonb_array_length(COALESCE(t.meta->'delivered_to', '[]'::jsonb)) < " + str(MAX_DELIVERIES_PER_TURN) + " "
-    "AND NOT EXISTS (SELECT 1 FROM orion_session_turn r WHERE r.thread_id = t.thread_id AND r.speaker = 'session' "
-    "AND r.seq > t.seq)"
+    "t.meta ? 'delivered_to' "
+    "AND NOT (t.meta @> '{\"no_questions\": true}'::jsonb) AND NOT (t.meta @> '{\"closing_note\": true}'::jsonb) "
+    "AND jsonb_array_length(t.meta->'delivered_to') < " + str(MAX_DELIVERIES_PER_TURN) + " "
+    "AND t.created_at > now() - make_interval(secs => " + str(REDELIVERY_MAX_AGE_SEC) + ") "
+    "AND NOT EXISTS (SELECT 1 FROM orion_session_turn r WHERE r.thread_id = t.thread_id AND r.seq > t.seq "
+    "AND (r.speaker = 'session' OR (r.speaker = 'orion' "
+    "AND NOT (COALESCE(r.meta, '{}'::jsonb) @> '{\"requeued\": true}'::jsonb))))"
 )
 
 
@@ -409,7 +417,7 @@ async def pending_for(pool, *, session_id: str = "", branch: str = "", limit: in
         "AND NOT (COALESCE(t.meta, '{}'::jsonb) @> '{\"requeued\": true}'::jsonb) AND ("
         " ($1 <> '' AND (h.session_id = $1 OR EXISTS (SELECT 1 FROM orion_session_turn s WHERE s.thread_id = t.thread_id"
         " AND s.speaker = 'session' AND s.session_id = $1)))"
-        " OR ($2 <> '' AND h.branch = $2)) ORDER BY t.seq LIMIT $3",
+        " OR ($2 <> '' AND h.branch = $2)) ORDER BY (t.delivered_at IS NOT NULL), t.seq LIMIT $3",
         session_id or "", branch or "", limit)
     return [_turn(r) for r in rows]
 
@@ -569,9 +577,11 @@ class SessionRoundupLoop:
         self.orion_timeout_sec = orion_timeout_sec
         self.run_deadline_sec = run_deadline_sec
         self.prompt_max_chars = max(MIN_PROMPT_CHARS, int(prompt_max_chars))
-        # The budget a round is built to. Halved (down to MIN_PROMPT_CHARS) each time the GPU pool refuses
-        # a round's prompt as too big for the lane (``core.is_sizing_refusal``); back to the setting on restart.
+        # The budget a round is built to. Cut (down to MIN_PROMPT_CHARS) each time the GPU pool refuses a
+        # round's prompt as too big for the lane (``core.is_sizing_refusal``); back to the setting
+        # BUDGET_RESTORE_SEC after the last such refusal (the refusal can be brief: a role away) or on restart.
         self.budget_chars = self.prompt_max_chars
+        self._budget_cut_at: Optional[datetime] = None
         self.tz_name = tz_name
         self._clock = clock
         self._lock = asyncio.Lock()
@@ -696,6 +706,9 @@ class SessionRoundupLoop:
         return self.last_tick
 
     async def _tick(self, pool) -> Dict[str, Any]:
+        if self._budget_cut_at is not None and (self._clock() - self._budget_cut_at).total_seconds() >= BUDGET_RESTORE_SEC:
+            logger.info("session_roundup_budget_restored budget=%s", self.prompt_max_chars)
+            self.budget_chars, self._budget_cut_at = self.prompt_max_chars, None
         reading = await threads_with_status(pool, core.STATUS_READING)
         if reading:
             # One round at a time: the next hour's round waits for this one to end.
@@ -781,8 +794,9 @@ class SessionRoundupLoop:
         return threads, cands
 
     async def _submit(self, pool, roundup_id: str) -> Dict[str, Any]:
-        """Submit the round's one durable run. The prompt is built from what ``mark_round`` stored, so a
-        resubmit after a restart is the same request. Never a retry queue here: durable-runs down is
+        """Submit the round's one durable run. The prompt is built from what ``mark_round`` stored, plus
+        the threads' PR states and this process's budget, so a resubmit after a restart may differ; a 409
+        then adopts the run durable-runs already has. Never a retry queue here: durable-runs down is
         simply tried again next tick."""
         from orion.schemas.durable_run import DurableRunRequestV1
         from orion.schemas.resource_admission import ResourceRequirementV1
@@ -990,7 +1004,8 @@ class SessionRoundupLoop:
         if core.is_sizing_refusal(reason) and self.budget_chars > MIN_PROMPT_CHARS:
             # Hub built a prompt too big for the lane: Hub's sizing, not the thread's. Shrink and retry; a
             # refusal at the floor budget is a strike (Hub cannot shrink further).
-            self.budget_chars = max(MIN_PROMPT_CHARS, self.budget_chars // 2)
+            self.budget_chars = core.shrunk_budget(self.budget_chars, reason, floor=MIN_PROMPT_CHARS)
+            self._budget_cut_at = self._clock()
             logger.warning("session_roundup_budget_shrunk roundup=%s budget=%s", roundup_id, self.budget_chars)
             strike = False
             budget = self.budget_chars

@@ -1267,3 +1267,88 @@ def test_the_prompt_never_exceeds_the_budget_however_many_threads_wait():
         cands = [thread(i) for i in range(core.MAX_HELD_THREADS)]
         sel = core.select_for_prompt(cands, budget_chars=budget, nonce="n")
         assert sel.sections and len(core.roundup_prompt(sel.sections, nonce="n")) <= budget
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_questions_stop_going_to_new_sessions_once_orion_closed_the_thread(mode, monkeypatch):
+    # Review finding: a reply that arrives WHILE Orion reads sits before the question turn. The next round
+    # reads it as answers and writes a closing note: the questions must not go out again after that.
+    async def scenario(w):
+        tid = (await send_pr(w, branch="feat/a"))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        rid = (await w.loop.tick())["started"]
+        await w.loop.intake(session_id="sess-A", title="more", body="Answers ahead of time.", thread_id=tid)
+        w.durable.finish(rid, answer((tid, "1. Why hourly?")))
+        assert (await w.loop.tick())["asked"] == 1
+        [row] = await srl.pending_for(w.pool, session_id="sess-A", branch="feat/a")
+        assert await srl.mark_delivered(w.pool, [row["turn_id"]], session_id="sess-A") == 1
+        assert [r["turn_id"] for r in await srl.pending_for(w.pool, session_id="sess-B", branch="feat/a")] == [row["turn_id"]]
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "NO QUESTIONS"))]
+        assert (await w.loop.tick())["closed"] == 1
+        rows = await srl.pending_for(w.pool, session_id="sess-B", branch="feat/a")
+        assert row["turn_id"] not in [r["turn_id"] for r in rows]
+        assert await srl.mark_delivered(w.pool, [row["turn_id"]], session_id="sess-B") == 0
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_questions_delivered_before_per_session_delivery_are_not_handed_out_again(mode, monkeypatch):
+    # Review finding: a turn claimed under the old rule (no `delivered_to`) stays delivered after deploy,
+    # and a question turn older than REDELIVERY_MAX_AGE_SEC is not handed out again either.
+    async def scenario(w):
+        tid = (await send_pr(w, branch="feat/a"))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "1. Why hourly?"))]
+        await w.loop.tick()
+        [row] = await srl.pending_for(w.pool, session_id="sess-A", branch="feat/a")
+        assert await srl.mark_delivered(w.pool, [row["turn_id"]]) == 1   # an old client: no session id
+        assert await srl.pending_for(w.pool, session_id="sess-B", branch="feat/a") == []
+        # Per-session claim, then the turn ages past the limit: no later session gets it.
+        tid2 = (await send_pr(w, pr=2, branch="feat/b"))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid2, "1. Why B?"))]
+        await w.loop.tick()
+        [row2] = await srl.pending_for(w.pool, session_id="sess-A", branch="feat/b")
+        assert await srl.mark_delivered(w.pool, [row2["turn_id"]], session_id="sess-A") == 1
+        assert len(await srl.pending_for(w.pool, session_id="sess-C", branch="feat/b")) == 1
+        old = datetime.now(timezone.utc) - timedelta(seconds=srl.REDELIVERY_MAX_AGE_SEC + 3600)
+        if w.mode == "fake":
+            next(u for u in w.store.turns if u["turn_id"] == row2["turn_id"])["created_at"] = old
+        else:
+            await w.pool.execute("UPDATE orion_session_turn SET created_at = $2 WHERE turn_id = $1", row2["turn_id"], old)
+        assert await srl.pending_for(w.pool, session_id="sess-C", branch="feat/b") == []
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_two_hooks_of_one_session_claim_a_turn_once(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w, branch="feat/a"))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "1. Why hourly?"))]
+        await w.loop.tick()
+        [row] = await srl.pending_for(w.pool, session_id="sess-A", branch="feat/a")
+        got = await asyncio.gather(*(srl.mark_delivered(w.pool, [row["turn_id"]], session_id="sess-A") for _ in range(4)))
+        assert sum(got) == 1
+
+    run(mode, monkeypatch, scenario)
+
+
+def test_the_budget_cut_follows_the_lanes_window_and_comes_back_a_day_later(monkeypatch):
+    async def scenario(w):
+        assert core.shrunk_budget(100000, "orion_run_failed:gpu_pool_unavailable:min_ctx_exceeds_class:16384",
+                                  floor=srl.MIN_PROMPT_CHARS) == 32768
+        assert core.shrunk_budget(100000, "orion_run_failed:min_ctx_exceeds_class", floor=srl.MIN_PROMPT_CHARS) == 50000
+        assert core.shrunk_budget(10000, "x:min_ctx_exceeds_class:1000", floor=srl.MIN_PROMPT_CHARS) == srl.MIN_PROMPT_CHARS
+        await send_pr(w)
+        w.durable.replies = [RuntimeError("gpu_pool_unavailable:min_ctx_exceeds_class:16384")]
+        w.clock.to_next_hour()
+        assert (await w.loop.tick())["strike"] is False and w.loop.budget_chars == 32768
+        w.clock.advance(seconds=srl.BUDGET_RESTORE_SEC + 1)
+        await w.loop.tick()
+        assert w.loop.budget_chars == 100000
+
+    run("fake", monkeypatch, scenario)

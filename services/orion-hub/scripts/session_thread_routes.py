@@ -83,6 +83,9 @@ def _public(row: dict, *, with_spec_text: bool = False) -> dict:
         # The list view and the session hooks need the paths, not 40,000 characters a file.
         out["meta"] = {**meta, "spec": [{"path": s.get("path"), "chars": len(str(s.get("text") or "")),
                                          "cut": bool(s.get("cut"))} for s in meta["spec"] or []]}
+    if isinstance(out.get("meta"), dict) and "delivered_to" in out["meta"]:
+        # Which sessions claimed a turn is Hub's bookkeeping, not another session's business.
+        out["meta"] = {k: v for k, v in out["meta"].items() if k != "delivered_to"}
     for key, value in list(out.items()):
         if hasattr(value, "isoformat"):
             out[key] = value.isoformat()

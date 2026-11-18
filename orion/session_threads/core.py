@@ -552,8 +552,9 @@ def pr_comment_body(*, thread_id: str, questions: str) -> str:
 # Run errors that mean Orion's body never gave the round its turn in time: the GPU pool kept the run
 # waiting past its admission deadline (cabinet heat sheds, a busy lane, a long backlog). They are not
 # strikes (``is_body_refusal``): the thread is held again, its failure count unchanged, and the next
-# round-up tries again. A refusal that is a property of the request itself (``min_ctx_exceeds_class``,
-# ``replay_payload_too_large``, an unknown class) is NOT here: retrying it can never work, so it counts.
+# round-up tries again. A refusal that is a property of the request itself (``replay_payload_too_large``,
+# an unknown class) is NOT here: retrying it can never work, so it counts. ``min_ctx_exceeds_class`` is
+# Hub's own sizing: ``is_sizing_refusal`` below.
 # A deadline hit AFTER a turn was attempted is not here either: the loop writes it as
 # ``workflow_deadline_after_turn`` (a prompt that makes the turn too slow must not retry forever).
 # Sources: services/orion-durable-runs/app/admission_runtime.py (``workflow_deadline`` and
@@ -596,6 +597,22 @@ def is_sizing_refusal(reason: str) -> bool:
         return False
     error = _EXC_PREFIX_RE.sub("", text[len("orion_run_failed:"):].strip(), count=1)
     return any(error == e or error.startswith(e + ":") for e in _SIZING_REFUSAL_ERRORS)
+
+
+_CTX_RE = re.compile(r"min_ctx_exceeds_class:(\d+)")
+# Prompt characters per token of lane context Hub allows itself: about 4 chars a token, and half the
+# lane's window for the prompt (the rest: Orion's system prompt, tool calls, tool results, the answer).
+CHARS_PER_CTX_TOKEN = 2
+
+
+def shrunk_budget(budget_chars: int, reason: str, *, floor: int) -> int:
+    """The prompt budget after a sizing refusal: half of it, and no more than the lane's largest
+    window (``min_ctx_exceeds_class:<ctx>``, in tokens) allows; never below ``floor``."""
+    cut = budget_chars // 2
+    m = _CTX_RE.search(str(reason or ""))
+    if m:
+        cut = min(cut, int(m.group(1)) * CHARS_PER_CTX_TOKEN)
+    return max(floor, cut)
 
 
 def sizing_refusal_text(*, reason: str, budget_chars: int, next_at: Optional[datetime],

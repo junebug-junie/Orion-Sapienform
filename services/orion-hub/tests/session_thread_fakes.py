@@ -194,11 +194,14 @@ class FakeStore:
         if u["delivered_at"] is None:
             return True
         meta = u["meta"]
-        return (bool(session_id) and not meta.get("no_questions") and not meta.get("closing_note")
-                and len(meta.get("delivered_to") or []) < srl.MAX_DELIVERIES_PER_TURN
-                and session_id not in (meta.get("delivered_to") or [])
-                and not any(r["thread_id"] == u["thread_id"] and r["speaker"] == "session" and r["seq"] > u["seq"]
-                            for r in self.turns))
+        return (bool(session_id) and "delivered_to" in meta and not meta.get("no_questions")
+                and not meta.get("closing_note") and len(meta["delivered_to"]) < srl.MAX_DELIVERIES_PER_TURN
+                and session_id not in meta["delivered_to"]
+                # The SQL ages against the database's now(); the fake against the real clock as well.
+                and u["created_at"] > datetime.now(timezone.utc) - timedelta(seconds=srl.REDELIVERY_MAX_AGE_SEC)
+                and not any(r["thread_id"] == u["thread_id"] and r["seq"] > u["seq"] and (
+                    r["speaker"] == "session" or (r["speaker"] == "orion" and r["meta"].get("requeued") is not True))
+                    for r in self.turns))
 
     async def pending_for(self, pool, *, session_id="", branch="", limit=20):
         out = []
@@ -211,9 +214,12 @@ class FakeStore:
                 for s in self.turns))
             if mine or (bool(branch) and h["branch"] == branch):
                 out.append({**{k: copy.deepcopy(u[k]) for k in ("turn_id", "thread_id", "body", "meta", "roundup_id",
-                                                                "pr_comment_url", "created_at", "delivered_at")},
+                                                                "pr_comment_url", "created_at", "delivered_at", "seq")},
                             **{k: h[k] for k in ("title", "branch", "pr_number", "pr_url", "status")}})
-        return out[:limit]
+        out = self._order(out)[:limit]
+        for row in out:
+            row.pop("seq")
+        return out
 
     async def mark_delivered(self, pool, turn_ids, *, session_id=""):
         n = 0
@@ -224,6 +230,9 @@ class FakeStore:
                     u["meta"]["delivered_to"] = list(u["meta"].get("delivered_to") or []) + [session_id]
                 n += 1
         return n
+
+    def _order(self, rows):
+        return sorted(rows, key=lambda r: (r["delivered_at"] is not None, r["seq"]))
 
 
 class FakeDurable:

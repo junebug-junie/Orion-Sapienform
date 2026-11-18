@@ -280,3 +280,14 @@ def test_page_origin_is_guarded_and_its_stored_cites_are_stripped():
 def test_cite_stripping_needs_a_word_boundary_before_the_kind():
     assert mesh_edge.sentences("Odd [circumstance: foo] here.") == ["Odd [circumstance: foo] here."]
     assert mesh_edge.sentences("Odd [stance:x] here.") == ["Odd here."]
+
+
+def test_page_lately_is_guarded_and_its_chat_cites_are_stripped():
+    assert "'page:lately'" in mesh_edge.CORE_PAGES_SQL
+    # A chat-only cite: the regex before page:lately left this one in place.
+    page = "The first snow came while we sat by the window on Monday [chat_history_log:5a08-ff]. Nothing else."
+    assert mesh_edge.sentences(page) == ["The first snow came while we sat by the window on Monday.", "Nothing else."]
+    guard = MeshEdgeGuard.from_texts(guard_texts_from_rows([{"concept_id": "page:lately", "content": page}], []))
+    with pytest.raises(MeshEdgeLeak) as err:
+        guard.check("The first snow came while we sat by the window on Monday.", surface="github")
+    assert err.value.hits[0].source == "page:lately"

@@ -125,7 +125,7 @@ class GroundingCapsuleV1(BaseModel):
     # any downstream check) tell live substrate signal apart from retrieved
     # memory, static identity config, or the user's own message.
     context_provenance: dict[str, str] = Field(default_factory=dict)
-    # Core memory pages (page:anchor, page:juniper, page:origin). ADDITIVE on a model that ignores unknown
+    # Core memory pages (page:anchor, page:juniper, page:origin, page:lately). ADDITIVE on a model that ignores unknown
     # fields (no extra="forbid"), so an old reader drops it and an old producer sends none; the
     # harness prefix renders today's RELATIONSHIP bullets whenever this is empty.
     core_pages: list[CorePageV1] = Field(default_factory=list)

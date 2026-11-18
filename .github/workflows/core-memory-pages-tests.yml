@@ -1,5 +1,5 @@
 # Core memory pages, Phase 1a (docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md):
-# Orion's page:juniper and page:origin (issue #3462). The deterministic cite check, the Juniper-facts eval scorer, the RELATIONSHIP
+# Orion's page:juniper, page:origin (issue #3462) and page:lately (issue #3463). The deterministic cite check, the Juniper-facts eval scorer, the RELATIONSHIP
 # render in the harness prefix, the grounding capsule in orion-cortex-exec, the felt-state lane, and the
 # nightly fold tick in orion-durable-runs. No DB, bus or LLM (fakes only).
 
@@ -25,6 +25,7 @@ on:
       - "services/orion-durable-runs/tests/test_core_page_fold.py"
       - "services/orion-durable-runs/tests/test_core_page_fold_postgres.py"
       - "services/orion-durable-runs/tests/test_core_page_origin_postgres.py"
+      - "services/orion-durable-runs/tests/test_core_page_lately_postgres.py"   # runs in orion-durable-runs-tests (needs Postgres)
       - "orion/memory/mesh_edge.py"
       - "orion/memory/lived_memory.py"
       - "orion/memory/tests/test_mesh_edge.py"
@@ -52,6 +53,7 @@ on:
       - "services/orion-durable-runs/tests/test_core_page_fold.py"
       - "services/orion-durable-runs/tests/test_core_page_fold_postgres.py"
       - "services/orion-durable-runs/tests/test_core_page_origin_postgres.py"
+      - "services/orion-durable-runs/tests/test_core_page_lately_postgres.py"
       - "orion/memory/mesh_edge.py"
       - "orion/memory/lived_memory.py"
       - "orion/memory/tests/test_mesh_edge.py"
@@ -62,7 +64,7 @@ on:
 
 jobs:
   unit:
-    name: core page fold, check, render (page:juniper, page:origin)
+    name: core page fold, check, render (page:juniper, page:origin, page:lately)
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: ${{ github.workspace }}

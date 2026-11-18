@@ -1,8 +1,8 @@
-"""Core memory pages: the nightly fold of Orion's pages (``page:juniper``, ``page:origin``).
+"""Core memory pages: the nightly fold of Orion's pages (``page:juniper``, ``page:origin``, ``page:lately``).
 
 Spec: docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md. The page
 logic (sources, prompt, cite check) is each page's ``FOLD_SPEC`` (``orion/memory/pages/juniper.py``,
-``orion/memory/pages/origin.py``, shared parts in ``orion/memory/pages/fold.py``); this module only
+``orion/memory/pages/origin.py``, ``orion/memory/pages/lately.py``, shared parts in ``orion/memory/pages/fold.py``); this module only
 decides when to fold, makes the one LLM call, and publishes the passing page. One
 ``CorePageFolder`` per page, each with its own once-a-day and attempt counts; ``run_folders_forever``
 ticks them one after another, so two folds never hold the LLM seat at once.

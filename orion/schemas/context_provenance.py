@@ -83,6 +83,14 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "(orion/memory/pages/origin.py); hydrated by the felt-state reader.",
         ),
         _entry(
+            "orion_core_page_lately",
+            "memory_recall",
+            "Latest page:lately row from self_concept_history: Orion's own page 'what has mattered "
+            "lately', folded nightly from cited episode_memory rows of the last 14 days, open "
+            "follow-ups and undistilled Hub chat (orion/memory/pages/lately.py); hydrated by the "
+            "felt-state reader.",
+        ),
+        _entry(
             "orion_core_page_anchor",
             "static_identity_config",
             "Latest page:anchor row from self_concept_history: fixed lines Juniper wrote by hand "

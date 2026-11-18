@@ -146,6 +146,6 @@ orion-recall needs a rebuild to pick up the change (the post-pull rebuild does t
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3676
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

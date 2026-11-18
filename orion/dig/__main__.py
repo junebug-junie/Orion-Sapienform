@@ -1800,13 +1800,11 @@ def cmd_digs(day: date, out: Out, runner=None, claude_home: Path | None = None) 
 
         claude_home = _home()
     transcript: list = []
-    on_disk: set[str] = set()
     if not (claude_home / "projects").is_dir() or not os.access(claude_home / "projects", os.R_OK | os.X_OK):
         unread["background runs (claude transcripts)"] = (
             f"{claude_home / 'projects'} is not readable here; run this in a turn's Bash")
     else:
-        paths, on_disk = digs.candidate_transcripts(claude_home, lo, hi)
-        transcript = digs.read_transcripts(paths, lo, hi)
+        transcript = digs.read_transcripts(digs.candidate_transcripts(claude_home, lo, hi), lo, hi)
     calls = digs.merge(cockpit, transcript)
     sql = digs.lookup_sql(c.correlation_id for c in calls if c.source == "transcript")
     if sql:
@@ -1815,18 +1813,19 @@ def cmd_digs(day: date, out: Out, runner=None, claude_home: Path | None = None) 
         except RuntimeError as exc:
             unread["where each run ran (harness_turn_trace)"] = str(exc)[:200]
     if any(c.needs_link for c in calls):
-        try:
-            digs.link_by_resume_key(calls, psql_rows(runner, digs.link_sql(day)), on_disk)
-        except RuntimeError as exc:
-            unread["which durable run each step was (durable_run_workflow)"] = str(exc)[:200]
+        digs.link_by_resume_key(calls, digs.read_resume_registry(claude_home))
     took = time.monotonic() - t0
     path = out.write(f"digs-{day.isoformat()}", digs.to_file(day, calls, unread))
-    chat = sum(1 for c in calls if c.chat_id)
+    chat = sum(1 for c in calls if c.chat_id or c.chat_pool or c.source == "cockpit" or c.workflow == "chat")
     tail = [f"{len(calls)} dig command(s) ran on {day.isoformat()} (times Denver): {chat} in chat, "
             f"{len(calls) - chat} in background runs; read in {took:.1f} s"]
     tail += [f"UNREAD {name}: {why} (that part is missing, not empty)" for name, why in unread.items()]
     tail.append(f"full list (every call, its whole first result line): {path}")
-    return capped(digs.render(calls), tail="\n".join(tail))
+    try:
+        lines = digs.render(calls)
+    except ValueError as exc:  # the line rule holds: refuse the page, never print a line that breaks it
+        raise DigError(f"digs: {exc} (full list still written: {path})") from exc
+    return capped(lines, tail="\n".join(tail))
 
 
 # --- attention (relative rates, issue #3600) -----------------------------------------------

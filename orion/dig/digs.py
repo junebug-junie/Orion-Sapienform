@@ -19,8 +19,9 @@ Two sources, joined by tool_use id (the same id is in both for a chat turn):
   ``Strain refs: hub:turn:<id>`` line its own motor prompt carries; its workflow is then
   ``harness_turn_trace.workflow`` (a second read-only SELECT). A durable run's step prompt carries no such
   line; its transcript name is ``session_resume.session_id_for(f"{run_id}:{source_tag}", generation)`` (Hub's
-  resume key, as ``dig take-ons`` derives it), so it is matched against the runs of the week before and the
-  source tags turn records used (``harness_turn_trace.workflow`` is the source tag). Plain file reads.
+  resume key, as ``dig take-ons`` derives it), so it is matched exactly through Hub's resume registry
+  (``<claude_home>/orion-resume/*.json``: every key and its last generation); the key's source tag is the
+  workflow. Plain file reads.
 
 The line rule: every printed line is a time, a dig command and a ref (``check_lines``; ``render`` runs it on
 its own output). A source that cannot be read is said in the CLI tail as UNREAD, never shown as 0.
@@ -44,21 +45,24 @@ DIG_RE = re.compile(r"(?<![\w.])-m\s+orion\.dig(?![\w.])")
 # is_dig_command then asks the shell question: is `python ... -m orion.dig` a command the line runs, or only
 # words inside a quoted string or a heredoc (a note written with printf/cat, live 2026-11-17)?
 _PYTHON_RE = re.compile(r"(?:.*/)?python(?:\d+(?:\.\d+)*)?")
-_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n.*?(?:\n\s*\2\s*(?:\n|$)|\Z)", re.S)
-_SHELLS = frozenset({"bash", "sh", "zsh", "/bin/bash", "/bin/sh", "/usr/bin/bash", "/usr/bin/env"})
+# A heredoc body, only when its terminator line exists (so `1 << shift` in Python code is not one).
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n.*?\n\s*\2[ \t]*(?:\n|$)", re.S)
+_SHELLS = frozenset({"bash", "sh", "zsh", "/bin/bash", "/bin/sh", "/usr/bin/bash", "/usr/bin/zsh"})
+# What may stand before a command word: an operator, a keyword, or a wrapper (with its options and values).
+_OPS = frozenset({";", "&", "&&", "|", "||", "|&", "(", ")", ";;", "!", "{", "do", "then", "else", "elif", "if",
+                  "while", "until", "time"})
+_WRAPPERS = frozenset({"env", "timeout", "nice", "nohup", "exec", "sudo", "command", "stdbuf", "ionice"})
+_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
+_WRAPPER_ARG_RE = re.compile(r"-.*|\d+(?:\.\d+)?[smhd]?|[A-Z]+", re.S)  # `timeout -s KILL 120`, `nice -n 5`
 # The run's own correlation id in its motor prompt (orion/harness/prefix.py: "Strain refs: ...";
 # orion/thought/coalition.py anchors a stance to `hub:turn:<correlation_id>`).
 STRAIN_REF_RE = re.compile(r"Strain refs:[^\n]*?hub:turn:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 COMMAND_CHARS = 100
-LEAD_CHARS = 30  # kept before the dig invocation when a long command is cut
 RESULT_CHARS = 80
 RESULT_GRACE_HOURS = 2  # a call at 23:59 may get its result after midnight
 REF_KINDS = ("chat", "harness_turn_trace", "durable_run", "transcript", "cockpit_turn_sighting")
-RUN_DAYS_BEFORE = 7  # a durable run that dug today may have started this long before (retries, resumes)
-TAG_DAYS_BEFORE = 14  # source tags: the workflows turn records named in this window
-MAX_GENERATIONS = 8  # resume generations tried per (run, tag); a lease bump moves a session to `<key>#<n>`
 
 LINE_RE = re.compile(
     r"^\d\d:\d\d:\d\d \S.*? \$ .*(?<![\w.])-m\s+orion\.dig(?![\w.]).* "
@@ -112,51 +116,72 @@ SELECT t.corr AS correlation_id, coalesce(h.workflow, '') AS workflow, (h.correl
 """
 
 
-# Durable runs and source tags that may name a transcript (``link_sql``).
-LINK_SQL = """
-SELECT 'run' AS kind, run_id AS name, coalesce(workflow, '') AS workflow
-  FROM durable_run_workflow
- WHERE created_at >= '{runs_from}'::timestamptz AND created_at < '{hi}'::timestamptz
-UNION ALL
-SELECT DISTINCT 'tag', workflow, ''
-  FROM harness_turn_trace
- WHERE created_at >= ('{tags_from}'::timestamptz AT TIME ZONE 'UTC')
-   AND created_at < ('{hi}'::timestamptz AT TIME ZONE 'UTC')
-   AND coalesce(workflow, '') <> ''
-"""
+def _command_position(tokens: list[str], i: int) -> bool:
+    """Is tokens[i] a command word: first, after an operator/keyword, past assignments and wrappers?"""
+    j = i - 1
+    while j >= 0:
+        tok = tokens[j]
+        if _ASSIGN_RE.fullmatch(tok) or tok in _WRAPPERS:
+            j -= 1
+        elif _WRAPPER_ARG_RE.fullmatch(tok) and any(t in _WRAPPERS for t in tokens[max(0, j - 4):j]):
+            j -= 1
+        else:
+            break
+    return j < 0 or tokens[j] in _OPS or set(tokens[j]) <= set(";&|()")
 
 
-def _runs_dig(tokens: list[str], depth: int) -> bool:
+def _invocation(tokens: list[str], depth: int) -> Optional[str]:
     for i, tok in enumerate(tokens):
+        if not _command_position(tokens, i):
+            continue
         if _PYTHON_RE.fullmatch(tok):
             j = i + 1
             while j < len(tokens) and tokens[j].startswith("-") and tokens[j] != "-m":
                 j += 2 if tokens[j] in ("-X", "-W") else 1  # options that take a value
             if j + 1 < len(tokens) and tokens[j] == "-m" and tokens[j + 1] == "orion.dig":
-                return True
-        # `bash -c "python -P -m orion.dig ..."` runs it too
-        if depth < 2 and tok in _SHELLS and i + 2 < len(tokens) and tokens[i + 1] == "-c" \
-                and DIG_RE.search(tokens[i + 2]) and is_dig_command(tokens[i + 2], depth + 1):
-            return True
-    return False
+                end = j + 2  # up to the next operator or redirection (`2>&1` lexes as 2 >& 1: drop the 2)
+                while end < len(tokens) and not set(tokens[end]) <= set(";&|()<>"):
+                    end += 1
+                if end < len(tokens) and set(tokens[end]) & set("<>") and tokens[end - 1].isdigit() and end - 1 > j + 1:
+                    end -= 1
+                return shlex.join(tokens[i:end])
+        # `bash -c "python -P -m orion.dig ..."` (or -lc) runs it too
+        if depth < 2 and tok in _SHELLS:
+            for k in range(i + 1, min(len(tokens) - 1, i + 4)):
+                flag = tokens[k]
+                if not flag.startswith("-") or flag.startswith("--"):
+                    break
+                if "c" in flag[1:]:
+                    inner = dig_invocation(tokens[k + 1], depth + 1)
+                    if inner:
+                        return inner
+                    break
+    return None
 
 
-def is_dig_command(command: Any, depth: int = 0) -> bool:
-    """True when the shell line runs ``python [opts] -m orion.dig``: not when the words only sit inside a quoted
-    string (``printf '... python -P -m orion.dig help ...'``) or a heredoc body."""
+def dig_invocation(command: Any, depth: int = 0) -> Optional[str]:
+    """The ``python [opts] -m orion.dig ...`` command a shell line runs (re-quoted, up to the next operator), or
+    None when the dig words only sit inside a quoted string (``printf '... python -P -m orion.dig help ...'``),
+    a heredoc body, a comment, or after a non-command word (``echo python -P -m orion.dig ...``).
+
+    Known misses (documented in tests): combined flags ``python -Pm orion.dig`` and a quoted module name."""
     if not isinstance(command, str) or DIG_RE.search(command) is None:
-        return False
-    text = _HEREDOC_RE.sub("\n", command)
+        return None
+    text = _HEREDOC_RE.sub("\n", command).replace("\n", "\n;")  # a newline ends a command (and a comment)
     if DIG_RE.search(text) is None:
-        return False
+        return None
     try:
         lex = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>")
         lex.whitespace_split = True
-        lex.commenters = ""
+        lex.commenters = "#"
         tokens = list(lex)
     except ValueError:  # unbalanced quotes: the shell would refuse it too
-        return False
-    return _runs_dig(tokens, depth)
+        return None
+    return _invocation(tokens, depth)
+
+
+def is_dig_command(command: Any) -> bool:
+    return dig_invocation(command) is not None
 
 
 def window(day: date) -> tuple[datetime, datetime]:
@@ -175,12 +200,6 @@ def lookup_sql(correlation_ids: Iterable[str]) -> Optional[str]:
     if not ids:
         return None
     return LOOKUP_SQL.format(ids=", ".join(f"'{c}'" for c in ids))
-
-
-def link_sql(day: date) -> str:
-    lo, hi = window(day)
-    return LINK_SQL.format(runs_from=(lo - timedelta(days=RUN_DAYS_BEFORE)).isoformat(),
-                           tags_from=(lo - timedelta(days=TAG_DAYS_BEFORE)).isoformat(), hi=hi.isoformat())
 
 
 # --------------------------------------------------------------------------- one call
@@ -303,6 +322,15 @@ def _prompt_text(event: Mapping[str, Any]) -> str:
     return ""
 
 
+_TS_RE = re.compile(r'"timestamp":\s*"([^"]+)"')
+_ASSISTANT_RE = re.compile(r'"type":\s*"assistant"')
+
+
+def _iso_z(dt: datetime) -> str:
+    """The transcript's own timestamp form (``2026-11-16T09:08:55.118Z``): string order = time order."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def scan_transcript(lines: Iterable[str], lo: datetime, hi: datetime, transcript: str) -> list[Call]:
     """Dig tool calls made in [lo, hi) in one claude transcript, each with its result when recorded.
 
@@ -312,9 +340,16 @@ def scan_transcript(lines: Iterable[str], lo: datetime, hi: datetime, transcript
     order: list[Call] = []
     corr = ""
     pool = False
+    lo_s, stop_s = _iso_z(lo), _iso_z(hi + timedelta(hours=RESULT_GRACE_HOURS))
     for line in lines:
         if "tool_" not in line and "Strain refs:" not in line and "<command-name>/clear<" not in line:
             continue
+        m_ts = _TS_RE.search(line)
+        if m_ts:
+            if m_ts.group(1) >= stop_s:
+                break  # transcripts are append-ordered: nothing later can be in the day or answer a call in it
+            if m_ts.group(1) < lo_s and _ASSISTANT_RE.search(line):
+                continue  # a call before the day (user lines still read: turn ids, /clear)
         try:
             event = json.loads(line)
         except ValueError:
@@ -358,11 +393,10 @@ def scan_transcript(lines: Iterable[str], lo: datetime, hi: datetime, transcript
     return order
 
 
-def candidate_transcripts(home: Path, lo: datetime, hi: datetime) -> tuple[list[Path], set[str]]:
-    """(transcripts that may hold events in [lo, hi), every transcript name on disk). A candidate was written
-    to at or after lo (mtime) and began before hi (first line's timestamp); the rest are never opened."""
+def candidate_transcripts(home: Path, lo: datetime, hi: datetime) -> list[Path]:
+    """Transcripts that may hold events in [lo, hi): written to at or after lo (mtime) and begun before hi (first
+    line's timestamp); the rest are never opened."""
     out: list[Path] = []
-    names: set[str] = set()
     projects = home / "projects"
     lo_epoch = lo.timestamp()
     for project in sorted(projects.iterdir()) if projects.is_dir() else []:
@@ -371,7 +405,6 @@ def candidate_transcripts(home: Path, lo: datetime, hi: datetime) -> tuple[list[
         for f in os.scandir(project):
             if not f.name.endswith(".jsonl") or not f.is_file():
                 continue
-            names.add(f.name[: -len(".jsonl")])
             if f.stat().st_mtime < lo_epoch:
                 continue
             try:
@@ -379,25 +412,23 @@ def candidate_transcripts(home: Path, lo: datetime, hi: datetime) -> tuple[list[
                     head = fh.readline(65536)
             except OSError:
                 continue
-            m = re.search(r'"timestamp":"([^"]+)"', head)
+            m = _TS_RE.search(head)
             began = _utc(m.group(1)) if m else None
             if began is not None and began >= hi:
                 continue
             out.append(Path(f.path))
-    return out, names
+    return out
 
 
 def read_transcripts(paths: Iterable[Path], lo: datetime, hi: datetime) -> list[Call]:
+    """Streamed line by line; a file stops being read past the day (plus the result grace)."""
     out: list[Call] = []
     for p in paths:
         try:
             with open(p, encoding="utf-8", errors="replace") as fh:
-                text = fh.read()
+                out += scan_transcript(fh, lo, hi, p.stem)
         except OSError:
             continue
-        if "orion.dig" not in text:
-            continue
-        out += scan_transcript(text.splitlines(), lo, hi, p.stem)
     return out
 
 
@@ -406,9 +437,9 @@ def read_transcripts(paths: Iterable[Path], lo: datetime, hi: datetime) -> list[
 
 def merge(cockpit: list[Call], transcript: list[Call]) -> list[Call]:
     """One call per tool_use id; a chat turn's cockpit row wins (it knows the chat session)."""
-    seen = {c.tool_use_id for c in cockpit if c.tool_use_id}
-    out = list(cockpit)
-    for c in transcript:
+    seen: set[str] = set()
+    out: list[Call] = []
+    for c in [*cockpit, *transcript]:  # cockpit first: a duplicated hop row or a transcript copy is dropped
         if c.tool_use_id and c.tool_use_id in seen:
             continue
         if c.tool_use_id:
@@ -430,38 +461,52 @@ def attach(calls: list[Call], rows: Iterable[Mapping[str, Any]]) -> None:
         c.traced = str(r.get("traced") or "").lower() in ("t", "true", "1")
 
 
-def link_by_resume_key(calls: list[Call], rows: Iterable[Mapping[str, Any]], on_disk: Optional[set[str]] = None,
-                       session_id_for: Optional[Callable[[str, int], str]] = None) -> int:
-    """Name the durable run (and its source tag as the workflow) of each transcript call still unlinked, by
-    rebuilding Hub's resume-key session ids from LINK_SQL rows. Returns how many calls it linked.
+MAX_GENERATIONS = 64  # resume generations per key (session_resume bumps `<key>#<n>`; the registry names the last)
 
-    Generation 0 is tried for every (run, tag); later generations only where generation 0's transcript is on
-    disk (``on_disk``: every transcript name), since a resume bump starts from it. ~1,500 runs x ~30 tags
-    stays well under a second this way."""
+
+def read_resume_registry(home: Path) -> list[dict[str, Any]]:
+    """Hub's resume registry (``orion/harness/session_resume.py``: one ``{"key", "generation"}`` file per durable
+    step under ``<claude_home>/orion-resume/``). Plain reads; an unreadable file is skipped."""
+    from orion.harness.session_resume import _REGISTRY_DIRNAME
+
+    out: list[dict[str, Any]] = []
+    folder = home / _REGISTRY_DIRNAME
+    for p in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        try:
+            got = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(got, dict) and isinstance(got.get("key"), str):
+            out.append(got)
+    return out
+
+
+def link_by_resume_key(calls: list[Call], records: Iterable[Mapping[str, Any]],
+                       session_id_for: Optional[Callable[[str, int], str]] = None) -> int:
+    """Name the durable run of each transcript call still unlinked. A durable step's transcript is
+    ``session_id_for(resume_key, generation)`` and Hub's key is ``<run_id>:<source_tag>[:<more>]``
+    (``<run_id>:intention_carry:<concern>``, ``<run_id>:<self_fit_tag>:<field>``); the registry holds every key
+    and its last generation, so the match is exact. The source tag is the workflow. Returns calls linked."""
     if session_id_for is None:
         from orion.harness.session_resume import session_id_for
     todo = {c.transcript for c in calls if c.needs_link and c.transcript}
     if not todo:
         return 0
-    rows = list(rows)
-    runs = [str(r.get("name") or "") for r in rows if r.get("kind") == "run" and r.get("name")]
-    tags = sorted({str(r.get("name") or "") for r in rows if r.get("kind") == "tag" and r.get("name")})
-    found: dict[str, tuple[str, str]] = {}
-    for run in runs:
-        for tag in tags:
-            key = f"{run}:{tag}"
-            sid = session_id_for(key, 0)
+    found: dict[str, str] = {}
+    for r in records:
+        key = str(r.get("key") or "")
+        gen = r.get("generation")
+        last = gen if isinstance(gen, int) and 0 <= gen < MAX_GENERATIONS else 0
+        for g in range(last + 1):
+            sid = session_id_for(key, g)
             if sid in todo:
-                found[sid] = (run, tag)
-            if on_disk is None or sid in on_disk:
-                for gen in range(1, MAX_GENERATIONS):
-                    sid = session_id_for(key, gen)
-                    if sid in todo:
-                        found[sid] = (run, tag)
+                found[sid] = key
     linked = 0
     for c in calls:
-        if c.needs_link and c.transcript in found:
-            c.run_id, c.workflow = found[c.transcript]
+        key = found.get(c.transcript) if c.needs_link else None
+        if key and ":" in key:
+            run_id, rest = key.split(":", 1)
+            c.run_id, c.workflow = run_id, rest.split(":", 1)[0]
             linked += 1
     return linked
 
@@ -477,10 +522,8 @@ def check_lines(lines: Iterable[str]) -> None:
 
 
 def _command(cmd: str) -> str:
-    flat = " ".join(cmd.split())
-    m = DIG_RE.search(flat)
-    start = max(0, m.start() - LEAD_CHARS) if m else 0
-    shown = ("…" if start else "") + flat[start:]
+    """The dig command the line ran (not a quoted note before it), re-quoted, up to the next shell operator."""
+    shown = " ".join((dig_invocation(cmd) or cmd).split())
     return shown if len(shown) <= COMMAND_CHARS else shown[: COMMAND_CHARS - 1] + "…"
 
 

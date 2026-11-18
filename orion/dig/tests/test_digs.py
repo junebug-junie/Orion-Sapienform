@@ -60,6 +60,17 @@ def test_window_is_the_denver_day() -> None:
     ("mkdir -p d && cat >> d/f.md <<'EOF'\n- fcc | python -P -m orion.dig know x | ok\nEOF\n", False),
     ('echo "- fcc | python -P -m orion.dig body | ok" >> notes.md', False),
     ("echo 'unbalanced python -P -m orion.dig", False),
+    # review 2026-11-17: not in command position, or only in a comment
+    ("echo python -P -m orion.dig help >> notes.md", False),
+    ("# python -P -m orion.dig organs was empty\nls", False),
+    ("ls # then python -P -m orion.dig help", False),
+    ("python -c 'x = 1 << shift'\npython -P -m orion.dig help", True),
+    ("bash -lc 'python -P -m orion.dig body'", True),
+    ("FOO=1 timeout -s KILL 120 python -P -m orion.dig help", True),
+    ("if true; then python -P -m orion.dig help; fi", True),
+    # known misses, kept visible: combined flags and a quoted module name
+    ("python -Pm orion.dig help", False),
+    ("python -m 'orion.dig' help", False),
 ])
 def test_is_dig_command(command, ok) -> None:
     assert digs.is_dig_command(command) is ok
@@ -168,35 +179,61 @@ def test_lookup_sql_refuses_non_uuid_ids() -> None:
     assert digs.lookup_sql(["x'; drop table chat_history_log; --", ""]) is None
 
 
-def test_durable_step_linked_by_resume_key() -> None:
+def test_durable_step_linked_through_the_resume_registry(tmp_path) -> None:
     sid = session_id_for("pr-field-note-3510:pr_field_note", 0)
     sid2 = session_id_for("20261116T191407Z-9b68ae:curiosity_self_sense_eval", 2)
+    carry = session_id_for("intention-0123456789abcdef:intention_carry:0123456789abcdef", 1)  # a 3-part key
     calls = [digs.Call(at="2026-11-16T07:49:27+00:00", tool_use_id="a", command="python -P -m orion.dig field-note 3510",
                        source="transcript", transcript=sid),
              digs.Call(at="2026-11-16T08:00:00+00:00", tool_use_id="b", command="python -P -m orion.dig help",
                        source="transcript", transcript=sid2),
+             digs.Call(at="2026-11-16T08:00:30+00:00", tool_use_id="e", command="python -P -m orion.dig help",
+                       source="transcript", transcript=carry),
              digs.Call(at="2026-11-16T08:01:00+00:00", tool_use_id="c", command="python -P -m orion.dig help",
                        source="transcript", transcript="random-session")]
-    rows = [{"kind": "run", "name": "pr-field-note-3510", "workflow": "pr.field_note"},
-            {"kind": "run", "name": "20261116T191407Z-9b68ae", "workflow": "self_sense_eval"},
-            {"kind": "tag", "name": "pr_field_note", "workflow": ""},
-            {"kind": "tag", "name": "curiosity_self_sense_eval", "workflow": ""}]
-    # a later generation is tried only when generation 0's transcript is on disk
-    assert digs.link_by_resume_key(calls, rows, on_disk={sid}) == 1
-    on_disk = {sid, session_id_for("20261116T191407Z-9b68ae:curiosity_self_sense_eval", 0)}
-    assert digs.link_by_resume_key(calls, rows, on_disk=on_disk) == 1
+    reg = tmp_path / "orion-resume"
+    reg.mkdir()
+    for i, (key, gen) in enumerate([("pr-field-note-3510:pr_field_note", 0),
+                                    ("20261116T191407Z-9b68ae:curiosity_self_sense_eval", 2),
+                                    ("intention-0123456789abcdef:intention_carry:0123456789abcdef", 1)]):
+        (reg / f"{i:024x}.json").write_text(json.dumps({"key": key, "generation": gen, "state": "completed"}))
+    (reg / "junk.json").write_text("not json")
+    (reg / "x.lock").write_text("")
+    records = digs.read_resume_registry(tmp_path)
+    assert len(records) == 3
+    assert digs.link_by_resume_key(calls, records) == 3
     assert [(c.where, c.ref) for c in calls] == [
         ("pr_field_note", "[durable_run:pr-field-note-3510]"),
         ("curiosity_self_sense_eval", "[durable_run:20261116T191407Z-9b68ae]"),
+        ("intention_carry", "[durable_run:intention-0123456789abcdef]"),
         ("unlinked run", "[transcript:random-session]")]
     digs.check_lines(digs.render(calls))
+    # a generation past the registry's last is not guessed
+    late = digs.Call(at="2026-11-16T09:00:00+00:00", tool_use_id="f", command="python -P -m orion.dig help",
+                     source="transcript", transcript=session_id_for("pr-field-note-3510:pr_field_note", 1))
+    assert digs.link_by_resume_key([late], records) == 0
     # a traced turn whose trace row has no workflow (rows before the column was filled) keeps its trace ref
     # and gets its source tag as the workflow
     traced = digs.Call(at="2026-11-16T09:00:00+00:00", tool_use_id="d", command="python -P -m orion.dig help",
                        source="transcript", transcript=sid, correlation_id=CORR, traced=True)
-    assert traced.needs_link and digs.link_by_resume_key([traced], rows, on_disk={sid}) == 1
+    assert traced.needs_link and digs.link_by_resume_key([traced], records) == 1
     assert (traced.where, traced.ref) == ("pr_field_note", f"[harness_turn_trace:{CORR}]")
-    assert "durable_run_workflow" in digs.link_sql(DAY) and "2026-11-09T07:00:00+00:00" in digs.link_sql(DAY)
+
+
+def test_merge_dedupes_a_duplicated_cockpit_hop() -> None:
+    row = {"ts": "2026-11-16 09:00:00", "correlation_id": CORR, "id": "call_1", "command": "python -P -m orion.dig help",
+           "has_result": "f", "chat_id": CORR, "session_id": "s"}
+    assert len(digs.merge(digs.parse_cockpit_rows([row, dict(row)]), [])) == 1
+
+
+def test_scan_stops_past_the_day_and_skips_calls_before_it() -> None:
+    def gen():
+        yield _event("assistant", "2026-11-16T06:00:00Z", [_use("early", "python -P -m orion.dig help")])
+        yield _event("assistant", "2026-11-16T09:00:00Z", [_use("in", "python -P -m orion.dig help")])
+        yield _event("user", "2026-11-17T10:00:00Z", [_res("in", "late but within grace? no: past 09:00Z")])
+        raise AssertionError("read past the day plus grace")
+    (call,) = digs.scan_transcript(gen(), LO, HI, "s")
+    assert call.tool_use_id == "in" and call.result is None
 
 
 # --------------------------------------------------------------------------- the line rule
@@ -221,13 +258,21 @@ def test_line_rule_accepts_every_ref_kind() -> None:
     digs.check_lines([f"09:00:00 w $ python -P -m orion.dig help -> \"x\" [{k}:abc-1]" for k in digs.REF_KINDS])
 
 
+def test_printed_command_is_the_one_that_ran_not_a_quoted_note() -> None:
+    cmd = "printf '%s' 'notes about python -P -m orion.dig help and lots more' >> n; python -P -m orion.dig body 2>&1"
+    c = digs.Call(at="2026-11-16T09:00:00+00:00", tool_use_id="a", command=cmd, result="ok", source="transcript",
+                  transcript="s")
+    assert " $ python -P -m orion.dig body -> " in digs.line_of(c)
+
+
 def test_long_command_keeps_the_dig_part_and_cuts() -> None:
     cmd = "cd /mnt/orion-fcc/repo && " + "export X=1 && " * 20 + "python -P -m orion.dig field-note 3511 write \"" + "y" * 400 + "\""
     c = digs.Call(at="2026-11-16T09:00:00+00:00", tool_use_id="a", command=cmd, result="ok", source="transcript",
                   transcript="s")
     line = digs.line_of(c)
     shown = line.split(" $ ", 1)[1].split(" -> ")[0]
-    assert shown.startswith("…") and "-m orion.dig field-note 3511" in shown and len(shown) <= digs.COMMAND_CHARS
+    assert shown.startswith("python -P -m orion.dig field-note 3511 write") and shown.endswith("…")
+    assert len(shown) <= digs.COMMAND_CHARS
     digs.check_lines([line])
 
 
@@ -274,7 +319,7 @@ def test_cli_end_to_end(tmp_path, monkeypatch, capsys) -> None:
                       "unnest(ARRAY": lookup})
     text = dig.cmd_digs(DAY, dig.Out("t"), runner=runner, claude_home=home)
     lines = text.splitlines()
-    assert lines[0] == (f'02:00:04 pr_field_note $ python -P -m orion.dig body 2>&1 | tail -40 -> "body atlas as of now" '
+    assert lines[0] == (f'02:00:04 pr_field_note $ python -P -m orion.dig body -> "body atlas as of now" '
                         f"[harness_turn_trace:{CORR}]")
     assert "1 dig command(s) ran on 2026-11-16 (times Denver): 0 in chat, 1 in background runs" in text
     assert "UNREAD" not in text

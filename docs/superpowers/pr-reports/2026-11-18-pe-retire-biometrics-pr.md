@@ -128,6 +128,8 @@
   - A run selected before deploy has no groups, so its rows get no group rows. A group row whose run lacks the group is scored `missing` / `no_group`, never against the blend's yardstick.
 
 ## Env/config changes
+- **Flag default flipped on (Juniper, 2026-11-18: "turn shit on").** `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES` now defaults to true in `services/orion-substrate-runtime/docker-compose.yml` and in `worker.py`'s unset fallback. Live `.env` already true, so no live change. Test `test_prediction_error_nodes_default_on_when_unset` pins it.
+
 
 - **Added keys:** `PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED=true` (orion-prediction); `SUBSTRATE_PREDICTION_JOINT_SURPRISE_NODES_ENABLED=true` and `SUBSTRATE_PREDICTION_JOINT_SURPRISE_CHANNEL=orion:prediction:joint_surprise` (orion-substrate-runtime).
 - **Removed keys:** `BIOMETRICS_SILENT_NODE_EXCLUSION`, `BIOMETRICS_SILENT_NODE_CADENCE_MULTIPLE` (orion-substrate-runtime).

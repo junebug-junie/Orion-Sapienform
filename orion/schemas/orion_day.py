@@ -289,6 +289,24 @@ class OrganRoundupV1(_Model):
     organ_experiences: dict[str, int] = Field(default_factory=dict)
 
 
+class DreamDayNightV1(_Model):
+    """Last night's day dream for the letter's day (day-dream spec Patch 3): the ``dream_day`` row the night's
+    ``dream.day`` run wrote for this same Denver day, or why there is none.
+
+    ``status``: ``produced`` (a row with at least one memory written), ``not_produced`` (a row, no memory:
+    ``note`` says why, e.g. "no lasting trace"), ``failed`` (no row, and the night's run failed: ``error``),
+    ``no_row`` (no row and no failed run: the night did not run, or has not yet)."""
+
+    day: date
+    status: Literal["produced", "not_produced", "failed", "no_row"]
+    run_id: str | None = None
+    note: str = ""
+    day_text: str | None = None
+    day_refs: list[str] = Field(default_factory=list)
+    memory_ids: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
 class OrionDayMaterialV1(_Model):
     """Everything gathered for one Denver calendar day, full length."""
 
@@ -337,6 +355,11 @@ class OrionDayMaterialV1(_Model):
     # durable-runs reads, and durable-runs writes it back in the letter row Hub reads; both are forbid
     # readers. Deploy orion-hub and orion-durable-runs together, outside the letter's 08:30 fire window.
     organ_roundup: OrganRoundupV1 | None = None
+    # Added 2026-11-18 (day-dream hardening, spec Patch 3): last night's day dream for this day. None = not
+    # read (an older brief, or the read failed: ``sources["dream_day"]`` says why). ROLLOUT as
+    # ``juniper_chat``: both orion-hub and orion-durable-runs read it with forbid models. Deploy them together,
+    # outside the letter's 08:30 fire window.
+    dream_day: DreamDayNightV1 | None = None
     sources: dict[str, OrionDaySourceStatusV1] = Field(default_factory=dict)
 
     @model_validator(mode="after")

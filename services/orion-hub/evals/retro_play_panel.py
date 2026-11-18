@@ -12,6 +12,15 @@ exits, caves and deaths; goal, rationale, prediction and verdicts render; a heat
 "Orion is waiting: cabinet hot"; Take this controller acquires a controller (the preempt
 request) and the relay records a human action.
 
+Game company patch 3 (the chat box): the three-position watch switch posts off/quiet/on; in
+fullscreen, T and the Chat button open the panel inside #stage; opening sends one neutral input and,
+with no controller, pauses the game (closing resumes it); game keys typed into the input change no
+button mask; a sent message reaches a stub Hub chat socket (/ws) as the contract frame after a
+session_hello, and the final reply shows in the panel and the strip; a dropped /ws reconnects
+without taking focus; a pushed line shows thumbs and a thumb POSTs and shows its stored state; any
+other outreach goes to the panel only; a "Who's playing?" flip changes only later messages.
+The /ws socket and the thumb route are fixtures here, not the real Hub handlers.
+
     python services/orion-hub/evals/retro_play_panel.py --output /tmp/retro-play-panel
 """
 import argparse
@@ -143,6 +152,7 @@ class MemoryStore:
 async def serve(output: Path, port: int, sock: str):
     import uvicorn
     from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
     from fastapi.staticfiles import StaticFiles
     sys.path.insert(0, str(HUB))
     spec = importlib.util.spec_from_file_location('retro_play_routes', HUB / 'scripts/retro_routes.py')
@@ -155,7 +165,49 @@ async def serve(output: Path, port: int, sock: str):
     config = SimpleNamespace(HUB_RETRO_ENABLED=True, HUB_RETRO_COGNITION_ENABLED=True,
                              HUB_RETRO_ORIGIN=f'http://127.0.0.1:{port}', HUB_RETRO_AUTH_DIR=str(output),
                              HUB_RETRO_SOCKET=sock)
-    app = FastAPI(); app.include_router(mod.create_router(config, presence=store))
+    app = FastAPI()
+    # Hub chat socket stub (game company patch 3): records every frame the page sends and answers a
+    # typed message with the normal final frame. Registered before the Retro router so the fixture's
+    # thumb route wins over any real one (which needs Postgres).
+    from fastapi import WebSocket, WebSocketDisconnect, Request
+    chat_sockets, chat_log, thumbs = set(), [], []
+    @app.websocket('/ws')
+    async def chat_ws(ws: WebSocket):
+        await ws.accept(); chat_sockets.add(ws)
+        try:
+            while True:
+                data = json.loads(await ws.receive_text()); chat_log.append(data)
+                if data.get('text_input'):
+                    await ws.send_json({'type': 'draft_preview', 'llm_response': 'draft (must not show)'})
+                    await ws.send_json({'type': 'final', 'llm_response': 'Reply to: ' + data['text_input'],
+                                        'mode': 'orion', 'correlation_id': f'corr-{len(chat_log)}'})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            chat_sockets.discard(ws)
+    @app.post('/api/retro/lines/{line_id}/thumb')
+    async def thumb(line_id: str, request: Request):
+        body = await request.json(); thumbs.append(dict(line_id=line_id, body=body))
+        if line_id == 'missing': return JSONResponse({'detail': 'no_line'}, status_code=404)
+        return {'ok': True, 'thumb_by': 'guest'}
+    @app.get('/api/session')
+    async def chat_session():
+        return {'session_id': 'juniper-main-thread'}
+    @app.post('/__fixture/push')
+    async def push(request: Request):
+        frame = await request.json()
+        for ws in tuple(chat_sockets): await ws.send_json(frame)
+        return {'sockets': len(chat_sockets)}
+    @app.post('/__fixture/chat_drop')
+    async def chat_drop():
+        for ws in tuple(chat_sockets):
+            try: await ws.close()
+            except Exception: pass   # already closing
+        return {}
+    @app.get('/__fixture/chat')
+    async def chat_fixture():
+        return dict(frames=chat_log, thumbs=thumbs, sockets=len(chat_sockets))
+    app.include_router(mod.create_router(config, presence=store))
     app.mount('/static', StaticFiles(directory=HUB / 'static'))
     @app.post('/__fixture/waiting')
     async def waiting():

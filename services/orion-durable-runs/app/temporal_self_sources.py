@@ -226,6 +226,17 @@ WHERE ended_at >= %(lo)s::timestamptz - interval '8 days' AND ended_at < %(hi)s
   AND greatest(ended_at, coalesce(created_at, ended_at)) >= %(lo)s
   AND greatest(ended_at, coalesce(created_at, ended_at)) < %(hi)s
 """, optional_table="retro_play_sessions"),
+    # Game company patch 3 (spec rev 4 section 8): a note Orion stored while a person played becomes an
+    # event only once a line turn checked it against frames of the same moment and it held. The chronicle
+    # never rewrites a stored event, so 'unchecked' and 'contradicted' looks are never read. Keyed and
+    # available at settled_at (the adapter's occurrence time); the settled_at columns need
+    # manual_migration_retro_lines_v1.sql (REQUIRED-BY this service).
+    SourceQuery("retro_look", """
+SELECT look_id, sitting_id, game_id, looked_at, note, verdict, outcome, settled_at, settled_by_line
+FROM retro_watch_look
+WHERE verdict = 'checked_holds' AND outcome = 'stored' AND settled_at IS NOT NULL
+  AND settled_at >= %(lo)s AND settled_at < %(hi)s
+""", optional_table="retro_watch_look"),
     # Episodes from the street (PR #2763 item 1), three reads of one kind; the adapter
     # (sources.street_event) decides every rule again, these only narrow the rows.
     # 1. Published clean motion stories, with the spot-check verdict counts of the newest rules version

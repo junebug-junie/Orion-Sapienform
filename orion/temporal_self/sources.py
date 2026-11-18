@@ -81,6 +81,10 @@ def _event(
     )
 
 
+# chat_history_log.source of a guest's typed turn on the game page (orion-hub, game company patch 3).
+RETRO_GUEST_SOURCE = "retro_guest"
+
+
 def _speaker(row: Row) -> str:
     """Who wrote the row, from flags only (the driver selects booleans, never the text).
 
@@ -88,6 +92,11 @@ def _speaker(row: Row) -> str:
     scripts/analysis/measure_arousal_replay.py). Orion's outreach has no prompt and
     ``client_meta.unsolicited`` true. Live 10-09: all four rows on the session that looked
     like a conversation were unsolicited outreach with no reply.
+
+    A guest's message from the game page (game company patch 3, spec rev 4 section 5) has a
+    prompt too, on Juniper's own session: its row's ``source`` is ``retro_guest`` (Hub sets it
+    server side). It is ``guest``, never ``juniper``. Each row keeps the source it was sent with,
+    so a flip to "Juniper is playing" mid-sitting makes only the later rows hers.
     """
     has_prompt = row.get("has_prompt")
     if has_prompt is None:
@@ -97,14 +106,14 @@ def _speaker(row: Row) -> str:
     if unsolicited is None:
         unsolicited = bool(meta.get("unsolicited")) if isinstance(meta, dict) else False
     if has_prompt:
-        return "juniper"
+        return "guest" if row.get("source") == RETRO_GUEST_SOURCE else "juniper"
     return "orion_outreach" if unsolicited else "orion"
 
 
 def chat_turn(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
     """chat_history_log. Time: created_at (naive UTC). No text copied.
 
-    Subject: session_id, for Juniper's turns only. Orion's own rows (outreach, journal
+    Subject: session_id, for Juniper's turns only (a guest's turn on the game page is not hers). Orion's own rows (outreach, journal
     replies with no prompt) carry the session in ``related_refs`` and no subject, so they
     bind by time as context and never open or extend a conversation (danger mode 9: Orion's
     outreach must not read as Juniper speaking)."""
@@ -564,6 +573,38 @@ def retro_play_label(row: Row) -> str:
     else:
         done = ""
     return clip(f"{title} {who}{done}")
+
+
+RETRO_LOOK_LABEL_PREFIX = "Saw on the game screen: "
+# The only bucket that becomes an event (spec rev 4 section 8): a line turn saw frames of the note's
+# window and the note held. 'unchecked' and 'contradicted' stay in retro_watch_look.
+RETRO_LOOK_HOLDS = "checked_holds"
+
+
+def retro_look(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """retro_watch_look (orion-hub's watch, game company patch 2): one note Orion stored while a person
+    played, that a later line turn checked against frames of the same moment and found to hold.
+
+    The chronicle never rewrites a stored event, so a contradiction found later could not void it: a look
+    becomes an event only once SETTLED as ``checked_holds`` (verdict, outcome ``stored``, ``settled_at``).
+    The SQL selects only those; the adapter checks again, so a replay or a wider read cannot let an
+    unjudged note in. Time: settled_at (when the turn judged it), not looked_at. Subject: the sitting
+    (``retro_sitting:<sitting_id>``), so looks open and refresh the sitting's play arc. Label: "Saw on the
+    game screen: <note>", so every reader that copies the label into a prompt says it is a look. No
+    salience magnitude: the sitting is this organ's scored experience; a look only fills a free place."""
+    if row.get("verdict") != RETRO_LOOK_HOLDS or row.get("outcome") != "stored":
+        return None
+    note = " ".join(str(row.get("note") or "").split())
+    sitting = str(row.get("sitting_id") or "")
+    if not note or not sitting or row.get("settled_at") is None:
+        return None
+    return _event(
+        kind="retro_look", table="retro_watch_look", ref=row.get("look_id"), at=row.get("settled_at"),
+        tz_name=tz_name, subject_ref=SITTING_SUBJECT_PREFIX + sitting,
+        label=clip(RETRO_LOOK_LABEL_PREFIX + note),
+        payload={"look_id": row.get("look_id"), "looked_at": _iso(row.get("looked_at")),
+                 "settled_by_line": row.get("settled_by_line"), "game_id": row.get("game_id")},
+    )
 
 
 def retro_sitting_ref(session_id: Any) -> str:
@@ -1076,6 +1117,7 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "presence_transition": presence_transition,
     "arousal_transition": arousal_transition,
     "retro_play": retro_play,
+    "retro_look": retro_look,
     "street_event": street_event,
     "body_binding": body_binding,
     "faculty_status_changed": faculty_status_changed,

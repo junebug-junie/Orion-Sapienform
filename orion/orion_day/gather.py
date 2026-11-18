@@ -40,6 +40,9 @@ Sources:
 * organ_roundup -- the daily dig roundup (``orion/dig/organs.py``, integration Part A.7): what each organ in
   ``config/integration/organs.yaml`` did on the day, every line a count, a quote or a ref. Read only when the
   caller asks (Hub: ``ORION_DAY_ORGAN_ROUNDUP_ENABLED``). Its own failed queries are ``unread`` inside it.
+* dream_day -- last night's day dream for the letter's day (day-dream spec Patch 3): the ``dream_day`` row
+  (orion-durable-runs' ``dream.day`` run writes it 01:00-03:00 Denver the night after the day, before the
+  letter), and when there is none, the night's latest failed ``dream.day`` run (substrate_durable_run_state).
 * walkway_day -- the walkway camera's deterministic day rollup line (``vision_rollup``,
   grain ``day``, written by orion-sql-writer; orion/vision/walkway_rollup.py). Counts only.
 """
@@ -61,6 +64,7 @@ from orion.schemas.orion_day import (
     ORION_DAY_TIMEZONE,
     CuriosityFailedRunV1,
     CuriosityRunItemV1,
+    DreamDayNightV1,
     DreamHypothesisV1,
     DreamNarrativeV1,
     JournalTextV1,
@@ -221,6 +225,9 @@ WHERE day_id = $1 AND event_id = ANY($2::text[]) AND ingested_at <= $3
 # Juniper's turns and Orion's unsolicited messages to her. created_at is UTC with no zone.
 # Only rows that are hers: Hub chat sources, or a NULL source sent from her browser (client_meta has
 # an origin; live 07-31..09-28). Not an agent's rpc ping (source 'hub') nor a Collapse Mirror block.
+# Not a game line either (game company patch 3, client_meta.source 'retro_commentary'): a line is said to whoever
+# holds the controller, often not her, and a 4-hour sitting can hold 30 of them; the sitting reaches the letter as
+# its play arc. A guest's chat-box turn (source 'retro_guest') never matches the source list.
 JUNIPER_CHAT_SOURCES = ["hub_orion", "hub_ws", "hub_http"]
 JUNIPER_CHAT_SQL = """
 SELECT id, correlation_id, created_at, prompt, response,
@@ -228,7 +235,8 @@ SELECT id, correlation_id, created_at, prompt, response,
 FROM chat_history_log
 WHERE created_at >= ($1::timestamptz AT TIME ZONE 'UTC') AND created_at < ($2::timestamptz AT TIME ZONE 'UTC')
   AND (
-    COALESCE((client_meta->>'unsolicited')::boolean, false)
+    (COALESCE((client_meta->>'unsolicited')::boolean, false)
+     AND COALESCE(client_meta->>'source', '') <> 'retro_commentary')
     OR (COALESCE(prompt, '') <> '' AND (source = ANY($3::text[])
                                         OR (source IS NULL AND client_meta ? 'origin')))
   )
@@ -587,6 +595,33 @@ async def gather_organ_roundup(conn: Any, letter_date: date) -> OrganRoundupV1:
                           closed_organs=r.closed_organs, organ_experiences=r.organ_experiences)
 
 
+DREAM_DAY_ROW_SQL = """
+SELECT run_id, produced, note, day_text, day_refs, memory_ids FROM dream_day WHERE day = $1
+"""
+# A failed night writes no dream_day row; its run state says why. run ids: dream-day-<day>[-aN].
+DREAM_DAY_FAILED_SQL = """
+SELECT run_id, generated_at, detail::jsonb->>'error' AS error
+FROM substrate_durable_run_state
+WHERE workflow = 'dream.day' AND status = 'failed' AND run_id LIKE $1
+ORDER BY generated_at DESC LIMIT 1
+"""
+
+
+async def gather_dream_day(conn: Any, letter_date: date) -> DreamDayNightV1:
+    """The night's day dream for ``letter_date``: its row, or why there is none."""
+    row = await conn.fetchrow(DREAM_DAY_ROW_SQL, letter_date)
+    if row is not None:
+        return DreamDayNightV1(
+            day=letter_date, status="produced" if row["produced"] else "not_produced", run_id=row["run_id"],
+            note=row["note"] or "", day_text=row["day_text"], day_refs=list(row["day_refs"] or []),
+            memory_ids=[str(x) for x in (row["memory_ids"] or [])])
+    failed = await conn.fetchrow(DREAM_DAY_FAILED_SQL, f"dream-day-{letter_date.isoformat()}%")
+    if failed is not None:
+        return DreamDayNightV1(day=letter_date, status="failed", run_id=failed["run_id"],
+                               error=(failed["error"] or "no error recorded")[:300])
+    return DreamDayNightV1(day=letter_date, status="no_row")
+
+
 async def gather_orion_day(
     conn: Any,
     letter_date: date,
@@ -640,6 +675,7 @@ async def gather_orion_day(
     roundup = None
     if organ_roundup:  # off: not read at all, and the letter keeps its trimmed tail
         roundup = await _read(sources, "organ_roundup", lambda: gather_organ_roundup(conn, letter_date), None)
+    dream_day = await _read(sources, "dream_day", lambda: gather_dream_day(conn, letter_date), None)
     return OrionDayMaterialV1(
         letter_date=letter_date,
         timezone=tz_name,
@@ -665,5 +701,6 @@ async def gather_orion_day(
         juniper_chat=juniper_chat,
         temporal_core=core,
         organ_roundup=roundup,
+        dream_day=dream_day,
         sources=sources,
     )

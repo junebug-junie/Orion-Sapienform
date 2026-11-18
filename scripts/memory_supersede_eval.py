@@ -254,6 +254,19 @@ async def decide_v3(it: EvalItem, ask: Any, votes: int) -> Decision:
         why = rule_refusal(it.old, it.new)
         if why:
             return Decision(it.item_id, False, stopped_by="rule", detail=why)
+    if it.others:
+        # A group: the new row against several older rows, through check_pairs (so Juniper's
+        # one-clear-target rule is scored too). Acted = a link retiring ``old``.
+        cands = [S.Candidate(old=r, dense=None, shared_rare_tokens=(), shared_rare_referents=(), rank=i + 1)
+                 for i, r in enumerate((it.old,) + it.others)]
+        links, recs = await S.check_pairs(it.new, cands, ask, votes=votes)
+        err = next((r.verdict.error for r in recs if r.verdict.error), None)
+        if err:
+            return Decision(it.item_id, False, None, "error", "group", error=err)
+        mine = next((l for l in links if l.old_id == it.old.memory_id), None)
+        return Decision(it.item_id, mine is not None, mine.relation if mine else None,
+                        None if mine else "model", f"group:{len(cands)}:{len(links)}_links",
+                        [v.audit() for r in recs for v in r.verdict.votes])
     c = await S.classify_pair(it.old, it.new, ask, votes=votes)
     if c.error:
         return Decision(it.item_id, False, c.relation, "error", c.abstain, [v.audit() for v in c.votes], c.error)

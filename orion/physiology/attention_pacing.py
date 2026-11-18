@@ -52,7 +52,9 @@ JUNIPER_DAILY_CAP = 6
 # report exists to speak when strain holds everything else. Forced (operator) sends are excluded by their
 # own ``forced`` column. Collapse-mirror replies and the Claude room relay answer Juniper's own input and
 # never write an outreach decision row. Read by Hub's daily cap and the body's attention:juniper line.
-CAP_EXEMPT_SOURCES = ("strain_report",)
+# A game line (``retro_commentary``, game company patch 3) is said to whoever holds the controller during a sitting,
+# not a message that spends Juniper's day: its rate control is its own tier 1 bid and the 2-minute line gap.
+CAP_EXEMPT_SOURCES = ("strain_report", "retro_commentary")
 # Sends whose decision row says Juniper asked for them (``result_json.door_policy``): a curiosity run she
 # queued in chat (door policy, 2026-11-10). A send she triggered is not Orion spending her attention.
 CAP_EXEMPT_DOOR_POLICIES = ("asked_by_juniper",)

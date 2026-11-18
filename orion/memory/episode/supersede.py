@@ -53,10 +53,12 @@ second event is written (the insert is also ON CONFLICT DO NOTHING on that id). 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import re
+import time
 import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
@@ -71,7 +73,7 @@ ACTOR_DISTILL = "memory.episode_distill"
 ACTOR_PASS = "memory.supersede_pass"
 OP_SUPERSEDED = "superseded"
 OP_UNDONE = "supersede_undone"
-CHECK_VERSION = "supersede_classify.v3.4"
+CHECK_VERSION = "supersede_classify.v3.5"
 SUPERSEDE_NAMESPACE = uuid.UUID("6f1d3c52-2b8e-4f7a-9d41-3587a0c0ffee")
 
 # Candidate limits. bge-large cosines are compressed (live 2026-11-17: median pair 0.56, 90th
@@ -389,6 +391,7 @@ _NUMBERED = re.compile(r"(?:(?<!#)#|\b(?:prs?|pull requests?|issues?|tickets?)[\
 
 
 NUMBERED_ITEM_NOT_IN_B = "numbered_item_not_in_b"
+NUMBERED_JUNIPER_ONLY = "numbered_item_juniper_path_only"
 
 
 def numbered_items(text: str) -> frozenset[str]:
@@ -497,7 +500,10 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
     non-acting answer ends the strict path; for Juniper's words a non-acting answer ends hers
     too). A failed call or a malformed answer is an error vote: the pair abstains and the caller
     treats the plan as degraded."""
-    if not same_numbered_item(old, new):
+    # Juniper's own quoted words may correct a numbered item without restating its number: her
+    # path still needs every vote acting, same_referent included; the strict path never bypasses.
+    numbered_ok = same_numbered_item(old, new)
+    if not numbered_ok and not new.juniper_quoted:
         # A names a numbered item B never mentions: no vote could act, so none is asked (no budget spent).
         return Classification(votes=(), relation=None, acts=False, juniper_acts=False,
                               abstain=NUMBERED_ITEM_NOT_IN_B)
@@ -519,7 +525,7 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
     complete = len(got) == max(1, int(votes))
     all_acting = complete and all(v.acting for v in got)
     unanimous = all_acting and len({v.relation for v in got}) == 1
-    strict = unanimous and all(v.confidence >= min_confidence for v in got)
+    strict = unanimous and all(v.confidence >= min_confidence for v in got) and numbered_ok
     juniper = all_acting and new.juniper_quoted
     if any(v.error for v in got):
         why = "error"
@@ -528,6 +534,8 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
     elif not all_acting:
         last = got[-1]
         why = f"checklist:{last.relation}" if last.relation in ACTING_RELATIONS else f"vote:{last.relation}"
+    elif not numbered_ok:
+        why = NUMBERED_JUNIPER_ONLY   # the model path cannot act; only Juniper's path may
     elif not unanimous:
         why = "split_update_correction"
     elif not strict:
@@ -825,6 +833,7 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
     links: list[Link] = []
     decisions: list[dict[str, Any]] = []
     asked = refused = 0
+    dense_ms = dense_calls = 0
     reasons: list[str] = []
     if dense is None:
         reasons.append(REFUSED_DENSE_OFF)
@@ -832,12 +841,16 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
         for new in new_rows:
             if budget[0] <= 0:
                 break  # no calls left: an index fault on a row never asked must not hold proven links
+            started = time.monotonic()
             try:
                 scores = await dense(new.statement)
             except Exception as exc:  # noqa: BLE001 -- no fallback: a degraded search never acts
                 scores, why = None, f"{REFUSED_DENSE_UNAVAILABLE}:{type(exc).__name__}"
             else:
                 why = REFUSED_DENSE_UNAVAILABLE
+            finally:
+                dense_ms += int((time.monotonic() - started) * 1000)
+                dense_calls += 1
             if scores is None:
                 reasons.append(why)
                 break
@@ -858,7 +871,13 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
     return {"links": [] if reasons else planned, "held_links": planned if reasons else [],
             "apply": "refused" if reasons else "on", "refused_because": reasons,
             "asked": asked, "check_errors": refused, "dense": dense_state, "budget_left": budget[0],
-            "check_version": CHECK_VERSION, "decisions": decisions}
+            "check_version": CHECK_VERSION, "decisions": decisions,
+            # The meaning-index lookups: how many, total wall time, and how many retries fired
+            # (index_dense exposes its retry count; a failed retry shows as refused_because dense_unavailable).
+            "dense_calls": dense_calls, "dense_ms": dense_ms,
+            "dense_retries": int(getattr(dense, "retries", lambda: 0)()) if dense is not None else 0,
+            # Why each asked pair did not link, counted (the numbered-item rule shows as its own reason).
+            "abstained": dict(Counter(d["abstain"] for d in decisions if d.get("abstain") and not d.get("linked")))}
 
 
 RECORD_RUN_SQL = """
@@ -881,6 +900,23 @@ async def record_run(conn: Any, *, run_id: str, source: str, plan: Mapping[str, 
     counts["links"] = len(plan.get("links") or [])
     counts["held_links"] = len(plan.get("held_links") or [])
     counts["applied"] = len(applied)
+    for k in ("dense_calls", "dense_ms", "dense_retries"):
+        if k in plan:
+            counts[k] = plan[k]
+    # Every path (nightly distill, pass dry-run, pass apply with per-pair decisions) gets the same
+    # count, derived from decisions when the caller did not give one.
+    abstained = plan.get("abstained")
+    if abstained is None:
+        abstained = dict(Counter(d.get("abstain") for d in (plan.get("decisions") or [])
+                                 if isinstance(d, Mapping) and d.get("abstain") and not d.get("linked")))
+    if abstained:
+        counts["abstained"] = dict(abstained)
+    # The hand-run pass apply asks no model: its per-pair decisions carry what apply did instead
+    # ("applied", "already_handled", "undone_never_reapplied", ...). Counted the same way.
+    outcomes = Counter(d.get("outcome") for d in (plan.get("decisions") or [])
+                       if isinstance(d, Mapping) and d.get("outcome"))
+    if outcomes:
+        counts["outcomes"] = dict(outcomes)
     if plan.get("error"):
         counts["error"] = str(plan["error"])
     await conn.execute(RECORD_RUN_SQL, (
@@ -930,24 +966,49 @@ async def eval_gate(conn: Any, *, check_version: str = CHECK_VERSION, votes: int
     return True, "eval_passed"
 
 
+DENSE_ATTEMPTS = 2
+DENSE_TIMEOUT_SEC = 40.0
+DENSE_RETRY_SLEEP_SEC = 5.0
+
+
 def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
     """A DenseFn over the lived-memory index (``orion_lived_memory``, the retriever's vectors):
     embed the statement, take the n nearest episode_memory docs. ``cfg`` is a
     ``orion.introspect.semantic_index.SearchConfig``. None when the index cannot answer."""
+    retried = [False]   # one retry per plan (index_dense is built per plan), not per row
+    retry_count = [0]
+
     async def run(statement: str) -> Optional[dict[str, float]]:
         import httpx
 
         from orion.introspect.semantic_index import SearchUnavailableError, embed, nearest
         from orion.memory.lived_memory import KIND_EPISODE, split_doc_id
 
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                vector, _ = await embed(client, cfg, statement, doc_prefix="supersede-check")
-                hits = await nearest(client, cfg, vector, n, where={"kind": KIND_EPISODE})
-        except SearchUnavailableError as exc:
-            # The plan only records "dense_unavailable"; the log keeps why (issue #3693: a live
-            # write-time run refused this way with no cause on record).
-            logger.warning("supersede_dense_unavailable error=%s: %s", type(exc).__name__, str(exc)[:300])
+        hits = None
+        for attempt in range(DENSE_ATTEMPTS):
+            try:
+                # The bound covers the whole attempt (embed + every Chroma call), not each phase.
+                async with asyncio.timeout(DENSE_TIMEOUT_SEC):
+                    async with httpx.AsyncClient(timeout=DENSE_TIMEOUT_SEC) as client:
+                        vector, _ = await embed(client, cfg, statement, doc_prefix="supersede-check")
+                        hits = await nearest(client, cfg, vector, n, where={"kind": KIND_EPISODE})
+                break
+            except (SearchUnavailableError, TimeoutError) as exc:
+                # The plan only records "dense_unavailable"; the log keeps why (issue #3693: a live
+                # write-time run refused this way with no cause on record).
+                logger.warning("supersede_dense_unavailable attempt=%s error=%s: %s", attempt + 1,
+                               type(exc).__name__, str(exc)[:300])
+                # 2026-11-18 11:10Z: Chroma's collection lookup stalled 25 s once (20 s timeout) and the
+                # night's check refused as dense_unavailable. ONE retry per plan, only for a transient
+                # fault; still no fallback if it fails.
+                transient = isinstance(exc, TimeoutError) or "unavailable:" in str(exc)
+                if attempt + 1 < DENSE_ATTEMPTS and transient and not retried[0]:
+                    retried[0] = True
+                    retry_count[0] += 1
+                    await asyncio.sleep(DENSE_RETRY_SLEEP_SEC)
+                    continue
+                break
+        if hits is None:
             return None
         out: dict[str, float] = {}
         for doc, sim in hits:
@@ -956,6 +1017,7 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
                 out[parts[1]] = float(sim)
         return out
 
+    run.retries = lambda: retry_count[0]  # type: ignore[attr-defined]  # read by plan_for_new_rows
     return run
 
 

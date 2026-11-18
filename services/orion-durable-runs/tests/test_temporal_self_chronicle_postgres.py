@@ -386,6 +386,43 @@ def test_retro_play_rows_fold_into_one_play_arc_and_a_missing_table_reads_nothin
     with_db(scenario_fn)
 
 
+LOOK_INSERT = """
+INSERT INTO retro_watch_look (look_id, sitting_id, game_id, looked_at, note, outcome, verdict, want_id,
+  settled_at, settled_by_line)
+VALUES (%(look_id)s, 's1', 'a-link-to-the-past', %(looked_at)s, %(note)s, %(outcome)s, %(verdict)s, 'want-1',
+  %(settled_at)s, %(line)s)
+"""
+
+
+def test_only_settled_checked_holds_looks_are_read_and_the_flag_and_a_missing_table_read_nothing():
+    """Game company patch 3 (spec rev 4 section 8): the chronicle never rewrites a stored event, so the SQL
+    reads a look only once a line turn settled it as checked_holds. Unchecked, contradicted, unsettled and
+    non-stored looks are never read; the event is keyed by settled_at."""
+    async def scenario_fn(pool):
+        t = T0 + timedelta(minutes=10)
+        rows = [("held", "stored", "checked_holds", t), ("contra", "stored", "contradicted", t),
+                ("unchecked", "stored", "unchecked", None), ("unsettled", "stored", "checked_holds", None),
+                ("empty", "empty", "checked_holds", t), ("late", "stored", "checked_holds", t + timedelta(hours=2))]
+        async with pool.connection() as conn:
+            for look_id, outcome, verdict, settled in rows:
+                await conn.execute(LOOK_INSERT, {"look_id": look_id, "looked_at": t - timedelta(minutes=1),
+                                                 "note": f"Link at the castle gate ({look_id})", "outcome": outcome,
+                                                 "verdict": verdict, "settled_at": settled, "line": "line-1"})
+        lo, hi = T0, T0 + timedelta(hours=1)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["retro_look"])
+        assert [(e.event_id, e.occurred_at) for e in events] == [("retro_look:held", t)]
+        assert events[0].label == "Saw on the game screen: Link at the castle gate (held)"
+        assert events[0].subject_ref == "retro_sitting:s1" and events[0].payload["settled_by_line"] == "line-1"
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("retro_look",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "retro_look"]
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE retro_watch_look")
+        _, gone = await SourceReader(pool, TZ).read(lo, hi, ticks=False)
+        assert not [e for e in gone if e.source_kind == "retro_look"]
+
+    with_db(scenario_fn)
+
+
 STORY_INSERT = """
 INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, speed_class, dir_lateral,
   dir_depth, name_label, individual_id, companion_kinds, together_story_ids, published, drop_reason, clean,

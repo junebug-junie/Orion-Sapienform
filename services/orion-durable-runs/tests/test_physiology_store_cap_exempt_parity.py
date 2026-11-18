@@ -22,8 +22,9 @@ def test_one_exempt_list_read_by_both_sides() -> None:
     assert "NOT IN ('curiosity_outreach'" not in text   # no second, hand-kept copy
 
 
-def test_every_door_counts_except_the_strain_report() -> None:
-    assert attention_pacing.CAP_EXEMPT_SOURCES == ("strain_report",)
+def test_every_door_counts_except_the_strain_report_and_game_lines() -> None:
+    # Game lines (retro_commentary, game company patch 3) are said to whoever holds the controller.
+    assert attention_pacing.CAP_EXEMPT_SOURCES == ("strain_report", "retro_commentary")
     for door in ("curiosity_outreach", "reading_finding_outreach", "office_reach_out"):
         assert door not in attention_pacing.CAP_EXEMPT_SOURCES
 

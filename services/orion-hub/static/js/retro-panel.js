@@ -10,6 +10,10 @@
   let mediaFlowControl=false; // negotiate with the gateway; old pages keep legacy media
   let activeSystem='nes'; // follows the running session, never an unstarted dropdown choice
   const keys = new Set(), sources = new Set();
+  // Game company patch 3: the chat box. While its input is open, nothing puts focus back on the
+  // game canvas: a reconnect, a grant, a save or a fullscreen change would steal the player's typing.
+  let chatOpen = false;
+  function focusGame(){ if(!chatOpen)screen.focus(); }
   // N64 (Mupen64Plus-Next standard map): X = A, A = B, C = Z, Q/W = L/R. Arrows push the
   // control stick and I/J/K/L the C stick instead of the D-pad. Select is not an N64 button.
   // Bit 15 marks the C-stick keys only: no console accepts it, so mask() always removes it.
@@ -110,7 +114,7 @@
   function mask() {
     let m=0; for(const code of keys) if(!(activeSystem==='n64' && STICK[code])) m |= bits[code] || 0;  // N64 arrows are the stick
     const pad = gamepad();
-    if (pad && (document.activeElement===screen || document.fullscreenElement===stage))
+    if (pad && (document.activeElement===screen || document.fullscreenElement===stage || chatOpen))
       m |= selectChord(chord, pad, padMask(pad, activeSystem==='n64'), performance.now(), code=>runHotkey(code));
     else resetChord(chord);
     m&=SYSTEM_BUTTONS[activeSystem] ?? 509; // each authority refuses buttons its console lacks
@@ -122,7 +126,7 @@
     const v=[0,0,0,0];
     for(const code of keys){const s=STICK[code];if(s)v[s[0]]+=s[1];}
     const pad=gamepad();
-    if(pad && (document.activeElement===screen || document.fullscreenElement===stage)){
+    if(pad && (document.activeElement===screen || document.fullscreenElement===stage || chatOpen)){
       const a=pad.axes||[];for(let i=0;i<4;i++)if(Math.abs(a[i]||0)>.08)v[i]=a[i];
     }
     return v.map(x=>Math.round(Math.max(-1,Math.min(1,x))*32767));
@@ -214,7 +218,7 @@
       if(acquiring!==pending || epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
       lease=result;
       scriptedMode=false;cognitivePort=null;handoffGrant=null;
-      seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
+      seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();focusGame();
     }finally{clearTimeout(deadline);if(acquiring===pending)acquiring=null;}
   }
   const wsURL = path => `${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/retro/${path}`;
@@ -236,7 +240,7 @@
       if(status.state!=='running'){lease=null;outstanding.clear();clearInterval(timer);}
       if(!recovering)await api(`sessions/${sid}/resume`,{});
       if(epoch!==transportEpoch || document.hidden)return;
-      if(!lease)await grant();else screen.focus();
+      if(!lease)await grant();else focusGame();
       if(epoch!==transportEpoch || document.hidden)return;
       report('Playing.');return;
     }
@@ -348,7 +352,7 @@
     const r=await api(`sessions/${sid}/save`,{});
     await listSaves();
     report(`Saved · played ${played(r.saved.played_frames)} · frame ${r.saved.frame}.`);
-    if(lease)screen.focus();
+    if(lease)focusGame();
   });
   let hotkeyLoad=false;  // F10 only restores in place; it never ends one game to start another
   action('load',async()=>{
@@ -359,13 +363,14 @@
     if(current && current.game_id===el('game').value && ['running','paused'].includes(current.state)){
       // Restore in place; the worker swaps the whole game state between two frames.
       await api(`sessions/${sid}/load`,{save_id});
-      if(lease && current.state==='running'){screen.focus();report('Save loaded. Playing.');}
+      if(lease && current.state==='running'){focusGame();report('Save loaded. Playing.');}
       else report('Save loaded (paused; the picture updates when play resumes). Click the game to keep playing.');
     } else if(inPlaceOnly) throw Error('F10 loads into the game that is running. To start a game from a save, choose it and press Load.');
     else if(await newGame(save_id)) report('Save loaded. Playing.');
   });
   action('join',connect);
-  action('pause',async()=>{const session=sid;++intent;wanted=false;neutral();if(session)await api(`sessions/${session}/pause`,{});report('Paused. Click the game to keep playing.');});
+  async function pauseGame(){const session=sid;++intent;wanted=false;neutral();if(session)await api(`sessions/${session}/pause`,{});report('Paused. Click the game to keep playing.');}
+  action('pause',pauseGame);
   action('stop',async()=>{const session=sid;++intent;wanted=false;neutral();sid=null;if(session)await api(`sessions/${session}/stop`,{});report('Game stopped.');});
   action('takeover',async()=>{
     setOrion(false);
@@ -577,7 +582,7 @@
   setInterval(async()=>{if(document.hidden || pollingPlay)return;pollingPlay=true;
     try{await pollPlay();}catch(_){/* status is optional; play never depends on it */}
     finally{pollingPlay=false;}},2000);
-  action('start',async()=>{screen.focus();keys.add('Enter');send();setTimeout(()=>keys.delete('Enter'),150);});
+  action('start',async()=>{focusGame();keys.add('Enter');send();setTimeout(()=>keys.delete('Enter'),150);});
   el('mute').onchange=()=>{if(gain)gain.gain.value=el('mute').checked?0:1;};
   el('port').onchange=neutral;
   // While the game has the keyboard, keys that scroll a page do nothing else. Before
@@ -602,6 +607,10 @@
       if(!e.repeat)runHotkey(e.code);
       return;
     }
+    // T opens the chat box (no console in the key map uses T). Never while typing somewhere.
+    if(e.code===CHAT_KEY && !chatOpen && !typing(e.target) && !(e.shiftKey || e.ctrlKey || e.altKey || e.metaKey)){
+      e.preventDefault();if(!e.repeat)openChat();return;}
+    if(chatOpen && e.code==='Escape' && e.target===el('chatInput')){e.preventDefault();closeChat();return;}
     if(orionPlay && scriptedMode && gameKey(e.code) && !field(e.target) && !e.target?.closest?.('button,summary,a,select')){
       e.preventDefault();takeBack();return;}
     if(document.activeElement!==screen && (document.fullscreenElement!==stage || field(e.target)))return;
@@ -615,7 +624,7 @@
   });
   el('exitFullscreen').onclick=()=>{if(document.fullscreenElement)void document.exitFullscreen().catch(()=>{});};
   document.addEventListener('fullscreenchange',()=>{
-    el('fullscreen').textContent=document.fullscreenElement?'Exit fullscreen':'Fullscreen';screen.focus();});
+    el('fullscreen').textContent=document.fullscreenElement?'Exit fullscreen':'Fullscreen';focusGame();});
   window.addEventListener('keyup',e=>{keys.delete(e.code);send();});
   // Blur releases a human's held keys. A handoff holds no keys and the game is still on screen,
   // so blur keeps it: closing the socket would end Orion's turn (Retro cancels a grant whose
@@ -626,6 +635,7 @@
   document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});
   window.addEventListener('focus',()=>{away=false;heal();});
   screen.addEventListener('pointerdown',()=>{
+    if(chatOpen)closeChat();   // a click on the game means play: the click below takes the controller
     away=false;if(takeBack())return;if(scriptedMode)return;
     if(sid){wanted=true;heals=0;if(!connecting && !acquiring && !lease)void connect().catch(err=>report(err.message));}
   });
@@ -637,34 +647,39 @@
   const settle=id=>{
     sittingAsked=id;el('whoPlays').hidden=true;
     try{sessionStorage.setItem('retroSittingAsked',id);}catch(_){}
-    screen.focus();                                                          // the game keeps the keys
+    focusGame();                                                             // the game keeps the keys
   };
   // Orion's look (game company design, patch 2). The server says whether Orion is watching and, if not,
   // why: the text is the server's, never composed here, so the page cannot claim more than the record.
-  function renderWatch(w){
+  function renderWatch(w,poll=false){
     const box=el('watch');
     if(!w || !w.enabled){box.hidden=true;return;}
     box.hidden=false;
     el('watchText').textContent=(w.status && w.status.text)||'';
-    el('watchSwitch').checked=w.juniper_mode!=='off';
+    // Three positions (spec section 5): off, quiet (looks, no lines), on (watch and talk).
+    const sw=el('watchSwitch');
+    if(poll && (sw.disabled || document.activeElement===sw))return;   // never flip it under a choice in progress
+    sw.value=['off','quiet','on'].includes(w.juniper_mode)?w.juniper_mode:'on';sw.dataset.mode=sw.value;
   }
   el('watchSwitch').onchange=async()=>{
     const sw=el('watchSwitch');sw.disabled=true;
-    try{renderWatch((await api('sitting/watch',{mode:sw.checked?'on':'off'})).watch);}
-    catch(err){sw.checked=!sw.checked;report(err.message);}
-    finally{sw.disabled=false;screen.focus();}                              // the game keeps the keys
+    try{renderWatch((await api('sitting/watch',{mode:sw.value})).watch);}
+    catch(err){sw.value=sw.dataset.mode||'on';report(err.message);}
+    finally{sw.disabled=false;focusGame();}                              // the game keeps the keys
   };
   async function pollSitting(){
     const got=await api('sitting');
-    renderWatch(got.watch);
+    renderWatch(got.watch,true);
     const s=got.sitting;
+    chatSitting(s);
     el('whoPlays').dataset.sitting=s?.sitting_id||'';
     // Only the page that holds the controller is asked: a second screen that only watches is not.
     el('whoPlays').hidden=!(s && lease && !s.player_stated && s.sitting_id!==sittingAsked);
   }
   for(const [id,player] of [['whoJuniper','juniper'],['whoGuest','guest']])action(id,async()=>{
     const asked=el('whoPlays').dataset.sitting;
-    try{await api('sitting/player',{player,sitting_id:asked});}   // an answer to an older sitting is refused
+    try{await api('sitting/player',{player,sitting_id:asked});   // an answer to an older sitting is refused
+      if(asked && asked===chat.sitting)chat.player=player;}        // later chat messages use it; sent ones keep theirs
     finally{settle(asked);}
   });
   action('whoLater',async()=>settle(el('whoPlays').dataset.sitting));
@@ -672,6 +687,172 @@
     if(document.hidden || pollingSitting)return;
     pollingSitting=true;pollSitting().catch(()=>{}).finally(()=>{pollingSitting=false;});
   },5000);
+
+  // --- The chat box (game company design, section 5) ------------------------------------------------
+  // A panel over the lower part of the screen, inside #stage so fullscreen shows it, talking on the
+  // Hub chat socket (/ws). Who typed decides the session: Juniper stated -> her main chat thread
+  // (localStorage.orion_sid); a guest or nobody stated -> a page-local "retro-guest-<sitting_id>".
+  // Each message keeps the session it was sent with; a later answer to "Who's playing?" changes only
+  // later messages. The line strip shows Orion's newest line or reply, then fades.
+  const CHAT_KEY='KeyT', STRIP_FADE_MS=15000;
+  const chat={sitting:null, player:null, socket:null, hello:null, retry:0, retryTimer:null,
+    pausedGame:false, pending:0, stripTimer:null, guest:'retro-guest-page-'+Math.random().toString(36).slice(2,10)};
+  function chatSitting(s){
+    const id=s?.sitting_id||null;
+    if(id && id!==chat.sitting){
+      if(chat.sitting)el('chatLog').replaceChildren();   // the panel holds this sitting's lines and messages
+      chat.sitting=id;
+    }
+    if(s && s.player_stated!==undefined)chat.player=s.player_stated||null;
+  }
+  // Juniper's thread, created the way the main chat page does (GET /api/session) when absent.
+  async function juniperSid(){
+    let sid=null;try{sid=localStorage.getItem('orion_sid');}catch(_){}
+    if(sid)return sid;
+    const r=await fetch('/api/session',{headers:{}});const d=await r.json();
+    if(!d.session_id)throw Error('No chat session.');
+    try{localStorage.setItem('orion_sid',d.session_id);}catch(_){}
+    return d.session_id;
+  }
+  async function chatSid(){
+    return chat.player==='juniper' ? juniperSid() : 'retro-guest-'+(chat.sitting||chat.guest.slice('retro-guest-'.length));
+  }
+  // The contract's typed message (Browser <-> server): Orion mode, no speech, the retro surface.
+  function chatMessage(text, sessionId, sittingId){
+    return {text_input:text, mode:'orion', disable_tts:true, session_id:sessionId,
+      surface_context:{surface:'retro', input_modality:'typed', retro_sitting_id:sittingId}};
+  }
+  const thumbURL=lineId=>`lines/${encodeURIComponent(lineId)}/thumb`;
+  const wsChatURL=()=>`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
+  function hello(sessionId){
+    if(chat.socket?.readyState!==WebSocket.OPEN || chat.hello===sessionId)return;
+    chat.socket.send(JSON.stringify({type:'session_hello', session_id:sessionId}));chat.hello=sessionId;
+  }
+  // Reconnect with backoff (1 s doubling to 30 s). Nothing here touches focus.
+  function chatConnect(){
+    clearTimeout(chat.retryTimer);chat.retryTimer=null;
+    if(document.hidden)return;
+    let socket;try{socket=new WebSocket(wsChatURL());}catch(_){chatRetry();return;}
+    chat.socket=socket;chat.hello=null;
+    socket.onopen=()=>{chat.retry=0;el('chatInfo').textContent='';
+      void chatSid().then(hello).catch(()=>{});};
+    socket.onclose=()=>{if(chat.socket!==socket)return;chat.socket=null;chat.hello=null;
+      if(chat.pending){chat.pending=0;chatEntry('system','The chat connection dropped; the reply was lost. Send again.');}
+      chatRetry();};
+    socket.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch(_){return;}if(d && typeof d==='object')chatFrame(d);};
+  }
+  function chatRetry(){
+    if(chat.retryTimer)return;
+    const wait=Math.min(30000,1000*2**chat.retry++);
+    el('chatInfo').textContent=`Chat reconnecting in ${Math.round(wait/1000)} s.`;
+    chat.retryTimer=setTimeout(chatConnect,wait);
+  }
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden && !chat.socket && !chat.retryTimer)chatConnect();});
+  function chatFrame(d){
+    if(d.kind==='orion_outreach'){
+      const text=String(d.llm_response||'').trim();if(!text)return;
+      if(d.source==='retro_commentary' && d.line_id){   // a line: strip with thumbs, and the panel
+        chatEntry('orion',text,{lineId:String(d.line_id)});strip(text,String(d.line_id));
+      } else if(chat.player==='juniper') chatEntry('orion',text,{note:'Orion, unprompted'});   // other outreach: panel only
+      // Orion's other messages are to Juniper: a guest (or nobody stated) at the game never sees them here.
+      return;
+    }
+    if(d.type==='final'){
+      const text=String(d.llm_response||'').trim();chat.pending=Math.max(0,chat.pending-1);
+      if(text){chatEntry('orion',text);strip(text,null);}
+      return;
+    }
+    if(d.type==='turn_error' || d.type==='turn_deferred'){
+      chat.pending=Math.max(0,chat.pending-1);
+      chatEntry('system',d.type==='turn_error'?`Orion could not answer (${d.error||d.phase||'turn failed'}).`
+        :`Orion put this off (${d.reason||'not now'}).`);
+    }
+  }
+  function thumbButtons(lineId){
+    const box=document.createElement('span');box.className='thumbs';box.dataset.line=lineId;
+    for(const [thumb,label] of [['up','Thumb up'],['down','Thumb down']]){
+      const b=document.createElement('button');b.type='button';b.className='thumb';b.dataset.thumb=thumb;
+      b.textContent=thumb==='up'?'+':'−';b.title=label;b.setAttribute('aria-label',label);b.setAttribute('aria-pressed','false');
+      b.onclick=()=>void sendThumb(lineId,thumb);box.append(b);
+    }
+    const state=document.createElement('small');state.className='thumbState';box.append(state);
+    return box;
+  }
+  async function sendThumb(lineId,thumb){
+    const boxes=()=>document.querySelectorAll(`.thumbs[data-line="${CSS.escape(lineId)}"]`);
+    for(const box of boxes())for(const b of box.querySelectorAll('button'))b.disabled=true;
+    try{
+      const r=await api(thumbURL(lineId),{thumb});
+      for(const box of boxes()){
+        for(const b of box.querySelectorAll('button'))b.setAttribute('aria-pressed',String(b.dataset.thumb===thumb));
+        box.dataset.stored=thumb;
+        box.querySelector('.thumbState').textContent=`Saved: thumb ${thumb}${r.thumb_by==='guest'?' (guest)':''}.`;
+      }
+    }catch(err){
+      for(const box of boxes())box.querySelector('.thumbState').textContent=err.status===404?'That line is gone.':'Not saved: '+err.message;
+    }finally{
+      for(const box of boxes())for(const b of box.querySelectorAll('button'))b.disabled=false;
+      focusGame();   // a click on a thumb never keeps the keyboard from the game
+    }
+  }
+  function chatEntry(who,text,opts={}){
+    const row=document.createElement('div');row.className='chatRow '+who;
+    const name=document.createElement('b');
+    name.textContent=who==='orion'?'Orion':who==='system'?'':(opts.player==='juniper'?'Juniper':'Guest');
+    const body=document.createElement('span');body.textContent=text;
+    row.append(name,' ',body);
+    if(opts.note){const n=document.createElement('small');n.textContent=` (${opts.note})`;row.append(n);}
+    if(opts.lineId){row.dataset.line=opts.lineId;row.append(' ',thumbButtons(opts.lineId));}
+    const log=el('chatLog');log.append(row);
+    while(log.children.length>200)log.firstChild.remove();
+    log.scrollTop=log.scrollHeight;
+  }
+  function strip(text,lineId){
+    const box=el('chatStrip');clearTimeout(chat.stripTimer);
+    el('chatStripText').textContent=text;
+    const old=box.querySelector('.thumbs');if(old)old.remove();
+    if(lineId){
+      const thumbs=thumbButtons(lineId), seen=document.querySelector(`#chatLog .thumbs[data-line="${CSS.escape(lineId)}"]`);
+      if(seen?.dataset.stored){thumbs.dataset.stored=seen.dataset.stored;
+        for(const b of thumbs.querySelectorAll('button'))b.setAttribute('aria-pressed',String(b.dataset.thumb===seen.dataset.stored));
+        thumbs.querySelector('.thumbState').textContent=seen.querySelector('.thumbState').textContent;}
+      box.append(thumbs);
+    }
+    box.dataset.line=lineId||'';box.hidden=false;box.classList.remove('fading');
+    chat.stripTimer=setTimeout(()=>{box.classList.add('fading');chat.stripTimer=setTimeout(()=>{box.hidden=true;},1000);},STRIP_FADE_MS);
+  }
+  async function sendChat(){
+    const input=el('chatInput'), text=input.value.trim();
+    if(!text)return;
+    if(chat.socket?.readyState!==WebSocket.OPEN){chatEntry('system','Not connected to Orion yet; try again in a moment.');return;}
+    const player=chat.player, sittingId=chat.sitting;   // fixed now: a later flip never rewrites this message
+    let sessionId;
+    try{sessionId=await chatSid();}catch(err){chatEntry('system','No chat session: '+err.message);return;}
+    if(chat.socket?.readyState!==WebSocket.OPEN){chatEntry('system','Not connected to Orion yet; try again in a moment.');return;}
+    hello(sessionId);
+    chat.socket.send(JSON.stringify(chatMessage(text,sessionId,sittingId)));
+    chat.pending++;input.value='';
+    chatEntry('you',text,{player});
+  }
+  function openChat(){
+    if(chatOpen){el('chatInput').focus();return;}
+    chatOpen=true;el('chatPanel').hidden=false;stage.classList.add('chatting');el('chatToggle').setAttribute('aria-expanded','true');
+    keys.clear();send();   // one neutral input: a button held while opening is released
+    // A keyboard player cannot type and play at once: with no controller connected, pause.
+    // With a controller, the controller keeps driving the game.
+    if(lease && !scriptedMode && !gamepad()){chat.pausedGame=true;void pauseGame().then(()=>report('Paused while you type. Close the chat to keep playing.')).catch(err=>report(err.message));}
+    el('chatInput').focus();
+  }
+  function closeChat(){
+    if(!chatOpen)return;
+    chatOpen=false;el('chatPanel').hidden=true;stage.classList.remove('chatting');el('chatToggle').setAttribute('aria-expanded','false');
+    if(chat.pausedGame){chat.pausedGame=false;if(sid)void connect().catch(err=>report(err.message));}
+    focusGame();
+  }
+  el('chatToggle').onclick=()=>chatOpen?closeChat():openChat();
+  el('chatClose').onclick=closeChat;
+  el('chatForm').onsubmit=e=>{e.preventDefault();void sendChat();};
   padStatus();
-  void load().catch(err=>{el('player').hidden=false;report(err.message);});
+  // The chat socket opens once the page has loaded (or failed to), never ahead of the game's own sockets.
+  void load().catch(err=>{el('player').hidden=false;report(err.message);}).finally(chatConnect);
 })();

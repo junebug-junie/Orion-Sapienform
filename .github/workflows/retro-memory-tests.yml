@@ -14,6 +14,11 @@ on:
       - "services/orion-hub/tests/test_retro_watch*.py"
       - "services/orion-hub/tests/test_retro_frames.py"
       - "services/orion-sql-db/manual_migration_retro_watch_v2.sql"
+      - "services/orion-sql-db/manual_migration_retro_lines_v1.sql"
+      - "services/orion-hub/scripts/retro_commentary.py"
+      - "orion/retro/commentary.py"
+      - "services/orion-hub/tests/test_retro_line_pg.py"
+      - "services/orion-hub/evals/retro_line_dry_eval.py"
       - "services/orion-durable-runs/app/temporal_self_sources.py"
       - "services/orion-hub/scripts/retro_leisure_self_start.py"
       - "services/orion-hub/scripts/retro_leisure.py"
@@ -40,6 +45,11 @@ on:
       - "orion/retro/watch.py"
       - "orion/retro/frames.py"
       - "services/orion-sql-db/manual_migration_retro_watch_v2.sql"
+      - "services/orion-sql-db/manual_migration_retro_lines_v1.sql"
+      - "services/orion-hub/scripts/retro_commentary.py"
+      - "orion/retro/commentary.py"
+      - "services/orion-hub/tests/test_retro_line_pg.py"
+      - "services/orion-hub/evals/retro_line_dry_eval.py"
       - "services/orion-durable-runs/app/temporal_self_sources.py"
       - "services/orion-hub/scripts/retro_leisure_self_start.py"
       - "services/orion-hub/scripts/retro_leisure.py"
@@ -82,11 +92,16 @@ jobs:
             tests/test_retro_memory_export_pg.py \
             tests/test_retro_sitting_pg.py \
             tests/test_retro_watch_pg.py \
+            tests/test_retro_line_pg.py \
             tests/test_retro_watch_service.py \
             tests/test_retro_frames.py \
             tests/test_retro_leisure_self_start.py \
             tests/test_retro_leisure_replay_live_source.py \
             tests/test_act_ledger_producers.py
+      - name: Line turn dry eval (game company patch 3; step 0 notes, no GPU)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -P services/orion-hub/evals/retro_line_dry_eval.py
       - name: Leisure timer replay (fixture; ladder retirement PR 1)
         env:
           PYTHONPATH: ${{ github.workspace }}

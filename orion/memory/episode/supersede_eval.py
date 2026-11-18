@@ -49,6 +49,9 @@ class EvalItem:
     old: MemoryRow
     new: MemoryRow
     apply_rules: bool = True  # False: judge the classifier alone (rows whose live state changed since)
+    # Other older rows asked alongside ``old`` for the same new row (the clear-target rule of
+    # Juniper's path is per new row). Empty: a single pair.
+    others: tuple[MemoryRow, ...] = ()
 
 
 def _dt(value: Any) -> Optional[datetime]:
@@ -83,13 +86,15 @@ def item_from_dict(d: Mapping[str, Any]) -> EvalItem:
     return EvalItem(item_id=str(d["item_id"]), kind=str(d.get("kind") or "synthetic"), source=str(d["source"]),
                     label=label, expected_relation=str(d.get("expected_relation") or ""),
                     hard_negative=bool(d.get("hard_negative")), old=_row(d["old"]), new=_row(d["new"]),
-                    apply_rules=bool(d.get("apply_rules", True)))
+                    apply_rules=bool(d.get("apply_rules", True)),
+                    others=tuple(_row(o) for o in (d.get("others") or ())))
 
 
 def item_to_dict(it: EvalItem) -> dict[str, Any]:
     return {"item_id": it.item_id, "kind": it.kind, "source": it.source, "label": it.label,
             "expected_relation": it.expected_relation, "hard_negative": it.hard_negative,
-            "apply_rules": it.apply_rules, "old": row_dict(it.old), "new": row_dict(it.new)}
+            "apply_rules": it.apply_rules, "old": row_dict(it.old), "new": row_dict(it.new),
+            **({"others": [row_dict(o) for o in it.others]} if it.others else {})}
 
 
 def load_items(path: Path) -> list[EvalItem]:

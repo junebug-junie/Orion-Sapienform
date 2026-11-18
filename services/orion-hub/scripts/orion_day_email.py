@@ -13,6 +13,9 @@ Rules this module holds:
 * Provenance, one small line each when present: the unified turn that wrote the letter
   (``sources.turn_correlation_id``) and the days with no letter the turn was told about
   (``sources.missed_letters``).
+* "Last night I slept on the day" (day-dream spec Patch 3): the same section the letter turn read, right
+  above the roundup. A produced night shows its paragraph and memory ids; any other night shows one line,
+  "no day dream for <day>: <reason>" (``orion.orion_day.day_input.dream_day_line``), never nothing.
 * "What each organ did" (integration patch 4): the daily organ roundup the letter turn read
   (``material.organ_roundup``), every line as written, right below Orion's letter and threads.
 * Email-safe HTML: tables and inline styles only, no external CSS/JS/fonts, no ``<details>``
@@ -50,6 +53,7 @@ TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
 TEMPLATE_NAME = "orion_day_letter.html.j2"
 EVENT_KIND = "orion_day.letter"
 ORGAN_ROUNDUP_HEADING = "What each organ did"  # integration patch 4: below Orion's letter
+DREAM_DAY_EMAIL_HEADING = "Last night I slept on the day"  # day-dream Patch 3: above the roundup
 _NOTIFICATION_NS = uuid5(NAMESPACE_URL, "orion.orion_day.letter.email.v1")
 
 DEFAULT_MAX_IMAGES = 6
@@ -347,6 +351,7 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
     return {
         "subject": letter_subject(letter.letter_date),
         "organ_roundup_heading": ORGAN_ROUNDUP_HEADING,
+        "dream_day_heading": DREAM_DAY_EMAIL_HEADING,
         "letter_date": letter.letter_date,
         "letter_date_long": letter.letter_date.strftime("%A, %B %-d, %Y"),
         "timezone": m.timezone,
@@ -359,6 +364,7 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "turn_correlation_id": letter.sources.turn_correlation_id,
         "missed_letters": [{"date": str(x.letter_date), "reason": x.reason} for x in letter.sources.missed_letters],
         "organ_roundup": list(m.organ_roundup.lines) if m.organ_roundup is not None else [],
+        "dream_day": dream_day_context(m),
         "curiosity": curiosity,
         "curiosity_failed": [{"workflow": f.workflow, "when": _local(f.failed_at, tz),
                               "error": f.error or "no error recorded"} for f in m.curiosity_failed],
@@ -421,6 +427,33 @@ def provenance_lines(letter: OrionDayLetterV1) -> list[str]:
     return out + ([""] if out else [])
 
 
+def dream_day_context(m: Any) -> dict[str, Any] | None:
+    """Last night's day dream as the email shows it: a produced night (paragraph + memory ids) or the one
+    "no day dream" line. None only when the letter's material never read it (an older letter)."""
+    from orion.orion_day.day_input import dream_day_line
+
+    d = m.dream_day
+    if d is not None and d.status == "produced":
+        return {"produced": True, "day": d.day.isoformat(), "text": d.day_text or "", "memory_ids": list(d.memory_ids)}
+    line = dream_day_line(m)
+    return {"produced": False, "line": line} if line else None
+
+
+def dream_day_text(m: Any) -> list[str]:
+    """The plain-text part's dream section (same facts as the HTML)."""
+    d = dream_day_context(m)
+    if d is None:
+        return []
+    out = [f"## {DREAM_DAY_EMAIL_HEADING}", ""]
+    if d["produced"]:
+        if d["text"]:
+            out += [d["text"], ""]
+        out.append("Memories I wrote: " + (", ".join(d["memory_ids"]) or "none"))
+    else:
+        out.append(d["line"])
+    return out + ["", "---"]
+
+
 def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
     """The plain-text part: the full note, carry-forward and material, as markdown."""
     m = letter.material
@@ -442,6 +475,7 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
     ]
     out += provenance_lines(letter)
     out += ["---"]
+    out += dream_day_text(m)
     if m.organ_roundup is not None and m.organ_roundup.lines:
         out += [f"## {ORGAN_ROUNDUP_HEADING}", "(The daily organ roundup Orion read for this letter: every line a "
                 "count, a quote or a ref.)", "", *m.organ_roundup.lines, "", "---"]

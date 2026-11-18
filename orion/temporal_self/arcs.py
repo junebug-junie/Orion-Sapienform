@@ -157,7 +157,11 @@ LANE_RULES = {
     "reverie": "one reverie chain with >= 1 thought",
     "imagery": "one visual reverie chain",
     "sleep": "one completed dream cycle",
-    "play": "one finished Retro session (retro_play_sessions); label = its deterministic summary",
+    "play": ("one finished Retro session (retro_play_sessions); label = its deterministic summary. A person's "
+             "sitting (subject retro_sitting:<id>) opens at its first settled checked_holds look (retro_look), "
+             "later looks refresh it (label = newest look; evidence keeps the first and last look only, the "
+             "looks between are counted in evidence_overflow), and its human_play retro_play row closes it "
+             "(process_ended, label = the row's); a look after that adds to the counts and never reopens it"),
     "street": ("one notable outside visit (street_event: a spot-check-gated motion story, a doorbell ring, "
                "or a handoff with p < 0.05); events the handoff loop linked, or a ring and a story within "
                "street_visit_gap_sec, share one arc; label starts 'Outside (<camera>)'; nothing binds to it "
@@ -1022,6 +1026,103 @@ def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
     _close(arc, "process_ended", end)
 
 
+# --------------------------------------------------------------------------- a person's sitting
+
+LOOK_TABLE = "retro_watch_look"
+
+
+def _sitting_arc(state: TemporalSelfStateV1, subject_ref: str) -> TemporalSelfArcV1 | None:
+    """Today's play arc of one sitting: the open one, else the one its sitting row closed."""
+    found = None
+    for arc in state.arcs.values():
+        if arc.kind == "play" and arc.subject_ref == subject_ref and arc.day_id == state.day_id:
+            if arc.status == "open":
+                return arc
+            if arc.closed_reason == "process_ended":
+                found = arc
+    return found
+
+
+def _add_look(arc: TemporalSelfArcV1, ref: str) -> None:
+    """Keep the first and the newest look only, so a 4-hour sitting with 200 looks stays one small
+    arc (spec rev 4 section 8). A look replaced here is counted in ``evidence_overflow``: the number
+    of looks is the look refs kept plus that count."""
+    if ref in arc.evidence_refs:
+        return
+    looks = [i for i, r in enumerate(arc.evidence_refs) if r.startswith(LOOK_TABLE + ":")]
+    if len(looks) < 2:
+        _add_evidence(arc, ref)
+        return
+    arc.evidence_refs[looks[-1]] = ref
+    arc.evidence_overflow += 1
+
+
+def _fold_look(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConfig) -> None:
+    """A settled checked_holds look (sources.retro_look): opens the sitting's play arc, or refreshes
+    the open one. Its label is the newest look ("Saw on the game screen: ..."), so a reader of the arc
+    still says it is a look. A look settled after the sitting row closed the arc only adds to its
+    counts: a finished sitting is never reopened."""
+    assert state.day_id is not None and e.subject_ref is not None
+    t, ref = e.occurred_at, _ref(e)
+    arc = _sitting_arc(state, e.subject_ref)
+    if arc is None:
+        carry = state.carry.pop(f"play|{e.subject_ref}", None)
+        arc = TemporalSelfArcV1(
+            arc_id=arc_id_for(state.day_id, "play", e.subject_ref, ref), day_id=state.day_id, kind="play",
+            subject_ref=e.subject_ref, subject_label=e.label, began_at=t, last_seen_at=t, status="open",
+            segments=[ArcSegmentV1(began_at=t, ended_at=t)],
+            carried_from_previous_day=carry is not None, carried_from_arc_id=carry["arc_id"] if carry else None,
+        )
+        _add_look(arc, ref)
+        state.arcs[arc.arc_id] = arc
+        _retro_bind(state, arc, t, t + timedelta(microseconds=1))
+        return
+    _add_look(arc, ref)
+    if arc.status != "open":
+        return
+    if t > arc.last_seen_at:
+        began = arc.last_seen_at
+        _extend(arc, t, None, accrue=True)
+        _retro_bind(state, arc, began, t + timedelta(microseconds=1))
+    arc.subject_label = e.label
+
+
+def _close_sitting(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConfig) -> bool:
+    """A person's sitting row (retro_play, kind human_play) closes the play arc its looks opened,
+    taking the row's label (who played, how long, how many notes) and the sitting's whole interval.
+    False when no look opened one today: the row is then one born-closed process arc, as before."""
+    if e.source_kind != "retro_play" or e.payload.get("kind") != "human_play" or e.subject_ref is None:
+        return False
+    arc = _sitting_arc(state, e.subject_ref)
+    if arc is None:
+        return False
+    ref = _ref(e)
+    if arc.status != "open":
+        return True  # already closed by this row (a refold) or by an earlier row of the same sitting
+    start = min(e.occurred_at, arc.began_at)
+    end = max(e.ended_at or e.occurred_at, arc.last_seen_at)
+    arc.began_at = start
+    arc.segments = [ArcSegmentV1(began_at=start, ended_at=end)]
+    arc.cumulative_dwell_sec = max(0.0, _secs(start, end))
+    arc.last_seen_at = end
+    arc.subject_label = e.label
+    arc.related_refs = list(e.related_refs)
+    if ref not in arc.evidence_refs:
+        # The sitting row goes first in the evidence, before the first and last look.
+        if len(arc.evidence_refs) >= EVIDENCE_CAP:
+            arc.evidence_refs.pop()
+            arc.evidence_overflow += 1
+        arc.evidence_refs.insert(0, ref)
+    if _secs(start, end) > cfg.stuck_segment_sec:
+        arc.warnings.append("process longer than 4 h: its start column may predate a stall or retry")
+    for event_id in state.awaiting_arc.pop(f"play|{e.subject_ref}", []):
+        if not _add_capped(arc.expectation_event_ids, event_id, CONTEXT_CAP):
+            arc.expectation_overflow += 1
+    _retro_bind(state, arc, start, end + timedelta(microseconds=1))
+    _close(arc, "process_ended", end)
+    return True
+
+
 def _visit_refs(refs: Iterable[str]) -> set[str]:
     return {r for r in refs if r.startswith(VISIT_REF_PREFIX)}
 
@@ -1174,8 +1275,11 @@ def _fold_event(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reducer
         _fold_loop_raised(state, e, cfg)
     elif k == "attention_loop_verdict":
         _fold_loop_verdict(state, e)
+    elif k == "retro_look":
+        _fold_look(state, e, cfg)
     elif k in PROCESS_KINDS:
-        _fold_process(state, e, cfg)
+        if not _close_sitting(state, e, cfg):
+            _fold_process(state, e, cfg)
     elif k == "consolidation_window_close":
         _fold_consolidation_close(state, e)
     elif k == "presence_transition":

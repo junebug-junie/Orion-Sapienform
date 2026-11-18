@@ -585,6 +585,7 @@ def _build_chronicle():
         exclude_kinds=tuple(k for k, on in (("arousal_transition", s.temporal_self_strain_arcs_enabled),
                                             ("body_binding", s.temporal_self_binding_arcs_enabled),
                                             ("retro_play", s.temporal_self_retro_play_enabled),
+                                            ("retro_look", s.temporal_self_retro_look_enabled),
                                             ("street_event", s.temporal_self_street_episodes_enabled),
                                             ("office_session", s.temporal_self_office_sessions_enabled),
                                             ("faculty_status_changed", s.self_monitor_enabled)) if not on)),

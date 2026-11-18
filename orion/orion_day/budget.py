@@ -59,7 +59,7 @@ MIN_CLIP_CHARS = 400
 
 _REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_offered|"
                      r"chat_compactor|github_compactor|world_pulse_digest|walkway_day|visual_reverie|reverie|reverie_theme|correction|"
-                     r"arc|day|event|juniper_chat|experience|act)"
+                     r"arc|day|event|juniper_chat|experience|act|dream_day)"
                      r":[^\]\s]+)\]")
 
 
@@ -437,6 +437,8 @@ def material_ref_records(material: OrionDayMaterialV1) -> dict[str, dict[str, An
         records |= dict(material.temporal_day.records)  # "arc:<id>" / "day:<id>" -> compact stored row
     for c in material.reverie_chains:
         records.setdefault(f"reverie_theme:{c.theme_key or 'unthemed'}", dump(c))
+    if material.dream_day is not None and material.dream_day.status == "produced":  # day-dream Patch 3
+        records[f"dream_day:{material.dream_day.day.isoformat()}"] = dump(material.dream_day)
     if material.organ_roundup is not None:  # integration patch 4: the roundup line that showed each ref
         lines = material.organ_roundup.lines
         for ref in material.organ_roundup.refs:

@@ -59,6 +59,9 @@ protected_paths:
   # 2026-11-18, game company patch 2: every look at a person's game screen bids here (only funded looks run), listed
   # below as bidder.
   - {glob: "services/orion-hub/scripts/retro_watch.py", organ: "choice (binding bid site: Orion's look at a game screen)"}
+  # 2026-11-18, game company patch 3: every line Orion says to a person who plays bids here (only funded lines run),
+  # listed below as bidder.
+  - {glob: "services/orion-hub/scripts/retro_commentary.py", organ: "choice (binding bid site: Orion's line in a person's game)"}
 
 readers:
   # --- spinal: hardware safety. The 34 C reflex and hardware-watch. ---
@@ -140,6 +143,10 @@ readers:
     role: bidder
     reason: "Orion's look at a person's game screen BINDS (game company patch 2, hub.retro_watch) -- only a funded bid runs a look (orion.physiology.binding names the producer). Reads no regulation or price state of its own; the heat reason it shows on the game page is the pool's own refusal text."
     note: "2026-11-18, already the Patch D shape (stricter: deferred and no answer skip the look)"
+  - module: services/orion-hub/scripts/retro_commentary.py
+    role: bidder
+    reason: "Orion's line to a person who plays BINDS (game company patch 3, hub.retro_commentary) -- only a funded bid runs a line turn (orion.physiology.binding names the producer). Reads no regulation or price state of its own; a heat refusal is the GPU pool's own refusal of its system hold."
+    note: "2026-11-18, already the Patch D shape (stricter: deferred and no answer skip the line)"
   - module: services/orion-sql-writer/app/ask_bind.py
     role: bidder
     reason: camera asks' BINDING bid (attention patch 4b) -- every camera opener obeys the market's decision (orion.physiology.binding) before a card opens; held re-bids with a backoff, no deadline (#3285). Reads no regulation or price state of its own.

@@ -470,7 +470,8 @@ chat. Phase 1 core pages stay. The parts of this spec that rev 2 replaces are ma
   reader.
 - **The vector backend is switched off.** It served 0 of 16,168 recalls.
 - **The read-only database role cannot see the memory tables.** `orion_readonly` has no
-  grants on them, so a read-only tool gets nothing.
+  grants on them, so a read-only tool gets nothing. *(Resolved: see the 2026-11-18 status under
+  "Missing questions", item 4.)*
 
 ### Design
 
@@ -574,6 +575,11 @@ superseded mid-turn can sit in Chroma for up to 300 s, but it cannot be served.
 The CI test today covers retrieval (pointer and status) and the fold (status). A pg test that
 the supersede write sets all three marks belongs with #3587.
 
+**Status on 2026-11-18:** the pass dry-ran twice (v2 on 11-17, v3.1 on 11-18). It made two
+proposals. Juniper rejected both, and the one hand-run apply was undone 31 s later. Write time runs
+v3.4 behind the eval gate, and every run writes a `memory_supersede_run` row. The rest of this
+paragraph is history.
+
 **Status on 2026-11-17: the one-time pass has not run.** #3533 closed with retrieval and the
 mesh-edge check (PR #3571), but no pass. Live: 5 rows are `superseded`, all from the
 confirmation loop. The named contradictions are all still `active`, and no correction row
@@ -623,8 +629,9 @@ points at its target. The distiller does not supersede at write time either. Fol
   Referent coverage is high: since 10-05, 97 to 100% of rows per week have a referent, and 68
   to 93% have one besides Juniper or Orion. The #3537 backfill must write referents the same
   way (noted on #3537).
-- Every run snapshots first (CLAUDE.md section 14) and writes a manifest Orion can read
-  (#3611 covers read access).
+- Every run snapshots first (CLAUDE.md section 14) and writes a manifest Orion can read.
+  Read access is in place (2026-11-18): `orion_readonly` can SELECT `episode_memory_event`,
+  `memory_supersede_run` and `memory_supersede_eval_run`.
 
 **Ordering with the #3537 backfill.** The backfill writes July to September rows after the
 October and November corrections already exist. So write-time supersede (which looks at older
@@ -667,6 +674,13 @@ undid become eval hard negatives automatically, and the eval runs every item twi
 votes vary. **v3.4:** the model alone still said "same referent: yes" on one of them, so a fixed rule
 runs first. When the old row names a PR or issue number that the new row never names, no vote is asked
 and nothing acts.
+
+**Who approves what (2026-11-18).** There are two apply paths, with different approvals:
+- **Write time, inside the nightly distill: automatic.** It applies only while the latest eval
+  run for the current check version passed, and never when degraded. No per-pair human approval.
+- **The one-time pass `apply`, run by hand:** needs Juniper's review of the pairs file. #3721
+  will make `apply` refuse any pair without her per-pair approval mark. That mark applies only to
+  this hand-run command, never to write time.
 
 ### Vetoes attach to the claim
 
@@ -935,6 +949,12 @@ Orion asked 9 questions on PR #3538. Short answers; detail is in the sections ab
    **Update:** the GRANT file merged in PR #3593 but is not applied (checked live). It omits
    `episode_memory_referent` and `recall_telemetry`. #3611 proposes both, with `recall_telemetry`
    minus its `query` column (it holds turn text). Waits on Juniper.
+   **Status 2026-11-18 (checked live): applied.** Juniper ran the #3593 and #3611 grants on
+   11-17. `orion_readonly` has SELECT on `episode_memory`, `episode_memory_event`,
+   `episode_memory_referent`, `recall_telemetry`, `memory_supersede_run` and
+   `memory_supersede_eval_run`. `recall_telemetry` was granted whole, including its `query` column
+   (not the column-limited form #3611 proposed). Its search_path is `orion_scope, public`, and
+   nothing in `orion_scope` shadows these tables.
 5. Lease: see "GPU lease" in Phase 1 status. The Hub version diff does not exist (#3588).
    v1 to v2 similarity is 0.902 and all 4 quotes survive, so #3553 would not have fired.
 6. `page:anchor` exemption: see Phase 1 status.

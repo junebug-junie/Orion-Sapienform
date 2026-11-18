@@ -379,6 +379,9 @@ world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
 world_pulse_read_stage2: Optional[WorldPulseReadStage2Pipeline] = None
 reading_finding_outreach: Optional[ReadingFindingOutreach] = None
 office_reach_out: Optional[OfficeReachOut] = None
+# Game company patch 3: Orion's lines while a person plays (scripts/retro_commentary.py). The websocket handler
+# reads it to yield a running line when a person speaks and to give game-page turns their frames.
+retro_commentary = None
 reading_event_wants: Optional[ReadingEventWants] = None
 curiosity_event_wants: Optional[CuriosityEventWants] = None
 self_monitor_question_minter: Optional[SelfMonitorQuestionMinter] = None
@@ -489,7 +492,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, curiosity_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, session_roundup_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, retro_commentary, reading_event_wants, curiosity_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, session_roundup_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -1101,6 +1104,21 @@ async def startup_event():
                 await office_reach_out.start()
             except Exception:  # noqa: BLE001 -- never blocks Hub boot
                 logger.exception("office_reach_out_start_failed")
+            # Game company patch 3 (docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md
+            # sections 4-6, 8): a funded hub.retro_commentary bid runs a real unified turn through the outreach door,
+            # at the priority of a system GPU hold, and the line reaches the game page's strip.
+            try:
+                from scripts.retro_commentary import CommentaryService
+
+                retro_commentary = CommentaryService(
+                    settings,
+                    bus_provider=lambda: bus,
+                    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                    outreach_provider=lambda: endogenous_outreach,
+                )
+                await retro_commentary.start()
+            except Exception:  # noqa: BLE001 -- never blocks Hub boot
+                logger.exception("retro_commentary_start_failed")
             # Self-monitor E2 (rung 6): a faculty newly held broken/unreliable mints ONE self-question
             # into curiosity_self_questions (minted_by='orion'), once per status episode.
             try:
@@ -1811,7 +1829,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, curiosity_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, session_roundup_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, retro_commentary, reading_event_wants, curiosity_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, session_roundup_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1929,6 +1947,12 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("reading_finding_outreach_stop_failed", exc_info=True)
         reading_finding_outreach = None
+    if retro_commentary is not None:
+        try:
+            await retro_commentary.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("retro_commentary_stop_failed", exc_info=True)
+        retro_commentary = None
     if office_reach_out is not None:
         try:
             await office_reach_out.stop()

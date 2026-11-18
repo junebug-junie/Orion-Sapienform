@@ -131,15 +131,20 @@ organs:
     # retro_play also carries a person's own sitting (kind human_play, game company patch 1): Hub's
     # Retro gateway records it (services/orion-hub/scripts/retro_sitting.py). No family: a person
     # playing is not an act of Orion's and nothing bids for it.
-    temporal_sources: [retro_play]
+    # Patch 3 (lines): retro_look is a look a line turn checked against its frames and found to hold
+    # (verdict checked_holds), keyed by its settle time and labelled "Saw on the game screen: <note>". Unchecked
+    # and contradicted looks never become events. Looks carry no salience (no magnitude here): they rank after
+    # every scored item in a reader's now and fill a place only when one is free (spec rev 4 section 8).
+    temporal_sources: [retro_play, retro_look]
     salience_magnitude:
       retro_play: sitting_minutes
     # Patch 2 (looks): hub.retro_watch bids for each look; orion.watch_choice is Orion's own switch (dig watch).
-    # Patch 2 writes no retro_look events: only looks a line turn checked and found to hold become events, and
-    # that judging arrives in patch 3 (spec rev 4 section 8). The sitting's label carries the note count.
-    families: [hub.retro_coplay, hub.retro_leisure, aitown.session, hub.retro_watch, orion.watch_choice]
-    reads_now: null
-    exempt_read: "the read-back comes with the line turn (game company design PR #3517, patch 3; #3457)"
+    # Patch 3 (lines): hub.retro_commentary bids for each line Orion says to the person who plays.
+    families: [hub.retro_coplay, hub.retro_leisure, aitown.session, hub.retro_watch, orion.watch_choice,
+               hub.retro_commentary]
+    # The line turn reads GET /temporal-self/now?organ=play, puts up to 3 items in its game block and records its
+    # cites with POST /temporal-self/now/use (closes the play part of #3457).
+    reads_now: services/orion-hub/scripts/retro_commentary.py
   prime:
     # prime_thought has no magnitude yet: the act ledger's surprisal for a Prime thought drifts by
     # 1e-6 per thought (0.000454 -> 0.000443 over 11-14..15) whatever the thought did, so it ranks by

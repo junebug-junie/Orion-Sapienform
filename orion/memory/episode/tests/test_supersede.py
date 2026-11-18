@@ -453,8 +453,28 @@ def test_a_named_pr_needs_the_same_number_in_b():
     assert s.numbered_items(a.statement) == {"41"} and not s.same_numbered_item(a, b) and s.same_numbered_item(a, same)
     assert s.same_numbered_item(row("x", "Biscuit is a cat."), b)          # A names no number: no constraint
     for new in (b, replace(b, voice="juniper_said", juniper_quoted=True)):
-        ask, _ = answers(*(vote("correction", kind="event"),) * 3)
-        v = asyncio.run(s.classify_pair(a, new, ask))
-        assert not v.acts and not v.juniper_acts and v.abstain == "numbered_item_not_in_b"
+        ask, seen = answers()
+        v = asyncio.run(s.classify_pair(a, new, ask, budget=[3]))
+        assert not v.acts and not v.juniper_acts and v.abstain == s.NUMBERED_ITEM_NOT_IN_B and seen == []
     ask, _ = answers(*(vote("correction", kind="event"),) * 3)
     assert asyncio.run(s.classify_pair(a, same, ask)).acts
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("text,ids", [
+    ("merged PR #2968, then left", {"2968"}), ("see #41.", {"41"}), ("PR-41 and PRs 42", {"41", "42"}),
+    ("issues 12 and ticket #0099", {"12", "99"}), ("orion#41", {"41"}),
+    ("about 40 W in 2026-11-18", set()), ("#1 and PR 7", set()), ("# 2026 review", set()), ("abc#41st", set()),
+])
+def test_numbered_items_regex(text, ids):
+    assert s.numbered_items(text) == ids
+
+
+def test_numbered_rule_edge_cases():
+    a2 = row("a2", "PR #14 and PR #15 are deployed.")
+    assert s.same_numbered_item(a2, row("b2", "PR #15 is not deployed.", days=1))       # one of two named
+    a = row("a", "Juniper said the fix is PR #14.")
+    assert s.same_numbered_item(a, row("b", "It was PR #41, not #14.", days=1))          # renumbering that names the old one
+    assert not s.same_numbered_item(a, row("c", "It was PR #41.", days=1))               # blocked: an accepted cost

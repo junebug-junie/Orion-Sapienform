@@ -8,6 +8,12 @@ on:
       - "orion/retro/sitting.py"
       - "services/orion-hub/tests/test_retro_sitting_pg.py"
       - "services/orion-sql-db/manual_migration_retro_watch_v1.sql"
+      - "services/orion-hub/scripts/retro_watch.py"
+      - "orion/retro/watch.py"
+      - "orion/retro/frames.py"
+      - "services/orion-hub/tests/test_retro_watch*.py"
+      - "services/orion-hub/tests/test_retro_frames.py"
+      - "services/orion-sql-db/manual_migration_retro_watch_v2.sql"
       - "services/orion-durable-runs/app/temporal_self_sources.py"
       - "services/orion-hub/scripts/retro_leisure_self_start.py"
       - "services/orion-hub/scripts/retro_leisure.py"
@@ -30,6 +36,10 @@ on:
       - "services/orion-hub/scripts/retro_sitting.py"
       - "orion/retro/sitting.py"
       - "services/orion-sql-db/manual_migration_retro_watch_v1.sql"
+      - "services/orion-hub/scripts/retro_watch.py"
+      - "orion/retro/watch.py"
+      - "orion/retro/frames.py"
+      - "services/orion-sql-db/manual_migration_retro_watch_v2.sql"
       - "services/orion-durable-runs/app/temporal_self_sources.py"
       - "services/orion-hub/scripts/retro_leisure_self_start.py"
       - "services/orion-hub/scripts/retro_leisure.py"
@@ -71,6 +81,9 @@ jobs:
             tests/test_retro_memory_export.py \
             tests/test_retro_memory_export_pg.py \
             tests/test_retro_sitting_pg.py \
+            tests/test_retro_watch_pg.py \
+            tests/test_retro_watch_service.py \
+            tests/test_retro_frames.py \
             tests/test_retro_leisure_self_start.py \
             tests/test_retro_leisure_replay_live_source.py \
             tests/test_act_ledger_producers.py

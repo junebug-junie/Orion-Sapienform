@@ -17,6 +17,7 @@ from typing import Any, Optional
 from orion.memory.episode.validate import MEMORY_ID_NAMESPACE, ValidationResult
 
 ACTOR = "memory.episode_distill"
+DREAM_ACTOR = "dream.day"
 logger = logging.getLogger(__name__)
 
 _INSERT_MEMORY = """
@@ -88,32 +89,7 @@ async def persist_episode(
     now = now or datetime.now(timezone.utc)
     async with pool.connection() as conn:
         async with conn.transaction():
-            for m in result.memories:
-                await conn.execute(
-                    _INSERT_MEMORY,
-                    (
-                        m.memory_id, episode_id, m.purpose, m.voice, m.channel, m.statement, m.occurred_at,
-                        m.stakes, m.stakes_reason, m.confirmation_state, m.strength, m.half_life_days, now,
-                        m.due_after, m.expires_at, model_route, prompt_version, run_id, now, now,
-                    ),
-                )
-                for ev in m.evidence:
-                    await conn.execute(_INSERT_EVIDENCE, (m.memory_id, ev.source_kind, ev.source_id, ev.quote,
-                                                          hashlib.sha256(ev.quote.encode("utf-8")).hexdigest(),
-                                                          ev.verified))
-                for key, role in m.referents:
-                    await conn.execute(_INSERT_REFERENT, (m.memory_id, key, role))
-                await conn.execute(
-                    _INSERT_EVENT,
-                    (_event_id(episode_id, f"{m.memory_id}|created"), m.memory_id, "created", ACTOR, episode_id,
-                     Jsonb({"run_id": run_id, "voice": m.voice, "purpose": m.purpose}), None, now),
-                )
-                for i, e in enumerate(m.events):
-                    await conn.execute(
-                        _INSERT_EVENT,
-                        (_event_id(episode_id, f"{m.memory_id}|{e.op}|{i}"), m.memory_id, e.op, ACTOR, episode_id,
-                         Jsonb(e.detail), e.reason, now),
-                    )
+            await _insert_memories(conn, episode_id, run_id, result, model_route, prompt_version, now)
             for r in result.rejections:
                 await conn.execute(
                     _INSERT_EVENT,
@@ -147,6 +123,65 @@ async def persist_episode(
         "superseded": superseded,
         **({"referents_resolved": referents["resolved"]} if referents else {}),
     }
+
+
+async def _insert_memories(conn: Any, episode_id: str, run_id: str, result: ValidationResult, model_route: str,
+                           prompt_version: str, now: datetime, *, actor: str = ACTOR) -> None:
+    """The memory rows of ``result``: memory, evidence, referents, its created event and its validator events.
+    Every insert is ON CONFLICT DO NOTHING (ids are deterministic), so a replay writes nothing twice."""
+    from psycopg.types.json import Jsonb
+
+    for m in result.memories:
+        await conn.execute(
+            _INSERT_MEMORY,
+            (
+                m.memory_id, episode_id, m.purpose, m.voice, m.channel, m.statement, m.occurred_at,
+                m.stakes, m.stakes_reason, m.confirmation_state, m.strength, m.half_life_days, now,
+                m.due_after, m.expires_at, model_route, prompt_version, run_id, now, now,
+            ),
+        )
+        for ev in m.evidence:
+            await conn.execute(_INSERT_EVIDENCE, (m.memory_id, ev.source_kind, ev.source_id, ev.quote,
+                                                  hashlib.sha256(ev.quote.encode("utf-8")).hexdigest(),
+                                                  ev.verified))
+        for key, role in m.referents:
+            await conn.execute(_INSERT_REFERENT, (m.memory_id, key, role))
+        await conn.execute(
+            _INSERT_EVENT,
+            (_event_id(episode_id, f"{m.memory_id}|created"), m.memory_id, "created", actor, episode_id,
+             Jsonb({"run_id": run_id, "voice": m.voice, "purpose": m.purpose}), None, now),
+        )
+        for i, e in enumerate(m.events):
+            await conn.execute(
+                _INSERT_EVENT,
+                (_event_id(episode_id, f"{m.memory_id}|{e.op}|{i}"), m.memory_id, e.op, actor, episode_id,
+                 Jsonb(e.detail), e.reason, now),
+            )
+
+
+async def persist_dream_memories(conn: Any, *, episode_id: str, run_id: str, result: ValidationResult,
+                                 model_route: str, prompt_version: str, now: datetime) -> int:
+    """The day dream's memories (orion/memory/dream_day.py), on the caller's connection INSIDE the caller's
+    transaction (the dream_day row is written in the same one). The same rows a distilled episode writes,
+    actor ``dream.day``; no episode_distill_run row, no referent resolution, no supersede. Validator
+    rejections land as ``rejected_invalid`` events, never as memories. Returns the memories inserted now
+    (0 on a replay: every id is deterministic and every insert is ON CONFLICT DO NOTHING)."""
+    from psycopg.types.json import Jsonb
+
+    ids = [m.memory_id for m in result.memories]
+    before = 0
+    if ids:
+        cur = await conn.execute("SELECT count(*) AS n FROM episode_memory WHERE memory_id = ANY(%s::uuid[])", (ids,))
+        row = await cur.fetchone()
+        before = int((row or {}).get("n") or 0)
+    await _insert_memories(conn, episode_id, run_id, result, model_route, prompt_version, now, actor=DREAM_ACTOR)
+    for r in result.rejections:
+        await conn.execute(
+            _INSERT_EVENT,
+            (_event_id(episode_id, f"rejected|{r.kind}|{r.index}"), None, "rejected_invalid", DREAM_ACTOR,
+             episode_id, Jsonb({"kind": r.kind, "candidate": r.candidate, "run_id": run_id}), r.reason, now),
+        )
+    return len(ids) - before
 
 
 async def _apply_supersede_links(conn: Any, episode_id: str, result: ValidationResult, now: datetime,

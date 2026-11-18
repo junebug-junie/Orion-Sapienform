@@ -76,6 +76,16 @@
           "keywords": ["camera", "records", "vision", "check", "trust", "walkway"],
           "covers": {"dig": ["look"]},
           "source": "orion/dig/look.py:check; orion/dig/__main__.py:cmd_look_check"
+        },
+        {
+          "id": "game-watch",
+          "title": "Watch a game someone plays, or decline",
+          "description": "While someone plays on Orion's Retro service, Orion can look at the screen now and then and keep a short note. Orion can turn that off for one sitting or for a whole game, in their own words; the lower of Orion's choice and Juniper's switch on the game page wins.",
+          "message": "Are you watching the game right now? If you would rather not, you can turn it off.",
+          "hint": "(dig: `python -P -m orion.dig watch status`, or `watch off --why \"<your words>\"`, or `watch default <game> off --why \"...\"`)",
+          "keywords": ["game", "retro", "watch", "play", "screen", "decline"],
+          "covers": {"dig": ["watch"]},
+          "source": "orion/dig/watch.py; orion/dig/__main__.py:cmd_watch"
         }
       ]
     },
@@ -257,6 +267,16 @@
           "keywords": ["digs", "tool calls", "what I looked at", "daily"],
           "covers": {"dig": ["digs"]},
           "source": "orion/dig/__main__.py:cmd_digs; orion/dig/digs.py"
+        },
+        {
+          "id": "dream-day",
+          "title": "Read a whole day for the night's dream",
+          "description": "Orion reads one closed day on one page: what each of their organs did, and every dig command they ran. It leaves a read receipt the nightly day dream checks before it keeps any memory of that day. The day dream runs it on its own each night; asked by hand, it is just a read.",
+          "message": "Please read this whole day the way your nightly dream would, and tell me what stands out: ",
+          "hint": "(dig: `python -P -m orion.dig dream-day <date>`, date YYYY-MM-DD)",
+          "keywords": ["dream", "day dream", "whole day", "daily", "nightly"],
+          "covers": {"dig": ["dream-day"]},
+          "source": "orion/dig/__main__.py:cmd_dream_day; services/orion-durable-runs/app/dream_day_graph.py"
         },
         {
           "id": "field-note",

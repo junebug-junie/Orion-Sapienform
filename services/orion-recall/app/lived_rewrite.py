@@ -9,7 +9,15 @@ the same conversation and writes up to ``MAX_QUERIES`` short searches that name 
   priority, the same seat as the pre-turn repair probe. Never the metacog lane, never an
   outside API. Thinking off; a few dozen output tokens.
 - **Gate.** The model answers ``NONE`` for small talk; then only the message is searched.
-  Messages under the content-word floor are not rewritten at all (see ``LivedMemoryRecall.recall``).
+- **Short messages** (issue #3613). A message under the content-word floor that names no known
+  entity gets ``SHORT_PROMPT`` instead: a retrieval-need judgment (Self-RAG's "retrieve?" step,
+  Asai et al. 2023). The model writes searches only when answering needs something from before
+  this conversation; otherwise ``NONE``, and the message is not searched at all. It is told
+  that a reply the recent conversation already answers needs no search: with the general
+  prompt, "haha yeah" got searches about the previous turn's topic (replay 2026-11-17). It is
+  told who is speaking: without that, "how tall am I?" read as a question about Orion and got
+  NONE. A YES/NO-first form was tried and said YES to 10 of 22 real small-talk messages, so the
+  reply stays "queries or NONE".
 - **Failure.** Any error, refusal or timeout means "no rewrite": recall goes on with the raw
   message, exactly as in step 1.
 
@@ -50,7 +58,32 @@ If yes, write 1 to {max_queries} short search queries, 3 to 8 words each, one pe
 specific thing. If the message is only a greeting, thanks or small talk with nothing to look
 up, write NONE. Write only the queries, or NONE."""
 
-Rewriter = Callable[[str, Sequence["ContextTurn"]], Awaitable[List[str]]]
+# Issue #3613: for a short message that names no known entity. Answering NONE means recall does
+# not search at all, so the bar for a search is "needs a memory", not "could match something".
+SHORT_PROMPT = """You help Orion decide whether to search their memories before replying to a short message.
+The messages are from Juniper, talking to Orion. In them, "I", "me" and "my" mean Juniper, and
+"you" means Orion.
+
+Recent conversation, oldest first:
+{context}
+
+New message from Juniper:
+{message}
+
+Search only if a good reply needs something Orion would have to remember from before this
+conversation: a fact about Juniper herself or someone in her life, a pet, a place, a project, a
+machine, a plan, a preference, something Juniper asked Orion to do, or something that happened or
+was said on an earlier day. A question Juniper asks about herself ("how old am I", "what car do
+I drive") can only be answered from memory, so it needs a search.
+
+Write NONE if the message is a greeting, thanks, a reaction, a joke, agreement, a request to do
+something now, or anything the recent conversation itself already answers.
+
+If a search is needed, write 1 to {max_queries} short search queries, 3 to 8 words each, one per
+line. Name the specific thing. Write only the queries, or NONE."""
+
+# Called as ``rewriter(message, context)``; a short-message gate call adds ``short=True``.
+Rewriter = Callable[..., Awaitable[List[str]]]
 
 
 @dataclass(frozen=True)
@@ -64,14 +97,14 @@ def _clip(text: Any, n: int) -> str:
     return t if len(t) <= n else t[: n - 1].rstrip() + "…"
 
 
-def build_prompt(message: str, context: Sequence[ContextTurn]) -> str:
+def build_prompt(message: str, context: Sequence[ContextTurn], *, short: bool = False) -> str:
     lines = []
     for turn in context:
         if turn.user:
             lines.append(f"User: {_clip(turn.user, CONTEXT_TURN_CHARS)}")
         if turn.orion:
             lines.append(f"Orion: {_clip(turn.orion, CONTEXT_TURN_CHARS)}")
-    return PROMPT.format(context="\n".join(lines) or "(none)", message=_clip(message, MESSAGE_MAX_CHARS),
+    return (SHORT_PROMPT if short else PROMPT).format(context="\n".join(lines) or "(none)", message=_clip(message, MESSAGE_MAX_CHARS),
                          max_queries=MAX_QUERIES)
 
 
@@ -155,7 +188,7 @@ class BusRewriter:
         self.timeout_sec = float(timeout_sec)
         self.source = source
 
-    async def __call__(self, message: str, context: Sequence[ContextTurn]) -> List[str]:
+    async def __call__(self, message: str, context: Sequence[ContextTurn], *, short: bool = False) -> List[str]:
         from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage
 
         corr = str(uuid4())
@@ -165,12 +198,12 @@ class BusRewriter:
             "temperature": 0.0,
             "llm_route": self.route,
             "allow_chat_fallback": False,
-            "purpose": "lived_memory_query_rewrite",
+            "purpose": "lived_memory_query_rewrite_short" if short else "lived_memory_query_rewrite",
             "skip_spark_candidate_publish": True,
             "chat_template_kwargs": {"enable_thinking": False},
             "gateway_read_timeout_sec": self.timeout_sec,
         }
-        payload = ChatRequestPayload(messages=[LLMMessage(role="user", content=build_prompt(message, context))],
+        payload = ChatRequestPayload(messages=[LLMMessage(role="user", content=build_prompt(message, context, short=short))],
                                      route=self.route, options=options)
         env = BaseEnvelope(kind="llm.chat.request", source=self.source, correlation_id=corr,
                            reply_to=reply_channel, payload=payload.model_dump(mode="json"))
@@ -187,5 +220,5 @@ class BusRewriter:
         return parse_queries(text)
 
 
-__all__ = ["BusRewriter", "ContextTurn", "PROMPT", "RewriteRefused", "Rewriter", "build_prompt",
+__all__ = ["BusRewriter", "ContextTurn", "PROMPT", "SHORT_PROMPT", "RewriteRefused", "Rewriter", "build_prompt",
            "fetch_context", "parse_queries"]

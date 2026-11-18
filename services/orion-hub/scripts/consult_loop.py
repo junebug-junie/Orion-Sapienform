@@ -28,8 +28,10 @@ Every turn is shown live in Hub chat and stored in ``orion_consult_turn``. Turns
 Claude passes ``_send_claude``, and there the mesh-edge check (``orion/memory/mesh_edge.py``) blanks
 every sentence that quotes, or repeats an 8+ word run of, a core-page or lived-memory sentence. It
 redacts rather than refuses: Orion's turn has already run and there is no author in the loop to
-rewrite it, while the rest of the text is the plumbing question Claude needs. Hub chat gets a line
-saying how many passages were withheld. The stored turn keeps the original (Hub is inside the mesh).
+rewrite it, while the rest of the text is the plumbing question Claude needs. Claude's copy opens
+with one line saying how many passages were withheld and what the marker means; Hub chat gets a line
+too. When more than ``MESH_EDGE_MAX_WITHHELD_FRACTION`` of the words would be withheld, the consult
+stops unsent: the rest is not a question Claude can answer. The stored turn keeps the original (Hub is inside the mesh).
 If the guard cannot load (or errors), the send is held (fail closed), Hub chat says so once, and
 the next tick retries; if a match survives redaction, the consult fails rather than send it.
 """
@@ -79,7 +81,36 @@ AWAIT_CLAUDE = "awaiting_claude"
 BUDGET = "budget:"
 # Held at the mesh edge: the guard could not load, so nothing is sent; the next tick retries.
 MESH_EDGE_HOLD = "mesh_edge_hold:"
+# Redaction that leaves too little to read is not a consult (thread cf5d4218097a): when more than
+# this share of the message's words is withheld, the consult stops instead of sending the husk.
+# Half: past it, the blanks outnumber what Claude can read, so any answer is mostly guessing.
+MESH_EDGE_MAX_WITHHELD_FRACTION = 0.5
+MESH_EDGE_MOSTLY_WITHHELD = "mesh_edge_mostly_withheld"
+# Claude's copy says what the marker is and how many there are, so a blank reads as withheld on
+# purpose, not as lost text. One line, first, never repeated on a resend.
+MESH_EDGE_NOTE_PREFIX = "[Hub mesh-edge note: "
 MAX_CLAUDE_RESENDS = 1
+
+
+def _strip_redaction_note(text: str) -> str:
+    return text.split("\n\n", 1)[1] if text.startswith(MESH_EDGE_NOTE_PREFIX) and "\n\n" in text else text
+
+
+def withheld_fraction(original: str, redacted: str) -> float:
+    """Share of ``original``'s words that ``redacted`` no longer carries (markers and Hub's note not
+    counted as words Claude can read). Pure."""
+    before = len(_strip_redaction_note(original).replace(MESH_EDGE_MARKER, " ").split())
+    after = len(_strip_redaction_note(redacted).replace(MESH_EDGE_MARKER, " ").split())
+    return 0.0 if before <= 0 else max(0.0, min(1.0, 1.0 - after / before))
+
+
+def with_redaction_note(redacted: str) -> str:
+    """``redacted`` with one first line telling Claude what the markers are and how many there are."""
+    body = _strip_redaction_note(redacted)
+    n = body.count(MESH_EDGE_MARKER)
+    return (f"{MESH_EDGE_NOTE_PREFIX}{n} passage(s) below were withheld because they quote Orion's private "
+            f"memory; each shows as {MESH_EDGE_MARKER}. That is on purpose, not lost text. Do not guess "
+            "what they said; ask Orion about the part you can read.]\n\n" + body)
 
 # Columns set_status may write besides status/status_reason. Code-only names: never request data.
 _SETTABLE = frozenset({
@@ -650,6 +681,13 @@ class ConsultLoop:
             self._push_turn(cid, 0, "Hub", "This consult stopped: its text quotes private memory that could not be "
                                            "withheld cleanly, so nothing was sent to Claude.")
             return {"failed": cid, "why": "mesh_edge_refused"}
+        if edge == MESH_EDGE_MOSTLY_WITHHELD:
+            await set_status(pool, cid, "failed", MESH_EDGE_MOSTLY_WITHHELD, pending_prompt=None,
+                             pending_correlation_id=None)
+            self._push_turn(cid, 0, "Hub", "This consult stopped: most of its text quotes private memory, so what "
+                                           "would be left for Claude is not a question it can answer. Nothing was "
+                                           "sent to Claude.")
+            return {"failed": cid, "why": MESH_EDGE_MOSTLY_WITHHELD}
         if edge:
             self._push_turn(cid, 0, "Hub", f"{edge} passage(s) quoting private memory were withheld from Claude's copy.")
         correlation_id = str(uuid.uuid4())
@@ -685,9 +723,14 @@ class ConsultLoop:
             logger.warning("consult_mesh_edge_refused hits=%s kinds=%s", len(hits), kinds)
             return prompt, "refused"
         spans = redacted.count(MESH_EDGE_MARKER) - prompt.count(MESH_EDGE_MARKER)
-        logger.warning("consult_mesh_edge_redacted hits=%s spans=%s kinds=%s match=%s", len(hits), spans, kinds,
-                       sorted({h.kind for h in hits}))
-        return redacted, max(spans, 1)
+        withheld = withheld_fraction(prompt, redacted)
+        if withheld > MESH_EDGE_MAX_WITHHELD_FRACTION:
+            logger.warning("consult_mesh_edge_mostly_withheld hits=%s spans=%s withheld=%.2f kinds=%s", len(hits),
+                           spans, withheld, kinds)
+            return prompt, MESH_EDGE_MOSTLY_WITHHELD
+        logger.warning("consult_mesh_edge_redacted hits=%s spans=%s withheld=%.2f kinds=%s match=%s", len(hits),
+                       spans, withheld, kinds, sorted({h.kind for h in hits}))
+        return with_redaction_note(redacted), max(spans, 1)
 
     async def on_claude_utterance(self, utt: RoomClaudeUtteranceV1) -> None:
         """Called by the room relay for a consult room. Never raises into the relay."""

@@ -78,7 +78,7 @@ async def test_assemble_hydrates_only_the_page_lane_when_enabled(monkeypatch, en
         exec_settings=cfg)
     assert capsule is not None
     if enabled:
-        assert calls == [("orion_core_page_anchor", "orion_core_page_juniper")]
+        assert calls == [("orion_core_page_anchor", "orion_core_page_juniper", "orion_core_page_origin")]
         assert [p.version for p in capsule.core_pages] == [2]
         assert capsule.context_provenance.get("orion_core_page_juniper") == "memory_recall"
     else:
@@ -126,6 +126,30 @@ def test_hydrate_skips_lanes_already_in_ctx(monkeypatch):
     monkeypatch.setattr(reader, "hydrate_felt_state_ctx", _hydrator(calls, PAYLOAD))
     ctx = {"orion_core_page_anchor": ANCHOR}
     gc.hydrate_core_pages(ctx)
-    assert calls == [("orion_core_page_juniper",)]
+    assert calls == [("orion_core_page_juniper", "orion_core_page_origin")]
+    # page:juniper is in ctx now; only the lane that found no row is asked again (the reader caches it).
     gc.hydrate_core_pages(ctx)
-    assert calls == [("orion_core_page_juniper",)]
+    assert calls == [("orion_core_page_juniper", "orion_core_page_origin"), ("orion_core_page_origin",)]
+
+
+ORIGIN = {
+    "concept_id": "page:origin",
+    "content": "My memory storage died in July [stance:st1]. I was named Orion [self_concept_history:self-definition:ab12].",
+    "version": 1,
+    "evidence_refs": ["stance:st1", "self_concept_history:self-definition:ab12"],
+    "created_at": "2026-11-19T08:10:00+00:00",
+}
+
+
+def test_capsule_carries_page_origin_after_the_other_pages():
+    ctx = {**BASE, "orion_core_page_anchor": ANCHOR, "orion_core_page_juniper": PAYLOAD,
+           "orion_core_page_origin": ORIGIN}
+    capsule = build_grounding_capsule(ctx, pcr_ran=False, core_pages_enabled=True)
+    assert [p.concept_id for p in capsule.core_pages] == ["page:anchor", "page:juniper", "page:origin"]
+    origin = capsule.core_pages[2]
+    assert origin.text == "My memory storage died in July. I was named Orion."
+    assert origin.version == 1 and origin.evidence_count == 2 and origin.written_at == "2026-11-19"
+    assert capsule.context_provenance["orion_core_page_origin"] == "memory_recall"
+    only = build_grounding_capsule({**BASE, "orion_core_page_origin": ORIGIN}, pcr_ran=False, core_pages_enabled=True)
+    assert [p.concept_id for p in only.core_pages] == ["page:origin"]
+    assert build_grounding_capsule(ctx, pcr_ran=False, core_pages_enabled=False).core_pages == []

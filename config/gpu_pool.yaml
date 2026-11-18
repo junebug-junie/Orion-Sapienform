@@ -264,6 +264,12 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # same warm worker as Prime. Interactive because Juniper is waiting on Claude's reply. Never the fast
   # or metacog lanes. System-only (orion/llm/routes.py).
   prime_consent: {class: chat, priority: interactive}
+  # Orion's look at a person's game screen (2026-11-18, game company patch 2, docs/superpowers/specs/2026-11-16-game-
+  # company-watch-and-commentary-design.md section 3): 4 stills, <= 160 tokens, one call a minute at most. Class chat:
+  # the only sighted lane (the quick lane's model invented chests and doors in step 0). `system`: below Juniper's turn,
+  # and the 34 C reflex refuses it like any system work. Hub's Retro gateway takes a hold of class chat at grant time
+  # and calls this route under it (services/orion-hub/scripts/retro_watch.py). System-only (orion/llm/routes.py).
+  retro_watch: {class: chat, priority: system}
   # Operator work (classes.operator* above): one route per class, always `background`. Named in the
   # `model` field of a gateway call that carries the eval's operator hold (X-Orion-Gpu-Lease).
   operator: {class: operator, priority: background}

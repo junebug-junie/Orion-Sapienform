@@ -281,6 +281,11 @@ class Settings(BaseSettings):
     RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS: int = Field(
         default=5, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS")
     )
+    # Issue #3613: a message under the floor still searches when it names a known entity or the
+    # short-message rewrite says a reply needs a memory. false = the plain floor (rollback switch).
+    RECALL_LIVED_MEMORY_SHORT_GATE_ENABLED: bool = Field(
+        default=True, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_SHORT_GATE_ENABLED")
+    )
     RECALL_LIVED_MEMORY_MAX_LINES: int = Field(
         default=4, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_MAX_LINES")
     )

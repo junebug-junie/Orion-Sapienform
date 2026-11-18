@@ -146,6 +146,12 @@ class SittingTracker:
             return [self._close(cur.last_input_at, reason)]
         return []
 
+    def held(self, session_id: str) -> bool:
+        """A button or a pushed stick is held right now on some port of this Retro session. A held
+        direction while walking changes no mask, yet a hand is on the pad: the look's calibration counts
+        that window as input (orion/retro/watch.py)."""
+        return any(k[0] == str(session_id) and state != (0, CENTRED) for k, state in self._masks.items())
+
     def forget_masks(self, session_id: str) -> None:
         """Drop the remembered button state of one Retro session (its input socket closed, or it
         stopped). Without this a socket that dropped while a button was held would leave that state

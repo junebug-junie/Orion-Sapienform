@@ -564,3 +564,85 @@ is tracked or written; the page question never shows.
 
 **Needs.** `services/orion-sql-db/manual_migration_retro_watch_v1.sql` (the deploy gate refuses
 orion-hub and orion-durable-runs without it) and `RECALL_PG_DSN` in the gateway's environment.
+
+## Orion's look (game company design, patch 2)
+
+Design: [Game company](../superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md), revision 4,
+sections 2, 3, 6 (part 8), 8 and 9.
+
+While a person plays, Orion looks at the game screen, as a camera. A look is perception: it does not speak and
+does not judge. Only its words are kept.
+
+**The promise, in one sentence.** Stills only, at most 4 per look, never sound, never a stream, each still gone
+within the hour, and only the words are kept. The engine (`services/orion-retro`) still records nothing and calls
+no model: perception begins in Hub's gateway.
+
+**The path.**
+
+1. The relay hands each video packet it already sends to the browser to `on_media`
+   (`scripts/retro_transport.py`). The gateway keeps one packet every 2 s, compressed, 30 at most
+   (`scripts/retro_watch.py`). Packets flow only while a browser has the game open. No second engine viewer.
+2. Every 2 s while a sitting is open, the newest packet is decoded to a 32 x 28 brightness grid
+   (`orion/retro/frames.py`). Two numbers: the change against the check 30 s earlier (for the game's histogram)
+   and the change since the last look (the trigger).
+3. Gates, in order (`orion/retro/watch.py`): no floor for this game -> no look; change under the floor ->
+   `static_skips` (+ `under_floor_with_input` when a button changed or was held); last press 60 s old or more
+   -> `input_stale_skips`; less than `HUB_RETRO_LOOK_SEC` (60) since the last look -> wait; watch mode off ->
+   no bid.
+4. One bid in family `hub.retro_watch` (tier 1). Only `funded` runs a look. A refused bid opens no act and
+   writes no row; the page shows the market's reason.
+5. The act opens (actor `hub.retro_watch`, verb `look`, object `retro_sitting:<id>`; act key and correlation
+   id = the want id). A GPU pool hold of class `chat` at priority `system`, carrying the want id, waits at most
+   `HUB_RETRO_WATCH_SEAT_WAIT_SEC` (30). At 34 C and above the heat reflex refuses it (the page says "too hot").
+6. At the grant: up to 4 packets spread over the last 30 s, decoded, enlarged 2x with hard edges, PNG,
+   posted to `PERCEPT_STORE_BASE_URL`. One call on route `retro_watch` under the hold, thinking off, <= 160
+   tokens. The prompt: the game title, the minutes played, the frames, nothing else. It says to write
+   "unclear" when unsure and not to quote status-bar numbers.
+7. The note is `stored`, `empty`, `unclear`, `copied` (equal to the previous note) or `failed`. One
+   `retro_watch_look` row. The act closes 1 only for `stored`.
+
+**The floor is per game, from live play.** Every check of every game lands in `retro_watch_change_hist`
+(counts per bin of its change over the last 30 s, split by "a button changed or was held in those 30 s"). The
+30-second window is the look's own window; on the step 0 frames it separated still from play on A Link to the
+Past, and the 2-second step did not (`services/orion-hub/evals/retro_look_replay.py`). Once a minute each game's floor
+is computed again into `retro_watch_floor`: a game gets one when it has 30 minutes of checks and one value has
+at most 10% of the still checks and at least 90% of the played checks at or above it. Nothing is seeded by
+hand. A game with no floor gets no look, and the page says "No looks for this game yet". On The Legend of Zelda
+(NES) no value separated still from walking in step 0, so that game may stay without looks.
+
+**The switch.** Juniper's checkbox on the game page ("Let Orion watch", `POST /api/retro/sitting/watch
+{"mode": "on"|"off"}`, a standing setting for every game) and Orion's own `dig watch` (`orion/dig/watch.py`:
+`watch off --why "..."`, `watch default <game> off --why "..."`, `watch status`). Orion's choice is an act on
+its ledger (actor `orion.watch_choice`); the gateway copies it into `retro_watch_preference` before every bid.
+The lower of the two is in force. Neither side can turn the other's "off" back on.
+
+**What the page says.** "Orion is watching." only while a stored note is under 3 minutes old. Otherwise why
+not: the watch is off (by Orion, with Orion's words, or by the switch), no floor for this game, a refused bid
+or seat (with the reason), the screen has not changed for N min, or no button press for N min.
+
+**What Orion gets.** In patch 2 the notes reach no prompt and no Temporal Self event: only a note a line turn
+checked and found to hold will become an event (patch 3). The sitting's play row and its label say "Orion
+watched: N notes".
+
+**Checks.**
+
+```sh
+# the watch, as the page sees it
+curl -fsS http://127.0.0.1:${HUB_RETRO_GATEWAY_PORT:-8092}/api/retro/sitting | python3 -m json.tool
+# the counts of the newest sittings, in report order
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \
+  "select started_at, game_id, ring_checks, checks_over_floor, input_stale_skips, under_floor_with_input, static_skips, bids_funded, model_calls, notes_stored, failed_looks from retro_sitting order by started_at desc limit 5"
+# every look has a want and a lease with the same id (the hold carries it as turn_correlation_id)
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \
+  "select l.look_id, l.outcome, l.lane_wait_ms, l.seconds, exists(select 1 from want_ledger w where w.want_id = l.want_id) has_want from retro_watch_look l order by looked_at desc limit 10"
+# the floors and the counts they came from
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \
+  "select game_id, floor, status, checks_input, checks_no_input, round(seconds/60) min from retro_watch_floor"
+```
+
+Gateway log lines: `retro_watch_look ... outcome=`, `retro_watch_bid_refused ... reason=`, `retro_watch_no_seat`,
+`retro_watch_no_bid ... mode=off`, `retro_watch_floor game=... status=`. `retro_watch_unavailable` at start means
+the watch could not be loaded; the game page works without it.
+
+**Turn it off.** `HUB_RETRO_WATCH_ENABLED=false` in `services/orion-hub/.env`, then rebuild `hub-retro-gateway`:
+no packet is kept, no bid, no call.

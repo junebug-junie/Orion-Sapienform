@@ -197,9 +197,13 @@ def pending(*, session_id: str, branch: str, timeout: float = 2.0) -> list[dict[
     return list(request("GET", f"/api/session-threads/pending?{query}", timeout=timeout).get("pending") or [])
 
 
-def delivered(turn_ids: list[str], *, timeout: float = 2.0) -> int:
-    return int(request("POST", "/api/session-threads/delivered", {"turn_ids": turn_ids}, timeout=timeout)
-               .get("delivered") or 0)
+def delivered(turn_ids: list[str], *, session_id: str = "", timeout: float = 2.0) -> int:
+    """Claim turns for ``session_id`` (Hub shows a question turn once per session, and to new sessions
+    until one replies on the thread). "manual" or empty: claimed once in total."""
+    payload: dict[str, Any] = {"turn_ids": turn_ids}
+    if session_id and session_id != "manual":
+        payload["session_id"] = session_id
+    return int(request("POST", "/api/session-threads/delivered", payload, timeout=timeout).get("delivered") or 0)
 
 
 # --- words -------------------------------------------------------------------------------------
@@ -257,6 +261,8 @@ def pending_text(rows: list[dict[str, Any]], *, woke: bool = False) -> str:
         else:
             if meta.get("unparsed"):
                 out.append("(Hub could not find this thread's own section, so this is Orion's whole reply.)")
+            if row.get("delivered_at"):
+                out.append("(An earlier session was shown these questions and no session has replied yet.)")
             out.append("<<<ORION_TEXT")
             out.append(str(row.get("body") or "").replace("<<<", "< < <").replace(">>>", "> > >"))
             out.append("ORION_TEXT>>>")
@@ -289,10 +295,11 @@ def answer_phase(turns: list[dict[str, Any]]) -> bool:
     return core.in_answer_phase(turns)
 
 
-def claim(rows: list[dict[str, Any]], *, timeout: float = 2.0) -> list[dict[str, Any]]:
-    """The rows this caller marked delivered. Hub marks a turn only once (delivered_at IS NULL), so two
-    hooks that read the same rows never both show them. A failed call claims nothing: shown later."""
-    return [r for r in rows if delivered([str(r["turn_id"])], timeout=timeout) == 1]
+def claim(rows: list[dict[str, Any]], *, session_id: str = "", timeout: float = 2.0) -> list[dict[str, Any]]:
+    """The rows this caller marked delivered. Hub marks a turn once per session, so two hooks of one
+    session that read the same rows never both show them; a later session still gets questions nobody
+    has replied to. A failed call claims nothing: shown later."""
+    return [r for r in rows if delivered([str(r["turn_id"])], session_id=session_id, timeout=timeout) == 1]
 
 
 def thread_view(thread_id: str, *, timeout: float = 5.0) -> tuple[dict[str, Any], list[dict[str, Any]]]:

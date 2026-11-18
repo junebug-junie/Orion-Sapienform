@@ -365,12 +365,26 @@ class PostgresStore:
             (list(series_ids), horizon_min, since, list(series_ids), horizon_min, since))
 
     def daily_rosters(self, series_ids: Sequence[str], since: datetime) -> list[dict]:
-        """Per series and UTC day: the set of model names fitted (kind 'model'), sorted."""
-        return self._all(
+        """Per series and UTC day: the model names fitted (kind 'model') plus the selection config of the day's
+        last champion_blend run (gate rule version, covariates; a missing list reads as [], as the engine's restore
+        does), sorted (``learning_progress.roster_keys``). The
+        config is read from a week before ``since`` so the first day has one."""
+        from app.learning_progress import roster_keys
+
+        models = self._all(
             "SELECT series_id, (fitted_at AT TIME ZONE 'UTC')::date AS day, "
             "array_agg(DISTINCT model ORDER BY model) AS models FROM prediction_model_run "
             "WHERE series_id = ANY(%s) AND kind = 'model' AND fitted_at >= %s GROUP BY 1, 2",
             (list(series_ids), since))
+        config = self._all(
+            "SELECT DISTINCT ON (series_id, (fitted_at AT TIME ZONE 'UTC')::date) series_id, "
+            "(fitted_at AT TIME ZONE 'UTC')::date AS day, metrics ->> 'gate_version' AS gate_version, "
+            "COALESCE(metrics -> 'covariates', '[]'::jsonb)::text AS covariates, "
+            "COALESCE(metrics -> 'overlap_covariates', '[]'::jsonb)::text AS overlap_covariates "
+            "FROM prediction_model_run WHERE series_id = ANY(%s) AND kind = 'champion_blend' "
+            "AND fitted_at >= %s - interval '7 days' ORDER BY series_id, (fitted_at AT TIME ZONE 'UTC')::date, fitted_at DESC",
+            (list(series_ids), since))
+        return roster_keys(models, config)
 
     def champion_pool(self, series_id: str, since: datetime, max_horizon_min: int) -> list[dict]:
         """Scored champion rows for the adaptive range (app/adaptive.py), each with ``owner``: the model

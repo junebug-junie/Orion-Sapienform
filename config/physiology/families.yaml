@@ -50,6 +50,12 @@ families:
     note: >-
       Orion opening a live camera frame from a turn (`dig look`, orion/dig/look.py, 2026-11-13). Perception
       chosen inside a chat turn or curiosity run, never bid for on its own: the turn already won its slot.
+  orion.watch_choice:
+    tier: 0
+    note: >-
+      Orion turning the watch on a person's game off, quiet or on from inside a turn (`dig watch`, orion/dig/watch.py,
+      game company patch 2, 2026-11-18). A choice made inside a turn that already won its slot, like orion.look: never
+      bids. The act row (verb regulate, Orion's own words as the note) is the record; Hub's Retro gateway reads it.
   orion.look_check:
     tier: 0
     note: >-
@@ -120,6 +126,21 @@ families:
     tier: 1
     deferrable_window_s: 900
     lanes: []
+  hub.retro_watch:
+    # 2026-11-18, game company patch 2 (docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md
+    # rev 4, sections 3 and 9): Orion looks at the game screen while a person plays (act look retro_sitting:<id>,
+    # services/orion-hub/scripts/retro_watch.py). TIER 1 IS JUNIPER'S DECISION (spec section 9, "I will go with your
+    # recs" 2026-11-16; go for patch 2 on 2026-11-18). Tier 1 reserves 0 on the chat lane today (the 75th percentile
+    # of tier 1's hourly use there is 0): a look pays the lane's price like any bid. Its bids BIND, and stricter
+    # than bind_verdict: only `funded` runs a look; deferred, refused or no answer skips it (a late look describes
+    # a different screen). The spec says `deferrable_window_s: 0`; families.py refuses 0 for a bidding family (it
+    # is the hunger clock), so 60 s = one look interval, and the producer still never holds a want. Lane chat:
+    # the one sighted lane (pool route retro_watch, class chat, priority system). No receptors yet: Prime's
+    # slow/quicken arrive with patch 4 (orion/physiology/tests/test_prime_charge.py pins the receptor set).
+    tier: 1
+    deferrable_window_s: 60
+    lanes: [chat]
+    placement: one_of
   durable.intention:
     # 2026-11-13, choice-as-EFE Step -1 (docs/superpowers/specs/2026-11-13-choice-as-expected-free-energy-design.md):
     # the carry run of a concern Prime took on (intention.carry durable run, run act make:durable.intention,
@@ -129,11 +150,17 @@ families:
     # whether is settled by Orion; follow-through is keeping its word, which is upkeep. The reserved share stops
     # curiosity and consult runs crowding it out (live follow-through mean 0.10). Tier 1 still bids, so the economy
     # still picks the time (unlike tier 0, reserved for the daily letter). Its bids BIND (app/run_bids.py
-    # BINDING_FAMILIES): a held run is admitted at its hold end, never dropped; hold end = min(opened + 86400 s, the
+    # BINDING_FAMILIES): a held run is admitted at its hold end, never dropped; hold end = min(requested_at + 86400 s, the
     # concern's horizon - 1800 s). 86400 s: Juniper's accepted default; the horizon (promise + 72 h) still caps it.
     # Agent lanes, like durable.consult_orion_turn. No receptors yet.
+    # hunger_from want_opened (#3640, Juniper 2026-11-18): the rank is the AGE OF THE PROMISE. The want opens at
+    # the promise's time (brief.promised_at, the harness_turn_trace row's created_at; app/run_bids.py), its hunger
+    # counts from there over this 1-day window (tau), and no other promise's close resets it. A run bid seconds
+    # after a fresh promise still ranks ~0; the 11-13 carry (promise 36.6 h old at bid) would have ranked 0.78,
+    # not 0.00. The hold end still counts from the run's own request (run_bids.hold_end), not the promise.
     tier: 1
     deferrable_window_s: 86400
+    hunger_from: want_opened
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
 

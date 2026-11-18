@@ -15,7 +15,7 @@ try{
   const assets=[];page.on('response',r=>{if(r.url().includes('/static/js/'))assets.push([r.url(),r.status()]);});
   await page.goto(url+'/retro');
   // Rendered template + linked asset.
-  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=18') && s===200),JSON.stringify(assets));
+  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=19') && s===200),JSON.stringify(assets));
   // Leisure is visible live on open, by watching only.
   await page.waitForSelector('#play:not([hidden])',{timeout:8000});
   await page.waitForFunction(()=>document.querySelector('#leisure').textContent.includes('playing alone'),{timeout:8000});
@@ -171,6 +171,12 @@ try{
   assert.equal(await page.evaluate(()=>document.activeElement.id),'screen','the game lost the keyboard after the answer');
   await new Promise(r=>setTimeout(r,5500));                         // one more poll: asked once, not again
   assert.equal(await page.$eval('#whoPlays',e=>e.hidden),true);
+  // Orion's look (game company patch 2): the page shows the server's own reason, never its own words.
+  // This harness has no database, so no game has a calibrated floor: the page must say so, not "watching".
+  await page.waitForFunction(()=>!document.querySelector('#watch').hidden,{timeout:9000});
+  const watchText=await page.$eval('#watchText',e=>e.textContent);
+  assert(watchText.startsWith('No looks for this game yet'),'watch line: '+watchText);
+  assert.equal(await page.$eval('#watchSwitch',e=>e.checked),true,"Juniper's switch starts on");
   assert.deepEqual(errors,[]);
   fs.writeFileSync(out+'/play-panel.json',JSON.stringify({atlas,goal,retro:log.retro.map(r=>r.op+(r.channel?':'+r.channel:'')),human:log.human},null,2));
 }finally{await browser.close();}

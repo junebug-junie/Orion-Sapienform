@@ -24,7 +24,10 @@ What it writes, in order:
 
 The summary is facts and counts only (``build_session_summary``). No model writes it, and it never
 says "fun" or "learned". A session where a human drove more than half of the frames is "played
-together", never Orion's achievement (#2751 section 7.4). Not exported: frames, RAM, ROM, raw journals.
+together", never Orion's achievement (#2751 section 7.4). Not exported in this summary: frames, RAM, ROM, raw
+journals. (That is about the summary only: since game company patch 2 Hub's gateway also looks at a person's game
+through scripts/retro_watch.py, which sends up to 4 stills per look to the percept store for an hour and keeps only
+the note; a human_play row carries the count of those notes as ``looks``.)
 Nothing here feeds phi, arousal, reward or training. Kill switch: HUB_RETRO_MEMORY_EXPORT_ENABLED
 (shipped on); off -> nothing is written, and a leisure act still closes (0, ``export_disabled``).
 

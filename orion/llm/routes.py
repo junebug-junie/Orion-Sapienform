@@ -124,6 +124,9 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         # Orion's consent to a Claude tool call (2026-11-13): the chat worker at pool priority
         # interactive (Juniper waits on Claude's reply). System-only: see SYSTEM_LLM_ROUTES.
         "prime_consent",
+        # Orion's look at a person's game screen (2026-11-18, game company patch 2): the chat worker at pool
+        # priority system, under a hold Hub's Retro gateway takes. System-only: see SYSTEM_LLM_ROUTES.
+        "retro_watch",
         # The finalize 5b judge of a durable run whose hold is not on a judge role (2026-11-12,
         # orion/harness/finalize.py resolve_finalize_judge_placement): gpu1, or chat's card while
         # lent, never the gpu2 seat. System-only, and cortex-exec accepts it as a caller override:
@@ -169,6 +172,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "prime",
     "prime_starved",
     "prime_consent",
+    "retro_watch",
     "judge",
 )
 
@@ -277,6 +281,8 @@ SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
         # `prime_consent` (2026-11-13): orion-mind's consent call for a Claude tool. Interactive in the
         # pool; a human picking it would jump every system call on the chat worker.
         "prime_consent",
+        # `retro_watch` (2026-11-18): Hub's look at a game screen. A human picking it would jump Orion's queue.
+        "retro_watch",
         # `judge` (2026-11-12): harness finalize's 5b judge off a hold. A human picking it would
         # get the agent model at system priority; never a Compute choice.
         "judge",

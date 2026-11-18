@@ -107,6 +107,12 @@ def _format_context_provenance_block(context_provenance: dict[str, str]) -> list
 CORE_PAGE_RELATIONSHIP = "page:juniper"
 # Juniper's fixed lines (orion/memory/pages/anchor.py, issue #3460): shown first in RELATIONSHIP.
 CORE_PAGE_ANCHOR = "page:anchor"
+# Orion's "how I came to be" (orion/memory/pages/origin.py, issue #3462): in WHO YOU ARE, right after
+# Orion's own self-definition lines.
+CORE_PAGE_ORIGIN = "page:origin"
+# The prefix of Orion's own identity lines (self-definition, lived answers). Same value as
+# orion/substrate/relational/adapters/self_definition_ctx.py SELF_DEFINITION_MARKER.
+_OWN_WORDS_MARKER = "In my own words"
 
 
 def _core_page(capsule: GroundingCapsuleV1, concept_id: str) -> CorePageV1 | None:
@@ -130,15 +136,32 @@ def _relationship_policy_lines(bullets: list[str]) -> list[str]:
     return out + rest
 
 
+def _who_you_are_lines(capsule: GroundingCapsuleV1) -> list[str]:
+    """Identity bullets, with Orion's page:origin right after the leading self-definition lines
+    ("In my own words ..."), or first when there are none."""
+    identity = [f"- {item}" for item in capsule.identity_summary]
+    origin = _core_page(capsule, CORE_PAGE_ORIGIN)
+    if origin is None:
+        return identity
+    at = 0
+    while at < len(capsule.identity_summary) and str(capsule.identity_summary[at]).startswith(_OWN_WORDS_MARKER):
+        at += 1
+    stamp = f", written {origin.written_at}" if origin.written_at else ""
+    page = [f"How I came to be, in my own words ({origin.concept_id} v{origin.version}{stamp}, "
+            f"from {origin.evidence_count} cited records):", origin.text.strip()]
+    return identity[:at] + page + identity[at:]
+
+
 def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
     """Compact motor self block: identity + relationship + continuity/memory + policy.
 
     RELATIONSHIP is Orion's own page:juniper when the capsule carries one (core memory pages,
     Phase 1a); the identity-yaml relationship bullets then move under RESPONSE POLICY. Juniper's
     fixed page:anchor lines, when present, come first in RELATIONSHIP, with or without a page
-    (issue #3460). Without either, both slots render exactly as before."""
+    (issue #3460). Orion's page:origin sits in WHO YOU ARE right after the self-definition (issue
+    #3462). Without any page, the slots render exactly as before."""
     lines: list[str] = ["WHO YOU ARE"]
-    lines.extend(f"- {item}" for item in capsule.identity_summary)
+    lines.extend(_who_you_are_lines(capsule))
     page = _relationship_page(capsule)
     anchor = _core_page(capsule, CORE_PAGE_ANCHOR)
     policy = list(capsule.response_policy_summary)

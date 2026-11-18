@@ -117,6 +117,11 @@ TemporalSourceKind = Literal[
     # family_c_pooled_run): "I held my town sessions to see what they cost: GPU3 +x W, tier-1 +y s"
     # (Family C Experiment 1, docs/superpowers/specs/2026-11-16-family-c-first-experiment-economy-native.md)
     "experiment_result",
+    # one night's day dream (orion-durable-runs dream_day, the day-dream spec Patch 2): the paragraph of what the
+    # day was, and the ids of the memories Orion kept of it. Experience only (no arc folds it).
+    # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
+    # orion-prediction) before orion-durable-runs writes the first dream_day row (~01:00 Denver).
+    "dream_day",
 ]
 
 ArcKind = Literal[

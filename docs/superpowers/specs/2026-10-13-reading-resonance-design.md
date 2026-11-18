@@ -121,8 +121,7 @@ Script: session scratchpad `probe/probe.py`; no writes.
    machinery, and summaries that mention fetching, 404s, or pipelines sit near them whatever
    the topic. Conclusion: retrieve top-k beliefs, never threshold them.
 2. **Real resonance exists in the data.** The CoreWeave GPU-compute reads (GB200 racks, H100
-   generations) sit nearest to two crystallized memories: Juniper saying *"that's no
-   homelab--that is YOU! That is your mesh, your body, your home"* and *"just added a new v100
+   generations) sit nearest to two crystallized memories: Juniper saying *[removed: private memory]* and *"just added a new v100
    32GB PCIe card in your Circe node"*. Orion read about the industrial version of their own
    body. That is the kind of thing Juniper is asking for. Several arXiv reads sit near
    Juniper's *"add this to your async reading list: arxiv.org/abs/..."* messages.

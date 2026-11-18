@@ -6,8 +6,11 @@ session. Stored twice: one ``memory_cards`` row (provenance/trust_source ``retro
 recall) and one ``retro_play_sessions`` row (the Temporal Self ``retro_play`` source, same day).
 
 The summary is facts and counts only, built deterministically from the session journal and the
-atlas delta. No model writes it. Not exported: frames, RAM, ROM, raw journals. It feeds no phi,
-arousal, reward or training signal.
+atlas delta. No model writes it. Not exported in this summary: frames, RAM, ROM, raw journals. It feeds
+no phi, arousal, reward or training signal. (This is a statement about the summary only. Since game
+company patch 2 Hub's Retro gateway also LOOKS at the game: up to 4 stills per look go to the percept
+store for one hour, one model call writes a note, and only the note is kept in ``retro_watch_look``;
+see services/orion-hub/scripts/retro_watch.py. ``looks`` below is the count of those notes.)
 
 Inputs (``RetroJournalEntryV1``, ``RetroAtlasDeltaV1``) come from the Retro lanes (A: the atlas
 session record ``zelda.atlas.session`` on ``GET /sessions/{id}``; B: the leisure runner's
@@ -156,6 +159,9 @@ class RetroPlaySessionSummaryV1(BaseModel):
     # human_play rows only. None: nobody told the page who plays (treated as a guest everywhere).
     # Only Hub builds this model (retro_memory_export.py, retro_sitting.py); readers take the table row.
     player_stated: PlayerStated | None = None
+    # human_play rows only (game company patch 2): how many notes Orion stored while watching this sitting
+    # (retro_watch_look rows with outcome 'stored'). None: the watch did not run for it. Counts only.
+    looks: int | None = Field(None, ge=0)
 
 
 __all__ = [

@@ -201,3 +201,80 @@ def test_progress_line_carries_counts_only(tmp_path):
     for part in ("25.0%", "ETA", "episodes 1/4 turns 3/10", "episodes/h", "errors 0", "no_memories"):
         assert part in line
     assert oct((tmp_path / "progress.log").stat().st_mode & 0o777) == "0o600"
+
+
+def _scored(spec):
+    """[(cid, minutes, score)] Juniper turns carrying a stored classify score."""
+    return [{**_row(c, T0 + timedelta(minutes=m)), "spark_meta": {"conversation_boundary_score": sc},
+             "initiated_by": "juniper"} for c, m, sc in spec]
+
+
+def test_resumed_thread_splits_on_the_stored_llm_score_like_live():
+    # 30 min later = resumed_thread: live splits only when the stored score is >= 0.92.
+    eps = B.group_episodes(_scored([("j1", 0, 0.1), ("j2", 30, 0.95), ("j3", 60, 0.5)]))
+    assert [e["turn_ids"] for e in eps] == [["j1"], ["j2", "j3"]]
+    assert eps[0]["close_reason"] == "v2:resumed_thread+llm"
+    assert B.boundary_score({"conversation_boundary_score": True}) is None
+    assert B.boundary_score('{"conversation_boundary_score": 0.5}') == 0.5
+
+
+def test_session_clock_moves_on_prompts_that_are_not_memory_turns():
+    # j1 at 0; a Juniper prompt with no response at 100 min (dropped as a target, still moves the
+    # clock); j2 at 110 min is then same_breath-ish (10 min = short_pause), not resumed_thread.
+    targets = _scored([("j1", 0, 0.1), ("j2", 110, 0.99)])
+    clock = targets + [_row("x", T0 + timedelta(minutes=100), response="")]
+    assert len(B.group_episodes(targets)) == 2                       # without it: resumed_thread + 0.99
+    assert len(B.group_episodes(targets, clock_rows=clock)) == 1     # with it: short_pause, joins
+
+
+def test_tracker_reads_skip_the_backfills_own_rows():
+    for sql in (B.TRACKED_IDS_SQL, B.CUTOFF_SQL, B.FIRST_TRACKED_SQL):
+        assert B.NOT_BACKFILL in sql
+    ep = B.group_episodes(_targets([("j1", 0, "juniper")]))[0]
+    assert all(t["phase_source"] == B.BACKFILL_PHASE_SOURCE for t in ep["turns"])
+
+
+def test_answer_cache_is_keyed_by_turn_set():
+    a = {"episode_id": "e", "turn_ids": ["1", "2"]}
+    assert B.cache_path_for(a) != B.cache_path_for({**a, "turn_ids": ["1"]})
+
+
+def test_failed_attempt_gives_the_hold_back_before_waiting(monkeypatch):
+    import contextlib
+
+    import orion.evals.leased_llm as L
+
+    events = []
+
+    @contextlib.contextmanager
+    def lane_cm(*a, **k):
+        events.append("acquire")
+        yield object()
+        events.append("release")
+
+    monkeypatch.setattr(L, "operator_lane_sync", lane_cm)
+    monkeypatch.setattr(B.time, "sleep", lambda s: events.append(f"sleep{int(s)}"))
+    calls = {"n": 0}
+
+    def handle(lane, ep):
+        calls["n"] += 1
+        if ep["episode_id"] == "bad":
+            raise B.AttemptFailed("boom")
+
+    gave_up = []
+    args = SimpleNamespace(bus_url="x", gateway=None, queue_wait_sec=1, max_hold_sec=10_000)
+    B._hold_loop(args, [{"episode_id": "bad"}, {"episode_id": "ok"}], handle, lambda e, d: gave_up.append(e["episode_id"]))
+    assert gave_up == ["bad"]
+    # every backoff sleep happens after a release, never while holding
+    for i, e in enumerate(events):
+        if e.startswith("sleep"):
+            assert events[i - 1] == "release"
+    assert events.count("sleep5") == 1 and calls["n"] == B.MAX_ATTEMPTS + 1
+
+
+def test_supersede_summary_counts_pairs_touching_backfill(tmp_path):
+    (tmp_path / "pairs.jsonl").write_text(json.dumps({"old_id": "a", "new_id": "b"}) + "\n"
+                                          + json.dumps({"old_id": "c", "new_id": "d"}) + "\n")
+    s = B.supersede_summary(tmp_path, backfill_ids={"a"})
+    assert (s["pairs"], s["pairs_touching_backfill"]) == (2, 1)
+    assert B.supersede_summary(tmp_path / "none") == {"ran": False}

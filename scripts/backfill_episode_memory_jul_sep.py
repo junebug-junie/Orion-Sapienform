@@ -12,8 +12,9 @@ grouped into episodes or distilled. This script does that once, on the live code
   holds and smoke/deploy-check sessions.
 * **Grouping.** The tracker's own Rule 3 (``episode_shadow.episode_boundary`` and
   ``build_closed_event``, imported, not copied), fed the same per-session wall-clock phase
-  (``orion.situational.context.classify_conversation_phase``). Old turns carry no LLM boundary
-  score, so a ``resumed_thread`` turn never splits (what the live rule does with no score).
+  (``orion.situational.context.classify_conversation_phase``; the session clock moves on every
+  Juniper prompt in the session, kept or not) and the turn's stored LLM boundary score
+  (``spark_meta.conversation_boundary_score``, as ``ShadowTurn.from_turn`` reads it).
 * **Distill.** ``orion.memory.episode.distill`` prompt + parser, ``validate_distillation``,
   ``store.persist_episode`` with the live referent policy: the same rows (memories, evidence,
   ``episode_memory_referent``, events, questions, aliases, the run row) a live distill writes.
@@ -88,20 +89,27 @@ SELF_KEYS = frozenset({"person:juniper", "person:orion"})   # orion.memory.refer
 SMOKE_SESSION = re.compile(r"smoke|deploy-check", re.IGNORECASE)
 
 TARGETS_SQL = """
-SELECT id, correlation_id, source, session_id, prompt, response, created_at, client_meta
+SELECT id, correlation_id, source, session_id, prompt, response, created_at, client_meta, spark_meta
 FROM chat_history_log
 WHERE created_at < %(cutoff)s
 ORDER BY created_at, correlation_id
 """
-TRACKED_IDS_SQL = """
+# Every turn entry this script writes carries this phase_source; the live tracker never does. The
+# three tracker reads below skip the backfill's own rows, so a re-plan after a run sees the same
+# cutoff and the same tracked turns as the first plan did.
+BACKFILL_PHASE_SOURCE = "backfill_recomputed"
+NOT_BACKFILL = "NOT (e.turns @> '[{\"phase_source\": \"backfill_recomputed\"}]'::jsonb)"
+TRACKED_IDS_SQL = f"""
 SELECT DISTINCT t->>'correlation_id' AS cid
 FROM memory_episode_shadow e, jsonb_array_elements(e.turns) t
+WHERE {NOT_BACKFILL}
 """
-CUTOFF_SQL = "SELECT min(started_at) AS cutoff FROM memory_episode_shadow"
+CUTOFF_SQL = f"SELECT min(e.started_at) AS cutoff FROM memory_episode_shadow e WHERE {NOT_BACKFILL}"
 # The turn that would have closed the last backfilled episode: the first one the tracker saw.
-FIRST_TRACKED_SQL = """
+FIRST_TRACKED_SQL = f"""
 SELECT t->>'correlation_id' AS correlation_id, (t->>'at')::timestamptz AS at
 FROM memory_episode_shadow e, jsonb_array_elements(e.turns) t
+WHERE {NOT_BACKFILL}
 ORDER BY (t->>'at')::timestamptz LIMIT 1
 """
 INSERT_SHADOW_SQL = """
@@ -116,6 +124,7 @@ ON CONFLICT (episode_id) DO NOTHING
 """
 # closed_event_published_at = now(): memory-consolidation's re-publisher (unpublished_closed) never
 # sends these, so the live distiller (and its write-time supersede) never runs on them.
+TOUCH_SQL = "UPDATE episode_memory SET updated_at = now() WHERE run_id = %s AND updated_at < now() - interval '1 day'"
 DONE_SQL = "SELECT episode_id FROM episode_distill_run WHERE episode_id = ANY(%s)"
 COVERAGE_SQL = """
 SELECT date_trunc('week', m.created_at AT TIME ZONE 'UTC')::date AS week,
@@ -295,7 +304,33 @@ class _Open:
     last_turn_at: datetime
 
 
+def boundary_score(spark_meta: Any) -> Optional[float]:
+    """The classify score stored on the turn, as ``ShadowTurn.from_turn`` reads it."""
+    if isinstance(spark_meta, str):
+        try:
+            spark_meta = json.loads(spark_meta)
+        except Exception:  # noqa: BLE001
+            return None
+    if not isinstance(spark_meta, dict):
+        return None
+    score = spark_meta.get("conversation_boundary_score")
+    return float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else None
+
+
+def session_clocks(rows: Iterable[dict[str, Any]]) -> dict[str, list[datetime]]:
+    """session -> sorted times of every Juniper prompt (any row with a prompt). The live session
+    clock (session_turn_state.last_user_turn_at) moves on each of them, kept as memory or not."""
+    out: dict[str, list[datetime]] = {}
+    for r in rows:
+        if str(r.get("prompt") or "").strip():
+            out.setdefault(str(r.get("session_id") or "global"), []).append(_utc(r["created_at"]))
+    for v in out.values():
+        v.sort()
+    return out
+
+
 def group_episodes(targets: list[dict[str, Any]], *, closing_turn: Optional[dict[str, Any]] = None,
+                   clock_rows: Optional[Iterable[dict[str, Any]]] = None,
                    tz_name: str = TZ, shadow_mod: Any = None) -> list[dict[str, Any]]:
     """Targets (time order) -> closed episodes, exactly as the tracker's observe_turn would group
     them: one open episode for direct Hub chat, Rule 3 + Orion's-own-message rules at each turn.
@@ -303,21 +338,23 @@ def group_episodes(targets: list[dict[str, Any]], *, closing_turn: Optional[dict
     last episode (the tracker started fresh, so it never joined)."""
     from orion.situational.context import classify_conversation_phase
 
+    from bisect import bisect_left
+
     sh = shadow_mod or _load_live_boundary()
-    last_juniper_at: dict[str, datetime] = {}   # session -> Juniper's last turn (session_turn_state)
+    clocks = session_clocks(targets if clock_rows is None else clock_rows)
     out: list[dict[str, Any]] = []
     cur: Optional[_Open] = None
 
     def shadow_turn(r: dict[str, Any]):
         at = _utc(r["created_at"])
-        session = str(r.get("session_id") or "global")
-        phase = classify_conversation_phase(last_juniper_at.get(session), at, tz_name)
-        if r["initiated_by"] == "juniper":
-            last_juniper_at[session] = at
+        times = clocks.get(str(r.get("session_id") or "global"), [])
+        i = bisect_left(times, at)   # Juniper's last prompt in this session strictly before this turn
+        phase = classify_conversation_phase(times[i - 1] if i else None, at, tz_name)
         return sh.ShadowTurn(
             correlation_id=str(r["correlation_id"]), at=at, phase_change=phase["phase_change"],
-            delta_user_seconds=phase["delta_user_seconds"], phase_source="backfill_recomputed",
-            boundary_score=None, is_command=sh.is_workflow_command_turn(r.get("response")),
+            delta_user_seconds=phase["delta_user_seconds"], phase_source=BACKFILL_PHASE_SOURCE,
+            boundary_score=boundary_score(r.get("spark_meta")),
+            is_command=sh.is_workflow_command_turn(r.get("response")),
             legacy_close_reason=None, initiated_by=r["initiated_by"])
 
     def close(closing, reason: str) -> None:
@@ -344,11 +381,11 @@ def group_episodes(targets: list[dict[str, Any]], *, closing_turn: Optional[dict
         if closing_turn is not None:
             at = _utc(closing_turn["at"])
             closing = sh.ShadowTurn(correlation_id=str(closing_turn["correlation_id"]), at=at, phase_change=None,
-                                    delta_user_seconds=None, phase_source="backfill_recomputed", boundary_score=None,
+                                    delta_user_seconds=None, phase_source=BACKFILL_PHASE_SOURCE, boundary_score=None,
                                     is_command=False, legacy_close_reason=None)
         else:
             closing = sh.ShadowTurn(correlation_id=cur.turns[-1]["correlation_id"], at=cur.last_turn_at,
-                                    phase_change=None, delta_user_seconds=None, phase_source="backfill_recomputed",
+                                    phase_change=None, delta_user_seconds=None, phase_source=BACKFILL_PHASE_SOURCE,
                                     boundary_score=None, is_command=False, legacy_close_reason=None)
         close(closing, "backfill:tracker_started")
     return out
@@ -465,8 +502,12 @@ async def _fetch(pool: OneShotPool, sql: str, params: Any = None) -> list[dict[s
 
 # ----------------------------------------------------------------------------------- distill
 
-def _cache_path(episode_id: str) -> Path:
-    return OUT / "answers" / f"{episode_id}.json"
+def cache_path_for(episode: dict[str, Any]) -> Path:
+    """Keyed by episode AND its turn set: a re-plan that regroups never reuses another grouping's answer."""
+    import hashlib
+
+    digest = hashlib.sha256("|".join(episode["turn_ids"]).encode("utf-8")).hexdigest()[:12]
+    return OUT / "answers" / f"{episode['episode_id']}-{digest}.json"
 
 
 def llm_body(prompt: str) -> dict[str, Any]:
@@ -533,6 +574,10 @@ async def persist(pool: OneShotPool, episode: dict[str, Any], turns: list[Any], 
         model_route="operator_agent", model=answer.get("model"), prompt_version=answer["prompt_version"],
         usage=answer.get("usage") or {}, llm_latency_ms=answer.get("latency_ms"), hold_wait_ms=None,
         coverage=coverage(result, turns)["coverage"], now=now, referent_policy=referent_policy())
+    # created_at stays at episode time (supersede order); updated_at is the true write time, so the
+    # core-page folds (max(greatest(created_at, updated_at))) see that memory changed and rebuild.
+    async with pool.connection() as conn:
+        await conn.execute(TOUCH_SQL, (run_id_for(episode["episode_id"]),))
     return {"counts": counts, "result": result}
 
 
@@ -562,6 +607,8 @@ def _load_plan() -> dict[str, Any]:
 async def cmd_plan(args: argparse.Namespace) -> int:
     pool = OneShotPool(args.dsn)
     private_dir(OUT)
+    if (OUT / "episodes.json").exists() and not args.force:
+        raise SystemExit(f"{OUT / 'episodes.json'} exists; pass --force to re-plan (answers are keyed by turn set)")
     cutoff = (await _fetch(pool, CUTOFF_SQL))[0]["cutoff"]
     tracked = {r["cid"] for r in await _fetch(pool, TRACKED_IDS_SQL)}
     rows = await _fetch(pool, TARGETS_SQL, {"cutoff": cutoff})
@@ -569,7 +616,7 @@ async def cmd_plan(args: argparse.Namespace) -> int:
         raise SystemExit(f"{len(rows)} rows exceed the snapshot limit {SNAPSHOT_MAX_ROWS}: ask Juniper")
     targets, skipped = select_targets(rows, tracked)
     first = await _fetch(pool, FIRST_TRACKED_SQL)
-    episodes = group_episodes(targets, closing_turn=first[0] if first else None)
+    episodes = group_episodes(targets, closing_turn=first[0] if first else None, clock_rows=rows)
     # Snapshot: the full target rows (private text), so the run can be audited against what it read.
     with (OUT / "targets.jsonl.tmp").open("w", encoding="utf-8") as f:
         os.chmod(OUT / "targets.jsonl.tmp", 0o600)
@@ -585,6 +632,7 @@ async def cmd_plan(args: argparse.Namespace) -> int:
         "targets_juniper": sum(1 for t in targets if t["initiated_by"] == "juniper"),
         "targets_orion": sum(1 for t in targets if t["initiated_by"] == "orion"),
         "targets_before_oct": sum(1 for t in targets if _utc(t["created_at"]) < datetime(2026, 10, 1, tzinfo=timezone.utc)),
+        "targets_with_boundary_score": sum(1 for t in targets if boundary_score(t.get("spark_meta")) is not None),
         "skipped": skipped, "episodes": len(episodes), "episodes_by_status": by_status,
         "first_turn": str(targets[0]["created_at"]) if targets else None,
         "last_turn": str(targets[-1]["created_at"]) if targets else None,
@@ -594,47 +642,71 @@ async def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
-def _hold_loop(args: argparse.Namespace, work: list[dict[str, Any]], handle_episode) -> None:
+class AttemptFailed(RuntimeError):
+    """One distill attempt failed (bounded; the hold is given back before the backoff)."""
+
+
+def _hold_loop(args: argparse.Namespace, work: list[dict[str, Any]], handle_episode, give_up) -> None:
     """Run ``handle_episode(lane, episode)`` over ``work`` under operator holds that are given back
-    every ``max_hold_sec`` (and after a recall), so Orion's own acts interleave."""
+    every ``max_hold_sec`` and after a recall, so Orion's own acts interleave. A failed attempt
+    (AttemptFailed) gives the hold back BEFORE its backoff, so a gateway fault never parks an idle seat;
+    after MAX_ATTEMPTS ``give_up(episode, detail)`` records it and the run goes on."""
     from orion.evals.leased_llm import LaneRecalled, operator_lane_sync
 
     queue = list(work)
+    attempts: dict[str, int] = {}
     while queue:
         granted = time.monotonic()
+        backoff = 0.0
         try:
             with operator_lane_sync("agent", holder=HOLDER, bus_url=args.bus_url, gateway=args.gateway,
                                     queue_wait_sec=args.queue_wait_sec) as lane:
                 while queue and time.monotonic() - granted < args.max_hold_sec:
-                    handle_episode(lane, queue[0])
+                    episode = queue[0]
+                    try:
+                        handle_episode(lane, episode)
+                    except AttemptFailed as exc:
+                        n = attempts[episode["episode_id"]] = attempts.get(episode["episode_id"], 0) + 1
+                        if n >= MAX_ATTEMPTS:
+                            give_up(episode, str(exc))
+                            queue.pop(0)
+                            continue
+                        backoff = min(60.0, 5.0 * 2 ** (n - 1))
+                        break
                     queue.pop(0)
         except LaneRecalled:
             continue   # the episode at the head of the queue is re-tried under the next hold
+        if backoff:
+            time.sleep(backoff)
 
 
-def _answer_with_retries(lane: Any, episode: dict[str, Any], turns: list[Any], candidates: list[str],
-                         prog: Progress) -> Optional[dict[str, Any]]:
+def _answer(lane: Any, episode: dict[str, Any], turns: list[Any], candidates: list[str],
+            prog: Progress) -> dict[str, Any]:
+    """The cached answer, or one attempt. Raises AttemptFailed (or LaneRecalled)."""
     from orion.evals.leased_llm import LaneRecalled
 
-    cache = _cache_path(episode["episode_id"])
+    cache = cache_path_for(episode)
     if cache.exists():
         return json.loads(cache.read_text(encoding="utf-8"))
-    last = None
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            answer = distill_answer(lane, episode, turns, candidates)
-            write_private(cache, json.dumps(answer))
-            return answer
-        except LaneRecalled:
-            raise
-        except Exception as exc:  # noqa: BLE001 -- a failed attempt: bounded, backed off
-            last = f"{type(exc).__name__}: {str(exc)[:160]}"
-            prog.line(f"attempt_failed episode={episode['episode_id']} attempt={attempt}",
-                      anomalies=f"error={type(exc).__name__}")
-            time.sleep(min(60.0, 5.0 * 2 ** (attempt - 1)))
-    prog.errors += 1
-    _append_error(episode["episode_id"], "distill_failed", last or "")
-    return None
+    try:
+        answer = distill_answer(lane, episode, turns, candidates)
+    except LaneRecalled:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- a failed attempt
+        prog.line(f"attempt_failed episode={episode['episode_id']}", anomalies=f"error={type(exc).__name__}")
+        raise AttemptFailed(f"{type(exc).__name__}: {str(exc)[:160]}") from exc
+    write_private(cache, json.dumps(answer))
+    return answer
+
+
+def _give_up(prog: Progress, stage_line: str):
+    def give_up(episode: dict[str, Any], detail: str) -> None:
+        prog.done += 1
+        prog.turns += len(episode["turn_ids"])
+        prog.errors += 1
+        _append_error(episode["episode_id"], "distill_failed", detail)
+        prog.line(f"{stage_line} episode={episode['episode_id']}", anomalies="distill_failed")
+    return give_up
 
 
 def _append_error(episode_id: str, stage: str, detail: str) -> None:
@@ -665,12 +737,9 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
 
     def handle(lane, episode):
         turns = loop.run_until_complete(load_turns(pool, episode))
-        answer = _answer_with_retries(lane, episode, turns, candidates, prog)
+        answer = _answer(lane, episode, turns, candidates, prog)
         prog.done += 1
         prog.turns += len(turns)
-        if answer is None:
-            prog.line(f"dry_run_episode_failed episode={episode['episode_id']}")
-            return
         result = validated_for(episode, turns, answer)
         memories.extend(result.memories)
         late = occurred_after_episode(result.memories, _utc(episode["last_turn_at"]))
@@ -679,6 +748,9 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
                         "juniper_turns": episode["juniper_turn_count"], "memories": len(result.memories),
                         "rejections": len(result.rejections), "questions": len(result.questions),
                         "with_referent": cov["any"], "with_other_referent": cov["other"],
+                        "high_stakes_pending_confirmation": sum(
+                            1 for m in result.memories
+                            if m.stakes == "high" and m.confirmation_state == "pending_confirmation"),
                         "occurred_after_episode": late, "model": answer.get("model")})
         anomalies = []
         if not result.memories:
@@ -688,13 +760,14 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
         prog.line(f"dry_run_episode episode={episode['episode_id']} memories={len(result.memories)} "
                   f"rejected={len(result.rejections)}", anomalies=" ".join(anomalies))
 
-    _hold_loop(args, sample, handle)
+    _hold_loop(args, sample, handle, _give_up(prog, "dry_run_episode_failed"))
     cov = referent_coverage(memories)
     verdict = {
         "pass": cov["n"] > 0 and cov["any_rate"] >= BAND_ANY_MIN and cov["other_rate"] >= BAND_OTHER_MIN,
         **cov, "band": {"any_min": BAND_ANY_MIN, "other_min": BAND_OTHER_MIN},
     }
-    out = {"episodes": results, "referent_coverage": verdict, "errors": prog.errors}
+    out = {"episodes": results, "referent_coverage": verdict, "errors": prog.errors,
+           "high_stakes_pending_confirmation": sum(r["high_stakes_pending_confirmation"] for r in results)}
     write_private(OUT / "dry_run.json", json.dumps(out, indent=1, default=str))
     prog.line(f"dry_run_done memories={cov['n']} any_rate={cov['any_rate']} other_rate={cov['other_rate']} "
               f"gate={'pass' if verdict['pass'] else 'FAIL'}")
@@ -728,12 +801,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         anomalies = []
         if len(turns) != len(episode["turn_ids"]):
             anomalies.append(f"turns_loaded={len(turns)}/{len(episode['turn_ids'])}")
-        answer = _answer_with_retries(lane, episode, turns, candidates, prog)
+        answer = _answer(lane, episode, turns, candidates, prog)
         prog.done += 1
         prog.turns += len(turns)
-        if answer is None:
-            prog.line(f"episode_failed episode={episode['episode_id']}", anomalies="distill_failed")
-            return
         try:
             out = loop.run_until_complete(persist(pool, episode, turns, answer))
         except Exception as exc:  # noqa: BLE001 -- recorded; the episode is retried by a re-run
@@ -756,7 +826,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                   f"rejected={counts['rejections']} questions={counts['questions']} "
                   f"referents_resolved={counts.get('referents_resolved')}", anomalies=" ".join(anomalies))
 
-    _hold_loop(args, todo, handle)
+    _hold_loop(args, todo, handle, _give_up(prog, "episode_failed"))
     prog.line(f"run_done processed={prog.done} errors={prog.errors}")
     return 0 if prog.errors == 0 else 1
 
@@ -795,8 +865,44 @@ def cmd_counts(args: argparse.Namespace) -> int:
     return 0
 
 
+SCOREBOARD_IDS_SQL = """
+SELECT DISTINCT e.source_id AS chat_id, m.memory_id::text AS memory_id, m.status
+FROM episode_memory_evidence e JOIN episode_memory m USING (memory_id)
+WHERE m.run_id LIKE %(run_like)s AND e.source_id = ANY(%(ids)s)
+ORDER BY 1, 2
+"""
+SUPERSEDE_DIR = Path("/tmp/memory-supersede-pass")
+
+
+def _read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def supersede_summary(directory: Path = SUPERSEDE_DIR, backfill_ids: Optional[set[str]] = None) -> dict[str, Any]:
+    """Pair counts from the supersede pass dry run (pairs.jsonl: one proposed pair per line; ids only)."""
+    pairs_file = directory / "pairs.jsonl"
+    if not pairs_file.exists():
+        return {"ran": False}
+    pairs = [json.loads(line) for line in pairs_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    ids = backfill_ids or set()
+
+    def touches(p: dict[str, Any]) -> bool:
+        return str(p.get("old_id")) in ids or str(p.get("new_id")) in ids
+
+    return {"ran": True, "pairs": len(pairs), "pairs_touching_backfill": sum(1 for p in pairs if touches(p)),
+            "pair_ids": [[str(p.get("old_id")), str(p.get("new_id"))] for p in pairs]}
+
+
+async def _report_reads(pool: OneShotPool, chat_ids: list[str]) -> dict[str, Any]:
+    rows = await _fetch(pool, SCOREBOARD_IDS_SQL, {"run_like": f"{RUN_PREFIX}%", "ids": chat_ids}) if chat_ids else []
+    mine = await _fetch(pool, "SELECT memory_id::text AS id FROM episode_memory WHERE run_id LIKE %(run_like)s",
+                        {"run_like": f"{RUN_PREFIX}%"})
+    return {"scoreboard": rows, "backfill_ids": {r["id"] for r in mine}}
+
+
 def cmd_report(args: argparse.Namespace) -> int:
-    counts = json.loads((OUT / "counts.json").read_text())
+    """report.md + before_after.csv: ids and counts only, never text."""
+    counts = _read_json(OUT / "counts.json") or {}
     before, after = counts.get("before", {}), counts.get("after", {})
     with (OUT / "before_after.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -805,7 +911,50 @@ def cmd_report(args: argparse.Namespace) -> int:
             b, a = before.get(k), after.get(k)
             w.writerow([k, b, a, (a - b) if isinstance(a, int) and isinstance(b, int) else ""])
     os.chmod(OUT / "before_after.csv", 0o600)
-    print(f"wrote {OUT / 'before_after.csv'}")
+
+    plan = (_read_json(OUT / "episodes.json") or {}).get("summary", {})
+    gate = _read_json(OUT / "referent_gate.json") or {}
+    dry = _read_json(OUT / "dry_run.json") or {}
+    errors_file = OUT / "errors.jsonl"
+    errors = [json.loads(x) for x in errors_file.read_text().splitlines() if x.strip()] if errors_file.exists() else []
+    sb_file = OUT / "scoreboard_chat_ids.txt"
+    sb = [line.split() for line in sb_file.read_text().splitlines() if line.strip()] if sb_file.exists() else []
+    reads = asyncio.run(_report_reads(OneShotPool(args.dsn), [x for _, ids in sb for x in ids.split(",")]))
+    sup = supersede_summary(backfill_ids=reads["backfill_ids"])
+    failed = sorted({e["episode_id"] for e in errors})
+    verdict = "PASS" if gate.get("pass") and not failed else "NEEDS ANOTHER PASS" if failed else "BLOCKED (referent gate)"
+
+    lines = [f"# Memory backfill July-September 2026 (#{ISSUE}): {verdict}", "",
+             "Ids and counts only. Private inputs stay in this directory (mode 600).", "",
+             "## Plan", ""] + [f"- {k}: {v}" for k, v in plan.items()] + [
+             "", "## Dry run", "",
+             f"- memories: {(dry.get('referent_coverage') or {}).get('n')}",
+             f"- with any referent: {(dry.get('referent_coverage') or {}).get('any')}",
+             f"- with a referent besides Juniper/Orion: {(dry.get('referent_coverage') or {}).get('other')}",
+             f"- high-stakes rows waiting for confirmation: {dry.get('high_stakes_pending_confirmation')}",
+             f"- gate: {'pass' if (dry.get('referent_coverage') or {}).get('pass') else 'FAIL'}",
+             "", "## Before / after", "", "| metric | before | after |", "|---|---|---|"] + [
+             f"| {k} | {before.get(k)} | {after.get(k)} |" for k in COUNTS_SQL] + [
+             "", "## Referent coverage gate (per week, by episode time)", "",
+             f"- pass: {gate.get('pass')}; rows {gate.get('rows')}; pooled any {gate.get('pooled_any_rate')}, "
+             f"non-self {gate.get('pooled_other_rate')}; band any >= {BAND_ANY_MIN}, non-self >= {BAND_OTHER_MIN}",
+             f"- weeks below band: {gate.get('week_failures')}", f"- weeks under {GATE_MIN_WEEK_ROWS} rows: "
+             f"{gate.get('small_weeks')}", "", "| week | rows | any | non-self |", "|---|---|---|---|"] + [
+             f"| {w['week']} | {w['n']} | {w['any_ref']} | {w['other_ref']} |" for w in gate.get("weeks", [])] + [
+             "", "## Errors", "", f"- error records: {len(errors)}; episodes that failed: {len(failed)}"] + [
+             f"  - {e}" for e in failed] + [
+             "", "## Supersede pass dry run (nothing applied)", "",
+             f"- ran: {sup.get('ran')}; pairs proposed: {sup.get('pairs')}; "
+             f"pairs touching backfilled rows: {sup.get('pairs_touching_backfill')}"] + [
+             f"  - old {o} -> new {n}" for o, n in sup.get("pair_ids", [])] + [
+             f"- full pass report: {SUPERSEDE_DIR / 'report.md'}",
+             "", "## Pre-October scoreboard items", ""]
+    for qid, ids in sb:
+        hits = [r for r in reads["scoreboard"] if r["chat_id"] in ids.split(",")]
+        lines.append(f"- {qid}: {len(hits)} memories cite its chat turn: "
+                     + (", ".join(f"episode_memory:{r['memory_id']} ({r['status']})" for r in hits) or "none"))
+    write_private(OUT / "report.md", "\n".join(lines) + "\n")
+    print(f"wrote {OUT / 'report.md'} and {OUT / 'before_after.csv'}")
     return 0
 
 
@@ -817,7 +966,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--queue-wait-sec", type=float, default=6 * 3600.0)
     p.add_argument("--max-hold-sec", type=float, default=900.0)
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("plan")
+    pl = sub.add_parser("plan")
+    pl.add_argument("--force", action="store_true")
     d = sub.add_parser("dry-run")
     d.add_argument("--exchanges", type=int, default=10)
     r = sub.add_parser("run")

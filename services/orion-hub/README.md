@@ -428,18 +428,36 @@ Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
   questions or the single line `NO QUESTIONS`. Code cuts the reply into one `orion` turn per thread
   (status `asked` or `no_questions`). A thread with no usable section gets the whole reply, marked
   `unparsed`. A thread id under two headings, or headings out of the prompt's order, makes the whole
-  round `unparsed`: text may sit under the wrong heading, so none of it goes to a PR. Empty text, a cut-short turn, or a failed run fails the round: Hub writes a line on each
-  thread, the threads go back to `held`, and after 3 failures in a row a thread stays `failed` until a
-  new message arrives on it.
+  round `unparsed`: text may sit under the wrong heading, so none of it goes to a PR. An `unparsed`
+  reply is sent nowhere (no PR, no session; kept on the thread only in a round of one thread, since in
+  a larger round it holds other threads' sections — it stays on the round's durable run), does NOT use the thread's one
+  round of questions, and the thread is read again next hour; it counts as one failure. Empty text, a
+  cut-short turn, or a failed run fails the round: Hub writes a line on each thread, the threads go
+  back to `held`, and after 3 failures in a row a thread stays `failed` until a new message arrives on
+  it. A run the body never gave a turn (past its GPU admission deadline before any turn, or still
+  waiting for the pool 30 min after it) is not a failure: the threads are held again, count unchanged,
+  one Hub line per streak; once the newest unread message is 14 days old it counts again. A prompt the
+  pool refuses as too big for the lane (`min_ctx_exceeds_class`) is not a strike either: Hub halves its
+  prompt budget (floor 8,000 characters; `GET /api/debug/session-threads` shows `budget_chars`).
 - **The PR comment.** For a thread with a pull request and real questions, Hub posts one comment on the
   PR with Orion's GitHub token (`ORION_GITHUB_TOKEN`, user `orion-sapienform`), headed "Orion's
   questions on this spec (hourly round-up)". Code posts it, not the model. It only ever posts on
   `HUB_SESSION_ROUNDUP_GITHUB_REPO`, and only after it read the PR back: the number must be an open pull
   request whose head branch is the thread's branch. `@name` and `#123` are broken so nobody is pinged
   and no issue is linked. No token or an API error
-  is logged and the turn is kept. Off: `HUB_SESSION_ROUNDUP_PR_COMMENTS=false`.
+  is logged and the turn is kept. Off: `HUB_SESSION_ROUNDUP_PR_COMMENTS=false`. Before each round Hub
+  reads each thread's PR state; a closed or merged PR gets a `[Hub]` line in the prompt, so Orion knows
+  its questions there reach only the session.
+- **One round of questions per thread.** Once Orion asked on a thread
+  (`core.MAX_QUESTION_ROUNDS_PER_THREAD = 1`), a session reply is still read at the next round-up, but
+  the prompt marks the thread ANSWER PHASE (no spec again, no new questions) and whatever Orion writes
+  for it is stored as a closing note: status `closed`, never posted on the PR, shown to the session as
+  "nothing here needs an answer". Question-like lines Orion wrote anyway are counted in the log line
+  `session_thread_questions_dropped`. A new PR or note gets its own round.
 - **Back to the session.** `GET /api/session-threads/pending?session_id=&branch=` returns Orion's turns
-  not yet handed back to that session or that branch; `POST /api/session-threads/delivered` marks them.
+  not yet handed back to that session or that branch; `POST /api/session-threads/delivered`
+  (`{"turn_ids": [...], "session_id": "..."}`) claims them for that session. A question turn stays
+  pending for later sessions until a session replies on the thread.
   A session answers with a new message on the same thread, which holds it again.
 - **Hub chat.** `static/js/session-threads.js`: one collapsed line per thread (title, sender session,
   status); a click opens the turns under the labels Session / Hub receipt / Orion. Live frames have kind
@@ -456,7 +474,7 @@ The session side lives in the repo's `scripts/`:
 | Show Orion's questions to the session | `scripts/hooks/session_pending_orion_questions.py` (UserPromptSubmit + SessionStart) |
 | Wake the session when Orion answers, so it circles back unasked | `scripts/hooks/wait_for_orion_answer.py` (PostToolUse on Bash, `asyncRewake`): arms only when Hub stored a message (a `send`/`reply` receipt, or a spec PR's thread updated in the last minute), follows that one thread (one waiter per thread), polls every 60 s for up to 4 h, and wakes the session on Orion's next answer with its questions and the steps: investigate, fix small things, file tickets, answer on the PR and to Orion. Hooks claim a turn before showing it, so it is never shown twice. "No questions" ends the wait without waking |
 | Send, reply, read by hand | `python3 scripts/orion_session_thread.py send --pr N [--note TEXT]`, `reply --thread ID [--pr N] --body TEXT\|--body-file F` (`--pr` also posts the reply on the PR), `pending` |
-| Smoke after deploy | `python3 scripts/smoke_session_threads.py`, then `--check THREAD_ID` an hour later |
+| Smoke after deploy | `python3 scripts/smoke_session_threads.py`, then `--check THREAD_ID` an hour later; `--rule-since <deploy time>` checks the one-round rule on live turns |
 
 The hooks are silent when Hub is down. Off for one shell: `ORION_SESSION_THREADS_HOOKS=0`. Hub URL:
 `ORION_HUB_URL` (default `http://localhost:8080`). Hook log: `~/.orion/session_threads_hooks.log`.

@@ -55,6 +55,8 @@ from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_STEP_KEY, PR_FIELD_NOT
 from app.reminiscence_graph import build_reminiscence_graph, finish_detail as reminiscence_finish_detail, pending_step
 from app.reminiscence_ledger import ReminiscenceLedger
 from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW
+from app.dream_day_graph import DreamDayDeps, build_dream_day_graph, finish_detail as dream_day_finish_detail
+from orion.schemas.dream_day import DREAM_DAY_STEP_KEY, DREAM_DAY_WORKFLOW
 from app.dream_carry_graph import (
     DEFAULT_CHILD_MAX_ATTEMPTS as DREAM_CARRY_DEFAULT_CHILD_MAX_ATTEMPTS,
     DEFAULT_CHILD_MIN_WINDOW_SEC as DREAM_CARRY_DEFAULT_CHILD_MIN_WINDOW_SEC,
@@ -142,13 +144,17 @@ WORK_NODES = {READING_RESONANCE_WORKFLOW: {"judge"}, DEFAULT_WORKFLOW: {"run_sta
               PR_FIELD_NOTE_WORKFLOW: {"field_note"},
               # One harness turn per step (five hops, then the cross-read), each under the run's one hold;
               # precheck and finish need none.
-              REMINISCENCE_WORKFLOW: {"step"}}
+              REMINISCENCE_WORKFLOW: {"step"},
+              # The day dream's one turn under the hold; it releases the hold once its answer is
+              # checkpointed. gather and persist need none.
+              DREAM_DAY_WORKFLOW: {"dream"}}
 # Workflows whose one step is a harness turn on app/harness_step.py: workflow -> its step key.
 HARNESS_STEP_WORKFLOWS = {HARNESS_ECHO_SMOKE_WORKFLOW: HARNESS_ECHO_SMOKE_STEP_KEY,
                           PR_FIELD_NOTE_WORKFLOW: PR_FIELD_NOTE_STEP_KEY,
                           CONSULT_ORION_TURN_WORKFLOW: CONSULT_ORION_TURN_STEP_KEY,
                           INTENTION_CARRY_WORKFLOW: INTENTION_CARRY_STEP_KEY,
-                          SESSION_ROUNDUP_WORKFLOW: SESSION_ROUNDUP_STEP_KEY}
+                          SESSION_ROUNDUP_WORKFLOW: SESSION_ROUNDUP_STEP_KEY,
+                          DREAM_DAY_WORKFLOW: DREAM_DAY_STEP_KEY}
 # Workflows of several harness steps on that seam: workflow -> (state -> the step key not yet done).
 HARNESS_MULTI_STEP_WORKFLOWS = {REMINISCENCE_WORKFLOW: pending_step}
 # Interrupt nodes the driver resumes only once the run's checkpointed ``retry_at`` has passed, and
@@ -304,6 +310,9 @@ class AdmissionRuntime:
             REMINISCENCE_WORKFLOW: build_reminiscence_graph(
                 lambda request: runner._run_turn(request), admission_deps, runner._checkpointer,
                 ledger=ReminiscenceLedger(getattr(settings, "reminiscence_ledger_dir", "/mnt/orion-fcc/self"))),
+            # The day dream Patch 2: one turn that reads the closed Denver day; code keeps what it remembers.
+            DREAM_DAY_WORKFLOW: build_dream_day_graph(self._dream_day_deps(runner), admission_deps,
+                                                      runner._checkpointer),
             # Bound lazily (like reading's run_turn): resolved on the runner at call time.
             ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
                 run_turn=lambda request: runner._run_turn(request),
@@ -409,7 +418,26 @@ class AdmissionRuntime:
             return pr_field_note_finish_detail(state)
         if workflow == REMINISCENCE_WORKFLOW:
             return reminiscence_finish_detail(state)
+        if workflow == DREAM_DAY_WORKFLOW:
+            return dream_day_finish_detail(state)
         return finish_detail(state)
+
+    def _dream_day_deps(self, runner) -> DreamDayDeps:
+        """The day dream's reads and its write (app/dream_day_store.py). Late-bound on the runner, like the
+        other graphs: the bus and the pool are read per call."""
+        from app import dream_day_store as store
+
+        self_dir = getattr(self.settings, "field_note_ledger_dir", "/mnt/orion-fcc/self")
+        return DreamDayDeps(
+            run_turn=lambda request: runner._run_turn(request),
+            gather=lambda brief, run_id: store.gather_material(
+                self.pool, lambda key: runner._bus.redis.get(key), brief, run_id, now=self.now()),
+            read_receipt=lambda day: store.read_receipt(self_dir, day),
+            resolve_refs=lambda refs: store.resolve_refs(self.pool, refs),
+            known_referents=lambda: store.known_referents(self.pool),
+            persist=lambda fields, result, route: store.persist_dream_day(self.pool, fields, result, route),
+            record_cites=lambda shown_id, cites, ref: store.record_cites(shown_id, cites, ref),
+        )
 
     async def _load_episode(self, brief) -> dict:
         """memory.episode_distill load_episode: the turns' FULL text from chat_history_log (never a
@@ -429,27 +457,37 @@ class AdmissionRuntime:
 
     async def _plan_supersede(self, result, ask, *, episode_id=None) -> dict:
         """Issue #3587: which older live memories this episode's memories correct (checked, not applied).
-        Candidates from the lived-memory index when configured, else shared words/referents."""
+        Issue #3659: never acts degraded. No meaning index, an index failure, a failed model answer,
+        or no passing precision eval for this check version: the plan proposes, holds its links, and
+        logs why; the persist step applies nothing."""
         from datetime import datetime, timezone
 
         from orion.introspect.semantic_index import SearchConfig
         from orion.memory.episode.supersede import (
-            index_dense, load_corpus, plan_for_new_rows, rows_from_validation, undone_pairs,
+            eval_gate, index_dense, load_corpus, plan_for_new_rows, rows_from_validation, undone_pairs,
         )
 
         if not result.memories:
-            return {"links": [], "asked": 0}
+            return {"links": [], "asked": 0, "apply": "refused", "refused_because": ["no_memories"]}
         s = self.settings
         async with self.pool.connection() as conn:
             corpus = await load_corpus(conn)
             excluded = await undone_pairs(conn)
+        try:  # its own connection: a failed read (table not there yet) must not poison the one above
+            async with self.pool.connection() as conn:
+                gate = await eval_gate(conn)
+        except Exception as exc:  # noqa: BLE001 -- unknown is closed
+            gate = (False, f"eval_unreadable:{type(exc).__name__}")
         cfg = SearchConfig(chroma_url=s.memory_supersede_chroma_url, embed_url=s.memory_supersede_embed_url,
                            collection=s.memory_supersede_collection, min_similarity=0.0)
         rows = rows_from_validation(result, now=datetime.now(timezone.utc), episode_id=episode_id)
         plan = await plan_for_new_rows(rows, corpus, ask, dense=index_dense(cfg) if cfg.enabled else None,
-                                       max_checks=int(s.memory_supersede_max_checks), excluded=excluded)
-        logger.info("episode_supersede_planned links=%s asked=%s check_errors=%s dense=%s",
-                    len(plan["links"]), plan["asked"], plan["check_errors"], plan["dense"])
+                                       max_checks=int(s.memory_supersede_max_checks), excluded=excluded,
+                                       apply_gate=gate)
+        logger.info("episode_supersede_planned episode_id=%s links=%s held=%s asked=%s check_errors=%s dense=%s "
+                    "apply=%s refused_because=%s", episode_id, len(plan["links"]), len(plan["held_links"]),
+                    plan["asked"], plan["check_errors"], plan["dense"], plan["apply"],
+                    ",".join(plan["refused_because"]) or "-")
         return plan
 
     def _referent_policy(self):
@@ -794,7 +832,7 @@ class AdmissionRuntime:
         elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW,
                                        HARNESS_ECHO_SMOKE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, REMINISCENCE_WORKFLOW,
                                        CONSULT_ORION_TURN_WORKFLOW, INTENTION_CARRY_WORKFLOW, SESSION_ROUNDUP_WORKFLOW,
-                                       ORION_DAY_WORKFLOW) \
+                                       ORION_DAY_WORKFLOW, DREAM_DAY_WORKFLOW) \
                 and state.get("step_correlation_id"):
             # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
             # or a worker that dies mid-step is still traceable by it (self-sense: the question's).

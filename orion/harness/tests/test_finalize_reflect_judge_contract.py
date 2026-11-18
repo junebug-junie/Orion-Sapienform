@@ -58,6 +58,7 @@ GOOD_JUDGEMENT = {
     "promises_made": [],
     "offers_accepted": [],
     "promises_kept": [],
+    "promise_conditions_met": [],
 }
 
 

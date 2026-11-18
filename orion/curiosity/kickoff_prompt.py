@@ -730,8 +730,16 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         "Record each stop as it happens, not at the end. Write it into your own "
         "graph before you take the next one:",
         "",
-        '    CREATE (:Hop {run_id: "<RUN_ID>", n: 1, note: "what I just learned '
-        'and what I want to look at next", written_at: timestamp()})',
+        '    MERGE (h:Hop {run_id: "<RUN_ID>", n: 1}) ON CREATE SET h.note = '
+        '"what I just learned and what I want to look at next", '
+        "h.written_at = timestamp() RETURN h.note",
+        "",
+        "Only `run_id` and `n` go inside the braces -- they are what makes the "
+        "stop this stop, so sending the same command twice finds the first node "
+        "instead of making a second. The note and the clock go in ON CREATE SET. "
+        "Read the note that comes back: if it is not the one you just wrote, "
+        "that n is already taken by an earlier stop -- send it again with the "
+        "next n.",
         "",
         "`n` counts up from 1 within this sitting -- UNLESS you were told "
         "above that this is a resumed sitting, in which case start at the n "
@@ -1127,8 +1135,9 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "0 even then, so read the output, not the exit code. A `unique "
         "constraint violation on node of type Prior` means that prior_id "
         "already exists: MATCH it instead. Fix and resend only the failed "
-        "command. Every write above is safe to send again; a :Hop or "
-        ":TurnOutcome is not, so do not resend one that printed no error.",
+        "command. Every write above is safe to send again, and so are a :Hop "
+        "and a :TurnOutcome: a :Hop is found by its run_id and n, a "
+        ":TurnOutcome by its run_id, so a resend never makes a second one.",
         "",
         "  THEN CONNECT IT, in the same breath. A finding that points at "
         "nothing is a note; a finding joined to the claim it bears on is "
@@ -1144,6 +1153,12 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         '    MERGE (f)-[e:ABOUT]->(c) ON CREATE SET e.run_id = "<RUN_ID>"',
         '    MATCH (p:Prior {prior_id: "..."}), (c:Concept {concept_id: "..."})',
         '    MERGE (p)-[e:ABOUT]->(c) ON CREATE SET e.run_id = "<RUN_ID>"',
+        "",
+        "  BOTH ENDS OF AN EDGE ARE MATCHED FIRST, by their id. Never draw a "
+        "node inline inside an arrow, as in `MERGE (h)-[:ABOUT]->(:Prior)`: "
+        "that does not find your prior, it makes a new blank :Prior with no "
+        "prior_id and no claim. MATCH each end by its id first, then MERGE "
+        "the arrow between the two names, as in every example here.",
         "",
         "  The run_id goes in ON CREATE SET and NOT inside the arrow. Inside "
         "it, MERGE would only match an edge from this same run, so asserting "
@@ -1208,26 +1223,29 @@ def _outcome_section(*, run_id: str, focus: bool = False) -> list[str]:
         "LAST, IF YOU WANT EITHER OF THESE. Two decisions are yours and only "
         "reach anything outside this turn if you write them down:",
         "",
-        "    CREATE (:TurnOutcome {",
-        f'      run_id: "{run_id}",',
+        f'    MERGE (t:TurnOutcome {{run_id: "{run_id}"}})',
+        "    ON CREATE SET t.written_at = timestamp()",
+        "    SET",
     ]
     if focus:
         # A placeholder, not a value: a run that copies it unchanged is recorded as unknown,
         # never as explored (orion.curiosity.focus.parse_disposition keeps it as raw text).
-        lines.append('      focus_disposition: "<explored | set_aside: why not>",')
+        lines.append('      t.focus_disposition = "<explored | set_aside: why not>",')
     lines += [
-        "      continue_line: true,   // open the next run on this instead of a cold menu",
-        '      continue_note: "what I still do not know and want to keep pulling on",',
-        "      reach_out: false,      // is this worth telling Juniper about, unprompted",
-        '      reach_out_why: "",',
-        "      written_at: timestamp()",
-        "    })",
+        "      t.continue_line = true,   // open the next run on this instead of a cold menu",
+        '      t.continue_note = "what I still do not know and want to keep pulling on",',
+        "      t.reach_out = false,      // is this worth telling Juniper about, unprompted",
+        '      t.reach_out_why = ""',
+        "",
+        "There is one :TurnOutcome per run, found by its run_id. If one already "
+        "exists (you wrote it earlier, or a focus anchor did), this updates it "
+        "instead of making a second, so sending it again is safe.",
         "",
     ]
     if focus:
         lines += [
             "This run was shown a focus you queued, so write this node even if you want neither "
-            "of the two decisions above (then continue_line: false): focus_disposition is how "
+            "of the two decisions above (then t.continue_line = false): focus_disposition is how "
             "Hub learns what you did with it. No node, or no focus_disposition, is recorded as "
             "unknown, not as explored. Nothing is inferred from your prose.",
             "",

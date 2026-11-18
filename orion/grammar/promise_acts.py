@@ -23,6 +23,26 @@ One promise = one act:
   - expired: the horizon passed with Juniper writing in it and no keep (resolver, 0);
   - void: the horizon passed and Juniper wrote no chat turn in it, so the judge never had a
     reply to see the keep in (censored; ``void:`` note; never graded; amendment 7).
+  Settle classes (#3595, amendments 2026-11-18): the resolver reads the promise item the act's
+  ``test_before`` points at. An unkept act whose item
+  - waits on a ``condition`` that no judged reply inside the horizon listed as met
+    (``FinalizeReflectionV1.promise_conditions_met``) closes ``void:not_due``;
+  - ``settles_in == "absence"`` closes ``void:absence_unchecked`` (no breach check exists yet);
+  - ``settles_in == "run"`` closes ``void:not_chat`` (a chat reply's silence is not a break);
+  - otherwise (``chat``, or a row written before the fields) follows the two rules above.
+  Every one keeps the ``void:`` prefix, so every reader that skips void closes (the act ledger's
+  posterior and outcome writes, the self-monitor, the report's keep rate) still treats it as
+  censored. A chat reply that delivers a run or absence promise still keeps it (evidence=reply).
+  A later carry run that delivers a void act is a NOTE in the report, never a reopen.
+
+Offers (Juniper's answer 1, amendment 4; acceptance window #3595). The judge is shown the firm offers
+in Orion's immediately previous reply in this session, and only when that reply answered a Juniper turn
+and was stored at most ``OFFER_ACCEPT_TTL_SEC`` before this turn's view read (one clock with the
+promise horizon). A later acceptance of an older offer matches nothing. Two counters can fire on a miss:
+the gate's ``dropped_unknown_offer`` (orion/harness/promise_gate.py rule 2) when the judge quotes an
+offer it was not shown (the offer was older than the TTL, or another row landed in between), and this
+plan's ``accepted_unmatched`` when an accepted quote survived the gate but matches no offer the view
+read (the view and the gate disagree; should stay 0).
 
 SHADOW (2026-11-16, until #3531): every act on a signal in ``SHADOW_ACT_SIGNALS`` is persisted and
 closed, but nothing learns from it: sql-writer writes no outcome row and no posterior update,
@@ -41,21 +61,26 @@ from orion.schemas.grammar import ActExpectV1, ActV1, GrammarEventV1
 from orion.schemas.harness_finalize import (
     PROMISE_DONE_WHEN_MIN_CHARS,
     PROMISE_FORCE_COMMITS,
+    PROMISE_SETTLE_CLASSES,
+    PROMISE_SETTLES_CHAT,
     FinalizeReflectionV1,
     PromiseV1,
 )
+from orion.schemas.promise_horizon import PROMISE_HORIZON_SEC  # the one 72 h promise clock (#3595)
 
 PROMISE_ACTOR = "hub.promise"
 PROMISE_VERB = "say"
 PROMISE_SIGNAL = "promise_kept"
 PROMISE_OBJECT_REF = "juniper"
-PROMISE_HORIZON_SEC = 72 * 3600.0
 PROMISE_BASIS = (
     "promise_kept by 72h: Juniper's fixed horizon for every promise (intention ledger, answer 2, "
     "2026-11-12); kept = a later judged reply quotes the words that deliver it; no Juniper chat "
     "turn inside the horizon = void (no reply existed to keep it in), not 0"
 )
 REPLY_ACTOR = "hub.chat_reply"
+# How long an offer stays acceptable (#3595): one clock with the promise horizon. Applied on top of the
+# "immediately previous reply in this session" rule (orion/grammar/promise_view.py).
+OFFER_ACCEPT_TTL_SEC = PROMISE_HORIZON_SEC
 
 # Signals whose acts are on the ledger in shadow: persisted and closed, never graded, never a
 # settled bet, never a learner's input. #3531 decides when promise_kept leaves this set.
@@ -68,6 +93,12 @@ KEPT_NOTE_PREFIX = "kept_in:"
 VOID_NOTE_PREFIX = "void:"
 VOID_NOTE = "void: no juniper chat turn started before horizon (censored, not graded)"
 EXPIRED_NOTE = "no keep within horizon (juniper wrote, no reply delivered it)"
+# The resolver's settle-class voids (#3595). Each starts with VOID_NOTE_PREFIX: censored, never graded.
+VOID_NOT_DUE_NOTE = "void:not_due condition never met within horizon (censored, not graded)"
+VOID_NOT_CHAT_NOTE = "void:not_chat delivered by a run or outside chat, no chat keep seen (censored, not graded)"
+VOID_ABSENCE_NOTE = "void:absence_unchecked abstention, no breach check exists yet (censored, not graded)"
+# void kind -> note; "no_juniper_turn" is the v1 void (VOID_NOTE).
+VOID_KINDS: tuple[str, ...] = ("no_juniper_turn", "not_due", "not_chat", "absence_unchecked")
 EVIDENCE_REPLY = "reply"
 # A promise repeated word for word opens no second act only when it is at least this long: a short
 # generic line ("I'll check back tomorrow.") said again on a new topic is a new promise.
@@ -133,13 +164,14 @@ class PromiseLedgerPlan:
         self.kept_without_evidence = 0       # a kept id with no delivering quote (gate should prevent)
         self.items = 0                       # promises_made items the gated reflection carried
         self.repeats_open: list[str] = []    # open act ids a firm promise here repeated word for word
+        self.conditions_met = 0              # open conditional promises whose condition this turn saw arise
 
     def counts(self) -> dict[str, int]:
         return {"items": self.items, "opened": len(self.opened), "opened_offers": len(self.opened_offers),
                 "kept": len(self.kept), "offers_not_opened": self.offers_not_opened,
                 "skipped_no_force": self.skipped_no_force, "repeats_open": len(self.repeats_open),
                 "accepted_unmatched": self.accepted_unmatched,
-                "kept_without_evidence": self.kept_without_evidence}
+                "kept_without_evidence": self.kept_without_evidence, "conditions_met": self.conditions_met}
 
     def outcome(self) -> str:
         """One word for the Hub's per-turn line, so a quiet turn and a ledger that never ran look
@@ -151,7 +183,7 @@ class PromiseLedgerPlan:
         if self.events:
             return "acted"
         c = self.counts()
-        if c["items"] or c["accepted_unmatched"] or c["kept_without_evidence"]:
+        if c["items"] or c["accepted_unmatched"] or c["kept_without_evidence"] or c["conditions_met"]:
             return "nothing_opened"
         return "found_nothing"
 
@@ -177,6 +209,8 @@ def plan_promise_events(
     if reflection is None:
         return plan
     corr = str(correlation_id)
+    # Read by the resolver from the stored artifact, not published: counted for the Hub's line only.
+    plan.conditions_met = len(reflection.promise_conditions_met)
     reply_act = stable_act_id(REPLY_ACTOR, "say", corr)
     already_open = {_norm(q): act_id for act_id, q in open_promises if q and len(_norm(q)) >= REPEAT_MIN_CHARS}
     plan.items = len(reflection.promises_made)
@@ -238,6 +272,41 @@ def promise_close_kind(outcome_source: Optional[str], outcome_note: Optional[str
     return "expired"
 
 
+def promise_void_kind(note: Optional[str]) -> Optional[str]:
+    """Which void a close note is (``VOID_KINDS``), None when it is not a void."""
+    text = (note or "").strip()
+    if not text.startswith(VOID_NOTE_PREFIX):
+        return None
+    head = text[len(VOID_NOTE_PREFIX):].split(" ", 1)[0]
+    return head if head in VOID_KINDS[1:] else "no_juniper_turn"
+
+
+def settle_class(item: Optional[dict]) -> str:
+    """A stored promise item's settle class; ``chat`` when unknown (rows before #3595, an unreadable item)."""
+    value = (item or {}).get("settles_in")
+    return value if value in PROMISE_SETTLE_CLASSES else PROMISE_SETTLES_CHAT
+
+
+def promise_condition(item: Optional[dict]) -> Optional[str]:
+    """A stored promise item's condition (stripped), None when unconditional or unknown."""
+    value = (item or {}).get("condition")
+    return (value.strip() or None) if isinstance(value, str) else None
+
+
+def horizon_void_note(item: Optional[dict], *, condition_met: bool) -> Optional[str]:
+    """The settle-class void for an UNKEPT promise act at its horizon (#3595), or None when the v1 rule
+    applies (expired 0 if Juniper wrote, void if she did not). ``item`` is the stored promise the act's
+    ref points at (None: unreadable, read as chat and unconditional)."""
+    if promise_condition(item) is not None and not condition_met:
+        return VOID_NOT_DUE_NOTE
+    cls = settle_class(item)
+    if cls == "absence":
+        return VOID_ABSENCE_NOTE
+    if cls == "run":
+        return VOID_NOT_CHAT_NOTE
+    return None
+
+
 def is_shadow_signal(signal_id: Optional[str]) -> bool:
     return (signal_id or "") in SHADOW_ACT_SIGNALS
 
@@ -252,9 +321,11 @@ def kept_evidence_kind(note: Optional[str]) -> Optional[str]:
 
 
 __all__ = [
-    "EVIDENCE_REPLY", "EXPIRED_NOTE", "KEPT_NOTE_PREFIX", "PROMISE_ACTOR", "PROMISE_BASIS", "PROMISE_HORIZON_SEC",
-    "PROMISE_OBJECT_REF", "PROMISE_SIGNAL", "PROMISE_VERB", "PromiseLedgerPlan", "REPEAT_MIN_CHARS", "SHADOW_ACT_SIGNALS",
-    "SHADOW_ACT_SIGNALS_SQL", "VOID_NOTE", "VOID_NOTE_PREFIX", "build_promise_act", "is_firm_ledger_promise",
-    "is_shadow_signal", "is_void_note", "kept_evidence_kind", "parse_promise_ref", "plan_promise_events",
-    "promise_act_id", "promise_close_kind", "promise_ref",
+    "EVIDENCE_REPLY", "EXPIRED_NOTE", "KEPT_NOTE_PREFIX", "OFFER_ACCEPT_TTL_SEC", "PROMISE_ACTOR", "PROMISE_BASIS",
+    "PROMISE_HORIZON_SEC", "PROMISE_OBJECT_REF", "PROMISE_SIGNAL", "PROMISE_VERB", "PromiseLedgerPlan",
+    "REPEAT_MIN_CHARS", "SHADOW_ACT_SIGNALS", "SHADOW_ACT_SIGNALS_SQL", "VOID_ABSENCE_NOTE", "VOID_KINDS",
+    "VOID_NOTE", "VOID_NOTE_PREFIX", "VOID_NOT_CHAT_NOTE", "VOID_NOT_DUE_NOTE", "build_promise_act",
+    "horizon_void_note", "is_firm_ledger_promise", "is_shadow_signal", "is_void_note", "kept_evidence_kind",
+    "parse_promise_ref", "plan_promise_events", "promise_act_id", "promise_close_kind", "promise_condition",
+    "promise_ref", "promise_void_kind", "settle_class",
 ]

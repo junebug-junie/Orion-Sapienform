@@ -7,6 +7,7 @@ Layer 5 substrate service: polls latest `FieldStateV1` from Postgres and builds 
 - Polls `substrate_field_state` every `ATTENTION_POLL_INTERVAL_SEC` (default 2s)
 - Skips if an attention frame already exists for the latest field `tick_id` (idempotent)
 - Persists to `substrate_attention_frames`
+- Adds each new frame's counts to `substrate_attention_hour_rollup` in the same transaction (`orion/attention/frame_rollup.py`; best effort in a savepoint, a failure logs `attention_hour_rollup_failed` and never stops the frame). `dig attention` reads it; it is never pruned (about 1k small rows a day)
 - Does **not** publish bus events or mutate field state
 - Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
   `HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection -- otherwise

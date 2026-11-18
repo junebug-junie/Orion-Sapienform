@@ -53,6 +53,41 @@ WHERE m.status = 'active'
   )
 """
 
+# "What was true then" (issue #3659, bi-temporal validity). EPISODE_SQL above serves only what is
+# currently true. This reader also serves a row an UPDATE retired, when it was still true at $1
+# (asyncpg timestamptz): it happened by then, and its invalid_at is after then. A CORRECTION's
+# old row is never served (it was never true), and neither is anything rejected.
+EPISODE_VALID_AT_SQL = """
+SELECT m.memory_id::text AS record_id,
+       m.purpose AS purpose,
+       m.statement AS text,
+       coalesce(m.occurred_at, m.created_at) AS occurred_at,
+       m.strength::float8 AS importance,
+       (m.supersedes_memory_id IS NOT NULL) AS is_correction,
+       (m.confirmation_state = 'confirmed') AS confirmed,
+       NULL::text AS label,
+       m.created_at AS created_at,
+       m.invalid_at AS invalid_at
+FROM episode_memory m
+WHERE m.confirmation_state IS DISTINCT FROM 'rejected'
+  AND length(trim(m.statement)) > 0
+  AND coalesce(m.occurred_at, m.created_at) <= $1
+  AND (m.expires_at IS NULL OR m.expires_at > $1)
+  AND (
+      (m.status = 'active'
+       AND NOT EXISTS (SELECT 1 FROM episode_memory c
+                       WHERE c.supersedes_memory_id = m.memory_id AND c.status = 'active'))
+      OR (m.status = 'superseded' AND m.invalid_reason = 'update' AND m.invalid_at > $1)
+  )
+"""
+
+
+async def fetch_valid_at(conn: Any, as_of: datetime) -> list[LivedRecord]:
+    """Episode memories true at ``as_of`` (asyncpg connection or pool): the past-tense read."""
+    rows = await conn.fetch(EPISODE_VALID_AT_SQL, as_of)
+    return records_from_rows(KIND_EPISODE, [dict(r) for r in rows])
+
+
 STANCE_SQL = """
 SELECT c.crystallization_id::text AS record_id,
        'stance' AS purpose,

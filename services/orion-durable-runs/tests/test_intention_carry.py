@@ -15,13 +15,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.harness_step import TURN_REPLY_GRACE_SEC
 from app.run_acts import run_act_family
-from app.run_bids import BINDING_PRODUCER, RunBidder, binding_family, hold_end, want_for_run
+from app.run_bids import BINDING_PRODUCER, RunBidder, binding_family, deadline_margin_sec, hold_end, want_for_run
 from orion.physiology.families import load_families
 from orion.schemas.durable_run import DurableRunRequestV1
 from orion.schemas.intention import (
     INTENTION_CARRY_STEP_KEY, INTENTION_CARRY_TAG, INTENTION_CARRY_WORKFLOW, INTENTION_FAMILY, INTENTION_SESSION_ID,
-    intention_run_id,
+    INTENTION_TURN_TIMEOUT_SEC, intention_run_id,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -36,7 +37,7 @@ def _brief(**kw):
             "prompt": f"prime_concern:{CID}\n\nI am carrying out something I told Juniper I would do.",
             "route": "chat_thread", "route_target": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
             "quote_ref": "harness_turn_trace:x#promises_made[0]", "horizon_at": HORIZON.isoformat(),
-            "retrieval_query": "a lazy browse", "timeout_sec": 1800, **kw}
+            "retrieval_query": "a lazy browse", "timeout_sec": INTENTION_TURN_TIMEOUT_SEC, **kw}
 
 
 def _req(requested_at=T0, deadline=HORIZON):
@@ -116,6 +117,24 @@ def test_a_held_tier_1_carry_run_rebids_and_is_admitted_at_its_hold_end_never_dr
     asyncio.run(go())
 
 
+
+def test_a_held_carry_run_near_its_horizon_is_released_one_whole_attempt_before_it():
+    """#3354 review: the deadline margin is at least one attempt, so a horizon-bound carry still gets its whole
+    3600 s turn (a 1800 s margin clamped the attempt back to the old 1,440 s motor budget)."""
+    horizon = T0 + timedelta(hours=5)
+    assert deadline_margin_sec(_req(deadline=horizon)) == INTENTION_TURN_TIMEOUT_SEC == 3600.0
+    assert deadline_margin_sec({"brief": {"timeout_sec": 900}}) == 1800.0   # never shorter than the old margin
+    assert deadline_margin_sec({}) == 1800.0
+
+    async def go():
+        b = RunBidder(enabled=True, binding_enabled=True, market_getter=lambda: _Market(_dec()))
+        end = horizon - timedelta(seconds=INTENTION_TURN_TIMEOUT_SEC)
+        held = await b.bind(_req(deadline=horizon), end - timedelta(seconds=60))
+        assert not held.admit and held.retry_at == end
+        released = await b.bind(_req(deadline=horizon), end)
+        assert released.admit and released.why == "window_end"
+    asyncio.run(go())
+
 # --- the turn --------------------------------------------------------------------------------------------------
 
 def test_the_carry_turn_runs_in_the_intention_session_writing_allowed_and_cites_the_concern():
@@ -144,6 +163,8 @@ def test_the_carry_turn_runs_in_the_intention_session_writing_allowed_and_cites_
         assert req.session_id == INTENTION_SESSION_ID and req.require_lookup is False
         assert req.source_tag == f"{INTENTION_CARRY_TAG}:{CID}" and req.retrieval_query == "a lazy browse"
         assert req.prompt.startswith(f"prime_concern:{CID}\n")
+        # #3354: Hub's turn limit is the brief's budget less the reply grace (the FCC motor's limit derives from it).
+        assert req.timeout_sec == pytest.approx(INTENTION_TURN_TIMEOUT_SEC - TURN_REPLY_GRACE_SEC) == 3570
         assert result["steps"][INTENTION_CARRY_STEP_KEY]["text"] == "I browsed the PRs. Two stand out."
         detail = intention_carry_finish_detail(result)
         assert detail["line"] == "intention_carry" and detail["concern_id"] == CID and detail["route"] == "chat_thread"

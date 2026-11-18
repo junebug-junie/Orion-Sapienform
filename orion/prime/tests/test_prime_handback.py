@@ -18,10 +18,16 @@ T0 = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
 FIXTURE = Path(__file__).parent / "fixtures" / "turn_hops_shaped_like_live.json"
 
 
-def _ingress(corr, session, prompt="hello", *, mode=None, at=T0):
+# What the Hub browser client sends (app.js) and the turn orchestrator copies into the ingress raw.
+BROWSER = {"surface": "hub_desktop", "input_modality": "typed"}
+
+
+def _ingress(corr, session, prompt="hello", *, mode=None, at=T0, browser=True):
     raw = {"session_id": session, "user_message": prompt, "attachment_count": 0, "observation_published": True}
     if mode is not None:
         raw["mode"] = mode
+        if browser:
+            raw["surface_context"] = dict(BROWSER)
     return CockpitHopV1(correlation_id=corr, seq=0, ts=at, stage="ingress", visor_line="ingress", status="ok",
                         summary={"session_id": session}, raw=raw, producer="orion-hub").model_dump(mode="json")
 
@@ -51,21 +57,53 @@ def _concern(cid, *, text="watching the cabinet heat", event_ref=None):
 # --- who ---------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("session,mode,who", [
-    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", "orion", "chat_juniper"),
-    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", None, None),  # Orion speaking first in her session: not her turn
-    ("orion_curiosity", None, "curiosity"),
-    ("consult-9f138a849520", None, "consult"),
-    ("orion_day_letter", None, "letter"),
-    ("orion_journal", "orion", None),
-    ("orion_world_pulse_read", None, None),
-    ("self-sense-eval", None, None),
-    ("pr-field-notes", None, None),
-    ("", "orion", None),
+@pytest.mark.parametrize("session,raw,who", [
+    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", {"mode": "orion", "surface_context": BROWSER}, "chat_juniper"),
+    # Spoken from the browser: still Juniper.
+    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", {"mode": "orion", "surface_context": {"input_modality": "spoken"}},
+     "chat_juniper"),
+    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", {}, None),  # Orion speaking first in her session: not her turn
+    # #3602: a coding session's note posted to /api/chat lands in her own session with ``mode`` and no
+    # surface_context (live 11-15, 9f846e8e); an eval script over /api/chat likewise (live 11-17, d391d241).
+    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", {"mode": "orion"}, None),
+    ("memory-scoreboard-eval", {"mode": "orion"}, None),
+    ("memory-scoreboard-eval", {"mode": "orion", "surface_context": {}}, None),
+    # The Hub skill-runner's deterministic browser send: surface_context, no ``mode``. Juniper starts it: hers.
+    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", {"surface_context": BROWSER}, "chat_juniper"),
+    # The operator smoke (scripts/trace_hub_skill_runner_e2e.py) marks itself operator_review: not Juniper.
+    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", {"surface_context": {"surface": "operator_review"}}, None),
+    ("orion_curiosity", {}, "curiosity"),
+    ("consult-9f138a849520", {}, "consult"),
+    ("orion_day_letter", {}, "letter"),
+    ("orion_journal", {"mode": "orion", "surface_context": BROWSER}, None),
+    ("orion_world_pulse_read", {}, None),
+    ("self-sense-eval", {}, None),
+    ("pr-field-notes", {}, None),
+    ("", {"mode": "orion", "surface_context": BROWSER}, None),
 ])
-def test_who_is_read_from_the_ingress_session(session, mode, who):
-    raw = {"mode": mode} if mode is not None else {}
+def test_who_is_read_from_the_ingress_session(session, raw, who):
     assert hb.classify_who(session, raw) == who
+
+
+def test_classify_who_uses_the_ledgers_browser_rule():
+    """One rule for "Juniper's turn" across Prime and the promise ledger (#3602): a payload the ledger counts as a
+    browser turn is chat_juniper here, and one it does not count is not."""
+    from orion.regulation.juniper_turns import is_browser_surface_turn
+
+    for raw in ({"mode": "orion", "surface_context": BROWSER}, {"mode": "orion"},
+                {"mode": "orion", "surface_context": {}}, {"mode": "orion", "surface_context": "hub"}):
+        assert (hb.classify_who("9c91d646", raw) == "chat_juniper") == is_browser_surface_turn(raw)
+
+
+def test_an_api_chat_eval_turn_with_a_promise_opens_no_concern():
+    """#3602 fixed-when: an /api/chat hop with ``mode`` and no surface_context (the memory-scoreboard-eval shape)
+    is not handed back, so its promise opens no Prime concern and no turn is recorded as chat_juniper."""
+    promise = {"offer": False, "quote": "I'll re-run the scoreboard and report the deltas."}
+    state, turns, folded = _fold(PrimeStateV1(), hb.PrimeTurnsStateV1(),
+                                 _ingress("d391d241", "memory-scoreboard-eval", mode="orion", browser=False),
+                                 _finalize("d391d241", promises=[promise]))
+    assert folded == [] and state.concerns == [] and turns.recent == []
+    assert hb.signal_from_hop(_ingress("d391d241", "memory-scoreboard-eval", mode="orion", browser=False)) is None
 
 
 def test_consult_prefix_matches_the_consult_seam():
@@ -155,6 +193,24 @@ def test_a_reply_that_only_mentions_a_concern_settles_nothing():
     assert state.concerns[0].graded is None and state.concern_record == []
 
 
+def test_a_day_letter_quoting_a_held_promise_ref_settles_nothing():
+    """#3644, the live 11-17 shape: the day letter's prompt (turn ce06758c) is the day's record, and it quoted
+    Orion's own earlier sentence with the promise's ref in it. The letter did not keep the promise."""
+    cid = "438e69ed6bb3d798"
+    promise = _concern(cid, text="a promise I made in a chat with Juniper", event_ref="turn:9f846e8e")
+    prompt = ("Write your letter about one of your own days: 2026-11-16 (America/Denver).\n\n"
+              "THE RECORD OF THE DAY\n=====================\n"
+              "That is the job behind the concept I coined yesterday, *the starved instrument*, and my slow loop has "
+              f"been holding a promise I made to you for 26 h 31 m [prime_concern:{cid}]. So: does the thing ...")
+    state = PrimeStateV1(concerns=[promise])
+    state, turns, folded = _fold(state, hb.PrimeTurnsStateV1(),
+                                 _ingress("ce06758c", "orion_day_letter", prompt),
+                                 _finalize("ce06758c", "## My day\n\nA long letter."))
+    assert state.concerns[0].graded is None and state.concern_record == []
+    assert folded[0].who == "letter" and folded[0].settled_concern_ids == []
+    assert "letter" in hb.NO_PROMPT_SETTLE_WHO
+
+
 @pytest.mark.parametrize("verdict,final", [("failed", "partial text"), ("partial", "cut short"), ("completed", "   ")])
 def test_a_turn_that_did_not_reply_settles_nothing(verdict, final):
     cid = "a1b2c3d4e5f60718"
@@ -209,7 +265,7 @@ def test_a_turn_concern_is_a_promise_and_fades_after_72h_not_24h():
     assert observe(state, snap, T0 + timedelta(hours=48)).concerns == state.concerns
     later = observe(state, snap, T0 + PROMISE_CONCERN_TTL + timedelta(minutes=10))
     assert later.concerns == [] and later.concern_record[-1].end == "faded"
-    assert later.concern_record[-1].note == "faded: not kept for 3 days"
+    assert later.concern_record[-1].note == "faded: nothing renewed it for 3 days"
 
 
 # --- dedupe / replay safety -------------------------------------------------------------------------------
@@ -314,3 +370,26 @@ def test_a_carry_turn_settles_its_concern_but_its_own_promises_open_no_concern()
     assert turn.opened_concern_id is None and "loop guard" in turn.thread_refused
     assert [c.concern_id for c in state.concerns] == ["d8db9d7b1bba4cf7"] and state.concerns[0].graded == "settled"
     assert turns.turn_concerns_opened_at == [] and turns.no_bet_concern_ids == []
+
+
+def test_a_carry_turn_settles_only_the_concern_its_prompt_starts_with():
+    """A carry prompt starts with the concern it carries; another held concern's ref quoted further down (in the
+    originating exchange) is a quote and settles nothing (#3644 review)."""
+    carried, other = "d8db9d7b1bba4cf7", "438e69ed6bb3d798"
+    state = PrimeStateV1(concerns=[_concern(carried, event_ref="turn:a1"), _concern(other, event_ref="turn:b2")])
+    corr = "intention-carry-turn-2"
+    prompt = (f"prime_concern:{carried}\n\nI am carrying out something I told Juniper.\n"
+              f"Me: my slow loop has been holding a promise [prime_concern:{other}]")
+    state, _, [turn] = _fold(state, hb.PrimeTurnsStateV1(), _ingress(corr, "orion_intention", prompt),
+                             _finalize(corr, "Done: I read the three proposals."))
+    assert turn.settled_concern_ids == [carried]
+    assert {c.concern_id: c.graded for c in state.concerns} == {carried: "settled", other: None}
+
+
+def test_a_carry_prompt_without_a_leading_ref_settles_nothing():
+    cid = "d8db9d7b1bba4cf7"
+    state = PrimeStateV1(concerns=[_concern(cid, event_ref="turn:a1")])
+    state, _, [turn] = _fold(state, hb.PrimeTurnsStateV1(),
+                             _ingress("carry-3", "orion_intention", f"Carrying on. [prime_concern:{cid}]"),
+                             _finalize("carry-3", "Done."))
+    assert turn.settled_concern_ids == [] and state.concerns[0].graded is None

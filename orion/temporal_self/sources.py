@@ -1033,6 +1033,27 @@ def experiment_result(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV
     )
 
 
+def dream_day(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One night's day dream: a ``dream_day`` row (orion-durable-runs ``dream.day``, day-dream spec Patch 2). Time:
+    created_at, when the dream was written. Label: the paragraph of what the day was (Orion's own words, every ref
+    in it resolved by code before the row was written), else the count line. related_refs: the memories it kept
+    (``episode_memory:<id>``) and the sleep that dreamt it (``durable_run:<run_id>``)."""
+    if row.get("created_at") is None or not row.get("day"):
+        return None
+    day = row["day"] if isinstance(row["day"], str) else row["day"].isoformat()
+    ids = [str(i) for i in (row.get("memory_ids") or [])]
+    return _event(
+        kind="dream_day", table="dream_day", ref=day, at=row.get("created_at"), tz_name=tz_name, subject_ref=None,
+        related_refs=([f"durable_run:{row['run_id']}"] if row.get("run_id") else [])
+        + [f"episode_memory:{i}" for i in ids][:7],
+        label=clip(row.get("day_text") or row.get("note") or f"day dream of {day}"),
+        verdict="produced" if row.get("produced") else "no_lasting_trace",
+        payload={"day": day, "memories_written": row.get("memories_written"), "memory_ids": ids,
+                 "kept": row.get("kept"), "dropped": row.get("dropped"), "new": row.get("new"),
+                 "items_dropped": row.get("items_dropped"), "refs_dropped": row.get("refs_dropped")},
+    )
+
+
 ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "chat_turn": chat_turn,
     "curiosity_run": curiosity_run,
@@ -1063,13 +1084,16 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "prediction_surprise": prediction_surprise,
     "prime_thought": prime_thought,
     "experiment_result": experiment_result,
+    "dream_day": dream_day,
 }
 
 
 # Orion's now: kinds that are experiences only (no arc folds them), and the tables their events name.
 # A row of these tables is never arc evidence (orion-sql-writer act_downstream_use ARC_SOURCE_TABLES).
-EXPERIENCE_ONLY_KINDS = frozenset({"reading_turn", "prediction_surprise", "prime_thought", "experiment_result"})
-EXPERIENCE_ONLY_TABLES = frozenset({"grammar_acts", "prediction_exceedance", "prediction_effect_estimate"})
+EXPERIENCE_ONLY_KINDS = frozenset({"reading_turn", "prediction_surprise", "prime_thought", "experiment_result",
+                                   "dream_day"})
+EXPERIENCE_ONLY_TABLES = frozenset({"grammar_acts", "prediction_exceedance", "prediction_effect_estimate",
+                                    "dream_day"})
 
 
 def adapt(kind: str, rows: Iterable[Row], tz_name: str = DEFAULT_TZ) -> list[TemporalSelfEventV1]:

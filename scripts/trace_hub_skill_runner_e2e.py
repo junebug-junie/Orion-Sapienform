@@ -215,7 +215,9 @@ async def phase2_ws(ws_url: str, prompt: str, session_id: str | None, wait_sec: 
         "verbs": [],
         "skill_runner_origin": True,
         "skill_runner_lane": "deterministic",
-        "surface_context": {"surface": "hub_desktop", "input_modality": "typed"},
+        # An operator smoke, not Juniper: "operator_review" keeps it out of every "Juniper's browser turn" reader
+        # (orion/regulation/juniper_turns.py SMOKE_SURFACE).
+        "surface_context": {"surface": "operator_review", "input_modality": "typed"},
     }
     if session_id:
         payload["session_id"] = session_id

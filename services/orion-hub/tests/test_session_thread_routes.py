@@ -62,7 +62,7 @@ def test_a_message_returns_hubs_receipt_and_orion_has_not_read_it(world):
     assert resp.status_code == 200
     data = resp.json()
     assert data["receipt"]["speaker"] == "hub" and "Orion has NOT read it yet" in data["receipt"]["text"]
-    assert data["orion_has_read"] is False and data["roundup_enabled"] is True
+    assert data["orion_has_read"] is False and data["roundup_enabled"] is True and data["answer_phase"] is False
     assert data["next_roundup_at"] == "2026-11-15T11:00:00+00:00"
     assert data["thread"]["status"] == "held" and data["thread"]["kind"] == "pr_spec"
     # The response does not echo the spec text back.
@@ -113,7 +113,8 @@ def test_list_thread_pending_and_delivered(world):
     assert [p["thread_id"] for p in for_b] == [note] and for_b[0]["meta"]["no_questions"] is True
     assert client.get("/api/session-threads/pending?session_id=sess-Z").json()["pending"] == []
 
-    done = client.post("/api/session-threads/delivered", json={"turn_ids": [by_session[0]["turn_id"]]})
+    done = client.post("/api/session-threads/delivered", json={"turn_ids": [by_session[0]["turn_id"]],
+                                                                "session_id": "sess-A"})
     assert done.json() == {"delivered": 1}
     assert client.get("/api/session-threads/pending?session_id=sess-A&branch=feat/a").json()["pending"] == []
     assert client.post("/api/session-threads/delivered", json={"turn_ids": []}).status_code == 422
@@ -122,6 +123,12 @@ def test_list_thread_pending_and_delivered(world):
     reply = client.post("/api/session-threads/message",
                         json={"session_id": "sess-A", "thread_id": tid, "title": "reply", "body": "Juniper's rule."})
     assert reply.json()["thread"]["thread_id"] == tid and reply.json()["thread"]["status"] == "held"
+    # Orion asked on it already: the session is told this is read as answers, nothing comes back to answer.
+    assert reply.json()["answer_phase"] is True and "one round of questions" in reply.json()["receipt"]["text"]
+    # The note got NO QUESTIONS: its one round is not used.
+    again = client.post("/api/session-threads/message",
+                        json={"session_id": "sess-B", "thread_id": note, "title": "reply", "body": "more"})
+    assert again.json()["answer_phase"] is False
 
 
 def test_routes_are_registered_on_the_hub_app_and_pending_is_not_read_as_a_thread_id():

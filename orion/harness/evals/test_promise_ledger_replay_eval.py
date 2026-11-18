@@ -58,7 +58,7 @@ def test_request_carries_offers_and_open_promises_with_the_promise_schema() -> N
     system = body["messages"][0]["content"]
     assert '- "If you want, I\'ll send the list tomorrow."' in system
     assert '[p1] "I\'ll look at the logs tonight."' in system
-    assert body["messages"][-1]["content"].endswith("promises_made, offers_accepted, promises_kept.")
+    assert body["messages"][-1]["content"].endswith("promises_made, offers_accepted, promises_kept, promise_conditions_met.")
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert "promises_made" in json.dumps(body["response_format"])
 

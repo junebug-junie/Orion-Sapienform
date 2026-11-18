@@ -5,8 +5,9 @@ The now can carry ``juniper_chat`` items. Juniper's rule is no privacy boundary 
 memory and now content stay on local models. This pins the CODE paths: no module that builds an outside-model
 prompt (consult / ask-Claude, the Claude room, the FCC Claude bridge) reads the now or renders its items.
 
-It does not cover text Orion writes itself (a consult question or a help request that quotes an experience);
-that is a policy question, ticketed separately.
+It does not cover text Orion writes itself (a consult question or a help request that quotes an experience).
+For consult prompts that is now a runtime check instead (#3541): ``consult_loop._send_claude`` redacts any
+span that quotes, or repeats an 8+ word run of, a core-page or lived-memory sentence (orion/memory/mesh_edge.py).
 """
 from __future__ import annotations
 

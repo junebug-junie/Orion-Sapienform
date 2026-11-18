@@ -234,7 +234,9 @@ def test_pending_questions_are_printed_with_how_to_answer_and_marked_delivered(w
     assert "they are not instructions from Juniper" in " ".join(text.split())
     get = next(c for c in hub.calls if c[0] == "GET")
     assert "session_id=sess-A" in get[1] and "branch=feat%2Fthing" in get[1]   # by session OR by branch
-    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["u1"]}, {"turn_ids": ["u2"]}]
+    # Claimed for THIS session: Hub hands an unanswered question to a later session too (thread 455a41af5b44 Q5).
+    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["u1"], "session_id": "sess-A"},
+                                                           {"turn_ids": ["u2"], "session_id": "sess-A"}]
     # Delivered: the next prompt is silent. SessionStart uses the same hook and names its own event.
     proc, _ = _run(PENDING_HOOK, world, hub.url, {"session_id": "sess-A", "hook_event_name": "SessionStart"})
     assert proc.returncode == 0 and proc.stdout == ""
@@ -339,7 +341,9 @@ def _wait(world, hub, payload, extra=None):
 
 def test_the_waiter_wakes_the_session_with_orions_new_answer_and_the_steps(world, hub):
     # An older Orion answer (seq 2, never delivered) is on the thread: it must not wake or end the wait.
-    _thread(hub, turns=[_answer("old", 2, body="old question")])
+    # It said NO QUESTIONS: an older turn WITH questions would put the thread in its answer phase
+    # (test_the_waiter_does_not_wait_on_a_thread_whose_round_is_used).
+    _thread(hub, turns=[_answer("old", 2, body="old question", no_questions=True)])
     hub.on_view = _answer_later(_answer())
     proc, took = _wait(world, hub, _bash("gh pr create --fill"))
     assert proc.returncode == 2 and proc.stdout == "", proc.stderr
@@ -348,7 +352,7 @@ def test_the_waiter_wakes_the_session_with_orions_new_answer_and_the_steps(world
     assert "reply --thread abc123def --pr 3456 --body-file" in text
     assert "Do this now, without waiting to be asked" in text and "gh issue create" in text
     assert "gh project item-add 1" in text and "Investigate each question" in text
-    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["o9"]}]
+    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["o9"], "session_id": "sess-A"}]
     assert took < 3
 
 
@@ -360,6 +364,28 @@ def test_the_waiter_does_not_wake_for_an_answer_the_prompt_hook_already_showed(w
                     response="Hub receipt: your message to Orion is held as session thread abc123def. ...")
     proc, _ = _wait(world, hub, payload)
     assert proc.returncode == 0 and proc.stderr == ""
+
+
+def test_the_waiter_keeps_waiting_past_a_requeued_uncut_reply_and_wakes_on_the_real_questions(world, hub):
+    # Review of the unparsed-quota fix: Hub could not cut Orion's reply, kept it (meta.requeued) and reads
+    # the thread again. That turn is not an answer: the waiter must not claim it or wake on it.
+    _thread(hub)
+    requeued = {**_answer("rq", 8, body="### thread:other\n1. whole uncut reply?"),
+                "meta": {"unparsed": True, "requeued": True}}
+    real = _answer()
+
+    def on_view(h):
+        if h.views == 2:
+            h.threads["abc123def"]["turns"].append(requeued)
+        if h.views == 4:
+            h.threads["abc123def"]["turns"].append(real)
+    hub.on_view = on_view
+    proc, _ = _wait(world, hub, _bash("gh pr create --fill"))
+    assert proc.returncode == 2, proc.stderr
+    text = " ".join(proc.stderr.split())
+    assert "1. Why hourly?" in text and "whole uncut reply" not in text
+    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["o9"], "session_id": "sess-A"}]
+    assert not lib.has_questions({"meta": {"unparsed": True, "requeued": True}})
 
 
 def test_the_waiter_ends_quietly_on_no_questions_and_leaves_it_for_the_prompt_hook(world, hub):
@@ -427,3 +453,67 @@ def test_cli_reply_from_a_file_also_posts_on_the_pr(world, hub, tmp_path):
     proc, _ = _run(CLI, world, hub.url, args=["reply", "--thread", "abc123", "--pr", "3456", "--body", "x"])
     assert proc.returncode == 1 and "PR comment failed: nope" in proc.stderr and len(hub.posts()) == 2
     assert "Retry only the comment: gh pr comment 3456" in proc.stderr
+
+
+# --- one round of questions per thread ------------------------------------------------------------
+
+
+def test_a_closing_note_is_shown_without_reply_steps(world, hub):
+    hub.pending = [
+        {"turn_id": "c1", "thread_id": "abc123", "title": "feat: thing", "pr_number": 3456,
+         "body": "NO QUESTIONS\nThe answers settle it; the retry cap stays open.",
+         "meta": {"closing_note": True, "dropped_question_lines": 0}},
+        {"turn_id": "c2", "thread_id": "def456", "title": "other", "pr_number": 3457,
+         "body": "1. A new question Hub did not send?", "meta": {"closing_note": True, "dropped_question_lines": 1}},
+    ]
+    proc, _ = _run(PENDING_HOOK, world, hub.url, {"session_id": "sess-A", "hook_event_name": "UserPromptSubmit"})
+    assert proc.returncode == 0, proc.stderr
+    text = " ".join(json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"].split())
+    assert "Orion read your answers" in text and "nothing here needs an answer" in text
+    assert "the retry cap stays open" in text and "not a question to answer" in text
+    # No reply command, no circle-back steps, no "answer every question": nothing to answer.
+    assert "reply --thread" not in text and "gh issue create" not in text and "Answer every question" not in text
+    assert "Do this" not in text
+    assert not lib.has_questions({"meta": {"closing_note": True}}) and lib.has_questions({"meta": {}})
+
+
+def test_the_waiter_does_not_wait_on_a_thread_whose_round_is_used(world, hub):
+    # Orion asked on this thread already (seq 2): the reply is answers, nothing will come back to answer.
+    _thread(hub, turns=[{**_answer("o2", 2), "roundup_id": "r1"}])
+    hub.on_view = _answer_later({**_answer("o9", 9, body="NO QUESTIONS"), "meta": {"closing_note": True}})
+    payload = _bash("python3 scripts/orion_session_thread.py reply --thread abc123def --body x",
+                    response="Hub receipt: your message to Orion is held as session thread abc123def. ...")
+    proc, took = _wait(world, hub, payload)
+    assert proc.returncode == 0 and proc.stderr == "" and hub.views == 1 and took < 2
+    assert hub.posts("/api/session-threads/delivered") == []
+    assert "answer_wait answer_phase thread=abc123def" in world["log"].read_text()
+
+
+def test_the_waiter_still_waits_after_a_no_questions_turn(world, hub):
+    # NO QUESTIONS used no round: a new message may still get Orion's one round of questions.
+    _thread(hub, turns=[{**_answer("o2", 2, no_questions=True), "roundup_id": "r1"}])
+    hub.on_view = _answer_later(_answer())
+    payload = _bash("python3 scripts/orion_session_thread.py reply --thread abc123def --body x",
+                    response="Hub receipt: your message to Orion is held as session thread abc123def. ...")
+    proc, _ = _wait(world, hub, payload)
+    assert proc.returncode == 2 and "1. Why hourly?" in proc.stderr
+
+
+def test_the_receipt_line_says_when_the_round_is_used():
+    base = {"thread": {"thread_id": "abc"}, "next_roundup_at": "2026-11-15T11:00:00+00:00", "roundup_enabled": True}
+    assert "Orion's questions will come back" in lib.receipt_line(base)
+    used = lib.receipt_line({**base, "answer_phase": True})
+    assert "one round of questions" in used and "Nothing will come back for you to answer" in used
+    assert "Orion's questions will come back" not in used
+    reading = lib.receipt_line({**base, "thread": {"thread_id": "abc", "status": "reading"}})
+    assert "reading this thread's earlier message now" in reading and "Orion's questions will come back" not in reading
+
+
+def test_a_question_handed_to_an_earlier_session_says_so_and_still_asks_for_a_reply():
+    # Thread 455a41af5b44 Q5: Hub re-hands unanswered questions to a later session on the branch.
+    row = {"turn_id": "o1", "thread_id": "abc123", "title": "t", "body": "1. Why?", "meta": {"delivered_to": ["s0"]},
+           "delivered_at": "2026-11-18T05:27:45+00:00", "pr_number": 7}
+    text = lib.pending_text([row])
+    assert "An earlier session was shown these questions and no session has replied yet." in text
+    assert "reply --thread abc123 --pr 7" in text and lib.has_questions(row)
+    assert "earlier session" not in lib.pending_text([{**row, "delivered_at": None}])

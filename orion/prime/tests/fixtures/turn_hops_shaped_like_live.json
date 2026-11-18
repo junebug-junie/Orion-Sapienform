@@ -17,7 +17,7 @@
    "mode": "orion",
    "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
    "user_message": "can you look at why the walkway camera keeps dropping frames?\nit was bad this morning",
-   "surface_context": {},
+   "surface_context": {"surface": "hub_desktop", "input_modality": "typed"},
    "attachment_count": 0,
    "observation_published": true
   },

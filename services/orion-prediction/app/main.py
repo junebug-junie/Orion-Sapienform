@@ -36,6 +36,7 @@ from app.effects import Effects
 from app.engine import Engine
 from app.event_pair import MIN_A_EVENTS, EventPairRefused
 from app.heat_balance import HeatBalanceRefused
+from app import learning_progress as lp
 from app.experiment_runner import ExperimentRunner, RouterProbe, RunnerRefused, recover as recover_experiments
 from app.family_a_live import FamilyALive
 from app.family_c import EffectTable
@@ -460,6 +461,44 @@ async def live(series_id: str) -> dict[str, Any]:
     out = await asyncio.to_thread(e.live_metrics, spec, e.clock())
     grades = await asyncio.to_thread(e.exceedance_grades, spec, e.clock())
     return {"series_id": series_id, "live": out, "exceedance": grades, "alerts": e.state[series_id].alerts}
+
+
+def _learning_progress_read(today: date, series: tuple[str, ...]) -> dict[str, Any]:
+    since = datetime.combine(today - timedelta(days=max(2 * lp.WINDOW_DAYS, lp.RHO_HISTORY_DAYS) + 1),
+                             datetime.min.time(), timezone.utc)
+    assert _store is not None
+    pairs = _store.daily_skill_pairs(series, lp.HORIZON_MIN, since)
+    rosters = _store.daily_rosters(series, since)
+    out = []
+    for sid in series:
+        days = [lp.DayStat(r["day"], int(r["pairs"]), float(r["mae_champion"]), float(r["mae_baseline"]))
+                for r in pairs if r["series_id"] == sid]
+        roster = {r["day"]: frozenset(r["models"]) for r in rosters if r["series_id"] == sid}
+        p = lp.progress(sid, days, roster, today)
+        out.append({
+            "series_id": p.series_id, "status": p.status, "reason": p.reason,
+            "learning_progress": p.learning_progress, "se": p.se, "t": p.t, "t_crit": p.t_crit,
+            "p_value": p.p_value, "direction": p.direction,
+            "recent": {"start": p.recent.start.isoformat(), "end": p.recent.end.isoformat(),
+                       "days": p.recent.days, "mean_skill": p.recent.mean_skill},
+            "prior": {"start": p.prior.start.isoformat(), "end": p.prior.end.isoformat(),
+                      "days": p.prior.days, "mean_skill": p.prior.mean_skill},
+            "roster_changed_on": p.roster_changed_on.isoformat() if p.roster_changed_on else None,
+            "rho": p.rho, "rho_pairs": p.rho_pairs, "rho_source": p.rho_source, "se_iid": p.se_iid,
+        })
+    return {"as_of": today.isoformat(), "horizon_min": lp.HORIZON_MIN, "window_days": lp.WINDOW_DAYS,
+            "alpha": lp.ALPHA, "min_effect": lp.MIN_EFFECT, "series": out}
+
+
+@app.get("/learning-progress")
+async def learning_progress(series_id: str | None = None) -> dict[str, Any]:
+    """Are Orion's forecasts getting better or worse? Skill vs baseline, last 7 complete days vs the 7 before,
+    same model roster on both sides (app/learning_progress.py; choice-as-EFE design Step 1). Computed on read."""
+    e = _ready()
+    if series_id is not None and series_id not in lp.SERIES:
+        raise HTTPException(404, f"learning progress covers only {', '.join(lp.SERIES)}")
+    series = (series_id,) if series_id else lp.SERIES
+    return await asyncio.to_thread(_learning_progress_read, e.clock().astimezone(timezone.utc).date(), series)
 
 
 @app.get("/series/{series_id}/surprise")

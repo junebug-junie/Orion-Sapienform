@@ -41,13 +41,32 @@ JUNIPER_IDLE_MINUTES_SQL = (
 # ``surface_context`` on a turn (static/js/app.js typed + spoken, thought-process.js), and the
 # turn orchestrator copies it into the ingress raw only when present. Live 2026-10-16, 10 days:
 # 37 ingress hops carried it and all 37 were Juniper's logged turns; none of the 1,100+
-# internal-turn hops did. Known false positive: scripts/trace_hub_skill_runner_e2e.py sends
-# surface_context over the hub WebSocket, so an operator smoke run reads as Juniper (its logged
-# row already did under JUNIPER_TURN_PREDICATE). SQL fragment over cockpit_turn_sighting
+# internal-turn hops did. scripts/trace_hub_skill_runner_e2e.py (an operator smoke over the hub
+# WebSocket) marks itself ``surface: "operator_review"`` and is excluded (its logged row still counts under
+# JUNIPER_TURN_PREDICATE). SQL fragment over cockpit_turn_sighting
 # (unqualified stage/seq/raw columns).
+# 2026-11-18 (#3602 review): an operator smoke marks itself ``surface: "operator_review"`` and is not Juniper; an empty
+# ``{}`` is not a surface (the Python rule below already said so; the SQL now agrees). Every live browser hop
+# carries ``surface: "hub_desktop"`` (42 of 42 logged turns, 11-08..11-18).
+SMOKE_SURFACE = "operator_review"  # a SurfaceContextV1.surface value (orion/schemas/situation.py)
 JUNIPER_INGRESS_PREDICATE = (
-    "stage = 'ingress' AND seq = 0 AND raw->'surface_context' IS NOT NULL"
+    "stage = 'ingress' AND seq = 0 AND raw->'surface_context' IS NOT NULL "
+    "AND raw->'surface_context' <> '{}'::jsonb "
+    f"AND COALESCE(raw->'surface_context'->>'surface', '') <> '{SMOKE_SURFACE}'"
 )
+
+
+def is_browser_surface_turn(payload: Mapping[str, Any] | None) -> bool:
+    """``JUNIPER_INGRESS_PREDICATE`` for a Hub turn payload, before the ingress hop is written.
+
+    True when the payload carries a non-empty ``surface_context`` dict: the same field, under the same
+    test, that ``turn_orchestrator._ingress_hop`` copies into the ingress raw. A coding session's message
+    posted to ``/api/chat`` (live 2026-11-15: two of them, persisted as ``hub_orion`` in Juniper's own
+    session) and a ``no_write`` eval turn carry none."""
+    if not payload:
+        return False
+    surface = payload.get("surface_context")
+    return isinstance(surface, Mapping) and bool(surface) and surface.get("surface") != SMOKE_SURFACE
 
 
 def is_juniper_turn(payload: Mapping[str, Any] | None) -> bool:
@@ -62,4 +81,5 @@ def is_juniper_turn(payload: Mapping[str, Any] | None) -> bool:
     return not (unsolicited is True or str(unsolicited).lower() == "true")
 
 
-__all__ = ["JUNIPER_IDLE_MINUTES_SQL", "JUNIPER_INGRESS_PREDICATE", "JUNIPER_TURN_PREDICATE", "is_juniper_turn"]
+__all__ = ["JUNIPER_IDLE_MINUTES_SQL", "JUNIPER_INGRESS_PREDICATE", "SMOKE_SURFACE", "JUNIPER_TURN_PREDICATE", "is_browser_surface_turn",
+           "is_juniper_turn"]

@@ -178,6 +178,12 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_setting_sources: str = Field(
         "user,local", alias="HARNESS_FCC_SETTING_SOURCES"
     )
+    # Orion's repo sub-agent via --agents (#3650), read directly from the
+    # environment by orion.fcc.claude_spawn.fcc_agents_argv; mirrored here so
+    # operators see the effective value.
+    harness_fcc_repo_agent_enabled: bool = Field(
+        True, alias="HARNESS_FCC_REPO_AGENT_ENABLED"
+    )
     # Auto-memory off for Hub chat-reply turns only, read directly from the
     # environment by orion.harness.fcc_motor.chat_auto_memory_disabled;
     # mirrored here so operators see the effective value.

@@ -40,8 +40,11 @@ INTENTION_CARRY_STEP_KEY = "carry"
 INTENTION_CARRY_NODES: tuple[str, ...] = ("harness_step", "finish")
 INTENTION_ORDER_PATH = "/api/intention/run"
 INTENTION_DELIVER_PATH = "/api/intention/deliver"
-# The carry turn's budget per attempt (the attempt timer and Hub's turn limit derive from it).
-INTENTION_TURN_TIMEOUT_SEC = 1800.0
+# The carry turn's budget per attempt (the attempt timer and Hub's turn limit derive from it; the FCC motor gets it
+# minus the 30 s reply grace and Hub's 330 s finalize reserve). 1800 -> 3600 (#3354): the first live carry (a "look
+# into X" dig on the agent lane, Bonsai 2 27B) needed ~1,757 s of FCC work in total (attempt 1 cut at its 1,440 s
+# motor budget, attempt 2 finished in 317 s from the carried findings); consult turns on the same seam run at 3600.
+INTENTION_TURN_TIMEOUT_SEC = 3600.0
 CONCERN_ID_PATTERN = r"^[0-9a-f]{16}$"
 
 # One value per adapter. ``letter_thread`` is declared now so the second adapter is one file plus one map entry
@@ -77,6 +80,9 @@ class IntentionSourceV1(_Model):
     quote_ref: Optional[str] = Field(default=None, max_length=300)
     # What recall searches for during the turn.
     retrieval_query: Optional[str] = Field(default=None, max_length=1000)
+    # When Orion made the promise (turn_promise: the harness_turn_trace row's created_at). The carry run's want
+    # opens here: its body-economy rank is the promise's age (#3640). None: the run's own request time.
+    promised_at: Optional[AwareDatetime] = None
 
 
 class IntentionOrderV1(_Model):
@@ -128,6 +134,10 @@ class IntentionCarryBriefV1(_Model):
     horizon_at: AwareDatetime
     retrieval_query: Optional[str] = Field(default=None, max_length=1000)
     timeout_sec: float = Field(default=INTENTION_TURN_TIMEOUT_SEC, ge=60.0, le=3600.0)
+    # IntentionSourceV1.promised_at: the want's opened_at in orion-durable-runs (app/run_bids.py, #3640). ROLLOUT:
+    # additive on an extra=forbid model -- deploy orion-durable-runs before orion-hub (an older durable-runs answers
+    # 422, which Hub reports as ``unavailable`` and Prime re-sends).
+    promised_at: Optional[AwareDatetime] = None
 
 
 class IntentionDeliverV1(_Model):

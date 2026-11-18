@@ -22,3 +22,10 @@ ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS candidates_fetched integer
 ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS candidates_kept integer;
 ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS deadline_hit boolean;
 ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS timings_ms jsonb;
+
+-- Lived-memory recall status + trace (#3628, 2026-11-17). Nullable, additive.
+-- lived_status: ok | below_bar | skipped_short | degraded | timeout | error | off;
+-- NULL = lived recall did not run on this call. lived_trace: rewritten queries,
+-- candidate ids that reached the rerank, injected ids, backend (ids only, no memory text).
+ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS lived_status text;
+ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS lived_trace jsonb;

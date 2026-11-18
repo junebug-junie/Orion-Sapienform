@@ -14,6 +14,7 @@ from orion.attention.field_attention.candidate_precision_weighted import (
     advance_precision_baseline,
 )
 from orion.attention.field_attention.goal_provenance import DominanceStreak
+from orion.attention.frame_rollup import ROLLUP_UPSERT_SQL, upsert_params
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from app.dominance_runs import advance_run
@@ -817,6 +818,7 @@ class AttentionRuntimeStore:
         min_streak: int = 1,
     ) -> bool:
         now = datetime.now(timezone.utc)
+        frame_json = frame.model_dump(mode="json")
         with self._engine.begin() as conn:
             result = conn.execute(
                 text(
@@ -848,12 +850,20 @@ class AttentionRuntimeStore:
                     "source_field_generated_at": frame.source_field_generated_at,
                     "generated_at": frame.generated_at,
                     "policy_id": frame.attention_policy_id,
-                    "frame_json": Json(frame.model_dump(mode="json")),
+                    "frame_json": Json(frame_json),
                     "created_at": now,
                 },
             )
             if result.scalar() is None:
                 return False
+            # The hourly counts `dig attention` reads (orion/attention/frame_rollup.py), once per new
+            # frame (the PK dedupe above). Best effort like the recorders below: a rollup error must
+            # never stop a frame, so it runs in a savepoint and is logged.
+            try:
+                with conn.begin_nested():
+                    conn.execute(text(ROLLUP_UPSERT_SQL), upsert_params(frame_json, frame.generated_at))
+            except Exception:
+                logger.exception("attention_hour_rollup_failed frame_id=%s", frame.frame_id)
             if streak is not None:
                 # Recording must never stop a frame or goal. The savepoint keeps
                 # a recorder SQL error from poisoning the outer frame transaction.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -1119,7 +1120,7 @@ def turn_workflow_label(
     return None
 
 
-async def execute_unified_turn(
+async def _execute_unified_turn_body(
     *,
     bus: Any,
     correlation_id: str,
@@ -1736,13 +1737,15 @@ async def execute_unified_turn(
     )
     inference_timeout_sec, reply_budget_sec = _held_turn_budgets(payload)
     # Intention ledger D1 (shadow): the 5b judge sees Orion's open promises and the previous reply's
-    # offers, so it can mark one kept or accepted. Juniper's own turns only; judge only, never the motor.
+    # offers, so it can mark one kept or accepted. Judge only, never the motor. Only a turn that gets
+    # this view can open promise acts (``_publish_promise_acts``), so this one test is the act-opening
+    # rule too: Juniper's own turn, sent from a Hub browser surface (``_promise_ledger_applies``).
     promise_view = None
-    if (utterance_origin == "juniper" and bool(getattr(cfg, "HUB_PROMISE_LEDGER_ENABLED", True))
-            and bool(getattr(cfg, "HUB_ACT_LEDGER_ENABLED", True))):
+    if _promise_ledger_applies(utterance_origin, payload, cfg):
         from orion.hub.promise_ledger import promise_view_for_turn
 
         promise_view = await promise_view_for_turn(session_id, correlation_id)
+        _promise_turn_mark("viewed", correlation_id)
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
         resume_key=payload.get("resume_key"),
@@ -1895,6 +1898,8 @@ async def execute_unified_turn(
         await publish_cockpit_frames(bus, [timeline_complete_frame(correlation_id)])
 
     if run is None:
+        # HarnessGovernorClient.run returns None on a timeout AND on an error/undecodable reply.
+        _log_promise_ledger_skip(promise_view, correlation_id, "no_run")
         await _publish_turn_timeout_grammar(bus=bus, correlation_id=correlation_id, settings=cfg)
         await _finish_cockpit(None, success=False)
         return [
@@ -1953,6 +1958,7 @@ async def execute_unified_turn(
             ),
         ]
     if not run.finalize_ran or not run.final_text:
+        _log_promise_ledger_skip(promise_view, correlation_id, "harness_error")
         await _finish_cockpit(run, success=False)
         return [_harness_error_frame(
             run, correlation_id=correlation_id,
@@ -2039,11 +2045,10 @@ async def _publish_unified_turn_chat_history(
              else "no_write" if (payload.get("no_write") or payload.get("x_no_write"))
              else "empty_reply" if not str(response_text or "").strip() else None)
     if early is not None:
-        if promise_view is not None:
-            # The turn got a promise view (it logged ``promise_view``) but is not persisted, so no promise
-            # act can open: still one ``promise_ledger`` line (live 2026-11-17: a no_write eval turn,
-            # d449db8c, left a view line and no ledger line).
-            logger.info("promise_ledger corr=%s outcome=skipped reason=%s", correlation_id, early)
+        # The turn got a promise view (it logged ``promise_view``) but is not persisted, so no promise
+        # act can open: still one ``promise_ledger`` line (live 2026-11-17: a no_write eval turn,
+        # d449db8c, left a view line and no ledger line).
+        _log_promise_ledger_skip(promise_view, correlation_id, early)
         return
 
     from scripts.chat_history import (
@@ -2173,6 +2178,7 @@ async def _publish_unified_turn_chat_history(
         ), name=f"promise-acts-{correlation_id}")
         _PROMISE_ACT_TASKS.add(task)
         task.add_done_callback(_PROMISE_ACT_TASKS.discard)
+        _promise_turn_mark("logged")  # the task logs this turn's one promise_ledger line
 
 
 async def _publish_reply_say_act(
@@ -2233,6 +2239,59 @@ async def _publish_reply_say_act(
         return False
 
 
+def _promise_ledger_applies(utterance_origin: str | None, payload: Mapping[str, Any] | None, cfg: Any) -> bool:
+    """Whether this turn gets the pre-turn promise view, and so whether its reply can open promise acts.
+
+    Juniper's own turn (``utterance_origin == "juniper"``) sent from a Hub browser surface
+    (``is_browser_surface_turn``: the payload carries ``surface_context``, the rule the report's guard
+    counts by, ``JUNIPER_INGRESS_PREDICATE``), with both ledger flags on. Orion's own turns (curiosity,
+    session round-ups, Prime's ``intention.carry``) are ``utterance_origin="orion"``; ``/api/chat`` turns
+    (a coding session's note, an eval) carry no surface. Neither is a promise made to Juniper."""
+    from orion.regulation.juniper_turns import is_browser_surface_turn
+
+    return (utterance_origin == "juniper" and is_browser_surface_turn(payload)
+            and bool(getattr(cfg, "HUB_PROMISE_LEDGER_ENABLED", True))
+            and bool(getattr(cfg, "HUB_ACT_LEDGER_ENABLED", True)))
+
+
+def _log_promise_ledger_skip(promise_view: Any, correlation_id: str, reason: str) -> None:
+    """One ``promise_ledger ... outcome=skipped`` line for a turn that read the view and ends before the
+    ledger step (not persisted, harness timeout or error, interrupted). No view: no line."""
+    if promise_view is not None:
+        logger.info("promise_ledger corr=%s outcome=skipped reason=%s", correlation_id, reason)
+        _promise_turn_mark("logged")
+
+
+# Per-turn promise-ledger bookkeeping for ``execute_unified_turn``: whether the turn read the view and
+# whether its one ``promise_ledger`` line is already written (or handed to the background task).
+_PROMISE_TURN: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("promise_turn", default=None)
+
+
+def _promise_turn_mark(key: str, correlation_id: str | None = None) -> None:
+    state = _PROMISE_TURN.get()
+    if state is not None:
+        state[key] = True
+        if correlation_id is not None:
+            state["corr"] = correlation_id
+
+
+async def execute_unified_turn(**kwargs: Any) -> list[dict[str, Any]]:
+    """The unified turn (``_execute_unified_turn_body``, same keyword arguments) plus one promise-ledger guarantee: a
+    turn that read the promise view and ends by a raise or a cancel anywhere before its ledger line (the
+    browser left, Hub shut down, a request that fails validation) logs ``outcome=skipped
+    reason=interrupted``, so no viewed turn ends silent (Orion's PR #3598 third-round question 1)."""
+    state: dict[str, Any] = {"viewed": False, "logged": False, "corr": None}
+    token = _PROMISE_TURN.set(state)
+    try:
+        return await _execute_unified_turn_body(**kwargs)
+    except BaseException:
+        if state["viewed"] and not state["logged"]:
+            logger.info("promise_ledger corr=%s outcome=skipped reason=interrupted", state["corr"])
+        raise
+    finally:
+        _PROMISE_TURN.reset(token)
+
+
 # Background promise-act publishes (held so a task is not garbage-collected mid-flight).
 _PROMISE_ACT_TASKS: set[asyncio.Task] = set()
 
@@ -2250,7 +2309,8 @@ async def _publish_promise_acts(
     """Intention ledger D2 (shadow until #3531): the promise acts of the reply Juniper just got.
 
     Only Juniper's own turns: the caller passes the pre-turn ``promise_view`` only when
-    ``utterance_origin == "juniper"`` (the same rule as the judge's view), and the reply act's guards
+    ``_promise_ledger_applies`` (Juniper's turn from a Hub browser surface, the same rule as the judge's
+    view and the report's guard), and the reply act's guards
     (hub_orion, not unsolicited) apply too. Opens one ``hub.promise``
     act per firm promise in this reply and one per earlier offer this message accepted; closes each
     promise the judge marked kept with a delivering quote (orion/hub/promise_ledger.py). Best-effort,
@@ -2289,6 +2349,7 @@ async def _publish_promise_acts(
                                           open_promises=[(p.id, p.quote) for p in promise_view.open_promises])
     except Exception as exc:  # noqa: BLE001 -- a background trace; never fails the turn
         logger.warning("promise_acts_failed corr=%s error=%s", correlation_id, exc)
+        logger.info("promise_ledger corr=%s outcome=failed reason=%s", correlation_id, type(exc).__name__)
         return None
 
 
@@ -2330,7 +2391,10 @@ def annotate_frames_after_draft(
             revised = final_text.strip() != shown_draft_text.strip()
             reason = None
             if revised:
-                reason = str(frame.get("response_repair_reason") or "finalize_changed")
+                # A repair reason names the edit only when the repair ran; a skip reason
+                # (strain_only_not_repaired, #3618) never explains a changed text.
+                ran = frame.get("response_repair_ran") is not False
+                reason = str((ran and frame.get("response_repair_reason")) or "finalize_changed")
             frame["replaces_draft"] = True
             frame["revised"] = revised
             frame["revised_reason"] = reason

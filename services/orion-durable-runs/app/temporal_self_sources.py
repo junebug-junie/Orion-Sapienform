@@ -314,6 +314,12 @@ FROM prediction_effect_estimate
 WHERE claim_kind = 'experimental_effect' AND details->>'estimator' = 'family_c_pooled_run'
   AND created_at >= %(lo)s AND created_at < %(hi)s
 """, optional_table="prediction_effect_estimate"),
+    # One night's day dream (day-dream spec Patch 2): one dream_day row a Denver day, available at created_at.
+    SourceQuery("dream_day", """
+SELECT day, run_id, produced, note, memories_written, memory_ids, kept, dropped, new, items_dropped, refs_dropped,
+  day_text, created_at
+FROM dream_day WHERE created_at >= %(lo)s AND created_at < %(hi)s
+""", optional_table="dream_day"),
     # A Prime thought: a closed prime/infer act, available at closed_at. Most close in seconds; one
     # closed 2.3 days late (live, to 11-15), so opened_at is widened by three days.
     SourceQuery("prime_thought", """

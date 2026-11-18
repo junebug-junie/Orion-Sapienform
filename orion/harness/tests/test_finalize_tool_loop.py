@@ -603,3 +603,44 @@ async def test_harness_finalize_chain_flag_off_no_retry_field_set(
 
     assert outcome_holder[0].finalize_loop_retried is False
     assert outcome_holder[0].finalize_loop_tool is None
+
+
+@pytest.mark.asyncio
+async def test_retry_reflection_gets_the_open_promises_and_pending_offers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#3560 (2): the tool-recall retry's second 5b call must see the same promise view as the first,
+    or a keep / acceptance / condition-met it marks is dropped by the gate as unknown."""
+    from orion.schemas.harness_finalize import OpenPromiseRefV1
+
+    monkeypatch.setenv("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "true")
+    monkeypatch.setenv("ORION_PROMISE_LEDGER_ENABLED", "true")
+    draft = "Here is the list you asked for: alpha, beta, gamma. Want the rest too?"
+    open_promises = [OpenPromiseRefV1(id="act-1", quote="I'll send the list tomorrow.",
+                                      condition="the export finishes")]
+    pending_offers = ["If you want, I'll re-read it later."]
+    reflection = make_reflection(alignment_verdict="aligned", recommended_tool="look_at_camera",
+                                 world_contact_opportunity=True)
+    re_reflected = {**make_reflection(alignment_verdict="aligned").model_dump(mode="json"),
+                    "promises_kept": [{"id": "act-1", "quote": "Here is the list you asked for: alpha, beta, gamma."}],
+                    "offers_accepted": ["If you want, I'll re-read it later."],
+                    "promise_conditions_met": ["act-1"]}
+    seen: list[dict] = []
+
+    async def cortex_client(req):
+        verb = req.plan.verb_name
+        if verb == "look_at_camera":
+            return {"final_text": "chair, table"}
+        if verb == "harness_finalize_reflect":
+            seen.append(req.context)
+            return {"final_text": json.dumps(re_reflected)}
+        raise AssertionError(f"unexpected verb {verb}")
+
+    result, _receipts, retried, _tool, _trace = await maybe_run_finalize_tool_retry(
+        **_retry_kwargs(draft_text=draft, reflection=reflection, cortex_client=cortex_client,
+                        open_promises=open_promises, pending_offers=pending_offers))
+
+    assert retried is True and len(seen) == 1
+    assert seen[0]["open_promises"] == [p.model_dump(mode="json") for p in open_promises]
+    assert seen[0]["pending_offers"] == pending_offers
+    assert result.promises_kept == ["act-1"]
+    assert result.offers_accepted == pending_offers
+    assert result.promise_conditions_met == ["act-1"]

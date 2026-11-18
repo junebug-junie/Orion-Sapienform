@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, List, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
 
 
 def mcp_allowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
@@ -137,3 +140,69 @@ def setting_sources_argv(env_key: str) -> List[str]:
     if not raw:
         return []
     return ["--setting-sources", raw]
+
+
+# Orion's own sub-agents, passed per turn with ``--agents`` (issue #3650). ``--setting-sources
+# user,local`` (above) keeps the repo's project scope out of FCC turns, so the repo's
+# ``.claude/agents/`` is never loaded there. ``--agents`` adds just the agent, not the repo's
+# CLAUDE.md, hooks or settings. The file is Orion's sandbox variant, not the operator's.
+FCC_AGENTS_DIR = Path(__file__).resolve().parent / "agents"
+FCC_AGENT_NAMES: tuple[str, ...] = ("orion-repo-agent",)
+
+
+_YAML_BLOCK_MARKERS = frozenset({">", "|", ">-", "|-", ">+", "|+"})
+
+
+def _parse_agent_file(path: Path) -> tuple[str, dict[str, Any]]:
+    """``(name, {description, prompt, tools, model})`` from a Claude Code agent markdown file.
+
+    Flat ``key: value`` frontmatter only. YAML block scalars are refused, not misread.
+    """
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    if not text.startswith("---\n"):
+        raise ValueError(f"{path}: no frontmatter")
+    head, _, body = text[4:].partition("\n---\n")
+    meta: dict[str, str] = {}
+    for line in head.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        value = value.strip()
+        if value in _YAML_BLOCK_MARKERS:
+            raise ValueError(f"{path}: {key.strip()} uses a YAML block scalar; write it on one line")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        meta[key.strip()] = value
+    name, description, prompt = meta.get("name", ""), meta.get("description", ""), body.strip()
+    if not (name and description and prompt):
+        raise ValueError(f"{path}: name, description and prompt are all required")
+    spec: dict[str, Any] = {"description": description, "prompt": prompt}
+    if meta.get("tools"):
+        spec["tools"] = [t.strip() for t in meta["tools"].split(",") if t.strip()]
+    if meta.get("model"):
+        spec["model"] = meta["model"]
+    return name, spec
+
+
+def fcc_agents_json(names: Sequence[str] = FCC_AGENT_NAMES) -> str:
+    """The ``--agents`` JSON object for ``names`` (read from ``FCC_AGENTS_DIR``)."""
+    agents: dict[str, Any] = {}
+    for name in names:
+        parsed_name, spec = _parse_agent_file(FCC_AGENTS_DIR / f"{name}.md")
+        if parsed_name != name:
+            raise ValueError(f"{name}.md declares name {parsed_name!r}")
+        agents[name] = spec
+    return json.dumps(agents, ensure_ascii=False)
+
+
+def fcc_agents_argv(env_key: str) -> List[str]:
+    """``--agents <json>`` for an FCC turn, or ``[]`` when ``env_key`` is off (default on)."""
+    raw = os.environ.get(env_key, "true").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return []
+    try:
+        return ["--agents", fcc_agents_json()]
+    except (OSError, ValueError) as exc:
+        # An optional helper must never stop every turn; the turn runs with built-in agents only.
+        logger.warning("fcc_agents_unavailable dir=%s err=%s", FCC_AGENTS_DIR, exc)
+        return []

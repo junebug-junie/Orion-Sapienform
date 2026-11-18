@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Optional
@@ -77,6 +78,8 @@ from orion.curiosity.worldview import (
 )
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
 from orion.text_fit import fit_to_budget
+
+logger = logging.getLogger("orion.curiosity.self_inquiry")
 
 # --- names ------------------------------------------------------------------
 
@@ -642,10 +645,29 @@ def read_lived_answers_for_run(reader: WorldviewReader, run_id: str) -> list[Liv
     return out
 
 
+# `question` is read beside `text` because hand-written Cypher has keyed the words
+# under `question` (two live mints, #3592); mint_text picks the first non-blank.
 _SELF_QUESTION_MINT_FIELDS = (
     "m.run_id AS run_id, m.question_id AS question_id, m.text AS text, "
-    "m.family AS family, m.written_at AS written_at"
+    "m.question AS question, m.family AS family, m.written_at AS written_at"
 )
+
+
+def mint_text(row: dict[str, Any]) -> str:
+    """The mint's words: `text`, else `question` (#3592). Blank when neither has any."""
+    for key in ("text", "question"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def self_question_mint_drop_reason(row: dict[str, Any]) -> Optional[str]:
+    """Why a mint row cannot become a question, or None when it can."""
+    missing = [k for k in ("run_id", "question_id") if not str(row.get(k) or "").strip()]
+    if not mint_text(row):
+        missing.append("text")
+    return "missing_" + "_".join(missing) if missing else None
 
 
 def self_question_mints_for_run_cypher(run_id: str) -> str:
@@ -658,11 +680,11 @@ def self_question_mints_for_run_cypher(run_id: str) -> str:
 
 
 def build_self_question_mint(row: dict[str, Any]) -> Optional[SelfQuestionMint]:
+    if self_question_mint_drop_reason(row):
+        return None
     run_id = str(row.get("run_id") or "").strip()
     question_id = str(row.get("question_id") or "").strip()
-    text = str(row.get("text") or "").strip()
-    if not run_id or not question_id or not text:
-        return None
+    text = mint_text(row)
     family = str(row.get("family") or "lived").strip() or "lived"
     if family not in {"lived", "anatomy"}:
         family = "lived"
@@ -686,6 +708,12 @@ def read_self_question_mints(reader: WorldviewReader, run_id: str) -> list[SelfQ
         mint = build_self_question_mint(row)
         if mint is not None:
             out.append(mint)
+            continue
+        # Never a silent drop (#3592): a mint Orion wrote that does not reach the pool is named.
+        logger.warning(
+            "curiosity_self_question_mint_dropped run=%s question_id=%r reason=%s",
+            run_id, row.get("question_id"), self_question_mint_drop_reason(row),
+        )
     return out
 
 

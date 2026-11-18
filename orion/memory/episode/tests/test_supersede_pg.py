@@ -28,7 +28,9 @@ from orion.memory.episode.validate import validate_distillation
 from orion.schemas.memory_episode import EpisodeDistillationV1
 
 ADMIN_DSN = os.environ.get("ORION_MEMORY_EPISODE_TEST_DATABASE_URL")
-MIGRATION = Path(__file__).resolve().parents[4] / "services" / "orion-sql-db" / "manual_migration_episode_memory_v1.sql"
+SQL_DIR = Path(__file__).resolve().parents[4] / "services" / "orion-sql-db"
+MIGRATION = SQL_DIR / "manual_migration_episode_memory_v1.sql"
+TEMPORAL = SQL_DIR / "manual_migration_episode_memory_temporal_v1.sql"
 pytestmark = pytest.mark.skipif(not ADMIN_DSN, reason="ORION_MEMORY_EPISODE_TEST_DATABASE_URL not set")
 
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
@@ -49,6 +51,7 @@ async def _with_db(fn):
     try:
         async with pool.connection() as conn:
             await conn.execute(MIGRATION.read_text())
+            await conn.execute(TEMPORAL.read_text())
         await fn(pool, dsn)
     finally:
         await pool.close()
@@ -228,5 +231,196 @@ def test_confirmed_rows_and_views_are_never_superseded_and_foreign_links_are_ign
             assert row["status"] == "active"
         n = await _one(pool, "SELECT count(*) AS n FROM episode_memory_event WHERE op = 'superseded'")
         assert n["n"] == 0
+
+    asyncio.run(_with_db(body))
+
+
+# --- bi-temporal validity, run audit, eval gate (issues #3659, #3660) --------------------------
+
+async def _valid_at_ids(dsn, as_of):
+    import asyncpg
+
+    from orion.memory.lived_memory import fetch_valid_at
+
+    conn = await asyncpg.connect(dsn)
+    try:
+        return {r.record_id for r in await fetch_valid_at(conn, as_of)}
+    finally:
+        await conn.close()
+
+
+async def _set_occurred(pool, mid, when):
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE episode_memory SET occurred_at = %s WHERE memory_id = %s", (when, mid))
+
+
+def test_an_update_ends_validity_at_the_new_time_and_stays_reachable_as_history():
+    async def body(pool, dsn):
+        old_id = await _old_row(pool, "Juniper lives in Fort Collins.")
+        await _set_occurred(pool, old_id, T0)
+        result = _correction()
+        new_id = result.memories[0].memory_id
+        link = s.Link(old_id=old_id, new_id=new_id, reason="moved", dense=0.7, relation="update",
+                      votes=("update",) * 3).as_dict()
+        assert (await _persist(pool, result, [link]))["superseded"] == 1
+        await _set_occurred(pool, new_id, T0 + timedelta(days=2))
+        old = await _one(pool, "SELECT status, confirmation_state, invalid_at, invalidated_by::text AS by, "
+                               "invalid_reason FROM episode_memory WHERE memory_id = %s", (old_id,))
+        new_time = (await _one(pool, "SELECT created_at FROM episode_memory WHERE memory_id = %s", (new_id,)))
+        assert old["status"] == "superseded" and old["confirmation_state"] == "auto"   # right at its time
+        assert old["invalid_reason"] == "update" and old["by"] == new_id
+        assert old["invalid_at"] == new_time["created_at"]  # the new row's time (no occurred_at at apply)
+        ev = await _one(pool, "SELECT evidence FROM episode_memory_event WHERE op = 'superseded' AND memory_id = %s",
+                        (old_id,))
+        assert ev["evidence"]["relation"] == "update" and ev["evidence"]["votes"] == ["update"] * 3
+
+        # Default recall: currently true only. Past-tense read: true then.
+        assert old_id not in await _served_ids(dsn)
+        assert old_id in await _valid_at_ids(dsn, T0 + timedelta(days=1))
+        assert old_id not in await _valid_at_ids(dsn, T0 + timedelta(days=10))
+        assert old_id not in await _valid_at_ids(dsn, T0 - timedelta(days=1))   # not yet happened
+
+        # Undo clears the validity end.
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                assert await s.undo_link(conn, old_id=old_id, new_id=new_id, actor="operator")
+        old = await _one(pool, "SELECT status, confirmation_state, invalid_at, invalidated_by, invalid_reason "
+                               "FROM episode_memory WHERE memory_id = %s", (old_id,))
+        assert (old["status"], old["confirmation_state"], old["invalid_at"], old["invalidated_by"],
+                old["invalid_reason"]) == ("active", "auto", None, None, None)
+
+        # An expired row is not served as history either.
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE episode_memory SET expires_at = %s WHERE memory_id = %s",
+                               (T0 + timedelta(hours=12), old_id))
+        assert old_id not in await _valid_at_ids(dsn, T0 + timedelta(days=1))
+
+    asyncio.run(_with_db(body))
+
+
+def test_a_correction_was_never_true_and_is_never_served_as_history():
+    async def body(pool, dsn):
+        old_id = await _old_row(pool, "Juniper's cat Biscuit is grey.")
+        await _set_occurred(pool, old_id, T0)
+        result = _correction()
+        link = s.Link(old_id=old_id, new_id=result.memories[0].memory_id, reason="wrong species").as_dict()
+        assert (await _persist(pool, result, [link]))["superseded"] == 1
+        old = await _one(pool, "SELECT confirmation_state, invalid_at, invalid_reason FROM episode_memory "
+                               "WHERE memory_id = %s", (old_id,))
+        assert (old["confirmation_state"], old["invalid_reason"], old["invalid_at"]) == ("corrected", "correction", T0)
+        for days in (0, 1, 10):
+            assert old_id not in await _valid_at_ids(dsn, T0 + timedelta(days=days))
+
+    asyncio.run(_with_db(body))
+
+
+def test_every_distill_run_leaves_one_append_only_audit_row_without_text():
+    async def body(pool, dsn):
+        old_id = await _old_row(pool, "Juniper's cat Biscuit is grey.")
+        result = _correction()
+        new_id = result.memories[0].memory_id
+        link = s.Link(old_id=old_id, new_id=new_id, reason="wrong species").as_dict()
+        plan = {"links": [link], "held_links": [], "apply": "on", "refused_because": [], "asked": 1,
+                "check_errors": 0, "dense": "on", "check_version": s.CHECK_VERSION,
+                "decisions": [{"old_id": old_id, "new_id": new_id, "legs": {"cosine": 0.7}, "relation": "correction",
+                               "votes": [{"relation": "correction", "confidence": 0.9}], "linked": True}]}
+        for _ in range(2):  # a replayed persist writes no second row
+            await persist_episode(
+                pool, episode_id="ep-new", run_id="memdistill-ep-new", result=result, model_route="memory_distill",
+                model="m", prompt_version="v", usage={}, llm_latency_ms=1, hold_wait_ms=1, coverage=1.0,
+                now=T0 + timedelta(days=3), supersede_links=[link], supersede_plan=plan)
+        rows = await _one(pool, "SELECT count(*) AS n FROM memory_supersede_run")
+        r = await _one(pool, "SELECT source, apply, dense, counts, decisions, applied FROM memory_supersede_run")
+        assert rows["n"] == 1 and r["source"] == "distill" and r["apply"] == "on" and r["dense"] == "on"
+        assert r["counts"]["applied"] == 1 and r["applied"][0]["relation"] == "correction"
+        assert r["decisions"][0]["legs"]["cosine"] == 0.7
+        assert "Biscuit" not in str(r)
+
+    asyncio.run(_with_db(body))
+
+
+def test_a_missing_audit_table_never_costs_the_memories():
+    async def body(pool, dsn):
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE memory_supersede_run")
+        result = _correction()
+        counts = await persist_episode(
+            pool, episode_id="ep-new", run_id="memdistill-ep-new", result=result, model_route="memory_distill",
+            model="m", prompt_version="v", usage={}, llm_latency_ms=1, hold_wait_ms=1, coverage=1.0,
+            now=T0 + timedelta(days=3), supersede_plan={"links": [], "apply": "refused",
+                                                         "refused_because": ["eval_gate:eval_missing"]})
+        assert counts["memories"] == 1
+
+    asyncio.run(_with_db(body))
+
+
+def test_eval_gate_reads_the_latest_finished_run_for_this_check_version():
+    async def body(pool, dsn):
+        async def gate():
+            async with pool.connection() as conn:
+                return await s.eval_gate(conn)
+
+        now = datetime.now(timezone.utc)
+
+        async def add(run_id, passed, finished, version=s.CHECK_VERSION, votes=s.VOTES, route=s.EVAL_ROUTE):
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "INSERT INTO memory_supersede_eval_run (run_id, check_version, started_at, finished_at, passed, "
+                    "n_items, n_real, false_acts, hard_negative_false_acts, errors, votes, route) "
+                    "VALUES (%s, %s, %s, %s, %s, 1, 1, 0, 0, 0, %s, %s)",
+                    (run_id, version, now, finished, passed, votes, route))
+
+        assert await gate() == (False, "eval_missing")
+        await add("old", True, now - timedelta(days=s.EVAL_MAX_AGE_DAYS + 2))
+        assert await gate() == (False, "eval_stale")
+        await add("a", True, now - timedelta(hours=5))
+        assert await gate() == (True, "eval_passed")
+        await add("b", False, None)                                   # still running: ignored
+        await add("c", False, now - timedelta(hours=1), version="supersede_check.v2")   # other version
+        await add("v", False, now - timedelta(hours=1), votes=5)     # other vote count
+        await add("r", False, now - timedelta(hours=1), route="agent")   # other route
+        assert await gate() == (True, "eval_passed")
+        await add("d", False, now - timedelta(hours=2))
+        assert await gate() == (False, "eval_failed")
+
+    asyncio.run(_with_db(body))
+
+
+def test_pass_apply_refuses_while_the_eval_gate_is_closed(tmp_path):
+    import argparse
+    import importlib.util
+    import json
+
+    script = Path(__file__).resolve().parents[4] / "scripts" / "memory_supersede_pass.py"
+    spec = importlib.util.spec_from_file_location("memory_supersede_pass_pg", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    async def body(pool, dsn):
+        pairs = tmp_path / "pairs.jsonl"
+        pairs.write_text(json.dumps({"old_id": str(uuid.uuid4()), "new_id": str(uuid.uuid4()), "reason": "r",
+                                     "dense": 0.7, "check_version": s.CHECK_VERSION}) + "\n")
+        args = argparse.Namespace(yes=True, pairs=str(pairs), allow_no_dense=False, allow_no_eval=False, only="",
+                                  exclude="", dsn=dsn, no_manifest=True, watch=[])
+        with pytest.raises(SystemExit, match="eval gate closed"):
+            await mod.cmd_apply(args)
+
+    asyncio.run(_with_db(body))
+
+
+def test_an_update_that_points_backwards_is_refused():
+    async def body(pool, dsn):
+        old_id = await _old_row(pool, "Juniper lives in Riverton.")
+        await _set_occurred(pool, old_id, T0 + timedelta(days=10))
+        result = _correction()
+        new_id = result.memories[0].memory_id
+        await _persist(pool, result, None)
+        await _set_occurred(pool, new_id, T0)                       # newer row about an earlier time
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                got = await s.apply_link(conn, s.Link(old_id, new_id, "r", relation="update"), actor=s.ACTOR_PASS)
+        assert got is None
+        old = await _one(pool, "SELECT status FROM episode_memory WHERE memory_id = %s", (old_id,))
+        assert old["status"] == "active"
 
     asyncio.run(_with_db(body))

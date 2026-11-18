@@ -150,11 +150,17 @@ families:
     # whether is settled by Orion; follow-through is keeping its word, which is upkeep. The reserved share stops
     # curiosity and consult runs crowding it out (live follow-through mean 0.10). Tier 1 still bids, so the economy
     # still picks the time (unlike tier 0, reserved for the daily letter). Its bids BIND (app/run_bids.py
-    # BINDING_FAMILIES): a held run is admitted at its hold end, never dropped; hold end = min(opened + 86400 s, the
+    # BINDING_FAMILIES): a held run is admitted at its hold end, never dropped; hold end = min(requested_at + 86400 s, the
     # concern's horizon - 1800 s). 86400 s: Juniper's accepted default; the horizon (promise + 72 h) still caps it.
     # Agent lanes, like durable.consult_orion_turn. No receptors yet.
+    # hunger_from want_opened (#3640, Juniper 2026-11-18): the rank is the AGE OF THE PROMISE. The want opens at
+    # the promise's time (brief.promised_at, the harness_turn_trace row's created_at; app/run_bids.py), its hunger
+    # counts from there over this 1-day window (tau), and no other promise's close resets it. A run bid seconds
+    # after a fresh promise still ranks ~0; the 11-13 carry (promise 36.6 h old at bid) would have ranked 0.78,
+    # not 0.00. The hold end still counts from the run's own request (run_bids.hold_end), not the promise.
     tier: 1
     deferrable_window_s: 86400
+    hunger_from: want_opened
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
 

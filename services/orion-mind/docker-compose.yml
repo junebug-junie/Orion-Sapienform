@@ -75,6 +75,8 @@ services:
       PRIME_CONCERNS_FROM_EVENT_WANTS: ${PRIME_CONCERNS_FROM_EVENT_WANTS:-true}
       PRIME_EVENT_WANTS_HOURS: ${PRIME_EVENT_WANTS_HOURS:-24}
       PRIME_EVENT_WANTS_LIMIT: ${PRIME_EVENT_WANTS_LIMIT:-8}
+      # Prime's concern evidence clock (#3574): a bare keep no longer renews a concern; see .env_example.
+      PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED: ${PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED:-true}
       # Living Prime Part 2, turn hand-back (app/prime_loop.py); see .env_example.
       PRIME_TURN_HANDBACK_ENABLED: ${PRIME_TURN_HANDBACK_ENABLED:-true}
       # Living Prime Part 3, the day letter as Prime's end-of-day turn (app/prime_loop.py); see .env_example.
@@ -83,10 +85,12 @@ services:
       PRIME_DAY_LETTER_TURN_TIMEOUT_SEC: ${PRIME_DAY_LETTER_TURN_TIMEOUT_SEC:-1800}
       PRIME_DAY_LETTER_RUN_DEADLINE_HOURS: ${PRIME_DAY_LETTER_RUN_DEADLINE_HOURS:-12}
       PRIME_INTENTION_TAKE_ON_ENABLED: ${PRIME_INTENTION_TAKE_ON_ENABLED:-true}
+      PRIME_INTENTION_TURN_TIMEOUT_SEC: ${PRIME_INTENTION_TURN_TIMEOUT_SEC:-3600}
       PRIME_HUNGER_NEEDS_ENABLED: ${PRIME_HUNGER_NEEDS_ENABLED:-true}
       PRIME_HUNGER_THRESHOLD: ${PRIME_HUNGER_THRESHOLD:-0.5}
       PRIME_HUNGER_DAILY_BUDGET: ${PRIME_HUNGER_DAILY_BUDGET:-24}
       PRIME_HUNGER_READ_SEC: ${PRIME_HUNGER_READ_SEC:-300}
+      PRIME_PREDICTION_URL: ${PRIME_PREDICTION_URL-http://orion-athena-prediction:8132}
       PRIME_PERSONALITY_LINE_ENABLED: ${PRIME_PERSONALITY_LINE_ENABLED:-false}
       # Orion's consent to a Claude tool call (app/prime_consent.py); see .env_example.
       PRIME_CONSENT_ENABLED: ${PRIME_CONSENT_ENABLED:-true}

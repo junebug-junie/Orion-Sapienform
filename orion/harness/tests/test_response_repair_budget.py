@@ -26,7 +26,6 @@ from orion.harness.finalize import (
     RESPONSE_REPAIR_PREFILL_RESERVE_SEC,
     HarnessFinalizeFailedError,
     build_response_repair_context,
-    repair_may_keep_draft_on_truncation,
     response_repair_max_tokens,
     run_harness_finalize_chain,
 )
@@ -187,7 +186,7 @@ def test_repair_request_carries_the_sized_budget() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reflection", [
-    make_reflection(alignment_verdict="aligned", strain_unresolved=True),   # 390c58ab, 8d3ac56d, 139e7e46
+    make_reflection(alignment_verdict="uncertain", strain_unresolved=True),
     make_reflection(alignment_verdict="misaligned", strain_unresolved=True),  # 9061adc5
 ])
 async def test_a_letter_longer_than_3072_tokens_does_not_fail(reflection) -> None:
@@ -211,16 +210,16 @@ async def test_a_short_reply_repairs_as_before() -> None:
 
 
 @pytest.mark.asyncio
-async def test_truncated_repair_of_an_aligned_draft_keeps_the_draft_and_says_so() -> None:
-    """5b passed the draft's content (aligned, no unsupported claim) and asked for repair only
-    for open strain: when the rewrite still does not fit, Juniper gets the draft, and the trace
-    says the repair was cut off."""
-    chain, _ = await _chain(LETTER, make_reflection(alignment_verdict="aligned", strain_unresolved=True), grow=3.0)
+async def test_an_aligned_letter_with_only_strain_open_ships_without_repair() -> None:
+    """390c58ab, 8d3ac56d, 139e7e46 (11-17) went to repair on open strain alone (#3618).
+    Now the accepted letter ships as written: no repair call, and the trace says why."""
+    chain, seen = await _chain(LETTER, make_reflection(alignment_verdict="aligned", strain_unresolved=True), grow=3.0)
+    assert "repairs" not in seen
     assert chain.final_text == LETTER
     assert chain.finalize_changed is False
-    assert chain.response_repair_ran is True
-    assert chain.response_repair_reason == "strain_unresolved_kept_draft:truncated"
-    assert chain.outcome_molecule.response_repair_reason == "strain_unresolved_kept_draft:truncated"
+    assert chain.response_repair_ran is False
+    assert chain.response_repair_reason == "strain_only_not_repaired"
+    assert chain.outcome_molecule.response_repair_reason == "strain_only_not_repaired"
     assert chain.outcome_molecule.finalize_failed is False
 
 
@@ -260,7 +259,7 @@ async def test_the_chain_passes_the_reply_budget_to_the_repair() -> None:
     molecule = build_draft_molecule(correlation_id="c-held", thought=thought, draft_text=LETTER,
                                     grammar_receipts=[], coalition_snapshot=build_coalition_snapshot(thought),
                                     repair_overlay=make_repair_overlay())
-    reflection = make_reflection(alignment_verdict="aligned", strain_unresolved=True)
+    reflection = make_reflection(alignment_verdict="uncertain", strain_unresolved=True)
     seen: dict[str, Any] = {}
 
     async def substrate_client(_mol: object):
@@ -276,21 +275,12 @@ async def test_the_chain_passes_the_reply_budget_to_the_repair() -> None:
         mp.setattr("orion.harness.finalize.maybe_quick_lane_verdict", lambda **_: None)
         mp.setattr("orion.harness.finalize.extract_finalize_reflection_payload",
                    lambda _result: reflection.model_dump(mode="json"))
-        await run_harness_finalize_chain(
-            correlation_id="c-held", draft_text=LETTER, draft_molecule=molecule, thought=thought,
-            grammar_receipts=[], repair_overlay=make_repair_overlay(), user_message="letter",
-            voice_contract=None, cortex_client=cortex_client, substrate_client=substrate_client,
-            deadline_monotonic=time.monotonic() + 150)
+        # The clamped budget cannot hold the whole letter, so the cut-off rewrite of a
+        # draft 5b did not accept fails closed; the point here is the budget it was given.
+        with pytest.raises(HarnessFinalizeFailedError, match="truncated at max_tokens"):
+            await run_harness_finalize_chain(
+                correlation_id="c-held", draft_text=LETTER, draft_molecule=molecule, thought=thought,
+                grammar_receipts=[], repair_overlay=make_repair_overlay(), user_message="letter",
+                voice_contract=None, cortex_client=cortex_client, substrate_client=substrate_client,
+                deadline_monotonic=time.monotonic() + 150)
     assert 3072 <= seen["max_tokens"] <= int((150 - RESPONSE_REPAIR_PREFILL_RESERVE_SEC) * RESPONSE_REPAIR_MIN_DECODE_TPS)
-
-
-def test_only_a_judge_approved_draft_may_be_kept_after_a_cut_off_repair() -> None:
-    assert repair_may_keep_draft_on_truncation(make_reflection(alignment_verdict="aligned", strain_unresolved=True))
-    assert not repair_may_keep_draft_on_truncation(make_reflection(alignment_verdict="misaligned"))
-    assert not repair_may_keep_draft_on_truncation(make_reflection(alignment_verdict="uncertain"))
-    assert not repair_may_keep_draft_on_truncation(make_reflection(
-        alignment_verdict="aligned", alignment_notes=["unsupported claim: X; notes say Y"]))
-    # Guard: a judge-failed reflection is misaligned today; if that ever changes, its draft
-    # still has no judge approval behind it.
-    assert not repair_may_keep_draft_on_truncation(make_reflection(
-        alignment_verdict="aligned", strain_unresolved=True, reflection_source="degraded_llm_failure_fallback"))

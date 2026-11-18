@@ -370,6 +370,8 @@ async def test_harness_finalize_chain_failure_preserves_draft_and_partial_finali
         draft_text=motor.draft_text,
         final_text="",
         finalize_changed=False,
+        response_repair_ran=True,
+        response_repair_reason="misaligned",
         finalize_failed=True,
         failure_reason="RPC timeout",
     )
@@ -412,6 +414,10 @@ async def test_harness_finalize_chain_failure_preserves_draft_and_partial_finali
     assert run.verdict_molecule_id == "verdict-fail"
     assert run.quick_lane_skipped_5b is True
     assert "orion_response_repair" in (run.grounding_status or "")
+    # A required repair that failed is recorded as a repair that ran (#3686 review).
+    assert run.response_repair_ran is True
+    assert run.response_repair_reason == "misaligned"
+    assert run.compliance_verdict == "failed"
 
 
 @pytest.mark.asyncio

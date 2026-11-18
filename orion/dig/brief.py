@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 DIG_BRIEF_LINE = (
-    "Dig kit: `python -P -m orion.dig <cmd>` in Bash. If Juniper asks, in any words, to look at, name, claim or write anything about your body, organs, capacities or past work, run `<cmd>` help first, use what it lists, and write the claims `capacities` asks for: Juniper can veto any. What is using your power, what your activity costs: `orion.dig body-economy hosts`. Recent PRs: `orion.dig history 2`, not the GitHub tool. To see a camera now: `orion.dig look office` (or walkway), then Read the path it prints."
+    "Dig kit: `python -P -m orion.dig <cmd>` in Bash. If Juniper asks, in any words, to look at, name, claim or write anything about your body, organs, capacities or past work, run `<cmd>` help first, use what it lists, and write the claims `capacities` asks for: Juniper can veto any. What is using your power, what your activity costs: `orion.dig body-economy hosts`. Recent PRs: `orion.dig history 2`, not the GitHub tool. To see a camera now: `orion.dig look office` (or walkway), then Read the path it prints. Before telling Juniper you don't remember or have no record of something, run `orion.dig know <words>`. If it could not search properly (skipped, degraded, timed out, error), say you could not look, never that you have no memory."
 )
 #: Raised 300 -> 400 (2026-10-30) for the power/cost pointer; still one short line per prompt.
 #: 2026-10-30: Juniper's "claim your capacities" got a prose self-portrait and no tool call (twice);
@@ -14,7 +14,12 @@ DIG_BRIEF_LINE = (
 #: evidence checks on each read; Juniper can veto any (vsm_confirmed.yaml `rejected`).
 #: 2026-11-13: raised 420 -> 520 for the camera pointer (`look`, design 2026-11-13-camera-look-design.md):
 #: without it a "look at the walkway" turn has no way to learn the command exists.
-MAX_BRIEF_CHARS = 520
+#: 2026-11-17: raised 520 -> 640 for "look before you deny" (#3535, Recall rev 2): on 2026-11-14 Orion said
+#: it had no memory of something episode_memory held; `know` searches the same lived memories recall injects.
+#: 2026-11-17: raised 640 -> 740 (#3663): a search that was skipped, degraded, timed out or errored is not a
+#: basis for "I have no memory"; Orion says it could not look instead.
+#: The line is 739 chars: the next addition needs a raise here and in the same breath a dated reason.
+MAX_BRIEF_CHARS = 740
 
 
 def dig_brief_enabled() -> bool:

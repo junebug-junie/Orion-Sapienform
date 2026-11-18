@@ -44,3 +44,31 @@ class RecallCompareResponseBody(BaseModel):
     v1: Dict[str, Any]
     v2: Dict[str, Any]
     compare: Dict[str, Any]
+
+
+class LivedKnowRequestBody(BaseModel):
+    """``POST /lived/know``: a deliberate lookup (``python -P -m orion.dig know <words>``, #3535)."""
+
+    words: str = Field(..., min_length=1, max_length=1000)
+    # The chat turn's correlation id, so the lookup counts toward read demand for that turn.
+    turn_id: Optional[str] = Field(default=None, max_length=200)
+    max_hits: int = Field(default=8, ge=1, le=12)
+
+
+class LivedKnowHit(BaseModel):
+    strength: str  # "strong" (would be injected) | "weak" (below the bar, shares a word)
+    kind: str
+    purpose: str
+    id: str
+    date: str
+    text: str
+    fit: float
+
+
+class LivedKnowResponseBody(BaseModel):
+    status: str
+    backend: str
+    degraded: List[str] = Field(default_factory=list)
+    hits: List[LivedKnowHit] = Field(default_factory=list)
+    unverified: int = 0  # matches found but not shown: the serving-gate re-check failed
+    corr_id: str

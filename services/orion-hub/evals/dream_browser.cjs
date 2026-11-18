@@ -8,7 +8,8 @@ const pressure = {enabled:true, ready:false, too_soon:true, offer_enabled:true,
   pressure:{pressure:9,threshold:3,idle_minutes:50,idle_required_minutes:45,computed_at:now,since:now,counts:{metacog:9},new_counts:{metacog:2}}};
 const arm = {offered:1,adopted:0,tested:0,adoption_rate:0,support_rate:null};
 const score = {arms:{dream:arm,control:arm},verdict:'too early: need 20 / 5',unmatched_priors:0};
-const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed',trigger:'pressure',replay_count:1,hypothesis_count:1,no_link_count:2,unparseable_count:1,llm_failures:0,replay:[{source_kind:'metacog',weight:1,text:'A real replay fragment',reason:'critical recall',ref_id:'metacog:1'}]});
+const pairAnswers = [{arm:'dream',ref_a:'metacog:1',ref_b:'crystallization:2',outcome:'echo',answer:'{"link": true, "claim": "<img src=x onerror=\\"window.injected=3\\"> pasted back"}'}];
+const cycle = id => ({...(id === 'dc-old' ? {} : {echo_count:1,pair_answers:pairAnswers}),cycle_id:id,started_at:now,ended_at:now,status:'completed',trigger:'pressure',replay_count:1,hypothesis_count:1,no_link_count:2,unparseable_count:1,llm_failures:0,replay:[{source_kind:'metacog',weight:1,text:'A real replay fragment',reason:'critical recall',ref_id:'metacog:1'}]});
 (async () => {
   const browser = await puppeteer.launch({headless:true,args:['--no-sandbox']});
   try {
@@ -46,6 +47,9 @@ const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed'
     assert.match(await page.$eval('#dreamPressure', e => e.textContent), /waiting for sleep gates/);
     assert.match(await page.$eval('#dreamPressure', e => e.textContent), /New since last sleep \(drives pressure\): metacog: 2.*Distinct things to replay: metacog: 9/s);
     assert.match(await page.$eval('#dreamDetail', e => e.textContent), /Random control.*waiting for waking offer/s);
+    // #3412: echoes are counted apart and every pair's raw answer is shown, escaped.
+    assert.match(await page.$eval('#dreamDetail', e => e.textContent), /No link: 2.*Echo: 1.*Garbled: 1/s);
+    assert.match(await page.$eval('#dreamDetail', e => e.textContent), /Pair answers.*Dream · echo.*pasted back.*metacog:1 ↔ crystallization:2/s);
     assert.match(await page.$eval('#dreamDetail', e => e.textContent), /<img src=x/);
     assert.equal(await page.evaluate(() => window.injected), undefined);
     assert.equal(await page.$('#dreamDetail img'), null);
@@ -58,6 +62,9 @@ const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed'
     assert.equal(await page.evaluate(() => window.injected), undefined);
     await page.click('#dreamOlder');
     await page.waitForFunction(() => document.getElementById('dreamDetail').textContent.includes('dc-old'));
+    // A sleep stored before pair answers existed: no echo count, no answers section.
+    assert.match(await page.$eval('#dreamDetail', e => e.textContent), /Echo: —/);
+    assert(!(await page.$eval('#dreamDetail', e => e.textContent)).includes('Pair answers'));
     await page.click('#dreamNewer');
     await page.waitForFunction(() => document.getElementById('dreamDetail').textContent.includes('dc-new'));
     await page.click('#hubTabLauncherButton');

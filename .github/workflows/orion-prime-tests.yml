@@ -124,6 +124,8 @@ jobs:
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_block_eval.py
       - name: Hunger replay on live data (needs replace the quiet floor; budget, damping, planted never-falling need)
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_hunger_replay.py
+      - name: Concern evidence clock replay 11-14..11-17 (#3574; a bare keep no longer renews, the jam ends)
+        run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_concern_evidence_clock_replay.py
       - name: Take-on replay on the live promise concern d8db9d7b1bba4cf7 (frame, decision, adapter, request, ages out)
         run: PYTHONPATH=${{ github.workspace }} python -m orion.prime.evals.run_intention_take_on_replay
       - name: orion-mind (resident loop + every existing Mind test)

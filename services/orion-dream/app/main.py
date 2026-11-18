@@ -573,6 +573,8 @@ async def cycle_run_endpoint(force: bool = False):
             for h in cycle.hypotheses
         ],
         "no_link": cycle.no_link_count,
+        "echo": cycle.echo_count,
         "unparseable": cycle.unparseable_count,
+        "pair_answers": [a.model_dump(mode="json") for a in cycle.pair_answers],
         "llm_failures": cycle.llm_failures,
     }

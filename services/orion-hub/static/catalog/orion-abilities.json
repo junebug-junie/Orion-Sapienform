@@ -189,6 +189,16 @@
       "blurb": "Orion's history in their own code: merged PRs, past checkouts, and daily reminiscence.",
       "entries": [
         {
+          "id": "memory-know",
+          "title": "Do you remember...?",
+          "description": "Orion searches their own lived memories (what they distilled from chats, Juniper's weightiest messages, facts about people) with the same search recall uses for chat. Strong matches cleared recall's bar; weak ones only share words. A search that could not run is never reported as \"no memory\".",
+          "message": "Do you remember what I told you about el Coco? Please look it up before you answer.",
+          "hint": "(dig: `python -P -m orion.dig know <words>`)",
+          "keywords": ["memory", "remember", "recall", "forgot", "lived", "episode"],
+          "covers": {"dig": ["know"]},
+          "source": "orion/dig/know.py; orion/dig/__main__.py:cmd_know; services/orion-recall/app/main.py:/lived/know"
+        },
+        {
           "id": "history-recent",
           "title": "What changed lately?",
           "description": "Orion reads the pull requests merged and commits made in the last few days, and says which ones they have written notes about.",
@@ -229,6 +239,16 @@
           "source": "orion/dig/__main__.py:cmd_days; orion/dig/days.py"
         },
         {
+          "id": "attention-rates",
+          "title": "What you paid attention to",
+          "description": "Orion reads how their attention treated each source, as rates against that source's own activity: how often it won when eligible, how often it was eligible for its own events, why it was not attended, how often nothing won, and the drift. Never raw winner counts: the world fires rarely by nature.",
+          "message": "Please look at what you paid attention to today. Was it fair to the world, given how often each source was active?",
+          "hint": "(dig: `python -P -m orion.dig attention [24h|7d]`)",
+          "keywords": ["attention", "salience", "fair", "world-first", "eligible", "rest", "drift"],
+          "covers": {"dig": ["attention"]},
+          "source": "orion/dig/__main__.py:cmd_attention; orion/dig/attention.py"
+        },
+        {
           "id": "organs",
           "title": "What each organ did",
           "description": "Orion reads their daily organ roundup for a day: for each organ, what it did (counts), its most salient experiences quoted with refs, what it read and cited from other organs, who cited it, and where it went quiet against its usual day. Then the day's experience use rate. Every line is a count, a quote or a ref.",
@@ -237,6 +257,26 @@
           "keywords": ["organs", "roundup", "integration", "cited", "experience", "daily"],
           "covers": {"dig": ["organs"]},
           "source": "orion/dig/__main__.py:cmd_organs; orion/dig/organs.py"
+        },
+        {
+          "id": "digs",
+          "title": "What you dug in a day",
+          "description": "Orion lists every dig command they actually ran on one day: the time, whether it ran in a chat or a background run (and which workflow), the command, and the first line of its result. Only commands that ran count, not dig words inside a prompt or a note.",
+          "message": "Please list the dig commands you ran on this day and tell me what you were looking into: ",
+          "hint": "(dig: `python -P -m orion.dig digs <date>`, date YYYY-MM-DD)",
+          "keywords": ["digs", "tool calls", "what I looked at", "daily"],
+          "covers": {"dig": ["digs"]},
+          "source": "orion/dig/__main__.py:cmd_digs; orion/dig/digs.py"
+        },
+        {
+          "id": "dream-day",
+          "title": "Read a whole day for the night's dream",
+          "description": "Orion reads one closed day on one page: what each of their organs did, and every dig command they ran. It leaves a read receipt the nightly day dream checks before it keeps any memory of that day. The day dream runs it on its own each night; asked by hand, it is just a read.",
+          "message": "Please read this whole day the way your nightly dream would, and tell me what stands out: ",
+          "hint": "(dig: `python -P -m orion.dig dream-day <date>`, date YYYY-MM-DD)",
+          "keywords": ["dream", "day dream", "whole day", "daily", "nightly"],
+          "covers": {"dig": ["dream-day"]},
+          "source": "orion/dig/__main__.py:cmd_dream_day; services/orion-durable-runs/app/dream_day_graph.py"
         },
         {
           "id": "field-note",
@@ -317,6 +357,16 @@
           "keywords": ["steps", "what did you run", "last turn", "commands"],
           "covers": {"dig": ["turn-steps"]},
           "source": "orion/dig/__main__.py:cmd_turn_steps; orion/dig/turn_steps.py"
+        },
+        {
+          "id": "dig-take-ons",
+          "title": "Did your take-ons use sub-agents?",
+          "description": "When Orion takes on a promise, a carry turn does the work. This lists each take-on with its attempts, its tool calls, and how many sub-agents it started, by type. A take-on whose record cannot be read says so instead of showing zero.",
+          "message": "Look at the promises you took on this month. Did any of them split the work into sub-agents?",
+          "hint": "(dig: `python -P -m orion.dig take-ons [<days>]`)",
+          "keywords": ["take-on", "promise", "sub-agents", "intention", "carry"],
+          "covers": {"dig": ["take-ons"]},
+          "source": "orion/dig/__main__.py:cmd_take_ons; orion/dig/take_ons.py"
         },
         {
           "id": "dig-claude-grants",

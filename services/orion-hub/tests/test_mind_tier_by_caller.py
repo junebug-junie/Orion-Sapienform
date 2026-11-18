@@ -56,7 +56,7 @@ EXPECTED_ORIGIN = {
     ("services/orion-hub/scripts/memory_graph_suggest.py", "suggest_with_escalation", "build_chat_request"): [None],
     ("orion/social/scenario_replay.py", "_run_fixture", "build_chat_request"): [None],
     # Direct stance-request builders: the origin rides stance_inputs, not a kwarg.
-    ("orion/hub/turn_orchestrator.py", "execute_unified_turn", "StanceReactRequestV1"): [None],
+    ("orion/hub/turn_orchestrator.py", "_execute_unified_turn_body", "StanceReactRequestV1"): [None],
     ("services/orion-hub/scripts/unified_turn_stub.py", "run_orion_unified_turn_stub", "StanceReactRequestV1"): [None],
 }
 _TARGETS = ("execute_unified_turn", "run_unified_turn", "build_chat_request", "build_cortex_chat_request",

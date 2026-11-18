@@ -149,7 +149,8 @@ def cycle_outcome(cycle: Any, *, persisted: bool) -> tuple[bool, str]:
     produced = bool(persisted) and status == "completed" and n_hyp > 0
     note = (
         f"status={status} persisted={bool(persisted)} hypotheses={n_hyp} "
-        f"llm_failures={getattr(cycle, 'llm_failures', 0)} no_link={getattr(cycle, 'no_link_count', 0)}"
+        f"llm_failures={getattr(cycle, 'llm_failures', 0)} no_link={getattr(cycle, 'no_link_count', 0)} "
+        f"echo={getattr(cycle, 'echo_count', 0)}"
     )
     return produced, note
 

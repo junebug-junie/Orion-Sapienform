@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
-from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
+from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, fcc_agents_argv, setting_sources_argv
 from orion.fcc.turn_lock import turn_in_progress
 from orion.curiosity.write_stamp import WriteStamper, completed_tool_use_ids, graph_write_tool_use_ids
 from orion.core.redact import redact_secrets, redact_secrets_deep, remember_secret_env
@@ -1736,6 +1736,8 @@ def build_claude_argv(
         argv.extend(["--tools", ",".join(READING_ONLY_TOOLS), "--strict-mcp-config", "--setting-sources", ""])
     else:
         argv.extend(setting_sources_argv("HARNESS_FCC_SETTING_SOURCES"))
+        # Orion's repo sub-agent (#3650): project scope stays off, so pass the agent itself.
+        argv.extend(fcc_agents_argv("HARNESS_FCC_REPO_AGENT_ENABLED"))
     argv.extend(repeat_failure_breaker_argv(correlation_id=correlation_id, reading_only=reading_only))
     if mcp_config_path is not None:
         extra_allowed_tools: Optional[List[str]] = None

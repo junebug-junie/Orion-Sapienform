@@ -509,3 +509,98 @@ Built in fix/promise-ledger-orion-review-2:
   old `key` for a quote with `*` (scoring does not recompute keys, so it is unaffected).
 - **Prime never reads the promise acts in shadow** (`test_prime_never_reads_the_promise_acts_while_they_are_shadow`
   scans `orion/prime` and `services/orion-mind/app`).
+
+## Amendments (2026-11-17, round 3): Orion's fourth set of questions (threads 0c1e, e14555)
+
+Built in fix/promise-ledger-orion-review-3:
+
+- **Act-opening uses the guard's rule.** Hub reads the pre-turn view, and so can open promise acts,
+  only for Juniper's own turn sent from a Hub browser surface (`_promise_ledger_applies`;
+  `is_browser_surface_turn` is `JUNIPER_INGRESS_PREDICATE` on the payload). Before, any
+  `utterance_origin="juniper"` turn qualified, which includes every `/api/chat` call: live 11-15, two
+  coding-session notes were posted that way into Juniper's own session and persisted as `hub_orion`.
+  Round-ups, `intention.carry` and curiosity turns were already outside it (`utterance_origin="orion"`).
+- **Every viewed turn logs one `promise_ledger` line**, also when the governor returns no run
+  (`reason=no_run`: a timeout or an error reply), a harness error (`reason=harness_error`), a raise or
+  cancel anywhere after the view read (`reason=interrupted`, from the `execute_unified_turn` wrapper), and
+  a failed background publish (`outcome=failed`). Live 11-17 before the 17:58Z restart: 29 view lines, 1 ledger line; 28 were
+  `memory-scoreboard-eval` `/api/chat` turns (`no_write`, the class #3619 fixed), one of them still in
+  flight at the restart. These eval turns no longer read the view at all.
+- **The report prints both bases:** baseline 23/289 and clean 21/287; ceiling 9/23 and clean 9/21 (both
+  coding-session promises fall in "delivered outside chat"). Red stays on the frozen basis.
+- **Abstentions:** 2 of the 23 ("I won't float anything back up while you're asleep", "I'll stop muttering
+  about bus error"). They pass the gate (commits, orion, a `done_when`) and would open an act that no
+  reply can show kept. The ceiling already counts them outside the 9. Whether they are promises: #3595.
+- **Duplicate window:** the report prints how many same-session pairs within 72 h the duplicate rule
+  compares. On the 24 replay items reconstructed from `/tmp/promise-ledger-replay-v3`: 44 pairs, 0
+  candidates. The float-up / won't-float pair is not flagged (longest shared run 11 characters).
+
+## Amendments (2026-11-18): Orion's findings fixed (#3595, #3596, #3530, #3560, #3531 defaults)
+
+Juniper, 2026-11-18: "we need to fix the promises Orion found." Each rule below is the recommendation
+already written on its ticket, **applied as a default on that instruction and reversible**. Shadow stays on;
+go-live is not flipped; `THOUGHT_OPEN_PROMISES_CUE_ENABLED` stays off.
+
+### Settle classes (#3595)
+
+- The judge writes two more fields per promise: `settles_in` (`chat` | `run` | `absence`) and `condition`
+  (the trigger a conditional promise waits on, or null). Rows written before them read as `chat`, unconditional.
+- Shown an open promise with a condition, the judge may list it in `promise_conditions_met` when the turn shows
+  the condition arose. Only ids it was shown survive the gate.
+- At the horizon, an UNKEPT act closes, by the item its ref points at:
+  - conditional, and no judged reply inside the horizon listed its condition met: `void:not_due`;
+  - `absence` (an abstention): `void:absence_unchecked`, until a breach check exists (#3595 rec 1);
+  - `run`: `void:not_chat` (a chat reply's silence is not a break);
+  - otherwise the v1 rule: expired 0 if Juniper wrote, `void:` if she did not.
+  Every settle-class void is censored (`void:` prefix): never graded, never a bet, never a posterior update.
+- Known bias toward `not_due`: only promises the judge is shown (oldest first, `PROMISE_JUDGE_VIEW_MAX` = 8) can be
+  marked condition-met, so with more than 8 open promises a newer conditional one closes `not_due`. Read errors fall
+  back the other way (an unread item = the v1 rule; an unread condition scan = met, graded) and are counted in the
+  resolver summary (`promise_item_unread`, `promise_condition_unread`). The report prints the settle-class void share
+  of closed acts so a judge drift toward ungraded labels is visible.
+  A chat reply that delivers a run or absence promise still keeps it (`evidence=reply`).
+- Later delivery (#3595 rec 2): the report lists void acts that a carry run for the same turn delivered later.
+  It never reopens the act; the act is the record of truth.
+- Prime vs the act (#3595 rec 3, #3531 point 6): in shadow the two records may disagree; the report counts
+  concerns with no act, acts with no concern, and concerns still open after their act closed. At go-live,
+  Prime's promise concern should close when its act closes (keyed by the shared ref); that wiring is the go-live
+  PR's job (the resolver closes expired/void acts in Postgres, not on the bus).
+- One clock: the act horizon, Prime's promise-concern life and the carry horizon read one constant,
+  `orion/schemas/promise_horizon.py` (Prime-side PR). Prime's concern places no bet, so one promise is at most
+  one settled bet (the act, after go-live).
+
+### Offer acceptance window (#3595)
+
+An offer is shown to the judge only from Orion's immediately previous reply in the session, when that reply
+answered a Juniper turn and was stored at most `OFFER_ACCEPT_TTL_SEC` (= the 72 h promise horizon) before the
+view is read. A miss shows as the gate's `dropped_unknown_offer` (the judge quoted an offer it was not shown:
+too old, or another row landed in between) or the ledger's `accepted_unmatched` (a quote survived the gate but
+matched no offer the view read; should stay 0).
+
+### Stable promise refs (#3596)
+
+The ref format `harness_turn_trace:<corr>#promises_made[<i>]` does not change (Prime's hand-back uses it).
+Instead, sql-writer's upsert keeps the first non-empty `reflection.promises_made` stored for a corr; a
+re-published run artifact updates everything else and logs `harness_turn_trace_promises_kept_first`.
+Limit: this pins the FIRST run's refs only. If a re-run's Hub opens acts from its own reflection, a promise at an
+index past the stored list reads as `unreadable` (and the v1 rule at the horizon), and one at an index the first
+list had is merged into the first run's act. Whether a Juniper turn is ever re-run is UNVERIFIED; the log line
+counts it if it happens.
+
+### Long quotes (#3530)
+
+A judge quote over `PROMISE_QUOTE_MAX_CHARS` that is literal in the reply is kept as its leading part, cut at a
+word boundary under the cap (`trimmed_long`). A prefix of a literal span is literal, so the substring gate still
+holds; a non-literal long quote is still `dropped_too_long`. The replay case d05f08e3 (243 chars, hold-deep-read)
+now passes the gate as a 235-char leading part.
+
+### Go-live criteria defaults (#3531; recorded, NOT applied: go-live stays off)
+
+- **Shadow end date: 2027-01-12.** Decide on whatever n exists then, intervals printed; extend only by decision.
+- **Only Juniper-browser promises count toward the gate.** Eval, curiosity and session-lane items are a side
+  precision number by lane, never in the gate set.
+- **Headline keep rate: the graded settle class** (chat-showable promises, and conditional ones whose condition
+  arose), with each void kind and the replay ceiling (9/23; clean 9/21) printed beside it. This replaces the
+  2026-11-17 default "over all firm acts" now that settle classes exist.
+- **Duplicates footnoted:** n stands; duplicate candidates print beside it; voiding duplicates only if real
+  candidates appear in shadow data.

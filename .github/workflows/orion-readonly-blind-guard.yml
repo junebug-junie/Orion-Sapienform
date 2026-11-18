@@ -1,0 +1,51 @@
+name: orion_readonly blind-arm guard
+# scripts/sql/2026-11-18_blind_experiment_arms_orion_readonly.sql hides blinded experiment arms (#3183 curiosity,
+# dream hypothesis) from Orion's read-only SQL role (#3458). This applies it to a throwaway Postgres and checks, as
+# orion_readonly, that no query reads an arm, that the view keeps every temporal_self_event column, and that the
+# documented lift steps work.
+on:
+  pull_request:
+    paths:
+      - 'scripts/sql/**'   # any new GRANT to orion_readonly can reopen the arm
+      - 'orion/temporal_self/sources.py'   # defines the stored payload keys
+      - 'services/orion-sql-db/manual_migration_*.sql'
+      - 'orion/curiosity/value.py'
+      - 'orion/schemas/dream_cycle.py'
+      - 'tests/test_blind_experiment_arms_sql.py'
+      - '.github/workflows/orion-readonly-blind-guard.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    # packages: read lets GITHUB_TOKEN pull the private GHCR postgres copy.
+    permissions:
+      contents: read
+      packages: read
+    services:
+      postgres:
+        image: ghcr.io/junebug-junie/postgres:15  # private GHCR copy of postgres:15 (live is 15)
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: blind_arm_guard_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      BLIND_ARM_GUARD_TEST_POSTGRES_URI: postgresql://postgres:test-only@localhost:5432/blind_arm_guard_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest psycopg2-binary pydantic
+      - name: psql client
+        run: command -v psql || (sudo apt-get update && sudo apt-get install -y postgresql-client)
+      - name: Guard against real Postgres
+        run: python -m pytest -q -rs -p no:cacheprovider tests/test_blind_experiment_arms_sql.py

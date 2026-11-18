@@ -465,3 +465,170 @@ def test_worker_falls_back_to_exact_words_when_the_backstop_fires(no_dense):
         worker.set_lived_memory(None)
     assert (count, timed_out, debug["backend"]) == (1, True, "degraded")
     assert bundle.rendered.startswith(lm.DEGRADED_HEADER) and [i.id for i in bundle.items] == ["episode_memory:g1"]
+
+
+# --- chunked rerank keeps what finished (issue #3662) -----------------------------------------
+
+FILLER = [_row(f"f{i}", f"A note about the castle on day {i} of the week.") for i in range(12)]
+CASTLE_TURN = "Juniper reached the final dungeon of the castle adventure game today"
+
+
+def _chunked(stall_after: int, *, stall: str = "sleep", calls: List[int] | None = None):
+    """Overlap reranker that answers ``stall_after`` calls, then sleeps past any deadline or raises."""
+    seen = calls if calls is not None else []
+
+    def rr(query, docs):
+        async def go():
+            seen.append(len(docs))
+            if len(seen) > stall_after:
+                if stall == "raise":
+                    raise ConnectionError("reranker went away")
+                await asyncio.sleep(10)
+            return await overlap_reranker(query, docs)
+        return go()
+
+    return rr
+
+
+def test_rerank_goes_in_chunks_best_retrieved_first(no_dense):
+    calls: List[int] = []
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + FILLER}), _cfg(link_top_k=0),
+                               reranker=_chunked(99, calls=calls), clock=lambda: NOW)
+    out = asyncio.run(reader.recall(CASTLE_TURN))
+    n = len(out.debug["candidate_ids"])
+    assert n > lm.RERANK_CHUNK and calls == [lm.RERANK_CHUNK, n - lm.RERANK_CHUNK]
+    assert out.backend == "hybrid" and "rerank_partial" not in out.debug
+    assert out.chosen[0].rec.record_id == "g1"
+
+
+def test_rerank_deadline_keeps_the_chunks_already_scored(no_dense):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + FILLER}),
+                               _cfg(timeout_sec=0.8, link_top_k=0), reranker=_chunked(1), clock=lambda: NOW)
+    out = asyncio.run(reader.recall(CASTLE_TURN))
+    # Before #3662 the whole pool was lost and this turn fell back to exact words.
+    assert out.backend == "hybrid" and "degraded" not in out.debug
+    n = len(out.debug["candidate_ids"])
+    assert out.debug["rerank_partial"] == {"scored": lm.RERANK_CHUNK, "of": n, "reason": "timeout"}
+    assert len(out.reranked) == lm.RERANK_CHUNK and out.chosen[0].rec.record_id == "g1"
+    assert not out.chosen[0].degraded and out.rendered.startswith(lm.HEADER)
+    assert lm.trace_of(out.debug)["rerank_partial"]["scored"] == lm.RERANK_CHUNK
+    assert lm.status_of(out.debug, len(out.chosen)) == lm.STATUS_OK
+    assert out.debug["timings_ms"]["total"] < 1100
+
+
+def test_rerank_error_after_a_chunk_keeps_it(no_dense):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + FILLER}), _cfg(link_top_k=0),
+                               reranker=_chunked(1, stall="raise"), clock=lambda: NOW)
+    out = asyncio.run(reader.recall(CASTLE_TURN))
+    assert out.backend == "hybrid" and out.debug["rerank_partial"]["reason"] == "error"
+    assert "rerank_error" in out.debug and out.chosen[0].rec.record_id == "g1"
+
+
+def test_rerank_that_scores_no_chunk_still_degrades(no_dense):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + FILLER}),
+                               _cfg(timeout_sec=0.6, link_top_k=0), reranker=_chunked(0), clock=lambda: NOW)
+    out = asyncio.run(reader.recall(CASTLE_TURN))
+    assert out.debug["degraded"] == ["rerank_timeout"] and "rerank_partial" not in out.debug
+    assert out.backend == "degraded" and out.chosen and out.chosen[0].degraded
+
+
+TWO_WORD_FILLER = [_row(f"t{i}", f"Another castle adventure from week {i}.") for i in range(12)]
+
+
+def _first_chunk_fits_nothing_then_stalls(query, docs, _seen=[]):  # noqa: B006 -- per-test reset below
+    async def go():
+        _seen.append(len(docs))
+        if len(_seen) > 1:
+            await asyncio.sleep(10)
+        return [-10.0] * len(docs)
+    return go()
+
+
+def test_partial_rerank_with_nothing_above_the_bar_degrades_and_says_so(no_dense):
+    """#3662/#3663: a part-scored pool that served nothing is not a full search: never a silent below-bar."""
+    seen: List[int] = []
+
+    def rr(query, docs):
+        return _first_chunk_fits_nothing_then_stalls(query, docs, seen)
+
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + TWO_WORD_FILLER}),
+                               _cfg(timeout_sec=0.8, link_top_k=0), reranker=rr, clock=lambda: NOW)
+    out = asyncio.run(reader.recall(CASTLE_TURN))
+    assert out.backend == "degraded" and out.debug["degraded"] == ["rerank_partial"]
+    scored = {r.doc_id for r, _l in out.reranked}
+    assert out.chosen and all(s.degraded and s.rec.doc_id not in scored for s in out.chosen)
+    assert out.rendered.startswith(lm.DEGRADED_HEADER)
+    assert lm.status_of(out.debug, len(out.chosen)) == lm.STATUS_DEGRADED
+
+
+def test_partial_rerank_that_finds_nothing_at_all_leaves_the_not_proof_note(no_dense):
+    seen: List[int] = []
+
+    def rr(query, docs):
+        return _first_chunk_fits_nothing_then_stalls(query, docs, seen)
+
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + FILLER}),
+                               _cfg(timeout_sec=0.8, link_top_k=0), reranker=rr, clock=lambda: NOW)
+    out = asyncio.run(reader.recall(CASTLE_TURN))
+    assert out.debug["degraded"] == ["rerank_partial"] and not out.chosen
+    assert out.rendered == lm.DEGRADED_EMPTY_NOTE
+    assert lm.status_of(out.debug, 0) == lm.STATUS_DEGRADED
+
+
+def test_know_shows_what_a_partial_rerank_left_unscored_as_weak(no_dense):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + FILLER}), _cfg(link_top_k=0),
+                               reranker=_chunked(1), clock=lambda: NOW)
+    got = asyncio.run(reader.know("castle adventure game dungeon", max_hits=20, timeout_sec=0.8))
+    assert [s.rec.record_id for s in got.strong] == ["g1"]
+    scored = {r.doc_id for r, _l in got.recall.reranked}
+    unscored_weak = [s for s in got.weak if s.rec.doc_id not in scored]
+    assert unscored_weak and all(s.degraded for s in unscored_weak)
+
+
+def test_exact_word_only_hit_is_in_the_first_chunk(monkeypatch):
+    """Meaning hits and exact-word hits take turns in the rerank order, so a name-only hit is not
+    left for the last chunk past a short deadline."""
+    near = [_row(f"n{i}", f"Something about the weather number {i}.") for i in range(12)]
+    biscuit = _row("b1", "Biscuit the cat came home from the vet with stitches.")
+
+    async def embed(*_a, **_k):
+        return [0.0], "m"
+
+    async def nearest(*_a, **_k):
+        return [(f"episode_memory:n{i}", 0.9 - i * 0.01) for i in range(12)]
+
+    monkeypatch.setattr(lm, "embed", embed)
+    monkeypatch.setattr(lm, "nearest", nearest)
+    reader = LivedMemoryRecall(Pool({"episode_memory": near + [biscuit]}), _cfg(timeout_sec=0.8, link_top_k=0),
+                               reranker=_chunked(1), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("did Biscuit come home with stitches from the vet visit"))
+    assert out.debug["rerank_partial"]["scored"] == lm.RERANK_CHUNK
+    assert "episode_memory:b1" in {r.doc_id for r, _l in out.reranked}
+    assert [s.rec.record_id for s in out.chosen][:1] == ["b1"]
+
+
+def test_http_rerank_goes_in_chunks_each_with_a_live_timeout(no_dense):
+    import httpx
+
+    seen: List[tuple[int, float]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        docs = _json.loads(request.content)["documents"]
+        seen.append((len(docs), float(request.extensions["timeout"]["read"])))
+        return httpx.Response(200, json={"scores": [0.0] * len(docs)})
+
+    rows = [_row(f"h{i}", f"Castle adventure game note {i}.") for i in range(20)]
+    reader = LivedMemoryRecall(Pool({"episode_memory": rows}), _cfg(link_top_k=0), clock=lambda: NOW)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await reader.recall(CASTLE_TURN, client=client)
+
+    out = asyncio.run(go())
+    n = len(out.debug["candidate_ids"])
+    sizes = [lm.RERANK_CHUNK] * (n // lm.RERANK_CHUNK) + ([n % lm.RERANK_CHUNK] if n % lm.RERANK_CHUNK else [])
+    assert [s for s, _t in seen] == sizes and len(seen) > 1
+    assert all(0 < t <= 2.0 for _s, t in seen)
+    assert out.backend == "hybrid" and len(out.reranked) == n

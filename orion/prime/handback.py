@@ -17,7 +17,8 @@ No new bus event: the hand-back is a second consumer of an existing one.
 The fold is deterministic: the same hops in the same order give the same state (a turn's concern id is derived
 from its correlation id, ``turn_concern_id``). Per finished turn Prime keeps:
 
-* who: ``chat_juniper`` (a turn Juniper typed), ``curiosity``, ``consult``, ``letter`` or ``intention`` (the carry
+* who: ``chat_juniper`` (a turn Juniper sent from a Hub browser surface; an /api/chat post from an eval or a
+  coding session is not handed back, #3602), ``curiosity``, ``consult``, ``letter`` or ``intention`` (the carry
   turn of a concern Prime took on, orion/prime/intention.py; its promises open no concern). Every other session
   (world-pulse reads, self-sense evals, PR field notes, reminiscence, outreach) is not handed back: those are
   ~90% of turns (live 11-09..11-12) and are not threads of Orion's own life with anyone;
@@ -42,7 +43,8 @@ decides whether Prime actually thinks):
   and the turn completed with a reply (verdict ``completed``; a ``partial`` turn was cut short). The concern
   settles, produced = 1 (``CONCERN_BASIS`` names this path). Only the PROMPT counts, never the reply: the Prime
   block (Part 1) puts concern ids into every turn's prefix, so a reply that lists what Prime holds would
-  otherwise settle every concern it names.
+  otherwise settle every concern it names. A day letter's prompt counts for nothing either
+  (``NO_PROMPT_SETTLE_WHO``, #3644): it is the day's record, so it quotes earlier replies, refs and all.
 
 Loop guard (turns open concerns, concerns steer turns). On top of ``MAX_CONCERNS`` and ``CONCERN_TTL``:
 at most ``TURN_CONCERNS_MAX_OPEN`` turn-opened concerns held at once (so at least two slots stay for Prime's own
@@ -68,6 +70,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from orion.prime.acts import settle_concern
 from orion.prime.state import (CONCERN_TTL, MAX_CONCERNS, PROMISE_EVENT_PREFIX, PROMISE_TEXT_CAP, PrimeConcernV1,
                                PrimeStateV1, note_change)
+from orion.regulation.juniper_turns import is_browser_surface_turn
 
 TURNS_KEY = "orion:prime:turns"
 HANDBACK_CHANNEL = "orion:cockpit:hop"
@@ -90,12 +93,20 @@ LETTER_SESSION_ID = "orion_day_letter"
 INTENTION_SESSION_ID = "orion_intention"
 # Loop guard (choice-as-EFE design Step -1, "Dangerous failure"): a carry turn's own promises open no concern.
 NO_THREAD_WHO = frozenset({"intention"})
-# Orion's own system sessions are named orion_*; a Hub chat turn Juniper typed carries ``mode`` on ingress.
+# Orion's own system sessions are named orion_*; a Hub chat turn Juniper sent from a browser surface carries
+# ``surface_context`` on ingress (``classify_who``).
 SYSTEM_SESSION_PREFIX = "orion_"
+# Turns whose prompt is a record of earlier text, so a ``prime_concern:<id>`` in it is a quote, never an answer
+# (#3644: the 11-17 day letter quoted Orion's own "[prime_concern:438e69ed6bb3d798]" from the day's record and
+# settled that promise). Their prompt citations settle nothing; the turn is still handed back.
+NO_PROMPT_SETTLE_WHO = frozenset({"letter"})
 
 # A turn concern is a promise concern (orion/prime/state.py ``concern_ttl``: 72 h unkept, not 24 h).
 TURN_EVENT_PREFIX = PROMISE_EVENT_PREFIX
 CONCERN_REF = re.compile(r"prime_concern:([0-9a-f]{16})\b")
+# A carry turn's prompt STARTS with the concern it carries (orion/schemas/intention.py); only that id settles. Other
+# refs further down (the quoted exchange, Orion's own earlier words) are quotes, not answers.
+LEADING_CONCERN_REF = re.compile(r"\A\s*\[?prime_concern:([0-9a-f]{16})\b")
 COUNTED_VERDICTS = frozenset({"completed"})
 
 MAX_PENDING = 30
@@ -205,7 +216,13 @@ def classify_who(session_id: Optional[str], raw: dict[str, Any]) -> Optional[Tur
         return "letter"
     if sid == INTENTION_SESSION_ID:
         return "intention"
-    if sid and "mode" in raw and not sid.startswith(SYSTEM_SESSION_PREFIX):
+    # Juniper's chat is a turn a Hub browser surface sent (#3602): the same rule the promise ledger and the
+    # report use (orion/regulation/juniper_turns.py ``is_browser_surface_turn``). ``mode`` alone is not enough:
+    # an eval script or a coding session posting to /api/chat carries ``mode`` but no ``surface_context``
+    # (live 11-17: session memory-scoreboard-eval was handed back as chat_juniper with a promise ref).
+    # ``mode`` is not required either: the Hub skill-runner's deterministic browser send carries surface_context and
+    # no ``mode``, and Juniper starts those sends, so it is her turn (intended).
+    if sid and not sid.startswith(SYSTEM_SESSION_PREFIX) and is_browser_surface_turn(raw):
         return "chat_juniper"
     return None
 
@@ -244,8 +261,13 @@ def signal_from_hop(hop: dict[str, Any]) -> Optional[TurnSignalV1]:
         if who is None:
             return None
         prompt = str(raw.get("user_message") or "")
+        if who == "intention":
+            lead = LEADING_CONCERN_REF.match(prompt)
+            cited = [lead.group(1)] if lead else []
+        else:
+            cited = _concern_ids(prompt)
         return TurnSignalV1(correlation_id=corr[:200], stage="ingress", at=at, who=who,
-                            prompt_excerpt=prompt[:PROMPT_EXCERPT_CAP], prompt_concern_ids=_concern_ids(prompt))
+                            prompt_excerpt=prompt[:PROMPT_EXCERPT_CAP], prompt_concern_ids=cited)
     indices, quotes, kept = _counted_promises(raw.get("reflection"))
     verdict = raw.get("compliance_verdict")
     return TurnSignalV1(correlation_id=corr[:200], stage="finalize", at=at,
@@ -329,7 +351,11 @@ def turn_concern_id(correlation_id: str) -> str:
 
 def holds_turn_slot(c: PrimeConcernV1, now: datetime) -> bool:
     """Whether an open turn concern holds the turn-concern slot (``TURN_CONCERNS_MAX_OPEN``). Only while it is
-    within ``CONCERN_TTL`` (24 h) of last being kept, exactly as long as it lived before promise concerns got 72 h
+    within ``CONCERN_TTL`` (24 h) of its last evidence (``last_evidence_at``). With the evidence clock on
+    (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED, #3574) a keep no longer renews it, so an untouched promise frees the slot
+    24 h after it opened (or after Prime last asked about it or took it on) while it is still held for up to 72 h;
+    before, every keep held the slot as long as Prime held the promise. This is the rule's stated intent: 24 h is
+    exactly as long as it lived before promise concerns got 72 h
     (2026-11-13): the longer life gives Prime more time to keep a promise, not one promise 3 days of blocking
     every later one (on the live 3-day replay a slot held 72 h refused a thread that 24 h opened)."""
     return (c.graded is None and (c.event_ref or "").startswith(TURN_EVENT_PREFIX)
@@ -393,7 +419,7 @@ def fold_turn_signals(
         gist = turn_gist(start.who, start.prompt_excerpt, sig.final_excerpt)
         replied = bool(sig.final_excerpt.strip()) and (sig.verdict or "") in COUNTED_VERDICTS
         settled: list[str] = []
-        if replied:
+        if replied and start.who not in NO_PROMPT_SETTLE_WHO:
             for cid in start.prompt_concern_ids:
                 state, line = settle_concern(state, cid, arm="treated", produced=True, now=now,
                                              note=f"answered in {words} turn {corr}")

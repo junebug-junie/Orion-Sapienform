@@ -3,8 +3,10 @@ from __future__ import annotations
 import pytest
 
 from orion.harness.finalize import (
+    STRAIN_ONLY_NOT_REPAIRED_REASON,
     needs_response_repair,
     response_repair_reason_for,
+    response_repair_skip_reason,
     run_harness_finalize_chain,
 )
 from orion.harness.runner import build_coalition_snapshot, build_draft_molecule
@@ -21,23 +23,40 @@ def test_needs_repair_false_when_aligned() -> None:
     assert response_repair_reason_for(make_reflection()) is None
 
 
-def test_needs_repair_true_for_misaligned_uncertain_strain() -> None:
+def test_needs_repair_true_for_misaligned_uncertain() -> None:
     assert needs_response_repair(make_reflection(alignment_verdict="misaligned")) is True
     assert response_repair_reason_for(make_reflection(alignment_verdict="misaligned")) == "misaligned"
     assert needs_response_repair(make_reflection(alignment_verdict="uncertain")) is True
     assert response_repair_reason_for(make_reflection(alignment_verdict="uncertain")) == "uncertain"
-    assert (
-        needs_response_repair(
-            make_reflection(alignment_verdict="aligned", strain_unresolved=True)
-        )
-        is True
-    )
-    assert (
-        response_repair_reason_for(
-            make_reflection(alignment_verdict="aligned", strain_unresolved=True)
-        )
-        == "strain_unresolved"
-    )
+    # Open strain does not change a rejected draft's reason.
+    assert response_repair_reason_for(
+        make_reflection(alignment_verdict="uncertain", strain_unresolved=True)) == "uncertain"
+
+
+def test_open_strain_alone_does_not_repair_an_aligned_draft() -> None:
+    """#3618: 56% of aligned + strain-only repairs returned the draft unchanged; a rewrite
+    cannot close Orion's open loops. The skip is named, never silent."""
+    reflection = make_reflection(alignment_verdict="aligned", strain_unresolved=True)
+    assert needs_response_repair(reflection) is False
+    assert response_repair_reason_for(reflection) is None
+    assert response_repair_skip_reason(reflection) == STRAIN_ONLY_NOT_REPAIRED_REASON
+    # Aligned with no strain: no skip reason either.
+    assert response_repair_skip_reason(make_reflection(alignment_verdict="aligned")) is None
+    # A rejected draft is repaired, so it has no skip reason.
+    assert response_repair_skip_reason(
+        make_reflection(alignment_verdict="misaligned", strain_unresolved=True)) is None
+
+
+@pytest.mark.parametrize("strain", [True, False])
+def test_an_unsupported_claim_repairs_an_aligned_draft(strain: bool) -> None:
+    """An unsupported-claim note names a defect in the reply itself. Before #3618 an
+    aligned draft with one was repaired only when strain happened to be open too
+    (live 30 days: 1 repaired, 2 shipped as written)."""
+    reflection = make_reflection(alignment_verdict="aligned", strain_unresolved=strain,
+                                 alignment_notes=["unsupported claim: a car at 18:20; notes say none"])
+    assert needs_response_repair(reflection) is True
+    assert response_repair_reason_for(reflection) == "unsupported_claim"
+    assert response_repair_skip_reason(reflection) is None
 
 
 @pytest.mark.asyncio
@@ -205,3 +224,44 @@ def test_a_failed_judge_repairs_with_reason_reflection_failed_not_misaligned():
     failed = make_reflection(alignment_verdict="misaligned", reflection_source=REFLECTION_SOURCE_JUDGE_FAILED)
     assert needs_response_repair(failed)
     assert response_repair_reason_for(failed) == "reflection_failed"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_required_repair_is_recorded_as_ran_and_failed() -> None:
+    """Fail-closed acceptance (#3686 review): 5b rejected the draft, the repair call
+    fails. Nothing is published as final text, and the outcome says the repair ran
+    and failed, with the reason and the error."""
+    from orion.harness.finalize import HarnessFinalizeFailedError
+
+    thought = make_thought()
+    draft_text = "motor draft that misses the frame"
+    molecule = build_draft_molecule(
+        correlation_id="c-fail", thought=thought, draft_text=draft_text, grammar_receipts=[],
+        coalition_snapshot=build_coalition_snapshot(thought), repair_overlay=make_repair_overlay(),
+    )
+    reflection = make_reflection(alignment_verdict="misaligned")
+
+    async def substrate_client(_mol: object):
+        return make_appraisal(surprise_level=0.5)
+
+    async def cortex_client(req: object):
+        if req.plan.verb_name == "orion_response_repair":
+            raise RuntimeError("gpu_pool_unavailable")
+        return {"final_text": reflection.model_dump(mode="json"), "trace_id": "t"}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("orion.harness.finalize.extract_finalize_reflection_payload",
+                   lambda _result: reflection.model_dump(mode="json"))
+        with pytest.raises(HarnessFinalizeFailedError) as info:
+            await run_harness_finalize_chain(
+                correlation_id="c-fail", draft_text=draft_text, draft_molecule=molecule,
+                thought=thought, grammar_receipts=[], repair_overlay=make_repair_overlay(),
+                user_message="hello", voice_contract=None,
+                cortex_client=cortex_client, substrate_client=substrate_client,
+            )
+    outcome = info.value.partial.outcome_molecule
+    assert outcome.finalize_failed is True
+    assert "gpu_pool_unavailable" in (outcome.failure_reason or "")
+    assert outcome.final_text == ""
+    assert outcome.response_repair_ran is True
+    assert outcome.response_repair_reason == "misaligned"

@@ -150,10 +150,24 @@ def horizon_for(concern: PrimeConcernV1) -> Optional[datetime]:
     return a.horizon_from(concern.opened_at) if a is not None else None
 
 
+# The sub-agent types the hint names. The carry turn's Agent tool lists claude, Explore, general-purpose, Plan,
+# statusline-setup (read live from the FCC transcripts, 2026-11-17) plus orion-repo-agent, which the governor
+# passes on every non-reading turn with `--agents` (orion/fcc/claude_spawn.py::fcc_agents_argv, #3650): project
+# setting scope stays off, so the repo's .claude/agents/ is never loaded there.
+CARRY_SUBAGENT_TYPES: tuple[str, ...] = ("Explore", "orion-repo-agent")
+# One line, take-on turns only (#3639). `python -P -m orion.dig take-ons` counts the calls it leads to.
+CARRY_SUBAGENT_HINT = (
+    "Sub-agents: for a long multi-step dig or independent pieces that can run in parallel, call the Agent tool "
+    'with subagent_type "Explore" (read-only search across many files) or "orion-repo-agent" (one multi-step '
+    "piece in the repo that needs Bash, tests or edits on a branch); give it a self-contained brief and use the "
+    "summary it returns.")
+
+
 def carry_prompt(concern_id: str, body: str) -> str:
     """The carry turn's prompt: the concern ref first, so the hand-back settles it when the turn completes
-    (orion/prime/handback.py reads ``prime_concern:<id>`` from the PROMPT only)."""
-    return f"prime_concern:{concern_id}\n\n{body}"
+    (orion/prime/handback.py reads ``prime_concern:<id>`` from the PROMPT only). The sub-agent line goes last,
+    after the task: how the work may be done, not part of it."""
+    return f"prime_concern:{concern_id}\n\n{body}\n\n{CARRY_SUBAGENT_HINT}"
 
 
 # --- the take-on ------------------------------------------------------------------------------------------------
@@ -335,7 +349,7 @@ def frame_lines(st: PrimeIntentionsStateV1, now: datetime) -> list[str]:
 __all__ = [
     "ACT_GRACE_SEC", "ADAPTERS", "CHECK_INTERVAL_SEC", "INTENTIONS_KEY", "INTENTION_COMPONENT", "MAKE_BASIS",
     "MAX_UNREAD_READS", "MIN_RUN_ROOM_SEC", "OBJECT_PREFIX", "PrimeIntentionDoneV1", "PrimeIntentionOpenV1", "PrimeIntentionsStateV1",
-    "act_horizon_sec", "adapter_for", "age_out", "carry_prompt", "find_open", "finish", "frame_lines", "has_adapter",
+    "CARRY_SUBAGENT_HINT", "CARRY_SUBAGENT_TYPES", "act_horizon_sec", "adapter_for", "age_out", "carry_prompt", "find_open", "finish", "frame_lines", "has_adapter",
     "horizon_for", "keep_taken_on", "make_act", "no_take_on_ids", "open_ids", "order_due", "parse_not_before", "past_horizon", "run_terminal",
     "take_on", "take_on_refusal", "update_open",
 ]

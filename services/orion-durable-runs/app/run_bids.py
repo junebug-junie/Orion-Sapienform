@@ -136,6 +136,14 @@ def _aware(v: Any) -> Optional[datetime]:
     return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
 
 
+def want_opened_at(request: dict[str, Any]) -> Optional[datetime]:
+    """When the run's want arose: the brief's ``promised_at`` when it has one (an intention.carry run: the time
+    Orion made the promise, so a take-on's hunger and rank are the promise's age, #3640), else the run's own
+    ``requested_at``. The hold end never reads this (``hold_end``'s ``held_from``: the request time)."""
+    brief = request.get("brief") if isinstance(request.get("brief"), dict) else {}
+    return _aware(brief.get("promised_at")) or _aware(request.get("requested_at"))
+
+
 def want_for_run(request: dict[str, Any], tier: int, *, producer: str = PRODUCER) -> Optional[WantV1]:
     """The run's want, or None when the run is not one of Orion's own wants (or not a bidding tier)."""
     family = run_act_family(request)
@@ -148,7 +156,7 @@ def want_for_run(request: dict[str, Any], tier: int, *, producer: str = PRODUCER
     corr = request.get("correlation_id")
     return WantV1(
         want_id=run_id, family=family.actor, producer=producer, verb=family.verb,
-        object_ref=f"durable_run:{run_id}", tier=tier, opened_at=_aware(request.get("requested_at")),
+        object_ref=f"durable_run:{run_id}", tier=tier, opened_at=want_opened_at(request),
         window=WantWindowV1(latest=_aware(admission.get("deadline_at"))),
         correlation_id=str(corr) if corr else None)
 
@@ -209,16 +217,34 @@ def reading_want(request: dict[str, Any], tier: int, *, producer: str = VALUE_PR
                   correlation_id=str(corr) if corr else None)
 
 
-def hold_end(want: WantV1, deferrable_window_s: float) -> Optional[datetime]:
-    """When a held want stops waiting and asks the pool anyway: ``opened_at`` + the family's
-    deferrable window, but never later than ``HOLD_DEADLINE_MARGIN_SEC`` before the run's own
-    admission deadline (a run released AT its deadline would fail at once). None: no opened_at and
-    no deadline -- the caller treats that as "do not hold" (an unbounded hold is never allowed)."""
+def deadline_margin_sec(request: dict[str, Any]) -> float:
+    """How long before its own deadline a held run is released: ``HOLD_DEADLINE_MARGIN_SEC``, or one whole
+    attempt (``brief.timeout_sec``) when that is longer. With a shorter margin the attempt is clamped to the
+    time left (``graph.attempt_timeout_sec``) and the motor is cut early: a 3600 s carry turn released 1800 s
+    before its horizon got the old 1,440 s motor budget again (#3354 review)."""
+    brief = request.get("brief") if isinstance(request.get("brief"), dict) else {}
+    try:
+        timeout = float(brief.get("timeout_sec") or 0.0)
+    except (TypeError, ValueError):
+        timeout = 0.0
+    return max(HOLD_DEADLINE_MARGIN_SEC, timeout)
+
+
+def hold_end(want: WantV1, deferrable_window_s: float,
+             margin_sec: float = HOLD_DEADLINE_MARGIN_SEC, *, held_from: Optional[datetime] = None) -> Optional[datetime]:
+    """When a held want stops waiting and asks the pool anyway: ``held_from`` (the run's own request time; the
+    binder passes it, so an intention want opened at its promise time still holds from its request, #3640),
+    else ``opened_at`` (only when the request has no readable ``requested_at``), + the family's
+    deferrable window, but never later than ``margin_sec`` (default ``HOLD_DEADLINE_MARGIN_SEC``; the
+    binder passes ``deadline_margin_sec``) before the run's own admission deadline (a run released AT
+    its deadline would fail at once). None: no opened_at and no deadline -- the caller treats that as
+    "do not hold" (an unbounded hold is never allowed)."""
     ends = []
-    if want.opened_at is not None and deferrable_window_s > 0:
-        ends.append(want.opened_at + timedelta(seconds=deferrable_window_s))
+    start = held_from or want.opened_at
+    if start is not None and deferrable_window_s > 0:
+        ends.append(start + timedelta(seconds=deferrable_window_s))
     if want.window.latest is not None:
-        ends.append(want.window.latest - timedelta(seconds=HOLD_DEADLINE_MARGIN_SEC))
+        ends.append(want.window.latest - timedelta(seconds=margin_sec))
     return min(ends) if ends else None
 
 
@@ -425,7 +451,8 @@ class RunBidder:
         except Exception:  # noqa: BLE001 -- incl. timeout: the run asks the pool as before
             logger.warning("physiology_bind_bid_failed run=%s family=%s", want.want_id, want.family, exc_info=True)
         elapsed_ms = round((time.monotonic() - t0) * 1000.0, 1)
-        verdict = bind_verdict(decision, now, hold_end(want, window))
+        verdict = bind_verdict(decision, now, hold_end(want, window, deadline_margin_sec(request),
+                                                       held_from=_aware(request.get("requested_at"))))
         verdict.detail["bid_ms"] = elapsed_ms
         if decision is None or decision.outcome != "funded":
             # Nothing of this want may stay in the book: a held or pool-queued want reserves nothing
@@ -485,4 +512,4 @@ class RunBidder:
 __all__ = ["BINDING_FAMILIES", "BINDING_PRODUCER", "BindVerdict", "HOLD_EVENT", "NO_ANSWER_REASONS", "PRODUCER",
            "READING_FAMILY", "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC", "RELEASE_EVENT", "RunBidder",
            "READING_BINDING_PRODUCER", "READING_HOLD_END_SEC", "RunValue", "VALUE_PRODUCER", "reading_binds", "VALUE_WAIT_SEC", "bind_verdict", "binding_family", "decision_detail", "hold_end", "reading_stage",
-           "reading_want", "want_for_run"]
+           "reading_want", "want_for_run", "want_opened_at"]

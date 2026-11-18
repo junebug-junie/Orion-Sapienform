@@ -89,14 +89,14 @@ test('revision replaces the draft in place and marks it revised with the reason'
   const fin = c.appendChild(finalMessage('Juniper -- I checked two containers'));
   const found = api.findDraft(c, 'corr-2');
   assert.equal(found, draft);
-  const result = api.settleWithFinal(c, found, fin, { revised: true, revised_reason: 'strain_unresolved' }, { document: doc });
+  const result = api.settleWithFinal(c, found, fin, { revised: true, revised_reason: 'misaligned' }, { document: doc });
   assert.equal(result, 'revised');
   assert.equal(c.children.length, 3);
   assert.equal(c.children[1], fin, 'final takes the draft position');
   assert.equal(c.children[2], sys);
   assert.equal(api.findDraft(c, 'corr-2'), null, 'draft is gone');
   assert.equal(fin.children[1].dataset.revisedMarker, '1', 'marker sits under the header');
-  assert.equal(fin.children[1].textContent, 'revised: the check found an unresolved strain');
+  assert.equal(fin.children[1].textContent, 'revised: the check found it out of line with the stance');
   assert.equal(fin.dataset.revised, '1');
 });
 

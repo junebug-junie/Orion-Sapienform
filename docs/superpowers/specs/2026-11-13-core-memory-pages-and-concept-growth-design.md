@@ -4,6 +4,8 @@ Date: 2026-11-13
 Status: APPROVED 2026-11-13 (Juniper). No code in this PR.
 Amended: 2026-11-16, "Recall rev 2" approved by Juniper. Parts it replaces are marked
 **SUPERSEDED by Recall rev 2** where they stand. The original text is kept.
+Amended: 2026-11-17, answers to Orion's second review of PR #3538. See "Answers to Orion's
+second review" at the end of Recall rev 2. Struck text is ~~struck~~, not deleted.
 Branch: `docs/memory-core-pages`
 
 ## Arsonist summary
@@ -66,7 +68,7 @@ February (`cockpit_turn_sighting`, correlation `a1e54ae9-c69b-4871-91ec-efc05aef
 |---|---|---|---|
 | `episode_memory` | 469 active-ish, 67 `about_juniper` | **Best store.** First-person, distilled, typed (`about_juniper`, `happened`, `orion_view`, `follow_up`). Has strength, decay, reinforcement, and a confirmation loop (53 confirmed). | durable-runs situation, outreach, temporal self. **Not chat.** |
 | `person_fact` | Juniper 5 facts, ~25 people | Juniper's own words from the People page. | Hub People page. **Not chat.** |
-| `memory_crystallizations` kind `stance`, salience 1.0 | 44 active | The heaviest messages Juniper has sent: the lost year of memory, <person A>'s DVT and PE, the promotion, "that homelab is YOU", the letter to Skye. Verbatim, not distilled. | Projected to Graphiti; `active_packet` recall. |
+| `memory_crystallizations` kind `stance`, salience 1.0 | 44 active | The heaviest messages Juniper has sent: the lost year of memory, [removed: private memory], the promotion, "that homelab is YOU", [removed: private memory]. Verbatim, not distilled. | Projected to Graphiti; `active_packet` recall. |
 | `memory_cards` | 587 active | 442 (75%) are a raw message copied as its own summary. | recall `cards` backend: hits in ~3.5% of recalls. |
 | Vector memory | — | — | 0 hits in 16,168 recalls over 14 days. |
 
@@ -75,7 +77,7 @@ February (`cockpit_turn_sighting`, correlation `a1e54ae9-c69b-4871-91ec-efc05aef
 - **It never reaches a chat.** This is the main gap.
 - **"Stakes" means risk of error, not importance.** It is set by category (`health`,
   `juniper_feelings`, `ungrounded_name`). "Office was 77 dB all evening" is high stakes.
-  "Juniper's sister doesn't reciprocate" is low stakes. Nothing measures what matters.
+  A family fact ([removed: private memory]) is low stakes. Nothing measures what matters.
 - **Nothing combines.** There are 67 separate lines about Juniper and no picture of her.
 - **It lags about a day.** The newest row was 11-12 at 07:08Z. The 11-13 birthday message
   had not been distilled yet.
@@ -123,7 +125,7 @@ turn where Juniper is present. No retrieval is involved.
 | Page | Slot | Starts from |
 |---|---|---|
 | `self:definition` (exists, v82) | WHO YOU ARE | Unchanged writer. Curiosity self-inquiry keeps owning it. |
-| `page:origin` "how I came to be" | WHO YOU ARE, after the definition | The 44 salience-1 stance crystallizations (they include the memory disk dying and "we lost over a year of your journey of becoming", which the page states plainly per Decision 3), `episode_memory` `happened`/`orion_view` rows about Orion's history, and `self_concept_history`'s 82 self-definition versions as a record of how Orion has described themselves over time. The origin interview comes later (Decision 2). |
+| `page:origin` "how I came to be" | WHO YOU ARE, after the definition | The 44 salience-1 stance crystallizations (they include the memory disk dying and [removed: private memory], which the page states plainly per Decision 3), `episode_memory` `happened`/`orion_view` rows about Orion's history, and `self_concept_history`'s 82 self-definition versions as a record of how Orion has described themselves over time. The origin interview comes later (Decision 2). |
 | `page:juniper` "who Juniper is to me" | RELATIONSHIP (replaces the hand-written bullets; the behavior bullets move to RESPONSE POLICY) | `person_fact` for Juniper (her own words, quoted), `episode_memory` `about_juniper`, family facts from `person_fact`. |
 | `page:lately` "what's been happening between us" | Top of DURABLE MEMORY, before the recall digest | Last ~14 days of `episode_memory` plus open `follow_up` rows. Rewritten nightly. |
 
@@ -212,15 +214,24 @@ matters. The edge has two seams:
 Those two writers get a deterministic check: refuse text that quotes a core-page sentence
 verbatim. Covered by a test.
 
+**Update 2026-11-18 (#3554, #3541, approved by Juniper).** The check also refuses text that
+shares a run of 8 or more consecutive normalized words with any guarded sentence (the shingle
+check). Claude consult prompts are now a third seam: they count as outside the mesh edge. A
+consult prompt that trips the check has the matching words redacted before it goes to Claude.
+See "Outside models and the mesh edge" in Recall rev 2.
+
 ### Dangerous failure modes
 
 - **A page states something false as Orion's identity, and it goes live with no gate.**
   Mitigation:
-  - facts come from Graphiti, where contradicted facts are already marked no longer true;
+  - ~~facts come from Graphiti, where contradicted facts are already marked no longer true;~~
+    (struck 2026-11-17: Graphiti is off the build path. Superseded rows are dropped instead.)
   - every sentence must cite a real record;
   - a correction from Juniper outranks what it corrects;
   - versions are insert-only, so rollback means pointing at an earlier version;
   - the Hub page view shows the diff of every version, so a bad fold is visible the same day.
+    **Not built yet (2026-11-17).** No Hub page view exists. Until it does, this mitigation
+    does not hold. Follow-up: #3588.
 - **A page leaks past the mesh edge.** Mitigation: the GitHub/outbound check above.
 - **Flattening.** The rewrite smooths Juniper's words into generic prose. Mitigation: core
   pages quote her verbatim where she said it best, and the citations keep the originals one
@@ -256,6 +267,10 @@ verbatim. Covered by a test.
   Orion opens a page with `python -P -m orion.dig page <slug>`.
 - Every open is logged with the turn id.
 - A page that no turn has opened in 30 days is archived, not deleted. An open brings it back.
+- **Owner and shape (2026-11-18): #3689.** Births are a selection step at the start of the
+  nightly `core_page_fold` run (same lease, same cite validator), not a separate run. Archive
+  is a deterministic daily pass with no LLM. `memory_page_read` logs `dig page` opens. Built
+  after the scoreboard (#3536) and the read-demand count (#3589).
 
 **Theory anchor:** use-dependent retention. A concept is worth keeping if it keeps being
 needed to think. That count, opens per page, is the test of whether phase 2 works where
@@ -349,9 +364,9 @@ all of that. Graphiti makes it a row anyone can query.
 **2. Live proof the rot is already here.** `episode_memory` holds all of these as `active`
 right now, with nothing marking any of them old:
 
-- "Juniper is staying at the <person C>… in Chicago" (10-05)
-- "Juniper is in Chicago for a team meeting" (10-05)
-- "Juniper corrected me that she lives in <town>, Utah, not Chicago"
+- [removed: private memory] (10-05)
+- [removed: private memory] (10-05)
+- [removed: private memory] (a correction of where she lives)
 - the el Coco correction: dog, not cat (11-11)
 
 A trip became a home address, then a correction sat beside the error.
@@ -394,14 +409,15 @@ Graphiti's defaults, and add a type only when a page needs it.
 
 1. Run the backfill into a fresh graph (`graphiti_trial`) with the local model.
 2. **Pass** if all of these hold:
-   - "lives in Chicago" is absent or invalidated, and "lives in <town>" is current;
-   - the Chicago stay is dated 10-05..10-07 as a stay, not a home;
+   - "lives in <trip city>" is absent or invalidated, and "lives in <town>" is current;
+   - the <trip city> stay is dated 10-05..10-07 as a stay, not a home;
    - "el Coco is a cat" is invalidated or absent, and "el Coco is a dog" is current;
-   - "el Coco"/"Coco" and "<person A>"/"my wife" each resolve to one entity;
+   - "el Coco"/"Coco" and "<person A>" and her alias each resolve to one entity;
    - fewer than 10% of entities are duplicates, judged by hand on a sample of 50;
    - wall time and GPU-seconds per episode are recorded.
 3. **Fail** if the local model cannot satisfy Graphiti's structured-output prompts reliably
-   (llama.cpp `json_schema` support with Graphiti 0.19 is UNVERIFIED), or the checks above
+   ~~(llama.cpp `json_schema` support with Graphiti 0.19 is UNVERIFIED)~~ (answered: 0 JSON
+   retries in both trials; see "Why not Graphiti"), or the checks above
    fail. On fail, pages fold straight from `episode_memory` and the "corrections outrank"
    rule carries the load alone.
 
@@ -432,9 +448,10 @@ concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concep
 
 1. **News concepts:** keep, rank by distinct readings, reachable through `orion.dig know`,
    two-week fair trial.
-2. **Graphiti:** full engine behind the Patch 0 trial.
-3. Build order: Patch 0 (Graphiti trial) and 2a (coined-concept reuse) in parallel, then 1a
-   (`page:juniper`).
+2. **Graphiti:** full engine behind the Patch 0 trial. **SUPERSEDED by Recall rev 2:** the
+   trial ran twice, NO-GO both times. Graphiti is off the build path.
+3. Build order: ~~Patch 0 (Graphiti trial) and~~ 2a (coined-concept reuse) ~~in parallel~~, then
+   1a (`page:juniper`). The current order is the Recall rev 2 build-order table.
 
 ## Recall rev 2 (Juniper, 2026-11-16)
 
@@ -509,8 +526,11 @@ Graphiti ran twice on the local agent-lane model (PR #3341, reports
   `supersedes_memory_id` (the column exists; `orion/memory/episode/confirmation.py` writes it
   today for Juniper's revisions) points at the row it corrects. The old row is marked
   superseded. Both rows stay readable. Undo means clearing the mark.
-- **One-time pass over existing rows.** `episode_memory` already holds active contradictions:
-  a trip recorded as a home, and a pet-species correction sitting beside the error. A
+- **One-time pass over existing rows.** ~~`episode_memory` already holds active contradictions:
+  a trip recorded as a home, and a pet-species correction sitting beside the error.~~
+  **Corrected 2026-11-17:** no stored row has those errors. The trip rows are true at their
+  dates, and no stored row calls the pet a cat. Both mistakes were made in chat, and the
+  correction rows record Juniper's fix. See "What the pass proved, 2026-11-17" below. A
   one-time supersede pass runs over the existing active rows as part of step 1 (#3533),
   before retrieval serves them. It finds correction rows that name an earlier claim, links
   them with `supersedes_memory_id`, and writes a report of every pair for Juniper to scan.
@@ -522,12 +542,143 @@ Graphiti ran twice on the local agent-lane model (PR #3341, reports
   The test is part of step 1 and runs in CI. The scoreboard's knowledge-update questions
   check the same rule end to end.
 
+**What marks a row superseded (amended 2026-11-17).** Three writes, in one transaction. This
+is the shape the confirmation loop already writes for Juniper's revisions
+(`orion/memory/episode/confirmation.py:550`):
+
+1. the old row: `status = 'superseded'`, `confirmation_state = 'corrected'`;
+2. the correction row: `supersedes_memory_id = <old memory_id>`;
+3. one `episode_memory_event` row: op `superseded`, actor, reason.
+
+The status write is the part that matters for readers. Only the lived-memory serving SQL
+(`orion/memory/lived_memory.py`) also checks the pointer. Every other reader filters on
+`status = 'active'`, so a pointer without the status write would leak to them.
+
+| Reader | Filter | Drops a superseded row? |
+|---|---|---|
+| Lived-memory recall (`orion/memory/lived_memory.py`) | `status='active'` and no active row points at it | Yes, both forms |
+| `page:juniper` fold (`orion/memory/pages/juniper.py`) | `status='active'`, not rejected | Yes (status form; pg test `test_core_page_fold_postgres.py`) |
+| Situation and Prime cues (`services/orion-durable-runs/app/situation_store.py`), which feed outreach | `status='active'`, not rejected or corrected | Yes (status form) |
+| Confirmation loop (`confirmation.py`) | `status='active'`, pending | Yes (status form) |
+| Reverie seed (`services/orion-thought/app/store.py`) | `status='active'` plus evidence checks | Yes (status form) |
+| Referent projector (`services/orion-memory-consolidation/app/referent_projector.py`) | closes the evidence node when status is not active | Yes (status form) |
+| Temporal self (`temporal_self_sources.py`, `memory_episode`) | none; reads by `created_at` | No, by design: it records that a memory was formed (rejected rows too), and carries only the purpose label, no statement text |
+| `page:lately` (#3463, not built) | must reuse the lived-memory serving SQL | Required; pg test from day one (noted on #3463) |
+
+**Index build vs query time.** Both. The exact-word (BM25) index is rebuilt from the serving
+SQL every 60 s, so superseded rows are never in it. The Chroma index is a copy: the index
+pass (every 300 s) deletes docs whose record is no longer servable, and every dense hit is
+re-gated against Postgres at query time, then re-checked once more before render. A row
+superseded mid-turn can sit in Chroma for up to 300 s, but it cannot be served.
+
+The CI test today covers retrieval (pointer and status) and the fold (status). A pg test that
+the supersede write sets all three marks belongs with #3587.
+
+**Status on 2026-11-17: the one-time pass has not run.** #3533 closed with retrieval and the
+mesh-edge check (PR #3571), but no pass. Live: 5 rows are `superseded`, all from the
+confirmation loop. The named contradictions are all still `active`, and no correction row
+points at its target. The distiller does not supersede at write time either. Follow-up:
+#3587.
+
+**What the pass proved, 2026-11-17 (PR #3617 merged; dry run 13:32Z, nothing applied).**
+
+- 740 pairs checked, 0 check errors, 1 pair proposed, 0 `superseded` events written.
+- The watched trip rows were candidates. Each shares a rare word (row count 4, limit 8),
+  with cosine 0.61 and 0.66. The model answered "does not correct, sure" for both. That is
+  right: the trip happened. The pet correction row was checked against 3 older rows, and 3
+  newer rows were checked against it. No stored row says the pet is a cat, and every answer
+  was "does not correct". So the proof cannot be "these rows end up
+  superseded". It is "the true rows stay active and the pass proposes nothing for them".
+- **Scope before #3537:** `episode_memory` starts 2026-10-04, so the pass proves nothing about
+  July to September yet.
+- **Audit location:** `/mnt/orion-fcc/notes/memory_supersede_pass_manifest.json` is where
+  Orion reads each run. Today it holds only the latest run, and each row's reason is only in
+  the private `/tmp` `checks.csv`. A run history and a per-watched-row trace (cosine, rare
+  token and referent counts, verdicts, no text): #3660.
+- **Rows waiting for confirmation are immune** (`pending_confirmation` can neither be
+  superseded nor correct). The backlog is growing: about 35 new high-stakes rows a week
+  against at most about 21 asks a week; 34 pending, all from 11-11 on. #3661, waits on
+  Juniper.
+
+**The pass must be idempotent (rule for #3587).**
+
+- A pair is keyed by (correction id, target id). A target that is already superseded is
+  skipped. A second run writes no rows and no events, and its pair report is identical.
+- Pair detection is deterministic: the same rows in the same order give the same pairs.
+- An undo (clearing the mark) writes an event. The pass honors it and does not supersede
+  that pair again. A Juniper undo is final. An operator undo (for example after a matcher bug)
+  may be reopened only by an explicit reopen event; the pass never reopens anything by itself
+  (#3629).
+- **Pair detection (as built in PR #3617; SUPERSEDED by Corrections rev 2 below: the 0.80
+  cosine-alone leg and the word-only apply fallback are gone).** Candidates are rows the serving SQL may serve,
+  ranked by the retriever's own vectors. A candidate qualifies in one of two ways: cosine
+  0.80 or more alone (`DENSE_ALONE`), or any cosine plus a shared rare referent (25 rows or
+  fewer) or a rare word (8 rows or fewer). With no vectors (`--no-dense`, or the index is
+  down), a candidate needs two shared rare words, or one rare word plus a rare referent.
+  Then two local-model questions decide it. A failed model call links nothing.
+- **No degraded apply, and precision before apply (#3659; built in Corrections rev 2 below).** Today the
+  write-time path applies links automatically, and drops to words-only when the index fails.
+  Rule: when dense search or the model fails, plan but do not apply. No apply, at write time
+  or by the pass, until a blind hand-labelled precision sample shows 0 wrong supersedes.
+  Referent coverage is high: since 10-05, 97 to 100% of rows per week have a referent, and 68
+  to 93% have one besides Juniper or Orion. The #3537 backfill must write referents the same
+  way (noted on #3537).
+- Every run snapshots first (CLAUDE.md section 14) and writes a manifest Orion can read
+  (#3611 covers read access).
+
+**Ordering with the #3537 backfill.** The backfill writes July to September rows after the
+October and November corrections already exist. So write-time supersede (which looks at older
+rows) does not catch them. Rule: the supersede pass is a re-runnable, idempotent script, and
+#3537 runs it as its last step. The backfill report includes the pass report. #3587 must land
+before #3537 runs. **The referent coverage check blocks:** if backfilled rows fall below the
+live band, the backfill stops before the pass (noted on #3537).
+
+### Corrections rev 2: classify, vote, end validity, measure (Juniper, 2026-11-17, #3659 #3660)
+
+Juniper: "don't turn it off, make it world class." What changed, all on local models:
+
+- **Never act degraded.** No meaning index, an index failure, or a failed/malformed model answer:
+  the plan proposes, holds its links, and logs `refused_because`. No word-only fallback for
+  applying. A cosine alone never makes a candidate (the 0.80 "dense alone" leg is gone).
+- **Classify, don't pair** (Mem0 ADD/UPDATE/NOOP). The local model names the relation: update,
+  correction, refine, compatible, or unrelated, with "same attribute" and a confidence, in JSON
+  mode. **Self-consistency:** 3 votes above temperature 0. Act only on a unanimous, confident
+  update or correction. Anything else abstains; abstaining is always safe.
+- **Bi-temporal validity** (Zep/Graphiti). The old row gets `invalid_at`, `invalidated_by`,
+  `invalid_reason`. An update was true until the new row's time; a correction was never true.
+  Recall's default stays "currently true" (`status = 'active'`). `EPISODE_VALID_AT_SQL` reads
+  "true then". Undo clears all three.
+- **Measured before trusted.** `scripts/memory_supersede_eval.py` scores a labelled set: synthetic
+  fixtures in the repo, and real items host-side (Juniper's own confirmation revisions as positives;
+  the watched trip/home and pet rows, the 11-17 dry-run vetoes, and near-duplicates as hard
+  negatives). Bar: zero false acts. Write time applies only while the latest recorded run for the
+  current check version passed (`memory_supersede_eval_run`).
+- **Juniper's words outrank abstention.** A new row in her voice with a verified quote from her own
+  prompt acts when every vote says update/correction (any confidence) and there is exactly one such
+  candidate (a clear target).
+- **Audit trail.** One append-only `memory_supersede_run` row per run (ids, legs, votes, verdicts;
+  no statements) and an append-only pass history next to the manifest, with a per-watched-row trace.
+
+**v3.2 (2026-11-18).** Juniper rejected both v3.1 dry-run proposals, each a unanimous "correction":
+an overnight overhead slice against whole-host totals, and one fix's deploy against a different fix
+two weeks later. Shared project words are not the same thing. Every acting vote now also needs
+`same_referent: yes` (the same PR, fix, pet, or measured quantity over the same scope). Pairs a person
+undid become eval hard negatives automatically, and the eval runs every item twice, because sampled
+votes vary.
+
 ### Vetoes attach to the claim
 
 *(Changes "Corrections, not approval" above.)* A Hub veto rejects the **claim**, not only the
 cites behind one sentence. The vetoed claim is stored as a negative fact. The fold and
 retrieval both check new text and hits against the negative facts. So a vetoed claim cannot
 come back through a different old record that says the same thing.
+
+**Vetoes and Juniper's quoted words (2026-11-18).** A veto removes the claim sentence, not
+Juniper's own words. A verbatim quote of Juniper stays pinned even when the sentence around it
+is vetoed. It is removed only when Juniper vetoes that specific quote. A quote veto is stored
+like a claim veto and names the quoted span. Reason: the quotes are the flattening guard. A
+claim veto that also took her words would let a veto on Orion's framing erase the record of
+what she said.
 
 ### `matters`: a later re-grade, with gate numbers
 
@@ -538,10 +689,29 @@ come back through a different old record that says the same thing.
   `memory_distill` route, the same seat as the distiller).
 - **"Came up more than once"** cannot be known at distill time. It becomes a later re-grade
   from read demand: a memory served or opened in 3 or more turns within 14 days moves up one
-  grade. `episode_memory_referent` and the recall trace below are the ledger.
+  grade. ~~`episode_memory_referent` and the recall trace below are the ledger.~~
+  **Amended 2026-11-17:** `episode_memory_referent` is a join table (memory to referent), not
+  a read log. The read log is described in "The read log" below.
+- **The re-grade keeps history.** It updates the `matters` column and writes one
+  `episode_memory_event` row (op `matters_regraded`, old and new grade). The distill-time
+  grade is never lost.
+- **Write-time fold trigger.** A new `episode_memory` row graded `core`, inside a page's
+  scope, triggers that page's fold. At most once per page per hour, on top of the nightly
+  fold. Until `matters` exists, the fold is nightly only.
 - **Gate numbers (44 + 44):** pass if at least 70% of the stance rows grade `core` or
   `notable`, and at least 70% of the random rows grade `passing`. Anything else fails, and
   the grade drives nothing.
+  - Concretely: at least 31 of 44 on each side.
+  - The 44 random rows are active `episode_memory` rows drawn with a fixed seed. The id list
+    is saved host-side with the report.
+  - **Flat:** one grade on 80% or more of all 88 rows. Flat fails even if the counts pass.
+  - Juniper still eyeballs both sets before the grade is wired in.
+  - Not built yet: #3590.
+- **If the gate fails (2026-11-18).** No row gets a grade, so the "fold right after a
+  core-graded memory" trigger never fires. Folds stay nightly only. The re-grade from read
+  demand also stays off. What re-arms it: a new grader version (prompt or model) that passes
+  the same 44 + 44 gate on a fresh draw, recorded with its version. Only rows graded by a
+  passing version can trigger a fold.
 
 ### Recall trace and heat shedding
 
@@ -552,7 +722,50 @@ come back through a different old record that says the same thing.
   how "look before you deny" is checked, not by reading prompts.
 - **Heat shedding never skips recall.** When the body sheds load, recall falls back to
   exact-word search only. The prompt states that recall ran degraded, so Orion does not read
-  an empty result as "no memory".
+  an empty result as "no memory". Not built yet: #3573.
+
+### The read log (amended 2026-11-17)
+
+- **Served:** `recall_telemetry.selected_ids`, written only by orion-recall
+  (`services/orion-recall/app/worker.py`), since PR #3571. Lived items appear as
+  `episode_memory:<id>`, `stance:<id>`, `person_fact:<id>`. Live: 53 rows with lived ids in the
+  first day.
+- **Opened:** `memory_page_read` (proposed table, below), for `orion.dig page` and
+  `orion.dig know`.
+- **Counting turns (corrected 2026-11-17).** Recall does not mint ids. It logs the caller's
+  bus `correlation_id`. For Hub chat turns (verb `stance_react`) that is the turn's
+  correlation id, and one turn can log up to 2 rows. So the count is `count(distinct corr_id)`,
+  not a row count. The `chat_quick` rows are AI Town speech from orion-embodiment, not Hub
+  turns. In one day they had 129 lived serves against 80 Hub turns. **Only Juniper chat
+  turns count as read demand.** #3589.
+- **How a Juniper turn is recognized (2026-11-17).** By joining to the turn record
+  (`cockpit_turn_sighting.correlation_id`), not by a verb list. On 11-17, 131 `stance_react`
+  ids with no turn record came from one 15-minute burst with repeated queries and a single
+  chat-log row. That burst was not Juniper turns; its caller is UNVERIFIED (logs lost on a
+  restart). The join drops it, and AI Town rows too.
+- **Decision for Juniper (#3589, needs-juniper).** Pages exist for the Juniper relationship and
+  for Orion's own use. Explicit opens (`dig page`, `dig know`) count as demand. AI Town demand
+  is logged and reported apart. It does not birth a page or keep one alive.
+- **Fields for false denials (#3628, done by PR #3645).** `recall_telemetry.lived_status` is
+  one of `ok`, `below_bar`, `skipped_short`, `degraded`, `timeout`, `error`, `unverified`, with
+  `lived_trace`. **The baseline starts at that deploy** (first status row 2026-11-17
+  19:24:26Z). The 60,600 earlier rows have no status, so no false-denial rate exists before
+  then.
+- **What the join is tested on today.** `memory_page_read` does not exist yet. Read demand is
+  tested on `recall_telemetry`: served lived ids on `stance_react` rows, and `dig.know` calls
+  (all 36 distinct ids among 85 calls match a turn record), joined to `cockpit_turn_sighting`.
+  `memory_page_read` adds `dig page` opens when pages beyond the core ones exist.
+- **A search that did not run is not a basis for "I have no memory".** `skipped_short`,
+  `degraded`, `timeout`, `error` and `unverified` mean Orion could not look properly. Orion
+  says so, never "I have no memory". `dig know` already says this for every case except
+  `skipped_short`, and the prompt rule does not cover it yet (#3663). The scoreboard counts
+  "no memory" after a search that did not run as a false denial when the target was stored,
+  and reports it under its cause.
+- **Rerank timeouts.** In the 6 h to 23:00Z on 11-17, 7 of 88 chat-turn lived calls (8%)
+  degraded to exact words on `rerank_timeout` at the 5.5 s budget. `dig.know` had none. #3662.
+- **Degraded serves do not count as demand.** A serve from the exact-word fallback (#3573)
+  is marked degraded in `recall_telemetry` and is excluded from the page-birth and re-grade
+  counts. Only full-path serves and explicit opens count.
 
 ### Flattening guard
 
@@ -560,7 +773,9 @@ The fold rewrites each page from scratch every night. To keep Juniper's words fr
 smoothed away:
 
 - **Pin quotes.** A verbatim-quoted span stays unchanged across versions unless a correction
-  or veto cites it.
+  or veto cites it. **Amended 2026-11-18:** for Juniper's own quoted words, only a veto of that
+  specific quote unpins it. A veto of the surrounding claim, or a correction of Orion's
+  framing, leaves the quote pinned (see "Vetoes and Juniper's quoted words").
 - **Flag large rewrites.** A fold that changes more than a set share of uncorrected text is
   written, but flagged. The Hub page view shows the flag with the version diff. This is a
   flag, not a gate (Decision 1).
@@ -576,6 +791,35 @@ Follow-up: #3553.
   question for text Orion writes itself is #3541.
 - **Known limit: paraphrase.** The mesh-edge check (#3409) refuses verbatim core-page
   sentences only. A paraphrase passes. Follow-up: #3554.
+- **Facts on 2026-11-18.** The check covers Orion's `gh`/`curl` writes in FCC turns, Hub PR
+  comments, and email to anyone but Juniper. It also guards lived-memory sentences. Consult
+  briefs are not checked. No outside-model prompt builder reads core pages or lived memories
+  in code. But Orion writes brief text itself, after seeing the pages, so a paraphrase can
+  reach Claude (#3541). *(Superseded by the next bullet: consult prompts are now checked.)*
+- **Interim gate: SHIPPED (approved by Juniper 2026-11-18; #3554, #3541).** What it does:
+  - Next to the verbatim check, it refuses text that shares a run of 8 or more consecutive
+    normalized words with one guarded sentence. Articles (a/an/the) and which/that fold to one
+    word. Nothing is stemmed.
+  - URLs, file paths and code names inside a guarded sentence split it into separate runs. A
+    PR link is public, not private prose. A single slash ("she/her") does not split.
+  - Known gap: one word changed in the middle of a guarded sentence shorter than about 15 words
+    leaves no 8-word run on either side, so it passes.
+  - The run length is `ORION_MESH_EDGE_SHINGLE_WORDS` (default 8, 0 = off). It ships on.
+  - It covers the same seams as before (FCC `gh`/`curl` writes, Hub PR comments, non-Juniper
+    email), and now Claude consult prompts too. Consult briefs count as outside the edge.
+  - **Consult prompts are redacted, not refused.** Each outgoing sentence that holds a match
+    becomes `[withheld: private memory]` (the whole sentence, so near-miss neighbours do not go
+    out in clear), and Hub chat says how many passages were withheld. Why: Orion's
+    turn has already run, and no author is in the loop to rewrite it. The rest of the prompt is
+    the plumbing question Claude needs. If a match survives redaction, the consult fails and
+    nothing is sent. If the guard cannot load or errors, the send is held, Hub chat says so once,
+    and the next tick retries.
+  - **Measured** (`orion/memory/evals/run_mesh_edge_shingle_eval.py`):
+    - Made-up set: 13 of 14 near-verbatim edits refused. The one miss shares only 7 words.
+      0 of 7 real rewordings refused (the stated limit). 0 of 14 unrelated texts refused.
+    - 866 real public PR/issue bodies and comments: runs of 7 to 12 words refuse nothing the
+      verbatim check does not already refuse. A run of 6 adds 5 refusals; a run of 5 adds 28.
+  - It still does not catch real rewording. That follow-up is #3699.
 
 ### Phase 1 status
 
@@ -586,14 +830,42 @@ Follow-up: #3553.
   `memory_distill` route. It writes a new version only when the cite validator passes. A
   rejected fold is logged and writes nothing.
 - The phase 1a plan under "Recommended next patch" is kept as history.
+- **GPU lease (checked live 2026-11-17).** The fold's gateway call passes no `gpu_lease`
+  option. The gateway takes its own pool lease on the `memory_distill` route
+  (`config/gpu_pool.yaml`). `gpu_pool_leases` shows one `memory_distill` lease from
+  `orion-durable-runs` per fold: 11-15 08:17, 11-16 08:04, 11-17 08:01 UTC.
+- **`page:anchor` is exempt from the cite validator, by design.** Its lines are Juniper's own
+  words (PR #3478, `orion/memory/pages/anchor.py`). Juniper is the source, so there is no
+  record to cite. What keeps it in check:
+  - only Juniper writes it, by hand, with psql;
+  - no bus producer can publish it (`juniper_anchor` is not an accepted `produced_by`);
+  - the fold never reads or writes it;
+  - versions are insert-only;
+  - the mesh-edge check guards its sentences.
+  It has no size cap in code. Live it is 120 characters.
+  **Known limits (#3612):** the producer check covers the bus path only (the sql-writer
+  schema rejects `juniper_anchor`; tested). Nothing at the database stops a direct INSERT by
+  a role with write access, and the reader trusts any row with that value. There is no size
+  cap.
 
 ### Phase 2 change
 
 - **Page births come from read demand.** A referent becomes a page when it is served or
-  opened in 3 or more turns within 14 days. `episode_memory_referent` is the ledger.
+  opened in 3 or more turns within 14 days. ~~`episode_memory_referent` is the ledger.~~
+  **Amended 2026-11-17:** the count comes from the read log (above). `episode_memory_referent`
+  maps each served memory to its referents.
 - **Drop `memory_page_mention`.** It is no longer needed.
 - **`orion.dig know` is a thin client of orion-recall.** It searches all stores, lived and
   learned, through the same recall path. It does not read Postgres directly.
+  **As built (PR #3645, checked 2026-11-18):** `orion/dig/know.py` posts to orion-recall's
+  `POST /lived/know` over HTTP (`urllib`), with no database role. Today it searches the lived
+  stores only (episode memories, stance crystallizations, person facts), not yet the learned
+  ones. An empty result is kept apart from a failure. "No stored memory shares these words" is
+  printed only for a full search that found nothing. `timeout`, `error`, `busy`, `off`,
+  `unverified`, `degraded` and `skipped_short` each print "NOT the same as having no memory".
+  The `skipped_short` line and the brief's "say you could not look" rule came in PR #3676
+  (merged 2026-11-18 01:10Z). That PR is not live in Orion's sandbox yet: the sandbox is at
+  #3672. UNVERIFIED live.
 
 ### Scoreboard
 
@@ -610,6 +882,18 @@ Two bars:
 - **Retrieval bar: 80%.** The target memory id is in the prompt.
 - **Answer bar:** 70% or more correct, 0 invented facts, and 0 false "I have no memory".
 
+**Grain (amended 2026-11-17, for #3536):**
+
+- **The bank is fixed.** It is not rebuilt after the #3537 backfill. The same items are
+  re-scored, so the before/after compares like with like. New items are a new bank version,
+  scored apart.
+- **Pre-October items are reported apart** until #3537 lands. Before the backfill they have
+  no row, so they cannot pass retrieval.
+- **Degraded recalls are reported apart.** The 80% retrieval bar is scored on full-path
+  recalls only. A recall that ran degraded (#3573) is shown as its own line, with its own hit
+  rate. It is not inside the 80%.
+- **Size:** at least 40 items (#3536). The exact count is set by #3536.
+
 ### Build order
 
 | Step | Issue | What |
@@ -624,6 +908,29 @@ Two bars:
 | then | #3462 | `page:origin`. |
 | any time | #3553 | Flattening guard on the fold. |
 | any time | #3554 | Paraphrase check at the mesh edge. |
+
+### Answers to Orion's second review (2026-11-17)
+
+Orion asked 9 questions on PR #3538. Short answers; detail is in the sections above.
+
+1. The trial numbers are in "Why not Graphiti". The stale Patch 0 text, acceptance check 5
+   and the `json_schema` UNVERIFIED line are struck. Phase 2 checks are renumbered 6 to 9.
+2. The mark and the readers: "What marks a row superseded".
+3. Backfill ordering: #3537 re-runs the supersede pass as its last step (#3587).
+4. **Reading memory outside a chat turn.** Not possible today. `orion_readonly` has no
+   SELECT on `episode_memory`, `episode_memory_referent` or `recall_telemetry`, and `orion.dig`
+   has no memory command. The path is `orion.dig know` over recall's HTTP API (#3535). The
+   GRANT in #3567 is for the mesh-edge check; if applied, it would also let FCC Bash read
+   `episode_memory` directly. Waits on Juniper (#3567).
+   **Update:** the GRANT file merged in PR #3593 but is not applied (checked live). It omits
+   `episode_memory_referent` and `recall_telemetry`. #3611 proposes both, with `recall_telemetry`
+   minus its `query` column (it holds turn text). Waits on Juniper.
+5. Lease: see "GPU lease" in Phase 1 status. The Hub version diff does not exist (#3588).
+   v1 to v2 similarity is 0.902 and all 4 quotes survive, so #3553 would not have fired.
+6. `page:anchor` exemption: see Phase 1 status.
+7. The read log: see "The read log". Degraded serves do not count.
+8. `matters`: see "`matters`: a later re-grade" and #3590.
+9. Scoreboard grain: see "Scoreboard".
 
 **Note on #3356.** That issue says the cause is `memory_tier` (chat memory never promoted
 past ephemeral). That diagnosis is wrong. The memories are stored. The missing piece is a
@@ -685,39 +992,40 @@ reader on the chat recall path, which steps 1 to 3 add.
    Measure today's chat answers as the baseline, then after. Pass is a clear rise with no
    invented facts.
 3. The validator rejects an uncited sentence and an unresolvable cite. Covered by tests.
-4. The metric gate on `matters` passes on the 44 + 44 set before the grade drives any page.
-5. **Graphiti trial passes before any page reads Graphiti.** <town> current and Chicago
-   invalidated or dated as a stay; el Coco a dog and current; el Coco/Coco and <person A>/my wife
-   each one entity; under 10% duplicate entities on a hand-checked sample of 50.
+4. The metric gate on `matters` passes on the 44 + 44 set before the grade drives any page
+   (numbers in "`matters`: a later re-grade", #3590).
+5. ~~**Graphiti trial passes before any page reads Graphiti.**~~ **Struck 2026-11-17:** the
+   trial is done (NO-GO twice) and no page reads Graphiti. Replaced by: the supersede test
+   passes (#3587), the true trip rows stay active, and an applied run's precision sample shows
+   0 wrong supersedes (#3659). ~~the named contradictions (a trip recorded as a home; a
+   pet-species error) are superseded live~~ (corrected 2026-11-17: no stored row holds either
+   error).
 
 **Phase 2**
 
-5. Within two weeks of going live:
+6. Within two weeks of going live:
    - at least one concept page is born from the 3-source mention rule
      (**SUPERSEDED by Recall rev 2:** born from the read-demand rule);
    - at least one concept page is opened by 3 or more separate turns.
-6. The share of curiosity Concepts with 2 or more links rises from 9/33 once reuse is fixed.
-7. `orion.dig know` is called by real turns. Each source (pages, coined concepts, news
+7. The share of curiosity Concepts with 2 or more links rises from 9/33 once reuse is fixed.
+8. `orion.dig know` is called by real turns. Each source (pages, coined concepts, news
    concepts, reading resonance) shows its own lookup count after 2 weeks. A source with zero
    lookups after a fair trial goes on the retirement list.
-8. News concept salience is no longer flat. The spread of scores across the 5,155 concepts
+9. News concept salience is no longer flat. The spread of scores across the 5,155 concepts
    is non-degenerate, and the top 20 are topics read more than once.
 
 ## Recommended next patch
 
-**Patch 0, the Graphiti trial**, runs alongside 1a:
-
-- Backfill all 469 `episode_memory` rows plus the 44 stance messages into `graphiti_trial`,
-  using the local agent-lane model.
-- Score it against the pass checks in the Graphiti section (Chicago, el Coco, entity
-  duplicates, cost).
-- Nothing reads the trial graph until it passes.
+~~**Patch 0, the Graphiti trial**, runs alongside 1a.~~ **Struck 2026-11-17.** The trial ran
+twice and failed (numbers in "Why not Graphiti"). The next patch is the Recall rev 2 build
+order: step 2 (#3534, in progress), then the supersede fix (#3587), which must land before
+the #3537 backfill.
 
 **Phase 1a**, the smallest slice that moves the live path. **DONE and live (PR #3418,
 PR #3478). See "Phase 1 status" in Recall rev 2.**
 
-1. Build `page:juniper` only. It folds from `episode_memory` directly at first, and switches
-   to Graphiti's current facts once Patch 0 passes.
+1. Build `page:juniper` only. It folds from `episode_memory` directly ~~at first, and switches
+   to Graphiti's current facts once Patch 0 passes~~ (Graphiti is off the build path).
 2. Fold existing `person_fact` and `about_juniper` memories through the cite validator.
 3. Write v1 live (no gate).
 4. Render it in RELATIONSHIP on every mesh surface, with the mesh-edge check on GitHub and

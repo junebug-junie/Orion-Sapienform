@@ -141,16 +141,17 @@ class Settings(BaseSettings):
     memory_referents_enabled: bool = Field(True, alias="MEMORY_REFERENTS_ENABLED")
     memory_alias_grounding_auto_accept: bool = Field(True, alias="MEMORY_ALIAS_GROUNDING_AUTO_ACCEPT")
     memory_cooccurrence_auto_accept: bool = Field(True, alias="MEMORY_COOCCURRENCE_AUTO_ACCEPT")
-    # Corrections supersede at write time (issue #3587, orion/memory/episode/supersede.py): after the
-    # distill answer, one strict yes/no check per candidate pair on the same hold; a sure "yes" retires
-    # the older row in the persist transaction. Candidates by meaning from the lived-memory index
-    # (empty URL = shared words/referents only). MAX_CHECKS caps model calls per episode.
+    # Corrections supersede at write time (issues #3587, #3659; orion/memory/episode/supersede.py): after
+    # the distill answer, a 3-vote local classification per candidate pair on the same hold; only a
+    # unanimous, confident update/correction retires the older row in the persist transaction, and only
+    # while the latest precision eval passed. No index or a failed answer = propose only (never a
+    # word-only fallback). MAX_CHECKS caps MODEL CALLS per episode (1-3 per pair).
     memory_supersede_enabled: bool = Field(True, alias="MEMORY_SUPERSEDE_ENABLED")
     memory_supersede_chroma_url: str = Field("http://orion-athena-vector-db:8000", alias="MEMORY_SUPERSEDE_CHROMA_URL")
     memory_supersede_embed_url: str = Field("http://orion-athena-vector-host:8320/embedding",
                                             alias="MEMORY_SUPERSEDE_EMBED_URL")
     memory_supersede_collection: str = Field("orion_lived_memory", alias="MEMORY_SUPERSEDE_COLLECTION")
-    memory_supersede_max_checks: int = Field(12, ge=0, le=60, alias="MEMORY_SUPERSEDE_MAX_CHECKS")
+    memory_supersede_max_checks: int = Field(36, ge=0, le=90, alias="MEMORY_SUPERSEDE_MAX_CHECKS")
     # Situation graph step 2 (spec 2026-10-07-situation-graph-design.md, SHADOW): one self-driven
     # LangGraph thread per day that keeps Orion's running situation and projects it to Redis
     # orion:situation:latest + bus orion:situation:state. Nothing reads it until step 3.
@@ -384,6 +385,14 @@ class Settings(BaseSettings):
             raise ValueError("REMINISCENCE_END_HOUR_LOCAL must be after REMINISCENCE_HOUR_LOCAL (same Denver day)")
         return v
 
+    @field_validator("dream_day_end_hour_local")
+    @classmethod
+    def _dream_day_window_has_room(cls, v: int, info):
+        start = info.data.get("dream_day_start_hour_local", 1)
+        if v <= start:
+            raise ValueError("DREAM_DAY_END_HOUR_LOCAL must be after DREAM_DAY_START_HOUR_LOCAL (same Denver night)")
+        return v
+
     @field_validator("core_page_fold_end_hour_local")
     @classmethod
     def _fold_window_has_room(cls, v: int, info):
@@ -469,6 +478,20 @@ class Settings(BaseSettings):
     # One step attempt's hard time bound, the same 900 s the field-note turn needs (Hub keeps a 330 s
     # finalize reserve out of it: 900 -> 540 s of motor, PR #3114). A cap, not a cost.
     reminiscence_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="REMINISCENCE_TURN_TIMEOUT_SEC")
+    # The day dream, Patch 2 (docs/superpowers/specs/2026-11-17-nightly-day-dream-design.md): inside the Denver
+    # window [DREAM_DAY_START_HOUR_LOCAL, DREAM_DAY_END_HOUR_LOCAL), submit one dream.day run for the Denver day that
+    # just closed (one turn on DREAM_DAY_ROUTE that reads the day and writes up to 5 memories, channel 'dream').
+    # The window end is the run's admission deadline: a missed night is a missed night. Needs admission
+    # (DURABLE_RUNS_ADMISSION_ENABLED). false -> no tick, no runs (rollback: set false, restart; POST
+    # /dream-day/run refuses too).
+    dream_day_enabled: bool = Field(True, alias="DREAM_DAY_ENABLED")
+    dream_day_start_hour_local: int = Field(1, ge=0, le=22, alias="DREAM_DAY_START_HOUR_LOCAL")
+    dream_day_end_hour_local: int = Field(3, ge=1, le=23, alias="DREAM_DAY_END_HOUR_LOCAL")
+    # The pool route the run's hold is asked on. memory_distill = the agent seat on gpu1 only
+    # (config/gpu_pool.yaml): memory work stays local (the parent spec).
+    dream_day_route: str = Field("memory_distill", min_length=1, alias="DREAM_DAY_ROUTE")
+    # One turn attempt's hard bound (same as a reminiscence hop; Hub keeps its finalize reserve out of it).
+    dream_day_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="DREAM_DAY_TURN_TIMEOUT_SEC")
     # Core memory pages, Phase 1a (docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md):
     # every CORE_PAGE_FOLD_POLL_SEC, inside the Denver window [CORE_PAGE_FOLD_HOUR_LOCAL, CORE_PAGE_FOLD_END_HOUR_LOCAL),
     # fold Orion's page:juniper once (one LLM call, app/core_page_fold.py) when its records changed since the

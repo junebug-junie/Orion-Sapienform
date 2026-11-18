@@ -23,6 +23,17 @@ One consult at a time, all in Hub:
 
 Every turn is shown live in Hub chat and stored in ``orion_consult_turn``. Turns are NOT written to
 ``chat_history_log``: Orion's recall keeps the brief only.
+
+**The mesh edge (issues #3541, #3554).** Claude is outside Orion's mesh. Every prompt bound for
+Claude passes ``_send_claude``, and there the mesh-edge check (``orion/memory/mesh_edge.py``) blanks
+every sentence that quotes, or repeats an 8+ word run of, a core-page or lived-memory sentence. It
+redacts rather than refuses: Orion's turn has already run and there is no author in the loop to
+rewrite it, while the rest of the text is the plumbing question Claude needs. Claude's copy opens
+with one line saying how many passages were withheld and what the marker means; Hub chat gets a line
+too. When more than ``MESH_EDGE_MAX_WITHHELD_FRACTION`` of the words would be withheld, the consult
+stops unsent: the rest is not a question Claude can answer. The stored turn keeps the original (Hub is inside the mesh).
+If the guard cannot load (or errors), the send is held (fail closed), Hub chat says so once, and
+the next tick retries; if a match survives redaction, the consult fails rather than send it.
 """
 
 from __future__ import annotations
@@ -50,6 +61,7 @@ from orion.consult.core import (
 )
 from orion.consult.core import self_monitor_sources, stuck_prior_source
 from orion.consult.beliefs import MAX_BELIEF_OFFERS, STALE_CLAIM_SEC
+from orion.memory.mesh_edge import REDACTION_MARKER as MESH_EDGE_MARKER
 from orion.schemas.claude_limit import ClaudeLimitObservationV1
 from orion.schemas.room_claude import RoomClaudeUtteranceV1
 
@@ -67,7 +79,38 @@ AWAIT_ORION = "awaiting_orion"
 AWAIT_ORION_RUN = "awaiting_orion_run"
 AWAIT_CLAUDE = "awaiting_claude"
 BUDGET = "budget:"
+# Held at the mesh edge: the guard could not load, so nothing is sent; the next tick retries.
+MESH_EDGE_HOLD = "mesh_edge_hold:"
+# Redaction that leaves too little to read is not a consult (thread cf5d4218097a): when more than
+# this share of the message's words is withheld, the consult stops instead of sending the husk.
+# Half: past it, the blanks outnumber what Claude can read, so any answer is mostly guessing.
+MESH_EDGE_MAX_WITHHELD_FRACTION = 0.5
+MESH_EDGE_MOSTLY_WITHHELD = "mesh_edge_mostly_withheld"
+# Claude's copy says what the marker is and how many there are, so a blank reads as withheld on
+# purpose, not as lost text. One line, first, never repeated on a resend.
+MESH_EDGE_NOTE_PREFIX = "[Hub mesh-edge note: "
 MAX_CLAUDE_RESENDS = 1
+
+
+def _strip_redaction_note(text: str) -> str:
+    return text.split("\n\n", 1)[1] if text.startswith(MESH_EDGE_NOTE_PREFIX) and "\n\n" in text else text
+
+
+def withheld_fraction(original: str, redacted: str) -> float:
+    """Share of ``original``'s words that ``redacted`` no longer carries (markers and Hub's note not
+    counted as words Claude can read). Pure."""
+    before = len(_strip_redaction_note(original).replace(MESH_EDGE_MARKER, " ").split())
+    after = len(_strip_redaction_note(redacted).replace(MESH_EDGE_MARKER, " ").split())
+    return 0.0 if before <= 0 else max(0.0, min(1.0, 1.0 - after / before))
+
+
+def with_redaction_note(redacted: str) -> str:
+    """``redacted`` with one first line telling Claude what the markers are and how many there are."""
+    body = _strip_redaction_note(redacted)
+    n = body.count(MESH_EDGE_MARKER)
+    return (f"{MESH_EDGE_NOTE_PREFIX}{n} passage(s) below were withheld because they quote Orion's private "
+            f"memory; each shows as {MESH_EDGE_MARKER}. That is on purpose, not lost text. Do not guess "
+            "what they said; ask Orion about the part you can read.]\n\n" + body)
 
 # Columns set_status may write besides status/status_reason. Code-only names: never request data.
 _SETTABLE = frozenset({
@@ -308,6 +351,7 @@ class ConsultLoop:
         source_max_age_hours: float = 72.0,
         source_service: str = "orion-hub",
         clock: Callable[[], datetime] = _now,
+        mesh_edge_guard_loader: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.enabled = enabled
         self._pool_provider = pool_provider
@@ -326,6 +370,8 @@ class ConsultLoop:
         self.source_max_age = timedelta(hours=source_max_age_hours)
         self.source_service = source_service
         self._clock = clock
+        # Mesh-edge check on every Claude-bound prompt (#3541). None = load from Postgres.
+        self._mesh_edge_guard_loader = mesh_edge_guard_loader
         self.meter: Dict[str, ClaudeLimitObservationV1] = {}
         self._lock = asyncio.Lock()
         self._tasks: List[asyncio.Task] = []
@@ -466,7 +512,7 @@ class ConsultLoop:
             return await self._orion_turn(pool, row)
         if reason == AWAIT_ORION_RUN:
             return await self._poll_orion_run(pool, row)
-        if reason.startswith(BUDGET):
+        if reason.startswith(BUDGET) or reason.startswith(MESH_EDGE_HOLD):
             return await self._send_claude(pool, row)
         if reason == AWAIT_CLAUDE:
             updated = row.get("updated_at")
@@ -619,15 +665,72 @@ class ConsultLoop:
         if relay is None:
             await set_status(pool, cid, "open", f"{BUDGET}no_relay", pending_prompt=prompt, pending_correlation_id=None)
             return {"waiting": cid, "for": "relay"}
+        outbound, edge = await self._mesh_edge(prompt)
+        if edge == "unavailable":
+            first_hold = not str(row.get("status_reason") or "").startswith(MESH_EDGE_HOLD)
+            await set_status(pool, cid, "open", f"{MESH_EDGE_HOLD}unavailable", pending_prompt=prompt,
+                             pending_correlation_id=None)
+            if first_hold:
+                # Once per hold, not every tick: the hold lasts until the guard loads again.
+                logger.warning("consult_mesh_edge_held id=%s why=guard_unavailable", cid)
+                self._push_turn(cid, 0, "Hub", "Held: the private-memory check could not load, so nothing goes "
+                                               "to Claude until it does. Retrying every tick.")
+            return {"waiting": cid, "for": "mesh_edge"}
+        if edge == "refused":
+            await set_status(pool, cid, "failed", "mesh_edge_refused", pending_prompt=None, pending_correlation_id=None)
+            self._push_turn(cid, 0, "Hub", "This consult stopped: its text quotes private memory that could not be "
+                                           "withheld cleanly, so nothing was sent to Claude.")
+            return {"failed": cid, "why": "mesh_edge_refused"}
+        if edge == MESH_EDGE_MOSTLY_WITHHELD:
+            await set_status(pool, cid, "failed", MESH_EDGE_MOSTLY_WITHHELD, pending_prompt=None,
+                             pending_correlation_id=None)
+            self._push_turn(cid, 0, "Hub", "This consult stopped: most of its text quotes private memory, so what "
+                                           "would be left for Claude is not a question it can answer. Nothing was "
+                                           "sent to Claude.")
+            return {"failed": cid, "why": MESH_EDGE_MOSTLY_WITHHELD}
+        if edge:
+            self._push_turn(cid, 0, "Hub", f"{edge} passage(s) quoting private memory were withheld from Claude's copy.")
         correlation_id = str(uuid.uuid4())
         # Written BEFORE the invite: a crash after it is a lost reply (resent once), never an
-        # unknown request in flight.
-        await set_status(pool, cid, "open", AWAIT_CLAUDE, pending_prompt=prompt, pending_correlation_id=correlation_id)
+        # unknown request in flight. The stored prompt is the redacted one: a resend re-checks it.
+        await set_status(pool, cid, "open", AWAIT_CLAUDE, pending_prompt=outbound,
+                         pending_correlation_id=correlation_id)
         await relay.invite(
-            prompt=prompt, invited_by="Orion", session_id=None, room_id=consult_room_id(cid),
+            prompt=outbound, invited_by="Orion", session_id=None, room_id=consult_room_id(cid),
             correlation_id=correlation_id, trigger="auto",
         )
         return {"sent": cid, "to": "claude", "resend": resend}
+
+    async def _mesh_edge(self, prompt: str) -> tuple[str, Any]:
+        """The prompt as it may leave Orion, and what happened: ``None`` (clean), the number of
+        withheld spans (redacted), ``"unavailable"`` (guard did not load: hold) or ``"refused"``
+        (a match survived redaction: never send). Logs source kinds only, never text."""
+        from orion.memory.mesh_edge import MeshEdgeUnavailable, load_guard
+
+        try:
+            guard = await asyncio.to_thread(self._mesh_edge_guard_loader or load_guard)
+            redacted, hits = guard.redact(prompt)
+            survives = bool(hits) and bool(guard.find(redacted))
+        except MeshEdgeUnavailable:
+            return prompt, "unavailable"
+        except Exception as exc:  # noqa: BLE001 -- any guard failure holds the send (fail closed)
+            logger.warning("consult_mesh_edge_error err=%s", type(exc).__name__)
+            return prompt, "unavailable"
+        if not hits:
+            return prompt, None
+        kinds = sorted({h.source.split(":", 1)[0] for h in hits})
+        if survives:
+            logger.warning("consult_mesh_edge_refused hits=%s kinds=%s", len(hits), kinds)
+            return prompt, "refused"
+        spans = redacted.count(MESH_EDGE_MARKER) - prompt.count(MESH_EDGE_MARKER)
+        withheld = withheld_fraction(prompt, redacted)
+        if withheld > MESH_EDGE_MAX_WITHHELD_FRACTION:
+            logger.warning("consult_mesh_edge_mostly_withheld hits=%s spans=%s withheld=%.2f kinds=%s", len(hits),
+                           spans, withheld, kinds)
+            return prompt, MESH_EDGE_MOSTLY_WITHHELD
+        logger.warning("consult_mesh_edge_redacted hits=%s spans=%s withheld=%.2f kinds=%s match=%s", len(hits),
+                       spans, withheld, kinds, sorted({h.kind for h in hits}))
+        return with_redaction_note(redacted), max(spans, 1)
 
     async def on_claude_utterance(self, utt: RoomClaudeUtteranceV1) -> None:
         """Called by the room relay for a consult room. Never raises into the relay."""

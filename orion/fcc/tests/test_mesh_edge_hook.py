@@ -255,3 +255,17 @@ def test_governor_mesh_edge_dsn_is_never_the_superuser():
     assert DSN_ENV_KEYS[0] == "ORION_MESH_EDGE_PG_DSN"
     for key in DSN_ENV_KEYS[1:]:
         assert not re.search(rf"(?m)^\s*-?\s*{key}=", example + "\n" + compose), key
+
+
+def test_near_verbatim_body_file_is_blocked_by_the_shingle_check(tmp_path: Path):
+    """Issue #3554: one word swapped at the end no longer slips past the hook."""
+    guard = MeshEdgeGuard.from_texts([("episode_memory:e1", "Juniper told me she walked the long way home "
+                                                            "past the bakery because the bridge was closed.")],
+                                     shingle_n=8)
+    (tmp_path / "pr.md").write_text("## Summary\n\nShe walked the long way home past the bakery because the "
+                                    "bridge was shut.\n", encoding="utf-8")
+    msg = hook.decide(_bash("gh pr create --body-file pr.md", cwd=str(tmp_path)), guard_loader=lambda: guard)
+    assert msg and "run of 8+ words" in msg and "(episode_memory)" in msg
+    assert "bakery" not in msg
+    (tmp_path / "ok.md").write_text("## Summary\n\nThe bakery sensor reports every ten minutes.\n", encoding="utf-8")
+    assert hook.decide(_bash("gh pr create --body-file ok.md", cwd=str(tmp_path)), guard_loader=lambda: guard) is None

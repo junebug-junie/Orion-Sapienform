@@ -24,6 +24,8 @@ Pipeline, once per chat turn (PCR continuity phase):
    PageRank over ``episode_memory_referent``). They only ever reach the prompt through the rerank.
 4. **Rerank.** A local cross-encoder (orion-vector-host ``/rerank``) scores each (turn, memory)
    pair; the turn side is the message followed by the rewritten searches. ``fit = sigmoid(logit)``.
+   Candidates go in chunks of ``RERANK_CHUNK``, best-retrieved first; a deadline that stops the
+   rerank keeps the chunks already scored (``rerank_partial`` in the trace, issue #3662).
 5. **Quality bar.** Records with ``fit < min_fit`` are dropped. The bar is tuned by replay
    (``evals/run_lived_memory_replay_eval.py``).
 6. **Rank** (Generative Agents, Park et al. 2023): ``score = logit + W_RECENCY * recency +
@@ -33,8 +35,8 @@ Pipeline, once per chat turn (PCR continuity phase):
    (a correction written since the snapshot removes what it corrects), then rendered one line
    each with kind, record id and date.
 
-**Degraded mode** (issue #3573). When the reranker is down, errors or runs past the deadline,
-the exact-word hits are ranked by BM25 alone (``lexical_fallback``) and the block says it ran
+**Degraded mode** (issue #3573). When the reranker is down, errors or runs past the deadline
+before scoring a single chunk, the exact-word hits are ranked by BM25 alone (``lexical_fallback``) and the block says it ran
 degraded. When the embedder is down, exact-word candidates are still reranked, and the block
 says it ran degraded. Recall never silently skips: a degraded search that finds nothing still
 puts a one-line note in the prompt. ``LivedRecall.backend`` is ``hybrid`` or ``degraded``.
@@ -51,6 +53,7 @@ import math
 import re
 import time
 from collections import Counter
+from itertools import zip_longest
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
@@ -100,6 +103,9 @@ LEXICAL_TOP_K = 10
 MAX_RERANK = 24
 # Step 2 ceiling: step 1's pool (at most MAX_RERANK) plus rewrite hits and link neighbours.
 MAX_RERANK_STEP2 = 32
+# ``orion.dig know``: at most this many hits (strong first, then weak) per lookup.
+KNOW_MAX_HITS = 8
+KNOW_RECHECK_TIMEOUT_SEC = 1.5
 # Step 2 (issue #3534): each rewritten search adds its own, smaller candidate lists; all lists
 # are merged by reciprocal-rank fusion before the rerank.
 REWRITE_DENSE_TOP_K = 8
@@ -129,6 +135,9 @@ QUERY_MAX_CHARS = 1000
 # the opening of a message and of a memory carry what it is about.
 RERANK_QUERY_CHARS = 600
 RERANK_DOC_CHARS = 400
+# Candidates per /rerank call (issue #3662). On the shared P4, a 27-candidate call for a long
+# message took 2-4.4 s and, past the deadline, all of it was lost. Chunks keep what finished.
+RERANK_CHUNK = 8
 SNAPSHOT_TTL_SEC = 60.0
 # The referent graph changes only when the distiller writes; it is refreshed in the background.
 GRAPH_TTL_SEC = 600.0
@@ -250,6 +259,10 @@ class LivedRecall:
     degraded_reasons: List[str] = field(default_factory=list)
     lexical_hits: int = 0
     quiet_empty: bool = False  # degraded, nothing found, and nothing to note (small talk)
+    # Every record that reached the rerank, in rerank order, and the best exact-word score of each
+    # search hit (``orion.dig know`` shows the below-bar ones that share words as weak matches).
+    candidates: List[LivedRecord] = field(default_factory=list)
+    lexical_scores: Dict[str, float] = field(default_factory=dict)
 
     @property
     def degraded(self) -> bool:
@@ -438,7 +451,8 @@ class LivedMemoryRecall:
 
     async def recall(self, query: str, *, client: httpx.AsyncClient | None = None,
                      as_of: datetime | None = None, session_id: str | None = None,
-                     exclude_ids: Sequence[str] = (), timeout_sec: float | None = None) -> LivedRecall:
+                     exclude_ids: Sequence[str] = (), timeout_sec: float | None = None,
+                     min_query_tokens: int | None = None, rewrite: bool = True) -> LivedRecall:
         """One retrieval. ``session_id`` lets the rewrite read the last turns of this
         conversation. ``as_of`` (replay evals only) hides records Orion stored after that time,
         so a replayed message cannot be answered by the memory distilled from it.
@@ -446,7 +460,10 @@ class LivedMemoryRecall:
         Bounded by ``timeout_sec`` (default ``cfg.timeout_sec``) end to end: the rewrite gets
         ``rewrite_timeout_sec``, the meaning search what is left minus ``RERANK_RESERVE_SEC``, and
         the rerank the rest. A reranker or embedder that is down or too slow drops to exact-word
-        ranking (backend ``degraded``), never to nothing (issue #3573)."""
+        ranking (backend ``degraded``), never to nothing (issue #3573).
+
+        ``min_query_tokens`` and ``rewrite`` are for a deliberate lookup (``know``): its words are
+        already a search, so it skips the chat-turn floor and the pre-turn rewrite."""
         started = time.perf_counter()
         deadline = started + float(timeout_sec if timeout_sec is not None else self.cfg.timeout_sec)
         timings: Dict[str, int] = {}
@@ -465,7 +482,8 @@ class LivedMemoryRecall:
         out.debug["rewrite"] = rewrite_info
         try:
             qtoks = set(tokenize(query))
-            if len(qtoks) < self.cfg.min_query_tokens:
+            floor = self.cfg.min_query_tokens if min_query_tokens is None else int(min_query_tokens)
+            if len(qtoks) < floor:
                 # Too few words to search with. Replay (2026-11-17) tried letting the rewrite
                 # rescue these: no referring message in the bank was this short, and small-talk
                 # injection rose from 13% to 35%. So the step 1 floor stands, and the rewrite is
@@ -476,7 +494,9 @@ class LivedMemoryRecall:
             # The rewrite starts first: it does not need the snapshot, and it is the slow part.
             rewrite_task: asyncio.Future | None = None
             rewrite_started = time.perf_counter()
-            if self._rewriter is not None and not long_message:
+            if not rewrite:
+                pass  # rewrite_info stays "off"
+            elif self._rewriter is not None and not long_message:
                 rewrite_task = asyncio.ensure_future(
                     self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of))
                 pending.append(rewrite_task)
@@ -567,6 +587,14 @@ class LivedMemoryRecall:
             fused = rrf(dense_lists + lexical_lists)
             base = list(dict.fromkeys([d for d, _ in dense_lists[0]] + [d for d, _ in lexical_lists[0]]))
             base = sorted(base, key=lambda d: (-dense_best.get(d, 0.0), -lexical_best.get(d, 0.0)))[:MAX_RERANK]
+            # Rerank order (#3662): the message's own meaning and exact-word lists take turns, so the
+            # first chunk holds the top hits of both. An exact-word-only hit (a name, a rare word)
+            # has no meaning score and would otherwise sit in the last chunk, past a short deadline.
+            # Link seeds still come from ``ordered`` (meaning first), so only the chunk order changes.
+            kept_base = set(base)
+            turns = [d for pair in zip_longest([d for d, _ in dense_lists[0]], [d for d, _ in lexical_lists[0]])
+                     for d in pair if d is not None and d in kept_base]
+            rerank_base = list(dict.fromkeys(turns + base))
             extra = sorted((d for d in fused if d not in set(base)), key=lambda d: (-fused[d], d))
             ordered = base + extra
 
@@ -590,6 +618,7 @@ class LivedMemoryRecall:
                                        "live_pool": len(fused), "links": len(links),
                                        "dense_not_live": out.debug.pop("dense_not_live", 0)}
             out.lexical_hits = len(lexical_best)
+            out.lexical_scores = dict(lexical_best)
 
             def finish_backend() -> None:
                 out.backend = BACKEND_DEGRADED if degraded else BACKEND_HYBRID
@@ -604,8 +633,12 @@ class LivedMemoryRecall:
             if not ordered and not links:
                 finish_backend()
                 return out
-            cand_ids = base + extra[: max(0, MAX_RERANK_STEP2 - len(base) - len(links))] + [d for d, _ in links]
+            cand_ids = rerank_base + extra[: max(0, MAX_RERANK_STEP2 - len(base) - len(links))] + [d for d, _ in links]
             recs = [self._by_doc[d] for d in cand_ids]
+            out.candidates = list(recs)
+            # Every id that reached the rerank, not only the injected ones (#3628): "the target was a
+            # candidate but fell below the bar" is then visible in recall_telemetry.lived_trace.
+            out.debug["candidate_ids"] = [r.doc_id for r in recs]
             names = name_tokens(query, self._names)
             all_tokens = set(qtoks)
             for q in queries:
@@ -615,39 +648,50 @@ class LivedMemoryRecall:
             t = time.perf_counter()
             docs = [r.text[:RERANK_DOC_CHARS] for r in recs]
             rq = rerank_query(query, queries)
-            logits: List[float] | None = None
+            logits: List[float | None] = [None] * len(docs)
             budget = deadline - time.perf_counter() - FINISH_RESERVE_SEC
+
+            async def score(idx: List[int]) -> None:
+                part = [docs[i] for i in idx]
+                if self._reranker is not None:
+                    got = list(await self._reranker(rq, part))
+                else:
+                    got = await self._rerank_http(client, rq, part,
+                                                  timeout=max(0.001, deadline - time.perf_counter() - FINISH_RESERVE_SEC))
+                if len(got) != len(part):
+                    raise SearchUnavailableError("reranker returned a malformed reply")
+                for i, x in zip(idx, got):
+                    logits[i] = float(x)
+
+            # Issue #3662: the pool goes in chunks of RERANK_CHUNK, best-retrieved first, one call
+            # at a time (the vector host refuses a third request in flight). When the deadline or an
+            # error stops it, the chunks already scored are kept: the top candidates still get a
+            # fit score, and only a call that scored nothing falls back to exact words.
+            async def all_chunks() -> None:
+                for start in range(0, len(docs), RERANK_CHUNK):
+                    await score(list(range(start, min(start + RERANK_CHUNK, len(docs)))))
+
+            stopped: str | None = None
             try:
                 if budget <= 0:
                     raise asyncio.TimeoutError
-                rqs = [rq]
-
-                async def score(text: str) -> List[float]:
-                    if self._reranker is not None:
-                        got = list(await self._reranker(text, docs))
-                    else:
-                        got = await self._rerank_http(client, text, docs, timeout=budget)
-                    if len(got) != len(docs):
-                        raise SearchUnavailableError("reranker returned a malformed reply")
-                    return [float(x) for x in got]
-
-                # One call at a time: the vector host refuses a third request in flight.
-                async def all_scores() -> List[List[float]]:
-                    return [await score(text) for text in rqs]
-
-                per_query = await asyncio.wait_for(all_scores(), timeout=budget)
-                logits = [max(col) for col in zip(*per_query)]
+                await asyncio.wait_for(all_chunks(), timeout=budget)
             except asyncio.TimeoutError:
-                degraded.append("rerank_timeout")
-                logits = None
+                stopped = "timeout"
             except Exception as exc:  # noqa: BLE001 -- a down reranker degrades, never skips (#3573)
-                degraded.append("rerank_unavailable")
+                stopped = "error"
                 out.debug["rerank_error"] = f"{type(exc).__name__}: {exc}"[:200]
-                logits = None
             timings["rerank"] = int((time.perf_counter() - t) * 1000)
+            scored_idx = [i for i, x in enumerate(logits) if x is not None]
+            if stopped and not scored_idx:
+                degraded.append("rerank_timeout" if stopped == "timeout" else "rerank_unavailable")
+            elif stopped:
+                out.debug["rerank_partial"] = {"scored": len(scored_idx), "of": len(docs), "reason": stopped}
 
-            if logits is not None:
-                out.reranked = list(zip(recs, [float(x) for x in logits]))
+            if scored_idx:
+                # Unscored candidates (a partial rerank) are left out, like link neighbours below:
+                # nothing reaches the prompt without a fit score unless the whole rerank failed.
+                out.reranked = [(recs[i], float(logits[i])) for i in scored_idx]
                 chosen = rank(out.reranked, min_fit=self.cfg.min_fit, max_lines=self.cfg.max_lines,
                               now=self._clock())
                 out.debug["reranked"] = [
@@ -655,6 +699,14 @@ class LivedMemoryRecall:
                      "lexical": round(lexical_best.get(r.doc_id, 0.0), 3), "link": r.doc_id in link_ids}
                     for r, l in sorted(out.reranked, key=lambda x: -x[1])[:8]
                 ]
+                if not chosen and stopped:
+                    # The scored chunks hold nothing that fits and the rest was never scored, so
+                    # this was not a full search: serve the unscored exact-word hits, degraded, and
+                    # say so. Never a silent "below the bar" (#3663: a part-search is no denial).
+                    degraded.append("rerank_partial")
+                    chosen = lexical_fallback([recs[i] for i, x in enumerate(logits)
+                                               if x is None and recs[i].doc_id not in link_ids],
+                                              lexical_best, all_tokens, names, max_lines=self.cfg.max_lines)
             else:
                 # Never inject a link neighbour without a rerank: exact-word hits only.
                 chosen = lexical_fallback([r for r in recs if r.doc_id not in link_ids], lexical_best,
@@ -730,6 +782,137 @@ class LivedMemoryRecall:
         timings["total"] = int((time.perf_counter() - started) * 1000)
         return out
 
+    async def know(self, words: str, *, max_hits: int = KNOW_MAX_HITS,
+                   timeout_sec: float | None = None) -> "KnowResult":
+        """A deliberate lookup (``python -P -m orion.dig know <words>``, issue #3535): the same
+        retrieval a chat turn gets, minus the chat-turn floor and the rewrite (the words already
+        are the search). Strong hits cleared recall's bar (the first ``max_lines`` of them are what
+        a chat turn would inject). Weak hits are below the bar but share at least one word with the search, so a partial match is shown, never hidden
+        behind "nothing found". Every hit passes the serving gate (re-checked against Postgres)."""
+        max_hits = max(1, int(max_hits))
+        out = await self.recall(words, min_query_tokens=1, rewrite=False, timeout_sec=timeout_sec)
+        strong = list(out.chosen)[:max_hits]
+        taken = {s.rec.doc_id for s in strong}
+        lex = out.lexical_scores
+        more_strong: List[Scored] = []  # above the bar, past the chat turn's line cap
+        pool: List[Scored] = []
+        if out.reranked:
+            above = rank(out.reranked, min_fit=self.cfg.min_fit, max_lines=max_hits, now=self._clock())
+            more_strong = [s for s in above if s.rec.doc_id not in taken]
+            taken |= {s.rec.doc_id for s in above}
+            for rec, logit in sorted(out.reranked, key=lambda x: (-x[1], x[0].doc_id)):
+                if rec.doc_id in taken or not lex.get(rec.doc_id) or not math.isfinite(float(logit)):
+                    continue
+                pool.append(Scored(rec=rec, fit=sigmoid(float(logit)), score=float(logit),
+                                   lexical=lex.get(rec.doc_id)))
+            if out.debug.get("rerank_partial"):  # #3662: candidates the deadline left unscored
+                scored = {rec.doc_id for rec, _l in out.reranked}
+                for rec in sorted(out.candidates, key=lambda r: (-lex.get(r.doc_id, 0.0), r.doc_id)):
+                    if rec.doc_id in taken or rec.doc_id in scored or not lex.get(rec.doc_id):
+                        continue
+                    pool.append(Scored(rec=rec, fit=0.0, score=lex[rec.doc_id], lexical=lex[rec.doc_id],
+                                       degraded=True))
+        else:  # no rerank ran (degraded): exact-word hits the fallback did not choose
+            for rec in sorted(out.candidates, key=lambda r: (-lex.get(r.doc_id, 0.0), r.doc_id)):
+                if rec.doc_id in taken or not lex.get(rec.doc_id):
+                    continue
+                pool.append(Scored(rec=rec, fit=0.0, score=lex[rec.doc_id], lexical=lex[rec.doc_id],
+                                   degraded=True))
+        more_strong = more_strong[: max_hits - len(strong)]
+        weak = pool[: max(0, max_hits - len(strong) - len(more_strong))]
+        extra = more_strong + weak
+        unverified = 0
+        if extra:
+            timings = out.debug.setdefault("timings_ms", {})
+            try:
+                checked = await asyncio.wait_for(self._recheck(extra, out, timings), timeout=KNOW_RECHECK_TIMEOUT_SEC)
+                live = {s.rec.doc_id for s in checked}
+            except Exception as exc:  # noqa: BLE001 -- an unverified row is never shown, but is counted
+                out.debug["know_recheck_error"] = type(exc).__name__ or "error"
+                live = set()
+                unverified = len(extra)
+            more_strong = [s for s in more_strong if s.rec.doc_id in live]
+            weak = [s for s in weak if s.rec.doc_id in live]
+        strong = strong + more_strong
+        status = status_of(out.debug, len(strong), backend=out.backend)
+        if unverified and not strong and not weak:
+            status = STATUS_UNVERIFIED  # matches existed but could not be checked: never "below_bar"
+        return KnowResult(strong=strong, weak=weak, recall=out, status=status, unverified=unverified)
+
+
+# Why a lived-recall call injected what it did (#3628), persisted as recall_telemetry.lived_status.
+# NULL in that column means lived recall did not run on that call (not a chat-turn continuity call).
+STATUS_OK = "ok"                    # full search ran and at least one memory cleared the bar
+STATUS_BELOW_BAR = "below_bar"      # full search ran; nothing cleared the bar (or nothing matched)
+STATUS_SKIPPED_SHORT = "skipped_short"  # too few content words to search with
+STATUS_DEGRADED = "degraded"        # exact words only (embedder/reranker down or slow); count says if it served
+STATUS_TIMEOUT = "timeout"          # ran out of time and the exact-word fallback found nothing
+STATUS_ERROR = "error"              # failed, and nothing was served
+STATUS_OFF = "off"                  # the reader is switched off or not started
+# `know` only: matches were found but the serving-gate re-check failed, so none could be shown.
+STATUS_UNVERIFIED = "unverified"
+STATUSES = (STATUS_OK, STATUS_BELOW_BAR, STATUS_SKIPPED_SHORT, STATUS_DEGRADED, STATUS_TIMEOUT,
+            STATUS_ERROR, STATUS_OFF, STATUS_UNVERIFIED)
+
+
+def status_of(debug: Dict[str, Any] | None, served: int, *, backend: str | None = None) -> str:
+    """One status per lived-recall call, from its debug dict and how many memories it served.
+
+    ``debug`` is a ``LivedRecall.debug`` (or the worker's copy of it, which adds ``outer`` when
+    the worker's own wait timed out or raised). Pure: the same input always gives the same status."""
+    d = debug or {}
+    outer = str(d.get("outer") or "")
+    skipped = str(d.get("skipped") or "")
+    if skipped == "disabled":
+        return STATUS_OFF
+    if outer == "timeout" or skipped == "timeout":
+        return STATUS_DEGRADED if served else STATUS_TIMEOUT
+    if outer.startswith("error") or skipped.startswith("error"):
+        return STATUS_DEGRADED if served else STATUS_ERROR
+    if skipped in ("few_content_words", "empty_query"):
+        return STATUS_SKIPPED_SHORT
+    if d.get("error") and not served:
+        return STATUS_ERROR
+    if (backend or d.get("backend")) == BACKEND_DEGRADED:
+        return STATUS_DEGRADED
+    return STATUS_OK if served else STATUS_BELOW_BAR
+
+
+TRACE_MAX_IDS = 32
+
+
+def trace_of(debug: Dict[str, Any] | None) -> Dict[str, Any]:
+    """The persisted recall trace (#3628): rewritten queries, every id that reached the rerank, the
+    injected ids, and the backend. Ids and Orion's own search text only, never memory text."""
+    d = debug or {}
+    rewrite = d.get("rewrite") or {}
+    out: Dict[str, Any] = {
+        "backend": d.get("backend") or None,
+        "queries": [str(q)[:200] for q in (rewrite.get("queries") or [])][:5],
+        "rewrite": rewrite.get("outcome"),
+        "candidate_ids": [str(x) for x in (d.get("candidate_ids") or [])][:TRACE_MAX_IDS],
+        "injected_ids": [str(x.get("id")) for x in (d.get("injected") or []) if isinstance(x, dict)][:TRACE_MAX_IDS],
+    }
+    if d.get("weak_ids"):
+        out["weak_ids"] = [str(x) for x in d["weak_ids"]][:TRACE_MAX_IDS]
+    if d.get("recheck_dropped"):  # the serving gate removed these after the snapshot
+        out["recheck_dropped"] = [str(x) for x in d["recheck_dropped"]][:TRACE_MAX_IDS]
+    if d.get("rerank_partial"):  # #3662: the deadline stopped the rerank after some chunks
+        out["rerank_partial"] = dict(d["rerank_partial"])
+    for key in ("degraded", "skipped", "outer", "error", "know_recheck_error"):
+        if d.get(key):
+            out[key] = d[key] if key == "degraded" else str(d[key])[:200]
+    return out
+
+
+@dataclass
+class KnowResult:
+    strong: List[Scored]
+    weak: List[Scored]
+    recall: LivedRecall
+    status: str
+    unverified: int = 0  # hits found but not shown: the serving-gate re-check failed
+
 
 @dataclass(frozen=True)
 class LivedIndexPass:
@@ -798,8 +981,9 @@ def items_for(chosen: Sequence[Scored]) -> List[Dict[str, Any]]:
 
 __all__ = [
     "BACKEND_DEGRADED", "BACKEND_HYBRID", "BM25", "DEGRADED_EMPTY_NOTE", "DEGRADED_EMPTY_NOTE_RERANKED",
+    "KNOW_MAX_HITS", "KnowResult", "STATUSES",
     "DEGRADED_HEADER", "HEADER", "KINDS", "LivedMemoryConfig", "LivedMemoryRecall", "LivedRecall", "SOURCE",
     "index_loop", "items_for", "lexical_fallback", "name_tokens", "rank", "recency", "render_line",
     "rerank_query", "rrf", "run_index_pass",
-    "sigmoid", "split_doc_id", "tokenize",
+    "sigmoid", "split_doc_id", "status_of", "tokenize", "trace_of",
 ]

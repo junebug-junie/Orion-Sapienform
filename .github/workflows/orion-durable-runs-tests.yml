@@ -30,6 +30,7 @@ on:
       - "orion/regulation/**"
       - "orion/schemas/regulation.py"
       - "orion/physiology/**"
+      - "orion/schemas/intention.py"   # #3640: brief.promised_at opens the intention want
       - "orion/schemas/physiology.py"
       - "orion/schemas/physiology_want.py"
       - "orion/schemas/physiology_report.py"
@@ -68,6 +69,9 @@ on:
       - "orion/schemas/pr_field_note_run.py"   # pr.field_note (PR field notes Patch 2)
       - "orion/body_atlas/field_notes.py"     # the ledger app/pr_field_note_ledger.py writes
       - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
+      - "orion/schemas/dream_day.py"           # dream.day (the day dream Patch 2)
+      - "orion/memory/dream_day.py"            # its parse / ref check / memories / grade
+      - "orion/memory/episode/**"              # dream memories go through validate + store
       - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/compactor_digest_run.py"
@@ -132,6 +136,7 @@ on:
       - "services/orion-sql-writer/evals/ask_bind_mutations.py"   # attention 4b: Prime's menu mutant lane
       - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger
       - "orion/physiology/**"
+      - "orion/schemas/intention.py"   # #3640: brief.promised_at opens the intention want
       - "config/physiology/**"
       - "scripts/analysis/body_economy_binding_replay.py"
       - "scripts/analysis/outreach_binding_replay.py"
@@ -162,6 +167,9 @@ on:
       - "orion/schemas/pr_field_note_run.py"   # pr.field_note (PR field notes Patch 2)
       - "orion/body_atlas/field_notes.py"     # the ledger app/pr_field_note_ledger.py writes
       - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
+      - "orion/schemas/dream_day.py"           # dream.day (the day dream Patch 2)
+      - "orion/memory/dream_day.py"            # its parse / ref check / memories / grade
+      - "orion/memory/episode/**"              # dream memories go through validate + store
       - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/compactor_digest_run.py"
@@ -304,6 +312,10 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python services/orion-durable-runs/evals/reading_binding_replay.py
+      - name: Intention promise-age replay (#3640 -- a take-on ranks by the promise's age; the 11-13 run, fixture)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python services/orion-durable-runs/evals/intention_promise_age_replay.py
       - name: Outreach binding-bid eval (body economy Patch D for hub.outreach -- holds bounded, no answer never holds)
         env:
           PYTHONPATH: ${{ github.workspace }}

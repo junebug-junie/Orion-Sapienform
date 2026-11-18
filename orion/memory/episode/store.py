@@ -17,6 +17,7 @@ from typing import Any, Optional
 from orion.memory.episode.validate import MEMORY_ID_NAMESPACE, ValidationResult
 
 ACTOR = "memory.episode_distill"
+DREAM_ACTOR = "dream.day"
 logger = logging.getLogger(__name__)
 
 _INSERT_MEMORY = """
@@ -72,44 +73,23 @@ async def persist_episode(
     now: Optional[datetime] = None,
     referent_policy: Any = None,
     supersede_links: Optional[list[dict[str, Any]]] = None,
+    supersede_plan: Optional[dict[str, Any]] = None,
 ) -> dict[str, int]:
     """``referent_policy`` (orion.memory.referents.resolve.ReferentPolicy) turns on the Stage 2
     referent step; None skips it (MEMORY_REFERENTS_ENABLED=false).
 
     ``supersede_links`` (orion.memory.episode.supersede.Link dicts, from the distill node's check)
     retire what this episode's memories correct, in the same transaction: the old row superseded,
-    the new row's pointer, one event. Each link is re-checked against live state first."""
+    the new row's pointer, one event. Each link is re-checked against live state first.
+
+    ``supersede_plan`` (the check's whole plan) is kept as one append-only ``memory_supersede_run``
+    row (issue #3660): ids, legs, votes, verdicts, what was applied; never statements."""
     from psycopg.types.json import Jsonb
 
     now = now or datetime.now(timezone.utc)
     async with pool.connection() as conn:
         async with conn.transaction():
-            for m in result.memories:
-                await conn.execute(
-                    _INSERT_MEMORY,
-                    (
-                        m.memory_id, episode_id, m.purpose, m.voice, m.channel, m.statement, m.occurred_at,
-                        m.stakes, m.stakes_reason, m.confirmation_state, m.strength, m.half_life_days, now,
-                        m.due_after, m.expires_at, model_route, prompt_version, run_id, now, now,
-                    ),
-                )
-                for ev in m.evidence:
-                    await conn.execute(_INSERT_EVIDENCE, (m.memory_id, ev.source_kind, ev.source_id, ev.quote,
-                                                          hashlib.sha256(ev.quote.encode("utf-8")).hexdigest(),
-                                                          ev.verified))
-                for key, role in m.referents:
-                    await conn.execute(_INSERT_REFERENT, (m.memory_id, key, role))
-                await conn.execute(
-                    _INSERT_EVENT,
-                    (_event_id(episode_id, f"{m.memory_id}|created"), m.memory_id, "created", ACTOR, episode_id,
-                     Jsonb({"run_id": run_id, "voice": m.voice, "purpose": m.purpose}), None, now),
-                )
-                for i, e in enumerate(m.events):
-                    await conn.execute(
-                        _INSERT_EVENT,
-                        (_event_id(episode_id, f"{m.memory_id}|{e.op}|{i}"), m.memory_id, e.op, ACTOR, episode_id,
-                         Jsonb(e.detail), e.reason, now),
-                    )
+            await _insert_memories(conn, episode_id, run_id, result, model_route, prompt_version, now)
             for r in result.rejections:
                 await conn.execute(
                     _INSERT_EVENT,
@@ -124,7 +104,10 @@ async def persist_episode(
                              "verified": e.verified} for e in q.evidence]),
                      q.referents, now),
                 )
-            superseded = await _apply_supersede_links(conn, episode_id, result, now, supersede_links)
+            applied: list[dict[str, Any]] = []
+            superseded = await _apply_supersede_links(conn, episode_id, result, now, supersede_links, applied)
+            if supersede_plan is not None:
+                await _record_supersede_run(conn, episode_id, run_id, now, supersede_plan, applied)
             referents = await _persist_referents(conn, episode_id, result, now, referent_policy)
             await conn.execute(
                 _INSERT_RUN,
@@ -142,8 +125,68 @@ async def persist_episode(
     }
 
 
+async def _insert_memories(conn: Any, episode_id: str, run_id: str, result: ValidationResult, model_route: str,
+                           prompt_version: str, now: datetime, *, actor: str = ACTOR) -> None:
+    """The memory rows of ``result``: memory, evidence, referents, its created event and its validator events.
+    Every insert is ON CONFLICT DO NOTHING (ids are deterministic), so a replay writes nothing twice."""
+    from psycopg.types.json import Jsonb
+
+    for m in result.memories:
+        await conn.execute(
+            _INSERT_MEMORY,
+            (
+                m.memory_id, episode_id, m.purpose, m.voice, m.channel, m.statement, m.occurred_at,
+                m.stakes, m.stakes_reason, m.confirmation_state, m.strength, m.half_life_days, now,
+                m.due_after, m.expires_at, model_route, prompt_version, run_id, now, now,
+            ),
+        )
+        for ev in m.evidence:
+            await conn.execute(_INSERT_EVIDENCE, (m.memory_id, ev.source_kind, ev.source_id, ev.quote,
+                                                  hashlib.sha256(ev.quote.encode("utf-8")).hexdigest(),
+                                                  ev.verified))
+        for key, role in m.referents:
+            await conn.execute(_INSERT_REFERENT, (m.memory_id, key, role))
+        await conn.execute(
+            _INSERT_EVENT,
+            (_event_id(episode_id, f"{m.memory_id}|created"), m.memory_id, "created", actor, episode_id,
+             Jsonb({"run_id": run_id, "voice": m.voice, "purpose": m.purpose}), None, now),
+        )
+        for i, e in enumerate(m.events):
+            await conn.execute(
+                _INSERT_EVENT,
+                (_event_id(episode_id, f"{m.memory_id}|{e.op}|{i}"), m.memory_id, e.op, actor, episode_id,
+                 Jsonb(e.detail), e.reason, now),
+            )
+
+
+async def persist_dream_memories(conn: Any, *, episode_id: str, run_id: str, result: ValidationResult,
+                                 model_route: str, prompt_version: str, now: datetime) -> int:
+    """The day dream's memories (orion/memory/dream_day.py), on the caller's connection INSIDE the caller's
+    transaction (the dream_day row is written in the same one). The same rows a distilled episode writes,
+    actor ``dream.day``; no episode_distill_run row, no referent resolution, no supersede. Validator
+    rejections land as ``rejected_invalid`` events, never as memories. Returns the memories inserted now
+    (0 on a replay: every id is deterministic and every insert is ON CONFLICT DO NOTHING)."""
+    from psycopg.types.json import Jsonb
+
+    ids = [m.memory_id for m in result.memories]
+    before = 0
+    if ids:
+        cur = await conn.execute("SELECT count(*) AS n FROM episode_memory WHERE memory_id = ANY(%s::uuid[])", (ids,))
+        row = await cur.fetchone()
+        before = int((row or {}).get("n") or 0)
+    await _insert_memories(conn, episode_id, run_id, result, model_route, prompt_version, now, actor=DREAM_ACTOR)
+    for r in result.rejections:
+        await conn.execute(
+            _INSERT_EVENT,
+            (_event_id(episode_id, f"rejected|{r.kind}|{r.index}"), None, "rejected_invalid", DREAM_ACTOR,
+             episode_id, Jsonb({"kind": r.kind, "candidate": r.candidate, "run_id": run_id}), r.reason, now),
+        )
+    return len(ids) - before
+
+
 async def _apply_supersede_links(conn: Any, episode_id: str, result: ValidationResult, now: datetime,
-                                 links: Optional[list[dict[str, Any]]]) -> int:
+                                 links: Optional[list[dict[str, Any]]],
+                                 applied_out: Optional[list[dict[str, Any]]] = None) -> int:
     """Only links whose new row is one of THIS episode's validated memories are applied."""
     if not links:
         return 0
@@ -155,9 +198,27 @@ async def _apply_supersede_links(conn: Any, episode_id: str, result: ValidationR
         link = Link.from_dict(d)
         if link.new_id not in mine:
             continue
-        if await apply_link(conn, link, actor=ACTOR_DISTILL, now=now, episode_id=episode_id):
+        written = await apply_link(conn, link, actor=ACTOR_DISTILL, now=now, episode_id=episode_id)
+        if written:
             applied += 1
+            if applied_out is not None:
+                applied_out.append({"old_id": link.old_id, "new_id": link.new_id, "relation": written["relation"],
+                                    "invalid_at": written["invalid_at"], "path": written["path"]})
     return applied
+
+
+async def _record_supersede_run(conn: Any, episode_id: str, run_id: str, now: datetime, plan: dict[str, Any],
+                                applied: list[dict[str, Any]]) -> None:
+    """One append-only audit row per distill run, in a SAVEPOINT: a fault here (its migration not
+    applied yet) is logged and rolled back alone; the memories and any supersede still commit."""
+    from orion.memory.episode.supersede import record_run
+
+    try:
+        async with conn.transaction():
+            await record_run(conn, run_id=f"distill:{episode_id}:{run_id}", source="distill", episode_id=episode_id,
+                             plan=plan, applied=applied, finished_at=now)
+    except Exception:  # noqa: BLE001 - the audit row must never cost the memories
+        logger.exception("supersede_run_record_failed episode_id=%s", episode_id)
 
 
 async def _persist_referents(conn: Any, episode_id: str, result: ValidationResult, now: datetime,

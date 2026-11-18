@@ -30,6 +30,7 @@ def _hops(corr=CORR, session=SESSION, *, mode="orion", promises=({"offer": False
     ingress = {"session_id": session, "user_message": "ok im off to play zelda for a bit", "attachment_count": 0}
     if mode is not None:
         ingress["mode"] = mode
+        ingress["surface_context"] = {"surface": "hub_desktop", "input_modality": "typed"}
     fin = {"correlation_id": corr, "final_text": final or f"Have fun!\n\n{QUOTE} and see what stands out.",
            "compliance_verdict": "completed",
            "reflection": {"promises_made": [dict(p) for p in promises], "promises_kept": []}}
@@ -116,14 +117,14 @@ def test_a_promise_concern_survives_48h_unkept_and_fades_after_72h():
     assert observe(state, PrimeSnapshotV1(), opened + timedelta(hours=72)).concerns == state.concerns
     gone = observe(state, PrimeSnapshotV1(), opened + timedelta(hours=72, seconds=1))
     assert gone.concerns == [] and gone.concern_record[-1].end == "faded"
-    assert any("not kept for 3 days" in line for line in gone.pending_changes)
+    assert any("nothing renewed it for 3 days" in line for line in gone.pending_changes)
 
 
 def test_an_ordinary_concern_still_fades_at_24h():
     state = PrimeStateV1(concerns=[_ordinary()])
     assert observe(state, PrimeSnapshotV1(), PROMISED + timedelta(hours=24)).concerns == state.concerns
     gone = observe(state, PrimeSnapshotV1(), PROMISED + timedelta(hours=24, seconds=1))
-    assert gone.concerns == [] and gone.concern_record[-1].note == "faded: not kept for a day"
+    assert gone.concerns == [] and gone.concern_record[-1].note == "faded: nothing renewed it for a day"
 
 
 def test_both_kinds_held_together_fade_on_their_own_clocks():

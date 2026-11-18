@@ -80,11 +80,15 @@ def _run(deps, **kw):
 
 
 def _cycle_view(cycle) -> dict:
-    """A cycle minus its random id, its wall clocks, and the hypotheses' content (control pairs
-    are seeded by the random cycle id, so their text varies run to run with or without a bid)."""
-    view = cycle.model_dump(exclude={"cycle_id", "started_at", "ended_at", "hypotheses"})
+    """A cycle minus its random id, its wall clocks, and the hypotheses' and pair answers' content
+    (control pairs are seeded by the random cycle id, so their text varies run to run with or
+    without a bid). The pair outcomes stay: they must not depend on the bid either."""
+    view = cycle.model_dump(exclude={"cycle_id", "started_at", "ended_at", "hypotheses", "pair_answers"})
     view["pressure"] = {k: v for k, v in view["pressure"].items() if k not in ("since", "computed_at")}
-    return view | {"n_hypotheses": len(cycle.hypotheses)}
+    return view | {
+        "n_hypotheses": len(cycle.hypotheses),
+        "pair_outcomes": [(a.arm, a.outcome) for a in cycle.pair_answers],
+    }
 
 
 def _act_view(event) -> tuple:

@@ -124,3 +124,21 @@ def test_blank_question_text_does_not_halt_the_pool():
     assert [d.ref_id for d in lived] == ["lived.q1@bbbbbbbbbbbb"]
     assert not [n for n in lived[0].neighborhood if n.relation == "answers_question"]
     assert pairs["questions"] == []
+
+
+class _FalkorQuestionKey(_Falkor):
+    """Live shape on 2026-11-17 (#3592): words under `question`, not `text`."""
+
+    def rows(self, graph, cypher, **params):
+        if "SelfQuestionMint" in cypher:
+            return [{"qid": "lived.q1", "text": None, "question": "which weights does it read?"},
+                    {"qid": "lived.q2", "text": "", "question": None}]
+        return super().rows(graph, cypher, **params)
+
+
+def test_question_keyed_mint_is_read_and_blank_one_is_logged(caplog):
+    with caplog.at_level("WARNING", logger="orion.world_pulse_read.resonance_records"):
+        docs, pairs, _ = rr.worldview_pool(_FalkorQuestionKey())
+    assert pairs["questions"] == [{"qid": "lived.q1", "text": "which weights does it read?"}]
+    assert [d.ref_id for d in docs if d.ref_kind == "lived_question"] == ["lived.q1"]
+    assert "resonance_self_question_mint_dropped count=1" in caplog.text and "lived.q2" in caplog.text

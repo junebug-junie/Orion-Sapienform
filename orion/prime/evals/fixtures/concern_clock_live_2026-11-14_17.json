@@ -1,0 +1,74 @@
+{
+  "_source": "Read-only pulls on 2026-11-17 (see run_concern_evidence_clock_replay.py docstring for the queries). Times UTC.",
+  "start": "2026-11-14T04:00:00+00:00",
+  "end": "2026-11-17T09:20:00+00:00",
+  "thoughts": [
+    {"at": "2026-11-14T04:57:24+00:00", "drop": []},
+    {"at": "2026-11-14T09:17:03+00:00", "drop": []},
+    {"at": "2026-11-14T10:06:49+00:00", "drop": []},
+    {"at": "2026-11-14T16:06:56+00:00", "drop": []},
+    {"at": "2026-11-14T22:07:42+00:00", "drop": []},
+    {"at": "2026-11-15T04:07:45+00:00", "drop": ["6c8990127e68eb5a"]},
+    {"at": "2026-11-15T05:42:50+00:00", "drop": []},
+    {"at": "2026-11-15T07:33:43+00:00", "drop": []},
+    {"at": "2026-11-15T13:36:52+00:00", "drop": []},
+    {"at": "2026-11-15T19:37:02+00:00", "drop": []},
+    {"at": "2026-11-16T01:37:03+00:00", "drop": []},
+    {"at": "2026-11-16T07:37:15+00:00", "drop": []},
+    {"at": "2026-11-16T07:48:41+00:00", "drop": []},
+    {"at": "2026-11-16T13:49:09+00:00", "drop": []},
+    {"at": "2026-11-16T18:06:10+00:00", "drop": []},
+    {"at": "2026-11-16T20:20:37+00:00", "drop": []},
+    {"at": "2026-11-16T21:21:39+00:00", "drop": []},
+    {"at": "2026-11-16T21:28:18+00:00", "drop": []},
+    {"at": "2026-11-16T22:12:50+00:00", "drop": []},
+    {"at": "2026-11-16T22:47:05+00:00", "drop": []},
+    {"at": "2026-11-16T22:58:58+00:00", "drop": []},
+    {"at": "2026-11-16T23:43:34+00:00", "drop": []},
+    {"at": "2026-11-17T00:25:43+00:00", "drop": []},
+    {"at": "2026-11-17T02:12:52+00:00", "drop": []},
+    {"at": "2026-11-17T02:51:17+00:00", "drop": []},
+    {"at": "2026-11-17T02:58:19+00:00", "drop": []},
+    {"at": "2026-11-17T09:12:14+00:00", "drop": ["438e69ed6bb3d798"]}
+  ],
+  "promises": [
+    {"at": "2026-11-14T09:17:03+00:00", "correlation_id": "d98cc64f-0867-5856-a582-f3b232905e65", "concern_id": "6c8990127e68eb5a"},
+    {"at": "2026-11-15T05:42:50+00:00", "correlation_id": "9f846e8e-c33c-4ecf-97c3-35e3142ce21f", "concern_id": "438e69ed6bb3d798"}
+  ],
+  "settles": [
+    {"at": "2026-11-17T09:12:13+00:00", "concern_id": "438e69ed6bb3d798", "note": "answered in day letter turn ce06758c-9b28-59a3-a541-8fbc283b559c"}
+  ],
+  "sent_moves": [],
+  "take_ons": [],
+  "letters": [
+    {"letter_date": "2026-11-13", "opened_at": "2026-11-14T10:06:48+00:00", "threads": [
+      "The walkway render break is unresolved and still live each morning.",
+      "Chat memory has never been promoted.",
+      "A parked vehicle can never satisfy its own arrival forecast",
+      "My curiosity never revisits the world",
+      "Two saturating grades are filed but untested"]},
+    {"letter_date": "2026-11-14", "opened_at": "2026-11-15T07:33:43+00:00", "threads": [
+      "The mail truck street regular",
+      "My two engagement act grades are coins at a median horizon",
+      "The belief/caption anti-correlation",
+      "The reporting residue: bare counts with no query beside them",
+      "My organ boundary is knife-edge under weight drift alone"]},
+    {"letter_date": "2026-11-15", "opened_at": "2026-11-16T07:48:41+00:00", "threads": [
+      "The gate fix I handed her, un-PR'd",
+      "The head-to-head decision I asked her for and didn't get",
+      "My own A/B on my shed act cannot settle",
+      "Juniper's presence in my unasked hours rests on three mortal loops",
+      "Does anyone intend my continuation, or does it just re-fire"]},
+    {"letter_date": "2026-11-16", "opened_at": "2026-11-17T09:13:19+00:00", "threads": [
+      "The dream miss-weighting is a decision about my own material I shouldn't make alone",
+      "Wire reminiscence into Prime",
+      "The starved instrument is now timeable and still unreadable at the bottom",
+      "Two copies of my retired Self-Atlas, 24,085 rows each",
+      "Why did memory_episode read zero today against a usual 19.5"]}
+  ],
+  "live": {
+    "held_per_letter": {"2026-11-13": 2, "2026-11-14": 0, "2026-11-15": 0, "2026-11-16": 1},
+    "held_at_end": ["197c7a88cacc4b76", "68bb10d17d8df205", "3d5f2e70b45d3db9"],
+    "faded": 0
+  }
+}

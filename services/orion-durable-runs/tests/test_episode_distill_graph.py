@@ -113,8 +113,11 @@ def test_supersede_check_runs_on_the_hold_and_its_links_reach_persist():
         assert episode_id == "ep-1"
         assert [m.statement for m in result.memories] == ["Juniper flew to Austin and returns Wednesday."]
         assert await ask("CHECK: does B correct A?") == "yes"
-        return {"links": [{"old_id": "old-1", "new_id": result.memories[0].memory_id, "reason": "r"}],
-                "asked": 1}
+        from orion.memory.episode.supersede import CHECK_VERSION
+
+        return {"links": [{"old_id": "old-1", "new_id": result.memories[0].memory_id, "reason": "r",
+                           "check_version": CHECK_VERSION, "relation": "correction"}],
+                "asked": 1, "apply": "on", "refused_because": []}
 
     async def run():
         world, saver = World(), InMemorySaver()
@@ -125,7 +128,25 @@ def test_supersede_check_runs_on_the_hold_and_its_links_reach_persist():
         assert result["status"] == "completed"
         assert [b.max_tokens for b in d.check_briefs] == [200] and d.check_briefs[0].timeout_sec <= 120
         assert d.persisted[0]["supersede_links"][0]["old_id"] == "old-1"
+        assert d.persisted[0]["supersede_plan"]["apply"] == "on"   # the whole plan reaches the audit row
         assert result["supersede"]["asked"] == 1
+
+    asyncio.run(run())
+
+
+def test_a_plan_that_does_not_say_apply_on_reaches_persist_with_no_links():
+    """Issue #3659: a degraded plan (or one checkpointed before the rule) applies nothing."""
+    async def link(result, ask, *, episode_id):
+        mine = result.memories[0].memory_id
+        return {"links": [{"old_id": "old-1", "new_id": mine, "reason": "r"}], "asked": 1, "dense": "unavailable"}
+
+    async def run():
+        world, saver = World(), InMemorySaver()
+        d = Distiller(world, [GOOD])
+        await asyncio.wait_for(graph(world, saver, d, link=link).ainvoke(initial(), CFG), 1)
+        world.grant()
+        result = await graph(world, saver, d, link=link).ainvoke(Command(resume={}), CFG)
+        assert result["status"] == "completed" and "supersede_links" not in d.persisted[0]
 
     asyncio.run(run())
 

@@ -618,6 +618,43 @@ unchanged. The list is balanced and never has 3 OFF in a row.
 - Evals: `evals/run_town_hold_synthetic_eval.py` (CI), `evals/run_town_hold_replay_eval.py` (Patch 0, live
   read-only: per-block spread and MDE), `evals/run_town_hold_dry_run_eval.py` (live read-only: tonight's plan).
 
+## Learning progress (`GET /learning-progress`)
+
+Are Orion's forecasts getting better or worse? (`app/learning_progress.py`; choice-as-EFE design Step 1,
+`docs/superpowers/specs/2026-11-13-choice-as-expected-free-energy-design.md`.) Oudeyer and Kaplan's learning
+progress: the drop in error over time, not low error.
+
+- `skill(day) = 1 - MAE(champion) / MAE(baseline)` over paired scored rows at 15 min, one UTC day. A hard day moves
+  both errors, so skill cancels most of the weather.
+- `learning_progress = mean skill(last 7 complete days) - mean skill(the 7 before)`.
+- **Only cabinet and office temperature.** The metric gate passed for these two only.
+- **Same models on both sides.** Only days after the last roster change count. The roster key per day is the set
+  of fitted model names plus the selection config on the day's last `champion_blend` run: `gate_version`,
+  `covariates`, `overlap_covariates`. So a gate-rule or covariate change under the same model names also counts
+  (cabinet: 10-21 covariates, 10-23 gate v3, 11-03). A model joining is our deploy, not learning. Fewer than 5
+  usable days on a side: `insufficient`, with a reason (never 0). Known gap: a change to a model's own code under
+  the same name is not seen; no table records a code or image version (#3691).
+- **Rest.** `direction` is `flat` unless the t passes Student's two-sided 5% cut at the Welch-Satterthwaite df
+  (about 2.2-2.4 live) and the change is at least 0.05 in skill. Flat is the calm reading.
+- **Weather spells.** Daily skill is autocorrelated, so independent-day (Welch) errors were too small: at a
+  day-to-day correlation of 0.2-0.3 that rule called a move on 9-12% of null looks, not 5%. The standard error is
+  now the exact AR(1) one (window means, their covariance, bias-corrected variances, matching df). `rho` is
+  estimated from 56 days of same-roster history: residuals of 7-day blocks after their own mean and trend, lag-1,
+  moment-matched; clamped to [0, 0.6]; then shrunk toward 0.3 (the prior counts as 24 day pairs); under 12 day
+  pairs it is 0.3. At `rho` 0 it is the Welch test exactly. Null false-move rate per look: 1.7-5.1% at `rho` 0-0.3
+  (Welch 4-13%). Per week (7 overlapping daily looks) it is about 12-21%; Prime reads each look's `p_value`.
+- Computed on read. No table, no node, no bus event. Not a market family (design: not before Step 3).
+
+Response: `{as_of, horizon_min, window_days, alpha, min_effect, series: [{series_id, status, reason,
+learning_progress, se, t, t_crit, p_value, direction, recent: {start, end, days, mean_skill}, prior: {...},
+roster_changed_on, rho, rho_pairs, rho_source, se_iid}]}`. `se`/`t`/`p_value` are the AR(1) ones; `se_iid` is the
+plain Welch SE for comparison; `rho_source` is `estimated` (history, shrunk), `prior` (fewer than 12 pairs) or
+`given`. `?series_id=` reads one; any other series is 404.
+
+Live replay (`evals/run_learning_progress_live_eval.py`, 2026-11-18, after #3691): cabinet flat 3, insufficient
+17; office flat 3. Office's earlier `better` (11-16) came from days before the 11-03 gate-rule change and is now
+excluded. Null eval: `evals/run_learning_progress_null_eval.py` (shuffled labels, circular shifts, simulated AR(1)).
+
 ## Contracts
 
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).

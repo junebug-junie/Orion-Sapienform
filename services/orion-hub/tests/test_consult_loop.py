@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 import pytest
 
 from orion.consult.core import consult_room_id, orion_session_id
+from orion.memory.mesh_edge import REDACTION_MARKER, MeshEdgeGuard, MeshEdgeUnavailable
 from orion.schemas.claude_limit import ClaudeLimitObservationV1
 from orion.schemas.room_claude import ExternalRoomResponderV1, RoomClaudeUtteranceV1
 from scripts import consult_loop as cl
@@ -189,10 +190,13 @@ def world(monkeypatch):
     queue = SimpleNamespace(put_nowait=pushed.append)
     outreach = FakeDurable(["Why does journal stop?", "I agree: release the lease."])
     relay, notify = FakeRelay(), FakeNotify()
+    # The mesh-edge guard the loop loads before each Claude send (#3541): empty unless a test swaps it.
+    guard_box = {"load": lambda: MeshEdgeGuard()}
     loop = cl.ConsultLoop(
         enabled=True, pool_provider=lambda: object(), durable_client=outreach,
         relay_provider=lambda: relay, notify_client=notify,
         connections_provider=lambda: {"conn1": {"queue": queue}}, clock=lambda: NOW,
+        mesh_edge_guard_loader=lambda: guard_box["load"](),
     )
     loop.meter = {"session_limit": meter("session_limit"), "weekly_limit": meter("weekly_limit")}
     monkeypatch.setattr(loop, "_spawn", lambda coro: asyncio.get_event_loop().create_task(coro))
@@ -201,12 +205,14 @@ def world(monkeypatch):
         pushed.append({"history": cid})
 
     monkeypatch.setattr(loop, "_history", _history)
-    return SimpleNamespace(store=store, loop=loop, outreach=outreach, relay=relay, notify=notify, pushed=pushed)
+    return SimpleNamespace(store=store, loop=loop, outreach=outreach, relay=relay, notify=notify, pushed=pushed,
+                           guard_box=guard_box)
 
 
 async def _settle():
-    for _ in range(5):
-        await asyncio.sleep(0)
+    # Real (tiny) sleeps: the mesh-edge guard loads in a worker thread (asyncio.to_thread).
+    for _ in range(20):
+        await asyncio.sleep(0.005)
 
 
 @pytest.mark.asyncio
@@ -528,3 +534,169 @@ def test_a_last_offer_whose_run_never_settled_reads_not_recorded(monkeypatch):
     row = {"status": "answered", "belief_offers": MAX_BELIEF_OFFERS, "orion_told_run_id": "r"}
     assert cl.belief_state({**row, "orion_told_at": NOW - timedelta(seconds=60)}) == "waiting"
     assert cl.belief_state({**row, "orion_told_at": NOW - timedelta(seconds=STALE_CLAIM_SEC + 1)}) == "not_recorded"
+
+
+# --- mesh edge on Claude-bound prompts (#3541, #3554) -------------------------------------------
+
+PRIVATE = "Juniper told me she walked the long way home past the bakery because the bridge was closed."
+
+
+def _private_guard():
+    return MeshEdgeGuard.from_texts([("episode_memory:e1", PRIVATE)], shingle_n=8)
+
+
+@pytest.mark.asyncio
+async def test_a_prompt_quoting_private_memory_is_redacted_before_claude_sees_it(world):
+    world.guard_box["load"] = _private_guard
+    world.outreach.replies = ["The journal lease leaks. Also she walked the long way home past the bakery because "
+                              "the bridge was shut, which is why I checked late."]
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m1", question="Journal?")
+    await world.loop.tick()
+    sent = world.relay.invites[-1]["prompt"]
+    assert REDACTION_MARKER in sent and "bakery" not in sent and "journal lease leaks" in sent
+    row = world.store.rows[cid]
+    assert row["status_reason"] == cl.AWAIT_CLAUDE and row["pending_prompt"] == sent, "a resend re-sends the redacted copy"
+    assert "bakery" in world.store.turn_rows[cid][0]["text"], "Orion's stored turn (inside the mesh) keeps the original"
+    notes = [p for p in world.pushed if p.get("kind") == cl.CONSULT_TURN_KIND and "withheld" in json.dumps(p)]
+    assert notes, "Hub chat says a span was withheld"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_prompt_is_sent_unchanged(world):
+    world.guard_box["load"] = _private_guard
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m2", question="Journal broke?")
+    await world.loop.tick()
+    assert REDACTION_MARKER not in world.relay.invites[-1]["prompt"]
+    assert world.store.rows[cid]["status_reason"] == cl.AWAIT_CLAUDE
+
+
+@pytest.mark.asyncio
+async def test_guard_unavailable_holds_the_send_then_retries_next_tick(world):
+    def down():
+        raise MeshEdgeUnavailable("no database DSN for the mesh-edge check")
+
+    world.guard_box["load"] = down
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m3", question="Journal broke?")
+    await world.loop.tick()
+    row = world.store.rows[cid]
+    assert world.relay.invites == [], "fail closed: nothing reaches Claude"
+    assert row["status"] == "open" and row["status_reason"] == f"{cl.MESH_EDGE_HOLD}unavailable"
+    assert row["pending_prompt"] and row["pending_correlation_id"] is None
+
+    world.guard_box["load"] = lambda: MeshEdgeGuard()
+    await world.loop.tick()
+    assert len(world.relay.invites) == 1 and world.store.rows[cid]["status_reason"] == cl.AWAIT_CLAUDE
+    assert len(world.outreach.calls) == 1, "the hold re-sends the stored prompt; Orion's turn is not re-run"
+
+
+@pytest.mark.asyncio
+async def test_a_match_that_survives_redaction_fails_the_consult_unsent(world, monkeypatch):
+    class Stubborn:
+        def redact(self, text):
+            return text, [SimpleNamespace(source="page:juniper", kind="shingle")]
+
+        def find(self, text):
+            return [SimpleNamespace(source="page:juniper", kind="shingle")]
+
+    world.guard_box["load"] = Stubborn
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m4", question="Journal broke?")
+    await world.loop.tick()
+    row = world.store.rows[cid]
+    assert world.relay.invites == []
+    assert row["status"] == "failed" and row["status_reason"] == "mesh_edge_refused" and row["pending_prompt"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_gate_retry_prompt_also_passes_the_mesh_edge(world):
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m5", question="q")
+    await world.loop.tick()
+    world.guard_box["load"] = lambda: (_ for _ in ()).throw(MeshEdgeUnavailable("down"))
+    bad = brief_block(cost={"doing_the_work": {"value": "3 kWh"}, "doing_nothing": {"unknown_reason": "n/a"}})
+    await world.loop.on_claude_utterance(utt(cid, bad))
+    row = world.store.rows[cid]
+    assert row["status_reason"] == f"{cl.MESH_EDGE_HOLD}unavailable" and "refused" in row["pending_prompt"]
+    assert len(world.relay.invites) == 1, "the correction is held, not sent unchecked"
+
+
+@pytest.mark.asyncio
+async def test_any_guard_error_holds_the_send_with_one_hub_notice(world):
+    def broken():
+        raise RuntimeError("bug in the loader")
+
+    world.guard_box["load"] = broken
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m6", question="Journal broke?")
+    await world.loop.tick()
+    await world.loop.tick()
+    assert world.relay.invites == []
+    assert world.store.rows[cid]["status_reason"] == f"{cl.MESH_EDGE_HOLD}unavailable"
+    notices = [p for p in world.pushed if p.get("kind") == cl.CONSULT_TURN_KIND and "Held" in json.dumps(p)]
+    assert len(notices) == 1, "Hub chat hears about the hold once, not every tick"
+
+
+@pytest.mark.asyncio
+async def test_the_lost_reply_resend_re_checks_against_a_newer_guard(world):
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m7", question="Journal?")
+    world.outreach.replies = ["The lease leaks. She walked the long way home past the bakery because the bridge "
+                              "was shut. That is all."]
+    await world.loop.tick()
+    assert "bakery" in world.relay.invites[-1]["prompt"], "the memory was not guarded yet"
+    world.guard_box["load"] = _private_guard  # the memory is guarded now
+    world.store.rows[cid]["updated_at"] = NOW - timedelta(seconds=world.loop.claude_timeout_sec + 5)
+    await world.loop.tick()
+    assert len(world.relay.invites) == 2
+    assert "bakery" not in world.relay.invites[-1]["prompt"] and REDACTION_MARKER in world.relay.invites[-1]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_the_budget_hold_resend_is_redacted(world):
+    world.outreach.replies = ["The lease leaks. She walked the long way home past the bakery because the bridge "
+                              "was shut. That is all."]
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m8", question="Journal?")
+    world.loop.meter["weekly_limit"] = meter("weekly_limit", state="limited")
+    world.store.rows[cid]["status"], world.store.rows[cid]["status_reason"] = "open", cl.AWAIT_ORION
+    await world.loop.tick()
+    assert world.relay.invites == [] and world.store.rows[cid]["status_reason"].startswith(cl.BUDGET)
+    world.guard_box["load"] = _private_guard
+    world.loop.meter["weekly_limit"] = meter("weekly_limit")
+    await world.loop.tick()
+    sent = world.relay.invites[-1]["prompt"]
+    assert "bakery" not in sent and REDACTION_MARKER in sent and "lease leaks" in sent
+
+
+@pytest.mark.asyncio
+async def test_claude_is_told_what_the_marker_is_and_how_many_there_are(world):
+    # Thread cf5d4218097a: Claude saw bare markers, with no word on what they were.
+    world.guard_box["load"] = _private_guard
+    world.outreach.replies = ["The journal lease leaks after the nightly run and nobody retries it. Also she walked "
+                              "the long way home past the bakery because the bridge was shut, which is why I "
+                              "checked late. The lease row shows the lock held for six hours."]
+    await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:n1", question="Journal?")
+    await world.loop.tick()
+    sent = world.relay.invites[-1]["prompt"]
+    first, _ = sent.split("\n\n", 1)
+    assert first.startswith(cl.MESH_EDGE_NOTE_PREFIX) and "1 passage(s)" in first and REDACTION_MARKER in first
+    assert "bakery" not in sent
+    again = cl.with_redaction_note(sent)
+    assert again == sent, "a resend never stacks a second note"
+
+
+@pytest.mark.asyncio
+async def test_a_mostly_withheld_prompt_stops_the_consult_unsent(world):
+    world.guard_box["load"] = _private_guard
+    world.outreach.replies = [f"{PRIVATE} {PRIVATE} {PRIVATE} {PRIVATE} {PRIVATE} {PRIVATE} Why?"]
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:n2", question="Q?")
+    await world.loop.tick()
+    row = world.store.rows[cid]
+    assert world.relay.invites == []
+    assert row["status"] == "failed" and row["status_reason"] == cl.MESH_EDGE_MOSTLY_WITHHELD
+    assert row["pending_prompt"] is None
+    notes = [p for p in world.pushed if p.get("kind") == cl.CONSULT_TURN_KIND and "most of its text" in json.dumps(p)]
+    assert notes, "Hub chat says why it stopped"
+
+
+def test_withheld_fraction_counts_readable_words_only():
+    assert cl.withheld_fraction("a b c d", "a b c d") == 0.0
+    assert cl.withheld_fraction("a b c d", f"a {REDACTION_MARKER}") == 0.75
+    assert cl.withheld_fraction("", "") == 0.0
+    noted = cl.with_redaction_note(f"a b {REDACTION_MARKER}")
+    assert cl.withheld_fraction(noted, noted) == 0.0, "Hub's own note is not counted as Claude-readable words"

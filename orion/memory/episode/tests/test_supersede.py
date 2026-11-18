@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from orion.memory.episode import supersede as s
@@ -18,23 +19,31 @@ def row(mid, statement, *, days=0, purpose="about_juniper", state="auto", refs=(
 def answers(*texts):
     """An ask() that replays canned answers in order and records every prompt."""
     seen: list[str] = []
+    temps: list[float] = []
     queue = list(texts)
 
-    async def ask(prompt):
+    async def ask(prompt, *, temperature=0.0):
         seen.append(prompt)
+        temps.append(temperature)
         item = queue.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
 
+    ask.temps = temps
     return ask, seen
 
 
-YES = json.dumps({"corrects": "yes", "sure": "yes", "reason": "B says the pet is a dog, A said a cat."})
-YES_UNSURE = json.dumps({"corrects": "yes", "sure": "no", "reason": "maybe"})
-NO = json.dumps({"corrects": "no", "sure": "yes", "reason": "both can be true"})
-BOTH_FALSE = json.dumps({"both_true": "no", "reason": "B says A was wrong."})
-BOTH_TRUE = json.dumps({"both_true": "yes", "reason": "different times"})
+def vote(relation, conf=0.9, same="yes", reason="r", kind="lasting_state", changed="yes", referent="yes"):
+    return json.dumps({"a_kind": kind, "b_says_a_wrong_or_changed": changed, "same_referent": referent,
+                       "same_attribute": same, "relation": relation, "confidence": conf, "reason": reason})
+
+
+COR = vote("correction", reason="B says the pet is a dog, A said a cat.")
+UPD = vote("update")
+COMPAT = vote("compatible", same="no", changed="no")
+LOWC = vote("correction", conf=0.5)
+COR3 = (COR, COR, COR)
 
 OLD = row("old", "Juniper told me her pet Biscuit is a cat.", refs=("pet:biscuit",))
 NEW = row("new", "Juniper told me Biscuit is a dog, not a cat.", days=3, refs=("pet:biscuit",))
@@ -55,12 +64,22 @@ def test_candidates_need_an_older_row_that_shares_something_specific():
     assert got[0].shared_rare_referents == ("pet:biscuit",)
 
 
-def test_dense_floor_and_dense_alone():
+def test_dense_floor_and_no_dense_alone_leg():
     near = row("near", "A very close paraphrase with no shared rare word.", days=1)
     c = corpus(OLD, near, NEW)
     assert s.candidates_for(NEW, c, dense={"old": 0.59}) == []           # under the floor
-    assert [x.old.memory_id for x in s.candidates_for(NEW, c, dense={"near": s.DENSE_ALONE})] == ["near"]
-    assert s.candidates_for(NEW, c, dense={"near": s.DENSE_ALONE - 0.01}) == []
+    # Issue #3659: a cosine alone, however high, never makes a pair.
+    assert s.candidates_for(NEW, c, dense={"near": 0.99}) == []
+    assert not hasattr(s, "DENSE_ALONE")
+
+
+def test_candidates_carry_their_legs_without_text():
+    got = s.candidates_for(NEW, corpus(OLD, NEW), dense={"old": 0.7123})
+    legs = got[0].legs()
+    assert legs == {"cosine": 0.7123, "rare_tokens": len(got[0].shared_rare_tokens),
+                    "rare_token_rows": [2] * len(got[0].shared_rare_tokens), "rare_referents": 1,
+                    "rare_referent_rows": [2], "rank": 1, "k": s.K_PER_ROW}
+    assert "Biscuit" not in json.dumps(legs)
 
 
 def test_confirmed_and_follow_up_rows_are_never_candidates():
@@ -92,47 +111,119 @@ def test_at_most_k_candidates_best_first():
     assert [x.old.memory_id for x in got] == ["o5", "o4", "o3"]
 
 
-# --- the check -------------------------------------------------------------------------------
+# --- the classifier -------------------------------------------------------------------------
 
-def test_parse_check_refuses_anything_malformed():
-    assert s.parse_check(YES).first_yes
-    assert s.parse_check("```json\n" + YES + "\n```").first_yes
-    for bad in ("", "yes", "[1]", '{"corrects": "maybe", "sure": "yes", "reason": "x"}',
-                '{"corrects": "yes", "sure": "yes", "reason": ""}'):
-        v = s.parse_check(bad)
-        assert not v.first_yes and not v.accepted, bad
-
-
-def test_two_agreeing_answers_link():
-    ask, seen = answers(YES, BOTH_FALSE)
-    v = asyncio.run(s.run_check(OLD, NEW, ask))
-    assert v.accepted and v.both_true is False and len(seen) == 2
-    assert OLD.statement in seen[0] and NEW.statement in seen[0] and "both be true" in seen[1]
-
-
-def test_second_question_can_veto():
-    ask, _ = answers(YES, BOTH_TRUE)
-    v = asyncio.run(s.run_check(OLD, NEW, ask))
-    assert v.first_yes and not v.accepted
+def test_parse_vote_refuses_anything_malformed():
+    assert s.parse_vote(COR).acting
+    assert s.parse_vote("```json\n" + UPD + "\n```").acting
+    for bad in ("", "yes", "[1]", vote("maybe"), vote("correction", same="perhaps"), vote("correction", conf=1.5),
+                json.dumps({"relation": "update", "same_attribute": "yes", "confidence": "high"})):
+        assert not s.parse_vote(bad).acting, bad
+        assert s.parse_vote(bad).error, bad
+    assert not s.parse_vote(vote("correction", same="no")).acting   # not the same attribute
+    assert not s.parse_vote(vote("refine")).acting
+    weird = s.parse_vote(vote("correction", kind="weird"))
+    assert weird.error is None and not weird.acting          # a bad checklist field abstains, not an error
+    assert s.parse_vote(vote("correction", kind="lasting state")).acting   # spacing normalized
+    assert s.parse_vote(json.dumps({"relation": "correction", "same_attribute": "yes", "confidence": True,
+                                    "a_kind": "event", "b_says_a_wrong_or_changed": "yes"})).error
+    assert s.parse_vote(json.dumps({"relation": "correction", "same_attribute": "yes", "confidence": "nan",
+                                    "a_kind": "event", "b_says_a_wrong_or_changed": "yes"})).error
 
 
-def test_no_unsure_or_failure_never_links_and_skips_the_second_question():
-    for first in (NO, YES_UNSURE, "garbage", RuntimeError("gateway down")):
-        ask, seen = answers(first)
-        v = asyncio.run(s.run_check(OLD, NEW, ask))
-        assert not v.accepted and len(seen) == 1
-    ask, _ = answers(YES, RuntimeError("timeout"))
-    v = asyncio.run(s.run_check(OLD, NEW, ask))
-    assert not v.accepted and v.both_true is None
+def test_the_checklist_must_agree_with_an_acting_relation():
+    assert not s.parse_vote(vote("update", kind="plan")).acting          # a plan is never updated
+    assert not s.parse_vote(vote("update", kind="event")).acting
+    assert not s.parse_vote(vote("correction", kind="past_period")).acting
+    assert not s.parse_vote(vote("correction", kind="view")).acting
+    assert not s.parse_vote(vote("correction", changed="no")).acting      # B's words must say so
+    assert s.parse_vote(vote("correction", kind="measurement")).acting
+    ask, _ = answers(vote("update", kind="plan"))
+    v = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert not v.acts and v.abstain == "checklist:update"
+
+
+def test_three_unanimous_confident_votes_act_above_temperature_zero():
+    ask, seen = answers(*COR3)
+    v = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert v.acts and v.relation == "correction" and len(seen) == 3 and v.abstain == ""
+    assert all(t > 0 for t in ask.temps) and OLD.statement in seen[0] and NEW.statement in seen[0]
+
+
+def test_any_non_acting_vote_abstains_and_stops_asking():
+    for votes in ((COMPAT,), (COR, vote("refine")), (COR, COR, vote("unrelated", same="no", changed="no"))):
+        ask, seen = answers(*votes)
+        v = asyncio.run(s.classify_pair(OLD, NEW, ask))
+        assert not v.acts and not v.juniper_acts and len(seen) == len(votes)
+        assert v.abstain.startswith("vote:")
+
+
+def test_split_or_low_confidence_abstains():
+    ask, _ = answers(COR, UPD, COR)
+    v = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert not v.acts and v.abstain == "split_update_correction"
+    ask, _ = answers(COR, LOWC, COR)
+    v = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert not v.acts and v.abstain == "low_confidence"
+
+
+def test_a_failed_or_malformed_vote_is_an_error_not_a_link():
+    for bad in (RuntimeError("gateway down"), "garbage"):
+        ask, _ = answers(COR, bad)
+        v = asyncio.run(s.classify_pair(OLD, NEW, ask))
+        assert not v.acts and v.error and s.check_failed(v)
+
+
+def test_juniper_words_outrank_low_confidence_but_not_a_dissent():
+    mine = replace(NEW, voice="juniper_said", juniper_quoted=True)
+    ask, _ = answers(COR, LOWC, UPD)
+    v = asyncio.run(s.classify_pair(OLD, mine, ask))
+    assert not v.acts and v.juniper_acts and v.relation == "correction"
+    ask, _ = answers(COR, COMPAT)
+    v = asyncio.run(s.classify_pair(OLD, mine, ask))
+    assert not v.juniper_acts                       # one "compatible" vote: no override
+    ask, _ = answers(COR, LOWC, COR)
+    assert not asyncio.run(s.classify_pair(OLD, NEW, ask)).juniper_acts   # not her words
+
+
+def test_juniper_path_needs_one_clear_target():
+    mine = replace(NEW, voice="juniper_said", juniper_quoted=True)
+    o2 = row("o2", "Juniper told me Biscuit is a tabby cat.", refs=("pet:biscuit",))
+    cands = s.candidates_for(mine, corpus(OLD, o2, mine), dense={"old": 0.75, "o2": 0.7})
+    ask, _ = answers(COR, LOWC, COR, COMPAT)       # old: her path; o2: compatible
+    links, recs = asyncio.run(s.check_pairs(mine, cands, ask))
+    assert [(l.old_id, l.path) for l in links] == [("old", "juniper")] and recs[0].linked
+    ask, _ = answers(COR, LOWC, COR, COR, LOWC, COR)   # both qualify: no clear target
+    links, _ = asyncio.run(s.check_pairs(mine, cands, ask))
+    assert links == []
+
+
+def test_link_carries_relation_path_and_votes():
+    ask, _ = answers(UPD, UPD, UPD)
+    cands = s.candidates_for(NEW, corpus(OLD, NEW), dense={"old": 0.75})
+    links, recs = asyncio.run(s.check_pairs(NEW, cands, ask))
+    assert links[0].relation == "update" and links[0].path == "model" and links[0].votes == ("update",) * 3
+    audit = recs[0].audit()
+    assert audit["linked"] and audit["legs"]["cosine"] == 0.75 and len(audit["votes"]) == 3
+    assert OLD.statement not in json.dumps(audit) and NEW.statement not in json.dumps(audit)
+
+
+def test_invalid_at_update_is_the_new_time_correction_is_the_old_time():
+    t_old, t_new, now = T0, T0 + timedelta(days=30), T0 + timedelta(days=40)
+    old, new = {"occurred_at": t_old, "created_at": t_old}, {"occurred_at": t_new, "created_at": now}
+    assert s.invalid_at_for("update", old, new, now) == t_new
+    assert s.invalid_at_for("correction", old, new, now) == t_old
+    assert s.invalid_at_for("update", old, {"occurred_at": None, "created_at": now}, now) == now
 
 
 def test_budget_caps_model_calls():
     olds = [row(f"o{i}", f"Biscuit fact {i}.", refs=("pet:biscuit",)) for i in range(3)]
-    ask, seen = answers(YES, BOTH_FALSE, NO, NO)
-    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(*olds), ask, max_checks=3,
-                                           dense=_dense({f"o{i}": 0.7 for i in range(3)})))
-    assert len(seen) == 3 and plan["budget_left"] == 0
-    assert len(plan["links"]) == 1
+    ask, seen = answers(*COR3, COMPAT, COMPAT)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(*olds), ask, max_checks=4,
+                                           dense=_dense({f"o{i}": 0.7 for i in range(3)}), apply_gate=OPEN))
+    assert len(seen) == 4 and plan["budget_left"] == 0
+    assert len(plan["links"]) == 1 and plan["apply"] == "on" and s.links_to_apply(plan) == plan["links"]
+    assert len(plan["decisions"]) == 2 and plan["decisions"][0]["linked"]
 
 
 def _dense(scores):
@@ -141,13 +232,105 @@ def _dense(scores):
     return run
 
 
-def test_plan_falls_back_when_the_index_is_down():
+OPEN = (True, "eval_passed")
+
+
+# --- never act degraded (issue #3659) --------------------------------------------------------
+
+def test_index_down_links_nothing_asks_nothing_and_says_why():
     async def down(_statement):
         return None
 
-    ask, _ = answers(YES, BOTH_FALSE)
-    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=down))
-    assert plan["dense"] == "unavailable" and [l["old_id"] for l in plan["links"]] == ["old"]
+    ask, seen = answers(*COR3)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=down, apply_gate=OPEN))
+    assert plan["dense"] == "unavailable" and plan["links"] == [] and seen == []
+    assert plan["apply"] == "refused" and plan["refused_because"] == [s.REFUSED_DENSE_UNAVAILABLE]
+    assert s.links_to_apply(plan) == []
+
+
+def test_index_raising_links_nothing():
+    async def boom(_statement):
+        raise ConnectionError("chroma down")
+
+    ask, seen = answers(*COR3)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=boom, apply_gate=OPEN))
+    assert plan["links"] == [] and seen == []
+    assert plan["refused_because"] == [f"{s.REFUSED_DENSE_UNAVAILABLE}:ConnectionError"]
+
+
+def test_no_index_configured_never_falls_back_to_word_overlap():
+    ask, seen = answers(*COR3)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=None, apply_gate=OPEN))
+    assert plan["dense"] == "off" and plan["links"] == [] and seen == []
+    assert plan["refused_because"] == [s.REFUSED_DENSE_OFF]
+
+
+def test_a_malformed_answer_anywhere_holds_every_link():
+    other_old = row("o2", "Biscuit sleeps on the green sofa.", refs=("pet:biscuit",))
+    ask, _ = answers(*COR3, "not json")
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD, other_old), ask,
+                                           dense=_dense({"old": 0.75, "o2": 0.7}), apply_gate=OPEN))
+    assert plan["links"] == [] and [l["old_id"] for l in plan["held_links"]] == ["old"]
+    assert plan["refused_because"] == [s.REFUSED_CHECK_ERRORS] and s.links_to_apply(plan) == []
+
+
+def test_a_failed_vote_on_a_later_pair_holds_every_link():
+    other_old = row("o2", "Biscuit sleeps on the green sofa.", refs=("pet:biscuit",))
+    ask, _ = answers(*COR3, COR, RuntimeError("hold lost"))
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD, other_old), ask,
+                                           dense=_dense({"old": 0.75, "o2": 0.7}), apply_gate=OPEN))
+    assert plan["check_errors"] == 1 and s.links_to_apply(plan) == []
+    assert [l["old_id"] for l in plan["held_links"]] == ["old"]
+
+
+def test_a_closed_eval_gate_proposes_but_holds():
+    ask, seen = answers(*COR3)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=_dense({"old": 0.75}),
+                                           apply_gate=(False, "eval_missing")))
+    assert len(seen) == 3 and plan["links"] == [] and [l["old_id"] for l in plan["held_links"]] == ["old"]
+    assert plan["refused_because"] == [f"{s.REFUSED_EVAL_GATE}:eval_missing"]
+
+
+def test_the_gate_defaults_closed():
+    ask, _ = answers(*COR3)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=_dense({"old": 0.75})))
+    assert plan["links"] == [] and plan["apply"] == "refused"
+
+
+def test_a_checkpoint_from_before_the_rule_applies_nothing():
+    legacy = {"links": [{"old_id": "a", "new_id": "b", "reason": "r"}], "asked": 1, "dense": "unavailable"}
+    assert s.links_to_apply(legacy) == [] and s.links_to_apply(None) == []
+    assert s.links_to_apply({"links": legacy["links"], "apply": "on", "refused_because": ["x"]}) == []
+
+
+class _GateConn:
+    def __init__(self, row=None, exc=None):
+        self.row, self.exc = row, exc
+
+    async def execute(self, sql, params):
+        if self.exc:
+            raise self.exc
+        assert "memory_supersede_eval_run" in sql and params == (s.CHECK_VERSION, s.VOTES, s.EVAL_ROUTE)
+        row = self.row
+
+        class Cur:
+            description = None
+
+            async def fetchone(self):
+                return row
+        return Cur()
+
+
+def test_eval_gate_open_only_on_a_passing_run_for_this_check_version():
+    run = asyncio.run
+    fresh = datetime.now(timezone.utc)
+    assert run(s.eval_gate(_GateConn({"passed": True, "finished_at": fresh}))) == (True, "eval_passed")
+    stale = fresh - timedelta(days=s.EVAL_MAX_AGE_DAYS + 1)
+    assert run(s.eval_gate(_GateConn({"passed": True, "finished_at": stale}))) == (False, "eval_stale")
+    assert run(s.eval_gate(_GateConn({"passed": False}))) == (False, "eval_failed")
+    assert run(s.eval_gate(_GateConn(None))) == (False, "eval_missing")
+    assert run(s.eval_gate(_GateConn(exc=RuntimeError("relation does not exist")))) == (
+        False, "eval_unreadable:RuntimeError")
 
 
 def test_dedupe_one_link_per_old_row_and_no_chains():
@@ -157,8 +340,11 @@ def test_dedupe_one_link_per_old_row_and_no_chains():
 
 
 def test_link_round_trips_through_the_checkpoint():
-    link = s.Link("A", "B", "reason", dense=0.71, shared=("pet:biscuit",))
+    link = s.Link("A", "B", "reason", dense=0.71, shared=("pet:biscuit",), relation="update", path="juniper",
+                  votes=("update", "update", "correction"))
     assert s.Link.from_dict(json.loads(json.dumps(link.as_dict()))) == link
+    legacy = s.Link.from_dict({"old_id": "A", "new_id": "B", "reason": "r"})   # a pre-v3 checkpoint
+    assert legacy.relation == "correction" and legacy.path == "model"
 
 
 def test_live_rows_sql_reuses_the_serving_gate():
@@ -189,5 +375,86 @@ def test_a_failed_call_stops_the_whole_plan():
     other = row("n2", "Juniper said Biscuit is a dog now.", days=4, refs=("pet:biscuit",))
     ask, seen = answers(RuntimeError("gpu_hold_lost"))
     plan = asyncio.run(s.plan_for_new_rows([NEW, other], corpus(*olds), ask, max_checks=10,
-                                           dense=_dense({f"o{i}": 0.7 for i in range(3)})))
+                                           dense=_dense({f"o{i}": 0.7 for i in range(3)}), apply_gate=OPEN))
     assert len(seen) == 1 and plan["links"] == [] and plan["budget_left"] == 0
+    assert s.REFUSED_CHECK_ERRORS in plan["refused_because"]
+
+
+def test_a_budget_cut_disables_the_juniper_path():
+    mine = replace(NEW, voice="juniper_said", juniper_quoted=True)
+    o2 = row("o2", "Juniper told me Biscuit is a tabby cat.", refs=("pet:biscuit",))
+    cands = s.candidates_for(mine, corpus(OLD, o2, mine), dense={"old": 0.75, "o2": 0.7})
+    ask, _ = answers(COR, LOWC, COR, COR)          # o2 is cut after one acting vote
+    links, recs = asyncio.run(s.check_pairs(mine, cands, ask, budget=[4]))
+    assert links == [] and recs[1].verdict.abstain == "budget_spent"
+
+
+def test_links_to_apply_keeps_only_current_version_links_with_a_relation():
+    good = {"old_id": "a", "new_id": "b", "check_version": s.CHECK_VERSION, "relation": "update"}
+    plan = {"apply": "on", "refused_because": [], "links": [
+        good, {**good, "check_version": "supersede_check.v2"}, {**good, "relation": None}]}
+    assert s.links_to_apply(plan) == [good]
+
+
+def test_an_update_invalid_at_is_the_new_time():
+    old = {"occurred_at": T0 + timedelta(days=5)}
+    new = {"occurred_at": T0, "created_at": T0 + timedelta(days=9)}
+    assert s.invalid_at_for("update", old, new, T0) == T0    # apply_link refuses this one (PG test)
+
+
+def test_juniper_words_still_need_the_checklist():
+    mine = replace(NEW, voice="juniper_said", juniper_quoted=True)
+    ask, _ = answers(*(vote("update", kind="plan"),) * 3)
+    v = asyncio.run(s.classify_pair(OLD, mine, ask))
+    assert not v.acts and not v.juniper_acts
+
+
+def test_a_third_vote_failing_the_checklist_abstains_after_three_calls():
+    ask, seen = answers(COR, COR, vote("correction", changed="no"))
+    v = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert not v.acts and v.abstain == "checklist:correction" and len(seen) == 3
+
+
+def test_missing_or_mixed_checklist_fields():
+    no_changed = json.dumps({"relation": "correction", "same_attribute": "yes", "confidence": 0.9, "a_kind": "event"})
+    no_kind = json.dumps({"relation": "update", "same_attribute": "yes", "confidence": 0.9,
+                          "b_says_a_wrong_or_changed": "yes"})
+    for text in (no_changed, no_kind):
+        v = s.parse_vote(text)
+        assert v.error is None and not v.acting
+    compat_bad = json.dumps({"relation": "compatible", "same_attribute": "no", "confidence": 0.9, "a_kind": "??",
+                             "b_says_a_wrong_or_changed": "unsure"})
+    ask, _ = answers(compat_bad)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=_dense({"old": 0.75}), apply_gate=OPEN))
+    assert plan["check_errors"] == 0 and plan["refused_because"] == []    # abstained, plan not held
+    assert not s.parse_vote(vote("update", kind="measurement")).acting
+    assert not s.parse_vote(vote("update", changed="no")).acting
+
+
+def test_a_correction_needs_the_same_specific_referent():
+    """v3.2: a shared project word is not the same item (two pairs Juniper rejected, 2026-11-18)."""
+    assert not s.parse_vote(vote("correction", kind="measurement", referent="no")).acting
+    assert not s.parse_vote(vote("update", referent="no")).acting
+    missing = json.loads(vote("correction"))
+    del missing["same_referent"]
+    v = s.parse_vote(json.dumps(missing))
+    assert v.error is None and not v.acting                     # missing = abstain, not an error
+    ask, seen = answers(vote("correction", referent="no"))
+    c = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert not c.acts and c.abstain == "checklist:correction" and len(seen) == 1
+    assert '"same_referent"' in s.build_classify_prompt(OLD, NEW)
+
+
+def test_a_named_pr_needs_the_same_number_in_b():
+    """v3.3: Juniper's rejected pair, made up: a named PR's deploy vs a general 'nothing deployed'."""
+    a = row("a", "Juniper said the login fix is deployed and linked PR #41.")
+    b = row("b", "Juniper said nothing is deployed yet; the ticket closes when a fix lands.", days=14)
+    same = row("c", "Juniper said PR #41 is not deployed after all.", days=1)
+    assert s.numbered_items(a.statement) == {"41"} and not s.same_numbered_item(a, b) and s.same_numbered_item(a, same)
+    assert s.same_numbered_item(row("x", "Biscuit is a cat."), b)          # A names no number: no constraint
+    for new in (b, replace(b, voice="juniper_said", juniper_quoted=True)):
+        ask, _ = answers(*(vote("correction", kind="event"),) * 3)
+        v = asyncio.run(s.classify_pair(a, new, ask))
+        assert not v.acts and not v.juniper_acts and v.abstain == "numbered_item_not_in_b"
+    ask, _ = answers(*(vote("correction", kind="event"),) * 3)
+    assert asyncio.run(s.classify_pair(a, same, ask)).acts

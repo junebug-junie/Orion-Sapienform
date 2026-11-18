@@ -126,14 +126,18 @@ def test_failed_round_and_unparsed_reply_are_labelled_and_a_load_error_is_said()
     got = _node("""
       const fetch2 = async (url) => url === "/api/session-threads/t7" ? {ok: true, json: async () => ({turns: [
         {turn_id: "a", speaker: "hub", body: "The round-up failed.", meta: {roundup_failed: true}},
-        {turn_id: "b", speaker: "orion", body: "whole reply", meta: {unparsed: true}}]})} : fetchFn(url);
+        {turn_id: "b", speaker: "orion", body: "whole reply", meta: {unparsed: true}},
+        {turn_id: "c", speaker: "orion", body: "whole reply", meta: {unparsed: true, requeued: true}},
+        {turn_id: "d", speaker: "hub", body: "Hub could not cut it.", meta: {reply_unparsed: true}}]})} : fetchFn(url);
       api.renderThread({thread_id: "t7", title: "x", status: "asked"}, doc, fetch2);
       await thread("t7").children[0].handlers.click();
       api.renderThread({thread_id: "bad", title: "y", status: "held"}, doc, fetchFn);
       await thread("bad").children[0].handlers.click();
       return [turnsOf("t7").map(t => t[0]), all(thread("bad")).map(n => n.textContent).includes("Could not load the turns.")];
     """)
-    assert got == [["Hub (round-up failed)", "Orion (whole reply: Hub could not find this thread's section)"], True]
+    assert got == [["Hub (round-up failed)", "Orion (whole reply: Hub could not find this thread's section)",
+                    "Orion (whole reply, not cut: sent nowhere, not the question round)",
+                    "Hub (reply not cut: read again next round-up)"], True]
 
 
 def test_the_page_links_the_asset_and_app_js_hands_it_the_frames():
@@ -148,3 +152,16 @@ def test_the_page_links_the_asset_and_app_js_hands_it_the_frames():
     # Text from sessions and from a model: never innerHTML (comments aside).
     code = "\n".join(line for line in JS.read_text(encoding="utf-8").splitlines() if not line.strip().startswith("//"))
     assert "innerHTML" not in code
+
+
+def test_a_closed_thread_and_its_closing_note_are_labelled():
+    got = _node("""
+      const fetch2 = async (url) => url === "/api/session-threads/t8" ? {ok: true, json: async () => ({turns: [
+        {turn_id: "q", speaker: "orion", body: "1. Why?", meta: {}},
+        {turn_id: "c", speaker: "orion", body: "NO QUESTIONS", meta: {closing_note: true}}]})} : fetchFn(url);
+      api.renderThread({thread_id: "t8", title: "z", status: "closed"}, doc, fetch2);
+      await thread("t8").children[0].handlers.click();
+      return [thread("t8").children[0].textContent, turnsOf("t8").map(t => t[0])];
+    """)
+    assert got[0].endswith("Orion read the answers. One round of questions per thread: done.")
+    assert got[1] == ["Orion", "Orion (closing note: not posted, not sent as questions)"]

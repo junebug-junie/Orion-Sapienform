@@ -1577,7 +1577,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             harness_rpc_bus=rpc_bus or bus,
                             harness_step_relay=harness_step_relay,
                             client_meta=reply_stamp or None,
-                            utterance_origin=retro_origin,
+                            # A guest on the game page is never Juniper (scripts/retro_commentary.py).
+                            utterance_origin="juniper" if retro_origin == "juniper" else None,
                         ),
                         bus=rpc_bus or bus,
                         correlation_id=trace_id,
@@ -1644,6 +1645,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 # leg is: synthesizing speech for a socket that is already
                 # gone is pure waste, and the client_state check is already
                 # right here.
+                if _retro_commentary is not None and _surface_ctx.get("surface") == "retro":
+                    # The game page's chat: the reply joins the sitting's recent chat (a line turn shows it).
+                    _retro_commentary.note_reply_frames(orion_turn_frames)
                 if websocket.client_state == WebSocketState.CONNECTED:
                     orion_final_text = extract_unified_turn_final_text(orion_turn_frames)
                     dispatch_tts_reply(
@@ -1657,9 +1661,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                 # Orion's reply joins history (see append_live_assistant_reply).
                 append_live_assistant_reply(history, extract_unified_turn_final_text(orion_turn_frames))
-                if _retro_commentary is not None and _surface_ctx.get("surface") == "retro":
-                    # The game page's chat: the reply joins the sitting's recent chat (a line turn shows it).
-                    _retro_commentary.note_reply(extract_unified_turn_final_text(orion_turn_frames))
                 trim_history_window(history, turns)
                 continue
 
@@ -1689,7 +1690,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     source_label="hub_ws",
                     prompt=prompt_with_ctx,
                     messages=continuity_messages,
-                    utterance_origin=retro_origin,
+                    utterance_origin="juniper" if retro_origin == "juniper" else None,
                 )
             except HubRequestValidationError as exc:
                 await websocket.send_json(

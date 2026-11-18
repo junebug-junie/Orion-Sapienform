@@ -61,6 +61,7 @@ TICK_SEC = 15.0
 OP_TIMEOUT_SEC = 4.0           # one database statement or loopback call
 NOW_TIMEOUT_SEC = 5.0
 FRAMES_TIMEOUT_SEC = 20.0      # the gateway decodes and posts up to 4 frames
+CHAT_FRAMES_TIMEOUT_SEC = 6.0  # a person's chat-box turn waits at most this long for them (else no frames)
 HOT_HOLD_SEC = 300.0           # after a heat refusal, no line is bid for this long
 LINE_LOCK_KEY = "orion:retro:line_turn"   # scripts/retro_watch.py LINE_LOCK_KEY
 HOLDER = "orion-hub.retro_commentary"
@@ -314,11 +315,10 @@ class CommentaryService:
         except Exception:  # noqa: BLE001
             return False
 
-    async def frames(self) -> dict:
+    async def frames(self, timeout: float = FRAMES_TIMEOUT_SEC) -> dict:
         """The gateway's newest frames for a turn (``status`` ok|no_sitting|no_frames|look_in_flight|failed:...)."""
         try:
-            status, body = await self._gateway_get("/api/retro/sitting/frames?n=4", auth=True,
-                                                   timeout=FRAMES_TIMEOUT_SEC)
+            status, body = await self._gateway_get("/api/retro/sitting/frames?n=4", auth=True, timeout=timeout)
         except Exception as exc:  # noqa: BLE001
             return {"status": f"failed:gateway_{type(exc).__name__}"}
         if status != 200 or not isinstance(body, dict):
@@ -606,6 +606,14 @@ class CommentaryService:
         except Exception:  # noqa: BLE001
             self._warn("retro_commentary_note_message_failed")
 
+    def note_reply_frames(self, frames: Any) -> None:
+        """``note_reply`` with the final frame's text of a chat-box turn (nothing for an errored turn)."""
+        try:
+            final = next((f for f in frames or [] if isinstance(f, dict) and f.get("type") == "final"), None)
+            self.note_reply(str((final or {}).get("llm_response") or ""))
+        except Exception:  # noqa: BLE001 -- never fails the chat turn
+            self._warn("retro_commentary_note_reply_failed")
+
     def note_reply(self, text: Optional[str]) -> None:
         """Orion's reply to a chat-box message: joins the sitting's recent chat and restarts the line gap."""
         if not self.enabled or not text or not str(text).strip():
@@ -727,7 +735,7 @@ class CommentaryService:
     async def chat_frames(self) -> list[dict]:
         """Percept attachments for a turn sent from the game page (surface ``retro``), or [] (no ring, a look in
         flight, the gateway unreachable: the turn runs without frames and the prompt names none)."""
-        frames = await self.frames()
+        frames = await self.frames(timeout=CHAT_FRAMES_TIMEOUT_SEC)
         if frames.get("status") != "ok":
             logger.info("retro_commentary_chat_frames status=%s", frames.get("status"))
             return []

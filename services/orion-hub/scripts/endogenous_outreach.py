@@ -3077,8 +3077,8 @@ class EndogenousOutreach:
         ``attachments``: AttachmentRefV1-shaped dicts the turn stages (game frames are ``kind: "percept"``).
         ``gpu_lease``: a GPU pool hold ref (``GpuLeaseRefV1``) the caller holds for the whole turn: every LLM
         call of the turn (pre-turn check, stance, motor, finalize) attaches to it, so the turn runs at the
-        hold's priority instead of the chat route's ``interactive``. Only with ``lane="chat"`` (one attempt:
-        a fallback attempt must not run without the hold).
+        hold's priority instead of ``interactive``, Juniper's own. Only on the one-attempt chat lane (a
+        fallback attempt must not run without the hold).
         ``source``: the turn's payload source (default ``endogenous_outreach``); Prime's hand-back reads it.
         ``cockpit_sink``: receives the turn's cockpit frames (it must publish them too: a sink replaces the
         default publish).

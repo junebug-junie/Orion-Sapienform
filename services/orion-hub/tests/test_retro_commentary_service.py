@@ -558,7 +558,8 @@ def test_chat_box_messages_and_replies_reach_the_next_line_turn(monkeypatch):
 
     async def go():
         t.svc.note_human_message(surface="retro", player="guest", text="how do I get past this?")
-        t.svc.note_reply("Try the bombable wall on the left.")
+        t.svc.note_reply_frames([{"type": "turn_started"}, {"type": "final",
+                                                            "llm_response": "Try the bombable wall on the left."}])
         t.svc.note_human_message(surface=None, player=None, text="main window message")   # not the chat box
         await asyncio.gather(*list(t.svc._jobs))
         t.svc._last_exchange_at = NOW - 600                    # the gap has passed

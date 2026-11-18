@@ -2559,7 +2559,7 @@ async def run_unified_turn(
             harness_step_queue=step_queue,
             cockpit_sink=cockpit_sink,
             cockpit_run_holder=cockpit_run_holder,
-            utterance_origin=utterance_origin,
+            utterance_origin="juniper" if utterance_origin == "juniper" else None,
             client_meta=client_meta,
             draft_preview=draft_first,
         )

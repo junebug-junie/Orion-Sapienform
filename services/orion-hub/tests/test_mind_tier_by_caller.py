@@ -45,10 +45,12 @@ EXPECTED_ORIGIN = {
     # Juniper unless the payload is a relayed external social room (is_third_party_room).
     ("services/orion-hub/scripts/api_routes.py", "handle_chat_request", "execute_unified_turn"): ["if:None|else:juniper"],
     ("services/orion-hub/scripts/api_routes.py", "handle_chat_request", "build_chat_request"): ["juniper"],
-    ("orion/hub/turn_orchestrator.py", "run_unified_turn", "execute_unified_turn"): ["juniper"],
+    # Juniper's socket turn; None only for a guest typing in the game page's chat box (game company patch 3).
+    ("orion/hub/turn_orchestrator.py", "run_unified_turn", "execute_unified_turn"): ["if:juniper|else:None"],
     # run_unified_turn hardcodes "juniper" (above): every caller of it inherits Juniper's mark.
-    ("services/orion-hub/scripts/websocket_handler.py", "websocket_endpoint", "run_unified_turn"): [None],  # juniper inside
-    ("services/orion-hub/scripts/websocket_handler.py", "websocket_endpoint", "build_chat_request"): ["juniper"],
+    # juniper, except a guest on the game page (scripts/retro_commentary.py prepare_retro_turn)
+    ("services/orion-hub/scripts/websocket_handler.py", "websocket_endpoint", "run_unified_turn"): ["if:juniper|else:None"],
+    ("services/orion-hub/scripts/websocket_handler.py", "websocket_endpoint", "build_chat_request"): ["if:juniper|else:None"],
     ("services/orion-hub/scripts/curiosity_investigation.py", "_generate", "execute_unified_turn"): ["orion"],
     ("services/orion-hub/scripts/reading_turn_listener.py", "_execute", "execute_unified_turn"): [None],
     ("services/orion-hub/scripts/endogenous_outreach.py", "_attempt_unified_turn", "execute_unified_turn"): [None],

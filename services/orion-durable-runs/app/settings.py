@@ -401,6 +401,14 @@ class Settings(BaseSettings):
             raise ValueError("CORE_PAGE_FOLD_END_HOUR_LOCAL must be after CORE_PAGE_FOLD_HOUR_LOCAL (same Denver day)")
         return v
 
+    @field_validator("core_page_fold_pages")
+    @classmethod
+    def _fold_pages_known(cls, v: str):
+        from orion.memory.pages.registry import selected_specs
+
+        specs = selected_specs(v)   # raises on an unknown slug
+        return ",".join(spec.slug for spec in specs)
+
     @field_validator("core_page_fold_route")
     @classmethod
     def _fold_route_not_small_lanes(cls, v: str):
@@ -494,10 +502,14 @@ class Settings(BaseSettings):
     dream_day_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="DREAM_DAY_TURN_TIMEOUT_SEC")
     # Core memory pages, Phase 1a (docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md):
     # every CORE_PAGE_FOLD_POLL_SEC, inside the Denver window [CORE_PAGE_FOLD_HOUR_LOCAL, CORE_PAGE_FOLD_END_HOUR_LOCAL),
-    # fold Orion's page:juniper once (one LLM call, app/core_page_fold.py) when its records changed since the
-    # current version. A page that passes the cite check goes live (no approval step, Juniper's decision 1).
-    # The same key gates the RELATIONSHIP render in orion-cortex-exec. false -> no fold (rollback: false, restart).
+    # fold each of Orion's pages once (one LLM call each, app/core_page_fold.py) when its records changed since
+    # the current version. A page that passes the cite check goes live (no approval step, Juniper's decision 1).
+    # The same key gates the page render in orion-cortex-exec. false -> no fold (rollback: false, restart).
     orion_core_pages_enabled: bool = Field(True, alias="ORION_CORE_PAGES_ENABLED")
+    # Which pages fold, in order (orion/memory/pages/registry.py): juniper = "who Juniper is to me"
+    # (RELATIONSHIP), origin = "how I came to be" (WHO YOU ARE, issue #3462). Drop a slug to stop folding
+    # that page; its last version still shows until ORION_CORE_PAGES_ENABLED=false in orion-cortex-exec.
+    core_page_fold_pages: str = Field("juniper,origin", alias="CORE_PAGE_FOLD_PAGES")
     # The gateway route the fold calls. memory_distill = the agent seat on gpu1 only (config/gpu_pool.yaml),
     # leased per call by the gateway. The fast and metacog lanes are refused (they share the small card).
     core_page_fold_route: str = Field("memory_distill", alias="CORE_PAGE_FOLD_ROUTE")

@@ -1,5 +1,5 @@
 # Core memory pages, Phase 1a (docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md):
-# Orion's page:juniper. The deterministic cite check, the Juniper-facts eval scorer, the RELATIONSHIP
+# Orion's page:juniper and page:origin (issue #3462). The deterministic cite check, the Juniper-facts eval scorer, the RELATIONSHIP
 # render in the harness prefix, the grounding capsule in orion-cortex-exec, the felt-state lane, and the
 # nightly fold tick in orion-durable-runs. No DB, bus or LLM (fakes only).
 
@@ -24,6 +24,11 @@ on:
       - "services/orion-durable-runs/app/settings.py"
       - "services/orion-durable-runs/tests/test_core_page_fold.py"
       - "services/orion-durable-runs/tests/test_core_page_fold_postgres.py"
+      - "services/orion-durable-runs/tests/test_core_page_origin_postgres.py"
+      - "orion/memory/mesh_edge.py"
+      - "orion/memory/lived_memory.py"
+      - "orion/memory/tests/test_mesh_edge.py"
+      - "scripts/core_page_dry_run.py"
       - "services/orion-equilibrium-service/app/chat_turn_metacog_gate.py"
       - "services/orion-equilibrium-service/tests/test_metacog_gate_core_pages.py"
       - ".github/workflows/core-memory-pages-tests.yml"
@@ -46,13 +51,18 @@ on:
       - "services/orion-durable-runs/app/settings.py"
       - "services/orion-durable-runs/tests/test_core_page_fold.py"
       - "services/orion-durable-runs/tests/test_core_page_fold_postgres.py"
+      - "services/orion-durable-runs/tests/test_core_page_origin_postgres.py"
+      - "orion/memory/mesh_edge.py"
+      - "orion/memory/lived_memory.py"
+      - "orion/memory/tests/test_mesh_edge.py"
+      - "scripts/core_page_dry_run.py"
       - "services/orion-equilibrium-service/app/chat_turn_metacog_gate.py"
       - "services/orion-equilibrium-service/tests/test_metacog_gate_core_pages.py"
       - ".github/workflows/core-memory-pages-tests.yml"
 
 jobs:
   unit:
-    name: page:juniper fold, check, render
+    name: core page fold, check, render (page:juniper, page:origin)
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: ${{ github.workspace }}
@@ -72,7 +82,8 @@ jobs:
           python -m pytest -q -p no:cacheprovider orion/memory/pages/tests \
             orion/harness/tests/test_core_page_relationship_block.py \
             orion/substrate/tests/test_felt_state_core_page_lane.py \
-            orion/substrate/tests/test_felt_state_self_definition_lane.py
+            orion/substrate/tests/test_felt_state_self_definition_lane.py \
+            orion/memory/tests/test_mesh_edge.py
       - name: orion-durable-runs nightly fold tick
         working-directory: services/orion-durable-runs
         run: python -m pytest -q -p no:cacheprovider tests/test_core_page_fold.py

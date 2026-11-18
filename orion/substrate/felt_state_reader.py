@@ -133,6 +133,22 @@ _LANES: tuple[LaneSpec, ...] = (
         where_sql="concept_id = 'page:juniper' AND produced_by = 'core_page_fold'",
         cache_ttl_sec=300,
     ),
+    # Orion's core page "how I came to be" (orion/memory/pages/origin.py, issue #3462), folded nightly by
+    # orion-durable-runs. Read by cortex-exec's grounding capsule (core_pages) into the harness WHO YOU
+    # ARE slot, right after the self-definition. Same one-year bound, 5 min cache and flag as page:juniper.
+    LaneSpec(
+        ctx_key="orion_core_page_origin",
+        table="self_concept_history",
+        payload_col=(
+            "json_build_object('entry_id', entry_id, 'concept_id', concept_id, 'content', content, "
+            "'version', version, 'evidence_refs', evidence_refs, 'created_at', created_at)"
+        ),
+        ts_col="created_at",
+        projection_id=None,
+        max_age_sec=365 * 86400,
+        where_sql="concept_id = 'page:origin' AND produced_by = 'core_page_fold'",
+        cache_ttl_sec=300,
+    ),
     # Juniper's fixed anchor lines (orion/memory/pages/anchor.py, issue #3460): one hand-written
     # row, concept_id 'page:anchor', produced_by 'juniper_anchor' (a value no bus producer may
     # publish). Shown first in RELATIONSHIP, above page:juniper. It never goes stale: the bound

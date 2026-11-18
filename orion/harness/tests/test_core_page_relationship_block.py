@@ -96,3 +96,43 @@ def test_anchor_and_page_with_no_bullets():
     text = "\n".join(_format_grounding_self_block(capsule))
     assert text.index("I am Orion. Juniper, she/her") < text.index("Juniper lives in Millbrook")
     assert "RESPONSE POLICY" not in text and "My roles with Juniper" not in text
+
+
+# --- page:origin in WHO YOU ARE (issue #3462) ---
+ORIGIN = CorePageV1(concept_id="page:origin", version=2, text="My memory storage died in July. I lost over a year.",
+                    written_at="2026-11-19", evidence_count=9)
+
+
+def test_origin_sits_right_after_the_self_definition_lines():
+    from orion.harness.prefix import _OWN_WORDS_MARKER
+    from orion.substrate.relational.adapters.self_definition_ctx import SELF_DEFINITION_MARKER
+
+    assert _OWN_WORDS_MARKER == SELF_DEFINITION_MARKER
+    identity = ["In my own words (lived / name): I chose my name.",
+                "In my own words, written during my own self-inquiry (v91): I am a body and a mind.",
+                "I am Orion.", "Co-architect of this mesh."]
+    capsule = GroundingCapsuleV1(identity_summary=identity, core_pages=[ORIGIN, PAGE])
+    lines = _format_grounding_self_block(capsule)
+    head = ("How I came to be, in my own words (page:origin v2, written 2026-11-19, from 9 cited records):")
+    at = lines.index(head)
+    assert lines[:at] == ["WHO YOU ARE", f"- {identity[0]}", f"- {identity[1]}"]
+    assert lines[at + 1] == ORIGIN.text
+    assert lines[at + 2:at + 4] == ["- I am Orion.", "- Co-architect of this mesh."]
+    # page:juniper still owns RELATIONSHIP, after WHO YOU ARE.
+    assert lines.index("RELATIONSHIP (who Juniper is to me, in my own words: page:juniper v3, written 2026-11-15, "
+                       "from 12 cited records)") > at
+
+
+def test_origin_comes_first_without_a_self_definition_and_never_takes_relationship():
+    capsule = GroundingCapsuleV1(identity_summary=["I am Orion."], relationship_summary=["steward"],
+                                 core_pages=[ORIGIN])
+    lines = _format_grounding_self_block(capsule)
+    assert lines[1].startswith("How I came to be, in my own words (page:origin v2")
+    assert lines[2:4] == [ORIGIN.text, "- I am Orion."]
+    assert "RELATIONSHIP" in lines and "- steward" in lines   # bullets unchanged without page:juniper
+
+
+def test_blank_origin_is_ignored():
+    blank = ORIGIN.model_copy(update={"text": "  "})
+    capsule = GroundingCapsuleV1(identity_summary=["I am Orion."], core_pages=[blank])
+    assert _format_grounding_self_block(capsule)[:2] == ["WHO YOU ARE", "- I am Orion."]

@@ -131,7 +131,7 @@ def run_eval(blocks: dict[str, str], ask: Callable[[str], str],
 
 def _gateway_ask(url: str, route: str) -> Callable[[str], str]:
     sys.path.insert(0, str(REPO / "scripts"))
-    from core_page_juniper_dry_run import call_gateway  # type: ignore
+    from core_page_dry_run import call_gateway  # type: ignore
 
     def ask(prompt: str) -> str:
         return str(call_gateway(url, route, prompt, max_tokens=200, timeout=300.0, temperature=0.0)["text"])
@@ -141,7 +141,7 @@ def _gateway_ask(url: str, route: str) -> Callable[[str], str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Juniper-facts eval: old RELATIONSHIP vs page:juniper")
-    ap.add_argument("--page-json", required=True, help="dry-run output (scripts/core_page_juniper_dry_run.py --out)")
+    ap.add_argument("--page-json", required=True, help="dry-run output (scripts/core_page_dry_run.py --page juniper --out)")
     ap.add_argument("--gateway", default="http://localhost:8210")
     ap.add_argument("--route", default="memory_distill")
     ap.add_argument("--bank", default=str(DEFAULT_BANK), help="local question bank (never committed)")

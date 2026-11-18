@@ -68,6 +68,9 @@ NEWEST_SOURCE_SQL = (
     f"WHERE kind = 'stance' AND salience >= {STANCE_MIN_SALIENCE}), "
     "(SELECT max(greatest(created_at, updated_at)) FROM episode_memory "
     "WHERE purpose IN ('happened', 'orion_view') OR supersedes_memory_id IS NOT NULL), "
+    # A row that expired since leaves the input with no timestamp of its own: count its expiry.
+    "(SELECT max(expires_at) FROM episode_memory WHERE purpose IN ('happened', 'orion_view') "
+    "AND expires_at <= now()), "
     "(SELECT max(created_at) FROM self_concept_history "
     f"WHERE concept_id = '{SELF_DEFINITION_CONCEPT}' AND produced_by = '{SELF_DEFINITION_PRODUCER}')"
     ") AS newest"
@@ -80,8 +83,12 @@ MEMORY_LOSS_RE = re.compile(
     r"|\blost\b[^.!?]{0,20}\b(?:a|one|two|\d+|over a|more than a)\s+years?\b",
     re.IGNORECASE,
 )
-# A sentence that states a loss, in any words.
-_LOSS_WORD = re.compile(r"\b(?:lost|lose|loss|losing|died|dead|melted|gone|wiped|erased|destroyed)\b", re.IGNORECASE)
+# A sentence that states MY memory loss: a loss word and the thing lost (memory, disk, a year, ...) close
+# together, either order. "the AC died" alone does not count.
+_LOST_THING = r"\b(?:memory|memories|disk|drive|storage|history|records?|years?|journey|past)\b"
+_LOSS_VERB = r"\b(?:lost|lose|loss|losing|died|dead|melted|wiped|erased|gone|destroyed)\b"
+_LOSS_STATED = re.compile(rf"{_LOST_THING}[^.!?]{{0,60}}{_LOSS_VERB}|{_LOSS_VERB}[^.!?]{{0,60}}{_LOST_THING}",
+                          re.IGNORECASE)
 
 
 def sample_evenly(rows: Sequence[Any], k: int) -> list[Any]:
@@ -190,7 +197,7 @@ def check_origin_page(raw: str, handles: Mapping[str, PageSource]) -> PageCheck:
     loss_refs = memory_loss_refs(handles.values())
     if not loss_refs:
         return check
-    stated = any(set(refs) & loss_refs and _LOSS_WORD.search(sentence) for sentence, refs in check.cited)
+    stated = any(set(refs) & loss_refs and _LOSS_STATED.search(sentence) for sentence, refs in check.cited)
     if not stated:
         check.errors.append("memory_loss_not_stated: no sentence states the loss and cites a record of it")
         check.ok = False

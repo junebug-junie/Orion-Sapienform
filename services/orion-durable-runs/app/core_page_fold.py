@@ -88,7 +88,8 @@ class FoldResult:
 
 class CorePageFolder:
     def __init__(self, *, settings: Any, pool: Any, call_llm: CallLlm, publish: Publish,
-                 now: Callable[[], datetime] | None = None, spec: FoldSpec = _juniper.FOLD_SPEC):
+                 now: Callable[[], datetime] | None = None, spec: FoldSpec = _juniper.FOLD_SPEC,
+                 lock: asyncio.Lock | None = None):
         self.spec = spec
         self.settings = settings
         self.pool = pool
@@ -100,7 +101,9 @@ class CorePageFolder:
         # The Denver date this process last published a page. orion-sql-writer writes the row
         # asynchronously; a slow or rejecting writer must not make the next tick fold again.
         self._folded_on: date | None = None
-        self._lock = asyncio.Lock()
+        # Shared by every page's folder (main.py passes one lock), so the nightly loop and a manual
+        # trigger for another page never hold the fold seat at the same time.
+        self._lock = lock or asyncio.Lock()
 
     async def _fetch(self) -> tuple[dict[str, list[dict]], dict | None, datetime | None, int]:
         params = {"cid": self.spec.concept_id, "by": PRODUCED_BY}

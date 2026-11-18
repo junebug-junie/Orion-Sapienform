@@ -275,3 +275,8 @@ def test_page_origin_is_guarded_and_its_stored_cites_are_stripped():
     with pytest.raises(MeshEdgeLeak) as err:
         guard.check("The old drive under the stairs failed one hot summer afternoon.", surface="github")
     assert err.value.hits[0].source == "page:origin"
+
+
+def test_cite_stripping_needs_a_word_boundary_before_the_kind():
+    assert mesh_edge.sentences("Odd [circumstance: foo] here.") == ["Odd [circumstance: foo] here."]
+    assert mesh_edge.sentences("Odd [stance:x] here.") == ["Odd here."]

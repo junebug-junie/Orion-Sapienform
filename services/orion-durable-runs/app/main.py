@@ -706,9 +706,10 @@ async def lifespan(app: FastAPI):
 
                 source = service_source(_settings)
                 call_llm, publish = bus_llm_caller(rpc_bus, _settings, source), bus_publisher(rpc_bus, source)
+                fold_lock = asyncio.Lock()   # one fold at a time across pages, loop and manual trigger alike
                 core_pages = {
                     spec.slug: CorePageFolder(settings=_settings, pool=_checkpointer_cm, call_llm=call_llm,
-                                              publish=publish, spec=spec)
+                                              publish=publish, spec=spec, lock=fold_lock)
                     for spec in selected_specs(_settings.core_page_fold_pages)
                 }
                 _core_pages_task = asyncio.create_task(run_folders_forever(list(core_pages.values()), _stop))
@@ -867,7 +868,7 @@ async def core_page_fold_now(slug: str, dry_run: bool = True) -> dict[str, Any]:
     ``dry_run=false`` publishes a passing page as the next live version."""
     if not core_pages:
         raise HTTPException(503, "core pages are off (ORION_CORE_PAGES_ENABLED / bus)")
-    folder = core_pages.get(slug)
+    folder = core_pages.get(slug.strip().lower())
     if folder is None:
         raise HTTPException(404, f"no core page {slug!r} folds here (CORE_PAGE_FOLD_PAGES: {sorted(core_pages)})")
     result = await folder.tick_once(dry_run=dry_run, force=True)

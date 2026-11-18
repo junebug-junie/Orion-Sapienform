@@ -7,7 +7,8 @@ lived-memory serving SQL in orion/memory/lived_memory.py) on real tables in a th
   row, an expired row and an out-of-scope purpose never reach the fold prompt;
 - a rejected stance and a stance under salience 1 never reach it either;
 - only Orion's own self:definition rows are read;
-- the change signal moves for a new correction (even of another purpose) and a rejected stance.
+- the change signal moves for a new correction (even of another purpose), a rejected stance, and an
+  in-scope row passing its expires_at.
 
 Set ORION_ADMISSION_TEST_DSN to a disposable database (CI does).
 """
@@ -152,7 +153,9 @@ def test_dead_rows_never_reach_the_origin_fold_and_the_change_signal_sees_them()
                 # A correction row of another purpose still moves the signal: it may retire an in-scope row.
                 await _episode(conn, "about_juniper", "Juniper corrected me about the disk.", supersedes=OLD_CLAIM,
                                at=NOW - timedelta(hours=1))
-            assert (await _folder(pool, prompts).tick_once()).decision != "no_new_sources"
+            before = len(prompts)
+            assert (await _folder(pool, prompts).tick_once()).decision == "rejected"   # it folded
+            assert len(prompts) == before + 1
             async with pool.connection() as conn:
                 await conn.execute("UPDATE episode_memory SET created_at = %s, updated_at = %s "
                                    "WHERE statement = 'Juniper corrected me about the disk.'", (OLD, OLD))
@@ -161,8 +164,20 @@ def test_dead_rows_never_reach_the_origin_fold_and_the_change_signal_sees_them()
                 # Rejecting a stance is a change too.
                 await conn.execute("UPDATE memory_crystallizations SET status = 'rejected', updated_at = %s "
                                    "WHERE summary LIKE 'Your memory storage%%'", (NOW,))
-            assert (await _folder(pool, prompts).tick_once()).decision != "no_new_sources"
+            assert (await _folder(pool, prompts).tick_once()).decision == "rejected"   # it folded
             assert "We lost over a year" not in prompts[-1]
+            async with pool.connection() as conn:
+                await conn.execute("UPDATE memory_crystallizations SET updated_at = %s", (OLD,))
+                # An in-scope row passing its expires_at changes the input with no timestamp bump of its own.
+                await conn.execute("UPDATE episode_memory SET created_at = %s, updated_at = %s", (OLD, OLD))
+            assert (await _folder(pool, prompts).tick_once()).decision == "no_new_sources"
+            async with pool.connection() as conn:
+                await conn.execute("UPDATE episode_memory SET expires_at = now() - interval '1 minute' "
+                                   "WHERE statement LIKE 'Juniper gave me a GitHub%%'")
+                await conn.execute("UPDATE self_concept_history SET created_at = now() - interval '2 minutes' "
+                                   "WHERE concept_id = 'page:origin'")
+            # The page row now looks written after every timestamp but the expiry: the expiry alone refolds.
+            assert (await _folder(pool, prompts).tick_once()).decision == "rejected"
         finally:
             await _teardown(pool, schema)
 

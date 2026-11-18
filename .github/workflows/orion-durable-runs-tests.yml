@@ -9,6 +9,8 @@ on:
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
+      - "orion/memory/pages/**"
+      - "orion/memory/lived_memory.py"
       - "orion/grammar/camera_ask_acts.py"   # attention 4a: the camera-asks gate replay (evals/event_wants_replay.py)
       - "services/orion-sql-writer/evals/ask_bind_mutations.py"   # attention 4b: Prime's menu mutant lane
       - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger
@@ -132,6 +134,8 @@ on:
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
+      - "orion/memory/pages/**"
+      - "orion/memory/lived_memory.py"
       - "orion/grammar/camera_ask_acts.py"   # attention 4a: the camera-asks gate replay (evals/event_wants_replay.py)
       - "services/orion-sql-writer/evals/ask_bind_mutations.py"   # attention 4b: Prime's menu mutant lane
       - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger

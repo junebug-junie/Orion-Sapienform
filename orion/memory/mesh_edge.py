@@ -86,7 +86,7 @@ DSN_ENV_KEYS = ("ORION_MESH_EDGE_PG_DSN", "POSTGRES_URI", "DATABASE_URL", "SUBST
 _QUOTES = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"', "—": " ", "–": " "})
 _NON_WORD = re.compile(r"[^a-z0-9]+")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
-_CITE = re.compile(r"\s*\[[^\]]*(?:person_fact|episode_memory|stance|self_concept_history):[^\]]*\]")
+_CITE = re.compile(r"\s*\[[^\]]*(?<![\w-])(?:person_fact|episode_memory|stance|self_concept_history):[^\]]*\]")
 
 
 class MeshEdgeLeak(RuntimeError):

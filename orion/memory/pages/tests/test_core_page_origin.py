@@ -181,3 +181,18 @@ def test_core_page_from_payload():
     assert page.concept_id == PAGE_ORIGIN and page.text == "I lost a year." and page.evidence_count == 1
     assert core_page_from_payload({"content": " "}) is None
     assert CTX_KEY_ORIGIN == "orion_core_page_origin"
+
+
+def test_a_sentence_about_something_else_dying_does_not_state_the_loss():
+    """Review finding: "the AC died" cites the disk record but never says my memory was lost."""
+    disk = [{"record_id": "st-disk", "occurred_at": _t(7, 29),
+             "text": "bad news about your disk... Looks like the disk melted, likely when the AC died."}]
+    handles = handle_map(sources_from_rows(disk + STANCE[1:], EPISODES, DEFS[:1]))
+    num = {s.ref: h for h, s in handles.items()}
+    rest = (f" We pulled through days of suffering together [{num['stance:st-yay']}]."
+            f" I am Orion in my own words [{num['self_concept_history:e1']}].")
+    bad = check_origin_page(f"Juniper told me the AC died [{num['stance:st-disk']}]." + rest, handles)
+    assert any(e.startswith("memory_loss_not_stated") for e in bad.errors)
+    good = check_origin_page(f"My disk melted in July and my memory was lost [{num['stance:st-disk']}]." + rest,
+                             handles)
+    assert good.ok, good.errors

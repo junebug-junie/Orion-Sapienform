@@ -3,7 +3,7 @@
 Design: spec revision 4 (`docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md`).
 Juniper's go: 2026-11-18 ("hit it"). Patch 1 (the sitting): PR #3627. Patch 2 (the look): PR #3727.
 
-Nothing in this PR has run live. Every runtime claim below is UNVERIFIED until the live check issue closes.
+Nothing in this PR has run live. Every runtime claim below is UNVERIFIED until the live check (#3741) closes.
 
 ## Summary
 
@@ -199,6 +199,6 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -f - < scripts
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3745
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -20,6 +20,14 @@ from, not a target.
   (new) plus ``incorrect_tone`` (historical name) is the other. Thumbs
   ``up`` vs ``down`` is reported too, as a coarser secondary split.
 
+- ``cockpit_turn_sighting`` (finalize stage) for the model that served each
+  turn, so the weekly table can also be split by served model.
+- Per ISO week (all three groups: chat replies, outreach, both together,
+  and again per served model), the ", not X" contrast-frame habit: share of replies with at least one
+  hit, hits per 100 words (pooled), and the dash share beside it for
+  comparison. Only replies longer than ``--min-chars`` (default 40) count
+  here, so one-word acks do not dilute the share. Re-run to see the trend.
+
 ## What it writes
 
 Nothing to any DB (read-only session, enforced by
@@ -45,7 +53,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -56,14 +64,29 @@ if str(_REPO_ROOT) not in sys.path:
 from orion.personality.tone_dials import DIAL_NAMES, measure_tone_dials  # noqa: E402
 
 MIN_SEPARATION_N = 5
+WEEKLY_MIN_CHARS = 40
+WEEKLY_GROUPS = ("chat_replies", "outreach", "all")
+UNKNOWN_MODEL = "(no finalize sighting)"
 GOOD_CATEGORIES = frozenset({"good_tone"})
 BAD_CATEGORIES = frozenset({"bad_tone", "incorrect_tone"})
 
+# served_model: the model the turn's finalize stage reports it actually
+# served (cockpit_turn_sighting.raw.fcc_served_model, written by
+# orion/harness/fcc_motor.py). NULL when the turn has no finalize sighting.
 SQL_HISTORY = """
-SELECT correlation_id, prompt, response, created_at
-FROM chat_history_log
-WHERE created_at >= (now() AT TIME ZONE 'utc') - make_interval(days => %s)
-  AND coalesce(btrim(response), '') <> ''
+SELECT h.correlation_id, h.prompt, h.response, h.created_at, m.served_model
+FROM chat_history_log h
+LEFT JOIN LATERAL (
+  SELECT s.raw->>'fcc_served_model' AS served_model
+  FROM cockpit_turn_sighting s
+  WHERE s.correlation_id = h.correlation_id
+    AND s.stage = 'finalize'
+    AND s.raw->>'fcc_served_model' IS NOT NULL
+  ORDER BY s.seq DESC
+  LIMIT 1
+) m ON true
+WHERE h.created_at >= (now() AT TIME ZONE 'utc') - make_interval(days => %s)
+  AND coalesce(btrim(h.response), '') <> ''
 """
 
 SQL_FEEDBACK = """
@@ -152,6 +175,87 @@ def separation(good: Sequence[Dict[str, float]], bad: Sequence[Dict[str, float]]
     return {"n_good": len(good), "n_bad": len(bad), "sufficient_n": enough, "dials": dials}
 
 
+# ------------------------------------------------------------ weekly trend
+
+
+def _week_start(ts: Any) -> Optional[date]:
+    """Monday of the ISO week holding ``ts`` (a datetime/date or ISO string)."""
+    if isinstance(ts, str):
+        try:
+            ts = datetime.fromisoformat(ts)
+        except ValueError:
+            return None
+    if isinstance(ts, datetime):
+        ts = ts.date()
+    if not isinstance(ts, date):
+        return None
+    return ts - timedelta(days=ts.weekday())
+
+
+def contrast_not_by_week(
+    history: Iterable[Dict[str, Any]],
+    *,
+    min_chars: int = WEEKLY_MIN_CHARS,
+    window_start: Optional[date] = None,
+    today: Optional[date] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Per ISO week and group: replies, share with >=1 ", not X" frame,
+    pooled frames per 100 words, and share with >=1 dash. Groups are
+    chat_replies / outreach / all, plus one ``model:<served_model>`` group
+    per model that served the reply (all replies, chat and outreach).
+    ``model:<synthetic>`` is what the CLI reports for a reply it wrote
+    itself (an error or stop message), not a real model. A week is marked
+    ``partial`` when ``window_start`` falls after its Monday or ``today``
+    falls before its Sunday: its n is a stub, so compare its share with care.
+    ``min_chars`` counts raw characters (code included) to match the
+    hand-run SQL baseline (``length(response) > 40``). Pure."""
+    acc: Dict[str, Dict[date, Dict[str, int]]] = {g: {} for g in WEEKLY_GROUPS}
+    by_model: Dict[str, Dict[date, Dict[str, int]]] = {}
+    for row in history:
+        response = row.get("response") or ""
+        if len(response) <= min_chars:
+            continue
+        week = _week_start(row.get("created_at"))
+        if week is None:
+            continue
+        dials = measure_tone_dials(response)
+        if dials is None:
+            continue
+        group = "chat_replies" if (row.get("prompt") or "").strip() else "outreach"
+        model = (row.get("served_model") or "").strip() or UNKNOWN_MODEL
+        buckets = [acc[group], acc["all"], by_model.setdefault("model:" + model, {})]
+        for bucket in buckets:
+            w = bucket.setdefault(week, {"n": 0, "with_contrast": 0, "frames": 0, "words": 0, "with_dash": 0})
+            w["n"] += 1
+            w["with_contrast"] += int(dials.contrast_not_count > 0)
+            w["frames"] += dials.contrast_not_count
+            w["words"] += dials.word_count
+            w["with_dash"] += int(dials.em_dash_per_100_words > 0)
+    acc.update(sorted(by_model.items()))
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for g in acc:
+        out[g] = [
+            {
+                "week": wk.isoformat(),
+                "iso_week": "%d-W%02d" % wk.isocalendar()[:2],
+                "n": w["n"],
+                "share_with_contrast_not": round(w["with_contrast"] / w["n"], 4),
+                "contrast_not_per_100_words": _pooled_per_100(w["frames"], w["words"]),
+                "share_with_dash": round(w["with_dash"] / w["n"], 4),
+                "partial": bool(
+                    (window_start is not None and window_start > wk)
+                    or (today is not None and today < wk + timedelta(days=6))
+                ),
+            }
+            for wk, w in sorted(acc[g].items())
+        ]
+    return out
+
+
+def _pooled_per_100(count: int, words: int) -> float:
+    return round(100.0 * count / words, 4) if words else 0.0
+
+
 # ------------------------------------------------------------ row assembly
 
 
@@ -160,9 +264,12 @@ def build_report(
     feedback: Iterable[Dict[str, Any]],
     *,
     window_days: int,
+    weekly_min_chars: int = WEEKLY_MIN_CHARS,
 ) -> Dict[str, Any]:
     """history rows: correlation_id, prompt, response. feedback rows:
     target_correlation_id, feedback_value, categories. Pure."""
+    history = list(history)
+    now = datetime.now(timezone.utc)
     chat: List[Dict[str, float]] = []
     outreach: List[Dict[str, float]] = []
     by_corr: Dict[str, Dict[str, float]] = {}
@@ -212,7 +319,7 @@ def build_report(
             thumbs_down.append(d)
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": now.isoformat(),
         "window_days": window_days,
         "counts": {
             "chat_replies": len(chat),
@@ -226,6 +333,13 @@ def build_report(
             "good_tone_vs_bad_tone": separation(good_tone, bad_tone),
             "thumbs_up_vs_down": separation(thumbs_up, thumbs_down),
         },
+        "weekly_min_chars": weekly_min_chars,
+        "contrast_not_by_week": contrast_not_by_week(
+            history,
+            min_chars=weekly_min_chars,
+            window_start=(now - timedelta(days=window_days)).date(),
+            today=now.date(),
+        ),
     }
 
 
@@ -252,6 +366,21 @@ def render_summary(report: Dict[str, Any]) -> str:
             out.append(f"  insufficient n (need >= {MIN_SEPARATION_N} per side); medians shown, no separation statistic")
         for name, s in sep["dials"].items():
             out.append(f"  {name:38s} good={s['good_median']} bad={s['bad_median']} cliffs_delta={s['cliffs_delta']}")
+    weekly = report.get("contrast_not_by_week") or {}
+    for group, rows in weekly.items():
+        out.append("")
+        out.append(
+            f"[contrast_not_by_week:{group}]  replies > {report.get('weekly_min_chars')} chars; "
+            "share with >=1 ', not X' | frames per 100 words | share with >=1 dash"
+        )
+        for r in rows:
+            out.append(
+                f"  {r['iso_week']} ({r['week']})  n={r['n']:4d}  "
+                f"contrast={100 * r['share_with_contrast_not']:5.1f}%  "
+                f"per100={r['contrast_not_per_100_words']:.3f}  "
+                f"dash={100 * r['share_with_dash']:5.1f}%"
+                + ("  (partial week)" if r.get("partial") else "")
+            )
     return "\n".join(out) + "\n"
 
 
@@ -268,6 +397,7 @@ def _fetch(conn, sql: str, params: Sequence[Any] = ()) -> List[Dict[str, Any]]:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--window-days", type=int, default=60)
+    ap.add_argument("--weekly-min-chars", type=int, default=WEEKLY_MIN_CHARS)
     ap.add_argument("--out-dir", default="/tmp/tone-dial-baseline/")
     args = ap.parse_args(argv)
 
@@ -283,7 +413,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     finally:
         conn.close()
 
-    report = build_report(history, feedback, window_days=args.window_days)
+    report = build_report(
+        history, feedback, window_days=args.window_days, weekly_min_chars=args.weekly_min_chars
+    )
     summary = render_summary(report)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)

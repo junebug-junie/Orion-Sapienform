@@ -47,7 +47,12 @@ ORION_MEMORY_EPISODE_TEST_DATABASE_URL=<throwaway postgres:16> pytest -q orion/m
 ## Evals run
 
 ```text
-scripts/memory_supersede_eval.py run --record-db   (v3.5)  EVAL_RESULT
+scripts/memory_supersede_eval.py run --record-db   (v3.5, 2 repeats)  PASSED and recorded (run bb7d5b9f)
+  precision 1.00 (24/24), recall 0.71 (24/34), 0 false acts, 0 errors over 122 item-runs
+  Juniper's rejected pairs: 65590f70->4da33de0 compatible x2; af9d823c->06c7cf45 compatible x2 (her quote no longer
+  short-circuits it, and the model now says compatible)
+  made-up Juniper fix correction without the PR number: acted via her path, 3/3, both repeats
+  10 misses = Juniper's 5 real confirmation revisions x 2: compatible 5, refine 4, checklist:correction 1
 ```
 
 ## Docker/build/smoke checks

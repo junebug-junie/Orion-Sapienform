@@ -210,7 +210,8 @@ def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: dat
         cost_q={k: _quantile(v, COST_QUANTILE) for k, v in scal.items()},
         lane_slot_s_q={k: _quantile(v, COST_QUANTILE) for k, v in lanes.items()},
         total_slot_s_q=_quantile(totals, COST_QUANTILE) if totals else None, n_costed=n_costed,
-        event_values=same_grading_events(event_intensities, graded), hunger_from=cfg.hunger_from)
+        hunger_from=cfg.hunger_from,
+        event_values=same_grading_events(event_intensities, graded))
 
 
 def same_grading_events(events: Iterable[Any], graded: bool) -> tuple[float, ...]:

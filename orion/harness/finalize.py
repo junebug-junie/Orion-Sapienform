@@ -1155,8 +1155,7 @@ async def emit_verdict_molecule(
 # repair traces that record a backend all say llamacpp (Strata since 10-30: also
 # forwarded, live letter repairs 11-17 logged reasoning_len=0). If this lane ever moves
 # to a backend that drops it, thinking stays on, the sized budget starves, and repairs
-# fail closed (no reply) rather than leaking reasoning -- except a cut-off repair of an
-# aligned draft, which keeps the draft (repair_may_keep_draft_on_truncation).
+# fail closed (no reply) rather than leaking reasoning.
 RESPONSE_REPAIR_MAX_TOKENS = 3072
 RESPONSE_REPAIR_CHAT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
 
@@ -1312,6 +1311,8 @@ def extract_response_repair_text(result: dict[str, Any]) -> str:
 
 # The repair step's answer when the draft needs no change (orion_response_repair.j2).
 REPAIR_NO_CHANGE = "NO_CHANGE"
+_NO_CHANGE_WORDS_MAX_CHARS = 80
+_NO_CHANGE_WORDS_RE = re.compile(r"[\s*_`\"'>#-]*no[\s_-]+changes?\b", re.IGNORECASE)
 # Words from the repair prompt's own scaffolding. A reply that uses one the draft and
 # Juniper's message never used is the model talking about its task, not to Juniper:
 # live 2026-10-04 ("The rejected draft was actually aligned according to the reflection
@@ -1347,20 +1348,17 @@ def is_repair_no_change(text: str, *, draft_text: str) -> bool:
     bold, quotes, a reason after it). The token never belongs in a reply to Juniper
     unless the draft itself used it."""
     token = REPAIR_NO_CHANGE.casefold()
-    return token in (text or "").casefold() and token not in (draft_text or "").casefold()
-
-
-def repair_may_keep_draft_on_truncation(reflection: FinalizeReflectionV1) -> bool:
-    """True when a cut-off repair may ship the draft instead of failing the turn.
-
-    Only when 5b passed the draft's content (aligned, no unsupported claim) and asked
-    for repair for open strain alone: the draft is a reply the judge accepted. A
-    misaligned or uncertain draft, or one with an unsupported claim, is what the judge
-    rejected, so a cut-off repair of it still fails the turn (#3607). Pure."""
+    if token in (text or "").casefold() and token not in (draft_text or "").casefold():
+        return True
+    # The token spelled as words, opening the reply: live 363a9723 (2026-11-10) shipped
+    # "No change needed." in place of a 1,567-char answer. "no change" is the prompt's own
+    # instruction ("If the draft needs no change"), so only a short reply that STARTS with it,
+    # from a draft that does not, is the model's verdict on its task.
+    stripped = (text or "").strip()
     return (
-        reflection.alignment_verdict == "aligned"
-        and reflection.reflection_source != REFLECTION_SOURCE_JUDGE_FAILED
-        and not has_unsupported_claim(reflection)
+        len(stripped) <= _NO_CHANGE_WORDS_MAX_CHARS
+        and bool(_NO_CHANGE_WORDS_RE.match(stripped))
+        and not _NO_CHANGE_WORDS_RE.match((draft_text or "").strip())
     )
 
 
@@ -1414,35 +1412,23 @@ async def run_orion_response_repair(
     )
     exec_result = await cortex_client(plan_request)
     kept_draft: str | None = None
-    try:
-        final_text = extract_response_repair_text(exec_result)
-    except ResponseRepairTruncatedError:
-        if not repair_may_keep_draft_on_truncation(reflection):
-            raise
-        # The rewrite did not fit even the sized budget. 5b accepted the draft's content,
-        # so Juniper gets the draft, and the trace says the repair was cut off
-        # (response_repair_reason "<reason>_kept_draft:truncated").
-        kept_draft = "truncated"
-        final_text = draft_text
-        logger.warning(
-            "orion_response_repair_truncated corr=%s draft_chars=%s max_tokens=%s -- keeping the draft",
-            correlation_id, len(draft_text or ""), plan_request.context.get("max_tokens"),
-        )
-    if kept_draft is None:  # a cut-off reply is never read as an answer
-        if is_repair_no_change(final_text, draft_text=draft_text):
-            kept_draft = "no_change"
-            logger.info("orion_response_repair_no_change corr=%s verdict=%s unsupported_claim=%s -- keeping the draft",
-                        correlation_id, reflection.alignment_verdict, has_unsupported_claim(reflection))
-        else:
-            echo = repair_scaffold_echo(final_text, draft_text=draft_text, user_message=user_message)
-            if echo:
-                # Commentary about the task, not a reply: Juniper gets the draft she would have
-                # got without repair, never the model's notes.
-                kept_draft = "scaffold_echo"
-                logger.warning(
-                    "orion_response_repair_scaffold_echo corr=%s term=%r excerpt=%r -- keeping the draft",
-                    correlation_id, echo, _excerpt(final_text, max_len=160),
-                )
+    # A reply cut off at max_tokens raises (ResponseRepairTruncatedError): every draft that
+    # reaches repair is one 5b rejected or flagged, so it fails closed (#3607, #3618).
+    final_text = extract_response_repair_text(exec_result)
+    if is_repair_no_change(final_text, draft_text=draft_text):
+        kept_draft = "no_change"
+        logger.info("orion_response_repair_no_change corr=%s verdict=%s unsupported_claim=%s -- keeping the draft",
+                    correlation_id, reflection.alignment_verdict, has_unsupported_claim(reflection))
+    else:
+        echo = repair_scaffold_echo(final_text, draft_text=draft_text, user_message=user_message)
+        if echo:
+            # Commentary about the task, not a reply: Juniper gets the draft she would have
+            # got without repair, never the model's notes.
+            kept_draft = "scaffold_echo"
+            logger.warning(
+                "orion_response_repair_scaffold_echo corr=%s term=%r excerpt=%r -- keeping the draft",
+                correlation_id, echo, _excerpt(final_text, max_len=160),
+            )
     if kept_draft:
         if not (draft_text or "").strip():
             raise ValueError(f"orion_response_repair kept an empty draft ({kept_draft})")
@@ -1729,10 +1715,26 @@ async def _recheck_and_maybe_repair(
     return second, UNSUPPORTED_CLAIM_TWICE_REASON
 
 
+# Open strain alone never sends a draft to repair (#3618). strain_unresolved is the
+# judge's note that Orion's own open loops (strain_refs: arcs, open loops, earlier turns)
+# are still open after this reply. A rewrite of the reply cannot close them, and the
+# repair prompt has nothing to correct: the verdict and notes accept the draft. Live
+# 2026-09-13..11-17, 464 aligned + strain-only repairs (cockpit_turn_sighting finalize):
+# 259 (56%) returned the draft unchanged, 78 changed under 3% of it; none added or
+# removed content about the strain; harms included a PASS turned into an unprompted
+# message (4ff8c812, cd581524) and a 1,567-char answer shipped as "No change needed."
+# (363a9723). Cost 10-30..11-17: 175 calls, 3,970 GPU-s, +22.7 s mean per turn.
+# The skip is recorded: response_repair_ran=False, response_repair_reason below.
+STRAIN_ONLY_NOT_REPAIRED_REASON = "strain_only_not_repaired"
+
+
 def needs_response_repair(reflection: FinalizeReflectionV1) -> bool:
+    """True when 5b rejected the draft (misaligned or uncertain) or named an
+    unsupported claim in it. An unsupported-claim note is a defect the repair can fix,
+    so it repairs even under an aligned verdict. Open strain alone is not (#3618)."""
     return (
         reflection.alignment_verdict in {"misaligned", "uncertain"}
-        or reflection.strain_unresolved
+        or has_unsupported_claim(reflection)
     )
 
 
@@ -1746,7 +1748,15 @@ def response_repair_reason_for(reflection: FinalizeReflectionV1) -> str | None:
         return "misaligned"
     if reflection.alignment_verdict == "uncertain":
         return "uncertain"
-    return "strain_unresolved"
+    return UNSUPPORTED_CLAIM_REASON
+
+
+def response_repair_skip_reason(reflection: FinalizeReflectionV1) -> str | None:
+    """Why repair did not run on a draft 5b accepted: the strain-only skip, else None.
+    Pure."""
+    if needs_response_repair(reflection):
+        return None
+    return STRAIN_ONLY_NOT_REPAIRED_REASON if reflection.strain_unresolved else None
 
 
 async def run_substrate_finalize_appraisal(
@@ -2134,15 +2144,17 @@ async def run_harness_finalize_chain(
                 "response_repair_reason": reason,
             }
         else:
+            skip_reason = response_repair_skip_reason(reflection)
             logger.info(
-                "response_repair_skipped corr=%s reason=aligned",
+                "response_repair_skipped corr=%s reason=%s",
                 correlation_id,
+                skip_reason or "aligned",
             )
             final_text = draft_text
             voice_meta = {
                 "finalize_changed": False,
                 "response_repair_ran": False,
-                "response_repair_reason": None,
+                "response_repair_reason": skip_reason,
             }
     except Exception as exc:
         partial = await emit_finalize_failure_artifacts(

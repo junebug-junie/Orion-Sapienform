@@ -782,7 +782,7 @@ async def handle_harness_run_request(
         logger.info(
             "harness_draft_preview_revised corr=%s reason=%s repair_ran=%s",
             corr,
-            run.response_repair_reason or "finalize_changed",
+            (run.response_repair_ran and run.response_repair_reason) or "finalize_changed",
             run.response_repair_ran,
         )
     if motor.grammar_collector is not None and run.final_text:

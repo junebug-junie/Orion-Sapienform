@@ -2,7 +2,9 @@ name: orion_response_repair
 label: Orion Response Repair
 description: >
   Conditional post-reflection repair for unified turns. Invoked only when 5b
-  marks the motor draft misaligned, uncertain, or strain_unresolved. Makes the
+  marks the motor draft misaligned or uncertain, or names an unsupported claim
+  in it. Open strain alone (strain_unresolved on an aligned draft) never
+  triggers it (#3618). Makes the
   smallest necessary correction — never a style polish pass.
 
 category: Generative

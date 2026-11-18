@@ -14,7 +14,7 @@ from orion.session_threads import core
 from scripts import session_roundup_loop as srl
 
 STORE_FUNCTIONS = ("intake_precheck", "add_message", "recent_threads", "get_thread", "thread_turns", "threads_with_status",
-                   "roundup_exists", "mark_round", "release_threads", "store_answer", "fail_round",
+                   "roundup_exists", "mark_round", "release_threads", "store_answer", "fail_round", "requeue_unparsed",
                    "set_pr_comment_url", "pending_for", "mark_delivered")
 
 
@@ -141,20 +141,43 @@ class FakeStore:
                           updated_at=self.clock.now)
         return dict(thread), dict(turn), created
 
-    async def fail_round(self, pool, roundup_id, *, reason, text_for):
+    async def fail_round(self, pool, roundup_id, *, reason, text_for, strike=True):
         out = []
         for u in self.turns:
             if u["roundup_id"] == roundup_id and u["speaker"] == "session":
                 u["roundup_id"] = None
         for thread in self.threads.values():
             if thread["last_roundup_id"] == roundup_id and thread["status"] == "reading":
-                n = thread["roundup_failures"] + 1
+                prior = thread.get("status_reason")
+                n = thread["roundup_failures"] + (1 if strike else 0)
                 thread.update(roundup_failures=n, status="failed" if n >= core.MAX_CONSECUTIVE_FAILURES else "held",
                               status_reason=reason[:300], updated_at=self.clock.now)
+                if not strike and core.is_body_refusal(prior or ""):
+                    continue
                 turn = self._add_turn(thread["thread_id"], "hub", text_for(n), roundup_id=roundup_id,
-                                      meta={"roundup_failed": True, "reason": reason[:300]})
+                                      meta={"roundup_failed": True, "reason": reason[:300],
+                                            **({} if strike else {"body_refusal": True})})
                 out.append((dict(thread), turn))
         return out
+
+    async def requeue_unparsed(self, pool, *, thread_id, roundup_id, body, meta, reason, text_for):
+        existing = next((u for u in self.turns if u["thread_id"] == thread_id and u["roundup_id"] == roundup_id
+                         and u["speaker"] == "orion"), None)
+        created = existing is None
+        turn = existing or self._add_turn(thread_id, "orion", body, roundup_id=roundup_id,
+                                          meta={**meta, "unparsed": True, "requeued": True})
+        thread = self.threads[thread_id]
+        hub = None
+        if thread["status"] == "reading" and thread["last_roundup_id"] == roundup_id:
+            n = thread["roundup_failures"] + 1
+            thread.update(roundup_failures=n, status="failed" if n >= core.MAX_CONSECUTIVE_FAILURES else "held",
+                          status_reason=reason[:300], updated_at=self.clock.now)
+            for u in self.turns:
+                if u["roundup_id"] == roundup_id and u["thread_id"] == thread_id and u["speaker"] == "session":
+                    u["roundup_id"] = None
+            hub = self._add_turn(thread_id, "hub", text_for(n), roundup_id=roundup_id,
+                                 meta={"reply_unparsed": True, "reason": reason[:300]})
+        return dict(thread), dict(turn), hub, created
 
     async def set_pr_comment_url(self, pool, turn_id, url):
         next(u for u in self.turns if u["turn_id"] == turn_id)["pr_comment_url"] = url
@@ -162,7 +185,7 @@ class FakeStore:
     async def pending_for(self, pool, *, session_id="", branch="", limit=20):
         out = []
         for u in self.turns:
-            if u["speaker"] != "orion" or u["delivered_at"] is not None:
+            if u["speaker"] != "orion" or u["delivered_at"] is not None or u["meta"].get("requeued") is True:
                 continue
             h = self.threads[u["thread_id"]]
             mine = bool(session_id) and (h["session_id"] == session_id or any(

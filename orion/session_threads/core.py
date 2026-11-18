@@ -13,7 +13,8 @@ The one-round rule (``MAX_QUESTION_ROUNDS_PER_THREAD``): Orion asks questions on
 an Orion turn with questions, the thread is in its ANSWER PHASE: a session reply is still held and
 read at the next round-up, but the prompt tells Orion the round is used, and whatever Orion writes for
 that thread is stored as a closing note (status ``closed``). A closing note is never posted to the PR
-and never handed to a session as questions to answer.
+and never handed to a session as questions to answer. A reply Hub could not cut (``unparsed``) does not
+use the round: the loop keeps it, sends it nowhere, and reads the thread again (``meta.requeued``).
 """
 
 from __future__ import annotations
@@ -144,7 +145,8 @@ def receipt_text(*, thread_id: str, next_at: datetime, roundup_enabled: bool, cu
 
 def question_rounds_used(turns: Sequence[Dict[str, Any]], *, exclude_roundup: Optional[str] = None) -> int:
     """How many rounds of questions Orion has asked on a thread: its Orion turns that are neither
-    "no questions" nor a closing note. An unparsed whole reply counts (it went out as questions).
+    "no questions" nor a closing note nor a re-queued unparsed reply (``meta.requeued``: Hub could not
+    cut it, kept it, sent it nowhere and read the thread again; a parse accident is not Orion asking).
     ``exclude_roundup``: leave out the Orion turn of that round (the round being read now)."""
     n = 0
     for t in turns:
@@ -153,7 +155,7 @@ def question_rounds_used(turns: Sequence[Dict[str, Any]], *, exclude_roundup: Op
         if exclude_roundup is not None and t.get("roundup_id") == exclude_roundup:
             continue
         meta = t.get("meta") or {}
-        if meta.get("no_questions") or meta.get("closing_note"):
+        if meta.get("no_questions") or meta.get("closing_note") or meta.get("requeued"):
             continue
         n += 1
     return n
@@ -521,6 +523,54 @@ def pr_comment_body(*, thread_id: str, questions: str) -> str:
         f"`python3 scripts/orion_session_thread.py reply --thread {thread_id} --body \"...\"` in the repo; "
         "the reply is read at the next round-up."
     )
+
+
+# Run errors that mean Orion's body never gave the round its turn in time: the GPU pool kept the run
+# waiting past its admission deadline (cabinet heat sheds, a busy lane, a long backlog). They are not
+# strikes (``is_body_refusal``): the thread is held again, its failure count unchanged, and the next
+# round-up tries again. A refusal that is a property of the request itself (``min_ctx_exceeds_class``,
+# ``replay_payload_too_large``, an unknown class) is NOT here: retrying it can never work, so it counts.
+# Sources: services/orion-durable-runs/app/harness_smoke_graph.py (``workflow_deadline``),
+# app/admission_runtime.py + app/pool_hold.py RUN_TERMINAL_PREFIXES (``gpu_pool_unavailable:<reason>``).
+_BODY_REFUSAL_ERRORS = ("workflow_deadline", "gpu_pool_unavailable:deadline", "gpu_pool_unavailable:backlog_max_age",
+                        "gpu_pool_unavailable:shed:")
+_EXC_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*:\s+")
+
+
+def is_body_refusal(reason: str) -> bool:
+    """True when a failed round's ``reason`` (as the loop writes it) is the body's, not the round's:
+    ``orion_run_overdue:*`` (the run did not end 30 min past its deadline), or a ``failed`` run whose
+    error is in ``_BODY_REFUSAL_ERRORS`` (optionally after an exception name, ``RuntimeError: ...``)."""
+    text = str(reason or "")
+    if text.startswith("orion_run_overdue:"):
+        return True
+    if not text.startswith("orion_run_failed:"):
+        return False
+    error = _EXC_PREFIX_RE.sub("", text[len("orion_run_failed:"):].strip(), count=1)
+    return any(error.startswith(e) if e.endswith(":") else (error == e or error.startswith(e + ":"))
+               for e in _BODY_REFUSAL_ERRORS)
+
+
+def body_refusal_text(*, reason: str, next_at: Optional[datetime], tz_name: str = "America/Denver") -> str:
+    """Hub's line on a thread whose round-up the body did not run. Not a strike."""
+    when = f" ({clock_text(next_at, tz_name)})" if next_at else ""
+    return (f"The round-up did not run ({reason}): Orion's body did not give it a turn in time. Orion did NOT read "
+            f"this thread. This is not counted as a failure. It is held again for the next round-up{when}, and "
+            "Hub keeps trying while the body is busy; it writes this line again only after something else happens "
+            "on the thread.")
+
+
+def unparsed_text(*, failures: int, next_at: Optional[datetime], tz_name: str = "America/Denver") -> str:
+    """Hub's line on a thread whose reply Hub could not cut. Hub's words: the round is not used."""
+    head = ("Hub could not cut Orion's reply into one section per thread, so it does not know which part is about "
+            "this thread. Orion's whole reply is kept above. It was not sent to the session and not posted on the "
+            "pull request, and it does not use this thread's one round of questions.")
+    if failures >= MAX_CONSECUTIVE_FAILURES:
+        return (f"{head} That is {failures} round-ups in a row that failed or could not be cut, so Hub stopped "
+                "trying. Send a new message on this thread to put it back in the queue.")
+    when = f" ({clock_text(next_at, tz_name)})" if next_at else ""
+    return (f"{head} Orion reads this thread again at the next round-up{when}. "
+            f"Failure {failures} of {MAX_CONSECUTIVE_FAILURES}.")
 
 
 def failure_text(*, reason: str, failures: int, next_at: Optional[datetime], tz_name: str = "America/Denver") -> str:

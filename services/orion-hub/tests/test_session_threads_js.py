@@ -126,14 +126,18 @@ def test_failed_round_and_unparsed_reply_are_labelled_and_a_load_error_is_said()
     got = _node("""
       const fetch2 = async (url) => url === "/api/session-threads/t7" ? {ok: true, json: async () => ({turns: [
         {turn_id: "a", speaker: "hub", body: "The round-up failed.", meta: {roundup_failed: true}},
-        {turn_id: "b", speaker: "orion", body: "whole reply", meta: {unparsed: true}}]})} : fetchFn(url);
+        {turn_id: "b", speaker: "orion", body: "whole reply", meta: {unparsed: true}},
+        {turn_id: "c", speaker: "orion", body: "whole reply", meta: {unparsed: true, requeued: true}},
+        {turn_id: "d", speaker: "hub", body: "Hub could not cut it.", meta: {reply_unparsed: true}}]})} : fetchFn(url);
       api.renderThread({thread_id: "t7", title: "x", status: "asked"}, doc, fetch2);
       await thread("t7").children[0].handlers.click();
       api.renderThread({thread_id: "bad", title: "y", status: "held"}, doc, fetchFn);
       await thread("bad").children[0].handlers.click();
       return [turnsOf("t7").map(t => t[0]), all(thread("bad")).map(n => n.textContent).includes("Could not load the turns.")];
     """)
-    assert got == [["Hub (round-up failed)", "Orion (whole reply: Hub could not find this thread's section)"], True]
+    assert got == [["Hub (round-up failed)", "Orion (whole reply: Hub could not find this thread's section)",
+                    "Orion (whole reply, not cut: sent nowhere, not the question round)",
+                    "Hub (reply not cut: read again next round-up)"], True]
 
 
 def test_the_page_links_the_asset_and_app_js_hands_it_the_frames():

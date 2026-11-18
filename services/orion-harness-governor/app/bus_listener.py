@@ -625,6 +625,9 @@ async def handle_harness_run_request(
             verdict_molecule_id=partial.verdict_molecule_id,
             finalize_ran=False,
             finalize_changed=False,
+            # A required repair that failed: the run says it ran (#3686 review).
+            response_repair_ran=partial.outcome_molecule.response_repair_ran,
+            response_repair_reason=partial.outcome_molecule.response_repair_reason,
             quick_lane_skipped_5b=partial.quick_lane_skipped_5b,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
@@ -782,7 +785,7 @@ async def handle_harness_run_request(
         logger.info(
             "harness_draft_preview_revised corr=%s reason=%s repair_ran=%s",
             corr,
-            run.response_repair_reason or "finalize_changed",
+            (run.response_repair_ran and run.response_repair_reason) or "finalize_changed",
             run.response_repair_ran,
         )
     if motor.grammar_collector is not None and run.final_text:

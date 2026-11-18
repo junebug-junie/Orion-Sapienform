@@ -111,6 +111,29 @@ def test_the_real_payload_path_reads_no_change() -> None:
     assert is_repair_no_change(text, draft_text=DRAFT)
 
 
+@pytest.mark.parametrize("reply", ["No change needed.", "**No changes required.**", "no_change", "No change."])
+def test_no_change_spelled_as_words_is_read_as_no_change(reply: str) -> None:
+    """Live 363a9723 (2026-11-10): "No change needed." shipped in place of a 1,567-char answer."""
+    from orion.harness.finalize import is_repair_no_change
+
+    assert is_repair_no_change(reply, draft_text=DRAFT)
+
+
+@pytest.mark.parametrize("reply", [
+    "No change on the cabinet since this morning: it held at 31 C, and I said it ran hot without checking that reading.",
+    "No change on the cabinet: still 31 C.",
+    "No changes since this morning, Juniper.",
+    "No change yet -- the walkway is quiet.",
+    "There was no change in the walkway counts today.",
+])
+def test_a_real_reply_that_mentions_no_change_is_not_no_change(reply: str) -> None:
+    from orion.harness.finalize import is_repair_no_change
+
+    assert not is_repair_no_change(reply, draft_text=DRAFT)
+    # A draft that itself opens with the words: the reply is not the model's verdict.
+    assert not is_repair_no_change("No change.", draft_text="No change. The sensor still reads 31 C.")
+
+
 @pytest.mark.asyncio
 async def test_a_real_repair_still_ships() -> None:
     chain = await _chain("You're right: the cabinet sensor read 31 C, not hot. I said it without checking.")

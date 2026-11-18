@@ -133,7 +133,7 @@ async def test_draft_shown_first_then_revision_replaces_it_with_reason(caplog) -
     _, turn_frames, returned, seen = await _run_turn(
         flag=True,
         draft="You -- all containers are up.",
-        frames=[_final_frame("Juniper -- I checked two containers.", repair_reason="strain_unresolved")],
+        frames=[_final_frame("Juniper -- I checked two containers.", repair_reason="misaligned")],
     )
     assert seen["draft_preview"] is True
     assert [f["type"] for f in turn_frames] == ["draft_preview", "final"]
@@ -143,13 +143,26 @@ async def test_draft_shown_first_then_revision_replaces_it_with_reason(caplog) -
     assert "llm_response" not in draft_frame and "text" not in draft_frame
     assert final["replaces_draft"] is True
     assert final["revised"] is True
-    assert final["revised_reason"] == "strain_unresolved"
+    assert final["revised_reason"] == "misaligned"
     # Persisted/returned frames still carry the final text only.
     assert returned[-1]["llm_response"] == "Juniper -- I checked two containers."
     logs = caplog.text
     assert f"unified_turn_first_visible corr={CORR} kind=draft_preview" in logs
-    assert f"unified_turn_revision corr={CORR} reason=strain_unresolved" in logs
+    assert f"unified_turn_revision corr={CORR} reason=misaligned" in logs
     assert f"unified_turn_final_visible corr={CORR}" in logs
+
+
+@pytest.mark.asyncio
+async def test_a_skip_reason_never_labels_a_changed_text() -> None:
+    """#3618: response_repair_reason carries strain_only_not_repaired when repair did NOT
+    run. If the text changed anyway (reading-receipt grounding), the label is not the skip."""
+    frame = _final_frame("Grounded answer.")
+    frame.update({"finalize_changed": True, "response_repair_ran": False,
+                  "response_repair_reason": "strain_only_not_repaired"})
+    _, turn_frames, _, _ = await _run_turn(flag=True, draft="Answer.", frames=[frame])
+    final = turn_frames[-1]
+    assert final["revised"] is True
+    assert final["revised_reason"] == "finalize_changed"
 
 
 @pytest.mark.asyncio

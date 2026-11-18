@@ -81,7 +81,7 @@ async def _run(request, *, bus, chain_seen: dict):
             quick_lane_skipped_5b=False,
             verdict_molecule_id="verdict-1",
             response_repair_ran=True,
-            response_repair_reason="strain_unresolved",
+            response_repair_reason="misaligned",
         )
 
     with patch.object(
@@ -112,7 +112,7 @@ async def test_draft_published_before_judge_and_recorded_with_final() -> None:
     assert run.draft_preview_text == DRAFT
     assert run.draft_preview_held_reason is None
     assert run.final_text == FINAL
-    assert run.response_repair_reason == "strain_unresolved"
+    assert run.response_repair_reason == "misaligned"
 
 
 @pytest.mark.asyncio

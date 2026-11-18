@@ -2391,7 +2391,10 @@ def annotate_frames_after_draft(
             revised = final_text.strip() != shown_draft_text.strip()
             reason = None
             if revised:
-                reason = str(frame.get("response_repair_reason") or "finalize_changed")
+                # A repair reason names the edit only when the repair ran; a skip reason
+                # (strain_only_not_repaired, #3618) never explains a changed text.
+                ran = frame.get("response_repair_ran") is not False
+                reason = str((ran and frame.get("response_repair_reason")) or "finalize_changed")
             frame["replaces_draft"] = True
             frame["revised"] = revised
             frame["revised_reason"] = reason

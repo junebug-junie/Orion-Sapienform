@@ -165,6 +165,17 @@ def test_leading_heading_is_not_a_preamble() -> None:
         ("A signal, not noise. A choice — not a rule.", 2),
         ("- a reading, not a guess\n- a fact, not a vibe", 2),
         ("A concept node I can reach, not only a number in a description.", 1),
+        ("It is cheap, *not* free.", 1),
+        ("It is cheap, **not** free.", 1),
+        ("It is cheap, _not_ free.", 1),
+        ('It is cheap, not "free".', 1),
+        ("It is cheap, not (free).", 1),
+        ("The column is `status`, not `state`.", 1),
+        ("*it landed*, not *it's right*.", 1),
+        # Accepted on purpose (pinned): interjection commas and single-backtick
+        # spans are prose to this dial.
+        ("No, not yet.", 1),
+        ("Use `a, not b` here.", 1),
         ("It matters — not just because it corrects the record, but because it holds.", 1),
     ],
 )

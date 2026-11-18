@@ -54,10 +54,15 @@ _DASH_RE = re.compile(r"—|(?<=\S)[ \t]+(?:--?|–)[ \t]+(?=\S)")
 # "not only ... but (also)" (only when a "but" follows in the same sentence;
 # a bare ", not only a number" is the contrast tic), "not to mention", and
 # "not least". Fixed; do not extend -- a miss is fixed by changing the shape,
-# not by adding words.
+# not by adding words. Markdown emphasis around "not" (", **not** free") and
+# a quoted / code / bracketed word after it (", not `state`") still count.
+# Accepted, pinned in tests: interjection commas ("No, not yet.") count too;
+# a minimum lead-in would also cut real tics ("Seat, not costume.").
 _CONTRAST_NOT_RE = re.compile(
     r"(?:,|—|(?<=\S)[ \t]+(?:--?|–)(?=[ \t]))[ \t]*"
-    r"\bnot[ \t]+(?!only\b(?=[^.!?\n]*\bbut\b)|to[ \t]+mention\b|least\b)(?=\w)",
+    r"[*_]{0,2}(?<![^\W_])not(?![^\W_])[*_]{0,2}[ \t]+"
+    r"(?!only\b(?=[^.!?\n]{0,200}\bbut\b)|to[ \t]+mention\b|least\b)"
+    r"(?=[\w\"'“‘(`*_])",
     re.IGNORECASE,
 )
 # Closed grammatical class: first-person singular. Fixed; do not extend.

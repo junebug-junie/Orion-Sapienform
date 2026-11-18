@@ -138,6 +138,24 @@ def test_contrast_not_by_week_groups_by_iso_week_and_filters_short_replies():
     assert weekly["model:flash-next"][0]["share_with_contrast_not"] == 1.0
     assert weekly["model:qwen35b"][0]["share_with_contrast_not"] == 0.0
     assert weekly["model:(no finalize sighting)"][0]["n"] == 1  # the outreach row
+    assert not any(r["partial"] for r in chat)  # no window given -> nothing marked
+
+
+def test_contrast_not_by_week_marks_edge_weeks_partial():
+    from datetime import date, datetime, timezone
+
+    tic = "That reading is physiology, not hierarchy, and the queue is fine today."
+    rows = [
+        {"prompt": "q", "response": tic, "created_at": datetime(2026, 11, d, tzinfo=timezone.utc)}
+        for d in (4, 10, 17)
+    ]
+    weekly = contrast_not_by_week(rows, window_start=date(2026, 11, 4), today=date(2026, 11, 18))
+    assert [(r["week"], r["partial"]) for r in weekly["chat_replies"]] == [
+        ("2026-11-02", True), ("2026-11-09", False), ("2026-11-16", True),
+    ]
+    # Sunday run: that week is complete.
+    sunday = contrast_not_by_week(rows, today=date(2026, 11, 22))
+    assert sunday["chat_replies"][-1]["partial"] is False
 
 
 def test_build_report_carries_weekly_trend_into_summary():

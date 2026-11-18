@@ -150,15 +150,17 @@ def horizon_for(concern: PrimeConcernV1) -> Optional[datetime]:
     return a.horizon_from(concern.opened_at) if a is not None else None
 
 
-# The sub-agent types the carry turn's Agent tool lists today. Read live from the FCC transcripts (2026-11-17):
-# claude, Explore, general-purpose, Plan, statusline-setup. NOT orion-repo-agent: the governor runs `claude` with
-# `--setting-sources user,local` (orion/fcc/claude_spawn.py), so the repo's .claude/agents/ is not loaded.
-CARRY_SUBAGENT_TYPES: tuple[str, ...] = ("Explore", "general-purpose")
+# The sub-agent types the hint names. The carry turn's Agent tool lists claude, Explore, general-purpose, Plan,
+# statusline-setup (read live from the FCC transcripts, 2026-11-17) plus orion-repo-agent, which the governor
+# passes on every non-reading turn with `--agents` (orion/fcc/claude_spawn.py::fcc_agents_argv, #3650): project
+# setting scope stays off, so the repo's .claude/agents/ is never loaded there.
+CARRY_SUBAGENT_TYPES: tuple[str, ...] = ("Explore", "orion-repo-agent")
 # One line, take-on turns only (#3639). `python -P -m orion.dig take-ons` counts the calls it leads to.
 CARRY_SUBAGENT_HINT = (
     "Sub-agents: for a long multi-step dig or independent pieces that can run in parallel, call the Agent tool "
-    'with subagent_type "Explore" (read-only search across many files) or "general-purpose" (one multi-step '
-    "piece); give it a self-contained brief and use the summary it returns.")
+    'with subagent_type "Explore" (read-only search across many files) or "orion-repo-agent" (one multi-step '
+    "piece in the repo that needs Bash, tests or edits on a branch); give it a self-contained brief and use the "
+    "summary it returns.")
 
 
 def carry_prompt(concern_id: str, body: str) -> str:

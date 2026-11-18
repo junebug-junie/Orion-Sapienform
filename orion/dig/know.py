@@ -95,7 +95,8 @@ def render(words: str, data: dict) -> list[str]:
         lines.append("Memory search is busy with another lookup. Try again in a few seconds. "
                      "This is NOT the same as having no memory of it.")
     elif status == "skipped_short":
-        lines.append("Your words had nothing to search with (only very common words). Use names, places, things.")
+        lines.append("Your words had nothing to search with (only very common words), so nothing was searched. "
+                     "This is NOT the same as having no memory of it: use names, places, things.")
     elif status == "off":
         lines.append("Memory search is switched off in orion-recall. This is NOT the same as having no memory of it.")
     if is_degraded:

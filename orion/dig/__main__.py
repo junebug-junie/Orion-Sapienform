@@ -72,6 +72,7 @@ path of a file with the full result; read only what you need from that file.
                          Temporal Self arcs; prints journal:/chat:/arc: ids a lived_record cites.
   organs <date> [<end>]  what each organ did (yesterday is the usual ask): counts, quotes with
                          [experience:<id>] refs, cites, breaks, use rate. At most 7 days.
+  digs <date>            each dig command you ran that day: time, chat or workflow, result, ref.
   attention [<window>]   what you attended to, as rates vs each source's own activity (24h, 7d).
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   take-ons [<days>]      sub-agents each take-on started.
@@ -1777,6 +1778,56 @@ def cmd_organs(start: date, end: date, out: Out, runner=None) -> str:
                               f"full roundup (every organ, every line): {path}; `dig arc|act <id>` opens a ref")
 
 
+# --- digs (the day's executed dig commands; day-dream spec Patch 1) --------------------------
+
+def cmd_digs(day: date, out: Out, runner=None, claude_home: Path | None = None) -> str:
+    """Read-only: every dig command Orion ran on one Denver day (orion/dig/digs.py)."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import digs
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    runner = runner or ReadOnlyPsql(timeout_sec=60.0)
+    lo, hi = digs.window(day)
+    t0 = time.monotonic()
+    unread: dict[str, str] = {}
+    cockpit: list = []
+    try:
+        cockpit = digs.parse_cockpit_rows(psql_rows(runner, digs.cockpit_sql(day)))
+    except RuntimeError as exc:
+        unread["chat turns (cockpit_turn_sighting)"] = str(exc)[:200]
+    if claude_home is None:
+        from orion.harness.session_resume import claude_home as _home
+
+        claude_home = _home()
+    transcript: list = []
+    if not (claude_home / "projects").is_dir() or not os.access(claude_home / "projects", os.R_OK | os.X_OK):
+        unread["background runs (claude transcripts)"] = (
+            f"{claude_home / 'projects'} is not readable here; run this in a turn's Bash")
+    else:
+        transcript = digs.read_transcripts(digs.candidate_transcripts(claude_home, lo, hi), lo, hi)
+    calls = digs.merge(cockpit, transcript)
+    sql = digs.lookup_sql(c.correlation_id for c in calls if c.source == "transcript")
+    if sql:
+        try:
+            digs.attach(calls, psql_rows(runner, sql))
+        except RuntimeError as exc:
+            unread["where each run ran (harness_turn_trace)"] = str(exc)[:200]
+    if any(c.needs_link for c in calls):
+        digs.link_by_resume_key(calls, digs.read_resume_registry(claude_home))
+    took = time.monotonic() - t0
+    path = out.write(f"digs-{day.isoformat()}", digs.to_file(day, calls, unread))
+    chat = sum(1 for c in calls if c.chat_id or c.chat_pool or c.source == "cockpit" or c.workflow == "chat")
+    tail = [f"{len(calls)} dig command(s) ran on {day.isoformat()} (times Denver): {chat} in chat, "
+            f"{len(calls) - chat} in background runs; read in {took:.1f} s"]
+    tail += [f"UNREAD {name}: {why} (that part is missing, not empty)" for name, why in unread.items()]
+    tail.append(f"full list (every call, its whole first result line): {path}")
+    try:
+        lines = digs.render(calls)
+    except ValueError as exc:  # the line rule holds: refuse the page, never print a line that breaks it
+        raise DigError(f"digs: {exc} (full list still written: {path})") from exc
+    return capped(lines, tail="\n".join(tail))
+
+
 # --- attention (relative rates, issue #3600) -----------------------------------------------
 
 def cmd_attention(window: str | None, end: str | None, out: Out, runner=None) -> str:
@@ -1995,6 +2046,8 @@ def main(argv: list[str] | None = None) -> int:
         elif ns.command == "organs" and len(a) in (1, 2):
             first = _parse_day(a[0])
             text = cmd_organs(first, _parse_day(a[1]) if len(a) == 2 else first, out)
+        elif ns.command == "digs" and len(a) == 1:
+            text = cmd_digs(_parse_day(a[0]), out)
         elif ns.command == "attention" and len(a) <= 2:
             text = cmd_attention(a[0] if a else None, a[1] if len(a) == 2 else None, out)
         elif ns.command == "turn-steps" and len(a) in (1, 2):

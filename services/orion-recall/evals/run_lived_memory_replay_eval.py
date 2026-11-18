@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import os
 import json
 import statistics
 import sys
@@ -120,20 +122,24 @@ VARIANTS = {
 class _CachedRewriter:
     """Calls the real rewriter once per message; later variants reuse the answer."""
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, seed: Dict[str, List[str]] | None = None) -> None:
         self.inner = inner
-        self.cache: Dict[str, List[str]] = {}
+        self.cache: Dict[str, List[str]] = dict(seed or {})
         self.errors = 0
 
+    @staticmethod
+    def key(message: str) -> str:
+        return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
     async def __call__(self, message: str, context: Any) -> List[str]:
-        if message in self.cache:
-            return self.cache[message]
+        if self.key(message) in self.cache:
+            return self.cache[self.key(message)]
         try:
             out = await self.inner(message, context)
         except Exception:
             self.errors += 1
             raise
-        self.cache[message] = list(out)
+        self.cache[self.key(message)] = list(out)
         return out
 
 
@@ -153,12 +159,17 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
 
         bus = OrionBusAsync(url=args.bus_url)
         await bus.connect()
+        seed = None
+        if args.rewrite_cache and Path(args.rewrite_cache).expanduser().exists():
+            seed = json.loads(Path(args.rewrite_cache).expanduser().read_text(encoding="utf-8"))
         rewriter = _CachedRewriter(BusRewriter(
             bus, channel=args.llm_channel, route=args.rewrite_route, timeout_sec=args.rewrite_timeout,
-            source=ServiceRef(name="orion-recall", version="replay-eval", node="eval")))
+            source=ServiceRef(name="orion-recall", version="replay-eval", node="eval")), seed)
 
     referring_rows = []
-    for item in bank["referring"]:
+    # Budget mode (issue #3662) measures the chat-turn deadline, not hit rate: only the last real
+    # messages are replayed, under the live end-to-end budget.
+    for item in ([] if args.budget_sec else bank["referring"]):
         row = await pool.fetchrow("SELECT prompt, created_at, session_id FROM chat_history_log WHERE id = $1",
                                   item["chat_id"])
         if row is not None:
@@ -167,7 +178,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
         "SELECT id, prompt, created_at, session_id FROM chat_history_log WHERE source = $1 "
         "AND length(trim(prompt)) > 0 AND prompt NOT LIKE $2 ORDER BY created_at DESC LIMIT $3",
         bank.get("noise_source", "hub_orion"), bank.get("noise_exclude_prefix", "Orion — ") + "%",
-        int(bank.get("noise_limit", 150)))
+        int(args.noise_limit or bank.get("noise_limit", 150)))
 
     report: Dict[str, Any] = {"min_query_tokens": args.min_query_tokens, "referring": len(referring_rows),
                               "noise_messages": len(noise_rows), "variants": {}}
@@ -181,17 +192,31 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             search=SearchConfig(chroma_url=args.chroma_url, embed_url=args.embed_url, collection=args.collection,
                                 min_similarity=0.0),
             rerank_url=args.dead_rerank_url if dead else args.rerank_url, min_fit=0.0 if not dead else args.degraded_min_fit,
-            max_lines=64 if not dead else MAX_LINES, timeout_sec=30.0,
+            max_lines=64 if not dead and not args.budget_sec else MAX_LINES,
+            timeout_sec=float(args.budget_sec or 30.0),
             min_query_tokens=args.min_query_tokens, rewrite_timeout_sec=args.rewrite_timeout,
             link_top_k=args.link_top_k if use_links else 0)
-        lm = LivedMemoryRecall(pool, cfg, rewriter=rewriter if use_rewrite else None)
+        # Budget mode times the live rewrite in every variant: a cached answer would cost 0 ms.
+        variant_rewriter = (_CachedRewriter(rewriter.inner) if args.budget_sec and rewriter is not None
+                            else rewriter)
+        lm = LivedMemoryRecall(pool, cfg, rewriter=variant_rewriter if use_rewrite else None)
         timings: List[Dict[str, int]] = []
         results: List[Dict[str, Any]] = []
         noise: List[Dict[str, Any]] = []
         outcomes: Dict[str, int] = {}
         backends: Dict[str, int] = {}
+        degraded_reasons: Dict[str, int] = {}
+        partial = 0
+        rerank_errors: Dict[str, int] = {}
 
         def note(out: Any) -> None:
+            nonlocal partial
+            for reason in out.debug.get("degraded") or []:
+                degraded_reasons[reason] = degraded_reasons.get(reason, 0) + 1
+            partial += int(bool(out.debug.get("rerank_partial")))
+            if out.debug.get("rerank_error"):  # exception type only, never text
+                err = str(out.debug["rerank_error"]).split(":", 1)[0]
+                rerank_errors[err] = rerank_errors.get(err, 0) + 1
             timings.append(out.debug.get("timings_ms") or {})
             o = (out.debug.get("rewrite") or {}).get("outcome") or "none"
             outcomes[o] = outcomes.get(o, 0) + 1
@@ -225,6 +250,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             vals = sorted(t[key] for t in timings if key in t)
             return vals[min(len(vals) - 1, int(q * len(vals)))] if vals else None
 
+        searched = backends.get("degraded", 0) + backends.get("hybrid", 0)
         bars = [score_bar(results, noise, float(x), now) for x in str(args.min_fit).split(",") if x.strip()]
         report["variants"][name] = {
             "targets_in_candidate_pool": {k: f"{sum(1 for r in results if r['kind'] == k and r['target_in_pool'])}/"
@@ -233,10 +259,21 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             "errors": [r["label"] for r in results if r["errors"]],
             "rewrite_outcomes": outcomes,
             "backends": backends,
+            # Share of searched messages that fell back to exact words (issue #3662 bar: < 2%).
+            "degraded_rate": round(backends.get("degraded", 0) / searched, 3) if searched else None,
+            "degraded_reasons": degraded_reasons,
+            "rerank_partial": partial,
+            "rerank_errors": rerank_errors,
             "latency_ms": {k: {"p50": pct(k, 0.5), "p90": pct(k, 0.9), "max": pct(k, 0.999)}
                            for k in ("snapshot", "rewrite", "dense", "links", "rerank", "recheck", "total")},
             "bars": [{k: v for k, v in b.items() if k != "items" or args.items} for b in bars],
         }
+    if rewriter is not None and args.rewrite_cache:
+        # Same rewrites on the next run, so a before/after compares the code, not the LLM's
+        # run-to-run variance. Private (Orion's searches over Juniper's messages): host-side, 600.
+        path = Path(args.rewrite_cache).expanduser()
+        path.write_text(json.dumps(rewriter.cache), encoding="utf-8")
+        os.chmod(path, 0o600)
     if rewriter is not None:
         report["rewrite_calls"] = len(rewriter.cache)
         report["rewrite_errors"] = rewriter.errors
@@ -265,6 +302,15 @@ def main() -> int:
     ap.add_argument("--rewrite-route", default="quick_turn")
     ap.add_argument("--rewrite-timeout", type=float, default=1.8)
     ap.add_argument("--link-top-k", type=int, default=6)
+    ap.add_argument("--budget-sec", type=float, default=0.0,
+                    help="replay under this end-to-end budget (live: RECALL_LIVED_MEMORY_TIMEOUT_SEC) and "
+                         "skip the referring bank; reports degraded_rate (issue #3662). Calls run one at a "
+                         "time on whatever else the GPU is doing, so on an idle P4 this is a lower bound: "
+                         "the live rate needs recall_telemetry, or a run beside GPU load")
+    ap.add_argument("--rewrite-cache", default="",
+                    help="host-side JSON of rewrites keyed by message hash: read if present, written after "
+                         "the run, so a before/after pair sees the same searches (not with --budget-sec)")
+    ap.add_argument("--noise-limit", type=int, default=0, help="last N real messages (default: the bank's)")
     ap.add_argument("--items", action="store_true", help="include per-item hits (labels are private)")
     args = ap.parse_args()
     print(json.dumps(asyncio.run(_replay(args)), indent=2, default=str))

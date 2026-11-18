@@ -276,3 +276,127 @@ def test_duplicate_window_pairs_counts_every_pair_the_rule_compares():
     out = rpt.report({"acts": [], "starts": [], "turns": [{**t, "created_at": rpt.FINDER_LIVE_AT + (t["created_at"] - T0)}
                                                           for t in turns], "carry": {}})
     assert out["duplicate_window_pairs"] == 1
+
+
+# --- Orion's PR #3641 round (thread 0a4514841253): lanes, browser window, Prime by exact key ----------------
+
+import pytest  # noqa: E402
+
+LIVE = rpt.FINDER_LIVE_AT + timedelta(hours=1)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_redis(monkeypatch):
+    # main() reads Prime from ORION_BUS_URL when the redis package is installed: keep these tests offline.
+    monkeypatch.delenv("ORION_BUS_URL", raising=False)
+
+
+def _stored(corr, made, *, browser=False, session="", workflow="chat", at=LIVE, mode=False):
+    return {"correlation_id": corr, "created_at": at, "workflow": workflow, "made": made,
+            "session_id": session, "from_browser": browser, "has_mode": mode}
+
+
+OFFER = {**FIRM, "quote": "Want me to pull the other run too?", "offer": True}
+
+
+def test_lane_split_names_the_browser_lane_and_folds_round_ups():
+    stored = [_stored("j", [FIRM], browser=True, session="9c91"),
+              _stored("e1", [OFFER, FIRM], session="memory-scoreboard-eval"),
+              _stored("e2", [OFFER], session="memory-scoreboard-eval"),
+              _stored("r1", [FIRM], session="orion_session-roundup-20261117T1800"),
+              _stored("r2", [FIRM], session="orion_session-roundup-20261117T1900"),
+              _stored("w", [FIRM], session="", workflow="curiosity_investigation"),
+              _stored("none", [])]
+    out = rpt.lane_split(stored)
+    assert (out["turns"], out["items"], out["browser_turns"]) == (6, 7, 1)
+    assert out["by_lane"]["memory-scoreboard-eval"] == {"turns": 2, "items": 3, "firm": 1}
+    assert out["by_lane"]["orion_session-roundup"]["turns"] == 2
+    assert out["by_lane"]["juniper_browser"]["firm"] == 1
+    assert "curiosity_investigation" in out["by_lane"]
+
+
+def test_browser_window_reports_the_last_browser_turn_and_the_gap_after_it():
+    now = LIVE + timedelta(hours=10)
+    turns = [{**_turn("b1-aaaaaaaa", []), "created_at": LIVE, "from_browser": True},
+             {**_turn("b2-bbbbbbbb", [], source="deterministic_quick_gate"),
+              "created_at": LIVE + timedelta(hours=4), "from_browser": True},
+             {**_turn("api", []), "created_at": LIVE + timedelta(hours=8), "from_browser": False},
+             {**_turn("old", []), "created_at": rpt.FINDER_LIVE_AT - timedelta(hours=1), "from_browser": True}]
+    bw = rpt.browser_window(turns, now)
+    assert (bw["browser_turns"], bw["judged"], bw["last_corr"], bw["hours_since_last"]) == (2, 1, "b2-bbbbb", 6.0)
+    assert rpt.browser_window([], now)["last_at"] is None
+
+
+def test_guard_prints_expected_beside_observed():
+    g = rpt.guard_summary([{**_turn(str(i), []), "created_at": LIVE} for i in range(6)])
+    assert g["expected_firm"] == round(6 * 23 / 289, 2) and g["firm_promises"] == 0
+    # Live 2026-11-18: 0 of 6 judged browser turns; at the frozen rate that happens about 62% of the time.
+    assert g["p_at_most_observed"] == round(rpt.poisson_cdf(0, 6 * 23 / 289), 3) == 0.62
+    assert g["p_at_least_observed"] == 1.0
+    hi = rpt.guard_summary([{**_turn(str(i), [FIRM] if i < 3 else []), "created_at": LIVE} for i in range(6)])
+    assert hi["p_at_least_observed"] == round(1 - rpt.poisson_cdf(2, 6 * 23 / 289), 3) < 0.02
+    assert rpt.guard_summary([])["p_at_most_observed"] is None
+    assert rpt.poisson_cdf(3, 0.0) == 1.0 and abs(rpt.poisson_cdf(1, 2.0) - 3 * 2.718281828 ** -2) < 1e-6
+
+
+def test_void_share_is_void_over_every_closed_act():
+    acts = [_act(1, opened=T0, closed=T0 + H, source="expired", note="no keep within horizon"),
+            _act(2, opened=T0, closed=T0 + H, source="expired", note=VOID_NOTE),
+            _act(3, opened=T0, closed=T0 + H, source="expired", note=VOID_NOTE),
+            _act(4, opened=T0)]
+    assert rpt.close_summary(acts, unclosable=set())["void_share"] == round(2 / 3, 3)
+    assert rpt.close_summary([_act(5, opened=T0)], unclosable=set())["void_share"] is None
+
+
+def test_prime_by_ref_joins_on_the_exact_turn_concern_id():
+    chat = {"session": "9c91", "mode": True}  # Prime's classify_who: a non-orion_ session with ``mode``
+    stored = [_stored("open-c", [FIRM], **chat), _stored("closed-c", [FIRM], session="orion_curiosity"),
+              _stored("refused-c", [FIRM], **chat), _stored("none-c", [FIRM], **chat),
+              _stored("unread-c", [FIRM], session="self-sense-eval"),  # no mode: never handed back
+              _stored("offer-only", [OFFER], **chat),
+              _stored("no-quote", [{**FIRM, "quote": "  "}], **chat)]  # Prime counts no empty quote
+    state = {"concerns": [{"concern_id": turn_concern_id("open-c")}],
+             "concern_record": [{"concern_id": turn_concern_id("closed-c"), "end": "settled"}]}
+    turns = {"recent": [{"correlation_id": "refused-c", "thread_refused": "already holding 3 concerns"}]}
+    # A carry on the open turn's key counts; one on a different turn's key in the same session does not.
+    carry = {turn_concern_id("open-c"): [LIVE], turn_concern_id("elsewhere"): [LIVE, LIVE]}
+    out = rpt.prime_by_ref(stored, carry, state, turns)
+    assert out["turns"] == 5  # offer-only and empty-quote turns are not promises Prime counts
+    assert out["status"] == {"concern_open": 1, "concern_settled": 1, "refused": 1, "no_concern_or_aged_out": 1,
+                             "not_handed_back": 1}
+    assert {r["corr"]: r["prime_who"] for r in out["rows"]}["closed-c"] == "curiosity"
+    assert out["carry_replies"] == 1
+    assert {r["corr"]: r["refused_why"] for r in out["rows"]}["refused-"] == "already holding 3 concerns"
+    assert rpt.prime_by_ref(stored, carry, None, None)["status"] == {"not_read": 4, "not_handed_back": 1}
+
+
+def test_read_prime_from_files_and_never_raises(tmp_path):
+    state, turns = tmp_path / "s.json", tmp_path / "t.json"
+    state.write_text(json.dumps({"concerns": []}))
+    turns.write_text(json.dumps({"recent": []}))
+    got_state, got_turns, how = rpt.read_prime(None, str(state), str(turns))
+    assert got_state == {"concerns": []} and got_turns == {"recent": []} and how.startswith("files")
+    assert rpt.read_prime(None, str(tmp_path / "missing.json"))[2].startswith("not read")
+    assert rpt.read_prime(None)[2].startswith("not read")
+
+
+def test_text_report_prints_the_window_lanes_expected_and_prime_lines(monkeypatch, capsys):
+    stored = [_stored("e1-xxxxxxxx", [FIRM], session="memory-scoreboard-eval", mode=True)]
+    turns = [{**_turn("b1-aaaaaaaa", []), "created_at": LIVE, "from_browser": True, "session_id": "s"}]
+    monkeypatch.setattr(rpt, "gather", lambda dsn, since: {"acts": [], "starts": [], "turns": turns, "carry": {},
+                                                           "stored": stored})
+    assert rpt.main(["--dsn", "x"]) == 0
+    out = capsys.readouterr().out
+    assert "expected vs observed: 0.08 firm promises expected over 1 judged browser turns" in out
+    assert "browser window: 1 Juniper browser turns since 2026-11-16 18:05Z (1 judged); last " in out
+    assert "(b1-aaaaa)" in out and "no promise_view/promise_ledger line is expected in that gap" in out
+    assert ("stored promise items since 2026-11-16 18:05Z: 1 on 1 turns, 0 of them Juniper browser turns"
+            in out) and "memory-scoreboard-eval 1t/1i/1f" in out
+    assert "Prime by exact key (turn_concern_id) on 1 item-bearing turns" in out and "not read" in out
+    assert "void share of closed acts: -" in out
+    assert "who=chat_juniper not_read" in out  # an eval session with ``mode`` reads as Juniper's chat to Prime (#3602)
+
+
+def test_prime_turns_file_needs_the_state_file():
+    with pytest.raises(SystemExit):
+        rpt.main(["--dsn", "x", "--prime-turns", "t.json"])

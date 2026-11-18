@@ -37,8 +37,11 @@ DEFAULT_NULL_GUARD = 36  # 3 h: every pair of organs is shifted apart by more th
 # Hygiene gate: a staleness-decay loop multiplies an unrefreshed value by a fixed factor every tick
 # (2026-07-26 substrate.route: x0.92 per tick for 48 h). Its successive ratio is constant, and it
 # reads as calm.
-DECAY_RATIO_STD_MAX = 0.01
 DECAY_MIN_RUN = 24  # 2 h of nonzero values
+DECAY_SHRINK_CV_MAX = 0.05  # how constant the per-step shrink (1 - ratio) must be to read as decay
+DECAY_SHRINK_MIN = 1e-4  # a per-step shrink smaller than this is not decay
+NEAR_CONSTANT_REL_STD = 1e-8  # a training-window std below this (relative to |mean|) is float noise
+DEFAULT_NULL_SPAN_FRACTION = 0.25  # the null may drop at most this share of rows to the shifts
 
 Partition = Sequence[Sequence[int]]
 
@@ -109,9 +112,11 @@ def lag_k_model(x: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray, np.ndarr
     if k < 1 or x.shape[0] <= k + x.shape[1]:
         raise ValueError(f"lag_k_model: k={k} too large for {x.shape[0]} rows")
     xc = x - x.mean(axis=0)
-    m = len(xc) - k
+    # Both divided by T (the biased, block-Toeplitz estimator). Dividing Γ_k by T-k instead breaks
+    # positive-definiteness of Σ_k: review 2026-11-18 found 188/1200 slow-organ windows (8 organs,
+    # A = 0.995 I, 288 rows) with a non-PSD Σ_k, so Φ would read NaN.
     gamma0 = xc.T @ xc / len(xc)
-    gammak = xc[k:].T @ xc[:-k] / m
+    gammak = xc[k:].T @ xc[:-k] / len(xc)
     Ak = gammak @ np.linalg.pinv(gamma0)
     sigmak = gamma0 - Ak @ gamma0 @ Ak.T
     sigmak = (sigmak + sigmak.T) / 2
@@ -119,12 +124,14 @@ def lag_k_model(x: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray, np.ndarr
 
 
 def predictive_information(gamma0: np.ndarray, sigma_k: np.ndarray) -> float:
-    """I(x_{t+k}; x_t) in nats for a Gaussian: ½ log det Γ_0 / det Σ_k."""
-    s0, ld0 = np.linalg.slogdet(gamma0)
-    sk, ldk = np.linalg.slogdet(sigma_k)
-    if s0 <= 0 or sk <= 0:
+    """I(x_{t+k}; x_t) in nats for a Gaussian: ½ log det Γ_0 / det Σ_k.
+
+    NaN unless both matrices are positive definite. A positive slogdet sign alone would pass a
+    matrix with an even number of negative eigenvalues.
+    """
+    if np.linalg.eigvalsh(gamma0).min() <= 0 or np.linalg.eigvalsh(sigma_k).min() <= 0:
         return float("nan")
-    return 0.5 * (ld0 - ldk)
+    return 0.5 * (np.linalg.slogdet(gamma0)[1] - np.linalg.slogdet(sigma_k)[1])
 
 
 def iterated_predictive_information(model: Var1, gamma0: np.ndarray, k: int) -> float:
@@ -147,6 +154,7 @@ class RollingErrors:
     persistence: np.ndarray
     cuts: Mapping[str, np.ndarray]
     block: int  # origins per refit (bootstrap block length)
+    skipped: tuple[tuple[int, str], ...] = ()  # (refit end row, reason), never scored
 
     @property
     def baseline(self) -> np.ndarray:
@@ -168,6 +176,11 @@ def rolling_errors(
     The origin state x[t] is observed at forecast time but is never in the fit. Each organ is
     standardized with the training window's mean and std, so organs count equally in the summed
     error. Origins whose target falls past the end of the series are dropped.
+
+    A refit is skipped, and recorded in ``skipped`` with a reason, when any organ is missing
+    anywhere in its training or scoring rows, or is (near-)constant over its training window.
+    Standardizing a column whose std is float noise (a repeated 0.3 gives ~5e-17) would blow its
+    errors up to ~1e29 and swamp every other organ.
     """
     x = np.asarray(x, dtype=float)
     T, n = x.shape
@@ -176,13 +189,20 @@ def rolling_errors(
         _check_partition(part, n)
     whole, clock, persist = [], [], []
     cuts: dict[str, list[np.ndarray]] = {name: [] for name in partitions}
+    skipped: list[tuple[int, str]] = []
     for e in range(window, T - horizon, step):
         train = x[e - window:e]
+        origins = np.arange(e, min(e + step, T - horizon))
+        if not np.all(np.isfinite(x[e - window:origins[-1] + horizon + 1])):
+            skipped.append((e, "missing"))
+            continue
         mu = train.mean(axis=0)
         sd = train.std(axis=0)
-        sd = np.where(sd > 0, sd, 1.0)
+        flat = np.flatnonzero(sd < NEAR_CONSTANT_REL_STD * np.maximum(1.0, np.abs(mu)))
+        if flat.size:
+            skipped.append((e, f"constant:{int(flat[0])}"))
+            continue
         z_train = (train - mu) / sd
-        origins = np.arange(e, min(e + step, T - horizon))
         z = (x - mu) / sd
         z0 = z[origins]
         targets = np.stack([z[origins + k] for k in range(1, horizon + 1)], axis=1)  # (m, K, n)
@@ -199,13 +219,15 @@ def rolling_errors(
         for name, cm in cut_models.items():
             cuts[name].append(_err(_rollout(cm, z0, horizon)))
     if not whole:
-        raise ValueError(f"rolling_errors: {T} rows is too short for window={window}, horizon={horizon}")
+        why = f"every refit was skipped: {skipped[:3]}" if skipped else "too short"
+        raise ValueError(f"rolling_errors: {T} rows, window={window}, horizon={horizon}: {why}")
     return RollingErrors(
         whole=np.concatenate(whole),
         clock=np.concatenate(clock),
         persistence=np.concatenate(persist),
         cuts={name: np.concatenate(v) for name, v in cuts.items()},
         block=step,
+        skipped=tuple(skipped),
     )
 
 
@@ -282,30 +304,97 @@ def time_shift_null(
     x: np.ndarray,
     *,
     guard: int = DEFAULT_NULL_GUARD,
+    span_fraction: float = DEFAULT_NULL_SPAN_FRACTION,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    """Shift each organ by its own offset and keep the overlap. No wrap-around.
+    """Shift each organ by its own random offset and keep the overlap. No wrap-around.
 
-    Offsets are a random order of 0, guard, 2*guard, ..., so every pair of organs is at least
-    ``guard`` steps apart. That breaks coupling at every scored lag and keeps each organ's own
-    rhythm and memory. Same reasoning as causal geometry's overlap null
+    Every pair of organs ends up at least ``guard`` steps apart, which breaks coupling at every
+    scored lag and keeps each organ's own rhythm and memory. Offsets are drawn at random with a
+    fixed total span of ``span_fraction * T``, so draws differ from each other and every draw keeps
+    the same number of rows. Same reasoning as causal geometry's overlap null
     (``causal_geometry_engine.time_shift_surrogate_rs``): a wrap-around seam distorts the null.
     """
     x = np.asarray(x, dtype=float)
     T, n = x.shape
     rng = rng if rng is not None else np.random.default_rng()
-    offsets = rng.permutation(n) * guard
-    span = int(offsets.max())
-    if T - span < 2:
-        raise ValueError(f"time_shift_null: {T} rows cannot hold {n} organs {guard} apart")
+    span = int(span_fraction * T)
+    if n < 2 or span < (n - 1) * guard or T - span < 2:
+        raise ValueError(
+            f"time_shift_null: {T} rows cannot hold {n} organs {guard} apart within "
+            f"{span_fraction:.0%} of the series"
+        )
+    extra = span - (n - 1) * guard
+    gaps = guard + rng.multinomial(extra, rng.dirichlet(np.ones(n - 1)))
+    offsets = rng.permutation(np.concatenate([[0], np.cumsum(gaps)]))
     length = T - span
     return np.stack([x[o:o + length, i] for i, o in enumerate(offsets)], axis=1)
+
+
+@dataclass(frozen=True)
+class CutCost:
+    """Foresight a cut destroys, against the time-shift null (no alpha line)."""
+
+    cost: np.ndarray  # C(k), observed
+    null_mean: np.ndarray
+    null_sd: np.ndarray
+    p_real: np.ndarray  # share of null draws whose C(k) is below the observed C(k)
+    horizon_cost_steps: int  # H_whole - H_cut, observed
+
+    @property
+    def excess(self) -> np.ndarray:
+        return self.cost - self.null_mean
+
+    @property
+    def horizon_cost_minutes(self) -> int:
+        return self.horizon_cost_steps * BUCKET_MINUTES
+
+
+def cut_cost_vs_null(
+    x: np.ndarray,
+    partition: Partition,
+    *,
+    n_null: int = 20,
+    rng: np.random.Generator | None = None,
+    window: int = DEFAULT_WINDOW,
+    step: int = DEFAULT_STEP,
+    horizon: int = DEFAULT_HORIZON,
+    guard: int = DEFAULT_NULL_GUARD,
+) -> CutCost:
+    """Observed cut cost over the whole series, and the same cost on ``n_null`` shifted copies.
+
+    Each null copy keeps at least 75% of the rows (``DEFAULT_NULL_SPAN_FRACTION``), so the null
+    is scored on most of the same hours as the observed cost.
+    """
+    rng = rng if rng is not None else np.random.default_rng()
+    kw = dict(window=window, step=step, horizon=horizon)
+    errs = rolling_errors(x, partitions={"cut": partition}, **kw)
+    observed = cut_cost_curve(errs, "cut")
+    base = errs.baseline
+    h_whole = horizon_steps(skill_curve(errs.whole, base))
+    h_cut = horizon_steps(skill_curve(errs.cuts["cut"], base))
+    null = np.stack([
+        cut_cost_curve(
+            rolling_errors(time_shift_null(x, guard=guard, rng=rng), partitions={"cut": partition}, **kw),
+            "cut",
+        )
+        for _ in range(n_null)
+    ])
+    return CutCost(
+        cost=observed,
+        null_mean=null.mean(axis=0),
+        null_sd=null.std(axis=0, ddof=1) if n_null > 1 else np.zeros_like(observed),
+        p_real=(null < observed[None, :]).mean(axis=0),
+        horizon_cost_steps=h_whole - h_cut,
+    )
 
 
 def refusal_reason(x: np.ndarray, names: Sequence[str]) -> str | None:
     """Hygiene gate: why this window must not be scored, or None when it is clean.
 
-    Refuses a missing value, a constant input, or a geometric-decay input, and names the input.
+    Takes the **raw node values**, before the time-of-day residual: subtracting a profile destroys
+    the constant ratio a decay loop leaves behind. Refuses a missing value, a constant input, or a
+    geometric-decay input, and names the input.
     """
     x = np.asarray(x, dtype=float)
     if x.ndim != 2 or x.shape[1] != len(names):
@@ -322,6 +411,13 @@ def refusal_reason(x: np.ndarray, names: Sequence[str]) -> str | None:
 
 
 def _has_decay_run(col: np.ndarray) -> bool:
+    """True when some 2 h run shrinks toward 0 by the same fraction every step.
+
+    A decay loop gives x_{t+1} = r x_t, so the per-step shrink 1 - r is constant and positive.
+    A relaxation toward a nonzero level has a shrink that itself fades (not constant). Growth has a
+    negative shrink, and a flat stretch has none, so neither is flagged.
+    """
+    n_ratios = DECAY_MIN_RUN - 1
     nonzero = col != 0
     run_start = None
     for t in range(len(col) + 1):
@@ -331,11 +427,12 @@ def _has_decay_run(col: np.ndarray) -> bool:
             continue
         if run_start is not None and t - run_start >= DECAY_MIN_RUN:
             seg = col[run_start:t]
-            ratios = seg[1:] / seg[:-1]
-            for s in range(0, len(ratios) - DECAY_MIN_RUN + 2):
-                win = ratios[s:s + DECAY_MIN_RUN - 1]
-                if np.std(win) < DECAY_RATIO_STD_MAX and abs(np.mean(win) - 1.0) > DECAY_RATIO_STD_MAX:
-                    return True
+            shrink = 1.0 - seg[1:] / seg[:-1]
+            windows = np.lib.stride_tricks.sliding_window_view(shrink, n_ratios)
+            mean = windows.mean(axis=1)
+            sd = windows.std(axis=1)
+            if np.any((mean > DECAY_SHRINK_MIN) & (sd < DECAY_SHRINK_CV_MAX * mean)):
+                return True
         run_start = None
     return False
 

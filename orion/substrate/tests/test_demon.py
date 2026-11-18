@@ -64,7 +64,7 @@ def test_uncoupled_organs_cost_is_null_and_slightly_negative():
 def test_time_shift_null_breaks_coupling():
     x = simulate(COUPLED, 288 * 14, seed=6)
     shifted = demon.time_shift_null(x, rng=np.random.default_rng(0))
-    assert shifted.shape[1] == 2 and shifted.shape[0] == len(x) - demon.DEFAULT_NULL_GUARD
+    assert shifted.shape == (len(x) - int(0.25 * len(x)), 2)
     errs = demon.rolling_errors(shifted, partitions={"full_cut": demon.full_cut(2)})
     assert np.all(np.abs(demon.cut_cost_curve(errs, "full_cut")) < 0.02)
 
@@ -106,7 +106,7 @@ def test_white_noise_has_no_horizon():
     x = np.random.default_rng(10).normal(size=(288 * 8, 3))
     errs = demon.rolling_errors(x)
     est = demon.bootstrap_horizon(errs, n_boot=200, rng=np.random.default_rng(0))
-    assert est.steps == 0 or est.skill[0] < 0.01
+    assert est.steps == 0
     assert est.minutes == est.steps * 5
     assert est.p10_steps <= est.median_steps <= est.p90_steps
 
@@ -198,3 +198,83 @@ def test_too_short_series_refused():
         demon.rolling_errors(np.zeros((50, 2)))
     with pytest.raises(ValueError):
         demon.time_shift_null(np.zeros((40, 3)), guard=36)
+
+
+def test_null_draws_differ_and_keep_organs_apart():
+    x = np.arange(4000, dtype=float)[:, None] * np.ones((1, 4))
+    rng = np.random.default_rng(19)
+    draws = [demon.time_shift_null(x, rng=rng) for _ in range(5)]
+    starts = {tuple(d[0].astype(int)) for d in draws}
+    assert len(starts) == 5  # not a handful of fixed permutations
+    for d in draws:
+        offs = np.sort(d[0])
+        assert np.all(np.diff(offs) >= demon.DEFAULT_NULL_GUARD)
+        assert offs[-1] - offs[0] == int(0.25 * len(x))
+
+
+def test_cut_cost_vs_null_coupled_is_real():
+    x = simulate(COUPLED, 288 * 14, seed=20)
+    res = demon.cut_cost_vs_null(x, demon.full_cut(2), n_null=8, rng=np.random.default_rng(2))
+    assert res.excess[0] > 0.05
+    assert res.p_real[0] == 1.0
+    assert res.horizon_cost_minutes == res.horizon_cost_steps * 5
+
+
+def test_cut_cost_vs_null_uncoupled_is_null():
+    x = simulate(UNCOUPLED, 288 * 14, seed=21)
+    res = demon.cut_cost_vs_null(x, demon.full_cut(2), n_null=8, rng=np.random.default_rng(3))
+    assert np.all(np.abs(res.excess) < 0.02)
+
+
+def test_lag_k_sigma_is_positive_definite_for_slow_organs():
+    """Review 2026-11-18: dividing Γ_k by T-k gave a non-PSD Σ_k in ~16% of these windows."""
+    bad = 0
+    for seed in range(40):
+        x = simulate(0.995 * np.eye(8), 288, seed=100 + seed)
+        for k in (1, 3, 6, 12):
+            _, sigk, g0 = demon.lag_k_model(x, k)
+            if not np.isfinite(demon.predictive_information(g0, sigk)):
+                bad += 1
+    assert bad == 0
+
+
+def test_predictive_information_rejects_even_negative_eigenvalues():
+    sigma = np.diag([-1.0, -1.0, 1.0])  # det > 0, not positive definite
+    assert np.isnan(demon.predictive_information(np.eye(3), sigma))
+
+
+def test_near_constant_training_window_is_skipped_not_blown_up():
+    rng = np.random.default_rng(22)
+    x = simulate(UNCOUPLED, 288 * 4, seed=22)
+    x[:300, 1] = 0.3 + rng.normal(0, 1e-12, 300)  # float jitter, std far above 0
+    errs = demon.rolling_errors(x)
+    assert errs.skipped and errs.skipped[0][1] == "constant:1"
+    assert errs.whole.max() < 1e3
+    clean = demon.rolling_errors(simulate(UNCOUPLED, 288 * 4, seed=22))
+    assert not clean.skipped
+
+
+def test_missing_rows_skip_the_refits_that_touch_them():
+    x = simulate(UNCOUPLED, 288 * 4, seed=23)
+    x[500, 0] = np.nan
+    errs = demon.rolling_errors(x)
+    assert errs.skipped and all(r == "missing" for _, r in errs.skipped)
+    assert np.all(np.isfinite(errs.whole))
+
+
+@pytest.mark.parametrize("r", [0.92, 0.995])
+def test_decay_caught_including_slow_factors(r):
+    rng = np.random.default_rng(24)
+    col = np.concatenate([rng.normal(size=100), 5.0 * r ** np.arange(200)])
+    assert demon.refusal_reason(col[:, None], ["pe"]) == "decaying:pe"
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [1.0 + 4.0 * 0.92 ** np.arange(200), 1.05 ** np.arange(200)],
+    ids=["relaxation_to_level", "growth"],
+)
+def test_relaxation_and_growth_are_not_decay(tail):
+    rng = np.random.default_rng(25)
+    col = np.concatenate([rng.normal(size=100), tail])
+    assert demon.refusal_reason(col[:, None], ["thermal"]) is None

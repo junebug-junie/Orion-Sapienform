@@ -49,9 +49,11 @@ def test_the_carry_horizon_and_the_act_horizon_end_at_the_same_instant():
 
 
 def test_no_reader_keeps_its_own_72h_literal():
-    pattern = re.compile(r"72\s*\*\s*3600|hours\s*=\s*72\b|259200")
+    pattern = re.compile(r"72(?:\.0+)?\s*\*\s*(?:3600|60\s*\*\s*60)|hours\s*=\s*72(?:\.0+)?\b"
+                         r"|days\s*=\s*3(?:\.0+)?\b|259200|4320\s*\*\s*60")
     for rel in ("orion/grammar/promise_acts.py", "orion/prime/state.py",
-                "orion/prime/intention_sources/turn_promise.py"):
+                "orion/prime/intention_sources/turn_promise.py", "orion/harness/evals/promise_ledger_replay_eval.py",
+                "scripts/report_promise_ledger.py"):
         text = (REPO / rel).read_text()
         assert not pattern.search(text), f"{rel} carries its own 72 h; import PROMISE_HORIZON_SEC instead"
 
@@ -96,3 +98,12 @@ def test_one_promise_closing_both_ways_yields_at_most_one_settled_bet(monkeypatc
     monkeypatch.setattr(pa, "SHADOW_ACT_SIGNALS", frozenset())
     bet = sm.grammar_act(_act_close_row(act_id))
     assert bet is not None and bet.bet_id == f"grammar_acts:{act_id}"
+
+
+def test_the_literal_guard_catches_the_usual_spellings():
+    pattern = re.compile(r"72(?:\.0+)?\s*\*\s*(?:3600|60\s*\*\s*60)|hours\s*=\s*72(?:\.0+)?\b"
+                         r"|days\s*=\s*3(?:\.0+)?\b|259200|4320\s*\*\s*60")
+    for spelled in ("72 * 3600.0", "72.0 * 3600", "72 * 60 * 60", "timedelta(hours=72)", "timedelta(hours=72.0)",
+                    "timedelta(days=3)", "259200.0", "4320 * 60"):
+        assert pattern.search(spelled), spelled
+    assert not pattern.search("timedelta(hours=24)") and not pattern.search("days=30")

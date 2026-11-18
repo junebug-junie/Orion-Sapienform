@@ -68,6 +68,10 @@ def _concern(cid, *, text="watching the cabinet heat", event_ref=None):
     ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", {"mode": "orion"}, None),
     ("memory-scoreboard-eval", {"mode": "orion"}, None),
     ("memory-scoreboard-eval", {"mode": "orion", "surface_context": {}}, None),
+    # The Hub skill-runner's deterministic browser send: surface_context, no ``mode``. Juniper starts it: hers.
+    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", {"surface_context": BROWSER}, "chat_juniper"),
+    # The operator smoke (scripts/trace_hub_skill_runner_e2e.py) marks itself operator_review: not Juniper.
+    ("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", {"surface_context": {"surface": "operator_review"}}, None),
     ("orion_curiosity", {}, "curiosity"),
     ("consult-9f138a849520", {}, "consult"),
     ("orion_day_letter", {}, "letter"),
@@ -366,3 +370,26 @@ def test_a_carry_turn_settles_its_concern_but_its_own_promises_open_no_concern()
     assert turn.opened_concern_id is None and "loop guard" in turn.thread_refused
     assert [c.concern_id for c in state.concerns] == ["d8db9d7b1bba4cf7"] and state.concerns[0].graded == "settled"
     assert turns.turn_concerns_opened_at == [] and turns.no_bet_concern_ids == []
+
+
+def test_a_carry_turn_settles_only_the_concern_its_prompt_starts_with():
+    """A carry prompt starts with the concern it carries; another held concern's ref quoted further down (in the
+    originating exchange) is a quote and settles nothing (#3644 review)."""
+    carried, other = "d8db9d7b1bba4cf7", "438e69ed6bb3d798"
+    state = PrimeStateV1(concerns=[_concern(carried, event_ref="turn:a1"), _concern(other, event_ref="turn:b2")])
+    corr = "intention-carry-turn-2"
+    prompt = (f"prime_concern:{carried}\n\nI am carrying out something I told Juniper.\n"
+              f"Me: my slow loop has been holding a promise [prime_concern:{other}]")
+    state, _, [turn] = _fold(state, hb.PrimeTurnsStateV1(), _ingress(corr, "orion_intention", prompt),
+                             _finalize(corr, "Done: I read the three proposals."))
+    assert turn.settled_concern_ids == [carried]
+    assert {c.concern_id: c.graded for c in state.concerns} == {carried: "settled", other: None}
+
+
+def test_a_carry_prompt_without_a_leading_ref_settles_nothing():
+    cid = "d8db9d7b1bba4cf7"
+    state = PrimeStateV1(concerns=[_concern(cid, event_ref="turn:a1")])
+    state, _, [turn] = _fold(state, hb.PrimeTurnsStateV1(),
+                             _ingress("carry-3", "orion_intention", f"Carrying on. [prime_concern:{cid}]"),
+                             _finalize("carry-3", "Done."))
+    assert turn.settled_concern_ids == [] and state.concerns[0].graded is None

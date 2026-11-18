@@ -104,6 +104,9 @@ NO_PROMPT_SETTLE_WHO = frozenset({"letter"})
 # A turn concern is a promise concern (orion/prime/state.py ``concern_ttl``: 72 h unkept, not 24 h).
 TURN_EVENT_PREFIX = PROMISE_EVENT_PREFIX
 CONCERN_REF = re.compile(r"prime_concern:([0-9a-f]{16})\b")
+# A carry turn's prompt STARTS with the concern it carries (orion/schemas/intention.py); only that id settles. Other
+# refs further down (the quoted exchange, Orion's own earlier words) are quotes, not answers.
+LEADING_CONCERN_REF = re.compile(r"\A\s*\[?prime_concern:([0-9a-f]{16})\b")
 COUNTED_VERDICTS = frozenset({"completed"})
 
 MAX_PENDING = 30
@@ -217,6 +220,8 @@ def classify_who(session_id: Optional[str], raw: dict[str, Any]) -> Optional[Tur
     # report use (orion/regulation/juniper_turns.py ``is_browser_surface_turn``). ``mode`` alone is not enough:
     # an eval script or a coding session posting to /api/chat carries ``mode`` but no ``surface_context``
     # (live 11-17: session memory-scoreboard-eval was handed back as chat_juniper with a promise ref).
+    # ``mode`` is not required either: the Hub skill-runner's deterministic browser send carries surface_context and
+    # no ``mode``, and Juniper starts those sends, so it is her turn (intended).
     if sid and not sid.startswith(SYSTEM_SESSION_PREFIX) and is_browser_surface_turn(raw):
         return "chat_juniper"
     return None
@@ -256,8 +261,13 @@ def signal_from_hop(hop: dict[str, Any]) -> Optional[TurnSignalV1]:
         if who is None:
             return None
         prompt = str(raw.get("user_message") or "")
+        if who == "intention":
+            lead = LEADING_CONCERN_REF.match(prompt)
+            cited = [lead.group(1)] if lead else []
+        else:
+            cited = _concern_ids(prompt)
         return TurnSignalV1(correlation_id=corr[:200], stage="ingress", at=at, who=who,
-                            prompt_excerpt=prompt[:PROMPT_EXCERPT_CAP], prompt_concern_ids=_concern_ids(prompt))
+                            prompt_excerpt=prompt[:PROMPT_EXCERPT_CAP], prompt_concern_ids=cited)
     indices, quotes, kept = _counted_promises(raw.get("reflection"))
     verdict = raw.get("compliance_verdict")
     return TurnSignalV1(correlation_id=corr[:200], stage="finalize", at=at,

@@ -28,6 +28,10 @@ on:
       - "services/orion-thought/tests/test_open_promises_cue.py"
       - "scripts/report_promise_ledger.py"
       - "tests/test_report_promise_ledger.py"
+      - "tests/test_juniper_browser_surface_rule.py"
+      - "orion/regulation/juniper_turns.py"
+      - "orion/schemas/promise_horizon.py"
+      - "scripts/trace_hub_skill_runner_e2e.py"
       - ".github/workflows/promise-ledger-tests.yml"
   workflow_dispatch:
 
@@ -52,7 +56,7 @@ jobs:
       - name: Promise gate, judge contract and replay-eval helpers
         run: python -m pytest -q -p no:cacheprovider orion/harness/tests/test_promise_gate.py orion/harness/evals/test_promise_ledger_replay_eval.py
       - name: Promise acts (pure), self-monitor shadow exclusion, report
-        run: python -m pytest -q -p no:cacheprovider orion/grammar/tests/test_promise_acts.py orion/self_monitor/tests/test_self_monitor_promise_shadow.py tests/test_report_promise_ledger.py
+        run: python -m pytest -q -p no:cacheprovider orion/grammar/tests/test_promise_acts.py orion/self_monitor/tests/test_self_monitor_promise_shadow.py tests/test_report_promise_ledger.py tests/test_juniper_browser_surface_rule.py
 
   cue:
     runs-on: ubuntu-latest

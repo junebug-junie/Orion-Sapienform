@@ -70,6 +70,7 @@ from orion.grammar.promise_acts import (  # noqa: E402
 )
 from orion.harness.promise_gate import normalize_for_quote_match  # noqa: E402
 from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE  # noqa: E402
+from orion.schemas.promise_horizon import PROMISE_HORIZON_SEC  # noqa: E402
 from orion.schemas.harness_finalize import (  # noqa: E402
     PROMISE_DONE_WHEN_MIN_CHARS,
     PROMISE_FORCE_COMMITS,
@@ -128,6 +129,11 @@ SELECT act_id, test_before, correlation_id, opened_at, horizon_at, closed_at, ou
 JUNIPER_STARTS_SQL = f"""
 SELECT created_at FROM chat_history_log WHERE {JUNIPER_TURN_PREDICATE} AND created_at >= %(since)s ORDER BY created_at
 """
+# Duplicate candidates are looked for inside one promise horizon: a repeat while the earlier act could still be
+# open (#3595: the one 72 h promise clock).
+PROMISE_WINDOW = timedelta(seconds=PROMISE_HORIZON_SEC)
+
+
 def qualify(predicate: str, alias: str, columns: Sequence[str]) -> str:
     """``predicate`` with each bare column name prefixed by ``alias.`` (whole words only, never inside a
     quoted string). Fails loudly if a column is missing, so a changed predicate cannot be mis-qualified."""
@@ -380,7 +386,7 @@ def _flat(text: Any) -> str:
     return normalize_for_quote_match(str(text or "")).casefold()
 
 
-def duplicate_candidates(turns: Sequence[Mapping[str, Any]], *, window: timedelta = timedelta(hours=72),
+def duplicate_candidates(turns: Sequence[Mapping[str, Any]], *, window: timedelta = PROMISE_WINDOW,
                          span_chars: int = DUPLICATE_SPAN_CHARS) -> list[dict[str, Any]]:
     """Pairs of firm promises from different turns of one session, made within ``window`` of each other
     (both could be open at once), that may be one promise said twice in other words: the same ``act``,
@@ -413,7 +419,7 @@ def duplicate_candidates(turns: Sequence[Mapping[str, Any]], *, window: timedelt
     return pairs
 
 
-def duplicate_window_pairs(turns: Sequence[Mapping[str, Any]], *, window: timedelta = timedelta(hours=72)) -> int:
+def duplicate_window_pairs(turns: Sequence[Mapping[str, Any]], *, window: timedelta = PROMISE_WINDOW) -> int:
     """How many pairs of firm promises ``duplicate_candidates`` compares at all: different turns of one
     session, made within ``window`` of each other, before any similarity test. This, not the candidate
     count, sizes the double-open risk (Orion's PR #3598 third-round question 5)."""
@@ -787,6 +793,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"Prime by exact key (turn_concern_id) on {pr['turns']} item-bearing turns with a non-offer promise "
           f"[{pr['read']}]: {pr['status'] or '-'}; intention.carry replies on those keys {pr['carry_replies']}"
           + _ids([f"{r['corr']} {r['lane']} who={r['prime_who']} {r['prime']}" for r in pr["rows"]]))
+    print("  (who= is Prime's CURRENT classify_who rule applied to every row: a turn handed back as chat_juniper "
+          "before #3602 deployed reads not_handed_back here if it had no browser surface)")
     of = out["offers"]
     print(f"offers accepted: {of['accepted']}; accepted_unmatched {of['accepted_unmatched']}"
           f"{_ids(of['accepted_unmatched_turns'])}; previous row not a Juniper turn {of['accepted_prev_not_juniper']}; "

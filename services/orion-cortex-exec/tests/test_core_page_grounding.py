@@ -78,7 +78,8 @@ async def test_assemble_hydrates_only_the_page_lane_when_enabled(monkeypatch, en
         exec_settings=cfg)
     assert capsule is not None
     if enabled:
-        assert calls == [("orion_core_page_anchor", "orion_core_page_juniper", "orion_core_page_origin")]
+        assert calls == [("orion_core_page_anchor", "orion_core_page_juniper", "orion_core_page_origin",
+                          "orion_core_page_lately")]
         assert [p.version for p in capsule.core_pages] == [2]
         assert capsule.context_provenance.get("orion_core_page_juniper") == "memory_recall"
     else:
@@ -126,10 +127,11 @@ def test_hydrate_skips_lanes_already_in_ctx(monkeypatch):
     monkeypatch.setattr(reader, "hydrate_felt_state_ctx", _hydrator(calls, PAYLOAD))
     ctx = {"orion_core_page_anchor": ANCHOR}
     gc.hydrate_core_pages(ctx)
-    assert calls == [("orion_core_page_juniper", "orion_core_page_origin")]
-    # page:juniper is in ctx now; only the lane that found no row is asked again (the reader caches it).
+    assert calls == [("orion_core_page_juniper", "orion_core_page_origin", "orion_core_page_lately")]
+    # page:juniper is in ctx now; only the lanes that found no row are asked again (the reader caches them).
     gc.hydrate_core_pages(ctx)
-    assert calls == [("orion_core_page_juniper", "orion_core_page_origin"), ("orion_core_page_origin",)]
+    assert calls == [("orion_core_page_juniper", "orion_core_page_origin", "orion_core_page_lately"),
+                     ("orion_core_page_origin", "orion_core_page_lately")]
 
 
 ORIGIN = {
@@ -152,4 +154,25 @@ def test_capsule_carries_page_origin_after_the_other_pages():
     assert capsule.context_provenance["orion_core_page_origin"] == "memory_recall"
     only = build_grounding_capsule({**BASE, "orion_core_page_origin": ORIGIN}, pcr_ran=False, core_pages_enabled=True)
     assert [p.concept_id for p in only.core_pages] == ["page:origin"]
+    assert build_grounding_capsule(ctx, pcr_ran=False, core_pages_enabled=False).core_pages == []
+
+
+LATELY = {
+    "concept_id": "page:lately",
+    "content": "The first snow came on Monday [chat_history_log:c1]. I owe Juniper an answer [episode_memory:m1].",
+    "version": 3,
+    "evidence_refs": ["chat_history_log:c1", "episode_memory:m1"],
+    "created_at": "2026-11-19T08:20:00+00:00",
+}
+
+
+def test_capsule_carries_page_lately_last_with_cites_removed():
+    ctx = {**BASE, "orion_core_page_anchor": ANCHOR, "orion_core_page_juniper": PAYLOAD,
+           "orion_core_page_origin": ORIGIN, "orion_core_page_lately": LATELY}
+    capsule = build_grounding_capsule(ctx, pcr_ran=False, core_pages_enabled=True)
+    assert [p.concept_id for p in capsule.core_pages] == ["page:anchor", "page:juniper", "page:origin", "page:lately"]
+    lately = capsule.core_pages[3]
+    assert lately.text == "The first snow came on Monday. I owe Juniper an answer."
+    assert lately.version == 3 and lately.evidence_count == 2 and lately.written_at == "2026-11-19"
+    assert capsule.context_provenance["orion_core_page_lately"] == "memory_recall"
     assert build_grounding_capsule(ctx, pcr_ran=False, core_pages_enabled=False).core_pages == []

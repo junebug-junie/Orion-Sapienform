@@ -907,7 +907,7 @@ Not a durable run: it is one LLM call, so it is a tick (`app/core_page_fold.py`)
   (cortex-exec picks it up within 5 minutes; no restart).
 - **Manual:** `curl -X POST 'http://localhost:8124/core-pages/juniper/fold?dry_run=true'` (or `.../origin/fold`)
   folds now at any hour and returns the page and its check without publishing; `dry_run=false` publishes a
-  passing page. Offline from the host: `scripts/core_page_dry_run.py --page juniper|origin`.
+  passing page. Offline from the host: `scripts/core_page_dry_run.py --page juniper|origin|lately`.
 - **Health:** `/health` -> `core_page_fold` (page:juniper's last decision, version, check; never the page
   text) and `core_page_folds` (the same, per page slug).
 - **Off / rollback:** `ORION_CORE_PAGES_ENABLED=false` (here: no fold; cortex-exec: today's RELATIONSHIP).
@@ -924,6 +924,18 @@ Not a durable run: it is one LLM call, so it is a tick (`app/core_page_fold.py`)
   (`memory_loss_not_stated` otherwise). Rendered in WHO YOU ARE right after the self-definition
   (felt-state lane `orion_core_page_origin`). Page logic: `orion/memory/pages/origin.py`; shared check
   and stored row: `orion/memory/pages/fold.py`. The mesh-edge check guards its sentences like page:juniper.
+- **`page:lately` "what has mattered lately" (issue #3463):** the third page in the same tick, after
+  page:origin. It reads the last 14 days of `episode_memory` plus every still-open `follow_up` row,
+  through the lived-memory serving SQL (active only; never superseded, rejected, expired, pointed at by an
+  active correction, or with `invalid_at` set), and Hub chat turns where Juniper spoke that the episode
+  distiller has not distilled yet (an episode in `memory_episode_shadow` with no `episode_distill_run`
+  row). No `matters` grade yet (#3590): when there are too many rows, follow-ups, `about_juniper` rows,
+  high-stakes rows and corrections are kept first, then the newest of the rest. Its check adds one rule:
+  when some source is from the last 7 days, the page must cite one of them (`not_recent` otherwise). The
+  change signal also moves when a row ages out of the 14-day window, so a quiet day with nothing new and
+  nothing aging out is skipped (`no_new_sources`). Rendered at the top of DURABLE MEMORY, above the
+  recall digest (felt-state lane `orion_core_page_lately`, shown while under 21 days old). Page logic:
+  `orion/memory/pages/lately.py`.
 - **Deploy order:** orion-sql-writer first (it validates the new `core_page_fold` producer value), then
   this service. orion-cortex-exec and the harness renderer can go in any order (the capsule field is additive
   on a model that ignores unknown fields).

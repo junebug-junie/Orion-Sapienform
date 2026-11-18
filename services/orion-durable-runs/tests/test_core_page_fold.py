@@ -462,8 +462,9 @@ def test_settings_pick_pages_and_refuse_unknown_slugs():
     from app.settings import Settings
 
     s = Settings(POSTGRES_URI="postgresql://x")
-    assert s.core_page_fold_pages == "juniper,origin"
-    assert [spec.concept_id for spec in selected_specs(s.core_page_fold_pages)] == ["page:juniper", "page:origin"]
+    assert s.core_page_fold_pages == "juniper,origin,lately"
+    assert [spec.concept_id for spec in selected_specs(s.core_page_fold_pages)] == [
+        "page:juniper", "page:origin", "page:lately"]
     assert Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_PAGES=" Origin ").core_page_fold_pages == "origin"
     with pytest.raises(ValueError):
         Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_PAGES="juniper,orgin")

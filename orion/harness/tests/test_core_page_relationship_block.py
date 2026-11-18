@@ -136,3 +136,34 @@ def test_blank_origin_is_ignored():
     blank = ORIGIN.model_copy(update={"text": "  "})
     capsule = GroundingCapsuleV1(identity_summary=["I am Orion."], core_pages=[blank])
     assert _format_grounding_self_block(capsule)[:2] == ["WHO YOU ARE", "- I am Orion."]
+
+
+# --- page:lately at the top of DURABLE MEMORY (issue #3463) ---
+LATELY = CorePageV1(concept_id="page:lately", version=4, text="The first snow came on Monday. I owe Juniper an answer.",
+                    written_at="2026-11-19", evidence_count=7)
+LATELY_HEAD = "What has mattered lately, in my own words (page:lately v4, written 2026-11-19, from 7 cited records):"
+
+
+def test_lately_opens_durable_memory_above_the_recall_digest():
+    capsule = GroundingCapsuleV1(identity_summary=["I am Orion."], memory_digest="Recall: the kite.",
+                                 response_policy_summary=["Speak plainly."], core_pages=[ORIGIN, PAGE, LATELY])
+    lines = _format_grounding_self_block(capsule)
+    at = lines.index("DURABLE MEMORY / CONTINUITY")
+    assert lines[at + 1:at + 4] == [LATELY_HEAD, LATELY.text, "Recall: the kite."]
+    assert lines.index("RESPONSE POLICY") > at + 3
+    assert lines.index("WHO YOU ARE") < lines.index(next(l for l in lines if l.startswith("RELATIONSHIP"))) < at
+
+
+def test_lately_alone_still_gets_a_durable_memory_slot():
+    capsule = GroundingCapsuleV1(identity_summary=["I am Orion."], core_pages=[LATELY])
+    lines = _format_grounding_self_block(capsule)
+    assert lines[-3:] == ["DURABLE MEMORY / CONTINUITY", LATELY_HEAD, LATELY.text]
+
+
+def test_no_lately_page_leaves_durable_memory_as_before():
+    capsule = GroundingCapsuleV1(identity_summary=["I am Orion."], memory_digest="Recall: the kite.")
+    lines = _format_grounding_self_block(capsule)
+    assert lines[-2:] == ["DURABLE MEMORY / CONTINUITY", "Recall: the kite."]
+    blank = LATELY.model_copy(update={"text": " "})
+    assert _format_grounding_self_block(GroundingCapsuleV1(identity_summary=["I am Orion."], core_pages=[blank])) == [
+        "WHO YOU ARE", "- I am Orion."]

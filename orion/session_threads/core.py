@@ -18,10 +18,11 @@ and never handed to a session as questions to answer.
 
 from __future__ import annotations
 
+import bisect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from zoneinfo import ZoneInfo
 
 SPEAKER_SESSION = "session"
@@ -382,34 +383,48 @@ def is_no_questions(text: str) -> bool:
     return len(lines) == 1 and bool(_NO_QUESTIONS_RE.match(lines[0]))
 
 
-# A data fence Orion copied into its reply, opening line to closing line (any nonce). Only a CLOSED
-# fence is cut: an opening line with no closing line after it is left as text.
-_ECHOED_DATA_RE = re.compile(r"^[^\n]*<<<SESSION_DATA[^\n]*\n(?:(?!<<<SESSION_DATA).)*?^[^\n]*<<<END_SESSION_DATA[^\n]*>>>[^\n]*$",
-                             re.MULTILINE | re.DOTALL)
+# A data fence Orion copied into its reply: from its opening marker to its closing marker (any nonce).
+# Only a CLOSED fence is cut, and only the markers and what lies between them: Orion's words before
+# the opening marker or after the closing one on the same line stay.
+_ECHOED_DATA_RE = re.compile(r"<<<SESSION_DATA(?:(?!<<<SESSION_DATA).)*?<<<END_SESSION_DATA[^\n>]*>>>", re.DOTALL)
 ECHOED_DATA_NOTE = "[Hub removed session data Orion quoted back here.]"
-_CODE_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_CODE_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
-def strip_echoed_data(text: str) -> str:
+def _names_round_thread(text: str, round_ids: Set[str]) -> bool:
+    return any(m.group(1).lower() in round_ids for m in _HEADER_RE.finditer(text))
+
+
+def strip_echoed_data(text: str, round_ids: Sequence[str] = ()) -> str:
     """``text`` with every closed session-data fence Orion quoted back replaced by one Hub line: that
-    text is the session's, not Orion's, and a heading inside it must not split Orion's reply."""
-    return _ECHOED_DATA_RE.sub(ECHOED_DATA_NOTE, str(text or ""))
+    text is the session's, not Orion's. A fence holding a heading for a thread of this round
+    (``round_ids``) is NOT cut: Hub cannot tell a quoted heading from a real one, so it stays in the
+    reply and the duplicate/order rules of the parser decide (the safe outcome: unparsed)."""
+    ids = {str(t).lower() for t in round_ids}
+    return _ECHOED_DATA_RE.sub(lambda m: m.group(0) if _names_round_thread(m.group(0), ids) else ECHOED_DATA_NOTE,
+                               str(text or ""))
 
 
 def _code_spans(text: str) -> List[Tuple[int, int]]:
-    """(start, end) of each CLOSED markdown code block (``` or ~~~) in ``text``. A heading line inside
-    one is quoted text, never a section heading."""
+    """(start, end) of each CLOSED markdown code block in ``text``, in order. A block opens on a line of
+    3+ backticks or tildes and closes on a line of only the same character, at least as many."""
     spans: List[Tuple[int, int]] = []
-    pos, start, marker = 0, None, ""
-    for line in text.splitlines(keepends=True):
+    pos, start, fence = 0, None, ""
+    for line in text.split("\n"):
         m = _CODE_FENCE_RE.match(line)
         if m and start is None:
-            start, marker = pos, m.group(1)
-        elif m and m.group(1) == marker:
+            start, fence = pos, m.group(1)
+        elif (m and start is not None and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence)
+              and not m.group(2).strip()):
             spans.append((start, pos + len(line)))
             start = None
-        pos += len(line)
+        pos += len(line) + 1
     return spans
+
+
+def _in_spans(pos: int, starts: List[int], spans: List[Tuple[int, int]]) -> bool:
+    i = bisect.bisect_right(starts, pos) - 1
+    return i >= 0 and spans[i][0] <= pos < spans[i][1]
 
 
 def parse_roundup_reply(text: str, thread_ids: Sequence[str],
@@ -430,22 +445,28 @@ def parse_roundup_reply(text: str, thread_ids: Sequence[str],
     under the wrong heading (Orion quoting a heading a session wrote), so EVERY thread of the round
     then gets the whole reply, marked ``unparsed``.
 
-    Session text Orion quotes back never splits the reply: a closed session-data fence is cut out first
-    (``strip_echoed_data``), and a heading line inside a closed markdown code block is not a heading."""
-    whole = strip_echoed_data(str(text or "")).strip()
+    Session text Orion quotes back does not cut a section short: a closed session-data fence is cut
+    out first (``strip_echoed_data``), and a heading inside a closed markdown code block is not a
+    heading. Both apply only to headings for threads NOT in this round: a round thread's heading
+    always counts, wherever it stands. A section that holds only Hub's cut note is empty."""
+    wanted = {tid.lower(): tid for tid in thread_ids}
+    whole = strip_echoed_data(str(text or ""), list(wanted)).strip()
     if not whole.replace(ECHOED_DATA_NOTE, "").strip():
         raise ValueError("empty_reply")
-    wanted = {tid.lower(): tid for tid in thread_ids}
     found: Dict[str, str] = {}
     spans = _code_spans(whole)
-    matches = [m for m in _HEADER_RE.finditer(whole) if not any(a <= m.start() < b for a, b in spans)]
+    starts = [a for a, _ in spans]
+    # A code block hides only a heading for a thread NOT in this round. A round thread's heading always
+    # counts, so a quoted copy of it trips the duplicate/order check instead of hiding the real one.
+    matches = [m for m in _HEADER_RE.finditer(whole)
+               if m.group(1).lower() in wanted or not _in_spans(m.start(), starts, spans)]
     seen: List[str] = []
     for i, m in enumerate(matches):
         tid = wanted.get(m.group(1).lower())
         body = whole[m.end(): matches[i + 1].start() if i + 1 < len(matches) else len(whole)].strip()
         if tid:
             seen.append(tid)
-            if body and tid not in found:
+            if body.replace(ECHOED_DATA_NOTE, "").strip() and tid not in found:
                 found[tid] = body
     order = [tid for tid in thread_ids if tid in seen]
     if len(seen) != len(set(seen)) or seen != order:

@@ -1118,14 +1118,21 @@ measured: `make eval-memory-scoreboard` (weekly; `ARGS=--phases retrieval` for t
   usual live intent) over the real bus. Hit = a target id is in either phase's DURABLE MEMORY
   bundle or cited by the current `page:juniper` core page (the table also shows the recall-only
   rate). Bar: 80% of stored items. Degraded recalls are read from each call's own
-  `recall_telemetry` row (deadline hit, lived memory not run or timed out, missing trace) and
-  reported apart. Superseded rows served for a knowledge-update item are counted.
+  `recall_telemetry` row (`lived_status` degraded / timeout / error / off, the `lived_trace`
+  degraded reasons and `rerank_partial`, deadline hit, missing trace; older rows without
+  `lived_status` fall back to timing checks) and reported apart. `lived_status = skipped_short`
+  (too few content words for the lived search) is the chat path's own rule, so it is scored and
+  counted in its own column. Superseded rows served for a knowledge-update item are counted.
+  Implicit items (real past messages) also get their own row across categories.
 - **Answer (end to end).** Each item is a real Hub chat turn (`POST /api/chat`, mode `orion`,
   `no_write: true`, session `memory-scoreboard-eval`), the same path as the self-sense eval, so
   nothing lands in chat history. A local judge (`orion/evals/leased_llm.py` operator hold, local
   lanes only) labels the reply: correct / don't know / invented / false "no memory" / missed.
   Bars: 70% or more correct, 0 invented, 0 false "no memory" on stored items. The turn's own
-  `recall_telemetry` row says whether the target was in its prompt.
+  `recall_telemetry` rows say whether the target was in its prompt and whether the search ran in
+  full. A "no memory" answer on a stored item is a false denial even when the search was skipped
+  or degraded; it is also reported under that cause (`lived:skipped_short`, `lived:degraded`,
+  `lived:rerank_timeout`, `recall:no_trace`, ... or `search_full`).
 - **Output.** `~/.orion/evals/memory_scoreboard_runs/<date>.json` (everything, includes replies)
   and `<date>.md` (per-category table, counts and qids only), plus one line per run in
   `history.jsonl`. All mode 600.

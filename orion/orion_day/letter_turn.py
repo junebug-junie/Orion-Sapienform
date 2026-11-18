@@ -80,6 +80,12 @@ CITE_ROUNDUP = ("- The section \"What each organ did\" is your organ roundup: fo
                 "organs and cited, and who cited it. When a sentence uses one of its items, copy that item's "
                 "[experience:<id>] (or [act:<id>]) into the same sentence, exactly as shown.")
 
+# Day-dream Patch 3: the record carries last night's day dream ("## Last night I slept on the day").
+DREAM_DAY_MARK = "## Last night I slept on the day"
+CITE_DREAM_DAY = ("- The section \"Last night I slept on the day\" is what your night's day dream kept of this day, or "
+                  "the one line saying why there was none. When a sentence uses it, cite [dream_day:<date>] exactly as "
+                  "shown; if it says there was no day dream, say so plainly rather than inventing one.")
+
 ARC_REMINDER = ('Reminder: when a sentence of your note states something from "My day as my own chronology '
                 'recorded it", put the [arc:<id>] shown next to that fact in the same sentence ([day:<date>] '
                 "alone only for a whole-day count).")
@@ -110,7 +116,7 @@ def build_letter_prompt(brief: OrionDayRunBriefV1) -> str:
            "reveries across the day's themes, and a trimmed tail of what you read, the news, changes to your code, "
            "your dreams and the street outside. It is your main source for this letter."),
         "\n".join([WRITING_INSTRUCTIONS, CITE_ARCS if cites else NO_ARCS, *([CITE_ROUNDUP] if roundup else []),
-                   TOOLS_LINE]),
+                   *([CITE_DREAM_DAY] if DREAM_DAY_MARK in digest else []), TOOLS_LINE]),
         THREADS_INSTRUCTIONS,
     ]
     missed = missed_lines(brief)

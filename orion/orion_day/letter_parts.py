@@ -272,6 +272,7 @@ _BODY_FIELDS = (
     "journal_body", "finding_text", "answer_text", "learned", "narrative", "body", "correction", "claim",
     "interpretation", "description", "executive_summary", "lived_answer_text", "self_definition_text",
     "error",
+    "day_text",  # dream_day (DreamDayNightV1): last night's day paragraph
     "line",  # walkway_day (WalkwayDayV1): last, so a curiosity run's own `line` never wins
 )
 

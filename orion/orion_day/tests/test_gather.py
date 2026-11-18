@@ -76,6 +76,8 @@ def test_every_window_query_gets_the_half_open_denver_day():
         gather.CURIOSITY_OUTCOMES_SQL, gather.WORLD_PULSE_DIGEST_SQL, gather.JOURNAL_BY_ID_OR_REF_SQL,
         gather.TEMPORAL_DAY_SQL,  # keyed by the local date, like the world-pulse digest
         gather.WALKWAY_DAY_SQL,  # keyed by (stream, the day's local-midnight start): its own test below
+        # keyed by the letter's local date / its run-id prefix (day-dream Patch 3): test_dream_day_letter.py
+        gather.DREAM_DAY_ROW_SQL, gather.DREAM_DAY_FAILED_SQL,
         # keyed by the day's readings: their seed ids, and moves from the first read to window end
         wp_findings.READ_LINKS_SQL, wp_findings.RUN_PRIOR_MOVES_SQL, RESONANCE_FINDINGS_SQL)]
     assert windowed and all(args[0] == window.window_start and args[1] == window.window_end for args in windowed)

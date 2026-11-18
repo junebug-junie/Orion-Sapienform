@@ -588,3 +588,52 @@ def test_email_roundup_never_shows_a_dream_hypothesis_id():
     m = _material().model_copy(update={"organ_roundup": OrganRoundupV1(day=LETTER_DATE, lines=r.lines, refs=r.refs)})
     letter = _letter(material=m)
     assert "dh-secret01" not in email.render_text(letter, []) and "dh-secret01" not in email.render_html(letter, [])
+
+
+# --- day-dream Patch 3: "Last night I slept on the day" ------------------------------------------------------
+
+
+def _dream_letter(**conn_kw):
+    m = asyncio.run(gather_orion_day(fx.FakeConn(github=GITHUB, **conn_kw), LETTER_DATE, now=AFTER_SLOT))
+    return _letter(material=m)
+
+
+def test_email_shows_a_produced_night_with_its_paragraph_and_memory_ids():
+    letter = _dream_letter(dream_day={"run_id": "dream-day-2026-09-29", "produced": True, "note": "2 memories written",
+                                      "day_text": "A quiet day <of> reading.", "day_refs": [],
+                                      "memory_ids": ["m-1", "m-2"]})
+    text = email.render_text(letter, [])
+    assert f"## {email.DREAM_DAY_EMAIL_HEADING}" in text
+    assert "A quiet day <of> reading." in text and "Memories I wrote: m-1, m-2" in text
+    assert text.index("## Threads I am carrying") < text.index(email.DREAM_DAY_EMAIL_HEADING)
+    html = email.render_html(letter, [])
+    assert 'data-section="dream-day"' in html and "m-2" in html
+    assert "&lt;of&gt;" in html and "<of>" not in html
+    assert "no day dream" not in html
+
+
+def test_email_shows_one_line_for_a_bad_night():
+    cases = {
+        "the night wrote no memory (no lasting trace)": dict(dream_day={
+            "run_id": "dream-day-2026-09-29", "produced": False, "note": "no lasting trace", "day_text": None,
+            "day_refs": [], "memory_ids": []}),
+        "the night's run failed (dream_day_no_answer)": dict(dream_day_failed={
+            "run_id": "dream-day-2026-09-29", "generated_at": AFTER_SLOT, "error": "dream_day_no_answer"}),
+        "no dream_day row": {},
+    }
+    for reason, kw in cases.items():
+        letter = _dream_letter(**kw)
+        line = f"no day dream for 2026-09-29: {reason}"
+        text = email.render_text(letter, [])
+        assert line in text, (reason, text[:2000])
+        html = email.render_html(letter, [])
+        assert 'data-section="dream-day"' in html and email.DREAM_DAY_EMAIL_HEADING in html
+        assert "no day dream for 2026-09-29" in html and "Memories I wrote" not in html
+
+
+def test_email_of_an_older_letter_has_no_dream_section():
+    m = _material().model_copy(update={"dream_day": None})
+    m = m.model_copy(update={"sources": {k: v for k, v in m.sources.items() if k != "dream_day"}})
+    letter = _letter(material=m)
+    assert email.DREAM_DAY_EMAIL_HEADING not in email.render_text(letter, [])
+    assert 'data-section="dream-day"' not in email.render_html(letter, [])

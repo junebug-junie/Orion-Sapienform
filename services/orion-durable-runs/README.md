@@ -925,17 +925,23 @@ Not a durable run: it is one LLM call, so it is a tick (`app/core_page_fold.py`)
   (felt-state lane `orion_core_page_origin`). Page logic: `orion/memory/pages/origin.py`; shared check
   and stored row: `orion/memory/pages/fold.py`. The mesh-edge check guards its sentences like page:juniper.
 - **`page:lately` "what has mattered lately" (issue #3463):** the third page in the same tick, after
-  page:origin. It reads the last 14 days of `episode_memory` plus every still-open `follow_up` row,
+  page:origin. It reads the last 14 days of `episode_memory` plus active `follow_up` rows up to 45 days
+  old (nothing can close a follow-up yet, so the page calls them "follow-ups I wrote down", never "open"),
   through the lived-memory serving SQL (active only; never superseded, rejected, expired, pointed at by an
   active correction, or with `invalid_at` set), and Hub chat turns where Juniper spoke that the episode
   distiller has not distilled yet (an episode in `memory_episode_shadow` with no `episode_distill_run`
-  row). No `matters` grade yet (#3590): when there are too many rows, follow-ups, `about_juniper` rows,
+  row; command turns left out). Sources are dated on Juniper's (Denver) calendar. No `matters` grade yet (#3590): when there are too many rows, follow-ups, `about_juniper` rows,
   high-stakes rows and corrections are kept first, then the newest of the rest. Its check adds one rule:
   when some source is from the last 7 days, the page must cite one of them (`not_recent` otherwise). The
   change signal also moves when a row ages out of the 14-day window, so a quiet day with nothing new and
   nothing aging out is skipped (`no_new_sources`). Rendered at the top of DURABLE MEMORY, above the
   recall digest (felt-state lane `orion_core_page_lately`, shown while under 21 days old). Page logic:
-  `orion/memory/pages/lately.py`.
+  `orion/memory/pages/lately.py`. Coverage eval (counts only):
+  `python -m orion.memory.pages.evals.lately_coverage --page-json <dry-run json>`.
+- **`CORE_PAGE_FOLD_PAGES` and deploy order:** an unknown slug fails startup on purpose (a typo must not
+  turn a page off). So set `CORE_PAGE_FOLD_PAGES=juniper,origin,lately` in the live `.env` only once code
+  that knows `lately` is what you deploy, and before rolling this service back to an older image,
+  remove `lately` from that key first. The sync script reports this key as "diverged" and leaves it alone.
 - **Deploy order:** orion-sql-writer first (it validates the new `core_page_fold` producer value), then
   this service. orion-cortex-exec and the harness renderer can go in any order (the capsule field is additive
   on a model that ignores unknown fields).

@@ -5,15 +5,18 @@ spec slot is the top of DURABLE MEMORY, before the recall digest; it is refolded
 
 Sources, both read-only:
 
-1. ``episode_memory`` from the last ``WINDOW_DAYS`` days, plus every still-open ``follow_up`` row
-   whatever its age. Read through the lived-memory serving SQL (``orion/memory/lived_memory.py``),
-   so a row recall may not serve never reaches the fold: only ``status = 'active'``, never rejected
-   or expired, and no active correction points at it. On top of that a row with ``invalid_at`` set
+1. ``episode_memory`` from the last ``WINDOW_DAYS`` days, plus older active ``follow_up`` rows up to
+   ``FOLLOW_UP_DAYS`` old. ``episode_memory`` has no way to close a follow-up yet, so "active" is all
+   the page can say: it calls them follow-ups I wrote down, never "still open". Read through the
+   lived-memory serving SQL (``orion/memory/lived_memory.py``), so a row recall may not serve never
+   reaches the fold: only ``status = 'active'``, never rejected or expired, and no active correction
+   points at it. On top of that a row with ``invalid_at`` set
    is dropped (issue #3463 comment; the spec's read-filter table).
 2. Hub chat the episode distiller has not distilled yet: turns where Juniper spoke, inside an episode
-   (``memory_episode_shadow``) that has no ``episode_distill_run`` row, from the same window. That is
-   today's talk, before the overnight distill catches up. Her words are kept verbatim (the spec's
-   flattening guard rests on quotes).
+   (``memory_episode_shadow``) that has no ``episode_distill_run`` row, from the same window, command
+   turns left out. That is mostly today's talk, before the overnight distill catches up. A closed
+   episode the distiller never ran on also reads as "not yet distilled" until it leaves the window.
+   Her words are kept verbatim (the spec's flattening guard rests on quotes).
 
 There is no ``matters`` grade yet (#3590). Until it exists, the rows the prompt keeps when there are
 too many are picked by ``select_episodes``: every ``follow_up``, every ``about_juniper`` row, every
@@ -26,7 +29,7 @@ so a "lately" page can never be about only old things.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
@@ -50,6 +53,10 @@ CHAT_PROMPT_CHARS = 900
 CHAT_RESPONSE_CHARS = 400
 # check_lately_page: the page must cite a source from this many days before the newest source.
 RECENT_DAYS = 7
+# Oldest active follow_up row kept (outside the window). Live 2026-11-18: 42 active follow-ups back to
+# 10-04, none ever closed (no closure state exists yet).
+FOLLOW_UP_DAYS = 45
+# Juniper's day: sources are dated in her timezone, the same one the prompt's "Today is" uses.
 ZONE = ZoneInfo("America/Denver")
 
 # The lived-memory serving SQL, wrapped (never edited), narrowed to the window plus open follow-ups.
@@ -61,11 +68,12 @@ FROM ({lived_memory.EPISODE_SQL.strip()}
 ) l
 JOIN episode_memory e ON e.memory_id::text = l.record_id
 WHERE e.invalid_at IS NULL
-  AND (l.occurred_at > now() - interval '{WINDOW_DAYS} days' OR l.purpose = 'follow_up')
+  AND (l.occurred_at > now() - interval '{WINDOW_DAYS} days'
+       OR (l.purpose = 'follow_up' AND l.occurred_at > now() - interval '{FOLLOW_UP_DAYS} days'))
 ORDER BY l.occurred_at, l.record_id
 """
-# Hub chat where Juniper spoke that the distiller has not read yet. chat_history_log.created_at is
-# naive UTC.
+# Hub chat where Juniper spoke (not a command turn) that the distiller has not read yet.
+# chat_history_log.created_at is naive UTC.
 CHAT_SQL = f"""
 SELECT h.id::text AS record_id, h.prompt AS prompt, h.response AS response, h.created_at AS created_at
 FROM chat_history_log h
@@ -73,7 +81,9 @@ WHERE h.created_at > (now() AT TIME ZONE 'UTC') - interval '{WINDOW_DAYS} days'
   AND length(trim(coalesce(h.prompt, ''))) > 0
   AND EXISTS (
       SELECT 1 FROM memory_episode_shadow s
-      WHERE s.turns @> jsonb_build_array(jsonb_build_object('correlation_id', h.correlation_id))
+      CROSS JOIN LATERAL jsonb_array_elements(s.turns) t
+      WHERE t->>'correlation_id' = h.correlation_id
+        AND t->>'is_command' IS DISTINCT FROM 'true'
         AND NOT EXISTS (SELECT 1 FROM episode_distill_run r WHERE r.episode_id = s.episode_id)
   )
 ORDER BY h.created_at DESC
@@ -83,7 +93,8 @@ LIMIT {MAX_CHAT_TURNS}
 # - an episode row in the window or any follow_up / correction row, added or updated;
 # - an in-scope row passing its expires_at (no timestamp of its own moves);
 # - a row aging out of the window (the moment it left: its time + WINDOW_DAYS);
-# - a new Hub chat turn where Juniper spoke.
+# - a new Hub chat turn where Juniper spoke, a chat turn aging out, or a distill run finishing (it
+#   takes its episode's turns out of the chat source, even when it keeps no memory).
 NEWEST_SOURCE_SQL = (
     "SELECT greatest("
     "(SELECT max(greatest(created_at, updated_at)) FROM episode_memory "
@@ -91,13 +102,28 @@ NEWEST_SOURCE_SQL = (
     "OR purpose = 'follow_up' OR supersedes_memory_id IS NOT NULL), "
     "(SELECT max(expires_at) FROM episode_memory WHERE expires_at <= now() AND "
     f"(coalesce(occurred_at, created_at) > now() - interval '{WINDOW_DAYS} days' OR purpose = 'follow_up')), "
+    # A follow_up passing FOLLOW_UP_DAYS leaves the input too: the moment it left.
+    f"(SELECT max(coalesce(occurred_at, created_at)) + interval '{FOLLOW_UP_DAYS} days' FROM episode_memory "
+    f"WHERE purpose = 'follow_up' AND coalesce(occurred_at, created_at) <= now() - interval '{FOLLOW_UP_DAYS} days'), "
     f"(SELECT max(coalesce(occurred_at, created_at)) + interval '{WINDOW_DAYS} days' FROM episode_memory "
     f"WHERE coalesce(occurred_at, created_at) <= now() - interval '{WINDOW_DAYS} days'), "
     "(SELECT max(created_at) AT TIME ZONE 'UTC' FROM chat_history_log "
     f"WHERE created_at > (now() AT TIME ZONE 'UTC') - interval '{WINDOW_DAYS} days' "
-    "AND length(trim(coalesce(prompt, ''))) > 0)"
+    "AND length(trim(coalesce(prompt, ''))) > 0), "
+    f"(SELECT (max(created_at) + interval '{WINDOW_DAYS} days') AT TIME ZONE 'UTC' FROM chat_history_log "
+    f"WHERE created_at <= (now() AT TIME ZONE 'UTC') - interval '{WINDOW_DAYS} days' "
+    "AND length(trim(coalesce(prompt, ''))) > 0), "
+    "(SELECT max(finished_at) FROM episode_distill_run)"
     ") AS newest"
 )
+
+
+def _local_date(value: Any) -> date | None:
+    """A timestamp -> Juniper's calendar date (naive means UTC). A chat at 03:00Z is the evening before."""
+    if isinstance(value, datetime):
+        aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return aware.astimezone(ZONE).date()
+    return _as_date(value)
 
 
 def _is_correction(row: Mapping[str, Any]) -> bool:
@@ -143,7 +169,7 @@ def sources_from_rows(episode_rows: Iterable[Mapping[str, Any]], chat_rows: Iter
         if str(row.get("stakes") or "").lower() == "high":
             bits.append("high stakes")
         if purpose == "follow_up":
-            bits.append("still open")
+            bits.append("I wrote it down to follow up")
         if row.get("confirmed"):
             bits.append("Juniper confirmed it")
         if _is_correction(row):
@@ -151,7 +177,7 @@ def sources_from_rows(episode_rows: Iterable[Mapping[str, Any]], chat_rows: Iter
         out.append(PageSource(
             ref=f"{EPISODE_MEMORY_KIND}:{row['record_id']}", kind=EPISODE_MEMORY_KIND,
             text=str(row["text"]).strip(), label=f"my memory ({', '.join(bits)})",
-            when=_as_date(row.get("occurred_at"))))
+            when=_local_date(row.get("occurred_at"))))
     for row in chat_rows:
         said = _clip(row.get("prompt") or "", CHAT_PROMPT_CHARS)
         if not said:
@@ -160,7 +186,7 @@ def sources_from_rows(episode_rows: Iterable[Mapping[str, Any]], chat_rows: Iter
         text = f"Juniper said: {said}" + (f" I answered: {answer}" if answer else "")
         out.append(PageSource(
             ref=f"{CHAT_KIND}:{row['record_id']}", kind=CHAT_KIND, text=text,
-            label="Hub chat, not yet distilled into a memory", when=_as_date(row.get("created_at"))))
+            label="Hub chat, not yet distilled into a memory", when=_local_date(row.get("created_at"))))
     return sorted(out, key=lambda s: (s.when is None, s.when or date.min))
 
 
@@ -176,12 +202,13 @@ Rules:
    the first sentence of a paragraph: no topic or summary sentences ("It has been a busy two
    weeks"); open each paragraph with a cited fact.
 3. Say only what the cited records say. Do not guess, round up, invent dates, or fill gaps.
-4. Pick what mattered, not everything that happened. Weigh, in this order: what is still open
-   (follow-ups I owe or am waiting on), what Juniper told me about her life and what she asked of
+4. Pick what mattered, not everything that happened. Weigh, in this order: the follow-ups I wrote
+   down (things I meant to come back to), what Juniper told me about her life and what she asked of
    me, high-stakes moments, corrections, then the newest things. Leave out passing technical
    chatter, one-off moods, and body census numbers (parts, flows, watts, dollars).
 5. Newest first is fine; say when things happened (a weekday or a date from the record), never
-   "recently" alone. Say plainly which follow-ups are still open.
+   "recently" alone. Call a follow-up something I wrote down to come back to; the records do not say
+   whether it was done, so never claim it is finished or still open.
 6. Quote Juniper verbatim, in double quotation marks, where she said it best. Her own words are the
    "Juniper said:" part of the Hub chat records, and words a memory itself puts in quotes. The rest
    of a memory is my paraphrase: quote it only word for word. A quote must appear word for word in a
@@ -197,7 +224,7 @@ def build_fold_prompt(sources: Sequence[PageSource], current: CurrentPage | None
     """The one prompt the fold sends. Sources are numbered in ``handle_map`` order."""
     today = today or datetime.now(ZONE).date()
     lines = [_FOLD_RULES, f"Today is {today:%A} {today.isoformat()}. The records cover the last "
-             f"{WINDOW_DAYS} days, plus older follow-ups that are still open.", ""]
+             f"{WINDOW_DAYS} days, plus older follow-ups I wrote down.", ""]
     if current is not None:
         lines.append(f"My current page (version {current.version}). Rewrite it for today: drop what no "
                      "longer matters or is no longer in the records, fix what they correct, add what is new:")

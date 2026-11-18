@@ -50,13 +50,20 @@ def test_sources_are_in_time_order_with_kinds_and_labels():
     by_ref = {s.ref: s for s in sources}
     assert set(by_ref) == {"episode_memory:m-old-fu", "episode_memory:m-trip", "episode_memory:m-chatter",
                            "episode_memory:m-new", "chat_history_log:c1"}   # an empty Juniper turn is skipped
-    assert by_ref["episode_memory:m-old-fu"].label == "my memory (follow_up, still open)"
+    assert by_ref["episode_memory:m-old-fu"].label == "my memory (follow_up, I wrote it down to follow up)"
     assert by_ref["episode_memory:m-trip"].label == "my memory (about_juniper, high stakes, Juniper confirmed it)"
     assert by_ref["episode_memory:m-chatter"].label == "my memory (happened)"
     chat = by_ref["chat_history_log:c1"]
     assert chat.kind == CHAT_KIND and chat.when == date(2026, 11, 17)
     assert chat.text == "Juniper said: the snow is finally here and I love it I answered: I can see it on the walkway camera."
     assert chat.label == "Hub chat, not yet distilled into a memory"
+
+
+def test_sources_are_dated_on_juniper_s_calendar():
+    # 03:00Z on 11-18 is the evening of 11-17 in Denver, for chat (naive UTC) and memories alike.
+    chat = {"record_id": "c9", "created_at": datetime(2026, 11, 18, 3, 0), "prompt": "good night", "response": ""}
+    mem = {"record_id": "m9", "purpose": "happened", "occurred_at": _t(11, 18, hour=3), "text": "We said good night."}
+    assert [s.when for s in sources_from_rows([mem], [chat])] == [date(2026, 11, 17), date(2026, 11, 17)]
 
 
 def test_chat_turns_are_clipped_on_a_word():
@@ -85,7 +92,8 @@ def test_prompt_states_today_the_window_and_the_rules():
     prompt = build_fold_prompt(sources, today=date(2026, 11, 18))
     assert "Today is Wednesday 2026-11-18." in prompt
     assert f"last {WINDOW_DAYS} days" in prompt
-    assert "what has mattered lately" in prompt and "still open" in prompt
+    assert "what has mattered lately" in prompt and "follow-ups I wrote" in prompt
+    assert "never claim it is finished or still open" in prompt
     assert "[S5] 2026-11-17 Hub chat, not yet distilled into a memory: Juniper said:" in prompt
     assert "My current page" not in prompt
 
@@ -133,6 +141,8 @@ def test_episode_sql_wraps_the_lived_memory_serving_sql_and_drops_invalid_rows()
     assert lived_memory.EPISODE_SQL.strip() in EPISODE_SQL
     assert "e.invalid_at IS NULL" in EPISODE_SQL
     assert f"interval '{WINDOW_DAYS} days'" in EPISODE_SQL and "l.purpose = 'follow_up'" in EPISODE_SQL
+    assert "interval '45 days'" in EPISODE_SQL   # old follow-ups are capped: nothing can close one yet
+    assert "is_command" in CHAT_SQL and "episode_distill_run" in NEWEST_SOURCE_SQL
     for sql in (EPISODE_SQL, CHAT_SQL, NEWEST_SOURCE_SQL):
         assert "%" not in sql and "$1" not in sql   # no bind parameters: psycopg and asyncpg both run it
     assert "episode_distill_run" in CHAT_SQL and "memory_episode_shadow" in CHAT_SQL

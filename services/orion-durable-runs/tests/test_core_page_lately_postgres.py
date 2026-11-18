@@ -79,7 +79,7 @@ async def _episode(conn, purpose, statement, *, at, state="auto", status="active
         (memory_id or uuid.uuid4(), purpose, statement, at, state, status, stakes, supersedes, expires, invalid, at, at))
 
 
-async def _chat(conn, episode_id, prompt, *, at, response="I heard you."):
+async def _chat(conn, episode_id, prompt, *, at, response="I heard you.", is_command=False):
     corr = str(uuid.uuid4())
     naive = at.astimezone(timezone.utc).replace(tzinfo=None)
     await conn.execute("INSERT INTO chat_history_log (id, correlation_id, prompt, response, created_at) "
@@ -89,7 +89,7 @@ async def _chat(conn, episode_id, prompt, *, at, response="I heard you."):
             "INSERT INTO memory_episode_shadow (episode_id, turns, last_turn_at) VALUES (%s, %s::jsonb, %s) "
             "ON CONFLICT (episode_id) DO UPDATE SET turns = memory_episode_shadow.turns || excluded.turns, "
             "last_turn_at = greatest(memory_episode_shadow.last_turn_at, excluded.last_turn_at)",
-            (episode_id, json.dumps([{"correlation_id": corr, "at": at.isoformat()}]), at))
+            (episode_id, json.dumps([{"correlation_id": corr, "at": at.isoformat(), "is_command": is_command}]), at))
 
 
 async def _fill(pool, schema: str) -> None:
@@ -118,14 +118,18 @@ async def _fill(pool, schema: str) -> None:
                        invalid=recent + timedelta(hours=2))
         await _episode(conn, "follow_up", "DEAD-FU-REJECTED: ask about the boat.", at=old, state="rejected",
                        status="rejected")
+        await _episode(conn, "follow_up", "DEAD-FU-ANCIENT: a follow-up from two months ago.",
+                       at=now - timedelta(days=60))
         # Hub chat: an undistilled episode (alive), a distilled one, outreach with no Juniper words, a
         # turn older than the window, and a turn in no episode at all.
         await _chat(conn, "ep-open", "the snow is finally here and I love it", at=now - timedelta(hours=5))
         await _chat(conn, "ep-open", "", at=now - timedelta(hours=4), response="DEAD-OUTREACH: I wondered about snow.")
         await _chat(conn, "ep-done", "DEAD-DISTILLED: we already talked about this.", at=now - timedelta(days=2))
-        await conn.execute("INSERT INTO episode_distill_run (episode_id, run_id) VALUES ('ep-done', 'r1')")
+        await conn.execute("INSERT INTO episode_distill_run (episode_id, run_id, finished_at) VALUES ('ep-done', 'r1', %s)",
+                           (now - timedelta(days=1),))
         await _chat(conn, "ep-ancient", "DEAD-ANCIENT: an old open episode.", at=old)
         await _chat(conn, None, "DEAD-NO-EPISODE: a turn from somewhere else.", at=now - timedelta(hours=3))
+        await _chat(conn, "ep-open", "DEAD-COMMAND: /journal", at=now - timedelta(hours=2), is_command=True)
         await conn.execute(
             "INSERT INTO self_concept_history VALUES ('l1', %s, 'page:lately', 1, 'Old page [episode_memory:x].', "
             "'[\"episode_memory:x\"]', 'core_page_fold')", (now,))
@@ -176,7 +180,7 @@ def test_dead_rows_never_reach_the_lately_fold_and_the_change_signal_sees_them()
                           "Juniper said: the snow is finally here and I love it"):
                 assert alive in prompt, alive
             for dead in ("DEAD-OLD", "DEAD-REJECTED", "DEAD-SUPERSEDED", "DEAD-POINTER", "DEAD-EXPIRED",
-                         "DEAD-INVALID", "DEAD-FU-REJECTED", "DEAD-OUTREACH", "DEAD-DISTILLED", "DEAD-ANCIENT",
+                         "DEAD-INVALID", "DEAD-FU-REJECTED", "DEAD-FU-ANCIENT", "DEAD-COMMAND", "DEAD-OUTREACH", "DEAD-DISTILLED", "DEAD-ANCIENT",
                          "DEAD-NO-EPISODE"):
                 assert dead not in prompt, dead
             assert result.sources == 5   # 4 memories + 1 chat turn
@@ -217,6 +221,14 @@ def test_dead_rows_never_reach_the_lately_fold_and_the_change_signal_sees_them()
             # Written after it aged out: quiet again.
             await _page_written_now(pool)
             assert (await _folder(pool, prompts).tick_once()).decision == "no_new_sources"
+
+            # The distiller finishing the open episode takes its turns out of the chat source, even when
+            # it keeps no memory: that refolds, and the turns are gone.
+            async with pool.connection() as conn:
+                await conn.execute("INSERT INTO episode_distill_run (episode_id, run_id, finished_at) "
+                                   "VALUES ('ep-open', 'r2', now() + interval '5 seconds')")
+            assert (await _folder(pool, prompts).tick_once()).decision == "rejected"
+            assert "the snow is finally here" not in prompts[-1] and "the snowman fell over" not in prompts[-1]
         finally:
             await _teardown(pool, schema)
 

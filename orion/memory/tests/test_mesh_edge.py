@@ -284,8 +284,8 @@ def test_cite_stripping_needs_a_word_boundary_before_the_kind():
 
 def test_page_lately_is_guarded_and_its_chat_cites_are_stripped():
     assert "'page:lately'" in mesh_edge.CORE_PAGES_SQL
-    page = ("The first snow came while we sat by the window on Monday [chat_history_log:5a08-ff, "
-            "episode_memory:m1]. Nothing else.")
+    # A chat-only cite: the regex before page:lately left this one in place.
+    page = "The first snow came while we sat by the window on Monday [chat_history_log:5a08-ff]. Nothing else."
     assert mesh_edge.sentences(page) == ["The first snow came while we sat by the window on Monday.", "Nothing else."]
     guard = MeshEdgeGuard.from_texts(guard_texts_from_rows([{"concept_id": "page:lately", "content": page}], []))
     with pytest.raises(MeshEdgeLeak) as err:

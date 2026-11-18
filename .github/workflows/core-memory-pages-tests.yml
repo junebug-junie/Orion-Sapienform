@@ -25,7 +25,7 @@ on:
       - "services/orion-durable-runs/tests/test_core_page_fold.py"
       - "services/orion-durable-runs/tests/test_core_page_fold_postgres.py"
       - "services/orion-durable-runs/tests/test_core_page_origin_postgres.py"
-      - "services/orion-durable-runs/tests/test_core_page_lately_postgres.py"
+      - "services/orion-durable-runs/tests/test_core_page_lately_postgres.py"   # runs in orion-durable-runs-tests (needs Postgres)
       - "orion/memory/mesh_edge.py"
       - "orion/memory/lived_memory.py"
       - "orion/memory/tests/test_mesh_edge.py"

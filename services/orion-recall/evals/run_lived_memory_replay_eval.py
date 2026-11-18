@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import os
 import json
 import statistics
 import sys
@@ -120,20 +122,24 @@ VARIANTS = {
 class _CachedRewriter:
     """Calls the real rewriter once per message; later variants reuse the answer."""
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, seed: Dict[str, List[str]] | None = None) -> None:
         self.inner = inner
-        self.cache: Dict[str, List[str]] = {}
+        self.cache: Dict[str, List[str]] = dict(seed or {})
         self.errors = 0
 
+    @staticmethod
+    def key(message: str) -> str:
+        return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
     async def __call__(self, message: str, context: Any) -> List[str]:
-        if message in self.cache:
-            return self.cache[message]
+        if self.key(message) in self.cache:
+            return self.cache[self.key(message)]
         try:
             out = await self.inner(message, context)
         except Exception:
             self.errors += 1
             raise
-        self.cache[message] = list(out)
+        self.cache[self.key(message)] = list(out)
         return out
 
 
@@ -153,9 +159,12 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
 
         bus = OrionBusAsync(url=args.bus_url)
         await bus.connect()
+        seed = None
+        if args.rewrite_cache and Path(args.rewrite_cache).expanduser().exists():
+            seed = json.loads(Path(args.rewrite_cache).expanduser().read_text(encoding="utf-8"))
         rewriter = _CachedRewriter(BusRewriter(
             bus, channel=args.llm_channel, route=args.rewrite_route, timeout_sec=args.rewrite_timeout,
-            source=ServiceRef(name="orion-recall", version="replay-eval", node="eval")))
+            source=ServiceRef(name="orion-recall", version="replay-eval", node="eval")), seed)
 
     referring_rows = []
     # Budget mode (issue #3662) measures the chat-turn deadline, not hit rate: only the last real
@@ -259,6 +268,12 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
                            for k in ("snapshot", "rewrite", "dense", "links", "rerank", "recheck", "total")},
             "bars": [{k: v for k, v in b.items() if k != "items" or args.items} for b in bars],
         }
+    if rewriter is not None and args.rewrite_cache:
+        # Same rewrites on the next run, so a before/after compares the code, not the LLM's
+        # run-to-run variance. Private (Orion's searches over Juniper's messages): host-side, 600.
+        path = Path(args.rewrite_cache).expanduser()
+        path.write_text(json.dumps(rewriter.cache), encoding="utf-8")
+        os.chmod(path, 0o600)
     if rewriter is not None:
         report["rewrite_calls"] = len(rewriter.cache)
         report["rewrite_errors"] = rewriter.errors
@@ -292,6 +307,9 @@ def main() -> int:
                          "skip the referring bank; reports degraded_rate (issue #3662). Calls run one at a "
                          "time on whatever else the GPU is doing, so on an idle P4 this is a lower bound: "
                          "the live rate needs recall_telemetry, or a run beside GPU load")
+    ap.add_argument("--rewrite-cache", default="",
+                    help="host-side JSON of rewrites keyed by message hash: read if present, written after "
+                         "the run, so a before/after pair sees the same searches (not with --budget-sec)")
     ap.add_argument("--noise-limit", type=int, default=0, help="last N real messages (default: the bank's)")
     ap.add_argument("--items", action="store_true", help="include per-item hits (labels are private)")
     args = ap.parse_args()

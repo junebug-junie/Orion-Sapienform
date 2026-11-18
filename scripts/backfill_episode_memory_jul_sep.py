@@ -489,7 +489,14 @@ def cluster_interval(per_episode: list[tuple[int, int]], reps: int = 4000, seed:
         rows = sum(n for _, n in draw)
         rates.append(sum(k for k, _ in draw) / rows)
     rates.sort()
-    return round(rates[int(0.025 * reps)], 3), round(rates[int(0.975 * reps) - 1], 3)
+    # A percentile bootstrap over few clusters runs narrow by about sqrt((G-1)/G): widen the
+    # deviations from the point estimate by sqrt(G/(G-1)) (small-cluster correction).
+    g = len(eps)
+    point = sum(k for k, _ in eps) / sum(n for _, n in eps)
+    scale = (g / (g - 1)) ** 0.5 if g > 1 else 1.0
+    lo = point - (point - rates[int(0.025 * reps)]) * scale
+    hi = point + (rates[int(0.975 * reps) - 1] - point) * scale
+    return round(max(0.0, lo), 3), round(min(1.0, hi), 3)
 
 
 # ----------------------------------------------------------------------------------- progress
@@ -834,7 +841,7 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     verdict["other_rate_episode_bootstrap95"] = cluster_interval(per_ep)
     verdict["any_rate_wilson95"] = wilson(cov["any"], cov["n"])
     out = {"episodes": results, "referent_coverage": verdict, "errors": prog.errors,
-           "high_stakes_pending_confirmation": sum(r["high_stakes_pending_confirmation"] for r in results)}
+           "high_stakes_not_asked": sum(r["high_stakes_not_asked"] for r in results)}
     write_private(OUT / "dry_run.json", json.dumps(out, indent=1, default=str))
     prog.line(f"dry_run_done memories={cov['n']} any_rate={cov['any_rate']} other_rate={cov['other_rate']} "
               f"gate={'pass' if verdict['pass'] else 'FAIL'}")
@@ -1000,7 +1007,7 @@ def cmd_report(args: argparse.Namespace) -> int:
              f"- memories: {(dry.get('referent_coverage') or {}).get('n')}",
              f"- with any referent: {(dry.get('referent_coverage') or {}).get('any')}",
              f"- with a referent besides Juniper/Orion: {(dry.get('referent_coverage') or {}).get('other')}",
-             f"- high-stakes rows waiting for confirmation: {dry.get('high_stakes_pending_confirmation')}",
+             f"- high-stakes rows written not_asked (never asked): {dry.get('high_stakes_not_asked')}",
              f"- gate: {'pass' if (dry.get('referent_coverage') or {}).get('pass') else 'FAIL'}",
              "", "## Before / after", "", "| metric | before | after |", "|---|---|---|"] + [
              f"| {k} | {before.get(k)} | {after.get(k)} |" for k in COUNTS_SQL] + [

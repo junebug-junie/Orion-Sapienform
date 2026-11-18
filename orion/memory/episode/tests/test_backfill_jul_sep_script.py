@@ -322,3 +322,8 @@ def test_spread_sample_and_intervals():
     lo2, hi2 = B.cluster_interval([(3, 10), (5, 5)])
     assert lo2 <= 8 / 15 <= hi2
     assert B.wilson(0, 0) == (None, None)
+
+
+def test_name_repair_never_turns_backfill_rows_into_asks():
+    src = (ROOT / "scripts" / "repair_episode_memory_ungrounded_names.py").read_text(encoding="utf-8")
+    assert "m.run_id NOT LIKE 'backfill3537-%'" in src

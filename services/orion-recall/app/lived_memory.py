@@ -367,6 +367,8 @@ class LivedMemoryConfig:
     # rewrite of the general prompt (35%). Greetings matched greeting-shaped stance messages by
     # form, not content.
     min_query_tokens: int = 0
+    # Issue #3613 rollback switch: False = the plain floor (a short message is never searched).
+    short_gate: bool = True
     # Step 2 (issue #3534). rewrite_timeout_sec bounds the pre-turn rewrite; past it the raw
     # message is used. link_top_k is how many referent neighbours join the rerank (0 = off).
     rewrite_timeout_sec: float = 2.5
@@ -516,6 +518,8 @@ class LivedMemoryRecall:
                 out.debug["content_tokens"] = len(qtoks)
                 if not qtoks:
                     gate = GATE_SHORT_NO_CONTENT  # "ok", "thanks!", "haha yeah": nothing to search with
+                elif not self.cfg.short_gate:
+                    gate = GATE_SHORT_NONE        # the plain floor (switched back off)
                 else:
                     t = time.perf_counter()
                     await self.snapshot()
@@ -821,8 +825,8 @@ class LivedMemoryRecall:
                           backend=BACKEND_DEGRADED, degraded_reasons=[reason])
         query = " ".join(str(query or "").split())[:QUERY_MAX_CHARS]
         qtoks = set(tokenize(query))
-        if (not query or self._bm25 is None
-                or (len(qtoks) < self.cfg.min_query_tokens and not (qtoks and self.entity_mentions(query)))):
+        short_ok = self.cfg.short_gate and bool(qtoks) and bool(self.entity_mentions(query))
+        if not query or self._bm25 is None or (len(qtoks) < self.cfg.min_query_tokens and not short_ok):
             out.backend = ""  # nothing a search could have run on: no note
             out.debug = {"timings_ms": timings, "skipped": "few_content_words_or_no_snapshot"}
             return out

@@ -136,7 +136,8 @@ async def dense_matrix(chroma: str, embed_url: str, collection: str) -> Optional
         async with httpx.AsyncClient(timeout=120.0) as client:
             vecs = await all_vectors(client, cfg)
     except SearchUnavailableError as exc:
-        print(f"dense unavailable ({exc}); candidates from shared words/referents only", file=sys.stderr)
+        print(f"dense unavailable ({exc}); candidates from shared words/referents only -- PROPOSALS ONLY: "
+              "apply refuses pairs found this way (issue #3659)", file=sys.stderr)
         return None
     out = {}
     for doc, vec in vecs:
@@ -253,7 +254,8 @@ def write_outputs(out: Path, links: list[Link], records: list[CheckRecord], by_i
     pair_rows = []
     for l in links:
         old, new = by_id[l.old_id], by_id[l.new_id]
-        pair_rows.append({**l.as_dict(), "old_statement": old.statement, "new_statement": new.statement,
+        # Issue #3659: each pair says whether its candidate came with a meaning-index cosine.
+        pair_rows.append({**l.as_dict(), "dense_on": l.dense is not None, "old_statement": old.statement, "new_statement": new.statement,
                           "old_date": old.date, "new_date": new.date,
                           "old_sha": sha(old.statement), "new_sha": sha(new.statement),
                           "old_confirmation_state": old.confirmation_state})
@@ -391,6 +393,14 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
         print(f"manifest NOT written to {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
+def found_with_dense(pair: dict[str, Any]) -> bool:
+    """True when the pair was found with a meaning-index cosine. Files from before #3659 carry no
+    ``dense_on``: their ``dense`` value decides (None = found by words alone)."""
+    if "dense_on" in pair:
+        return bool(pair["dense_on"])
+    return pair.get("dense") is not None
+
+
 def _pair_set(spec: str) -> set[tuple[str, str]]:
     out = set()
     for item in (spec or "").split(","):
@@ -410,6 +420,15 @@ async def cmd_apply(args: argparse.Namespace) -> int:
         raise SystemExit("apply writes to the live database: re-run with --yes after Juniper reviewed the pairs")
     pairs = [json.loads(line) for line in Path(args.pairs).read_text(encoding="utf-8").splitlines() if line.strip()]
     only, exclude = _pair_set(args.only), _pair_set(args.exclude)
+    pairs = [p for p in pairs if not ((only and (p["old_id"], p["new_id"]) not in only)
+                                      or (p["old_id"], p["new_id"]) in exclude)]
+    no_dense = [p for p in pairs if not found_with_dense(p)]
+    if no_dense and not args.allow_no_dense:
+        # Issue #3659: a pair found without the meaning index (word overlap only) is never applied
+        # unless someone says so on purpose for this run (or --exclude drops it).
+        raise SystemExit(f"{len(no_dense)} pair(s) in {args.pairs} were found without the meaning index "
+                         "(dense off); refusing. Re-run dry-run with the index up, --exclude them, or pass "
+                         "--allow-no-dense after reviewing those pairs by hand.")
     out = private_dir(Path(args.pairs).parent)
     log = out / "applied.log"
     from orion.memory.episode.supersede import superseded_event_id
@@ -498,6 +517,8 @@ def main() -> int:
     a.add_argument("--only", default="", help="OLD:NEW,... apply only these")
     a.add_argument("--exclude", default="", help="OLD:NEW,... skip these")
     a.add_argument("--yes", action="store_true")
+    a.add_argument("--allow-no-dense", action="store_true",
+                   help="apply pairs found without the meaning index (refused by default, issue #3659)")
     for sp in (d, a):
         sp.add_argument("--manifest", default=str(DEFAULT_MANIFEST),
                         help="ids-only manifest Orion can read (no statements)")

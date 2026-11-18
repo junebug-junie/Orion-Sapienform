@@ -130,9 +130,9 @@ def test_budget_caps_model_calls():
     olds = [row(f"o{i}", f"Biscuit fact {i}.", refs=("pet:biscuit",)) for i in range(3)]
     ask, seen = answers(YES, BOTH_FALSE, NO, NO)
     plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(*olds), ask, max_checks=3,
-                                           dense=_dense({f"o{i}": 0.7 for i in range(3)})))
+                                           dense=_dense({f"o{i}": 0.7 for i in range(3)}), apply_gate=OPEN))
     assert len(seen) == 3 and plan["budget_left"] == 0
-    assert len(plan["links"]) == 1
+    assert len(plan["links"]) == 1 and plan["apply"] == "on" and s.links_to_apply(plan) == plan["links"]
 
 
 def _dense(scores):
@@ -141,13 +141,102 @@ def _dense(scores):
     return run
 
 
-def test_plan_falls_back_when_the_index_is_down():
+OPEN = (True, "eval_passed")
+
+
+# --- never act degraded (issue #3659) --------------------------------------------------------
+
+def test_index_down_links_nothing_asks_nothing_and_says_why():
     async def down(_statement):
         return None
 
+    ask, seen = answers(YES, BOTH_FALSE)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=down, apply_gate=OPEN))
+    assert plan["dense"] == "unavailable" and plan["links"] == [] and seen == []
+    assert plan["apply"] == "refused" and plan["refused_because"] == [s.REFUSED_DENSE_UNAVAILABLE]
+    assert s.links_to_apply(plan) == []
+
+
+def test_index_raising_links_nothing():
+    async def boom(_statement):
+        raise ConnectionError("chroma down")
+
+    ask, seen = answers(YES, BOTH_FALSE)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=boom, apply_gate=OPEN))
+    assert plan["links"] == [] and seen == []
+    assert plan["refused_because"] == [f"{s.REFUSED_DENSE_UNAVAILABLE}:ConnectionError"]
+
+
+def test_no_index_configured_never_falls_back_to_word_overlap():
+    ask, seen = answers(YES, BOTH_FALSE)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=None, apply_gate=OPEN))
+    assert plan["dense"] == "off" and plan["links"] == [] and seen == []
+    assert plan["refused_because"] == [s.REFUSED_DENSE_OFF]
+
+
+def test_a_malformed_answer_anywhere_holds_every_link():
+    other_old = row("o2", "Biscuit sleeps on the green sofa.", refs=("pet:biscuit",))
+    ask, _ = answers(YES, BOTH_FALSE, "not json")
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD, other_old), ask,
+                                           dense=_dense({"old": 0.75, "o2": 0.7}), apply_gate=OPEN))
+    assert plan["links"] == [] and [l["old_id"] for l in plan["held_links"]] == ["old"]
+    assert plan["refused_because"] == [s.REFUSED_CHECK_ERRORS] and s.links_to_apply(plan) == []
+
+
+def test_a_malformed_second_answer_holds_every_link():
+    other_old = row("o2", "Biscuit sleeps on the green sofa.", refs=("pet:biscuit",))
+    ask, _ = answers(YES, BOTH_FALSE, YES, "not json")
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD, other_old), ask,
+                                           dense=_dense({"old": 0.75, "o2": 0.7}), apply_gate=OPEN))
+    assert plan["check_errors"] == 1 and s.links_to_apply(plan) == []
+    assert [l["old_id"] for l in plan["held_links"]] == ["old"]
+
+
+def test_a_closed_eval_gate_proposes_but_holds():
+    ask, seen = answers(YES, BOTH_FALSE)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=_dense({"old": 0.75}),
+                                           apply_gate=(False, "eval_missing")))
+    assert len(seen) == 2 and plan["links"] == [] and [l["old_id"] for l in plan["held_links"]] == ["old"]
+    assert plan["refused_because"] == [f"{s.REFUSED_EVAL_GATE}:eval_missing"]
+
+
+def test_the_gate_defaults_closed():
     ask, _ = answers(YES, BOTH_FALSE)
-    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=down))
-    assert plan["dense"] == "unavailable" and [l["old_id"] for l in plan["links"]] == ["old"]
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=_dense({"old": 0.75})))
+    assert plan["links"] == [] and plan["apply"] == "refused"
+
+
+def test_a_checkpoint_from_before_the_rule_applies_nothing():
+    legacy = {"links": [{"old_id": "a", "new_id": "b", "reason": "r"}], "asked": 1, "dense": "unavailable"}
+    assert s.links_to_apply(legacy) == [] and s.links_to_apply(None) == []
+    assert s.links_to_apply({"links": legacy["links"], "apply": "on", "refused_because": ["x"]}) == []
+
+
+class _GateConn:
+    def __init__(self, row=None, exc=None):
+        self.row, self.exc = row, exc
+
+    async def execute(self, sql, params):
+        if self.exc:
+            raise self.exc
+        assert "memory_supersede_eval_run" in sql and params == (s.CHECK_VERSION,)
+        row = self.row
+
+        class Cur:
+            description = None
+
+            async def fetchone(self):
+                return row
+        return Cur()
+
+
+def test_eval_gate_open_only_on_a_passing_run_for_this_check_version():
+    run = asyncio.run
+    assert run(s.eval_gate(_GateConn({"passed": True, "check_version": s.CHECK_VERSION}))) == (True, "eval_passed")
+    assert run(s.eval_gate(_GateConn({"passed": False}))) == (False, "eval_failed")
+    assert run(s.eval_gate(_GateConn(None))) == (False, "eval_missing")
+    assert run(s.eval_gate(_GateConn(exc=RuntimeError("relation does not exist")))) == (
+        False, "eval_unreadable:RuntimeError")
 
 
 def test_dedupe_one_link_per_old_row_and_no_chains():
@@ -189,5 +278,6 @@ def test_a_failed_call_stops_the_whole_plan():
     other = row("n2", "Juniper said Biscuit is a dog now.", days=4, refs=("pet:biscuit",))
     ask, seen = answers(RuntimeError("gpu_hold_lost"))
     plan = asyncio.run(s.plan_for_new_rows([NEW, other], corpus(*olds), ask, max_checks=10,
-                                           dense=_dense({f"o{i}": 0.7 for i in range(3)})))
+                                           dense=_dense({f"o{i}": 0.7 for i in range(3)}), apply_gate=OPEN))
     assert len(seen) == 1 and plan["links"] == [] and plan["budget_left"] == 0
+    assert s.REFUSED_CHECK_ERRORS in plan["refused_because"]

@@ -15,7 +15,9 @@ Spec: docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md, secti
 * ``supersede_check`` (when a ``link`` step is given; issue #3587) runs after ``distill`` on the same hold,
   with its own time budget: candidates among older live memories, then strict yes/no calls on the
   same route. Its plan is checkpointed in ``supersede``. Any failure there (timeout, lost hold,
-  model or index fault) links nothing and never fails the run or spends an attempt.
+  model or index fault) links nothing and never fails the run or spends an attempt. ``persist``
+  applies a plan's links only when it says ``apply == "on"`` (issue #3659: no degraded apply, and
+  only while the precision eval passes).
 * ``persist`` lets the hold go first (no GPU needed), then validates deterministically
   (orion.memory.episode.validate) and writes the shadow tables in one idempotent transaction.
   A crash after the write resumes at ``persist`` and re-writes nothing (deterministic ids).
@@ -260,7 +262,11 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
         turns = turns_from_state(state["turns"])
         prompt_version = rendered_prompt_version(dict(state))
         result = validated(dict(state))
-        links = list((state.get("supersede") or {}).get("links") or [])
+        # Issue #3659: only a plan that says apply == "on" (clean index, clean answers, passing eval)
+        # applies anything; a degraded or pre-#3659 checkpoint applies nothing.
+        from orion.memory.episode.supersede import links_to_apply
+
+        links = links_to_apply(state.get("supersede"))
         counts = await persist(
             episode_id=brief.episode_id, run_id=state["run_id"], result=result, model_route=brief.llm_route,
             model=state.get("model"), prompt_version=prompt_version, usage=state.get("usage") or {},

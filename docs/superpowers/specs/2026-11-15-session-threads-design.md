@@ -69,8 +69,17 @@ Rules that carry weight:
 - Session text is quoted data inside a labelled fence with a per-round nonce. It cannot close the fence.
 - Code cuts Orion's reply at `### thread:<id>` lines. No usable section for a thread: the whole reply
   is stored on it, marked `unparsed`. A repeated or out-of-order heading makes the whole round
-  `unparsed`. Empty text is a failed round, never a stored turn.
-- A failed round returns its threads to `held`. Three failures in a row leave a thread `failed`.
+  `unparsed`. Empty text is a failed round, never a stored turn. Session text Orion quotes back does
+  not cut a section short: a closed data fence in the reply is replaced by one Hub line before the cut,
+  and a heading inside a closed markdown code block is not a heading. Both apply only to headings for
+  threads NOT in the round: a round thread's heading inside a quote makes the round `unparsed` (Hub
+  cannot tell the copy from the real one). A section with no words besides Hub's cut note is empty.
+- A failed round returns its threads to `held`. Three failures in a row leave a thread `failed`. A
+  failed round stores no Orion turn, so it never uses the thread's one round of questions.
+- Orion's questions reach a session by thread, not by the `gh pr create` event: the prompt hook asks
+  Hub for undelivered Orion turns on any thread this session wrote on, or on this session's branch.
+  A later send for the same PR (`orion_session_thread.py send --pr N`, from any session) joins the same
+  thread, so its sender still gets the open questions, once. A plain `git push` sends nothing.
 - A run that has not ended 30 minutes after its deadline fails the round, so one stuck run cannot block
   later rounds.
 - Code posts the PR comment. Only on the configured repo, and only on an open pull request whose head

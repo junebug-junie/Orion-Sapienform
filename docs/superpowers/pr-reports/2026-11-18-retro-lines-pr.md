@@ -195,6 +195,8 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -f - < scripts
 - Severity: low. Concern: the near-copy cut-off (0.45) and the expected checkable share (about 8%) come from step 0, not live play. Mitigation: the dry eval recomputes the cut-off; the live check reports the checkable share.
 - Severity: low. Concern: `hub.retro_commentary` keeps the spec's `deferrable_window_s: 300` (families.py accepts it; the brief's "smallest accepted value" note applied to a 0 the spec never set for this family). The producer never holds a want: only `funded` runs.
 - Departures from spec, stated: see the spec's "Patch 3 is built" note (any person's message yields, frames route needs the hub token, line act opens and closes at delivery, lines out of the letter's chat gather, the per-turn game block with notes and the stance cancel listener not built).
+- Severity: low. Concern: CI's Retro preflight browser eval (`evals/retro_browser.mjs`, a patch 1-era eval this PR does not edit) failed once at a `#stop` click ("Node is either not clickable") after a load-from-save, and passed on rerun; main's last 3 runs passed. Not reproduced. Mitigation: if it recurs, check whether the new chat strip or panel ever covers the "More" controls.
+- CI: 60 of 60 checks green after one test fix (the durable-runs cap parity test pinned the old exempt list).
 - Issues opened: #3741 (verify-live, needs-juniper), #3742 (chat turns see no look notes), #3743 (play arc staleness close), #3744 (watch switch not in fullscreen). Commented: #3658. Issues closed: none (the play part of #3457 closes when #3741 proves the read-back live).
 
 ## PR link

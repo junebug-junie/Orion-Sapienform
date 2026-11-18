@@ -53,6 +53,7 @@ from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW, ReminiscenceRu
 from orion.schemas.consult_turn_run import CONSULT_ORION_TURN_WORKFLOW, ConsultOrionTurnBriefV1
 from orion.schemas.intention import INTENTION_CARRY_WORKFLOW, IntentionCarryBriefV1
 from orion.schemas.session_roundup_run import SESSION_ROUNDUP_WORKFLOW, SessionRoundupBriefV1
+from orion.schemas.dream_day import DREAM_DAY_WORKFLOW, DreamDayBriefV1
 from orion.schemas.resource_admission import ResourceRequirementV1
 
 DURABLE_RUN_REQUEST_CHANNEL = "orion:durable:run:request"
@@ -122,6 +123,10 @@ DurableWorkflowV1 = Literal[
     # orion-sql-writer, orion-actions and orion-cortex-orch, then orion-durable-runs, and orion-hub (the only
     # producer) last.
     "session_roundup.orion_turn",
+    # The day dream Patch 2 (2026-11-18, orion/schemas/dream_day.py): one run a Denver night, submitted by
+    # orion-durable-runs' own night tick (or POST /dream-day/run). ADDITIVE on Literal/forbid, consumer-first:
+    # deploy orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+    "dream.day",
 ]
 
 # The runner's node names, in order. `attention_reason` on the surface lane
@@ -249,7 +254,7 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: ReadingResonanceRunBriefV1 | CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1 | HarnessEchoSmokeBriefV1 | PrFieldNoteBriefV1 | ReminiscenceRunBriefV1 | ConsultOrionTurnBriefV1 | IntentionCarryBriefV1 | SessionRoundupBriefV1
+    brief: ReadingResonanceRunBriefV1 | CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1 | HarnessEchoSmokeBriefV1 | PrFieldNoteBriefV1 | ReminiscenceRunBriefV1 | ConsultOrionTurnBriefV1 | IntentionCarryBriefV1 | SessionRoundupBriefV1 | DreamDayBriefV1
     admission: ResourceRequirementV1 | None = None
 
     @model_validator(mode="after")
@@ -284,7 +289,9 @@ class DurableRunRequestV1(BaseModel):
             raise ValueError("intention.carry requires IntentionCarryBriefV1")
         if (self.workflow == SESSION_ROUNDUP_WORKFLOW) != isinstance(self.brief, SessionRoundupBriefV1):
             raise ValueError("session_roundup.orion_turn requires SessionRoundupBriefV1")
-        if self.workflow in (SESSION_ROUNDUP_WORKFLOW, INTENTION_CARRY_WORKFLOW, CONSULT_ORION_TURN_WORKFLOW, READING_RESONANCE_WORKFLOW, REMINISCENCE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, HARNESS_ECHO_SMOKE_WORKFLOW, CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
+        if (self.workflow == DREAM_DAY_WORKFLOW) != isinstance(self.brief, DreamDayBriefV1):
+            raise ValueError("dream.day requires DreamDayBriefV1")
+        if self.workflow in (DREAM_DAY_WORKFLOW, SESSION_ROUNDUP_WORKFLOW, INTENTION_CARRY_WORKFLOW, CONSULT_ORION_TURN_WORKFLOW, READING_RESONANCE_WORKFLOW, REMINISCENCE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, HARNESS_ECHO_SMOKE_WORKFLOW, CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
             raise ValueError(f"{self.workflow} runs require durable resource admission")
         return self
 

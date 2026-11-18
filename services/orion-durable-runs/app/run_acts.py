@@ -51,6 +51,7 @@ from orion.schemas.session_roundup_run import SESSION_ROUNDUP_WORKFLOW
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
 from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_WORKFLOW
 from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW
+from orion.schemas.dream_day import DREAM_DAY_WORKFLOW
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,9 @@ class RunActFamily:
     verb: ActVerb
     horizon_sec: float
     basis: str
+    # True: the act's outcome is the run's own grade (``state["produced"]``, note ``state["produced_note"]``),
+    # not just "the run completed". The day dream: a completed night that wrote no memory grades 0.
+    graded_by_run: bool = False
 
 
 # Horizons: from the run's first pool grant to its terminal, measured 2026-10-23 over 30 days of
@@ -153,6 +157,17 @@ FAMILIES: dict[str, RunActFamily] = {
         "artifact_produced (the durable run ends completed: Orion's questions on the held session threads "
         "checkpointed for Hub) by 21600s after its first GPU pool grant. ESTIMATE, not measured (no completed "
         "runs yet, 2026-11-15): 3 attempts x 1800s turn + backoff fits in 6000s; the rest is GPU queue"),
+    # The day dream (2026-11-18, orion/schemas/dream_day.py): one sleep a night that reads the whole closed day. It
+    # is a dream, so it bids and is graded as the EXISTING family dream.cycle (the spec: no new family), with its
+    # own act per run (key = run_id; the sleep cycle's acts key on cycle_id). Graded by the run (pillar 5): 1 only
+    # when at least one memory was written, else 0 with "no lasting trace". No run has completed, so the horizon is
+    # a bound: the run's deadline is the end of its 01:00-03:00 Denver window (deadline + 600 s), 10800 s the floor.
+    "dream_day": RunActFamily(
+        "dream_day", "dream.cycle", "make", 10800.0,
+        "artifact_produced (the dream.day run wrote at least one memory of the day, channel dream, read back in the "
+        "same transaction) by 10800s after its first GPU pool grant, or by the run's own admission deadline + 600s "
+        "when that is later. ESTIMATE, not measured (no completed runs yet, 2026-11-18)",
+        graded_by_run=True),
 }
 
 
@@ -164,7 +179,8 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
     design default 2026-11-07), pr.field_note (make; tier-1 upkeep, Juniper
     2026-11-04 -- named here so each note is an act with a measured cost), consult.orion_turn
     (ask; tier 2, Juniper 2026-11-12), intention.carry (make; tier 1, Juniper 2026-11-13),
-    session_roundup.orion_turn (ask; tier 2, design default 2026-11-15). Excluded on purpose:
+    session_roundup.orion_turn (ask; tier 2, design default 2026-11-15), dream.day (make; actor dream.cycle,
+    the existing tier-1 family, graded by the run's own ``produced``). Excluded on purpose:
 
     * urgent curiosity runs (``brief.urgent`` set): an incident report a sensor alarm forced
       (cabinet AC, GPU heat), a reflex rather than a want;
@@ -199,6 +215,8 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
         return FAMILIES["intention_carry"]
     if workflow == SESSION_ROUNDUP_WORKFLOW:
         return FAMILIES["session_roundup"]
+    if workflow == DREAM_DAY_WORKFLOW:
+        return FAMILIES["dream_day"]
     return None
 
 
@@ -249,8 +267,12 @@ def closed_event(family: RunActFamily, state: dict[str, Any], *, status: str, op
     error = state.get("last_error")
     if status != "completed" and error:
         note = f"{status}: {error}"
+    produced = status == "completed"
+    if family.graded_by_run and produced:
+        produced = bool(state.get("produced"))
+        note = str(state.get("produced_note") or ("produced" if produced else "no lasting trace"))
     return act_closed_event(
-        act, produced=status == "completed", source_service=SOURCE_SERVICE,
+        act, produced=produced, source_service=SOURCE_SERVICE,
         source_component=f"durable_run.{family.family}.act", note=note,
         cost=ActCostV1(seconds=round(wall, 3)) if wall >= 0 else None,
         correlation_id=str(state.get("correlation_id") or "") or None,

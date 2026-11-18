@@ -908,6 +908,23 @@ async def dream_day_plan(day: str | None = None) -> dict[str, Any]:
     return {**result.as_dict(), "prompt": prompt}
 
 
+@app.get("/dream-day/result")
+async def dream_day_result(day: str) -> dict[str, Any]:
+    """The stored night for one Denver day, for Prime (day-dream Patch 2b): ``found``, ``run_id``, ``produced``
+    and the ref-checked ``plan`` (``DreamDayPlanItemV1`` dicts). Read-only. ``found: false`` when no row exists."""
+    from datetime import date as _date
+
+    from app.dream_day_store import read_result
+
+    if dream_day is None:
+        raise HTTPException(503, "the day dream is off (DREAM_DAY_ENABLED / admission)")
+    try:
+        target = _date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(400, f"day is not a date: {day!r}") from exc
+    return (await read_result(dream_day.pool, target)) or {"day": target.isoformat(), "found": False}
+
+
 @app.post("/dream-day/run")
 async def dream_day_run(day: str) -> dict[str, Any]:
     """The hand trigger: submit one dream.day run for a closed Denver day of the last week, outside the night

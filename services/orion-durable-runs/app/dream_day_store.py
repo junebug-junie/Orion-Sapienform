@@ -56,6 +56,8 @@ SELECT hypothesis_id, cycle_id, arm, coalesce(claim, '') AS claim, coalesce(why,
   FROM dream_hypothesis WHERE cycle_id = ANY(%s) ORDER BY created_at
 """
 STORED_SQL = "SELECT run_id, memories_written, memory_ids, produced, note FROM dream_day WHERE day = %s"
+# Day-dream Patch 2b: what Prime reads to apply the night's plan (orion/prime/day_dream.py).
+RESULT_SQL = "SELECT day, run_id, produced, plan FROM dream_day WHERE day = %s"
 COUNT_SQL = "SELECT count(*) AS n FROM episode_memory WHERE memory_id = ANY(%s::uuid[]) AND channel = 'dream'"
 INSERT_SQL = """
 INSERT INTO dream_day (day, run_id, status, produced, note, memories_written, memory_ids, items_dropped, refs_dropped,
@@ -75,6 +77,19 @@ def _aware(v: Any) -> datetime:
 
 
 # --------------------------------------------------------------------------- gather
+
+
+async def read_result(pool: Any, day: date) -> Optional[dict[str, Any]]:
+    """The stored night for ``day`` as Prime needs it: run, produced, and the ref-checked plan. None: no row."""
+    async with pool.connection() as conn:
+        row = await (await conn.execute(RESULT_SQL, (day,))).fetchone()
+    if row is None:
+        return None
+    r = dict(row)
+    plan = r.get("plan")
+    plan = json.loads(plan) if isinstance(plan, str) else (plan or [])
+    return {"day": day.isoformat(), "found": True, "run_id": r.get("run_id"), "produced": bool(r.get("produced")),
+            "plan": [p for p in plan if isinstance(p, dict)]}
 
 
 async def read_dreams(pool: Any, day: date) -> list[DreamDayCycleV1]:

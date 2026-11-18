@@ -190,6 +190,7 @@ from orion.prime.acts import (
     thought_act,
     treated_focus_gone,
 )
+from orion.prime import day_dream as dd
 from orion.prime import day_letter as dl
 from orion.prime import hunger as hg
 from orion.prime import intention as it
@@ -377,6 +378,9 @@ class PrimeRuntime(MindLoopRuntime):
         # The day letter (Part 3): its own record, saved under dl.DAY_LETTER_KEY.
         self.day_letter = dl.PrimeDayLetterStateV1()
         self._day_letter_checked_at: Optional[datetime] = None
+        # The day dream's plan (day-dream Patch 2b): its own record, saved under dd.DREAM_DAY_KEY.
+        self.dream_day = dd.PrimeDreamDayStateV1()
+        self._dream_day_checked_at: Optional[datetime] = None
         # Intentions (Step -1): its own record, saved under it.INTENTIONS_KEY. concern_id -> last look.
         self.intentions = it.PrimeIntentionsStateV1()
         self._intention_checked_at: dict[str, datetime] = {}
@@ -505,6 +509,13 @@ class PrimeRuntime(MindLoopRuntime):
                     self.day_letter = dl.PrimeDayLetterStateV1.model_validate_json(raw)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("prime_day_letter_load_failed err=%s (starting empty)", str(exc)[:200])
+        if self._dream_day_on():
+            try:
+                raw = await self.bus.redis.get(dd.DREAM_DAY_KEY)
+                if raw:
+                    self.dream_day = dd.PrimeDreamDayStateV1.model_validate_json(raw)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("prime_dream_day_load_failed err=%s (starting empty)", str(exc)[:200])
         if self._intentions_on():
             try:
                 raw = await self.bus.redis.get(it.INTENTIONS_KEY)
@@ -538,6 +549,11 @@ class PrimeRuntime(MindLoopRuntime):
                 await self.bus.redis.set(dl.DAY_LETTER_KEY, self.day_letter.model_dump_json())
             except Exception as exc:  # noqa: BLE001
                 logger.warning("prime_day_letter_save_failed err=%s", type(exc).__name__)
+        if self._dream_day_on():
+            try:
+                await self.bus.redis.set(dd.DREAM_DAY_KEY, self.dream_day.model_dump_json())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("prime_dream_day_save_failed err=%s", type(exc).__name__)
         if self._intentions_on():
             try:
                 await self.bus.redis.set(it.INTENTIONS_KEY, self.intentions.model_dump_json())
@@ -569,6 +585,8 @@ class PrimeRuntime(MindLoopRuntime):
             inputs.turns = turn_lines(self.turn_record, now)
         if self._day_letter_on():
             await self._day_letter_upkeep(now)
+        if self._dream_day_on():
+            await self._dream_day_upkeep(now)
         if self._intentions_on():
             await self._intention_upkeep(now)
         await self._maybe_settle(now)
@@ -706,6 +724,41 @@ class PrimeRuntime(MindLoopRuntime):
         await self._flush_concern_acts()
 
     # --- the day letter: Prime's end-of-day turn (living Prime design, Part 3) -----------------
+    # --- the day dream's plan (day-dream Patch 2b) ---------------------------------------------
+    def _dream_day_on(self) -> bool:
+        return bool(getattr(self.s, "PRIME_DREAM_DAY_ENABLED", False))
+
+    async def _dream_day_upkeep(self, now: datetime) -> None:
+        """Once per Denver day: read last night's dream_day row and apply its plan (orion/prime/day_dream.py).
+        Throttled to dd.CHECK_INTERVAL_SEC. Never raises into the tick."""
+        last = self._dream_day_checked_at
+        if last is not None and (now - last).total_seconds() < dd.CHECK_INTERVAL_SEC:
+            return
+        self._dream_day_checked_at = now
+        try:
+            await self._dream_day_step(now)
+        except Exception:  # noqa: BLE001
+            logger.warning("prime_dream_day_step_failed", exc_info=True)
+
+    async def _dream_day_step(self, now: datetime) -> None:
+        day = dl.yesterday(now)
+        if dd.is_applied(self.dream_day, day):
+            return
+        url = f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/dream-day/result?day={day.isoformat()}"
+        data, err = await self._read(url)
+        if data is None:
+            logger.info("prime_dream_day_unread day=%s err=%s", day, err)
+            return
+        if not data.get("found"):
+            return  # tonight's run has not written yet; checked again later
+        plan = dd.parse_plan(data.get("plan"))
+        taken_on = frozenset(it.open_ids(self.intentions)) if self._intentions_on() else frozenset()
+        self.state, done = dd.apply_plan(self.state, day, plan, now, run_id=data.get("run_id"), taken_on=taken_on)
+        self.dream_day = dd.record(self.dream_day, done)
+        logger.info("prime_dream_day_applied day=%s run=%s dropped=%s opened=%s kept=%d skipped=%s", day,
+                    done.run_id or "-", ",".join(done.dropped) or "-", ",".join(done.opened) or "-", done.kept,
+                    "; ".join(done.skipped) or "-")
+
     def _day_letter_on(self) -> bool:
         return bool(getattr(self.s, "PRIME_DAY_LETTER_ENABLED", False))
 

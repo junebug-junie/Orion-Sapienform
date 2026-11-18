@@ -190,6 +190,10 @@ class Settings(BaseSettings):
     # turn. When yesterday is closed and has no letter, Prime opens a `make` act and orders the letter run from Hub
     # (PRIME_HUB_URL). Tier 0: no bid. false = Prime never writes a letter (Hub's timer is retired: no letters).
     PRIME_DAY_LETTER_ENABLED: bool = Field(default=True, alias="PRIME_DAY_LETTER_ENABLED")
+    # Day-dream Patch 2b (orion/prime/day_dream.py): once a Denver day, apply the nightly dream.day plan from
+    # PRIME_DURABLE_RUNS_URL/dream-day/result: drop closes a concern, one new opens like a letter thread, a keep
+    # renews nothing. false = the plan stays in the dream_day row only.
+    PRIME_DREAM_DAY_ENABLED: bool = Field(default=True, alias="PRIME_DREAM_DAY_ENABLED")
     # Runs ordered for one day at most: a run that wrote nothing is ordered again while the deadline holds.
     PRIME_DAY_LETTER_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=10, alias="PRIME_DAY_LETTER_MAX_ATTEMPTS")
     # The letter turn's budget per attempt (the run's timeout_sec).

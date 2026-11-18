@@ -124,7 +124,8 @@ class WantV1(BaseModel):
     # mismatch is decided at the config's tier and named in the decision's warnings.
     tier: Literal[1, 2]
     # When this want arose. Intensity grows from the family's last act close (or from here, if
-    # the family never closed an act), never from the bid time.
+    # the family never closed an act), never from the bid time. A ``hunger_from: want_opened`` family
+    # (orion/physiology/families.py) always counts from here: durable.intention's is the promise's time (#3640).
     opened_at: Optional[AwareDatetime] = None
     # Market-filled when None: 0..1, rises with time unfunded at the family's rate.
     intensity: Optional[float] = Field(default=None, ge=0.0, le=1.0)

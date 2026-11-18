@@ -80,3 +80,37 @@ def test_durable_intention_is_the_one_want_opened_family_in_the_live_config():
     fams, err = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
     assert err is None
     assert [f for f, c in fams.families.items() if c.hunger_from == "want_opened"] == ["durable.intention"]
+
+
+def test_a_graded_family_mean_outcome_does_not_sink_the_rank():
+    """Review #1: the rank IS the promise's age. A 0.10 follow-through mean must not scale it to ~0 again."""
+    acts = [ActRecord(act_id=f"g{i}", family="durable.intention", opened_at=NOW - timedelta(hours=i + 1, minutes=30),
+                      closed_at=NOW - timedelta(hours=i + 1), outcome_value=0.1, outcome_source="producer")
+            for i in range(35)]
+    app, h, rank, basis = _rank(WANT, acts, NOW - timedelta(hours=36))
+    assert app.graded and app.mean_outcome == pytest.approx(0.1)
+    assert basis == "want_opened:graded" and rank == pytest.approx(1 - math.exp(-36 * 3600 / DAY))
+
+
+def test_the_real_choice_ranks_an_intention_want_by_the_promise_age():
+    """Review #2: through orion.physiology.choice.decide (the market's own code), not a hand-copied hunger/rank."""
+    from orion.physiology.choice import ReservationBook, build_context, decide
+    from orion.schemas.physiology import PhysiologyConstraintReadingV1 as R, PhysiologyStateV1
+    from orion.schemas.physiology_want import WantV1, WantWindowV1
+
+    fams, _ = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
+    price = {"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 3600.0, "why": ""}
+    lanes = [R(constraint=f"lane:{r}", unit="slot_s", level=0.0, budget=3600.0, budget_kind="capacity",
+               detail={"slots": 1, "lease_s": 0.0, "window_sec": 3600.0, "deferrable_queued": 3,
+                       "deferrable_waiting_sec": 20000.0}, price=price) for r in ("agent", "agent-gpu2", "agent-deep")]
+    state = PhysiologyStateV1(tick_id="t", generated_at=NOW, constraints=lanes)
+    closed = [ActRecord(act_id="c0", family="durable.intention", opened_at=NOW - timedelta(hours=1),
+                        closed_at=NOW - timedelta(minutes=5), outcome_value=1.0, outcome_source="producer")]
+    ctx = build_context(fams, closed, [], state, NOW, weights={})
+    for hours in (0.01, 6, 36):
+        w = WantV1(want_id=f"intention-{hours}", family="durable.intention", producer="durable-runs", verb="make",
+                   tier=1, opened_at=NOW - timedelta(hours=hours),
+                   window=WantWindowV1(latest=NOW + timedelta(hours=72 - hours)))
+        d = decide(w, state, ctx, ReservationBook(), NOW)
+        assert d.value_rank == pytest.approx(1 - math.exp(-hours * 3600 / DAY), abs=1e-4), (hours, d.why)
+        assert "since_opened" in d.why and "want_opened" in d.why

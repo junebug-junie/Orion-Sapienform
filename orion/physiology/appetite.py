@@ -33,8 +33,9 @@ vehicle ask (expected answer 0.135) rank 0.025, so it was funded.
 **Hunger from the want's own open (#3640).** A family configured ``hunger_from: want_opened``
 (``config/physiology/families.yaml``) is not a recurring drive: each want is a debt with its own birth
 time. Its hunger counts from the want's ``opened_at`` even after the family has closed acts (no close of
-another want resets it, and no lane seed raises it), its tau is its ``deferrable_window_s`` (the close rhythm is not its clock), and its
-rank is that intensity itself (basis ``want_opened:<graded|ungraded>``): the family's close-gap history
+another want resets it, and no lane seed raises it), its tau is its ``deferrable_window_s`` (the close
+rhythm is not its clock), and its rank is that intensity itself, never scaled by the family's mean outcome
+(basis ``want_opened:<graded|ungraded>``): the family's close-gap history
 measures a different clock, so it is not a reference. durable.intention: the want opens at the promise's
 time, so a take-on's rank is the age of the promise (Juniper 2026-11-18), low for a fresh promise.
 
@@ -310,8 +311,11 @@ def rank_value(app: FamilyAppetite, want_intensity: float, outcome_value: Option
     # Cold start: too few past events to rank against, so the rule every want had before (patch 1).
     cold = "event_cold:" if event else ""
     if app.hunger_from == "want_opened":
-        # The want's own age is the rank (#3640): no close-gap history is its reference.
-        return min(1.0, max(0.0, x)), f"{cold}want_opened:{basis}", out
+        # The want's own age IS the rank (#3640, Juniper 2026-11-18): no close-gap history is its reference, and
+        # the family's mean outcome does not scale it (an absolute rank x a 0.10 follow-through mean would sink
+        # every promise back to ~0, the bug this fixes). ``out`` is returned for the trace only. (An event want of
+        # such a family with EVENT_HISTORY_MIN past events took the event branch above.)
+        return min(1.0, max(0.0, want_intensity * mult)), f"{cold}want_opened:{basis}", out
     if not app.values:
         return min(1.0, max(0.0, want_intensity * mult)), f"{cold}no_history", out
     return mid_rank(x, app.values), f"{cold}{basis}", out

@@ -234,7 +234,7 @@ def hold_end(want: WantV1, deferrable_window_s: float,
              margin_sec: float = HOLD_DEADLINE_MARGIN_SEC, *, held_from: Optional[datetime] = None) -> Optional[datetime]:
     """When a held want stops waiting and asks the pool anyway: ``held_from`` (the run's own request time; the
     binder passes it, so an intention want opened at its promise time still holds from its request, #3640),
-    else ``opened_at``, + the family's
+    else ``opened_at`` (only when the request has no readable ``requested_at``), + the family's
     deferrable window, but never later than ``margin_sec`` (default ``HOLD_DEADLINE_MARGIN_SEC``; the
     binder passes ``deadline_margin_sec``) before the run's own admission deadline (a run released AT
     its deadline would fail at once). None: no opened_at and no deadline -- the caller treats that as

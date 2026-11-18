@@ -26,12 +26,12 @@ Every turn is shown live in Hub chat and stored in ``orion_consult_turn``. Turns
 
 **The mesh edge (issues #3541, #3554).** Claude is outside Orion's mesh. Every prompt bound for
 Claude passes ``_send_claude``, and there the mesh-edge check (``orion/memory/mesh_edge.py``) blanks
-any span that quotes, or repeats an 8+ word run of, a core-page or lived-memory sentence. It
+every sentence that quotes, or repeats an 8+ word run of, a core-page or lived-memory sentence. It
 redacts rather than refuses: Orion's turn has already run and there is no author in the loop to
 rewrite it, while the rest of the text is the plumbing question Claude needs. Hub chat gets a line
-saying how many spans were withheld. The stored turn keeps the original (Hub is inside the mesh).
-If the guard cannot load, the send is held (fail closed) and retried on the next tick; if a span
-cannot be placed for redaction, the consult fails rather than send it.
+saying how many passages were withheld. The stored turn keeps the original (Hub is inside the mesh).
+If the guard cannot load (or errors), the send is held (fail closed), Hub chat says so once, and
+the next tick retries; if a match survives redaction, the consult fails rather than send it.
 """
 
 from __future__ import annotations
@@ -636,9 +636,14 @@ class ConsultLoop:
             return {"waiting": cid, "for": "relay"}
         outbound, edge = await self._mesh_edge(prompt)
         if edge == "unavailable":
+            first_hold = not str(row.get("status_reason") or "").startswith(MESH_EDGE_HOLD)
             await set_status(pool, cid, "open", f"{MESH_EDGE_HOLD}unavailable", pending_prompt=prompt,
                              pending_correlation_id=None)
-            logger.warning("consult_mesh_edge_held id=%s why=guard_unavailable", cid)
+            if first_hold:
+                # Once per hold, not every tick: the hold lasts until the guard loads again.
+                logger.warning("consult_mesh_edge_held id=%s why=guard_unavailable", cid)
+                self._push_turn(cid, 0, "Hub", "Held: the private-memory check could not load, so nothing goes "
+                                               "to Claude until it does. Retrying every tick.")
             return {"waiting": cid, "for": "mesh_edge"}
         if edge == "refused":
             await set_status(pool, cid, "failed", "mesh_edge_refused", pending_prompt=None, pending_correlation_id=None)
@@ -646,7 +651,7 @@ class ConsultLoop:
                                            "withheld cleanly, so nothing was sent to Claude.")
             return {"failed": cid, "why": "mesh_edge_refused"}
         if edge:
-            self._push_turn(cid, 0, "Hub", f"{edge} span(s) quoting private memory were withheld from Claude's copy.")
+            self._push_turn(cid, 0, "Hub", f"{edge} passage(s) quoting private memory were withheld from Claude's copy.")
         correlation_id = str(uuid.uuid4())
         # Written BEFORE the invite: a crash after it is a lost reply (resent once), never an
         # unknown request in flight. The stored prompt is the redacted one: a resend re-checks it.
@@ -666,13 +671,17 @@ class ConsultLoop:
 
         try:
             guard = await asyncio.to_thread(self._mesh_edge_guard_loader or load_guard)
+            redacted, hits = guard.redact(prompt)
+            survives = bool(hits) and bool(guard.find(redacted))
         except MeshEdgeUnavailable:
             return prompt, "unavailable"
-        redacted, hits = guard.redact(prompt)
+        except Exception as exc:  # noqa: BLE001 -- any guard failure holds the send (fail closed)
+            logger.warning("consult_mesh_edge_error err=%s", type(exc).__name__)
+            return prompt, "unavailable"
         if not hits:
             return prompt, None
         kinds = sorted({h.source.split(":", 1)[0] for h in hits})
-        if guard.find(redacted):
+        if survives:
             logger.warning("consult_mesh_edge_refused hits=%s kinds=%s", len(hits), kinds)
             return prompt, "refused"
         spans = redacted.count(MESH_EDGE_MARKER) - prompt.count(MESH_EDGE_MARKER)

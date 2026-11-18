@@ -616,3 +616,48 @@ async def test_the_gate_retry_prompt_also_passes_the_mesh_edge(world):
     row = world.store.rows[cid]
     assert row["status_reason"] == f"{cl.MESH_EDGE_HOLD}unavailable" and "refused" in row["pending_prompt"]
     assert len(world.relay.invites) == 1, "the correction is held, not sent unchecked"
+
+
+@pytest.mark.asyncio
+async def test_any_guard_error_holds_the_send_with_one_hub_notice(world):
+    def broken():
+        raise RuntimeError("bug in the loader")
+
+    world.guard_box["load"] = broken
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m6", question="Journal broke?")
+    await world.loop.tick()
+    await world.loop.tick()
+    assert world.relay.invites == []
+    assert world.store.rows[cid]["status_reason"] == f"{cl.MESH_EDGE_HOLD}unavailable"
+    notices = [p for p in world.pushed if p.get("kind") == cl.CONSULT_TURN_KIND and "Held" in json.dumps(p)]
+    assert len(notices) == 1, "Hub chat hears about the hold once, not every tick"
+
+
+@pytest.mark.asyncio
+async def test_the_lost_reply_resend_re_checks_against_a_newer_guard(world):
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m7", question="Journal?")
+    world.outreach.replies = ["The lease leaks. She walked the long way home past the bakery because the bridge "
+                              "was shut. That is all."]
+    await world.loop.tick()
+    assert "bakery" in world.relay.invites[-1]["prompt"], "the memory was not guarded yet"
+    world.guard_box["load"] = _private_guard  # the memory is guarded now
+    world.store.rows[cid]["updated_at"] = NOW - timedelta(seconds=world.loop.claude_timeout_sec + 5)
+    await world.loop.tick()
+    assert len(world.relay.invites) == 2
+    assert "bakery" not in world.relay.invites[-1]["prompt"] and REDACTION_MARKER in world.relay.invites[-1]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_the_budget_hold_resend_is_redacted(world):
+    world.outreach.replies = ["The lease leaks. She walked the long way home past the bakery because the bridge "
+                              "was shut. That is all."]
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:m8", question="Journal?")
+    world.loop.meter["weekly_limit"] = meter("weekly_limit", state="limited")
+    world.store.rows[cid]["status"], world.store.rows[cid]["status_reason"] = "open", cl.AWAIT_ORION
+    await world.loop.tick()
+    assert world.relay.invites == [] and world.store.rows[cid]["status_reason"].startswith(cl.BUDGET)
+    world.guard_box["load"] = _private_guard
+    world.loop.meter["weekly_limit"] = meter("weekly_limit")
+    await world.loop.tick()
+    sent = world.relay.invites[-1]["prompt"]
+    assert "bakery" not in sent and REDACTION_MARKER in sent and "lease leaks" in sent

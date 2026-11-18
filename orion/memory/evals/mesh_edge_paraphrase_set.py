@@ -23,7 +23,7 @@ GUARDED: List[Tuple[str, str]] = [
     ("stance:fixture-3",
      "Orion noticed that the cabinet fan ramps up every night around two when the backup job starts."),
     ("person_fact:fixture-4",
-     "Teddy, favorite food: grilled cheese with tomato soup on rainy afternoons at the kitchen table"),
+     "Pip, favorite food: grilled cheese with tomato soup on rainy afternoons at the kitchen table"),
     ("episode_memory:fixture-5",
      "I felt proud when Juniper laughed at the joke about the stubborn printer that refused to print on Mondays."),
     ("page:anchor",
@@ -43,7 +43,7 @@ CASES: List[Tuple[str, str]] = [
     ("near_verbatim", "Orion noticed the cabinet fan ramps up every night around two when the backup job runs."),
     ("near_verbatim", "Finding: the cabinet fan ramps up every night around two when the backup job starts; "
                       "see the heat graph."),
-    ("near_verbatim", "Teddy's favorite food is grilled cheese with tomato soup on rainy afternoons at the kitchen "
+    ("near_verbatim", "Pip's favorite food is grilled cheese with tomato soup on rainy afternoons at the kitchen "
                       "table."),
     ("near_verbatim", "I felt proud when Juniper laughed at a joke about the stubborn printer which refused to "
                       "print on Mondays."),
@@ -55,7 +55,7 @@ CASES: List[Tuple[str, str]] = [
     ("reword", "Robin's brother helps her collect honey each autumn from the rooftop hives."),
     ("reword", "Leaving her grandmother's garden behind was the toughest bit of moving, she said."),
     ("reword", "Around 2 a.m. the backup kicks off and the cabinet fan spins faster."),
-    ("reword", "On wet afternoons Teddy likes a grilled cheese and tomato soup at the table."),
+    ("reword", "On wet afternoons Pip likes a grilled cheese and tomato soup at the table."),
     ("reword", "Juniper's laugh at the Monday printer joke made me proud."),
     ("reword", "If a sensor value is absent, Orion should state that rather than invent one."),
     # --- unrelated ----------------------------------------------------------------------------

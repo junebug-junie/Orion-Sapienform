@@ -21,12 +21,12 @@ is not a leak of anything. Two matches run on the same text (issue #3554):
 - **Shingle.** Any run of ``SHINGLE_WORDS`` (default 8) consecutive normalized words shared with
   one guarded sentence. This catches near-verbatim edits: a word swapped at one end, a clause
   cut, a sentence spliced into a longer one. Articles (a/an/the) and which/that are folded to one
-  word each first; nothing is stemmed. It does not catch real rewording (the embedding check in
-  #3554 is still open for that). ``ORION_MESH_EDGE_SHINGLE_WORDS`` sets the run length; 0 turns it
+  word each first; nothing is stemmed. It does not catch real rewording (follow-up #3699;
+  the embedding idea from #3554). ``ORION_MESH_EDGE_SHINGLE_WORDS`` sets the run length; 0 turns it
   off. The threshold was tuned on made-up paraphrases and on real public PR and issue bodies
   (``orion/memory/evals/run_mesh_edge_shingle_eval.py``).
 
-``MeshEdgeGuard.redact`` blanks the matching words instead of refusing, for a writer with no
+``MeshEdgeGuard.redact`` blanks each sentence holding a match instead of refusing, for a writer with no
 author in the loop to rewrite (the Claude consult send, issue #3541).
 
 Failure mode is closed: a writer that cannot load the guarded text must refuse, not send
@@ -103,6 +103,8 @@ class MeshEdgeUnavailable(RuntimeError):
 
 
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+# Invisible characters that would otherwise split one word in two ("qu<ZWSP>iet").
+_INVISIBLE = re.compile("[\u200b-\u200d\u2060\ufeff\u00ad]")
 _CONTROL_ESCAPE = re.compile(r"\\[nrt]")
 
 
@@ -116,6 +118,7 @@ def normalize(text: str) -> str:
     raw = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), raw)
     raw = _CONTROL_ESCAPE.sub(" ", raw)
     raw = raw.replace("'\\''", "'").replace("\\", "")
+    raw = _INVISIBLE.sub("", raw)
     folded = raw.translate(_QUOTES).lower().replace("'", "")
     return " ".join(_NON_WORD.sub(" ", folded).split())
 
@@ -152,11 +155,13 @@ class LeakHit:
 
 
 _TOKEN = re.compile(r"\S+")
+_SENTENCE_END = re.compile(r"[.!?][\"')\]*_`’”]*$")
 # A URL, file path, code identifier or module name inside a guarded sentence is a public pointer,
 # not private prose: "https://github.com/<owner>/<repo>/pull/12" alone normalizes to 8+ words.
 # Such tokens split a guarded sentence into separate runs for shingling (verbatim matching still
 # uses the whole sentence). Outgoing text is never stripped, so nothing can hide inside a URL.
-_POINTER_TOKEN = re.compile(r"://|^www\.|[/\\_`]|[A-Za-z0-9]\.[A-Za-z]{2,}")
+# Ordinary prose like "she/her", "and/or" or "24/7" is NOT a pointer (one slash, no extension).
+_POINTER_TOKEN = re.compile(r"://|^www\.|/[^/\s]*/|\\|`|\w_\w|[A-Za-z0-9]\.[A-Za-z]{2,}")
 
 
 def prose_segments(sentence: str) -> List[List[str]]:
@@ -193,7 +198,7 @@ class MeshEdgeGuard:
                 norm = normalize(sent)
                 words = norm.split()
                 if len(words) >= min_words:
-                    phrases.setdefault(norm, source)
+                    phrases.setdefault(" ".join(fold_words(norm)), source)
                 if n and len(words) >= n:
                     for segment in prose_segments(sent):
                         for i in range(len(segment) - n + 1):
@@ -212,12 +217,12 @@ class MeshEdgeGuard:
         return out
 
     def find(self, text: str) -> List[LeakHit]:
-        norm = normalize(text)
-        hay = " " + norm + " "
+        folded = fold_words(normalize(text))
+        hay = " " + " ".join(folded) + " "
         hits = [LeakHit(source=src, words=len(p.split())) for p, src in self.phrases.items() if f" {p} " in hay]
         seen = {h.source for h in hits}
         covered: dict[str, set] = {}
-        for i, src in self._shingle_positions(fold_words(norm)):
+        for i, src in self._shingle_positions(folded):
             if src not in seen:
                 covered.setdefault(src, set()).update(range(i, i + self.shingle_n))
         hits.extend(LeakHit(source=src, words=len(idx), kind="shingle") for src, idx in covered.items())
@@ -229,23 +234,33 @@ class MeshEdgeGuard:
             raise MeshEdgeLeak(surface, hits)
 
     def redact(self, text: str, *, marker: str = REDACTION_MARKER) -> tuple[str, List[LeakHit]]:
-        """``text`` with every word inside a verbatim or shingle match replaced by ``marker`` (one
-        marker per run of withheld words), and the hits found in the original. The caller must
-        ``find`` again on the result and refuse if anything is left: normalization across token
-        boundaries can, rarely, match where per-token mapping cannot place the span."""
+        """``text`` with every outgoing sentence that holds a verbatim or shingle match replaced by
+        ``marker`` (one marker per run of withheld sentences), and the hits found in the original.
+
+        The whole sentence goes, not just the matched words: a near-miss leaves neighbouring
+        guarded words in clear, and the writers that redact have no author waiting to rewrite, so
+        over-redaction is cheap. The caller must ``find`` again on the result and refuse if
+        anything is left: normalization across token boundaries can, rarely, match where the
+        per-token mapping cannot place the span."""
         hits = self.find(text)
         if not hits:
             return text, []
         tokens = list(_TOKEN.finditer(text))
         owner: List[int] = []   # normalized word index -> token index
         norm_words: List[str] = []
+        sentence_of: List[int] = []  # token index -> outgoing sentence number
+        sid = 0
         for t_idx, m in enumerate(tokens):
-            for w in normalize(m.group(0)).split():
+            gap = text[tokens[t_idx - 1].end():m.start()] if t_idx else ""
+            if t_idx and ("\n" in gap or _SENTENCE_END.search(tokens[t_idx - 1].group(0))):
+                sid += 1
+            sentence_of.append(sid)
+            for w in fold_words(normalize(m.group(0))):
                 norm_words.append(w)
                 owner.append(t_idx)
         withheld: set = set()
         n = self.shingle_n
-        for i, _src in self._shingle_positions([_FUNCTION_FOLD.get(w, w) for w in norm_words]):
+        for i, _src in self._shingle_positions(norm_words):
             withheld.update(owner[j] for j in range(i, i + n))
         joined = " ".join(norm_words)
         hay = " " + joined + " "
@@ -265,6 +280,8 @@ class MeshEdgeGuard:
                 at = hay.find(needle, at + 1)
         if not withheld:
             return text, hits
+        hit_sentences = {sentence_of[t] for t in withheld}
+        withheld = {t for t in range(len(tokens)) if sentence_of[t] in hit_sentences}
         out: List[str] = []
         cursor = 0
         in_run = False

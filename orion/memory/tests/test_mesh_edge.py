@@ -183,12 +183,46 @@ def test_paraphrase_set_near_verbatim_refused_unrelated_pass_at_the_shipped_thre
     assert all(longest_shared_run(t, GUARDED) < SHINGLE_WORDS for t in misses)
 
 
-def test_redact_blanks_the_shared_run_and_keeps_the_rest():
+def test_redact_blanks_the_whole_sentence_holding_a_match_and_keeps_the_rest():
     text = "Status update. She walked the long way home past the bakery because the bridge was shut. CI is green."
     out, hits = _sg().redact(text)
-    assert hits and REDACTION_MARKER in out
-    assert "bakery" not in out and "Status update." in out and "CI is green." in out
+    assert hits and out == f"Status update. {REDACTION_MARKER} CI is green."
     assert _sg().find(out) == []
+
+
+def test_redact_does_not_leave_near_miss_neighbours_in_clear():
+    text = "So she walked the long way home past the bakery because the river was high, then slept."
+    out, _ = _sg().redact(text)
+    assert out == REDACTION_MARKER and "river" not in out
+
+
+def test_redact_keeps_one_marker_across_punctuation_tokens():
+    out, _ = _sg().redact("Done. Juniper told me she walked the long way home — past the bakery because the bridge "
+                          "was closed for repairs. Next.")
+    assert out.count(REDACTION_MARKER) == 1 and out.startswith("Done.") and out.endswith("Next.")
+
+
+def test_known_gap_a_mid_sentence_swap_in_a_short_sentence_passes():
+    """Stated limit (#3554 follow-up): 12 words, middle word changed, leaves two runs of 5-6."""
+    guard = MeshEdgeGuard.from_texts([("stance:s", "Robin painted the shed blue beside the old pear tree last spring.")],
+                                     shingle_n=8)
+    assert guard.find("Robin painted the shed blue besides the old pear tree last spring.") == []
+
+
+def test_a_single_slash_in_a_guarded_sentence_does_not_split_its_runs():
+    guard = MeshEdgeGuard.from_texts([("person_fact:p", "Robin uses she/her and keeps the honey jars on the top shelf")],
+                                     shingle_n=8)
+    assert guard.find("note: Robin uses she/her and keeps the honey jars somewhere")
+
+
+def test_articles_fold_in_the_verbatim_match_too():
+    guard = MeshEdgeGuard.from_texts([("page:anchor", "Robin hates the cold coffee here")], shingle_n=8)
+    assert guard.find("Robin hates a cold coffee here.")
+
+
+def test_zero_width_characters_do_not_split_words():
+    assert normalize("qu\u200biet") == "quiet"
+    assert _sg().find("she walked the long way home past the bak\u200bery because the bridge")
 
 
 def test_redact_handles_verbatim_short_sentences_and_clean_text():

@@ -1,6 +1,7 @@
 # Memory recall step 1 (issue #3533) and the mesh-edge leak check (issue #3409). Step 2 (issue
 # #3534): query rewrite and link-following; the degraded exact-word fallback (issue #3573).
 # Step 3 (issue #3535): `orion.dig know` endpoint; per-call lived status + trace (issue #3628).
+# Short-message gate (issue #3613): known entities and the short-message rewrite.
 # Lived-memory recall: exact-word + meaning candidates, live gating, local rerank, the bar, ranking,
 # render, the worker seam, and the committed fixture replay eval. Mesh edge: the shared guard (verbatim
 # + 8-word shingle, issue #3554), the FCC gh PreToolUse hook, Hub's PR commenter, outbound email, and
@@ -24,6 +25,7 @@ on:
       - "services/orion-recall/app/lived_memory.py"
       - "services/orion-recall/app/lived_rewrite.py"
       - "services/orion-recall/app/lived_links.py"
+      - "services/orion-recall/app/lived_entities.py"
       - "services/orion-recall/app/worker.py"
       - "services/orion-recall/app/main.py"
       - "services/orion-recall/app/settings.py"
@@ -31,6 +33,7 @@ on:
       - "services/orion-recall/tests/test_lived_memory_step2.py"
       - "services/orion-recall/tests/test_lived_know_and_status.py"
       - "services/orion-recall/tests/test_recall_telemetry_persist.py"
+      - "services/orion-recall/tests/test_lived_short_gate.py"
       - "services/orion-recall/app/http_models.py"
       - "services/orion-recall/sql/recall_telemetry.sql"
       - "services/orion-recall/evals/**"
@@ -101,7 +104,7 @@ jobs:
           PYTHONPATH=.:${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
             tests/test_lived_memory.py tests/test_lived_memory_step2.py evals/test_lived_memory_replay_eval.py \
             tests/test_lived_know_and_status.py tests/test_recall_telemetry_persist.py \
-            evals/test_dig_know_bank_eval.py
+            tests/test_lived_short_gate.py evals/test_dig_know_bank_eval.py
       - name: Memory scoreboard fixture eval (issue #3536)
         working-directory: services/orion-recall
         run: |

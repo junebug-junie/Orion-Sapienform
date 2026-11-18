@@ -177,6 +177,7 @@ def _start_lived_memory(pool, bus, stop: "asyncio.Event"):
                 max_lines=settings.RECALL_LIVED_MEMORY_MAX_LINES,
                 timeout_sec=settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC,
                 min_query_tokens=settings.RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS,
+                short_gate=settings.RECALL_LIVED_MEMORY_SHORT_GATE_ENABLED,
                 rewrite_timeout_sec=settings.RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC,
                 link_top_k=settings.RECALL_LIVED_MEMORY_LINK_TOP_K,
             ),

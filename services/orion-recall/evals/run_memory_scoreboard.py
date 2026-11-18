@@ -27,6 +27,13 @@ table, counts and qids only), plus one line appended to ``history.jsonl`` so a w
 change. Exit 0 = ran; the bars are in the report, not the exit code. Exit 2 = could not run.
 
 Env: ORION_BUS_URL (required, redis://<bus-host>:6379/0), POSTGRES_* or --dsn, HUB_BASE_URL.
+
+**Scoring a branch before deploy** (``--lived-local``, issue #3613). The retrieval phase still
+calls the deployed recall service, but the lived-memory lines in its continuity bundle (source
+``lived_memory``) are replaced by the lived recall of the code on disk, run in-process with the
+live ``RECALL_LIVED_MEMORY_*`` settings against the host-side Chroma, vector host and LLM gateway.
+Everything else (the other backends, phase 3, the core page) stays live. ``--lived-local-short-gate
+off`` runs the same code with the plain content-word floor, the "before" of a short-gate change.
 """
 from __future__ import annotations
 
@@ -151,6 +158,51 @@ async def _recall_rpc(bus: Any, *, text: str, profile: str, phase: str, intent: 
     return body, corr
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name) or default)
+    except ValueError:
+        return default
+
+
+def build_local_lived(pool: Any, bus: Any, args: argparse.Namespace) -> Any:
+    """The lived recall of the code on disk, configured like the live service (``--lived-local``)."""
+    service = str(HERE.parents[1])
+    if service not in sys.path:
+        sys.path.insert(0, service)
+    from app.lived_memory import LivedMemoryConfig, LivedMemoryRecall
+    from app.lived_rewrite import BusRewriter
+    from orion.core.bus.bus_schemas import ServiceRef
+    from orion.introspect.semantic_index import SearchConfig
+    from orion.memory.lived_memory import COLLECTION
+
+    rewrite_timeout = _env_float("RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC", 2.5)
+    rewriter = None
+    if str(os.getenv("RECALL_LIVED_MEMORY_REWRITE_ENABLED", "true")).lower() not in ("0", "false", "no"):
+        rewriter = BusRewriter(bus, channel=os.getenv("CHANNEL_LLM_INTAKE", "orion:exec:request:LLMGatewayService"),
+                               route=os.getenv("RECALL_LIVED_MEMORY_REWRITE_ROUTE", "quick_turn"),
+                               timeout_sec=rewrite_timeout,
+                               source=ServiceRef(name="orion-recall", version="scoreboard-local", node="eval"))
+    cfg = LivedMemoryConfig(
+        search=SearchConfig(chroma_url=args.lived_chroma_url, embed_url=args.lived_embed_url,
+                            collection=os.getenv("RECALL_LIVED_MEMORY_COLLECTION", COLLECTION), min_similarity=0.0),
+        rerank_url=args.lived_rerank_url,
+        min_fit=_env_float("RECALL_LIVED_MEMORY_MIN_FIT", 0.004),
+        max_lines=int(_env_float("RECALL_LIVED_MEMORY_MAX_LINES", 4)),
+        timeout_sec=_env_float("RECALL_LIVED_MEMORY_TIMEOUT_SEC", 5.5),
+        min_query_tokens=int(_env_float("RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS", 5)),
+        short_gate=args.lived_local_short_gate == "on",
+        rewrite_timeout_sec=rewrite_timeout,
+        link_top_k=int(_env_float("RECALL_LIVED_MEMORY_LINK_TOP_K", 2)))
+    return LivedMemoryRecall(pool, cfg, rewriter=rewriter)
+
+
+def swap_lived_lines(bundle_items: List[Dict[str, Any]], local_ids: List[str]) -> set[str]:
+    """A continuity bundle's ids with the deployed service's lived lines replaced by the local ones."""
+    kept = {str(i.get("id")) for i in bundle_items if str(i.get("source") or "") != "lived_memory"}
+    return kept | set(local_ids)
+
+
 async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, args: argparse.Namespace) -> Dict[str, Any]:
     from orion.core.bus.async_service import OrionBusAsync
     from orion.memory.recall_skip_gate import recall_skip_gate
@@ -160,6 +212,10 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
     pids = page_refs(page["content"] if page else None)
     bus = OrionBusAsync(url=args.bus_url)
     await bus.connect()
+    local = build_local_lived(pool, bus, args) if getattr(args, "lived_local", False) else None
+    local_rows: Dict[str, Dict[str, Any]] = {}   # qid -> the local lived search's status and trace
+    local_ms: Dict[str, List[int]] = {}   # gate -> lived-recall total ms
+    gates: Dict[str, int] = {}
     observations: Dict[str, RetrievalObservation] = {}
     corrs: Dict[str, List[str]] = {}
     rpc_errors: Dict[str, str] = {}
@@ -179,7 +235,20 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
                                                intent="continuity", deadline_ms=args.deadline_ms,
                                                timeout_sec=args.rpc_timeout)
                 corrs.setdefault(it.qid, []).append(corr)
-                obs.injected_ids |= {str(i.get("id")) for i in (body.get("bundle") or {}).get("items") or []}
+                bundle_items = list((body.get("bundle") or {}).get("items") or [])
+                if local is not None:
+                    from app.lived_memory import status_of, trace_of
+
+                    out = await local.recall(text, session_id=SESSION_ID)
+                    ids = [s.rec.doc_id for s in out.chosen]
+                    local_rows[it.qid] = {"lived_status": status_of(out.debug, len(ids), backend=out.backend),
+                                          "lived_trace": trace_of(out.debug), "served": len(ids)}
+                    g = str(out.debug.get("gate") or "none")
+                    local_ms.setdefault(g, []).append(int((out.debug.get("timings_ms") or {}).get("total") or 0))
+                    gates[g] = gates.get(g, 0) + 1
+                    obs.injected_ids |= swap_lived_lines(bundle_items, ids)
+                else:
+                    obs.injected_ids |= {str(i.get("id")) for i in bundle_items}
                 intent = args.phase3_intent
                 if intent == "auto":
                     # No stance brief or attention frame outside a live turn; eligible_belief_count is
@@ -212,11 +281,18 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
         rows = [dict(r) for r in await pool.fetch(
             "SELECT profile, deadline_hit, backend_counts, timings_ms, lived_status, lived_trace FROM recall_telemetry "
             "WHERE corr_id = ANY($1::text[])", cs)] if cs else []
-        for r in rows:
-            if r.get("profile") == CONTINUITY_PROFILE:
-                counts = r.get("backend_counts")
-                counts = json.loads(counts) if isinstance(counts, str) else (counts or {})
-                lived_lines += int(counts.get("lived_memory") or 0)
+        if it.qid in local_rows:
+            # The local lived search replaced the deployed one's lines: read its verdict, not theirs.
+            lived_lines += int(local_rows[it.qid].pop("served", 0))
+            for r in rows:
+                if r.get("profile") == CONTINUITY_PROFILE:
+                    r.update(local_rows[it.qid])
+        else:
+            for r in rows:
+                if r.get("profile") == CONTINUITY_PROFILE:
+                    counts = r.get("backend_counts")
+                    counts = json.loads(counts) if isinstance(counts, str) else (counts or {})
+                    lived_lines += int(counts.get("lived_memory") or 0)
         if rows and len(rows) < len(cs):
             obs.degraded.append("trace:partial")
         obs.degraded += degraded_reasons(rows, lived_timeout_ms=lived_timeout_ms, rpc_error=rpc_errors.get(it.qid))
@@ -224,6 +300,17 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
     report["page"] = {"version": page["version"] if page else None, "cites": len(pids)}
     report["lived_memory_lines_injected"] = lived_lines
     report["phase3_intent"] = args.phase3_intent
+    if local is not None:
+        def pcts(vals: List[int]) -> Dict[str, int] | None:
+            ms = sorted(vals)
+            return {"p50": ms[len(ms) // 2], "p90": ms[min(len(ms) - 1, int(0.9 * len(ms)))],
+                    "max": ms[-1]} if ms else None
+
+        report["lived_local"] = {
+            "short_gate": args.lived_local_short_gate, "gates": gates,
+            "total_ms": pcts([m for vals in local_ms.values() for m in vals]),
+            "total_ms_by_gate": {g: pcts(v) for g, v in sorted(local_ms.items())},
+        }
     return report
 
 
@@ -510,6 +597,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--resume", default=None,
                     help="earlier run JSON: keep its replies and judgments, redo failed turns and unjudged items")
     ap.add_argument("--rejudge", action="store_true", help="with --resume: judge every kept reply again")
+    ap.add_argument("--lived-local", action="store_true",
+                    help="retrieval only: replace the deployed lived-memory lines with the code on disk (#3613)")
+    ap.add_argument("--lived-local-short-gate", choices=["on", "off"], default="on",
+                    help="with --lived-local: off = the plain content-word floor (the before of #3613)")
+    ap.add_argument("--lived-chroma-url", default="http://127.0.0.1:8500")
+    ap.add_argument("--lived-embed-url", default="http://127.0.0.1:8320/embedding")
+    ap.add_argument("--lived-rerank-url", default="http://127.0.0.1:8320/rerank")
     ap.add_argument("--hub-wait", type=float, default=900.0, help="seconds to wait for Hub /health before a turn")
     args = ap.parse_args(argv)
     if not args.bus_url:

@@ -534,3 +534,23 @@ def test_runner_answers_report_false_denials_by_their_turn_cause(monkeypatch):
     assert report["false_no_memory_by_cause"] == {
         "lived:skipped_short": ["fact_city"], "lived:embedder_unavailable": ["event_kiln"],
         "search_full": ["time_market"]}
+
+
+def test_lived_local_swaps_only_the_deployed_lived_lines():
+    # --lived-local (#3613): the deployed service's lived lines are replaced by the local ones; every
+    # other backend's ids stay.
+    items = [{"id": "episode_memory:old", "source": "lived_memory"}, {"id": "chat:1", "source": "sql_chat"},
+             {"id": "stance:2", "source": "belief"}]
+    assert runner.swap_lived_lines(items, ["episode_memory:new"]) == {"chat:1", "stance:2", "episode_memory:new"}
+    assert runner.swap_lived_lines(items, []) == {"chat:1", "stance:2"}
+
+
+def test_lived_local_reads_the_live_settings_and_the_short_gate_switch(monkeypatch):
+    monkeypatch.setenv("RECALL_LIVED_MEMORY_MIN_FIT", "0.02")
+    monkeypatch.setenv("RECALL_LIVED_MEMORY_REWRITE_ENABLED", "false")
+    monkeypatch.delenv("RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS", raising=False)
+    args = Namespace(lived_chroma_url="http://c", lived_embed_url="http://e", lived_rerank_url="http://r",
+                     lived_local_short_gate="off")
+    lm = runner.build_local_lived(object(), object(), args)
+    assert lm.cfg.min_fit == 0.02 and lm.cfg.short_gate is False and lm._rewriter is None
+    assert lm.cfg.rerank_url == "http://r" and lm.cfg.min_query_tokens == 5

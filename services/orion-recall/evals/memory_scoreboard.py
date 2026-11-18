@@ -279,8 +279,9 @@ class RetrievalObservation:
 
 
 # Search causes that are the chat path working as designed, not a failure: they are scored (a miss
-# is a miss) and counted in their own column. lived:skipped_short = too few content words for the
-# lived search (lived_memory.py min_query_tokens), which a real turn with that message also does.
+# is a miss) and counted in their own column. lived:skipped_short = a short message with no signal
+# for the lived search (lived_memory.py min_query_tokens and the #3613 short-message gate: no known
+# entity, and the short rewrite said NONE), which a real turn with that message also does.
 SCORED_CAUSES = ("lived:skipped_short",)
 
 

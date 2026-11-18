@@ -126,3 +126,35 @@ def test_fixture_replay_implicit_references_need_the_rewrite(monkeypatch):
     assert before["by_kind"] == {"implicit": "0/3"}
     assert after["by_kind"] == {"implicit": "3/3"}, after["items"]
     assert after["small_talk_share_injecting"] == 0.0
+
+
+def test_small_talk_injection_is_split_by_gate_and_pure_social_counted_apart():
+    # Issue #3613: the short-message gate's share of small-talk injection is reported per gate.
+    rec = lm.LivedRecord(kind="episode_memory", record_id="a", purpose="happened", text="x y", occurred_at=NOW,
+                         importance=0.5)
+    noise = [
+        {"reranked": [(rec, 3.0)], "now": NOW, "small_talk": True, "social": False, "gate": "short_entity"},
+        {"reranked": [], "now": NOW, "small_talk": True, "social": True, "gate": "short_no_content"},
+        {"reranked": [(rec, -9.0)], "now": NOW, "small_talk": True, "social": False, "gate": "short_rewrite"},
+        {"reranked": [(rec, 3.0)], "now": NOW, "small_talk": False, "social": False, "gate": "words"},
+    ]
+    bar = score_bar([], noise, 0.5, NOW)
+    assert bar["small_talk_share_injecting"] == round(1 / 3, 3)
+    assert bar["small_talk_injecting_by_gate"] == {"short_entity": "1/1", "short_no_content": "0/1",
+                                                   "short_rewrite": "0/1"}
+    assert bar["social_messages"] == 1 and bar["social_share_injecting"] == 0.0
+
+
+def test_cached_rewriter_keeps_the_short_question_apart():
+    from run_lived_memory_replay_eval import _CachedRewriter
+
+    calls = []
+
+    async def inner(message, context, short=False):
+        calls.append(short)
+        return ["short q" if short else "general q"]
+
+    rw = _CachedRewriter(inner)
+    assert asyncio.run(rw("hi", [])) == ["general q"]
+    assert asyncio.run(rw("hi", [], short=True)) == ["short q"]
+    assert asyncio.run(rw("hi", [], short=True)) == ["short q"] and calls == [False, True]

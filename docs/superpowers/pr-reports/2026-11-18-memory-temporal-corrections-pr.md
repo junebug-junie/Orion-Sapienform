@@ -21,6 +21,7 @@ The step's precision is now measured, and write time trusts it only while the me
 
 - v3 without the checklist acted with confidence on three hard negatives: a plan against what happened (real), two PR counts on different days (real), and an explicit "in 2019" fact (made up). All three votes agreed every time. So votes alone do not make it safe. The checklist does: the model must say what A is and whether B's own words change it, and an update needs A to be a lasting state.
 - Real data: 0 false acts on 16 real hard negatives (both watched trip rows against the home correction, the three pet pairs, 5 dry-run vetoes, 6 near-duplicates). It acted on 0 of Juniper's 5 real revisions. Those are mostly rewording fixes, and the model reads them as refine or compatible. Her confirmation-loop path already retires them, so this is a missed proposal, not a safety gap. The made-up set: 8/8 updates and corrections caught.
+- **In-sample caveat, then an out-of-sample check.** The checklist was designed after seeing v3's three false acts on this same set, so the v3.1 row above is in-sample. Nine new pairs were then written that the design never saw (`fixtures/supersede_eval_heldout.jsonl`): a plan against its outcome, counts on different days, readings over different windows, a past period, a changed view, a getaway against home in Juniper's own words, added detail, plus 2 positives. Result: 0 false acts, 2/2 positives caught. They are part of every full run from now on.
 - The v2 run used the made-up fixtures before their invented place names were changed to neutral ones. The cases are the same.
 - Self-consistency at temperature 0.7 rarely splits on this model; nearly every vote carried confidence 0.95-1.0. The votes mostly guard against a one-off malformed or odd answer. They are not what fixed the false acts.
 
@@ -139,6 +140,20 @@ scripts/check_migration_required_by.py: OK. orion.sql_migration_drift.auto_apply
   - The wording now says model reasons may paraphrase a memory.
   - `passed` needs at least one true positive.
   - The K limit on Juniper's target is documented.
+- Second review (the checklist commit):
+  - Finding: clamping an update's `invalid_at` to the old start still left an empty window.
+    - Fix: `apply_link` refuses an update whose new time is at or before the old start.
+    - Evidence: `test_an_update_that_points_backwards_is_refused` (PG).
+  - Finding: a malformed checklist field held the whole plan as an error.
+    - Fix: such a vote is a non-acting abstain. Kind spacing is normalized. A bool or NaN confidence is an error.
+    - Evidence: `test_missing_or_mixed_checklist_fields`.
+  - Finding: the `model` column was missing for any hand-applied earlier copy of the migration.
+    - Fix: added `ADD COLUMN IF NOT EXISTS`.
+  - Finding: the eval evidence was in-sample.
+    - Fix: added the held-out set (above).
+  - Finding: there were test gaps.
+    - Fix: added tests for Juniper's path still needing the checklist, a third vote failing the checklist, missing fields, update kinds, and the cache with an old-format answer.
+  - Nits fixed: the gate also needs `route = memory_distill`, the abstain branches are merged, and the cap and cache-key comments are corrected.
 - Earlier review on #3669 (the safety PR): four findings, all fixed there.
 
 ## Restart required

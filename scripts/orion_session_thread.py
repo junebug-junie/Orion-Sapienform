@@ -83,7 +83,7 @@ def cmd_pending(args: argparse.Namespace) -> int:
         print("Nothing from Orion is waiting for this session.")
         return 0
     if not args.keep:
-        rows = lib.claim(rows, timeout=6.0)   # only what no hook has shown yet
+        rows = lib.claim(rows, session_id=session_id, timeout=6.0)   # only what no hook has shown yet
     print(lib.pending_text(rows) or "Nothing from Orion is waiting for this session.")
     return 0
 

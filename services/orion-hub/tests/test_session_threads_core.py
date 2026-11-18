@@ -459,3 +459,37 @@ def test_a_heading_line_that_also_sits_in_session_data_is_still_orions_real_head
     assert "### thread:t2" in session_text.splitlines()   # the same bytes as Orion's real heading
     a1, a2 = core.parse_roundup_reply(reply, ["t1", "t2"])
     assert (a1.text, a2.text) == ("1. for t1?", "1. for t2?") and not a1.unparsed and not a2.unparsed
+
+
+# --- session thread 455a41af5b44 (2026-11-18) ---------------------------------------------------
+
+
+@pytest.mark.parametrize("reason,sizing", [
+    ("orion_run_failed:gpu_pool_unavailable:min_ctx_exceeds_class:65536", True),
+    ("orion_run_failed:RuntimeError: gpu_pool_unavailable:min_ctx_exceeds_class", True),
+    ("orion_run_failed:min_ctx_exceeds_class:131072", True),
+    ("orion_run_failed:gpu_pool_unavailable:deadline", False),
+    ("orion_run_failed:replay_payload_too_large", False),
+    ("orion_run_overdue:queued", False),
+    ("orion_turn_cut_short", False),
+])
+def test_a_prompt_too_big_for_the_lane_is_a_sizing_refusal(reason, sizing):
+    assert core.is_sizing_refusal(reason) is sizing
+    assert not (core.is_sizing_refusal(reason) and core.is_body_refusal(reason))
+
+
+def test_an_unparsed_answer_in_a_round_of_several_threads_is_marked_shared():
+    one = core.parse_roundup_reply("no headings", ["a"])
+    assert one[0].unparsed and not one[0].shared
+    three = core.parse_roundup_reply("### thread:a\n1. x?\n\n### thread:b\n1. y?", ["a", "b", "c"])
+    assert [(x.unparsed, x.shared) for x in three] == [(False, False), (False, False), (True, True)]
+
+
+def test_a_closed_or_merged_pr_gets_a_hub_line_outside_the_fence():
+    base = {"thread_id": "t1", "title": "x", "pr_number": 9, "pr_url": "u"}
+    for state in core.PR_NOT_OPEN_STATES:
+        section = core.thread_section({**base, "pr_state": state}, [{"speaker": "session", "body": "b", "meta": {}}])
+        assert section.index(core.pr_not_open_note(9, state)) < section.index(core.DATA_OPEN)
+    for state in ("open", None):
+        section = core.thread_section({**base, "pr_state": state}, [{"speaker": "session", "body": "b", "meta": {}}])
+        assert "[Hub] Pull request" not in section

@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 import time
@@ -65,6 +66,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Optional, Sequence
 
 from orion.memory.lived_memory import EPISODE_SQL
+
+logger = logging.getLogger(__name__)
 
 ACTOR_DISTILL = "memory.episode_distill"
 ACTOR_PASS = "memory.supersede_pass"
@@ -908,6 +911,12 @@ async def record_run(conn: Any, *, run_id: str, source: str, plan: Mapping[str, 
                                  if isinstance(d, Mapping) and d.get("abstain") and not d.get("linked")))
     if abstained:
         counts["abstained"] = dict(abstained)
+    # The hand-run pass apply asks no model: its per-pair decisions carry what apply did instead
+    # ("applied", "already_handled", "undone_never_reapplied", ...). Counted the same way.
+    outcomes = Counter(d.get("outcome") for d in (plan.get("decisions") or [])
+                       if isinstance(d, Mapping) and d.get("outcome"))
+    if outcomes:
+        counts["outcomes"] = dict(outcomes)
     if plan.get("error"):
         counts["error"] = str(plan["error"])
     await conn.execute(RECORD_RUN_SQL, (
@@ -985,6 +994,10 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
                         hits = await nearest(client, cfg, vector, n, where={"kind": KIND_EPISODE})
                 break
             except (SearchUnavailableError, TimeoutError) as exc:
+                # The plan only records "dense_unavailable"; the log keeps why (issue #3693: a live
+                # write-time run refused this way with no cause on record).
+                logger.warning("supersede_dense_unavailable attempt=%s error=%s: %s", attempt + 1,
+                               type(exc).__name__, str(exc)[:300])
                 # 2026-11-18 11:10Z: Chroma's collection lookup stalled 25 s once (20 s timeout) and the
                 # night's check refused as dense_unavailable. ONE retry per plan, only for a transient
                 # fault; still no fallback if it fails.

@@ -582,3 +582,19 @@ def test_record_run_derives_abstained_from_decisions_on_every_path():
     asyncio.run(s.record_run(conn, run_id="pass_apply:x", source="pass_apply", plan=plan))
     counts = conn.params[9].obj
     assert counts["abstained"] == {"vote:compatible": 1}
+
+
+def test_record_run_counts_apply_outcomes_from_per_pair_decisions():
+    class Conn:
+        params = None
+
+        async def execute(self, sql, params):
+            Conn.params = params
+
+    plan = {"apply": "on", "check_version": s.CHECK_VERSION, "dense": "on",
+            "decisions": [{"old_id": "a", "new_id": "b", "outcome": "applied"},
+                          {"old_id": "c", "new_id": "d", "outcome": "undone_never_reapplied"},
+                          {"old_id": "e", "new_id": "f", "outcome": "applied"}]}
+    asyncio.run(s.record_run(Conn(), run_id="pass_apply:y", source="pass_apply", plan=plan, applied=[{}, {}]))
+    counts = Conn.params[9].obj
+    assert counts["outcomes"] == {"applied": 2, "undone_never_reapplied": 1} and "abstained" not in counts

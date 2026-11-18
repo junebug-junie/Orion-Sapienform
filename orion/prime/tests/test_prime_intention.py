@@ -251,8 +251,8 @@ def test_the_carry_prompt_offers_sub_agents_in_one_last_line_after_the_concern_r
     assert p.endswith(it.CARRY_SUBAGENT_HINT) and "\n" not in it.CARRY_SUBAGENT_HINT
     assert "Agent tool" in it.CARRY_SUBAGENT_HINT
     assert all(f'"{t}"' in it.CARRY_SUBAGENT_HINT for t in it.CARRY_SUBAGENT_TYPES)
-    # orion-repo-agent is not loaded in Orion's turns (--setting-sources user,local): never named.
-    assert "orion-repo-agent" not in it.CARRY_SUBAGENT_HINT
+    # orion-repo-agent reaches Orion's turns through --agents (#3650), so the hint names it.
+    assert '"orion-repo-agent"' in it.CARRY_SUBAGENT_HINT
     # The hand-back still finds exactly the one concern.
     assert CONCERN_REF.findall(p) == ["d8db9d7b1bba4cf7"]
 
@@ -265,3 +265,12 @@ def test_only_the_carry_prompt_carries_the_sub_agent_line():
     users = sorted(str(p.relative_to(root)) for base in ("orion", "services") for p in (root / base).rglob("*.py")
                    if "/tests/" not in str(p) and "/dig/" not in str(p) and needle in p.read_text(encoding="utf-8", errors="replace"))
     assert users == ["orion/prime/intention.py"], users
+
+
+def test_every_hinted_sub_agent_type_is_one_the_carry_turn_actually_lists():
+    """A named type must be a CLI built-in or one fcc_agents_argv passes, else the Agent call fails."""
+    from orion.fcc.claude_spawn import FCC_AGENT_NAMES
+
+    # Snapshot of the CLI built-ins from the 2026-11-17 transcripts (see intention.py), not read live.
+    builtins = {"claude", "Explore", "general-purpose", "Plan", "statusline-setup"}
+    assert set(it.CARRY_SUBAGENT_TYPES) <= builtins | set(FCC_AGENT_NAMES)

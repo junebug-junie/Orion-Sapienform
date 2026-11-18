@@ -136,6 +136,8 @@ services:
       - HARNESS_FCC_WORKING_NOTES_ENABLED=${HARNESS_FCC_WORKING_NOTES_ENABLED:-true}
       - HARNESS_FCC_WORKING_NOTES_DIR=${HARNESS_FCC_WORKING_NOTES_DIR:-/mnt/orion-fcc/notes}
       - HARNESS_FCC_DISABLE_SKILLS=${HARNESS_FCC_DISABLE_SKILLS:-true}
+      # Orion's repo sub-agent, passed per turn with --agents (orion/fcc/agents/orion-repo-agent.md, #3650).
+      - HARNESS_FCC_REPO_AGENT_ENABLED=${HARNESS_FCC_REPO_AGENT_ENABLED:-true}
       # Claude's tools broker (app/claude_tools_listener.py); see .env_example.
       - CLAUDE_TOOLS_ENABLED=${CLAUDE_TOOLS_ENABLED:-true}
       - CHANNEL_CLAUDE_TOOL_REQUEST=${CHANNEL_CLAUDE_TOOL_REQUEST:-orion:claude:tool:request}

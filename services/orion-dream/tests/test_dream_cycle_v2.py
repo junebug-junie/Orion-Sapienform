@@ -12,26 +12,34 @@ import pytest
 NOW = datetime(2026, 9, 25, 4, 0, tzinfo=timezone.utc)
 
 
+_T = datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc)
+
+
 def _rows():
+    # Every source query returns the row's time as occurred_at; the dream arm pairs by it (#3664).
+    t = lambda m: _T + timedelta(minutes=m)  # noqa: E731
     return {
         "metacog": [
             {"id": "m1", "summary": "Recall returned empty for three turns in a row", "severity": "critical",
-             "trigger_kind": "recall_empty", "tags": ["recall", "memory"]},
+             "trigger_kind": "recall_empty", "tags": ["recall", "memory"], "occurred_at": t(0)},
             {"id": "m2", "summary": "Latency spike on the chat lane", "severity": "degraded",
-             "trigger_kind": "latency", "tags": ["latency"]},
-            {"id": "m3", "summary": "all fine", "severity": "nominal", "trigger_kind": "x", "tags": []},
+             "trigger_kind": "latency", "tags": ["latency"], "occurred_at": t(20)},
+            {"id": "m3", "summary": "all fine", "severity": "nominal", "trigger_kind": "x", "tags": [],
+             "occurred_at": t(30)},
         ],
         "compaction_request": [
-            {"request_id": "r1", "theme": "juniper's sleep schedule", "reason": "recurs across chains"},
+            {"request_id": "r1", "theme": "juniper's sleep schedule", "reason": "recurs across chains",
+             "occurred_at": t(10)},
         ],
         "resonance": [
-            {"alert_id": "a1", "theme_key": "being watched", "violation_count": 4},
+            {"alert_id": "a1", "theme_key": "being watched", "violation_count": 4, "occurred_at": t(40)},
         ],
         "crystallization": [
             {"crystallization_id": "c1", "subject": "Juniper prefers plain English",
-             "summary": "dense answers get asked to be re-said", "salience": 0.8, "tags": ["style"]},
+             "summary": "dense answers get asked to be re-said", "salience": 0.8, "tags": ["style"],
+             "occurred_at": t(50)},
             {"crystallization_id": "c2", "subject": "GPU5 contention", "summary": "metacog lane shares a GPU",
-             "salience": 0.0, "tags": ["gpu"]},
+             "salience": 0.0, "tags": ["gpu"], "occurred_at": t(60)},
         ],
     }
 
@@ -150,11 +158,89 @@ def _replay():
 def test_dream_pairs_are_disjoint_and_prefer_cross_source():
     from app.recombine import dream_pairs
 
-    pairs = dream_pairs(_replay(), 3)
+    pairs = dream_pairs(_replay(), 3, window_minutes=120)
     refs = [r for p in pairs for r in (p.a.ref_id, p.b.ref_id)]
     assert len(refs) == len(set(refs))
     assert all(p.a.source_kind != p.b.source_kind for p in pairs)
     assert all(p.arm == "dream" for p in pairs)
+
+
+def _item(ref, kind, minute, weight=1.0, until=None):
+    from orion.schemas.dream_cycle import ReplayItemV1
+
+    return ReplayItemV1(
+        ref_id=ref, source_kind=kind, text=f"fragment {ref}", weight=weight, reason="test",
+        occurred_at=None if minute is None else _T + timedelta(minutes=minute),
+        occurred_until=None if until is None else _T + timedelta(minutes=until),
+    )
+
+
+def test_dream_pairs_only_pair_coincident_fragments_from_different_organs():
+    # #3664: the dream arm asks about things that happened near each other in different organs.
+    from app.recombine import dream_pairs
+
+    items = [
+        _item("metacog:near", "metacog", 0),
+        _item("compaction_request:near", "compaction_request", 30),
+        _item("metacog:same_kind", "metacog", 2),             # 2 min from metacog:near, same organ: not a pair
+        _item("walkway:far", "walkway", 600),                 # 9.5 h after anything else: never paired
+        _item("crystallization:untimed", "crystallization", None),  # no time: never paired by this arm
+    ]
+    pairs = dream_pairs(items, 3, window_minutes=120)
+    # One compaction fragment, so one pair: the nearer metacog (28 min) beats the farther (30 min).
+    assert [(p.a.ref_id, p.b.ref_id) for p in pairs] == [("compaction_request:near", "metacog:same_kind")]
+    assert all(p.a.source_kind != p.b.source_kind for p in pairs)
+    # No fallback: with nothing coincident the arm asks nothing, rather than a distant pair.
+    assert dream_pairs([items[3], items[4], items[0]], 3, window_minutes=120) == []
+
+
+def test_dream_pairs_prefer_weight_then_nearness_and_use_each_item_once():
+    from app.recombine import dream_pairs
+
+    items = [
+        _item("metacog:a", "metacog", 0, weight=1.0),
+        _item("arc:b", "arc", 100, weight=0.5),
+        _item("compaction_request:c", "compaction_request", 90, weight=0.9),
+        _item("walkway:d", "walkway", 5, weight=0.9),
+    ]
+    pairs = dream_pairs(items, 3, window_minutes=120)
+    keys = [frozenset((p.a.ref_id, p.b.ref_id)) for p in pairs]
+    # a-c and a-d both weigh 0.9; d is nearer (5 min vs 90), so a-d wins; then c-b (0.45) over nothing else.
+    assert keys[0] == frozenset(("metacog:a", "walkway:d"))
+    assert keys[1] == frozenset(("compaction_request:c", "arc:b"))
+    assert len(keys) == 2
+
+
+def test_an_arc_span_overlapping_a_point_is_zero_minutes_apart():
+    from app.recombine import time_gap_minutes
+
+    arc = _item("arc:x", "arc", 0, until=300)      # 12:00 to 17:00
+    inside = _item("metacog:y", "metacog", 200)    # 15:20, inside the span
+    after = _item("metacog:z", "metacog", 330)     # 30 min after the span ends
+    assert time_gap_minutes(arc, inside) == 0.0
+    assert time_gap_minutes(arc, after) == 30.0
+    assert time_gap_minutes(arc, _item("metacog:n", "metacog", None)) is None
+    # Longer than the window: only its end counts, so it does not swallow everything inside it.
+    assert time_gap_minutes(arc, inside, max_span_minutes=120) == 100.0
+    assert time_gap_minutes(arc, after, max_span_minutes=120) == 30.0
+
+
+def test_a_night_long_arc_does_not_take_every_pair():
+    from app.recombine import dream_pairs
+
+    night = _item("arc:night", "arc", 0, weight=1.0, until=480)     # 8 h body arc
+    items = [night, _item("metacog:m", "metacog", 60, weight=0.9),
+             _item("compaction_request:c", "compaction_request", 70, weight=0.9)]
+    pairs = dream_pairs(items, 3, window_minutes=120)
+    assert [frozenset((p.a.ref_id, p.b.ref_id)) for p in pairs] == [
+        frozenset(("metacog:m", "compaction_request:c"))]
+
+
+def test_every_builder_carries_the_rows_time():
+    from app.replay import build_candidates
+
+    for c in build_candidates(_rows()):
+        assert c.occurred_at is not None and c.occurred_at.tzinfo is not None, c.ref_id
 
 
 def test_control_pairs_are_seeded_and_exclude_dream_pairs():
@@ -162,7 +248,7 @@ def test_control_pairs_are_seeded_and_exclude_dream_pairs():
     from app.replay import build_candidates
 
     pool = build_candidates(_rows())
-    d = dream_pairs(_replay(), 2)
+    d = dream_pairs(_replay(), 2, window_minutes=120)
     one = control_pairs(pool, 2, seed="dc-abc", exclude=d)
     two = control_pairs(list(reversed(pool)), 2, seed="dc-abc", exclude=d)
     assert [(p.a.ref_id, p.b.ref_id) for p in one] == [(p.a.ref_id, p.b.ref_id) for p in two]

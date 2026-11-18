@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Collection, Sequence
+from typing import Any, Sequence
 
 from orion.bus.ewma import compute_ewma_update
-from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.structural_mass.git_delta import GitChurnDelta
 from orion.structural_mass.graph_delta import GraphStructuralDelta
 from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
-from orion.substrate.biometrics_loop.room_hints import machine_body_hints
-
-_THRESHOLD = 0.30
 
 # _BUS_SYNAPTIC_CALM_FLOOR (= sqrt(2/pi)) was REMOVED 2026-07-30 along with the
 # mean-based formula it corrected. It was a real fix for a real bias in that
@@ -383,11 +379,8 @@ def _score_and_update_ewma_prediction_error(
     `chat_prediction_error`'s 2026-08-19 fix (retired 2026-11-13) had each independently hand-copied
     this exact "score this tick's raw delta as a z-score against a live EWMA
     baseline, then update that baseline" sequence, with no shared helper.
-    `biometrics_prediction_error` still uses the old fixed-`_THRESHOLD` divisor
-    and is the next domain that would need this same migration -- not done
-    here, out of scope for this patch (see that function's docstring: its
-    real dynamic range doesn't show the same near-zero-forever symptom chat
-    and execution did, so it wasn't independently confirmed broken).
+    (`biometrics_prediction_error`, which kept a fixed 0.30 divisor, was
+    retired 2026-11-18 rather than migrated: #3575.)
 
     `prev`/`curr` are duck-typed: any object exposing
     `prediction_error_baseline_ewma`/`_var`/`_n` float/int attributes (every
@@ -538,67 +531,16 @@ def execution_raw_reading(
 #
 # Its 2026-07 successor, bus_synaptic_prediction_error(), was itself retired
 # 2026-11 (see the note where it used to live, below).
-def biometrics_prediction_error(
-    prev: NodeBiometricsProjectionV1,
-    curr: NodeBiometricsProjectionV1,
-    *,
-    exclude_nodes: Collection[str] = (),
-) -> float:
-    """0-1 surprise score: how much did node biometrics pressure hints change this batch?
-
-    Unlike ``execution_prediction_error``'s fixed four-key set, biometrics
-    ``pressure_hints`` keys are not enumerable in advance -- they are populated
-    conditionally per node role by ``orion/substrate/biometrics_loop/
-    grammar_extract.py::extract_node_state_from_events()`` (``strain`` always when a
-    body_state atom carries salience, ``gpu`` only for ``local_llm_heavy`` nodes,
-    ``memory_pressure``/``thermal_pressure``/``disk_pressure`` only when the
-    matching pressure-signal atom is present). Confirmed live against real
-    ``substrate_node_biometrics_projection`` data 2026-07-21: a GPU node (``atlas``)
-    carries ``{"gpu", "strain"}`` while an orchestration node (``athena``) carries
-    ``{"strain", "disk_pressure", "memory_pressure", "thermal_pressure"}`` -- no
-    single fixed key list covers every node. So this diffs the union of keys
-    present on either side of a given node, defaulting a missing key to 0.0 the
-    same way ``execution_prediction_error`` defaults a missing fixed key.
-
-    **Definition v2 (2026-10-20): silent nodes are left out.** ``exclude_nodes`` names
-    nodes that have stopped reporting (``orion/substrate/biometrics_loop/
-    report_cadence.py::silent_nodes`` -- last report older than 6x the node's own
-    report interval). Their hints are frozen, so every key added a 0.0 delta that was
-    never observed. Live 2026-10-20: hecate in BMC-only standby since 2026-10-15
-    contributed 9 of 35 keys, so the mean read 26% lower than the reporting nodes'
-    real change. A node that reports again counts again on that tick.
-
-    **Definition v3 (2026-11-12): room sensors are left out.** athena's ``cabinet_*``
-    hints (cabinet sensor board + ambient microphone: proximity, vibration, audio,
-    climate, EM, UV, staleness) read the room, not the machines. Juniper approved
-    removing them. Live 2026-11-12 they were 8 of athena's 17 keys and 8 of the 26
-    keys in the mean. The one owner of the list is
-    ``orion/substrate/biometrics_loop/room_hints.py``. The cabinet has its own
-    attention source (``node:substrate.cabinet``).
-    """
-    excluded = set(exclude_nodes)
-    deltas: list[float] = []
-    for node_id, curr_node in curr.nodes.items():
-        if node_id in excluded:
-            continue
-        prev_node = prev.nodes.get(node_id)
-        if prev_node is None:
-            continue
-        prev_hints = machine_body_hints(prev_node.pressure_hints)
-        curr_hints = machine_body_hints(curr_node.pressure_hints)
-        keys = set(prev_hints) | set(curr_hints)
-        for key in keys:
-            # pressure_hints is typed dict[str, Any] (unlike execution's pydantic-
-            # enforced dict[str, float]), since node role gates which keys ever get
-            # set -- coerce defensively rather than let a malformed/non-numeric
-            # value raise out of a poll tick.
-            try:
-                pv = float(prev_hints.get(key, 0.0) or 0.0)
-                cv = float(curr_hints.get(key, 0.0) or 0.0)
-            except (TypeError, ValueError):
-                continue
-            deltas.append(abs(cv - pv))
-    return min(1.0, _mean(deltas) / _THRESHOLD) if deltas else 0.0
+# biometrics_prediction_error() was DELETED 2026-11-18 (PE suite rebuild retire step 6, #3575).
+# Not a forecast: the mean absolute change of the machines' pressure hints between two
+# biometrics batches over a fixed 0.30 scale -- never 0, never near 1, power pinned at 1.0 on
+# both hosts. Its successor is a scored forecast: family A's joint surprise, every raw body
+# and room reading forecast at once and scored as one whitened miss per group
+# (services/orion-prediction/app/family_a_live.py, orion/substrate/prediction_joint_surprise.py)
+# -> node:prediction.body_joint and node:prediction.room_joint (a world source).
+# node:substrate.biometrics is on RETIRED_PREDICTION_ERROR_NODE_IDS. Its silent-node rule
+# (report_cadence.py) and the fixed _THRESHOLD went with it. The biometrics grammar pipeline,
+# node projection and pressure organ stay. Git history keeps the function.
 
 
 # chat_prediction_error() and chat_raw_reading() were DELETED 2026-11-13 (PE suite

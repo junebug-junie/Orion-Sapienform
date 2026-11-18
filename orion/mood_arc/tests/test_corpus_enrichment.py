@@ -244,7 +244,6 @@ def test_resolve_live_enrichment_returns_latest_value_per_channel() -> None:
     assert result == {
         "heartbeat_mean_ratio": 0.97,
         "prediction_error_execution": 0.6,
-        "prediction_error_biometrics": 0.8,
     }
 
 
@@ -274,7 +273,7 @@ def test_resolve_live_enrichment_never_reads_the_retired_proposal_table() -> Non
 
 def test_resolve_live_enrichment_covers_every_live_channel() -> None:
     """Mirrors test_fetch_all_series_only_wires_dense_enough_signals()'s
-    channel-set assertion: the live prediction_error_* domains (execution, biometrics;
+    channel-set assertion: the live prediction_error_* domains (execution; biometrics retired 2026-11-18, #3575;
     bus_synaptic and chat retired 2026-11) + heartbeat_mean_ratio all round-trip when the
     source has a reading in-window. A retired domain in the source row is ignored."""
     now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
@@ -289,7 +288,6 @@ def test_resolve_live_enrichment_covers_every_live_channel() -> None:
     assert set(result.keys()) == {
         "heartbeat_mean_ratio",
         "prediction_error_execution",
-        "prediction_error_biometrics",
     }
 
 
@@ -317,7 +315,6 @@ def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
     assert set(series.keys()) == {
         "heartbeat_mean_ratio",
         "prediction_error_execution",
-        "prediction_error_biometrics",
     }
     joined_queries = " ".join(conn.queries).lower()
     for forbidden_table in (

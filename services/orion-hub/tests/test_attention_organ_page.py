@@ -17,6 +17,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
 os.environ.setdefault("CHANNEL_VOICE_LLM", "orion:voice:llm")
 os.environ.setdefault("CHANNEL_VOICE_TTS", "orion:voice:tts")
@@ -204,19 +206,16 @@ def test_build_domain_rows_flags_ceiling_and_floor_pins() -> None:
     """Both directions have real incident history (bus_synaptic frozen at 1.0,
     PR #1449; route decayed toward 0.0 by a generic staleness loop -- both
     nodes since retired) -- neither may render as an ordinary value."""
-    rows = build_domain_rows(
-        [
-            {"node_id": "node:substrate.execution", "prediction_error": 1.0},
-            {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
-        ],
-        now=NOW,
-    )
-    by_domain = {r["domain"]: r for r in rows}
+    # (biometrics retired 2026-11-18, #3575: execution is the one live domain, read twice.)
+    top = {r["domain"]: r for r in build_domain_rows(
+        [{"node_id": "node:substrate.execution", "prediction_error": 1.0}], now=NOW)}
+    bottom = {r["domain"]: r for r in build_domain_rows(
+        [{"node_id": "node:substrate.execution", "prediction_error": 0.0}], now=NOW)}
 
-    assert by_domain["execution"]["at_ceiling"] is True
-    assert by_domain["execution"]["at_floor"] is False
-    assert by_domain["biometrics"]["at_floor"] is True
-    assert by_domain["biometrics"]["at_ceiling"] is False
+    assert top["execution"]["at_ceiling"] is True
+    assert top["execution"]["at_floor"] is False
+    assert bottom["execution"]["at_floor"] is True
+    assert bottom["execution"]["at_ceiling"] is False
 
 
 def test_build_domain_rows_drops_retired_pe_nodes() -> None:
@@ -232,22 +231,25 @@ def test_build_domain_rows_drops_retired_pe_nodes() -> None:
             {"node_id": "node:substrate.cabinet", "prediction_error": 0.7},
             {"node_id": "node:substrate.strain", "prediction_error": 1.0},
             {"node_id": "node:substrate.street", "prediction_error": 1.0},
+            # (biometrics retired 2026-11-18, #3575)
+            {"node_id": "node:substrate.biometrics", "prediction_error": 0.3},
             {"node_id": "node:substrate.execution", "prediction_error": 0.1},
         ],
         now=NOW,
     )
     domains = {r["domain"] for r in rows}
-    assert domains == {"execution", "biometrics"}  # biometrics listed as missing
+    assert domains == {"execution"}
 
 
 def test_build_domain_rows_distinguishes_missing_node_from_zero_reading() -> None:
-    rows = build_domain_rows([{"node_id": "node:substrate.biometrics", "prediction_error": 0.0}], now=NOW)
-    by_domain = {r["domain"]: r for r in rows}
-
-    assert by_domain["biometrics"]["present"] is True
-    assert by_domain["biometrics"]["prediction_error"] == 0.0
+    # (biometrics retired 2026-11-18, #3575: execution is the one known domain, read both ways.)
+    zero = {r["domain"]: r for r in build_domain_rows(
+        [{"node_id": "node:substrate.execution", "prediction_error": 0.0}], now=NOW)}
+    assert zero["execution"]["present"] is True
+    assert zero["execution"]["prediction_error"] == 0.0
     # A known domain whose node does not exist at all is a louder failure than
     # one reading zero, and must not be rendered as "0.0".
+    by_domain = {r["domain"]: r for r in build_domain_rows([], now=NOW)}
     assert by_domain["execution"]["present"] is False
     assert by_domain["execution"]["prediction_error"] is None
     assert by_domain["execution"]["at_floor"] is False
@@ -292,9 +294,9 @@ def test_reconcile_confidence_matches_the_reducers_own_formula() -> None:
     same thing."""
     domain_rows = build_domain_rows(
         [
-            {"node_id": "node:substrate.execution", "prediction_error": 0.4},
+            {"node_id": "node:substrate.execution", "prediction_error": 0.2},
+            # Retired 2026-11 (biometrics 2026-11-18, #3575): never averaged in.
             {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
-            # Retired 2026-11: never averaged in.
             {"node_id": "node:substrate.chat", "prediction_error": 0.9},
             {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
             {"node_id": "node:substrate.route", "prediction_error": 1.0},
@@ -307,17 +309,32 @@ def test_reconcile_confidence_matches_the_reducers_own_formula() -> None:
     )
     out = reconcile_confidence(domain_rows, 0.8, row_age_sec=1.0)
 
-    assert out["domains_used"] == 2
+    assert out["domains_used"] == 1
     assert out["recomputed"] == 0.8
     assert out["delta"] == 0.0
     assert out["verdict"] == "exact"
 
 
-def test_reconcile_confidence_flags_structural_divergence() -> None:
+@pytest.fixture
+def two_live_domains(monkeypatch):
+    """execution is the one live domain since biometrics was retired 2026-11-18 (#3575), and with
+    one domain any delta is within one domain's full swing. The divergence rule is about MORE than
+    one domain moving, so these tests add a test-only second domain, "probe"."""
+    # Patch the globals the functions under test actually read: in the full hub folder another test
+    # can re-import the `scripts` package, so a module looked up by name may be a different copy.
+    g = reconcile_confidence.__globals__
+    assert build_domain_rows.__globals__ is g
+    domains = frozenset(g["ACTIVE_INFERENCE_DOMAINS"] | {"probe"})
+    monkeypatch.setitem(g, "ACTIVE_INFERENCE_DOMAINS", domains)
+    monkeypatch.setitem(g, "KNOWN_PREDICTION_ERROR_DOMAINS", (*g["KNOWN_PREDICTION_ERROR_DOMAINS"], "probe"))
+    monkeypatch.setitem(g, "_SINGLE_DOMAIN_SWING", 1.0 / len(domains))
+
+
+def test_reconcile_confidence_flags_structural_divergence(two_live_domains) -> None:
     domain_rows = build_domain_rows(
         [
             {"node_id": "node:substrate.execution", "prediction_error": 1.0},
-            {"node_id": "node:substrate.biometrics", "prediction_error": 1.0},
+            {"node_id": "node:substrate.probe", "prediction_error": 1.0},
             {"node_id": "node:substrate.chat", "prediction_error": 1.0},
         ],
         now=NOW,
@@ -334,7 +351,7 @@ def test_reconcile_confidence_reports_unknown_rather_than_a_fake_zero() -> None:
     assert reconcile_confidence(rows, None)["verdict"] == "unknown"
 
 
-def test_reconcile_confidence_does_not_cry_divergence_on_ordinary_sampling_skew() -> None:
+def test_reconcile_confidence_does_not_cry_divergence_on_ordinary_sampling_skew(two_live_domains) -> None:
     """The first version of this check used a flat 0.05 tolerance, and live
     data immediately showed it reporting "divergent" purely as a function of
     when the operator happened to poll: the row is written on a ~30s tick
@@ -347,7 +364,7 @@ def test_reconcile_confidence_does_not_cry_divergence_on_ordinary_sampling_skew(
             # is unchanged. Aggregate moves by 1/2 (two live domains since
             # 2026-11-13) -- entirely explicable by timing, not a source mismatch.
             {"node_id": "node:substrate.execution", "prediction_error": 1.0},
-            {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
+            {"node_id": "node:substrate.probe", "prediction_error": 0.0},
         ],
         now=NOW,
     )
@@ -575,7 +592,6 @@ def test_attention_organ_routes_doc_does_not_call_mean_ratio_the_verdict_axis() 
 # and the `truncated` flag are actually covered.
 # --------------------------------------------------------------------------
 
-import pytest  # noqa: E402
 
 from scripts import attention_organ_routes as routes  # noqa: E402
 
@@ -665,7 +681,8 @@ _GOOD_ROW = {
     },
 }
 _GOOD_DOMAINS = [
-    {"node_id": "node:substrate.execution", "prediction_error": 1.0},
+    {"node_id": "node:substrate.execution", "prediction_error": 0.3719},
+    # (biometrics retired 2026-11-18, #3575): a lingering node is not averaged in.
     {"node_id": "node:substrate.biometrics", "prediction_error": 0.102157},
 ]
 

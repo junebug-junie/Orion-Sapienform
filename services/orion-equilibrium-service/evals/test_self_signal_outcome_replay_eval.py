@@ -85,8 +85,9 @@ def test_replay_covers_the_week_and_only_body_signals(replay) -> None:
     # retired 2026-11 (PE suite rebuild steps 5 and 6) and are not body signals.
     # codebase followed 2026-11-13 (a churn z, not a forecast). The cabinet stays:
     # an alarm, read here as on/off hours, never as a size.
+    # biometrics retired 2026-11-18 (#3575): its fixture rows are fenced too.
     assert set(signals) == {
-        "node:substrate.biometrics", "node:substrate.cabinet", "node:substrate.execution",
+        "node:substrate.cabinet", "node:substrate.execution",
     }
     assert "node:substrate.chat" not in signals
 
@@ -103,7 +104,7 @@ def test_every_association_recounts_from_the_hour_rows(replay) -> None:
     rows = replay[0]
     for min_hours in (24, 1):
         assocs = sso.associate_all(rows, computed_at=COMPUTED, min_hours=min_hours)
-        assert len(assocs) == 3 * 3
+        assert len(assocs) == 2 * 3  # 2 body signals x 3 outcomes (biometrics retired, #3575)
         fails = [f for a in assocs for f in check_association(a, rows)]
         by_id = {a.association_id: a for a in assocs}
         fails += [f for a in assocs if a.clause for f in check_clause(a.clause, by_id)]

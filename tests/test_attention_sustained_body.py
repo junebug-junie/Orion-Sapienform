@@ -36,10 +36,27 @@ fx = importlib.util.module_from_spec(_fx_spec)
 _fx_spec.loader.exec_module(fx)  # type: ignore[union-attr]
 
 NOW = fx.NOW
-# The continuous (per_tick) body node under test. Was node:substrate.bus_synaptic until
-# its retirement (2026-11, PE suite rebuild step 5); biometrics is the remaining one.
+# The continuous (per_tick) body node under test. Was node:substrate.bus_synaptic, then
+# node:substrate.biometrics; both retired (2026-11; biometrics 2026-11-18, #3575), so it is a
+# TEST-ONLY probe registered in the glossary by the autouse fixture below.
 BUS = fx.CONTINUOUS_BODY
-BIO = "node:substrate.biometrics"
+
+
+@pytest.fixture(autouse=True)
+def _probe_glossary(monkeypatch):
+    fx.install_probe_glossary(monkeypatch)
+
+
+def test_no_live_glossary_node_is_continuous_today(monkeypatch) -> None:
+    """(biometrics retired 2026-11-18, #3575) The real glossary has no per-tick level body node,
+    so the sustained rule has no live subject. A new one must re-arm it on purpose: update this."""
+    import orion.field.channel_glossary as cg
+
+    monkeypatch.undo()
+    for name in ("_SEMANTICS_CACHE", "_EVENT_WRITTEN_CACHE", "_CONTINUOUS_CACHE"):
+        monkeypatch.setattr(wf, name, {})
+    nodes = {e.node for e in cg.load_glossary()["entries"] if e.channel == "prediction_error" and e.node}
+    assert {n for n in nodes if wf.node_prediction_error_continuous(n)} == set()
 EXE = "node:substrate.execution"
 PER = "node:substrate.perception"
 CAB = "node:substrate.cabinet"
@@ -116,7 +133,7 @@ def test_continuous_set_comes_from_glossary_semantics() -> None:
     got = {n for n in nodes if wf.node_prediction_error_continuous(n)}
     # per_tick body nodes only: perception is the world, event-written and trigger nodes have
     # their own rules, a placeholder is never a measurement.
-    assert got == {BIO}  # bus_synaptic left with its 2026-11 retirement
+    assert got == {BUS}  # the test-only probe; no live node qualifies (biometrics retired 2026-11-18, #3575)
 
 
 def test_a_one_reading_spike_does_not_win() -> None:

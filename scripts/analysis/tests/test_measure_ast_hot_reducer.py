@@ -82,18 +82,21 @@ def _broadcast_payload(
 
 class TestExtractPredictionErrorByDomain:
     def test_extracts_present_domains_only(self) -> None:
-        payload = _field_state_payload(BASE, execution=0.1, biometrics=0.5)
+        payload = _field_state_payload(BASE, execution=0.1)
         out = mod.extract_prediction_error_by_domain(payload)
-        assert out == {"execution": 0.1, "biometrics": 0.5}
+        assert out == {"execution": 0.1}
 
     def test_retired_domains_are_not_extracted(self) -> None:
-        # 2026-11: route and bus_synaptic retired (PE suite rebuild step 5).
+        # 2026-11: route and bus_synaptic retired (PE suite rebuild step 5);
+        # (biometrics retired 2026-11-18, #3575).
         assert "bus_synaptic" not in mod.PREDICTION_ERROR_DOMAIN_NODES
         assert "route" not in mod.PREDICTION_ERROR_DOMAIN_NODES
+        assert "biometrics" not in mod.PREDICTION_ERROR_DOMAIN_NODES
         payload = {
             "node_vectors": {
                 "node:substrate.bus_synaptic": {"prediction_error": 0.3},
                 "node:substrate.route": {"prediction_error": 0.2},
+                "node:substrate.biometrics": {"prediction_error": 0.2},
             }
         }
         assert mod.extract_prediction_error_by_domain(payload) == {}
@@ -105,11 +108,10 @@ class TestExtractPredictionErrorByDomain:
         payload = {
             "node_vectors": {
                 "node:substrate.execution": {"prediction_error": "not-a-number"},
-                "node:substrate.biometrics": {"prediction_error": 0.3},
             }
         }
         out = mod.extract_prediction_error_by_domain(payload)
-        assert out == {"biometrics": 0.3}
+        assert out == {}
 
 
 class TestComputePredictionErrorTrend:
@@ -154,7 +156,7 @@ def test_replay_reducer_joins_field_state_by_nearest_preceding_timestamp() -> No
         (BASE + timedelta(seconds=10), _field_payload(BASE + timedelta(seconds=10))),
     ]
     field_state_rows = [
-        (BASE - timedelta(seconds=1), _field_state_payload(BASE - timedelta(seconds=1), biometrics=0.2)),
+        (BASE - timedelta(seconds=1), _field_state_payload(BASE - timedelta(seconds=1), execution=0.2)),
     ]
 
     ticks, field_skipped, fs_skipped, bc_skipped = mod.replay_reducer(field_rows, [], field_state_rows)
@@ -249,7 +251,7 @@ def test_replay_reducer_predicted_shift_tracks_rolling_trend_window() -> None:
     (falling), the empirically-validated direction, not naive continuation.
     """
     field_state_rows = [
-        (BASE + timedelta(seconds=i), _field_state_payload(BASE + timedelta(seconds=i), biometrics=0.01 * i))
+        (BASE + timedelta(seconds=i), _field_state_payload(BASE + timedelta(seconds=i), execution=0.01 * i))
         for i in range(1, 6)
     ]
     field_rows = [(BASE + timedelta(seconds=6), _field_payload(BASE + timedelta(seconds=6)))]
@@ -259,7 +261,7 @@ def test_replay_reducer_predicted_shift_tracks_rolling_trend_window() -> None:
     assert fs_skipped == 0
     assert len(ticks) == 1
     assert ticks[0].predicted_shift is not None
-    assert "biometrics" in ticks[0].predicted_shift
+    assert "execution" in ticks[0].predicted_shift
     assert "falling" in ticks[0].predicted_shift
 
 

@@ -25,7 +25,9 @@ def _calm_rows(node: str, value: float, *, days: float = 6.0, every_min: int = 5
 
 
 def test_calm_body_and_quiet_chat_is_mostly_no_winner() -> None:
-    rows = _calm_rows("node:substrate.biometrics", 0.02)
+    # (biometrics retired 2026-11-18, #3575: a retired node builds no candidate, so the calm body
+    # vehicle is its successor, the body joint surprise.)
+    rows = _calm_rows("node:prediction.body_joint", 0.02)
     out = replay(rows, [], None, start=END - timedelta(hours=6), end=END, step=timedelta(minutes=30))
     assert out["internal_winner_raw_lt_0_05_share"] < 0.2
     assert out["no_winner_share"] > 0.5

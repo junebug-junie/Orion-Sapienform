@@ -64,8 +64,8 @@ def _frame(nodes, mags, external=None):
 
 
 def test_calm_tick_has_no_winner() -> None:
-    nodes = [_node("node:substrate.execution", "Execution PE"), _node("node:substrate.biometrics", "Bio PE")]
-    frame = _frame(nodes, {"node:substrate.execution": _mag(0.7), "node:substrate.biometrics": _mag(0.3)})
+    nodes = [_node("node:substrate.execution", "Execution PE"), _node("node:prediction.body_joint", "Body joint PE")]
+    frame = _frame(nodes, {"node:substrate.execution": _mag(0.7), "node:prediction.body_joint": _mag(0.3)})
     assert frame.open_loops == []
     assert frame.selected_action.action_type == "none"
     wf = frame.debug["world_first"]
@@ -75,12 +75,12 @@ def test_calm_tick_has_no_winner() -> None:
 
 
 def test_magnitude_now_decides_who_wins() -> None:
-    """Pressure says biometrics; its own history says execution is the alarm."""
+    """Pressure says the body joint (biometrics retired 2026-11-18, #3575); its own history says execution is the alarm."""
     nodes = [
         _node("node:substrate.execution", "Execution PE", pressure=0.06),
-        _node("node:substrate.biometrics", "Bio PE", pressure=0.9),
+        _node("node:prediction.body_joint", "Body joint PE", pressure=0.9),
     ]
-    frame = _frame(nodes, {"node:substrate.execution": _mag(0.995), "node:substrate.biometrics": _mag(0.6)})
+    frame = _frame(nodes, {"node:substrate.execution": _mag(0.995), "node:prediction.body_joint": _mag(0.6)})
     proj = ab.broadcast_projection_from_frame(frame)
     assert proj.attended_node_ids == ["node:substrate.execution"]
     loop = frame.open_loops[0]
@@ -96,8 +96,8 @@ def test_internal_below_high_cannot_enter_even_with_huge_pressure() -> None:
 def test_chat_external_candidate_wins_on_a_calm_body() -> None:
     turns = [NOW - timedelta(days=d, minutes=30) for d in range(1, 7)] + [NOW - timedelta(minutes=2)]
     frame = _frame(
-        [_node("node:substrate.biometrics", "Bio PE")],
-        {"node:substrate.biometrics": _mag(0.4)},
+        [_node("node:prediction.body_joint", "Body joint PE")],
+        {"node:prediction.body_joint": _mag(0.4)},
         external=[chat_candidate(turns, now=NOW)],
     )
     proj = ab.broadcast_projection_from_frame(frame)
@@ -121,8 +121,8 @@ def test_reading_candidate_attends_recent_concepts() -> None:
     assert candidate.absent is False
     assert len(candidate.evidence_refs[1:]) <= 8
     frame = _frame(
-        [_node("node:substrate.biometrics", "Bio PE")],
-        {"node:substrate.biometrics": _mag(0.4)},
+        [_node("node:prediction.body_joint", "Body joint PE")],
+        {"node:prediction.body_joint": _mag(0.4)},
         external=[candidate],
     )
     attended = ab.broadcast_projection_from_frame(frame).attended_node_ids
@@ -316,8 +316,8 @@ def _chat_frame(minutes_ago, latest=None):
         NOW - timedelta(minutes=m) for m in minutes_ago
     ]
     return _frame(
-        [_node("node:substrate.biometrics", "Bio PE")],
-        {"node:substrate.biometrics": _mag(0.4)},
+        [_node("node:prediction.body_joint", "Body joint PE")],
+        {"node:prediction.body_joint": _mag(0.4)},
         external=[chat_candidate(turns, now=NOW, latest_turn=latest)],
     )
 

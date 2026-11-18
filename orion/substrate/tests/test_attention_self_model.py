@@ -205,7 +205,7 @@ class TestPartialData:
         rule bans. Must now honestly reflect that real data is present."""
         model = reduce_attention_self_model(
             None, None, now=NOW,
-            prediction_error_trend_by_domain={"biometrics": 0.3},
+            prediction_error_trend_by_domain={"execution": 0.3},
         )
 
         assert model.attention_reason != "no_data"
@@ -275,23 +275,24 @@ class TestPredictedShift:
         model = reduce_attention_self_model(
             None, None, now=NOW,
             prediction_error_trend_by_domain={
-                "execution": 0.001, "biometrics": 0.18, "chat": -0.02,
+                # (biometrics retired 2026-11-18, #3575): supplied, never chosen.
+                "execution": 0.18, "biometrics": 0.5, "chat": -0.02,
             },
         )
 
         assert model.predicted_shift_basis == (
             "prediction_error_trend_by_domain (Active Inference, argmax by |trend|)"
         )
-        assert "biometrics" in model.predicted_shift
+        assert "execution" in model.predicted_shift
         assert "rising" in model.predicted_shift
 
     def test_falling_trend_is_named_as_falling(self) -> None:
         model = reduce_attention_self_model(
             None, None, now=NOW,
-            prediction_error_trend_by_domain={"biometrics": -0.3, "execution": 0.01},
+            prediction_error_trend_by_domain={"execution": -0.3},
         )
 
-        assert "biometrics" in model.predicted_shift
+        assert "execution" in model.predicted_shift
         assert "falling" in model.predicted_shift
 
     def test_no_trend_data_yields_no_prediction(self) -> None:
@@ -352,12 +353,12 @@ class TestPredictedShift:
         broadcast = _broadcast(override=_override())
         model = reduce_attention_self_model(
             broadcast, _field_frame(), now=NOW,
-            prediction_error_trend_by_domain={"biometrics": 0.2},
+            prediction_error_trend_by_domain={"execution": 0.2},
         )
 
         assert model.attention_reason == "top_down_override"
         assert model.predicted_shift is not None
-        assert "biometrics" in model.predicted_shift
+        assert "execution" in model.predicted_shift
 
 
 class TestUnconditionalPredictionErrorConfidence:
@@ -390,17 +391,17 @@ class TestUnconditionalPredictionErrorConfidence:
         assert model.prediction_error_confidence is not None
 
     def test_transport_excluded_from_domain_set(self) -> None:
-        # {execution: 0.0001, biometrics: 0.0459} (route and chat, also
-        # supplied, retired 2026-11) -> mean = 0.023 -> confidence = 0.977.
+        # {execution: 0.0001} (route, chat and biometrics, also supplied,
+        # retired 2026-11; biometrics 2026-11-18, #3575) -> confidence = 0.9999.
         # If transport's guaranteed 0.0 leaked back in, the mean would drop
         # -- this test would fail.
         model = reduce_attention_self_model(
             None, _field_frame(), now=NOW,
             prediction_error_by_domain=_prediction_error_by_domain(),
         )
-        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.023, abs=1e-4)
+        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0001, abs=1e-4)
         assert "transport" not in model.prediction_error_confidence_basis
-        assert "2 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
+        assert "1 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
 
     def test_only_transport_data_yields_honestly_absent_not_zero(self) -> None:
         # If the caller only ever has transport data (degenerate but
@@ -433,16 +434,17 @@ class TestUnconditionalPredictionErrorConfidence:
     def test_retired_bus_synaptic_and_route_are_excluded(self) -> None:
         # 2026-11 (PE suite rebuild step 5): bus_synaptic and route were
         # retired (chat 2026-11-13, step 6). Supplied anyway, they must not move the mean:
-        # {execution: 0.0001, biometrics: 0.0459} -> 0.977.
+        # {execution: 0.0001} -> 0.9999 (biometrics retired 2026-11-18, #3575).
         model = reduce_attention_self_model(
             None, _field_frame(), now=NOW,
             prediction_error_by_domain=_prediction_error_by_domain(bus_synaptic=0.30, route=0.9, chat=0.8),
         )
-        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.023, abs=1e-4)
+        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0001, abs=1e-4)
         assert "bus_synaptic" not in model.prediction_error_confidence_basis
         assert "route" not in model.prediction_error_confidence_basis
         assert "chat" not in model.prediction_error_confidence_basis
-        assert "2 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
+        assert "biometrics" not in model.prediction_error_confidence_basis
+        assert "1 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
 
     def test_only_retired_domain_data_yields_honestly_absent(self) -> None:
         model = reduce_attention_self_model(
@@ -465,8 +467,7 @@ class TestPredictionErrorByDomainExposed:
             prediction_error_by_domain=_prediction_error_by_domain(),
         )
         assert model.prediction_error_by_domain == {
-            "execution": 0.0001,
-            "biometrics": 0.0459,
+            "execution": 0.0001,  # (biometrics retired 2026-11-18, #3575)
         }
 
     def test_transport_excluded_even_when_supplied(self) -> None:
@@ -523,8 +524,7 @@ class TestPredictionErrorEvidenceByDomainExposed:
             },
         )
         assert model.prediction_error_evidence_by_domain == {
-            "execution": ["gev_exec_1"],
-            "biometrics": ["gev_bio_1", "gev_bio_2"],
+            "execution": ["gev_exec_1"],  # (biometrics retired 2026-11-18, #3575)
         }
 
     def test_transport_excluded_even_when_supplied(self) -> None:

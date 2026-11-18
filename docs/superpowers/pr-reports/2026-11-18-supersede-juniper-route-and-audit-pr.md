@@ -55,6 +55,9 @@ scripts/memory_supersede_eval.py run --record-db   (v3.5, 2 repeats)  PASSED and
   short-circuits it, and the model now says compatible)
   made-up Juniper fix correction without the PR number: acted via her path, 3/3, both repeats
   10 misses = Juniper's 5 real confirmation revisions x 2: compatible 5, refine 4, checklist:correction 1
+scripts/memory_supersede_eval.py run --record-db   (v3.5, + group item)  PASSED and recorded (run d42dedfc)
+  precision 1.00 (23/23), recall 0.68, 0 false acts over 90 negative runs (17 real hard negatives), 0 errors
+  syn:juniper-two-targets: 0 links in both repeats (no clear target); both rejected pairs compatible/unrelated
 ```
 
 ## Docker/build/smoke checks

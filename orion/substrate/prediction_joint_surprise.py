@@ -18,7 +18,8 @@ Aggregation (the node's value), same shape as ``node:prediction.room`` / ``.body
 (``orion/substrate/prediction_surprise.py``): keep the outcomes whose target bucket is in the last
 ``WINDOW`` (30 min), from independent origins only (one per horizon-long block on the clock), one per
 target bucket (the shortest horizon wins). ``z = sum(excess) / sqrt(sum(calm_var))``, stored as
-``clip(z / 3, 0, 1)``. ``calm_var`` is the variance of ``-ln p`` for a conformal p uniform on
+``clip(z / 3, 0, 1)``. In practice nearly every counted outcome is a 5-min one: a 15-min outcome counts
+only when its bucket has no 5-min outcome (same rule as ``node:prediction.body``). ``calm_var`` is the variance of ``-ln p`` for a conformal p uniform on
 ``{1..n_cal+1} / (n_cal+1)`` (``calm_excess_variance``): 1.0 in the continuous limit, set by theory, not tuned.
 
 - calm: z ~ N(0, 1) when calibrated -> exact 0 about half the time. Rest point 0.

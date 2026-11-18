@@ -4756,7 +4756,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:prediction.room_joint.prediction_error": {
-      "meaning": "How much the office (Juniper's room) is surprising Orion's own forecast: eCO2, PM2.5, light, sound and humidity forecast together 5 and 15 minutes ahead, the misses scored as ONE joint miss, over the last 30 minutes, as excess surprise in units of its calm spread (a z-score), 3 sigma = 1.0. 0 = the room did what the forecast expected. Caused by people, windows, time of day and weather, so it is the outside world, not Orion's body.",
+      "meaning": "How much the office (Juniper's room) is surprising Orion's own forecast: eCO2, PM2.5, light and humidity forecast together 5 and 15 minutes ahead, the misses scored as ONE joint miss, over the last 30 minutes, as excess surprise in units of its calm spread (a z-score), 3 sigma = 1.0. 0 = the room did what the forecast expected. Caused by people, windows, time of day and weather, so it is the outside world, not Orion's body.",
       "value_kind": "surprise_excess",
       "rest": "0.0 = the room's joint misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time). Room-group rows start at deploy; its own calm check (#3309 per group) gates any reliance on it.",
       "rest_range": [

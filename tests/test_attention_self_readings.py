@@ -33,14 +33,19 @@ def _by_id(readings):
 def test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_placeholder() -> None:
     nodes = sr.prompt_reaching_nodes()
     assert nodes == sorted([
-        "node:substrate.biometrics", "node:substrate.cabinet",
+        "node:substrate.cabinet",
         "node:substrate.execution",
         "node:substrate.strain",
         # forecast surprise (value_kind surprise_excess, 2026-11-11): a measurement, the body.
         "node:prediction.body", "node:prediction.room",
         # chat-turn surprise (2026-11-13), successor of node:substrate.chat.
         "node:prediction.chat_turn",
+        # family A body joint (2026-11-18, #3575), successor of node:substrate.biometrics. The room
+        # joint is a world source: never a self-reading.
+        "node:prediction.body_joint",
     ])
+    assert "node:prediction.room_joint" not in nodes
+    assert "node:substrate.biometrics" not in nodes
     # bus_synaptic and route retired 2026-11 (PE suite rebuild step 5), chat 2026-11-13 (step 6).
     assert "node:substrate.bus_synaptic" not in nodes and "node:substrate.route" not in nodes
     assert "node:substrate.chat" not in nodes
@@ -133,19 +138,20 @@ def test_event_signal_with_no_event_in_its_whole_history_is_quiet_not_unreadable
 
 
 def test_score_is_polarity_aware(monkeypatch) -> None:
+    fx.install_probe_glossary(monkeypatch)  # continuous body probe (biometrics retired, #3575)
     rows = fx.busy_body_rows()
-    base = _by_id(sr.build_self_readings(_cache(rows), now=NOW))["node:substrate.biometrics"]
+    base = _by_id(sr.build_self_readings(_cache(rows), now=NOW))[fx.CONTINUOUS_BODY]
     assert base.score_0_10 == 10 and base.unusual
 
     real = wf.node_prediction_error_semantics
 
     def flipped(node_id):
         vk, pol = real(node_id)
-        return (vk, "higher_is_better") if node_id == "node:substrate.biometrics" else (vk, pol)
+        return (vk, "higher_is_better") if node_id == fx.CONTINUOUS_BODY else (vk, pol)
 
     monkeypatch.setattr(wf, "node_prediction_error_semantics", flipped)
     monkeypatch.setattr(sr, "node_prediction_error_semantics", flipped)
-    inv = _by_id(sr.build_self_readings(_cache(rows), now=NOW))["node:substrate.biometrics"]
+    inv = _by_id(sr.build_self_readings(_cache(rows), now=NOW))[fx.CONTINUOUS_BODY]
     # At the top of its week: great if higher is better, so its bad-direction score is 0.
     assert inv.score_0_10 == 0 and not inv.unusual
 
@@ -201,8 +207,9 @@ def test_non_finite_latest_value_is_no_reading_never_a_measurement(bad) -> None:
     assert "execution (no reading)" in block.text
 
 
-def test_calm_with_unread_signals_is_not_logged_all_calm() -> None:
-    rows = [r for r in fx.calm_rows() if r[0] in ("node:substrate.biometrics",)]
+def test_calm_with_unread_signals_is_not_logged_all_calm(monkeypatch) -> None:
+    fx.install_probe_glossary(monkeypatch)  # continuous body probe (biometrics retired, #3575)
+    rows = [r for r in fx.calm_rows() if r[0] in (fx.CONTINUOUS_BODY,)]
     block = sr.project_self_readings(_cache(rows), now=NOW)
     assert block.text == "" and block.skip_reason == "calm_partial"
 
@@ -225,11 +232,12 @@ def test_event_signal_with_no_recent_event_is_not_called_unreadable() -> None:
     assert "prediction.chat_turn (stale)" not in block.text
 
 
-def test_per_tick_signal_gone_stale_is_unreadable() -> None:
+def test_per_tick_signal_gone_stale_is_unreadable(monkeypatch) -> None:
+    fx.install_probe_glossary(monkeypatch)  # continuous body probe (biometrics retired, #3575)
     rows = [r for r in fx.busy_body_rows()
-            if not (r[0] == "node:substrate.biometrics" and r[1] > NOW - timedelta(hours=1))]
+            if not (r[0] == fx.CONTINUOUS_BODY and r[1] > NOW - timedelta(hours=1))]
     block = sr.project_self_readings(_cache(rows), now=NOW)
-    assert "Can't read right now: biometrics (stale)." in block.text
+    assert "Can't read right now: probe (stale)." in block.text
 
 
 # --- what it tends to lead to (spec section E) --------------------------------------------------
@@ -278,8 +286,9 @@ def test_a_clause_never_attaches_to_a_calm_or_unread_signal() -> None:
     assert block.text == ""  # calm body: nothing rendered, clause or not
 
 
-def test_the_clause_is_dropped_before_a_reading_would_be() -> None:
-    nodes = ["node:substrate.execution", "node:substrate.biometrics", "node:substrate.cabinet"]
+def test_the_clause_is_dropped_before_a_reading_would_be(monkeypatch) -> None:
+    fx.install_probe_glossary(monkeypatch)  # continuous body probe (biometrics retired, #3575)
+    nodes = ["node:substrate.execution", fx.CONTINUOUS_BODY, "node:substrate.cabinet"]
     readings = sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW,
                                       associations={n: _assoc(n) for n in nodes})
     plain = sr.render_self_readings(sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW), now=NOW)

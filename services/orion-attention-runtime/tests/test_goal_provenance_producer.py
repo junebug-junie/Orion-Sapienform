@@ -58,7 +58,7 @@ def _make_worker(
 
 def test_maybe_build_goal_returns_none_when_producer_disabled(monkeypatch):
     worker = _make_worker(monkeypatch, producer_enabled=False)
-    real_domain = "node:substrate.biometrics"
+    real_domain = "node:substrate.execution"
     frame = _frame([_target(real_domain, 0.9)])
 
     goal = worker._maybe_build_goal(frame)
@@ -68,7 +68,7 @@ def test_maybe_build_goal_returns_none_when_producer_disabled(monkeypatch):
 def test_maybe_build_goal_returns_none_when_bus_absent(monkeypatch):
     worker = _make_worker(monkeypatch)
     worker._bus = None
-    real_domain = "node:substrate.biometrics"
+    real_domain = "node:substrate.execution"
     frame = _frame([_target(real_domain, 0.9)])
 
     goal = worker._maybe_build_goal(frame)
@@ -77,7 +77,7 @@ def test_maybe_build_goal_returns_none_when_bus_absent(monkeypatch):
 
 def test_maybe_build_goal_returns_none_before_streak_threshold(monkeypatch):
     worker = _make_worker(monkeypatch, min_streak=3)
-    real_domain = "node:substrate.biometrics"
+    real_domain = "node:substrate.execution"
     frame = _frame([_target(real_domain, 0.9)])
 
     goal = worker._maybe_build_goal(frame)  # streak=1
@@ -89,7 +89,7 @@ def test_maybe_build_goal_returns_none_before_streak_threshold(monkeypatch):
 
 def test_maybe_build_goal_returns_real_goal_at_streak_threshold(monkeypatch):
     worker = _make_worker(monkeypatch, min_streak=3)
-    real_domain = "node:substrate.biometrics"
+    real_domain = "node:substrate.execution"
     frame = _frame([_target(real_domain, 0.77)])
 
     worker._maybe_build_goal(frame)  # streak=1
@@ -126,9 +126,9 @@ def test_maybe_build_goal_lazy_loads_streak_from_store_once(monkeypatch):
     every tick, since the in-memory value is authoritative once loaded."""
     worker = _make_worker(monkeypatch, min_streak=5)
     worker._node_streak = None
-    persisted = DominanceStreak(target_id="node:substrate.biometrics", count=2)
+    persisted = DominanceStreak(target_id="node:substrate.execution", count=2)
     worker._store.load_node_dominance_streak.return_value = persisted
-    real_domain = "node:substrate.biometrics"
+    real_domain = "node:substrate.execution"
     frame = _frame([_target(real_domain, 0.9)])
 
     worker._maybe_build_goal(frame)  # loads persisted count=2, advances to 3
@@ -140,7 +140,7 @@ def test_maybe_build_goal_lazy_loads_streak_from_store_once(monkeypatch):
 
 def test_maybe_build_goal_persists_streak_every_tick(monkeypatch):
     worker = _make_worker(monkeypatch, min_streak=3)
-    real_domain = "node:substrate.biometrics"
+    real_domain = "node:substrate.execution"
     frame = _frame([_target(real_domain, 0.9)])
 
     worker._maybe_build_goal(frame)
@@ -157,9 +157,9 @@ async def test_publish_goal_calls_publish_with_reconnect(monkeypatch):
     goal = FieldGoalProvenanceV1(
         subject="attention",
         model_layer="field_attention",
-        entity_id="node:substrate.biometrics",
+        entity_id="node:substrate.execution",
         kind="memory.field_goals.proposed.v1",
-        field_target_id="node:substrate.biometrics",
+        field_target_id="node:substrate.execution",
         target_kind="node",
         salience_score=0.8,
         source_field_tick_id="tick-1",
@@ -187,9 +187,9 @@ async def test_publish_goal_noop_when_bus_absent(monkeypatch):
     goal = FieldGoalProvenanceV1(
         subject="attention",
         model_layer="field_attention",
-        entity_id="node:substrate.biometrics",
+        entity_id="node:substrate.execution",
         kind="memory.field_goals.proposed.v1",
-        field_target_id="node:substrate.biometrics",
+        field_target_id="node:substrate.execution",
         target_kind="node",
         salience_score=0.8,
         source_field_tick_id="tick-1",
@@ -314,7 +314,17 @@ from pathlib import Path
 from app.store import AttentionRuntimeStore
 
 
+def _probe(monkeypatch):
+    """The bridge needs TWO goal-eligible candidates. execution is the last native prediction-error
+    target since biometrics was retired 2026-11-18 (#3575), so these tests add a test-only one."""
+    from orion.attention.field_attention import goal_provenance
+
+    monkeypatch.setattr(goal_provenance, "PREDICTION_ERROR_NATIVE_TARGETS",
+                        {**goal_provenance.PREDICTION_ERROR_NATIVE_TARGETS, "node:substrate.probe": "probe"})
+
+
 def _bridge_worker(monkeypatch, *, competing, reads_competition: bool = True):
+    _probe(monkeypatch)
     monkeypatch.setenv("ORION_GOAL_PROVENANCE_READS_COMPETITION", str(reads_competition))
     worker = _make_worker(monkeypatch, min_streak=1)
     worker._store.load_competing_loop_refs.return_value = competing
@@ -336,14 +346,14 @@ def _receipt(caplog) -> str:
 
 
 def _two_candidates():
-    return _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.biometrics", 0.6)])
+    return _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.probe", 0.6)])
 
 
 def test_bridge_goal_targets_the_competing_candidate_and_says_so(monkeypatch, caplog):
     caplog.set_level(logging.INFO)
-    worker = _bridge_worker(monkeypatch, competing={"node:substrate.biometrics"})
+    worker = _bridge_worker(monkeypatch, competing={"node:substrate.probe"})
     goal = _emit_twice(worker, _two_candidates())
-    assert goal is not None and goal.field_target_id == "node:substrate.biometrics"
+    assert goal is not None and goal.field_target_id == "node:substrate.probe"
     assert _receipt(caplog) == "in_competition"
     worker._store.load_competing_loop_refs.assert_called_with(
         max_age_sec=worker._settings.goal_competition_max_age_sec
@@ -367,7 +377,7 @@ def test_bridge_unknown_competition_is_unavailable_not_empty(monkeypatch, caplog
 
 def test_bridge_kill_switch_never_reads_the_store(monkeypatch, caplog):
     caplog.set_level(logging.INFO)
-    worker = _bridge_worker(monkeypatch, competing={"node:substrate.biometrics"}, reads_competition=False)
+    worker = _bridge_worker(monkeypatch, competing={"node:substrate.probe"}, reads_competition=False)
     goal = _emit_twice(worker, _two_candidates())
     assert goal.field_target_id == "node:substrate.execution"  # pre-bridge behaviour exactly
     assert _receipt(caplog) == "unavailable"
@@ -377,7 +387,7 @@ def test_bridge_kill_switch_never_reads_the_store(monkeypatch, caplog):
 def test_bridge_skips_the_read_when_it_cannot_matter(monkeypatch):
     """With fewer than two qualified candidates no competition set can change
     the answer, so the cross-service read is not made (review finding)."""
-    worker = _bridge_worker(monkeypatch, competing={"node:substrate.biometrics"})
+    worker = _bridge_worker(monkeypatch, competing={"node:substrate.probe"})
     goal = _emit_twice(worker, _frame([_target("node:substrate.execution", 0.9)]))
     assert goal is not None and goal.field_target_id == "node:substrate.execution"
     worker._store.load_competing_loop_refs.assert_not_called()
@@ -397,12 +407,13 @@ def test_bridge_unknown_reads_do_not_flap_the_streak(monkeypatch):
     producer would fire LESS than before. A None/empty read keeps the current
     streak target."""
     monkeypatch.setenv("ORION_GOAL_PROVENANCE_READS_COMPETITION", "true")
+    _probe(monkeypatch)
     worker = _make_worker(monkeypatch, min_streak=3)
-    reads = [{"node:substrate.biometrics"}, None, set(), RuntimeError("db down"), {"node:substrate.biometrics"}]
+    reads = [{"node:substrate.probe"}, None, set(), RuntimeError("db down"), {"node:substrate.probe"}]
     worker._store.load_competing_loop_refs.side_effect = reads
     goals = [worker._maybe_build_goal(_two_candidates()) for _ in reads]
-    assert [g.field_target_id for g in goals if g is not None] == ["node:substrate.biometrics"] * 3
-    assert worker._node_streak.target_id == "node:substrate.biometrics" and worker._node_streak.count == 5
+    assert [g.field_target_id for g in goals if g is not None] == ["node:substrate.probe"] * 3
+    assert worker._node_streak.target_id == "node:substrate.probe" and worker._node_streak.count == 5
 
 
 # --- store reader: one fake engine, shared by the reader tests ---------------

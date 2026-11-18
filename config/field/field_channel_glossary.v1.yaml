@@ -566,7 +566,7 @@ channels:
         - "orion.attention.self_readings:render_self_readings"
 
   # Room joint (2026-11-18, #3575 / #3580): same producer and fold as the body joint, on the
-  # office's air, light and sound readings. A WORLD source (orion/schemas/attention_candidate.py
+  # office's air and light readings (sound joins once #3581 fixes the meter). A WORLD source (orion/schemas/attention_candidate.py
   # _WORLD_NODE_IDS): it can author a goal through the attended-world rule, is absent after
   # 600 s without a write (orion/attention/world_first.py EXTERNAL_MAX_AGE_SEC_BY_NODE), and the
   # body-only self-signal gates and self-readings skip it.
@@ -575,7 +575,7 @@ channels:
     channel: prediction_error
     level: [node]
     category: self_monitoring
-    meaning: "How much the office (Juniper's room) is surprising Orion's own forecast: eCO2, PM2.5, light, sound and humidity forecast together 5 and 15 minutes ahead, the misses scored as ONE joint miss, over the last 30 minutes, as excess surprise in units of its calm spread (a z-score), 3 sigma = 1.0. 0 = the room did what the forecast expected. Caused by people, windows, time of day and weather, so it is the outside world, not Orion's body."
+    meaning: "How much the office (Juniper's room) is surprising Orion's own forecast: eCO2, PM2.5, light and humidity forecast together 5 and 15 minutes ahead, the misses scored as ONE joint miss, over the last 30 minutes, as excess surprise in units of its calm spread (a z-score), 3 sigma = 1.0. 0 = the room did what the forecast expected. Caused by people, windows, time of day and weather, so it is the outside world, not Orion's body."
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:prediction.room_joint'"
     consumers:
       - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"

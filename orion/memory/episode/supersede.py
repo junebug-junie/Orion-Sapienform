@@ -97,6 +97,10 @@ PROTECTED_CONFIRMATION_STATES = frozenset({"confirmed"})
 # she later rejects would leave the old row hidden with nothing in its place.
 OPEN_CONFIRMATION_STATES = frozenset({"pending_confirmation", "unconfirmed"})
 CORRECTION_STATES = frozenset({"auto", "confirmed"})
+# ``not_asked`` (high stakes, written by the July-September backfill, #3537, which never asks Juniper):
+# nobody will ever settle it, so it is NOT open -- a later settled correction may retire it (with the
+# same eval gate, and the hand-run pass's per-pair review). It is not settled either, so it is not in
+# CORRECTION_STATES: it never retires anything itself.
 SKIPPED_PURPOSES = frozenset({"follow_up"})                     # neither side
 NOT_SUPERSEDABLE_PURPOSES = SKIPPED_PURPOSES | {"orion_view"}   # never the old side
 

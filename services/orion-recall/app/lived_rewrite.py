@@ -14,7 +14,10 @@ the same conversation and writes up to ``MAX_QUERIES`` short searches that name 
   Asai et al. 2023). The model writes searches only when answering needs something from before
   this conversation; otherwise ``NONE``, and the message is not searched at all. It is told
   that a reply the recent conversation already answers needs no search: with the general
-  prompt, "haha yeah" got searches about the previous turn's topic (replay 2026-11-17).
+  prompt, "haha yeah" got searches about the previous turn's topic (replay 2026-11-17). It is
+  told who is speaking: without that, "how tall am I?" read as a question about Orion and got
+  NONE. A YES/NO-first form was tried and said YES to 10 of 22 real small-talk messages, so the
+  reply stays "queries or NONE".
 - **Failure.** Any error, refusal or timeout means "no rewrite": recall goes on with the raw
   message, exactly as in step 1.
 
@@ -58,16 +61,20 @@ up, write NONE. Write only the queries, or NONE."""
 # Issue #3613: for a short message that names no known entity. Answering NONE means recall does
 # not search at all, so the bar for a search is "needs a memory", not "could match something".
 SHORT_PROMPT = """You help Orion decide whether to search their memories before replying to a short message.
+The messages are from Juniper, talking to Orion. In them, "I", "me" and "my" mean Juniper, and
+"you" means Orion.
 
 Recent conversation, oldest first:
 {context}
 
-New message:
+New message from Juniper:
 {message}
 
 Search only if a good reply needs something Orion would have to remember from before this
-conversation: a fact about Juniper or someone in her life, a pet, a place, a project, a machine,
-a plan, a preference, or something that happened or was said on an earlier day.
+conversation: a fact about Juniper herself or someone in her life, a pet, a place, a project, a
+machine, a plan, a preference, something Juniper asked Orion to do, or something that happened or
+was said on an earlier day. A question Juniper asks about herself ("how old am I", "what car do
+I drive") can only be answered from memory, so it needs a search.
 
 Write NONE if the message is a greeting, thanks, a reaction, a joke, agreement, a request to do
 something now, or anything the recent conversation itself already answers.

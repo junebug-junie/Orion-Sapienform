@@ -214,7 +214,7 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
     await bus.connect()
     local = build_local_lived(pool, bus, args) if getattr(args, "lived_local", False) else None
     local_rows: Dict[str, Dict[str, Any]] = {}   # qid -> the local lived search's status and trace
-    local_ms: List[int] = []
+    local_ms: Dict[str, List[int]] = {}   # gate -> lived-recall total ms
     gates: Dict[str, int] = {}
     observations: Dict[str, RetrievalObservation] = {}
     corrs: Dict[str, List[str]] = {}
@@ -243,8 +243,8 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
                     ids = [s.rec.doc_id for s in out.chosen]
                     local_rows[it.qid] = {"lived_status": status_of(out.debug, len(ids), backend=out.backend),
                                           "lived_trace": trace_of(out.debug), "served": len(ids)}
-                    local_ms.append(int((out.debug.get("timings_ms") or {}).get("total") or 0))
                     g = str(out.debug.get("gate") or "none")
+                    local_ms.setdefault(g, []).append(int((out.debug.get("timings_ms") or {}).get("total") or 0))
                     gates[g] = gates.get(g, 0) + 1
                     obs.injected_ids |= swap_lived_lines(bundle_items, ids)
                 else:
@@ -301,11 +301,15 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
     report["lived_memory_lines_injected"] = lived_lines
     report["phase3_intent"] = args.phase3_intent
     if local is not None:
-        ms = sorted(local_ms)
+        def pcts(vals: List[int]) -> Dict[str, int] | None:
+            ms = sorted(vals)
+            return {"p50": ms[len(ms) // 2], "p90": ms[min(len(ms) - 1, int(0.9 * len(ms)))],
+                    "max": ms[-1]} if ms else None
+
         report["lived_local"] = {
             "short_gate": args.lived_local_short_gate, "gates": gates,
-            "total_ms": {"p50": ms[len(ms) // 2], "p90": ms[min(len(ms) - 1, int(0.9 * len(ms)))],
-                         "max": ms[-1]} if ms else None,
+            "total_ms": pcts([m for vals in local_ms.values() for m in vals]),
+            "total_ms_by_gate": {g: pcts(v) for g, v in sorted(local_ms.items())},
         }
     return report
 

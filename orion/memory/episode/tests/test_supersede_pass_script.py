@@ -61,7 +61,7 @@ def test_apply_refuses_pairs_found_without_the_meaning_index(tmp_path):
                                  "check_version": v})
                      + "\n" + json.dumps({"old_id": "o2", "new_id": "n2", "reason": "r", "dense": 0.71,
                                            "check_version": v}) + "\n")
-    args = argparse.Namespace(yes=True, pairs=str(pairs), allow_no_dense=False, only="", exclude="",
+    args = argparse.Namespace(yes=True, pairs=str(pairs), allow_no_dense=False, allow_no_eval=True, only="", exclude="",
                               dsn="postgresql://nobody@127.0.0.1:1/none", no_manifest=True, watch=[])
     with pytest.raises(SystemExit, match="without the meaning index"):
         asyncio.run(P.cmd_apply(args))
@@ -82,7 +82,7 @@ def test_apply_refuses_a_pairs_file_from_another_check_version(tmp_path):
     pairs = tmp_path / "pairs.jsonl"
     pairs.write_text(json.dumps({"old_id": "o", "new_id": "n", "reason": "r", "dense": 0.7,
                                  "check_version": "supersede_check.v2"}) + "\n")
-    args = argparse.Namespace(yes=True, pairs=str(pairs), allow_no_dense=True, only="", exclude="",
+    args = argparse.Namespace(yes=True, pairs=str(pairs), allow_no_dense=True, allow_no_eval=True, only="", exclude="",
                               dsn="postgresql://nobody@127.0.0.1:1/none", no_manifest=True, watch=[])
     with pytest.raises(SystemExit, match="another check version"):
         asyncio.run(P.cmd_apply(args))
@@ -114,3 +114,9 @@ def test_two_runs_leave_two_history_lines_and_watched_trace_has_legs_not_text(tm
     assert trace[0]["legs"]["cosine"] == 0.6612 and trace[0]["legs"]["rare_token_rows"] == [4]
     assert trace[0]["votes"] == [{"relation": "compatible", "same_attribute": False, "confidence": 0.9}]
     assert "Austin" not in path.read_text() and "Austin" not in "".join(hist)
+
+
+def test_a_malformed_answer_is_never_cached():
+    assert not P.cacheable("garbage") and not P.cacheable('{"relation": "maybe"}')
+    assert P.cacheable(json.dumps({"relation": "compatible", "same_attribute": "no", "confidence": 0.9,
+                                   "reason": "r"}))

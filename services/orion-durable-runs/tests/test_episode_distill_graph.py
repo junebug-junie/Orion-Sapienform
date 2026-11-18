@@ -113,7 +113,10 @@ def test_supersede_check_runs_on_the_hold_and_its_links_reach_persist():
         assert episode_id == "ep-1"
         assert [m.statement for m in result.memories] == ["Juniper flew to Austin and returns Wednesday."]
         assert await ask("CHECK: does B correct A?") == "yes"
-        return {"links": [{"old_id": "old-1", "new_id": result.memories[0].memory_id, "reason": "r"}],
+        from orion.memory.episode.supersede import CHECK_VERSION
+
+        return {"links": [{"old_id": "old-1", "new_id": result.memories[0].memory_id, "reason": "r",
+                           "check_version": CHECK_VERSION, "relation": "correction"}],
                 "asked": 1, "apply": "on", "refused_because": []}
 
     async def run():
@@ -125,6 +128,7 @@ def test_supersede_check_runs_on_the_hold_and_its_links_reach_persist():
         assert result["status"] == "completed"
         assert [b.max_tokens for b in d.check_briefs] == [200] and d.check_briefs[0].timeout_sec <= 120
         assert d.persisted[0]["supersede_links"][0]["old_id"] == "old-1"
+        assert d.persisted[0]["supersede_plan"]["apply"] == "on"   # the whole plan reaches the audit row
         assert result["supersede"]["asked"] == 1
 
     asyncio.run(run())

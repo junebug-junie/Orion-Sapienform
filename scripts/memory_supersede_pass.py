@@ -44,6 +44,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -164,6 +165,12 @@ def dense_for(new: MemoryRow, corpus: Corpus, vecs: Optional[dict[str, list[floa
     return out
 
 
+def cacheable(answer: str) -> bool:
+    from orion.memory.episode.supersede import parse_vote
+
+    return parse_vote(answer).error is None
+
+
 def plan_candidates(corpus: Corpus, vecs: Optional[dict[str, list[float]]],
                     excluded: frozenset[tuple[str, str]] = frozenset()) -> list[tuple[MemoryRow, list[Candidate]]]:
     """(new row, its candidates) for every live row that has any."""
@@ -194,13 +201,13 @@ async def cmd_dry_run(args: argparse.Namespace) -> int:
         excluded = await undone_pairs(conn)
     vecs = None if args.no_dense else await dense_matrix(args.chroma, args.embed_url, args.collection)
     groups = plan_candidates(corpus, vecs, excluded)
-    if args.max_checks:  # cap on candidate PAIRS (each takes 1 to VOTES model calls)
-        capped, n = [], 0
+    if args.max_checks:  # cap on candidate PAIRS, at whole rows: a row's candidates are never split
+        capped, n = [], 0   # (a split list could fake Juniper's "one clear target")
         for new_row, cands in groups:
-            if n >= args.max_checks:
+            if n and n + len(cands) > args.max_checks:
                 break
-            capped.append((new_row, cands[: args.max_checks - n]))
-            n += len(capped[-1][1])
+            capped.append((new_row, cands))
+            n += len(cands)
         groups = capped
     n_pairs = sum(len(c) for _, c in groups)
     by_id = {r.memory_id: r for r in corpus.rows}
@@ -238,9 +245,10 @@ async def cmd_dry_run(args: argparse.Namespace) -> int:
                     return cache[key]
                 answer = await gateway_ask(client, args.gateway, args.route, prompt, timeout=args.timeout,
                                            temperature=temperature)
-                cache[key] = answer
-                cache_f.write(json.dumps({"key": key, "answer": answer}) + "\n")
-                cache_f.flush()
+                if cacheable(answer):  # a malformed answer is asked again next run, never replayed
+                    cache[key] = answer
+                    cache_f.write(json.dumps({"key": key, "answer": answer}) + "\n")
+                    cache_f.flush()
                 return answer
 
             for new_row, cands in groups:
@@ -259,7 +267,7 @@ async def cmd_dry_run(args: argparse.Namespace) -> int:
             "refused_because": [] if vecs is not None else ["dense_off"], "asked": len(records),
             "check_errors": sum(1 for r in records if r.verdict.error), "dense": dense_state,
             "check_version": CHECK_VERSION, "decisions": [r.audit() for r in records]}
-    run_id = f"pass_dry_run:{started.strftime('%Y%m%dT%H%M%SZ')}"
+    run_id = f"pass_dry_run:{started.strftime('%Y%m%dT%H%M%SZ')}:{uuid.uuid4().hex[:6]}"
     if args.record_db:
         await record_db(args.dsn, run_id, "pass_dry_run", plan, [], started)
     if not args.no_manifest:
@@ -509,6 +517,19 @@ async def cmd_apply(args: argparse.Namespace) -> int:
     if not args.yes:
         raise SystemExit("apply writes to the live database: re-run with --yes after Juniper reviewed the pairs")
     pairs = [json.loads(line) for line in Path(args.pairs).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not args.allow_no_eval:
+        # Same gate as write time (issue #3659): no apply without a passing precision eval for this
+        # check version, unless the operator says so on purpose for this run.
+        import psycopg
+        from psycopg.rows import dict_row
+
+        from orion.memory.episode.supersede import eval_gate
+
+        async with await psycopg.AsyncConnection.connect(args.dsn, row_factory=dict_row, autocommit=True) as gc:
+            open_, why = await eval_gate(gc)
+        if not open_:
+            raise SystemExit(f"eval gate closed ({why}): run scripts/memory_supersede_eval.py run --record-db first, "
+                             "or pass --allow-no-eval after reviewing every pair by hand.")
     only, exclude = _pair_set(args.only), _pair_set(args.exclude)
     pairs = [p for p in pairs if not ((only and (p["old_id"], p["new_id"]) not in only)
                                       or (p["old_id"], p["new_id"]) in exclude)]
@@ -568,7 +589,7 @@ async def cmd_apply(args: argparse.Namespace) -> int:
             with log.open("a", encoding="utf-8") as f:
                 f.write(f"{datetime.now(timezone.utc).isoformat()} {why} old={p['old_id']} new={p['new_id']}\n")
             os.chmod(log, 0o600)
-        run_id = f"pass_apply:{started.strftime('%Y%m%dT%H%M%SZ')}"
+        run_id = f"pass_apply:{started.strftime('%Y%m%dT%H%M%SZ')}:{uuid.uuid4().hex[:6]}"
         if not args.no_manifest:
             await write_manifest(conn, Path(args.manifest), mode="apply",
                                  proposed=[{"old_id": p["old_id"], "new_id": p["new_id"]} for p in pairs],
@@ -621,6 +642,8 @@ def main() -> int:
     a.add_argument("--only", default="", help="OLD:NEW,... apply only these")
     a.add_argument("--exclude", default="", help="OLD:NEW,... skip these")
     a.add_argument("--yes", action="store_true")
+    a.add_argument("--allow-no-eval", action="store_true",
+                   help="apply although no passing precision eval is recorded (refused by default, issue #3659)")
     a.add_argument("--allow-no-dense", action="store_true",
                    help="apply pairs found without the meaning index (refused by default, issue #3659)")
     for sp in (d, a):

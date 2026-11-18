@@ -72,6 +72,7 @@ FROM episode_memory m
 WHERE m.confirmation_state IS DISTINCT FROM 'rejected'
   AND length(trim(m.statement)) > 0
   AND coalesce(m.occurred_at, m.created_at) <= $1
+  AND (m.expires_at IS NULL OR m.expires_at > $1)
   AND (
       (m.status = 'active'
        AND NOT EXISTS (SELECT 1 FROM episode_memory c

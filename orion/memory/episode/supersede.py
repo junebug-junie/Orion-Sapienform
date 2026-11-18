@@ -59,7 +59,7 @@ import re
 import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Optional, Sequence
 
 from orion.memory.lived_memory import EPISODE_SQL
@@ -526,7 +526,8 @@ async def check_pairs(new: MemoryRow, cands: Sequence[Candidate], ask: AskFn, *,
     Links: every candidate with a unanimous, confident update/correction. Juniper's explicit words
     (``new.juniper_quoted``) outrank abstention: when no candidate passes the strict rule and exactly
     ONE candidate drew only update/correction votes, that one links (path "juniper"). Two or more
-    such candidates is no clear target: nothing links."""
+    such candidates is no clear target: nothing links. "Exactly one" is among the top ``K_PER_ROW``
+    candidates asked to the end (a budget cut disables the path)."""
     links: list[Link] = []
     records: list[CheckRecord] = []
     juniper: list[tuple[Candidate, Classification]] = []
@@ -597,9 +598,12 @@ def invalid_at_for(relation: str, old: Mapping[str, Any], new: Mapping[str, Any]
 
     update: it WAS true until the newer memory's time (``occurred_at``, else when it was written).
     correction: it was never true, so it is invalid from its own time."""
+    old_start = _aware(old.get("occurred_at")) or _aware(old.get("created_at")) or now
     if relation == REL_UPDATE:
-        return _aware(new.get("occurred_at")) or _aware(new.get("created_at")) or now
-    return _aware(old.get("occurred_at")) or _aware(old.get("created_at")) or now
+        # Never before the old fact's own start (a newer row about an earlier event would otherwise
+        # give an empty validity window and silently hide the history).
+        return max(_aware(new.get("occurred_at")) or _aware(new.get("created_at")) or now, old_start)
+    return old_start
 
 
 async def apply_link(conn: Any, link: Link, *, actor: str, now: Optional[datetime] = None,
@@ -746,6 +750,8 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
         reasons.append(REFUSED_DENSE_OFF)
     else:
         for new in new_rows:
+            if budget[0] <= 0:
+                break  # no calls left: an index fault on a row never asked must not hold proven links
             try:
                 scores = await dense(new.statement)
             except Exception as exc:  # noqa: BLE001 -- no fallback: a degraded search never acts
@@ -809,27 +815,37 @@ def links_to_apply(plan: Optional[Mapping[str, Any]]) -> list[dict[str, Any]]:
     checkpoint written before #3659, or a degraded plan, applies nothing)."""
     if not plan or plan.get("apply") != "on" or plan.get("refused_because"):
         return []
-    return list(plan.get("links") or [])
+    # Defense in depth: only links from the current check version, with a relation it names.
+    return [l for l in (plan.get("links") or [])
+            if l.get("check_version") == CHECK_VERSION and l.get("relation") in ACTING_RELATIONS]
 
 
 # The precision eval's verdict, read before write-time apply (issue #3659). The table is created by
 # the eval's migration; until it exists (or while its latest run for this check version did not
 # pass), write time proposes only.
+# A pass expires: the model behind the memory_distill route can change under a fixed check version.
+EVAL_MAX_AGE_DAYS = 30
 EVAL_GATE_SQL = ("SELECT passed, check_version, finished_at FROM memory_supersede_eval_run "
-                 "WHERE check_version = %s AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1")
+                 "WHERE check_version = %s AND votes = %s AND finished_at IS NOT NULL "
+                 "ORDER BY finished_at DESC LIMIT 1")
 
 
-async def eval_gate(conn: Any, *, check_version: str = CHECK_VERSION) -> tuple[bool, str]:
-    """(open, why). Open only when the most recent eval run for ``check_version`` passed. Any read
-    failure (table missing, permissions, a dead connection) reads as closed."""
+async def eval_gate(conn: Any, *, check_version: str = CHECK_VERSION, votes: int = VOTES,
+                    now: Optional[datetime] = None) -> tuple[bool, str]:
+    """(open, why). Open only when the most recent finished eval run for ``check_version`` at the
+    production vote count passed, less than ``EVAL_MAX_AGE_DAYS`` ago. Any read failure (table
+    missing, permissions, a dead connection) reads as closed."""
     try:
-        row = await _fetchone(conn, EVAL_GATE_SQL, (check_version,))
+        row = await _fetchone(conn, EVAL_GATE_SQL, (check_version, int(votes)))
     except Exception as exc:  # noqa: BLE001 -- unknown is closed
         return False, f"eval_unreadable:{type(exc).__name__}"
     if row is None:
         return False, "eval_missing"
     if not row.get("passed"):
         return False, "eval_failed"
+    finished = _aware(row.get("finished_at"))
+    if finished is None or (now or datetime.now(timezone.utc)) - finished > timedelta(days=EVAL_MAX_AGE_DAYS):
+        return False, "eval_stale"
     return True, "eval_passed"
 
 

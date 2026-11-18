@@ -290,7 +290,7 @@ class _GateConn:
     async def execute(self, sql, params):
         if self.exc:
             raise self.exc
-        assert "memory_supersede_eval_run" in sql and params == (s.CHECK_VERSION,)
+        assert "memory_supersede_eval_run" in sql and params == (s.CHECK_VERSION, s.VOTES)
         row = self.row
 
         class Cur:
@@ -303,7 +303,10 @@ class _GateConn:
 
 def test_eval_gate_open_only_on_a_passing_run_for_this_check_version():
     run = asyncio.run
-    assert run(s.eval_gate(_GateConn({"passed": True, "check_version": s.CHECK_VERSION}))) == (True, "eval_passed")
+    fresh = datetime.now(timezone.utc)
+    assert run(s.eval_gate(_GateConn({"passed": True, "finished_at": fresh}))) == (True, "eval_passed")
+    stale = fresh - timedelta(days=s.EVAL_MAX_AGE_DAYS + 1)
+    assert run(s.eval_gate(_GateConn({"passed": True, "finished_at": stale}))) == (False, "eval_stale")
     assert run(s.eval_gate(_GateConn({"passed": False}))) == (False, "eval_failed")
     assert run(s.eval_gate(_GateConn(None))) == (False, "eval_missing")
     assert run(s.eval_gate(_GateConn(exc=RuntimeError("relation does not exist")))) == (
@@ -355,3 +358,25 @@ def test_a_failed_call_stops_the_whole_plan():
                                            dense=_dense({f"o{i}": 0.7 for i in range(3)}), apply_gate=OPEN))
     assert len(seen) == 1 and plan["links"] == [] and plan["budget_left"] == 0
     assert s.REFUSED_CHECK_ERRORS in plan["refused_because"]
+
+
+def test_a_budget_cut_disables_the_juniper_path():
+    mine = replace(NEW, voice="juniper_said", juniper_quoted=True)
+    o2 = row("o2", "Juniper told me Biscuit is a tabby cat.", refs=("pet:biscuit",))
+    cands = s.candidates_for(mine, corpus(OLD, o2, mine), dense={"old": 0.75, "o2": 0.7})
+    ask, _ = answers(COR, LOWC, COR, COR)          # o2 is cut after one acting vote
+    links, recs = asyncio.run(s.check_pairs(mine, cands, ask, budget=[4]))
+    assert links == [] and recs[1].verdict.abstain == "budget_spent"
+
+
+def test_links_to_apply_keeps_only_current_version_links_with_a_relation():
+    good = {"old_id": "a", "new_id": "b", "check_version": s.CHECK_VERSION, "relation": "update"}
+    plan = {"apply": "on", "refused_because": [], "links": [
+        good, {**good, "check_version": "supersede_check.v2"}, {**good, "relation": None}]}
+    assert s.links_to_apply(plan) == [good]
+
+
+def test_an_update_never_ends_before_the_old_fact_began():
+    old = {"occurred_at": T0 + timedelta(days=5)}
+    new = {"occurred_at": T0, "created_at": T0 + timedelta(days=9)}
+    assert s.invalid_at_for("update", old, new, T0) == T0 + timedelta(days=5)

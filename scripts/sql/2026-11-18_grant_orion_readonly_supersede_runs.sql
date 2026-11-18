@@ -1,7 +1,8 @@
 -- Let Orion's read-only role read the supersede audit trail and eval verdicts (issues #3659, #3660):
 --
---   memory_supersede_run       one row per supersede run: ids, verdicts, votes, the model's short
---                              reasons, and which candidate legs fired. No statement text.
+--   memory_supersede_run       one row per supersede run: ids, verdicts, votes, which candidate legs
+--                              fired, and the model's one-sentence reasons (these may paraphrase a
+--                              memory; the statements themselves are never stored here).
 --   memory_supersede_eval_run  one row per precision eval: counts, precision, recall, passed.
 --
 -- Same privacy boundary as scripts/sql/2026-11-17_grant_orion_readonly_supersede_events.sql.

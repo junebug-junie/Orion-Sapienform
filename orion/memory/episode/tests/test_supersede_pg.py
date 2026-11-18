@@ -284,10 +284,16 @@ def test_an_update_ends_validity_at_the_new_time_and_stays_reachable_as_history(
         async with pool.connection() as conn:
             async with conn.transaction():
                 assert await s.undo_link(conn, old_id=old_id, new_id=new_id, actor="operator")
-        old = await _one(pool, "SELECT status, invalid_at, invalidated_by, invalid_reason FROM episode_memory "
-                               "WHERE memory_id = %s", (old_id,))
-        assert (old["status"], old["invalid_at"], old["invalidated_by"], old["invalid_reason"]) == (
-            "active", None, None, None)
+        old = await _one(pool, "SELECT status, confirmation_state, invalid_at, invalidated_by, invalid_reason "
+                               "FROM episode_memory WHERE memory_id = %s", (old_id,))
+        assert (old["status"], old["confirmation_state"], old["invalid_at"], old["invalidated_by"],
+                old["invalid_reason"]) == ("active", "auto", None, None, None)
+
+        # An expired row is not served as history either.
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE episode_memory SET expires_at = %s WHERE memory_id = %s",
+                               (T0 + timedelta(hours=12), old_id))
+        assert old_id not in await _valid_at_ids(dsn, T0 + timedelta(days=1))
 
     asyncio.run(_with_db(body))
 
@@ -354,20 +360,47 @@ def test_eval_gate_reads_the_latest_finished_run_for_this_check_version():
             async with pool.connection() as conn:
                 return await s.eval_gate(conn)
 
-        async def add(run_id, passed, finished, version=s.CHECK_VERSION):
+        now = datetime.now(timezone.utc)
+
+        async def add(run_id, passed, finished, version=s.CHECK_VERSION, votes=s.VOTES):
             async with pool.connection() as conn:
                 await conn.execute(
                     "INSERT INTO memory_supersede_eval_run (run_id, check_version, started_at, finished_at, passed, "
-                    "n_items, n_real, false_acts, hard_negative_false_acts, errors) "
-                    "VALUES (%s, %s, %s, %s, %s, 1, 1, 0, 0, 0)", (run_id, version, T0, finished, passed))
+                    "n_items, n_real, false_acts, hard_negative_false_acts, errors, votes) "
+                    "VALUES (%s, %s, %s, %s, %s, 1, 1, 0, 0, 0, %s)", (run_id, version, now, finished, passed, votes))
 
         assert await gate() == (False, "eval_missing")
-        await add("a", True, T0 + timedelta(hours=1))
+        await add("old", True, now - timedelta(days=s.EVAL_MAX_AGE_DAYS + 2))
+        assert await gate() == (False, "eval_stale")
+        await add("a", True, now - timedelta(hours=5))
         assert await gate() == (True, "eval_passed")
         await add("b", False, None)                                   # still running: ignored
-        await add("c", True, T0 + timedelta(hours=5), version="supersede_check.v2")   # other version
+        await add("c", False, now - timedelta(hours=1), version="supersede_check.v2")   # other version
+        await add("v", False, now - timedelta(hours=1), votes=5)     # other vote count
         assert await gate() == (True, "eval_passed")
-        await add("d", False, T0 + timedelta(hours=2))
+        await add("d", False, now - timedelta(hours=2))
         assert await gate() == (False, "eval_failed")
+
+    asyncio.run(_with_db(body))
+
+
+def test_pass_apply_refuses_while_the_eval_gate_is_closed(tmp_path):
+    import argparse
+    import importlib.util
+    import json
+
+    script = Path(__file__).resolve().parents[4] / "scripts" / "memory_supersede_pass.py"
+    spec = importlib.util.spec_from_file_location("memory_supersede_pass_pg", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    async def body(pool, dsn):
+        pairs = tmp_path / "pairs.jsonl"
+        pairs.write_text(json.dumps({"old_id": str(uuid.uuid4()), "new_id": str(uuid.uuid4()), "reason": "r",
+                                     "dense": 0.7, "check_version": s.CHECK_VERSION}) + "\n")
+        args = argparse.Namespace(yes=True, pairs=str(pairs), allow_no_dense=False, allow_no_eval=False, only="",
+                                  exclude="", dsn=dsn, no_manifest=True, watch=[])
+        with pytest.raises(SystemExit, match="eval gate closed"):
+            await mod.cmd_apply(args)
 
     asyncio.run(_with_db(body))

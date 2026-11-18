@@ -13,10 +13,10 @@
 --    "What was true then" reads orion/memory/lived_memory.EPISODE_VALID_AT_SQL. Undo clears all three.
 -- 2. memory_supersede_eval_run: one row per precision eval (scripts/memory_supersede_eval.py
 --    run --record-db). Write-time apply is open only while the latest finished row for the current
---    check version has passed = true (supersede.eval_gate).
+--    check version and vote count has passed = true and is under 30 days old (supersede.eval_gate).
 -- 3. memory_supersede_run: one row per supersede run (the nightly distill's check and each pass
---    dry-run/apply), never updated: ids, verdicts, votes, reasons and which candidate legs fired.
---    No statement text.
+--    dry-run/apply), never updated: ids, verdicts, votes, which candidate legs fired, and the
+--    model's one-sentence reasons (which may paraphrase a statement; never the statements themselves).
 --
 -- Additive only. Readable by orion_readonly after
 -- scripts/sql/2026-11-18_grant_orion_readonly_supersede_runs.sql (applied by hand).
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS memory_supersede_eval_run (
     errors INTEGER NOT NULL,
     route TEXT,
     votes INTEGER,
+    model TEXT,                           -- the model id the gateway reported for the route
     summary JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

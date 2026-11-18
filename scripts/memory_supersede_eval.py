@@ -55,7 +55,11 @@ EVAL_DIR = Path(os.path.expanduser("~/.orion/evals"))
 REAL_PATH = EVAL_DIR / "memory_supersede_labelled.jsonl"
 RUNS_DIR = EVAL_DIR / "memory_supersede_eval_runs"
 DEFAULT_MANIFEST = Path("/mnt/orion-fcc/notes/memory_supersede_pass_manifest.json")
-DEFAULT_CHECKS = Path("/tmp/memory-supersede-pass/checks.csv")
+# The 2026-11-17 v2 dry run's per-pair verdicts, frozen host-side (a v3 dry run writes a different
+# checks.csv format): the source of the dry-run-veto and near-duplicate hard negatives.
+DEFAULT_CHECKS = EVAL_DIR / "supersede_v2_checks_2026-11-17.csv"
+PRODUCTION_ROUTE = "memory_distill"
+SEEN_MODELS: set[str] = set()   # model ids the gateway reported for the route during this run
 NEAR_DUP_COSINE = 0.85
 NEAR_DUP_JACCARD = 0.25  # hand-checked 2026-11-18: the 6 pairs this admits are different events on one topic
 
@@ -156,13 +160,11 @@ async def cmd_build(args: argparse.Namespace) -> int:
                 old, new = _ordered(_row_from_db(got[a]), _row_from_db(got[b]))
                 items.append(_item(f"watch:{label}", source, "no_act", "compatible", True, old, new, apply_rules=True))
 
-        vetoed = [c for c in checks if c["corrects"] == "True" and c["sure"] == "True" and c["accepted"] != "True"
-                  and c["both_true"] == "True"]
-        near = []
-        for c in checks:
-            if c["corrects"] != "False" or not c["dense"] or float(c["dense"]) < NEAR_DUP_COSINE:
-                continue
-            near.append(c)
+        checks = [c for c in checks if "corrects" in c and "both_true" in c]   # v2-format rows only
+        vetoed = [c for c in checks if c.get("corrects") == "True" and c.get("sure") == "True"
+                  and c.get("accepted") != "True" and c.get("both_true") == "True"]
+        near = [c for c in checks if c.get("corrects") == "False" and c.get("dense")
+                and float(c["dense"]) >= NEAR_DUP_COSINE]
         got = await rows([c["old_id"] for c in vetoed + near] + [c["new_id"] for c in vetoed + near])
         for c in vetoed:
             if c["old_id"] in got and c["new_id"] in got:
@@ -207,7 +209,10 @@ async def gateway_ask(client: Any, url: str, route: str, prompt: str, *, tempera
             continue
         break
     resp.raise_for_status()
-    choice = (resp.json().get("choices") or [{}])[0]
+    body = resp.json()
+    if body.get("model"):
+        SEEN_MODELS.add(str(body["model"]))
+    choice = (body.get("choices") or [{}])[0]
     return (choice.get("message") or {}).get("content") or ""
 
 
@@ -278,17 +283,21 @@ async def cmd_run(args: argparse.Namespace) -> int:
     run = {"run_id": str(uuid.uuid4()), "checker": args.checker, "check_version": check_version,
            "started_at": started.isoformat(timespec="seconds"),
            "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-           "route": args.route, "votes": args.votes, "calls": calls[0], "summary": result,
+           "route": args.route, "votes": args.votes, "calls": calls[0], "model": ",".join(sorted(SEEN_MODELS)),
+           "summary": result,
            "decisions": [decision_dict(d) for d in decisions]}
     out = RUNS_DIR / f"{started.strftime('%Y%m%dT%H%M%SZ')}-{args.checker}.json"
     private_write(out, json.dumps(run, indent=2, default=str))
     public = {k: v for k, v in result.items() if k != "false_acts"}
     public["false_act_items"] = [f["item_id"] for f in result["false_acts"]]
     print(json.dumps({"checker": args.checker, "check_version": check_version, "calls": calls[0],
+                      "model": run["model"],
                       "file": str(out), **public}, indent=2, default=str))
     if args.record_db:
-        if args.checker != "v3":
-            raise SystemExit("only the current checker's runs are recorded")
+        # Only a run that matches production counts for the gate: the current checker, the votes
+        # write time uses, and the production route.
+        if args.checker != "v3" or args.votes != S.VOTES or args.route != PRODUCTION_ROUTE or args.set != "all":
+            raise SystemExit(f"only a full v3 run with --votes {S.VOTES} on {PRODUCTION_ROUTE} is recorded")
         await record(args.dsn, run)
         print(f"recorded eval run {run['run_id']} passed={result['passed']}")
     return 0 if result["passed"] else 1
@@ -296,8 +305,8 @@ async def cmd_run(args: argparse.Namespace) -> int:
 
 RECORD_SQL = """
 INSERT INTO memory_supersede_eval_run (run_id, check_version, started_at, finished_at, passed, n_items, n_real,
-    precision, recall, false_acts, hard_negative_false_acts, errors, route, votes, summary)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    precision, recall, false_acts, hard_negative_false_acts, errors, route, votes, model, summary)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 
@@ -312,7 +321,7 @@ async def record(dsn: str, run: dict[str, Any]) -> None:
         await conn.execute(RECORD_SQL, (
             run["run_id"], run["check_version"], run["started_at"], run["finished_at"], s["passed"], s["n"], s["real"],
             s["precision"], s["recall"], s["fp"], s["hard_negative_false_acts"], s["errors"], run["route"],
-            run["votes"], Jsonb(summary)))
+            run["votes"], run.get("model") or None, Jsonb(summary)))
 
 
 def main() -> int:
@@ -329,7 +338,7 @@ def main() -> int:
     r.add_argument("--real", default=str(REAL_PATH))
     r.add_argument("--votes", type=int, default=S.VOTES)
     r.add_argument("--gateway", default=os.environ.get("ORION_GATEWAY_URL", "http://localhost:8210"))
-    r.add_argument("--route", default="memory_distill")
+    r.add_argument("--route", default=PRODUCTION_ROUTE)
     r.add_argument("--timeout", type=float, default=180.0)
     r.add_argument("--record-db", action="store_true")
     args = ap.parse_args()

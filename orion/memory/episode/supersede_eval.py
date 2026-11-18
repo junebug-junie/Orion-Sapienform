@@ -32,6 +32,7 @@ LABELS = ("act", "no_act")
 # The minimum real-data coverage for a run to count: an eval with no real negatives proves nothing.
 MIN_REAL_POSITIVES = 1
 MIN_REAL_HARD_NEGATIVES = 5
+MIN_TRUE_POSITIVES = 1
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,8 @@ def score(items: Sequence[EvalItem], decisions: Iterable[Decision]) -> dict[str,
     fail: list[str] = []
     if fp:
         fail.append(f"false_acts={fp}")
+    if tp < MIN_TRUE_POSITIVES:  # abstaining on everything is safe, but proves the classifier works for nothing
+        fail.append(f"true_positives={tp}<{MIN_TRUE_POSITIVES}")
     if errors:
         fail.append(f"errors={errors}")
     if real_pos < MIN_REAL_POSITIVES:

@@ -320,14 +320,14 @@ def two_live_domains(monkeypatch):
     """execution is the one live domain since biometrics was retired 2026-11-18 (#3575), and with
     one domain any delta is within one domain's full swing. The divergence rule is about MORE than
     one domain moving, so these tests add a test-only second domain, "probe"."""
-    # The module that holds the functions under test, not whatever `scripts` resolves to now: in the
-    # full hub folder another test can rebind the `scripts` package.
-    routes_mod = sys.modules[reconcile_confidence.__module__]
-
-    domains = frozenset(routes_mod.ACTIVE_INFERENCE_DOMAINS | {"probe"})
-    monkeypatch.setattr(routes_mod, "ACTIVE_INFERENCE_DOMAINS", domains)
-    monkeypatch.setattr(routes_mod, "KNOWN_PREDICTION_ERROR_DOMAINS", (*routes_mod.KNOWN_PREDICTION_ERROR_DOMAINS, "probe"))
-    monkeypatch.setattr(routes_mod, "_SINGLE_DOMAIN_SWING", 1.0 / len(domains))
+    # Patch the globals the functions under test actually read: in the full hub folder another test
+    # can re-import the `scripts` package, so a module looked up by name may be a different copy.
+    g = reconcile_confidence.__globals__
+    assert build_domain_rows.__globals__ is g
+    domains = frozenset(g["ACTIVE_INFERENCE_DOMAINS"] | {"probe"})
+    monkeypatch.setitem(g, "ACTIVE_INFERENCE_DOMAINS", domains)
+    monkeypatch.setitem(g, "KNOWN_PREDICTION_ERROR_DOMAINS", (*g["KNOWN_PREDICTION_ERROR_DOMAINS"], "probe"))
+    monkeypatch.setitem(g, "_SINGLE_DOMAIN_SWING", 1.0 / len(domains))
 
 
 def test_reconcile_confidence_flags_structural_divergence(two_live_domains) -> None:

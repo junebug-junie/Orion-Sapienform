@@ -53,7 +53,7 @@ def test_execution_tick_persists_baseline_even_when_error_is_zero(monkeypatch) -
     # execution_prediction_error's return to 0.0, the exact condition that used
     # to skip the receipt-writing block entirely.
     monkeypatch.setattr(worker_module, "process_execution_grammar_events", lambda **kwargs: None)
-    monkeypatch.setattr(worker_module, "execution_prediction_error", lambda prev, curr: 0.0)
+    monkeypatch.setattr(worker_module, "execution_prediction_error", lambda prev, curr, **_kw: 0.0)
 
     worker._execution_tick()
 
@@ -79,7 +79,7 @@ def test_execution_tick_still_writes_receipt_when_error_is_nonzero(monkeypatch) 
     worker._get_substrate_graph_store = MagicMock(return_value=None)
 
     monkeypatch.setattr(worker_module, "process_execution_grammar_events", lambda **kwargs: None)
-    monkeypatch.setattr(worker_module, "execution_prediction_error", lambda prev, curr: 0.42)
+    monkeypatch.setattr(worker_module, "execution_prediction_error", lambda prev, curr, **_kw: 0.42)
 
     worker._execution_tick()
 

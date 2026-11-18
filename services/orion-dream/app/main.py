@@ -11,6 +11,8 @@ from contextlib import asynccontextmanager
 from orion.core.bus.bus_service_chassis import OrionBusAsync
 from orion.core.bus.enforce import enforcer
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.drive_reading import REST_DRIVE_REDIS_KEY
+from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY
 from orion.schemas.telemetry.dream import DreamTriggerPayload
 from app.settings import settings
 from app.dream_api import router as dream_router
@@ -31,6 +33,23 @@ async def lifespan(app: FastAPI):
     logger.info("🌙 Orion Dream module starting up (readout façade; triggers go to cortex-orch)…")
 
     stop = asyncio.Event()
+    introspect = None
+    if settings.DREAM_INTROSPECT_ENABLED and settings.ORION_BUS_ENABLED:
+        from app.introspect_listener import build_listener
+
+        introspect = build_listener()
+        await introspect.start()
+        logger.info("dream introspect responder started")
+    carry_listener = None
+    # Always answer carry steps when the bus is up: DREAM_CARRY_ENABLED gates only NEW carries
+    # (the sleep switch and POST /dreams/carry/run). Turning it off must not strand carries
+    # already in flight, whose text/finish steps would otherwise time out and lose their hops.
+    if settings.ORION_BUS_ENABLED:
+        from app.carry_listener import build_carry_listener
+
+        carry_listener = build_carry_listener()
+        await carry_listener.start()
+        logger.info("dream carry step responder started")
     loop_task = None
     if settings.ORION_DREAM_CYCLE_ENABLED:
         from app.cycle import sleep_loop
@@ -42,6 +61,10 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if introspect is not None:
+        await introspect.stop()
+    if carry_listener is not None:
+        await carry_listener.stop()
     stop.set()
     if loop_task is not None:
         try:
@@ -94,6 +117,12 @@ def _latest(*values):
     return max((_aware(v) for v in values if v is not None), default=None)
 
 
+def _economy():
+    from app.physiology_bind import BINDER, bind_mode
+
+    return BINDER if bind_mode() == "on" else None
+
+
 def build_cycle_deps():
     """Real IO for the dream cycle. Tests build CycleDeps with fakes instead."""
     from app import cycle_store, llm, rem_store
@@ -105,6 +134,8 @@ def build_cycle_deps():
             raise RuntimeError("bus disabled: no LLM for recombination")
         try:
             return await llm.complete(bus, prompt)
+        except llm.GatewayRefused:
+            raise  # the gateway answered: the connection is fine
         except Exception:
             # A timeout is usually the gateway, not the connection -- but a
             # dead connection looks the same from here, and reconnecting on
@@ -125,21 +156,149 @@ def build_cycle_deps():
             bus = await _cycle_bus()
         except Exception:
             bus = None
+        from app.compaction_consent import ask_consent_and_apply
+        from app.rem_compaction import consolidate_evidence_ids
+
+        salience = await asyncio.to_thread(rem_store.load_thought_salience, consolidate_evidence_ids(requests))
         delta = await run_rem_compaction_once(
             bus,
             request_loader=lambda _n: requests,
             delta_persister=lambda d: staged.append(d) or True,
             dream_id=cycle_id,
+            salience_loader=lambda _ids: salience,
         )
         for d in staged:
-            await asyncio.to_thread(rem_store.persist_compaction_delta, d)
+            stored = await asyncio.to_thread(rem_store.persist_compaction_delta, d)
+            # Attention patch 3d: ask the consent gate only about a delta that is really stored (the
+            # want_ledger row names it), after the persist. On allow + apply on, the store downscales.
+            if stored and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED:
+                try:
+                    await ask_consent_and_apply(d)
+                except Exception as exc:  # noqa: BLE001 -- the ask is a trace; the sleep goes on
+                    logger.warning("rem compaction consent ask failed id=%s err=%s", d.delta_id, exc)
         return delta.delta_id if delta is not None else None
 
+    async def _start_story(trigger):
+        bus = await _cycle_bus()
+        if bus is None:
+            return
+        from app.story import story_envelope
+
+        env = story_envelope(
+            trigger, ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
+        )
+        try:
+            await bus.publish(settings.CHANNEL_DREAM_TRIGGER, env)
+        except Exception:
+            await _drop_cycle_bus()  # same as _complete: reconnect on the next use
+            raise
+        logger.info(
+            "dream_story_started trigger_id=%s material=%d correlation_id=%s",
+            trigger.trigger_id, len(trigger.sleep.material), env.correlation_id,
+        )
+
+    async def _start_carry(trigger):
+        # The sleep ends in a carried dream instead of the one-shot story: same trigger id,
+        # same digest (T0 *is* the story), one durable run per sleep (deterministic run_id).
+        # A failed submit is tried once more before falling back: a timeout can arrive after
+        # durable-runs already registered the run, and falling straight back would give the
+        # sleep two dreams. The run_id is deterministic, so the resubmit dedupes at the store.
+        last_exc = None
+        for attempt in (1, 2):
+            try:
+                bus = await _cycle_bus()
+                if bus is None:
+                    return
+                await submit_carry(bus, trigger.trigger_id, trigger.sleep)
+                return
+            except Exception as exc:
+                last_exc = exc
+                if not isinstance(exc, CarryNotAccepted):
+                    await _drop_cycle_bus()  # transport trouble: reconnect on the next use
+                logger.warning("dream_carry_submit_attempt_failed trigger_id=%s attempt=%d err=%s",
+                               trigger.trigger_id, attempt, exc)
+        # Twice not started: the sleep must not lose its dream, so fall back to the one-shot story
+        # (e.g. durable-runs/cortex not ready for dream.carry yet).
+        logger.warning("dream_carry_fallback_story trigger_id=%s err=%s", trigger.trigger_id, last_exc)
+        await _start_story(trigger)
+
+    async def _publish_act(event):
+        # One dream cycle's act_opened/act_closed on orion:grammar:event (app/act_emit.py).
+        # Best effort; CycleActTrace logs a failure and the sleep carries on.
+        bus = await _cycle_bus()
+        if bus is None:
+            return
+        from app.act_emit import publish_grammar
+
+        try:
+            await publish_grammar(bus, event)
+        except Exception:
+            await _drop_cycle_bus()  # same as _complete: reconnect on the next use
+            raise
+
+    async def _publish_drive_reading(reading):
+        # Redis, read by Hub curiosity/outreach. TTL = their staleness bound,
+        # so an expired key reads as unknown. Best effort; run_cycle_once logs
+        # a failure. History: dream_pressure_observation (same check_id; none for dp-postsleep-*).
+        bus = await _cycle_bus()
+        if bus is None:
+            return
+        try:
+            await bus.redis.setex(
+                REST_DRIVE_REDIS_KEY, int(settings.DREAM_REST_DRIVE_REDIS_TTL_SEC), reading.model_dump_json(),
+            )
+        except Exception:
+            await _drop_cycle_bus()
+            raise
+        logger.info(
+            "rest_drive_reading state=%s level=%s threshold=%s due_reason=%s source_ref=%s",
+            reading.state, reading.level, reading.threshold, reading.due_reason, reading.source_ref,
+        )
+
+    async def _read_arousal():
+        # Temporal Self R3 reader: durable-runs' latest regulation state. Any failure is
+        # unknown (cycle.read_arousal_view), which leaves the idle query alone in charge.
+        bus = await _cycle_bus()
+        if bus is None:
+            return None
+        try:
+            return await bus.redis.get(REGULATION_STATE_REDIS_KEY)
+        except Exception:
+            await _drop_cycle_bus()
+            raise
+
+    read_errors = []
+
     def _window_start():
-        return _latest(cycle_store.load_last_window_start(), _CYCLE_STATE.get("window_start"))
+        return _latest(cycle_store.load_last_window_start(read_errors=read_errors), _CYCLE_STATE.get("window_start"))
 
     def _attempt_end():
-        return _latest(cycle_store.load_last_attempt_end(), _CYCLE_STATE.get("attempt_end"))
+        return _latest(cycle_store.load_last_attempt_end(read_errors=read_errors), _CYCLE_STATE.get("attempt_end"))
+
+    async def _compact_curiosity(cycle):
+        from app.curiosity_compaction_submit import submit_due
+        from app.curiosity_compaction_store import store
+        from app.carry_submit import submit_via_cortex
+
+        bus = await _cycle_bus()
+        if bus is None:
+            raise RuntimeError("bus disabled: curiosity compaction admission deferred")
+        source = ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
+
+        async def submit(request):
+            return await submit_via_cortex(bus=bus, source=source, request=request,
+                                          request_channel=settings.CHANNEL_CORTEX_REQUEST,
+                                          user_text="Consolidate the due Curiosity calendar window.")
+
+        async def publish(entry):
+            await bus.publish("orion:journal:write", BaseEnvelope(
+                kind="journal.entry.write.v1",
+                source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+                                  node=settings.NODE_NAME),
+                payload=entry.model_dump(mode="json"),
+            ))
+
+        await submit_due(store(), submit, publish, now=cycle.ended_at, cycle_id=cycle.cycle_id)
 
     def _persist(cycle) -> bool:
         _CYCLE_STATE["attempt_end"] = cycle.ended_at
@@ -153,14 +312,58 @@ def build_cycle_deps():
         load_last_window_start=_window_start,
         load_last_attempt_end=_attempt_end,
         persist_cycle=_persist,
+        persist_pressure_observation=cycle_store.persist_pressure_observation,
+        read_errors=read_errors,
         complete=_complete,
         rem_compaction=_rem,
+        compact_curiosity=_compact_curiosity if settings.DREAM_CURIOSITY_COMPACTION_ENABLED else None,
+        start_story=(
+            (_start_carry if settings.DREAM_CARRY_ENABLED else _start_story)
+            if settings.DREAM_STORY_AFTER_SLEEP_ENABLED else None
+        ),
+        publish_drive_reading=_publish_drive_reading if settings.DREAM_REST_DRIVE_PUBLISH_ENABLED else None,
+        read_arousal=_read_arousal if settings.DREAM_IDLE_FROM_AROUSAL_ENABLED else None,
+        load_arc_rows=cycle_store.load_arc_rows if settings.DREAM_REPLAY_ARC_CANDIDATES_ENABLED else None,
+        load_walkway_rows=cycle_store.load_walkway_rows if settings.DREAM_REPLAY_WALKWAY_ENABLED else None,
+        walkway_timezone=settings.DREAM_WALKWAY_TIMEZONE,
+        publish_act=_publish_act if settings.DREAM_ACT_EMIT_ENABLED else None,
+        # Body economy Patch D: the sleep obeys its bid (app/physiology_bind.py). One binder per process,
+        # shared by the loop and the manual endpoint. shadow -> None: the C3b shadow bid as before.
+        economy=_economy(),
     )
+
+
+class CarryNotAccepted(RuntimeError):
+    """cortex-orch answered, but did not accept the carry (the bus itself is fine)."""
+
+
+async def submit_carry(bus, trigger_id: str, sleep) -> str:
+    """Submit one dream.carry run; returns its run_id. Raises with the reason when cortex-orch
+    did not accept it (the sleep's caller logs that and carries on)."""
+    from app.carry_submit import TRANSPORT_PREFIX, build_carry_request, submit_via_cortex
+
+    request = build_carry_request(trigger_id, sleep, deadline_sec=settings.DREAM_CARRY_DEADLINE_SEC)
+    reason = await submit_via_cortex(
+        bus=bus,
+        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
+        request=request,
+        request_channel=settings.CHANNEL_CORTEX_REQUEST,
+    )
+    if reason is not None:
+        logger.warning("dream_carry_submit_failed trigger_id=%s run_id=%s reason=%s", trigger_id, request.run_id, reason)
+        if reason.startswith(TRANSPORT_PREFIX):
+            raise RuntimeError(f"dream_carry_submit_failed: {reason}")
+        raise CarryNotAccepted(f"dream_carry_submit_failed: {reason}")
+    logger.info(
+        "dream_carry_submitted trigger_id=%s run_id=%s material=%d correlation_id=%s",
+        trigger_id, request.run_id, len(sleep.material) if sleep is not None else 0, request.correlation_id,
+    )
+    return request.run_id
 
 
 app = FastAPI(
     title="Orion Dream Module",
-    description="Generates nightly dreams from Orion’s stored memories.",
+    description="Orion's sleep cycle: replay, recombination, and dream readouts.",
     version=settings.SERVICE_VERSION,
     lifespan=lifespan,
 )
@@ -251,13 +454,22 @@ async def rem_preview_endpoint():
     if not settings.ORION_DREAM_REM_ENABLED:
         return {"status": "disabled", "reason": "ORION_DREAM_REM_ENABLED is false"}
 
-    from app.rem_compaction import run_rem_compaction_once
+    from app import rem_store
+    from app.rem_compaction import consolidate_evidence_ids, run_rem_compaction_once
 
+    # The DB reads run in threads, not on the event loop.
+    requests = await asyncio.to_thread(rem_store.load_pending_requests, settings.DREAM_REM_MAX_REQUESTS)
+    salience = await asyncio.to_thread(rem_store.load_thought_salience, consolidate_evidence_ids(requests))
     bus = OrionBusAsync(settings.ORION_BUS_URL) if settings.ORION_BUS_ENABLED else None
     try:
         if bus is not None:
             await bus.connect()
-        delta = await run_rem_compaction_once(bus)
+        from app.compaction_consent import ask_consent_and_apply
+
+        # A preview never writes memory: the consent is asked (and recorded) with no store.
+        delta = await run_rem_compaction_once(bus, request_loader=lambda _n: requests,
+                                              salience_loader=lambda _ids: salience,
+                                              consent_asker=lambda d: ask_consent_and_apply(d, preview=True))
     finally:
         if bus is not None:
             await bus.close()
@@ -273,25 +485,63 @@ async def rem_preview_endpoint():
     }
 
 
+@app.post("/dreams/carry/run", summary="Start one carried dream by hand")
+async def carry_run_endpoint():
+    """Submit a hand-started dream.carry run (no sleep behind it: it dreams from a free seed).
+    Refuses when DREAM_CARRY_ENABLED is false."""
+    if not settings.DREAM_CARRY_ENABLED:
+        return {"status": "disabled", "reason": "DREAM_CARRY_ENABLED is false"}
+    if not settings.ORION_BUS_ENABLED:
+        return {"status": "disabled", "reason": "ORION_BUS_ENABLED is false"}
+    from uuid import uuid4
+
+    from orion.schemas.dream_carry import dream_carry_run_id
+
+    trigger_id = f"manual:{uuid4()}"
+    try:
+        bus = await _cycle_bus()
+        run_id = await submit_carry(bus, trigger_id, None)
+    except Exception as exc:
+        if not isinstance(exc, CarryNotAccepted):
+            await _drop_cycle_bus()
+        return {"run_id": dream_carry_run_id(trigger_id), "status": "submit_failed", "reason": str(exc)[:300]}
+    return {"run_id": run_id, "status": "accepted", "trigger_id": trigger_id}
+
+
 @app.get("/dreams/cycle/pressure", summary="Current sleep pressure (read-only)")
 async def cycle_pressure_endpoint():
     """What the sleep loop would see right now. Reads only; runs nothing."""
     from datetime import datetime
 
-    from app.cycle import read_pressure, too_soon
+    from app.cycle import overdue, read_pressure, too_soon
 
     deps = build_cycle_deps()
     now = datetime.now(timezone.utc)
     last_start = await asyncio.to_thread(deps.load_last_window_start)
     last_end = await asyncio.to_thread(deps.load_last_attempt_end)
-    pressure, candidates = await asyncio.to_thread(read_pressure, deps, now, last_start)
+    errors: list[str] = []
+    pressure, candidates = await asyncio.to_thread(read_pressure, deps, now, last_start, read_errors=errors)
+    from app.cycle import drive_reading_for
+
+    # Same source errors the loop folds in, so this cannot show `due` where the
+    # loop would publish `no_reading`.
+    drive = drive_reading_for(
+        pressure, now=now, check_id="pressure-endpoint", last_start=last_start, last_end=last_end,
+        has_candidates=bool(candidates), source_errors=errors + list(deps.read_errors),
+    )
     return {
+        # The same reading the sleep loop publishes for Hub curiosity/outreach.
+        "rest_drive": drive.model_dump(mode="json"),
         "enabled": settings.ORION_DREAM_CYCLE_ENABLED,
         "pressure": pressure.model_dump(mode="json"),
         "is_idle": pressure.is_idle,
         "should_sleep": pressure.should_sleep,
         "too_soon": too_soon(now, last_end),
         "candidates": len(candidates),
+        # The backstop run_cycle_once applies below threshold: the window has hit
+        # DREAM_LOOKBACK_HOURS, so Orion sleeps once idle if there is anything to replay.
+        "overdue": overdue(now, last_start),
+        "lookback_hours": settings.DREAM_LOOKBACK_HOURS,
     }
 
 
@@ -306,8 +556,12 @@ async def cycle_run_endpoint(force: bool = False):
         return {"status": "disabled", "reason": "ORION_DREAM_CYCLE_ENABLED is false"}
     from app.cycle import run_cycle_once
 
-    cycle = await run_cycle_once(build_cycle_deps(), trigger="manual", force=force)
+    deps = build_cycle_deps()
+    cycle = await run_cycle_once(deps, trigger="manual", force=force)
     if cycle is None:
+        if deps.hold_reason:
+            # Due, but arousal (engaged / strained) held it: say so, not "not due".
+            return {"status": "held", "reason": deps.hold_reason}
         return {"status": "not_due"}
     return {
         "status": cycle.status,
@@ -319,6 +573,8 @@ async def cycle_run_endpoint(force: bool = False):
             for h in cycle.hypotheses
         ],
         "no_link": cycle.no_link_count,
+        "echo": cycle.echo_count,
         "unparseable": cycle.unparseable_count,
+        "pair_answers": [a.model_dump(mode="json") for a in cycle.pair_answers],
         "llm_failures": cycle.llm_failures,
     }

@@ -28,11 +28,14 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any
 
 from orion.schemas.orion_day import (
     OrionDayCondensationV1,
+    OrionDayCorrectionV1,
     OrionDayLlmViewV1,
     OrionDayMaterialV1,
+    ReadingItemV1,
     ReverieThoughtV1,
 )
 
@@ -55,7 +58,8 @@ REVERIE_FRAME_CHARS = 400
 MIN_CLIP_CHARS = 400
 
 _REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_offered|"
-                     r"chat_compactor|github_compactor|world_pulse_digest|visual_reverie|reverie|reverie_theme)"
+                     r"chat_compactor|github_compactor|world_pulse_digest|walkway_day|visual_reverie|reverie|reverie_theme|correction|"
+                     r"arc|day|event|juniper_chat|experience|act)"
                      r":[^\]\s]+)\]")
 
 
@@ -90,10 +94,60 @@ def _yn(value) -> str:
     return "unknown" if value is None else ("yes" if value else "no")
 
 
-def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
-    """(section heading, [str | _Body, ...]) in render order. _Body parts are clippable."""
-    sections: list[tuple[str, list]] = []
+def correction_outcome_text(c: OrionDayCorrectionV1) -> str:
+    """What became of a correction's named priors so far, in plain words (digest and email)."""
+    if not c.prior_ids:
+        return "No prior named: context only."
+    named = ", ".join(c.prior_ids)
+    if c.offered_run_id is None:
+        return f"Priors it rested on: {named}. Not yet offered to a curiosity run."
+    if c.priors_retested is None:
+        return f"Priors it rested on: {named}. Offered to curiosity run {c.offered_run_id}; its outcome is not recorded yet."
+    untouched = [p for p in c.prior_ids if p not in c.priors_retested]
+    moved = "unknown" if c.priors_moved is None else (", ".join(c.priors_moved) or "none")
+    return (f"Priors it rested on: {named}. Curiosity run {c.offered_run_id} re-tested: "
+            f"{', '.join(c.priors_retested) or 'none'}; moved: {moved}"
+            + (f"; not re-tested: {', '.join(untouched)}." if untouched else "."))
 
+
+def _correction_parts(c: OrionDayCorrectionV1) -> list:
+    evidence = "; ".join(str(e.get("text")) for e in c.evidence if e.get("text")) or "none recorded"
+    return [
+        f"### [correction:{c.correction_id}] Correction to my letter {c.ref}",
+        "I wrote:", _Body(c.claim),
+        "What is actually true:", _Body(c.correction),
+        f"Evidence: {evidence}.",
+        correction_outcome_text(c),
+    ]
+
+
+NOTHING_CHANGED_LINE = "no link accepted; no curiosity run cited this read"
+NOT_CHECKED_LINE = "not checked (the findings read failed)"
+
+
+def reading_change_lines(r: ReadingItemV1, material: OrionDayMaterialV1) -> list[str]:
+    """What one read changed, as record-built lines (orion/world_pulse_read/findings.py). Never
+    claims "no belief moved" when the belief check could not run: that names the gap instead."""
+    findings_src = material.sources.get("reading_findings")
+    if not r.findings and findings_src is not None and findings_src.status == "error":
+        return [NOT_CHECKED_LINE]
+    beliefs = material.sources.get("reading_beliefs")
+    gap = (f"beliefs not checked ({beliefs.error})"
+           if beliefs is not None and beliefs.status == "error" else None)
+    resonance = material.sources.get("reading_resonance")
+    if resonance is not None and resonance.status == "error":
+        gap = "; ".join(x for x in (gap, f"reading connections not checked ({resonance.error})") if x)
+    if r.findings:
+        return [f.headline for f in r.findings] + ([gap] if gap else [])
+    if gap:
+        return [f"no link accepted; {gap}"]
+    # Says what was checked: a belief counts only when a curiosity run's own notes cite the read.
+    return [NOTHING_CHANGED_LINE]
+
+
+
+def curiosity_section(material: OrionDayMaterialV1) -> tuple[str, list] | None:
+    """The curiosity section (runs with outcomes and write-ups, then failed runs), or None."""
     runs = []
     for run in material.curiosity_runs:
         head = f"### [curiosity:{run.run_id}] {run.journal_title or 'Curiosity run'} (line: {run.line or 'unknown'}"
@@ -119,9 +173,20 @@ def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
         runs.append(parts)
     failed = [[f"- [curiosity_failed:{f.run_id}] {f.workflow} failed {_fmt_time(f.failed_at)}: {f.error or 'no error recorded'}"]
               for f in material.curiosity_failed]
-    if runs or failed:
-        sections.append((f"## Curiosity ({len(material.curiosity_runs)} runs finished, "
-                         f"{len(material.curiosity_failed)} failed)", runs + failed))
+    if not (runs or failed):
+        return None
+    return (f"## Curiosity ({len(material.curiosity_runs)} runs finished, "
+            f"{len(material.curiosity_failed)} failed)", runs + failed)
+
+
+
+def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
+    """(section heading, [str | _Body, ...]) in render order. _Body parts are clippable."""
+    sections: list[tuple[str, list]] = []
+
+    curiosity = curiosity_section(material)
+    if curiosity is not None:
+        sections.append(curiosity)
 
     if material.self_sense:
         sections.append(("## Self-sense answers", [[
@@ -134,8 +199,10 @@ def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
         f"### [reading:{r.seed_id}] {r.title or r.url or 'Reading'}",
         f"Source: {r.url or 'unknown'}. Status: {r.reading_status or 'unknown'}."
         + (f" Why I picked it: {r.why_now}" if r.why_now else ""),
+        *([f"What the piece says: {r.article_summary}"] if r.article_summary else []),
         "What I learned:" if r.learned else "What I learned: (nothing recorded)",
         *([_Body(r.learned)] if r.learned else []),
+        *[f"What it changed: {line}" for line in reading_change_lines(r, material)],
     ] for r in material.readings]
     readings += [[f"### [reading_journal:{j.entry_id}] {j.title or 'Reading journal'}", _Body(j.body)]
                  for j in material.reading_journals]
@@ -154,6 +221,9 @@ def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
         sections.append((f"## Dreams ({len(material.dream_narratives)} narratives, "
                          f"{len(material.dream_hypotheses)} hypotheses offered to me)", dreams))
 
+    if material.corrections:
+        sections.append(("## Corrections from conversations with Juniper",
+                         [_correction_parts(c) for c in material.corrections]))
     if material.chat_compactor is not None:
         c = material.chat_compactor
         sections.append(("## Conversations with Juniper (chat digest)",
@@ -168,6 +238,10 @@ def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
         lines += [f"- ({i.category or 'general'}) {i.title}" + (f": {i.summary}" if i.summary and i.summary != i.title else "")
                   for i in w.items]
         sections.append(("## World pulse digest", [lines]))
+    if material.walkway_day is not None:
+        w = material.walkway_day
+        sections.append(("## The street outside (my walkway camera; counts by code, not by me)",
+                         [[f"[walkway_day:{w.day.isoformat()}] {w.line}"]]))
     if material.visual_reveries:
         sections.append((f"## Visual reveries ({len(material.visual_reveries)} images)", [[
             f"- [visual_reverie:{v.sha256[:16]}] {_fmt_time(v.created_at)}"
@@ -281,6 +355,9 @@ def build_llm_view(
     budget_tokens: int = DEFAULT_BUDGET_TOKENS,
     chars_per_token: float = CHARS_PER_TOKEN,
 ) -> OrionDayLlmViewV1:
+    """REPLAY ONLY since 2026-11-12: the old pile, kept as the "old" side of
+    ``evals/run_orion_day_input_replay.py``. Production uses ``day_input.render_day_input``;
+    do not wire this back in. Retired with the verb in living Prime Part 3."""
     budget_chars = int(budget_tokens * chars_per_token)
     cond = OrionDayCondensationV1()
     header = (f"# My day: {material.letter_date.isoformat()} ({material.timezone}, "
@@ -288,6 +365,12 @@ def build_llm_view(
     gaps = [f"{name} ({s.error})" for name, s in sorted(material.sources.items()) if s.status == "error"]
     if gaps:
         header += "\n\nSources that could not be read (their sections are missing, not empty): " + "; ".join(gaps)
+
+    if material.temporal_day is not None:
+        # Temporal Self patch 4: the closed day as Orion's chronology recorded it. Short (capped at
+        # 2,400 chars), never clipped, and counted in the header so the budget below accounts for it.
+        header += ("\n\n## My day as my own chronology recorded it (closed day; each line names the record it came from)\n\n"
+                   + material.temporal_day.text)
 
     sections = _full_text_blocks(material)
     bodies = _bodies(sections)
@@ -319,22 +402,90 @@ def build_llm_view(
     )
 
 
+def material_ref_records(material: OrionDayMaterialV1) -> dict[str, dict[str, Any]]:
+    """Every reference a digest may cite, mapped to the stored record it names.
+
+    The one place the ref formats above are spelled out for lookup: ``material_refs`` (grounding)
+    and ``orion.orion_day.letter_parts`` (resolving a letter's citations, checking its claims)
+    both read it, so a ref the writer was shown always resolves the same way afterwards."""
+    def dump(item: Any) -> dict[str, Any]:
+        return item.model_dump(mode="json")
+
+    records: dict[str, dict[str, Any]] = {}
+    records |= {f"curiosity:{r.run_id}": dump(r) for r in material.curiosity_runs}
+    records |= {f"curiosity_failed:{f.run_id}": dump(f) for f in material.curiosity_failed}
+    records |= {f"self_sense:{a.run_id or 'na'}:{a.question_key}": dump(a) for a in material.self_sense}
+    records |= {f"reading:{r.seed_id}": dump(r) for r in material.readings}
+    records |= {f"reading_journal:{j.entry_id}": dump(j) for j in material.reading_journals}
+    records |= {f"dream:{d.id}": dump(d) for d in material.dream_narratives}
+    records |= {f"dream_offered:{i}": dump(h) for i, h in enumerate(material.dream_hypotheses, start=1)}
+    if material.chat_compactor is not None:
+        records[f"chat_compactor:{material.chat_compactor.entry_id}"] = dump(material.chat_compactor)
+    if material.github_compactor is not None:
+        records[f"github_compactor:{material.github_compactor.entry_id}"] = dump(material.github_compactor)
+    if material.world_pulse_digest is not None:
+        records[f"world_pulse_digest:{material.world_pulse_digest.run_id}"] = dump(material.world_pulse_digest)
+    if material.walkway_day is not None:
+        records[f"walkway_day:{material.walkway_day.day.isoformat()}"] = dump(material.walkway_day)
+    records |= {f"visual_reverie:{v.sha256[:16]}": dump(v) for v in material.visual_reveries}
+    records |= {f"reverie:{t.thought_id[:8]}": dump(t) for t in material.reverie_thoughts}
+    records |= {f"correction:{c.correction_id}": dump(c) for c in material.corrections}
+    records |= {f"juniper_chat:{juniper_chat_ref(t.turn_id)}": dump(t) for t in material.juniper_chat}
+    if material.temporal_core is not None:
+        records |= dict(material.temporal_core.records)  # "arc:" / "event:" / "day:" -> compact row
+    if material.temporal_day is not None:
+        records |= dict(material.temporal_day.records)  # "arc:<id>" / "day:<id>" -> compact stored row
+    for c in material.reverie_chains:
+        records.setdefault(f"reverie_theme:{c.theme_key or 'unthemed'}", dump(c))
+    if material.organ_roundup is not None:  # integration patch 4: the roundup line that showed each ref
+        lines = material.organ_roundup.lines
+        for ref in material.organ_roundup.refs:
+            line = next((x for x in lines if f"[{ref}]" in x), None)
+            if line is not None:
+                records.setdefault(ref, {"roundup_day": material.organ_roundup.day.isoformat(), "line": line.strip()})
+    return records
+
+
+def juniper_chat_ref(turn_id: str) -> str:
+    """The short id a chat turn is cited by (``[juniper_chat:<first 12 chars>]``)."""
+    return turn_id[:12]
+
+
+_EVENT_REF_RE = re.compile(r"\[event:([^\]\s]+)\]")
+
+
+def gate_event_refs(text: str, material: OrionDayMaterialV1) -> tuple[str, list[str]]:
+    """Remove [event:<id>] refs the temporal core did not show; return (text, removed ids as written)."""
+    shown = {r[len("event:"):] for r in (material.temporal_core.records if material.temporal_core else {})
+             if r.startswith("event:")}
+    removed: list[str] = []
+
+    def _strip(m: re.Match[str]) -> str:
+        if m.group(1) in shown:
+            return m.group(0)
+        removed.append(m.group(1))
+        return ""
+
+    return _EVENT_REF_RE.sub(_strip, text or ""), removed
+
+
+def chronology_citations(material: OrionDayMaterialV1) -> tuple[list[str], dict[str, list[str]]]:
+    """Arc ids the writer was shown (closed-day block and temporal core) and the labels that name
+    them, for the [arc:] citation gate. One place, so both blocks are gated the same way."""
+    shown: list[str] = []
+    labels: dict[str, list[str]] = {}
+    for block in (material.temporal_day, material.temporal_core):
+        if block is None:
+            continue
+        for ref in block.records:
+            if ref.startswith("arc:") and ref[4:] not in shown:
+                shown.append(ref[4:])
+        for text, ids in block.labels.items():
+            merged = labels.setdefault(text, [])
+            merged += [i for i in ids if i not in merged]
+    return shown, labels
+
+
 def material_refs(material: OrionDayMaterialV1) -> set[str]:
     """Every reference a digest may legitimately cite for this material (grounding checks)."""
-    refs = {f"curiosity:{r.run_id}" for r in material.curiosity_runs}
-    refs |= {f"curiosity_failed:{f.run_id}" for f in material.curiosity_failed}
-    refs |= {f"self_sense:{a.run_id or 'na'}:{a.question_key}" for a in material.self_sense}
-    refs |= {f"reading:{r.seed_id}" for r in material.readings}
-    refs |= {f"reading_journal:{j.entry_id}" for j in material.reading_journals}
-    refs |= {f"dream:{d.id}" for d in material.dream_narratives}
-    refs |= {f"dream_offered:{i}" for i in range(1, len(material.dream_hypotheses) + 1)}
-    if material.chat_compactor is not None:
-        refs.add(f"chat_compactor:{material.chat_compactor.entry_id}")
-    if material.github_compactor is not None:
-        refs.add(f"github_compactor:{material.github_compactor.entry_id}")
-    if material.world_pulse_digest is not None:
-        refs.add(f"world_pulse_digest:{material.world_pulse_digest.run_id}")
-    refs |= {f"visual_reverie:{v.sha256[:16]}" for v in material.visual_reveries}
-    refs |= {f"reverie:{t.thought_id[:8]}" for t in material.reverie_thoughts}
-    refs |= {f"reverie_theme:{c.theme_key or 'unthemed'}" for c in material.reverie_chains}
-    return refs
+    return set(material_ref_records(material))

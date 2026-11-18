@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from typing import Any
 from uuid import UUID, uuid4
@@ -10,7 +11,7 @@ from pydantic import ValidationError
 
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.cognition.recall_query import cap_retrieval_query
-from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.async_service import OrionBusAsync, PubSubSilentError, PubSubWatchdog
 
 from .rpc_health import fold_bus
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -23,12 +24,21 @@ from orion.schemas.reverie_visual_run import (
     ReverieVisualStepResultV1,
 )
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
+from orion.schemas.stance_context_prepare import (
+    STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+    STANCE_CONTEXT_PREPARE_RESULT_PREFIX,
+    STANCE_PREPARE_REQUESTED_CTX_KEY,
+    StanceContextPrepareRequestV1,
+    StanceContextPrepareResultV1,
+    stance_context_prepare_channel,
+)
 from orion.schemas.thought import (
     AutonomySliceV1,
     GroundingCapsuleV1,
     StanceReactRequestV1,
     ThoughtEventV1,
 )
+from orion.thought.coalition import prompt_turn_refs
 from orion.thought.stance_react import (
     apply_stance_react_pipeline,
     build_stance_react_failure_thought,
@@ -46,6 +56,11 @@ from .mind_enrichment import (
     work_shape_from_coloring,
 )
 from .settings import settings
+from .temporal_self_cue import build_stance_cue
+from .personality_cue import build_personality_cue
+from .self_readings_cue import build_self_readings_block
+from .self_track_record_cue import build_self_track_record_cue
+from .open_promises_cue import build_open_promises_cue
 from .visual_steps import run_visual_step
 
 logger = logging.getLogger("orion-thought.bus")
@@ -138,7 +153,9 @@ def _coalition_projection(request: StanceReactRequestV1) -> dict[str, Any] | Non
     if broadcast is None:
         return None
     return {
-        "attended_node_ids": list(broadcast.attended_node_ids),
+        "attended_node_ids": prompt_turn_refs(
+            list(broadcast.attended_node_ids), request.association.correlation_id
+        ),
         "open_loop_ids": [loop.id for loop in broadcast.frame.open_loops],
         "broadcast_stale": request.association.broadcast_stale,
     }
@@ -148,6 +165,13 @@ def build_stance_react_context(
     request: StanceReactRequestV1,
     *,
     mind_coloring: dict[str, Any] | None = None,
+    stance_prepare_requested: bool = False,
+    temporal_self_cue: str | None = None,
+    self_readings: str | None = None,
+    personality_cue: str | None = None,
+    self_track_record: str | None = None,
+    open_promises: str | None = None,
+    label_estimates: bool = False,
 ) -> dict[str, Any]:
     stance_inputs = (
         dict(request.stance_inputs)
@@ -193,6 +217,16 @@ def build_stance_react_context(
         # executor.py's existing `ctx.get("response_format")` forwarding
         # (executor.py:4365-4367); no executor.py change is needed.
         "response_format": {"type": "json_object"},
+        # Thinking OFF on every lane. The agent lanes think by default (Strata
+        # agent-defaults.json reasoning_effort=high; Bonsai agent-gpu2
+        # reasoning_effort=xhigh); the chat lane does not. Live 2026-10-29..31
+        # (llm_call_usage): stance_react wrote a median 342 completion tokens on
+        # chat (14 s) but 2,918 on agent and 3,652 on agent-gpu2 (158 s at
+        # ~29 tok/s), and 42 of 113 agent-gpu2 calls ran into cortex-exec's 235 s
+        # cutoff (`timeout:caller_budget_exhausted`; 108 failed reading turns
+        # since 10-14). The answer is a short JSON object and the reasoning is
+        # never read. cortex-exec's executor.py forwards this key to the gateway.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     if isinstance(surface_context, dict) and surface_context:
         context["surface_context"] = surface_context
@@ -205,6 +239,31 @@ def build_stance_react_context(
         context["retrieval_query"] = retrieval_query
     if mind_coloring is not None:
         context["mind_coloring"] = mind_coloring
+    if temporal_self_cue:
+        # Temporal Self patch 4: where Orion is in its own day (rendered from stored arcs, no LLM).
+        context["temporal_self_cue"] = temporal_self_cue
+    if self_readings:
+        # Self-calibration section C: body signals unusual for themselves (rendered, no LLM).
+        context["self_readings"] = self_readings
+    if personality_cue:
+        # Personality graph read-back: what Orion keeps coming back to (rendered, no LLM; a record).
+        context["personality_cue"] = personality_cue
+    if self_track_record:
+        # Self-monitor step 3: what Orion is failing at or misjudging, from settled bets (no LLM).
+        context["self_track_record"] = self_track_record
+    if open_promises:
+        # Intention ledger D3 (THOUGHT_OPEN_PROMISES_CUE_ENABLED, ships off until #3531).
+        context["open_promises"] = open_promises
+    if label_estimates and mind_coloring is not None:
+        # Mind's frontier scores / confidences are an LLM's numbers: say so in the prompt.
+        context["self_readings_label_estimates"] = True
+    if settings.stance_self_prediction_enabled:
+        # Self-prediction A1: stance_react.j2 asks for the private self_prediction bet only when set.
+        context["self_prediction_enabled"] = True
+    if stance_prepare_requested:
+        # cortex-exec waits for (and uses) the context it is already building for
+        # this turn instead of building a second one (app/stance_prepare.py).
+        context[STANCE_PREPARE_REQUESTED_CTX_KEY] = True
     if request.gpu_lease is not None:
         # Stance is part of the already admitted turn: it runs under the turn's GPU pool hold (the
         # gateway attaches the call to it) and names the hold's work-class route, whatever the
@@ -229,11 +288,23 @@ def build_stance_react_plan_request(
     request: StanceReactRequestV1,
     *,
     mind_coloring: dict[str, Any] | None = None,
+    stance_prepare_requested: bool = False,
+    temporal_self_cue: str | None = None,
+    self_readings: str | None = None,
+    personality_cue: str | None = None,
+    self_track_record: str | None = None,
+    open_promises: str | None = None,
+    label_estimates: bool = False,
 ) -> PlanExecutionRequest:
     """Build the cortex-exec plan request for the stance_react verb (one attempt, on the turn's own
     route and correlation id; which GPU serves it is orion-gpu-pool's decision)."""
     plan = build_plan_for_verb("stance_react", mode="brain")
-    context = build_stance_react_context(request, mind_coloring=mind_coloring)
+    context = build_stance_react_context(
+        request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested,
+        temporal_self_cue=temporal_self_cue, self_readings=self_readings,
+        personality_cue=personality_cue, self_track_record=self_track_record, open_promises=open_promises,
+        label_estimates=label_estimates,
+    )
     return PlanExecutionRequest(
         plan=plan,
         args=PlanExecutionArgs(
@@ -253,6 +324,13 @@ async def execute_stance_react(
     *,
     client: CortexExecClient,
     mind_coloring: dict[str, Any] | None = None,
+    stance_prepare_requested: bool = False,
+    temporal_self_cue: str | None = None,
+    self_readings: str | None = None,
+    personality_cue: str | None = None,
+    self_track_record: str | None = None,
+    open_promises: str | None = None,
+    label_estimates: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | str]:
     """Run the stance_react plan once, on the turn's own route and correlation id, with the whole
     STANCE_REACT_TIMEOUT_SEC budget.
@@ -264,7 +342,12 @@ async def execute_stance_react(
     while it is lent -- and returns a typed "unavailable" instead of a silent shed. A second
     caller-side placement decision on top would only fight the pool, so it is gone.
     """
-    plan_request = build_stance_react_plan_request(request, mind_coloring=mind_coloring)
+    plan_request = build_stance_react_plan_request(
+        request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested,
+        temporal_self_cue=temporal_self_cue, self_readings=self_readings,
+        personality_cue=personality_cue, self_track_record=self_track_record, open_promises=open_promises,
+        label_estimates=label_estimates,
+    )
     exec_result = await client.execute_plan(
         source=_source(),
         req=plan_request,
@@ -415,6 +498,90 @@ async def _maybe_build_mind_coloring(
         return None
 
 
+# Bound on how long the background prepare RPC waits for cortex-exec's reply.
+# The reply only feeds the overlap log; stance_react never waits on it here.
+_STANCE_PREPARE_REPLY_TIMEOUT_SEC = 120.0
+
+
+async def send_stance_context_prepare(
+    request: StanceReactRequestV1,
+    *,
+    request_channel: str,
+    bus: OrionBusAsync | None = None,
+) -> StanceContextPrepareResultV1 | None:
+    """Ask cortex-exec to build stance_react's context now (unified-turn latency L4).
+
+    Sent on the prepare channel of the same exec lane stance_react will use
+    (``request_channel``), so the cached context is on the container that serves
+    stance_react. Own bus connection: it runs concurrently with the mind call
+    and the stance RPC. Fail-open: any failure returns None and stance_react
+    builds its own context after a short wait.
+    """
+    channel = stance_context_prepare_channel(request_channel)
+    if channel is None:
+        return None
+    plan_request = build_stance_react_plan_request(request)
+    payload = StanceContextPrepareRequestV1(
+        correlation_id=request.correlation_id, plan_request=plan_request
+    )
+    reply_channel = f"{STANCE_CONTEXT_PREPARE_RESULT_PREFIX}:{uuid4()}"
+    env = BaseEnvelope(
+        kind=STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+        source=_source(),
+        correlation_id=_envelope_correlation_id(request.correlation_id),
+        reply_to=reply_channel,
+        payload=payload.model_dump(mode="json"),
+    )
+    own_bus = bus is None
+    rpc_bus = bus or OrionBusAsync(url=settings.orion_bus_url)
+    try:
+        if own_bus:
+            await rpc_bus.connect()
+        msg = await rpc_bus.rpc_request(
+            channel,
+            env,
+            reply_channel=reply_channel,
+            timeout_sec=_STANCE_PREPARE_REPLY_TIMEOUT_SEC,
+        )
+        decoded = rpc_bus.codec.decode(msg.get("data"))
+        if not decoded.ok or not isinstance(decoded.envelope.payload, dict):
+            return None
+        return StanceContextPrepareResultV1.model_validate(decoded.envelope.payload)
+    except Exception as exc:  # noqa: BLE001 -- the prepare must never fail the turn
+        logger.warning(
+            "stance_prepare_rpc_failed corr=%s channel=%s err=%s: %s",
+            request.correlation_id,
+            channel,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    finally:
+        if own_bus:
+            fold_bus(rpc_bus)
+            with suppress(Exception):
+                await rpc_bus.close()
+
+
+def _start_stance_prepare(
+    request: StanceReactRequestV1, client: CortexExecClient
+) -> asyncio.Task[StanceContextPrepareResultV1 | None] | None:
+    if not settings.stance_prepare_parallel_enabled:
+        return None
+    exec_channel = getattr(client, "request_channel", None)
+    if not isinstance(exec_channel, str) or stance_context_prepare_channel(exec_channel) is None:
+        logger.info(
+            "stance_prepare_skipped corr=%s reason=no_prepare_channel exec_channel=%s",
+            request.correlation_id,
+            exec_channel,
+        )
+        return None
+    return asyncio.create_task(
+        send_stance_context_prepare(request, request_channel=exec_channel),
+        name=f"stance-prepare-{request.correlation_id}",
+    )
+
+
 async def run_stance_react(
     request: StanceReactRequestV1,
     *,
@@ -436,16 +603,72 @@ async def run_stance_react(
     imperative or stance slice looks wrong before the motor ever ran.
     """
     client = cortex_client or CortexExecClient(bus)
-    mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
-    exec_result, raw_payload = await execute_stance_react(
-        request, client=client, mind_coloring=mind_coloring
+    # The stance_react lane is decided once, here: the prepare goes to the
+    # prepare channel of client.request_channel, the stance RPC to that channel.
+    prepare_task = _start_stance_prepare(request, client)
+    # Temporal Self patch 4: the day cue is fetched alongside Mind (bounded, fail-open), so it
+    # only adds wait when Mind is off or faster than the frame fetch's short timeout.
+    cue_task = asyncio.create_task(build_stance_cue(request.correlation_id),
+                                   name=f"temporal-self-cue-{request.correlation_id}")
+    # Self-readings: also alongside Mind, bounded by SELF_READINGS_FETCH_TIMEOUT_SEC.
+    readings_enabled = settings.self_readings_stance_enabled
+    readings_task = asyncio.create_task(
+        build_self_readings_block(request.correlation_id, purpose="stance", enabled=readings_enabled),
+        name=f"self-readings-{request.correlation_id}",
     )
+    # Personality read-back: also alongside Mind, bounded by PERSONALITY_CUE_TIMEOUT_SEC.
+    personality_task = asyncio.create_task(build_personality_cue(request.correlation_id),
+                                           name=f"personality-cue-{request.correlation_id}")
+    mind_started = time.perf_counter()
+    mind_ms: float | None = None
+    exec_result: dict[str, Any] | None = None
+    day_cue = None
+    try:
+        mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
+        mind_ms = round((time.perf_counter() - mind_started) * 1000.0, 1)
+        day_cue = await cue_task
+        readings = await readings_task
+        personality = await personality_task
+        # Self-monitor track record: renders from a background-refreshed cache, never waits on Redis.
+        track_record = await build_self_track_record_cue(request.correlation_id, purpose="stance")
+        # Intention ledger D3: off until #3531 posts live precision (app/open_promises_cue.py).
+        open_promises = await build_open_promises_cue(request.correlation_id, request.stance_inputs)
+        exec_result, raw_payload = await execute_stance_react(
+            request,
+            client=client,
+            mind_coloring=mind_coloring,
+            stance_prepare_requested=prepare_task is not None,
+            temporal_self_cue=day_cue.text or None,
+            self_readings=readings.text or None,
+            personality_cue=personality.text or None,
+            self_track_record=track_record.text or None,
+            open_promises=open_promises or None,
+            label_estimates=readings_enabled,
+        )
+    finally:
+        if not cue_task.done():
+            cue_task.cancel()
+        if not readings_task.done():
+            readings_task.cancel()
+        if not personality_task.done():
+            personality_task.cancel()
+        if prepare_task is not None:
+            # Also on a mind/stance failure or cancellation: never leave the
+            # prepare RPC task (and its bus connection) orphaned.
+            _log_stance_prepare_overlap(
+                request, prepare_task, mind_ms=mind_ms, exec_result=exec_result
+            )
     thought = parse_stance_react_payload(
         raw_payload,
         correlation_id=request.correlation_id,
         session_id=request.session_id,
     )
-    enriched = apply_stance_react_pipeline(thought, request)
+    enriched = apply_stance_react_pipeline(thought, request, day_cue=day_cue)
+    if enriched.day_citations is not None:
+        dc = enriched.day_citations
+        logger.info("temporal_self_day_citations corr=%s label=%s shown=%s cited=%s rejected=%s uncited=%s",
+                    request.correlation_id, dc.label, dc.shown, len(dc.cited_valid),
+                    len(dc.rejected_unknown), dc.uncited_day_sentences)
     capsule = _extract_grounding_capsule(exec_result)
     if capsule is not None:
         enriched = enriched.model_copy(update={"grounding_capsule": capsule})
@@ -456,6 +679,39 @@ async def run_stance_react(
         update={"mind_work_shape": work_shape_from_coloring(mind_coloring)}
     )
     return enriched
+
+
+def _log_stance_prepare_overlap(
+    request: StanceReactRequestV1,
+    prepare_task: asyncio.Task[StanceContextPrepareResultV1 | None],
+    *,
+    mind_ms: float | None,
+    exec_result: dict[str, Any] | None = None,
+) -> None:
+    """One line per prepared turn: mind time vs build time, and how long
+    stance_react waited for the build. cortex-exec logs its own side
+    (outcome, wait_ms) under the same prefix."""
+    prepare: StanceContextPrepareResultV1 | None = None
+    if prepare_task.done() and not prepare_task.cancelled():
+        prepare = prepare_task.result()
+    else:
+        prepare_task.cancel()
+    metadata = exec_result.get("metadata") if isinstance(exec_result, dict) else None
+    overlap = metadata.get("stance_prepare_overlap") if isinstance(metadata, dict) else None
+    overlap = overlap if isinstance(overlap, dict) else {}
+    build_ms = prepare.build_ms if prepare is not None else None
+    if build_ms is None:
+        build_ms = overlap.get("build_ms")
+    logger.info(
+        "stance_prepare_overlap corr=%s side=orion-thought mind_ms=%s build_ms=%s wait_ms=%s "
+        "outcome=%s prepare_status=%s",
+        request.correlation_id,
+        mind_ms,
+        build_ms,
+        overlap.get("wait_ms"),
+        overlap.get("outcome") or ("stance_failed" if exec_result is None else "unreported"),
+        prepare.status if prepare is not None else "no_reply",
+    )
 
 
 async def handle_stance_react_request(
@@ -531,7 +787,9 @@ async def handle_visual_step_request(bus: OrionBusAsync, env: BaseEnvelope, *, r
             source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=list(env.causality_chain or []),
-            payload=result.model_dump(mode="json"),
+            # exclude_none: a waking reply never carries the dream-only `caption: null`;
+            # every result field defaults to None, so the receiver reads the same model.
+            payload=result.model_dump(mode="json", exclude_none=True),
         ),
     )
 
@@ -558,6 +816,7 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
             logger.info("subscribed channels=%s", ",".join(channels))
             async with bus.subscribe(*channels) as pubsub:
                 backoff_sec = 1.0
+                watchdog = PubSubWatchdog()
                 while True:
                     if stop_event is not None and stop_event.is_set():
                         break
@@ -588,7 +847,19 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
                         reconnect = True
                         break
 
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                    if msg is None:
+                        # A dead line answers "nothing yet" on time, so the overrun
+                        # check above never sees it; the PING does.
+                        try:
+                            msg = await watchdog.idle(pubsub)
+                        except PubSubSilentError as exc:
+                            logger.warning("pubsub silent channel=%s err=%s; reconnecting", channel, exc)
+                            reconnect = True
+                            break
+                        if msg is None:
+                            continue
+                    watchdog.heard()
+                    if msg.get("type") not in ("message", "pmessage"):
                         continue
                     idle_polls = 0
                     try:

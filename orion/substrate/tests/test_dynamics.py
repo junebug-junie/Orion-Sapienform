@@ -44,6 +44,7 @@ class _CountingStore(InMemorySubstrateGraphStore):
         super().__init__()
         self.upsert_node_calls: list[str] = []
         self.skip_metadata_keys_calls: list[frozenset[str] | None] = []
+        self.dynamics_writes: list = []
 
     def upsert_node(
         self,
@@ -55,6 +56,13 @@ class _CountingStore(InMemorySubstrateGraphStore):
         self.upsert_node_calls.append(node.node_id)
         self.skip_metadata_keys_calls.append(skip_metadata_keys)
         super().upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
+
+    def update_node_dynamics(self, write):  # noqa: ANN001
+        # Counted as a node write alongside upsert_node: the tick's per-node
+        # persist is now this targeted write.
+        self.upsert_node_calls.append(write.node_id)
+        self.dynamics_writes.append(write)
+        return super().update_node_dynamics(write)
 
 
 def _engine_with(store: InMemorySubstrateGraphStore, *, activations: dict[str, float], pressures: dict[str, float]) -> SubstrateDynamicsEngine:
@@ -110,8 +118,13 @@ def test_tick_passes_externally_owned_keys_to_skip_metadata_keys() -> None:
     engine = _engine_with(store, activations={node.node_id: 0.5}, pressures={node.node_id: 0.0})
     engine.tick(now=_NOW)
 
+    # The tick's persist is now a targeted write that cannot carry these
+    # fields at all (no full-node upsert, so nothing to skip).
     assert store.upsert_node_calls == [node.node_id]
-    assert store.skip_metadata_keys_calls == [EXTERNALLY_OWNED_METADATA_KEYS]
+    assert store.skip_metadata_keys_calls == []
+    fields = set(vars(store.dynamics_writes[0]))
+    assert not fields & set(EXTERNALLY_OWNED_METADATA_KEYS)
+    assert "observed_at" not in fields
 
 
 def test_tick_does_not_clobber_externally_owned_prediction_error() -> None:

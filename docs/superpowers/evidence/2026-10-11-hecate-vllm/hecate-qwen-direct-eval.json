@@ -1,0 +1,41 @@
+{
+  "results": [
+    {
+      "case": "arithmetic",
+      "passed": false,
+      "model": "qwen3-4b-instruct",
+      "content": "17 \u00d7 23 = 391",
+      "usage": {
+        "prompt_tokens": 21,
+        "total_tokens": 33,
+        "completion_tokens": 12,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "case": "recall",
+      "passed": true,
+      "model": "qwen3-4b-instruct",
+      "content": "cobalt-otter-73",
+      "usage": {
+        "prompt_tokens": 1031,
+        "total_tokens": 1040,
+        "completion_tokens": 9,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "case": "json",
+      "passed": true,
+      "model": "qwen3-4b-instruct",
+      "content": "{\n  \"ready\": true\n}",
+      "usage": {
+        "prompt_tokens": 20,
+        "total_tokens": 29,
+        "completion_tokens": 9,
+        "prompt_tokens_details": null
+      }
+    }
+  ],
+  "passed": false
+}

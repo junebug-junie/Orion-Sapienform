@@ -51,14 +51,84 @@ def test_calm_hop_passes_and_only_quiet_hours_are_judged():
     report, g = _grade(rows)
     assert report["overall"] == "PASS"
     assert g["orion:exec:request:LLMGatewayService"].verdict == "PASS"
-    assert "rests where it should" in mod.render(report)
+    assert "would not raise a false alert at rest" in mod.render(report)
 
 
-def test_quiet_hour_z_or_ratio_out_of_band_fails():
-    _, g = _grade([_row(h, z=0.8, ratio=1.0) for h in range(7, 12)])
-    assert g["orion:exec:request:LLMGatewayService"].verdict == "FAIL"
-    _, g = _grade([_row(h, z=0.0, ratio=1.4) for h in range(7, 12)])
-    assert "slow-vs-best ratio was 1.40" in g["orion:exec:request:LLMGatewayService"].sentence
+K = "orion:exec:request:LLMGatewayService"
+
+
+def _rows_with(z=0.0, ratio=1.0, floor=1000.0, fast=None, would=None, excluded=False):
+    rows = [_row(h, z=z, ratio=ratio, floor=floor, excluded=excluded, would=would) for h in range(7, 12)]
+    for r in rows:
+        # baseline_ms is the guarded FAST mean: on a step it stays near the floor
+        # while level (ratio) rises. Default it there so tests cannot lean on it.
+        r["baseline_ms"] = fast if fast is not None else floor
+    return rows
+
+
+def test_z_below_the_spike_line_is_a_note_not_a_fail():
+    # 2026-09-30 live: nights carry different load (recall z -1.27) -- not an alert risk.
+    _, g = _grade(_rows_with(z=0.8))
+    assert g[K].verdict == "PASS" and "nights run slower" in g[K].sentence
+
+
+def test_a_spike_the_gate_opened_at_rest_fails():
+    _, g = _grade(_rows_with(z=3.2, would={"spike:open": 1, "spike:close": 1}))
+    assert g[K].verdict == "FAIL" and "opened 5 spike/saturation" in g[K].sentence  # one per quiet hour
+
+
+def test_high_z_without_an_opened_spike_is_a_note():
+    # review finding: negative z can never fire; a positive z on a tiny-ms hop is immaterial
+    _, g = _grade(_rows_with(z=-3.5))
+    assert g[K].verdict == "PASS" and "faster" in g[K].sentence
+    _, g = _grade(_rows_with(z=3.5, floor=30.0))
+    assert g[K].verdict == "PASS" and "opened no spike at rest" in g[K].sentence
+
+
+def test_timeouts_at_rest_are_real_events_not_rest_failures():
+    _, g = _grade(_rows_with(would={"timeout:open": 2, "zero_success:open": 1}))
+    assert g[K].verdict == "PASS"
+
+
+def test_immaterial_ratio_is_a_note_not_a_fail():
+    # 2026-09-30 live: orion:state:request ~59 ms vs 23 ms best (ratio 2.8, ~41 ms gap).
+    _, g = _grade(_rows_with(ratio=2.8, floor=23.0))
+    assert g[K].verdict == "PASS" and "under the gate's 250 ms floor" in g[K].sentence
+
+
+def test_ratio_between_band_and_saturation_line_is_a_note():
+    _, g = _grade(_rows_with(ratio=1.4, floor=2000.0))
+    assert g[K].verdict == "PASS" and "below the gate's 2x saturation line" in g[K].sentence
+
+
+def test_material_saturation_at_rest_fails_even_when_fast_stayed_low():
+    # review finding: on a step, the guarded fast mean stays near the floor while
+    # the level rises -- the gap must come from floor*(ratio-1), not baseline_ms.
+    _, g = _grade(_rows_with(ratio=2.4, floor=1000.0, fast=1100.0))
+    assert g[K].verdict == "FAIL" and "reads as saturated" in g[K].sentence and "1400 ms" in g[K].sentence
+
+
+def test_ratio_below_band_reads_as_faster_not_negative_ms():
+    _, g = _grade(_rows_with(ratio=0.6))
+    assert g[K].verdict == "PASS" and "faster than its recorded best" in g[K].sentence
+
+
+def test_gate_rules_are_overridable_to_match_live_config():
+    rows = _rows_with(ratio=2.4, floor=1000.0)
+    r = mod.grade(rows, saturation_ratio=3.0)
+    assert {g.ident.split("|")[2]: g for g in r["keys"]}[K].verdict == "PASS"
+    r = mod.grade(_rows_with(ratio=2.8, floor=23.0), min_excess_ms=10.0)
+    assert {g.ident.split("|")[2]: g for g in r["keys"]}[K].verdict == "FAIL"
+
+
+def test_excluded_hops_never_decide_the_overall_verdict():
+    rows = _rows_with(z=5.0, excluded=True, would={"spike:open": 3})
+    calm = _rows_with()
+    for r in calm:
+        r["key"] = "orion:exec:request:RecallService"
+    report = mod.grade(rows + calm)
+    assert report["overall"] == "PASS"
+    assert mod.grade(rows)["overall"] == "NO_DATA"
 
 
 def test_quiet_hour_boundaries_are_07_to_11_utc():
@@ -116,9 +186,10 @@ def test_json_string_columns_from_postgres_are_read():
 def test_cli_on_jsonl_fixture(tmp_path, capsys):
     p = tmp_path / "rows.jsonl"
     p.write_text("\n".join(json.dumps(_row(h, excluded=True)) for h in range(7, 12)))
-    assert mod.main(["--input", str(p)]) == 0
+    # only excluded hops -> nothing can alert -> NO_DATA (exit 3), shown not counted
+    assert mod.main(["--input", str(p)]) == 3
     out = capsys.readouterr().out
-    assert "Overall: PASS" in out and "excluded: measured, never triggers" in out
+    assert "Overall: NO_DATA" in out and "excluded: measured, never triggers" in out
     assert "provisional" in out  # < 7 days
 
 
@@ -154,3 +225,40 @@ def test_quiet_hours_follow_denver_dst():
     # Winter (MST, UTC-7): 07 UTC = 00 local (not), 12 UTC = 05 local (quiet).
     assert not mod.is_quiet_hour("2026-11-10T07:00:00+00:00")
     assert mod.is_quiet_hour("2026-11-10T12:00:00+00:00")
+
+
+def test_immaterial_floor_rise_is_a_note_not_a_fail():
+    """2026-10-13: durable-runs' GPU-lease status hop drifted 13 -> 20 ms (1.5x);
+    the gate can never alert under 250 ms, so that cannot hide an alertable
+    slowdown. NOTE with numbers, not FAIL."""
+    rows = [_row(h, floor=13.0 + 1.0 * h) for h in range(0, 12)]  # 13 -> 24 ms
+    _, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert k.floor_flags == [] and k.verdict == "PASS"
+    assert any("materiality line" in n and "13 ->" in n for n in k.notes)
+
+
+def test_material_floor_rise_still_fails_at_the_live_scale():
+    rows = [_row(h, floor=1300.0 + 250.0 * h) for h in range(0, 12)]  # 1.3 s -> 4.05 s
+    _, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert k.verdict == "FAIL" and k.floor_flags
+
+
+def test_went_silent_closes_are_noted():
+    rows = [_row(h) for h in range(0, 12)]
+    rows[3]["conditions_closed"] = {"saturation:went_silent": 1, "spike:calm": 2}
+    _, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert any("1 latency episode(s) closed because the hop went silent" in n for n in k.notes)
+
+
+def test_creep_in_immaterial_steps_still_fails_once_the_total_is_material():
+    """Review finding: seg_min ratcheted up after each immaterial 1.5x step, so a
+    floor could creep 13 -> ~700 ms producing only NOTEs."""
+    floors = [13.0 * (1.55 ** k) for k in range(10)]  # 13 -> ~670 ms
+    rows = [_row(h, floor=f) for h, f in enumerate(floors)]
+    _, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert k.verdict == "FAIL" and k.floor_flags
+    assert "above this segment's lowest, 13 ms" in k.floor_flags[0]

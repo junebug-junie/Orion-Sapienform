@@ -19,7 +19,11 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-AttentionOutcomeVerdictV1 = Literal["resolved", "dismissed", "decayed_unattended"]
+# ``acted`` (2026-10-01, attend-to-act loop D4): Orion's own NON-final verdict -- "I acted on this
+# loop" -- written only by the world-action settle path with actor='orion'. Deliberately not in
+# orion/substrate/attention/verdicts.py's TERMINAL_VERDICTS: acting must never silence the loop;
+# it stops winning only if the world signal actually falls.
+AttentionOutcomeVerdictV1 = Literal["resolved", "dismissed", "decayed_unattended", "acted"]
 PendingCardStatusV1 = Literal["pending", "resolved", "dismissed"]
 
 MAX_FEATURE_LIST = 16

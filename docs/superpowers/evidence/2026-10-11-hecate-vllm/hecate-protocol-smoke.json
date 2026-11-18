@@ -1,0 +1,31 @@
+{
+  "results": [
+    {
+      "case": "stream",
+      "passed": false,
+      "content": "17 \u00d7 23 = 391",
+      "done": true,
+      "models": [
+        "qwen3-4b-instruct"
+      ]
+    },
+    {
+      "case": "tool_call",
+      "passed": true,
+      "model": "qwen3-4b-instruct",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-bf8679e3b4d33201",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"city\": \"Paris\"}"
+          }
+        }
+      ],
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "passed": false,
+  "elapsed_sec": 2.43
+}

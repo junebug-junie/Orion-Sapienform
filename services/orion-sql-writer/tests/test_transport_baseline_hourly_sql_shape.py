@@ -62,10 +62,22 @@ def test_a_producer_row_constructs_the_sql_model() -> None:
         windows_seen=120, windows_evaluated=40, z_p50=0.1, z_p90=1.2, saturation_ratio_p50=1.02,
         baseline_ms=9000.0, floor_ms_start=8800.0, floor_ms=8900.0, calls_per_min_mean=3.2,
         conditions_opened={"timeout": 1}, open_at_hour_end=["timeout"],
+        conditions_closed={"saturation:went_silent": 1},
         would_emit_by_condition={"timeout:open": 1}, warm=True, config_fingerprint="f",
     )
     obj = TransportBaselineHourlySQL(**row.model_dump())
     assert obj.key.endswith("LLMGatewayService") and obj.would_emit_by_condition == {"timeout:open": 1}
+    assert obj.conditions_closed == {"saturation:went_silent": 1}
+
+
+def test_conditions_closed_column_is_added_at_boot_for_existing_tables() -> None:
+    """create_all never adds a column to the live table; without the boot-time
+    ALTER every hourly insert would fail on the new key."""
+    main_src = (SERVICE_ROOT / "app" / "main.py").read_text()
+    assert (
+        "ALTER TABLE IF EXISTS transport_baseline_hourly ADD COLUMN IF NOT EXISTS conditions_closed JSON;"
+        in main_src
+    )
 
 
 def test_a_real_envelope_lands_through_the_worker_consume_path(monkeypatch) -> None:

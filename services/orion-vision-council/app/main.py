@@ -1,15 +1,18 @@
 import asyncio
+import contextvars
 import time
 import uuid
 from typing import Optional
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, ChatRequestPayload, LLMMessage
 from orion.schemas.vision import (
@@ -48,18 +51,47 @@ from .foveal_probe import (
 )
 from .interpretation import (
     InterpretationParseOutcome,
+    apply_detector_confidence,
     build_interpretation_llm_options,
     build_interpretation_prompt,
     parse_llm_content,
     project_interpretation_to_events,
 )
-from .llm_reply import extract_chat_result_text as _extract_chat_result_text
+from .caption_policy import (
+    is_caption_only_after_strip,
+    parse_caption_streams,
+    window_for_council,
+)
+from .llm_reply import (
+    completion_finish_reason,
+    extract_chat_result_text as _extract_chat_result_text,
+)
+from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_error_reason as _gateway_error_reason, gateway_shed_refusal
 from .unresolved import UnresolvedRateLimiter, build_unresolved
 
 _MAX_DEBUG_INTERPRETATIONS = 20
+# The model the gateway says served the last LLM call made in this task
+# (ChatResultPayload.model_used). A ContextVar, not an attribute: each window
+# is processed in its own task, so one stream's reply can never be read as
+# another's. settings.COUNCIL_MODEL is only what was asked for; the route
+# decides what answers (it read llama-3-8b while Qwen3.5 9B served, 2026-11-15).
+_SERVED_MODEL: contextvars.ContextVar[str | None] = contextvars.ContextVar("council_served_model", default=None)
+
+
+def _model_used_from_reply(payload) -> str | None:
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump(mode="json")
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("model_used")
+    if not (isinstance(value, str) and value.strip()):
+        raw = payload.get("raw")
+        value = raw.get("model") if isinstance(raw, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
 from .settings import Settings
 
 settings = Settings()
+CAPTION_STREAMS = parse_caption_streams(settings.COUNCIL_CAPTION_STREAMS)
 
 
 class CouncilService:
@@ -74,6 +106,9 @@ class CouncilService:
         self._evidence_transition = EvidenceTransitionTracker()
         self._evidence_transition_lock = asyncio.Lock()
         self._unresolved_limiter = UnresolvedRateLimiter(settings.COUNCIL_UNRESOLVED_MIN_INTERVAL_SEC)
+        # While the GPU pool sheds this route (shed:cabinet_hot), skip the LLM call per window
+        # instead of asking again every ~6 s; one log line per episode (orion/gpu_pool/shed_backoff.py).
+        self._shed_backoff = ShedBackoff(name="vision-council", log=logger.warning)
 
     def _record_interpretation(
         self,
@@ -99,6 +134,7 @@ class CouncilService:
         self._consumer_task = asyncio.create_task(self._consume())
         self._rpc_task = asyncio.create_task(self._consume_rpc())
         logger.info(f"[COUNCIL] Started. Listening on {settings.CHANNEL_COUNCIL_INTAKE} and {settings.CHANNEL_COUNCIL_REQUEST}")
+        logger.info(f"[COUNCIL] caption_streams={','.join(sorted(CAPTION_STREAMS)) or '(none)'}")
 
     async def stop(self):
         self._shutdown_event.set()
@@ -115,32 +151,35 @@ class CouncilService:
         await self.bus.close()
 
     async def _consume(self):
-        async with self.bus.subscribe(settings.CHANNEL_COUNCIL_INTAKE) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_COUNCIL_INTAKE,
+            self._on_intake,
+            stop_event=self._shutdown_event,
+            name="vision-council.consume",
+        )
 
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-
-                env = decoded.envelope
-                asyncio.create_task(self._process_window(env, is_rpc=False))
+    def _on_intake(self, msg):
+        # Starts its own task and returns None so the stream is not held up.
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        asyncio.create_task(self._process_window(decoded.envelope, is_rpc=False))
 
     async def _consume_rpc(self):
-        async with self.bus.subscribe(settings.CHANNEL_COUNCIL_REQUEST) as pubsub:
-             async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_COUNCIL_REQUEST,
+            self._on_rpc,
+            stop_event=self._shutdown_event,
+            name="vision-council.consume_rpc",
+        )
 
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-
-                env = decoded.envelope
-                asyncio.create_task(self._handle_rpc(env))
+    def _on_rpc(self, msg):
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        asyncio.create_task(self._handle_rpc(decoded.envelope))
 
     async def _handle_rpc(self, env: BaseEnvelope):
         try:
@@ -152,17 +191,20 @@ class CouncilService:
             logger.error(f"[COUNCIL] RPC invalid payload: {e}")
             return
 
+        window = window_for_council(req.window, CAPTION_STREAMS)
         interpretation, parse_outcome = await self._generate_interpretation(
-            req.window, env, allow_transition_gate=False
+            window, env, allow_transition_gate=False
         )
         interpretation, parse_outcome = self._finalize_interpretation(
-            interpretation, parse_outcome, req.window
+            interpretation, parse_outcome, window
         )
         if interpretation is not None:
             self._record_interpretation(interpretation, parse_outcome)
 
         event_payload = (
-            self._project_interpretation_to_events(interpretation, req.window)
+            self._project_interpretation_to_events(
+                interpretation, window, model_used=parse_outcome.model_used
+            )
             if interpretation is not None
             else None
         )
@@ -200,7 +242,21 @@ class CouncilService:
             logger.error(f"[COUNCIL] Invalid payload: {e}")
             return
 
-        interpretation, parse_outcome = await self._generate_interpretation(payload, env)
+        # Captions leave the council's input for streams not in
+        # COUNCIL_CAPTION_STREAMS (app/caption_policy.py). The unresolved
+        # percept keeps the full window: it names the caption as "caption
+        # model said: ...", attributed, never as the council's own fact.
+        council_window = window_for_council(payload, CAPTION_STREAMS)
+        if is_caption_only_after_strip(council_window):
+            # Only a caption artifact, no detector pass: nothing left to
+            # interpret once the caption is withheld.
+            logger.info(
+                f"[COUNCIL] caption_only_window skip stream={stream_key_from_window(payload)} "
+                f"window_id={payload.window_id}"
+            )
+            await self._maybe_publish_unresolved(payload, None, env)
+            return
+        interpretation, parse_outcome = await self._generate_interpretation(council_window, env)
         if parse_outcome.parse_mode == "stable_scene":
             logger.info(
                 f"[COUNCIL] evidence_transition noop stream={stream_key_from_window(payload)} "
@@ -213,7 +269,7 @@ class CouncilService:
             return
 
         interpretation, parse_outcome = self._finalize_interpretation(
-            interpretation, parse_outcome, payload
+            interpretation, parse_outcome, council_window
         )
         await self._maybe_publish_unresolved(payload, interpretation, env)
 
@@ -221,7 +277,9 @@ class CouncilService:
             self._record_interpretation(interpretation, parse_outcome)
 
         event_payload = (
-            self._project_interpretation_to_events(interpretation, payload)
+            self._project_interpretation_to_events(
+                interpretation, council_window, model_used=parse_outcome.model_used
+            )
             if interpretation is not None
             else None
         )
@@ -291,6 +349,8 @@ class CouncilService:
         window: VisionWindowPayload,
     ) -> tuple[VisionSceneInterpretationV1 | None, InterpretationParseOutcome]:
         if interpretation is not None:
+            # First, so the grounding caps below act on the measured number.
+            interpretation = apply_detector_confidence(interpretation, window)
             interpretation, grounding_notes = enforce_evidence_grounding(interpretation, window)
             for note in grounding_notes:
                 logger.info(f"[COUNCIL] grounding {note}")
@@ -301,6 +361,7 @@ class CouncilService:
                 interpretation = build_person_presence_fallback(window)
                 warnings = list(parse_outcome.salvage_warnings)
                 warnings.append("host_fallback_after_grounding")
+                # model_used is left None: no model wrote the fallback row.
                 parse_outcome = InterpretationParseOutcome(
                     interpretation=interpretation,
                     parse_mode=parse_outcome.parse_mode,
@@ -362,11 +423,13 @@ class CouncilService:
 
         try:
             prompt = build_interpretation_prompt(window)
+            _SERVED_MODEL.set(None)
             content = await self._call_llm_raw(prompt, source_env)
             if not content:
                 return None, InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
 
             outcome = parse_llm_content(content, window)
+            outcome = replace(outcome, model_used=_SERVED_MODEL.get())
             if gate_ctx is not None:
                 stream_key, snapshot, _ = gate_ctx
                 async with self._evidence_transition_lock:
@@ -389,8 +452,10 @@ class CouncilService:
         self,
         interpretation: VisionSceneInterpretationV1,
         window: VisionWindowPayload,
+        *,
+        model_used: str | None = None,
     ) -> VisionEventPayload | None:
-        payload = project_interpretation_to_events(interpretation, window)
+        payload = project_interpretation_to_events(interpretation, window, model_used=model_used)
         if not payload.events:
             return None
         return payload
@@ -423,6 +488,13 @@ class CouncilService:
             logger.error("[COUNCIL] RPC bus not initialized; cannot call LLM gateway")
             return None
 
+        shed_key = str(settings.COUNCIL_LLM_ROUTE or "llm")
+        wait, probe = self._shed_backoff.admit(shed_key)
+        if wait is not None:
+            # Counted and reported by the backoff's episode-end log line.
+            logger.debug(f"[COUNCIL] LLM call skipped: GPU pool shedding ({self._shed_backoff.reason(shed_key)})")
+            return None
+
         try:
             async with self._llm_semaphore:
                 reply = await self._rpc_bus.rpc_request(
@@ -434,11 +506,24 @@ class CouncilService:
 
             decoded = self._rpc_bus.codec.decode(reply.get("data"))
             if not decoded.ok:
+                self._shed_backoff.abandon(shed_key, token=probe)
                 logger.error(f"[COUNCIL] LLM decode error: {decoded.error}")
                 return None
 
             res_env = decoded.envelope
+            shed = gateway_shed_refusal(res_env.payload)
+            if shed is not None:
+                self._shed_backoff.resolve(shed_key, shed[0], token=probe, hint_sec=shed[1])
+                return None
+            self._shed_backoff.resolve(shed_key, _gateway_error_reason(res_env.payload), token=probe)
+            if completion_finish_reason(res_env.payload) == "length":
+                logger.warning(
+                    f"[COUNCIL] LLM incomplete correlation_id={envelope.correlation_id} "
+                    f"finish_reason=length max_tokens={settings.COUNCIL_LLM_MAX_TOKENS}"
+                )
+                return None
             content = _extract_chat_result_text(res_env.payload)
+            _SERVED_MODEL.set(_model_used_from_reply(res_env.payload))
 
             if not content:
                 logger.warning(f"[COUNCIL] Empty LLM response: {res_env.payload}")
@@ -450,11 +535,16 @@ class CouncilService:
             return content
 
         except TimeoutError:
+            self._shed_backoff.abandon(shed_key, token=probe)
             logger.error("[COUNCIL] LLM timeout")
             return None
         except Exception as e:
+            self._shed_backoff.abandon(shed_key, token=probe)
             logger.error(f"[COUNCIL] LLM error: {e}")
             return None
+        except BaseException:
+            self._shed_backoff.abandon(shed_key, token=probe)
+            raise
 
 
 service = CouncilService()

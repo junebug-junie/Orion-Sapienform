@@ -187,7 +187,7 @@ const html = OrionMindProvenance.renderMindBriefItems(run);
 console.log(JSON.stringify({{
   cognition_path: prov.cognition_path,
   has_shadow_card: html.includes('Shadow synthesis'),
-  has_attention: html.includes('evening plans with Amanda'),
+  has_attention: html.includes('evening plans with Robin'),
   has_projection_refs: html.includes('projection:relationship:0'),
 }}));
 """

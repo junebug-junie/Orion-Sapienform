@@ -19,6 +19,14 @@ from pydantic import Field, ValidationError
 # IMPORTS UPDATED: Added Envelope for generic typing
 from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef, CausalityLink
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
+from orion.core.bus.rpc_degraded import (
+    begin_collecting,
+    current_degraded_reason,
+    end_collecting,
+    mark_degraded,
+    note_degraded,
+    strip_degraded,
+)
 from orion.core.bus.rpc_health_publish import rpc_health_publish_loop
 from orion.core.verbs import VerbRequestV1, VerbResultV1, VerbEffectV1, VerbRuntime
 
@@ -32,6 +40,7 @@ from orion.substrate.appraisal.contract import REPAIR_PRESSURE_CONTRACT_METADATA
 from .settings import settings
 from .router import PlanRouter
 from .dream_publish import build_dream_publish_envelope
+from .exec_ctx import build_exec_ctx
 from .chat_stance import resolve_autonomy_graphdb_config
 from .core_event_cache import get_core_event_cache
 from .world_context_capsule_cache import get_world_context_capsule_cache
@@ -487,6 +496,17 @@ def _run_autonomy_graph_probe() -> None:
         )
 
 
+def _stamp_degraded(reply: BaseEnvelope, *, reason: str | None = None) -> BaseEnvelope:
+    """Mark a reply this service publishes itself (outside the Rabbit chassis, which
+    stamps returned replies on its own) as degraded when the request's handling noted
+    a degradation -- a gateway refusal, a skipped/refused metacog draft -- or the
+    caller passes an explicit ``reason`` (an unusable request). A reply that failed
+    after real work is NOT degraded: its wait was real. orion/core/bus/rpc_degraded.py:
+    the caller's rpc_request() counts a degraded reply instead of timing it."""
+    reason = current_degraded_reason() or reason
+    return mark_degraded(reply, reason) if reason else reply
+
+
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     corr_id = str(env.correlation_id)
     logger.info(f"Incoming Exec Request: correlation_id={corr_id}")
@@ -526,6 +546,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                     corr_id,
                     exc_info=True,
                 )
+        note_degraded("validation_failed")
         return BaseEnvelope(
             kind="cortex.exec.result",
             source=_source(),
@@ -554,22 +575,13 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     payload_context = raw_payload.get("context") or req_env.payload.context or {}
 
     # 2. Merge Context
-    plan_metadata = req_env.payload.plan.metadata if isinstance(req_env.payload.plan.metadata, dict) else {}
-    ctx = {
-        **payload_context,
-        **(req_env.payload.args.extra or {}),
-        "user_id": req_env.payload.args.user_id,
-        "trigger_source": req_env.payload.args.trigger_source,
-        "trace_id": trace_id,
-        "parent_event_id": parent_event_id,
-        "correlation_id": corr_id,
-        "plan_metadata": plan_metadata,
-    }
-    if "personality_file" in plan_metadata:
-        # Preserve declaration state (including empty string) for precise identity fallback diagnostics.
-        ctx["personality_file"] = plan_metadata.get("personality_file")
-    ctx.setdefault("trigger_correlation_id", ctx.get("chat_correlation_id") or corr_id)
-    ctx.setdefault("trigger_trace_id", trace_id)
+    ctx = build_exec_ctx(
+        payload_context=payload_context,
+        req=req_env.payload,
+        trace_id=trace_id,
+        parent_event_id=parent_event_id,
+        corr_id=corr_id,
+    )
 
     logger.debug(f"Context loaded with {len(ctx.get('messages', []))} history messages.")
 
@@ -659,11 +671,13 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                     f"preview={preview_text}",
                     flush=True,
                 )
-                manual_result = CortexExecResult(
-                    source=_source(),
-                    correlation_id=corr_id,
-                    causality_chain=env.causality_chain,
-                    payload=CortexExecResultPayload(ok=True, result=res_payload),
+                manual_result = _stamp_degraded(
+                    CortexExecResult(
+                        source=_source(),
+                        correlation_id=corr_id,
+                        causality_chain=env.causality_chain,
+                        payload=CortexExecResultPayload(ok=True, result=res_payload),
+                    )
                 )
                 publish_started = time.perf_counter()
                 try:
@@ -739,7 +753,9 @@ def _derive_envelope(env: BaseEnvelope, *, kind: str, payload: dict) -> BaseEnve
         source=_source(),
         correlation_id=env.correlation_id,
         causality_chain=[*env.causality_chain, parent_link],
-        trace=dict(env.trace),
+        # The request's own degraded marker (if a caller ever sent one) is not this
+        # reply's verdict; replies are stamped explicitly by _stamp_degraded.
+        trace=strip_degraded(env.trace),
         payload=payload,
     )
 
@@ -833,6 +849,16 @@ async def handle_world_context_capsule(env: BaseEnvelope) -> None:
 
 
 async def handle_verb_request(env: BaseEnvelope) -> None:
+    """orion:verb:request is a Hunter (no chassis reply), so this handler opens its own
+    degraded-reply collector and stamps the verb.result it publishes."""
+    token = begin_collecting()
+    try:
+        await _handle_verb_request(env)
+    finally:
+        end_collecting(token)
+
+
+async def _handle_verb_request(env: BaseEnvelope) -> None:
     assert svc is not None, "Rabbit service not initialized"
     assert verb_runtime is not None, "Verb runtime not initialized"
 
@@ -855,7 +881,10 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
             error=f"invalid_request:{ve}",
             request_id=raw_payload.get("request_id"),
         )
-        result_env = _derive_envelope(env, kind="verb.result", payload=error_result.model_dump(mode="json"))
+        result_env = _stamp_degraded(
+            _derive_envelope(env, kind="verb.result", payload=error_result.model_dump(mode="json")),
+            reason="validation_failed",
+        )
         await svc.bus.publish(reply_channel, result_env)
         if reply_channel != "orion:verb:result":
             await svc.bus.publish("orion:verb:result", result_env)
@@ -877,7 +906,9 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
         },
     )
 
-    result_env = _derive_envelope(env, kind="verb.result", payload=result.model_dump(mode="json"))
+    result_env = _stamp_degraded(
+        _derive_envelope(env, kind="verb.result", payload=result.model_dump(mode="json")),
+    )
     await svc.bus.publish(reply_channel, result_env)
     logger.info(
         "verb_runtime_result corr=%s reply=%s request_id=%s ok=%s",
@@ -946,6 +977,28 @@ pre_turn_appraisal_svc = Rabbit(
     _cfg(),
     request_channel=settings.channel_pre_turn_appraisal_request,
     handler=handle_pre_turn_appraisal_request,
+    # Every Hub turn awaits this check. Serial handling made a turn wait behind other
+    # turns' checks: 2026-11-12 a 2.4 s check sat 180 s behind world-pulse checks that
+    # could not fit the fast lane, and the Hub timed it out. GPU work still queues in the pool.
+    concurrent_handlers=True,
+)
+# Unified-turn latency L4: stance_context_prepare, one channel per exec lane so
+# orion-thought's prepare lands on the same container as its stance_react.
+from orion.schemas.stance_context_prepare import stance_context_prepare_channel
+from .stance_prepare import handle_stance_context_prepare
+
+STANCE_CONTEXT_PREPARE_CHANNEL = stance_context_prepare_channel(settings.channel_exec_request)
+stance_prepare_svc: Rabbit | None = (
+    Rabbit(
+        _cfg(),
+        request_channel=STANCE_CONTEXT_PREPARE_CHANNEL,
+        handler=handle_stance_context_prepare,
+        # A handler awaits a ~9 s build; serial handling would leave a second
+        # turn's prepare unregistered until the first finished.
+        concurrent_handlers=True,
+    )
+    if STANCE_CONTEXT_PREPARE_CHANNEL
+    else None
 )
 _rpc_bus = None
 _rpc_health_stop = asyncio.Event()
@@ -1029,6 +1082,11 @@ async def main() -> None:
         "on" if verb_listener is not None else "off",
         "on" if settings.enable_pre_turn_appraisal_handler else "off",
     )
+    # Advertise that this process reads the assertion-core graph shapes, so the referent/
+    # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
+    from orion.substrate.reader_capability import advertise_at_startup
+
+    advertise_at_startup()
     _run_autonomy_graph_probe()
     await svc.bus.connect()
     from .health_http import create_health_app, start_health_server
@@ -1080,45 +1138,6 @@ async def main() -> None:
                 settings.embodiment_background_interval_sec,
                 settings.embodiment_channel_intent,
             )
-        if verb_listener is not None and float(settings.self_study_inspect_interval_sec) > 0:
-            # Chat lane only (same gate as the verb listener) so the four
-            # replicas don't each append a full snapshot.
-            from .self_study import run_self_repo_inspect
-            from .self_study_refresh import self_study_refresh_loop
-
-            asyncio.create_task(
-                self_study_refresh_loop(
-                    bus_getter=_bus_for_rpc,
-                    source=_source(),
-                    interval_sec=float(settings.self_study_inspect_interval_sec),
-                    run_inspect=run_self_repo_inspect,
-                ),
-                name="self-study-refresh",
-            )
-            logger.info(
-                "self_study_refresh_loop_started interval_sec=%s lane=%s",
-                settings.self_study_inspect_interval_sec,
-                settings.exec_lane,
-            )
-        if verb_listener is not None and float(settings.self_study_reflect_refresh_interval_sec) > 0:
-            # Same chat-lane-only gate as the Layer 1 timer above.
-            from .self_study import run_self_concept_reflect
-            from .self_study_refresh import self_study_reflect_refresh_loop
-
-            asyncio.create_task(
-                self_study_reflect_refresh_loop(
-                    bus_getter=_bus_for_rpc,
-                    source=_source(),
-                    interval_sec=float(settings.self_study_reflect_refresh_interval_sec),
-                    run_reflect=run_self_concept_reflect,
-                ),
-                name="self-study-reflect-refresh",
-            )
-            logger.info(
-                "self_study_reflect_refresh_loop_started interval_sec=%s lane=%s",
-                settings.self_study_reflect_refresh_interval_sec,
-                settings.exec_lane,
-            )
         if settings.rpc_health_publish_enabled:
             global _rpc_health_task
             _rpc_health_task = asyncio.create_task(
@@ -1146,6 +1165,13 @@ async def main() -> None:
         starters: list[Any] = [svc.start(), health_task]
         if settings.enable_pre_turn_appraisal_handler:
             starters.insert(1, pre_turn_appraisal_svc.start())
+        if stance_prepare_svc is not None:
+            starters.insert(1, stance_prepare_svc.start())
+        logger.info(
+            "stance_context_prepare_listener channel=%s lane=%s",
+            STANCE_CONTEXT_PREPARE_CHANNEL or "off",
+            settings.exec_lane,
+        )
         await asyncio.gather(*starters)
     finally:
         await _stop_rpc_health_publish()

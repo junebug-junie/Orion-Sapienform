@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from orion.core.bus.resilience import subscription_health
 from orion.notify.client import NotifyClient
 from orion.substrate.biometrics_loop.constants import ACTIVE_NODE_PRESSURE_PROJECTION_ID
 
@@ -87,6 +88,19 @@ def run_checks(store: BiometricsSubstrateStore, settings: Settings) -> list[Heal
             healthy=not degraded,
             severity="critical",
             message_if_unhealthy=message,
+        )
+    )
+
+    listeners = subscription_health()
+    checks.append(
+        _check(
+            "substrate_listeners_down",
+            healthy=listeners["ok"],
+            severity="critical",
+            message_if_unhealthy=(
+                "substrate-runtime bus listeners not subscribed (retrying): "
+                + ", ".join(listeners["down"])
+            ),
         )
     )
 

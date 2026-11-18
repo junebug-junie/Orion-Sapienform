@@ -1,0 +1,9 @@
+# Existing announce-only Strata mode needs no CUDA/llama-server image.
+FROM python:3.12-slim
+WORKDIR /app
+COPY services/orion-llamacpp-host/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+COPY services/orion-llamacpp-host/app /app/app
+COPY config /app/config
+COPY orion /app/orion
+ENTRYPOINT ["python", "-m", "app.main"]

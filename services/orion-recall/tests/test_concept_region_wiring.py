@@ -33,7 +33,6 @@ from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, Rec
 
 def _base_worker_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker.settings, "RECALL_PCR_ENABLED", True)
-    monkeypatch.setattr(worker.settings, "RECALL_ACTIVE_PACKET_ENABLED", False)
     monkeypatch.setattr(worker.settings, "RECALL_BELIEF_RENDER_BUDGET", 128)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_CHAT", False)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_TIMELINE", False)
@@ -145,12 +144,10 @@ def test_worker_concept_region_failure_degrades_gracefully(monkeypatch: pytest.M
 def test_get_substrate_store_never_raises_on_init_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.substrate_store as substrate_store_mod
 
-    monkeypatch.setattr(substrate_store_mod, "_STORE", None)
-
-    def _boom(**_kw):
+    def _boom():
         raise RuntimeError("backend unreachable")
 
-    monkeypatch.setattr(substrate_store_mod, "build_substrate_store_from_env", _boom)
+    monkeypatch.setattr(substrate_store_mod, "_build_store", _boom)
 
     assert substrate_store_mod.get_substrate_store() is None
 
@@ -158,15 +155,13 @@ def test_get_substrate_store_never_raises_on_init_failure(monkeypatch: pytest.Mo
 def test_get_substrate_store_caches_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.substrate_store as substrate_store_mod
 
-    monkeypatch.setattr(substrate_store_mod, "_STORE", None)
-
     calls: list[int] = []
 
-    def _fake_build(**_kw):
+    def _fake_build():
         calls.append(1)
         return object()
 
-    monkeypatch.setattr(substrate_store_mod, "build_substrate_store_from_env", _fake_build)
+    monkeypatch.setattr(substrate_store_mod, "_build_store", _fake_build)
 
     first = get_substrate_store()
     second = substrate_store_mod.get_substrate_store()

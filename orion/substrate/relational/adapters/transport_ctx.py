@@ -73,8 +73,10 @@ def map_transport_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
     temporal = make_temporal(observed_at=now)
     prov = _make_prov()
 
+    # contract_pressure left this max 2026-10-07 (retired; it read 0 on every
+    # live tick, so the salience values are unchanged).
     def _salience(bus: Any) -> float:
-        return _clamp(max(bus.reliability_pressure, bus.contract_pressure))
+        return _clamp(bus.reliability_pressure)
 
     buses = sorted(projection.buses.values(), key=_salience, reverse=True)[:_MAX_NODES]
 
@@ -82,7 +84,8 @@ def map_transport_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
     for bus in buses:
         salience = _salience(bus)
         # Same value the retired delivery_confidence produced: it was always
-        # 1 - reliability_pressure (0.0 on observer failure, 0.5 unknown ping).
+        # 1 - reliability_pressure (0.0 on a failed ping, 0.5 unknown ping; the
+        # observer-failure input was retired 2026-10-07).
         confidence = _clamp(1.0 - bus.reliability_pressure) or 0.7
         nodes.append(
             ConceptNodeV1(
@@ -98,7 +101,6 @@ def map_transport_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
                     "node_id": bus.node_id,
                     "redis_ping_ok": bus.redis_ping_ok,
                     "reliability_pressure": round(bus.reliability_pressure, 6),
-                    "contract_pressure": round(bus.contract_pressure, 6),
                 },
             )
         )

@@ -66,12 +66,11 @@ class AttentionSelfModelV1(BaseModel):
     while registering this schema in `orion/inner_state_registry.py`.
     `orion-equilibrium-service`'s `generative_metacog_poll_loop`
     (`services/orion-equilibrium-service/app/service.py`) reads recent samples
-    via `AttentionSelfModelReader.fetch_recent_samples` and feeds both
-    `build_insight_metacog_trigger` and `build_flow_metacog_trigger`.
-    `EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE` and
-    `EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE` are both `true` in
-    `.env_example`, so that path is live by default — a real consumer, not
-    future work.
+    via `AttentionSelfModelReader.fetch_recent_samples` and feeds
+    `build_insight_metacog_trigger`. `EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE`
+    is `true` in `.env_example`, so that path is live by default — a real
+    consumer, not future work. (The sibling `build_flow_metacog_trigger`
+    consumer was retired 2026-10-10.)
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)

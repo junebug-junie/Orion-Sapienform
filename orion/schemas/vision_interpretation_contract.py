@@ -44,6 +44,20 @@ _UNCERTAINTY = {
     },
 }
 
+_SCENE_ENTITY = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["label"],
+    "properties": {
+        "label": {"type": "string"},
+        "entity_id": {"type": ["string", "null"]},
+        "entity_type": {"type": ["string", "null"]},
+        "confidence": {"type": "number"},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "attributes": {"type": "object"},
+    },
+}
+
 
 def compact_vision_scene_interpretation_json_schema() -> dict[str, Any]:
     """Inline schema without $ref — suitable for Atlas metacog json_object+schema."""
@@ -66,7 +80,7 @@ def compact_vision_scene_interpretation_json_schema() -> dict[str, Any]:
             "camera_id": {"type": "string"},
             "scene_summary": {"type": "string"},
             "scene_state": {"type": "object"},
-            "entities": {"type": "array", "items": {"type": "object"}},
+            "entities": {"type": "array", "items": _SCENE_ENTITY},
             "relations": {"type": "array", "items": {"type": "object"}},
             "salient_observations": {"type": "array", "items": _SALIENT_OBSERVATION},
             "uncertainties": {"type": "array", "items": _UNCERTAINTY},

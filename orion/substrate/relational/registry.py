@@ -21,9 +21,29 @@ GRAPHDB_DURABLE = TrustTierV1(name="graphdb_durable", rank=2, write_through=True
 CONCEPT_INDUCED = TrustTierV1(name="concept_induced", rank=3, write_through=True)
 SNAPSHOT_EPHEMERAL = TrustTierV1(name="snapshot_ephemeral", rank=4, write_through=False)
 
+# Same authority as CONCEPT_INDUCED, but materialized into the per-call
+# ephemeral store instead of written back to the durable store. For producers
+# that read nodes that already live durably (concept_induction reads the
+# substrate concept region): writing them back re-saved stale copies over
+# fresher ones (max-merge undid activation decay) and bumped the store's write
+# generation, which forced a full rehydrate on the layer's second snapshot()
+# (2026-10-06, unified-turn latency L6 step 2). Not in TIER_BY_NAME: it shares
+# CONCEPT_INDUCED's name on purpose so lineage reads the same.
+CONCEPT_INDUCED_EPHEMERAL = TrustTierV1(name="concept_induced", rank=3, write_through=False)
+
 TIER_BY_NAME: dict[str, TrustTierV1] = {
     t.name: t for t in (OPERATOR_STATIC, GRAPHDB_DURABLE, CONCEPT_INDUCED, SNAPSHOT_EPHEMERAL)
 }
+
+
+class ProducerUnavailableError(RuntimeError):
+    """An adapter could not reach its source this turn (transient failure).
+
+    Raise this instead of returning ``None``: the unification layer counts a
+    ``None`` return as a completed pull with nothing to add (fresh for the
+    producer's TTL), but an exception marks the producer degraded and leaves
+    it untracked, so the next turn retries.
+    """
 
 
 @dataclass(frozen=True)

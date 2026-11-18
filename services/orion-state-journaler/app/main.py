@@ -1,70 +1,40 @@
 from __future__ import annotations
 
-import asyncio
-from datetime import timedelta
-from typing import List
-
-import asyncpg
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query
+
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from .service import StateJournaler
+from .service import build_chassis
 from .settings import settings
 
 
-journaler = StateJournaler()
+chassis = build_chassis()
 
-
-async def _fetch_rollups(window: int, hours: int) -> List[asyncpg.Record]:
-    sql = f"""
-    SELECT bucket_ts, window_sec, node, avg_valence, avg_arousal, avg_coherence, avg_novelty, pct_missing, pct_stale, avg_distress
-    FROM {settings.rollup_table}
-    WHERE window_sec=$1 AND bucket_ts >= (NOW() - INTERVAL '{int(hours)} hours')
-    ORDER BY bucket_ts DESC
-    """
-    conn = await asyncpg.connect(dsn=settings.postgres_uri)
-    try:
-        rows = await conn.fetch(sql, int(window))
-        return rows
-    finally:
-        await conn.close()
+ROLLUPS_RETIRED_DETAIL = (
+    "spark-state rollups retired 2026-10-10: their input channel "
+    "orion:spark:state:snapshot has had no producer since orion-spark-introspector "
+    "was deleted 2026-07-28. Table spark_state_rollups is frozen history, not live state."
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await journaler.start_background()
+    await chassis.start_background()
     try:
         yield
     finally:
-        await journaler.stop()
+        await chassis.stop()
 
 
 app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/rollups")
-async def get_rollups(
-    window: int = Query(300, description="Window size in seconds"),
-    hours: int = Query(24, description="Lookback horizon in hours"),
-):
-    rows = await _fetch_rollups(window, hours)
-    out = [
-        {
-            "bucket_ts": r["bucket_ts"].isoformat() if r.get("bucket_ts") else None,
-            "window_sec": r.get("window_sec"),
-            "node": r.get("node"),
-            "avg_valence": r.get("avg_valence"),
-            "avg_arousal": r.get("avg_arousal"),
-            "avg_coherence": r.get("avg_coherence"),
-            "avg_novelty": r.get("avg_novelty"),
-            "pct_missing": r.get("pct_missing"),
-            "pct_stale": r.get("pct_stale"),
-            "avg_distress": r.get("avg_distress"),
-        }
-        for r in rows
-    ]
-    return JSONResponse({"window": window, "hours": hours, "rows": out})
+async def get_rollups() -> JSONResponse:
+    # Marked absent on purpose: serving the frozen table here would present
+    # 2026-07-28-era (or all-zero) values as if they were current state.
+    return JSONResponse({"retired": True, "detail": ROLLUPS_RETIRED_DETAIL}, status_code=410)
 
 
 if __name__ == "__main__":

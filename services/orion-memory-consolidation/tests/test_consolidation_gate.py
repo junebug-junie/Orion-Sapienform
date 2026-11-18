@@ -48,7 +48,7 @@ def test_gate_proposes_topic_shift():
 
 
 def test_gate_proposes_on_repair_signal():
-    turns = [_turn("hey", "sorry about earlier")]
+    turns = [_turn("no, that literal title is incorrect.", "sorry about earlier")]
     result = consolidation_memory_gate(
         turns=turns,
         grammar_repair_signal=True,
@@ -56,6 +56,21 @@ def test_gate_proposes_on_repair_signal():
         min_significance=0.40,
     )
     assert result.action == "propose"
+    assert result.reasons == ["repair_signal"]
+
+
+def test_repair_signal_does_not_rescue_a_greeting():
+    # Stage 0A regression: the repair shortcut ran before any text check, so
+    # "hey" with a repair atom became a memory. The junk check runs first now.
+    turns = [_turn("hey", "sorry about earlier")]
+    result = consolidation_memory_gate(
+        turns=turns,
+        grammar_repair_signal=True,
+        min_novelty=0.35,
+        min_significance=0.40,
+    )
+    assert result.action == "skip"
+    assert result.reasons == ["low_info_social"]
 
 
 def test_gate_proposes_substantive_text_below_floors():

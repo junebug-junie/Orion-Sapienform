@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from orion.fcc import mcp_names
+
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "fcc_claude_mcp.template.json"
 _TMP_ROOT = Path("/tmp/orion-fcc-mcp")
 
@@ -149,7 +151,21 @@ def render_mcp_config(
     reading_bus_url: Optional[str] = None,
     introspect_binding: Any = None,
     introspect_bus_url: Optional[str] = None,
+    reading_binding_file: Optional[Path] = None,
+    introspect_binding_file: Optional[Path] = None,
+    introspect_memory_allowed: bool = False,
 ) -> Path:
+    """Render this process's MCP config.
+
+    ``reading_binding``/``introspect_binding`` bind the tools to one turn (a
+    spawned process). ``*_binding_file`` instead points the server at a file
+    the warm pool rewrites per turn (orion/fcc/turn_binding_file.py); pass one
+    form or the other per server, never both.
+    """
+    if reading_binding is not None and reading_binding_file is not None:
+        raise ValueError("pass reading_binding or reading_binding_file, not both")
+    if introspect_binding is not None and introspect_binding_file is not None:
+        raise ValueError("pass introspect_binding or introspect_binding_file, not both")
     if reading_only:
         # Deliberate source readers need only built-in WebFetch/WebSearch.
         # An empty *explicit* config also works when normal MCP is disabled.
@@ -173,35 +189,45 @@ def render_mcp_config(
     }
     rendered = _deep_replace(template, replacements)
 
-    if reading_binding is not None:
-        from orion.schemas.reading import ReadingToolBindingV1
-        binding = ReadingToolBindingV1.model_validate(reading_binding)
+    if reading_binding is not None or reading_binding_file is not None:
         if not reading_bus_url:
             raise McpPreflightError("fcc_reading_bus_missing", "ORION_BUS_URL required for reading tools")
-        rendered["mcpServers"]["orion-reading"] = {
+        if reading_binding_file is not None:
+            reading_bind_env = {"ORION_READING_BINDING_FILE": str(reading_binding_file)}
+        else:
+            from orion.schemas.reading import ReadingToolBindingV1
+            binding = ReadingToolBindingV1.model_validate(reading_binding)
+            reading_bind_env = {"ORION_READING_BINDING": binding.model_dump_json()}
+        rendered["mcpServers"][mcp_names.ORION_READING] = {
             "type": "stdio", "command": "python3",
             "args": ["-P", "-m", "orion.world_pulse_read.mcp_server"],
             "env": {"ORION_BUS_URL": reading_bus_url,
                     "PYTHONPATH": str(_TEMPLATE_PATH.parents[2]),
-                    "ORION_READING_BINDING": binding.model_dump_json()},
+                    **reading_bind_env},
         }
 
-    if introspect_binding is not None:
-        from orion.schemas.introspect import IntrospectToolBindingV1
-        ib = IntrospectToolBindingV1.model_validate(introspect_binding)
+    if introspect_binding is not None or introspect_binding_file is not None:
         if not introspect_bus_url:
             raise McpPreflightError("fcc_introspect_bus_missing", "ORION_BUS_URL required for introspect tools")
-        if include_aitown and ib.memory_allowed:
+        if introspect_binding_file is not None:
+            memory_allowed = bool(introspect_memory_allowed)
+            introspect_bind_env = {"ORION_INTROSPECT_BINDING_FILE": str(introspect_binding_file)}
+        else:
+            from orion.schemas.introspect import IntrospectToolBindingV1
+            ib = IntrospectToolBindingV1.model_validate(introspect_binding)
+            memory_allowed = ib.memory_allowed
+            introspect_bind_env = {"ORION_INTROSPECT_BINDING": ib.model_dump_json()}
+        if include_aitown and memory_allowed:
             raise McpPreflightError(
                 "fcc_introspect_outward_memory",
                 "introspect memory access must be off when an outward-facing MCP (AI Town) is attached",
             )
-        rendered["mcpServers"]["orion-introspect"] = {
+        rendered["mcpServers"][mcp_names.ORION_INTROSPECT] = {
             "type": "stdio", "command": "python3",
             "args": ["-P", "-m", "orion.introspect.mcp_server"],
             "env": {"ORION_BUS_URL": introspect_bus_url,
                     "PYTHONPATH": str(_TEMPLATE_PATH.parents[2]),
-                    "ORION_INTROSPECT_BINDING": ib.model_dump_json()},
+                    **introspect_bind_env},
         }
 
     if include_aitown:
@@ -211,7 +237,7 @@ def render_mcp_config(
         world_id = _require(ae, "AITOWN_WORLD_ID", error_code="fcc_mcp_aitown_config")
         _probe_convex_version(convex_url)
         _probe_convex_auth(convex_url, admin_key)
-        rendered["mcpServers"]["orion-aitown"] = {
+        rendered["mcpServers"][mcp_names.ORION_AITOWN] = {
             "type": "stdio",
             "command": "python3",
             "args": ["-m", "orion_aitown_mcp"],
@@ -229,7 +255,7 @@ def render_mcp_config(
         # host-built .gitnexus/ index; no secrets required. Requires a global
         # registry entry (~/.gitnexus/registry.json) resolving to the workspace.
         _require_tool("gitnexus", error_code="fcc_mcp_gitnexus_missing")
-        rendered["mcpServers"]["gitnexus"] = {
+        rendered["mcpServers"][mcp_names.GITNEXUS] = {
             "type": "stdio",
             "command": "gitnexus",
             "args": ["mcp"],
@@ -247,7 +273,7 @@ def render_mcp_config(
                 error_code="fcc_mcp_context_mode_config",
                 message="Context Mode requires a project dir (HARNESS_FCC_WORKSPACE)",
             )
-        rendered["mcpServers"]["context-mode"] = {
+        rendered["mcpServers"][mcp_names.CONTEXT_MODE] = {
             "type": "stdio",
             "command": "context-mode",
             "env": {

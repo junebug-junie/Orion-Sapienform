@@ -66,6 +66,9 @@ def test_rpc_validates_hold_and_deduplicates_read_only_turn(monkeypatch):
         assert kwargs["reading_only"] and kwargs["payload"]["no_write"]
         assert kwargs["payload"]["gpu_lease"] == req.gpu_lease.model_dump()
         assert kwargs["correlation_id"] == req.correlation_id
+        # An unfenced (pre-fix) brief: the stance gets the full prompt, as before.
+        assert kwargs["user_message"] == "Read the source"
+        assert kwargs["stance_view_message"] is None
         assert listener.bus.publish.await_count == 2
         await listener.stop()
 
@@ -130,7 +133,10 @@ def test_production_generate_only_binds_and_polls_durable_run(monkeypatch, cls, 
         assert bind.call_args.args[0] is conn
         assert bind.call_args.args[1].stage == stage
         assert bind.call_args.args[1].seed_id == "seed"
-        poll.assert_awaited_once_with(bound, "http://durable")
+        poll.assert_awaited_once()
+        assert poll.call_args.args == (bound, "http://durable")
+        if stage == 1:  # stage 1 watches for work start (its `look` act opens then)
+            assert callable(poll.call_args.kwargs["on_state"])
         poll.side_effect = None
         poll.return_value = ReadingTurnResultV1(
             run_id="immutable-run",
@@ -142,5 +148,129 @@ def test_production_generate_only_binds_and_polls_durable_run(monkeypatch, cls, 
         result = await pipe._generate("Read source", "requested-corr", seed_id="seed")
         assert result.trace_id == "actual-held-corr"
         assert pipe._settlement_run_id == "immutable-run"
+
+    asyncio.run(run())
+
+
+def test_reading_turn_budget_is_the_briefs_wall_not_the_harness_default():
+    """Seed c31227dc Stage 2 (2026-10-14): no budget on the payload -> motor ran on
+    HARNESS_FCC_TIMEOUT_SEC=7200 inside a 3500 s durable attempt."""
+    from scripts.reading_turn_listener import (
+        READING_REPLY_RESERVE_SEC, REPLY_DEADLINE_PAYLOAD_KEY, stamp_reading_turn_budget,
+    )
+    from scripts.curiosity_investigation import REPLY_DEADLINE_PAYLOAD_KEY as CURIOSITY_KEY
+    from orion.hub import turn_orchestrator
+
+    assert REPLY_DEADLINE_PAYLOAD_KEY == CURIOSITY_KEY  # the key _held_turn_budgets reads
+    payload = {}
+    stamp_reading_turn_budget(payload, timeout_sec=3500.0, started=1000.0)
+    assert payload["inference_timeout_sec"] == 3500.0 - READING_REPLY_RESERVE_SEC
+    assert payload[REPLY_DEADLINE_PAYLOAD_KEY] == 4500.0
+    # After 249 s of stance/recall the harness gets what is really left (10 s slack).
+    monkey_now = 1249.0
+    orig = turn_orchestrator.time.monotonic
+    turn_orchestrator.time.monotonic = lambda: monkey_now
+    try:
+        inference, reply = turn_orchestrator._held_turn_budgets(payload)
+    finally:
+        turn_orchestrator.time.monotonic = orig
+    assert reply == 3500.0 - 249 - 10
+    assert reply - inference == READING_REPLY_RESERVE_SEC  # reserve survives slow stance
+    # A caller that sets no reserve (curiosity held turns) is unchanged.
+    no_reserve = {k: v for k, v in payload.items() if k != "harness_finalize_reserve_sec"}
+    turn_orchestrator.time.monotonic = lambda: monkey_now
+    try:
+        inference2, reply2 = turn_orchestrator._held_turn_budgets(no_reserve)
+    finally:
+        turn_orchestrator.time.monotonic = orig
+    assert inference2 == reply2
+    small = {}
+    stamp_reading_turn_budget(small, timeout_sec=10.0, started=0.0)
+    assert small["inference_timeout_sec"] == 10.0
+
+
+def test_listener_stamps_budget_on_the_turn_payload(monkeypatch):
+    from scripts.reading_turn_listener import REPLY_DEADLINE_PAYLOAD_KEY
+
+    monkeypatch.setitem(ReadingTurnListener.handle.__globals__, "validate_hold_ref", AsyncMock())
+    turn = AsyncMock(return_value=[{"type": "final", "llm_response": "ok", "harness_source_fetches": []}])
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", turn)
+
+    async def run():
+        listener = ReadingTurnListener(ServiceRef(name="orion-hub"))
+        listener.bus = AsyncMock()
+        listener.rpc_bus = listener.bus
+        req = request()
+        envelope = BaseEnvelope(
+            kind="reading.turn.request.v1", source=ServiceRef(name="orion-durable-runs"),
+            correlation_id=req.correlation_id,
+            reply_to=f"orion:reading:turn:reply:{req.correlation_id}", payload=req.model_dump(),
+        )
+        await listener.handle(envelope)
+        payload = turn.call_args.kwargs["payload"]
+        assert payload["inference_timeout_sec"] == 10.0
+        assert REPLY_DEADLINE_PAYLOAD_KEY in payload
+        await listener.stop()
+
+    asyncio.run(run())
+
+
+def test_fenced_brief_gives_the_stance_a_view_without_the_reader_contract(monkeypatch):
+    from orion.world_pulse_read.reader_contract import STANCE_CONTRACT_PLACEHOLDER, fence_reader_contract
+
+    monkeypatch.setitem(ReadingTurnListener.handle.__globals__, "validate_hold_ref", AsyncMock())
+    turn = AsyncMock(return_value=[{"type": "final", "llm_response": "{}", "harness_source_fetches": []}])
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", turn)
+    prompt = "Read https://example.org/a.\n" + fence_reader_contract('{"what_i_learned": "x"}')
+
+    async def run():
+        listener = ReadingTurnListener(ServiceRef(name="orion-hub"))
+        listener.bus = AsyncMock()
+        listener.rpc_bus = listener.bus
+        req = request()
+        req.brief.prompt = prompt
+        envelope = BaseEnvelope(
+            kind="reading.turn.request.v1",
+            source=ServiceRef(name="orion-durable-runs"),
+            correlation_id=req.correlation_id,
+            reply_to=f"orion:reading:turn:reply:{req.correlation_id}",
+            payload=req.model_dump(),
+        )
+        await listener.handle(envelope)
+        kwargs = turn.call_args.kwargs
+        assert kwargs["user_message"] == prompt  # the reader gets the contract
+        assert kwargs["stance_view_message"] == "Read https://example.org/a.\n" + STANCE_CONTRACT_PLACEHOLDER + "\n"
+        await listener.stop()
+
+    asyncio.run(run())
+
+
+def test_damaged_fence_falls_back_to_full_prompt_and_logs(monkeypatch, caplog):
+    from orion.world_pulse_read.reader_contract import READER_CONTRACT_END, fence_reader_contract
+
+    monkeypatch.setitem(ReadingTurnListener.handle.__globals__, "validate_hold_ref", AsyncMock())
+    turn = AsyncMock(return_value=[{"type": "final", "llm_response": "{}", "harness_source_fetches": []}])
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", turn)
+    # A document that quotes the end marker: the view cannot be trusted.
+    prompt = "Read it.\n" + fence_reader_contract('{"what_i_learned": "x"}') + f"doc: {READER_CONTRACT_END}"
+
+    async def run():
+        listener = ReadingTurnListener(ServiceRef(name="orion-hub"))
+        listener.bus = AsyncMock()
+        listener.rpc_bus = listener.bus
+        req = request()
+        req.brief.prompt = prompt
+        envelope = BaseEnvelope(
+            kind="reading.turn.request.v1",
+            source=ServiceRef(name="orion-durable-runs"),
+            correlation_id=req.correlation_id,
+            reply_to=f"orion:reading:turn:reply:{req.correlation_id}",
+            payload=req.model_dump(),
+        )
+        with caplog.at_level("WARNING"):
+            await listener.handle(envelope)
+        assert turn.call_args.kwargs["stance_view_message"] is None
+        assert "reading_stance_view_unavailable reason=damaged_fence" in caplog.text
+        await listener.stop()
 
     asyncio.run(run())

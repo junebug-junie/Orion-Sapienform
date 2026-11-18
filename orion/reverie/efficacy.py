@@ -5,8 +5,6 @@ answer "is reverie doing anything useful?" without any LLM judgment:
 
   - pressure-discharge rate: did chains actually discharge the pressure that
     spawned them (SelfStateV1 pressure before vs after)?
-  - action usefulness: of reverie-originated actions, how many were judged useful
-    (FeedbackFrameV1 outcomes)?
   - recall delta: recall latency + memory-graph size before vs after compaction.
 
 Each function degrades to a well-defined zero/None on empty input — an honest
@@ -29,18 +27,6 @@ def pressure_discharge_rate(before: list[float], after: list[float]) -> float | 
         return None
     discharged = sum(1 for b, a in zip(before[:n], after[:n]) if float(a) < float(b))
     return discharged / n
-
-
-def action_usefulness_rate(outcomes: list[str], *, useful_labels: tuple[str, ...] = ("useful", "helped", "positive")) -> float | None:
-    """Fraction of reverie-originated action outcomes judged useful (FeedbackFrameV1).
-
-    None on empty input. Labels are matched case-insensitively.
-    """
-    if not outcomes:
-        return None
-    useful = {label.lower() for label in useful_labels}
-    hits = sum(1 for o in outcomes if str(o).lower() in useful)
-    return hits / len(outcomes)
 
 
 @dataclass(frozen=True)

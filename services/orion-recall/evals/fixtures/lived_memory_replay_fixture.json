@@ -1,0 +1,129 @@
+{
+  "_note": "Made-up records and messages for the committed lived-memory replay eval (issues #3533, #3534). 'implicit' items lean on the shared past without naming it; 'rewrites' is what the fake rewriter answers for them (the live eval calls the real fast lane). The real bank is host-side: ~/.orion/evals/lived_memory_recall_bank.json (mode 600).",
+  "records": {
+    "episode_memory": [
+      {
+        "record_id": "e-biscuit",
+        "purpose": "happened",
+        "text": "Juniper told me her dog Biscuit had surgery and came home with stitches.",
+        "days_ago": 3
+      },
+      {
+        "record_id": "e-kite",
+        "purpose": "happened",
+        "text": "Juniper and Robin flew a blue kite at the lake and it got stuck in an oak tree.",
+        "days_ago": 20
+      },
+      {
+        "record_id": "e-server",
+        "purpose": "happened",
+        "text": "Juniper installed a second GPU card in the Nimbus server for a deep thinking lane.",
+        "days_ago": 6
+      },
+      {
+        "record_id": "e-quiz",
+        "purpose": "about_juniper",
+        "text": "Juniper is studying for a pottery exam next month.",
+        "days_ago": 9
+      },
+      {
+        "record_id": "e-noise",
+        "purpose": "orion_view",
+        "text": "I noticed the office fans were loud all evening.",
+        "days_ago": 1
+      }
+    ],
+    "stance": [
+      {
+        "record_id": "s-move",
+        "text": "We are moving to a new apartment in the spring and I am nervous about packing everything.",
+        "days_ago": 40
+      }
+    ],
+    "person_fact": [
+      {
+        "record_id": "p-robin",
+        "purpose": "relationship",
+        "label": "Robin Vale",
+        "text": "best friend since college",
+        "days_ago": 60
+      }
+    ]
+  },
+  "referring": [
+    {
+      "label": "biscuit",
+      "message": "Biscuit finally got his stitches out at the vet today, yay!",
+      "targets": [
+        "episode_memory:e-biscuit"
+      ]
+    },
+    {
+      "label": "kite",
+      "message": "Robin wants to go back to the lake and try flying the kite again.",
+      "targets": [
+        "episode_memory:e-kite"
+      ]
+    },
+    {
+      "label": "server",
+      "message": "The second GPU card in Nimbus is finally running the deep thinking lane.",
+      "targets": [
+        "episode_memory:e-server"
+      ]
+    },
+    {
+      "label": "pottery",
+      "message": "Passed my pottery exam this morning, the glaze test went great!",
+      "targets": [
+        "episode_memory:e-quiz"
+      ]
+    },
+    {
+      "label": "move",
+      "message": "Started packing boxes for the apartment move today, so many boxes.",
+      "targets": [
+        "stance:s-move"
+      ]
+    }
+  ],
+  "small_talk": [
+    "hey, how are you?",
+    "thanks!",
+    "night night",
+    "haha nice",
+    "sup yo"
+  ],
+  "implicit": [
+    {
+      "label": "kite_again",
+      "message": "ugh, it got stuck again up high, so annoying, sigh!",
+      "rewrites": [
+        "blue kite stuck in oak tree at the lake"
+      ],
+      "targets": [
+        "episode_memory:e-kite"
+      ]
+    },
+    {
+      "label": "exam_done",
+      "message": "I passed!! nerves were wild this morning, whew",
+      "rewrites": [
+        "pottery exam"
+      ],
+      "targets": [
+        "episode_memory:e-quiz"
+      ]
+    },
+    {
+      "label": "vet_done",
+      "message": "he's all healed up now, running around happy and wagging",
+      "rewrites": [
+        "Biscuit dog surgery stitches"
+      ],
+      "targets": [
+        "episode_memory:e-biscuit"
+      ]
+    }
+  ]
+}

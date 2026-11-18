@@ -50,7 +50,7 @@ class ScriptedPoolBus(PoolBus):
         self.script: dict[str, object] = {}
         self.acquires = 0
 
-    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec, health_label=None):
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec, health_label=None, require_listener=False):
         wire = self.codec.decode(self.codec.encode(envelope)).envelope
         verb = (wire.payload or {}).get("verb")
         if verb == "acquire":

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.vision import (
@@ -86,6 +87,28 @@ def should_broadcast_identity(task_type: str, payload: Optional[VisionArtifactPa
     if payload is not None and getattr(payload.outputs, "identities", None) is not None:
         return True
     return False
+
+
+def artifact_broadcast_allowed(
+    payload: Optional[VisionArtifactPayload], *, enabled: bool, streams: str
+) -> bool:
+    """Whether the general artifact broadcast may carry this artifact.
+
+    ``enabled`` (VISION_ARTIFACT_BROADCAST_ENABLED) true: everything, as
+    before. False (the circe-qwen lane): only artifacts whose own
+    ``inputs.stream_id`` is in ``streams`` (VISION_ARTIFACT_BROADCAST_STREAMS).
+    That keeps orion-thought's dream captions (no stream_id) off the camera
+    projection, which is why this lane was silenced, while letting the
+    walkway caption tasks the frame router sends here reach
+    orion-vision-window.
+    """
+    if enabled:
+        return True
+    allowed = {s.strip() for s in str(streams or "").split(",") if s.strip()}
+    if not allowed or payload is None:
+        return False
+    stream_id = str((payload.inputs or {}).get("stream_id") or "").strip()
+    return bool(stream_id) and stream_id in allowed
 
 
 class VisionHostService:
@@ -188,8 +211,9 @@ class VisionHostService:
                     ok=False,
                     task_type=task.task_type,
                     device=None,
-                    error="No GPU available above hard floor (VRAM pressure).",
-                    meta={"error_code": "gpu_hard_floor"},
+                    error="No GPU available above hard floor (VRAM pressure)."
+                    + (f" {pick.refusal_reason}" if pick.refusal_reason else ""),
+                    meta={"error_code": "gpu_hard_floor", "refusal_reason": pick.refusal_reason},
                 )
             try:
                 return await asyncio.wait_for(
@@ -371,6 +395,11 @@ class VisionHostService:
         if warm_failed:
             degraded.extend([f"warm_failed:{n}" for n in warm_failed])
 
+        # Named, not fatal: the body embedder fell back to another model, or the
+        # shadow OSNet vector cannot load. Neither changes `ready`.
+        models = self.runner.model_status() if self.runner else {}
+        degraded.extend(model_degraded_reasons(models))
+
         ready = profiles_ok and bus_ok and gpu_schedulable and not warm_failed
 
         return {
@@ -382,34 +411,30 @@ class VisionHostService:
             "warm_failed_profiles": warm_failed,
             "degraded_reasons": degraded,
             "queue_depth": self.sched.queue_depth() if self.sched else 0,
+            "models": models,
         }
 
     async def _consume_loop(self):
         if not self.bus:
             return
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_VISIONHOST_INTAKE,
+            self._on_intake,
+            stop_event=self._shutdown_event,
+            name="vision-host.intake",
+        )
 
-        async with self.bus.subscribe(settings.CHANNEL_VISIONHOST_INTAKE) as pubsub:
-            while not self._shutdown_event.is_set():
-                try:
-                    async for msg in self.bus.iter_messages(pubsub):
-                        if self._shutdown_event.is_set():
-                            break
-
-                        data = msg.get("data")
-                        if not data:
-                            continue
-
-                        decoded = self.bus.codec.decode(data)
-                        if not decoded.ok or not decoded.envelope:
-                            logger.error(f"[BUS] decode failed: {decoded.error}")
-                            continue
-
-                        # Process in background to not block consumer
-                        asyncio.create_task(self._handle_envelope(decoded.envelope))
-
-                except Exception as e:
-                    logger.error(f"[BUS] consumer error: {e}")
-                    await asyncio.sleep(1)
+    def _on_intake(self, msg: dict) -> None:
+        data = msg.get("data")
+        if not data:
+            return
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok or not decoded.envelope:
+            logger.error(f"[BUS] decode failed: {decoded.error}")
+            return
+        # Process in background to not block consumer (returns None, not the task).
+        asyncio.create_task(self._handle_envelope(decoded.envelope))
 
     async def _handle_envelope(self, envelope: BaseEnvelope):
         # Validate payload
@@ -502,9 +527,11 @@ class VisionHostService:
         """
         if not artifact_payload:
             return
-        if settings.VISION_ARTIFACT_BROADCAST_ENABLED and should_broadcast_artifact(
-            task_type, artifact_payload
-        ):
+        if artifact_broadcast_allowed(
+            artifact_payload,
+            enabled=settings.VISION_ARTIFACT_BROADCAST_ENABLED,
+            streams=settings.VISION_ARTIFACT_BROADCAST_STREAMS,
+        ) and should_broadcast_artifact(task_type, artifact_payload):
             await self._publish_artifact_broadcast(artifact_payload, source_envelope)
         if should_broadcast_identity(task_type, artifact_payload):
             await self._publish_identity_broadcast(artifact_payload, source_envelope)
@@ -582,9 +609,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Orion Vision Host", version="0.1.0", lifespan=lifespan)
 
+def model_degraded_reasons(models: Dict[str, Any]) -> list[str]:
+    """``body_embedder_fallback:<loaded id>`` per fallen-back embedder slot, and
+    ``osnet_shadow_failed`` when the shadow OSNet vector cannot load."""
+    out: list[str] = []
+    for st in (models.get("body_embedder") or {}).values():
+        if st.get("fallback"):
+            reason = f"body_embedder_fallback:{st.get('loaded')}"
+            if reason not in out:
+                out.append(reason)
+    if (models.get("osnet_shadow") or {}).get("state") == "failed":
+        out.append("osnet_shadow_failed")
+    return out
+
+
 @app.get("/health")
 async def health():
     return {
+        # The models that actually loaded: requested vs loaded body embedder
+        # (SigLIP2 falls back to SigLIP v1 under transformers 4.49.0) and the
+        # OSNet shadow vector's state, VRAM and vector count.
+        "models": service.runner.model_status() if service.runner else {},
         "ok": True,
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
@@ -596,6 +641,7 @@ async def health():
             "max_inflight_per_gpu": settings.VISION_MAX_INFLIGHT_PER_GPU,
             "queue_when_busy": settings.VISION_QUEUE_WHEN_BUSY,
             "max_queue": settings.VISION_MAX_QUEUE,
+            **(service.sched.refusal_stats() if service.sched else {}),
         },
     }
 

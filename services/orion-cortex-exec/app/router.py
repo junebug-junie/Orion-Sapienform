@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import (
     _forward_llm_uncertainty_metadata,
+    brain_reply_context_skipped,
     call_step_services,
     prepare_brain_reply_context,
     prepare_chat_quick_reply_context,
@@ -31,6 +32,7 @@ from .recall_utils import (
 )
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
+from orion.gpu_pool.shed import shed_reason_from_error
 from .supervisor import Supervisor
 from .settings import settings
 from .grammar_emit import (
@@ -83,10 +85,10 @@ _PLANNING_TEXT_RE = re.compile(
 def _structured_output_expected(verb_name: str | None) -> bool:
     return str(verb_name or "").strip().lower() in {
         "journal.compose",
-        "self_study.reflect",
         "concept_induction_journal_synthesize",
         "github_compactor_digest_v1",
         "chat_history_compactor_digest_v1",
+        "curiosity_compactor_digest_v1",
         "memory_graph_suggest",
         "stance_react",
         "harness_finalize_reflect",
@@ -1042,13 +1044,9 @@ class PlanRunner:
                     prepare_chat_quick_reply_context(ctx)
             elif verb_lc == "chat_kids_story":
                 prepare_chat_quick_reply_context(ctx)
-            elif (
-                ctx.get("skip_brain_reply_context")
-                or str(plan.verb_name or "").strip().lower()
-                in {"introspect_spark", "memory_graph_suggest"}
-            ):
+            elif brain_reply_context_skipped(plan.verb_name, ctx):
                 logger.info(
-                    "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=spark_or_skip_flag",
+                    "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=skip_verb_or_flag",
                     correlation_id,
                     plan.verb_name,
                 )
@@ -1164,6 +1162,7 @@ class PlanRunner:
                         order=0,
                         step_name=recall_step.step_name or "pcr_continuity_recall",
                         error_kind=short_error_kind(recall_step.error),
+                        shed_reason=shed_reason_from_error(recall_step.error),
                     )
             memory_used = recall_step is not None and recall_step.status == "success"
             recall_count = 0
@@ -1214,6 +1213,7 @@ class PlanRunner:
                     order=0,
                     step_name=recall_step.step_name or "pre_recall",
                     error_kind=short_error_kind(recall_step.error),
+                    shed_reason=shed_reason_from_error(recall_step.error),
                 )
             memory_used = recall_step.status == "success"
             recall_count = 0
@@ -1273,6 +1273,7 @@ class PlanRunner:
                         final_text_present=False,
                         reasoning_present=False,
                         thinking_source="none",
+                        shed_reason=shed_reason_from_error(recall_step.error),
                     )
                     return PlanExecutionResult(
                         verb_name=plan.verb_name,
@@ -1367,6 +1368,7 @@ class PlanRunner:
                     order=step.order,
                     step_name=step.step_name,
                     error_kind=short_error_kind(step_res.error),
+                    shed_reason=shed_reason_from_error(step_res.error),
                 )
             if isinstance(step_res.result, dict) and "RecallService" in step_res.result:
                 recall_debug = step_res.result.get("RecallService", {})
@@ -1412,6 +1414,7 @@ class PlanRunner:
                             order=step.order,
                             step_name=phase3_recall_step.step_name or "pcr_belief_recall",
                             error_kind=short_error_kind(phase3_recall_step.error),
+                            shed_reason=shed_reason_from_error(phase3_recall_step.error),
                         )
                     memory_used = phase3_recall_step.status == "success"
                 if isinstance(phase3_debug, dict) and isinstance(recall_debug, dict):
@@ -1627,6 +1630,8 @@ class PlanRunner:
             metadata["grounding_capsule"] = ctx["grounding_capsule"]
         if isinstance(ctx.get("autonomy_slice"), dict):
             metadata["autonomy_slice"] = ctx["autonomy_slice"]
+        if isinstance(ctx.get("stance_prepare_overlap"), dict):
+            metadata["stance_prepare_overlap"] = ctx["stance_prepare_overlap"]
         # Real served model-card name (e.g. "qwen-36-instruct"), independent of
         # whether a reasoning trace was collected -- see _last_model_used's own
         # docstring. Hub already reads metadata["model"] off CortexClientResult
@@ -1640,6 +1645,13 @@ class PlanRunner:
         record_assembled_grammar(
             ctx,
             status=overall_status,
+            # Same error the PlanExecutionResult below returns: a plan that failed because
+            # its last step was shed reads as shed, not as a failure (2026-10-20).
+            shed_reason=(
+                None
+                if overall_status == "success" or not step_results
+                else shed_reason_from_error(step_results[-1].error)
+            ),
             final_text_present=bool((final_text or "").strip()),
             reasoning_present=bool(reasoning_content or reasoning_trace or metacog_traces),
             thinking_source=str(thinking_source or "none"),

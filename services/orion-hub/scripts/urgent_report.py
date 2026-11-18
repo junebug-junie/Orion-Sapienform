@@ -67,6 +67,9 @@ def _evidence_text(evidence: Any) -> str:
     return f"{text[:EVIDENCE_TEXT_CAP]}\n... (truncated, {len(text) - EVIDENCE_TEXT_CAP} more chars)"
 
 
+UNFINISHED_MARK = "UNFINISHED:"
+
+
 def compose_urgent_report(
     incident: dict,
     *,
@@ -127,6 +130,14 @@ def compose_urgent_report(
         lines.append("Evidence bundle at request time:\n" + _evidence_text(incident.get("evidence")))
     finding_text = str(detail.get("finding_text") or "").strip() if kind == "final" else ""
     if finding_text:
+        if detail.get("draft_salvaged"):
+            # Next to the words it qualifies, so a real verdict still leads the notice.
+            why = str(detail.get("salvaged_from_error") or "").strip()
+            lines.append(
+                f"{UNFINISHED_MARK} Orion's turn ended before their answer was finalized"
+                + (f" ({why})" if why else "")
+                + "; the words below are their working draft, unreviewed."
+            )
         lines.append(f"Orion's words:\n{finding_text}")
     lines.append(f"Trigger: {incident.get('trigger') or 'unknown'}")
     lines.append(f"Question: {incident.get('question') or ''}")
@@ -139,6 +150,7 @@ def compose_urgent_report(
         "trigger": incident.get("trigger"),
         "subject": incident.get("subject"),
         "report_flag": report_flag or None,
+        "draft_salvaged": True if kind == "final" and detail.get("draft_salvaged") else None,
         "is_real": report.get("is_real") if report else None,
         "severity": report.get("severity") if report else None,
     }

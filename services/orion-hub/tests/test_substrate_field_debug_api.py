@@ -149,3 +149,17 @@ def test_field_capability_llm_inference(client):
     assert body["connected_nodes"][0]["node_id"] == "atlas"
     assert body["connected_nodes"][0]["pressure"] == 0.72
     assert body["connected_nodes"][0]["edge_weight"] == 0.85
+
+
+def test_field_node_unmeasured_capability_pressure_is_null_not_zero(client):
+    """The digester drops an unmeasured capability channel (2026-10-07); the
+    debug API must pass that through as null, not invent a calm 0.0."""
+    field = _atlas_field_state()
+    field["capability_vectors"]["capability:llm_inference"].pop("pressure")
+    fake_engine = _fake_engine_with_field(field)
+
+    with patch.object(substrate_field_routes, "_engine", return_value=fake_engine):
+        r = client.get("/api/substrate/field/node/atlas")
+
+    assert r.status_code == 200
+    assert r.json()["connected_capabilities"][0]["pressure"] is None

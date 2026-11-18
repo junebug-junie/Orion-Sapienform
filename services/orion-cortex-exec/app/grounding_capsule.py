@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.context_provenance import CONTEXT_PROVENANCE_REGISTRY
-from orion.schemas.thought import GroundingCapsuleV1
+from orion.memory.pages.anchor import CTX_KEY_ANCHOR as CORE_PAGE_ANCHOR_CTX_KEY, anchor_page_from_payload
+from orion.memory.pages.juniper import CTX_KEY_JUNIPER as CORE_PAGE_JUNIPER_CTX_KEY, core_page_from_payload
+from orion.schemas.thought import CorePageV1, GroundingCapsuleV1
 from orion.thought.json_extract import extract_first_json_object_text
 
 from .pcr_chat_memory import pcr_phase01_complete, run_pcr_phase0_and_1, run_pcr_phase3
@@ -100,9 +103,43 @@ def context_provenance_for_ctx(ctx: Dict[str, Any]) -> Dict[str, str]:
     return computed
 
 
-def build_grounding_capsule(ctx: Dict[str, Any], *, pcr_ran: bool) -> GroundingCapsuleV1:
+def core_pages_for_ctx(ctx: Dict[str, Any], *, enabled: bool) -> list[CorePageV1]:
+    """The core pages ctx carries, anchor first: Juniper's fixed page:anchor lines, then Orion's
+    page:juniper. Either may be missing. Empty when the flag is off or no row was hydrated, so the
+    prefix falls back to the identity-yaml bullets."""
+    if not enabled:
+        return []
+    pages = [
+        anchor_page_from_payload(ctx.get(CORE_PAGE_ANCHOR_CTX_KEY)),
+        core_page_from_payload(ctx.get(CORE_PAGE_JUNIPER_CTX_KEY)),
+    ]
+    return [p for p in pages if p is not None]
+
+
+_CORE_PAGE_CTX_KEYS = (CORE_PAGE_ANCHOR_CTX_KEY, CORE_PAGE_JUNIPER_CTX_KEY)
+
+
+def hydrate_core_pages(ctx: Dict[str, Any]) -> None:
+    """Pull ONLY the core-page felt-state lanes (page:anchor, page:juniper; cached 5 min;
+    fail-open, never raises). Lanes already in ctx are not read again."""
+    missing = tuple(k for k in _CORE_PAGE_CTX_KEYS if ctx.get(k) is None)
+    if not missing:
+        return
+    from app.substrate_felt_state_reader import hydrate_felt_state_ctx
+
+    hydrate_felt_state_ctx(ctx, lanes=missing)
+    if any(ctx.get(k) is not None for k in missing):
+        # The provenance map may already be cached from earlier in the turn; recompute so the
+        # pages' keys are listed in CONTEXT PROVENANCE.
+        ctx.pop("_context_provenance_cache", None)
+
+
+def build_grounding_capsule(
+    ctx: Dict[str, Any], *, pcr_ran: bool, core_pages_enabled: bool = False
+) -> GroundingCapsuleV1:
     """Assemble the capsule from identity summaries + PCR digests already in ctx."""
     return GroundingCapsuleV1(
+        core_pages=core_pages_for_ctx(ctx, enabled=core_pages_enabled),
         identity_summary=_str_list(ctx.get("orion_identity_summary")),
         relationship_summary=_str_list(ctx.get("juniper_relationship_summary")),
         response_policy_summary=_str_list(ctx.get("response_policy_summary")),
@@ -166,14 +203,22 @@ async def assemble_stance_grounding(
         )
         pcr_ran = False
 
-    capsule = build_grounding_capsule(ctx, pcr_ran=pcr_ran)
+    core_pages_on = bool(getattr(cfg, "orion_core_pages_enabled", False))
+    if core_pages_on:
+        try:
+            await asyncio.to_thread(hydrate_core_pages, ctx)
+        except Exception:  # noqa: BLE001 -- a page is never worth a failed turn
+            logger.warning("core_page_hydrate_failed corr=%s", correlation_id, exc_info=True)
+    capsule = build_grounding_capsule(ctx, pcr_ran=pcr_ran, core_pages_enabled=core_pages_on)
     logger.info(
-        "unified_grounding_capsule_ready corr=%s identity=%s relationship=%s policy=%s pcr_ran=%s memory_chars=%s",
+        "unified_grounding_capsule_ready corr=%s identity=%s relationship=%s policy=%s pcr_ran=%s memory_chars=%s "
+        "core_pages=%s",
         correlation_id,
         len(capsule.identity_summary),
         len(capsule.relationship_summary),
         len(capsule.response_policy_summary),
         pcr_ran,
         len(capsule.memory_digest or ""),
+        ",".join(f"{p.concept_id}@v{p.version}" for p in capsule.core_pages) or "-",
     )
     return capsule

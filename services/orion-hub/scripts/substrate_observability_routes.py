@@ -35,9 +35,9 @@ def _engine():
     uri = os.getenv("POSTGRES_URI", "").strip()
     if not uri:
         return None
-    from sqlalchemy import create_engine
+    from .pg_engine import module_engine
 
-    return create_engine(uri, pool_pre_ping=True)
+    return module_engine(__name__, uri)
 
 
 def _latest_row(engine, sql: str) -> dict[str, Any] | None:

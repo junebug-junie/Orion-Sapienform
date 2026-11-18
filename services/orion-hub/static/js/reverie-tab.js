@@ -87,14 +87,14 @@
       desc:
         "The previous run's own caption (reverie_visual_chain.prior_description), Orion's own " +
         "most recent real reverie-thought interpretation (context_text), a real quantified " +
-        "self-study observation (self_study_text), a real shared-life memory (memory_text), " +
+        "self-study observation (self_study_text), a governed episode memory (memory_text), " +
         "how many consecutive runs have used continuity so far (continuity_streak), and which " +
         "context-seed's turn it is next (context_slot_rotation).",
       detail:
         'Fixed seed only when NONE of prior_description/context_text/self_study_text/memory_text ' +
         'exist (fresh install, no history yet): "a calm orion, soft abstract light, dreaming". ' +
         "Every later run reads all these from Postgres, concurrently.",
-      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_interpretation, load_latest_self_study_reflection, load_latest_memory_crystallization",
+      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_interpretation, load_latest_self_study_reflection, load_episode_memory_seed",
     },
     {
       id: "continuity-cap",
@@ -308,9 +308,12 @@
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.self_study_text)}</div>
          </div>${interpretedBlockFor("self_study")}`
       : "";
+    const memoryLabel = chain.memory_source_kind === "episode_memory"
+      ? "Memory (validated episode)"
+      : "Memory (legacy shared-life crystallization)";
     const memoryBlock = chain.memory_text
       ? `<div class="mt-2 rounded border border-gray-800 bg-gray-950/40 px-2 py-1.5">
-           <div class="text-[10px] uppercase tracking-wide text-gray-600">Memory (shared-life crystallization)${slotUsedBadge("memory")}</div>
+           <div class="text-[10px] uppercase tracking-wide text-gray-600">${memoryLabel}${slotUsedBadge("memory")}</div>
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.memory_text)}</div>
          </div>${interpretedBlockFor("memory")}`
       : "";

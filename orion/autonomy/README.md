@@ -1,5 +1,9 @@
 ## Program status (2026-08-31): the budget ENFORCES, and Orion made a choice
 
+**Retired 2026-11-07 (ladder retirement PR 6):** the allocator and the motor-seconds budget
+(`allocator.py`, `budget.py`) went with the dispatch rung. Every real act now starts itself
+through the body-economy want market. The rest of this section is history.
+
 `orion/autonomy/allocator.py` and the motor-seconds budget stopped being observers.
 Until 2026-08-30 both ran in shadow mode -- `motor_allocator_preview` logged what
 *would* have been refused and the dispatcher then sent everything anyway. As of

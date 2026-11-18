@@ -1,5 +1,7 @@
 (function (global) {
   const _liveClaudeSteps = new Map();
+  // Correlation ids whose card was already pinned to a message; late steps must not resurrect an inline card.
+  const _finalizedTraces = new Set();
   const LIVE_ANCHOR_ID = 'conversation';
   const PREVIEW_MAX = 240;
   const CONTEXT_PRESSURE_NUDGE = 'Context nearly full — answer from what you have; no more tools.';
@@ -135,6 +137,10 @@
       return clip(String(raw.result || 'result'), PREVIEW_MAX) || 'result';
     }
 
+    if (type === 'context_compaction_degenerate') {
+      return `⚠ compaction lost the task: ${clip(raw.message || 'summary kept no record of the request', 160)}`;
+    }
+
     if (type === 'context_pressure') {
       const msg = raw.message || CONTEXT_PRESSURE_NUDGE;
       const fill = raw.context_fill_pct != null ? ` (${raw.context_fill_pct}% fill)` : '';
@@ -178,7 +184,7 @@
   }
 
   function appendLiveClaudeStep(correlationId, step, doc) {
-    if (!correlationId || !step) return;
+    if (!correlationId || !step || _finalizedTraces.has(correlationId)) return;
     const list = _liveClaudeSteps.get(correlationId) || [];
     list.push(step);
     _liveClaudeSteps.set(correlationId, list);
@@ -212,6 +218,7 @@
     const panel = root.getElementById(panelId);
     if (!panel) return null;
 
+    if (beforeEl) _finalizedTraces.add(correlationId);
     panel.classList.remove('is-streaming');
     panel.classList.add('is-complete');
 
@@ -221,8 +228,11 @@
       heading.textContent = formatHarnessHeading(list.length, false);
     }
 
-    if (beforeEl && beforeEl.parentNode && panel.parentNode === beforeEl.parentNode) {
-      beforeEl.parentNode.insertBefore(panel, beforeEl);
+    // With a message to pin to, the card leaves the transcript: the caller
+    // turns it into a hover button that reopens it in a modal. Without one the
+    // finished card stays inline where it streamed.
+    if (beforeEl && panel.parentNode) {
+      panel.parentNode.removeChild(panel);
     }
 
     return panel;

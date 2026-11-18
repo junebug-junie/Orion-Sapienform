@@ -71,7 +71,7 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{3,}")
 # common function words survive the 3+ char token filter and false-positive
 # match as CONTAINS substrings inside unrelated real entity names -- "and"
 # alone matched "sandra bullock", "nelson mandela", "england", "landing pad",
-# "amanda", "grand canyon skywalk" in one live test query. The old SPARQL
+# "miranda", "grand canyon skywalk" in one live test query. The old SPARQL
 # version had the same unfiltered-keyword weakness (rdf_adapter.py's
 # _extract_keywords is identical), just diluted across a much larger match
 # space (any triple, not a curated ~850-node Entity set) where the noise was

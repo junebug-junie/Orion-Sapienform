@@ -8,7 +8,10 @@ from typing import Any
 import pytest
 
 from orion.schemas.pre_turn_appraisal import PreTurnAppraisalRequestV1, TurnWindowMessageV1
-from orion.substrate.appraisal.paradigms.repair_pressure_v2 import RepairPressureV2Paradigm
+from orion.substrate.appraisal.paradigms.repair_pressure_v2 import (
+    RepairPressureV2Paradigm,
+    RepairProbeUnavailable,
+)
 
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "repair_pressure"
 
@@ -21,6 +24,8 @@ def _load_fixtures() -> list[dict[str, Any]]:
 
 
 def _mock_llm_response(fixture: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(fixture.get("mock_reply"), dict):
+        return dict(fixture["mock_reply"])
     lines = fixture.get("mock_probe_lines") or {}
     if not lines:
         return {"text": "", "llm_uncertainty": {"available": False}}
@@ -84,6 +89,13 @@ async def test_repair_pressure_v2_fixture(fixture: dict[str, Any]) -> None:
         session_id="eval",
         turn_window=window,
     )
+    expected_reason = (fixture.get("expect") or {}).get("unavailable_reason")
+    if expected_reason:
+        # No measurement (e.g. probe shed by heat): must fail, never read as a calm 0.0.
+        with pytest.raises(RepairProbeUnavailable) as exc:
+            await paradigm.run(req)
+        assert exc.value.reason == expected_reason, fixture["id"]
+        return
     slice_ = await paradigm.run(req)
     _assert_fixture(fixture, slice_)
 
@@ -101,7 +113,20 @@ def main() -> int:
             session_id="eval",
             turn_window=window,
         )
-        slice_ = asyncio.run(paradigm.run(req))
+        expected_reason = (fixture.get("expect") or {}).get("unavailable_reason")
+        try:
+            slice_ = asyncio.run(paradigm.run(req))
+        except RepairProbeUnavailable as exc:
+            if exc.reason == expected_reason:
+                print(f"PASS {fixture['id']} unavailable reason={exc.reason}")
+            else:
+                failures += 1
+                print(f"FAIL {fixture['id']}: unexpected unavailable reason={exc.reason}")
+            continue
+        if expected_reason:
+            failures += 1
+            print(f"FAIL {fixture['id']}: expected unavailable ({expected_reason}), got level={slice_.level:.3f}")
+            continue
         try:
             _assert_fixture(fixture, slice_)
             print(f"PASS {fixture['id']} level={slice_.level:.3f} mode={slice_.contract_delta.get('mode')}")

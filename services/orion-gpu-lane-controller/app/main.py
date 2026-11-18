@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from loguru import logger
 
-from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
+from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
+from orion.gpu_pool.actuator_probe import config_fix_hint
 from orion.schemas.gpu_pool import GPU_POOL_ACTUATE_REQUEST_CHANNEL
 
-from . import actuator_bus, pool_fence
+from . import actuator_bus, container_census, pool_fence
 from .settings import settings
 
-heartbeat_chassis: HeartbeatOnly | None = None
 actuator_chassis: Hunter | None = None
 
 
@@ -27,10 +28,6 @@ def _chassis_config() -> ChassisConfig:
     )
 
 
-def build_heartbeat_chassis() -> HeartbeatOnly:
-    return HeartbeatOnly(_chassis_config())
-
-
 def build_actuator_chassis() -> Hunter:
     """Stage 4.2: pool actuation intake. Concurrent handlers so a `status` or a second request is
     answered (busy) while a 15-minute load runs; admission itself is serialized in actuator_bus."""
@@ -39,15 +36,50 @@ def build_actuator_chassis() -> Hunter:
     async def on_request(env):
         await actuator_bus.handle(env.payload, holder["publish"], env.correlation_id)
 
+    details = container_census.heartbeat_details if settings.GPU_LANE_CONTAINER_CENSUS_ENABLED else None
     hunter = Hunter(_chassis_config(), handler=on_request, patterns=[GPU_POOL_ACTUATE_REQUEST_CHANNEL],
-                    concurrent_handlers=True)
+                    concurrent_handlers=True, heartbeat_details=details)
     holder["publish"] = actuator_bus.bus_publisher(hunter.bus)
     return hunter
 
 
+BUS_RETRY_DELAY_SEC = 15.0
+
+
+async def _start_bus_with_retry() -> None:
+    """Start the actuator (which also publishes the heartbeat) and keep retrying: a bus that is
+    slow at boot must not leave the controller permanently deaf. A fresh chassis per attempt,
+    since a failed start_background leaves its chassis marked started."""
+    global actuator_chassis
+    while True:
+        chassis = build_actuator_chassis()
+        try:
+            await chassis.start_background()
+            actuator_chassis = chassis
+            logger.info(f"[HOST] gpu_pool_actuator_started actuator={settings.GPU_POOL_ACTUATOR_NAME}")
+            return
+        except asyncio.CancelledError:
+            await chassis.stop()  # don't leak a half-opened bus client on shutdown
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[HOST] gpu_pool_actuator_start_failed error={exc!r} retry_in={BUS_RETRY_DELAY_SEC}s")
+            try:
+                await chassis.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(BUS_RETRY_DELAY_SEC)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global heartbeat_chassis, actuator_chassis
+    global actuator_chassis
+    bus_task = None
+    census_task = None
+    if settings.GPU_LANE_CONTAINER_CENSUS_ENABLED:
+        census_task = asyncio.create_task(
+            container_census.census_loop(settings.GPU_LANE_CONTAINER_CENSUS_INTERVAL_SEC),
+            name="gpu-lane-container-census",
+        )
     try:
         interrupted = await asyncio.to_thread(pool_fence.recover_interrupted)
         if interrupted:
@@ -55,34 +87,21 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 -- the fence re-reads (and fails closed) per request
         logger.error(f"[HOST] gpu_pool_fence_recover_failed error={exc}")
     if settings.ORION_BUS_ENABLED:
-        try:
-            actuator_chassis = build_actuator_chassis()
-            await actuator_chassis.start_background()
-            logger.info(f"[HOST] gpu_pool_actuator_started actuator={settings.GPU_POOL_ACTUATOR_NAME}")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[HOST] gpu_pool_actuator_start_failed error={exc}")
-            actuator_chassis = None
-    if actuator_chassis is None:
-        # The actuator Hunter already publishes the heartbeat (BaseChassis); a second chassis would
-        # be a second SystemHealthV1 stream + bus connection. HeartbeatOnly is only the fallback.
-        try:
-            heartbeat_chassis = build_heartbeat_chassis()
-            await heartbeat_chassis.start_background()
-            logger.info(f"[HOST] system_health_heartbeat_started service={settings.SERVICE_NAME}")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[HOST] system_health_heartbeat_start_failed error={exc}")
-            heartbeat_chassis = None
+        bus_task = asyncio.create_task(_start_bus_with_retry(), name="gpu-lane-bus-start")
     yield
+    if census_task is not None:
+        census_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):  # never skip the bus cleanup below
+            await census_task
+    if bus_task is not None:
+        bus_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await bus_task
     if actuator_chassis is not None:
         try:
             await actuator_chassis.stop()
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[HOST] gpu_pool_actuator_stop_error error={exc}")
-    if heartbeat_chassis is not None:
-        try:
-            await heartbeat_chassis.stop()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[HOST] system_health_heartbeat_stop_error error={exc}")
 
 
 app = FastAPI(title="Orion GPU Lane Controller", version=settings.SERVICE_VERSION, lifespan=lifespan)
@@ -90,4 +109,18 @@ app = FastAPI(title="Orion GPU Lane Controller", version=settings.SERVICE_VERSIO
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "service": settings.SERVICE_NAME, "version": settings.SERVICE_VERSION}
+    """Healthy only if this controller can read the config every actuation reads.
+
+    It was a constant ``ok`` until 2026-10-10: the image predated a new gpu_pool.yaml field
+    for 28 h, every load/unload was refused ``config_unloadable``, and /health said ok throughout.
+    Same loader as the actuator (``pool_fence.load_config``, the live checkout)."""
+    body = {"service": settings.SERVICE_NAME, "version": settings.SERVICE_VERSION}
+    try:
+        await asyncio.to_thread(pool_fence.load_config)
+    except Exception as exc:  # noqa: BLE001 -- any parse failure means every actuation is refused
+        return JSONResponse(status_code=503, content={
+            **body, "ok": False, "config_loadable": False,
+            "config_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            "fix": config_fix_hint(type(exc).__name__),
+        })
+    return {**body, "ok": True, "config_loadable": True}

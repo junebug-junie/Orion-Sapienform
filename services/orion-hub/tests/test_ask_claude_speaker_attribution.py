@@ -32,7 +32,7 @@ def _source() -> str:
 
 def test_ask_claude_sends_invited_by_not_hardcoded_juniper() -> None:
     source = _source()
-    match = re.search(r"async function askClaude\(\)[\s\S]*?\n  \}\n", source)
+    match = re.search(r"async function askClaude\([^)]*\)[\s\S]*?\n  \}\n", source)
     assert match, "askClaude() not found"
     body = match.group(0)
     # The fetch body must carry a variable, not a literal "Juniper" baked

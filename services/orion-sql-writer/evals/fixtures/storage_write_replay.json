@@ -1,0 +1,3307 @@
+{
+ "periods": [
+  {
+   "end": "2026-10-02T05:04:00+00:00",
+   "label": "calm_recent_3h",
+   "minutes": {
+    "2026-10-02T02:09:00Z": {
+     "gpu_pool_events": {
+      "committed": 16
+     },
+     "grammar_events": {
+      "committed": 355
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:10:00Z": {
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:11:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:12:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:13:00Z": {
+     "grammar_events": {
+      "committed": 246
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:14:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:15:00Z": {
+     "grammar_events": {
+      "committed": 265
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:16:00Z": {
+     "gpu_pool_events": {
+      "committed": 9
+     },
+     "grammar_events": {
+      "committed": 247
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:17:00Z": {
+     "grammar_events": {
+      "committed": 254
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:18:00Z": {
+     "gpu_pool_events": {
+      "committed": 6
+     },
+     "grammar_events": {
+      "committed": 295
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:19:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:20:00Z": {
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:21:00Z": {
+     "grammar_events": {
+      "committed": 194
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:22:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:23:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:24:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 278
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:25:00Z": {
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:26:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 327
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:27:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:28:00Z": {
+     "grammar_events": {
+      "committed": 222
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:29:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:30:00Z": {
+     "gpu_pool_events": {
+      "committed": 11
+     },
+     "grammar_events": {
+      "committed": 320
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:31:00Z": {
+     "gpu_pool_events": {
+      "committed": 1
+     },
+     "grammar_events": {
+      "committed": 267
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:32:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:33:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:34:00Z": {
+     "grammar_events": {
+      "committed": 198
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:35:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:36:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:37:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:38:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:39:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 247
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:40:00Z": {
+     "grammar_events": {
+      "committed": 222
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:41:00Z": {
+     "gpu_pool_events": {
+      "committed": 6
+     },
+     "grammar_events": {
+      "committed": 297
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:42:00Z": {
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:43:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 327
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:44:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:45:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:46:00Z": {
+     "grammar_events": {
+      "committed": 246
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:47:00Z": {
+     "grammar_events": {
+      "committed": 198
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:48:00Z": {
+     "gpu_pool_events": {
+      "committed": 6
+     },
+     "grammar_events": {
+      "committed": 295
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:49:00Z": {
+     "gpu_pool_events": {
+      "committed": 2
+     },
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:50:00Z": {
+     "gpu_pool_events": {
+      "committed": 1
+     },
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:51:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:52:00Z": {
+     "grammar_events": {
+      "committed": 222
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:53:00Z": {
+     "grammar_events": {
+      "committed": 246
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:54:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:55:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:56:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:57:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:58:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 279
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T02:59:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 326
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:00:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 199
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:01:00Z": {
+     "gpu_pool_events": {
+      "committed": 24
+     },
+     "grammar_events": {
+      "committed": 407
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:02:00Z": {
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:03:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:04:00Z": {
+     "grammar_events": {
+      "committed": 222
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:05:00Z": {
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:06:00Z": {
+     "grammar_events": {
+      "committed": 254
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:07:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:08:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:09:00Z": {
+     "grammar_events": {
+      "committed": 246
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:10:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:11:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:12:00Z": {
+     "grammar_events": {
+      "committed": 189
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:13:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:14:00Z": {
+     "gpu_pool_events": {
+      "committed": 5
+     },
+     "grammar_events": {
+      "committed": 258
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:15:00Z": {
+     "gpu_pool_events": {
+      "committed": 27
+     },
+     "grammar_events": {
+      "committed": 271
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:16:00Z": {
+     "gpu_pool_events": {
+      "committed": 18
+     },
+     "grammar_events": {
+      "committed": 241
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:17:00Z": {
+     "gpu_pool_events": {
+      "committed": 1
+     },
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:18:00Z": {
+     "gpu_pool_events": {
+      "committed": 18
+     },
+     "grammar_events": {
+      "committed": 364
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:19:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:20:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:21:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:22:00Z": {
+     "grammar_events": {
+      "committed": 246
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:23:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:24:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:25:00Z": {
+     "grammar_events": {
+      "committed": 189
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:26:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:27:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:28:00Z": {
+     "grammar_events": {
+      "committed": 254
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:29:00Z": {
+     "grammar_events": {
+      "committed": 221
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:30:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:31:00Z": {
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:32:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:33:00Z": {
+     "gpu_pool_events": {
+      "committed": 6
+     },
+     "grammar_events": {
+      "committed": 293
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:34:00Z": {
+     "gpu_pool_events": {
+      "committed": 6
+     },
+     "grammar_events": {
+      "committed": 304
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:35:00Z": {
+     "gpu_pool_events": {
+      "committed": 6
+     },
+     "grammar_events": {
+      "committed": 283
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:36:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 331
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:37:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:38:00Z": {
+     "grammar_events": {
+      "committed": 189
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:39:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 331
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:40:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:41:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 215
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:42:00Z": {
+     "gpu_pool_events": {
+      "committed": 10
+     },
+     "grammar_events": {
+      "committed": 332
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:43:00Z": {
+     "gpu_pool_events": {
+      "committed": 9
+     },
+     "grammar_events": {
+      "committed": 270
+     },
+     "home_cooling_sample": {
+      "committed": 9
+     },
+     "metacognition_ticks": {
+      "committed": 5
+     }
+    },
+    "2026-10-02T03:44:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 182
+     },
+     "home_cooling_sample": {
+      "committed": 6
+     },
+     "metacognition_ticks": {
+      "committed": 3
+     }
+    },
+    "2026-10-02T03:45:00Z": {
+     "gpu_pool_events": {
+      "committed": 22
+     },
+     "grammar_events": {
+      "committed": 247
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:46:00Z": {
+     "gpu_pool_events": {
+      "committed": 98
+     },
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:47:00Z": {
+     "gpu_pool_events": {
+      "committed": 167
+     },
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:48:00Z": {
+     "gpu_pool_events": {
+      "committed": 118
+     },
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:49:00Z": {
+     "gpu_pool_events": {
+      "committed": 118
+     },
+     "grammar_events": {
+      "committed": 289
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:50:00Z": {
+     "gpu_pool_events": {
+      "committed": 125
+     },
+     "grammar_events": {
+      "committed": 324
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:51:00Z": {
+     "gpu_pool_events": {
+      "committed": 94
+     },
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:52:00Z": {
+     "gpu_pool_events": {
+      "committed": 104
+     },
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:53:00Z": {
+     "gpu_pool_events": {
+      "committed": 112
+     },
+     "grammar_events": {
+      "committed": 219
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:54:00Z": {
+     "gpu_pool_events": {
+      "committed": 104
+     },
+     "grammar_events": {
+      "committed": 190
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:55:00Z": {
+     "gpu_pool_events": {
+      "committed": 117
+     },
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:56:00Z": {
+     "gpu_pool_events": {
+      "committed": 105
+     },
+     "grammar_events": {
+      "committed": 327
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:57:00Z": {
+     "gpu_pool_events": {
+      "committed": 81
+     },
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:58:00Z": {
+     "gpu_pool_events": {
+      "committed": 84
+     },
+     "grammar_events": {
+      "committed": 247
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T03:59:00Z": {
+     "gpu_pool_events": {
+      "committed": 85
+     },
+     "grammar_events": {
+      "committed": 296
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:00:00Z": {
+     "gpu_pool_events": {
+      "committed": 66
+     },
+     "grammar_events": {
+      "committed": 247
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:01:00Z": {
+     "gpu_pool_events": {
+      "committed": 54
+     },
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:02:00Z": {
+     "gpu_pool_events": {
+      "committed": 45
+     },
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:03:00Z": {
+     "gpu_pool_events": {
+      "committed": 104
+     },
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:04:00Z": {
+     "gpu_pool_events": {
+      "committed": 211
+     },
+     "grammar_events": {
+      "committed": 266
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:05:00Z": {
+     "gpu_pool_events": {
+      "committed": 218
+     },
+     "grammar_events": {
+      "committed": 223
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:06:00Z": {
+     "gpu_pool_events": {
+      "committed": 129
+     },
+     "grammar_events": {
+      "committed": 266
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:07:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 5
+     },
+     "gpu_pool_events": {
+      "committed": 38
+     },
+     "grammar_events": {
+      "committed": 218
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:08:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 11
+     },
+     "gpu_pool_events": {
+      "committed": 11
+     },
+     "grammar_events": {
+      "committed": 301
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:09:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 3
+     },
+     "gpu_pool_events": {
+      "committed": 5
+     },
+     "grammar_events": {
+      "committed": 285
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:10:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2
+     },
+     "gpu_pool_events": {
+      "committed": 22
+     },
+     "grammar_events": {
+      "committed": 345
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:11:00Z": {
+     "grammar_events": {
+      "committed": 247
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:12:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:13:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:14:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:15:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:16:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:17:00Z": {
+     "grammar_events": {
+      "committed": 218
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:18:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:19:00Z": {
+     "grammar_events": {
+      "committed": 246
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:20:00Z": {
+     "grammar_events": {
+      "committed": 198
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:21:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 5
+     },
+     "gpu_pool_events": {
+      "committed": 251
+     },
+     "grammar_events": {
+      "committed": 262
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:22:00Z": {
+     "gpu_pool_events": {
+      "committed": 215
+     },
+     "grammar_events": {
+      "committed": 324
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:23:00Z": {
+     "gpu_pool_events": {
+      "committed": 249
+     },
+     "grammar_events": {
+      "committed": 305
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:24:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 4
+     },
+     "gpu_pool_events": {
+      "committed": 272
+     },
+     "grammar_events": {
+      "committed": 271
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:25:00Z": {
+     "gpu_pool_events": {
+      "committed": 301
+     },
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:26:00Z": {
+     "gpu_pool_events": {
+      "committed": 287
+     },
+     "grammar_events": {
+      "committed": 332
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:27:00Z": {
+     "gpu_pool_events": {
+      "committed": 246
+     },
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:28:00Z": {
+     "gpu_pool_events": {
+      "committed": 98
+     },
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:29:00Z": {
+     "gpu_pool_events": {
+      "committed": 226
+     },
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:30:00Z": {
+     "gpu_pool_events": {
+      "committed": 189
+     },
+     "grammar_events": {
+      "committed": 214
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:31:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:32:00Z": {
+     "gpu_pool_events": {
+      "committed": 15
+     },
+     "grammar_events": {
+      "committed": 335
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:33:00Z": {
+     "grammar_events": {
+      "committed": 190
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:34:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 332
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:35:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:36:00Z": {
+     "grammar_events": {
+      "committed": 246
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:37:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 335
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:38:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:39:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:40:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:41:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:42:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 213
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:43:00Z": {
+     "grammar_events": {
+      "committed": 256
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:44:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:45:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:46:00Z": {
+     "grammar_events": {
+      "committed": 194
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:47:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:48:00Z": {
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:49:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 330
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:50:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:51:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 336
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:52:00Z": {
+     "gpu_pool_events": {
+      "committed": 8
+     },
+     "grammar_events": {
+      "committed": 283
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:53:00Z": {
+     "gpu_pool_events": {
+      "committed": 1
+     },
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:54:00Z": {
+     "grammar_events": {
+      "committed": 222
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:55:00Z": {
+     "gpu_pool_events": {
+      "committed": 14
+     },
+     "grammar_events": {
+      "committed": 334
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:56:00Z": {
+     "gpu_pool_events": {
+      "committed": 10
+     },
+     "grammar_events": {
+      "committed": 324
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:57:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:58:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:59:00Z": {
+     "grammar_events": {
+      "committed": 198
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T05:00:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T05:01:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T05:02:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T05:03:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    }
+   },
+   "start": "2026-10-02T02:09:00+00:00"
+  },
+  {
+   "end": "2026-09-26 05:30:00+00",
+   "label": "home_cooling_serialization_2026-09-26",
+   "minutes": {
+    "2026-09-26T03:39:00Z": {
+     "home_cooling_sample": {
+      "serialization": 2
+     }
+    },
+    "2026-09-26T03:40:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:41:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:42:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:43:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:44:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:45:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:46:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:47:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:48:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:49:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:50:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:51:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:52:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:53:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:54:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:55:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:56:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:57:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:58:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T03:59:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:00:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:01:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:02:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:03:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:04:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:05:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:06:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:07:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:08:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:09:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:10:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:11:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:12:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:13:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:14:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:15:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:16:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:17:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:18:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:19:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:20:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:21:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:22:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:23:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:24:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:25:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:26:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:27:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:28:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:29:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:30:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:31:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:32:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:33:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:34:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:35:00Z": {
+     "home_cooling_sample": {
+      "serialization": 11
+     }
+    },
+    "2026-09-26T04:36:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:37:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:38:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:39:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:40:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:41:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:42:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:43:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:44:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:45:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:46:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:47:00Z": {
+     "home_cooling_sample": {
+      "serialization": 11
+     }
+    },
+    "2026-09-26T04:48:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:49:00Z": {
+     "home_cooling_sample": {
+      "serialization": 7
+     }
+    },
+    "2026-09-26T04:50:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:51:00Z": {
+     "home_cooling_sample": {
+      "serialization": 12
+     }
+    },
+    "2026-09-26T04:52:00Z": {
+     "home_cooling_sample": {
+      "committed": 5,
+      "serialization": 4
+     }
+    },
+    "2026-09-26T04:53:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T04:54:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T04:55:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T04:56:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T04:57:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T04:58:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T04:59:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:00:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:01:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:02:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:03:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:04:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:05:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:06:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:07:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:08:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:09:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:10:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:11:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:12:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:13:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:14:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:15:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:16:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:17:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:18:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:19:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:20:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:21:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:22:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:23:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:24:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:25:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:26:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:27:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:28:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    },
+    "2026-09-26T05:29:00Z": {
+     "home_cooling_sample": {
+      "committed": 12
+     }
+    }
+   },
+   "start": "2026-09-26 02:30:00+00"
+  },
+  {
+   "end": "2026-09-07 19:30:00+00",
+   "label": "cockpit_validation_2026-09-07",
+   "minutes": {
+    "2026-09-07T07:44:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 4
+     }
+    },
+    "2026-09-07T08:10:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T08:11:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T08:12:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T08:13:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 8,
+      "validation": 5
+     }
+    },
+    "2026-09-07T08:14:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2
+     }
+    },
+    "2026-09-07T08:16:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 4,
+      "validation": 3
+     }
+    },
+    "2026-09-07T08:44:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T08:45:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T08:47:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T08:55:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2
+     }
+    },
+    "2026-09-07T14:00:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T14:01:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T14:03:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T14:05:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T14:06:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 1
+     }
+    },
+    "2026-09-07T14:07:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T14:09:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T14:23:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T14:26:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T14:31:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2
+     }
+    },
+    "2026-09-07T14:40:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T14:41:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T14:44:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T14:54:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T14:57:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T14:59:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2
+     }
+    },
+    "2026-09-07T15:44:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T15:45:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T15:47:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T15:50:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T15:53:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T15:55:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2
+     }
+    },
+    "2026-09-07T16:20:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T16:21:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T16:23:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:26:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:29:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:32:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:35:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:38:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:41:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:44:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:47:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 6
+     }
+    },
+    "2026-09-07T16:49:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:50:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:53:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 2
+     }
+    },
+    "2026-09-07T16:54:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T16:57:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 4
+     }
+    },
+    "2026-09-07T16:58:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T17:00:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 6
+     }
+    },
+    "2026-09-07T17:02:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T17:06:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T17:08:00Z": {
+     "cockpit_turn_sighting": {
+      "validation": 3
+     }
+    },
+    "2026-09-07T17:16:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T17:17:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T17:19:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T17:23:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T17:24:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T17:26:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T17:28:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 3,
+      "validation": 1
+     }
+    },
+    "2026-09-07T17:29:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T17:31:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T17:42:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T17:45:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T17:49:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T17:50:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T17:52:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T17:54:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T17:55:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T17:58:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T18:03:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T18:06:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T18:25:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T18:26:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T18:28:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T18:31:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 1
+     }
+    },
+    "2026-09-07T18:32:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1,
+      "validation": 2
+     }
+    },
+    "2026-09-07T18:33:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T18:37:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2,
+      "validation": 3
+     }
+    },
+    "2026-09-07T18:40:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 7
+     }
+    },
+    "2026-09-07T18:41:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 5
+     }
+    },
+    "2026-09-07T18:42:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 5
+     }
+    },
+    "2026-09-07T18:50:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1
+     }
+    },
+    "2026-09-07T18:51:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 5
+     }
+    },
+    "2026-09-07T18:54:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 5
+     }
+    },
+    "2026-09-07T18:57:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 5
+     }
+    },
+    "2026-09-07T18:59:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 5
+     }
+    },
+    "2026-09-07T19:03:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2
+     }
+    },
+    "2026-09-07T19:07:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 1
+     }
+    },
+    "2026-09-07T19:11:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 3
+     }
+    },
+    "2026-09-07T19:12:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2
+     }
+    },
+    "2026-09-07T19:14:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 6
+     }
+    },
+    "2026-09-07T19:29:00Z": {
+     "cockpit_turn_sighting": {
+      "committed": 2
+     }
+    }
+   },
+   "start": "2026-09-07 07:30:00+00"
+  }
+ ],
+ "pulled_at": "2026-10-02T05:09:00+00:00"
+}

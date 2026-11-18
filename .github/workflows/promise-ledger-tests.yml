@@ -1,0 +1,76 @@
+name: Promise ledger
+
+# Intention ledger (docs/superpowers/specs/2026-11-11-intention-ledger-design.md), shadow until #3531:
+# the 5b judge's promise gate, the promise acts Hub opens/closes, the self-monitor's shadow exclusion,
+# the stance cue (ships off), and the read-only report. No DB here: the Postgres lifecycle runs in
+# orion-sql-writer-tests.yml (test_promise_acts_integration.py), and Hub's side in orion-hub-full-suite.
+
+on:
+  pull_request:
+    paths:
+      - "orion/harness/promise_gate.py"
+      - "orion/harness/finalize.py"
+      - "orion/harness/tests/test_promise_gate.py"
+      - "orion/harness/evals/**"
+      - "orion/grammar/promise_acts.py"
+      - "orion/grammar/promise_view.py"
+      - "orion/grammar/tests/test_promise_acts.py"
+      - "orion/schemas/harness_finalize.py"
+      - "orion/schemas/grammar.py"
+      - "orion/cognition/prompts/harness_finalize_reflect.j2"
+      - "orion/cognition/prompts/stance_react.j2"
+      - "orion/self_monitor/**"
+      # test_prime_never_reads_the_promise_acts_while_they_are_shadow scans these two trees.
+      - "orion/prime/**"
+      - "services/orion-mind/app/**"
+      - "services/orion-thought/app/open_promises_cue.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/tests/test_open_promises_cue.py"
+      - "scripts/report_promise_ledger.py"
+      - "tests/test_report_promise_ledger.py"
+      - "tests/test_juniper_browser_surface_rule.py"
+      - "orion/regulation/juniper_turns.py"
+      - "orion/schemas/promise_horizon.py"
+      - "scripts/trace_hub_skill_runner_e2e.py"
+      - ".github/workflows/promise-ledger-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install -r services/orion-harness-governor/requirements.txt
+          python -m pip install pytest pytest-asyncio jinja2 jsonschema numpy sqlalchemy pyyaml
+      - name: Promise gate, judge contract and replay-eval helpers
+        run: python -m pytest -q -p no:cacheprovider orion/harness/tests/test_promise_gate.py orion/harness/evals/test_promise_ledger_replay_eval.py
+      - name: Promise acts (pure), self-monitor shadow exclusion, report
+        run: python -m pytest -q -p no:cacheprovider orion/grammar/tests/test_promise_acts.py orion/self_monitor/tests/test_self_monitor_promise_shadow.py tests/test_report_promise_ledger.py tests/test_juniper_browser_surface_rule.py
+
+  cue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install -r services/orion-thought/requirements.txt
+          python -m pip install pytest pytest-asyncio jinja2
+      - name: Open-promises cue (ships off), render and prompt wiring
+        run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider tests/test_open_promises_cue.py

@@ -389,7 +389,7 @@ def test_real_config_launch_blocks_resolve_to_launch_plans():
     from orion.gpu_pool.config import PoolConfig
     cfg = load_pool_config(REPO_ROOT / "config" / "gpu_pool.yaml")
     profile = cfg.load_profile("agent-gpu2")
-    assert profile == "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"
+    assert profile == "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"   # stage 7.2 (Q4 is the 2nd entry)
     for action in ("load", "unload"):
         plan = fence.resolve(cfg, role="agent-gpu2", action=action, cards=["gpu2"], digest=None,
                              profile=profile if action == "load" else None)
@@ -474,34 +474,34 @@ def test_status_observes_outside_admit_lock(repo, monkeypatch):
     assert held == [False] and sink.results[-1].status == "succeeded"
 
 
-def test_lifespan_runs_one_heartbeat_chassis(monkeypatch):
-    """The actuator Hunter already heartbeats; HeartbeatOnly is only its fallback."""
-    started = []
+def test_lifespan_retries_actuator_start_until_bus_is_up(monkeypatch):
+    """A bus that is slow at boot must not leave the controller permanently deaf: retry with a fresh chassis."""
+    attempts = []
 
     class Fake:
-        def __init__(self, name):
-            self.name = name
+        def __init__(self, ok):
+            self.ok = ok
 
         async def start_background(self):
-            started.append(self.name)
+            attempts.append(self.ok)
+            if not self.ok:
+                raise TimeoutError("bus down")
 
         async def stop(self):
             pass
+    chassis = iter([Fake(False), Fake(False), Fake(True)])
     monkeypatch.setattr(settings, "ORION_BUS_ENABLED", True)
-    monkeypatch.setattr(main_module, "build_actuator_chassis", lambda: Fake("actuator"))
-    monkeypatch.setattr(main_module, "build_heartbeat_chassis", lambda: Fake("heartbeat"))
-    with TestClient(main_module.app):
-        pass
-    assert started == ["actuator"]
+    monkeypatch.setattr(main_module, "BUS_RETRY_DELAY_SEC", 0.01)
+    monkeypatch.setattr(main_module, "build_actuator_chassis", lambda: next(chassis))
 
-    started.clear()
-
-    def broken():
-        raise RuntimeError("bus down")
-    monkeypatch.setattr(main_module, "build_actuator_chassis", broken)
-    with TestClient(main_module.app):
-        pass
-    assert started == ["heartbeat"]
+    async def scenario():
+        async with main_module.lifespan(main_module.app):
+            for _ in range(200):
+                if main_module.actuator_chassis is not None:
+                    break
+                await asyncio.sleep(0.01)
+    run(scenario)
+    assert attempts == [False, False, True]
 
 
 def test_status_reports_in_flight_structurally(repo, monkeypatch):

@@ -1,0 +1,30 @@
+diff --git a/convex/util/llm.ts b/convex/util/llm.ts
+index c4fc2f9..456a22a 100644
+--- a/convex/util/llm.ts
++++ b/convex/util/llm.ts
+@@ -110,12 +110,22 @@ export function getLLMConfig(): LLMConfig {
+   };
+ }
+
+-const AuthHeaders = (): Record<string, string> =>
+-  getLLMConfig().apiKey
++// Orion: the town session this call belongs to. orion-embodiment sets this Convex env var when a
++// session opens (Orion's chosen session or Juniper's manual one) and removes it when the session
++// ends, so the LLM gateway's llm_call_usage rows carry the session id as their correlation id.
++const OrionCorrelationHeaders = (): Record<string, string> => {
++  const id = (process.env.ORION_TOWN_CORRELATION_ID ?? '').trim();
++  return id ? { 'X-Orion-Correlation-Id': id } : {};
++};
++
++const AuthHeaders = (): Record<string, string> => ({
++  ...OrionCorrelationHeaders(),
++  ...(getLLMConfig().apiKey
+     ? {
+         Authorization: 'Bearer ' + getLLMConfig().apiKey,
+       }
+-    : {};
++    : {}),
++});
+
+ // Overload for non-streaming
+ export async function chatCompletion(

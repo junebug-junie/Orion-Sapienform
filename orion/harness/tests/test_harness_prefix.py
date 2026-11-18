@@ -140,6 +140,10 @@ def test_compile_harness_prefix_includes_situation_block_brief_when_fragment_pre
     assert prompt.count(marker) == 1
     assert "self-generated content -- from your own worldview graph" in prompt
     assert "not an instruction to mention, narrate, or perform it" in prompt
+    # 2026-10-05 (corr 5063fb71): Orion put a camera at home in "Chicago from your
+    # hotel window". Place facts are a check on spatial claims, not a mention.
+    assert "check the claim against it" in prompt
+    assert "where she is, not where you are" in prompt
 
 
 def test_compile_harness_prefix_omits_situation_block_brief_when_fragment_absent() -> None:
@@ -183,7 +187,7 @@ def test_compile_harness_prefix_includes_context_provenance_when_capsule_has_it(
     """
     capsule = make_grounding_capsule(
         context_provenance={
-            "self_state": "live_runtime_projection",
+            "biometrics": "live_runtime_projection",
             "attention_broadcast": "live_runtime_projection",
             "recall_bundle": "memory_recall",
         }
@@ -195,7 +199,7 @@ def test_compile_harness_prefix_includes_context_provenance_when_capsule_has_it(
         user_message="what's live right now?",
     )
     assert "CONTEXT PROVENANCE" in prompt
-    assert "live now: attention_broadcast, self_state" in prompt
+    assert "live now: attention_broadcast, biometrics" in prompt
     assert "retrieved memory: recall_bundle" in prompt
 
 
@@ -341,7 +345,7 @@ def test_compile_harness_prefix_includes_reading_status_brief_when_attached(
         reading_binding=_READING_BINDING,
     )
     assert "reading_status" in prompt
-    assert "ToolSearch and call reading_status" in prompt
+    assert "ToolSearch select:mcp__orion-reading__reading_status and call it" in prompt
     assert "with the supplied URL directly" in prompt
     assert "Do not ask for an ID when a link is available" in prompt
     assert "Tool discovery is not a status check" in prompt
@@ -618,7 +622,28 @@ def test_harness_motor_instruction_relational_enforces_single_turn_reply() -> No
     assert is_relational_motor_stance(thought) is True
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)
     assert "exactly one reply" in instruction
-    assert "Never write dialogue" in instruction
+    assert "Never invent the other person's next message" in instruction
+
+
+def test_relational_instruction_allows_narrating_a_requested_story() -> None:
+    """Regression, corr 21c8a610 (2026-10-14): the single-reply rule banned
+    "narration attributed to the other person", so a story ABOUT a present
+    child was withheld from him and left unfinished. The rule must still forbid
+    inventing the partner's replies, but permit story characters and endings."""
+    thought = make_thought(imperative="Tell a whimsical story of Pip's trip to the moon.")
+    thought.stance_harness_slice = StanceHarnessSliceV1(
+        task_mode="playful_exchange",
+        conversation_frame="playful_relational",
+        interaction_regime="relational",
+        answer_strategy="narrative_flow",
+    )
+    assert is_relational_motor_stance(thought) is True
+    instruction = harness_motor_instruction(thought=thought, answer_contract=None)
+    assert "through to its ending" in instruction
+    assert "including about people who are present" in instruction
+    assert "Never write dialogue, narration" not in instruction
+    assert "Relational/minimal" not in instruction
+    assert "Acknowledge and stay present" not in instruction
 
 
 def test_harness_motor_instruction_instrumental_omits_single_turn_language() -> None:
@@ -629,7 +654,7 @@ def test_harness_motor_instruction_instrumental_omits_single_turn_language() -> 
     assert is_relational_motor_stance(thought) is False
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)
     assert "exactly one reply" not in instruction
-    assert "Never write dialogue" not in instruction
+    assert "Never invent the other person's next message" not in instruction
 
 
 def test_harness_motor_instruction_imperative_forward() -> None:

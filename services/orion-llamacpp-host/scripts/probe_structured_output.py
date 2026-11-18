@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Probe live llama.cpp OpenAI-compatible server for structured-output support."""
+"""Probe live llama.cpp OpenAI-compatible server for structured-output support.
+
+Leased (leased-evals design, docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md):
+the probe takes ONE operator hold on ``--lane`` (default ``fast``) from the GPU pool, at background
+priority, and sends every model call through orion-llm-gateway under that hold
+(orion/evals/leased_llm.py). It reads /health, /props, /slots and /models from the URL the pool
+granted; those reads run no model. There is no direct-URL mode: the lane door refuses an unkeyed
+model call. Needs ORION_BUS_URL (the pool) and the gateway (ORION_LLM_GATEWAY_URL, default
+http://127.0.0.1:8210). Recalled mid-run: the artifacts so far stay, exit 3.
+
+    ORION_BUS_URL=redis://100.92.216.81:6379/0 \
+      python3 services/orion-llamacpp-host/scripts/probe_structured_output.py --lane fast
+"""
 
 from __future__ import annotations
 
@@ -50,12 +62,15 @@ METHOD_ORDER = [
 ]
 
 
-def _default_base_url() -> str:
-    return (
-        os.getenv("ATLAS_LLAMACPP_QUICK_URL", "").strip()
-        or os.getenv("LLAMACPP_BASE_URL", "").strip()
-        or "http://127.0.0.1:8013"
-    ).rstrip("/")
+HOLDER = "operator:probe-structured-output"
+
+
+REPO = Path(__file__).resolve().parents[3]
+
+
+def _is_recall(exc: BaseException) -> bool:
+    """orion.evals.leased_llm.LaneRecalled, without importing it at module load (tests run bare)."""
+    return type(exc).__name__ == "LaneRecalled"
 
 
 def _default_model() -> str:
@@ -199,6 +214,8 @@ def _post_chat(
     try:
         resp = client.post(url, json=payload, timeout=timeout_sec)
     except Exception as exc:  # noqa: BLE001
+        if _is_recall(exc):
+            raise   # the pool took the seat back: stop, do not score it as a failed method
         return 0, {}, str(exc)
     try:
         body = resp.json() if resp.content else {}
@@ -420,7 +437,8 @@ def run_probe(
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Probe llama.cpp structured output methods")
-    parser.add_argument("--base-url", default=_default_base_url())
+    parser.add_argument("--lane", default="fast",
+                        help="operator lane to hold (orion/evals/leased_llm.py OPERATOR_LANES); default fast")
     parser.add_argument("--model", default=_default_model())
     parser.add_argument("--timeout-sec", type=float, default=120.0)
     parser.add_argument(
@@ -435,14 +453,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
-    summary = run_probe(
-        base_url=str(args.base_url).rstrip("/"),
-        model=str(args.model),
-        timeout_sec=float(args.timeout_sec),
-        artifact_dir=Path(args.artifact_dir),
-        include_thinking_on_probe=bool(args.include_thinking_on_probe),
-        verbose=bool(args.verbose),
-    )
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from orion.evals.leased_llm import EXIT_RECALLED, LaneRecalled, LaneUnavailable, operator_lane_sync
+
+    try:
+        with operator_lane_sync(args.lane, holder=HOLDER) as lane:
+            summary = run_probe(
+                base_url=lane.worker_url,
+                model=str(args.model),
+                timeout_sec=float(args.timeout_sec),
+                artifact_dir=Path(args.artifact_dir),
+                include_thinking_on_probe=bool(args.include_thinking_on_probe),
+                verbose=bool(args.verbose),
+                client_factory=lane.http_client,
+            )
+            summary["lease"] = lane.summary()
+            summary["model"] = f"{lane.route} (gateway route; --model is not what ran)"
+    except LaneRecalled as exc:
+        print(f"RECALLED: {exc}; partial artifacts in {args.artifact_dir}", file=sys.stderr)
+        return EXIT_RECALLED
+    except LaneUnavailable as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps(summary, indent=2))
     return 0 if summary.get("health_ok") else 1
 

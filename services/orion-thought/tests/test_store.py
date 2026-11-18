@@ -718,19 +718,9 @@ def test_load_latest_reverie_interpretation_never_raises_on_db_failure() -> None
 
 # --- load_latest_self_study_reflection: Patch 5 richer context-seed --------
 #
-# Real incident this reader exists because of, not a hypothetical (see the
-# function's own docstring): live-checking the candidate `memory_
-# crystallizations` table for an "actual memory" context-seed found its
-# summary/subject columns hold verbatim personal chat content.
-# self_study_analysis.py's four deterministic window-contrast producers were
-# the one candidate that live-verified safe (pure numeric prose, no chat
-# quotes) -- confirmed by reading real bodies before writing this reader.
-# The allowlist is a real privacy boundary, not a style choice, so it gets
-# direct SQL-shape assertions below, not just "does it return the row" --
-# asserted against `orion.schemas.self_study_analysis.ANALYSIS_SOURCES`
-# itself (review finding: an earlier version of this test compared against
-# a second hardcoded literal set, which couldn't catch the allowlist and the
-# real producer list drifting apart).
+# Repointed 2026-11-07 (ladder retirement PR 6): the seed now reads curiosity's self-inquiry
+# answers (self_concept_history, produced_by='curiosity_self_inquiry'). The analysis rows it read
+# before had one trigger, the retired dispatch rung, and stopped on 2026-11-05.
 
 
 def _body_row_result(row: dict | None):
@@ -788,8 +778,8 @@ def _body_capturing_engine(row: dict | None, captured: dict):
 def test_load_latest_self_study_reflection_returns_real_body() -> None:
     store = _fresh_store()
     body = (
-        "Self-study analysis of affective state: the last 6h against the 6h "
-        "before it. mean_shift: mean word_count moved 2073 vs 3.625."
+        "Four prediction-error loops hold 97,976 of my 201,515 attention rows. "
+        "I attend biometrics constantly and never ask about it."
     )
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"body": body}))
@@ -799,40 +789,42 @@ def test_load_latest_self_study_reflection_returns_real_body() -> None:
         monkeypatch.undo()
 
 
-def test_load_latest_self_study_reflection_query_only_allowlists_the_four_safe_prefixes() -> None:
-    """The actual privacy boundary: assert the SQL only ever admits the four
-    known-safe source_ref prefixes, by name -- not "some WHERE clause exists".
-    A future edit widening this without updating the allowlist should fail
-    this test, not slip through as "query still returns rows". Asserted
-    against `ANALYSIS_SOURCES` itself, not a second hardcoded literal set
-    (review finding: a hardcoded expectation here couldn't catch the
-    allowlist and the real producer list drifting apart)."""
-    from orion.schemas.self_study_analysis import ANALYSIS_SOURCES
-
+def test_load_latest_self_study_reflection_reads_curiosity_self_inquiry_answers() -> None:
+    """The seed's source is curiosity's answer of record, by producer, newest first. It never reads
+    the retired analysis rows in journal_entries (their only trigger was the dispatch rung)."""
     store = _fresh_store()
     captured: dict = {}
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
-        store, "_get_engine", lambda: _body_capturing_engine({"body": "x"}, captured)
+        store, "_get_engine", lambda: _body_capturing_engine({"body": "x", "source_id": "e1"}, captured)
     )
     try:
         store.load_latest_self_study_reflection()
     finally:
         monkeypatch.undo()
 
-    stmt = captured["stmt"]
-    assert "source_kind = 'self_study'" in stmt
-    # starts_with(), not LIKE (review finding): every real prefix contains an
-    # underscore, which LIKE treats as a single-character wildcard rather
-    # than a literal -- starts_with() is exact literal prefix matching.
-    assert "starts_with(source_ref" in stmt
-    assert "LIKE" not in stmt
-    params = captured["params"]
-    bound_prefixes = {v for k, v in params.items() if k.startswith("prefix")}
-    assert bound_prefixes == {f"{source}:" for source in ANALYSIS_SOURCES}
-    # The real incident this allowlist closes: the free-form "Curiosity"
-    # reflection's own prefix must never be one of the admitted ones.
-    assert "curiosity:" not in bound_prefixes
+    stmt = " ".join(captured["stmt"].split())
+    assert "FROM self_concept_history" in stmt
+    assert "journal_entries" not in stmt
+    assert "produced_by = :produced_by" in stmt
+    assert "ORDER BY created_at DESC LIMIT 1" in stmt
+    assert captured["params"]["produced_by"] == "curiosity_self_inquiry"
+
+
+def test_load_latest_self_study_reflection_with_identity_names_the_answer_row() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine",
+        lambda: _body_row_result({"body": "I am Orion, one presence held in four kinds of stuff.",
+                                  "source_id": "sch-123"}),
+    )
+    try:
+        seed = store.load_latest_self_study_reflection(with_identity=True)
+    finally:
+        monkeypatch.undo()
+    assert seed.source_id == "sch-123"
+    assert seed.text.startswith("I am Orion")
 
 
 def test_load_latest_self_study_reflection_char_limit_override() -> None:
@@ -916,7 +908,100 @@ def test_load_latest_self_study_reflection_never_raises_on_db_failure() -> None:
         monkeypatch.undo()
 
 
-# --- load_latest_memory_crystallization: Patch 6 third context-seed --------
+# --- load_episode_memory_seed: Stage 2 PR G visual-memory source -----------
+
+
+def test_load_episode_memory_seed_returns_typed_source_identity() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _body_row_result(
+            {"source_id": "a47eb72a-7010-4ea4-a90d-f025166ac2fd", "statement": "A kept memory."}
+        ),
+    )
+    try:
+        source = store.load_episode_memory_seed(with_identity=True)
+    finally:
+        monkeypatch.undo()
+
+    assert source.source_id == "a47eb72a-7010-4ea4-a90d-f025166ac2fd"
+    assert source.text == "A kept memory."
+
+
+def test_load_episode_memory_seed_query_enforces_governance_and_rotation() -> None:
+    """The SQL is the privacy and diversity boundary; lock its joins and gates."""
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _body_capturing_engine(
+            {"source_id": "a47eb72a-7010-4ea4-a90d-f025166ac2fd", "statement": "x"}, captured
+        ),
+    )
+    try:
+        store.load_episode_memory_seed(max_age_sec=1209600.0)
+    finally:
+        monkeypatch.undo()
+
+    stmt = captured["stmt"]
+    assert "m.purpose IN ('happened', 'about_juniper')" in stmt
+    assert "m.status = 'active'" in stmt
+    assert "m.expires_at IS NULL OR m.expires_at > now()" in stmt
+    assert "m.stakes = 'low' AND m.confirmation_state = 'auto'" in stmt
+    assert "m.confirmation_state = 'confirmed'" in stmt
+    assert "ev.memory_id = m.memory_id AND ev.verified IS TRUE" in stmt
+    assert "ev.memory_id = m.memory_id AND ev.verified IS NOT TRUE" in stmt
+    assert "e.memory_id = m.memory_id" in stmt
+    assert "e.op IN ('downgraded_voice', 'rejected_invalid')" in stmt
+    assert "source_kind' = 'episode_memory'" in stmt
+    assert "s.last_seeded_at ASC NULLS FIRST" in stmt
+    assert "e.created_at ASC" in stmt
+    assert captured["params"] == {"max_age_sec": 604800.0}
+
+
+def test_load_episode_memory_seed_truncates_at_word_boundary() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _body_row_result({"source_id": "memory-id", "statement": "shared memory " * 30}),
+    )
+    try:
+        value = store.load_episode_memory_seed(char_limit=20)
+    finally:
+        monkeypatch.undo()
+
+    assert value is not None
+    assert len(value) <= 21
+
+
+def test_load_episode_memory_seed_none_on_empty_or_db_failure() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result(None))
+    try:
+        assert store.load_episode_memory_seed() is None
+    finally:
+        monkeypatch.undo()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_episode_memory_seed() is None
+    finally:
+        monkeypatch.undo()
+
+
+# --- load_latest_memory_crystallization: Patch 6 legacy context-seed -------
 #
 # Reverses Patch 5's declined call on this same table -- see the function's
 # own docstring for why. Real correction (design doc §20): `status='active'`

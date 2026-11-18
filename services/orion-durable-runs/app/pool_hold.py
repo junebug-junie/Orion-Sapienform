@@ -164,12 +164,16 @@ class PoolHolds:
         return hold_placement(self.cfg, admission)
 
     async def acquire(self, run_id: str, request_id: str, admission: dict[str, Any], *,
-                      correlation_id: str | None) -> GpuLeaseReplyV1:
+                      correlation_id: str | None, value: Any = None) -> GpuLeaseReplyV1:
+        """``value`` (attention patch 3b, ``app.run_bids.RunValue``): the run's market net, which the
+        pool uses to order its background queue. None: no bid, arrival order."""
         work_class, priority, min_ctx = self.placement(admission)
         return await acquire_hold(
             self.bus, holder=durable_run_holder(run_id), work_class=work_class, request_id=request_id,
             priority=priority, deadline_at=_deadline(admission.get("deadline_at")), min_ctx_tokens=min_ctx,
-            turn_correlation_id=correlation_id, source=self.source)
+            turn_correlation_id=correlation_id, source=self.source,
+            want_id=getattr(value, "want_id", None), want_net=getattr(value, "net", None),
+            want_family=getattr(value, "family", None))
 
     async def status(self, lease_id: str) -> GpuLeaseReplyV1:
         return await lease_status(self.bus, lease_id, source=self.source)

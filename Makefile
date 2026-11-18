@@ -1,4 +1,4 @@
-.PHONY: check-async-routes-not-blocking check-chat-route-poachers check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch substrate-ladder-check substrate-ladder-watch
+.PHONY: check-body-economy-contract check-verb-physiology check-async-routes-not-blocking check-chat-route-poachers check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch substrate-ladder-check substrate-ladder-watch
 
 SERVICE ?=
 ARGS ?=
@@ -94,6 +94,20 @@ check-chat-route-poachers:
 # a one-line change.
 check-env-key-single-source:
 	@$(METRIC_PYTHON) scripts/check_env_key_single_source.py
+
+# Body economy "no unregistered veto" (docs/superpowers/specs/2026-10-23-organism-body-
+# economy-design.md, Phase 2 Gate 1, early slice in Patch A1). Every module that reads
+# regulation / arousal / thermal / price state must be listed in
+# config/physiology/contract.yaml, so a new `if strained: return` cannot land unnoticed.
+# Static AST scan, no live data, under 2 s. --inventory prints every hit with evidence.
+check-body-economy-contract:
+	@$(METRIC_PYTHON) scripts/check_body_economy_contract.py $(ARGS)
+
+# Body economy Patch C2: every orion/cognition/verbs/*.yaml declares a valid `physiology`
+# block (tier 0/1/2, family, GPU pool lanes, deferrable_window_s). Structural, no live data.
+# --summary prints counts by tier and family.
+check-verb-physiology:
+	@$(METRIC_PYTHON) scripts/check_verb_physiology.py $(ARGS)
 
 # Metric semantic layer (phases 1+2 of docs/superpowers/specs/
 # 2026-08-12-metric-semantic-layer-design.md). Joins the four metric-bearing
@@ -414,16 +428,21 @@ attention-outcome-coverage:
 #
 # services/orion-sql-db/*.sql is applied BY HAND. There is no migration table, no version
 # stamp, and no ordering guarantee, so a migration that was written, reviewed, merged and
-# never applied looks identical in git to one that is live.
+# never applied looks identical in git to one that is live (PR #2400, PR #2424).
+#
+# The whole corpus is replayed in commit order (a later DROP explains an earlier CREATE);
+# only files changed in the last DAYS (default 30, 0 = all) can be red. Data-only files are
+# listed as "verify manually". The same check runs every 10 minutes inside
+# substrate-ladder-watch and cards Hub. Logic: orion/sql_migration_drift.py.
 #
 # Needs a reachable Postgres, so this is an operator/agent command rather than a CI gate.
 # Exit 1 = drift found; exit 2 = could not connect (deliberately distinct, so an infra
 # failure cannot be mistaken for a pass).
 check-sql-migrations-applied:
-	python3 scripts/check_sql_migrations_applied.py
+	$(METRIC_PYTHON) scripts/check_sql_migrations_applied.py $(if $(DAYS),--since-days $(DAYS),)
 
 check-sql-migrations-applied-quiet:
-	python3 scripts/check_sql_migrations_applied.py --quiet
+	$(METRIC_PYTHON) scripts/check_sql_migrations_applied.py --quiet $(if $(DAYS),--since-days $(DAYS),)
 
 # Postgres connection headroom. Needs a reachable Postgres AND psycopg2, so like
 # check-sql-migrations-applied this is an operator/agent command, not a CI gate.
@@ -473,12 +492,15 @@ postgres-headroom-watch:
 
 # Substrate ladder liveness (2026-09-20 incident: a FieldStateV1 forbid-field was
 # added, only the producer redeployed, attention/proposal wrote nothing for ~48h
-# while every container read "Up"). Two checks: every rung table still has a
-# recent row (bounded index scans), and every container that validates a
+# while every container read "Up"). Two checks: every live rung table still has a
+# recent row (bounded index scans; L7-L11 are listed as retired, never read), and every container that validates a
 # schema another service writes can read what that writer's container writes
 # (orion/schema_skew_discovery.py finds every forbid-model (file, writer,
 # readers) triple from call sites; `--list-candidates` shows them; one docker
-# exec per container reads its copies, fields compared on the host). Read-only
+# exec per container reads its copies, fields compared on the host). Third: every
+# merged services/orion-sql-db migration changed in the last 30 days has its
+# tables/columns/indexes/sequences live (PR #2400/#2424; same logic as
+# check-sql-migrations-applied; --skip-migrations / --migration-days N). Read-only
 # against Postgres, docker, and git. Exit 1 = red, 2 = could not check,
 # 4 = --notify could not escalate (state unusable or orion-notify refused; red is
 # then carded every tick undeduped). Same exit-4 contract as disk/headroom watches.
@@ -512,3 +534,29 @@ eval-self-sense:
 	if [ -f .env ]; then . ./.env; elif [ -f "$$_root/.env" ]; then . "$$_root/.env"; fi; \
 	set +a; \
 	$(METRIC_PYTHON) services/orion-hub/evals/run_self_sense_eval.py $(ARGS)
+
+# Bonsai (gpu2) vs Q4 (gpu1) replay quality test: 30 real tasks, both models, writes stubbed,
+# verdict printed at the end. Holds gpu1+gpu2 per task through the pool's operator verbs and
+# releases them between tasks; ~12 h expected. `ARGS=--dry-run` shows the plan and touches nothing.
+# Design: orion/evals/model_replay/, docs/superpowers/pr-reports/2026-10-09-bonsai-replay-eval-pr.md.
+.PHONY: eval-bonsai-replay
+eval-bonsai-replay:
+	@ORION_BUS_URL=$${ORION_BUS_URL:-redis://100.92.216.81:6379/0} PYTHONPATH=. $(METRIC_PYTHON) scripts/run_bonsai_replay_eval.py $(ARGS)
+
+# Person learning Phase 1 acceptance check (docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md):
+# leave-one-cluster-out over every cluster Juniper named; writes one vision_person_model_eval row
+# (wrong accepts, correct accepts, unsure rate, cross-day separation per channel). Exit 1 = a wrong
+# accept (gate failed). ~20 min of CPU, so nightly cron, not a sql-writer tick. Needs POSTGRES_URI.
+.PHONY: eval-person-recognition
+eval-person-recognition:
+	@test -n "$$POSTGRES_URI" || { echo "POSTGRES_URI is required" >&2; exit 2; }
+	@date -u +"%Y-%m-%dT%H:%M:%SZ eval-person-recognition"
+	@PYTHONWARNINGS=ignore $(METRIC_PYTHON) services/orion-sql-writer/evals/run_person_recognition_eval.py --live "$$POSTGRES_URI" --write $(ARGS)
+
+# Temporal Self patch 4, acceptance check 6: do Orion's citations of its own day describe the cited
+# arc correctly? Read-only over thought_decision.day_citations (label verified by default), the
+# stored reply and temporal_self_arc; deterministic checks only, no LLM judge. A measurement, not a
+# gate. `ARGS="--days 7 --json --out /tmp/truth.json"`; `ARGS=--labels verified,UNVERIFIED`.
+.PHONY: eval-temporal-self-truth
+eval-temporal-self-truth:
+	@PYTHONPATH=. $(METRIC_PYTHON) orion/temporal_self/evals/run_day_citation_truth_eval.py $(ARGS)

@@ -38,13 +38,6 @@ def uncertainty_from_abs_zscore(zscore: float | None, *, no_baseline: float = 0.
     return clamp01(min(1.0, abs(float(zscore)) / 3.0))
 
 
-def uncertainty_from_sample_mismatch(mismatch_count: int, sampled_count: int) -> float:
-    """Schema-validation sample mismatch ratio (bus observer)."""
-    if sampled_count <= 0:
-        return 0.5
-    return clamp01(mismatch_count / sampled_count)
-
-
 def uncertainty_from_catalog_drift(undeclared_active_count: int, catalog_size: int) -> float:
     """Mesh-wide bus census undeclared-active fraction."""
     if catalog_size <= 0:

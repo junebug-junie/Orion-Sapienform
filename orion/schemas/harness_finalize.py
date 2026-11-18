@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -62,6 +62,124 @@ class SubstrateFinalizeAppraisalV1(BaseModel):
     )
 
 
+# reflection_source of a reflection the harness wrote because the 5b judge call failed (bad JSON,
+# no GPU slot, gateway error). Its alignment_verdict is "misaligned" so the turn still degrades
+# safely (response repair still runs), but it is not a judgment of the draft. Handled today: the
+# metacog chat-turn gate (reports reflection_failed, no verdict) and response_repair_reason
+# ("reflection_failed"). The turn-outcome molecule still carries alignment_verdict="misaligned".
+REFLECTION_SOURCE_JUDGE_FAILED = "degraded_llm_failure_fallback"
+
+# Intention ledger, step D0 (docs/superpowers/specs/2026-11-11-intention-ledger-design.md).
+# Max promise items the judge may list per field.
+PROMISE_ITEMS_MAX = 3
+PROMISE_QUOTE_MAX_CHARS = 240
+# Who carries out the future act a promise quote names. The judge fills it for every item;
+# the gate keeps only PROMISE_DOER_ORION. The other three are what the 11-12 replay listed
+# by mistake: an ask to Juniper, a hand-off to someone else, a forecast about a system.
+PromiseDoer = Literal["orion", "juniper", "someone_else", "a_system"]
+PROMISE_DOERS: tuple[str, ...] = get_args(PromiseDoer)
+PROMISE_DOER_ORION = "orion"
+# What the quoted line does, as a speech act (Searle's illocutionary point): binds Orion to
+# a future act (commits; offers included), or states what was done (reports), what will
+# happen (predicts), what someone should do (suggests), or what Orion feels or hopes
+# (wishes). The gate keeps only PROMISE_FORCE_COMMITS.
+PromiseForce = Literal["commits", "reports", "predicts", "suggests", "wishes"]
+PROMISE_FORCES: tuple[str, ...] = get_args(PromiseForce)
+PROMISE_FORCE_COMMITS = "commits"
+# A done_when shorter than this is a placeholder ("n/a", "none"), not a completion test.
+PROMISE_DONE_WHEN_MIN_CHARS = 12
+# Where a promise's keep can be seen (#3595; intention ledger amendments 2026-11-18). The judge fills it
+# for every item:
+# - "chat": a later chat reply to Juniper can show it done (the only class the ledger grades in v1);
+# - "run": a run or work outside chat delivers it (a queued curiosity run, a commit, a brief), so a chat
+#   reply rarely quotes the delivery: unkept at the horizon it closes ``void:not_chat`` (censored);
+# - "absence": keeping it means something does NOT happen ("I won't ... while you're asleep"): no reply
+#   can show it kept, so unkept at the horizon it closes ``void:absence_unchecked`` until a breach
+#   check exists.
+# None (rows written before the field) reads as "chat", the v1 rule.
+PromiseSettlesIn = Literal["chat", "run", "absence"]
+PROMISE_SETTLE_CLASSES: tuple[str, ...] = get_args(PromiseSettlesIn)
+PROMISE_SETTLES_CHAT = "chat"
+
+
+class PromiseV1(BaseModel):
+    """One forward promise Orion made in this reply, as the 5b judge found it.
+
+    quote is an exact span of the reply. Plain code (orion.harness.promise_gate) drops any
+    quote that is not literally in the reply, so the judge can name a promise but cannot
+    invent one. offer=True marks a promise that waits for Juniper's yes ("if you want,
+    I'll ..."): it is recorded, but it counts as a promise only after a later judge call
+    lists it in offers_accepted (Juniper's 2026-11-12 answer 1).
+
+    doer names who carries out the act. Only "orion" survives the gate: a forecast about a
+    queue or deploy (a_system), an ask for Juniper to act (juniper) and a hand-off to someone
+    else are not Orion's commitments (D0 replay, 2026-11-12: 5 of 8 false items).
+
+    act / done_when name the act and how a later reply or run would show it done. A promise
+    has a completion that could also fail to happen; a line nothing could break ("I'll be
+    here when you get back": Orion is here anyway) commits to nothing, so the judge writes
+    done_when null and the gate drops it (2026-11-15 rerun: 3 of 6 false items left after
+    the doer rule were presence lines).
+    """
+
+    # Length caps are enforced by the judge's JSON schema and by the gate, not here: a
+    # malformed promise list must never fail validation and sink the alignment verdict.
+    quote: str
+    offer: bool = False
+    # Who does the act. None on rows written before the field existed (they were gated without
+    # it). The gate drops every item whose doer is not "orion", so a stored promise is Orion's.
+    doer: PromiseDoer | None = None
+    # The line's speech act. None on rows written before the field existed. The gate drops
+    # every item that does not commit (a recommendation, a wish, a report of an act already
+    # done), so a stored promise commits.
+    force: PromiseForce | None = None
+    # What Orion will do, in the judge's words. None on rows written before the field existed.
+    act: str | None = None
+    # What a later reply or run would show when the act is done. None: the judge found no
+    # completion that could fail; the gate drops those, so a stored promise has one (rows
+    # written before the field existed have None and were gated without it).
+    done_when: str | None = None
+    # Where the keep can be seen (PROMISE_SETTLE_CLASSES). None on rows written before the field:
+    # read as "chat". The resolver closes an unkept run or absence promise void, never 0 (#3595).
+    settles_in: PromiseSettlesIn | None = None
+    # The trigger a conditional promise waits on ("when the proposals appear"), in the judge's words;
+    # None when the promise is unconditional (and on rows written before the field). A conditional
+    # promise whose condition no judged reply inside the horizon saw arise closes ``void:not_due``.
+    condition: str | None = None
+
+
+# How many open promises the judge is shown (oldest first). Wider than PROMISE_ITEMS_MAX on
+# purpose (intention ledger amendment 8): a promise the judge is never shown can never be marked
+# kept, so a cap of 3 made a 4th open promise structurally un-closeable. Live rate ~1 promise per
+# 12 judged turns with a 72 h horizon keeps this far above the usual open count.
+PROMISE_JUDGE_VIEW_MAX = 8
+
+
+class OpenPromiseRefV1(BaseModel):
+    """An earlier promise shown to the judge so it can say this reply kept it.
+
+    id is the promise's act id on the act ledger (orion/grammar/promise_acts.py); quote is read
+    from the promising turn's own record (harness_turn_trace), never stored on the act."""
+
+    id: str
+    quote: str
+    # The trigger the promise waits on (PromiseV1.condition), so the judge can say this turn saw it
+    # arise (FinalizeReflectionV1.promise_conditions_met). None: unconditional. An older governor
+    # ignores the key (this model ignores unknown keys).
+    condition: str | None = None
+
+
+class PromiseKeptV1(BaseModel):
+    """One open promise this reply keeps, with the words of the reply that deliver it.
+
+    quote must be literally in the reply (the same normalized substring test as a made
+    promise; intention ledger amendment 5), so the judge can mark a promise kept but cannot
+    invent the delivery."""
+
+    id: str
+    quote: str
+
+
 class FinalizeReflectionV1(BaseModel):
     schema_version: Literal["finalize.reflection.v1"] = "finalize.reflection.v1"
     correlation_id: str
@@ -108,6 +226,32 @@ class FinalizeReflectionV1(BaseModel):
     # structurally unreachable for a benign "what do you see" ask. See
     # orion/harness/finalize.py::maybe_run_finalize_tool_retry.
     world_contact_opportunity: bool = False
+
+    # Intention ledger D0 (ORION_PROMISE_LEDGER_ENABLED). Judge-written, then gated by
+    # orion.harness.promise_gate.gate_promises before anything reads them:
+    # - promises_made: promises in THIS reply, each an exact quote of it.
+    # - offers_accepted: quotes of offers from Orion's previous reply that THIS user
+    #   message accepts; only quotes the harness showed the judge survive.
+    # - promises_kept: ids of open promises THIS reply delivers; only ids the harness
+    #   showed the judge survive.
+    # No consumer validates this model with extra="forbid", so old readers drop the
+    # fields. Empty lists on every reflection the judge did not write. Caps
+    # (PROMISE_ITEMS_MAX, PROMISE_QUOTE_MAX_CHARS) live in the gate.
+    # Source of truth: the run artifact (HarnessRunV1.reflection), gated against the final
+    # text Juniper saw. The copy in HarnessVerdictMoleculeV1 is published before response
+    # repair and is gated only against the draft; D1 must not open acts from it.
+    promises_made: list[PromiseV1] = Field(default_factory=list)
+    offers_accepted: list[str] = Field(default_factory=list)
+    promises_kept: list[str] = Field(default_factory=list)
+    # The delivering quote for each id in promises_kept, same order (amendment 5). A kept id
+    # with no quote that passes the substring test is dropped by the gate, so every id in
+    # promises_kept has exactly one entry here. Empty on rows written before the field.
+    promises_kept_evidence: list[PromiseKeptV1] = Field(default_factory=list)
+    # Ids of open conditional promises (shown with a condition) whose condition this turn saw arise
+    # (#3595 option b). Only ids the harness showed the judge survive the gate. The resolver reads them
+    # from the stored run artifacts: a conditional promise no judged reply in its horizon listed here
+    # closes ``void:not_due`` (not due, censored), never a graded 0. Empty on rows written before the field.
+    promise_conditions_met: list[str] = Field(default_factory=list)
 
 
 class HarnessVerdictMoleculeV1(BaseModel):
@@ -197,13 +341,23 @@ class HarnessAttachmentV1(BaseModel):
 
 from orion.schemas.reading import ReadingToolBindingV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
+from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1
 
 
 class HarnessRunRequestV1(BaseModel):
     # The durable run's GPU pool hold. Every LLM call of the turn (FCC via X-Orion-Gpu-Lease,
     # finalize via options.gpu_lease) attaches to it. The only run lease (stage 4.6).
     gpu_lease: GpuLeaseRefV1 | None = None
+    # The durable run's own id. When set, a retry of this turn resumes the killed
+    # `claude` session instead of starting over (orion/harness/session_resume.py).
+    # None = every other caller, unchanged.
+    resume_key: str | None = None
     inference_timeout_sec: float | None = Field(default=None, gt=0)
+    # Seconds, from receipt, the caller still waits for the reply (held curiosity turns:
+    # durable-runs releases the run's GPU hold at the same moment). When set, the governor
+    # bounds the finalize chain to what is left and otherwise replies with the draft on the
+    # failed-finalize path, rather than finalizing after nobody is listening. None = unbounded.
+    reply_budget_sec: float | None = Field(default=None, gt=0)
     reading_binding: ReadingToolBindingV1 | None = None
     reading_only: bool = False
     schema_version: Literal["harness.run.request.v1"] = "harness.run.request.v1"
@@ -224,12 +378,44 @@ class HarnessRunRequestV1(BaseModel):
     # attachments/recent_turns/situation_prompt_fragment convention of
     # getattr(request, "...", None) at every read site.
     mode: str | None = None
+    # Who the turn answers: "juniper" for a Hub chat reply (Juniper typed it),
+    # "orion" for Orion's own curiosity/self-inquiry/urgent runs, None for
+    # every other caller (outreach, collapse mirror, reading). Copied from
+    # execute_unified_turn's utterance_origin. The governor uses it to keep
+    # Claude Code auto-memory out of chat replies only
+    # (HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY). None from an older Hub build
+    # means "not a chat reply", i.e. today's behavior.
+    utterance_origin: str | None = None
+    # What kind of turn this is, in the caller's own words: the unified-turn payload's
+    # ``source`` tag ("curiosity_investigation", "endogenous_outreach", ...), else "reading" or
+    # "chat" (orion/hub/turn_orchestrator.py::turn_workflow_label). The governor copies it onto
+    # HarnessRunV1.workflow and sql-writer stores it in harness_turn_trace.workflow, so turn
+    # failures can be split by kind (#3255). None from an older Hub build means unknown. This
+    # model ignores unknown keys, so an older governor drops it silently.
+    workflow: str | None = None
+    # A curiosity run that took a focus (orion/curiosity/focus.py): the governor puts the focus and
+    # the focus_disposition instruction in the system prompt, where CLI compaction cannot reach it
+    # (orion/harness/task_anchor.py::build_focus_anchor). None for every other turn. This model
+    # ignores unknown keys, so an older governor drops it silently; deploy the governor first.
+    curiosity_focus: CuriosityFocusAnchorV1 | None = None
     attachments: list[HarnessAttachmentV1] = Field(
         default_factory=list,
         description=(
             "Images staged into the sandbox for this turn. Empty for every "
             "text-only turn, which keeps the harness prompt byte-identical to "
             "its pre-attachment form."
+        ),
+    )
+    draft_preview: bool = Field(
+        default=False,
+        description=(
+            "Draft-first display (spec L8, 2026-10-06). True asks the governor "
+            "to publish the motor draft, after deterministic grounding only, on "
+            "orion:harness:run:draft_preview before the finalize judge runs, so "
+            "the caller can show it while the judge decides. Sensitive turns "
+            "(orion/harness/finalize.py::draft_preview_hold_reason) are held "
+            "back regardless. Only the Hub's interactive chat lane sets this; "
+            "False keeps judge-before-display."
         ),
     )
     situation_prompt_fragment: str | None = Field(
@@ -246,6 +432,17 @@ class HarnessRunRequestV1(BaseModel):
             "the block entirely rather than showing a placeholder."
         ),
     )
+    prime_block: str | None = Field(
+        default=None,
+        description=(
+            "Prime's present (living Prime design Part 1): concerns held now, last thought and its "
+            "move, open asks/regulate signals, body read, each line cited. Rendered by code in "
+            "orion-hub BEFORE this request is built (orion/prime/block.py::fetch_prime_block, capped "
+            "at 600 chars) and placed verbatim after the situation fragment "
+            "(orion/harness/prefix.py). None when HUB_PRIME_BLOCK_ENABLED is off; an older governor "
+            "ignores the key (this model ignores unknown keys), so deploy the governor first."
+        ),
+    )
     recent_turns: list[TurnWindowMessageV1] = Field(
         default_factory=list,
         max_length=HARNESS_RECENT_TURNS_MAX,
@@ -260,6 +457,15 @@ class HarnessRunRequestV1(BaseModel):
             "isolation regardless of how long the conversation had run."
         ),
     )
+    # Intention ledger D1 (docs/superpowers/specs/2026-11-11-intention-ledger-design.md). Read by
+    # orion-hub before the turn (orion/hub/promise_ledger.py) for Juniper's own turns only, and
+    # passed to the 5b judge ONLY (orion/harness/finalize.py). The motor prompt never reads them
+    # (orion/harness/prefix.py, runner.py; test_motor_prompt_never_shows_open_promises). An older
+    # governor ignores the keys (this model ignores unknown keys).
+    open_promises: list[OpenPromiseRefV1] = Field(default_factory=list, max_length=PROMISE_JUDGE_VIEW_MAX)
+    # Offers Orion made in the previous reply of this session (quotes), so the judge can say
+    # whether this message accepts one. An offer opens no promise until it is accepted.
+    pending_offers: list[str] = Field(default_factory=list, max_length=PROMISE_ITEMS_MAX)
 
 
 class HarnessRunCancelV1(BaseModel):
@@ -275,6 +481,21 @@ class HarnessRunStepV1(BaseModel):
     correlation_id: str
     step_index: int
     step: dict[str, Any]
+
+
+class HarnessRunDraftPreviewV1(BaseModel):
+    """The reply writer's draft, published before the finalize judge runs.
+
+    Producer: orion-harness-governor, only when HarnessRunRequestV1.draft_preview
+    is True and the turn is not held as sensitive. Consumer: orion-hub, which
+    shows it in chat and later replaces it with the final text. Not persisted
+    as a turn (chat history, memory, TTS and outreach read HarnessRunV1.final_text);
+    bus-mirror copies it like any other orion:harness:* event.
+    """
+
+    schema_version: Literal["harness.run.draft_preview.v1"] = "harness.run.draft_preview.v1"
+    correlation_id: str
+    text: str = Field(..., min_length=1, description="Draft after deterministic grounding; what the Hub shows.")
 
 
 class HarnessRunV1(BaseModel):
@@ -299,6 +520,16 @@ class HarnessRunV1(BaseModel):
     finalize_degraded_reason: str | None = None
     step_count: int
     exit_code: int | None = None
+    # Why the motor stopped (orion/harness/stop_reason.py): "cancel:<reason>" when a
+    # harness cancel killed the process (user_stop, client_disconnect,
+    # durable_attempt_stopped, ...), else the motor's error code (fcc_timeout,
+    # fcc_stream_stalled, fcc_nonzero_exit, ...), else None. None also on records
+    # from governors that predate this field: absent means unknown, never "outside".
+    stop_reason: str | None = None
+    # HarnessRunRequestV1.workflow, copied by the governor (bus_listener._reply_and_artifact).
+    # None on records from a Hub or governor that predates the field: absent means unknown.
+    # No consumer validates this model with extra="forbid", so old readers drop the key.
+    workflow: str | None = None
     compliance_verdict: Literal["completed", "partial", "failed", "refused"]
     grounding_status: str
     grammar_event_ids: list[str] = Field(default_factory=list)
@@ -329,3 +560,10 @@ class HarnessRunV1(BaseModel):
     # Consumers that gate on evidence must treat ``None`` as "no evidence",
     # never as "assume it was read".
     source_fetches: list[SourceFetchEvidenceV1] | None = None
+    # Draft-first display (spec L8). The exact text published to the Hub
+    # before the judge ran, or None when no draft was shown. Together with
+    # final_text this records what Juniper saw first and what it became.
+    draft_preview_text: str | None = None
+    # Why a requested draft preview was held back (sensitive turn, structured
+    # output, cut short). None when not requested or when it was published.
+    draft_preview_held_reason: str | None = None

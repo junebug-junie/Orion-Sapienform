@@ -16,6 +16,13 @@ class BiometricsSummarySQL(Base):
     composites = Column(JSONB, nullable=True)
     constraint = Column(String, nullable=True)
     telemetry_error_rate = Column(Float, nullable=True)
+    # The binding constraint: the highest of ALL pressures on this node, and which channel it
+    # is (see BiometricsSummaryV1). NULL when nothing was measured -- never 0.0. These were on
+    # the bus payload since 2026-08-15 but had no column, so _write_row dropped them silently
+    # for every per-node row (the cluster table already had them). Same boot-time ALTER as
+    # `measurements` below.
+    peak_pressure = Column(Float, nullable=True)
+    peak_pressure_channel = Column(String, nullable=True)
     # Raw physical units (chassis_watts, temp_c_max, ...) alongside the normalised pressures.
     # A key is absent when unmeasured on that node -- never 0.0 -- so a fleet total summed
     # from this column is honest about what it could not see. See BiometricsSummaryV1.

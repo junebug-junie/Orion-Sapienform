@@ -116,6 +116,21 @@ def _clip_pair(prompt: str, response: str, *, limit: int = 300) -> tuple[str, st
     return _c(prompt), _c(response)
 
 
+# What BOUNDARY means (Juniper, 2026-10-06). Without it the judge scored near 1.0 on turns that
+# continue the same conversation, and Rule 3 (services/orion-memory-consolidation/app/boundary.py)
+# splits a resumed_thread turn on a score >= 0.92. A definition, not a word list: the model judges
+# whether CURRENT still continues the BASELINE thread. Wording chosen 2026-10-06 among three
+# phrasings of the same definition on 30 days of real turns (PR report): a first phrasing ("YES only
+# when ... does not depend on BASELINE to be understood") pushed every score to ~0, including real
+# switches, so Rule 3 could never split on the judge.
+BOUNDARY_DEFINITION = (
+    "BOUNDARY: YES when the user has moved on from the BASELINE thread: that thread ended, or CURRENT is about "
+    "a subject unrelated to it, so CURRENT can be understood without BASELINE.\n"
+    "BOUNDARY: NO when CURRENT continues the BASELINE thread: a pause, a follow-up, an elaboration, a reaction, "
+    "a return to the same subject, or small talk inside that thread.\n"
+)
+
+
 def build_turn_change_prompt(
     *,
     prompt: str,
@@ -133,6 +148,7 @@ def build_turn_change_prompt(
         "SHIFT: NONE | TOPIC (subject) | STANCE (identity/beliefs/relationship framing) | "
         "REPAIR (correction/recovery).\n"
         "If SHIFT is TOPIC, STANCE, or REPAIR, NOVEL should be YES unless it is trivial repetition.\n"
+        f"{BOUNDARY_DEFINITION}"
         "NOVEL: YES or NO\n"
         "SHIFT: NONE or TOPIC or STANCE or REPAIR\n"
         "MEMORY: YES or NO\n"

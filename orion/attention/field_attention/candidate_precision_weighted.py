@@ -228,7 +228,7 @@ NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE: float = 1e-5
 # question (`PressureConfig.prediction_error_decay_horizon_seconds`, applied in
 # `orion/substrate/pressure.py::prediction_error_pressure`,
 # `endogenous_curiosity._prediction_error_staleness_decay`,
-# `bus_synaptic_surprise.STALENESS_HORIZON_SEC`). Copied rather than imported: the
+# `prediction_error_freshness.PE_STALENESS_HORIZON_SEC`). Copied rather than imported: the
 # attention runtime does not import `orion.substrate` (its package `__init__` pulls
 # the graph store); `test_staleness_horizon_matches_substrate_pressure_config`
 # keeps the two equal.

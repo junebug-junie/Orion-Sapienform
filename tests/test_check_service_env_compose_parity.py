@@ -73,12 +73,12 @@ def test_compose_env_keys_matches_mapping_form():
 def test_compose_env_keys_catches_differently_named_interpolation_in_environment():
     """2026-08-21 regression: a value in `environment:` can interpolate a
     .env_example key with a DIFFERENT name than the container-side key it's
-    assigned to -- e.g. orion-self-study-enrichment's
-    `CLAUDE_CONFIG_DIR=${SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR:-/root/.claude}`.
+    assigned to -- e.g. a (since retired) service's
+    `CLAUDE_CONFIG_DIR=${SVC_CLAUDE_CONFIG_DIR:-/root/.claude}`.
     Before this fix, `_interpolated_keys` was called with
     `skip_key="environment"`, which skipped this case entirely (only the
     left-hand key name "CLAUDE_CONFIG_DIR" was ever counted), producing a
-    false "missing key" for SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR the
+    false "missing key" for SVC_CLAUDE_CONFIG_DIR the
     moment that service's last non-environment interpolation of the same
     var was removed (the credentials.json bind mount, retired the same
     day). This test locks in the fixed behavior directly, independent of

@@ -52,7 +52,7 @@ def _captured_situation_ctx(**kwargs) -> dict:
 
     captured: dict = {}
 
-    async def _fake_build(ctx, runtime_ns):
+    async def _fake_build(ctx, runtime_ns, **_kwargs):
         captured["ctx"] = ctx
         return None, {"compact_text": "Situation: stub"}
 

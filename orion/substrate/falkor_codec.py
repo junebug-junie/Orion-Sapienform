@@ -3,7 +3,8 @@
 This module is intentionally pure: no Redis client, no store cache, no graph
 queries. It owns the durable property allowlist used by FalkorSubstrateStore.
 
-Durable Falkor support is intentionally Concept + Evidence + SubstrateEdge.
+Durable Falkor support is intentionally Concept + Entity + Evidence + Assertion +
+SubstrateEdge.
 Other node kinds must not be silently persisted as incomplete native rows.
 """
 
@@ -12,20 +13,25 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, get_args
 
 from orion.core.schemas.cognitive_substrate import (
+    AssertionNodeV1,
     BaseSubstrateNodeV1,
     ConceptNodeV1,
     EntityNodeV1,
     EvidenceNodeV1,
     NodeRefV1,
     SubstrateActivationV1,
+    SubstrateEdgePredicateV1,
+    SubstrateEdgeRoleV1,
     SubstrateEdgeV1,
+    SubstrateNodeKindV1,
     SubstrateProvenanceV1,
     SubstrateSignalBundleV1,
     SubstrateTemporalWindowV1,
 )
+from orion.substrate.activation import ACTIVATION_DECAYED_AT_KEY
 
 _LABEL_BY_KIND: dict[str, str] = {
     "entity": "Entity",
@@ -39,6 +45,7 @@ _LABEL_BY_KIND: dict[str, str] = {
     "state_snapshot": "StateSnapshot",
     "hypothesis": "Hypothesis",
     "ontology_branch": "OntologyBranch",
+    "assertion": "Assertion",
 }
 
 
@@ -98,7 +105,58 @@ def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None)
         "provenance_trace_id": provenance.trace_id,
         "provenance_tier_rank": provenance.tier_rank,
         "evidence_refs_json": _json_list(provenance.evidence_refs),
+        **_decay_stamp_properties_from_metadata(node.metadata),
     }
+
+
+# `activation_decayed_at` (2026-10-06, L6): the moment a node's stored
+# activation is valid as of; written by SubstrateDynamicsEngine.tick() (the
+# sole decay writer since 2026-10-06) so decay covers only the time since the last decay
+# (orion/substrate/activation.py::activation_decay_anchor). Stored on every
+# durable kind, since activation itself is a common property.
+#
+# Omitted from the SET clause when absent (never written as null).
+# FalkorSubstrateStore.upsert_node() fills it with the node's own observed_at
+# before encoding when a writer doesn't carry it, so in practice every durable
+# write sets it; the omission is a backstop for any other caller of this codec.
+def _decay_stamp_properties_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw = (metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)
+    if raw is None:
+        return {}
+    if isinstance(raw, datetime):
+        return {ACTIVATION_DECAYED_AT_KEY: _dt(raw)}
+    return {ACTIVATION_DECAYED_AT_KEY: str(raw)}
+
+
+def _decay_stamp_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    raw = row.get(ACTIVATION_DECAYED_AT_KEY)
+    return {ACTIVATION_DECAYED_AT_KEY: raw} if raw is not None else {}
+
+
+# `label_set_at` (entity nodes, 2026-11-03): when a named camera cluster's name was
+# set. Writer: orion/substrate/adapters/vision_individual.py (naming, rename, and the
+# first sighting refresh, which backfills it from observed_at). Consumer: the
+# person-graph relabel guard (services/orion-substrate-runtime/app/person_graph_loop.py),
+# which used to compare against observed_at -- observed_at now follows sightings, so a
+# rename would have been refused forever. Native, because this codec keeps no free-form
+# entity metadata. Omitted from the SET clause when absent, so a writer that does not
+# carry it never clears it.
+LABEL_SET_AT_KEY = "label_set_at"
+
+
+def _label_set_at_properties_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw = (metadata or {}).get(LABEL_SET_AT_KEY)
+    if raw is None:
+        return {}
+    return {LABEL_SET_AT_KEY: _dt(raw) if isinstance(raw, datetime) else str(raw)}
+
+
+def _entity_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = _decay_stamp_metadata_from_row(row)
+    raw = row.get(LABEL_SET_AT_KEY)
+    if raw is not None:
+        metadata[LABEL_SET_AT_KEY] = raw
+    return metadata
 
 
 # Node kinds this codec can round-trip through durable Falkor storage.
@@ -118,7 +176,16 @@ def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None)
 # _LABEL_BY_KIND have no producer writing them to this store, and adding
 # encode/decode for a kind nothing emits would be a keyword cathedral. Add a
 # kind here when something real writes it, with a decoder in the same patch.
-DURABLE_NODE_KINDS: tuple[str, ...] = ("concept", "evidence", "entity")
+#
+# `contradiction` is out on purpose (#3544, decided 2026-11-17): the substrate
+# graph does not represent contradictions for now, and the contradiction-region
+# query was retired. Adding the kind needs a producer and a consumer built
+# together, in the same patch, with a metric-gate record -- not this line alone.
+#
+# `assertion` joined 2026-10-06 (memory Stage 2 PR A, the shared assertion core):
+# producer orion/substrate/assertion_projector.py, consumers the neighborhood
+# read's walkable_edge() check and orion/substrate/eligibility.py.
+DURABLE_NODE_KINDS: tuple[str, ...] = ("concept", "evidence", "entity", "assertion")
 
 
 def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) -> dict[str, Any]:
@@ -138,6 +205,16 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
         props["label"] = getattr(node, "label")
         props["entity_type"] = getattr(node, "entity_type", "unknown")
         props["aliases_json"] = _json_list(getattr(node, "aliases", None))
+        props.update(_label_set_at_properties_from_metadata(node.metadata))
+    elif node.node_kind == "assertion":
+        # `assertion_predicate`/`assertion_revision`, not `predicate`/`revision`:
+        # the neighborhood join reads a.assertion_revision next to
+        # e.assertion_revision, and a bare `predicate` would read like an edge field.
+        props["assertion_predicate"] = getattr(node, "predicate")
+        props["statement_key"] = getattr(node, "statement_key")
+        props["statement_text"] = getattr(node, "statement_text")
+        props["assertion_revision"] = int(getattr(node, "revision"))
+        props["decision_ref"] = getattr(node, "decision_ref", None)
     else:
         props["evidence_type"] = getattr(node, "evidence_type")
         props["content_ref"] = getattr(node, "content_ref")
@@ -148,8 +225,10 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # scalar properties (concept nodes only). These are the only metadata keys
 # already-shipped consumers (SubstrateDynamicsEngine.tick(),
 # attention_broadcast._node_salience(), substrate_pressure_signals()'s
-# evidence_refs, and the AST/HOT reducer's optional harness_closure_signal
-# narrative -- orion/substrate/attention_self_model.py) actually read/write;
+# evidence_refs, and world-first attention's evidence_refs in
+# orion/substrate/attention_broadcast.py) actually read/write. (The AST/HOT
+# reducer's harness_closure_signal narrative was a consumer until 2026-11-11,
+# when node:substrate.harness_closure was retired);
 # see docs/superpowers/specs/2026-07-16-cypher-native-substrate-postgres-bus-split-design.md
 # item 3's "promote to first-class Cypher properties only with a second
 # consumer" escape hatch. `contributing_turn_ids` was added under this same
@@ -180,6 +259,15 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # node:substrate.vision -> capability:vision edge maps perception_staleness to
 # pressure. Note `perception_yield` is a raw count mean (live: 6-8 objects per
 # frame), NOT a 0-1 pressure, and is encoded unbounded on purpose.
+# `embedding_staleness` / `prediction_error_missing_reason` added 2026-10-21,
+# caught the same way (review of fix/camera-surprise-honest-input): upsert_node
+# caches the DECODED durable row, so a key missing here is gone even inside the
+# writer's own process. Both camera surprise nodes write them every tick;
+# consumers: the history sampler (worker.py _node_prediction_error_reading,
+# skips a marked placeholder), the self-model freshness rule
+# (prediction_error_freshness.classify_reading) and the broadcast's camera
+# absence check (attention_broadcast.world_first_signals). The reason is
+# encoded as None when absent, so ON MATCH clears it on the next real reading.
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
@@ -190,20 +278,42 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "prediction_error_evidence_event_ids",
     "perception_staleness",
     "perception_yield",
+    "embedding_staleness",
+    "prediction_error_missing_reason",
 )
 
-# Subset of DYNAMICS_METADATA_KEYS owned by SubstrateDynamicsEngine.tick()
-# rather than by whichever writer is upserting this call -- any caller that
-# upserts a concept node via a freshly-constructed model (not one round-tripped
-# from the store) must carry these forward from the pre-existing node or its
-# own upsert_node() call will durably reset dynamics.py's computed pressure/
-# dormancy state back to defaults. See
-# services/orion-substrate-runtime/app/worker.py::_write_prediction_error_node.
-DYNAMICS_ENGINE_OWNED_METADATA_KEYS: tuple[str, ...] = (
-    "dynamic_pressure",
-    "dynamic_pressure_reason",
-    "dormant",
-    "dormancy_updated_at",
+# Native properties ONLY SubstrateDynamicsEngine.tick() writes on an existing
+# node, through its targeted compare-and-set write
+# (FalkorSubstrateStore.update_node_dynamics, PR #2617). Every other writer
+# reaches the graph through upsert_node(), which since 2026-10-12 sets these
+# ON CREATE only -- never ON MATCH -- so a writer that builds a fresh model
+# (default pressure 0.0, dormant False) or carries forward a copy it read a
+# moment ago can no longer revert the tick's value. The old fix for this was
+# a read-and-carry-forward in _write_prediction_error_node (the retired
+# DYNAMICS_ENGINE_OWNED_METADATA_KEYS); a read-modify-write still lost any
+# tick write landing between its read and its write. Concept nodes only (the
+# only kind that stores them, see DYNAMICS_METADATA_KEYS).
+TICK_OWNED_NODE_PROPERTIES: frozenset[str] = frozenset(
+    {
+        "dynamic_pressure",
+        "dynamic_pressure_reason",
+        "dormant",
+        "dormancy_updated_at",
+    }
+)
+
+# A node's activation state: the decayed value, its recency, and the stamp the
+# value is valid as of. Written by the tick (decay) AND, legitimately, by
+# producers that reinforce a node with a fresh activation -- the tick's
+# compare-and-set yields to those. A writer that does NOT mean to set
+# activation names these in upsert_node()'s ``skip_metadata_keys`` so they are
+# set ON CREATE only. Confirmed live 2026-10-12: _write_prediction_error_node
+# built a fresh ConceptNodeV1 every write, whose validator seeds
+# activation = salience and recency_score = 0.0, and wrote them paired with the
+# tick's old decay stamp -- node:substrate.bus_synaptic read activation
+# 0.0118343 == its prediction_error 0.011834, recency 0, every 30 s.
+ACTIVATION_STATE_KEYS: frozenset[str] = frozenset(
+    {"activation", "recency_score", ACTIVATION_DECAYED_AT_KEY}
 )
 
 # The reverse-direction ownership problem, confirmed live 2026-07-29 as a real
@@ -245,6 +355,8 @@ EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
         "prediction_error_evidence_event_ids",
         "perception_staleness",
         "perception_yield",
+        "embedding_staleness",
+        "prediction_error_missing_reason",
     }
 )
 
@@ -333,6 +445,14 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
         # Raw count mean, not a 0-1 pressure -- live values run 6-8 objects per
         # frame. Encoded unbounded on purpose; see _write_prediction_error_node.
         "perception_yield": _safe_float(meta.get("perception_yield"), default=None),
+        # Camera surprise nodes (2026-10-21). None when absent: the reason is
+        # cleared by the next real reading, never carried forward.
+        "embedding_staleness": _safe_float(meta.get("embedding_staleness"), default=None),
+        "prediction_error_missing_reason": (
+            str(meta["prediction_error_missing_reason"]).strip() or None
+            if meta.get("prediction_error_missing_reason") is not None
+            else None
+        ),
     }
 
 
@@ -362,6 +482,9 @@ def encode_edge_properties(edge: SubstrateEdgeV1, identity_key: str) -> dict[str
         "provenance_trace_id": provenance.trace_id,
         "provenance_tier_rank": provenance.tier_rank,
         "evidence_refs_json": _json_list(provenance.evidence_refs),
+        "edge_role": edge.edge_role,
+        "assertion_id": edge.assertion_id,
+        "assertion_revision": edge.assertion_revision,
     }
 
 
@@ -433,6 +556,12 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     perception_yield = _safe_float(row.get("perception_yield"), default=None)
     if perception_yield is not None:
         metadata["perception_yield"] = perception_yield
+    embedding_staleness = _safe_float(row.get("embedding_staleness"), default=None)
+    if embedding_staleness is not None:
+        metadata["embedding_staleness"] = embedding_staleness
+    missing_reason = row.get("prediction_error_missing_reason")
+    if missing_reason:
+        metadata["prediction_error_missing_reason"] = str(missing_reason)
     # Fail-open, matching every other decode field in this function: a
     # malformed contributing_turn_ids_json value (corrupt JSON, wrong shape)
     # must not abort decoding the whole node -- treat it as absent rather
@@ -486,7 +615,11 @@ def decode_concept_node(row: Mapping[str, Any]) -> ConceptNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata={**_dynamics_metadata_from_row(row), **_topic_foundry_metadata_from_row(row)},
+        metadata={
+            **_dynamics_metadata_from_row(row),
+            **_topic_foundry_metadata_from_row(row),
+            **_decay_stamp_metadata_from_row(row),
+        },
     )
 
 
@@ -504,7 +637,7 @@ def decode_evidence_node(row: Mapping[str, Any]) -> EvidenceNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata={},
+        metadata=_decay_stamp_metadata_from_row(row),
     )
 
 
@@ -527,7 +660,52 @@ def decode_entity_node(row: Mapping[str, Any]) -> EntityNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata={},
+        metadata=_entity_metadata_from_row(row),
+    )
+
+
+def decode_assertion_node(row: Mapping[str, Any]) -> AssertionNodeV1 | None:
+    if row.get("node_kind") != "assertion":
+        return None
+    return AssertionNodeV1(
+        node_id=str(row["node_id"]),
+        predicate=row["assertion_predicate"],
+        statement_key=str(row["statement_key"]),
+        statement_text=str(row["statement_text"]),
+        revision=int(row.get("assertion_revision") or 0),
+        decision_ref=row.get("decision_ref"),
+        anchor_scope=row["anchor_scope"],
+        subject_ref=row.get("subject_ref"),
+        promotion_state=row.get("promotion_state") or "proposed",
+        risk_tier=row.get("risk_tier") or "low",
+        temporal=_temporal_from_row(row),
+        signals=_signals_from_row(row),
+        provenance=_provenance_from_row(row),
+        metadata=_decay_stamp_metadata_from_row(row),
+    )
+
+
+# Forward tolerance (#2515 review, 2026-10-06): a row of a shape newer than this code
+# (a node kind, predicate, endpoint kind or edge role it does not know) is SKIPPED and
+# counted by the caller, never fatal. A future shape then cannot take a reader down; the
+# reader_capability gate covers code that predates this check.
+_KNOWN_NODE_KINDS = frozenset(get_args(SubstrateNodeKindV1))
+_KNOWN_PREDICATES = frozenset(get_args(SubstrateEdgePredicateV1))
+_KNOWN_EDGE_ROLES = frozenset(get_args(SubstrateEdgeRoleV1))
+
+
+def node_row_is_known(row: Mapping[str, Any]) -> bool:
+    """A node row this code can decode durably (its kind is one of DURABLE_NODE_KINDS)."""
+    return row.get("node_kind") in DURABLE_NODE_KINDS
+
+
+def edge_row_is_known(row: Mapping[str, Any]) -> bool:
+    role = row.get("edge_role")
+    return (
+        row.get("predicate") in _KNOWN_PREDICATES
+        and (row.get("source_kind") or "concept") in _KNOWN_NODE_KINDS
+        and (row.get("target_kind") or "concept") in _KNOWN_NODE_KINDS
+        and (role is None or role in _KNOWN_EDGE_ROLES)
     )
 
 
@@ -536,6 +714,9 @@ def decode_node(row: Mapping[str, Any]) -> BaseSubstrateNodeV1 | None:
     if node is not None:
         return node
     node = decode_evidence_node(row)
+    if node is not None:
+        return node
+    node = decode_assertion_node(row)
     if node is not None:
         return node
     return decode_entity_node(row)
@@ -560,4 +741,9 @@ def decode_edge(row: Mapping[str, Any]) -> SubstrateEdgeV1 | None:
         salience=float(row.get("salience") or 0.0),
         provenance=_provenance_from_row(row),
         metadata={},
+        # Rows written before roles existed have no edge_role column: they are
+        # legacy_unreviewed by definition (#2497 "Persistence and ownership").
+        edge_role=row.get("edge_role") or "legacy_unreviewed",
+        assertion_id=row.get("assertion_id"),
+        assertion_revision=row.get("assertion_revision"),
     )

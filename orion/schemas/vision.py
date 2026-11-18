@@ -25,6 +25,25 @@ class VisionObject(BaseModel):
     # crop, written by orion-vision-host ONLY for a crop it embedded (never a
     # no-embed-zone box). The Hub serves it for the ask card.
     thumb_ref: Optional[str] = None
+    # Additive (2026-10-15, walkway faces). On a crop-embedded ``person`` box
+    # of a stream that asked for crop faces (the walkway only): the
+    # L2-normalized 512-d facenet (InceptionResnetV1/VGGFace2) embedding of
+    # the most confident face MTCNN found inside the crop, its detection
+    # probability, and "thumb:<sha256>" of the face. None when no face was
+    # confident enough. The individuals reducer prefers a face match.
+    face_embedding: Optional[List[float]] = None
+    face_score: Optional[float] = None
+    face_thumb_ref: Optional[str] = None
+    # Additive (2026-10-16, OSNet shadow, docs/superpowers/specs/
+    # 2026-10-16-vision-body-match-proposal.md). ``embedding_model_id``: the
+    # body model that ACTUALLY made ``embedding`` (the SigLIP loader can fall
+    # back to another model). ``osnet_embedding``: on an embedded ``person``
+    # crop, the L2-normalized 512-d OSNet-AIN person re-identification vector
+    # of the same crop pixels, with ``osnet_model_id``. Shadow only: stored for
+    # an offline comparison, never used to assign a crop to an individual.
+    embedding_model_id: Optional[str] = None
+    osnet_embedding: Optional[List[float]] = None
+    osnet_model_id: Optional[str] = None
 
 
 # Alias for explicit requirement
@@ -34,6 +53,11 @@ VisionDetection = VisionObject
 class VisionCaption(BaseModel):
     text: str
     confidence: Optional[float] = None
+    # Additive (2026-10-08). Set only when the captioner's output was thrown
+    # away by the host's sanitizer (prompt_echo, too_short, stoplist_ratio,
+    # repetition_degenerate, empty, null_answer = the model gave the caller's
+    # agreed "nothing here" sentence); text is then "" and confidence 0.0.
+    rejected_reason: Optional[str] = None
 
 
 class VisionEmbedding(BaseModel):
@@ -300,7 +324,12 @@ class VisionEventBundleItem(BaseModel):
     narrative: str
     entities: List[str]
     tags: List[str]
-    confidence: float
+    # None = no measurement stands behind this row. The council sets it from
+    # the detector's score for the labels the row names, and leaves it None
+    # when the detector saw none of them (2026-11-15, #3387). It was a
+    # required float, and 96% of council rows carried 0.8 copied from the
+    # prompt example.
+    confidence: Optional[float] = None
     salience: float
     evidence_refs: List[str]
     # Additive (2026-09-24, walkway camera). Which camera this narrative is
@@ -370,7 +399,8 @@ class VisionEventCandidateV1(BaseModel):
     narrative: str
     entities: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
-    confidence: float = 0.5
+    # None = not measured (see VisionEventBundleItem.confidence).
+    confidence: Optional[float] = None
     salience: float = 0.5
     evidence_refs: list[str] = Field(default_factory=list)
 
@@ -511,9 +541,13 @@ class VisionScribeResultPayload(BaseModel):
 class VisionCropV1(BaseModel):
     """One detection box worth remembering as a possible individual.
 
-    ``embedding`` is None for any box inside a no-embed zone (the patio). The
-    DB enforces the same rule with a CHECK constraint, so a producer bug
-    cannot quietly start storing pictures of the family.
+    ``embedding`` (and the thumbnail and face fields) is None for any box in a
+    no-embed zone. No configured zone is no-embed since 2026-10-15 (the patio
+    is fingerprinted now); the writer still strips them generically.
+
+    ``extra="forbid"``: the face and OSNet fields are additive, so
+    orion-sql-writer (the consumer) must be deployed before orion-vision-window
+    starts sending them.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -524,8 +558,19 @@ class VisionCropV1(BaseModel):
     embedding_ref: Optional[str] = None
     embedding: Optional[List[float]] = None
     # Additive (2026-09-24): see VisionObject.thumb_ref. Same rule as the
-    # embedding: None for any no-embed-zone box (DB CHECK enforces it too).
+    # embedding: None for any no-embed-zone box.
     thumb_ref: Optional[str] = None
+    # Additive (2026-10-15): see VisionObject.face_embedding.
+    face_embedding: Optional[List[float]] = None
+    face_score: Optional[float] = None
+    face_thumb_ref: Optional[str] = None
+    # Additive (2026-10-16): see VisionObject.osnet_embedding. orion-sql-writer
+    # must be deployed before orion-vision-window sends them (extra="forbid");
+    # the window omits them while None, so an older writer keeps accepting
+    # crops until the host starts producing them.
+    embedding_model_id: Optional[str] = None
+    osnet_embedding: Optional[List[float]] = None
+    osnet_model_id: Optional[str] = None
 
 
 class VisionCropObservationV1(BaseModel):
@@ -578,8 +623,66 @@ class VisionUnresolvedV1(BaseModel):
     camera_id: Optional[str] = None
     window_id: Optional[str] = None
     observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    reason: Literal["council_uncertainty", "no_label", "surprise"]
+    # handoff_missed (2026-10-20): orion-sql-writer's handoff reducer -- someone
+    # left one camera toward the other, the target camera was watching, and no
+    # data explanation (late, turned back, detector miss, a place to go) held.
+    reason: Literal["council_uncertainty", "no_label", "surprise", "handoff_missed"]
     description: str
     what_was_tried: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
     image_ref: Optional[str] = None
+
+
+# Street events (docs/superpowers/specs/2026-10-20-street-continuity-handoff-
+# design.md, section 6). One fact about the street that may compete for
+# Orion's attention: a doorbell press, a cross-camera handoff outcome, a known
+# person's arrival. Producers: orion-vision-retina (doorbell_ring) and the
+# handoff reducer in orion-sql-writer (approach_door, handoff_met for a known
+# person, handoff_missed after its hypotheses settle unexplained,
+# overlap_pair). orion-substrate-runtime consumes the channel (later PR).
+StreetEventKind = Literal[
+    "doorbell_ring",
+    "handoff_met",
+    "handoff_late",
+    "handoff_missed",
+    "overlap_pair",
+    "known_person_arrived",
+    "approach_door",
+]
+StreetSubjectKind = Literal["person", "dog", "vehicle", "unknown"]
+
+
+class StreetEventV1(BaseModel):
+    """One street event on ``orion:vision:street:events``.
+
+    ``salience`` is the spec's ``who x what x surprise`` (0..1); a doorbell
+    ring is always 1.0. ``p_value`` is set only by events graded against a
+    model (handoffs): the probability of an outcome at least this unlikely.
+    ``individual_id`` / ``person_guess`` are a walkway individual and a
+    Juniper-given name guess, never a face match.
+
+    ``extra="forbid"``: a new field must reach every consumer before any
+    producer sends it (consumer-first migration).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["vision.street.event.v1"] = "vision.street.event.v1"
+    event_id: str
+    kind: StreetEventKind
+    stream_ids: List[str] = Field(min_length=1)
+    occurred_at: datetime
+    subject_kind: StreetSubjectKind = "unknown"
+    individual_id: Optional[str] = None
+    person_guess: Optional[str] = None
+    salience: float = Field(ge=0.0, le=1.0)
+    p_value: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Log density, in nats per second, of the actual arrival time under the
+    # handoff's predicted arrival distribution (orion-sql-writer
+    # app/vision_handoff.py arrival_log_score). Set on handoff_met /
+    # handoff_late only; None for misses, unscorable and every other kind.
+    # Read by orion-substrate-runtime's Rung 6 street_handoff domain.
+    # Consumer-first: rebuild the consumer before a producer sends it.
+    arrival_log_score: Optional[float] = None
+    evidence_refs: List[str] = Field(default_factory=list)
+    correlation_id: str

@@ -1,0 +1,365 @@
+"""Repeat-failing-call breaker: replay of urgent run a153451fe423 + unit rules."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+import subprocess
+import sys
+from pathlib import Path
+
+from orion.fcc import repeat_failure_breaker as rfb
+
+FIXTURE = Path(__file__).parent / "fixtures" / "fcc_repeat_failure_a153451fe423.jsonl"
+SENSORS = {"url": "http://host.docker.internal:8080/api/cabinet/sensors/latest"}
+SCRAPE = "mcp__firecrawl__firecrawl_scrape"
+
+
+def _entries():
+    return list(rfb.read_transcript(FIXTURE))
+
+
+def _replay(entries, threshold=3):
+    """Re-run the turn: before each tool_use, decide from the transcript prefix.
+
+    Returns [(tool_name, input, blocked)] in call order. Counterfactual past the
+    first block (the real model never saw it), which is fine for counting.
+    """
+    calls = []
+    for i, entry in enumerate(entries):
+        for block in (entry.get("message") or {}).get("content") or []:
+            if block.get("type") == "tool_use":
+                history = rfb.CallHistory().feed_all(entries[:i])
+                verdict = rfb.decide(history, block["name"], block["input"], threshold=threshold)
+                calls.append((block["name"], block["input"], verdict is not None))
+    return calls
+
+
+def test_fixture_is_the_real_incident():
+    sensors = [c for c in _replay(_entries()) if c[0] == SCRAPE and c[1] == SENSORS]
+    assert len(sensors) == 19  # the brief's "~20": 19 identical scrape calls in one turn
+
+
+def test_replay_cuts_nineteen_identical_failures_to_three():
+    sensors = [c for c in _replay(_entries()) if c[0] == SCRAPE and c[1] == SENSORS]
+    allowed = [c for c in sensors if not c[2]]
+    assert len(allowed) == 3
+    assert all(c[2] for c in sensors[3:])  # every call after the third failure is blocked
+    assert sum(c[2] for c in sensors) == 16
+
+
+def test_replay_does_not_block_calls_below_threshold_or_succeeded():
+    calls = _replay(_entries())
+    blocked_other = {json.dumps(c[1], sort_keys=True) for c in calls if c[2] and c[1] != SENSORS}
+    # biometrics?node=circe failed only twice; psql/Bash calls succeeded -> never blocked.
+    assert blocked_other == set()
+
+
+def test_block_message_names_count_and_real_error():
+    entries = _entries()
+    history = rfb.CallHistory().feed_all(entries)
+    count, err = rfb.decide(history, SCRAPE, SENSORS, threshold=3)
+    assert count >= 3
+    assert "DNS resolution failed" in err
+    msg = rfb.block_message(SCRAPE, count, err)
+    assert rfb.BLOCK_MARKER in msg and f"failed {count} times" in msg
+    assert "DNS resolution failed" in msg and "Change approach" in msg
+
+
+def _use(i, name, inp):
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": f"t{i}", "name": name, "input": inp}]}}
+
+
+def _res(i, err, text="x"):
+    block = {"type": "tool_result", "tool_use_id": f"t{i}", "content": text}
+    if err:
+        block["is_error"] = True
+    return {"type": "user", "message": {"content": [block]}}
+
+
+def _hist(*pairs):
+    entries = []
+    for i, (name, inp, err) in enumerate(pairs):
+        entries += [_use(i, name, inp), _res(i, err, "boom" if err else "ok")]
+    return rfb.CallHistory().feed_all(entries)
+
+
+def test_previously_succeeded_call_is_never_blocked():
+    cmd = {"command": "curl -s http://x"}
+    h = _hist(("Bash", cmd, False), ("Bash", cmd, True), ("Bash", cmd, True), ("Bash", cmd, True))
+    assert rfb.decide(h, "Bash", cmd, threshold=3) is None
+
+
+def test_bash_blocked_after_three_identical_failures():
+    cmd = {"command": "false"}
+    h = _hist(("Bash", cmd, True), ("Bash", cmd, True))
+    assert rfb.decide(h, "Bash", cmd, threshold=3) is None
+    h = _hist(("Bash", cmd, True), ("Bash", cmd, True), ("Bash", cmd, True))
+    assert rfb.decide(h, "Bash", cmd, threshold=3) == (3, "boom")
+
+
+def test_different_input_or_tool_not_blocked():
+    cmd = {"command": "false"}
+    h = _hist(("Bash", cmd, True), ("Bash", cmd, True), ("Bash", cmd, True))
+    assert rfb.decide(h, "Bash", {"command": "true"}, threshold=3) is None
+    assert rfb.decide(h, "mcp__x__y", cmd, threshold=3) is None
+
+
+def test_normalization_key_order_and_whitespace():
+    a = {"url": "http://a", "formats": ["markdown"]}
+    h = _hist(("T", a, True), ("T", a, True), ("T", a, True))
+    assert rfb.decide(h, "T", {"formats": ["markdown"], "url": "  http://a "}, threshold=3) is not None
+
+
+def test_bash_description_label_does_not_split_identical_calls():
+    """Live smoke 2026-10-02: the model numbered each attempt in `description`."""
+    h = _hist(*[("Bash", {"command": "cat /nope", "description": f"Read file (attempt {i})"}, True) for i in (1, 2, 3)])
+    assert rfb.decide(h, "Bash", {"command": "cat /nope", "description": "attempt 4"}, threshold=3) == (3, "boom")
+    # ...but only for Bash: an MCP tool's `description` can be real content.
+    h = _hist(*[("mcp__x__y", {"description": f"d{i}"}, True) for i in (1, 2, 3)])
+    assert rfb.decide(h, "mcp__x__y", {"description": "d4"}, threshold=3) is None
+
+
+def test_successful_edit_resets_failure_counts():
+    """Edit -> re-run failing tests is a fair retry, not a stuck loop."""
+    cmd = {"command": "pytest tests/x.py"}
+    pairs = []
+    for i in range(3):
+        pairs += [("Bash", cmd, True), ("Edit", {"file_path": "/a.py", "old_string": str(i), "new_string": "y"}, False)]
+    assert rfb.decide(_hist(*pairs), "Bash", cmd, threshold=3) is None
+    # A failed edit does not reset.
+    pairs = []
+    for i in range(3):
+        pairs += [("Bash", cmd, True), ("Edit", {"file_path": "/a.py", "old_string": str(i)}, True)]
+    assert rfb.decide(_hist(*pairs), "Bash", cmd, threshold=3) is not None
+    # Nor does an unrelated successful read.
+    pairs = []
+    for i in range(3):
+        pairs += [("Bash", cmd, True), ("Read", {"file_path": f"/{i}"}, False)]
+    assert rfb.decide(_hist(*pairs), "Bash", cmd, threshold=3) is not None
+
+
+def test_threshold_zero_disables():
+    cmd = {"command": "false"}
+    h = _hist(*[("Bash", cmd, True)] * 5)
+    assert rfb.decide(h, "Bash", cmd, threshold=0) is None
+
+
+def test_sidechain_entries_ignored():
+    cmd = {"command": "false"}
+    entries = []
+    for i in range(3):
+        u, r = _use(i, "Bash", cmd), _res(i, True)
+        u["isSidechain"] = r["isSidechain"] = True
+        entries += [u, r]
+    assert rfb.decide(rfb.CallHistory().feed_all(entries), "Bash", cmd, threshold=3) is None
+
+
+def _run_hook(tmp_path, transcript_entries, tool_name, tool_input, threshold=3):
+    t = tmp_path / "session.jsonl"
+    t.write_text("".join(json.dumps(e) + "\n" for e in transcript_entries))
+    payload = {"hook_event_name": "PreToolUse", "transcript_path": str(t), "tool_name": tool_name, "tool_input": tool_input}
+    return subprocess.run(
+        [sys.executable, rfb.__file__, "--threshold", str(threshold)],
+        input=json.dumps(payload), capture_output=True, text=True, timeout=30,
+    )
+
+
+def test_per_session_isolation_via_transcript(tmp_path):
+    """Two turns = two transcripts; failures in one never block the other."""
+    cmd = {"command": "false"}
+    failing = []
+    for i in range(3):
+        failing += [_use(i, "Bash", cmd), _res(i, True)]
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert _run_hook(tmp_path / "a", failing, "Bash", cmd).returncode == 2
+    assert _run_hook(tmp_path / "b", [], "Bash", cmd).returncode == 0
+
+
+def test_hook_process_blocks_with_exit_2_and_stderr(tmp_path):
+    proc = _run_hook(tmp_path, _entries(), SCRAPE, SENSORS)
+    assert proc.returncode == 2
+    assert rfb.BLOCK_MARKER in proc.stderr and "DNS resolution failed" in proc.stderr
+
+
+def test_hook_fails_open_on_missing_transcript_or_garbage(tmp_path):
+    payload = {"transcript_path": str(tmp_path / "nope.jsonl"), "tool_name": "Bash", "tool_input": {}}
+    proc = subprocess.run([sys.executable, rfb.__file__], input=json.dumps(payload), capture_output=True, text=True)
+    assert proc.returncode == 0
+    proc = subprocess.run([sys.executable, rfb.__file__], input="not json", capture_output=True, text=True)
+    assert proc.returncode == 0
+    # Bad argv must not turn into argparse's exit 2 (= block every call).
+    proc = subprocess.run([sys.executable, rfb.__file__, "--threshold", "x"], input=json.dumps(payload), capture_output=True, text=True)
+    assert proc.returncode == 0
+
+
+def test_settings_json_installs_catch_all_pretooluse_hook():
+    data = json.loads(rfb.hook_settings_json(threshold=4, python_bin="/usr/local/bin/python3"))
+    (entry,) = data["hooks"]["PreToolUse"]
+    assert entry["matcher"] == "*"
+    cmd = entry["hooks"][0]["command"]
+    assert cmd.startswith("/usr/local/bin/python3 ") and "repeat_failure_breaker.py" in cmd
+    assert cmd.endswith("--threshold 4")
+
+
+# --- reading-only rules: refetch + tool window (seed c31227dc Stage 2, 2026-10-14) ---
+
+HUGE = Path(__file__).parent / "fixtures" / "fcc_reading_refetch_c31227dc.jsonl"
+QUANTS_C = "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-quants.c"
+# Motor budget the fixed listener gives this turn: 3500 s attempt, harness started
+# 249 s in (stance), 10 s reply slack -> 3241 s; turn start = deadline - budget.
+HUGE_BUDGET = 3500 - 249 - 10
+
+
+def _huge_entries():
+    return [json.loads(line) for line in HUGE.read_text().splitlines()[1:]]
+
+
+def _replay_reading(entries, *, refetch_limit=1, fraction=0.5, budget=HUGE_BUDGET):
+    """Re-run the turn's tool calls through run_hook's rules at their real start times.
+    Returns {tool_use_id: block message or None}."""
+    env = {"ORION_TURN_BUDGET_SEC": str(budget), "ORION_TURN_DEADLINE_EPOCH": str(budget)}
+    out = {}
+    for i, entry in enumerate(entries):
+        for block in entry["message"]["content"]:
+            if block.get("type") != "tool_use":
+                continue
+            history = rfb.CallHistory().feed_all(entries[:i])
+            window = rfb.tool_window_state(env, fraction=fraction, now=float(entry["_t"]))
+            if window is not None:
+                out[block["id"]] = rfb.tool_window_message(block["name"], *window)
+                continue
+            refetch = rfb.decide_refetch(history, block["name"], block["input"], limit=refetch_limit)
+            out[block["id"]] = rfb.refetch_message(*refetch) if refetch else None
+    return out
+
+
+def test_canonical_fetch_url_folds_github_raw_spellings_only():
+    variants = [
+        QUANTS_C,
+        "https://raw.githubusercontent.com/ggml-org/llama.cpp/refs/heads/master/ggml/src/ggml-quants.c",
+        "https://github.com/ggml-org/llama.cpp/raw/refs/heads/master/ggml/src/ggml-quants.c",
+        "https://github.com/ggml-org/llama.cpp/raw/master/ggml/src/ggml-quants.c/",
+        "  HTTPS://Raw.GitHubUserContent.com/ggml-org/llama.cpp/master/ggml/src/ggml-quants.c#L10 ",
+    ]
+    assert {rfb.canonical_fetch_url(v) for v in variants} == {QUANTS_C}
+    # The blob page is a different document (GitHub chrome), and a query string is content.
+    blob = "https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c"
+    assert rfb.canonical_fetch_url(blob) == blob
+    assert rfb.canonical_fetch_url("https://a.example/x?page=2") != rfb.canonical_fetch_url("https://a.example/x")
+    assert rfb.canonical_fetch_url("http://a.example/x") == rfb.canonical_fetch_url("https://a.example/x")
+    assert rfb.canonical_fetch_url("https://a.example:8080/x") != rfb.canonical_fetch_url("https://a.example/x")
+
+
+def test_huge_page_replay_refetch_blocks_the_three_repeat_fetches():
+    verdicts = _replay_reading(_huge_entries(), fraction=0.0)
+    blocked = {k for k, v in verdicts.items() if v}
+    # t20: same .c "slice 100000-200000"; t21: same .h again; t99: refs/heads spelling of the .c.
+    assert blocked == {"t20", "t21", "t99"}
+    assert all("already fetched" in verdicts[k] for k in blocked)
+    assert "already fetched 1 time" in verdicts["t20"]  # the real turn then fetched it again
+    assert "cannot read a later slice" in verdicts["t20"]
+
+
+def test_huge_page_replay_tool_window_closes_before_the_last_two_fetches():
+    verdicts = _replay_reading(_huge_entries(), refetch_limit=0)
+    assert {k for k, v in verdicts.items() if v} == {"t99", "t100"}  # started at 1922 s > 0.5 x 3241 s
+    assert "tool window for this turn is closed" in verdicts["t100"]
+    # On the old 7200 s motor budget the window never closed inside the 3500 s attempt.
+    assert not any(_replay_reading(_huge_entries(), refetch_limit=0, budget=7200).values())
+
+
+def test_failed_fetch_does_not_count_toward_refetch():
+    url = {"url": QUANTS_C, "prompt": "a"}
+    h = _hist(("WebFetch", url, True))
+    assert rfb.decide_refetch(h, "WebFetch", {"url": QUANTS_C, "prompt": "b"}, limit=1) is None
+    h = _hist(("WebFetch", url, False))
+    assert rfb.decide_refetch(h, "WebFetch", {"url": QUANTS_C, "prompt": "b"}, limit=1) == (QUANTS_C, 1)
+    assert rfb.decide_refetch(h, "WebFetch", {"url": QUANTS_C}, limit=2) is None
+    assert rfb.decide_refetch(h, "WebFetch", {"url": QUANTS_C}, limit=0) is None
+    assert rfb.decide_refetch(h, "WebSearch", {"query": QUANTS_C}, limit=1) is None
+
+
+def test_tool_window_fails_open_without_clock_env():
+    assert rfb.tool_window_state({}, fraction=0.5, now=1e12) is None
+    assert rfb.tool_window_state({"ORION_TURN_BUDGET_SEC": "x", "ORION_TURN_DEADLINE_EPOCH": "1"}, fraction=0.5, now=1e12) is None
+    assert rfb.tool_window_state({"ORION_TURN_BUDGET_SEC": "100", "ORION_TURN_DEADLINE_EPOCH": "1000"}, fraction=0.0, now=999) is None
+    env = {"ORION_TURN_BUDGET_SEC": "100", "ORION_TURN_DEADLINE_EPOCH": "1000"}  # turn started at 900
+    assert rfb.tool_window_state(env, fraction=0.5, now=949) is None
+    assert rfb.tool_window_state(env, fraction=0.5, now=950) == (50, 100)
+
+
+def test_hook_process_reading_rules(tmp_path):
+    import os
+    import time
+
+    t = tmp_path / "session.jsonl"
+    t.write_text("".join(json.dumps(e) + "\n" for e in _hist_entries_fetched()))
+    payload = {"transcript_path": str(t), "tool_name": "WebFetch",
+               "tool_input": {"url": QUANTS_C, "prompt": "characters 100000 to 200000"}}
+
+    def run(args, env_extra):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("ORION_TURN_")}
+        env.update(env_extra)
+        return subprocess.run([sys.executable, rfb.__file__, *args], input=json.dumps(payload),
+                              capture_output=True, text=True, timeout=30, env=env)
+
+    # Refetch armed: blocked. Not armed (non-reading turn): allowed.
+    proc = run(["--threshold", "3", "--refetch-limit", "1"], {})
+    assert proc.returncode == 2 and "already fetched" in proc.stderr
+    assert run(["--threshold", "3"], {}).returncode == 0
+    # Tool window closed on the turn's own clock: any tool blocked, before the transcript is read.
+    now = time.time()
+    clock = {"ORION_TURN_BUDGET_SEC": "100", "ORION_TURN_DEADLINE_EPOCH": str(int(now + 10))}
+    proc = run(["--tool-window-fraction", "0.5"], clock)
+    assert proc.returncode == 2 and "tool window" in proc.stderr
+    open_clock = {"ORION_TURN_BUDGET_SEC": "100", "ORION_TURN_DEADLINE_EPOCH": str(int(now + 95))}
+    assert run(["--tool-window-fraction", "0.5"], open_clock).returncode == 0
+
+
+def _hist_entries_fetched():
+    return [_use(0, "WebFetch", {"url": QUANTS_C, "prompt": "slice"}), _res(0, False, "digest")]
+
+
+def test_settings_json_carries_reading_flags_only_when_armed():
+    plain = json.loads(rfb.hook_settings_json(threshold=3, python_bin="py"))
+    assert "--refetch-limit" not in plain["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    armed = json.loads(rfb.hook_settings_json(threshold=3, python_bin="py", refetch_limit=1, tool_window_fraction=0.5))
+    assert armed["hooks"]["PreToolUse"][0]["hooks"][0]["command"].endswith(
+        "--threshold 3 --refetch-limit 1 --tool-window-fraction 0.5")
+
+
+# --- #3401: Postgres reads \\b as a backspace, so the regex matches nothing ---
+
+_PSQL = 'psql "$ORION_CURIOSITY_PG_DSN" -At -c '
+
+
+@pytest.mark.parametrize("sql", [
+    r"""select count(*) from reverie_thoughts where body ~* '\bjuniper\b'""",
+    r"""select count(*) from t where body !~ '\bfoo'""",
+    r"""select regexp_count(body, '\bjuniper\b', 1, 'i') from t""",
+    r"""select 1 from t where body SIMILAR TO '%\bfoo%'""",
+])
+def test_psql_regex_with_backslash_b_is_blocked_with_the_fix(tmp_path, sql):
+    proc = _run_hook(tmp_path, [], "Bash", {"command": _PSQL + '"' + sql + '"'})
+    assert proc.returncode == 2
+    assert rfb.BLOCK_MARKER in proc.stderr
+    assert r"Use \y for a word boundary" in proc.stderr
+
+
+@pytest.mark.parametrize("tool_name,command", [
+    ("Bash", _PSQL + r""" "select count(*) from t where body ~* '\yjuniper\y'" """),
+    ("Bash", _PSQL + r""" "select count(*) from t where body like '%juniper%'" """),
+    ("Bash", r"grep -rn '\bjuniper\b' ~/notes"),  # not psql: \b is right for grep
+    ("Bash", _PSQL + r""" "select 1" && printf 'a\bc' """),  # \b, but no regex operator
+    ("Read", _PSQL + r""" "select 1 where 'a' ~ '\bfoo'" """),  # not a Bash call
+])
+def test_psql_guard_lets_everything_else_through(tmp_path, tool_name, command):
+    assert _run_hook(tmp_path, [], tool_name, {"command": command}).returncode == 0
+
+
+def test_psql_guard_needs_no_transcript():
+    payload = {"tool_name": "Bash", "tool_input": {"command": _PSQL + r""" "select 1 where x ~ '\bfoo'" """}}
+    assert rfb.run_hook(payload, threshold=3) == rfb.psql_backspace_message()

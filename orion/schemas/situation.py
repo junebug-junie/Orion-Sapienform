@@ -112,6 +112,11 @@ class PlaceContextV1(BaseModel):
     locality: Optional[str] = None
     region: Optional[str] = None
     country: Optional[str] = None
+    # Fixed facts about where Orion lives, independent of where Juniper is
+    # this week. Rendered in the Situation block so a mention of "outside" or
+    # "the camera" cannot be resolved against a travel city from recent chat.
+    home_location: Optional[str] = None
+    physical_location: Optional[str] = None
     timezone: str = "America/Denver"
     precision: Literal["none", "coarse", "city", "exact"] = "coarse"
     source: Literal["configured_home", "browser_metadata", "manual", "unknown"] = "unknown"
@@ -204,23 +209,6 @@ class AgendaContextV1(BaseModel):
     diagnostics: dict[str, str] = Field(default_factory=dict)
 
 
-class LabContextV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    available: bool = False
-    active_node: Optional[str] = None
-    gpu_hosts_online: list[str] = Field(default_factory=list)
-    service_health_summary: Optional[str] = None
-    ambient_temp_f: Optional[float] = None
-    power_load_watts: Optional[float] = None
-    ups_on_battery: Optional[bool] = None
-    thermal_risk: Literal["unknown", "low", "medium", "high"] = "unknown"
-    power_risk: Literal["unknown", "low", "medium", "high"] = "unknown"
-    source: str = "none"
-    confidence: Literal["low", "medium", "high"] = "low"
-    diagnostics: dict[str, str] = Field(default_factory=dict)
-
-
 class CabinetContextV1(BaseModel):
     """Live read of Orion's own physical cabinet sensors (Athena Nano ESP32
     node: BME680 climate, LTR390 UV/ALS, magnetometer, PMSA003I particulate,
@@ -229,10 +217,9 @@ class CabinetContextV1(BaseModel):
     inventory and `services/orion-biometrics/README.md`'s "Cabinet sensor
     node" section for the full host-reader -> biometrics pipeline).
 
-    This is the real thing `LabContextV1` was a stand-in for -- Orion's own
-    housing, not a hand-waved compute-cluster risk summary. `LabContextV1`
-    stays untouched as a distinct, still-unwired concept (GPU-cluster
-    thermal/power risk); this does not replace or extend it.
+    This is the real thing the old lab stub (removed 2026-10-27) was a
+    stand-in for -- Orion's own housing, not a hand-waved compute-cluster
+    risk summary.
 
     Producer: `orion/situational/context.py`'s `_fetch_cabinet_context`,
     reusing the same shared `orion.telemetry.cabinet_sensors` /
@@ -282,6 +269,46 @@ class CabinetContextV1(BaseModel):
     uv_activity: Optional[float] = None
     vibration_activity: Optional[float] = None
     proximity_activity: Optional[float] = None
+    # Cabinet USB mic (Athena host reader, `orion/telemetry/ambient_audio.py`).
+    # Independent of the Nano frame: `available` above can be False while the
+    # mic is fresh, and vice versa. Levels are dBFS (relative to the 16-bit
+    # full scale, 0 = clipping), NOT calibrated dB SPL. `sound_usual_*` are
+    # the 10th/50th/90th percentiles of the stored ~30 s readings over the
+    # last 24 h; `sound_recent_dbfs` is the median of the last 10 min.
+    # `sound_vs_usual` compares the live reading to that 24 h band.
+    sound_available: bool = False
+    sound_age_seconds: Optional[float] = None
+    sound_dbfs: Optional[float] = None
+    sound_peak_dbfs: Optional[float] = None
+    sound_recent_dbfs: Optional[float] = None
+    sound_usual_low_dbfs: Optional[float] = None
+    sound_usual_dbfs: Optional[float] = None
+    sound_usual_high_dbfs: Optional[float] = None
+    sound_vs_usual: Optional[Literal["quieter", "usual", "louder"]] = None
+
+
+class OfficeSoundContextV1(BaseModel):
+    """How loud Juniper's office is, from the office sound meter (DFRobot
+    SEN0232 on pan-1's office Nano; `orion/situational/office_sound_reader.py`).
+
+    A real dBA meter, so the level is decibels, unlike the cabinet mic's
+    dBFS. It is in the office, not in the server cabinet or the closet.
+    `usual_*` are the 10th/50th/90th percentiles of the last 24 h of stored
+    ~30 s readings (None while that history is too thin); `recent_dba` is the
+    median of the last 10 min. `available=False` = no fresh reading.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["office_sound.context.v1"] = "office_sound.context.v1"
+    available: bool = False
+    age_seconds: Optional[float] = None
+    dba: Optional[float] = None
+    recent_dba: Optional[float] = None
+    usual_low_dba: Optional[float] = None
+    usual_dba: Optional[float] = None
+    usual_high_dba: Optional[float] = None
+    vs_usual: Optional[Literal["quieter", "usual", "louder"]] = None
 
 
 class RuntimeContextV1(BaseModel):
@@ -301,7 +328,7 @@ class RuntimeContextV1(BaseModel):
 
     `available=False` is the honest default: probe failure, a disabled flag,
     or an unreachable gateway all degrade to "unavailable", not a guess.
-    Mirrors `LabContextV1`/`PerceptionContextV1`'s pattern in this file.
+    Mirrors `PerceptionContextV1`'s pattern in this file.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -344,8 +371,6 @@ class SituationAffordanceV1(BaseModel):
         "family_audience",
         "privacy_sensitive_audience",
         "late_night_risk",
-        "lab_thermal_risk",
-        "lab_power_risk",
         "calendar_constraint",
         "weather_alert",
         "stale_context_revalidation",
@@ -367,6 +392,45 @@ class SituationPolicyV1(BaseModel):
     child_presence_requires_age_appropriate_style: bool = True
     do_not_infer_private_facts_from_presence: bool = True
     do_not_overpersonalize: bool = True
+
+
+class CameraSenseV1(BaseModel):
+    """One of Orion's cameras as Orion's own sense (2026-10-15).
+
+    Built by `orion.situational.camera_eyes`: `name`/`view`/`outside` come
+    from config (`ORION_CAMERA_DESCRIPTIONS`), the rest from live state
+    (`vision_scene_inventory` per stream, today's `vision_rollup` day row for
+    the street camera). No frames, boxes, faces or names cross here -- a
+    status, an age, a date and a people range.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    stream_id: str
+    name: str
+    view: Optional[str] = None
+    # A public view that is not Orion's room (the walkway). Never true for an
+    # undescribed camera.
+    outside: bool = False
+    # live: newest frame within the perception staleness gate;
+    # not_seeing: frames exist, none that recent; no_frames: never any.
+    status: Literal["live", "not_seeing", "no_frames"]
+    # The gate `status` was judged against (seconds); "live" means a frame
+    # within this window, and the rendered line says so in these terms.
+    live_window_seconds: float
+    # Local date (situation timezone) of this camera's first frame.
+    since: Optional[str] = None
+    last_frame_age_seconds: Optional[float] = None
+    # People today as a range (street cameras only, live only), from today's
+    # day rollup (vision_rollup, orion/vision/walkway_rollup.person_count_range):
+    # low = most people in one vision window, high = person clusters. Both or
+    # neither. Never a bare cluster count (spec #2763 decision 5); the old
+    # `individuals_today` (distinct clusters of every kind) was retired
+    # 2026-11-03. `people_today_through`: local HH:MM the range is counted
+    # through (closed hours only).
+    people_today_low: Optional[int] = None
+    people_today_high: Optional[int] = None
+    people_today_through: Optional[str] = None
 
 
 class PerceptionContextV1(BaseModel):
@@ -479,9 +543,11 @@ class PerceptionContextV1(BaseModel):
     # The street outside the walkway camera (walkway spec ideas 5 and 9,
     # docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md),
     # from `orion.situational.perception_reader.fetch_street_summary`. Plain
-    # sentences only: who is around (Juniper-given names, otherwise "an
-    # unfamiliar dog"), expectation outcomes, things Orion could not name,
-    # and the patio as a COUNT, never a name. None when nothing was read or
+    # sentences only: what the street camera's captions said just now, who is
+    # around (Juniper-given names, otherwise "an unfamiliar dog"; patio people
+    # included since 2026-10-15, stationary fixtures excluded), expectation
+    # outcomes, things Orion could not name, and a head count for counted
+    # zones (the patio). None when nothing was read or
     # nothing is worth saying -- never an empty sentence. Independent of
     # `available` above: that is the room camera; this is a different one.
     # Additive, 2026-09-24. The brief crosses services as a dict and is not
@@ -490,6 +556,15 @@ class PerceptionContextV1(BaseModel):
     # extra="forbid" does not make this a consumer-first migration.
     street_summary: Optional[str] = None
     street_stream_id: Optional[str] = None
+
+    # Every configured camera (room and street) as Orion's own sense, read
+    # live each brief (orion.situational.camera_eyes). Rendered as one
+    # "Your cameras (your own eyes): ..." line so "what can you see?" has an
+    # answer that names both the room and the walkway, and says which one is
+    # outside. Empty when perception is off or nothing could be read --
+    # never a line claiming every camera is dark. Additive, 2026-10-15; same
+    # dict-crossing note as street_summary above.
+    cameras: list[CameraSenseV1] = Field(default_factory=list)
 
 
 class AffectContextV1(BaseModel):
@@ -685,15 +760,17 @@ class SituationBriefV1(BaseModel):
     place: PlaceContextV1
     environment: EnvironmentContextV1 = Field(default_factory=EnvironmentContextV1)
     agenda: AgendaContextV1 = Field(default_factory=AgendaContextV1)
-    lab: LabContextV1 = Field(default_factory=LabContextV1)
     # Additive (2026-08-31): defaults to available=False. Rendered like
     # curiosity/reverie (omitted from the prompt entirely when unavailable,
-    # not an always-on placeholder line) rather than like weather/lab/
+    # not an always-on placeholder line) rather than like weather/
     # perception -- see `_build_prompt_fragment`'s own comment for why. ON
     # by default in orion-hub (the only process with the `/run/orion-
     # sensors` bind mount) -- carries no private-home content, same
     # reasoning as curiosity/reverie above.
     cabinet: CabinetContextV1 = Field(default_factory=CabinetContextV1)
+    # Additive (2026-11-07): defaults to available=False; omitted from the
+    # prompt when unavailable, like cabinet.
+    office_sound: OfficeSoundContextV1 = Field(default_factory=OfficeSoundContextV1)
     # Additive: defaults to available=False, so an unpatched producer or a
     # disabled flag yields "haven't seen anything recently" rather than a
     # missing field.

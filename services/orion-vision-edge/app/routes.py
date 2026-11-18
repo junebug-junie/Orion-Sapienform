@@ -18,9 +18,14 @@ from fastapi.responses import (
 
 from .context import settings, bus, camera
 from .detector_worker import run_detectors_on_frame
+from .still import grab_still
 from .utils import encode_jpeg
 
 router = APIRouter()
+
+# One still at a time. A caller that arrives mid-grab is told "busy" instead of queueing: a queued
+# grab would run after its caller (the frame router waits 10 s) had already given up.
+_still_lock = asyncio.Lock()
 
 # Path to static index.html
 BASE_DIR = Path(__file__).resolve().parent
@@ -29,16 +34,21 @@ INDEX_HTML_PATH = BASE_DIR / "static" / "index.html"
 
 @router.get("/health")
 async def health():
+    frame_age = camera.frame_age_sec()
     return {
         "ok": True,
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
-        # Matches the literal `node` reported by main.py's heartbeat_loop -- no
-        # per-node NODE_NAME setting exists yet for this service.
-        "node": "vision-edge-node",
+        # Same `node` main.py's heartbeat_loop reports.
+        "node": settings.NODE_NAME,
         "stream_id": settings.STREAM_ID,
         "source": settings.source_redacted,
         "detectors": settings.detector_names,
+        "hires_still": bool(settings.HIRES_SOURCE.strip()),
+        # Seconds since the camera last delivered a frame; past capture.STALE_AFTER_SEC nothing
+        # is published. None means no frame since boot.
+        "camera_frame_age_sec": None if frame_age is None else round(frame_age, 1),
+        "camera_reopens": camera.reopens,
         "bus_enabled": settings.ORION_BUS_ENABLED,
         "events_publish_raw": settings.VISION_EVENTS_PUBLISH_RAW,
         "events_subscribe_raw": settings.VISION_EVENTS_SUBSCRIBE_RAW,
@@ -73,6 +83,24 @@ async def snapshot():
     if data is None:
         return Response(status_code=500)
     return Response(content=data, media_type="image/jpeg")
+
+
+@router.post("/still")
+async def still():
+    """One full-resolution still from the main stream, written to the shared frame directory.
+    The frame router calls this right before a face check (app/still.py says why)."""
+    if not settings.HIRES_SOURCE.strip():
+        return JSONResponse({"ok": False, "error": "hires_source_not_configured"}, status_code=404)
+    if _still_lock.locked():
+        return JSONResponse({"ok": False, "error": "busy"}, status_code=409)
+    async with _still_lock:
+        try:
+            result = await asyncio.to_thread(grab_still, settings.HIRES_SOURCE, settings.FRAME_STORAGE_DIR)
+        except Exception as exc:  # noqa: BLE001 -- never echo the URL; the exception type is enough
+            return JSONResponse({"ok": False, "error": f"grab_failed:{type(exc).__name__}"}, status_code=502)
+    if result is None:
+        return JSONResponse({"ok": False, "error": "no_frame"}, status_code=502)
+    return {"ok": True, "stream_id": settings.STREAM_ID, **result}
 
 
 @router.get("/stream.mjpg")

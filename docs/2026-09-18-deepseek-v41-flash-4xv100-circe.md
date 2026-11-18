@@ -76,7 +76,7 @@ llama-server \
 
 `--moe-stream-l2 96` allocated **96.00 GiB PINNED** host RAM (16,426 slots × 6,275,072 bytes, CLOCK eviction). That memory is unavailable to the rest of the system. Combined with ~110 GiB RSS this host went into **5 GiB swap**. Raising L2 further on 256 GiB-class boxes is likely a footgun until RAM grows.
 
-`--flash-attn off` is not optional on these Voltas. Same host has previously seen ~20× token-generation collapse with flash-attn on V100. We did not re-enable it.
+`--flash-attn off` is not optional on these Voltas. Same host has previously seen ~20× token-generation collapse with flash-attn on V100. **Update 2026-09-30:** that rule came from one older 2-GPU bench and did not hold single-card on stock b10398 (flash attention on was ~2x faster at depth for the 27B, 35B and Bonsai; `docs/2026-09-30-flash-attention-volta-circe.md`). This fork was not re-benched. We did not re-enable it.
 
 Vision and tools: weights are multimodal; this run was **text-only**. `supports_vision` was left off.
 

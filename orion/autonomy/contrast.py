@@ -242,11 +242,11 @@ class ControlCell:
 
         `moved` is decided by the CALLER, not by a dead band defined here.
         This module is the estimator and knows nothing about pressure units;
-        `orion.feedback.extractors.PRESSURE_DELTA_EPSILON` is the one place
-        that decides what "moved" means for these channels, and importing it
-        here would close a real cycle (contrast -> extractors -> field ->
-        schemas.execution_dispatch_frame -> schemas.action_prediction ->
-        contrast).
+        `orion.autonomy.world_settlement.PRESSURE_DELTA_EPSILON` is the one
+        place that decides what "moved" means for these channels (it lived in
+        orion.feedback.extractors until the feedback rung retired, 2026-11-04);
+        importing it here would close a cycle (contrast -> world_settlement ->
+        schemas.action_prediction -> contrast).
         """
         return ControlCell(
             posterior=posterior,

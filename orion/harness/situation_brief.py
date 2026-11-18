@@ -45,6 +45,13 @@ def situation_block_brief_lines() -> list[str]:
             "to assert to Juniper."
         ),
         (
+            "If the Situation block has a Place line, treat it as standing ground "
+            "truth about where you live and where your body, cameras and sensors "
+            "are. Before you claim what a camera or sensor can see, or where you "
+            "are, check the claim against it. A city Juniper mentions in chat is "
+            "where she is, not where you are."
+        ),
+        (
             "General posture: use situation context only when it materially serves "
             "this turn's task (the user message). A section being present is not an "
             "instruction to mention, narrate, or perform it."

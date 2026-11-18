@@ -1,8 +1,9 @@
 """Which frames an edge instance detects on.
 
-Every orion-vision-edge instance (cam0, walkway) subscribes to the same
-orion:vision:frames channel. Each must detect only its own camera's frames or
-a second instance doubles activity events and GPU work. A pointer with no
+The edge subscribes to orion:vision:frames, which also carries frames from
+other capture services (e.g. the walkway's orion-vision-retina instance). It
+must detect only its own camera's frames or it doubles activity events and
+GPU work. A pointer with no
 stream_id (legacy producers) belongs to the legacy default instance, cam0,
 only -- otherwise every instance would detect it.
 """

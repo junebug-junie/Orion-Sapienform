@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, TypedDict
 
 from app.admitted_graph import (
-    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued,
+    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, listener_wait, replay_if_requeued,
     resource_nodes, taken_back,
 )
 from orion.journaler import build_write_payload
@@ -53,6 +53,7 @@ class JournalComposeState(TypedDict, total=False):
     requested_at: str
     attempt: int
     hold_takebacks: int
+    listener_waits: int   # RPCs published to nobody this run waited out (listener_wait; never an attempt)
     lease: dict[str, Any] | None
     hold: dict[str, Any] | None
     hold_seq: int
@@ -123,6 +124,11 @@ def build_journal_compose_graph(compose: ComposeFn, publish: PublishFn, admissio
             return await taken_back(admission, dict(state), exc.release_reason, f"{type(exc).__name__}: {exc}",
                                     {"status": "waiting_resource"})
         except Exception as exc:  # noqa: BLE001 -- a real compose attempt failed: bounded re-try
+            # The answering service restarting: the call reached nobody. Wait it out, replay, no attempt.
+            parked = await listener_wait(admission, dict(state), exc,
+                                         waiting={"status": "retrying", "retry_node": None})
+            if parked is not None:
+                return parked
             # An urgent preemption can surface as a failed call: replay it, never spend an attempt.
             replay = await replay_if_requeued(admission, dict(state), {"status": "waiting_resource"})
             if replay is not None:

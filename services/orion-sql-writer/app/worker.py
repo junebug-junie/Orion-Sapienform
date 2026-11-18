@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import time
 import uuid
 from collections import deque
 from copy import deepcopy
@@ -26,6 +27,8 @@ from app.models import (
     PowerIntentSettledSQL,
     CabinetAmbientSpikeSQL,
     HomeCoolingSampleSQL,
+    OfficeEnvSampleSQL,
+    ClosetEnvSampleSQL,
     EnergyBillActualSQL,
     EnergyBillForecastSQL,
     EnergyCostAccruedSQL,
@@ -37,6 +40,7 @@ from app.models import (
     BiometricsSummarySQL,
     BiometricsInductionSQL,
     CausalGeometrySnapshotSQL,
+    BusTrafficRollupSQL,
     ChatHistoryLogSQL,
     AitownChatHistoryLogSQL,
     ChatGptLogSQL,
@@ -64,15 +68,23 @@ from app.models import (
     RecipientProfileDB,
     NotificationPreferenceDB,
     JournalEntrySQL,
-    SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
     CuriosityPeerBriefSQL,
     CuriosityHopReadingSQL,
     DurableRunStateSQL,
     GpuPoolEventSQL,
+    GpuPoolStateSQL,
+    PhysiologyStateSQL,
+    WantLedgerSQL,
+    ClaudeToolCallLogSQL,
+    LlmCallUsageSQL,
     TransportBaselineHourlySQL,
+    SelfSignalHourSQL,
+    SelfSignalOutcomeAssociationSQL,
+    FieldChannelAnomalyScoreSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SelfSenseEvalLogSQL,
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
@@ -102,7 +114,6 @@ from app.models import (
     VisionEventSQL,
     VisionSceneInventorySQL,
     ActionOutcomeSQL,
-    DominanceStreakTickSQL,
     DevEconomicsLedgerSQL,
     DocSemanticDriftSQL,
     JuniperAffectiveStateSQL,
@@ -116,15 +127,24 @@ from app.harness_turn_trace_persist import upsert_harness_turn_trace
 from app.cockpit_turn_sighting_persist import append_cockpit_hop
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
-from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.curiosity_peer import PeerBriefV1
 from orion.schemas.curiosity_supervisor import HopReadingV1
 from orion.schemas.durable_run import DurableRunStateV1
-from orion.schemas.gpu_pool import GpuPoolEventV1
+from orion.schemas.gpu_pool import GpuPoolEventV1, GpuPoolStateV1
+from app.models.gpu_pool_state import state_history_row
+from app.models.physiology_state import physiology_state_row
+from orion.schemas.physiology import PhysiologyStateV1
+from app.models.want_ledger import want_ledger_row
+from orion.schemas.physiology_want import WantDecisionV1
+from orion.schemas.llm_call_usage import LlmCallUsageV1
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
+from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcomeAssociationV1
+from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
+from orion.schemas.claude_tools import ClaudeToolCallV1
+from orion.schemas.personality import DispositionNamingV1
 from orion.schemas.self_sense import SelfSenseEvalV1
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -139,7 +159,6 @@ from orion.journaler import (
     build_journal_entry_index_payload,
 )
 from orion.schemas.chat_stance import ChatStanceBrief
-from orion.schemas.field_goal import DominanceStreakTickV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
 from orion.schemas.doc_semantic_drift import DocSemanticDriftV1
 from orion.schemas.affective_state import JuniperAffectiveStateV1
@@ -155,6 +174,8 @@ from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.power import PowerIntentSettledV1
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
+from orion.schemas.telemetry.office_env import OfficeEnvSampleV1
+from orion.schemas.telemetry.closet_env import ClosetEnvSampleV1
 from orion.schemas.energy import (
     EnergyBillActualV1,
     EnergyBillForecastV1,
@@ -173,6 +194,7 @@ from orion.schemas.telemetry.biometrics import (
     BiometricsClusterV1,
 )
 from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
+from orion.schemas.bus_traffic import BusTrafficRollupV1
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.thought import ThoughtEventV1
@@ -237,6 +259,8 @@ except ImportError:
     normalize_spark_state_snapshot = None
     normalize_spark_telemetry = None
 
+from app import write_health
+
 logger = logging.getLogger("sql-writer")
 GrammarWorkItem = tuple[BaseEnvelope, GrammarEventV1, dict[str, Any], str]
 _GRAMMAR_EXECUTORS: list[concurrent.futures.ThreadPoolExecutor] | None = None
@@ -254,19 +278,27 @@ SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     GpuPoolEventSQL,
+    GpuPoolStateSQL,
+    PhysiologyStateSQL,
+    WantLedgerSQL,
+    ClaudeToolCallLogSQL,
+    LlmCallUsageSQL,
     TransportBaselineHourlySQL,
+    SelfSignalOutcomeAssociationSQL,
+    FieldChannelAnomalyScoreSQL,
     DurableRunStateSQL,
-    SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
     CuriosityPeerBriefSQL,
     CuriosityHopReadingSQL,
     DurableRunStateSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SocialRoomTurnSQL,
     ChatResponseFeedbackSQL,
     MindRunSQL,
     CausalGeometrySnapshotSQL,
+    BusTrafficRollupSQL,
     EquilibriumServiceTransitionSQL,
     VisionUnresolvedSQL,
 }
@@ -430,6 +462,7 @@ def _spawn_grammar_persist(
         if depth > _GRAMMAR_QUEUE_HIGH_WATER.get(shard, 0):
             _GRAMMAR_QUEUE_HIGH_WATER[shard] = depth
     except asyncio.QueueFull:
+        write_health.record_grammar([event.trace_id], "backpressure")
         logger.warning(
             "grammar_queue_full shard=%s event_id=%s trace_id=%s",
             shard,
@@ -498,6 +531,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "PowerIntentSettledSQL": (PowerIntentSettledSQL, PowerIntentSettledV1),
     "CabinetAmbientSpikeSQL": (CabinetAmbientSpikeSQL, CabinetAmbientSpikeV1),
     "HomeCoolingSampleSQL": (HomeCoolingSampleSQL, HomeCoolingSampleV1),
+    "OfficeEnvSampleSQL": (OfficeEnvSampleSQL, OfficeEnvSampleV1),
+    "ClosetEnvSampleSQL": (ClosetEnvSampleSQL, ClosetEnvSampleV1),
     "EnergyUsageIntervalSQL": (EnergyUsageIntervalSQL, EnergyUsageIntervalV1),
     "EnergyCostAccruedSQL": (EnergyCostAccruedSQL, EnergyCostAccruedV1),
     "EnergyRunCostSQL": (EnergyRunCostSQL, EnergyRunCostEstimatedV1),
@@ -508,6 +543,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "EnergyImporterStatusSQL": (EnergyImporterStatusSQL, EnergyImporterStatusV1),
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
+    "BusTrafficRollupSQL": (BusTrafficRollupSQL, BusTrafficRollupV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
     "ThoughtDecisionSQL": (ThoughtDecisionSQL, ThoughtEventV1),
     # schema_cls=None: harness-governor already validated each of the four
@@ -528,15 +564,23 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "RecipientProfileDB": (RecipientProfileDB, None),
     "NotificationPreferenceDB": (NotificationPreferenceDB, None),
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
-    "SelfKnowledgeItemLogSQL": (SelfKnowledgeItemLogSQL, SelfKnowledgeItemLogV1),
     "AttentionSchemaSQL": (AttentionSchemaSQL, AttentionSchemaV1),
     "CuriosityPeerBriefSQL": (CuriosityPeerBriefSQL, PeerBriefV1),
     "CuriosityHopReadingSQL": (CuriosityHopReadingSQL, HopReadingV1),
     "DurableRunStateSQL": (DurableRunStateSQL, DurableRunStateV1),
     "GpuPoolEventSQL": (GpuPoolEventSQL, GpuPoolEventV1),
+    "GpuPoolStateSQL": (GpuPoolStateSQL, GpuPoolStateV1),
+    "PhysiologyStateSQL": (PhysiologyStateSQL, PhysiologyStateV1),
+    "WantLedgerSQL": (WantLedgerSQL, WantDecisionV1),
+    "ClaudeToolCallLogSQL": (ClaudeToolCallLogSQL, ClaudeToolCallV1),
+    "LlmCallUsageSQL": (LlmCallUsageSQL, LlmCallUsageV1),
     "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
+    "SelfSignalHourSQL": (SelfSignalHourSQL, SelfSignalHourV1),
+    "SelfSignalOutcomeAssociationSQL": (SelfSignalOutcomeAssociationSQL, SelfSignalOutcomeAssociationV1),
+    "FieldChannelAnomalyScoreSQL": (FieldChannelAnomalyScoreSQL, FieldChannelAnomalyScoreV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
+    "DispositionNamingSQL": (DispositionNamingSQL, DispositionNamingV1),
     "SelfSenseEvalLogSQL": (SelfSenseEvalLogSQL, SelfSenseEvalV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
@@ -568,7 +612,6 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "VisionSceneInventorySQL": (VisionSceneInventorySQL, VisionSceneInventoryV1),
     "VisionUnresolvedSQL": (VisionUnresolvedSQL, VisionUnresolvedV1),
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
-    "DominanceStreakTickSQL": (DominanceStreakTickSQL, DominanceStreakTickV1),
     "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),
     "DocSemanticDriftSQL": (DocSemanticDriftSQL, DocSemanticDriftV1),
     "JuniperAffectiveStateSQL": (JuniperAffectiveStateSQL, JuniperAffectiveStateV1),
@@ -1648,6 +1691,83 @@ def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
     return out
 
 
+def _normalize_env_sample_payload(
+    write_data: dict,
+    *,
+    float_keys: tuple[str, ...],
+    int_keys: tuple[str, ...],
+    state_keys: tuple[str, ...],
+) -> dict:
+    """Flatten a pan-1 env sample (office or closet) onto its SQL columns.
+
+    Nested sensor/measurements/state/provenance objects are flattened. A stale
+    sample has no measurements, so the reading columns stay NULL -- never 0.
+    """
+    full_payload = dict(write_data)
+    out = dict(write_data)
+
+    sensor = out.pop("sensor", None)
+    if isinstance(sensor, dict):
+        if sensor.get("id") is not None:
+            out["sensor_id"] = str(sensor["id"])
+        if "online" in sensor:
+            out["sensor_online"] = bool(sensor["online"])
+
+    measurements = out.pop("measurements", None)
+    if isinstance(measurements, dict):
+        for key in float_keys:
+            value = measurements.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out[key] = float(value)
+        for key in int_keys:
+            value = measurements.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                out[key] = value
+
+    state = out.pop("state", None)
+    if isinstance(state, dict):
+        for key in ("stale", *state_keys):
+            if state.get(key) is not None:
+                out[key] = bool(state[key])
+
+    provenance = out.pop("provenance", None)
+    if isinstance(provenance, dict):
+        age = provenance.get("sample_age_sec")
+        if isinstance(age, (int, float)) and not isinstance(age, bool):
+            out["sample_age_sec"] = float(age)
+        seq = provenance.get("frame_seq")
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            out["frame_seq"] = seq
+
+    out["payload_json"] = _json_sanitize(full_payload)
+    out.pop("schema_name", None)
+    out.pop("schema", None)
+    return out
+
+
+def _normalize_office_env_sample_payload(write_data: dict) -> dict:
+    """Map ``office.env.sample.v1`` onto OfficeEnvSampleSQL columns."""
+    return _normalize_env_sample_payload(
+        write_data,
+        float_keys=("office_temp_c", "office_humidity_pct", "office_lux"),
+        int_keys=(
+            "office_eco2_ppm", "office_tvoc_ppb",
+            "office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3",
+        ),
+        state_keys=("air_warming", "light_saturated"),
+    )
+
+
+def _normalize_closet_env_sample_payload(write_data: dict) -> dict:
+    """Map ``closet.env.sample.v1`` onto ClosetEnvSampleSQL columns."""
+    return _normalize_env_sample_payload(
+        write_data,
+        float_keys=("closet_temp_c", "closet_humidity_pct"),
+        int_keys=("closet_co2_ppm",),
+        state_keys=(),
+    )
+
+
 def _normalize_biometrics_cluster_payload(write_data: dict) -> dict:
     """Map a ``biometrics.cluster.v1`` payload onto BiometricsClusterSQL's columns.
 
@@ -1705,6 +1825,10 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             write_data = _normalize_biometrics_cluster_payload(write_data)
         if sql_model_cls is HomeCoolingSampleSQL:
             write_data = _normalize_home_cooling_sample_payload(write_data)
+        if sql_model_cls is OfficeEnvSampleSQL:
+            write_data = _normalize_office_env_sample_payload(write_data)
+        if sql_model_cls is ClosetEnvSampleSQL:
+            write_data = _normalize_closet_env_sample_payload(write_data)
 
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)
@@ -2091,6 +2215,10 @@ def _normalize_calibration_profile_audit_payload(payload: Any) -> Dict[str, Any]
 
 
 def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
+    # Every lost write on the envelope path ends here, so this is where the
+    # storage-write organ learns the class. No-op on the grammar path (no
+    # envelope outcome in context: those are recorded in the persist helpers).
+    write_health.mark_failed(error)
     sess = get_session()
     try:
         safe_payload = payload
@@ -2139,7 +2267,16 @@ async def _write(
                 e,
             )
             raise
-        data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
+        data = (state_history_row(obj) if sql_model_cls is GpuPoolStateSQL else
+                physiology_state_row(obj) if sql_model_cls is PhysiologyStateSQL else
+                want_ledger_row(obj) if sql_model_cls is WantLedgerSQL else
+                obj.model_dump() if hasattr(obj, "model_dump") else obj.dict())
+        if sql_model_cls is DispositionNamingSQL:
+            # jsonb columns hold the nested packet (datetimes inside); the engine's serializer is
+            # plain json.dumps. Top-level written_at stays a datetime for its timestamptz column.
+            as_json = obj.model_dump(mode="json")
+            for key in ("shown", "evidence_refs", "refused_reasons"):
+                data[key] = as_json[key]
     else:
         data = payload if isinstance(payload, dict) else {}
 
@@ -2147,10 +2284,25 @@ async def _write(
         data.update(extra_fields)
 
     try:
-        return await asyncio.to_thread(_write_row, sql_model_cls, data)
+        written = await asyncio.to_thread(_write_row, sql_model_cls, data)
     except Exception as e:
         logger.error(f"Failed to write to primary table: {e}")
         raise
+    # _write_row returns False only for an idempotent duplicate skip.
+    write_health.mark_written(bool(written), getattr(sql_model_cls, "__tablename__", None))
+    return written
+
+
+def _grammar_persist_with_outcome(fn: Any, *args: Any) -> tuple[Any, dict[str, int] | None]:
+    """Run a grammar persist and read what it actually did, in the same executor
+    thread (the outcome is a thread-local; run_in_executor does not carry
+    contextvars). The persist functions return False/0 for a duplicate AND for a
+    swallowed statement cancel or integrity reject; only the outcome tells them apart."""
+    from app.grammar_ledger_handler import take_last_grammar_outcome
+
+    take_last_grammar_outcome()
+    result = fn(*args)
+    return result, take_last_grammar_outcome()
 
 
 async def _persist_grammar_trace_batch_envelope(
@@ -2168,10 +2320,21 @@ async def _persist_grammar_trace_batch_envelope(
     )
     loop = asyncio.get_running_loop()
     executor = _get_grammar_executors()[shard]
-    fut = loop.run_in_executor(executor, persist_grammar_trace_batch, events, shard)
+    fut = loop.run_in_executor(
+        executor, _grammar_persist_with_outcome, persist_grammar_trace_batch, events, shard
+    )
+    trace_ids = [e.trace_id for e in events]
+    started = time.perf_counter()
     try:
-        await asyncio.wait_for(fut, timeout=timeout_sec)
+        applied, outcome = await asyncio.wait_for(fut, timeout=timeout_sec)
+        if outcome is None:
+            n_applied = max(0, min(len(events), int(applied or 0)))
+            outcome = {"committed": n_applied, "duplicate": len(events) - n_applied}
+        write_health.record_grammar_outcome(
+            trace_id, outcome, latency_ms=(time.perf_counter() - started) * 1000.0
+        )
     except asyncio.TimeoutError:
+        write_health.record_grammar(trace_ids, "timeout")
         canceled = cancel_active_grammar_persist(shard)
         logger.error(
             "sql_writer_grammar_trace_batch_timeout shard=%s trace_id=%s events=%s timeout_sec=%s canceled=%s",
@@ -2197,6 +2360,7 @@ async def _persist_grammar_trace_batch_envelope(
                     exc,
                 )
     except Exception as exc:
+        write_health.record_grammar(trace_ids, write_health.classify_write_error(exc))
         logger.exception(
             "sql_writer_grammar_trace_batch_failed trace_id=%s events=%s error=%s",
             trace_id,
@@ -2227,10 +2391,19 @@ async def _persist_grammar_event_envelope(
     timeout_sec = float(settings.sql_writer_grammar_persist_timeout_sec)
     loop = asyncio.get_running_loop()
     executor = _get_grammar_executors()[shard]
-    fut = loop.run_in_executor(executor, persist_grammar_event, event, shard)
+    fut = loop.run_in_executor(
+        executor, _grammar_persist_with_outcome, persist_grammar_event, event, shard
+    )
+    started = time.perf_counter()
     try:
-        await asyncio.wait_for(fut, timeout=timeout_sec)
+        applied, outcome = await asyncio.wait_for(fut, timeout=timeout_sec)
+        if outcome is None:
+            outcome = {"committed" if applied else "duplicate": 1}
+        write_health.record_grammar_outcome(
+            event.trace_id, outcome, latency_ms=(time.perf_counter() - started) * 1000.0
+        )
     except asyncio.TimeoutError:
+        write_health.record_grammar([event.trace_id], "timeout")
         canceled = cancel_active_grammar_persist(shard)
         logger.error(
             "sql_writer_grammar_persist_timeout shard=%s event_id=%s trace_id=%s timeout_sec=%s canceled=%s",
@@ -2256,6 +2429,7 @@ async def _persist_grammar_event_envelope(
                 exc,
             )
     except Exception as exc:
+        write_health.record_grammar([event.trace_id], write_health.classify_write_error(exc))
         logger.exception(
             "sql_writer_grammar_persist_failed event_id=%s trace_id=%s error=%s",
             event.event_id,
@@ -2298,6 +2472,30 @@ def _chat_source_platform(client_meta: Any) -> str | None:
     return str(platform) if platform else None
 
 
+def _memory_turn_initiator(prompt: str, client_meta: Any) -> str | None:
+    """Who opened a turn, or None when the turn is not memory: "juniper" when she wrote a
+    prompt; "orion" only for Orion's own outreach (client_meta.unsolicited, the flag the
+    outreach path writes). Other prompt-less rows -- e.g. Claude speaking in the room
+    (client_meta.room_claude, 18 live rows) -- stay out of memory, as before 2026-10-09.
+
+    A room_claude row is never memory, even with a prompt (2026-11-12): Hub now keeps
+    Juniper's @claude prompt in client_meta.room_claude.prompt, and a side exchange with
+    Claude must not become Orion's memory if that text ever reaches the prompt column."""
+    meta = client_meta
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:  # noqa: BLE001
+            meta = None
+    if isinstance(meta, dict) and meta.get("room_claude"):
+        return None
+    if prompt:
+        return "juniper"
+    if isinstance(client_meta, dict) and client_meta.get("unsolicited") is True:
+        return "orion"
+    return None
+
+
 def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
     if not corr_id:
         return None
@@ -2330,7 +2528,8 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             return None
         prompt = str(getattr(row, "prompt", "") or "").strip()
         response = str(getattr(row, "response", "") or "").strip()
-        if not prompt or not response:
+        initiated_by = _memory_turn_initiator(prompt, getattr(row, "client_meta", None))
+        if not response or initiated_by is None:
             return None
         spark_meta = getattr(row, "spark_meta", None)
         if not isinstance(spark_meta, dict):
@@ -2345,6 +2544,7 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             "spark_meta": spark_meta,
             "session_id": getattr(row, "session_id", None),
             "source_platform": _chat_source_platform(getattr(row, "client_meta", None)),
+            "initiated_by": initiated_by,
         }
     finally:
         sess.close()
@@ -2377,6 +2577,7 @@ async def _emit_memory_turn_persisted(
         spark_meta=turn.get("spark_meta") if isinstance(turn.get("spark_meta"), dict) else {},
         session_id=turn.get("session_id"),
         source_platform=turn.get("source_platform"),
+        initiated_by=turn.get("initiated_by") or "juniper",
     )
     out_env = parent_env.derive_child(
         kind=MEMORY_TURN_PERSISTED_KIND,
@@ -2418,6 +2619,59 @@ async def _maybe_emit_memory_turn_from_row(
         logger.exception("Failed to emit memory turn persisted event corr=%s", corr_id)
 
 
+# One orion:memory:turn:persisted per turn (2026-10-02). A Hub turn reaches this writer as a
+# `chat.history` turn envelope AND an assistant `chat.history.message.v1`, in either order (both
+# orders seen live). Each used to publish, so memory-consolidation judged every turn twice. The
+# turn envelope carries the turn's spark_meta (conversation_phase), the row read-back does not, so
+# the envelope wins: it claims the correlation id and publishes at once; a message only schedules
+# a row-based publish after a short delay, dropped if the envelope claimed the id meanwhile.
+# Message-only flows (Collapse Mirror reply) still publish once, from the row.
+# In-process and best-effort: a restart inside the delay drops that one publish (the consumer's
+# degraded-classify retry still appraises the row); claims expire after an hour.
+_MEMORY_TURN_EMIT_CLAIMS: dict[str, float] = {}
+_MEMORY_TURN_CLAIM_TTL_SEC = 3600.0
+_MEMORY_TURN_CLAIM_MAX = 20000
+
+
+def _claim_memory_turn_emit(corr_id: str) -> bool:
+    """True if this caller may publish the turn for corr_id (first claim within the TTL)."""
+    now = time.monotonic()
+    if len(_MEMORY_TURN_EMIT_CLAIMS) > _MEMORY_TURN_CLAIM_MAX:
+        for key, at in list(_MEMORY_TURN_EMIT_CLAIMS.items()):
+            if now - at > _MEMORY_TURN_CLAIM_TTL_SEC:
+                _MEMORY_TURN_EMIT_CLAIMS.pop(key, None)
+    at = _MEMORY_TURN_EMIT_CLAIMS.get(corr_id)
+    if at is not None and now - at <= _MEMORY_TURN_CLAIM_TTL_SEC:
+        return False
+    _MEMORY_TURN_EMIT_CLAIMS[corr_id] = now
+    return True
+
+
+async def _emit_memory_turn_from_envelope_once(bus: Any, *, parent_env: BaseEnvelope, turn: dict) -> None:
+    corr = str(turn["correlation_id"])
+    if not _claim_memory_turn_emit(corr):
+        logger.info("memory_turn_persisted_duplicate_suppressed corr=%s source=turn_envelope", corr)
+        return
+    await _emit_memory_turn_persisted(bus, parent_env=parent_env, turn=turn)
+
+
+async def _emit_memory_turn_from_row_deferred(bus: Any, *, parent_env: BaseEnvelope, corr_id: str) -> None:
+    await asyncio.sleep(float(settings.sql_writer_memory_turn_row_emit_delay_sec))
+    if not _claim_memory_turn_emit(corr_id):
+        logger.info("memory_turn_persisted_duplicate_suppressed corr=%s source=message_row", corr_id)
+        return
+    await _maybe_emit_memory_turn_from_row(bus, parent_env=parent_env, corr_id=corr_id)
+
+
+def _schedule_memory_turn_from_row(bus: Any, *, parent_env: BaseEnvelope, corr_id: str) -> None:
+    task = asyncio.create_task(_emit_memory_turn_from_row_deferred(bus, parent_env=parent_env, corr_id=corr_id))
+    _PENDING_MEMORY_TURN_TASKS.add(task)
+    task.add_done_callback(_PENDING_MEMORY_TURN_TASKS.discard)
+
+
+_PENDING_MEMORY_TURN_TASKS: set = set()
+
+
 async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     if env.kind == "grammar.event.v1":
         payload = env.payload if isinstance(env.payload, dict) else {}
@@ -2427,7 +2681,37 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
         return
 
     async with _get_write_semaphore():
-        await _handle_envelope_body(env, bus=bus)
+        outcome, token = (
+            write_health.begin_envelope(_write_family_for_kind(env.kind))
+            if write_health.is_enabled()
+            else (None, None)
+        )
+        started = time.perf_counter()
+        error: BaseException | None = None
+        try:
+            await _handle_envelope_body(env, bus=bus)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            write_health.end_envelope(outcome, token, started=started, error=error)
+
+
+def _write_family_for_kind(kind: str) -> str:
+    """The table an envelope kind is written to: the storage-write organ's family.
+
+    Mirrors _handle_envelope_body's dispatch: the special-cased kinds first, then
+    the route map. A kind with no route reports as ``unrouted``."""
+    if kind == "chat.history.spark_meta.patch.v1":
+        return "chat_history_log"
+    if kind == VISION_CROP_OBSERVATION_KIND:
+        return "vision_crop_observation"
+    if kind == "spark.state.snapshot.v1":
+        return "spark_telemetry"
+    route_key = settings.route_map.get(kind)
+    if route_key and route_key in MODEL_MAP:
+        return str(getattr(MODEL_MAP[route_key][0], "__tablename__", route_key))
+    return "unrouted"
 
 
 async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) -> None:
@@ -2445,6 +2729,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
 
         try:
             n = await asyncio.to_thread(persist_crop_observation, payload)
+            if n:
+                write_health.mark_written(True)
             logger.info("Written %s -> vision_crop_observation rows=%s", env.kind, n)
         except Exception as exc:
             logger.error(
@@ -2901,6 +3187,12 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 write_ok = await _write(sql_model, None, data_to_process, {}, kind=env.kind)
             elif sql_model is CockpitTurnSightingSQL:
                 write_ok = await _write(sql_model, CockpitHopV1, data_to_process, {}, kind=env.kind)
+            elif sql_model is LlmCallUsageSQL:
+                # extra_fields={}: the generic extras carry the ENVELOPE correlation_id, which is a
+                # fresh uuid4 whenever the producer had none (or a non-UUID turn id). Merging it
+                # would overwrite the payload's correlation_id -- NULL is meaningful here (the
+                # FCC-path gateway row) and the per-turn join reads the payload's value.
+                write_ok = await _write(sql_model, schema_model, data_to_process, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
             if env.kind == JOURNAL_WRITE_KIND and write_ok:
@@ -3004,14 +3296,16 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                     corr = str(env.correlation_id or extra_sql_fields.get("correlation_id") or "")
                     prompt = str(data_to_process.get("prompt") or "").strip()
                     response = str(data_to_process.get("response") or "").strip()
-                    if corr and prompt and response:
-                        await _emit_memory_turn_persisted(
+                    initiated_by = _memory_turn_initiator(prompt, payload.get("client_meta"))
+                    if corr and response and initiated_by is not None:
+                        await _emit_memory_turn_from_envelope_once(
                             bus,
                             parent_env=env,
                             turn={
                                 "correlation_id": corr,
                                 "prompt": prompt,
                                 "response": response,
+                                "initiated_by": initiated_by,
                                 "spark_meta": data_to_process.get("spark_meta")
                                 if isinstance(data_to_process.get("spark_meta"), dict)
                                 else {},
@@ -3026,7 +3320,7 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                                 "source_platform": _chat_source_platform(payload.get("client_meta")),
                             },
                         )
-                    elif corr:
+                    elif corr and _claim_memory_turn_emit(corr):
                         await _maybe_emit_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
                 except Exception:
                     logger.exception(
@@ -3044,7 +3338,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 and (payload.get("role") or "").lower() == "assistant"
             ):
                 corr = str(env.correlation_id or payload.get("correlation_id") or "")
-                await _maybe_emit_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
+                if corr and settings.sql_writer_emit_memory_turn_persisted:
+                    _schedule_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
 
         except Exception as e:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")

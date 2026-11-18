@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
-from orion.energy.ledger import UsageLedger
+from orion.energy.ledger import UsageLedger, bridged_seconds
 from orion.energy.tariff import Tariff
 from orion.schemas.energy import (
     EnergyBillActualV1,
@@ -71,13 +71,17 @@ class PeriodProjection:
     observed_kwh: float
     observed_energy_usd: float
     projected_kwh: float
-    projected_energy_usd: float
+    # Pre-tax, priced as the bill would print it (Tariff.itemize over the period's dates).
+    projected_total_usd: float
     fixed_usd: float
     covered_through: datetime
+    # Hours inside [start, covered_through) with no meter reading (short holes the ledger stepped
+    # over). observed_kwh leaves them out; projected_kwh fills them at the run rate.
+    bridged_hours: float = 0.0
 
     @property
-    def projected_total_usd(self) -> float:
-        return self.projected_energy_usd + self.fixed_usd
+    def projected_energy_usd(self) -> float:
+        return self.projected_total_usd - self.fixed_usd
 
 
 def project_period(
@@ -86,27 +90,26 @@ def project_period(
     prefix, covered = ledger.window_prefix(usage_point_id, start, end)
     if not prefix or covered is None:
         return None, _empty_prefix_gap(ledger, usage_point_id, start, end), None
-    covered_sec = _duration_seconds(start, covered)
-    if covered_sec < MIN_RUN_RATE_HOURS * 3600.0:
+    bridged_sec = bridged_seconds(prefix, start)
+    metered_sec = _duration_seconds(start, covered) - bridged_sec
+    if metered_sec < MIN_RUN_RATE_HOURS * 3600.0:
         return None, "usage_incomplete", covered
     tariff, tz = ledger.tariff, ledger.tz
     days = ledger.period_days(start, end)
     kwh, energy = price_intervals(tariff, prefix, tz=tz, period_days=days)
     period_sec = _duration_seconds(start, end)
-    projected_kwh = kwh if covered >= end else kwh * period_sec / covered_sec
-    last_month = (end - timedelta(seconds=1)).astimezone(tz).month
-    remaining = max(0.0, projected_kwh - kwh)
-    projected_energy = energy + tariff.energy_cost_usd(
-        remaining, cycle_kwh_before=kwh, month=last_month, period_days=days
-    )
+    # The run rate covers the unseen hours, bridged holes included, so a hole never reads as zero.
+    projected_kwh = kwh if covered >= end and bridged_sec == 0.0 else kwh * period_sec / metered_sec
+    bill = tariff.itemize(projected_kwh, start=start.astimezone(tz).date(), end=end.astimezone(tz).date())
     return (
         PeriodProjection(
             observed_kwh=kwh,
             observed_energy_usd=energy,
             projected_kwh=projected_kwh,
-            projected_energy_usd=projected_energy,
+            projected_total_usd=bill.pre_tax_usd,
             fixed_usd=tariff.fixed_usd(days),
             covered_through=covered,
+            bridged_hours=bridged_sec / 3600.0,
         ),
         None,
         covered,
@@ -128,9 +131,10 @@ def _utility_pretax(bill: EnergyBillActualV1) -> tuple[float, UtilityBasis]:
 def reconcile_actual(
     bill: EnergyBillActualV1, *, ledger: UsageLedger, usage_point_id: str, computed_at: datetime
 ) -> EnergyReconcileV1:
-    tariff, tz = ledger.tariff, ledger.tz
+    tariff = ledger.tariff
     start, end = period_bounds(bill.billing_period_start, bill.billing_period_end, ledger)
-    prefix, covered = ledger.window_prefix(usage_point_id, start, end)
+    # A billed total is compared only against a gap-free meter period: no bridging here.
+    prefix, covered = ledger.window_prefix(usage_point_id, start, end, bridge=False)
     utility_total, basis = _utility_pretax(bill)
     common = dict(
         reconcile_kind="actual",
@@ -152,27 +156,27 @@ def reconcile_actual(
     if covered < end:
         return EnergyReconcileV1(**common, reconcile_gap="usage_incomplete")
     days = (bill.billing_period_end - bill.billing_period_start).days
-    kwh, energy = price_intervals(tariff, prefix, tz=tz, period_days=days)
+    kwh = sum(iv.energy_kwh for iv in prefix)
+    # Priced the way RMP prices the bill (season split by days, dated riders), so the delta is
+    # usage and tariff error, not the hourly approximation's.
+    est = tariff.itemize(kwh, start=bill.billing_period_start, end=bill.billing_period_end)
     fixed = tariff.fixed_usd(days)
-    total = energy + fixed
-    base_energy = energy / tariff.energy_multiplier
-    customer = tariff.customer_charge_usd(days)
-    # Riders on the customer charge print among the bill's adjustments, not in its customer line.
-    customer_riders = customer * (tariff.customer_multiplier - 1.0)
+    total = est.pre_tax_usd
     buckets: dict[str, float] = {}
     if bill.energy_charge is not None:
-        buckets["energy_charge"] = base_energy - bill.energy_charge
+        buckets["energy_charge"] = est.energy_charge - bill.energy_charge
         if bill.adjustments is not None:
-            buckets["energy_charge_plus_adjustments"] = (energy + customer_riders) - (
+            buckets["energy_charge_plus_adjustments"] = (est.energy_charge + est.adjustments) - (
                 bill.energy_charge + bill.adjustments
             )
     if bill.customer_charge is not None:
-        buckets["customer_charge"] = (customer if tariff.has_customer_charge else fixed) - bill.customer_charge
+        orion_customer = est.customer_charge if tariff.has_customer_charge else est.fees
+        buckets["customer_charge"] = orion_customer - bill.customer_charge
     delta_usd = total - utility_total
     return EnergyReconcileV1(
         **common,
         orion_kwh=kwh,
-        orion_energy_usd=energy,
+        orion_energy_usd=total - fixed,
         orion_fixed_usd=fixed,
         orion_total_usd=total,
         delta_kwh=kwh - bill.kwh_billed,

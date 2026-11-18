@@ -9,7 +9,6 @@ from orion.grammar.atom_signals import (
     uncertainty_from_catalog_drift,
     uncertainty_from_induction_volatility,
     uncertainty_from_route_arbitration,
-    uncertainty_from_sample_mismatch,
     uncertainty_from_telemetry_error_rate,
 )
 from orion.schemas.telemetry.biometrics import (
@@ -34,10 +33,6 @@ def test_abs_zscore_no_baseline() -> None:
 
 def test_abs_zscore_three_sigma_caps_at_one() -> None:
     assert uncertainty_from_abs_zscore(9.0) == pytest.approx(1.0)
-
-
-def test_sample_mismatch_ratio() -> None:
-    assert uncertainty_from_sample_mismatch(2, 5) == pytest.approx(0.4)
 
 
 def test_catalog_drift() -> None:

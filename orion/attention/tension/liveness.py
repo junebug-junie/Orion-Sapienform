@@ -4,10 +4,10 @@ This module exists because of a defect the rest of this package **cannot**
 detect, documented in `orion/field/pressure.py` and confirmed live 2026-08-14:
 
     When `services/orion-biometrics` goes quiet, every input to
-    `resource_pressure` decays toward 0, the dimension reads *calm*, and because
-    `config/feedback/feedback_policy.v1.yaml` lists `resource_pressure:
-    decrease` under `positive_delta_channels`, the in-flight action is credited
-    with a POSITIVE OUTCOME for a producer outage.
+    `resource_pressure` decays toward 0 and the dimension reads *calm*. Until the
+    feedback rung retired (2026-11-04) that also credited the in-flight action
+    with a POSITIVE OUTCOME for a producer outage; any reader of the dimension
+    can still mistake an outage for calm.
 
 A per-channel ratio check cannot see this: a channel in the field digester's
 `NODE_DECAY_CHANNELS` decaying toward rest is *correct* behaviour, so "is it

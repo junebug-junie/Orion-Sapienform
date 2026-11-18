@@ -20,3 +20,25 @@ def test_agent_claude_trace_summarizes_tool_use_and_results() -> None:
     assert "basename(path)" in source
     assert "Grep" in source
     assert "Bash" in source
+
+
+def test_degenerate_compaction_step_renders_a_warning() -> None:
+    """Runs the real summarizeStep via node on the step the motor emits."""
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from orion.fcc.context_budget import build_degenerate_compaction_step
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    script = (
+        f"require({json.dumps(str(TRACE_JS))});"
+        f"process.stdout.write(globalThis.OrionClaudeTrace.summarizeStep({json.dumps(build_degenerate_compaction_step())}));"
+    )
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, check=False, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("⚠ compaction lost the task:")

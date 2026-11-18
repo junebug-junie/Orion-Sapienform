@@ -110,7 +110,6 @@ async def test_build_chat_stance_inputs_includes_situation_category() -> None:
                 "forecast_next_24h": {"summary": "mild"},
                 "practical_flags": {"take_jacket": False},
             },
-            "lab": {"available": False, "thermal_risk": "unknown", "power_risk": "unknown"},
             "surface": {"surface": "hub_desktop", "input_modality": "typed"},
             "affordances": [{"kind": "kid_friendly_explanation", "trigger_relevance": "active", "suggestion": "Use age-appropriate explanation", "confidence": "medium"}],
         },
@@ -303,7 +302,6 @@ def test_fallback_chat_stance_brief_preserves_situation_guidance() -> None:
         "situation_brief": {
             "presence": {"audience_mode": "kid_present", "requestor": {"display_name": "Juniper"}},
             "conversation_phase": {"phase_change": "long_gap"},
-            "lab": {"available": False, "thermal_risk": "unknown", "power_risk": "unknown"},
             "affordances": [{"kind": "kid_friendly_explanation", "trigger_relevance": "active", "suggestion": "Use age-appropriate explanation"}],
         },
     }

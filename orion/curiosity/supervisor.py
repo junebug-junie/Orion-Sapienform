@@ -121,13 +121,9 @@ def build_run_order(reader: WorldviewReader) -> dict[str, int]:
     to show Orion its own recent thread. `{}` on failure -- callers treat a
     missing entry as "unknown", not as an error.
 
-    Repurposes a query sized for "recent", not "all of history" --
-    `RECENT_RUNS_CYPHER` caps at `RECENT_RUNS_LIMIT` rows. A run past that
-    bound silently sorts as "unknown -> last" in `group_hops_by_run` rather
-    than erroring, so the only place this can go wrong quietly is here: the
-    warning below is what makes a future population big enough to hit the
-    cap visible, the same discipline `read_all_hops`/`read_all_priors` apply
-    to their own bounds. Caught in review.
+    One row per run outcome, newest first, up to `RECENT_RUNS_LIMIT`. A run
+    past that bound sorts as "unknown -> last" in `group_hops_by_run` and does
+    not error, so the warning below is the only sign the bound was hit.
     """
     try:
         rows = reader.query(RECENT_RUNS_CYPHER)
@@ -195,7 +191,7 @@ def build_grading_sealed_prompt(
     {choice: "hire_cursor_review"}` -- see `kickoff_prompt._review_role_section`.
 
     Same "read-only contractor" framing convention as `services/orion-
-    curiosity-peer/app/cursor_invoker.py:build_sealed_prompt`'s `self_inquiry`
+    curiosity-peer/app/brief_prompt.py:build_sealed_prompt`'s `self_inquiry`
     branch (that prompt already names "hop notes" as valid evidence), but
     targets `HopReadingBatchV1` JSON, not `PeerBriefV1` -- a free-form brief
     cannot carry "one reading per hop," which is exactly what grading needs.

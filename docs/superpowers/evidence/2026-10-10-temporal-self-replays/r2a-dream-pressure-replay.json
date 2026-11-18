@@ -1,0 +1,1336 @@
+{
+  "start": "2026-09-26T01:50:00+00:00",
+  "end": "2026-10-10T01:50:00+00:00",
+  "source_items": 12733,
+  "chat_rows": 130,
+  "juniper_turns": 52,
+  "checks": 2016,
+  "formula_boundary": "2026-10-09T06:33:24+00:00",
+  "validation": {
+    "saved_checks_compared": 114,
+    "exact": 114,
+    "max_abs_diff": 0.0
+  },
+  "by_era": {
+    "before_2557": {
+      "windows": 52,
+      "windows_with_zero_checks": 48,
+      "windows_never_reaching": {
+        "1": 21,
+        "2": 35,
+        "3": 40,
+        "4": 45,
+        "5": 46,
+        "8": 49,
+        "13": 51,
+        "21": 52
+      },
+      "median_hours_to_crossing": {
+        "1": 2.2205432422222224,
+        "2": 3.1730787188888887,
+        "3": 4.091705655138889,
+        "4": 4.200308355,
+        "5": 4.091705655138889,
+        "8": 4.700308355000001,
+        "13": 5.200203990833334,
+        "21": null
+      }
+    },
+    "after_2557": {
+      "windows": 2,
+      "windows_with_zero_checks": 2,
+      "windows_never_reaching": {
+        "1": 1,
+        "2": 1,
+        "3": 1,
+        "4": 2,
+        "5": 2,
+        "8": 2,
+        "13": 2,
+        "21": 2
+      },
+      "median_hours_to_crossing": {
+        "1": 11.943210201666668,
+        "2": 17.609876868333334,
+        "3": 18.109876868333334,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    }
+  },
+  "sleep_windows": [
+    {
+      "sleep_started_at": "2026-09-26T03:05:39.279671+00:00",
+      "next_sleep_at": "2026-09-26T09:05:53.657576+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.003993862500001,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.6,
+      "zero_checks": 29,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-26T09:05:53.657576+00:00",
+      "next_sleep_at": "2026-09-26T15:36:06.867680+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.503669473333334,
+      "checks": 39,
+      "min_pressure": 0.0,
+      "max_pressure": 2.2,
+      "zero_checks": 1,
+      "hours_to_first_crossing": {
+        "1": 0.7350951177777778,
+        "2": 5.068428451111111,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-26T15:36:06.867680+00:00",
+      "next_sleep_at": "2026-09-26T21:36:16.415110+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002652063888888,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.0,
+      "zero_checks": 17,
+      "hours_to_first_crossing": {
+        "1": 2.898092311111111,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-26T21:36:16.415110+00:00",
+      "next_sleep_at": "2026-09-27T03:36:26.192347+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002715899166666,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-27T03:36:26.192347+00:00",
+      "next_sleep_at": "2026-09-27T09:36:37.074716+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.003022880277777,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 3.0,
+      "zero_checks": 8,
+      "hours_to_first_crossing": {
+        "1": 1.3927243480555556,
+        "2": 4.559391014722222,
+        "3": 5.726057681388889,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-27T09:36:37.074716+00:00",
+      "next_sleep_at": "2026-09-27T15:36:47.445815+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002880860833334,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.8,
+      "zero_checks": 11,
+      "hours_to_first_crossing": {
+        "1": 2.7230348011111114,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-27T15:36:47.445815+00:00",
+      "next_sleep_at": "2026-09-27T21:36:56.670036+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002562283611112,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.6,
+      "zero_checks": 3,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-27T21:36:56.670036+00:00",
+      "next_sleep_at": "2026-09-28T03:37:06.338828+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002685775555555,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-28T03:37:06.338828+00:00",
+      "next_sleep_at": "2026-09-28T10:47:28.697920+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 7.172877525555555,
+      "checks": 43,
+      "min_pressure": 0.6,
+      "max_pressure": 1.8,
+      "zero_checks": 0,
+      "hours_to_first_crossing": {
+        "1": 5.214905881111111,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-28T10:47:28.697920+00:00",
+      "next_sleep_at": "2026-09-28T16:47:38.315165+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002671456944444,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.5,
+      "zero_checks": 24,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-28T16:47:38.315165+00:00",
+      "next_sleep_at": "2026-09-28T22:47:48.831236+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002921130833333,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-28T22:47:48.831236+00:00",
+      "next_sleep_at": "2026-09-29T04:58:04.978539+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.171152028611112,
+      "checks": 37,
+      "min_pressure": 0.0,
+      "max_pressure": 2.1,
+      "zero_checks": 3,
+      "hours_to_first_crossing": {
+        "1": 1.2031024344444445,
+        "2": 5.203102434444444,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-29T04:58:04.978539+00:00",
+      "next_sleep_at": "2026-09-29T10:58:17.621032+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.003511803611111,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-29T10:58:17.621032+00:00",
+      "next_sleep_at": "2026-09-29T17:28:27.776105+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.502820853611111,
+      "checks": 39,
+      "min_pressure": 0.0,
+      "max_pressure": 1.0,
+      "zero_checks": 10,
+      "hours_to_first_crossing": {
+        "1": 1.6951052688888888,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-29T17:28:27.776105+00:00",
+      "next_sleep_at": "2026-09-29T23:28:38.380663+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002945710555555,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 2.1,
+      "zero_checks": 8,
+      "hours_to_first_crossing": {
+        "1": 1.3589510819444444,
+        "2": 5.358951081944444,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-29T23:28:38.380663+00:00",
+      "next_sleep_at": "2026-09-30T05:28:56.784617+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.0051122094444445,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-30T05:28:56.784617+00:00",
+      "next_sleep_at": "2026-09-30T11:29:14.931115+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.005040693888889,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.5,
+      "zero_checks": 22,
+      "hours_to_first_crossing": {
+        "1": 4.184226495277778,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-30T11:29:14.931115+00:00",
+      "next_sleep_at": "2026-09-30T17:29:25.397789+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002907409444444,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 2.2,
+      "zero_checks": 8,
+      "hours_to_first_crossing": {
+        "1": 1.3458524680555555,
+        "2": 5.679185801388889,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-30T17:29:25.397789+00:00",
+      "next_sleep_at": "2026-09-30T23:29:36.916612+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.003199673055555,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.2,
+      "zero_checks": 4,
+      "hours_to_first_crossing": {
+        "1": 2.842945058611111,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-09-30T23:29:36.916612+00:00",
+      "next_sleep_at": "2026-10-01T05:30:05.144369+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.007841043611111,
+      "checks": 37,
+      "min_pressure": 0.0,
+      "max_pressure": 3.4,
+      "zero_checks": 14,
+      "hours_to_first_crossing": {
+        "1": 2.3397453855555552,
+        "2": 3.1730787188888887,
+        "3": 3.6730787188888887,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-01T05:30:05.144369+00:00",
+      "next_sleep_at": "2026-10-01T11:30:17.279560+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.003370886388889,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 4.8,
+      "zero_checks": 10,
+      "hours_to_first_crossing": {
+        "1": 1.8319043419444445,
+        "2": 1.8319043419444445,
+        "3": 4.665237675277777,
+        "4": 5.665237675277777,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-01T11:30:17.279560+00:00",
+      "next_sleep_at": "2026-10-01T17:40:28.345868+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.169740641111112,
+      "checks": 37,
+      "min_pressure": 0.0,
+      "max_pressure": 1.7,
+      "zero_checks": 2,
+      "hours_to_first_crossing": {
+        "1": 1.8285334555555555,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-01T17:40:28.345868+00:00",
+      "next_sleep_at": "2026-10-01T23:40:37.811283+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.0026292819444445,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-01T23:40:37.811283+00:00",
+      "next_sleep_at": "2026-10-02T05:41:00.829361+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.0063939105555555,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.663,
+      "zero_checks": 27,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-02T05:41:00.829361+00:00",
+      "next_sleep_at": "2026-10-02T11:41:11.847690+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.003060646944444,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 7.2,
+      "zero_checks": 5,
+      "hours_to_first_crossing": {
+        "1": 0.9831029552777778,
+        "2": 2.816436288611111,
+        "3": 3.983102955277778,
+        "4": 3.983102955277778,
+        "5": 3.983102955277778,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-02T11:41:11.847690+00:00",
+      "next_sleep_at": "2026-10-02T17:41:21.938360+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.00280296388889,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-02T17:41:21.938360+00:00",
+      "next_sleep_at": "2026-10-02T23:41:31.724819+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002718460833333,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-02T23:41:31.724819+00:00",
+      "next_sleep_at": "2026-10-03T05:41:47.966397+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.0045115494444445,
+      "checks": 36,
+      "min_pressure": 1.0,
+      "max_pressure": 3.6,
+      "zero_checks": 0,
+      "hours_to_first_crossing": {
+        "1": 0.14118755027777777,
+        "2": 0.3078542169444444,
+        "3": 0.4745208836111111,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-03T05:41:47.966397+00:00",
+      "next_sleep_at": "2026-10-03T11:41:57.552820+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002662895277778,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.6,
+      "zero_checks": 25,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-03T11:41:57.552820+00:00",
+      "next_sleep_at": "2026-10-03T17:42:07.187068+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.00267618,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-03T17:42:07.187068+00:00",
+      "next_sleep_at": "2026-10-03T23:43:21.853273+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.0207406125,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 8.2,
+      "zero_checks": 29,
+      "hours_to_first_crossing": {
+        "1": 4.964670258888889,
+        "2": 5.464670258888889,
+        "3": 5.464670258888889,
+        "4": 5.464670258888889,
+        "5": 5.798003592222223,
+        "8": 5.964670258888889,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-03T23:43:21.853273+00:00",
+      "next_sleep_at": "2026-10-04T05:46:46.044328+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.0567197375,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 2.562,
+      "zero_checks": 5,
+      "hours_to_first_crossing": {
+        "1": 0.9439296463888889,
+        "2": 1.7772629797222224,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-04T05:46:46.044328+00:00",
+      "next_sleep_at": "2026-10-04T11:46:56.478367+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002898344166667,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.2,
+      "zero_checks": 5,
+      "hours_to_first_crossing": {
+        "1": 2.2205432422222224,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-04T11:46:56.478367+00:00",
+      "next_sleep_at": "2026-10-04T17:47:06.374966+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002749055277778,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.6,
+      "zero_checks": 5,
+      "hours_to_first_crossing": {
+        "1": 3.550978231388889,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-04T17:47:06.374966+00:00",
+      "next_sleep_at": "2026-10-04T23:47:16.174856+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002722191666666,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-04T23:47:16.174856+00:00",
+      "next_sleep_at": "2026-10-05T05:47:31.104384+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.004147091111111,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 5.986,
+      "zero_checks": 19,
+      "hours_to_first_crossing": {
+        "1": 3.8788403177777777,
+        "2": 4.712173651111111,
+        "3": 4.878840317777778,
+        "4": 4.878840317777778,
+        "5": 4.878840317777778,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-05T05:47:31.104384+00:00",
+      "next_sleep_at": "2026-10-05T11:47:39.832295+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002424419722223,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.6,
+      "zero_checks": 5,
+      "hours_to_first_crossing": {
+        "1": 0.8746932266666666,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-05T11:47:39.832295+00:00",
+      "next_sleep_at": "2026-10-05T17:47:49.503509+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002686448333334,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.6,
+      "zero_checks": 4,
+      "hours_to_first_crossing": {
+        "1": 2.372268806944444,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-05T17:47:49.503509+00:00",
+      "next_sleep_at": "2026-10-05T23:47:58.889922+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002607336944444,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-05T23:47:58.889922+00:00",
+      "next_sleep_at": "2026-10-06T05:48:12.579935+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.003802781388889,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 10.162,
+      "zero_checks": 18,
+      "hours_to_first_crossing": {
+        "1": 4.033641688333333,
+        "2": 4.033641688333333,
+        "3": 4.200308355,
+        "4": 4.200308355,
+        "5": 4.200308355,
+        "8": 4.700308355000001,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-06T05:48:12.579935+00:00",
+      "next_sleep_at": "2026-10-06T11:48:36.686571+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.006696287777778,
+      "checks": 36,
+      "min_pressure": 1.0,
+      "max_pressure": 3.262,
+      "zero_checks": 0,
+      "hours_to_first_crossing": {
+        "1": 0.02983890694444444,
+        "2": 2.696505573611111,
+        "3": 3.3631722402777777,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-06T11:48:36.686571+00:00",
+      "next_sleep_at": "2026-10-06T17:48:47.317687+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002953087777778,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-06T17:48:47.317687+00:00",
+      "next_sleep_at": "2026-10-07T00:18:57.979098+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.502961503055555,
+      "checks": 39,
+      "min_pressure": 0.0,
+      "max_pressure": 1.0,
+      "zero_checks": 28,
+      "hours_to_first_crossing": {
+        "1": 4.686856198055556,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-07T00:18:57.979098+00:00",
+      "next_sleep_at": "2026-10-07T06:26:55.515335+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.132648954722223,
+      "checks": 37,
+      "min_pressure": 0.0,
+      "max_pressure": 0.662,
+      "zero_checks": 21,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-07T06:26:55.515335+00:00",
+      "next_sleep_at": "2026-10-07T12:27:05.794410+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.00285529861111,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.6,
+      "zero_checks": 34,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-07T12:27:05.794410+00:00",
+      "next_sleep_at": "2026-10-07T18:27:15.678054+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002745456666667,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.0,
+      "zero_checks": 19,
+      "hours_to_first_crossing": {
+        "1": 3.2150571083333332,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-07T18:27:15.678054+00:00",
+      "next_sleep_at": "2026-10-08T00:27:24.584240+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002473940555555,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 36,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-08T00:27:24.584240+00:00",
+      "next_sleep_at": "2026-10-08T06:27:39.354252+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.004102781111111,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 1.324,
+      "zero_checks": 14,
+      "hours_to_first_crossing": {
+        "1": 2.3765043777777777,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-08T06:27:39.354252+00:00",
+      "next_sleep_at": "2026-10-08T12:27:44.410321+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.00140446361111,
+      "checks": 36,
+      "min_pressure": 0.5,
+      "max_pressure": 0.5,
+      "zero_checks": 0,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-08T12:27:44.410321+00:00",
+      "next_sleep_at": "2026-10-08T18:27:54.336507+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.002757273888889,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 3.6,
+      "zero_checks": 11,
+      "hours_to_first_crossing": {
+        "1": 2.704330466388889,
+        "2": 2.704330466388889,
+        "3": 5.704330466388889,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-08T18:27:54.336507+00:00",
+      "next_sleep_at": "2026-10-09T00:27:59.265633+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.001369201666666,
+      "checks": 36,
+      "min_pressure": 0.0,
+      "max_pressure": 7.6,
+      "zero_checks": 5,
+      "hours_to_first_crossing": {
+        "1": 0.8682398591666667,
+        "2": 1.0349065258333334,
+        "3": 2.034906525833333,
+        "4": 2.7015731925,
+        "5": 2.7015731925,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-09T00:27:59.265633+00:00",
+      "next_sleep_at": "2026-10-09T06:33:24.443274+00:00",
+      "era": "before_2557",
+      "hours_to_next_sleep": 6.0903271225,
+      "checks": 37,
+      "min_pressure": 0.0,
+      "max_pressure": 13.262,
+      "zero_checks": 1,
+      "hours_to_first_crossing": {
+        "1": 0.20020399083333335,
+        "2": 0.8668706575,
+        "3": 1.0335373241666668,
+        "4": 1.5335373241666668,
+        "5": 1.5335373241666668,
+        "8": 1.7002039908333333,
+        "13": 5.200203990833334,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-09T06:33:24.443274+00:00",
+      "next_sleep_at": "2026-10-10T01:01:56.607322+00:00",
+      "era": "after_2557",
+      "hours_to_next_sleep": 18.475601124444445,
+      "checks": 111,
+      "min_pressure": 0.0,
+      "max_pressure": 3.324,
+      "zero_checks": 71,
+      "hours_to_first_crossing": {
+        "1": 11.943210201666668,
+        "2": 17.609876868333334,
+        "3": 18.109876868333334,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    },
+    {
+      "sleep_started_at": "2026-10-10T01:01:56.607322+00:00",
+      "next_sleep_at": "2026-10-10T01:50:00+00:00",
+      "era": "after_2557",
+      "hours_to_next_sleep": 0.8009424105555556,
+      "checks": 4,
+      "min_pressure": 0.0,
+      "max_pressure": 0.0,
+      "zero_checks": 4,
+      "hours_to_first_crossing": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "8": null,
+        "13": null,
+        "21": null
+      }
+    }
+  ],
+  "simulated_schedules": {
+    "all_chat_idle": [
+      {
+        "threshold": 1,
+        "sleeps": 42,
+        "backstop_sleeps": 0,
+        "idle_timer_clear_checks_held_below_threshold": 356,
+        "timer_clear_checks_held_not_idle": 138,
+        "median_gap_hours": 6.166666666666667,
+        "max_gap_hours": 16.666666666666668,
+        "sleeps_later_than_clock": 20,
+        "share_later_than_clock": 0.4878048780487805
+      },
+      {
+        "threshold": 2,
+        "sleeps": 31,
+        "backstop_sleeps": 0,
+        "idle_timer_clear_checks_held_below_threshold": 747,
+        "timer_clear_checks_held_not_idle": 154,
+        "median_gap_hours": 10.583333333333332,
+        "max_gap_hours": 25.833333333333332,
+        "sleeps_later_than_clock": 23,
+        "share_later_than_clock": 0.7666666666666667
+      },
+      {
+        "threshold": 3,
+        "sleeps": 24,
+        "backstop_sleeps": 0,
+        "idle_timer_clear_checks_held_below_threshold": 907,
+        "timer_clear_checks_held_not_idle": 253,
+        "median_gap_hours": 11.166666666666666,
+        "max_gap_hours": 40.666666666666664,
+        "sleeps_later_than_clock": 20,
+        "share_later_than_clock": 0.8695652173913043
+      },
+      {
+        "threshold": 4,
+        "sleeps": 20,
+        "backstop_sleeps": 0,
+        "idle_timer_clear_checks_held_below_threshold": 1041,
+        "timer_clear_checks_held_not_idle": 235,
+        "median_gap_hours": 15.5,
+        "max_gap_hours": 44.166666666666664,
+        "sleeps_later_than_clock": 15,
+        "share_later_than_clock": 0.7894736842105263
+      },
+      {
+        "threshold": 5,
+        "sleeps": 17,
+        "backstop_sleeps": 1,
+        "idle_timer_clear_checks_held_below_threshold": 1146,
+        "timer_clear_checks_held_not_idle": 241,
+        "median_gap_hours": 19.75,
+        "max_gap_hours": 49.0,
+        "sleeps_later_than_clock": 13,
+        "share_later_than_clock": 0.8125
+      },
+      {
+        "threshold": 8,
+        "sleeps": 12,
+        "backstop_sleeps": 2,
+        "idle_timer_clear_checks_held_below_threshold": 1301,
+        "timer_clear_checks_held_not_idle": 271,
+        "median_gap_hours": 31.5,
+        "max_gap_hours": 48.0,
+        "sleeps_later_than_clock": 10,
+        "share_later_than_clock": 0.9090909090909091
+      },
+      {
+        "threshold": 13,
+        "sleeps": 8,
+        "backstop_sleeps": 5,
+        "idle_timer_clear_checks_held_below_threshold": 1426,
+        "timer_clear_checks_held_not_idle": 294,
+        "median_gap_hours": 48.0,
+        "max_gap_hours": 48.0,
+        "sleeps_later_than_clock": 7,
+        "share_later_than_clock": 1.0
+      },
+      {
+        "threshold": 21,
+        "sleeps": 7,
+        "backstop_sleeps": 6,
+        "idle_timer_clear_checks_held_below_threshold": 1440,
+        "timer_clear_checks_held_not_idle": 317,
+        "median_gap_hours": 48.0,
+        "max_gap_hours": 48.5,
+        "sleeps_later_than_clock": 6,
+        "share_later_than_clock": 1.0
+      }
+    ],
+    "juniper_only_idle": [
+      {
+        "threshold": 1,
+        "sleeps": 42,
+        "backstop_sleeps": 0,
+        "idle_timer_clear_checks_held_below_threshold": 448,
+        "timer_clear_checks_held_not_idle": 46,
+        "median_gap_hours": 6.166666666666667,
+        "max_gap_hours": 16.666666666666668,
+        "sleeps_later_than_clock": 15,
+        "share_later_than_clock": 0.36585365853658536
+      },
+      {
+        "threshold": 2,
+        "sleeps": 31,
+        "backstop_sleeps": 0,
+        "idle_timer_clear_checks_held_below_threshold": 850,
+        "timer_clear_checks_held_not_idle": 51,
+        "median_gap_hours": 10.0,
+        "max_gap_hours": 25.833333333333332,
+        "sleeps_later_than_clock": 21,
+        "share_later_than_clock": 0.7
+      },
+      {
+        "threshold": 3,
+        "sleeps": 24,
+        "backstop_sleeps": 0,
+        "idle_timer_clear_checks_held_below_threshold": 1076,
+        "timer_clear_checks_held_not_idle": 65,
+        "median_gap_hours": 13.0,
+        "max_gap_hours": 40.666666666666664,
+        "sleeps_later_than_clock": 16,
+        "share_later_than_clock": 0.6956521739130435
+      },
+      {
+        "threshold": 4,
+        "sleeps": 19,
+        "backstop_sleeps": 0,
+        "idle_timer_clear_checks_held_below_threshold": 1257,
+        "timer_clear_checks_held_not_idle": 56,
+        "median_gap_hours": 15.75,
+        "max_gap_hours": 44.166666666666664,
+        "sleeps_later_than_clock": 13,
+        "share_later_than_clock": 0.7222222222222222
+      },
+      {
+        "threshold": 5,
+        "sleeps": 17,
+        "backstop_sleeps": 1,
+        "idle_timer_clear_checks_held_below_threshold": 1324,
+        "timer_clear_checks_held_not_idle": 63,
+        "median_gap_hours": 19.75,
+        "max_gap_hours": 48.0,
+        "sleeps_later_than_clock": 13,
+        "share_later_than_clock": 0.8125
+      },
+      {
+        "threshold": 8,
+        "sleeps": 12,
+        "backstop_sleeps": 2,
+        "idle_timer_clear_checks_held_below_threshold": 1492,
+        "timer_clear_checks_held_not_idle": 80,
+        "median_gap_hours": 31.5,
+        "max_gap_hours": 48.0,
+        "sleeps_later_than_clock": 10,
+        "share_later_than_clock": 0.9090909090909091
+      },
+      {
+        "threshold": 13,
+        "sleeps": 8,
+        "backstop_sleeps": 5,
+        "idle_timer_clear_checks_held_below_threshold": 1638,
+        "timer_clear_checks_held_not_idle": 82,
+        "median_gap_hours": 48.0,
+        "max_gap_hours": 48.0,
+        "sleeps_later_than_clock": 7,
+        "share_later_than_clock": 1.0
+      },
+      {
+        "threshold": 21,
+        "sleeps": 7,
+        "backstop_sleeps": 6,
+        "idle_timer_clear_checks_held_below_threshold": 1693,
+        "timer_clear_checks_held_not_idle": 64,
+        "median_gap_hours": 48.0,
+        "max_gap_hours": 48.5,
+        "sleeps_later_than_clock": 6,
+        "share_later_than_clock": 1.0
+      }
+    ]
+  },
+  "assumptions": [
+    "checks every 600s from start; cycle lasts 6.0 min",
+    "min interval 6 h, lookback/overdue 48.0 h, idle 45.0 min",
+    "current novelty formula applied to the whole window, including before #2557",
+    "sources as they stand at export: later deletes, deactivations and salience edits are invisible",
+    "simulated attempt end = simulated start + cycle_minutes; failed attempts are not simulated",
+    "only saved checks after #2557 validate the replay; earlier windows are counterfactual"
+  ]
+}

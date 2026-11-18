@@ -257,12 +257,6 @@ TRANSPORT_LATENCY_RATIO_SATURATE = 12.0
 # call", not a percentile -- it may say degraded, never critical.
 TRANSPORT_MIN_CALLS_FOR_CRITICAL_LATENCY = 5
 
-# bus_synaptic prediction error / its gate threshold (0.15). Live 7d: median
-# 1.5x, max 4.9x.
-BUS_SYNAPTIC_RATIO_DEGRADED = 2.0
-BUS_SYNAPTIC_RATIO_CRITICAL = 3.0
-BUS_SYNAPTIC_RATIO_SATURATE = 5.0
-
 # transport_baseline (the new EWMA gate, spec A1-A4).
 TRANSPORT_Z_DEGRADED = 3.0
 TRANSPORT_Z_CRITICAL = 5.0
@@ -369,32 +363,6 @@ def _map_transport_rpc_timeout(reason: str, up: dict[str, Any]) -> EvidenceMappi
     )
 
 
-def _map_transport_bus_synaptic(reason: str, up: dict[str, Any]) -> EvidenceMapping:
-    err = _num(up.get("error"))
-    thr = _num(up.get("error_threshold"))
-    if err is None or not thr or thr <= 0:
-        return _no_evidence("transport", reason, "bus_synaptic without error/threshold")
-    ratio = err / thr
-    severity, magnitude = banded(
-        ratio, BUS_SYNAPTIC_RATIO_DEGRADED, BUS_SYNAPTIC_RATIO_CRITICAL, BUS_SYNAPTIC_RATIO_SATURATE
-    )
-    evidence = [f"bus prediction error {err:.3f} vs threshold {thr:.3f} ({ratio:.1f}x)"]
-    if up.get("transition"):
-        evidence.append(f"transition {up.get('transition')}")
-    edges = _int(up.get("edge_count"))
-    if edges is not None:
-        evidence.append(f"edges measured: {edges}")
-    return _build(
-        kind="transport",
-        severity=severity,
-        magnitude=magnitude,
-        basis=f"bus_synaptic error_ratio={ratio:.2f}",
-        evidence=evidence,
-        touches=["bus_mirror"],
-        headline=f"bus inter-arrival prediction error {ratio:.1f}x its threshold",
-    )
-
-
 def _map_transport_baseline(reason: str, up: dict[str, Any]) -> EvidenceMapping:
     """New condition-shaped upstream from the per-hop EWMA gate (spec A4)."""
     condition = str(up.get("condition") or "").strip().lower()
@@ -443,16 +411,25 @@ def _map_transport_baseline(reason: str, up: dict[str, Any]) -> EvidenceMapping:
         band = ("degraded", round(m, 4))
         basis = f"regime_shift saturation_ratio={sat if sat is not None else 'n/a'}"
 
+    close_reason = str(up.get("close_reason") or "").strip().lower() or None
     severity, magnitude = band
     if phase == "close":
         # An episode ending is news, not trouble: nominal, scaled by how big
         # the episode was so a big close still outranks a small one.
         severity, magnitude = "nominal", _nominal_band(magnitude)
         basis += ", phase=close"
+        if close_reason:
+            basis += f", closed={close_reason}"
     elif phase == "escalate":
         basis += ", phase=escalate"
 
     evidence: list[str] = [f"{condition} {phase} on {key}"]
+    if phase == "close" and close_reason == "went_silent":
+        # Not a recovery: the hop stopped producing evaluated traffic while
+        # the episode was still open (orion/metacog/transport_baseline.py).
+        evidence.append("closed because the hop went silent, not because it recovered")
+    elif phase == "close" and close_reason:
+        evidence.append(f"closed: {close_reason}")
     if window_ms is not None and baseline_ms is not None:
         s = f"mean {_secs(window_ms)} vs normal {_secs(baseline_ms)}"
         if z is not None:
@@ -487,7 +464,9 @@ def _map_transport_baseline(reason: str, up: dict[str, Any]) -> EvidenceMapping:
         basis=basis,
         evidence=evidence,
         touches=[key],
-        headline=f"{condition} {phase} on {key}",
+        headline=f"{condition} {phase} on {key}" + (
+            " (went silent, not recovered)" if phase == "close" and close_reason == "went_silent" else ""
+        ),
     )
 
 
@@ -499,8 +478,10 @@ def map_transport(reason: str, upstream: dict[str, Any]) -> EvidenceMapping:
         return _map_transport_rpc_health(reason, upstream)
     if source == "rpc_transport_timeout_grammar":
         return _map_transport_rpc_timeout(reason, upstream)
-    if source == "bus_synaptic_prediction_error":
-        return _map_transport_bus_synaptic(reason, upstream)
+    # evidence_source "bus_synaptic_prediction_error" (equilibrium's transport
+    # source, retired 2026-09-30; node:substrate.bus_synaptic itself retired
+    # 2026-11) now falls through to the unknown-source branch: historical
+    # rows read no_evidence instead of a severity from a dead instrument.
     return _no_evidence("transport", reason, f"unknown evidence_source={source or 'missing'}")
 
 
@@ -739,6 +720,11 @@ def map_insight(reason: str, up: dict[str, Any]) -> EvidenceMapping:
 
 
 def map_flow(reason: str, up: dict[str, Any]) -> EvidenceMapping:
+    # Historical rows only: the flow trigger's producer (orion-equilibrium-
+    # service's flow gate) was RETIRED 2026-10-10, so nothing emits new
+    # trigger_kind="flow" rows. Kept so capture replay / the capture eval can
+    # still map the 872 pre-retirement rows already stored in metacog_trigger
+    # (and the stratified fixture) instead of dropping them to no_evidence.
     mean = _num(up.get("mean_value"))
     floor = _num(up.get("floor"))
     if mean is None or floor is None or floor >= 1.0:
@@ -859,7 +845,116 @@ def map_manual(reason: str, up: dict[str, Any]) -> EvidenceMapping:
     )
 
 
+# --------------------------------------------------------------------------
+# self_signal_episode (spec 2026-10-07 section D; orion/metacog/self_signal_episode.py)
+# --------------------------------------------------------------------------
+
+# Bad-direction percentile against the signal's own 7 days. The cut points ARE
+# the attention seam's band cuts (prediction_error_magnitude.DEFAULT_BAND_CUTS:
+# high >= 0.9, unusual >= 0.99), so severity says the same thing the band does:
+# high -> degraded, unusual -> critical. Strict-below percentile never reaches
+# 1.0, so 1.0 is the saturation point.
+# Not imported: orion.substrate's package __init__ is heavy and this module
+# loads in cortex-exec / cortex-orch / orion-actions. Equality with
+# DEFAULT_BAND_CUTS[1:] is pinned by test_self_signal_cut_points_are_the_seams.
+SELF_SIGNAL_PCT_DEGRADED = 0.9
+SELF_SIGNAL_PCT_CRITICAL = 0.99
+SELF_SIGNAL_PCT_SATURATE = 1.0
+
+
+def map_self_signal_episode(reason: str, up: dict[str, Any]) -> EvidenceMapping:
+    signal = str(up.get("signal_id") or "").strip()
+    phase = str(up.get("phase") or "").strip()
+    if not signal or phase not in ("open", "close"):
+        return _no_evidence("self_signal_episode", reason, "missing signal_id/phase")
+    label = str(up.get("label") or signal)
+    peak = _num(up.get("peak_percentile"))
+    peak_raw = _num(up.get("peak_raw"))
+    peak_band = str(up.get("peak_band") or "?")
+    open_pct = _num(up.get("percentile_at_open"))
+    open_raw = _num(up.get("raw_at_open"))
+    open_band = str(up.get("band_at_open") or "?")
+    touches = [signal, str(up.get("source_table") or "")]
+    evidence: list[str] = []
+    if open_raw is not None and open_pct is not None:
+        evidence.append(f"{label}: {open_raw:.4g} entered {open_band} (above {open_pct:.1%} of its own week)")
+    if peak_raw is not None and peak is not None:
+        evidence.append(f"peak {peak_raw:.4g} ({peak_band}, above {peak:.1%} of its week)")
+    p50, p90 = _num(up.get("p50_7d")), _num(up.get("p90_7d"))
+    if p50 is not None and p90 is not None:
+        evidence.append(f"its usual: median {p50:.4g}, p90 {p90:.4g} over 7 days")
+    if phase == "close":
+        dur = _num(up.get("duration_sec"))
+        close_reason = str(up.get("close_reason") or "?")
+        after = f" after {dur / 60.0:.0f} min" if dur is not None else ""
+        if close_reason == "went_silent":
+            # Silence is not a recovery: the signal could not be read for the
+            # silent-close horizon. Degraded, never nominal (absent != calm).
+            evidence.insert(0, f"{label} went silent{after}: no readable reading; NOT a recovery")
+            return _build(
+                kind="self_signal_episode",
+                severity="degraded",
+                magnitude=DEGRADED_FLOOR,
+                basis=f"close:went_silent:duration_sec={dur}",
+                evidence=evidence,
+                touches=touches,
+                headline=f"{label} went silent while {peak_band} (not a recovery)",
+            )
+        if close_reason == "retired":
+            # The instrument was removed (RETIRED_PREDICTION_ERROR_NODE_IDS):
+            # no further readings will come. Not a recovery.
+            evidence.insert(
+                0, f"{label} closed{after}: its signal was retired; no further readings, NOT a recovery"
+            )
+            return _build(
+                kind="self_signal_episode",
+                severity="nominal",
+                magnitude=_nominal_band((dur or 0.0) / 3600.0),
+                basis=f"close:retired:duration_sec={dur}",
+                evidence=evidence,
+                touches=touches,
+                headline=f"{label} closed while {peak_band}: signal retired (not a recovery)",
+            )
+        if close_reason == "faded":
+            what = "no new event since; its last reading stopped being news"
+        else:
+            what = "readings back within its usual range"
+        evidence.insert(0, f"{label} settled ({close_reason}){after}: {what}")
+        return _build(
+            kind="self_signal_episode",
+            severity="nominal",
+            magnitude=_nominal_band((dur or 0.0) / 3600.0),
+            basis=f"close:{close_reason}:duration_sec={dur}",
+            evidence=evidence,
+            touches=touches,
+            headline=f"{label} settled from {peak_band} ({close_reason})",
+        )
+    pct = peak if peak is not None else open_pct
+    if pct is None:
+        return _no_evidence("self_signal_episode", reason, "open without percentile")
+    # What this signal tends to lead to (spec section E): the producer attaches it only when the
+    # persisted association's 95% interval excludes 1; the clause cites [assoc:<association_id>].
+    tends_to = up.get("tends_to")
+    if isinstance(tends_to, dict):
+        clause = str(tends_to.get("clause") or "").strip()
+        if clause:
+            evidence.append(clause[:300])
+    severity, magnitude = banded(
+        pct, SELF_SIGNAL_PCT_DEGRADED, SELF_SIGNAL_PCT_CRITICAL, SELF_SIGNAL_PCT_SATURATE
+    )
+    return _build(
+        kind="self_signal_episode",
+        severity=severity,
+        magnitude=magnitude,
+        basis=f"percentile={pct:.4f}",
+        evidence=evidence,
+        touches=touches,
+        headline=f"{label} {peak_band} for itself (above {pct:.1%} of its own week)",
+    )
+
+
 _MAPPERS: dict[str, Callable[[str, dict[str, Any]], EvidenceMapping]] = {
+    "self_signal_episode": map_self_signal_episode,
     "transport": map_transport,
     "telemetry_anomaly": map_telemetry_anomaly,
     "chat_turn": map_chat_turn,

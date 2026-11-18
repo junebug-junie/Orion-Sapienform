@@ -12,12 +12,14 @@ from typing import Optional
 from uuid import uuid4
 
 from app.settings import get_settings
+from app.town_self_start import TownSelfStart, build_act_gate
+from app.town_sessions import TownConfig, TownSessionController
 
 from orion.autonomy.fcc_env import expand_env_path, load_fcc_env
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
-from orion.core.bus.resilience import publish_with_reconnect
+from orion.core.bus.resilience import publish_with_reconnect, run_subscription
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.embodiment import aitown_client
 from orion.embodiment.arbiter import ArbiterState, decide
@@ -46,6 +48,9 @@ from orion.schemas.embodiment import (
 from orion.town_cast import ORION_DISPLAY_NAME, slug_for_name, thread_id_for
 
 logger = logging.getLogger("orion.embodiment.worker")
+
+# An unprocessed accept is resent at most this often (the engine's invite times out at 60 s).
+ACCEPT_RESEND_SEC = 20.0
 
 # Fixed cross-service contract endpoint (owned by orion-actions). The channel is
 # `orion:actions:trigger:journal.v1` and the consumer routes on the dotted kind
@@ -147,6 +152,11 @@ class EmbodimentWorker:
         # many successful injects it has landed in that conversation.
         self._abandon_participating_since_ms: dict[str, float] = {}
         self._abandon_own_utterances: dict[str, int] = {}
+        # When a leave was last sent per conversation: one leave, then wait.
+        self._abandon_leave_sent_ms: dict[str, float] = {}
+        self._accept_sent_ms: dict[str, float] = {}
+        # Engine state from the last perception tick; None until first read.
+        self._world_running: Optional[bool] = None
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
         self._active_conversation_id: Optional[str] = None
@@ -163,6 +173,24 @@ class EmbodimentWorker:
         # or unavailable -> resolver falls back to unconstrained wander.
         self._walkable: Optional[set[tuple[int, int]]] = None
         self._walkable_loaded = False
+        # AI Town sessions (2026-10-30): the town runs only in sessions Orion chooses (capped per
+        # local day) or that Juniper opens by hand. See app/town_sessions.py.
+        self._town = TownSessionController(
+            TownConfig.from_settings(self._settings),
+            redis_getter=lambda: self._bus.redis,
+            world_id_getter=lambda: self._world_id or None,
+            bus_getter=lambda: self._bus,
+        )
+        # Ladder retirement PR 3 (2026-11-05): Orion's sessions start on this service's own timer
+        # (app/town_self_start.py), which bids and then asks the controller above. It replaced the
+        # dispatch runtime's orion:aitown_session:start:request RPC.
+        self._town_self_start = TownSelfStart(
+            self._town,
+            tick_sec=float(getattr(self._settings, "town_self_start_tick_sec", 300.0)),
+            enabled=bool(getattr(self._settings, "town_self_start_enabled", True)),
+            gate=build_act_gate(self._settings, self._town),
+            shadow_bid_enabled=bool(getattr(self._settings, "physiology_shadow_bid_enabled", True)),
+        )
 
     def _walkable_tiles(self) -> Optional[set[tuple[int, int]]]:
         """Fail-open, cached walkable set from the AI Town map. Fetched once."""
@@ -214,6 +242,13 @@ class EmbodimentWorker:
 
     # --- unit-testable core -------------------------------------------------
     def process_intent(self, intent: EmbodimentIntentV1, *, now: datetime) -> EmbodimentOutcomeV1:
+        if getattr(self, "_world_running", None) is False:
+            # Frozen town: an input now only queues for replay after Unfreeze.
+            return EmbodimentOutcomeV1(
+                intent_correlation_id=intent.correlation_id, source=intent.source,
+                status="denied", reason="town frozen (engine stopped)",
+                player_id=self._orion_player_id or None,
+            )
         decision = decide(intent, self._arbiter, now=now, hold_sec=self._hold_sec)
         if not decision.accept:
             return EmbodimentOutcomeV1(
@@ -336,30 +371,47 @@ class EmbodimentWorker:
         await self._bus.connect()
         self._rpc_health_publisher.start()
         asyncio.create_task(self._consume_loop(), name="embodiment-consume")
+        asyncio.create_task(self._town_loop(), name="embodiment-town-sessions")
+        self._town_self_start.begin()
         if self._settings.perception_interval_sec > 0:
             asyncio.create_task(self._perception_loop(), name="embodiment-perception")
 
     async def stop(self) -> None:
         self._stop.set()
+        await self._town_self_start.stop()
         await self._rpc_health_publisher.stop()
         await self._bus.close()
 
     async def _consume_loop(self) -> None:
-        channel = self._settings.channel_intent
-        async with self._bus.subscribe(channel) as pubsub:
-            while not self._stop.is_set():
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0), timeout=1.2
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await self._handle(msg)
-                except Exception:
-                    logger.exception("embodiment_handle_failed")
+        # Resubscribes with backoff after a Redis drop instead of ending the loop.
+        await run_subscription(
+            self._bus, self._settings.channel_intent, self._handle_logged,
+            stop_event=self._stop, name="embodiment-intent",
+        )
+
+    async def _town_loop(self) -> None:
+        """The session controller's own clock: the cap check must not wait on a slow perception tick."""
+        interval = max(1.0, float(getattr(self._settings, "town_tick_sec", 10.0)))
+        while not self._stop.is_set():
+            self._refresh_aitown_runtime()
+            try:
+                await self._town.tick()
+            except Exception:
+                logger.exception("embodiment_town_session_tick_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    def town_self_start_snapshot(self) -> dict:
+        """GET /health -> ``town_self_start``: each tick's result and the refusal counts."""
+        return self._town_self_start.snapshot()
+
+    async def _handle_logged(self, raw_msg: dict) -> None:
+        try:
+            await self._handle(raw_msg)
+        except Exception:
+            logger.exception("embodiment_handle_failed")
 
     async def _handle(self, raw_msg: dict) -> None:
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -695,7 +747,10 @@ class EmbodimentWorker:
         player_id = (self._orion_player_id or "").strip()
         if not player_id:
             return None
-        if getattr(self._settings, "world_heartbeat_enabled", False):
+        town = getattr(self, "_town", None)
+        if getattr(self._settings, "world_heartbeat_enabled", False) and not (town is not None and town.cfg.enabled):
+            # Legacy always-on heartbeat, read only while town sessions are OFF (the rollback path).
+            # With sessions on, the session controller heartbeats during Orion's own sessions only.
             # Wake/keep the engine running so actuation lands (inactive worlds drop inputs).
             try:
                 await asyncio.to_thread(aitown_client.heartbeat_world, self._world_id or None)
@@ -708,13 +763,29 @@ class EmbodimentWorker:
         except Exception:
             logger.exception("embodiment_perception_list_players_failed")
             return None
+        # Hub's Freeze button stops the engine. Anything sent while it is stopped
+        # queues for replay, and every NPC action waits behind the replay after
+        # Unfreeze, so a frozen town gets no perception-driven inputs at all.
+        try:
+            running = await asyncio.to_thread(aitown_client.engine_running, self._world_id or None)
+        except Exception:
+            logger.debug("embodiment_engine_state_failed", exc_info=True)
+            return None
+        if running != getattr(self, "_world_running", None):
+            logger.info("embodiment_town_engine running=%s", running)
+        self._world_running = running
+        if not running:
+            return None
         conversations: list = []
         try:
             conversations = await asyncio.to_thread(
                 aitown_client.list_conversations, world_id=self._world_id or None
             ) or []
         except Exception:
+            # Skip the tick, like a list_players failure: an empty list would read as
+            # "no conversation" and reset the per-conversation resend guards.
             logger.debug("embodiment_perception_list_conversations_failed", exc_info=True)
+            return None
         # Only fetch the transcript for the conversation Orion is actually
         # participating in (avoids a query per unrelated town conversation).
         messages: list = []
@@ -778,6 +849,13 @@ class EmbodimentWorker:
             cid = str(convo.get("conversation_id") or "")
             other = convo.get("other") or {}
             if status == "invited" and cid:
+                # Same class as the leave flood: the invite stays visible until the engine
+                # processes the accept, so one accept per conversation per window.
+                now_ms = _utcnow().timestamp() * 1000.0
+                sent_ms = self._accept_sent_ms.get(cid)
+                if sent_ms is not None and now_ms - sent_ms < ACCEPT_RESEND_SEC * 1000.0:
+                    return
+                self._accept_sent_ms[cid] = now_ms
                 try:
                     await asyncio.to_thread(
                         aitown_client.accept_invite,
@@ -807,6 +885,8 @@ class EmbodimentWorker:
         # No active conversation — drop abandon clocks so a later rejoin starts fresh.
         self._abandon_participating_since_ms.clear()
         self._abandon_own_utterances.clear()
+        self._abandon_leave_sent_ms.clear()
+        self._accept_sent_ms.clear()
         await self._maybe_initiate_conversation(perception)
 
     async def _maybe_abandon_dead_chat(
@@ -836,6 +916,15 @@ class EmbodimentWorker:
             participating_since_ms=self._abandon_participating_since_ms.get(cid),
         ):
             return
+        # The chat stays visible until the engine processes the leave. Resending every
+        # tick queued ~84k leaveConversation inputs on 2026-10-28; every NPC action then
+        # timed out behind them and the town froze. One leave per abandon window.
+        sent_ms = self._abandon_leave_sent_ms.get(cid)
+        if sent_ms is not None and now_ms - sent_ms < abandon_sec * 1000.0:
+            return
+        # Marked before sending: under a backlog the client times out (30 s) while the
+        # input still lands, and an unmarked failure would be resent every tick.
+        self._abandon_leave_sent_ms[cid] = now_ms
         try:
             await asyncio.to_thread(
                 aitown_client.leave_conversation,
@@ -1127,6 +1216,9 @@ class EmbodimentWorker:
             self._abandon_own_utterances[convo_id] = (
                 int(self._abandon_own_utterances.get(convo_id, 0)) + 1
             )
+            town = getattr(self, "_town", None)
+            if town is not None:
+                town.note_utterance()
             # Record Orion's contribution so the journal gate sees a real exchange
             # when this conversation later completes.
             if convo_id == getattr(self, "_active_conversation_id", None):
@@ -1160,7 +1252,8 @@ class EmbodimentWorker:
                     timeout_sec=float(self._settings.unified_timeout_sec),
                     participant_continuity=participant_continuity,
                 )
-                if grounded.strip():
+                # Junk ("[]", error text) falls through to the quick path, not a skipped turn.
+                if is_injectable(grounded):
                     return grounded
             except Exception as exc:
                 logger.info(
@@ -1183,7 +1276,7 @@ class EmbodimentWorker:
         participant_continuity: Optional[str] = None,
     ) -> str:
         """Cortex-exec RPC for town speech with grounded_small surface context."""
-        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+        from orion.cognition.cortex_payload_extract import extract_cortex_answer_text
         from orion.cognition.plan_loader import build_plan_for_verb
         from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 
@@ -1234,14 +1327,14 @@ class EmbodimentWorker:
             return ""
         payload = decoded.envelope.payload
         result = payload.get("result") if isinstance(payload, dict) else None
-        text = extract_cortex_payload_text(result if isinstance(result, dict) else (payload or {}))
+        text = extract_cortex_answer_text(result if isinstance(result, dict) else (payload or {}))
         return str(text or "")
 
     async def _request_utterance_quick(
         self, prompt: str, *, correlation_id: str, participant_continuity: Optional[str] = None,
     ) -> str:
         """Reuse the cortex exec rail to generate an utterance. Fail-open -> ''."""
-        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+        from orion.cognition.cortex_payload_extract import extract_cortex_answer_text
         from orion.cognition.plan_loader import build_plan_for_verb
         from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 
@@ -1294,7 +1387,7 @@ class EmbodimentWorker:
                 return ""
             payload = decoded.envelope.payload
             result = payload.get("result") if isinstance(payload, dict) else None
-            text = extract_cortex_payload_text(result if isinstance(result, dict) else (payload or {}))
+            text = extract_cortex_answer_text(result if isinstance(result, dict) else (payload or {}))
             return str(text or "")
         except Exception:
             logger.exception("embodiment_speech_rpc_failed corr=%s", correlation_id)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from orion.field_coherence import check_field_coherence
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
+from orion.field.action_warrant import action_warrant
 from orion.field.pressure import collect_field_channel_pressures
 from orion.field.queue_contention import (
     SOURCE_DURABLE,
@@ -57,8 +58,12 @@ def delta_digestion_enabled(target_kind: str, settings: Any) -> bool:
         return bool(settings.enable_transport_field_digestion)
     if target_kind == "llm_inference_node":
         return bool(settings.enable_llm_inference_field_digestion)
+    if target_kind == "vision_organ":
+        return bool(settings.enable_vision_organ_field_digestion)
     if target_kind == "rpc_delivery":
         return bool(settings.enable_rpc_delivery_field_digestion)
+    if target_kind == "storage_write":
+        return bool(settings.enable_storage_write_field_digestion)
     return True
 
 
@@ -337,6 +342,14 @@ class FieldDigesterWorker:
                         self._settings.field_merge_staleness_threshold_sec
                     ),
                 )
+                # action_warrant (orion/field/action_warrant.py), computed here from this
+                # tick's final state. Until 2026-11-07 the proposal runtime computed it from
+                # this same persisted state and the corpus/live scorer read it back from
+                # substrate_proposal_frames; that rung retired (ladder retirement PR 6).
+                # Absent (never 0.0) when no dimension is live enough to score.
+                warrant = action_warrant(state).score
+                if warrant is not None:
+                    channel_pressures["action_warrant"] = warrant
                 row = FieldChannelCorpusRowV1(
                     generated_at=state.generated_at,
                     tick_id=state.tick_id,

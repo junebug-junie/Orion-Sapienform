@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -51,21 +52,25 @@ def _crystallizations_sql_path() -> Path:
     return repo_root / "orion" / "core" / "storage" / "sql" / "memory_crystallizations.sql"
 
 
-def apply_memory_crystallizations_schema(dsn: str) -> None:
+def apply_memory_crystallizations_schema(dsn: str, *, force: bool = False) -> bool:
+    """Same contract as apply_memory_cards_schema: skipped (False) while the
+    file's fingerprint is recorded, True when the DDL ran."""
     import psycopg2
+
+    from orion.core.storage.schema_fingerprint import apply_schema_file_once
 
     sql_path = _crystallizations_sql_path()
     if not sql_path.is_file():
         raise FileNotFoundError(f"memory_crystallizations DDL not found at {sql_path}")
-    sql = sql_path.read_text(encoding="utf-8")
-    connect_options = (
-        f"-c lock_timeout={_SCHEMA_APPLY_LOCK_TIMEOUT_MS} "
-        f"-c statement_timeout={_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS}"
+    return apply_schema_file_once(
+        dsn,
+        name="memory_crystallizations",
+        sql=sql_path.read_text(encoding="utf-8"),
+        lock_timeout_ms=_SCHEMA_APPLY_LOCK_TIMEOUT_MS,
+        statement_timeout_ms=_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS,
+        connect=psycopg2.connect,
+        force=force,
     )
-    with psycopg2.connect(dsn, options=connect_options) as conn:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute(sql)
 
 
 def _jsonb(value: Any) -> str:
@@ -438,6 +443,32 @@ async def list_crystallizations(
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql, *args)
 
+    out: list[MemoryCrystallizationV1] = []
+    for row in rows:
+        claims, evidence, links = await _load_children(pool, str(row["crystallization_id"]))
+        out.append(_row_to_crystallization(row, claims=claims, evidence=evidence, links=links))
+    return out
+
+
+async def find_exact_duplicates(
+    pool: asyncpg.Pool, *, kind: str, subject: str, summary: str
+) -> list[MemoryCrystallizationV1]:
+    """Live rows with the same kind and the same case/whitespace-normalised subject and
+    summary. Unlike list_crystallizations(), not capped to the top-N by salience, so an
+    old low-salience copy is still found."""
+    sql = r"""
+        SELECT * FROM memory_crystallizations
+        WHERE kind = $1
+          AND status NOT IN ('rejected', 'archived', 'quarantined')
+          AND lower(btrim(regexp_replace(subject, '\s+', ' ', 'g'))) = $2
+          AND lower(btrim(regexp_replace(summary, '\s+', ' ', 'g'))) = $3
+        ORDER BY (status = 'active') DESC, created_at
+    """
+    def norm(t: str) -> str:
+        return re.sub(r"\s+", " ", (t or "").strip()).lower()
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, kind, norm(subject), norm(summary))
     out: list[MemoryCrystallizationV1] = []
     for row in rows:
         claims, evidence, links = await _load_children(pool, str(row["crystallization_id"]))

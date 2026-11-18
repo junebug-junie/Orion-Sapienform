@@ -51,7 +51,7 @@ def test_auto_router_clamps_short_instruction_question_to_agent_for_implementati
     routed = asyncio.run(router.route(req, correlation_id="c-impl-short", source=ServiceRef(name="orch", version="0", node="n")))
     assert routed.request.options["output_mode"] == "implementation_guide"
     assert routed.decision.execution_depth == 2
-    assert "output_mode_tool_lane" in routed.decision.reason or "heuristic:instruction" in routed.decision.reason or "context_exec_investigation" in routed.decision.reason
+    assert "output_mode_tool_lane" in routed.decision.reason or "heuristic:instruction" in routed.decision.reason
     assert routed.request.mode == "agent"
     assert routed.request.verb == "agent_runtime"
 
@@ -71,7 +71,8 @@ def test_hub_auto_depth2_engineering_heuristic_and_plan_shape():
     assert routed.decision.execution_depth == 2
     assert routed.request.verb == "agent_runtime"
     plan_req = build_plan_request(routed.request, "corr")
-    assert [s.step_name for s in plan_req.plan.steps] == ["context_exec"]
+    assert [s.step_name for s in plan_req.plan.steps] == ["agent_runtime"]
+    assert [s.services for s in plan_req.plan.steps] == [[]]
 
 
 def test_auto_router_respects_live_routing_threshold_gate(monkeypatch):
@@ -338,3 +339,22 @@ def test_explicit_skill_verb_request_skips_auto_router(monkeypatch):
     )
     asyncio.run(orch_main.handle(env))
     assert called["router"] == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "where did this belief come from?",
+        "trace autopsy for corr abc123",
+        "what breaks if we replace the recall service?",
+    ],
+)
+def test_auto_router_never_tags_requests_for_retired_context_exec(text):
+    """orion-context-exec was retired 2026-10-10. The router used to promote these
+    phrasings to depth 2 and tag them agent_runtime_engine=context_exec, sending
+    them to a service with no consumer (60s timeout, then a canned failure)."""
+    router = DecisionRouter(_FakeBus())
+    routed = asyncio.run(router.route(_req(text=text), correlation_id="c-ce", source=ServiceRef(name="orch", version="0", node="n")))
+    assert "context_exec_mode" not in routed.request.options
+    assert "agent_runtime_engine" not in routed.request.options
+    assert "context_exec" not in routed.decision.reason

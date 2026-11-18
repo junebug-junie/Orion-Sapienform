@@ -1,35 +1,23 @@
 #!/bin/sh
 set -e
 
-# Inject MCP credentials into ~/.fcc/.env from gh credentials or env vars
-# This handles FCC server regenerating the file and wiping manual entries
-
-if [ -f ~/.config/gh/hosts.yml ]; then
-  if ! grep -q "^GITHUB_PAT=" ~/.fcc/.env 2>/dev/null; then
-    PAT=$(python3 << 'PYEOF'
-import yaml
-from pathlib import Path
-try:
-    hosts = Path.home() / ".config/gh/hosts.yml"
-    if hosts.exists():
-        config = yaml.safe_load(hosts.read_text()) or {}
-        gh_com = config.get("github.com", {})
-        if isinstance(gh_com, dict):
-            token = gh_com.get("oauth_token")
-            if token:
-                print(token)
-except:
-    pass
-PYEOF
-)
-    if [ -n "$PAT" ]; then
-      if [ -f ~/.fcc/.env ]; then
-        echo "GITHUB_PAT=$PAT" >> ~/.fcc/.env
-      else
-        mkdir -p ~/.fcc && echo "GITHUB_PAT=$PAT" > ~/.fcc/.env
-      fi
-    fi
-  fi
+# GITHUB_PAT in ~/.fcc/.env is Orion's GitHub MCP token and sandbox push token.
+# It comes ONLY from ORION_GITHUB_TOKEN (Orion's own GitHub user). The old
+# fallback that copied the operator's gh login out of ~/.config/gh/hosts.yml is
+# gone on purpose, and any stale GITHUB_PAT is removed first -- the previous
+# "only if missing" guard left the operator's token in the file forever.
+mkdir -p ~/.fcc
+touch ~/.fcc/.env
+if grep -q "^GITHUB_PAT=" ~/.fcc/.env; then
+  # Write a sibling file and rename it over the original: readers (the hub mounts
+  # this directory) never see a half-written or empty .env. ~/.fcc is a directory
+  # mount, so the rename is visible to them.
+  grep -v "^GITHUB_PAT=" ~/.fcc/.env > ~/.fcc/.env.tmp || true
+  chmod --reference=$HOME/.fcc/.env ~/.fcc/.env.tmp 2>/dev/null || true
+  mv ~/.fcc/.env.tmp ~/.fcc/.env
+fi
+if [ -n "$ORION_GITHUB_TOKEN" ]; then
+  echo "GITHUB_PAT=$ORION_GITHUB_TOKEN" >> ~/.fcc/.env
 fi
 
 # Inject FIRECRAWL_API_KEY from env var if set and missing from file

@@ -14,19 +14,14 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.self_experiments import (
     SelfExperimentCreateRequestV1,
     SelfExperimentCreateResponseV1,
-    SelfExperimentDispatchResponseV1,
     SelfExperimentListResponseV1,
     SelfExperimentRecordV1,
 )
 
-from .context_exec_client import dispatch_context_exec
 from .experiment_registry import (
     ExperimentValidationError,
-    compile_experiment_to_context_exec_request,
     compute_dedupe_key,
     normalize_create_request,
-    parse_context_exec_result,
-    registry_config_for_type,
 )
 from .settings import settings
 from .store import get_record, init_db, insert_record_dedupe_safe, list_records, update_record
@@ -49,9 +44,8 @@ heartbeat_chassis: HeartbeatOnly | None = None
 
 def build_heartbeat_chassis() -> HeartbeatOnly:
     """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
-    every heartbeat_interval_sec. Self-experiments' bus usage (dispatch to context-exec via
-    `SELF_EXPERIMENTS_CONTEXT_EXEC_DISPATCH_TRANSPORT=bus`) is per-request, not a persistent
-    connection this chassis could collide with. See
+    every heartbeat_interval_sec. This is the service's only bus usage: the old per-request
+    dispatch to orion-context-exec was removed with that service (retired 2026-10-10). See
     docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
     return HeartbeatOnly(
         ChassisConfig(
@@ -102,7 +96,6 @@ def health() -> dict[str, Any]:
         "ok": True,
         "service": settings.service_name,
         "version": settings.service_version,
-        "dispatch_enabled": settings.self_experiments_dispatch_enabled,
     }
 
 
@@ -217,111 +210,6 @@ def list_experiments(
     return SelfExperimentListResponseV1(total=len(items), items=items)
 
 
-def _apply_context_exec_result(record: SelfExperimentRecordV1, run_payload: dict[str, Any]) -> SelfExperimentRecordV1:
-    parsed = parse_context_exec_result(run_payload)
-    record.context_exec_run_id = str(parsed.get("context_exec_run_id") or "")
-    record.context_exec_status = str(parsed.get("status") or "")
-    record.artifact_type = parsed.get("artifact_type")
-    record.artifact_summary = parsed.get("operator_summary")
-    record.artifact_payload = run_payload
-    record.proposal_id = str(parsed["proposal_id"]) if parsed.get("proposal_id") else None
-    record.proposal_status = str(parsed["ledger_status"]) if parsed.get("ledger_status") else None
-    record.attention_required = bool(parsed.get("attention_required"))
-
-    run_status = str(parsed.get("status") or "error")
-    artifact_type = str(parsed.get("artifact_type") or "")
-    if run_status != "ok":
-        record.status = "failed"
-        record.reason = f"context_exec_{run_status}"
-    elif artifact_type == "ProposalEnvelopeV1":
-        record.status = "proposal_stored"
-        if record.attention_required:
-            record.status = "pending_review"
-    else:
-        record.status = "completed"
-    record.completed_at_utc = _now_utc()
-    record.updated_at_utc = record.completed_at_utc
-    return record
-
-
-@app.post("/v1/experiments/{experiment_id}/dispatch", response_model=SelfExperimentDispatchResponseV1)
-async def dispatch_experiment(experiment_id: str) -> SelfExperimentDispatchResponseV1:
-    record = get_record(experiment_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="experiment_not_found")
-
-    if record.status in ("rejected", "discarded", "expired", "completed", "proposal_stored", "pending_review"):
-        raise HTTPException(status_code=409, detail=f"cannot_dispatch_status:{record.status}")
-
-    if not settings.self_experiments_dispatch_enabled:
-        record.status = "queued"
-        record.reason = "dispatch_disabled"
-        record.updated_at_utc = _now_utc()
-        update_record(record)
-        logger.info("self_experiment_queued dispatch_disabled experiment_id=%s", experiment_id)
-        config = registry_config_for_type(record.spec.experiment_type)
-        return SelfExperimentDispatchResponseV1(
-            ok=True,
-            experiment_id=experiment_id,
-            status="queued",
-            context_exec_mode=config["context_exec_mode"],
-            expected_artifact_type=config["expected_artifact_type"],
-            message="dispatch_disabled",
-        )
-
-    if record.dispatch_attempts >= settings.self_experiments_max_dispatch_attempts:
-        raise HTTPException(status_code=409, detail="max_dispatch_attempts_exceeded")
-
-    try:
-        ctx_req = compile_experiment_to_context_exec_request(record)
-    except ExperimentValidationError as exc:
-        record.status = "rejected"
-        record.reason = exc.reason
-        record.updated_at_utc = _now_utc()
-        update_record(record)
-        raise HTTPException(status_code=400, detail=exc.reason) from exc
-
-    record.status = "dispatching"
-    record.dispatch_attempts += 1
-    record.context_exec_request = ctx_req.model_dump(mode="json")
-    record.updated_at_utc = _now_utc()
-    update_record(record)
-    logger.info(
-        "self_experiment_dispatch_started experiment_id=%s mode=%s",
-        experiment_id,
-        ctx_req.mode,
-    )
-
-    record.status = "running"
-    record.updated_at_utc = _now_utc()
-    update_record(record)
-
-    try:
-        run = await dispatch_context_exec(ctx_req)
-        record = _apply_context_exec_result(record, run.model_dump(mode="json"))
-        logger.info(
-            "self_experiment_context_exec_result_received experiment_id=%s status=%s",
-            experiment_id,
-            record.status,
-        )
-    except Exception as exc:
-        record.status = "failed"
-        record.reason = f"dispatch_error:{exc.__class__.__name__}"
-        record.updated_at_utc = _now_utc()
-        logger.exception("self_experiment_failed experiment_id=%s", experiment_id)
-
-    update_record(record)
-    config = registry_config_for_type(record.spec.experiment_type)
-    return SelfExperimentDispatchResponseV1(
-        ok=record.status in ("completed", "proposal_stored", "pending_review"),
-        experiment_id=experiment_id,
-        status=record.status,
-        context_exec_mode=config["context_exec_mode"],
-        expected_artifact_type=config["expected_artifact_type"],
-        message=record.reason,
-    )
-
-
 @app.post("/v1/experiments/{experiment_id}/discard", response_model=SelfExperimentCreateResponseV1)
 def discard_experiment(experiment_id: str) -> SelfExperimentCreateResponseV1:
     record = get_record(experiment_id)
@@ -336,23 +224,6 @@ def discard_experiment(experiment_id: str) -> SelfExperimentCreateResponseV1:
         status="discarded",
         message=None,
     )
-
-
-@app.post("/v1/experiments/{experiment_id}/retry", response_model=SelfExperimentDispatchResponseV1)
-async def retry_experiment(experiment_id: str) -> SelfExperimentDispatchResponseV1:
-    record = get_record(experiment_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="experiment_not_found")
-    if record.status not in ("failed", "queued") and not (
-        record.status == "validated" and record.reason == "dispatch_disabled"
-    ):
-        raise HTTPException(status_code=409, detail=f"cannot_retry_status:{record.status}")
-    if record.status == "failed":
-        record.status = "validated"
-        record.reason = None
-        record.updated_at_utc = _now_utc()
-        update_record(record)
-    return await dispatch_experiment(experiment_id)
 
 
 if __name__ == "__main__":

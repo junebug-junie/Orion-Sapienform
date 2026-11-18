@@ -20,7 +20,8 @@ for the rest of the session.
 Deliberately narrow, matching the two-candidates scoping of phase 5 itself:
 only the handful of tokens that CURRENTLY have a registered liveness source
 (orion.metrics.liveness.has_registered_source()) can ever trigger this --
-today that's the 5 attention_self_model.v1 scalar fields and l7_l11_ladder.
+today that's the 5 attention_self_model.v1 scalar fields and repair_pressure's
+level/confidence (l7_l11_ladder was one until it retired, 2026-11-07).
 Every other metric name in the codebase is silently ignored here, honestly,
 not asserted clean. Token set is read live off build_graph() (~1s, no repo-
 wide consumer scan -- that's orion.metrics.consumers.scan_repo(), NOT called
@@ -90,9 +91,8 @@ even for a README-only commit. A commit that DOES stage `.py` files but
 matches no covered token still pays that ~1s (build_graph() has to run to
 know the token set at all), but never opens a DB connection. Worst case is
 NOT ~15s: `main()` calls
-`liveness_for_node()` once per unique matched token, and l7_l11_ladder's own
-call internally issues 5 more sequential per-stage queries (orion/metrics/
-liveness.py's `_ladder_liveness`) -- a commit whose diff touches several
+`liveness_for_node()` once per unique matched token (the retired
+l7_l11_ladder's call also issued per-stage queries, until 2026-11-07) -- a commit whose diff touches several
 covered tokens at once (plausible: 4 of the 5 attention_self_model.v1 fields
 live in one schema file) can take a low tens-of-seconds. Not batched or
 capped here -- same accepted trade-off as the un-batched ladder queries

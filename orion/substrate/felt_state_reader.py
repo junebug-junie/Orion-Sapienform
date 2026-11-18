@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import functools
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -110,6 +112,44 @@ _LANES: tuple[LaneSpec, ...] = (
         where_sql="concept_id = 'self:definition' AND produced_by = 'curiosity_self_inquiry'",
         cache_ttl_sec=300,
     ),
+    # Orion's core page "who Juniper is to me" (orion/memory/pages/juniper.py), folded nightly by
+    # orion-durable-runs. Read by cortex-exec's grounding capsule (core_pages) into the harness
+    # RELATIONSHIP slot. A page stays current until the next fold replaces it, so the row may be
+    # old; a year bounds a page nothing has refreshed. Cache refreshes every 5 min.
+    # A full hydrate (lanes=None) reads this lane whatever ORION_CORE_PAGES_ENABLED says (this reader
+    # has no per-lane flags): the flag gates USE, in cortex-exec's core_pages_for_ctx, not the read.
+    # With the flag off the ctx key may be present (and listed in CONTEXT PROVENANCE) but no prompt
+    # renders the page.
+    LaneSpec(
+        ctx_key="orion_core_page_juniper",
+        table="self_concept_history",
+        payload_col=(
+            "json_build_object('entry_id', entry_id, 'concept_id', concept_id, 'content', content, "
+            "'version', version, 'evidence_refs', evidence_refs, 'created_at', created_at)"
+        ),
+        ts_col="created_at",
+        projection_id=None,
+        max_age_sec=365 * 86400,
+        where_sql="concept_id = 'page:juniper' AND produced_by = 'core_page_fold'",
+        cache_ttl_sec=300,
+    ),
+    # Juniper's fixed anchor lines (orion/memory/pages/anchor.py, issue #3460): one hand-written
+    # row, concept_id 'page:anchor', produced_by 'juniper_anchor' (a value no bus producer may
+    # publish). Shown first in RELATIONSHIP, above page:juniper. It never goes stale: the bound
+    # is ten years so an old anchor still shows. Same 5 min cache and same flag as page:juniper.
+    LaneSpec(
+        ctx_key="orion_core_page_anchor",
+        table="self_concept_history",
+        payload_col=(
+            "json_build_object('concept_id', concept_id, 'content', content, "
+            "'version', version, 'created_at', created_at)"
+        ),
+        ts_col="created_at",
+        projection_id=None,
+        max_age_sec=10 * 365 * 86400,
+        where_sql="concept_id = 'page:anchor' AND produced_by = 'juniper_anchor'",
+        cache_ttl_sec=300,
+    ),
     LaneSpec(
         ctx_key="latest_reverie_thought",
         table="substrate_reverie_thought",
@@ -158,12 +198,23 @@ def _pinned_lived_concept_ids() -> tuple[str, ...]:
         return ()
 
 
+@functools.lru_cache(maxsize=None)
+def _shared_engine(database_url: str) -> Any:
+    """One pool per database URL for every reader in the process.
+
+    orion/hub/association.py builds a new reader on every hub chat turn; a
+    per-instance create_engine() left each turn's pool (and its connection)
+    open until garbage collection.
+    """
+    return create_engine(database_url, pool_pre_ping=True)
+
+
 class SubstrateFeltStateReader:
     def __init__(self, *, enabled: bool, database_url: str, max_age_sec: int) -> None:
         self._enabled = enabled
         self._database_url = database_url
         self._max_age_sec = max_age_sec
-        self._engine = create_engine(database_url, pool_pre_ping=True) if enabled else None
+        self._engine = _shared_engine(database_url) if enabled else None
         self._cache: dict[str, tuple[Any, float]] = {}
 
     def _fetch_lived_answers(self) -> list[dict[str, Any]] | None:
@@ -329,16 +380,22 @@ class SubstrateFeltStateReader:
 
 
 _READER: SubstrateFeltStateReader | None = None
+# cortex-exec now hydrates from its stance-build worker thread as well as from
+# the event loop (identity injection, metacog); without this two first calls
+# could each build a reader and leak one SQLAlchemy engine.
+_READER_LOCK = threading.Lock()
 
 
 def _get_reader() -> SubstrateFeltStateReader:
     global _READER
     if _READER is None:
-        _READER = SubstrateFeltStateReader(
-            enabled=_flag_enabled(),
-            database_url=_database_url(),
-            max_age_sec=_max_age_sec(),
-        )
+        with _READER_LOCK:
+            if _READER is None:
+                _READER = SubstrateFeltStateReader(
+                    enabled=_flag_enabled(),
+                    database_url=_database_url(),
+                    max_age_sec=_max_age_sec(),
+                )
     return _READER
 
 

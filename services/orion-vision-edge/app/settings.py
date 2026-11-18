@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # --- Service metadata ---
     SERVICE_NAME: str = Field("vision-edge", alias="SERVICE_NAME")
     SERVICE_VERSION: str = Field("0.2.0", alias="SERVICE_VERSION")
+    # Host this process runs on (root .env NODE_NAME, passed by docker-compose.yml).
+    # Reported as `node` in the SystemHealthV1 heartbeat and /health; replaces the
+    # made-up "vision-edge-node" both used to send.
+    NODE_NAME: str = Field("athena", alias="NODE_NAME")
 
     # --- Camera source ---
     # Capture URL. May carry credentials (rtsp://USER:PASS@host/...), so it is
@@ -36,6 +40,9 @@ class Settings(BaseSettings):
     # SOURCE was published as camera_id.
     SOURCE: str = Field(..., alias="SOURCE")
     STREAM_ID: str = Field("cam0", alias="STREAM_ID")
+    # Full-resolution stream for on-demand stills before a face check (app/still.py). Same
+    # credential rule as SOURCE. Empty turns POST /still off (404).
+    HIRES_SOURCE: str = Field("", alias="HIRES_SOURCE")
 
     WIDTH: int = Field(640, alias="WIDTH")
     HEIGHT: int = Field(360, alias="HEIGHT")
@@ -129,7 +136,7 @@ class Settings(BaseSettings):
     @classmethod
     def source_required(cls, v: str) -> str:
         if not str(v or "").strip():
-            raise ValueError("SOURCE is empty (for the walkway instance: set WALKWAY_RTSP_URL in the service .env)")
+            raise ValueError("SOURCE is empty (set REOLINK_URL in the service .env)")
         return v
 
     @field_validator("JPEG_QUALITY")

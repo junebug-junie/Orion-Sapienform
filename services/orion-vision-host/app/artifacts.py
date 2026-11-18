@@ -63,12 +63,22 @@ def build_artifact_payload(res: VisionResult) -> Optional[VisionArtifactPayload]
                 embedding_ref=obj.get("embedding_ref"),
                 embedding=obj.get("embedding"),
                 thumb_ref=obj.get("thumb_ref"),
+                # Walkway faces (want_crop_faces): None unless a face was found in an embedded person crop.
+                face_embedding=obj.get("face_embedding"),
+                face_score=obj.get("face_score"),
+                face_thumb_ref=obj.get("face_thumb_ref"),
+                # The body model that actually made ``embedding``, and the
+                # shadow OSNet vector (person crops only; not used for matching).
+                embedding_model_id=obj.get("embedding_model_id"),
+                osnet_embedding=obj.get("osnet_embedding"),
+                osnet_model_id=obj.get("osnet_model_id"),
             ))
 
     if "caption" in artifacts and isinstance(artifacts["caption"], dict):
         caption = VisionCaption(
             text=artifacts["caption"].get("text", ""),
-            confidence=artifacts["caption"].get("confidence")
+            confidence=artifacts["caption"].get("confidence"),
+            rejected_reason=artifacts["caption"].get("rejected_reason"),
         )
 
     if "embedding" in artifacts and isinstance(artifacts["embedding"], dict):

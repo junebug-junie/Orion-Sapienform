@@ -4,6 +4,7 @@ from __future__ import annotations
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.fcc.mcp_names import ORION_READING, mcp_tool
 from orion.schemas.reading import (
     DurableReadingReceiptV1, ReadingRequestedV1, ReadingStatusArguments,
     ReadingStatusReceiptV1, ReadingToolBindingV1, ReadingToolRequestV1,
@@ -39,21 +40,25 @@ STATUS_DESCRIPTION = (
 )
 
 
+_RECOMMEND = mcp_tool(ORION_READING, "recommend_reading")
+_STATUS = mcp_tool(ORION_READING, "reading_status")
+
+
 def reading_brief_lines() -> list[str]:
     return [
         (
-            "Reading MCP is available: recommend_reading queues a public HTTP(S) source (or an "
+            f"Reading MCP is available: {_RECOMMEND} queues a public HTTP(S) source (or an "
             "internal document by absolute path) for "
-            "durable async processing, and reading_status looks up a previously queued source "
+            f"durable async processing, and {_STATUS} looks up a previously queued source "
             "by URL, document path, or request_id. If asked about the status of something already queued for "
-            "reading, ToolSearch and call reading_status with the supplied URL directly (or "
+            f"reading, ToolSearch select:{_STATUS} and call it with the supplied URL directly (or "
             "request_id if provided). Do not ask for an ID when a link is available; do "
             "not guess Postgres table names, grep the repo for the id, or invent a status. A "
             "'queued' result includes queue_position/queue_depth (e.g. '13th of 121') -- use "
             "them, don't just report 'queued' with no sense of scale. Tool discovery is not "
             "a status check: report status only after a successful tool call. URL lookup "
             "selects the latest request; queued does not establish that no earlier attempt ran. "
-            "An already-read URL is not read twice: a recommend_reading result with "
+            f"An already-read URL is not read twice: a {_RECOMMEND} result with "
             "duplicate='already_read' means it was blocked as a duplicate by design -- say so "
             "plainly and give the earlier read's summary."
         ),

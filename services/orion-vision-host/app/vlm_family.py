@@ -9,6 +9,8 @@ new Qwen alias, the other doesn't, and half the pipeline silently falls
 back to the wrong prompt format). One function, imported by both.
 """
 
+from orion.vision.caption_echo import CAPTION_PROMPT
+
 # "qwen2.5-vl" does not contain the substring "qwen2-vl", so checking order
 # against QWEN2_VL_MARKERS is not load-bearing -- kept as two explicit tuples
 # anyway so a caller that only cares about one generation doesn't have to
@@ -51,3 +53,61 @@ def is_chat_template_vlm(model_id: str) -> bool:
     second chat-template family in sight.
     """
     return is_qwen2_5_vl_model(model_id) or is_qwen2_vl_model(model_id)
+
+
+def caption_prompt_for(model_id: str) -> str | None:
+    """The text a caption call sends with the frame, chosen by model family.
+
+    Chat-template VLMs follow instructions, so they get ``CAPTION_PROMPT``.
+    Everything else (BLIP/BLIP2 and unknown families on the plain
+    ``processor(images=, text=)`` path) gets no prompt: those models continue
+    the text they are given rather than obeying it. Confirmed live
+    2026-10-08 on cam0 frames: BLIP-base handed ``CAPTION_PROMPT`` returns
+    the prompt itself (the echo filter rejects it, the caption publishes
+    blank); with no prompt it returns "a woman sitting at a desk in an
+    office". See docs/superpowers/specs/2026-10-08-vision-blank-captions-
+    and-on-demand-look-design.md.
+    """
+    return CAPTION_PROMPT if is_chat_template_vlm(model_id) else None
+
+
+def resolve_caption_prompt(model_id: str, request: dict | None) -> tuple[str | None, str | None]:
+    """The prompt a caption call uses, honoring a caller's ``request.caption_prompt``.
+
+    Returns ``(prompt, warning)``. A caller prompt only works on a chat-template
+    VLM: BLIP-family models continue the text they are handed instead of
+    obeying it (#2542: BLIP-base echoed the instruction back). On those the
+    warning is set and the caller (runner._run_caption_frame) returns no
+    caption rather than the model's unprompted one. Used by the walkway
+    stream (vision-frame-router's caption_dispatch) to ask Qwen2-VL about
+    people, animals and vehicles only, instead of listing every object.
+    """
+    default = caption_prompt_for(model_id)
+    override = str((request or {}).get("caption_prompt") or "").strip()
+    if not override:
+        return default, None
+    if not is_chat_template_vlm(model_id):
+        return default, "caption_rejected:caller_prompt_unsupported"
+    return override, None
+
+
+def _norm_answer(text: str) -> str:
+    return " ".join(str(text or "").lower().split()).strip(" .,!?;:'\"`")
+
+
+def matches_null_answer(text: str, null_answers) -> bool:
+    """True when the model gave the caller's agreed "nothing here" answer.
+
+    ``request.caption_null_answers`` lists the exact sentence(s) the prompt
+    told the model to answer with when there is nothing to describe (walkway:
+    "nothing notable"). Such a reply is mapped to no caption, never published
+    as a caption that says nothing. Exact match after case/whitespace/end
+    punctuation normalisation -- deliberately not a growing list of
+    near-synonyms.
+    """
+    if not null_answers:
+        return False
+    if isinstance(null_answers, str):
+        null_answers = [null_answers]
+    wanted = {_norm_answer(a) for a in null_answers if _norm_answer(a)}
+    return bool(wanted) and _norm_answer(text) in wanted

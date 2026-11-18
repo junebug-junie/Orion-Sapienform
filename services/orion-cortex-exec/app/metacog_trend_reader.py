@@ -76,9 +76,11 @@ def _timeout_sec() -> float:
 
 
 def _induction_nodes() -> tuple[str, ...]:
-    raw = os.getenv("METACOG_TREND_CUE_NODES", "athena,atlas,circe")
+    # atlas dropped 2026-10-16: retired host (config/biometrics/node_catalog.yaml
+    # `retired_nodes:`), it has written no induction row since 2026-08-20.
+    raw = os.getenv("METACOG_TREND_CUE_NODES", "athena,circe")
     nodes = tuple(n.strip() for n in raw.split(",") if n.strip())
-    return nodes or ("athena", "atlas", "circe")
+    return nodes or ("athena", "circe")
 
 
 def _induction_max_age_sec() -> float:
@@ -98,10 +100,8 @@ def _get_engine():
         # statement_timeout set as a per-connection GUC via connect_args
         # (applies to every statement on every connection this engine hands
         # out), not a per-transaction `SET LOCAL` -- the two reader functions
-        # below each open their own short-lived `engine.connect()` (matching
-        # `latest_bus_synaptic_prediction_error(engine)`'s own signature/
-        # testing convention in orion/substrate/bus_synaptic_surprise.py
-        # rather than threading a shared Connection through both), so there
+        # below each open their own short-lived `engine.connect()` (rather
+        # than threading a shared Connection through both), so there
         # is no single transaction to attach a `SET LOCAL` to.
         _ENGINE = create_engine(
             url,

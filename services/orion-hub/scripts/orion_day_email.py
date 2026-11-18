@@ -1,14 +1,20 @@
 """Orion's Day email: render a persisted ``orion_day_letter`` row to HTML + plain text.
 
-Pure rendering (no bus, no DB, no network). ``scripts/orion_day_letter.py`` owns when to send.
+Pure rendering (no bus, no DB, no network). ``scripts/orion_day_mailer.py`` owns when to send.
 
 Rules this module holds:
 
 * Nothing is truncated. Every material body goes out at full length, in both the HTML and the
-  plain-text part (``tests/test_orion_day_letter.py`` and ``evals/run_orion_day_email_eval.py``
+  plain-text part (``tests/test_orion_day_mailer.py`` and ``evals/run_orion_day_email_eval.py``
   check every item's full text is present).
-* ``note_md`` (Orion's note) and ``carry_forward_md`` (threads offered to curiosity) are two
-  separate, visually distinct sections. Neither is merged into the other.
+* ``note_md`` (Orion's note) and ``carry_forward_md`` (the letter's own list of threads Orion is
+  carrying, handed to Prime -- living Prime Part 3) are two separate, visually distinct sections.
+  Neither is merged into the other.
+* Provenance, one small line each when present: the unified turn that wrote the letter
+  (``sources.turn_correlation_id``) and the days with no letter the turn was told about
+  (``sources.missed_letters``).
+* "What each organ did" (integration patch 4): the daily organ roundup the letter turn read
+  (``material.organ_roundup``), every line as written, right below Orion's letter and threads.
 * Email-safe HTML: tables and inline styles only, no external CSS/JS/fonts, no ``<details>``
   (Gmail strips it). Images are inline CID parts (``cid:reverie1@orion``).
 * Blind dream rule: dream hypotheses show claim + why only. No hypothesis id (the dream
@@ -32,14 +38,18 @@ from zoneinfo import ZoneInfo
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
+from orion.orion_day.budget import NOTHING_CHANGED_LINE, correction_outcome_text, reading_change_lines
+from orion.orion_day.letter_parts import LetterPart, split_carry, split_note
 from orion.schemas.notify import NotificationAttachment, NotificationRequest
 from orion.schemas.orion_day import OrionDayLetterV1, VisualReverieV1
+from orion.world_pulse_read.findings import first_sentences
 
 logger = logging.getLogger("orion-hub.orion_day_email")
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
 TEMPLATE_NAME = "orion_day_letter.html.j2"
 EVENT_KIND = "orion_day.letter"
+ORGAN_ROUNDUP_HEADING = "What each organ did"  # integration patch 4: below Orion's letter
 _NOTIFICATION_NS = uuid5(NAMESPACE_URL, "orion.orion_day.letter.email.v1")
 
 DEFAULT_MAX_IMAGES = 6
@@ -105,6 +115,51 @@ def markdown_to_html(text: str | None) -> Markup:
     html = _md().render(text)
     html = _TAG_RE.sub(lambda m: f'<{m.group(1)} style="{_TAG_STYLES[m.group(1)]}"', html)
     return Markup(html)
+
+
+# --- part numbers (orion/orion_day/letter_parts.py) -----------------------------------------
+# Juniper points at "2026-10-09 ¶3" / "2026-10-09 carry 5"; Orion's reread tool resolves the
+# same numbers with the same splitters, so the email and the tool can never disagree.
+
+_MARK_STYLE = "color:#9aa4b2;font-size:12px;font-weight:normal;"
+_FIRST_OPEN_RE = re.compile(r"^\s*(<(?:p|li)\b[^>]*>)")
+_FIRST_LI_RE = re.compile(r"(<li\b[^>]*>)")
+
+
+def part_label(part: LetterPart) -> str:
+    return f"¶{part.index}" if part.kind == "paragraph" else f"carry {part.index}"
+
+
+def _marked_html(part: LetterPart) -> str:
+    html = str(markdown_to_html(part.text))
+    if part.index is None:
+        return html
+    mark = f'<span style="{_MARK_STYLE}">{part_label(part)}</span>&nbsp; '
+    # A carry item renders as its own one-item list: mark inside the <li>. A prose paragraph
+    # gets the mark inside its <p>. Anything else (a list or quote as a note paragraph) gets
+    # the mark on its own line above it.
+    pattern = _FIRST_LI_RE if part.kind == "carry" else _FIRST_OPEN_RE
+    marked, n = pattern.subn(lambda m: m.group(1) + mark, html, count=1)
+    return marked if n else f'<p style="margin:0 0 4px;{_MARK_STYLE}">{part_label(part)}</p>' + html
+
+
+def numbered_html(parts: list[LetterPart]) -> Markup:
+    return Markup("".join(_marked_html(p) for p in parts))
+
+
+_BULLET_RE = re.compile(r"^((?:[-*+]|\d+[.)])\s+)")
+
+
+def numbered_text(parts: list[LetterPart]) -> str:
+    out: list[str] = []
+    for p in parts:
+        if p.index is None:
+            out.append(p.text)
+        elif p.kind == "carry":
+            out.append(_BULLET_RE.sub(lambda m: m.group(1) + f"[{part_label(p)}] ", p.text, count=1))
+        else:
+            out.append(f"[{part_label(p)}] {p.text}")
+    return "\n\n".join(out)
 
 
 # --- images ----------------------------------------------------------------------------------
@@ -240,6 +295,30 @@ def reverie_counts(letter: OrionDayLetterV1) -> dict[str, Any]:
     }
 
 
+def what_i_read(material: Any) -> list[dict[str, Any]]:
+    """The compact "What I read" section: per read, what the piece says (Stage 2's stored
+    ``article_summary``), Orion's own take (the first sentences of the stored Stage 2 / Stage 1
+    text, verbatim) and what the read changed (record-built lines). A read that left none of those
+    gets one line, not padding."""
+    out = []
+    for r in material.readings:
+        title = r.title or r.url or "Reading"
+        take = first_sentences(r.learned, 2)
+        changes = [{"headline": f.headline, "evidence": f.evidence_text} for f in r.findings]
+        out.append({
+            "title": title, "url": r.url,
+            "href": r.url if (r.url or "").lower().startswith(("http://", "https://")) else None,
+            "article": r.article_summary, "take": take, "changes": changes,
+            "unchanged_line": None if changes else reading_change_lines(r, material)[0],
+            # Gaps a read with findings still carries (the belief check could not run).
+            "gaps": reading_change_lines(r, material)[len(changes):] if changes else [],
+            # "Nothing came of it" only when everything was checked and nothing was found.
+            "empty": (not r.article_summary and not take and not changes
+                      and reading_change_lines(r, material)[0] == NOTHING_CHANGED_LINE),
+        })
+    return out
+
+
 def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[str, Any]:
     m = letter.material
     tz = ZoneInfo(m.timezone)
@@ -267,6 +346,7 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
                        if s.status == "error" or s.truncated]
     return {
         "subject": letter_subject(letter.letter_date),
+        "organ_roundup_heading": ORGAN_ROUNDUP_HEADING,
         "letter_date": letter.letter_date,
         "letter_date_long": letter.letter_date.strftime("%A, %B %-d, %Y"),
         "timezone": m.timezone,
@@ -274,15 +354,18 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "window_end_utc": letter.window_end.strftime("%Y-%m-%d %H:%MZ"),
         "run_id": letter.run_id,
         "written_at": _local(letter.created_at, tz, "%Y-%m-%d %H:%M"),
-        "note_html": markdown_to_html(letter.note_md),
-        "carry_forward_html": markdown_to_html(letter.carry_forward_md),
-        "carry_forward_expires": _local(letter.carry_forward_expires_at, tz, "%Y-%m-%d %H:%M"),
+        "note_html": numbered_html(split_note(letter.note_md)),
+        "carry_forward_html": numbered_html(split_carry(letter.carry_forward_md)),
+        "turn_correlation_id": letter.sources.turn_correlation_id,
+        "missed_letters": [{"date": str(x.letter_date), "reason": x.reason} for x in letter.sources.missed_letters],
+        "organ_roundup": list(m.organ_roundup.lines) if m.organ_roundup is not None else [],
         "curiosity": curiosity,
         "curiosity_failed": [{"workflow": f.workflow, "when": _local(f.failed_at, tz),
                               "error": f.error or "no error recorded"} for f in m.curiosity_failed],
         "self_sense": [{"question": a.question, "answer": markdown_to_html(a.answer_text),
                         "self_label": a.self_label_score, "grounded": a.grounded_record_score,
                         "when": _local(a.created_at, tz)} for a in m.self_sense],
+        "what_i_read": what_i_read(m),
         "readings": [{"title": r.title or r.url or "Reading", "url": r.url, "why_now": r.why_now,
                       "href": r.url if (r.url or "").lower().startswith(("http://", "https://")) else None,
                       "status": r.reading_status or "unknown", "when": _local(r.occurred_at, tz),
@@ -297,12 +380,17 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "images_attached": len(images),
         "github": ({"title": m.github_compactor.title or "Repo digest",
                     "body": markdown_to_html(m.github_compactor.body)} if m.github_compactor else None),
+        "corrections": [{"ref": c.ref, "claim": c.claim, "correction": c.correction,
+                         "evidence": "; ".join(str(e.get("text")) for e in c.evidence if e.get("text")) or "none recorded",
+                         "outcome": correction_outcome_text(c), "when": _local(c.created_at, tz)}
+                        for c in m.corrections],
         "chat": ({"title": m.chat_compactor.title or "Chat digest",
                   "body": markdown_to_html(m.chat_compactor.body)} if m.chat_compactor else None),
         "world": m.world_pulse_digest,
         "reveries": reverie_counts(letter),
         "source_problems": source_problems,
         "condensed": letter.sources.condensed,
+        "input_shares": sorted(letter.sources.input_shares.items(), key=lambda kv: (-kv[1], kv[0])),
     }
 
 
@@ -322,6 +410,17 @@ def render_html(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
     return _env().get_template(TEMPLATE_NAME).render(**build_context(letter, images))
 
 
+def provenance_lines(letter: OrionDayLetterV1) -> list[str]:
+    """The plain-text provenance lines (the HTML template renders the same two facts)."""
+    out: list[str] = []
+    if letter.sources.turn_correlation_id:
+        out.append(f"Written as unified turn {letter.sources.turn_correlation_id}.")
+    if letter.sources.missed_letters:
+        out.append("Days with no letter that this letter was told about: "
+                   + "; ".join(f"{x.letter_date} ({x.reason})" for x in letter.sources.missed_letters) + ".")
+    return out + ([""] if out else [])
+
+
 def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
     """The plain-text part: the full note, carry-forward and material, as markdown."""
     m = letter.material
@@ -333,18 +432,38 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
         "",
         "## Orion's note",
         "",
-        letter.note_md.strip(),
+        numbered_text(split_note(letter.note_md)).strip(),
         "",
-        "## Carrying forward into curiosity",
-        "(Offered once to Orion's next regular curiosity run"
-        + (f", until {_local(letter.carry_forward_expires_at, tz, '%Y-%m-%d %H:%M')}" if letter.carry_forward_expires_at else "")
-        + ".)",
+        "## Threads I am carrying",
+        "(The letter's own list. Prime holds these threads; curiosity hears about them only through Prime.)",
         "",
-        letter.carry_forward_md.strip(),
+        numbered_text(split_carry(letter.carry_forward_md)).strip(),
         "",
-        "---",
-        "# What the day held",
     ]
+    out += provenance_lines(letter)
+    out += ["---"]
+    if m.organ_roundup is not None and m.organ_roundup.lines:
+        out += [f"## {ORGAN_ROUNDUP_HEADING}", "(The daily organ roundup Orion read for this letter: every line a "
+                "count, a quote or a ref.)", "", *m.organ_roundup.lines, "", "---"]
+    reads = what_i_read(m)
+    if reads:
+        out += ["## What I read", ""]
+        for r in reads:
+            if r["empty"]:
+                out.append(f"- {r['title']}: nothing came of this read ({r['unchanged_line']}).")
+                continue
+            out.append(f"- {r['title']}" + (f" ({r['url']})" if r["url"] and r["url"] != r["title"] else ""))
+            out.append(f"  What the piece says: {r['article'] or '(no summary of the piece was recorded)'}")
+            if r["take"]:
+                out.append(f"  What I took from it: {r['take']}")
+            for c in r["changes"]:
+                out.append(f"  {c['headline']}" + (f" Evidence: \"{c['evidence']}\"" if c["evidence"] else ""))
+            for g in r["gaps"]:
+                out.append(f"  Not checked: {g}.")
+            if r["unchanged_line"]:
+                out.append(f"  Changed: {r['unchanged_line']}.")
+        out += ["", "---"]
+    out += ["# What the day held"]
     if m.curiosity_runs or m.curiosity_failed:
         out += ["", f"## Curiosity ({len(m.curiosity_runs)} finished, {len(m.curiosity_failed)} failed)"]
         for r in m.curiosity_runs:
@@ -393,6 +512,13 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
             out.append(f"- {_local(v.created_at, tz)}" + (f" [{att}]" if att else "") + f": {v.description or '(no caption)'}")
     if m.github_compactor is not None:
         out += ["", f"## Changes to Orion's code: {m.github_compactor.title or 'Repo digest'}", "", m.github_compactor.body]
+    if m.corrections:
+        out += ["", f"## Corrections from conversations ({len(m.corrections)})"]
+        for c in m.corrections:
+            evidence = "; ".join(str(e.get("text")) for e in c.evidence if e.get("text")) or "none recorded"
+            out += ["", f"### Correction to {c.ref} (recorded {_local(c.created_at, tz)})",
+                    "Orion wrote:", "", c.claim, "", "What is actually true:", "", c.correction, "",
+                    f"Evidence: {evidence}.", correction_outcome_text(c)]
     if m.chat_compactor is not None:
         out += ["", f"## Conversations with Juniper: {m.chat_compactor.title or 'Chat digest'}", "", m.chat_compactor.body]
     if m.world_pulse_digest is not None:

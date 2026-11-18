@@ -32,6 +32,7 @@ from app.admitted_graph import (
 from orion.schemas.reverie_visual import VisualRunRequestV1
 from orion.schemas.reverie_visual_run import (
     NEEDS_GENERATE,
+    DreamHopImageV1,
     ReverieVisualRunBriefV1,
     ReverieVisualStepRequestV1,
     ReverieVisualStepResultV1,
@@ -88,6 +89,8 @@ class ReverieVisualState(TypedDict, total=False):
     chain_id: str | None
     artifact_sha256: str | None
     execution_receipt: dict | None
+    # Caption done of a dream image hop only (brief.dream_hop): what thought saw in the painting.
+    caption: str | None
     generate_elapsed_sec: float
     visual_elapsed_sec: float
     started_at: str | None
@@ -110,6 +113,24 @@ def _bumped(state: dict, step: str) -> dict:
 
 def _visual_request(state: dict):
     return ReverieVisualRunBriefV1.model_validate(state["brief"]).visual_request
+
+
+def _dream_hop(state: dict):
+    """The brief's dream image hop (a dream.carry child run), or None for a waking painting."""
+    return ReverieVisualRunBriefV1.model_validate(state["brief"]).dream_hop
+
+
+def _artifacts(result: ReverieVisualStepResultV1) -> dict:
+    """What a result that ends the run says was painted and seen. Only the fields it actually set, so
+    a terminal that names none leaves the run's own (and a waking run's detail) unchanged; a replayed
+    dream child whose prepare answers terminal ``produced`` with the recorded sha/caption is not
+    reported as image-less."""
+    out: dict = {}
+    if result.artifact_sha256:
+        out["artifact_sha256"] = result.artifact_sha256
+    if result.caption is not None:
+        out["caption"] = result.caption
+    return out
 
 
 def _expired(state: dict, now: datetime) -> bool:
@@ -135,8 +156,10 @@ def _detail_common(state: dict) -> dict[str, Any]:
 
 def finish_detail(state: dict) -> dict[str, Any]:
     """``run.completed`` detail: what dispatch settles the render result from. visual_elapsed_sec is
-    thought's own real-work seconds across done steps -- never queue or hold-wait time."""
-    return {
+    thought's own real-work seconds across done steps -- never queue or hold-wait time.
+    A dream image hop (brief.dream_hop) also carries ``caption``: the dream.carry run reads what was
+    seen from here. A waking painting's detail is unchanged (no caption key)."""
+    detail = {
         **_detail_common(state),
         "outcome": state.get("outcome"),
         "reason": state.get("reason"),
@@ -145,6 +168,9 @@ def finish_detail(state: dict) -> dict[str, Any]:
         "generate_elapsed_sec": round(float(state.get("generate_elapsed_sec") or 0.0), 3),
         "visual_elapsed_sec": round(float(state.get("visual_elapsed_sec") or 0.0), 3),
     }
+    if (state.get("brief") or {}).get("dream_hop"):
+        detail["caption"] = state.get("caption")
+    return detail
 
 
 def terminal_detail(state: dict, status: str) -> dict[str, Any]:
@@ -184,7 +210,8 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
     def request(state: dict, step: str, correlation_id: str, **extra) -> ReverieVisualStepRequestV1:
         return ReverieVisualStepRequestV1(run_id=state["run_id"], correlation_id=correlation_id, step=step,
                                           visual_request=_visual_request(state),
-                                          attempt_id=state.get("attempt_id"), **extra)
+                                          attempt_id=state.get("attempt_id"), dream_hop=_dream_hop(state),
+                                          **extra)
 
     async def call(req: ReverieVisualStepRequestV1, budget_sec: float | None = None) -> ReverieVisualStepResultV1:
         result = await run_step(req, budget_sec)
@@ -229,7 +256,7 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
             return {**started, **calls, "status": "running", "route": "finish", "outcome": result.outcome,
                     "reason": result.reason, "attempt_id": result.attempt_id or state.get("attempt_id"),
                     "chain_id": result.chain_id or state.get("chain_id"),
-                    "execution_receipt": result.execution_receipt, "last_error": None}
+                    "execution_receipt": result.execution_receipt, "last_error": None, **_artifacts(result)}
         return {**started, **calls, **done_update(state, result), "status": "running",
                 "route": "resource_request", "attempt_id": result.attempt_id, "hold": None, "lease": None}
 
@@ -278,7 +305,7 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
         return {**released, **calls, "status": "running", "route": "finish", "outcome": result.outcome,
                 "reason": result.reason, "attempt_id": result.attempt_id or state.get("attempt_id"),
                 "chain_id": result.chain_id or state.get("chain_id"),
-                "execution_receipt": result.execution_receipt, "last_error": None}
+                "execution_receipt": result.execution_receipt, "last_error": None, **_artifacts(result)}
 
     async def caption(state):
         state = dict(state)
@@ -306,7 +333,8 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
             return retry(state, node, result.reason or "retry", result.retry_after_sec, **calls)
         update = {**calls, "status": "running", "route": "finish", "outcome": result.outcome,
                   "chain_id": result.chain_id or state.get("chain_id"),
-                  "execution_receipt": result.execution_receipt, "reason": result.reason, "last_error": None}
+                  "execution_receipt": result.execution_receipt, "reason": result.reason, "last_error": None,
+                  **_artifacts(result)}
         if result.status == "done":
             update.update(done_update(state, result))
         return update
@@ -360,13 +388,16 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
 
 
 def abandon_request(run_id: str, visual_request: dict | VisualRunRequestV1,
-                    attempt_id: str | None) -> ReverieVisualStepRequestV1:
+                    attempt_id: str | None,
+                    dream_hop: dict | DreamHopImageV1 | None = None) -> ReverieVisualStepRequestV1:
     """One abandon RPC. ``attempt_id`` may be None (prepare's reply was lost, or the run never got
     that far): thought resolves the attempt by ``visual_request.dispatch_id``. Every try gets its own
-    correlation id, so a late reply to an earlier try is never read as this one's."""
+    correlation id, so a late reply to an earlier try is never read as this one's. ``dream_hop`` is
+    the brief's (a dream.carry child run), so thought closes the dream attempt, not a waking one."""
     return ReverieVisualStepRequestV1(
         run_id=run_id, correlation_id=str(uuid4()), step="abandon",
-        visual_request=VisualRunRequestV1.model_validate(visual_request), attempt_id=attempt_id)
+        visual_request=VisualRunRequestV1.model_validate(visual_request), attempt_id=attempt_id,
+        dream_hop=DreamHopImageV1.model_validate(dream_hop) if dream_hop else None)
 
 
 async def send_abandon(run_step: RunStep | None, req: ReverieVisualStepRequestV1, *, reason: str) -> bool:

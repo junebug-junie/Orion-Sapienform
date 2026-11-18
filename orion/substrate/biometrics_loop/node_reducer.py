@@ -53,7 +53,14 @@ def reduce_biometrics_node_event(
             event_id=event.event_id, now=clock, reducer_id=reducer_id
         )
 
-    if not parse_biometrics_trace_id(event.trace_id):
+    parsed_node = parse_biometrics_trace_id(event.trace_id)
+    if not parsed_node:
+        return projection, _noop_receipt(
+            event_id=event.event_id, now=clock, reducer_id=reducer_id
+        )
+    # A retired host (catalog `retired_nodes:`) never re-enters the live
+    # projection, even if a stray or replayed event names it.
+    if catalog.is_retired(parsed_node):
         return projection, _noop_receipt(
             event_id=event.event_id, now=clock, reducer_id=reducer_id
         )

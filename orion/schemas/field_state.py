@@ -114,7 +114,7 @@ class FieldStateV1(BaseModel):
     node_vector_updated_at: dict[str, dict[str, datetime]] = Field(default_factory=dict)
     # Precision-weighted proposal confidence (2026-07-28, docs/superpowers/
     # specs/2026-07-28-precision-weighted-proposal-scoring-design.md):
-    # per-PRESSURE_DIMENSION (orion.proposals.scoring.PRESSURE_DIMENSIONS)
+    # per-PRESSURE_DIMENSION (orion.field.pressure_dimensions.PRESSURE_DIMENSIONS)
     # EWMA mean/variance/z-score baseline, replacing orion/proposals/
     # scoring.py::dimension_confidence()'s old binary presence flag
     # (`1.0 if dimension_id in field_pressures else 0.0`). Same EWMA-

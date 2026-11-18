@@ -55,6 +55,9 @@ def _load_main_module(monkeypatch: pytest.MonkeyPatch, *, cuda_available: bool):
     module = importlib.util.module_from_spec(spec)
     sys.modules["app.main"] = module
     spec.loader.exec_module(module)
+    # The bus heartbeat opens its own Redis connection (HeartbeatOnly); keep it
+    # off the network here. Its own lifecycle is covered by test_heartbeat_chassis.py.
+    monkeypatch.setattr(module, "build_heartbeat_chassis", lambda: AsyncMock())
     return module, fake_torch
 
 

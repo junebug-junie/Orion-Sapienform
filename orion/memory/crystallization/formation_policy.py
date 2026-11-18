@@ -73,12 +73,16 @@ def resolve_formation_policy(
     platform = source_platform_of(crystallization)
     if platform is not None and platform in discard_platforms:
         return FormationPolicy.DISCARD, [f"discard_platform:{platform}"]
-    if duplicate_id:
-        return FormationPolicy.REINFORCE_EXISTING, [f"duplicate:{duplicate_id}"]
     if crystallization.governance.sensitivity == "intimate":
         return FormationPolicy.GOVERNOR_QUEUE, ["intimate_sensitivity"]
     if _has_identity_scope(crystallization, prefix=identity_scope_prefix):
         return FormationPolicy.GOVERNOR_QUEUE, ["identity_scope"]
+    # After the intimate/identity gates on purpose: reinforcing writes the candidate's
+    # evidence straight into an already-active row with no review, which must never
+    # happen for a window a governor has to see. Gated *kinds* may reinforce: the match
+    # is the same kind, so no new memory is activated, only evidence added.
+    if duplicate_id:
+        return FormationPolicy.REINFORCE_EXISTING, [f"duplicate:{duplicate_id}"]
     if crystallization.kind in GATED_KINDS:
         return FormationPolicy.GOVERNOR_QUEUE, [f"gated_kind:{crystallization.kind}"]
     if crystallization.kind in AUTO_ACTIVE_KINDS:

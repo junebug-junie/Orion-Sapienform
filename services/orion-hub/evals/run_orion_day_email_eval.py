@@ -5,8 +5,10 @@ The letter promises "everything above is shown in full". This checks that promis
 real renderer (scripts/orion_day_email.py), independently of it: the expected texts are pulled
 straight from the material model, normalised the same way on both sides (markdown syntax,
 HTML tags/entities and whitespace removed), and each must appear as a substring of both the
-HTML part and the plain-text part. It also checks the note and carry-forward land in their own
-sections, no dream hypothesis id leaks, and every cid: reference has an attachment.
+HTML part and the plain-text part. It also checks the note and the threads list land in their own
+sections, no dream hypothesis id leaks, every cid: reference has an attachment, the provenance
+lines (the unified turn that wrote the letter, the missed days it was told about) are shown, and
+the retired "offered to curiosity until <time>" copy is gone (living Prime Part 3).
 
     python services/orion-hub/evals/run_orion_day_email_eval.py                  # fixture day
     python services/orion-hub/evals/run_orion_day_email_eval.py --material m.json  # e.g. a live
@@ -32,7 +34,10 @@ _REPO_ROOT = _HUB_ROOT.parents[1]
 warnings.filterwarnings("ignore", message=r"Field \"model_", category=UserWarning)
 
 PLACEHOLDER_NOTE = ("PLACEHOLDER NOTE -- not written by Orion. The real note is the durable run's "
-                    "`orion_day_note_v1` output; this preview only shows where it goes and how it reads.")
+                    "unified letter turn; this preview only shows where it goes and how it reads.")
+PLACEHOLDER_TURN = "orion-day-turn-PLACEHOLDER"
+PLACEHOLDER_MISSED_REASON = "PLACEHOLDER: Prime's make bid was never funded"
+RETIRED_COPY = ("Carrying forward into curiosity", "Offered once to Orion's next regular curiosity run")
 PLACEHOLDER_CARRY = ("PLACEHOLDER CARRY-FORWARD -- not written by Orion.\n\n"
                      "1. PLACEHOLDER thread one.\n2. PLACEHOLDER thread two.")
 
@@ -78,7 +83,12 @@ def normalise_doc(doc: str, *, is_html: bool) -> str:
 def material_texts(letter) -> list[tuple[str, str]]:
     """(label, full text) for every material item the letter promises to show in full."""
     m = letter.material
-    out: list[tuple[str, str]] = [("note", letter.note_md), ("carry_forward", letter.carry_forward_md)]
+    # The note and carry-forward render part by part with a number between parts
+    # (orion/orion_day/letter_parts.py), so each part must be present in full.
+    from orion.orion_day.letter_parts import split_carry, split_note
+
+    out: list[tuple[str, str]] = [(f"note:{i}", p.text) for i, p in enumerate(split_note(letter.note_md))]
+    out += [(f"carry_forward:{i}", p.text) for i, p in enumerate(split_carry(letter.carry_forward_md))]
     for r in m.curiosity_runs:
         for name in ("journal_body", "self_definition_text", "lived_answer_text"):
             if getattr(r, name):
@@ -99,6 +109,8 @@ def material_texts(letter) -> list[tuple[str, str]]:
     out += [(f"visual:{v.sha256[:12]}", v.description) for v in m.visual_reveries if v.description]
     if m.github_compactor:
         out.append(("github_compactor", m.github_compactor.body))
+    for c in m.corrections:
+        out += [(f"correction:{c.correction_id}:{k}", v) for k, v in (("claim", c.claim), ("correction", c.correction))]
     if m.chat_compactor:
         out.append(("chat_compactor", m.chat_compactor.body))
     if m.world_pulse_digest:
@@ -116,10 +128,16 @@ def missing_texts(doc: str, texts: list[tuple[str, str]], *, is_html: bool) -> l
 
 
 def check(letter, images) -> list[str]:
+    from orion.orion_day.letter_parts import split_carry, split_note
     from scripts.orion_day_email import build_notification
 
     req = build_notification(letter, images)
     failures: list[str] = []
+    # The per-part checks below take the parts from the splitter; it must not drop or reorder text.
+    for name, text, parts in (("note", letter.note_md, split_note(letter.note_md)),
+                              ("carry_forward", letter.carry_forward_md, split_carry(letter.carry_forward_md))):
+        if normalise_source("\n".join(p.text for p in parts)) != normalise_source(text):
+            failures.append(f"{name} split lost or reordered text")
     texts = material_texts(letter)
     failures += [f"html missing {label}" for label in missing_texts(req.body_html, texts, is_html=True)]
     failures += [f"text missing {label}" for label in missing_texts(req.body_md, texts, is_html=False)]
@@ -136,19 +154,33 @@ def check(letter, images) -> list[str]:
         failures.append("note or carry-forward section missing")
     elif normalise_source(letter.carry_forward_md)[:60] in normalise_doc(note.group(1), is_html=True):
         failures.append("carry-forward text inside the note section")
+    for part, body in (("html", req.body_html), ("text", req.body_md)):
+        doc = html_lib.unescape(body)
+        for retired in RETIRED_COPY:
+            if retired in doc:
+                failures.append(f"{part}: retired copy still shown: {retired!r}")
+        turn = letter.sources.turn_correlation_id
+        if turn and f"unified turn {turn}" not in re.sub(r"<[^>]+>", "", doc):
+            failures.append(f"{part}: the writing turn {turn} is not shown")
+        for missed in letter.sources.missed_letters:
+            if str(missed.letter_date) not in doc or missed.reason not in doc:
+                failures.append(f"{part}: missed day {missed.letter_date} not shown")
     return failures
 
 
 def _letter_from_material(material, *, note: str, carry: str):
-    from orion.schemas.orion_day import OrionDayLetterSourcesV1, OrionDayLetterV1
+    from orion.schemas.orion_day import MissedLetterV1, OrionDayLetterSourcesV1, OrionDayLetterV1
 
     created = material.window_end + timedelta(hours=8, minutes=40)
     return OrionDayLetterV1(
         letter_date=material.letter_date, run_id=f"orion-day-{material.letter_date}-1",
         window_start=material.window_start, window_end=material.window_end,
         note_md=note, carry_forward_md=carry, material=material,
-        sources=OrionDayLetterSourcesV1(by_source=material.sources),
-        created_at=created, carry_forward_expires_at=created + timedelta(hours=36),
+        sources=OrionDayLetterSourcesV1(
+            by_source=material.sources, turn_correlation_id=PLACEHOLDER_TURN,
+            missed_letters=[MissedLetterV1(letter_date=material.letter_date - timedelta(days=1),
+                                           reason=PLACEHOLDER_MISSED_REASON)]),
+        created_at=created,
     )
 
 
@@ -159,7 +191,7 @@ def fixture_letter():
     github = {"entry_id": "gh01", "created_at": datetime(2026, 9, 30, 12, 2, tzinfo=timezone.utc),
               "title": "Repo digest", "body": "Merged the backend. " * 50,
               "source_ref": "github_compactor_pass:github_compactor:day:2026-09-29"}
-    material = asyncio.run(gather_orion_day(fx.FakeConn(github=github), fx.LETTER_DATE,
+    material = asyncio.run(gather_orion_day(fx.FakeConn(github=github, corrections=fx.CORRECTIONS), fx.LETTER_DATE,
                                             now=datetime(2026, 9, 30, 15, tzinfo=timezone.utc)))
     return _letter_from_material(material, note=PLACEHOLDER_NOTE, carry=PLACEHOLDER_CARRY)
 

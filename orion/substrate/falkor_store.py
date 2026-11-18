@@ -12,12 +12,15 @@ successful concept/edge decode.
 
 from __future__ import annotations
 
+from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1
+
 import logging
 import math
 import os
 import threading
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -37,24 +40,48 @@ from orion.graph.falkor_client import (
     set_assignments as _set_assignments,
 )
 from orion.graph.property_guard import sanitize_metadata
+from orion.substrate.activation import ACTIVATION_DECAYED_AT_KEY
 from orion.substrate.falkor_codec import (
     DURABLE_NODE_KINDS,
     JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS,
+    TICK_OWNED_NODE_PROPERTIES,
     decode_edge,
     decode_node,
+    edge_row_is_known,
+    node_row_is_known,
     encode_edge_properties,
     encode_node_properties,
     node_label_for_kind,
 )
 from orion.substrate.store import (
+    CompleteScanReceipt,
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
+    ACTIVATION_CAS_TOLERANCE,
+    DORMANCY_NODE_KINDS,
+    NodeDynamicsWriteV1,
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
+    apply_node_dynamics_write,
 )
 from orion.substrate.graphdb_store import _resolve_snapshot_force_refresh_ceiling_sec
 
 logger = logging.getLogger("orion.substrate.falkor_store")
+
+# Scan decode sentinel: a row of a node kind / edge shape newer than this
+# reader (skipped and counted, never a decode failure).
+_UNKNOWN_SHAPE = object()
+
+
+def _decode_native_node(row: dict[str, Any]) -> Any:
+    """decode_node returns None for some bad rows instead of raising; raise so
+    a page of them counts as undecodable for the plan-cache retry (#3455)."""
+    if not node_row_is_known(row):
+        return _UNKNOWN_SHAPE
+    node = decode_node(row)
+    if node is None:
+        raise ValueError(f"undecodable durable node row: {row.get('node_id')!r}")
+    return node
 
 NODE_ADAPTER = TypeAdapter(SubstrateNodeV1)
 
@@ -84,9 +111,9 @@ class FalkorSubstrateStoreConfig:
     # bounding staleness from writes this process can't see (a different
     # process's write, or a direct external mutation like an operator
     # running Cypher DELETE by hand). Without any periodic refresh, a direct
-    # external deletion is invisible to this cache forever, AND the decay
-    # scheduler (services/orion-hub/scripts/api_routes.py::
-    # decay_concept_activations) durably re-upserts every node in every
+    # external deletion is invisible to this cache forever, AND a decay
+    # writer (then the Hub's decay_concept_activations, removed 2026-10-06;
+    # now SubstrateDynamicsEngine.tick()) durably re-upserts nodes from every
     # snapshot() it reads on every tick -- so a stale cache doesn't just
     # show old data, it actively resurrects deleted durable data on the next
     # tick. Confirmed live: this exact resurrection loop was observed and
@@ -101,25 +128,9 @@ class FalkorSubstrateStoreConfig:
     #     The fresh-cache-swap idea (see _hydrate_from_durable) is what
     #     actually fixes deletion-visibility and is new to this store, not
     #     ported from GraphDB.
-    # (2) This store's hydrate queries have no LIMIT (GraphDB's are capped
-    #     at 500 nodes / 1000 edges), and same_generation is invalidated by
-    #     ANY write anywhere -- so a caller that both reads and writes every
-    #     tick (the decay scheduler above is exactly this shape: one
-    #     snapshot() read, then N upsert_node() writes) will see a
-    #     generation mismatch on its OWN next tick's read, forcing a full
-    #     unbounded re-hydration on very close to every tick regardless of
-    #     this ceiling. This is an accepted, understood tradeoff at current
-    #     graph sizes (tens of nodes) -- correctness over cache efficiency
-    #     for this caller shape -- not a bug, but worth revisiting (a LIMIT,
-    #     or excluding a caller's own immediately-prior writes from
-    #     generation invalidation) if it ever shows up as real cost.
-    #
-    # See also FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC (falls back to this
-    # shared SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC when unset) for an
-    # independent override -- RoutedSubstrateGraphStore can run both a
-    # GraphDB-backed and a Falkor-backed store concurrently in one process
-    # (primary + shadow), and given point (2) above, the two backends' real
-    # refresh costs are not symmetric.
+    # (2) Falkor hydrates all supported durable nodes/edges with bounded
+    # keyset pages. A write/read loop still requests a complete refresh on
+    # every generation change; local exploration should use read_neighborhood.
     snapshot_force_refresh_ceiling_sec: float = 30.0
     # Optional redis socket timeouts (seconds) for the default
     # RedisGraphQueryClient. None = redis-py default (no timeout), which is
@@ -127,6 +138,15 @@ class FalkorSubstrateStoreConfig:
     # hung FalkorDB cannot pin a request thread (or the boot warmup) forever.
     client_socket_timeout_s: float | None = None
     client_socket_connect_timeout_s: float | None = None
+    hydration_page_size: int = 1000
+    # Create the node_id index on construction (see ensure_substrate_indexes).
+    # Only applies when the store builds its own client; injected clients
+    # (tests, read-only replay tools) are left alone.
+    ensure_indexes: bool = True
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.hydration_page_size <= 10000:
+            raise ValueError("hydration_page_size must be between 1 and 10000")
 
 
 NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
@@ -143,6 +163,14 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # decode_entity_node falls back to "unknown"/[] for real stored values.
     "entity_type",
     "aliases_json",
+    # named camera clusters: when the name was set (falkor_codec.LABEL_SET_AT_KEY).
+    "label_set_at",
+    # assertion nodes (falkor_codec.encode_node_properties' assertion branch)
+    "assertion_predicate",
+    "statement_key",
+    "statement_text",
+    "assertion_revision",
+    "decision_ref",
     # topic_id has had a complete encode/decode pair since the topic-foundry
     # work (_topic_foundry_properties_from_metadata /
     # _topic_foundry_metadata_from_row) and was simply never listed here, so
@@ -186,6 +214,15 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # as-is here; that is pre-existing and out of scope for this patch.
     "perception_staleness",
     "perception_yield",
+    # Camera surprise nodes (2026-10-21): the missing-input marker and the
+    # embedding clock must survive the decoded-row cache (falkor_codec
+    # DYNAMICS_METADATA_KEYS).
+    "embedding_staleness",
+    "prediction_error_missing_reason",
+    # L6 (2026-10-06): without this the stamp never survives a rehydrate and
+    # every tick falls back to observed_at -- i.e. the compounding decay the
+    # stamp exists to remove (falkor_codec._decay_stamp_metadata_from_row).
+    "activation_decayed_at",
 )
 
 NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (
@@ -211,7 +248,13 @@ NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (
     "provenance_trace_id",
     "provenance_tier_rank",
     "evidence_refs_json",
+    "edge_role",
+    "assertion_id",
+    "assertion_revision",
 )
+
+
+DURABLE_NODE_COUNT_CYPHER = "MATCH (n:SubstrateNode) RETURN count(n) AS node_count"
 
 
 def _return_clause(alias: str, fields: tuple[str, ...]) -> str:
@@ -275,6 +318,96 @@ def _with_sanitized_metadata(model: Any) -> Any:
     return model.model_copy(update={"metadata": cleaned})
 
 
+# Every substrate writer MERGEs on SubstrateNode.node_id (upsert_node,
+# upsert_edge's two endpoint MERGEs) and every single-node reader filters on
+# it (falkor_direct NODE_BY_ID, neighborhood_backends). Without an index each
+# of those is a label scan of every SubstrateNode. identity_key is indexed
+# because FalkorSubstrateStore.get_node_id_by_identity falls back to a durable
+# lookup on a cache miss (2026-10-14): resolving identity against the
+# in-process cache alone let every incomplete cache (the old 10k-row server
+# cap, then a failed hydrate) mint a second node for an identity that already
+# existed. Unindexed, that lookup is ~23ms per miss on the 44k-node AI Town
+# graph. Mirrors services/orion-bus-mirror/app/graph_writer.py::ensure_indexes.
+SUBSTRATE_INDEXES: tuple[tuple[str, str], ...] = (
+    ("SubstrateNode", "node_id"),
+    ("SubstrateNode", "identity_key"),
+)
+# Durable identity lookup (see get_node_id_by_identity). Smallest node_id wins
+# when an identity is duplicated -- the one canonical rule hydrate and the
+# dedupe repair also use. LIMIT 1 bounds the read; the identity_key index
+# keeps it off a label scan.
+NODE_BY_IDENTITY_CYPHER = (
+    "MATCH (n:SubstrateNode) WHERE n.identity_key = $identity_key AND n.payload_json IS NULL "
+    f"RETURN {_return_clause('n', NATIVE_NODE_RETURN_FIELDS)} ORDER BY n.node_id LIMIT 1"
+)
+
+# Bounded: a dedicated client with its own short timeouts, so a down or hung
+# FalkorDB delays construction by at most ~connect+read, never indefinitely.
+ENSURE_INDEX_SOCKET_TIMEOUT_S = 5.0
+ENSURE_INDEX_CONNECT_TIMEOUT_S = 2.0
+
+
+def substrate_index_cypher(label: str, prop: str) -> str:
+    return f"CREATE INDEX FOR (n:{label}) ON (n.{prop})"
+
+
+def bootstrap_substrate_reader(uri: str, graph_name: str, *, client: FalkorGraphClient | None = None) -> bool:
+    """The one-time, off-the-request-path bootstrap every reader runs: the node_id index,
+    then the reader-capability advertisement (orion/substrate/reader_capability.py) saying this
+    process reads the assertion-core shapes and skips unknown ones. Never raises."""
+    from orion.substrate.reader_capability import advertise
+
+    ok = ensure_substrate_indexes(uri, graph_name, client=client)
+    advertise(uri)
+    return ok
+
+
+def ensure_substrate_indexes(uri: str, graph_name: str, *, client: FalkorGraphClient | None = None) -> bool:
+    """Idempotent, never raises. Returns True when every index exists afterwards.
+
+    FalkorDB 4.18 and 6.0 both answer a repeat with "Attribute 'x' is already
+    indexed" (neither accepts IF NOT EXISTS); that is the steady state, not a
+    failure. Rollback: ``DROP INDEX ON :SubstrateNode(node_id)``.
+    """
+    owned = client is None
+    try:
+        if client is None:
+            client = RedisGraphQueryClient(
+                uri=uri,
+                graph_name=graph_name,
+                socket_timeout=ENSURE_INDEX_SOCKET_TIMEOUT_S,
+                socket_connect_timeout=ENSURE_INDEX_CONNECT_TIMEOUT_S,
+            )
+    except Exception as exc:  # noqa: BLE001 - must never block construction
+        logger.warning("falkor_substrate_index_client_failed graph=%s error=%s", graph_name, exc)
+        return False
+    ok = True
+    try:
+        for label, prop in SUBSTRATE_INDEXES:
+            try:
+                client.graph_query(substrate_index_cypher(label, prop))
+                logger.info("falkor_substrate_index_created graph=%s label=%s prop=%s", graph_name, label, prop)
+            except Exception as exc:  # noqa: BLE001
+                if "already indexed" in str(exc):
+                    continue
+                ok = False
+                logger.warning(
+                    "falkor_substrate_index_create_failed graph=%s label=%s prop=%s error=%s",
+                    graph_name, label, prop, exc,
+                )
+    finally:
+        # A client this function built is throwaway: release its pool so
+        # every store construction does not leak a connection.
+        if owned:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("falkor_substrate_index_client_close_failed error=%s", exc)
+    return ok
+
+
 class FalkorSubstrateStore:
     """SubstrateGraphStore with Falkor write-through and in-memory read cache.
 
@@ -291,6 +424,7 @@ class FalkorSubstrateStore:
         hydrate: bool = True,
     ) -> None:
         self._cfg = cfg
+        client_was_default = client is None
         if client is None:
             client_kwargs: dict[str, float] = {}
             if cfg.client_socket_timeout_s is not None:
@@ -311,120 +445,472 @@ class FalkorSubstrateStore:
         # "first call" branch is needed in snapshot() itself.
         self._last_snapshot_generation = -1
         self._snapshot_lock = threading.Lock()
+        # Guards the in-process cache and ``_write_generation`` against
+        # concurrent writers. ``_snapshot_lock`` only serializes snapshot()
+        # callers; writes never took it. Before cortex-exec moved the stance
+        # build off the event loop (2026-10-06 turn-latency L2) a write could not
+        # overlap a snapshot because the build blocked the whole loop. Now it
+        # can, and the unified layer's cold fan-out already writes from pool
+        # threads. Held only for in-memory work (never across a Falkor round
+        # trip), so a 4 s rehydrate never blocks a writer for 4 s.
+        self._cache_lock = threading.RLock()
+        # Local writes that land while a hydrate scan is in flight. Each write
+        # is durable in Falkor before it is journaled, so the scan may or may
+        # not have read it; replaying it onto the staged cache at swap time
+        # makes the swapped cache include it either way. Before 2026-10-06 the
+        # scan aborted on any such write instead ("local mutation during scan;
+        # retry required"), and orion-substrate-runtime writes from several
+        # tick loops at once, so ~1 in 2 refreshes aborted and ticks ran on a
+        # stale cache. None = no scan in flight. Guarded by _cache_lock.
+        # Trade-off: a replayed local write wins over a newer write from
+        # another process that the same scan read, until the next refresh
+        # (the snapshot ceiling, or this process's next write). That matches
+        # steady state (a local write always wins in the cache until refresh);
+        # the old abort path recovered from it one snapshot sooner. Only one
+        # scan may run at a time: snapshot() holds _snapshot_lock, and the
+        # constructor hydrate runs before the store is shared.
+        # Counters below are updated outside _cache_lock; safe because hydrate
+        # callers are serialized the same way.
+        self._scan_journal: list[tuple[str, Any, Any, frozenset[str] | None]] | None = None
+        self.hydrate_ok_total = 0
+        self.hydrate_failed_total = 0
+        self.hydrate_replayed_writes_total = 0
+        # #3455 plan-cache guard and partial-graph signal (see _scan_pages and
+        # _record_node_count_gap).
+        self.hydrate_plan_cache_retries_total = 0
+        self.hydrate_plan_cache_recovered_total = 0
+        # Scans (keyed by WHERE text) whose exact text read a poisoned plan and
+        # now start on the bypass variant (see _scan_pages).
+        self._plan_cache_bypass: set[str] = set()
+        self.last_durable_node_count: int | None = None
+        self.last_node_count_gap: int | None = None
+        self._hydrate_stats_logged_at: float | None = None
+        self.last_scan_receipt: CompleteScanReceipt | None = None
+        self._last_successful_refresh_at: str | None = None
+        if client_was_default and cfg.ensure_indexes:
+            bootstrap_substrate_reader(cfg.uri, cfg.graph_name)
+        self.hydrate_skipped_unknown_nodes = 0
+        self.hydrate_skipped_unknown_edges = 0
+        self.hydrate_duplicate_node_identities = 0
+        self.identity_durable_lookups_total = 0
+        self.identity_durable_hits_total = 0
         if hydrate:
             self._hydrate_from_durable()
-            # Record that construction already did a full hydration, so the
-            # first real snapshot() call doesn't immediately redo it. Without
-            # this, the -1 sentinel above would force a second, wasted
-            # refresh on literally the next call (GraphDBSubstrateStore
-            # doesn't have this wrinkle because it never hydrates eagerly at
-            # construction -- its first snapshot() call is genuinely the
-            # first fetch, not a redundant second one).
-            self._last_snapshot_at = time.monotonic()
-            self._last_snapshot_generation = self._write_generation
 
-    # Outcome of the most recent _hydrate_from_durable() call. None = never
-    # hydrated (hydrate=False, or an instance built with __new__). False =
-    # the durable queries raised and the cache was left untouched (empty on
-    # a first hydrate). Read by callers that cache a store handle for the
-    # process lifetime (orion-recall's substrate_store.py) so a boot-time
-    # hydrate against an unreachable FalkorDB is not mistaken for a ready
-    # store. Class-level defaults so __new__-built instances have them.
     last_hydrate_ok: bool | None = None
     last_hydrate_node_count: int = 0
 
+    # #3455: FalkorDB's cached plan for the exact native-node scan text once
+    # returned each row's node_id in the decay_floor column, so every row of
+    # every page failed to decode and every reload failed for ~28 h. The same
+    # query with one extra space missed the cache and read correctly. The plan
+    # cache is keyed on the exact query text and is a small LRU, so the bypass
+    # is ONE fixed variant per scan query (trailing space), never a nonce.
+    _PLAN_CACHE_BYPASS_SUFFIX = " "
+    # In-memory vs durable node-count gap that reads as "readers are on a
+    # partial graph". Floor absorbs nodes written between the scan and the
+    # count; the fraction scales with the graph (#3455 incident: 40 of 15,355).
+    _NODE_GAP_ALARM_FLOOR = 50
+    _NODE_GAP_ALARM_FRACTION = 0.05
+
+    def _scan_pages(self, *, match: str, where: str, alias: str,
+                    returns: str, fields: tuple[str, ...], progress: dict[str, int],
+                    decode=None):
+        """A short page may be the server cap. Only an empty page ends a scan.
+
+        Yields ``(row, decoded)``. ``decode`` runs per row; when EVERY row of a
+        page fails it, the page is re-read once with the OTHER of two fixed
+        query texts (exact / plan-cache-bypass variant, #3455). The text that
+        worked is remembered per scan on the store, so a poisoned plan costs
+        one wasted page and one warning per episode, not one per reload. A
+        page with only some bad rows, or both texts failing, raises the first
+        decode error. The whole page decodes before the cursor check, so a
+        page with both faults raises the decode error."""
+        query = (f"{match} WHERE {where} AND id({alias}) > $after_id "
+                 f"RETURN {returns}, id({alias}) AS object_id "
+                 "ORDER BY object_id LIMIT $page_size")
+        bypassed = where in self._plan_cache_bypass
+        retried = False
+        cursor = -1
+
+        def fetch(text: str) -> list[dict[str, Any]]:
+            raw = self._client.graph_query(
+                text, {"after_id": cursor, "page_size": self._cfg.hydration_page_size})
+            return _normalize_rows(raw, fields=(*fields, "object_id"), strict=True)
+
+        def decode_page(rows):
+            out, errors = [], []
+            for row in rows:
+                try:
+                    out.append(decode(row) if decode is not None else None)
+                except Exception as exc:  # noqa: BLE001 - re-raised below
+                    errors.append(exc)
+            return out, errors
+
+        while True:
+            rows = fetch(query + self._PLAN_CACHE_BYPASS_SUFFIX if bypassed else query)
+            progress["pages"] += 1
+            if not rows:
+                return
+            decoded, errors = decode_page(rows)
+            if errors and len(errors) == len(rows) and not retried:
+                sample = rows[0]
+                id_field = fields[0]
+                shifted = sorted(k for k, v in sample.items()
+                                 if k not in (id_field, "object_id") and v is not None
+                                 and v == sample.get(id_field))
+                logger.warning(
+                    "falkor_hydrate_plan_cache_suspect graph=%s scan=%r rows=%d field=%s "
+                    "sample_%s=%r bad_text=%s error=%s",
+                    self._cfg.graph_name, where, len(rows), ",".join(shifted) or "unknown",
+                    id_field, sample.get(id_field), "variant" if bypassed else "exact", errors[0],
+                )
+                self.hydrate_plan_cache_retries_total += 1
+                retried, bypassed = True, not bypassed
+                rows = fetch(query + self._PLAN_CACHE_BYPASS_SUFFIX if bypassed else query)
+                progress["pages"] += 1
+                if not rows:
+                    return
+                decoded, errors = decode_page(rows)
+                if not errors:
+                    self.hydrate_plan_cache_recovered_total += 1
+                    if bypassed:
+                        self._plan_cache_bypass.add(where)
+                    else:
+                        self._plan_cache_bypass.discard(where)
+            if errors:
+                raise errors[0]
+            for row, obj in zip(rows, decoded):
+                object_id = row.get("object_id")
+                if type(object_id) is not int or object_id <= cursor:
+                    raise ValueError("nonadvancing or invalid object cursor")
+                cursor = object_id
+                yield row, obj
+
     def _hydrate_from_durable(self) -> None:
-        """(Re)populate the in-process cache from durable Falkor state.
+        """Stage and validate all pages before replacing the last good cache.
 
-        Called once at construction, and again periodically by snapshot()'s
-        refresh path (see FalkorSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec).
-        Builds a FRESH InMemorySubstrateGraphStore and swaps it in wholesale
-        rather than upserting into the existing self._cache in place -- this
-        is the actual fix for the resurrection bug: an in-place upsert can
-        only ever add/update nodes that still exist durably, it can never
-        remove a node that was deleted directly in Falkor (bypassing this
-        process). A fresh cache, containing only what's durably present
-        right now, correctly reflects deletions on every refresh.
-
-        On query failure, returns without touching self._cache at all --
-        the stale-but-still-valid existing cache is a strictly better
-        fallback than an empty one.
+        Object IDs are scan cursors, never business identities. Concurrent
+        external mutation can produce a mixed-time view; detected missing
+        endpoints reject the scan. Local writes made during the scan are
+        journaled and replayed onto the staged cache at swap (see
+        ``_scan_journal``), so they never abort it. Legacy rewrite remains a
+        best-effort compatibility step after validation, never in read-only mode.
         """
+        started = datetime.now(timezone.utc).isoformat()
+        with self._cache_lock:
+            self._scan_journal = []
+        progress = {"pages": 0, "edge_identity_aliases": 0}
+        fresh = InMemorySubstrateGraphStore()
+        legacy_nodes, legacy_edges = [], []
+        node_ids, edge_ids = set(), set()
+
+        duplicate_identities: dict[str, int] = {}
+
+        def add_node(row, node):
+            if node is None or not node.node_id or node.node_id == "None":
+                raise ValueError("invalid or unsupported durable node")
+            if node.node_id in node_ids:
+                raise ValueError(f"duplicate node_id: {node.node_id}")
+            identity = str(row.get("identity_key") or "") or None
+            previous_id = fresh.get_node_id_by_identity(identity) if identity else None
+            node_ids.add(node.node_id)
+            fresh.upsert_node(identity_key=identity, node=node)
+            if previous_id is not None:
+                # Two durable nodes share one identity. Both are real rows with
+                # their own edges, so both stay in the cache; the identity
+                # resolves to the lexically smallest node_id -- the same rule
+                # as the durable lookup (NODE_BY_IDENTITY_CYPHER) and the
+                # dedupe repair (scripts/repair_substrate_duplicate_identities.py),
+                # so every writer converges on one node instead of minting a
+                # third. Before 2026-10-14 this raised and failed the whole
+                # scan, which left the cache empty at boot, so the next ingest
+                # missed every identity and duplicated all of them again.
+                duplicate_identities[identity] = duplicate_identities.get(identity, 1) + 1
+                fresh.set_identity_canonical(identity, min(previous_id, node.node_id))
+
+        def add_edge(row, edge):
+            if edge is None:
+                raise ValueError("invalid durable edge")
+            if edge.edge_id in edge_ids:
+                raise ValueError(f"duplicate edge_id: {edge.edge_id}")
+            for endpoint in (edge.source, edge.target):
+                node = fresh.get_node_by_id(endpoint.node_id)
+                if node is None or node.node_kind != endpoint.node_kind:
+                    raise ValueError(f"missing or mismatched endpoint: {endpoint.node_id}")
+            identity = str(row.get("identity_key") or self._edge_identity(edge))
+            previous_id = fresh.get_edge_id_by_identity(identity)
+            if previous_id is not None:
+                previous = fresh.get_edge_by_id(previous_id)
+                if (previous.source != edge.source or previous.target != edge.target
+                        or previous.predicate != edge.predicate):
+                    raise ValueError(f"incompatible edge identity: {identity}")
+                progress["edge_identity_aliases"] += 1
+            edge_ids.add(edge.edge_id)
+            fresh.upsert_edge(identity_key=identity, edge=edge)
+            if previous_id is not None and previous_id < edge.edge_id:
+                # Preserve all parallel edges, with a stable representative for
+                # the historical one-ID lookup API (not a uniqueness claim).
+                fresh.upsert_edge(identity_key=identity, edge=previous)
+
+        skipped_nodes: set[str] = set()
+        skipped = {"nodes": 0, "edges": 0}
         try:
-            node_rows = self._client.graph_query(
-                "MATCH (n:SubstrateNode) RETURN " + _return_clause("n", NATIVE_NODE_RETURN_FIELDS)
-            )
-            edge_rows = self._client.graph_query(
-                "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) "
-                "WHERE e.substrate_edge = true "
-                "RETURN " + _edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS)
-            )
-            legacy_node_rows = self._client.graph_query(
-                "MATCH (n:SubstrateNode) WHERE n.payload_json IS NOT NULL "
-                "RETURN n.payload_json AS payload_json, n.identity_key AS identity_key"
-            )
-            legacy_edge_rows = self._client.graph_query(
-                "MATCH ()-[e]->() WHERE e.payload_json IS NOT NULL "
-                "RETURN e.payload_json AS payload_json, e.identity_key AS identity_key"
-            )
+            for row, node in self._scan_pages(
+                match="MATCH (n:SubstrateNode)", where="n.payload_json IS NULL",
+                alias="n", returns=_return_clause("n", NATIVE_NODE_RETURN_FIELDS),
+                fields=NATIVE_NODE_RETURN_FIELDS, progress=progress,
+                decode=_decode_native_node,
+            ):
+                if node is _UNKNOWN_SHAPE:
+                    # A kind newer than this code: skip it (and, below, its edges).
+                    skipped_nodes.add(str(row.get("node_id")))
+                    skipped["nodes"] += 1
+                    continue
+                add_node(row, node)
+            for row, node in self._scan_pages(
+                match="MATCH (n:SubstrateNode)", where="n.payload_json IS NOT NULL",
+                alias="n", returns="n.payload_json AS payload_json, n.identity_key AS identity_key",
+                fields=("payload_json", "identity_key"), progress=progress,
+                decode=lambda row: NODE_ADAPTER.validate_json(row["payload_json"]),
+            ):
+                if node.node_kind not in DURABLE_NODE_KINDS:
+                    raise ValueError("unsupported legacy node kind")
+                add_node(row, node)
+                legacy_nodes.append(row)
+            def decode_native_edge(row):
+                if (not edge_row_is_known(row) or str(row.get("source_id")) in skipped_nodes
+                        or str(row.get("target_id")) in skipped_nodes):
+                    return _UNKNOWN_SHAPE
+                return decode_edge(row)
+
+            for row, edge in self._scan_pages(
+                match="MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode)",
+                where="e.substrate_edge = true AND e.payload_json IS NULL", alias="e",
+                returns=_edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS),
+                fields=NATIVE_EDGE_RETURN_FIELDS, progress=progress, decode=decode_native_edge,
+            ):
+                if edge is _UNKNOWN_SHAPE:
+                    skipped["edges"] += 1
+                    continue
+                add_edge(row, edge)
+            for row, edge in self._scan_pages(
+                match="MATCH ()-[e]->()", where="e.payload_json IS NOT NULL", alias="e",
+                returns="e.payload_json AS payload_json, e.identity_key AS identity_key",
+                fields=("payload_json", "identity_key"), progress=progress,
+                decode=lambda row: SubstrateEdgeV1.model_validate_json(row["payload_json"]),
+            ):
+                add_edge(row, edge)
+                legacy_edges.append(row)
+            # Replay and swap are one atomic step under _cache_lock: every
+            # local write since the scan began is in the journal, and no new
+            # one can land until the swap is done, so the swapped cache holds
+            # the scan plus every local write and is current as of
+            # _write_generation. A write landing between a bare replay and the
+            # swap would otherwise go into the old cache and be dropped.
+            with self._cache_lock:
+                journal, self._scan_journal = self._scan_journal or [], None
+                for kind, identity_key, obj, skip_keys in journal:
+                    if kind == "node":
+                        self._apply_node_to_cache(fresh, identity_key, obj, skip_keys)
+                    elif kind == "dynamics":
+                        write, applied = obj
+                        self._apply_dynamics_to_cache(fresh, write, applied)
+                    elif all(fresh.get_node_by_id(end.node_id) is not None
+                             for end in (obj.source, obj.target)):
+                        fresh.upsert_edge(identity_key=identity_key, edge=obj)
+                    # else: an endpoint is gone from the fresh scan (deleted
+                    # elsewhere mid-scan); never cache an edge to a missing node.
+                self._cache = fresh
+                self._last_snapshot_generation = self._write_generation
+                self.hydrate_replayed_writes_total += len(journal)
         except Exception as exc:
+            with self._cache_lock:
+                self._scan_journal = None
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
+            self.hydrate_failed_total += 1
             self.last_hydrate_ok = False
+            self.last_scan_receipt = CompleteScanReceipt(
+                started_at=started, finished_at=datetime.now(timezone.utc).isoformat(),
+                complete=False, stale=True, node_count=len(node_ids), edge_count=len(edge_ids),
+                pages_read=progress["pages"],
+                last_successful_refresh_at=self._last_successful_refresh_at,
+                reason=str(exc), edge_identity_aliases=progress["edge_identity_aliases"],
+            )
+            # Failed scan: the kept cache is the last good one, so its own
+            # skipped count is the right one to subtract.
+            self._record_node_count_gap(self.hydrate_skipped_unknown_nodes)
+            self._maybe_log_hydrate_stats()
             return
 
-        fresh_cache = InMemorySubstrateGraphStore()
-        hydrated_nodes = 0
-        for row in _normalize_rows(node_rows, fields=NATIVE_NODE_RETURN_FIELDS):
-            try:
-                node = decode_node(row)
-            except Exception:
-                logger.warning("falkor_substrate_hydrate_node_invalid")
-                continue
-            if node is None:
-                continue
-            identity = row.get("identity_key")
-            fresh_cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
-            hydrated_nodes += 1
-
-        for row in _normalize_rows(edge_rows, fields=NATIVE_EDGE_RETURN_FIELDS):
-            try:
-                edge = decode_edge(row)
-            except Exception:
-                logger.warning("falkor_substrate_hydrate_edge_invalid")
-                continue
-            if edge is None:
-                continue
-            identity = row.get("identity_key") or self._edge_identity(edge)
-            fresh_cache.upsert_edge(identity_key=str(identity), edge=edge)
-
-        # Swap now, before legacy migration -- _migrate_legacy_payload_*
-        # below call self.upsert_node()/self.upsert_edge() (the full public
-        # write path, which also bumps self._write_generation), and must
-        # operate against the current cache, not a soon-to-be-discarded one.
-        #
-        # Known, bounded race: upsert_node()/upsert_edge() are deliberately
-        # not protected by _snapshot_lock (matching GraphDBSubstrateStore's
-        # own precedent), so a concurrent upsert_node() call whose
-        # `self._cache.upsert_node(...)` step interleaves with this swap
-        # could land its write on the old (about to be discarded) cache
-        # object instead of `fresh_cache` -- that write would be briefly
-        # invisible to snapshot(). It self-heals: the write still bumped
-        # self._write_generation, so the very next snapshot() call detects
-        # the mismatch and re-fetches, which then sees the write durably
-        # reflected in Falkor. Not permanent loss, just a narrow visibility
-        # delay -- and this window scales with fresh_cache's build time,
-        # which is currently unbounded (see the LIMIT tradeoff noted on
-        # FalkorSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec).
-        self._cache = fresh_cache
         self.last_hydrate_ok = True
-        self.last_hydrate_node_count = hydrated_nodes
+        self.hydrate_ok_total += 1
+        self.hydrate_duplicate_node_identities = len(duplicate_identities)
+        if duplicate_identities:
+            sample = sorted(duplicate_identities.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+            logger.warning(
+                "falkor_substrate_hydrate_duplicate_identities graph=%s identities=%d extra_nodes=%d sample=%s",
+                self._cfg.graph_name, len(duplicate_identities),
+                sum(count - 1 for count in duplicate_identities.values()),
+                "; ".join(f"{key} x{count}" for key, count in sample),
+            )
+        self.hydrate_skipped_unknown_nodes = skipped["nodes"]
+        self.hydrate_skipped_unknown_edges = skipped["edges"]
+        if skipped["nodes"] or skipped["edges"]:
+            logger.warning("falkor_substrate_hydrate_skipped_unknown_shapes nodes=%d edges=%d",
+                           skipped["nodes"], skipped["edges"])
+        self.last_hydrate_node_count = len(node_ids)
+        finished = datetime.now(timezone.utc).isoformat()
+        self._last_snapshot_at = time.monotonic()
+        self._last_successful_refresh_at = finished
+        self.last_scan_receipt = CompleteScanReceipt(
+            started_at=started, finished_at=finished, complete=True, stale=False,
+            node_count=len(node_ids), edge_count=len(edge_ids), pages_read=progress["pages"],
+            last_successful_refresh_at=finished,
+            edge_identity_aliases=progress["edge_identity_aliases"],
+            duplicate_node_identities=len(duplicate_identities),
+        )
+        self._record_node_count_gap(skipped["nodes"])
+        self._maybe_log_hydrate_stats()
+        if not getattr(self._client, "read_only", False):
+            self._migrate_legacy_payload_nodes(legacy_nodes)
+            self._migrate_legacy_payload_edges(legacy_edges)
 
-        self._migrate_legacy_payload_nodes(
-            _normalize_rows(legacy_node_rows, fields=("payload_json", "identity_key"))
+    _HYDRATE_STATS_LOG_INTERVAL_SEC = 300.0
+
+    def _record_node_count_gap(self, skipped_unknown_nodes: int = 0) -> None:
+        """Compare the in-memory node count with the durable graph's (#3455).
+
+        A failed refresh keeps the last good cache, and a process that never
+        refreshed holds only its own writes, so readers can run on a partial
+        graph while nothing complains (#3455: 40 cached nodes vs 15,355
+        durable). One cheap count per refresh; the gap rides on the scan
+        receipt and the stats line, and a large gap logs a warning every
+        refresh until it closes. Nodes of kinds newer than this reader are
+        skipped on purpose and are subtracted, so an old reader next to a newer
+        writer does not alarm forever. A count error leaves the gap None."""
+        with self._cache_lock:
+            cache_nodes = len(self._cache._nodes)
+        durable = None
+        try:
+            rows = _normalize_rows(self._client.graph_query(DURABLE_NODE_COUNT_CYPHER, {}))
+            value = rows[0].get("node_count") if rows else None
+            durable = int(value) if value is not None else None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("falkor_substrate_node_count_failed error=%s", exc)
+        gap = durable - cache_nodes - skipped_unknown_nodes if durable is not None else None
+        self.last_durable_node_count, self.last_node_count_gap = durable, gap
+        if self.last_scan_receipt is not None:
+            self.last_scan_receipt = replace(
+                self.last_scan_receipt, durable_node_count=durable, node_count_gap=gap,
+                plan_cache_retries=self.hydrate_plan_cache_retries_total,
+            )
+        if gap is not None and gap > max(self._NODE_GAP_ALARM_FLOOR,
+                                         self._NODE_GAP_ALARM_FRACTION * durable):
+            logger.warning(
+                "falkor_substrate_hydrate_node_gap graph=%s durable_nodes=%d cache_nodes=%d gap=%d "
+                "last_hydrate_ok=%s skipped_unknown_nodes=%d",
+                self._cfg.graph_name, durable, cache_nodes, gap, self.last_hydrate_ok,
+                skipped_unknown_nodes,
+            )
+
+    def _maybe_log_hydrate_stats(self) -> None:
+        """Cumulative refresh success/failure counts, at most every 5 min, so
+        the success rate is readable from logs without a line per refresh."""
+        now = time.monotonic()
+        if (self._hydrate_stats_logged_at is not None
+                and now - self._hydrate_stats_logged_at < self._HYDRATE_STATS_LOG_INTERVAL_SEC):
+            return
+        self._hydrate_stats_logged_at = now
+        logger.info(
+            "falkor_substrate_hydrate_stats graph=%s ok_total=%d failed_total=%d replayed_writes_total=%d "
+            "duplicate_identities=%d identity_durable_lookups=%d identity_durable_hits=%d "
+            "plan_cache_retries=%d plan_cache_recovered=%d node_count_gap=%s",
+            self._cfg.graph_name, self.hydrate_ok_total, self.hydrate_failed_total,
+            self.hydrate_replayed_writes_total, getattr(self, "hydrate_duplicate_node_identities", 0),
+            getattr(self, "identity_durable_lookups_total", 0), getattr(self, "identity_durable_hits_total", 0),
+            getattr(self, "hydrate_plan_cache_retries_total", 0),
+            getattr(self, "hydrate_plan_cache_recovered_total", 0),
+            getattr(self, "last_node_count_gap", None),
         )
-        self._migrate_legacy_payload_edges(
-            _normalize_rows(legacy_edge_rows, fields=("payload_json", "identity_key"))
-        )
+
+    @staticmethod
+    def _cache_upsert_keep_canonical(
+        cache: InMemorySubstrateGraphStore, identity_key: str | None, node: BaseSubstrateNodeV1,
+    ) -> None:
+        """Cache a node without moving a duplicated identity off its canonical.
+
+        The in-memory store points an identity at whichever node was written
+        last. With duplicates still in the graph (pre-repair), a write to a
+        larger-id copy would re-point the identity at it, and new runs would
+        then merge into a different copy than the durable lookup and the
+        repair pick (review finding 2026-10-14). Smallest node_id stays put."""
+        previous = cache.get_node_id_by_identity(identity_key) if identity_key else None
+        cache.upsert_node(identity_key=identity_key, node=node)
+        if (identity_key and previous and previous != node.node_id
+                and previous < node.node_id and cache.get_node_by_id(previous) is not None):
+            cache.set_identity_canonical(identity_key, previous)
+
+    @staticmethod
+    def _apply_node_to_cache(
+        cache: InMemorySubstrateGraphStore,
+        identity_key: str | None,
+        node: BaseSubstrateNodeV1,
+        skip_metadata_keys: frozenset[str] | None,
+    ) -> None:
+        """Cache half of upsert_node; also replays journaled writes onto a
+        freshly scanned cache, merging skipped keys against that cache.
+
+        Mirrors the durable MERGE's ON CREATE / ON MATCH split: when the cache
+        already holds the node (the durable write matched), the tick-owned
+        pressure/dormancy properties and any skipped activation state keep the
+        cached values, exactly as the graph keeps its own."""
+        cache_node = node
+        existing_cached = cache.get_node_by_id(node.node_id)
+        merged_metadata = dict(node.metadata or {})
+        update: dict[str, Any] = {}
+        if skip_metadata_keys:
+            existing_metadata = (existing_cached.metadata or {}) if existing_cached is not None else {}
+            for key in skip_metadata_keys:
+                if key in ("activation", "recency_score"):
+                    continue  # signals, not metadata; handled below
+                if key in existing_metadata:
+                    merged_metadata[key] = existing_metadata[key]
+                else:
+                    # No cached copy to fall back on -- an honest "unknown"
+                    # (key absent) beats caching this caller's own unverified
+                    # guess for a field it doesn't own. Review finding
+                    # 2026-07-29: without this, a cache miss (e.g. mid-
+                    # rehydrate) would leave the LOCAL cache holding the
+                    # caller's copy for a field the durable Cypher write
+                    # deliberately skipped -- cache/durable divergence until
+                    # the next generation-triggered rehydrate.
+                    merged_metadata.pop(key, None)
+        if existing_cached is not None:
+            existing_metadata = existing_cached.metadata or {}
+            if node.node_kind == "concept":
+                for key in TICK_OWNED_NODE_PROPERTIES:
+                    if key in existing_metadata:
+                        merged_metadata[key] = existing_metadata[key]
+                    else:
+                        merged_metadata.pop(key, None)
+            skipped_signals = {"activation", "recency_score"} & set(skip_metadata_keys or ())
+            if skipped_signals:
+                cached_activation = existing_cached.signals.activation
+                update["signals"] = node.signals.model_copy(
+                    update={
+                        "activation": node.signals.activation.model_copy(
+                            update={key: getattr(cached_activation, key) for key in skipped_signals}
+                        )
+                    }
+                )
+        if skip_metadata_keys or existing_cached is not None:
+            update["metadata"] = merged_metadata
+            cache_node = node.model_copy(update=update)
+        # skip_metadata_keys=None: the merge above already applied the
+        # Falkor-specific semantics (pop on miss), which differ from the
+        # in-memory store's (keep on miss).
+        FalkorSubstrateStore._cache_upsert_keep_canonical(cache, identity_key, cache_node)
 
     def _migrate_legacy_payload_nodes(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
@@ -446,7 +932,8 @@ class FalkorSubstrateStore:
             identity = row.get("identity_key")
             identity_key = str(identity) if identity else None
             # Seed cache first so a transient rewrite failure cannot empty Atlas.
-            self._cache.upsert_node(identity_key=identity_key, node=node)
+            with self._cache_lock:
+                self._cache.upsert_node(identity_key=identity_key, node=node)
             try:
                 # Rewrite to native properties. upsert_node()'s MERGE keys on
                 # (SubstrateNode:<type-label> {node_id}) -- a label pattern
@@ -523,7 +1010,10 @@ class FalkorSubstrateStore:
                 logger.warning("falkor_substrate_legacy_edge_invalid")
                 continue
             identity = row.get("identity_key") or self._edge_identity(edge)
-            self._cache.upsert_edge(identity_key=str(identity), edge=edge)
+            with self._cache_lock:
+                representative_id = self._cache.get_edge_id_by_identity(str(identity))
+                representative = self._cache.get_edge_by_id(representative_id) if representative_id else None
+                self._cache.upsert_edge(identity_key=str(identity), edge=edge)
             try:
                 self.upsert_edge(identity_key=str(identity), edge=edge)
                 logger.info(
@@ -538,6 +1028,13 @@ class FalkorSubstrateStore:
                     exc,
                 )
 
+            finally:
+                # Native rewriting must not change the lookup selected by the
+                # validated staging scan, including when rewriting fails.
+                if representative is not None and representative.edge_id < edge.edge_id:
+                    with self._cache_lock:
+                        self._cache.upsert_edge(identity_key=str(identity), edge=representative)
+
     @staticmethod
     def _edge_identity(edge: SubstrateEdgeV1) -> str:
         return f"{edge.source.node_id}|{edge.predicate}|{edge.target.node_id}"
@@ -549,7 +1046,62 @@ class FalkorSubstrateStore:
         return self._cache.get_edge_by_id(edge_id)
 
     def get_node_id_by_identity(self, identity_key: str) -> str | None:
-        return self._cache.get_node_id_by_identity(identity_key)
+        """Cache first, then the durable graph.
+
+        The cache is not proof of absence: it can be partial (a failed or
+        not-yet-run hydrate, another process's write since the last refresh).
+        Callers such as the materializer treat ``None`` as "create a new node",
+        and topic-foundry mints a fresh run-scoped node_id every run, so a
+        cache-only miss durably duplicated the identity -- 1,237 identities
+        (14,022 nodes) on orion_substrate_aitown and 1,109 (4,640) on
+        orion_substrate_self by 2026-10-14. A durable hit is loaded into the
+        cache so the caller's follow-up ``get_node_by_id`` finds it.
+        """
+        cached = self._cache.get_node_id_by_identity(identity_key)
+        if cached or not identity_key:
+            return cached
+        return self._durable_node_id_by_identity(str(identity_key))
+
+    def _durable_node_id_by_identity(self, identity_key: str) -> str | None:
+        self.identity_durable_lookups_total += 1
+        try:
+            raw = self._client.graph_query(NODE_BY_IDENTITY_CYPHER, {"identity_key": identity_key})
+            rows = _normalize_rows(raw, fields=NATIVE_NODE_RETURN_FIELDS)
+        except Exception as exc:  # noqa: BLE001 - a lookup must not break the caller's write path
+            logger.warning(
+                "falkor_substrate_identity_lookup_failed graph=%s identity_key=%s error=%s",
+                self._cfg.graph_name, identity_key, exc,
+            )
+            return None
+        # Same canonical rule as hydrate and the dedupe repair: smallest
+        # node_id. Filtered and sorted here too, not only in Cypher, so a
+        # client that ignores WHERE/ORDER BY cannot pick a different node.
+        matches = sorted(
+            (row for row in rows
+             if row.get("identity_key") == identity_key and row.get("node_id") and node_row_is_known(row)),
+            key=lambda row: str(row["node_id"]),
+        )
+        for row in matches:
+            try:
+                node = decode_node(row)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "falkor_substrate_identity_lookup_undecodable node_id=%s error=%s", row.get("node_id"), exc,
+                )
+                continue
+            with self._cache_lock:
+                if self._cache.get_node_by_id(node.node_id) is None:
+                    self._cache.upsert_node(identity_key=identity_key, node=node)
+                    if self._scan_journal is not None:
+                        # A hydrate is mid-scan and may already have passed
+                        # this row; journal it so the swap keeps it and the
+                        # caller's follow-up get_node_by_id still finds it.
+                        self._scan_journal.append(("node", identity_key, node, None))
+                else:
+                    self._cache.set_identity_canonical(identity_key, node.node_id)
+            self.identity_durable_hits_total += 1
+            return node.node_id
+        return None
 
     def get_identity_key_by_node_id(self, node_id: str) -> str | None:
         return self._cache.get_identity_key_by_node_id(node_id)
@@ -582,17 +1134,18 @@ class FalkorSubstrateStore:
         value. See falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring
         for the full trace.
 
-        **Known, bounded race, same shape as the cache-swap race documented
-        on ``_hydrate_from_durable()`` above**: the ``self._cache.get_node_by_id()``
-        read used to build the skip-preserving merge isn't lock-protected. A
-        second concurrent ``upsert_node()`` call landing between that read
-        and this call's own ``self._cache.upsert_node(...)`` could still
-        leave the *local cache* (not the durable Falkor graph -- the Cypher
-        SET-clause exclusion is unconditional and independent of this cache
-        read) briefly holding a stale copy of a skipped key. Self-heals the
-        same way: this write still bumps ``self._write_generation``, so the
-        next ``snapshot()`` call detects the mismatch and re-hydrates from
-        durable Falkor, which is unaffected by this narrow window.
+        ``skip_metadata_keys`` may also name ``falkor_codec.ACTIVATION_STATE_KEYS``
+        (``activation``, ``recency_score``, ``activation_decayed_at``) for a
+        writer that does not own the node's activation. Skipped keys are still
+        set when this call creates the node (ON CREATE); only an existing
+        node's values are left alone (ON MATCH). The tick-owned
+        pressure/dormancy properties (``falkor_codec.TICK_OWNED_NODE_PROPERTIES``)
+        are always ON CREATE only.
+
+        The skip-preserving merge read, the cache write and the
+        ``_write_generation`` bump run together under ``_cache_lock`` after the
+        durable write, so a concurrent writer or a snapshot cache swap cannot
+        interleave between them (2026-10-06, turn-latency L2).
         """
         # Derived from the codec's DURABLE_NODE_KINDS rather than repeating the
         # tuple: these two guards were separate hardcoded copies of the same
@@ -603,28 +1156,36 @@ class FalkorSubstrateStore:
                 f"FalkorSubstrateStore durable writes support {', '.join(DURABLE_NODE_KINDS)} nodes only; "
                 f"got node_kind={getattr(node, 'node_kind', None)!r}"
             )
-        node = _with_sanitized_metadata(node)
-
-        cache_node = node
+        # activation_decayed_at is a typed durable property (one ISO string),
+        # not free-form metadata: keep it out of the metadata key-count cap so
+        # a node already carrying 16 keys can't have its stamp trimmed -- a
+        # trimmed stamp would be re-filled from observed_at below and bring
+        # back the compounding decay every tick.
+        #
+        # A write that doesn't carry the stamp (concept_induction's blind
+        # re-save, the seed loader, the materializer's fresh-node branch) is
+        # stamped with its own observed_at: its activation is taken to be valid
+        # as of its observation, so the next since_last tick decays it by its
+        # real age once. Leaving the older durable stamp in place instead would
+        # treat a stale, undecayed value as fresh as of that stamp and hold it
+        # there indefinitely under repeated re-saves.
+        decay_stamp = (node.metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)
+        if decay_stamp is None:
+            decay_stamp = node.temporal.observed_at.isoformat()
+        node = _with_sanitized_metadata(
+            node.model_copy(
+                update={
+                    "metadata": {
+                        k: v for k, v in (node.metadata or {}).items() if k != ACTIVATION_DECAYED_AT_KEY
+                    }
+                }
+            )
+        )
+        node = node.model_copy(
+            update={"metadata": {**(node.metadata or {}), ACTIVATION_DECAYED_AT_KEY: decay_stamp}}
+        )
         skip_encoded_keys: set[str] = set()
         if skip_metadata_keys:
-            existing_cached = self._cache.get_node_by_id(node.node_id)
-            merged_metadata = dict(node.metadata or {})
-            existing_metadata = (existing_cached.metadata or {}) if existing_cached is not None else {}
-            for key in skip_metadata_keys:
-                if key in existing_metadata:
-                    merged_metadata[key] = existing_metadata[key]
-                else:
-                    # No cached copy to fall back on -- an honest "unknown"
-                    # (key absent) beats caching this caller's own unverified
-                    # guess for a field it doesn't own. Review finding
-                    # 2026-07-29: without this, a cache miss (e.g. mid-
-                    # rehydrate) would leave the LOCAL cache holding the
-                    # caller's copy for a field the durable Cypher write
-                    # deliberately skipped -- cache/durable divergence until
-                    # the next generation-triggered rehydrate.
-                    merged_metadata.pop(key, None)
-            cache_node = node.model_copy(update={"metadata": merged_metadata})
             # Translate raw metadata keys into the encoded Cypher property
             # names actually present in the SET clause -- contributing_turn_ids
             # becomes contributing_turn_ids_json only once
@@ -649,19 +1210,177 @@ class FalkorSubstrateStore:
 
         params = encode_node_properties(node, identity_key)
         label = node_label_for_kind(str(node.node_kind))
-        assignments = _set_assignments("n", params, skip={"node_id"} | skip_encoded_keys)
+        # ON CREATE sets everything, so a new node starts complete. ON MATCH
+        # leaves alone (a) properties this caller said it does not own
+        # (skip_metadata_keys) and (b) the tick-owned pressure/dormancy
+        # properties, which only update_node_dynamics writes on an existing
+        # node -- a whole-node upsert from any other writer used to reset them
+        # to its model's defaults or to a stale carried-forward copy
+        # (2026-10-12, the remaining lost-update writer after PR #2617).
+        create_assignments = _set_assignments("n", params, skip={"node_id"})
+        match_assignments = _set_assignments(
+            "n", params, skip={"node_id"} | skip_encoded_keys | TICK_OWNED_NODE_PROPERTIES
+        )
         cypher = (
             f"MERGE (n:SubstrateNode:{label} {{node_id: $node_id}}) "
-            f"SET {assignments} "
-            "REMOVE n.payload_json"
+            f"ON CREATE SET {create_assignments} "
+            f"ON MATCH SET {match_assignments} "
+            "REMOVE n.payload_json "
+            # Return what the graph now holds, so the cache stores the durable
+            # truth: on ON MATCH the graph kept values (pressure, dormancy,
+            # skipped keys) this caller's model does not carry, and a cache miss
+            # here (node written by another process since the last hydrate)
+            # would otherwise cache the caller's defaults -- and the tick's
+            # compare-and-set would then expect an activation the graph does
+            # not hold (review finding 2026-10-12).
+            "RETURN " + _return_clause("n", NATIVE_NODE_RETURN_FIELDS)
         )
         try:
-            self._client.graph_query(cypher, params)
+            raw = self._client.graph_query(cypher, params)
         except Exception as exc:
             logger.error("falkor_substrate_upsert_node_failed node_id=%s error=%s", node.node_id, exc)
             raise
-        self._cache.upsert_node(identity_key=identity_key, node=cache_node)
-        self._write_generation += 1
+        durable = self._decode_written_node(raw, node.node_id)
+        with self._cache_lock:
+            if durable is not None:
+                # The durable row is authoritative; nothing left to merge.
+                self._cache_upsert_keep_canonical(self._cache, identity_key, durable)
+                journal_entry = ("node", identity_key, durable, None)
+            else:
+                self._apply_node_to_cache(self._cache, identity_key, node, skip_metadata_keys)
+                journal_entry = ("node", identity_key, node, skip_metadata_keys)
+            if self._scan_journal is not None:
+                self._scan_journal.append(journal_entry)
+            self._write_generation += 1
+
+    @staticmethod
+    def _decode_written_node(raw: Any, node_id: str) -> BaseSubstrateNodeV1 | None:
+        """The node the MERGE returned, or None (a test double returning no
+        row or someone else's row, or an undecodable row) -- the caller then
+        falls back to the merge-based cache mirror."""
+        try:
+            rows = _normalize_rows(raw, fields=NATIVE_NODE_RETURN_FIELDS)
+        except Exception:
+            return None
+        for row in rows:
+            if row.get("node_id") != node_id or not node_row_is_known(row):
+                continue
+            try:
+                return decode_node(row)
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _apply_dynamics_to_cache(
+        cache: InMemorySubstrateGraphStore, write: NodeDynamicsWriteV1, applied: bool
+    ) -> None:
+        """Mirror a durable dynamics write onto a cache: the pressure group
+        always, the activation group only if the durable compare-and-set
+        applied. The cache's own CAS is not consulted -- the durable result is
+        the truth."""
+        existing = cache.get_node_by_id(write.node_id)
+        if existing is None:
+            return
+        cache.upsert_node(
+            identity_key=cache.get_identity_key_by_node_id(write.node_id),
+            node=apply_node_dynamics_write(
+                existing,
+                write,
+                include_activation=applied,
+                # Match what the graph actually stores: pressure/dormancy are
+                # concept-only native properties.
+                include_concept_only=write.node_kind == "concept",
+            ),
+        )
+
+    def update_node_dynamics(self, write: NodeDynamicsWriteV1) -> bool:
+        """Targeted write of only SubstrateDynamicsEngine.tick()'s own fields.
+
+        Replaces the tick's old full-node ``upsert_node`` re-persist, which
+        SET every property from the tick's start-of-tick snapshot and so
+        reverted any concurrent write to a property it doesn't own (confirmed
+        live 2026-10-11: 238 corrected ``observed_at`` values reverted within
+        two minutes, PR #2608). Here:
+
+        - ``MATCH``, never ``MERGE``: a node deleted since the tick read it
+          stays deleted.
+        - Only named properties are SET; observed_at, label, provenance and
+          every foreign property are never in the statement.
+        - The activation group (activation, recency_score,
+          activation_decayed_at, dormancy) is compare-and-set on the
+          activation and stamp the tick read, in the same statement, so a
+          fresh activation written meanwhile is not overwritten by a decayed
+          stale one. Pressure is written regardless (tick-owned, not derived
+          from the node's stored activation).
+
+        Returns whether the activation group applied.
+        """
+        params: dict[str, Any] = {
+            "node_id": write.node_id,
+            "expected_activation": float(write.expected_activation),
+            "activation_tolerance": ACTIVATION_CAS_TOLERANCE,
+            "expected_decay_stamp": write.expected_decay_stamp,
+            "activation": float(write.activation),
+            "recency_score": float(write.recency_score),
+            ACTIVATION_DECAYED_AT_KEY: write.activation_decayed_at,
+        }
+        # Pressure/dormancy are native properties on concept nodes only (the
+        # codec's DYNAMICS_METADATA_KEYS); other kinds never stored them, so
+        # don't start now.
+        is_concept = write.node_kind == "concept"
+        pressure_set = ""
+        if is_concept and write.dynamic_pressure is not None:
+            params["dynamic_pressure"] = float(write.dynamic_pressure)
+            params["dynamic_pressure_reason"] = write.dynamic_pressure_reason
+            pressure_set = (
+                "SET n.dynamic_pressure = $dynamic_pressure, "
+                "n.dynamic_pressure_reason = $dynamic_pressure_reason WITH n "
+            )
+        activation_assignments = [
+            "n.activation = $activation",
+            "n.recency_score = $recency_score",
+            f"n.{ACTIVATION_DECAYED_AT_KEY} = ${ACTIVATION_DECAYED_AT_KEY}",
+        ]
+        if write.node_kind in DORMANCY_NODE_KINDS and write.dormant is not None:
+            params["dormant"] = bool(write.dormant)
+            params["dormancy_updated_at"] = write.dormancy_updated_at
+            activation_assignments += [
+                "n.dormant = $dormant",
+                "n.dormancy_updated_at = $dormancy_updated_at",
+            ]
+        cypher = (
+            "MATCH (n:SubstrateNode {node_id: $node_id}) "
+            f"{pressure_set}"
+            # Tolerance, not equality: FalkorDB stores the full double but
+            # returns ~15 significant digits, so the value the tick read back
+            # (hydrate) never equals the stored one exactly and an equality
+            # CAS would miss on every node forever, freezing decay. Verified
+            # live: 0.7127189745122715 stored, 0.712718974512272 returned.
+            # 1e-12 is far above that rounding (~1e-16) and far below any real
+            # concurrent change (one 30 s decay step on a 30-day half-life is
+            # ~8e-6 relative). coalesce: hydrate decodes a missing activation
+            # as 0.0 (falkor_codec).
+            "WHERE abs(coalesce(n.activation, 0.0) - $expected_activation) <= $activation_tolerance "
+            f"AND ((n.{ACTIVATION_DECAYED_AT_KEY} IS NULL AND $expected_decay_stamp IS NULL) "
+            f"OR n.{ACTIVATION_DECAYED_AT_KEY} = $expected_decay_stamp) "
+            f"SET {', '.join(activation_assignments)} "
+            "RETURN n.node_id AS applied_node_id"
+        )
+        try:
+            rows = _normalize_rows(self._client.graph_query(cypher, params))
+        except Exception as exc:
+            logger.error("falkor_substrate_update_node_dynamics_failed node_id=%s error=%s", write.node_id, exc)
+            raise
+        applied = any(row.get("applied_node_id") == write.node_id for row in rows)
+        with self._cache_lock:
+            self._apply_dynamics_to_cache(self._cache, write, applied)
+            if self._scan_journal is not None:
+                self._scan_journal.append(("dynamics", None, (write, applied), None))
+            # Bumped on a miss too: the cache disagreed with the graph, so the
+            # next snapshot must re-read it rather than decay the stale copy.
+            self._write_generation += 1
+        return applied
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         edge = _with_sanitized_metadata(edge)
@@ -680,8 +1399,11 @@ class FalkorSubstrateStore:
         except Exception as exc:
             logger.error("falkor_substrate_upsert_edge_failed edge_id=%s error=%s", edge.edge_id, exc)
             raise
-        self._cache.upsert_edge(identity_key=identity_key, edge=edge)
-        self._write_generation += 1
+        with self._cache_lock:
+            self._cache.upsert_edge(identity_key=identity_key, edge=edge)
+            if self._scan_journal is not None:
+                self._scan_journal.append(("edge", identity_key, edge, None))
+            self._write_generation += 1
 
     def snapshot(self) -> MaterializedSubstrateGraphState:
         with self._snapshot_lock:
@@ -700,91 +1422,115 @@ class FalkorSubstrateStore:
             # operator running Cypher DELETE by hand against Falkor directly).
             within_ceiling = ceiling <= 0.0 or elapsed is None or elapsed < ceiling
 
-            if same_generation and within_ceiling:
-                return self._cache.snapshot()
+            if not (same_generation and within_ceiling and self.last_hydrate_ok):
+                self._hydrate_from_durable()
+            receipt = self.last_scan_receipt
+            with self._cache_lock:
+                if receipt and self._last_snapshot_generation != self._write_generation:
+                    receipt = replace(receipt, stale=True)
+                state = self._cache.snapshot()
+            return replace(state, scan_receipt=receipt)
 
-            # Capture the generation BEFORE refreshing (which does network
-            # I/O), not after -- if a write races in while the refresh is in
-            # flight, capturing after would credit that write to data fetched
-            # before it happened, silently masking it until the next
-            # unrelated write or the ceiling fires again. Capturing before
-            # means such a race just costs one possibly-redundant extra
-            # refresh on the next call, never a falsely-trusted stale cache.
-            # Same reasoning as GraphDBSubstrateStore.snapshot() (already
-            # proven in production for the SPARQL backend); this mirrors it
-            # for Falkor to fix the equivalent gap here.
-            generation_at_fetch_start = self._write_generation
-            self._hydrate_from_durable()
-            self._last_snapshot_at = now_mono
-            self._last_snapshot_generation = generation_at_fetch_start
-            return self._cache.snapshot()
+    def prime_cache_for_producers(self, producers: tuple[str, ...]) -> tuple[int, int]:
+        """Load only these producers' nodes and edges into the cache (no full hydration).
 
+        For a single-writer projector (memory referents) whose own nodes are the only ones it
+        reads back: it needs them after a restart without scanning the whole graph. Returns
+        (nodes, edges) loaded. Raises on an undecodable row (fail closed, like hydration).
+        """
+        params = {"producers": list(producers)}
+        nodes = _normalize_rows(self._client.graph_query(
+            "MATCH (n:SubstrateNode) WHERE n.provenance_producer IN $producers RETURN "
+            + _return_clause("n", NATIVE_NODE_RETURN_FIELDS), params=params), fields=NATIVE_NODE_RETURN_FIELDS)
+        edges = _normalize_rows(self._client.graph_query(
+            "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) WHERE e.substrate_edge = true "
+            "AND e.provenance_producer IN $producers RETURN "
+            + _edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS), params=params),
+            fields=NATIVE_EDGE_RETURN_FIELDS)
+        with self._cache_lock:
+            for row in nodes:
+                node = decode_node(row)
+                if node is None:
+                    raise ValueError(f"undecodable node {row.get('node_id')}")
+                self._cache.upsert_node(identity_key=row.get("identity_key") or None, node=node)
+            for row in edges:
+                edge = decode_edge(row)
+                if edge is None:
+                    raise ValueError(f"undecodable edge {row.get('edge_id')}")
+                self._cache.upsert_edge(identity_key=str(row.get("identity_key") or ""), edge=edge)
+        return len(nodes), len(edges)
+
+    def find_semantic_node_ids_by_label(self, label: str, *, exclude_producers: tuple[str, ...]) -> list[str]:
+        """Concept/Entity nodes whose label equals ``label`` case-insensitively, written by any
+        producer NOT listed. Direct read; for detecting a same-named node another producer owns."""
+        rows = _normalize_rows(self._client.graph_query(
+            "MATCH (n:SubstrateNode) WHERE n.node_kind IN ['concept', 'entity'] "
+            "AND toLower(n.label) = $label AND NOT (n.provenance_producer IN $exclude) "
+            "RETURN n.node_id AS node_id ORDER BY node_id LIMIT 5",
+            params={"label": str(label).lower(), "exclude": list(exclude_producers)}), fields=("node_id",))
+        return [str(row["node_id"]) for row in rows]
+
+    def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
+        from .neighborhood_backends import read_falkor_neighborhood
+        return read_falkor_neighborhood(self, request)
+
+    # Region reads iterate the in-memory cache's dicts; InMemorySubstrateGraphStore
+    # has no lock of its own, so they share _cache_lock with writers.
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_focal_slice(node_ids=node_ids, max_edges=max_edges),
-            self._result_source_kind,
-        )
+        with self._cache_lock:
+            result = self._cache.query_focal_slice(node_ids=node_ids, max_edges=max_edges)
+        return _retag_source(result, self._result_source_kind)
 
     def query_hotspot_region(
         self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        result = self._cache.query_hotspot_region(
-            min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
-        )
+        with self._cache_lock:
+            result = self._cache.query_hotspot_region(
+                min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
+            )
         return _retag_source(result, self._result_source_kind)
-
-    def query_contradiction_region(
-        self, *, limit_nodes: int = 32, limit_edges: int = 64
-    ) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
-            self._result_source_kind,
-        )
 
     def query_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
-            self._result_source_kind,
-        )
+        with self._cache_lock:
+            result = self._cache.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        return _retag_source(result, self._result_source_kind)
 
     def query_provenance_neighborhood(
         self, *, evidence_ref: str, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_provenance_neighborhood(
+        with self._cache_lock:
+            result = self._cache.query_provenance_neighborhood(
                 evidence_ref=evidence_ref, limit_nodes=limit_nodes, limit_edges=limit_edges
-            ),
-            self._result_source_kind,
-        )
+            )
+        return _retag_source(result, self._result_source_kind)
 
     def read_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_focal_slice(node_ids=node_ids, max_edges=max_edges)
+        with self._cache_lock:
+            return self._cache.read_focal_slice(node_ids=node_ids, max_edges=max_edges)
 
     def read_hotspot_region(
         self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_hotspot_region(
-            min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
-        )
-
-    def read_contradiction_region(
-        self, *, limit_nodes: int = 32, limit_edges: int = 64
-    ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        with self._cache_lock:
+            return self._cache.read_hotspot_region(
+                min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
+            )
 
     def read_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        with self._cache_lock:
+            return self._cache.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
     def read_provenance_neighborhood(
         self, *, evidence_ref: str, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_provenance_neighborhood(
-            evidence_ref=evidence_ref, limit_nodes=limit_nodes, limit_edges=limit_edges
-        )
+        with self._cache_lock:
+            return self._cache.read_provenance_neighborhood(
+                evidence_ref=evidence_ref, limit_nodes=limit_nodes, limit_edges=limit_edges
+            )
 
 
 def _retag_source(result: SubstrateQueryResultV1, source_kind: str) -> SubstrateQueryResultV1:
@@ -792,9 +1538,11 @@ def _retag_source(result: SubstrateQueryResultV1, source_kind: str) -> Substrate
 
 
 def _normalize_rows(
-    raw: Any, *, fields: tuple[str, ...] | list[str] | None = None
+    raw: Any, *, fields: tuple[str, ...] | list[str] | None = None, strict: bool = False
 ) -> list[dict[str, Any]]:
     if raw is None:
+        if strict:
+            raise ValueError("missing query result")
         return []
     if isinstance(raw, list):
         # Raw GRAPH.QUERY response: [header, records, statistics]. redis-py's
@@ -808,6 +1556,8 @@ def _normalize_rows(
             and all(isinstance(column, (list, tuple)) for column in raw[0])
         ):
             names = _header_field_names(raw[0])
+            if strict and any(not isinstance(r, (list, tuple)) or len(r) != len(names) for r in raw[1]):
+                raise ValueError("malformed wire query row")
             return [
                 dict(zip(names, record))
                 for record in raw[1]
@@ -822,11 +1572,15 @@ def _normalize_rows(
                     if isinstance(values, list) and len(values) == len(field_names):
                         out.append(dict(zip(field_names, values)))
                         continue
+                if strict and "_positional" in item:
+                    raise ValueError("malformed positional query row")
                 out.append(item)
             elif isinstance(item, (list, tuple)):
                 if field_names and len(item) == len(field_names):
                     out.append(dict(zip(field_names, item)))
                 elif field_names:
+                    if strict:
+                        raise ValueError("query row width mismatch")
                     logger.warning(
                         "falkor_substrate_normalize_row_width_mismatch expected=%s got=%s",
                         len(field_names),
@@ -837,7 +1591,11 @@ def _normalize_rows(
                     out.append({"node_id": item[0], "identity_key": item[1]})
                 elif item:
                     out.append({"node_id": item[0], "identity_key": ""})
+            elif strict:
+                raise ValueError("malformed query row")
         return out
+    if strict:
+        raise ValueError("malformed query result")
     return []
 
 
@@ -848,7 +1606,7 @@ def _resolve_falkor_snapshot_force_refresh_ceiling_sec() -> float:
     RoutedSubstrateGraphStore can run a GraphDB-backed store and a
     Falkor-backed store concurrently in the same process (primary + shadow),
     and the two backends' refresh costs are not symmetric -- Falkor's own
-    hydrate queries are currently unbounded (no LIMIT, unlike GraphDB's
+    hydrate traverses all pages (unlike GraphDB's
     capped _query_nodes/_query_edges_for_node_ids), so an operator running
     both may want a longer Falkor ceiling without also having to change
     GraphDB's. Without this override, both backends would be forced to share
@@ -938,15 +1696,4 @@ def build_aitown_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InM
     return build_falkor_substrate_store_from_env(
         graph_name_env="FALKORDB_AITOWN_SUBSTRATE_GRAPH",
         graph_name_default="orion_substrate_aitown",
-    )
-
-
-def build_self_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InMemorySubstrateGraphStore:
-    """Third, independently-named FalkorDB graph -- the Self Atlas
-    (self-model rebuild arc, Patch 3, 2026-09-05). Same shape and same
-    Falkor-only scoping rationale as
-    build_aitown_falkor_substrate_store_from_env() above."""
-    return build_falkor_substrate_store_from_env(
-        graph_name_env="FALKORDB_SELF_SUBSTRATE_GRAPH",
-        graph_name_default="orion_substrate_self",
     )

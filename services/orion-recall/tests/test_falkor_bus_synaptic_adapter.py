@@ -2,6 +2,9 @@
 orion_bus_synapse (the same queries already live-verified in
 services/orion-hub/scripts/bus_synaptic_graph_routes.py::anomalies()).
 
+2026-11: the publish-gap half (text="" fragments rendered only by the retired
+orion-mind resolver) is retired; only causal-latency fragments come back.
+
 Same return-fragment contract as the other Falkor adapters
 (id/source/source_ref/uri/text/ts/tags/score/meta) -- fusion.py has no
 per-backend adapter layer, so shape drift here would silently break scoring.
@@ -53,65 +56,6 @@ def test_no_anomalies_returns_empty_list_not_a_placeholder_fragment(monkeypatch)
     assert out == []
 
 
-def test_publish_anomaly_produces_a_real_fragment(monkeypatch) -> None:
-    fake_client = _FakeFalkorClient(
-        publish_rows=[
-            {
-                "organ_id": "cortex-exec",
-                "channel": "orion:cognition:trace",
-                "zscore": 5.2,
-                "count": 40,
-                "last_seen_epoch": _recent_epoch(120),
-            }
-        ]
-    )
-    monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
-
-    out = _run(bsa.fetch_bus_synaptic_anomaly_fragments())
-
-    assert len(out) == 1
-    frag = out[0]
-    assert frag["source"] == "bus_synaptic_anomaly"
-    assert frag["source_ref"] == "falkordb"
-    assert frag["uri"] == frag["id"]
-    # No English any more (2026-09-03) -- the resolver in
-    # conversation_front.py builds the sentence now, not this adapter.
-    assert frag["text"] == ""
-    assert frag["tags"] == ["bus_synaptic", "anomaly", "publish_gap"]
-    assert frag["meta"]["organ_id"] == "cortex-exec"
-    assert frag["meta"]["channel"] == "orion:cognition:trace"
-    assert frag["meta"]["zscore"] == 5.2
-    assert frag["meta"]["count"] == 40
-    assert frag["meta"]["signal_kind"] == "publish_gap_zscore"
-    assert isinstance(frag["ts"], float)
-
-
-def test_publish_anomaly_survives_outside_the_recency_window(monkeypatch) -> None:
-    """2026-09-03: the recency filter moved out of this query -- an edge
-    older than max_edge_age_sec must still come back (with its true age in
-    meta), not be silently dropped. A total outage reading as an empty list
-    is exactly the failure the liveness axis exists to distinguish from
-    genuine calm; this query returning nothing for an OLD-but-real edge
-    would recreate that same ambiguity one level down."""
-    fake_client = _FakeFalkorClient(
-        publish_rows=[
-            {
-                "organ_id": "cortex-exec",
-                "channel": "orion:cognition:trace",
-                "zscore": 5.2,
-                "count": 40,
-                "last_seen_epoch": _recent_epoch(2 * 86400),  # 2 days old
-            }
-        ]
-    )
-    monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
-
-    out = _run(bsa.fetch_bus_synaptic_anomaly_fragments(max_edge_age_sec=3600.0))
-
-    assert len(out) == 1
-    assert out[0]["meta"]["last_seen_epoch"] < time.time() - 3600.0
-
-
 def test_causal_anomaly_produces_a_real_fragment(monkeypatch) -> None:
     fake_client = _FakeFalkorClient(
         causal_rows=[
@@ -136,7 +80,24 @@ def test_causal_anomaly_produces_a_real_fragment(monkeypatch) -> None:
     assert "not live traffic" in frag["text"]
 
 
-def test_both_anomaly_kinds_combine_and_respect_max_items(monkeypatch) -> None:
+def test_publish_gap_half_is_retired(monkeypatch) -> None:
+    """Even with anomalous publish-gap edges in the graph, no publish query runs
+    and no text="" fragment comes back."""
+    fake_client = _FakeFalkorClient(
+        publish_rows=[
+            {"organ_id": "x", "channel": "c", "zscore": 9.0, "count": 50, "last_seen_epoch": _recent_epoch(30)}
+        ]
+    )
+    monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
+
+    out = _run(bsa.fetch_bus_synaptic_anomaly_fragments())
+
+    assert out == []
+    assert not [c for c, _ in fake_client.calls if "PUBLISHES" in c]
+    assert not hasattr(bsa, "_PUBLISH_ANOMALY_QUERY")
+
+
+def test_causal_anomalies_respect_max_items(monkeypatch) -> None:
     fake_client = _FakeFalkorClient(
         publish_rows=[
             {
@@ -161,14 +122,14 @@ def test_both_anomaly_kinds_combine_and_respect_max_items(monkeypatch) -> None:
     )
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
 
-    out = _run(bsa.fetch_bus_synaptic_anomaly_fragments(max_items=4))
+    out = _run(bsa.fetch_bus_synaptic_anomaly_fragments(max_items=2))
 
-    assert len(out) == 4
+    assert len(out) == 2
 
 
 def test_rows_missing_zscore_are_skipped_not_crashed(monkeypatch) -> None:
     fake_client = _FakeFalkorClient(
-        publish_rows=[{"organ_id": "x", "channel": "c", "zscore": None, "count": 1, "last_seen_epoch": _recent_epoch()}]
+        causal_rows=[{"source_organ": "x", "target_organ": "y", "zscore": None, "count": 1, "last_seen_epoch": _recent_epoch()}]
     )
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
 
@@ -189,7 +150,7 @@ def test_graph_query_exception_fails_open_to_empty_list(monkeypatch) -> None:
     assert out == []
 
 
-def test_thresholds_and_recency_are_threaded_through_to_both_queries(monkeypatch) -> None:
+def test_thresholds_and_recency_are_threaded_through_to_the_query(monkeypatch) -> None:
     fake_client = _FakeFalkorClient()
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
     before = time.time()
@@ -202,7 +163,7 @@ def test_thresholds_and_recency_are_threaded_through_to_both_queries(monkeypatch
         )
     )
 
-    assert len(fake_client.calls) == 2
+    assert len(fake_client.calls) == 1
     for _, params in fake_client.calls:
         assert params["threshold"] == 5.0
         assert params["min_count"] == 10
@@ -241,15 +202,6 @@ def test_multiple_real_anomalies_all_survive_fuse_candidates(monkeypatch) -> Non
     from app.fusion import fuse_candidates
 
     fake_client = _FakeFalkorClient(
-        publish_rows=[
-            {
-                "organ_id": "cortex-orch",
-                "channel": "orion:cortex:result*",
-                "zscore": 7.1,
-                "count": 10,
-                "last_seen_epoch": _recent_epoch(45),
-            }
-        ],
         causal_rows=[
             {
                 "source_organ": "actions",
@@ -270,50 +222,10 @@ def test_multiple_real_anomalies_all_survive_fuse_candidates(monkeypatch) -> Non
     monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
 
     fragments = _run(bsa.fetch_bus_synaptic_anomaly_fragments())
-    assert len(fragments) == 3
+    assert len(fragments) == 2
 
     bundle, _ = fuse_candidates(candidates=fragments, profile=_fusion_profile(), diagnostic=True)
 
-    assert len(bundle.items) == 3
-    surviving_ids = {item.id for item in bundle.items}
-    assert surviving_ids == {f["id"] for f in fragments}
-
-
-def test_publish_gap_fragment_survives_fuse_candidates_on_a_substantive_query(monkeypatch) -> None:
-    """Regression test (code review, 2026-09-03): fuse_candidates()'s
-    low_info_social filter drops any candidate whose snippet is empty --
-    unconditionally, on its own short-circuit -- and this adapter's
-    publish_gap_zscore fragments carry text="" by design (2026-09-03 patch).
-    Without fusion.py's meta.signal_kind exemption, EVERY publish_gap
-    fragment vanishes on every substantive (real-question) chat turn,
-    silently making the whole render-gate feature inert for the majority
-    query class the test above never exercised (it never sets
-    substantive_query=True)."""
-    from app.fusion import fuse_candidates
-
-    fake_client = _FakeFalkorClient(
-        publish_rows=[
-            {
-                "organ_id": "vision-edge",
-                "channel": "orion:vision:edge:health",
-                "zscore": 7.1,
-                "count": 40,
-                "last_seen_epoch": _recent_epoch(30),
-            }
-        ]
-    )
-    monkeypatch.setattr(bsa, "get_bus_synaptic_falkor_client", lambda: fake_client)
-
-    fragments = _run(bsa.fetch_bus_synaptic_anomaly_fragments())
-    assert fragments[0]["text"] == ""  # sanity: this is the real emptied shape
-
-    bundle, _ = fuse_candidates(
-        candidates=fragments,
-        profile=_fusion_profile(),
-        query_text="what does the drive economy look like right now",
-        substantive_query=True,
-        diagnostic=True,
-    )
-
+    assert len(bundle.items) == 2
     surviving_ids = {item.id for item in bundle.items}
     assert surviving_ids == {f["id"] for f in fragments}

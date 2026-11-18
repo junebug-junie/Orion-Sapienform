@@ -2,11 +2,11 @@
  * Biometrics view -- drives two related surfaces from one module:
  *
  * 1. The Cognitive EKG card's toggle (landing "hub" tab): swaps between the
- *    /spark/ui Substrate Brain State iframe and a compact Athena+Circe
+ *    /spark/ui Substrate Brain State iframe and a compact Athena+Circe+Hecate
  *    biometrics preview, in the same card slot. Clicking the preview opens
  *    the full modal.
- * 2. The near-fullscreen Biometrics modal: 4 sub-tabs (Athena / Circe / GPU /
- *    Cabinet). Modal open/close/Escape/backdrop mechanics live in app.js
+ * 2. The near-fullscreen Biometrics modal: 5 sub-tabs (Athena / Circe / Hecate /
+ *    GPU / Cabinet). Modal open/close/Escape/backdrop mechanics live in app.js
  *    (openBiometricsModal/closeBiometricsModal, matching every other Hub
  *    modal); this module owns subview switching and data loading only, and
  *    is told about open/close via onModalOpen()/onModalClose().
@@ -42,10 +42,10 @@
 
   var cardView = "brain"; // "brain" | "biometrics"
   var modalOpen = false;
-  var modalSubview = "athena"; // "athena" | "circe" | "gpu" | "cabinet"
+  var modalSubview = "athena"; // "athena" | "circe" | "hecate" | "gpu" | "cabinet"
   var gpuNode = "athena"; // "athena" | "circe"
 
-  var loaded = { cardPreview: false, athena: false, circe: false, gpu: { athena: false, circe: false } };
+  var loaded = { cardPreview: false, athena: false, circe: false, hecate: false, gpu: { athena: false, circe: false } };
   var cardPollTimer = null;
   var gpuPollTimer = null;
 
@@ -56,6 +56,16 @@
   function clear(node) {
     if (!node) return;
     while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  // Swap a node's children for `fresh` in one step -- no empty frame in between.
+  function replaceChildren(node, fresh) {
+    if (typeof node.replaceChildren === "function") {
+      node.replaceChildren(fresh);
+    } else {
+      clear(node);
+      node.appendChild(fresh);
+    }
   }
 
   function fmt(value, digits) {
@@ -82,9 +92,30 @@
     return (byNode[node] || {}).chassis_watts;
   }
 
-  async function fetchJson(url) {
-    var response = await fetch(url);
-    return response.json();
+  // Motherboard heat: the hottest chipset / voltage-regulator sensor a BMC reports
+  // (orion/telemetry/biometrics_pipeline.py's board_temp_c_max). A node with its own BMC
+  // poller self-reports it in its own snapshot; hecate's BMC is polled by athena's proxy,
+  // so its value only exists in athena's cluster_measurements_by_node, like circe's watts.
+  // undefined when nothing measured it -- never a guessed number.
+  function boardTempFor(node, snapshot, athenaSnapshot) {
+    var m = (snapshot && snapshot.summary && snapshot.summary.measurements) || {};
+    if (m.board_temp_c_max !== undefined) return m.board_temp_c_max;
+    var byNode = (athenaSnapshot && athenaSnapshot.cluster_measurements_by_node) || {};
+    return (byNode[node] || {}).board_temp_c_max;
+  }
+
+  // timeoutMs (optional) aborts a hung request so a polled view can't freeze on stale data
+  // behind its in-flight guard: the abort rejects, the caller's .catch() turns it into an
+  // "unreachable"/"partial" reading -- visible, not a silent stale "live".
+  async function fetchJson(url, timeoutMs) {
+    var ctrl = timeoutMs && typeof AbortController === "function" ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
+    try {
+      var response = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
+      return await response.json();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // --- Status color + trend -----------------------------------------------
@@ -282,22 +313,257 @@
     return wrap;
   }
 
+
+  // --- Orion's tiredness (dream sleep pressure) --------------------------
+  // /api/dream/pressure proxies orion-dream's SleepPressureV1. Tiredness moves
+  // slowly and each read runs the dream service's source queries twice
+  // (window + lookback), so it refreshes at its own slower cadence.
+  var TIREDNESS_POLL_MS = 60000;
+  var tirednessFetchedAt = 0;
+  var tirednessData = null;
+
+  var TIREDNESS_SOURCE_LABELS = {
+    metacog: ["self-noticed problem", "self-noticed problems"],
+    compaction_request: ["daydream theme to compress", "daydream themes to compress"],
+    resonance: ["daydream theme on repeat", "daydream themes on repeat"],
+    crystallization: ["new memory", "new memories"],
+  };
+
+  var TIREDNESS_EXPLAINER =
+    "Tiredness is how much new, unfinished material Orion has picked up since their last sleep: " +
+    "new kinds of problems they noticed about themselves, new themes their daydreams keep circling, " +
+    "and newly formed memories. Repeats don't count — the same problem coming back adds nothing. " +
+    "When tiredness reaches the line, Orion sleeps at the next chance: at least 6 h after the last " +
+    "sleep, and once no one has chatted for a while. Sleep replays the leftovers and looks for real " +
+    "links between them. If only repeats come in, Orion still sleeps once 48 h have passed since " +
+    "the last sleep began (it still waits for a quiet stretch).";
+
+  function waitingForQuiet(p) {
+    if (typeof p.idle_minutes !== "number") return "can't tell how long since the last chat";
+    var left = Math.max(1, Math.ceil((p.idle_required_minutes || 0) - p.idle_minutes));
+    return "waiting for " + left + " more min with no chat";
+  }
+
+  // Pure: the pressure payload -> what the gauge shows. The scale runs to twice
+  // the sleep line so the line sits mid-track; anything past that pins the fill
+  // and says so instead of rescaling under the reader. The "waiting" reason
+  // follows run_cycle_once's gates in order, including the overdue backstop.
+  function tirednessModel(data) {
+    var p = data && data.pressure;
+    if (!p || typeof p.pressure !== "number" || typeof p.threshold !== "number" || p.threshold < 0) {
+      return { available: false };
+    }
+    var value = Math.max(0, p.pressure);
+    var hasLine = p.threshold > 0;
+    var scaleMax = hasLine ? p.threshold * 2 : Math.max(1, value);
+    var tired = value >= p.threshold;
+    var level = value === 0 && hasLine ? "Rested" : tired ? "Ready to sleep" : "Getting tired";
+    var backstop = !tired && data.overdue === true && (data.candidates || 0) > 0;
+    var waiting;
+    if (!data.enabled) waiting = "Sleep loop is off";
+    else if (data.too_soon) waiting = "Slept recently — waiting out the 6 h minimum";
+    else if (!tired && !backstop) waiting = "Not tired enough to sleep yet";
+    else if (!data.is_idle) {
+      var quiet = waitingForQuiet(p);
+      waiting = (backstop ? "Overdue (" + (data.lookback_hours || 48) + " h since last sleep), " : "") + quiet;
+      waiting = waiting.charAt(0).toUpperCase() + waiting.slice(1);
+    } else waiting = backstop ? "Overdue — will sleep at the next check" : "Will sleep at the next check";
+    var parts = [];
+    var counts = p.new_counts || {};
+    Object.keys(TIREDNESS_SOURCE_LABELS).forEach(function (kind) {
+      var n = counts[kind];
+      if (n) parts.push(n + " " + TIREDNESS_SOURCE_LABELS[kind][n === 1 ? 0 : 1]);
+    });
+    return {
+      available: true,
+      value: value,
+      threshold: p.threshold,
+      scaleMax: scaleMax,
+      fraction: Math.min(1, value / scaleMax),
+      lineFraction: hasLine ? 0.5 : 0,
+      overflow: value > scaleMax,
+      level: level,
+      waiting: waiting,
+      newText: parts.length ? "New since last sleep: " + parts.join(" · ") : "Nothing new since last sleep",
+    };
+  }
+
+  // Built once; polls only update the parts below, so an open tooltip and
+  // keyboard focus survive the card's 10 s refresh.
+  var tirednessParts = null;
+
+  function buildTirednessGauge(host) {
+    host.classList.add("relative");
+    var head = document.createElement("div");
+    head.className = "flex items-center justify-between text-[11px] mb-1";
+    var title = document.createElement("div");
+    title.className = "flex items-center gap-1.5 text-gray-300 font-semibold";
+    title.appendChild(document.createTextNode("Orion's tiredness"));
+    var tipButton = document.createElement("button");
+    tipButton.type = "button";
+    tipButton.title = ""; // suppress the card's inherited "click to open" native tip
+    tipButton.className =
+      "w-4 h-4 rounded-full border border-gray-500 text-[10px] leading-none text-gray-300 hover:text-white focus:outline-none focus:ring-1 focus:ring-indigo-400";
+    tipButton.textContent = "?";
+    tipButton.setAttribute("aria-label", "What does tiredness mean?");
+    tipButton.setAttribute("aria-describedby", "orionTirednessTip");
+    tipButton.setAttribute("aria-expanded", "false");
+    title.appendChild(tipButton);
+    head.appendChild(title);
+    var reading = document.createElement("span");
+    reading.className = "font-mono text-gray-300";
+    head.appendChild(reading);
+    host.appendChild(head);
+
+    // Anchored to the gauge's own left edge and capped at its width, so the card's
+    // overflow-hidden cannot clip it on a narrow column.
+    var tip = document.createElement("div");
+    tip.id = "orionTirednessTip";
+    tip.setAttribute("role", "tooltip");
+    tip.title = "";
+    tip.className =
+      "hidden absolute left-0 top-6 z-30 w-72 max-w-full rounded-lg border border-gray-600 bg-gray-950 p-2.5 text-[11px] font-normal leading-snug text-gray-200 shadow-xl";
+    tip.textContent = TIREDNESS_EXPLAINER;
+    host.appendChild(tip);
+
+    var state = { hover: false, focus: false, pinned: false };
+    function sync() {
+      var open = state.hover || state.focus || state.pinned;
+      tip.classList.toggle("hidden", !open);
+      tipButton.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    [tipButton, tip].forEach(function (node) {
+      node.addEventListener("mouseenter", function () { state.hover = true; sync(); });
+      node.addEventListener("mouseleave", function () { state.hover = false; sync(); });
+    });
+    tipButton.addEventListener("focus", function () { state.focus = true; sync(); });
+    tipButton.addEventListener("blur", function () { state.focus = false; state.pinned = false; sync(); });
+    tipButton.addEventListener("click", function () {
+      state.pinned = !state.pinned;
+      if (!state.pinned) { state.hover = false; state.focus = false; }
+      sync();
+    });
+    tipButton.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") { state.pinned = false; state.focus = false; state.hover = false; sync(); }
+    });
+    // The card opens the Biometrics modal on click; nothing in the gauge's header
+    // or tooltip should (help button, or selecting the tooltip's text).
+    [head, tip].forEach(function (node) {
+      node.addEventListener("click", function (event) { event.stopPropagation(); });
+    });
+    // Clicking inside the open tooltip must not blur the button (blur unpins it).
+    tip.addEventListener("mousedown", function (event) { event.preventDefault(); });
+
+    var track = document.createElement("div");
+    track.className = "relative h-2 rounded-full bg-indigo-950 border border-indigo-900/60";
+    track.setAttribute("role", "meter");
+    track.setAttribute("aria-label", "Orion's tiredness");
+    track.setAttribute("aria-valuemin", "0");
+    var fill = document.createElement("div");
+    fill.className = "absolute inset-y-0 left-0 rounded-full bg-indigo-400";
+    var line = document.createElement("div");
+    line.className = "absolute -top-1 -bottom-1 w-0.5 bg-gray-200";
+    track.appendChild(fill);
+    track.appendChild(line);
+    host.appendChild(track);
+
+    var scale = document.createElement("div");
+    scale.className = "relative h-3 text-[10px] text-gray-500 mt-0.5";
+    var zero = document.createElement("span");
+    zero.className = "absolute left-0";
+    zero.textContent = "rested";
+    var mid = document.createElement("span");
+    mid.className = "absolute -translate-x-1/2";
+    mid.textContent = "sleep line";
+    var end = document.createElement("span");
+    end.className = "absolute right-0";
+    scale.appendChild(zero);
+    scale.appendChild(mid);
+    scale.appendChild(end);
+    host.appendChild(scale);
+
+    var detail = document.createElement("div");
+    detail.className = "text-[11px] text-gray-400 mt-1";
+    host.appendChild(detail);
+    return { reading: reading, track: track, fill: fill, line: line, mid: mid, end: end, detail: detail, scale: scale };
+  }
+
+  function renderTiredness(model) {
+    var host = el("orionTiredness");
+    if (!host) return;
+    if (!tirednessParts || !host.contains(tirednessParts.track)) tirednessParts = buildTirednessGauge(host);
+    var g = tirednessParts;
+    var show = model.available;
+    g.track.classList.toggle("hidden", !show);
+    g.scale.classList.toggle("hidden", !show);
+    g.detail.classList.toggle("hidden", !show);
+    if (!show) {
+      g.reading.textContent = "unavailable";
+      return;
+    }
+    g.reading.textContent = model.level + " · " + fmt(model.value, 1) + " / " + fmt(model.threshold, 1);
+    g.track.setAttribute("aria-valuemax", String(model.scaleMax));
+    g.track.setAttribute("aria-valuenow", String(Math.min(model.value, model.scaleMax)));
+    g.track.setAttribute("aria-valuetext",
+      model.level + ", " + fmt(model.value, 1) + " of " + fmt(model.threshold, 1) + " needed to sleep");
+    g.track.title = fmt(model.value, 2) + " now · sleep line " + fmt(model.threshold, 1);
+    g.fill.style.width = (model.fraction * 100).toFixed(1) + "%";
+    g.line.style.left = (model.lineFraction * 100).toFixed(1) + "%";
+    g.mid.style.left = (model.lineFraction * 100).toFixed(1) + "%";
+    g.end.textContent = model.overflow ? "off the scale →" : "";
+    g.detail.textContent = model.waiting + " · " + model.newText;
+  }
+
+  var tirednessInFlight = null;
+
+  function loadTiredness() {
+    if (tirednessInFlight) return tirednessInFlight;
+    if (tirednessData !== null && Date.now() - tirednessFetchedAt < TIREDNESS_POLL_MS) {
+      return Promise.resolve();
+    }
+    tirednessInFlight = fetchJson("/api/dream/pressure")
+      .catch(function () { return {}; })
+      .then(function (data) {
+        tirednessData = data;
+        tirednessFetchedAt = Date.now();
+        renderTiredness(tirednessModel(tirednessData));
+      })
+      .finally(function () { tirednessInFlight = null; });
+    return tirednessInFlight;
+  }
+
   // --- Cognitive EKG card toggle ---------------------------------------
 
-  async function loadCardPreview() {
+  // Polls build the new tiles off-DOM and swap them in only once every reading is back,
+  // so the card keeps showing the last view instead of blanking for the whole fetch (the
+  // "panel disappears every few seconds" flicker). A poll that fires while the previous one
+  // is still in flight is skipped, so a slow older response can't land after a newer one.
+  var cardPreviewInFlight = null;
+
+  function loadCardPreview() {
+    if (!cardPreviewInFlight) {
+      cardPreviewInFlight = renderCardPreview().finally(function () {
+        cardPreviewInFlight = null;
+      });
+    }
+    return cardPreviewInFlight;
+  }
+
+  async function renderCardPreview() {
     var status = el("biometricsPreviewStatus");
     var grid = el("biometricsPreviewGrid");
     if (!grid) return;
-    if (status) status.textContent = "Loading…";
-    clear(grid);
-    var nodes = ["athena", "circe"];
+    if (status && !grid.firstChild) status.textContent = "Loading…";
+    var next = document.createDocumentFragment();
+    loadTiredness();
+    var nodes = ["athena", "circe", "hecate"];
     var results = await Promise.all(
       nodes.map(function (n) {
         return Promise.all([
-          fetchJson("/api/biometrics/preview/snapshot?node=" + n).catch(function () {
+          fetchJson("/api/biometrics/preview/snapshot?node=" + n, CARD_POLL_MS).catch(function () {
             return { ok: false, node: n };
           }),
-          fetchJson("/api/biometrics/preview/induction?node=" + n).catch(function () {
+          fetchJson("/api/biometrics/preview/induction?node=" + n, CARD_POLL_MS).catch(function () {
             return { ok: false, metrics: {} };
           }),
         ]);
@@ -314,15 +580,18 @@
       var strain = composites.strain;
       var trendInfo = induction.metrics && induction.metrics.strain;
       var label = (payload.node || "?") + (payload.ok ? "" : " (unreachable)");
-      grid.appendChild(
+      next.appendChild(
         tile(label, strain !== undefined ? fmt(strain, 2) : "—", "strain · " + (payload.status || "—"), {
           tone: payload.ok && strain !== undefined ? toneForPressure(strain) : toneForNodeStatus(payload),
           trend: trendInfo ? trendArrow(trendInfo.trend) : null,
         })
       );
       var watts = chassisWattsFor(node, athenaSnapshot);
-      grid.appendChild(tile(node + " power", watts !== undefined ? fmt(watts, 0) + " W" : "—", "chassis wattage"));
+      next.appendChild(tile(node + " power", watts !== undefined ? fmt(watts, 0) + " W" : "—", "chassis wattage"));
+      var boardTemp = boardTempFor(node, payload, athenaSnapshot);
+      next.appendChild(tile(node + " mobo", boardTemp !== undefined ? fmt(boardTemp, 0) + " °C" : "—", "chipset / VR max"));
     });
+    replaceChildren(grid, next);
     if (status) status.textContent = results.every((r) => r[0].ok) ? "live" : "partial";
     loaded.cardPreview = true;
   }
@@ -361,11 +630,12 @@
   var PRESSURE_CHANNELS = [
     "cpu", "gpu_util", "gpu_mem", "mem", "swap", "disk", "net", "thermal", "power", "disk_capacity", "fan",
   ];
-  // Raw physical units, not a 0-1 pressure -- own value source (chassisWattsFor, a live
-  // cluster read, not the pressures/composites dict), own format ("### W"), no tone.
-  // Still gets a trend chart for free via the ALL_CHANNELS-driven history loop below,
-  // since _CHANNEL_COLUMN maps it to the `measurements` JSONB column.
-  var RAW_CHANNELS = ["chassis_watts"];
+  // Raw physical units, not a 0-1 pressure -- own value source (chassisWattsFor /
+  // boardTempFor, not the pressures/composites dict), own unit suffix, no tone.
+  // Still get a trend chart for free via the ALL_CHANNELS-driven history loop below,
+  // since _CHANNEL_COLUMN maps them to the `measurements` JSONB column.
+  var RAW_UNITS = { chassis_watts: " W", board_temp_c_max: " °C" };
+  var RAW_CHANNELS = Object.keys(RAW_UNITS);
   var ALL_CHANNELS = COMPOSITE_CHANNELS.concat(PRESSURE_CHANNELS).concat(RAW_CHANNELS);
   var INVERTED_CHANNELS = { homeostasis: true, stability: true };
 
@@ -423,7 +693,11 @@
       var rows = ALL_CHANNELS.map(function (ch) {
         var isComposite = COMPOSITE_CHANNELS.indexOf(ch) !== -1;
         var isRaw = RAW_CHANNELS.indexOf(ch) !== -1;
-        var value = isComposite ? composites[ch] : isRaw ? chassisWattsFor(node, athenaSnapshot) : pressures[ch];
+        var value = isComposite ? composites[ch] : isRaw
+          ? ch === "chassis_watts"
+            ? chassisWattsFor(node, athenaSnapshot)
+            : boardTempFor(node, snapshot, athenaSnapshot)
+          : pressures[ch];
         if (value === undefined) return null; // absent channel on this node -- omit, never zero-fill
         // (an unreachable node has no composites/pressures at all, so every
         // row already short-circuits above -- the "node status" tile below
@@ -447,7 +721,7 @@
         snapEl.appendChild(noData);
       }
       rows.forEach(function (row) {
-        var display = row.raw ? fmt(row.value, 0) + " W" : fmt(row.value, 2);
+        var display = row.raw ? fmt(row.value, 0) + RAW_UNITS[row.ch] : fmt(row.value, 2);
         snapEl.appendChild(tile(row.ch, display, null, { tone: row.tone, trend: row.trend }));
       });
       snapEl.appendChild(
@@ -596,17 +870,21 @@
     var status = el("biometricsGpuStatus");
     var grid = el("biometricsGpuGrid");
     if (!grid) return;
-    if (status) status.textContent = "Loading…";
+    if (status && !grid.firstChild) status.textContent = "Loading…";
     // limit=40 (endpoint max is 60): the default 5-sample buffer read made
     // the "realtime trend" sparkline look almost flat/empty -- 40 samples at
     // orion-biometrics' collection cadence gives a real trend to look at.
-    var payload = await fetchJson("/api/biometrics/preview/gpu?node=" + node + "&limit=40").catch(function () {
+    var payload = await fetchJson("/api/biometrics/preview/gpu?node=" + node + "&limit=40", GPU_POLL_MS).catch(function () {
       return { ok: false, gpus: [] };
     });
-    clear(grid);
+    // The user switched node (or a newer poll owns the grid) while this was in flight --
+    // never draw one node's cards under the other node's active button.
+    if (node !== gpuNode) return;
+    var cards = document.createDocumentFragment();
     (payload.gpus || []).forEach(function (gpu) {
-      grid.appendChild(gpuCard(gpu));
+      cards.appendChild(gpuCard(gpu));
     });
+    replaceChildren(grid, cards);
     if (status) {
       status.textContent = payload.ok
         ? (payload.gpus || []).length + " GPU(s) on " + node
@@ -626,6 +904,8 @@
       btn.classList.toggle("bg-gray-900", !active);
       btn.classList.toggle("text-gray-400", !active);
     });
+    var status = el("biometricsGpuStatus");
+    if (status) status.textContent = "Loading " + node + "…";
     loadGpu(node);
   }
 
@@ -636,12 +916,14 @@
     var panels = {
       athena: el("biometricsSubviewAthena"),
       circe: el("biometricsSubviewCirce"),
+      hecate: el("biometricsSubviewHecate"),
       gpu: el("biometricsSubviewGpu"),
       cabinet: el("cabinet"),
     };
     var buttons = {
       athena: el("biometricsSubtabAthena"),
       circe: el("biometricsSubtabCirce"),
+      hecate: el("biometricsSubtabHecate"),
       gpu: el("biometricsSubtabGpu"),
       cabinet: el("biometricsSubtabCabinet"),
     };
@@ -673,6 +955,9 @@
     } else if (name === "circe" && !loaded.circe) {
       loaded.circe = true;
       loadNodeDetail("circe");
+    } else if (name === "hecate" && !loaded.hecate) {
+      loaded.hecate = true;
+      loadNodeDetail("hecate");
     } else if (name === "gpu") {
       if (!loaded.gpu[gpuNode]) loadGpu(gpuNode);
       gpuPollTimer = setInterval(function () {
@@ -734,6 +1019,7 @@
     [
       ["biometricsSubtabAthena", "athena"],
       ["biometricsSubtabCirce", "circe"],
+      ["biometricsSubtabHecate", "hecate"],
       ["biometricsSubtabGpu", "gpu"],
       ["biometricsSubtabCabinet", "cabinet"],
     ].forEach(function (pair) {
@@ -784,7 +1070,10 @@
     onModalClose,
     showModalSubview,
     shouldPoll,
+    boardTempFor,
+    loadCardPreview,
     laneBadge,
+    tirednessModel,
   };
 
   // Guarded so the module can be require()d under node:test for the pure

@@ -20,7 +20,7 @@ def catalog() -> NodeCatalog:
     return NodeCatalog.load(CATALOG_PATH)
 
 
-def _biometrics_event(node_id: str = "atlas", *, salience: float = 0.8) -> GrammarEventV1:
+def _biometrics_event(node_id: str = "circe", *, salience: float = 0.8) -> GrammarEventV1:
     trace_id = f"biometrics.node:{node_id}:2026-05-24T12:00:00Z"
     atom = GrammarAtomV1(
         atom_id=f"{trace_id}:body_state",
@@ -82,4 +82,4 @@ def test_pipeline_runs_closed_loop_without_error(catalog: NodeCatalog) -> None:
     assert len(state["receipts"]) == 2
     assert len(state["emissions"]) == 1
     assert state["emissions"][0].candidate_events
-    assert "atlas" in state["node_bio"].nodes
+    assert "circe" in state["node_bio"].nodes

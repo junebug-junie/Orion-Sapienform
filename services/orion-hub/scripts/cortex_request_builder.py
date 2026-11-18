@@ -263,8 +263,15 @@ def build_continuity_messages(
     history: Any,
     latest_user_prompt: str,
     turns: int = 10,
+    keep_timestamps: bool = False,
 ) -> List[Dict[str, str]]:
-    """Build bounded user/assistant/system turns for CortexChatRequest.messages."""
+    """Build bounded user/assistant/system turns for CortexChatRequest.messages.
+
+    ``keep_timestamps`` carries a history item's ``ts`` (when it has one)
+    through to the output. Only the unified harness turn sets it -- its
+    RECENT CONVERSATION block renders the times; the CortexChatRequest
+    lanes keep the plain role/content shape they always had.
+    """
     max_turns = max(0, int(turns or 0))
     max_msgs = 2 * max_turns if max_turns else 0
     normalized: List[Dict[str, str]] = []
@@ -276,10 +283,22 @@ def build_continuity_messages(
             role = str(item.get("role") or "").strip().lower()
             if role not in {"user", "assistant", "system"}:
                 continue
+            if not keep_timestamps and item.get("kind") == "side_exchange":
+                # Orion's light view of Juniper's side conversations with Claude
+                # (chat_history_rehydrate.render_side_exchange_block) is a system
+                # message placed mid-history. Only the unified harness turn
+                # renders it (as a labelled RECENT CONVERSATION line); a plain
+                # chat `messages` list must not carry a system message in the
+                # middle -- some chat templates reject that outright.
+                continue
             content = str(item.get("content") or "").strip()
             if not content:
                 continue
-            normalized.append({"role": role, "content": content})
+            entry = {"role": role, "content": content}
+            ts = item.get("ts")
+            if keep_timestamps and isinstance(ts, str) and ts.strip():
+                entry["ts"] = ts.strip()
+            normalized.append(entry)
 
     if max_msgs > 0 and len(normalized) > max_msgs:
         normalized = normalized[-max_msgs:]
@@ -383,6 +402,19 @@ def _build_social_epistemic_phrase_hint(
     }
 
 
+def is_third_party_room(payload: Dict[str, Any], social_room: bool | None = None) -> bool:
+    """A social-room turn relayed from an external room, not the Hub UI's own hub_direct room."""
+    if social_room is None:
+        social_room = is_social_room_payload(payload)
+    if not social_room:
+        return False
+    if str(payload.get("social_room_mode") or "").strip().lower() == "hub_direct":
+        return False
+    room = payload.get("external_room")
+    platform = str(room.get("platform") or "").strip().lower() if isinstance(room, dict) else ""
+    return platform != "hub"
+
+
 def build_cortex_chat_request(
     *,
     payload: Dict[str, Any],
@@ -394,6 +426,7 @@ def build_cortex_chat_request(
     source_label: str,
     prompt: str,
     messages: List[Dict[str, Any]] | None = None,
+    utterance_origin: str | None = None,
 ) -> Tuple[CortexChatRequest, Dict[str, Any], bool]:
     selected_ui_route = _normalize_mode(
         payload.get("mode"),
@@ -475,6 +508,10 @@ def build_cortex_chat_request(
     llm_route_norm = normalize_llm_route(llm_route_raw)
     if llm_route_norm:
         options["llm_route"] = llm_route_norm
+    else:
+        # A refused route must not ride on in the copied options: cortex-exec accepts
+        # orion.llm.routes.CORTEX_OVERRIDE_SYSTEM_ROUTES as an override (2026-10-23).
+        options.pop("llm_route", None)
 
     workflow_match = None
     workflow_management = None
@@ -580,6 +617,13 @@ def build_cortex_chat_request(
     mind_requested, mind_diagnostics = _mind_requested_from_payload(payload)
     if mind_requested:
         metadata["mind_enabled"] = True
+    # Who typed this turn. Only the caller knows (websocket/HTTP chat pass "juniper"); never read
+    # from the client payload. cortex-orch copies it onto MindRunRequestV1, and orion-mind keeps
+    # only a "juniper" run on the interactive (never heat-shed) tier. A message relayed from an
+    # external social room (orion-social-room-bridge) is a third party speaking, so it never
+    # carries Juniper's mark; the Hub UI's own hub_direct room is still Juniper typing.
+    if utterance_origin in ("juniper", "orion") and not is_third_party_room(payload, social_room):
+        metadata["utterance_origin"] = utterance_origin
     draft_ac = build_answer_contract_draft_for_hub(prompt)
     metadata["answer_contract_draft"] = draft_ac
     logger.info(
@@ -625,7 +669,6 @@ def build_cortex_chat_request(
         turn_handoff = payload.get("social_turn_handoff") or ((room_continuity or {}).get("turn_handoff")) or {}
         closure_signal = payload.get("social_closure_signal") or ((room_continuity or {}).get("closure_signal")) or {}
         floor_decision = payload.get("social_floor_decision") or ((room_continuity or {}).get("floor_decision")) or {}
-        open_commitments = payload.get("social_open_commitments") or ((room_continuity or {}).get("active_commitments")) or []
         context_window = payload.get("social_context_window") or {}
         context_selection_decision = payload.get("social_context_selection_decision") or {}
         context_candidates = payload.get("social_context_candidates") or []
@@ -715,7 +758,6 @@ def build_cortex_chat_request(
                 "social_context_candidates": [SocialContextCandidateV1.model_validate(item).model_dump(mode="json") for item in context_candidates[:8] if isinstance(item, dict)] if isinstance(context_candidates, list) else None,
                 "social_episode_snapshot": SocialEpisodeSnapshotV1.model_validate(episode_snapshot).model_dump(mode="json") if episode_snapshot else None,
                 "social_reentry_anchor": SocialReentryAnchorV1.model_validate(reentry_anchor).model_dump(mode="json") if reentry_anchor else None,
-                "social_open_commitments": open_commitments[:2] if isinstance(open_commitments, list) else None,
                 "social_thread_routing": thread_routing or None,
                 "social_handoff_signal": handoff_signal or None,
                 "social_repair_signal": repair_signal or None,
@@ -852,8 +894,13 @@ def build_chat_request(
     source_label: str,
     prompt: str,
     messages: List[Dict[str, Any]] | None = None,
+    utterance_origin: str | None = None,
 ) -> Tuple[CortexChatRequest, Dict[str, Any], bool]:
-    """Compatibility wrapper: canonical Hub chat request builder for HTTP + WS."""
+    """Compatibility wrapper: canonical Hub chat request builder for HTTP + WS.
+
+    ``utterance_origin="juniper"`` marks a turn Juniper typed (Hub chat). Leave it None for any
+    other caller: an unmarked turn's Mind run is sheddable under heat (orion-mind
+    engine.carries_live_turn)."""
     return build_cortex_chat_request(
         payload=payload,
         session_id=session_id,
@@ -864,4 +911,5 @@ def build_chat_request(
         source_label=source_label,
         prompt=prompt,
         messages=messages,
+        utterance_origin=utterance_origin,
     )

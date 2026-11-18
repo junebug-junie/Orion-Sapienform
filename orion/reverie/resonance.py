@@ -29,11 +29,17 @@ class ThemeEvent:
 
     theme_key: str
     at: datetime
+    # Did this chain start the theme's refractory cooldown? A chain that could
+    # not produce a first thought ("no_coalition") deliberately does not
+    # (chain.py's arm-list), so a quick retry after it is the gate working, not
+    # a breach. Defaults True so callers without terminal data keep the old
+    # behaviour.
+    armed: bool = True
 
 
-def _sorted_times(events: list[ThemeEvent], theme_key: str) -> list[datetime]:
-    times = [e.at for e in events if e.theme_key == theme_key and e.theme_key not in ("", "unknown")]
-    return sorted(times)
+def _sorted_events(events: list[ThemeEvent], theme_key: str) -> list[ThemeEvent]:
+    picked = [e for e in events if e.theme_key == theme_key and e.theme_key not in ("", "unknown")]
+    return sorted(picked, key=lambda e: e.at)
 
 
 def detect_resonance(
@@ -45,8 +51,10 @@ def detect_resonance(
     """Return the most severe resonance alert, or None if every theme is damped.
 
     A *violation* is a consecutive recurrence of the same theme with a gap
-    shorter than `refractory_sec` — i.e. the theme re-ignited before its
-    habituation cooldown expired. A theme with `>= min_violations` such gaps is a
+    shorter than `refractory_sec` after a chain that armed the cooldown — i.e.
+    the theme re-ignited before its habituation cooldown expired. Gaps after an
+    unarmed chain are skipped (live 2026-11-03: 104 of 104 "violations" on one
+    theme followed a no_coalition chain; 0 followed an armed one). A theme with `>= min_violations` such gaps is a
     runaway loop. The returned alert is for the theme with the most violations
     (ties broken by the smallest gap — the tightest loop).
     """
@@ -61,12 +69,16 @@ def detect_resonance(
     for theme_key in sorted({e.theme_key for e in events}):
         if theme_key in ("", "unknown"):
             continue
-        times = _sorted_times(events, theme_key)
-        if len(times) < 2:
+        ordered = _sorted_events(events, theme_key)
+        if len(ordered) < 2:
             continue
+        times = [e.at for e in ordered]
         breaching_gaps: list[float] = []
-        for prev, cur in zip(times, times[1:]):
-            gap = (cur - prev).total_seconds()
+        for prev, cur in zip(ordered, ordered[1:]):
+            if not prev.armed:
+                # No cooldown was started, so nothing could be breached.
+                continue
+            gap = (cur.at - prev.at).total_seconds()
             if gap < refractory_sec:
                 breaching_gaps.append(gap)
         if len(breaching_gaps) < min_violations:

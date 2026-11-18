@@ -23,7 +23,18 @@ def _ensure_dream_paths() -> None:
     sys.path.insert(0, str(_DREAM_ROOT))
 
 
+# Module-level ``from app import ...`` in test files runs at collection, before any fixture.
+_ensure_dream_paths()
+
+
 @pytest.fixture(autouse=True)
 def _dream_service_isolation() -> None:
     _ensure_dream_paths()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_live_physiology_bid(monkeypatch):
+    """Unit tests must never POST a shadow bid to the live body economy (Patch C3b): the client
+    returns None without a call. Tests of the shadow seam stub app.physiology_shadow.abid."""
+    monkeypatch.setenv("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "false")

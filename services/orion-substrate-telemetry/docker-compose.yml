@@ -1,5 +1,9 @@
 services:
   substrate-telemetry:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-substrate-telemetry/Dockerfile

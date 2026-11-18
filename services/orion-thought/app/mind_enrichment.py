@@ -321,6 +321,8 @@ def build_light_mind_request(
             router_profile_id=router_profile or "default",
         ),
         utterance_origin=utterance_origin,
+        # A held turn's Mind phases run on its own GPU seat (orion-mind engine, held_call_route).
+        gpu_lease=request.gpu_lease,
     )
 
 

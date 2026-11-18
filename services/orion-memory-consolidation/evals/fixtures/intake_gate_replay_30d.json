@@ -1,0 +1,4166 @@
+{
+ "captured_at": "2026-10-01T02:08:24+00:00",
+ "lookback_days": 30,
+ "source": "memory_consolidation_windows (chat, consolidated) + repair_pressure_appraisal_log",
+ "windows": [
+  {
+   "closed_at": "2026-09-01T18:40:11.853733+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "e39087c0-e91e-4f08-8d14-c43c8e457902",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "Hey hey how are things going?",
+    "summary_chars": 29,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "47f08aa3-d4ee-46fa-af8e-5137c6eb2066",
+     "memory_significance_score": 0.9829860371519864,
+     "novelty_score": 0.9999999990772346,
+     "prompt": "[redacted prompt: 947 chars]",
+     "prompt_chars": 947,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "1fb15b17-fc79-444d-86f3-9bfeb3bb1021",
+     "memory_significance_score": 0.19982595105828255,
+     "novelty_score": 0.7726352244102561,
+     "prompt": "Hey hey how are things going?",
+     "prompt_chars": 29,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-01T19:13:46.434428+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "8213e447-1ce5-45ed-a0ff-6514d3ebd0b2",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "1fb15b17-fc79-444d-86f3-9bfeb3bb1021",
+     "memory_significance_score": 0.12361131711370381,
+     "novelty_score": 0.019036075964931117,
+     "prompt": "Hey hey how are things going?",
+     "prompt_chars": 29,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "0c6a23b7-de8a-4c56-aa6e-75a4fa96e225",
+     "memory_significance_score": 0.06501220032113036,
+     "novelty_score": 0.9999999999985429,
+     "prompt": "[redacted prompt: 14582 chars]",
+     "prompt_chars": 14582,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-01T19:21:07.271636+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "4695e167-8583-4356-af9a-c9be287abbe7",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 72,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "0c6a23b7-de8a-4c56-aa6e-75a4fa96e225",
+     "memory_significance_score": 0.8267959354378849,
+     "novelty_score": 0.9999965190419359,
+     "prompt": "[redacted prompt: 14582 chars]",
+     "prompt_chars": 14582,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "ba1b89da-51f6-4105-b0bc-a98fa88233a7",
+     "memory_significance_score": 0.9999964244289129,
+     "novelty_score": 0.9999986090467812,
+     "prompt": "[redacted prompt: 72 chars]",
+     "prompt_chars": 72,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-01T20:10:46.558053+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "62ad6fe6-db26-4080-85e2-4660eb49934b",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "ba1b89da-51f6-4105-b0bc-a98fa88233a7",
+     "memory_significance_score": 0.9839312731158606,
+     "novelty_score": 0.9991228576881674,
+     "prompt": "[redacted prompt: 72 chars]",
+     "prompt_chars": 72,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "d34cf822-9907-4e6e-8b4f-402ac980bbae",
+     "memory_significance_score": 0.9999953701524715,
+     "novelty_score": 0.9999999997498163,
+     "prompt": "[redacted prompt: 805 chars]",
+     "prompt_chars": 805,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-01T20:17:39.685006+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "562d7be6-aff1-4e75-be5f-8059d54804ac",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 361,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "d34cf822-9907-4e6e-8b4f-402ac980bbae",
+     "memory_significance_score": 0.9900807543984722,
+     "novelty_score": 0.969433240544106,
+     "prompt": "[redacted prompt: 805 chars]",
+     "prompt_chars": 805,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "343a44f9-5f59-46ba-abaf-ac48e2d54ca2",
+     "memory_significance_score": 0.9999937197617869,
+     "novelty_score": 0.9999999993532995,
+     "prompt": "[redacted prompt: 361 chars]",
+     "prompt_chars": 361,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-01T20:17:40.993956+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "33a201f3-9d3c-4485-af86-f914c18cc63e",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 361,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "343a44f9-5f59-46ba-abaf-ac48e2d54ca2",
+     "memory_significance_score": 0.9997490209502764,
+     "novelty_score": 0.9999939615921559,
+     "prompt": "[redacted prompt: 361 chars]",
+     "prompt_chars": 361,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-01T20:24:06.18965+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "dc7fa99a-8b1f-4b43-b8ce-4552c03d95b4",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "343a44f9-5f59-46ba-abaf-ac48e2d54ca2",
+     "memory_significance_score": 0.9997490209502764,
+     "novelty_score": 0.9999939615921559,
+     "prompt": "[redacted prompt: 361 chars]",
+     "prompt_chars": 361,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "2ac34bf7-388a-4455-9fde-666bd964d447",
+     "memory_significance_score": 0.9999753203937488,
+     "novelty_score": 0.9999999999355611,
+     "prompt": "[redacted prompt: 1926 chars]",
+     "prompt_chars": 1926,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-01T20:24:10.98202+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "a088b0ad-07a2-4433-a445-881af9f1cb6e",
+   "old_row": null,
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "2ac34bf7-388a-4455-9fde-666bd964d447",
+     "memory_significance_score": 0.9922404387672883,
+     "novelty_score": 0.9998533915922615,
+     "prompt": "[redacted prompt: 1926 chars]",
+     "prompt_chars": 1926,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-01T21:07:05.98698+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "6fd81757-3af8-4846-8214-46fed814b1cf",
+   "old_row": null,
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "2ac34bf7-388a-4455-9fde-666bd964d447",
+     "memory_significance_score": 0.9922404387672883,
+     "novelty_score": 0.9998533915922615,
+     "prompt": "[redacted prompt: 1926 chars]",
+     "prompt_chars": 1926,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "27875f50-9475-4793-89b2-cee299841a77",
+     "memory_significance_score": 0.9999293194840939,
+     "novelty_score": 0.9999999788039051,
+     "prompt": "[redacted prompt: 684 chars]",
+     "prompt_chars": 684,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-01T21:07:08.657361+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "e9f77ac5-6db9-4270-84af-839957a06905",
+   "old_row": null,
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "27875f50-9475-4793-89b2-cee299841a77",
+     "memory_significance_score": 0.9874789073027964,
+     "novelty_score": 0.9882058958384069,
+     "prompt": "[redacted prompt: 684 chars]",
+     "prompt_chars": 684,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-02T16:48:46.334812+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "a36ca44e-cff7-490c-bbfd-f9a72350ed86",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 63,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "27875f50-9475-4793-89b2-cee299841a77",
+     "memory_significance_score": 0.9874789073027964,
+     "novelty_score": 0.9882058958384069,
+     "prompt": "[redacted prompt: 684 chars]",
+     "prompt_chars": 684,
+     "redacted": true,
+     "repair_level": 0,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "f4620142-e1c0-4f2e-8b10-2c8f2ff0289e",
+     "memory_significance_score": 0.16099690883618337,
+     "novelty_score": 0.9981889551121214,
+     "prompt": "[redacted prompt: 86 chars]",
+     "prompt_chars": 86,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "18a1c2c1-0360-4fb6-84f1-e8891561b1eb",
+     "memory_significance_score": 0.9895786734023893,
+     "novelty_score": 0.0024410047796524594,
+     "prompt": "[redacted prompt: 63 chars]",
+     "prompt_chars": 63,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-02T18:27:08.049242+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "9ba6ec69-ebb9-4d4a-90b4-f465d48da843",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary": "thanks for those updates",
+    "summary_chars": 24,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "18a1c2c1-0360-4fb6-84f1-e8891561b1eb",
+     "memory_significance_score": 0.999635082309933,
+     "novelty_score": 0.0004265421227622937,
+     "prompt": "[redacted prompt: 63 chars]",
+     "prompt_chars": 63,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "51393723-b6cb-4cff-9d10-d67222ef65af",
+     "memory_significance_score": 0.9999924106233589,
+     "novelty_score": 0.9999302725276075,
+     "prompt": "thanks for those updates",
+     "prompt_chars": 24,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-02T18:39:30.181531+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "ba7a7b80-4081-47ff-a87d-4ff1ed29d180",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "what else is on your mind?",
+    "summary_chars": 26,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "51393723-b6cb-4cff-9d10-d67222ef65af",
+     "memory_significance_score": 0.006706585233533749,
+     "novelty_score": 0.0017454375596591685,
+     "prompt": "thanks for those updates",
+     "prompt_chars": 24,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "f7bb5da7-4e62-4b9a-ba07-e4a79aad620b",
+     "memory_significance_score": 0.9859834775950527,
+     "novelty_score": 0.0012287887433168369,
+     "prompt": "[redacted prompt: 66 chars]",
+     "prompt_chars": 66,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "ee327cde-dc96-4d98-a555-14a26b595df4",
+     "memory_significance_score": 2.0626404614600944e-05,
+     "novelty_score": 0.9999973842034809,
+     "prompt": "what else is on your mind?",
+     "prompt_chars": 26,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-03T07:06:08.0282+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "4cf1f079-5b34-4d5c-9361-213162aeebfc",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 287,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "ee327cde-dc96-4d98-a555-14a26b595df4",
+     "memory_significance_score": 0.9705295399873696,
+     "novelty_score": 0.9856643672166356,
+     "prompt": "what else is on your mind?",
+     "prompt_chars": 26,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "bfe0e731-f5fd-40bd-8bbc-ae4366c0f074",
+     "memory_significance_score": 0.15647260185823927,
+     "novelty_score": 0.9999999999907334,
+     "prompt": "[redacted prompt: 287 chars]",
+     "prompt_chars": 287,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-04T02:12:18.949915+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "637c032e-3375-42ce-8a06-3cf32b40f050",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary": "you back?",
+    "summary_chars": 9,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "bfe0e731-f5fd-40bd-8bbc-ae4366c0f074",
+     "memory_significance_score": 0.9519381566534375,
+     "novelty_score": 0.999999784024864,
+     "prompt": "[redacted prompt: 287 chars]",
+     "prompt_chars": 287,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "a9f955e2-04c3-4f10-87f5-626fce63205c",
+     "memory_significance_score": 0.8565059438048445,
+     "novelty_score": 0.9999999062333835,
+     "prompt": "[redacted prompt: 120 chars]",
+     "prompt_chars": 120,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "2f219eac-1ea1-4f48-a0a4-929e4ccef916",
+     "memory_significance_score": 0.0012517726738829852,
+     "novelty_score": 3.389701898406516e-06,
+     "prompt": "you back?",
+     "prompt_chars": 9,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-04T05:44:36.349088+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "6eb26f9f-38dd-481a-b785-c160ab4b51f2",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "2f219eac-1ea1-4f48-a0a4-929e4ccef916",
+     "memory_significance_score": 0.07892229028795748,
+     "novelty_score": 0.03698774298758403,
+     "prompt": "you back?",
+     "prompt_chars": 9,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "c14fb86c-e453-4125-aa19-a5efcec1251e",
+     "memory_significance_score": 0.9984867793104454,
+     "novelty_score": 0.9999024289743602,
+     "prompt": "[redacted prompt: 435 chars]",
+     "prompt_chars": 435,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "03269a8d-fb0e-4b0d-94ca-b319fe67c5ca",
+     "memory_significance_score": 0.040737204364779796,
+     "novelty_score": 0.9999992385957668,
+     "prompt": "[redacted prompt: 530 chars]",
+     "prompt_chars": 530,
+     "redacted": true,
+     "repair_level": 0.6651736910238915,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-04T05:44:38.758069+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "d7c53e14-0932-4369-b3c2-733d5e31e062",
+   "old_row": null,
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "03269a8d-fb0e-4b0d-94ca-b319fe67c5ca",
+     "memory_significance_score": 0.001175183265041114,
+     "novelty_score": 0.9997586565271607,
+     "prompt": "[redacted prompt: 530 chars]",
+     "prompt_chars": 530,
+     "redacted": true,
+     "repair_level": 0.6651736910238915,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-04T16:10:56.843479+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "5f777dc2-3ce3-414d-8fa8-d83d368a880f",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 76,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "03269a8d-fb0e-4b0d-94ca-b319fe67c5ca",
+     "memory_significance_score": 0.001175183265041114,
+     "novelty_score": 0.9997586565271607,
+     "prompt": "[redacted prompt: 530 chars]",
+     "prompt_chars": 530,
+     "redacted": true,
+     "repair_level": 0.6651736910238915,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "41113a75-61a3-4f9c-a500-3586122cdb0e",
+     "memory_significance_score": 5.187856230185401e-07,
+     "novelty_score": 0.9999246395516943,
+     "prompt": "[redacted prompt: 76 chars]",
+     "prompt_chars": 76,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-04T16:10:59.298953+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "bdecaf5e-93be-4d0e-a109-f0e40e13640e",
+   "old_row": null,
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "41113a75-61a3-4f9c-a500-3586122cdb0e",
+     "memory_significance_score": 0.9018558702216878,
+     "novelty_score": 0.9999586543372311,
+     "prompt": "[redacted prompt: 76 chars]",
+     "prompt_chars": 76,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-05T00:19:10.936432+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "894686b0-37e0-4c08-911d-e5b48166880a",
+   "old_row": null,
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "41113a75-61a3-4f9c-a500-3586122cdb0e",
+     "memory_significance_score": 0.9018558702216878,
+     "novelty_score": 0.9999586543372311,
+     "prompt": "[redacted prompt: 76 chars]",
+     "prompt_chars": 76,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "272e95d1-2d70-4103-9fae-44cf74e7fd69",
+     "memory_significance_score": 4.617014313824519e-05,
+     "novelty_score": 0.999985749968385,
+     "prompt": "[redacted prompt: 434 chars]",
+     "prompt_chars": 434,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-05T00:46:09.191919+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "97f25409-c20c-4a97-ba64-375797a7584d",
+   "old_row": null,
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "272e95d1-2d70-4103-9fae-44cf74e7fd69",
+     "memory_significance_score": 0.9944062518086472,
+     "novelty_score": 0.12958420477747884,
+     "prompt": "[redacted prompt: 434 chars]",
+     "prompt_chars": 434,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "117c07ed-b072-4993-a498-67be38bbae2a",
+     "memory_significance_score": 0.7476994402009305,
+     "novelty_score": 0.9999999969617503,
+     "prompt": "[redacted prompt: 434 chars]",
+     "prompt_chars": 434,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-05T00:46:11.991095+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "a72987bd-9fab-4bf0-99bf-7a5bdd1c9512",
+   "old_row": null,
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "117c07ed-b072-4993-a498-67be38bbae2a",
+     "memory_significance_score": 0.9183461832789661,
+     "novelty_score": 0.9999569350109059,
+     "prompt": "[redacted prompt: 434 chars]",
+     "prompt_chars": 434,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-05T06:54:58.870258+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "e7e85380-dc7e-4eb7-b7d9-33d043b61014",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "Run github compactor.",
+    "summary_chars": 21,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "117c07ed-b072-4993-a498-67be38bbae2a",
+     "memory_significance_score": 0.9183461832789661,
+     "novelty_score": 0.9999569350109059,
+     "prompt": "[redacted prompt: 434 chars]",
+     "prompt_chars": 434,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "73586967-d309-4710-9c7f-cd8b098859e3",
+     "memory_significance_score": null,
+     "novelty_score": null,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": null
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-05T08:12:35.410412+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "523d0dff-df2b-4701-b5c2-48f25e67d6ed",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 6,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "73586967-d309-4710-9c7f-cd8b098859e3",
+     "memory_significance_score": null,
+     "novelty_score": null,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": null
+    },
+    {
+     "appraised": false,
+     "correlation_id": "88e5188c-f480-4972-b956-15d7d1569242",
+     "memory_significance_score": null,
+     "novelty_score": null,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": null
+    },
+    {
+     "appraised": false,
+     "correlation_id": "6234d116-6fed-47c2-a366-e3b2c7a727f9",
+     "memory_significance_score": 0.003319574533022719,
+     "novelty_score": 0.9999614300195496,
+     "prompt": "[redacted prompt: 6 chars]",
+     "prompt_chars": 6,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-06T00:31:41.212934+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "62c63769-97eb-4885-87b7-d7994b53f9da",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 75,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "6234d116-6fed-47c2-a366-e3b2c7a727f9",
+     "memory_significance_score": 0.7438438498204661,
+     "novelty_score": 0.0017984419576162626,
+     "prompt": "[redacted prompt: 6 chars]",
+     "prompt_chars": 6,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "d3e9aeea-6394-4c29-9c9b-6a60419c6ab7",
+     "memory_significance_score": 1.4717581482651651e-05,
+     "novelty_score": 0.9999999904935052,
+     "prompt": "[redacted prompt: 75 chars]",
+     "prompt_chars": 75,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-06T00:45:43.00423+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "1835effd-3d96-4bbb-9c65-6fad6534de84",
+   "old_row": null,
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "d3e9aeea-6394-4c29-9c9b-6a60419c6ab7",
+     "memory_significance_score": 0.9994128484265792,
+     "novelty_score": 0.9865325724726732,
+     "prompt": "[redacted prompt: 75 chars]",
+     "prompt_chars": 75,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "fe177c31-f4ab-4f83-be4a-3107ddd7a92e",
+     "memory_significance_score": 0.9999324666496371,
+     "novelty_score": 0.9999999975421865,
+     "prompt": "[redacted prompt: 59 chars]",
+     "prompt_chars": 59,
+     "redacted": true,
+     "repair_level": 0.3100502553225248,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-06T22:52:16.119739+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "44e6402f-c34d-4a2e-bf0d-013895d31d7d",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary": "what's crackalacking",
+    "summary_chars": 20,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "fe177c31-f4ab-4f83-be4a-3107ddd7a92e",
+     "memory_significance_score": 0.9986605384867283,
+     "novelty_score": 0.1528889388280951,
+     "prompt": "[redacted prompt: 59 chars]",
+     "prompt_chars": 59,
+     "redacted": true,
+     "repair_level": 0.3100502553225248,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "9643fbd7-4709-4959-b94a-07d49001e5ea",
+     "memory_significance_score": 0.00010561086408257776,
+     "novelty_score": 0.9248363167999171,
+     "prompt": "what's crackalacking",
+     "prompt_chars": 20,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-06T23:14:37.405845+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "899375c4-353a-4a7a-9b32-aa3ec573d548",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 144,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "9643fbd7-4709-4959-b94a-07d49001e5ea",
+     "memory_significance_score": 0.03595255469753515,
+     "novelty_score": 3.733702135624018e-05,
+     "prompt": "what's crackalacking",
+     "prompt_chars": 20,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "88245edd-b857-4d29-b411-7e63ebc5f3b7",
+     "memory_significance_score": 0.3472179930164427,
+     "novelty_score": 0.9999999999985949,
+     "prompt": "[redacted prompt: 144 chars]",
+     "prompt_chars": 144,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T01:00:18.01863+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "ed9fdd3a-75be-40a0-ab79-3b6cb0c2734f",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "88245edd-b857-4d29-b411-7e63ebc5f3b7",
+     "memory_significance_score": 0.15582819763831263,
+     "novelty_score": 0.9967815683498938,
+     "prompt": "[redacted prompt: 144 chars]",
+     "prompt_chars": 144,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "13da5a9a-a47b-4142-9841-3d134fc2a235",
+     "memory_significance_score": 0.9995225473817515,
+     "novelty_score": 0.9999999999769591,
+     "prompt": "[redacted prompt: 3013 chars]",
+     "prompt_chars": 3013,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T05:05:40.826195+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "4d0ed978-c26e-44a5-9a98-28ab302e8c25",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 117,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "13da5a9a-a47b-4142-9841-3d134fc2a235",
+     "memory_significance_score": 0.9950564042534377,
+     "novelty_score": 0.9999997120432009,
+     "prompt": "[redacted prompt: 3013 chars]",
+     "prompt_chars": 3013,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "a0e8d1f6-4671-46b1-855d-4ff0e8767e9f",
+     "memory_significance_score": 0.0010024548446298485,
+     "novelty_score": 0.9999998719877066,
+     "prompt": "[redacted prompt: 117 chars]",
+     "prompt_chars": 117,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T05:53:19.61885+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "61d928fd-aa83-4437-ac2d-5895a595ba8e",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 273,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "a0e8d1f6-4671-46b1-855d-4ff0e8767e9f",
+     "memory_significance_score": 0.7886410427026344,
+     "novelty_score": 0.9580639585075258,
+     "prompt": "[redacted prompt: 117 chars]",
+     "prompt_chars": 117,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "d48c52c4-1c1c-4c6a-8056-96bf1a8c197b",
+     "memory_significance_score": 0.9999999999613285,
+     "novelty_score": 0.9999999999994875,
+     "prompt": "[redacted prompt: 273 chars]",
+     "prompt_chars": 273,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T06:27:28.215794+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "e28902bf-8e67-4622-b186-2881315e74b9",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 122,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "d48c52c4-1c1c-4c6a-8056-96bf1a8c197b",
+     "memory_significance_score": 0.9999962094440848,
+     "novelty_score": 0.9999999903318945,
+     "prompt": "[redacted prompt: 273 chars]",
+     "prompt_chars": 273,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "acedc4b3-5a24-4273-85ee-5eb9777ec403",
+     "memory_significance_score": 0.9997555112959217,
+     "novelty_score": 0.9999999743394143,
+     "prompt": "[redacted prompt: 122 chars]",
+     "prompt_chars": 122,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T08:16:36.642354+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "480e232e-9495-4f00-94f3-cb0b8c9470f6",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 25,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "acedc4b3-5a24-4273-85ee-5eb9777ec403",
+     "memory_significance_score": 0.9999545972984328,
+     "novelty_score": 0.9999999595926398,
+     "prompt": "[redacted prompt: 122 chars]",
+     "prompt_chars": 122,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "c7743120-df6d-4d2a-ad25-e2612e1e3b87",
+     "memory_significance_score": 0.07338723527136139,
+     "novelty_score": 5.418081807749698e-06,
+     "prompt": "[redacted prompt: 25 chars]",
+     "prompt_chars": 25,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T20:27:43.742113+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "d579f6b2-b3a9-4cc1-bb18-ba12afcae7b9",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 25,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "c7743120-df6d-4d2a-ad25-e2612e1e3b87",
+     "memory_significance_score": 0.00013140388136688083,
+     "novelty_score": 4.306188772543783e-06,
+     "prompt": "[redacted prompt: 25 chars]",
+     "prompt_chars": 25,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "13a28f4e-7efd-4ff9-a4a9-997c618f72c3",
+     "memory_significance_score": 0.00018472760895950715,
+     "novelty_score": 0.9999999994216973,
+     "prompt": "[redacted prompt: 25 chars]",
+     "prompt_chars": 25,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T20:27:45.039629+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "417e2d14-6130-4813-94a2-5fb7320a57cd",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 25,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "13a28f4e-7efd-4ff9-a4a9-997c618f72c3",
+     "memory_significance_score": 0.00736677246540394,
+     "novelty_score": 0.999926078122268,
+     "prompt": "[redacted prompt: 25 chars]",
+     "prompt_chars": 25,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T22:19:48.210846+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "babc3cdf-7a5b-4528-be5c-52f620995f6b",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 90,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "13a28f4e-7efd-4ff9-a4a9-997c618f72c3",
+     "memory_significance_score": 0.00736677246540394,
+     "novelty_score": 0.999926078122268,
+     "prompt": "[redacted prompt: 25 chars]",
+     "prompt_chars": 25,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "d6788c7d-eaab-438b-a8dc-7b57909b2221",
+     "memory_significance_score": 0.9991468157226924,
+     "novelty_score": 0.9999999999907634,
+     "prompt": "[redacted prompt: 90 chars]",
+     "prompt_chars": 90,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T22:27:37.891171+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "34d8fbd7-3dca-4987-b087-e87e1b0c6712",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 142,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "d6788c7d-eaab-438b-a8dc-7b57909b2221",
+     "memory_significance_score": 0.9507423439515136,
+     "novelty_score": 0.9999991437570919,
+     "prompt": "[redacted prompt: 90 chars]",
+     "prompt_chars": 90,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "88f7c37b-cf23-4887-a1d9-6399d10b93c6",
+     "memory_significance_score": 0.135548679566201,
+     "novelty_score": 0.9999999983958738,
+     "prompt": "[redacted prompt: 142 chars]",
+     "prompt_chars": 142,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T22:27:39.240453+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "ee0735f0-e5d8-4490-8ae0-bc9e13058fa7",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 142,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "88f7c37b-cf23-4887-a1d9-6399d10b93c6",
+     "memory_significance_score": 4.403076209658719e-06,
+     "novelty_score": 0.9999887457418096,
+     "prompt": "[redacted prompt: 142 chars]",
+     "prompt_chars": 142,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T23:02:56.813087+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "ee7747c4-bb98-4f56-bab4-b89c16dad807",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 427,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "88f7c37b-cf23-4887-a1d9-6399d10b93c6",
+     "memory_significance_score": 4.403076209658719e-06,
+     "novelty_score": 0.9999887457418096,
+     "prompt": "[redacted prompt: 142 chars]",
+     "prompt_chars": 142,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "22f108fc-5338-4a8f-913e-f6f928a03399",
+     "memory_significance_score": 0.9687693803664544,
+     "novelty_score": 0.9999999999997855,
+     "prompt": "[redacted prompt: 427 chars]",
+     "prompt_chars": 427,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-07T23:26:43.308539+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "5ed5c919-e46d-47eb-b6b1-232b7c7625df",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 161,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "22f108fc-5338-4a8f-913e-f6f928a03399",
+     "memory_significance_score": 0.8831084725772205,
+     "novelty_score": 0.9999999673854181,
+     "prompt": "[redacted prompt: 427 chars]",
+     "prompt_chars": 427,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "c9a2e59b-7e7e-4aab-9fb4-d38dc6a5c44d",
+     "memory_significance_score": 0.9290521481262743,
+     "novelty_score": 0.9999999665881598,
+     "prompt": "[redacted prompt: 161 chars]",
+     "prompt_chars": 161,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-08T08:21:54.477332+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "7288d18b-35de-40cc-b134-d9c8ad92b750",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "Run github compactor.",
+    "summary_chars": 21,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "c9a2e59b-7e7e-4aab-9fb4-d38dc6a5c44d",
+     "memory_significance_score": 0.05790768723643245,
+     "novelty_score": 0.9999986140030738,
+     "prompt": "[redacted prompt: 161 chars]",
+     "prompt_chars": 161,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "18022c3e-c149-43a1-a289-15ccea246331",
+     "memory_significance_score": 0.9999981086880313,
+     "novelty_score": 0.013761104553749803,
+     "prompt": "[redacted prompt: 120 chars]",
+     "prompt_chars": 120,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "08001111-c1d4-49d1-8961-549d0a762294",
+     "memory_significance_score": 6.807012198704898e-08,
+     "novelty_score": 1.3512169608993934e-05,
+     "prompt": "[redacted prompt: 27 chars]",
+     "prompt_chars": 27,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "b7d0d1b5-a5c9-469c-ad72-cf8fa15b8545",
+     "memory_significance_score": 3.34418407600983e-06,
+     "novelty_score": 0.0009541643046184993,
+     "prompt": "[redacted prompt: 12 chars]",
+     "prompt_chars": 12,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "ed17d3f0-90d7-4656-96e8-12407219e825",
+     "memory_significance_score": 0.9999999342831455,
+     "novelty_score": 0.9999999964957049,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-08T08:29:51.056592+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "813ffa5b-37c8-4574-a5af-202832475bcd",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "Compact the last 24 hours of chat into a memory digest.",
+    "summary_chars": 55,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "ed17d3f0-90d7-4656-96e8-12407219e825",
+     "memory_significance_score": 0.9999999858964523,
+     "novelty_score": 0.0007736212176767858,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "0faa5071-d379-445e-98fd-50d7ba2d7c75",
+     "memory_significance_score": 0.9999999988706629,
+     "novelty_score": 0.9999999999989881,
+     "prompt": "Compact the last 24 hours of chat into a memory digest.",
+     "prompt_chars": 55,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-08T16:23:31.14933+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "76e3e0e6-6609-4452-a20d-7f9b626d4b88",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary": "sup yo",
+    "summary_chars": 6,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "0faa5071-d379-445e-98fd-50d7ba2d7c75",
+     "memory_significance_score": 0.9998369910364147,
+     "novelty_score": 0.004655075069458365,
+     "prompt": "Compact the last 24 hours of chat into a memory digest.",
+     "prompt_chars": 55,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "888cf714-cdd2-442e-b147-1e0936c2a8c1",
+     "memory_significance_score": 0.9986946729765135,
+     "novelty_score": 0.9998698440645847,
+     "prompt": "[redacted prompt: 97 chars]",
+     "prompt_chars": 97,
+     "redacted": true,
+     "repair_level": 0.4752239463464163,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "2e01bfe5-f4f6-44b3-a556-a0b670b59941",
+     "memory_significance_score": 6.365755205521048e-08,
+     "novelty_score": 4.3667971998262286e-07,
+     "prompt": "sup yo",
+     "prompt_chars": 6,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-08T16:28:10.048347+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "36070194-9909-4cfa-a021-86e7b2e7f4ac",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 65,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "2e01bfe5-f4f6-44b3-a556-a0b670b59941",
+     "memory_significance_score": 6.3107856414998465e-06,
+     "novelty_score": 1.7310956941852966e-06,
+     "prompt": "sup yo",
+     "prompt_chars": 6,
+     "redacted": false,
+     "repair_level": null,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "125e2dae-9520-4ac5-b4b9-920427cc1b5e",
+     "memory_significance_score": 0.21929244102397505,
+     "novelty_score": 0.9999999999523483,
+     "prompt": "[redacted prompt: 65 chars]",
+     "prompt_chars": 65,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-08T16:36:53.010513+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "f3f17923-50fe-4358-bb72-c17c7b2949a7",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 116,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "125e2dae-9520-4ac5-b4b9-920427cc1b5e",
+     "memory_significance_score": 0.27931600824965885,
+     "novelty_score": 0.22476786938906218,
+     "prompt": "[redacted prompt: 65 chars]",
+     "prompt_chars": 65,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "4385a1ea-2bbd-439e-a63c-435c464d4b84",
+     "memory_significance_score": 0.9949262262713544,
+     "novelty_score": 0.9999999999971132,
+     "prompt": "[redacted prompt: 116 chars]",
+     "prompt_chars": 116,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-08T17:05:09.759432+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "7819f62a-2e2d-4e45-8942-6e8df32d1d6c",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 159,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "4385a1ea-2bbd-439e-a63c-435c464d4b84",
+     "memory_significance_score": 0.265010209806886,
+     "novelty_score": 0.9999097475307102,
+     "prompt": "[redacted prompt: 116 chars]",
+     "prompt_chars": 116,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "66564fba-1442-47bf-be17-9b016ed7855e",
+     "memory_significance_score": 0.9999999971222906,
+     "novelty_score": 0.9999999999883589,
+     "prompt": "[redacted prompt: 159 chars]",
+     "prompt_chars": 159,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-08T23:15:41.865476+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "cfe0c3cc-67d8-48d2-bd2b-2bb0af1770b9",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 60,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "66564fba-1442-47bf-be17-9b016ed7855e",
+     "memory_significance_score": 0.9999492963218064,
+     "novelty_score": 0.9945570976889628,
+     "prompt": "[redacted prompt: 159 chars]",
+     "prompt_chars": 159,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "9d85d88d-d0d8-44b2-926d-592032277e2d",
+     "memory_significance_score": 0.0023179781806040465,
+     "novelty_score": 0.999999998644012,
+     "prompt": "[redacted prompt: 60 chars]",
+     "prompt_chars": 60,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-08T23:23:30.012442+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "15a9fc1f-46f7-4b07-a0c6-4f762bc143a7",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "9d85d88d-d0d8-44b2-926d-592032277e2d",
+     "memory_significance_score": 0.9810811048001216,
+     "novelty_score": 0.9999980246022319,
+     "prompt": "[redacted prompt: 60 chars]",
+     "prompt_chars": 60,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "2a30ed8c-98c2-4b73-99d4-d3ac779a1e85",
+     "memory_significance_score": 0.999998279004844,
+     "novelty_score": 0.999999999998195,
+     "prompt": "[redacted prompt: 537 chars]",
+     "prompt_chars": 537,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-10T04:43:26.717768+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "eb321bf7-50c8-4958-a3f0-5f8e86903316",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "substantive_shift"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 19,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "2a30ed8c-98c2-4b73-99d4-d3ac779a1e85",
+     "memory_significance_score": 0.9895803232732996,
+     "novelty_score": 0.9999843582516488,
+     "prompt": "[redacted prompt: 537 chars]",
+     "prompt_chars": 537,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": false,
+     "correlation_id": "4820e24e-3b18-4eb1-8f66-6765c448567e",
+     "memory_significance_score": 0.007967127463175584,
+     "novelty_score": 0.8591447500627798,
+     "prompt": "[redacted prompt: 19 chars]",
+     "prompt_chars": 19,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-10T16:53:45.804794+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "d70d9a10-c8a6-4a18-a775-cf1b5ef3a78d",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 108,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": false,
+     "correlation_id": "4820e24e-3b18-4eb1-8f66-6765c448567e",
+     "memory_significance_score": 0.5589684370027613,
+     "novelty_score": 0.9626061627050572,
+     "prompt": "[redacted prompt: 19 chars]",
+     "prompt_chars": 19,
+     "redacted": true,
+     "repair_level": null,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "b94f521e-be91-44a3-ab6e-7fc1f2c4780c",
+     "memory_significance_score": 0.9546171871704391,
+     "novelty_score": 0.9999999859544375,
+     "prompt": "[redacted prompt: 108 chars]",
+     "prompt_chars": 108,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-10T18:00:51.726028+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "627f8971-569b-4f3c-843b-dd9976bea79e",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 365,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "b94f521e-be91-44a3-ab6e-7fc1f2c4780c",
+     "memory_significance_score": 0.9976405550043774,
+     "novelty_score": 0.9430151669311106,
+     "prompt": "[redacted prompt: 108 chars]",
+     "prompt_chars": 108,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "2e8e7ca6-3a9e-4ec7-9227-838df16b0527",
+     "memory_significance_score": 0.9999997491249586,
+     "novelty_score": 0.9999999999863556,
+     "prompt": "[redacted prompt: 365 chars]",
+     "prompt_chars": 365,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-11T03:40:13.600351+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "411d45a7-1b14-4f0b-8241-b7326faa1162",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 85,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "2e8e7ca6-3a9e-4ec7-9227-838df16b0527",
+     "memory_significance_score": 0.9999992741970606,
+     "novelty_score": 0.9999968466364426,
+     "prompt": "[redacted prompt: 365 chars]",
+     "prompt_chars": 365,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "f9f9d41d-11c7-4873-bef1-983c395e5c83",
+     "memory_significance_score": 3.5735344439431766e-05,
+     "novelty_score": 0.980055305064389,
+     "prompt": "[redacted prompt: 85 chars]",
+     "prompt_chars": 85,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-11T03:40:14.785377+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "e566b234-13f7-4007-bcab-5b641ee71e47",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 85,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "f9f9d41d-11c7-4873-bef1-983c395e5c83",
+     "memory_significance_score": 0.010362913104983893,
+     "novelty_score": 0.9212785313465113,
+     "prompt": "[redacted prompt: 85 chars]",
+     "prompt_chars": 85,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-11T04:09:59.524774+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "71fb744d-b52f-49af-8ada-52902edeac0d",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 36,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "f9f9d41d-11c7-4873-bef1-983c395e5c83",
+     "memory_significance_score": 0.010362913104983893,
+     "novelty_score": 0.9212785313465113,
+     "prompt": "[redacted prompt: 85 chars]",
+     "prompt_chars": 85,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "82945e61-2990-4cbe-b1fb-f3db1f90dee2",
+     "memory_significance_score": 0.9999756591129427,
+     "novelty_score": 0.1325641266399047,
+     "prompt": "[redacted prompt: 79 chars]",
+     "prompt_chars": 79,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "1cf7410a-2c9f-4dde-97ce-efaec53f946a",
+     "memory_significance_score": 0.9594206651830659,
+     "novelty_score": 0.9999999868819507,
+     "prompt": "[redacted prompt: 36 chars]",
+     "prompt_chars": 36,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-11T04:10:01.080965+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "579db2a6-cd9d-4d51-8e32-23411d00d771",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 36,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "1cf7410a-2c9f-4dde-97ce-efaec53f946a",
+     "memory_significance_score": 0.4102651906533962,
+     "novelty_score": 0.9999980150770379,
+     "prompt": "[redacted prompt: 36 chars]",
+     "prompt_chars": 36,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-11T04:25:38.447865+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "4e87875e-b0e4-43ee-8042-f1b9adcdb649",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "open_loop",
+    "status": "active",
+    "summary_chars": 83,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "1cf7410a-2c9f-4dde-97ce-efaec53f946a",
+     "memory_significance_score": 0.4102651906533962,
+     "novelty_score": 0.9999980150770379,
+     "prompt": "[redacted prompt: 36 chars]",
+     "prompt_chars": 36,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "79da9740-9cde-40b0-8112-69f4eaa03fc5",
+     "memory_significance_score": 0.9999999991953339,
+     "novelty_score": 0.9999999999785132,
+     "prompt": "[redacted prompt: 83 chars]",
+     "prompt_chars": 83,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "REPAIR"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-13T02:23:13.120234+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "5e06cf8b-9b58-4596-bfca-f20d74dc86d1",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "open_loop",
+    "status": "active",
+    "summary": "yo",
+    "summary_chars": 2,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "79da9740-9cde-40b0-8112-69f4eaa03fc5",
+     "memory_significance_score": 0.9999999973959084,
+     "novelty_score": 0.9999999291239763,
+     "prompt": "[redacted prompt: 83 chars]",
+     "prompt_chars": 83,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "REPAIR"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "18b2540e-8499-40df-817b-4986fea84915",
+     "memory_significance_score": 0.0027936699098358507,
+     "novelty_score": 0.9579419444516647,
+     "prompt": "yo",
+     "prompt_chars": 2,
+     "redacted": false,
+     "repair_level": 0.5495521073071674,
+     "shift_kind": "REPAIR"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-13T03:36:04.380789+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "64cc4049-abe1-42be-90f3-11b4f135d49c",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 259,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "18b2540e-8499-40df-817b-4986fea84915",
+     "memory_significance_score": 5.304429515050174e-05,
+     "novelty_score": 1.2936511868923188e-05,
+     "prompt": "yo",
+     "prompt_chars": 2,
+     "redacted": false,
+     "repair_level": 0.5495521073071674,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "1b912af6-48fa-4a9a-8579-8a9623f53abc",
+     "memory_significance_score": 0.9999865181558092,
+     "novelty_score": 0.9999999999944547,
+     "prompt": "[redacted prompt: 259 chars]",
+     "prompt_chars": 259,
+     "redacted": true,
+     "repair_level": 0.5495521073071674,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-13T03:36:05.578598+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "42c1b014-71d0-4789-9430-bf3e7cf2b4d5",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 259,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "1b912af6-48fa-4a9a-8579-8a9623f53abc",
+     "memory_significance_score": 0.9711197859643873,
+     "novelty_score": 0.9999979879526835,
+     "prompt": "[redacted prompt: 259 chars]",
+     "prompt_chars": 259,
+     "redacted": true,
+     "repair_level": 0.5495521073071674,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-13T03:45:35.457039+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "932050a3-c6a2-43df-80ed-7646857967bc",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 45,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "1b912af6-48fa-4a9a-8579-8a9623f53abc",
+     "memory_significance_score": 0.9711197859643873,
+     "novelty_score": 0.9999979879526835,
+     "prompt": "[redacted prompt: 259 chars]",
+     "prompt_chars": 259,
+     "redacted": true,
+     "repair_level": 0.5495521073071674,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "94d82f5f-c3d0-4984-8865-8fe68fde6cf3",
+     "memory_significance_score": 0.9525122195918085,
+     "novelty_score": 0.9999999992701105,
+     "prompt": "[redacted prompt: 45 chars]",
+     "prompt_chars": 45,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-13T03:49:38.070475+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "f8255a52-2c21-46d1-b89e-55c49e42b71a",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 26,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "94d82f5f-c3d0-4984-8865-8fe68fde6cf3",
+     "memory_significance_score": 0.006253929112960083,
+     "novelty_score": 0.9999981924727661,
+     "prompt": "[redacted prompt: 45 chars]",
+     "prompt_chars": 45,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "fdf9c752-dcea-4ddc-a474-59fc8b8743ad",
+     "memory_significance_score": 0.999787367052683,
+     "novelty_score": 0.9999999913412657,
+     "prompt": "[redacted prompt: 26 chars]",
+     "prompt_chars": 26,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-13T03:52:45.195186+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "215fcda1-1409-406d-b9ee-056bff1954c9",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 94,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "fdf9c752-dcea-4ddc-a474-59fc8b8743ad",
+     "memory_significance_score": 0.8647540753400295,
+     "novelty_score": 0.009908164341740298,
+     "prompt": "[redacted prompt: 26 chars]",
+     "prompt_chars": 26,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "6516c6b7-5e3f-4de0-b5a1-4ed0ac8f5cf3",
+     "memory_significance_score": 0.9968617430657095,
+     "novelty_score": 0.999999973542629,
+     "prompt": "[redacted prompt: 94 chars]",
+     "prompt_chars": 94,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-13T03:59:43.821513+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "5aef5196-7081-4aa9-ae67-7faacd46a64e",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 71,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "6516c6b7-5e3f-4de0-b5a1-4ed0ac8f5cf3",
+     "memory_significance_score": 0.9663807599517941,
+     "novelty_score": 0.0024927741683195975,
+     "prompt": "[redacted prompt: 94 chars]",
+     "prompt_chars": 94,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "cdfb6450-e4a8-4218-8202-cd357c8b3926",
+     "memory_significance_score": 0.09325974484218806,
+     "novelty_score": 0.9999999998639879,
+     "prompt": "[redacted prompt: 71 chars]",
+     "prompt_chars": 71,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-13T04:55:42.528305+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "f4a01d47-4708-4c63-ab18-0d2399ca53e0",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 128,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "cdfb6450-e4a8-4218-8202-cd357c8b3926",
+     "memory_significance_score": 0.2656675941157434,
+     "novelty_score": 0.7201638079153679,
+     "prompt": "[redacted prompt: 71 chars]",
+     "prompt_chars": 71,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "0caf5170-3382-497a-8980-cda0cd3e18d7",
+     "memory_significance_score": 0.33306242528306446,
+     "novelty_score": 0.9999947881840867,
+     "prompt": "[redacted prompt: 182 chars]",
+     "prompt_chars": 182,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "d75ef55e-aa10-4026-9a5c-e0b9fb261a1c",
+     "memory_significance_score": 1.5693768250900915e-06,
+     "novelty_score": 0.010863610598782728,
+     "prompt": "[redacted prompt: 128 chars]",
+     "prompt_chars": 128,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-14T00:15:57.664361+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "da172b7d-8cee-4c65-aefd-555f243567ea",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 62,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "d75ef55e-aa10-4026-9a5c-e0b9fb261a1c",
+     "memory_significance_score": 0.9692453824500465,
+     "novelty_score": 1.4043687245342312e-08,
+     "prompt": "[redacted prompt: 128 chars]",
+     "prompt_chars": 128,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "c78ee7bd-2f83-4355-b3ce-9a749591f484",
+     "memory_significance_score": 0.9962361165792284,
+     "novelty_score": 1.1234773307754861e-07,
+     "prompt": "[redacted prompt: 62 chars]",
+     "prompt_chars": 62,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "35ea8693-7e44-44c4-81e2-f6adc1874931",
+     "memory_significance_score": 0.6645683684855254,
+     "novelty_score": 0.9999994296214063,
+     "prompt": "[redacted prompt: 62 chars]",
+     "prompt_chars": 62,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-14T17:03:38.328274+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "dbf7099c-0416-4289-b136-34a6fab99f2e",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "howdy, how goes it",
+    "summary_chars": 18,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "35ea8693-7e44-44c4-81e2-f6adc1874931",
+     "memory_significance_score": 0.9869784766508188,
+     "novelty_score": 0.00038850285795888475,
+     "prompt": "[redacted prompt: 62 chars]",
+     "prompt_chars": 62,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "bea0824c-10e5-4f46-9891-2298d8dbdc06",
+     "memory_significance_score": 0.0023366227668133776,
+     "novelty_score": 0.9997480225574326,
+     "prompt": "howdy, how goes it",
+     "prompt_chars": 18,
+     "redacted": false,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-14T17:31:23.512925+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "52d20975-7714-4627-bba5-d911edb75e06",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "bea0824c-10e5-4f46-9891-2298d8dbdc06",
+     "memory_significance_score": 0.10508778634688548,
+     "novelty_score": 0.04698458617521971,
+     "prompt": "howdy, how goes it",
+     "prompt_chars": 18,
+     "redacted": false,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "72bc8695-3e34-41d5-ba61-d570ac9ccf5a",
+     "memory_significance_score": 0.9997392275912143,
+     "novelty_score": 0.9999999999970011,
+     "prompt": "[redacted prompt: 977 chars]",
+     "prompt_chars": 977,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-14T17:47:01.477746+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "c4e7bb39-0df4-4341-8368-bbd45e127a63",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 407,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "72bc8695-3e34-41d5-ba61-d570ac9ccf5a",
+     "memory_significance_score": 0.9991152966530484,
+     "novelty_score": 0.9999258191572852,
+     "prompt": "[redacted prompt: 977 chars]",
+     "prompt_chars": 977,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "cbc81175-ac21-4640-a27f-816105dbfeb4",
+     "memory_significance_score": 0.9992038979352265,
+     "novelty_score": 0.9999999999915781,
+     "prompt": "[redacted prompt: 407 chars]",
+     "prompt_chars": 407,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-14T17:53:12.68622+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "1f8fcfa9-5fc5-47b2-9b4d-8fbce701e5bd",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 127,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "cbc81175-ac21-4640-a27f-816105dbfeb4",
+     "memory_significance_score": 0.8149145298384508,
+     "novelty_score": 0.9999999998836715,
+     "prompt": "[redacted prompt: 407 chars]",
+     "prompt_chars": 407,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "de68359f-a1d5-441c-b446-ad65b31f3b32",
+     "memory_significance_score": 0.9998995993392861,
+     "novelty_score": 0.9999999999859859,
+     "prompt": "[redacted prompt: 127 chars]",
+     "prompt_chars": 127,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-14T22:07:09.651006+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "ad2bdb3a-b2cc-4da7-9401-4de3b67adddb",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "de68359f-a1d5-441c-b446-ad65b31f3b32",
+     "memory_significance_score": 0.9952027509912796,
+     "novelty_score": 0.9999999926854362,
+     "prompt": "[redacted prompt: 127 chars]",
+     "prompt_chars": 127,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "66f853c2-ebfc-46e6-aff0-4a41abb5ff7f",
+     "memory_significance_score": 0.820071844806428,
+     "novelty_score": 0.999999986577472,
+     "prompt": "[redacted prompt: 762 chars]",
+     "prompt_chars": 762,
+     "redacted": true,
+     "repair_level": 0.3017915707713302,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-14T22:11:05.968482+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "a3f506be-ac44-4cf2-81c8-1a43a78ac57e",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 47,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "66f853c2-ebfc-46e6-aff0-4a41abb5ff7f",
+     "memory_significance_score": 0.820071844806428,
+     "novelty_score": 0.999999986577472,
+     "prompt": "[redacted prompt: 762 chars]",
+     "prompt_chars": 762,
+     "redacted": true,
+     "repair_level": 0.3017915707713302,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "39e12b64-f714-4ce6-8994-d4d94c9e13eb",
+     "memory_significance_score": 0.999999993236631,
+     "novelty_score": 0.9999999999926694,
+     "prompt": "[redacted prompt: 47 chars]",
+     "prompt_chars": 47,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-15T16:45:22.136727+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "58d1c0c6-41f7-4494-8aaa-c907ac15ac28",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 376,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "39e12b64-f714-4ce6-8994-d4d94c9e13eb",
+     "memory_significance_score": 0.9999859526876356,
+     "novelty_score": 0.9999999437426373,
+     "prompt": "[redacted prompt: 47 chars]",
+     "prompt_chars": 47,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "9a26e16f-eeac-45e9-b722-cbb030c730ab",
+     "memory_significance_score": 0.002245958736106536,
+     "novelty_score": 0.9999999996675246,
+     "prompt": "[redacted prompt: 376 chars]",
+     "prompt_chars": 376,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-15T19:45:52.197853+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "284b09a2-947b-4d82-a32a-9851be0a51c6",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 59,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "9a26e16f-eeac-45e9-b722-cbb030c730ab",
+     "memory_significance_score": 0.9999647334577437,
+     "novelty_score": 0.9999980131907478,
+     "prompt": "[redacted prompt: 376 chars]",
+     "prompt_chars": 376,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "ed84eb84-8c66-43c1-ac3d-4f25ce37bc30",
+     "memory_significance_score": 0.9999999971486035,
+     "novelty_score": 0.9987869111203005,
+     "prompt": "[redacted prompt: 59 chars]",
+     "prompt_chars": 59,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "REPAIR"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-15T21:56:07.561992+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "eef0021e-26f2-457d-a294-ba1548a23ca3",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 178,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "ed84eb84-8c66-43c1-ac3d-4f25ce37bc30",
+     "memory_significance_score": 0.9996836684559379,
+     "novelty_score": 0.9999973340866586,
+     "prompt": "[redacted prompt: 59 chars]",
+     "prompt_chars": 59,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "afc04089-531d-4e30-baaa-fcd0ee3cd297",
+     "memory_significance_score": 0.9998384467457521,
+     "novelty_score": 0.999999999991974,
+     "prompt": "[redacted prompt: 178 chars]",
+     "prompt_chars": 178,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-17T05:03:35.12871+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "6c05bc83-31f4-430c-b92d-eee8c5f7e589",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "hi",
+    "summary_chars": 2,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "afc04089-531d-4e30-baaa-fcd0ee3cd297",
+     "memory_significance_score": 0.999885968159564,
+     "novelty_score": 0.546218163479652,
+     "prompt": "[redacted prompt: 178 chars]",
+     "prompt_chars": 178,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "b963f90d-3855-43c5-bd1a-1ead4cb02477",
+     "memory_significance_score": 0.07986101599982587,
+     "novelty_score": 0.9282107828903148,
+     "prompt": "hi",
+     "prompt_chars": 2,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-17T05:13:15.887391+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "930dead2-323f-408b-8e53-8ebd963d5185",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "b963f90d-3855-43c5-bd1a-1ead4cb02477",
+     "memory_significance_score": 2.918378328893778e-05,
+     "novelty_score": 8.438629912357431e-06,
+     "prompt": "hi",
+     "prompt_chars": 2,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "32cb25a1-7ac7-4f76-82a8-565d8d6eccce",
+     "memory_significance_score": 0.9943986503376366,
+     "novelty_score": 0.9999999999622271,
+     "prompt": "[redacted prompt: 842 chars]",
+     "prompt_chars": 842,
+     "redacted": true,
+     "repair_level": 0.3100502553225248,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-17T05:55:07.080496+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "614408a9-cf02-4606-8edb-e7693fd13183",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 196,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "32cb25a1-7ac7-4f76-82a8-565d8d6eccce",
+     "memory_significance_score": 0.9973229642788659,
+     "novelty_score": 0.9999999714888502,
+     "prompt": "[redacted prompt: 842 chars]",
+     "prompt_chars": 842,
+     "redacted": true,
+     "repair_level": 0.3100502553225248,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "1e9f344c-edf6-44d3-81d9-efafe859ca8a",
+     "memory_significance_score": 0.9982222232067313,
+     "novelty_score": 0.9999374626500354,
+     "prompt": "[redacted prompt: 278 chars]",
+     "prompt_chars": 278,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "81bb95de-b559-43ab-8906-241d57972c56",
+     "memory_significance_score": 0.017186049723573987,
+     "novelty_score": 0.9999997687119755,
+     "prompt": "[redacted prompt: 196 chars]",
+     "prompt_chars": 196,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-19T02:40:22.260115+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "face2c47-7a8a-45dc-ac60-c9d66c25b434",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 208,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "81bb95de-b559-43ab-8906-241d57972c56",
+     "memory_significance_score": 0.6589354803921345,
+     "novelty_score": 0.9999075993248314,
+     "prompt": "[redacted prompt: 196 chars]",
+     "prompt_chars": 196,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "67e68c0e-a0e4-4d16-8bd4-78f973c31f33",
+     "memory_significance_score": 4.3030669756104804e-05,
+     "novelty_score": 0.9997164024447918,
+     "prompt": "[redacted prompt: 208 chars]",
+     "prompt_chars": 208,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-19T02:40:25.905577+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "97790f30-c109-4d38-94eb-04817d7fe46d",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 208,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "67e68c0e-a0e4-4d16-8bd4-78f973c31f33",
+     "memory_significance_score": 0.09064456901492378,
+     "novelty_score": 0.9999997903596595,
+     "prompt": "[redacted prompt: 208 chars]",
+     "prompt_chars": 208,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-19T02:57:51.868242+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "2afe6032-1f0e-4d9b-8e8b-7927ff5e44df",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "67e68c0e-a0e4-4d16-8bd4-78f973c31f33",
+     "memory_significance_score": 0.09064456901492378,
+     "novelty_score": 0.9999997903596595,
+     "prompt": "[redacted prompt: 208 chars]",
+     "prompt_chars": 208,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "5ee48b7c-4b6a-488c-9391-768a2136fce3",
+     "memory_significance_score": 0.0006005059490764504,
+     "novelty_score": 0.9999999939836859,
+     "prompt": "[redacted prompt: 586 chars]",
+     "prompt_chars": 586,
+     "redacted": true,
+     "repair_level": 0.33482630897610843,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-19T02:57:53.3395+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "4465096f-6a8c-4c57-96b7-8cfa9f2a625c",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "5ee48b7c-4b6a-488c-9391-768a2136fce3",
+     "memory_significance_score": 0.5212084278124369,
+     "novelty_score": 0.9999996866163453,
+     "prompt": "[redacted prompt: 586 chars]",
+     "prompt_chars": 586,
+     "redacted": true,
+     "repair_level": 0.33482630897610843,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-20T04:06:41.056609+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "e63186b5-a51a-4f84-ac6c-291a97d63198",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 86,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "5ee48b7c-4b6a-488c-9391-768a2136fce3",
+     "memory_significance_score": 0.5212084278124369,
+     "novelty_score": 0.9999996866163453,
+     "prompt": "[redacted prompt: 586 chars]",
+     "prompt_chars": 586,
+     "redacted": true,
+     "repair_level": 0.33482630897610843,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "2d17a6da-6645-4974-ad07-40ea4e6bdc31",
+     "memory_significance_score": 0.9356361014060784,
+     "novelty_score": 0.9999795484702559,
+     "prompt": "[redacted prompt: 86 chars]",
+     "prompt_chars": 86,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-20T05:00:03.05725+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "4a8e6418-b830-4c98-93e0-cdc077090455",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 90,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "2d17a6da-6645-4974-ad07-40ea4e6bdc31",
+     "memory_significance_score": 0.9949221213310756,
+     "novelty_score": 0.9437417889091286,
+     "prompt": "[redacted prompt: 86 chars]",
+     "prompt_chars": 86,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "a13b26c5-b136-4cc8-8f3a-d4f737b4b3da",
+     "memory_significance_score": 0.9999999176957661,
+     "novelty_score": 0.9999996877023309,
+     "prompt": "[redacted prompt: 90 chars]",
+     "prompt_chars": 90,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-21T04:33:54.606128+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "4e26deba-2843-4a83-ac02-1e28c09ee59c",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary": "hi Orion, how was your weekend?",
+    "summary_chars": 31,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "a13b26c5-b136-4cc8-8f3a-d4f737b4b3da",
+     "memory_significance_score": 0.9805145821739288,
+     "novelty_score": 0.000155650481276535,
+     "prompt": "[redacted prompt: 90 chars]",
+     "prompt_chars": 90,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "0b913c10-0f61-42c3-b2ea-8eba9b7e0a86",
+     "memory_significance_score": 0.003191256211283543,
+     "novelty_score": 0.9998197186161722,
+     "prompt": "hi Orion, how was your weekend?",
+     "prompt_chars": 31,
+     "redacted": false,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-21T22:40:21.541374+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "cbaa6bb3-9e16-49f9-84d2-021ea01d7382",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 500,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "0b913c10-0f61-42c3-b2ea-8eba9b7e0a86",
+     "memory_significance_score": 0.7412037708816238,
+     "novelty_score": 0.22918998256636536,
+     "prompt": "hi Orion, how was your weekend?",
+     "prompt_chars": 31,
+     "redacted": false,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "5f519ca1-b467-4e26-8ddc-402edad703a9",
+     "memory_significance_score": 0.9963971788689875,
+     "novelty_score": 0.9906164627819807,
+     "prompt": "[redacted prompt: 268 chars]",
+     "prompt_chars": 268,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "338f31fb-bc22-48b4-b23a-6e49ef473cfd",
+     "memory_significance_score": 0.0023051514734707713,
+     "novelty_score": 0.9999999365998162,
+     "prompt": "[redacted prompt: 793 chars]",
+     "prompt_chars": 793,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-23T00:47:11.394835+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "8df5ead0-0a22-4e73-88a3-0a4083a8deb7",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "sup yo",
+    "summary_chars": 6,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "338f31fb-bc22-48b4-b23a-6e49ef473cfd",
+     "memory_significance_score": 0.9846287701640567,
+     "novelty_score": 0.9980825518911685,
+     "prompt": "[redacted prompt: 793 chars]",
+     "prompt_chars": 793,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "572e447f-720f-4635-8b0a-1c387c9759c4",
+     "memory_significance_score": 6.820707252489682e-07,
+     "novelty_score": 1.447432500851625e-05,
+     "prompt": "sup yo",
+     "prompt_chars": 6,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-23T01:29:33.92123+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "ae764c63-c313-48e1-ba41-9ff0cf932c99",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 190,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "572e447f-720f-4635-8b0a-1c387c9759c4",
+     "memory_significance_score": 6.179255435880077e-05,
+     "novelty_score": 4.093448872189405e-05,
+     "prompt": "sup yo",
+     "prompt_chars": 6,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "82f46048-5442-4f79-b99e-0758ee6ade86",
+     "memory_significance_score": 0.9242030380151192,
+     "novelty_score": 0.9999999999964122,
+     "prompt": "[redacted prompt: 190 chars]",
+     "prompt_chars": 190,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-23T01:56:10.95495+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "cd601691-7ca9-40cb-a4a0-308e10cd2249",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 127,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "82f46048-5442-4f79-b99e-0758ee6ade86",
+     "memory_significance_score": 0.9746640369559485,
+     "novelty_score": 0.9853314383153718,
+     "prompt": "[redacted prompt: 190 chars]",
+     "prompt_chars": 190,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "STANCE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "cd651590-48c6-4594-b8ba-6a5c6eead8a4",
+     "memory_significance_score": 0.9205009394881045,
+     "novelty_score": 0.9999994290488784,
+     "prompt": "[redacted prompt: 127 chars]",
+     "prompt_chars": 127,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-24T00:26:17.705778+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "17adc91d-278f-457a-8a90-7259313a15ae",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 69,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "cd651590-48c6-4594-b8ba-6a5c6eead8a4",
+     "memory_significance_score": 0.2656139975160983,
+     "novelty_score": 0.9999981804005822,
+     "prompt": "[redacted prompt: 127 chars]",
+     "prompt_chars": 127,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "34f2d1a2-ea13-4486-b6f1-bb57581b2ea3",
+     "memory_significance_score": 0.00035184592968602504,
+     "novelty_score": 0.9999996636986344,
+     "prompt": "[redacted prompt: 69 chars]",
+     "prompt_chars": 69,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-24T00:50:29.43789+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "bb41911a-883d-43cb-b409-a2081d35cde2",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary_chars": 148,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "34f2d1a2-ea13-4486-b6f1-bb57581b2ea3",
+     "memory_significance_score": 0.997251740816555,
+     "novelty_score": 0.0608407773668651,
+     "prompt": "[redacted prompt: 69 chars]",
+     "prompt_chars": 69,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "e6c8712d-56f4-4500-b5ee-f537ea53c883",
+     "memory_significance_score": 0.7978387553498384,
+     "novelty_score": 9.165214553198682e-07,
+     "prompt": "[redacted prompt: 126 chars]",
+     "prompt_chars": 126,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "a451b219-7506-4895-92b6-67fd272ab379",
+     "memory_significance_score": 0.9996028892922111,
+     "novelty_score": 0.9999999999884315,
+     "prompt": "[redacted prompt: 148 chars]",
+     "prompt_chars": 148,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-25T09:03:41.610012+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "2296d9c9-d37d-4ade-8922-ab3d067d097c",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "Run github compactor.",
+    "summary_chars": 21,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "a451b219-7506-4895-92b6-67fd272ab379",
+     "memory_significance_score": 0.9994911630953173,
+     "novelty_score": 0.9999995516980235,
+     "prompt": "[redacted prompt: 148 chars]",
+     "prompt_chars": 148,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "0db311e7-51ee-4f3d-8301-6d47c32d0a14",
+     "memory_significance_score": 0.0354313258370596,
+     "novelty_score": 0.9029136557813651,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": 0.3017915707713302,
+     "shift_kind": "REPAIR"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-25T09:12:25.413655+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "7d75006b-05dd-4f9f-97ad-a8e6e5006518",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "Run github compactor.",
+    "summary_chars": 21,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "0db311e7-51ee-4f3d-8301-6d47c32d0a14",
+     "memory_significance_score": 3.1355226033614126e-07,
+     "novelty_score": 4.5736214549798355e-08,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": 0.3017915707713302,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "383796de-ccdf-4d9b-bb59-23eba30374a4",
+     "memory_significance_score": 0.999999964977612,
+     "novelty_score": 0.9999999933978896,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": 0.4091544699368596,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-26T02:15:47.303148+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "f571086f-9da7-4b2a-ab84-4045e2045b32",
+   "old_row": {
+    "approved_by": null,
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "rejected",
+    "summary": "ty!",
+    "summary_chars": 3,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "383796de-ccdf-4d9b-bb59-23eba30374a4",
+     "memory_significance_score": 0.9999993799688733,
+     "novelty_score": 9.482559477179251e-08,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": 0.4091544699368596,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "4c5db6ac-0a8d-46a5-8daf-4f557142f836",
+     "memory_significance_score": 0.9999995908292145,
+     "novelty_score": 0.9999988911740264,
+     "prompt": "ty!",
+     "prompt_chars": 3,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-26T04:19:49.380231+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "e453f8c3-9c8d-4c3c-a434-c77f39f1f5bf",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 4,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "4c5db6ac-0a8d-46a5-8daf-4f557142f836",
+     "memory_significance_score": 0.009277719000309454,
+     "novelty_score": 0.0725155153635085,
+     "prompt": "ty!",
+     "prompt_chars": 3,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "c22e65d7-8328-4774-9e25-7a6e4f791c35",
+     "memory_significance_score": 2.156063531289391e-07,
+     "novelty_score": 0.9999999843007688,
+     "prompt": "[redacted prompt: 4 chars]",
+     "prompt_chars": 4,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-26T04:44:51.25343+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "b828d241-4f63-4950-bacc-13d67fef5d5d",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 50,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "c22e65d7-8328-4774-9e25-7a6e4f791c35",
+     "memory_significance_score": 0.00039873279715333916,
+     "novelty_score": 0.0023720503062872873,
+     "prompt": "[redacted prompt: 4 chars]",
+     "prompt_chars": 4,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "80112d84-958f-41aa-8716-103989f34a2f",
+     "memory_significance_score": 0.009403985162447963,
+     "novelty_score": 0.9999999999974385,
+     "prompt": "[redacted prompt: 50 chars]",
+     "prompt_chars": 50,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-26T06:29:23.19361+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "0d5d82ae-e062-490f-87a2-b8fbc0d874aa",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 167,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "80112d84-958f-41aa-8716-103989f34a2f",
+     "memory_significance_score": 0.0016244941341874877,
+     "novelty_score": 0.961999924853553,
+     "prompt": "[redacted prompt: 50 chars]",
+     "prompt_chars": 50,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "1ee069c3-6032-486d-b7c6-c85809f341b5",
+     "memory_significance_score": 2.8081004709412504e-05,
+     "novelty_score": 0.9999566953191366,
+     "prompt": "[redacted prompt: 167 chars]",
+     "prompt_chars": 167,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-28T06:26:15.341093+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "bbba467b-7dd0-414a-b905-7033a1c7882b",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "hi",
+    "summary_chars": 2,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "1ee069c3-6032-486d-b7c6-c85809f341b5",
+     "memory_significance_score": 0.6149487684064505,
+     "novelty_score": 2.2746317023890298e-06,
+     "prompt": "[redacted prompt: 167 chars]",
+     "prompt_chars": 167,
+     "redacted": true,
+     "repair_level": 0.1944286716058007,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "b94ff36e-91f3-487e-8753-673fcd33227e",
+     "memory_significance_score": 0.0019829515266075637,
+     "novelty_score": 0.9999997379733216,
+     "prompt": "hi",
+     "prompt_chars": 2,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-28T06:31:27.116755+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "ca973fcb-658d-4539-bd4a-fa6442903581",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "hey, which queue?",
+    "summary_chars": 17,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "b94ff36e-91f3-487e-8753-673fcd33227e",
+     "memory_significance_score": 1.357153058881312e-06,
+     "novelty_score": 6.784144947875656e-07,
+     "prompt": "hi",
+     "prompt_chars": 2,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "8541979d-e437-47be-99b2-cf5df2471120",
+     "memory_significance_score": 0.4344659816307714,
+     "novelty_score": 0.9999999993871227,
+     "prompt": "hey, which queue?",
+     "prompt_chars": 17,
+     "redacted": false,
+     "repair_level": 0.2026873561569953,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-28T06:38:57.519807+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "d1c87869-be55-4518-ae55-dce6e9abfbb4",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 103,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "8541979d-e437-47be-99b2-cf5df2471120",
+     "memory_significance_score": 0.9951256299604779,
+     "novelty_score": 0.0025456769977661893,
+     "prompt": "hey, which queue?",
+     "prompt_chars": 17,
+     "redacted": false,
+     "repair_level": 0.2026873561569953,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "3778282d-0d88-4184-8f44-02c5b85adb35",
+     "memory_significance_score": 0.9820102894096555,
+     "novelty_score": 0.9999999991634074,
+     "prompt": "[redacted prompt: 103 chars]",
+     "prompt_chars": 103,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-28T08:45:16.035991+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "b7cbedbc-bddf-437c-8114-210e4348756e",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 29,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "3778282d-0d88-4184-8f44-02c5b85adb35",
+     "memory_significance_score": 0.25904655655271247,
+     "novelty_score": 0.6611011707563988,
+     "prompt": "[redacted prompt: 103 chars]",
+     "prompt_chars": 103,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "38d240cc-74a2-4a41-8f52-161070358adb",
+     "memory_significance_score": 0.9999999674731368,
+     "novelty_score": 0.2889138067841686,
+     "prompt": "[redacted prompt: 296 chars]",
+     "prompt_chars": 296,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "beab81a3-268e-4c2c-8032-cd4bb9373d16",
+     "memory_significance_score": 0.002052859865696702,
+     "novelty_score": 0.004484993526546017,
+     "prompt": "[redacted prompt: 115 chars]",
+     "prompt_chars": 115,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "a041a759-0791-408b-82d8-f265732544c5",
+     "memory_significance_score": 0.011721545141097607,
+     "novelty_score": 0.9999999619358156,
+     "prompt": "[redacted prompt: 29 chars]",
+     "prompt_chars": 29,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-28T08:57:18.880241+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "2bfc29d3-1ff2-42d9-8968-bf5c2bf7ddc7",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 56,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "a041a759-0791-408b-82d8-f265732544c5",
+     "memory_significance_score": 0.04355737441047584,
+     "novelty_score": 0.01798371606470634,
+     "prompt": "[redacted prompt: 29 chars]",
+     "prompt_chars": 29,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "c15a7a3a-7c56-4982-be70-421ac65e5408",
+     "memory_significance_score": 0.9472664530095235,
+     "novelty_score": 0.999999999978735,
+     "prompt": "Thanks. Headed to Austin and will fly back on Wednesday.",
+     "prompt_chars": 56,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-28T09:06:10.626127+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "0022ef9d-ad94-4359-849c-b9b86b179b85",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary_chars": 188,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "c15a7a3a-7c56-4982-be70-421ac65e5408",
+     "memory_significance_score": 0.0002263332132133385,
+     "novelty_score": 0.07104244179726175,
+     "prompt": "Thanks. Headed to Austin and will fly back on Wednesday.",
+     "prompt_chars": 56,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "df63a23c-d397-45a4-a60b-b7bb7fbbf871",
+     "memory_significance_score": 0.9178447670011238,
+     "novelty_score": 0.9999999999802118,
+     "prompt": "It's a team offsite for AI/ML. I'll be meeting my peers for the first time. It's nice to meet people and get out of my project work, but its also super draining for me--I'm an introvert :)",
+     "prompt_chars": 188,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-28T09:46:54.987009+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "0bce97d8-e0c2-475e-bdb5-58b5907403f9",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "Run github compactor.",
+    "summary_chars": 21,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "df63a23c-d397-45a4-a60b-b7bb7fbbf871",
+     "memory_significance_score": 0.39938786467653004,
+     "novelty_score": 0.9996692512834341,
+     "prompt": "It's a team offsite for AI/ML. I'll be meeting my peers for the first time. It's nice to meet people and get out of my project work, but its also super draining for me--I'm an introvert :)",
+     "prompt_chars": 188,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "db2e5b19-9d02-4138-9fbe-c6929a1e22a3",
+     "memory_significance_score": 0.513544567880845,
+     "novelty_score": 3.2448279483633324e-05,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-28T09:52:14.081736+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "ce6f1d54-8915-40fe-9093-53a74460ab47",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "Compact the last 24 hours of chat into a memory digest.",
+    "summary_chars": 55,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "db2e5b19-9d02-4138-9fbe-c6929a1e22a3",
+     "memory_significance_score": 0.9999999941272222,
+     "novelty_score": 7.955843879614295e-06,
+     "prompt": "Run github compactor.",
+     "prompt_chars": 21,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "539a306a-1c01-43d3-969e-23b49ba904aa",
+     "memory_significance_score": 0.999999998818941,
+     "novelty_score": 0.99999999999051,
+     "prompt": "Compact the last 24 hours of chat into a memory digest.",
+     "prompt_chars": 55,
+     "redacted": false,
+     "repair_level": 0.3017915707713302,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-28T09:55:02.952071+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "3d5b677b-aaea-43de-be00-1b88f6625502",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "semantic",
+    "status": "active",
+    "summary": "Do a journal pass.",
+    "summary_chars": 18,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "539a306a-1c01-43d3-969e-23b49ba904aa",
+     "memory_significance_score": 0.9999975394879095,
+     "novelty_score": 0.00022814012553248398,
+     "prompt": "Compact the last 24 hours of chat into a memory digest.",
+     "prompt_chars": 55,
+     "redacted": false,
+     "repair_level": 0.3017915707713302,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "0e7d3342-3e5d-42ed-94a9-6c845144de03",
+     "memory_significance_score": 0.3520007857671951,
+     "novelty_score": 0.9984234330504925,
+     "prompt": "Do a journal pass.",
+     "prompt_chars": 18,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "TOPIC"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-29T04:01:08.861574+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "37c3425d-b124-452f-bdaf-0a600f899d6b",
+   "old_row": {
+    "approved_by": "system:formation_policy",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "open_loop",
+    "status": "active",
+    "summary": "sup",
+    "summary_chars": 3,
+    "summary_is_junk": true
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "0e7d3342-3e5d-42ed-94a9-6c845144de03",
+     "memory_significance_score": 0.004764687357653236,
+     "novelty_score": 1.9278838779180675e-05,
+     "prompt": "Do a journal pass.",
+     "prompt_chars": 18,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "151b0268-2419-4974-b433-c9ce9394dfce",
+     "memory_significance_score": 2.0392544818617803e-06,
+     "novelty_score": 0.30055549912160306,
+     "prompt": "sup",
+     "prompt_chars": 3,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    }
+   ]
+  },
+  {
+   "closed_at": "2026-09-29T04:11:03.5706+00:00",
+   "consolidation_status": "ok",
+   "memory_window_id": "ade01c80-9554-4d9e-bd5a-adcfdf75dfba",
+   "old_row": {
+    "approved_by": "orion_journal",
+    "gate_reasons": [
+     "repair_signal"
+    ],
+    "kind": "stance",
+    "status": "active",
+    "summary_chars": 63,
+    "summary_is_junk": false
+   },
+   "turns": [
+    {
+     "appraised": true,
+     "correlation_id": "151b0268-2419-4974-b433-c9ce9394dfce",
+     "memory_significance_score": 7.511000312147491e-08,
+     "novelty_score": 1.9502947021998335e-07,
+     "prompt": "sup",
+     "prompt_chars": 3,
+     "redacted": false,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "NONE"
+    },
+    {
+     "appraised": true,
+     "correlation_id": "6602d921-0ad6-4010-896c-99d03abf70d5",
+     "memory_significance_score": 0.11404321306715921,
+     "novelty_score": 0.9999999999672717,
+     "prompt": "[redacted prompt: 63 chars]",
+     "prompt_chars": 63,
+     "redacted": true,
+     "repair_level": 0.08706577244027125,
+     "shift_kind": "STANCE"
+    }
+   ]
+  }
+ ]
+}

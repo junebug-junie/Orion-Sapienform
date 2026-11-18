@@ -58,13 +58,35 @@ class StubInducer:
         return type("Result", (), {"profile": self.profile, "delta": None})()
 
 
+class _ScriptedPubSub:
+    """get_message returns scripted items (exceptions are raised); calls ``on_empty`` once drained."""
+
+    def __init__(self, script, on_empty=None):
+        self.script = list(script)
+        self.on_empty = on_empty
+
+    async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+        if not self.script:
+            if self.on_empty is not None:
+                self.on_empty()
+            await asyncio.sleep(0.01)
+            return None
+        item = self.script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
 class FakeStreamingBus(FakeBus):
-    def __init__(self, messages=None):
+    """One subscribe session per entry in ``sessions`` (a message list, or an exception to raise)."""
+
+    def __init__(self, messages=None, *, sessions=None):
         super().__init__()
-        self.messages = messages or []
+        self.sessions = list(sessions) if sessions is not None else [list(messages or [])]
         self.connect_calls = 0
         self.close_calls = 0
         self.subscribe_calls = []
+        self.on_drained = None
 
         class _Codec:
             @staticmethod
@@ -82,11 +104,11 @@ class FakeStreamingBus(FakeBus):
     @asynccontextmanager
     async def subscribe(self, *channels, patterns=False):
         self.subscribe_calls.append((list(channels), patterns))
-        yield object()
-
-    async def iter_messages(self, _pubsub):
-        for msg in self.messages:
-            yield msg
+        session = self.sessions.pop(0)
+        if isinstance(session, BaseException):
+            raise session
+        last = not self.sessions
+        yield _ScriptedPubSub(session, on_empty=self.on_drained if last else None)
 
 
 class ConceptInductionTests(unittest.TestCase):
@@ -676,6 +698,7 @@ class ConceptInductionTests(unittest.TestCase):
                 {"type": "message", "channel": b"orion:metacognition:tick", "data": type("Decoded", (), {"ok": False, "envelope": None, "error": "bad"})()},
             ]
         )
+        worker.bus.on_drained = worker._stop_event.set
         asyncio.run(worker.start())
         status = worker.worker_liveness_status()
         self.assertTrue(status["bus_consumer_started"])
@@ -684,6 +707,42 @@ class ConceptInductionTests(unittest.TestCase):
         self.assertEqual(status["total_events_rejected"], 1)
         self.assertIsNotNone(status["last_event_received_at"])
         self.assertTrue(worker.bus.subscribe_calls)
+
+    def test_worker_resubscribes_after_the_intake_subscription_drops(self):
+        """Live 2026-10-20: one redis error ended the intake loop while the service looked healthy."""
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        env = BaseEnvelope(
+            kind="metacognition.tick.v1",
+            source=ServiceRef(name="test", version="0.0.0"),
+            correlation_id=uuid4(),
+            payload={"subject": "orion", "summary": "tick"},
+        )
+        msg = {"type": "message", "channel": b"orion:metacognition:tick",
+               "data": type("Decoded", (), {"ok": True, "envelope": env})()}
+        handled = []
+
+        async def _handle(envelope, channel):
+            handled.append(channel)
+            if len(handled) == 1:
+                raise ValueError("bad envelope")  # must be counted, not end intake
+
+        worker.handle_envelope = _handle
+        worker.bus = FakeStreamingBus(sessions=[
+            [msg, ConnectionError("Connection reset by peer")],
+            [msg],
+        ])
+        worker.bus.on_drained = worker._stop_event.set
+        asyncio.run(asyncio.wait_for(worker.start(), timeout=10))
+
+        status = worker.worker_liveness_status()
+        self.assertEqual(len(worker.bus.subscribe_calls), 2)
+        self.assertEqual(handled, ["orion:metacognition:tick"] * 2)
+        self.assertTrue(status["bus_consumer_started"])
+        self.assertEqual(status["bus_subscription_failures_total"], 1)
+        self.assertIn("ConnectionError", status["worker_last_exception"])
+        self.assertEqual(status["stop_reason"], "stopped")
+        self.assertEqual(status["total_events_failed"], 1)
+        self.assertIn("bad envelope", status["last_handler_exception"])
 
     def test_worker_done_callback_captures_exception(self):
         worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))

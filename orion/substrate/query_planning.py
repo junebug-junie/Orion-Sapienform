@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
-from .store import SubstrateGraphStore, SubstrateQueryResultV1
+from .store import SubstrateGraphStore, SubstrateQueryResultV1, SubstrateNeighborhoodSliceV1
+from .neighborhood import NeighborhoodRequestV1
 
 
 @dataclass(frozen=True)
@@ -60,23 +61,6 @@ class SubstrateQueryExecutionV1:
 
 class SubstrateQueryPlanner:
     @staticmethod
-    def graph_view_basis(*, subject_ref: str | None, max_nodes: int, max_edges: int) -> SubstrateQueryPlanV1:
-        bounded_nodes = max(1, int(max_nodes))
-        bounded_edges = max(1, int(max_edges))
-        return SubstrateQueryPlanV1(
-            plan_kind="graph_view_basis",
-            steps=(
-                SubstrateQueryPlanStepV1("hotspot_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
-                SubstrateQueryPlanStepV1("concept_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
-                SubstrateQueryPlanStepV1("contradiction_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
-                SubstrateQueryPlanStepV1(
-                    "provenance_neighborhood",
-                    {"evidence_ref": str(subject_ref or ""), "limit_nodes": bounded_nodes, "limit_edges": bounded_edges},
-                ),
-            ),
-        )
-
-    @staticmethod
     def consolidation_region(*, target_zone: str, focal_node_refs: list[str], max_nodes: int, max_edges: int) -> SubstrateQueryPlanV1:
         bounded_nodes = max(1, int(max_nodes))
         bounded_edges = max(1, int(max_edges))
@@ -105,7 +89,6 @@ class SubstrateQueryPlanner:
             steps=(
                 SubstrateQueryPlanStepV1("hotspot_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
                 SubstrateQueryPlanStepV1("concept_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
-                SubstrateQueryPlanStepV1("contradiction_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
             ),
         )
 
@@ -180,6 +163,32 @@ class SubstrateSemanticReadCoordinator:
         return SubstrateQueryExecutionV1(plan=plan, results=tuple(results), meta=meta)
 
     def _dispatch(self, step: SubstrateQueryPlanStepV1) -> SubstrateQueryResultV1:
+        if step.query_kind == "neighborhood":
+            request = NeighborhoodRequestV1.model_validate(step.params)
+            result = self._store.read_neighborhood(request)
+            return SubstrateQueryResultV1(
+                query_kind="neighborhood", source_kind=result.source_kind,
+                slice=SubstrateNeighborhoodSliceV1(
+                    nodes=result.focal_nodes + result.neighbor_nodes,
+                    edges=result.internal_edges + result.boundary_edges),
+                degraded=result.degraded, error=result.reason if result.degraded else None,
+                truncated=result.truncated,
+                limits={"internal_edge_limit": request.internal_edge_limit,
+                        "boundary_edge_limit": request.boundary_edge_limit,
+                        "neighbor_node_limit": request.neighbor_node_limit},
+                details={"focal_node_refs": [n.node_id for n in result.focal_nodes],
+                         "neighbor_node_refs": [n.node_id for n in result.neighbor_nodes],
+                         "focal_edge_refs": [e.edge_id for e in result.internal_edges],
+                         "boundary_edge_refs": [e.edge_id for e in result.boundary_edges],
+                         "projection_endpoint_node_refs": list(result.projection_endpoint_node_ids),
+                         "complete_for_request": result.complete_for_request,
+                         "read_started_at": result.read_started_at,
+                         "read_finished_at": result.read_finished_at,
+                         "consistency": result.consistency,
+                         "reason": result.reason,
+                         "missing_focal_node_ids": list(result.missing_focal_node_ids),
+                         "continuations": list(result.continuations)},
+            )
         if step.query_kind == "hotspot_region":
             return self._store.query_hotspot_region(
                 min_salience=float(step.params.get("min_salience", 0.6)),
@@ -188,11 +197,6 @@ class SubstrateSemanticReadCoordinator:
             )
         if step.query_kind == "concept_region":
             return self._store.query_concept_region(
-                limit_nodes=int(step.params.get("limit_nodes", 32)),
-                limit_edges=int(step.params.get("limit_edges", 64)),
-            )
-        if step.query_kind == "contradiction_region":
-            return self._store.query_contradiction_region(
                 limit_nodes=int(step.params.get("limit_nodes", 32)),
                 limit_edges=int(step.params.get("limit_edges", 64)),
             )

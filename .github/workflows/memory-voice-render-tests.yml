@@ -1,0 +1,47 @@
+# Memory Stage 2 PR D: the voice renderer (orion/memory/voice_render.py) and its
+# callers. Source monitoring: a reverie is never rendered as something Juniper
+# said; Juniper's voices need her verified words; rejected/corrected memories
+# never render as truth. No DB, bus or LLM. The episode report's Postgres-backed
+# test runs in orion-memory-episode-tests.yml.
+
+name: memory-voice-render-tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/memory/voice_render.py"
+      - "orion/memory/episode/validate.py"
+      - "orion/memory/tests/**"
+      - "services/orion-cortex-exec/app/chat_stance.py"
+      - "services/orion-cortex-exec/tests/test_chat_stance_reverie_glimpse_projection.py"
+      - ".github/workflows/memory-voice-render-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/memory/voice_render.py"
+      - "orion/memory/episode/validate.py"
+      - "orion/memory/tests/**"
+      - "services/orion-cortex-exec/app/chat_stance.py"
+      - ".github/workflows/memory-voice-render-tests.yml"
+
+jobs:
+  unit:
+    name: Voice renderer and reverie glimpse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install "pydantic>=2.7,<3" "pydantic-settings==2.3.4" \
+            "fastapi==0.111.0" "httpx==0.27.0" "SQLAlchemy==2.0.43" "asyncpg==0.29.0" \
+            "python-dotenv==1.0.1" "requests==2.32.5" "loguru>=0.7" "pyaml==25.7.0"
+      - name: Renderer source-monitoring matrix
+        run: PYTHONPATH=. python -m pytest -q -p no:cacheprovider orion/memory/tests
+      - name: orion-cortex-exec reverie glimpse (legacy chat_general stance)
+        working-directory: services/orion-cortex-exec
+        run: python -m pytest -q -p no:cacheprovider tests/test_chat_stance_reverie_glimpse_projection.py

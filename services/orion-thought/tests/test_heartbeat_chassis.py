@@ -55,6 +55,7 @@ async def test_lifespan_starts_and_stops_heartbeat_chassis(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(thought_main, "warm_pool", _fake_warm_pool)
+    monkeypatch.setattr(settings, "visual_painting_gap_check_enabled", False)
 
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
     monkeypatch.setattr(thought_main, "build_heartbeat_chassis", lambda: fake_chassis)
@@ -79,6 +80,7 @@ async def test_lifespan_survives_heartbeat_start_failure(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(thought_main, "warm_pool", _fake_warm_pool)
+    monkeypatch.setattr(settings, "visual_painting_gap_check_enabled", False)
 
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
     fake_chassis.start_background.side_effect = RuntimeError("bus unreachable")

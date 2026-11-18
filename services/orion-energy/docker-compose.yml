@@ -1,5 +1,9 @@
 services:
   orion-energy:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     container_name: ${PROJECT}-orion-energy
     build:
       context: ../..
@@ -13,6 +17,10 @@ services:
       - app-net
 
   orion-energy-portal:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     container_name: ${PROJECT}-orion-energy-portal
     # Not started by a plain `up`: needs the chmod-600 credentials file first (README "Portal").
     profiles: ["portal"]

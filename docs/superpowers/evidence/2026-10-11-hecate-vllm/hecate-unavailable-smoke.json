@@ -1,0 +1,25 @@
+{
+  "correlation_id": "cbd6e36f-9581-4114-916d-303cb2415380",
+  "pool_before": {
+    "role": "agent-deep",
+    "kind": "llm",
+    "cards": [
+      "hecate-gpu0"
+    ],
+    "url": "http://100.87.202.68:8021",
+    "status": "down",
+    "profile_name": "qwen3-4b-vllm-hecate",
+    "model_file": null,
+    "model_path": null,
+    "slots": 0,
+    "ctx_per_slot": null,
+    "vision": null,
+    "vram_gb": null,
+    "detail": "ConnectError: All connection attempts failed",
+    "checked_at": "2026-10-11T08:49:21.735004Z"
+  },
+  "client_error": "TimeoutError",
+  "detail": "timed out",
+  "child_leases": [],
+  "active_child_leases": []
+}

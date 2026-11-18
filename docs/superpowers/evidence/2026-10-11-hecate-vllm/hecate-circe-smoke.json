@@ -1,0 +1,6 @@
+{
+  "correlation_id": "0fb5c43c-36cb-421c-81b0-75dbe3ef8ed0",
+  "model": "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf",
+  "content": "READY.",
+  "passed": true
+}

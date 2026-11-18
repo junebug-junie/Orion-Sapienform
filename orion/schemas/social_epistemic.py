@@ -28,7 +28,6 @@ SocialEpistemicSourceBasis = Literal[
     "social_memory",
     "active_thread",
     "explicit_peer_request",
-    "open_commitment",
     "pending_artifact",
     "repair_context",
     "low_evidence",

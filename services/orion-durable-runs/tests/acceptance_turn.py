@@ -201,6 +201,11 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
     http_owners = {}
 
     def observe(stage, ref):
+        if ref is None and stage == "harness_finalize_reflect":
+            # The 5b judge of a hold off a judge role (gpu2 seat) leaves the hold on route `judge`
+            # (orion/harness/finalize.py resolve_finalize_judge_placement); the test checks which.
+            stages.append({"stage": stage, "hold_lease_id": None, "hold_generation": None, "hold_holder": None})
+            return
         assert ref is not None, f"{stage} dropped the durable owner"
         ref = ref if isinstance(ref, dict) else ref.model_dump(mode="json")
         stages.append({"stage": stage, "hold_lease_id": ref["lease_id"], "hold_generation": ref["generation"],

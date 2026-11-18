@@ -13,8 +13,8 @@ logger = logging.getLogger("orion.graph-compression.stale_listener")
 # 2026-07-28: orion-rdf-writer (the only other consumer of that channel) was
 # retired, and live verification of this listener's own consumption found it
 # was already dead weight -- the Redis stream key didn't exist (zero messages
-# ever), and the one real producer (orion-cortex-exec's self_concept_induce/
-# reflect verbs) wrote graph names this mapping didn't even recognize, so it
+# ever), and the one real producer (orion-cortex-exec's self-study induce/
+# reflect verbs, retired 2026-10-30) wrote graph names this mapping didn't even recognize, so it
 # only ever hit the "mark everything stale" fallback branch, and never
 # observably did so (stale_queue was empty). See
 # orion/bus/channels.yaml's orion:rdf:enqueue entry for the full writeup.

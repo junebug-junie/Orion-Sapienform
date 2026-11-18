@@ -6,6 +6,12 @@ from scripts.repair_pressure_wiring import attach_repair_pressure_contract
 from scripts.substrate_effect_cache import SubstrateEffectSnapshot
 from scripts.substrate_effect_pipeline import run_substrate_effect_pipeline
 
+import pytest
+
+
+# See conftest.pre_turn_appraisal_off: these tests assume pre-turn appraisal is off.
+pytestmark = pytest.mark.usefixtures("pre_turn_appraisal_off")
+
 
 def test_metadata_key_is_stable_string() -> None:
     assert REPAIR_PRESSURE_CONTRACT_METADATA_KEY == "repair_pressure_contract"

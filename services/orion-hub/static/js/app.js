@@ -179,6 +179,13 @@ let notifications = [];
 let pendingAttention = [];
 const seenMessageIds = new Set();
 const openedMessageIds = new Set();
+// Orion's own outreach messages in the tray (orion-message-tray.js). Durable
+// rows come from orion-notify and stay until Juniper dismisses each one.
+let orionOpenMessages = [];
+const dismissedOrionMessageIds = new Set();
+// Ids orion-notify reports closed (dismissed elsewhere) that Hub's cache still
+// holds. Recomputed on every durable load. See closedByDurable().
+let orionClosedByDurable = new Set();
 const NOTIFICATION_MAX = 200;
 let notificationToastSeconds = 8;
 
@@ -210,7 +217,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const statusDiv = document.getElementById('status');
   const conversationDiv = document.getElementById('conversation');
   const chatInput = document.getElementById('chatInput');
-  const chatTurnTimer = document.getElementById('chatTurnTimer');
+  // The turn clock chip is created per turn inside the user's message (see startTurnTimer).
+let chatTurnTimer = null;
   const operatorToolsOpenBtn = document.getElementById('operatorToolsOpenBtn');
   const operatorToolsModalRoot = document.getElementById('operatorToolsModalRoot');
   const operatorToolsModalBackdrop = document.getElementById('operatorToolsModalBackdrop');
@@ -268,6 +276,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const presenceClearButton = document.getElementById('presenceClearButton');
   const recallModeSelect = document.getElementById('recallModeSelect');
   const recallProfileSelect = document.getElementById('recallProfileSelect');
+  const recallModeToggle = document.getElementById('recallModeToggle');
+  const recallModeCaret = document.getElementById('recallModeCaret');
+  const recallModeBody = document.getElementById('recallModeBody');
+  const recallModeControls = document.getElementById('recallModeControls');
+  const recallModeOpenModal = document.getElementById('recallModeOpenModal');
+  const recallModeModalRoot = document.getElementById('recallModeModalRoot');
+  const recallModeModalBackdrop = document.getElementById('recallModeModalBackdrop');
+  const recallModeModalDialog = document.getElementById('recallModeModalDialog');
+  const recallModeModalClose = document.getElementById('recallModeModalClose');
+  const recallModeModalBody = document.getElementById('recallModeModalBody');
+  const cabinetAudioButton = document.getElementById('cabinetAudioButton');
+  const cabinetAudioStatus = document.getElementById('cabinetAudioStatus');
   const debugPanelOpenModal = document.getElementById('debugPanelOpenModal');
   const debugPanelModalRoot = document.getElementById('debugPanelModalRoot');
   const debugPanelModalBackdrop = document.getElementById('debugPanelModalBackdrop');
@@ -509,6 +529,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const substrateReviewResultRaw = document.getElementById('substrateReviewResultRaw');
   const notificationList = document.getElementById('notificationList');
   const notificationFilter = document.getElementById('notificationFilter');
+  const orionMessagesBadge = document.getElementById('orionMessagesBadge');
   const attentionList = document.getElementById('attentionList');
   const attentionDismissAllBtn = document.getElementById('attentionDismissAllBtn');
   let dismissAllAttentionInFlight = false;
@@ -666,6 +687,23 @@ document.addEventListener("DOMContentLoaded", () => {
   // Visualizers
   const visualizerCanvas = document.getElementById('visualizer');
   const canvasCtx = visualizerCanvas ? visualizerCanvas.getContext('2d') : null;
+  const visualizerLabel = document.getElementById('visualizerLabel');
+  // Live cabinet mic analyser (cabinet-live-audio.js); drawn under Orion's voice.
+  let cabinetAnalyser = null;
+  let voiceBoxVoiceVisible = false;
+  // The voice box is collapsed unless Orion's voice or the cabinet mic is
+  // actually playing, so the transcript gets the vertical space. The canvas's
+  // ResizeObserver re-sizes it when it reappears.
+  function setVoiceBoxVisible(visible) {
+    voiceBoxVoiceVisible = visible;
+    const box = visualizerCanvas && visualizerCanvas.parentElement;
+    if (box) box.classList.toggle('hidden', !(visible || cabinetAnalyser));
+    if (visualizerLabel) {
+      visualizerLabel.textContent = cabinetAnalyser
+        ? (visible ? 'Cabinet + Oríon’s Voice' : 'Cabinet')
+        : 'Oríon’s Voice';
+    }
+  }
   
   // NOTE: stateVisualizer was replaced by an iframe in the HTML. 
   // We check for its existence to prevent crashes.
@@ -778,6 +816,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const moodArcStatusTabButton = document.getElementById("moodArcStatusTabButton");
   const moodArcStatusPanelEl = document.getElementById("mood-arc-status");
   const moodArcStatusFrame = document.getElementById("moodArcStatusFrame");
+  const orionEnergyTabButton = document.getElementById("orionEnergyTabButton");
+  const orionEnergyPanelEl = document.getElementById("orion-energy");
+  const orionEnergyFrame = document.getElementById("orionEnergyFrame");
+  const bodyEconomyTabButton = document.getElementById("bodyEconomyTabButton");
+  const bodyEconomyPanelEl = document.getElementById("body-economy");
+  const bodyEconomyFrame = document.getElementById("bodyEconomyFrame");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -1071,6 +1115,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "mood-arc-status" && !moodArcStatusPanelEl) {
       effectiveTab = "hub";
     }
+    if (tabKey === "orion-energy" && !orionEnergyPanelEl) {
+      effectiveTab = "hub";
+    }
+    if (tabKey === "body-economy" && !bodyEconomyPanelEl) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "collapse-mirror" && !collapseMirrorPanel) {
       effectiveTab = "hub";
     }
@@ -1107,6 +1157,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const isSubstrateLattice = effectiveTab === "substrate-lattice";
     const isFieldChannelGlossary = effectiveTab === "field-channel-glossary";
     const isMoodArcStatus = effectiveTab === "mood-arc-status";
+    const isOrionEnergy = effectiveTab === "orion-energy";
+    const isBodyEconomy = effectiveTab === "body-economy";
     const isMind = effectiveTab === "mind";
     const isSignals = effectiveTab === "signals";
     const isCollapseMirror = effectiveTab === "collapse-mirror";
@@ -1273,6 +1325,20 @@ document.addEventListener("DOMContentLoaded", () => {
       const currentSrc = moodArcStatusFrame.getAttribute("src");
       moodArcStatusFrame.setAttribute("src", currentSrc);
     }
+    if (orionEnergyPanelEl) {
+      orionEnergyPanelEl.classList.toggle("hidden", !isOrionEnergy);
+    }
+    if (orionEnergyFrame && isOrionEnergy) {
+      const currentSrc = orionEnergyFrame.getAttribute("src");
+      orionEnergyFrame.setAttribute("src", currentSrc);
+    }
+    if (bodyEconomyPanelEl) {
+      bodyEconomyPanelEl.classList.toggle("hidden", !isBodyEconomy);
+    }
+    if (bodyEconomyFrame && isBodyEconomy) {
+      const currentSrc = bodyEconomyFrame.getAttribute("src");
+      bodyEconomyFrame.setAttribute("src", currentSrc);
+    }
     if (collapseMirrorPanel) {
       collapseMirrorPanel.classList.toggle("hidden", !isCollapseMirror);
     }
@@ -1396,6 +1462,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (moodArcStatusTabButton) {
       styleTabButton(moodArcStatusTabButton, isMoodArcStatus);
+    }
+    if (orionEnergyTabButton) {
+      styleTabButton(orionEnergyTabButton, isOrionEnergy);
+    }
+    if (bodyEconomyTabButton) {
+      styleTabButton(bodyEconomyTabButton, isBodyEconomy);
     }
     if (collapseMirrorTabButton) {
       styleTabButton(collapseMirrorTabButton, isCollapseMirror);
@@ -1998,6 +2070,10 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("field-channel-glossary");
     } else if (h === "#mood-arc-status" && moodArcStatusPanelEl && moodArcStatusTabButton) {
       setActiveTab("mood-arc-status");
+    } else if (h === "#orion-energy" && orionEnergyPanelEl && orionEnergyTabButton) {
+      setActiveTab("orion-energy");
+    } else if (h === "#body-economy" && bodyEconomyPanelEl && bodyEconomyTabButton) {
+      setActiveTab("body-economy");
     } else if (h === "#memory" && memoryPanel && memoryTabButton) {
       setActiveTab("memory");
     } else if (h === "#mind" && mindPanel && mindTabButton) {
@@ -2027,6 +2103,8 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#substrate-lattice"
         || h === "#field-channel-glossary"
         || h === "#mood-arc-status"
+        || h === "#orion-energy"
+        || h === "#body-economy"
         || h === "#memory"
         || h === "#mind"
         || h === "#signals"
@@ -3143,29 +3221,50 @@ document.addEventListener("DOMContentLoaded", () => {
   // turn's timer, and must not report the reconnect gap as its duration.
   let turnTimerOwner = null;
 
+  // The clock lives on the turn itself: a chip in the header of the user message
+  // that started the turn. It ticks while the turn runs and stays frozen at the
+  // final duration afterwards, so every turn keeps its own recorded time.
+  function attachTurnClock() {
+    if (chatTurnTimer && chatTurnTimer.isConnected) return chatTurnTimer;
+    if (!conversationDiv) return null;
+    const users = conversationDiv.querySelectorAll('[data-role="user"]');
+    const host = users.length ? users[users.length - 1] : null;
+    const headerEl = host && host.firstElementChild;
+    if (!headerEl) return null;
+    const chip = document.createElement('span');
+    chip.className = 'om-turn-clock is-running';
+    chip.dataset.turnClock = '1';
+    chip.title = 'Elapsed processing time for this turn';
+    // Right after the sender name, before the hover actions.
+    headerEl.insertBefore(chip, headerEl.children[1] || null);
+    chatTurnTimer = chip;
+    return chip;
+  }
+
   function paintTurnTimer() {
-    if (!chatTurnTimer) return;
     // Formatting lives in turn-timer.js so its minute-rollover edges are
     // unit-testable without a DOM harness. Guarded like every other optional
     // module in this file: a cosmetic chip must not be able to throw out of
     // updateStatusBasedOnState() and abort WebSocket frame handling.
     const format = window.OrionTurnTimer && window.OrionTurnTimer.formatTurnElapsed;
     if (typeof format !== 'function') return;
-    chatTurnTimer.textContent = format(Date.now() - turnTimerStartedAt);
+    // Voice turns can start the clock before the transcript message exists;
+    // keep trying to attach until it does.
+    const chip = attachTurnClock();
+    if (!chip) return;
+    chip.textContent = format(Date.now() - turnTimerStartedAt);
   }
 
   function startTurnTimer(owner) {
-    if (!chatTurnTimer) return;
     // Every start is a fresh turn hand-off, so the clock always restarts. The
     // WS and HTTP lanes are the two branches of one if/else and can never both
     // run for a single turn, so there is no "second lane joining" case to
     // protect -- and keeping a previous turn's start time would report an
     // elapsed time that never happened.
     if (turnTimerHandle) window.clearInterval(turnTimerHandle);
+    chatTurnTimer = null;
     turnTimerOwner = owner || null;
     turnTimerStartedAt = Date.now();
-    chatTurnTimer.classList.remove('hidden', 'text-gray-400');
-    chatTurnTimer.classList.add('text-amber-300');
     paintTurnTimer();
     turnTimerHandle = window.setInterval(paintTurnTimer, 100);
   }
@@ -3176,13 +3275,13 @@ document.addEventListener("DOMContentLoaded", () => {
     window.clearInterval(turnTimerHandle);
     turnTimerHandle = null;
     turnTimerOwner = null;
-    if (!chatTurnTimer) return;
     // repaint:false freezes the chip on its last painted value. Used when the
     // socket dies mid-turn: the turn is over, and the time since is dead air,
     // not thinking time.
-    if (opts.repaint !== false) paintTurnTimer();
-    chatTurnTimer.classList.remove('text-amber-300');
-    chatTurnTimer.classList.add('text-gray-400');
+    if (opts.repaint !== false && chatTurnTimer) paintTurnTimer();
+    if (chatTurnTimer) chatTurnTimer.classList.remove('is-running');
+    // Detach: a later turn must never reuse (and overwrite) this recorded clock.
+    chatTurnTimer = null;
   }
 
   function syncCockpitLiveButton() {
@@ -3492,6 +3591,7 @@ document.addEventListener("DOMContentLoaded", () => {
       || isModalVisible(autonomyConstitutionModalRoot)
       || isModalVisible(autonomyReadinessModalRoot)
       || isModalVisible(debugPanelModalRoot)
+      || isModalVisible(recallModeModalRoot)
       || isModalVisible(biometricsModalRoot)
       || isModalVisible(agentTraceModal)
       || isModalVisible(cockpitHudRoot);
@@ -3606,6 +3706,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!value) return;
     syncChatInputFromExpandTextarea();
     closeChatInputExpandModal({ applyToInput: false, focusInput: false });
+    if (routeComposerToClaude(value)) return;
     await submitExplicitChatText(value);
   }
 
@@ -4277,6 +4378,33 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     debugPanelModalRoot.classList.remove('hidden');
     debugPanelModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function toggleRecallModePanel() {
+    if (!recallModeBody) return;
+    const nextHidden = !recallModeBody.classList.contains('hidden');
+    recallModeBody.classList.toggle('hidden', nextHidden);
+    if (recallModeCaret) recallModeCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  // The selects are the live inputs every chat send reads, so there is exactly
+  // one copy: the modal borrows #recallModeControls and gives it back on close.
+  function openRecallModeModal() {
+    if (!recallModeModalRoot) return;
+    if (recallModeModalRoot.parentElement !== document.body) document.body.appendChild(recallModeModalRoot);
+    if (recallModeControls && recallModeModalBody) recallModeModalBody.appendChild(recallModeControls);
+    recallModeModalRoot.classList.remove('hidden');
+    recallModeModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+    if (recallModeSelect) recallModeSelect.focus();
+  }
+
+  function closeRecallModeModal() {
+    if (!recallModeModalRoot) return;
+    if (recallModeControls && recallModeBody) recallModeBody.appendChild(recallModeControls);
+    recallModeModalRoot.classList.add('hidden');
+    recallModeModalRoot.setAttribute('aria-hidden', 'true');
     syncDebugModalScrollLock();
   }
 
@@ -6576,7 +6704,7 @@ document.addEventListener("DOMContentLoaded", () => {
         handleChatMessageReceipt(notification.message_id, notification.session_id, 'seen');
       }
     }
-    if (notification.notification_type === 'endogenous_outreach') {
+    if (isOrionTrayMessage(notification)) {
       // Live sockets already rendered this as a chat bubble (the orion_outreach
       // branch in socket.onmessage), and the notification rides the same tts_q,
       // so toasting it too would show the identical text twice. It still lands
@@ -6632,24 +6760,207 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  function renderNotifications() {
-    if (!notificationList) return;
+  function orionTray() {
+    return (typeof window !== 'undefined' && window.OrionMessageTray) || null;
+  }
+
+  function isOrionTrayMessage(n) {
+    const t = orionTray();
+    if (t) return t.isOrionMessage(n);
+    return Boolean(n && n.notification_type === 'endogenous_outreach');
+  }
+
+  // Open Orion messages: durable rows plus any that arrived live on this page.
+  function currentOrionMessages() {
+    const t = orionTray();
+    if (!t) return [];
+    const hidden = new Set([...dismissedOrionMessageIds, ...orionClosedByDurable]);
+    return t.mergeOpenMessages(orionOpenMessages, notifications, hidden);
+  }
+
+  // The normal cards under the Orion rows: severity filter, then the
+  // self-clearing alert rule (orion-message-tray.js explains it).
+  function generalTrayItems() {
     const filter = notificationFilter ? notificationFilter.value : 'all';
-    notificationList.innerHTML = '';
-    const filtered = sortedNotificationsForTray(notifications).filter(
+    const base = notifications.filter(
       (n) =>
         isNotificationTrayItem(n) &&
+        !isOrionTrayMessage(n) &&
         (filter === 'all' || (n.severity || '').toLowerCase() === filter)
     );
+    const t = orionTray();
+    const collapsed = t ? t.collapseSelfClearing(base) : { visible: base, hidden: 0, groups: new Map() };
+    return { base, ...collapsed };
+  }
 
-    if (notificationsDismissAllBtn) notificationsDismissAllBtn.disabled = filtered.length === 0;
+  async function loadOrionMessages() {
+    try {
+      const resp = await fetch(
+        `${API_BASE_URL}/api/chat/messages?status=open&tag=endogenous_outreach&limit=100`
+      );
+      // A failed fetch must not read as "nothing is open": keep the live list.
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (Array.isArray(data)) {
+        orionOpenMessages = data;
+        const t = orionTray();
+        orionClosedByDurable = t ? t.closedByDurable(data, notifications) : new Set();
+        renderNotifications();
+      }
+    } catch (err) {
+      console.warn('Failed to load Orion messages', err);
+    }
+  }
 
-    if (filtered.length === 0) {
+  async function dismissOrionMessage(m) {
+    if (!m || !m.message_id || dismissedOrionMessageIds.has(m.message_id)) return;
+    dismissedOrionMessageIds.add(m.message_id);
+    renderNotifications();
+    const ok = await handleChatMessageReceipt(m.message_id, m.session_id, 'dismissed');
+    if (!ok) {
+      // Not saved, so it would come back on reload. Say so now instead.
+      dismissedOrionMessageIds.delete(m.message_id);
+      renderNotifications();
+      showToastText('Could not save that dismiss. The message is back in the tray.');
+    }
+  }
+
+  // Reply: put the chat on the message's conversation, show the message
+  // there, and focus the input so Juniper can just type.
+  function replyToOrionMessage(m) {
+    if (!m) return;
+    let bubble = null;
+    const esc = (v) => (window.CSS && typeof window.CSS.escape === 'function' ? window.CSS.escape(v) : v);
+    if (conversationDiv) {
+      for (const id of [m.correlation_id, m.message_id].filter(Boolean)) {
+        bubble = conversationDiv.querySelector(`[data-turn-id="${esc(id)}"]`);
+        if (bubble) break;
+      }
+    }
+    // Already on screen: Juniper is in that thread. Otherwise switch to the
+    // message's thread, and say so in the chat, because Hub cannot reload an
+    // older thread's history and the turns above belong to another thread.
+    if (!bubble && m.session_id && m.session_id !== orionSessionId) {
+      setSessionId(m.session_id);
+      if (conversationDiv && conversationDiv.children.length) {
+        appendMessage('System', 'Replying in the thread where Orion said this. The messages above are from another thread.', 'text-gray-400');
+      }
+      // Same hello the socket sends on connect, so the server (outreach and
+      // the reply stamp) knows this tab is now in that thread.
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        try {
+          socket.send(JSON.stringify({ type: 'session_hello', session_id: m.session_id }));
+        } catch (err) {
+          console.warn('[WS] session_hello failed', err);
+        }
+      }
+    }
+    if (conversationDiv) {
+      if (!bubble && m.text) {
+        appendMessage('Orion', m.text, 'text-white', {
+          correlationId: m.correlation_id || null,
+          messageId: m.message_id,
+          turnId: m.correlation_id || m.message_id,
+          mode: 'orion',
+          unsolicited: true,
+        });
+        bubble = conversationDiv.lastElementChild;
+      }
+    }
+    focusChatInput();
+    if (bubble && typeof bubble.scrollIntoView === 'function') {
+      bubble.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    handleChatMessageReceipt(m.message_id, m.session_id, 'opened');
+    // Replying handles it: the message is in the chat now, so it leaves the tray.
+    dismissOrionMessage(m);
+  }
+
+  function renderOrionMessageRow(m) {
+    const item = document.createElement('div');
+    item.className = 'om-orion-msg rounded-lg border border-green-800/60 bg-green-950/30 p-2';
+    item.dataset.messageId = m.message_id;
+
+    const head = document.createElement('div');
+    head.className = 'flex items-center justify-between gap-2';
+    const who = document.createElement('div');
+    who.className = 'text-[11px] font-semibold text-green-300';
+    const when = m.created_at ? formatHubLocalTime(m.created_at) : '';
+    who.textContent = when ? `Orion · ${when}` : 'Orion';
+
+    const actions = document.createElement('div');
+    actions.className = 'flex items-center gap-1';
+    const replyBtn = document.createElement('button');
+    replyBtn.type = 'button';
+    replyBtn.className = 'om-orion-reply text-[10px] px-2 py-0.5 rounded bg-green-800/80 hover:bg-green-700 text-white';
+    replyBtn.textContent = 'Reply';
+    replyBtn.title = 'Open this conversation in the chat and reply';
+    replyBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      replyToOrionMessage(m);
+    });
+    const dismissBtn = document.createElement('button');
+    dismissBtn.type = 'button';
+    dismissBtn.className = 'om-orion-dismiss text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200';
+    dismissBtn.textContent = 'Dismiss';
+    dismissBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dismissOrionMessage(m);
+    });
+    actions.appendChild(replyBtn);
+    actions.appendChild(dismissBtn);
+    head.appendChild(who);
+    head.appendChild(actions);
+
+    const fullText = normalizeTextForPreview(m.text || '');
+    const body = document.createElement('div');
+    body.className = 'mt-1 text-[11px] text-gray-200 line-clamp-2';
+    body.textContent = truncate(fullText);
+    body.title = fullText;
+
+    item.appendChild(head);
+    item.appendChild(body);
+    return item;
+  }
+
+  function renderNotifications() {
+    if (!notificationList) return;
+    notificationList.innerHTML = '';
+
+    const orionMessages = currentOrionMessages();
+    if (orionMessagesBadge) {
+      orionMessagesBadge.textContent = orionMessages.length ? `Orion ${orionMessages.length}` : '';
+      orionMessagesBadge.classList.toggle('hidden', orionMessages.length === 0);
+    }
+    orionMessages.forEach((m) => notificationList.appendChild(renderOrionMessageRow(m)));
+
+    const tray = generalTrayItems();
+    const filtered = sortedNotificationsForTray(tray.visible);
+
+    if (notificationsDismissAllBtn) notificationsDismissAllBtn.disabled = tray.base.length === 0;
+
+    if (orionMessages.length && filtered.length) {
+      const divider = document.createElement('div');
+      divider.className = 'border-t border-gray-800';
+      notificationList.appendChild(divider);
+    }
+
+    if (filtered.length === 0 && orionMessages.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'text-xs text-gray-500 italic';
       empty.textContent = 'No notifications';
       notificationList.appendChild(empty);
-      return;
+    }
+
+    if (tray.hidden > 0) {
+      // Rendered last (below the cards) but built here so every exit path has it.
+      tray.hiddenNote = document.createElement('div');
+      tray.hiddenNote.className = 'om-cleared-hidden text-[10px] text-gray-500 italic';
+      tray.hiddenNote.textContent = `${tray.hidden} self-cleared alert${tray.hidden === 1 ? '' : 's'} hidden`;
+      tray.hiddenNote.title =
+        'Alerts whose condition has already cleared (a matching *_cleared notice arrived), and repeats of a condition that is still on. Full list: /api/notifications.';
     }
 
     filtered.forEach((n) => {
@@ -6676,8 +6987,11 @@ document.addEventListener("DOMContentLoaded", () => {
       dismissBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const identity = notificationIdentity(n);
-        notifications = notifications.filter((item) => notificationIdentity(item) !== identity);
+        // A collapsed alert card stands for its whole family; drop all of it,
+        // or the next-newest hidden repeat would pop up in its place.
+        const group = tray.groups.get(n) || [n];
+        const doomed = new Set(group.map(notificationIdentity));
+        notifications = notifications.filter((item) => !doomed.has(notificationIdentity(item)));
         renderNotifications();
         if (n && n.message_id && n.session_id) {
           handleChatMessageReceipt(n.message_id, n.session_id, 'dismissed');
@@ -6731,6 +7045,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (details) item.appendChild(details);
       notificationList.appendChild(item);
     });
+    if (tray.hiddenNote) notificationList.appendChild(tray.hiddenNote);
   }
 
   function focusChatInput() {
@@ -6784,14 +7099,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function dismissAllNotifications() {
     if (!Array.isArray(notifications)) return;
-    const filter = notificationFilter ? notificationFilter.value : 'all';
-    // Scoped to what the active filter is actually showing -- dismissing rows
-    // the operator cannot see would be a surprise.
-    const targets = notifications.filter(
-      (n) =>
-        isNotificationTrayItem(n) &&
-        (filter === 'all' || (n.severity || '').toLowerCase() === filter)
-    );
+    // Scoped to the active severity filter. Includes the self-cleared alerts
+    // the tray folds away (they stand behind the visible cards). Orion's own
+    // messages are left alone: each waits for its own Dismiss or Reply.
+    const targets = generalTrayItems().base;
     if (!targets.length) return;
     const doomed = new Set(targets.map(notificationIdentity));
     notifications = notifications.filter((n) => !doomed.has(notificationIdentity(n)));
@@ -6803,14 +7114,26 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // Returns true when Hub accepted the receipt, false otherwise (callers that
+  // must not pretend a dismiss was saved check it).
   async function handleChatMessageReceipt(messageId, sessionId, receiptType) {
-    if (!messageId || !sessionId) return;
-    if (String(messageId).startsWith('synthetic:')) return;
+    if (!messageId || !sessionId) return false;
+    if (String(messageId).startsWith('synthetic:')) return false;
     // Deduplicate double-clicks / bubbling
     const key = `${messageId}:${receiptType}`;
-    window.__orionReceiptInFlight = window.__orionReceiptInFlight || new Set();
-    if (window.__orionReceiptInFlight.has(key)) return;
-    window.__orionReceiptInFlight.add(key);
+    // Same receipt already in flight: share its result instead of guessing.
+    window.__orionReceiptInFlight = window.__orionReceiptInFlight || new Map();
+    if (window.__orionReceiptInFlight.has(key)) return window.__orionReceiptInFlight.get(key);
+    const pending = sendChatMessageReceipt(messageId, sessionId, receiptType);
+    window.__orionReceiptInFlight.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      try { window.__orionReceiptInFlight.delete(key); } catch (_) {}
+    }
+  }
+
+  async function sendChatMessageReceipt(messageId, sessionId, receiptType) {
     try {
       const resp = await fetch(`${API_BASE_URL}/api/chat/message/${messageId}/receipt`, {
         method: 'POST',
@@ -6818,10 +7141,10 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({ session_id: sessionId, receipt_type: receiptType }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return true;
     } catch (err) {
       console.warn('Failed to send chat message receipt', err);
-    } finally {
-      try { window.__orionReceiptInFlight.delete(key); } catch (_) {}
+      return false;
     }
   }
 
@@ -7053,7 +7376,6 @@ document.addEventListener("DOMContentLoaded", () => {
     addSection('time_place', 'Time/place', { time: (meta.situation_brief || {}).time, place: (meta.situation_brief || {}).place });
     addSection('weather', 'Weather/environment', (meta.situation_brief || {}).environment);
     addSection('agenda', 'Agenda', (meta.situation_brief || {}).agenda);
-    addSection('lab', 'Lab context', (meta.situation_brief || {}).lab);
     addSection('surface', 'Surface', (meta.situation_brief || {}).surface);
     addSection('affordances', 'Affordances', meta.situation_affordances || (meta.situation_brief || {}).affordances);
     addSection('provider_diagnostics', 'Provider diagnostics', (meta.situation_brief || {}).diagnostics);
@@ -7260,7 +7582,7 @@ document.addEventListener("DOMContentLoaded", () => {
       { value: 'incomplete_truncated', label: 'Incomplete / truncated' },
       { value: 'did_not_answer_directly', label: "Didn't answer directly" },
       { value: 'missed_edge_cases', label: 'Missed edge cases' },
-      { value: 'incorrect_tone', label: 'Incorrect tone' },
+      { value: 'bad_tone', label: 'Bad tone' },
       { value: 'too_boilerplate_generic', label: 'Too boilerplate / generic' },
       { value: 'too_guarded_sanitized', label: 'Too guarded / sanitized' },
       { value: 'poor_attunement', label: 'Poor attunement' },
@@ -7588,10 +7910,35 @@ document.addEventListener("DOMContentLoaded", () => {
     const corr = meta.correlationId || meta.correlation_id;
     if (!corr || typeof finalizeLiveClaudeTrace !== 'function') return;
     try {
-      finalizeLiveClaudeTrace(corr, document, messageEl);
+      const panel = finalizeLiveClaudeTrace(corr, document, messageEl);
+      if (panel) addHarnessButton(messageEl, panel);
     } catch (err) {
       console.warn('claude trace finalize failed', err);
     }
+  }
+
+  // Once the turn is done the FCC harness trace is no longer an inline card: it
+  // becomes a hover-revealed button (next to Expand / Copy) that opens the same
+  // card in the message-expand modal.
+  function addHarnessButton(messageEl, panel) {
+    let actions = messageEl.querySelector('.om-msg-copy');
+    if (!actions) {
+      actions = document.createElement('div');
+      actions.className = 'om-msg-copy flex items-center gap-1';
+      const headerEl = messageEl.firstElementChild;
+      if (!headerEl) return;
+      headerEl.appendChild(actions);
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className =
+      'rounded-md border border-gray-700 bg-gray-900/70 px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-gray-500 hover:text-white';
+    const heading = panel.querySelector('.agent-live-trace__heading');
+    btn.textContent = 'Harness';
+    btn.title = (heading && heading.textContent) || 'FCC harness';
+    btn.setAttribute('aria-label', 'Open FCC harness trace');
+    btn.addEventListener('click', () => openChatMessageExpandModal('FCC harness', [panel], ''));
+    actions.insertBefore(btn, actions.firstChild);
   }
 
   // ── Chat attachments: viewer + per-message thumbnails ──────────────────
@@ -8053,6 +8400,9 @@ document.addEventListener("DOMContentLoaded", () => {
         console.warn('[Hub] Chat stance debug panel failed', err);
       }
     }
+    // Returned so a draft-first turn can move the final into the draft's slot
+    // (draft-revision.js::settleWithFinal). Existing callers ignore it.
+    return div;
   }
 
   function collectConversationTurnsUpTo(anchorEl, maxTurns) {
@@ -9009,7 +9359,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function loadNotifications() {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/notifications?limit=50`);
+      // Whole Hub cache (NOTIFY_IN_APP_MAX=200): the self-clearing rule needs
+      // to see an alert's matching *_cleared notice to fold it away.
+      const resp = await fetch(`${API_BASE_URL}/api/notifications?limit=200`);
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -9017,8 +9369,10 @@ document.addEventListener("DOMContentLoaded", () => {
         notificationsInitialHydrateDone = true;
         notifications = data;
         renderNotifications();
-        if (firstHydrate && data.length >= notificationBatchHydrateThreshold()) {
-          showToastText(`${data.length} notifications loaded (see tray)`);
+        // Count what the tray will actually show, not folded-away alerts.
+        const shown = generalTrayItems().visible.length;
+        if (firstHydrate && shown >= notificationBatchHydrateThreshold()) {
+          showToastText(`${shown} notifications loaded (see tray)`);
         }
       }
     } catch (err) {
@@ -9786,13 +10140,58 @@ document.addEventListener("DOMContentLoaded", () => {
   const askClaudeButton = document.getElementById('askClaudeButton');
   const askClaudeStatusChip = document.getElementById('askClaudeStatusChip');
 
+  // One Claude turn in flight at a time, tracked here rather than read back
+  // from the button's DOM state. The reply frame normally clears it; the
+  // timeout is a safety valve for a reply that never arrives (socket
+  // reconnected mid-reply, relay died after accepting), which used to leave
+  // Ask Claude -- and now every typed @claude -- stuck until a page reload.
+  const ASK_CLAUDE_BUSY_TIMEOUT_MS = 5 * 60 * 1000;
+  let askClaudeInFlight = false;
+  let askClaudeBusyTimer = null;
   function setAskClaudeBusy(busy) {
-    if (askClaudeButton) askClaudeButton.disabled = Boolean(busy);
-    if (askClaudeStatusChip) askClaudeStatusChip.classList.toggle('hidden', !busy);
+    askClaudeInFlight = Boolean(busy);
+    if (askClaudeBusyTimer) {
+      clearTimeout(askClaudeBusyTimer);
+      askClaudeBusyTimer = null;
+    }
+    if (askClaudeInFlight) {
+      askClaudeBusyTimer = setTimeout(() => {
+        askClaudeBusyTimer = null;
+        setAskClaudeBusy(false);
+        updateStatus('No reply from Claude after 5 minutes. You can ask again.');
+      }, ASK_CLAUDE_BUSY_TIMEOUT_MS);
+    }
+    if (askClaudeButton) askClaudeButton.disabled = askClaudeInFlight;
+    if (askClaudeStatusChip) askClaudeStatusChip.classList.toggle('hidden', !askClaudeInFlight);
   }
 
-  async function askClaude() {
-    const value = (chatInput && chatInput.value ? chatInput.value : '').trim();
+  // Fail closed: if claude-address.js did not load (404, a stale cached
+  // index.html without its script tag), an "@claude ..." message must still
+  // never reach Orion. Same pattern as claude-address.js.
+  const CLAUDE_ADDRESS_FALLBACK = /^@claude(?=$|[\s,:;])/i;
+  function parseClaudeAddressSafe(text) {
+    if (window.OrionClaudeAddress && typeof window.OrionClaudeAddress.parseClaudeAddress === 'function') {
+      return window.OrionClaudeAddress.parseClaudeAddress(text);
+    }
+    const value = String(text == null ? '' : text).trim();
+    if (!CLAUDE_ADDRESS_FALLBACK.test(value)) return { toClaude: false, prompt: value };
+    return {
+      toClaude: true,
+      prompt: value.replace(CLAUDE_ADDRESS_FALLBACK, '').replace(/^\s*[,:;]?\s*/, '').trim(),
+    };
+  }
+
+  // `typed`, when given, is a chat-box message that started with "@claude"
+  // (see routeComposerToClaude): its prompt with the address stripped, plus
+  // the original text to echo as Juniper's bubble. Called with no argument by
+  // the Ask Claude button, which reads the composer itself.
+  async function askClaude(typed) {
+    const fromAddress = Boolean(typed && typeof typed === 'object');
+    // The button sends the box's text without its "@claude" address too, so
+    // the two entry points give Claude the same prompt for the same text.
+    const value = fromAddress
+      ? String(typed.prompt || '').trim()
+      : parseClaudeAddressSafe(chatInput && chatInput.value ? chatInput.value : '').prompt;
     // Falls back to the last thing said when the composer is empty, so "Ask
     // Claude" works as "weigh in on this" without retyping the question.
     // That fallback text is not necessarily Juniper's -- it could be Orion's
@@ -9806,7 +10205,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!prompt) {
       const last = lastRoomMessage();
       if (last) {
-        prompt = last.text;
+        // Juniper's own "@claude ..." bubble is a fallback candidate too;
+        // hand Claude the message, not the address.
+        const addressed = parseClaudeAddressSafe(last.text);
+        prompt = (addressed.toClaude && addressed.prompt) ? addressed.prompt : last.text;
         invitedBy = last.sender === 'You' ? 'Juniper' : last.sender;
       } else {
         prompt = 'What do you make of the conversation so far?';
@@ -9830,7 +10232,19 @@ document.addEventListener("DOMContentLoaded", () => {
         setAskClaudeBusy(false);
         return;
       }
-      if (value && chatInput) chatInput.value = '';
+      if (fromAddress) {
+        // Her words stay visible in the room. Shown only once the invite is
+        // accepted, so a refused invite leaves the text in the box instead.
+        // DOM only: nothing here reaches Orion's history (see PR report
+        // docs/superpowers/pr-reports/2026-11-12-hub-at-claude-pr.md).
+        if (value) appendMessage('You', typed.original || value, 'text-white', { mode: 'room_claude' });
+        if (chatInput) chatInput.value = '';
+        if (chatInputExpandTextarea) chatInputExpandTextarea.value = '';
+        updateClaudeAddressCue();
+      } else if (chatInput && chatInput.value.trim()) {
+        chatInput.value = '';
+        updateClaudeAddressCue();
+      }
       // Busy stays on until the room_claude_utterance frame arrives; the reply
       // is asynchronous over the socket, not in this response.
     } catch (err) {
@@ -9857,12 +10271,70 @@ document.addEventListener("DOMContentLoaded", () => {
     return null;
   }
 
-  if (askClaudeButton) askClaudeButton.addEventListener('click', askClaude);
+  // A chat-box message starting with "@claude" goes to Claude through the same
+  // invite as the Ask Claude button and NEVER starts an Orion turn. Returns
+  // true when it took the message (sent, or held because Claude is still
+  // replying), false when the text is ordinary chat for Orion.
+  function routeComposerToClaude(text) {
+    const parsed = parseClaudeAddressSafe(text);
+    if (!parsed.toClaude) return false;
+    const pendingImages = chatAttachmentsController && typeof chatAttachmentsController.peekPending === 'function'
+      ? chatAttachmentsController.peekPending().length
+      : 0;
+    if (pendingImages) {
+      // The invite carries text only. Sending anyway would leave the images
+      // pending, and they would ride out silently on her next Orion message.
+      const msg = 'Images cannot go to Claude. Remove them, or send without @claude to give them to Orion.';
+      if (typeof chatAttachmentsController.setStatus === 'function') chatAttachmentsController.setStatus(msg, 'error');
+      updateStatus(msg);
+      return true;
+    }
+    if (askClaudeInFlight) {
+      // Same limit as the button: one Claude turn in flight at a time. The
+      // text stays in the box; it is not handed to Orion instead.
+      updateStatus('Claude is still replying. Your @claude message is still in the box.');
+      return true;
+    }
+    askClaude({ prompt: parsed.prompt, original: String(text || '').trim() });
+    return true;
+  }
+
+  // Amber Send button (and expanded-composer Send) while the box starts with
+  // "@claude", so Juniper sees where the message goes before she sends it.
+  // Function declaration (hoisted) with its class lists inside, so an early
+  // caller such as submitExplicitChatText cannot hit a const's dead zone.
+  function updateClaudeAddressCue() {
+    const CLAUDE_CUE_ON = ['bg-amber-600', 'hover:bg-amber-500'];
+    const CLAUDE_CUE_OFF = ['bg-indigo-600', 'hover:bg-indigo-500'];
+    const text = chatInputExpandModalRoot && !chatInputExpandModalRoot.classList.contains('hidden') && chatInputExpandTextarea
+      ? chatInputExpandTextarea.value
+      : (chatInput ? chatInput.value : '');
+    const toClaude = parseClaudeAddressSafe(text).toClaude;
+    for (const btn of [sendButton, chatInputExpandModalSend]) {
+      if (!btn) continue;
+      if (btn.dataset.claudeAddress === (toClaude ? '1' : '0')) continue;
+      btn.dataset.claudeAddress = toClaude ? '1' : '0';
+      btn.classList.remove(...(toClaude ? CLAUDE_CUE_OFF : CLAUDE_CUE_ON));
+      btn.classList.add(...(toClaude ? CLAUDE_CUE_ON : CLAUDE_CUE_OFF));
+      if (btn === sendButton) btn.textContent = toClaude ? 'To Claude' : 'Send';
+      btn.title = toClaude ? 'Starts with @claude: goes to Claude, not Orion' : '';
+    }
+    if (chatInput && chatInput.dataset.claudeAddress !== (toClaude ? '1' : '0')) {
+      // Border, not ring: the box's own focus:ring-indigo-500 would win over
+      // an amber ring exactly while she is typing.
+      chatInput.dataset.claudeAddress = toClaude ? '1' : '0';
+      chatInput.classList.toggle('border-amber-500', toClaude);
+      chatInput.classList.toggle('border-gray-700', !toClaude);
+    }
+  }
+
+  if (askClaudeButton) askClaudeButton.addEventListener('click', () => askClaude());
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (stopButton) stopButton.addEventListener('click', stopCurrentTurn);
   if (cockpitLiveButton) cockpitLiveButton.addEventListener('click', openLiveCockpit);
   if (chatInput) {
     chatInput.addEventListener('input', () => {
+      updateClaudeAddressCue();
       if (!chatInputExpandModalRoot || chatInputExpandModalRoot.classList.contains('hidden')) return;
       syncChatExpandTextareaFromInput();
     });
@@ -9918,7 +10390,10 @@ document.addEventListener("DOMContentLoaded", () => {
     notificationsDismissAllBtn.addEventListener('click', () => dismissAllNotifications());
   }
   if (chatInputExpandTextarea) {
-    chatInputExpandTextarea.addEventListener('input', syncChatInputFromExpandTextarea);
+    chatInputExpandTextarea.addEventListener('input', () => {
+      syncChatInputFromExpandTextarea();
+      updateClaudeAddressCue();
+    });
     chatInputExpandTextarea.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
@@ -10009,6 +10484,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const { prompt: promptText } = getSkillRunnerSelection();
       if (!promptText) return;
       chatInput.value = promptText;
+      updateClaudeAddressCue();
       chatInput.focus();
     });
   }
@@ -10131,6 +10607,7 @@ document.addEventListener("DOMContentLoaded", () => {
       clearAudioWatchdog();
       audioQueue = [];
       isPlayingAudio = false;
+      setVoiceBoxVisible(false);
       updateStatusBasedOnState();
       interruptButton.classList.add('hidden');
     });
@@ -10332,63 +10809,6 @@ document.addEventListener("DOMContentLoaded", () => {
     return null;
   }
 
-  // "Lend chat GPU" button: lends / takes back gpu0 (chat's card) in orion-gpu-pool.
-  // While lent, other work may borrow gpu0 when chat is idle. Chat still owns the card:
-  // a chat message recalls any borrower (grace period, then it runs). Nothing is held or
-  // emailed any more. State is read from the gateway's route catalog (chat-burst gate_open
-  // mirrors the pool's gpu0 lent flag).
-  const CHAT_LANE_LEND_ROUTE = 'chat-burst';
-  const chatLaneLendToggle = document.getElementById('chatLaneLendToggle');
-  let chatLaneLendOpen = false;
-
-  function renderChatLaneLend(gate) {
-    if (!chatLaneLendToggle) return;
-    const on = !!(gate && (gate.open === true || gate.gate_open === true));
-    chatLaneLendOpen = on;
-    chatLaneLendToggle.textContent = on ? 'Lend chat GPU: on' : 'Lend chat GPU: off';
-    chatLaneLendToggle.classList.toggle('bg-emerald-700', on);
-    chatLaneLendToggle.classList.toggle('border-emerald-500', on);
-  }
-
-  function chatBurstGateFromCatalog(catalog) {
-    const entry = ((catalog && catalog.routes) || []).find(
-      (r) => String(r.id || '').toLowerCase() === CHAT_LANE_LEND_ROUTE,
-    );
-    return entry ? { open: entry.gate_open === true } : null;
-  }
-
-  async function toggleChatLaneLend() {
-    if (!chatLaneLendToggle) return;
-    const wantOpen = !chatLaneLendOpen;
-    chatLaneLendToggle.disabled = true;
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/gpu-pool/control`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        // X-Requested-With: the pool control route refuses requests without it (CSRF guard).
-        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'orion-hub' },
-        body: JSON.stringify({ verb: wantOpen ? 'lend' : 'unlend', card: 'gpu0' }),
-      });
-      const body = await res.json().catch(() => null);
-      if (!res.ok || !(body && body.ok)) {
-        const detail = body && (body.detail || body.reason) ? (body.detail || body.reason) : `HTTP ${res.status}`;
-        throw new Error(String(typeof detail === 'string' ? detail : JSON.stringify(detail)));
-      }
-      renderChatLaneLend({ open: !!(body.detail && body.detail.lent) });
-      updateStatus(chatLaneLendOpen
-        ? 'Chat GPU lent: other work may use it while chat is idle. Your chat still takes it back.'
-        : 'Chat GPU taken back: only chat uses it.');
-    } catch (err) {
-      appendMessage('System', `Lend chat GPU failed: ${err && err.message ? err.message : err}`, 'text-red-400');
-    } finally {
-      chatLaneLendToggle.disabled = false;
-    }
-  }
-
-  if (chatLaneLendToggle) {
-    chatLaneLendToggle.addEventListener('click', () => { toggleChatLaneLend(); });
-  }
-
   async function loadLlmRouteCatalog() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/llm-routes`);
@@ -10398,10 +10818,6 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!known.has(String(selectedLlmRoute || '').toLowerCase())) {
         selectedLlmRoute = HUB_COMPUTE_DEFAULT;
       }
-      // The catalog already polls every 30 s; piggyback the gate state on it so the
-      // button follows a flip made from another tab without its own timer.
-      const gate = chatBurstGateFromCatalog(llmRouteCatalog);
-      if (gate) renderChatLaneLend(gate);
     } catch (err) {
       console.warn('[Compute lanes] catalog load failed', err);
     }
@@ -10621,6 +11037,17 @@ document.addEventListener("DOMContentLoaded", () => {
   if (memoryDebugModalDialog) {
     memoryDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
+  if (recallModeToggle) recallModeToggle.addEventListener('click', toggleRecallModePanel);
+  if (recallModeOpenModal) {
+    recallModeOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openRecallModeModal();
+    });
+  }
+  if (recallModeModalClose) recallModeModalClose.addEventListener('click', closeRecallModeModal);
+  if (recallModeModalBackdrop) recallModeModalBackdrop.addEventListener('click', closeRecallModeModal);
+  if (recallModeModalDialog) recallModeModalDialog.addEventListener('click', (event) => event.stopPropagation());
   ensureDebugPanelModalRootOnBody();
   if (debugPanelOpenModal) {
     debugPanelOpenModal.addEventListener('click', (event) => {
@@ -11155,6 +11582,10 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && recallModeModalRoot && !recallModeModalRoot.classList.contains('hidden')) {
+      closeRecallModeModal();
+      return;
+    }
     if (event.key === 'Escape' && memoryGraphBridgeModal && !memoryGraphBridgeModal.classList.contains('hidden')) {
       closeMemoryGraphBridgeModal();
       return;
@@ -11278,115 +11709,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function agentAnswerHeadline(answerStatus) {
-    const status = String(answerStatus || '').trim();
-    if (status === 'answered_grounded') return 'Agent investigation complete';
-    if (status === 'partial_grounding') return 'Partially grounded investigation';
-    if (status === 'dependency_unavailable') return 'Investigation blocked by unavailable dependencies';
-    if (status === 'failed_fake_engine_selected') return 'Blocked: fake engine selected';
-    if (status === 'failed_grounding_preflight') return 'Runtime completed, but no real investigation occurred';
-    if (status === 'no_reliable_evidence') return 'No reliable grounded answer found';
-    if (['failed_fake_engine_selected', 'failed_grounding_preflight', 'no_reliable_evidence', 'failed'].includes(status)) {
-      return 'Runtime complete';
-    }
-    return 'Runtime complete';
-  }
-
-  function formatInvestigationV2Report(artifact) {
-    if (!artifact || typeof artifact !== 'object') return '';
-    const answerStatus = String(artifact.answer_status || 'unknown');
-    const lines = [
-      agentAnswerHeadline(answerStatus),
-      `Answer status: ${answerStatus}`,
-      `Summary: ${artifact.summary || 'No summary.'}`,
-    ];
-    const sections = artifact.sections && typeof artifact.sections === 'object' ? artifact.sections : {};
-    const order = ['repo', 'traces', 'recall', 'memory', 'runtime', 'health'];
-    const sectionLines = [];
-    order.forEach((name) => {
-      const sec = sections[name];
-      if (!sec || typeof sec !== 'object') return;
-      const title = sec.title || name;
-      const status = sec.status || 'unknown';
-      const summary = sec.summary || '';
-      sectionLines.push(`  - ${title} [${status}]: ${summary}`);
-    });
-    if (sectionLines.length) {
-      lines.push('Sections:');
-      lines.push(...sectionLines);
-    }
-    [
-      ['Unavailable', 'unavailable_sources'],
-      ['Failed', 'failed_sources'],
-      ['Blocked', 'blocked_sources'],
-    ].forEach(([label, key]) => {
-      const items = artifact[key];
-      if (Array.isArray(items) && items.length) {
-        lines.push(`${label} sources: ${items.join(', ')}`);
-      }
-    });
-    const limitations = artifact.limitations;
-    if (Array.isArray(limitations) && limitations.length) {
-      lines.push('Limitations:');
-      limitations.slice(0, 6).forEach((item) => lines.push(`  - ${item}`));
-    }
-    return lines.join('\n');
-  }
-
-  function recallFailureLine(organStatus) {
-    if (!organStatus || typeof organStatus !== 'object') return null;
-    const recall = organStatus.recall;
-    if (!recall || typeof recall !== 'object' || !recall.attempted || !recall.error) return null;
-    const errText = String(recall.error);
-    if (/redis|timeout/i.test(errText)) return `Recall failed: Redis timeout (${errText})`;
-    return `Recall failed: ${errText}`;
-  }
-
   function resolveAssistantDisplayText(d) {
     if (!d || typeof d !== 'object') return '';
     const userFacing = String(d.llm_response ?? d.text ?? '').trim();
     if (userFacing) return userFacing;
-    if (d.mode === 'agent' && d.operator_summary && typeof d.operator_summary === 'object') {
-      const op = d.operator_summary;
-      const dbg = d.routing_debug && typeof d.routing_debug === 'object' ? d.routing_debug : {};
-      const answerStatus = String(dbg.answer_status || '').trim();
-      const synthesis = dbg.model_synthesis_used ? 'used'
-        : (dbg.synthesis_fallback_used || String(dbg.synthesis_fallback_reason || '').startsWith('synthesis') ? 'fallback' : 'skipped');
-      const organStatus = dbg.organ_status
-        || (d.agent_trace && d.agent_trace.raw && d.agent_trace.raw.organ_status)
-        || (d.context_exec_run && d.context_exec_run.runtime_debug && d.context_exec_run.runtime_debug.organ_status)
-        || null;
-      const ctxRun = d.context_exec_run && typeof d.context_exec_run === 'object' ? d.context_exec_run : null;
-      const v2Artifact = ctxRun && ctxRun.mode === 'investigation_v2' && ctxRun.artifact
-        ? ctxRun.artifact
-        : (op.agent_mode === 'investigation_v2' && d.raw && d.raw.metadata && d.raw.metadata.context_exec
-          ? d.raw.metadata.context_exec.artifact
-          : null);
-      if (v2Artifact && typeof v2Artifact === 'object') {
-        return formatInvestigationV2Report(v2Artifact);
-      }
-      const headline = agentAnswerHeadline(answerStatus);
-      const lines = [
-        headline,
-        `Mode: ${op.agent_mode || dbg.context_exec_mode || 'unknown'}`,
-        `Route: ${op.route_used || dbg.route_used || dbg.llm_profile || 'chat'}`,
-        `Synthesis: ${synthesis}`,
-        `Result: ${op.summary || ''}`,
-      ];
-      if (answerStatus) {
-        lines.splice(1, 0, `Answer status: ${answerStatus}`);
-      }
-      const recallLine = recallFailureLine(organStatus);
-      if (recallLine) {
-        lines.splice(answerStatus ? 2 : 1, 0, recallLine);
-      }
-      if (op.proposal_id) {
-        lines.push(`Proposal: ${op.proposal_id} ${op.proposal_status || 'pending_review'}`);
-        lines.push('Open Pending Decisions to review.');
-      }
-      lines.push('Mutation: none');
-      return lines.join('\n');
-    }
     const top = String(d.llm_response ?? d.text ?? '').trim();
     const raw = d.raw && typeof d.raw === 'object' ? d.raw : {};
     const nested = String(raw.final_text ?? '').trim();
@@ -11516,6 +11842,20 @@ document.addEventListener("DOMContentLoaded", () => {
             activeConnectionId = d.connection_id || null;
             return;
           }
+          if (d.kind === 'consult_turn' || d.kind === 'consult_brief') {
+            // A consult between Orion and Claude (static/js/consult.js). Not an
+            // Orion turn: returns before the generic branch so it cannot
+            // overwrite the recall/debug panels of the last real turn.
+            if (window.OrionConsult) window.OrionConsult.onFrame(d);
+            return;
+          }
+          if (d.kind === 'session_thread_turn') {
+            // A coding session's message to Orion, Hub's receipt, or Orion's
+            // hourly questions (static/js/session-threads.js). Not an Orion
+            // chat turn: returns before the generic branch, like a consult.
+            if (window.OrionSessionThreads) window.OrionSessionThreads.onFrame(d);
+            return;
+          }
           if (d.kind === 'room_claude_utterance') {
             // Claude's turn in the room. Handled before the generic assistant
             // branch and returns early for the same reason orion_outreach does:
@@ -11589,7 +11929,32 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             return;
           }
+          if (d.type === 'draft_preview') {
+            // Draft-first (spec L8): show the reply writer's draft now; the
+            // final frame for the same turn replaces it in place.
+            const draftApi = window.OrionDraftRevision;
+            if (draftApi && conversationDiv) {
+              try {
+                const md = window.ChatMarkdown && typeof window.ChatMarkdown.renderMarkdown === 'function'
+                  ? (t) => window.ChatMarkdown.renderMarkdown(t)
+                  : null;
+                if (draftApi.showDraft(conversationDiv, d, { renderMarkdown: md })) {
+                  conversationDiv.scrollTop = conversationDiv.scrollHeight;
+                }
+              } catch (err) { console.warn('draft_preview render failed', err); }
+            }
+            return;
+          }
+          // Only turn-ending frames can settle a draft; skip the DOM scan for
+          // the many step/hop frames that also carry a correlation id.
+          const pendingDraftNode = (
+            (d.type === 'final' || d.type === 'turn_error' || d.type === 'turn_deferred')
+            && window.OrionDraftRevision && conversationDiv && d.correlation_id
+          )
+            ? window.OrionDraftRevision.findDraft(conversationDiv, d.correlation_id)
+            : null;
           if (d.type === 'turn_deferred') {
+            if (pendingDraftNode) window.OrionDraftRevision.settleWithoutFinal(pendingDraftNode);
             appendMessage(
               'System',
               `Turn deferred: ${d.reason || 'stance unavailable'}`,
@@ -11609,7 +11974,11 @@ document.addEventListener("DOMContentLoaded", () => {
             const phase = d.phase ? ` (${d.phase})` : '';
             const detail = d.error || d.grounding_status || 'turn failed';
             const partialDraft = typeof d.partial_draft === 'string' ? d.partial_draft.trim() : '';
-            if (partialDraft) {
+            if (pendingDraftNode) {
+              // The draft is already on screen; label it unchecked rather
+              // than adding a second copy of the same text.
+              window.OrionDraftRevision.settleWithoutFinal(pendingDraftNode);
+            } else if (partialDraft) {
               appendMessage('Orion', partialDraft, 'text-yellow-200', {
                 correlationId: d.correlation_id,
                 mode: d.mode || 'orion',
@@ -11624,7 +11993,7 @@ document.addEventListener("DOMContentLoaded", () => {
           const displayText = resolveAssistantDisplayText(d);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
           if (shouldAppendOrionWsPayload(d)) {
-            appendMessage('Orion', displayText || '', 'text-white', {
+            const finalNode = appendMessage('Orion', displayText || '', 'text-white', {
               raw: d.raw,
               reasoning: d.reasoning,
               reasoningTrace: d.reasoning_trace,
@@ -11665,6 +12034,11 @@ document.addEventListener("DOMContentLoaded", () => {
               situationAffordances: d.situation_affordances,
               substrateEffectSummary: d.substrate_effect_summary || null,
             });
+            if (pendingDraftNode) {
+              try {
+                window.OrionDraftRevision.settleWithFinal(conversationDiv, pendingDraftNode, finalNode, d);
+              } catch (err) { console.warn('draft settle failed', err); }
+            }
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
           }
@@ -11688,10 +12062,6 @@ document.addEventListener("DOMContentLoaded", () => {
           }
           if (d.kind === 'notification' && d.notification) {
             addNotification(d.notification);
-          }
-          if (d.kind === 'agent_step' && d.step) {
-            try { appendLiveAgentStep(d.correlation_id, d.step); } catch (err) { console.warn('agent_step render failed', err); }
-            return;
           }
           if (d.kind === 'claude_step' && d.step) {
             // Belt-and-suspenders: if turn_started was missed, first claude_step
@@ -11792,34 +12162,23 @@ document.addEventListener("DOMContentLoaded", () => {
     return base;
   }
 
+  // Row markup and read-back live in presence-form.js (unit-tested there).
   function renderPresenceCompanions(companions = []) {
-    if (!presenceCompanionRows) return;
+    if (!presenceCompanionRows || !window.OrionPresenceForm) return;
     presenceCompanionRows.innerHTML = '';
     companions.forEach((item, idx) => {
       const row = document.createElement('div');
-      row.className = 'grid grid-cols-1 gap-1 rounded border border-gray-700 bg-gray-900/40 p-2 md:grid-cols-6';
-      row.innerHTML = `
-        <input data-presence-field="display_name" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="Name" value="${item.display_name || ''}" />
-        <input data-presence-field="relationship" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="relationship" value="${item.relationship || 'other'}" />
-        <input data-presence-field="role" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="role" value="${item.role || 'nearby'}" />
-        <input data-presence-field="age_band" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="age_band" value="${item.age_band || 'unknown'}" />
-        <input data-presence-field="context_note" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="context note" value="${item.context_note || ''}" />
-        <button data-presence-remove="${idx}" class="rounded border border-rose-500/50 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-200" type="button">Remove</button>
-      `;
+      row.className = 'grid grid-cols-2 items-end gap-2 rounded border border-gray-700 bg-gray-900/40 p-2 md:grid-cols-6';
+      row.innerHTML = window.OrionPresenceForm.rowHtml(item, idx);
       presenceCompanionRows.appendChild(row);
     });
   }
 
   function collectPresenceCompanions() {
-    if (!presenceCompanionRows) return [];
-    const rows = {};
-    presenceCompanionRows.querySelectorAll('input[data-presence-index]').forEach((el) => {
-      const idx = String(el.dataset.presenceIndex || '');
-      const field = String(el.dataset.presenceField || '');
-      if (!rows[idx]) rows[idx] = {};
-      rows[idx][field] = String(el.value || '').trim();
-    });
-    return Object.values(rows).filter((row) => row.display_name);
+    if (!presenceCompanionRows || !window.OrionPresenceForm) return [];
+    return window.OrionPresenceForm.collectRows(
+      Array.from(presenceCompanionRows.querySelectorAll('[data-presence-index]'))
+    );
   }
 
   async function loadPresenceContext() {
@@ -11951,6 +12310,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     appendMessage('You', value, 'text-white', { attachments: outboundAttachments });
     if (chatInput) chatInput.value = '';
+    updateClaudeAddressCue();
 
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
@@ -12152,6 +12512,7 @@ document.addEventListener("DOMContentLoaded", () => {
   async function sendTextMessage() {
     const text = chatInput.value.trim();
     if (!text) return;
+    if (routeComposerToClaude(text)) return;
     await submitExplicitChatText(text);
   }
 
@@ -12567,6 +12928,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function processAudioQueue() {
+    // Every playback exit path (ended, watchdog, error, interrupt) lands here
+    // with nothing left to play: collapse the voice box.
+    if (!isPlayingAudio && !audioQueue.length) setVoiceBoxVisible(false);
     if (isPlayingAudio || !audioQueue.length) return;
     isPlayingAudio = true;
     const item = audioQueue.shift();
@@ -12607,6 +12971,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         analyser = audioContext.createAnalyser();
         src.connect(analyser);
+        setVoiceBoxVisible(true);
         drawVisualizer();
 
         src.start(0);
@@ -12628,8 +12993,12 @@ document.addEventListener("DOMContentLoaded", () => {
           console.info('[tts] playback ended');
           clearAudioWatchdog();
           isPlayingAudio = false;
-          cancelAnimationFrame(animationFrameId);
-          if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+          analyser = null;
+          if (!cabinetAnalyser) {
+            cancelAnimationFrame(animationFrameId);
+            if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+          }
+          setVoiceBoxVisible(false);
           processAudioQueue();
         };
     } catch (e) {
@@ -12642,21 +13011,71 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function drawVisualizer() {
-    if (!analyser || !canvasCtx) return;
-    const bufLen = analyser.frequencyBinCount;
+  function drawAnalyserBars(source, color) {
+    const bufLen = source.frequencyBinCount;
     const data = new Uint8Array(bufLen);
-    analyser.getByteFrequencyData(data);
-    canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
+    source.getByteFrequencyData(data);
     const barW = (visualizerCanvas.width / bufLen) * 2.5;
     let x = 0;
     for(let i=0; i<bufLen; i++) {
       const h = (data[i] / 255) * visualizerCanvas.height;
-      canvasCtx.fillStyle = `rgb(${h+100}, 100, 200)`;
+      canvasCtx.fillStyle = color(h);
       canvasCtx.fillRect(x, visualizerCanvas.height - h, barW, h);
       x += barW + 1;
     }
+  }
+
+  // One waveform for every live sound: cabinet mic (teal) underneath, Orion's
+  // TTS voice (violet) on top. One animation loop no matter which started it.
+  function drawVisualizer() {
+    cancelAnimationFrame(animationFrameId);
+    // Watchdog/error/interrupt exits leave `analyser` set; isPlayingAudio is
+    // the flag every exit path clears, so a dead clip can't keep the loop alive.
+    const voiceAnalyser = isPlayingAudio ? analyser : null;
+    if (!canvasCtx) return;
+    if (!voiceAnalyser && !cabinetAnalyser) {
+      canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+      return;
+    }
+    canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
+    if (cabinetAnalyser) drawAnalyserBars(cabinetAnalyser, (h) => `rgba(45, ${Math.round(h + 120)}, 170, 0.85)`);
+    if (voiceAnalyser) drawAnalyserBars(voiceAnalyser, (h) => `rgb(${h+100}, 100, 200)`);
     animationFrameId = requestAnimationFrame(drawVisualizer);
+  }
+
+  const cabinetLiveAudio = window.OrionCabinetLiveAudio
+    ? window.OrionCabinetLiveAudio.createCabinetLiveAudio({
+        getContext: () => {
+          if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          return audioContext;
+        },
+        onAnalyser: (node) => {
+          cabinetAnalyser = node;
+          setVoiceBoxVisible(voiceBoxVoiceVisible);
+          drawVisualizer();
+        },
+        onStatus: (state, text) => {
+          const on = state === 'connecting' || state === 'live';
+          if (cabinetAudioButton) {
+            cabinetAudioButton.setAttribute('aria-pressed', on ? 'true' : 'false');
+            cabinetAudioButton.textContent = on ? 'Stop cabinet audio' : 'Cabinet audio';
+            cabinetAudioButton.classList.toggle('border-teal-500', on);
+            cabinetAudioButton.classList.toggle('text-teal-200', on);
+          }
+          if (cabinetAudioStatus) {
+            cabinetAudioStatus.textContent = text;
+            cabinetAudioStatus.classList.toggle('text-red-300', state === 'error');
+          }
+        },
+      })
+    : null;
+  if (cabinetAudioButton) {
+    cabinetAudioButton.disabled = !cabinetLiveAudio;
+    cabinetAudioButton.addEventListener('click', () => {
+      if (!cabinetLiveAudio) return;
+      if (cabinetLiveAudio.isActive()) cabinetLiveAudio.stop();
+      else cabinetLiveAudio.start();
+    });
   }
 
   // --- Session & Init ---
@@ -12709,6 +13128,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!Number.isNaN(parsed)) notificationToastSeconds = parsed;
       }
       await loadNotifications();
+      await loadOrionMessages();
       await loadPendingAttention();
       loadCognitiveLoops();
       await loadWorldPulseLatest();
@@ -12740,7 +13160,16 @@ document.addEventListener("DOMContentLoaded", () => {
       // poll so switching away from it (or re-selecting it) doesn't stack
       // multiple overlapping timers.
       let carbonLivePollTimer = null;
-      let carbonLiveLastSha256 = null;
+      // Polled live view state (carbon-live / walkway-live). In-flight
+      // markers hold the render generation that owns them, so switching
+      // views can't clear a newer view's marker (review finding,
+      // 2026-10-15). liveImageSeq orders image loads so an older response
+      // landing late can't swap a newer frame back out.
+      let liveFrameShownId = null;
+      let liveMetaInFlightGen = null;
+      let liveImageInFlightGen = null;
+      let liveImageSeq = 0;
+      let livePicture = { loadedAtMs: null, lastError: false };
       // "Carbon (affect snapshot)" dropdown value -- shared between
       // updateVisionUi's dispatch and fetchAmbientStatus's view-active
       // check below so the two can't drift out of sync (review finding,
@@ -12759,45 +13188,96 @@ document.addEventListener("DOMContentLoaded", () => {
           clearInterval(carbonLivePollTimer);
           carbonLivePollTimer = null;
         }
-        carbonLiveLastSha256 = null;
+        liveFrameShownId = null;
+        liveImageSeq += 1; // orphan any image still loading for the old view
+        livePicture = { loadedAtMs: null, lastError: false };
       }
 
-      async function renderCarbonLiveFrame(container, generation) {
-        // Cheap metadata check first, full image bytes only if the frame
-        // actually changed -- review finding, 2026-08-22: polling the
-        // image route directly every 5s re-fetched+re-transferred the full
-        // JPEG through Hub even on ticks where carbon's own capture hadn't
-        // produced a new frame yet (same ~5s cadence on both sides).
-        let meta;
+      // Polled "live" camera view (carbon-live, walkway-live). Cheap
+      // metadata check every tick; image bytes only when the frame changed
+      // (bandwidth -- review finding, 2026-08-22), one image load at a time.
+      // The badge is recomputed every tick from BOTH the backend's frame
+      // freshness and when the picture on screen last actually loaded, so
+      // a stream that stops moving, or an image route that keeps failing,
+      // shows STALE / IMAGE ERROR and dims -- never a frozen picture
+      // labelled LIVE. A failed poll keeps the last picture (no flicker).
+      // All the "what to show" logic is in vision-live-frame.js (tested).
+      function paintLiveFrame(container, view, meta) {
+        const L = window.OrionVisionLiveFrame;
+        const state = L.liveFrameState(meta, view, livePicture, Date.now());
+        if (state.kind === "none") {
+          container.innerHTML = "";
+          const msg = document.createElement("div");
+          msg.className = "text-gray-500 text-xs text-center px-4";
+          msg.dataset.liveFrameEmpty = view.streamId;
+          msg.textContent = state.message;
+          container.appendChild(msg);
+          return null;
+        }
+        let frame = container.querySelector("[data-live-frame]");
+        if (!frame || frame.dataset.liveFrame !== view.streamId) {
+          container.innerHTML = "";
+          frame = document.createElement("div");
+          frame.className = "relative w-full h-full flex items-center justify-center";
+          frame.dataset.liveFrame = view.streamId;
+          const img = document.createElement("img");
+          img.alt = `${view.label} (latest captured frame)`;
+          const badge = document.createElement("span");
+          badge.dataset.liveFrameBadge = "1";
+          frame.appendChild(img);
+          frame.appendChild(badge);
+          container.appendChild(frame);
+        }
+        const img = frame.querySelector("img");
+        const badge = frame.querySelector("[data-live-frame-badge]");
+        badge.textContent = state.badgeText;
+        badge.className = `absolute top-2 left-2 text-[10px] font-semibold rounded px-2 py-0.5 ${state.badgeClass}`;
+        img.className = `w-full h-full object-contain transition-opacity ${state.imageClass}`;
+        return img;
+      }
+
+      async function renderLiveFrame(container, generation, view) {
+        const L = window.OrionVisionLiveFrame;
+        if (!L || liveMetaInFlightGen === generation) return;
+        liveMetaInFlightGen = generation;
+        let meta = null;
         try {
-          const resp = await fetch("/api/vision/carbon/latest-frame");
-          meta = await resp.json().catch(() => null);
+          const resp = await fetch(`/api/vision/frames/latest?stream_id=${encodeURIComponent(view.streamId)}`);
+          meta = resp.ok ? await resp.json().catch(() => null) : null;
         } catch (err) {
           meta = null;
+        } finally {
+          if (liveMetaInFlightGen === generation) liveMetaInFlightGen = null;
         }
         if (generation !== visionRenderGeneration) return;
-        if (!meta || !meta.available) {
-          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No frame from carbon yet -- confirm orion-vision-retina is running there.</div>';
-          carbonLiveLastSha256 = null;
-          return;
-        }
-        if (meta.sha256 === carbonLiveLastSha256) {
-          return; // unchanged since the last poll -- nothing to refetch
-        }
-        const img = new Image();
-        img.className = "w-full h-full object-contain";
-        img.alt = "Carbon (latest captured frame)";
-        img.src = `/api/vision/carbon/latest-frame/image?t=${Date.now()}`;
-        img.onerror = () => {
-          if (generation !== visionRenderGeneration) return;
-          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No frame from carbon yet -- confirm orion-vision-retina is running there.</div>';
+        const img = paintLiveFrame(container, view, meta);
+        if (!img || liveImageInFlightGen === generation) return;
+        if (!L.shouldFetchImage(meta, liveFrameShownId)) return;
+        const seq = ++liveImageSeq;
+        const frameId = meta.frame_id;
+        liveImageInFlightGen = generation;
+        const next = new Image();
+        const done = () => {
+          if (liveImageInFlightGen === generation) liveImageInFlightGen = null;
         };
-        img.onload = () => {
-          if (generation !== visionRenderGeneration) return;
-          container.innerHTML = "";
-          container.appendChild(img);
-          carbonLiveLastSha256 = meta.sha256;
+        next.onload = () => {
+          done();
+          if (generation !== visionRenderGeneration || seq !== liveImageSeq) return;
+          img.src = next.src;
+          liveFrameShownId = frameId;
+          livePicture = { loadedAtMs: Date.now(), lastError: false };
+          paintLiveFrame(container, view, meta);
         };
+        next.onerror = () => {
+          // Frame pruned between poll and fetch, unreadable, or undecodable:
+          // keep the last picture, record the error so the badge can't stay
+          // LIVE, and let the next tick retry whatever is newest.
+          done();
+          if (generation !== visionRenderGeneration || seq !== liveImageSeq) return;
+          livePicture = { ...livePicture, lastError: true };
+          paintLiveFrame(container, view, meta);
+        };
+        next.src = L.imageUrl(view.streamId, frameId);
       }
 
       // Repaints the "Carbon (affect snapshot)" panel from an ALREADY-
@@ -12852,7 +13332,10 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        if (value === "carbon-live" || value === CARBON_AFFECT_VIEW_VALUE) {
+        const liveView = window.OrionVisionLiveFrame
+          ? window.OrionVisionLiveFrame.LIVE_FRAME_VIEWS[value]
+          : null;
+        if (liveView || value === CARBON_AFFECT_VIEW_VALUE) {
             // Neither carbon view has a "pop out to floating video" concept
             // (no continuous stream to pop out) -- disable the button and
             // force visionIsFloating back to false rather than letting a
@@ -12863,10 +13346,11 @@ document.addEventListener("DOMContentLoaded", () => {
             visionIsFloating = false;
             setPopoutEnabled(false);
             if (visionFloatingContainer) visionFloatingContainer.classList.add("hidden");
-            if (value === "carbon-live") {
-                renderCarbonLiveFrame(visionDockedContainer, generation);
+            if (liveView) {
+                visionDockedContainer.innerHTML = '<div class="text-gray-400 text-xs text-center px-4">Loading latest frame…</div>';
+                renderLiveFrame(visionDockedContainer, generation, liveView);
                 carbonLivePollTimer = setInterval(
-                    () => renderCarbonLiveFrame(visionDockedContainer, generation), 5000
+                    () => renderLiveFrame(visionDockedContainer, generation, liveView), liveView.pollMs
                 );
             } else {
                 // No poll of its own -- fetchAmbientStatus() below already
@@ -13402,6 +13886,20 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("mood-arc-status");
         history.replaceState(null, "", "#mood-arc-status");
+      });
+    }
+    if (orionEnergyTabButton && orionEnergyPanelEl) {
+      orionEnergyTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("orion-energy");
+        history.replaceState(null, "", "#orion-energy");
+      });
+    }
+    if (bodyEconomyTabButton && bodyEconomyPanelEl) {
+      bodyEconomyTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("body-economy");
+        history.replaceState(null, "", "#body-economy");
       });
     }
     if (collapseMirrorTabButton && collapseMirrorPanel) {

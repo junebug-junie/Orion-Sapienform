@@ -1,0 +1,377 @@
+"""Personality rev 4 in Prime, pure parts: the choice point (orion/prime/choice.py), the tending lines
+(orion/prime/tending.py) and their place in the Prime block (orion/prime/block.py)."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from orion.prime.block import BLOCK_CAP, check_prime_citations, render_prime_block
+from orion.prime.choice import ShownConcern, body_situation, market_ranks, prime_choice, shown_concerns
+from orion.prime.state import PrimeConcernV1, PrimeStateV1
+from orion.prime.tending import TendingV1, tendencies_from_frame
+from orion.prime.thought import PrimeAnswerV1
+
+NOW = datetime(2026, 11, 13, 9, 0, tzinfo=timezone.utc)
+A = ShownConcern("c-a", "the bee paper", "seed:1")
+B = ShownConcern("c-b", "whose car is it", "ask:1")
+C = ShownConcern("c-c", "a promise from chat", "turn:x")
+RANKED = ["ask:1", "other", "seed:1"]
+
+
+def _choice(answer: dict, shown=(A, B, C), **kw):
+    return prime_choice(PrimeAnswerV1.model_validate(answer), list(shown), thought_id="t1", occurred_at=NOW,
+                        ranked_event_ids=RANKED, **kw)
+
+
+def test_market_rank_is_the_event_order_among_shown_concerns_only():
+    assert market_ranks([A, B, C], RANKED) == {"c-b": 1, "c-a": 2, "c-c": None}
+    assert market_ranks([A, B], []) == {"c-a": None, "c-b": None}
+
+
+def test_one_placed_concern_is_not_the_markets_top_over_unranked_ones():
+    assert market_ranks([B, C], RANKED) == {"c-b": None, "c-c": None}
+    choice, _ = _choice({"pick": "c-b"}, shown=(B, C))
+    assert choice.chosen_market_rank is None
+
+
+def test_explicit_pick_records_chosen_and_the_rest_as_alternatives():
+    choice, why = _choice({"pick": "c-a"})
+    assert why == "chosen" and choice.choice_id == "prime:t1"
+    assert (choice.chosen.key, choice.chosen_market_rank) == ("c-a", 2)  # departed from the market's top
+    assert [o.key for o in choice.alternatives] == ["c-b", "c-c"]
+
+
+@pytest.mark.parametrize("pick", ["none", None, "no move", "NONE"])
+def test_none_is_declined_all(pick):
+    choice, why = _choice({"pick": pick})
+    assert why == "declined_all" and choice.declined_all and len(choice.alternatives) == 3
+
+
+def test_declined_all_needs_only_one_option_but_a_pick_needs_two():
+    choice, _ = _choice({"pick": "none"}, shown=(A,))
+    assert choice.declined_all
+    assert _choice({"pick": "c-a"}, shown=(A,)) == (None, "one_concern_picked")
+
+
+def test_unusable_picks_record_nothing_with_a_reason():
+    assert _choice({"pick": "new"}) == (None, "pick_not_shown")
+    assert _choice({"pick": "c-zzz"}) == (None, "pick_not_shown")
+    assert _choice({}) == (None, "no_pick")
+    assert _choice({"pick": "c-a"}, shown=()) == (None, "no_concerns")
+
+
+def test_missing_pick_falls_back_to_the_move_concern():
+    move = {"kind": "curiosity_focus", "question": "q?", "why": "w", "concern_id": "c-b"}
+    choice, _ = _choice({"move": move})
+    assert choice.chosen.key == "c-b" and choice.chosen_market_rank == 1
+
+
+def test_a_pick_that_contradicts_the_move_records_nothing():
+    move = {"kind": "curiosity_focus", "question": "q?", "why": "w", "concern_id": "c-b"}
+    assert _choice({"pick": "c-a", "move": move}) == (None, "pick_conflicts_move")
+    assert _choice({"pick": "none", "move": move}) == (None, "pick_conflicts_move")
+    choice, _ = _choice({"pick": "c-b", "move": move})
+    assert choice.chosen.key == "c-b"
+
+
+@pytest.mark.parametrize("bad", [2, ["c-a"], {"id": "c-a"}, True])
+def test_a_malformed_pick_never_fails_the_thought(bad):
+    answer = PrimeAnswerV1.model_validate({"reading": "r", "pick": bad, "concerns": {"keep": ["c-a"]}})
+    assert answer.reading == "r" and answer.concerns.keep == ["c-a"]
+    assert _choice({"pick": bad}) == (None, "pick_not_shown")
+
+
+def test_a_long_pick_is_cut_not_refused():
+    answer = PrimeAnswerV1.model_validate({"reading": "r", "pick": "x" * 900})
+    assert answer.reading == "r" and len(answer.pick) == 200
+
+
+def test_situation_is_flat_and_valid():
+    body = {"strain": {"value": 0.42, "constraint": "heat"}}
+    sit = body_situation(body, ["energy", "heat"], event_mode=True)
+    assert sit == {"body_read": True, "event_mode": True, "binding": "energy,heat", "binding_count": 2,
+                   "strain": 0.42, "strain_constraint": "heat"}
+    choice, _ = _choice({"pick": "c-a"}, situation=sit)
+    assert choice.situation == sit
+    assert body_situation(None, None, event_mode=False) == {"body_read": False, "event_mode": False}
+
+
+def test_long_concern_text_is_cut_to_the_option_cap():
+    long = ShownConcern("c-l", "x" * 900)
+    choice, _ = _choice({"pick": "c-l"}, shown=(long, A))
+    assert len(choice.chosen.text) == 400
+
+
+# --- tending ------------------------------------------------------------------------------------
+
+def _disp(did, weight, *, origin="choice", status="active", label=None):
+    return {"disposition_id": did, "label": label or f"{did} over other, 5 of 7", "origin": origin, "status": status,
+            "weight": weight, "evidence_count": 7, "first_seen_at": NOW.isoformat(),
+            "last_reinforced_at": NOW.isoformat()}
+
+
+def _frame(*disps, at=NOW):
+    return {"schema_version": "personality.frame.v1", "generated_at": at.isoformat(), "dispositions": list(disps)}
+
+
+def test_tending_shows_only_choice_nodes_with_ten_weighted_choices_top_two():
+    frame = _frame(_disp("d1", 30), _disp("d2", 10), _disp("d3", 11), _disp("d4", 9.99),
+                   _disp("d5", 50, origin="recurrence"))
+    tends, why = tendencies_from_frame(frame, now=NOW)
+    assert why is None and [t.disposition_id for t in tends] == ["d1", "d3"]
+    assert tends[0].line() == "tending: d1 over other, 5 of 7 [disposition:d1]"
+
+
+def test_tending_label_carries_no_ref_shaped_text():
+    tends, _ = tendencies_from_frame(_frame(_disp("d1", 30, label="a [thought:x] over b, 5 of 7")), now=NOW)
+    assert tends[0].label == "a (thought:x) over b, 5 of 7"
+
+
+def test_tending_skips_stale_invalid_and_thin_frames():
+    assert tendencies_from_frame(_frame(_disp("d1", 30), at=NOW - timedelta(hours=2)), now=NOW) == ([], "stale")
+    assert tendencies_from_frame({"nope": 1}, now=NOW) == ([], "invalid_frame")
+    assert tendencies_from_frame(_frame(_disp("d1", 2)), now=NOW) == ([], "below_threshold")
+    # Before the reducer's first commit the frame is dated at the epoch: stale, never current.
+    assert tendencies_from_frame(_frame(at=datetime(1970, 1, 1, tzinfo=timezone.utc)), now=NOW)[1] == "stale"
+
+
+# --- the block --------------------------------------------------------------------------------
+
+T1 = TendingV1("disp-aaa", "people over pipeline, 11 of 14", 12.0)
+T2 = TendingV1("disp-bbb", "reading over walkway, 10 of 12", 10.5)
+
+
+def _state(concern_words: str = "short") -> PrimeStateV1:
+    at = NOW - timedelta(hours=1)
+    concerns = [PrimeConcernV1(concern_id=f"c{i}", text=concern_words, opened_at=at, last_evidence_at=at)
+                for i in range(3)]
+    return PrimeStateV1(concerns=concerns, last_thought_at=NOW - timedelta(minutes=5), thoughts_total=9,
+                        last_reading="quiet", seen_binding=[])
+
+
+def _render(state, tending=()):
+    return render_prime_block(state, ticked_at=NOW - timedelta(seconds=5), now=NOW, tending=tending)
+
+
+def test_block_renders_tending_lines_with_disposition_refs_and_counts_them():
+    b = _render(_state(), [T1, T2])
+    assert "- tending: people over pipeline, 11 of 14 [disposition:disp-aaa]" in b.text
+    assert "[disposition:disp-bbb]" in b.text and b.tending == 2
+    assert "disposition:disp-aaa" in b.refs and len(b.text) <= BLOCK_CAP
+    assert "tending=2" in b.log_fields()
+    check = check_prime_citations("I lean [disposition:disp-aaa] and [disposition:disp-zzz]", b.refs)
+    assert check.cited_valid == ("disposition:disp-aaa",) and check.rejected_unknown == ("disposition:disp-zzz",)
+
+
+def test_tending_lines_are_dropped_first_when_over_the_cap():
+    full = _render(_state("x" * 300))
+    with_tending = _render(_state("x" * 300), [T1, T2])
+    assert len(with_tending.text) <= BLOCK_CAP
+    # The block's own lines are all kept; only tending lines give way.
+    kept_without = [ln.split("[")[-1] for ln in full.text.splitlines()[1:]]
+    kept_with = [ln.split("[")[-1] for ln in with_tending.text.splitlines()[1:] if "tending:" not in ln]
+    assert kept_with == kept_without
+    assert with_tending.dropped_lines - full.dropped_lines == 2 - with_tending.tending
+
+
+def test_fetch_prime_block_awaits_a_tending_task_and_survives_its_failure():
+    import asyncio
+
+    from orion.prime.block import PRIME_STATE_KEY, fetch_prime_block
+    from orion.prime.state import PRIME_CONCERNS_KEY, concerns_view
+
+    state = _state()
+    kv = {PRIME_STATE_KEY: state.model_dump_json(),
+          PRIME_CONCERNS_KEY: concerns_view(state, now=NOW).model_dump_json()}
+
+    class R:
+        async def get(self, key):
+            return kv.get(key)
+
+    async def good():
+        return [T1]
+
+    async def bad():
+        raise RuntimeError("down")
+
+    async def run(src):
+        return await fetch_prime_block(R(), now=NOW + timedelta(seconds=5), tending=asyncio.ensure_future(src()))
+
+    assert asyncio.run(run(good)).tending == 1
+    b = asyncio.run(run(bad))
+    assert b.status == "ok" and b.tending == 0
+
+
+def test_no_tending_leaves_the_block_unchanged():
+    assert _render(_state()).text == _render(_state(), []).text
+    assert _render(_state()).tending == 0
+
+
+def test_options_are_keyed_by_their_event_wants_family_for_source_c():
+    """Rev 4 Move 2: a Prime choice of a reading concern counts for the reading family, not for
+    ``prime`` as a lump. A concern with no event in the list keeps its plain id (lane family)."""
+    from orion.physiology.weights import option_family
+    from orion.prime.choice import event_families
+
+    events = {"wants": [{"event_ref": "seed:1", "family": "hub.world_pulse_read"},
+                        {"event_ref": "ask:1", "family": "vision.ask"}, {"event_ref": "", "family": "x"}]}
+    fams = event_families(events)
+    assert fams == {"seed:1": "hub.world_pulse_read", "ask:1": "vision.ask"}
+    choice, _ = _choice({"pick": "c-a"}, families=fams)
+    assert choice.chosen.key == "hub.world_pulse_read::c-a"
+    assert [o.key for o in choice.alternatives] == ["vision.ask::c-b", "c-c"]
+    assert [option_family("prime", o.key) for o in [choice.chosen, *choice.alternatives]] == [
+        "hub.world_pulse_read", "vision.ask", "prime"]
+
+
+def test_care_promoted_follows_the_chosen_concerns_event():
+    from orion.prime.choice import care_promoted_events
+
+    promoted = care_promoted_events({"wants": [{"event_ref": "seed:1", "care_promoted": True},
+                                               {"event_ref": "ask:1", "care_promoted": False}]})
+    assert promoted == {"seed:1"}
+    assert _choice({"pick": "c-a"}, care_promoted=promoted)[0].care_promoted is True
+    assert _choice({"pick": "c-b"}, care_promoted=promoted)[0].care_promoted is False
+    assert _choice({"pick": "none"}, care_promoted=promoted)[0].care_promoted is False
+    assert care_promoted_events(None) == set()
+
+
+def test_a_new_event_concern_records_its_wants_family_and_care_flag_and_saves_without_them_when_unset():
+    """Review finding 2026-11-13: the guard is about the moment care put the option in front of Orion. The
+    concern records its want's family and care flag when it opens, so a concern that outlives its want's
+    place on the list keeps both. A concern with neither saves byte-for-byte as before."""
+    from orion.prime.choice import listed_wants
+    from orion.prime.thought import apply_answer
+
+    events = {"wants": [{"event_ref": "seed:1", "family": "hub.world_pulse_read", "care_promoted": True},
+                        {"event_ref": "seed:1", "family": "other", "care_promoted": False}]}
+    answer = PrimeAnswerV1.model_validate({"reading": "r", "concerns": {"add": [{"text": "the bee paper",
+                                                                                   "event_id": "seed:1"}]}})
+    applied = apply_answer(PrimeStateV1(), answer, now=NOW, arc_ids=[], focus_pending=False,
+                           event_ids=["seed:1"], event_wants=listed_wants(events))
+    (c,) = applied.state.concerns
+    assert (c.event_family, c.event_care_promoted) == ("hub.world_pulse_read", True)  # first (top) want wins
+    dumped = c.model_dump(mode="json")
+    assert dumped["event_family"] == "hub.world_pulse_read" and dumped["event_care_promoted"] is True
+    plain = PrimeConcernV1(concern_id="x", text="t", opened_at=NOW, last_evidence_at=NOW).model_dump(mode="json")
+    assert "event_family" not in plain and "event_care_promoted" not in plain
+
+    # The event later leaves the list: the choice still keys and flags it as recorded.
+    shown = shown_concerns([c, PrimeConcernV1(concern_id="c-b", text="whose car", event_ref="ask:1",
+                                              opened_at=NOW, last_evidence_at=NOW)])
+    choice, _ = prime_choice(PrimeAnswerV1.model_validate({"pick": c.concern_id}), shown, thought_id="t2",
+                             occurred_at=NOW, families={}, care_promoted=set())
+    assert choice.chosen.key == f"hub.world_pulse_read::{c.concern_id}" and choice.care_promoted is True
+    assert [o.key for o in choice.alternatives] == ["c-b"]  # nothing recorded, not on the live list: plain id
+
+
+# --- option text: subject first (live 2026-11-14) ------------------------------------------------------------
+# Live concern texts from orion:prime:state and personality_choice (lane prime), 2026-11-14.
+LIVE_LETTER = ("a thread from my letter for 2026-11-13: **The walkway render break is unresolved and still live "
+               "each morning.** 59 `http_500` compose failures in 81 minutes on 11-13; the patched template is on "
+               "exactly one profile, the retired bake-off host isn't running, and I cannot say what m…")
+LIVE_LETTER_REF = ("a thread from my letter for 2026-11-13: **Chat memory has never been promoted.** 1,133 rows, "
+                   "zero ever `durable`, two consumers waiting on a tier nobody writes; #3356 needs the El Coco "
+                   "replay as its acceptance check [juniper_chat:7a286bdd-acc].")
+LIVE_PROMISE = ("a promise I made in a curiosity run (1 promise, "
+                "harness_turn_trace:d98cc64f-0867-5856-a582-f3b232905e65#promises_made[0])")
+LIVE_PROMISE_TEXT = 'a promise I made in a curiosity run at 2026-11-14 09:17Z: "I left that in TurnOutcome.continue_note"'
+LIVE_CHAT = ('a thread I opened in a chat with Juniper (1 promise, harness_turn_trace:a129b72f-e698-425a-a435-'
+             '3388cd7cd759#promises_made[0]): Juniper: "howdy, just saying hi on my way to play Zelda, a Link from '
+             'the Past! We just..." / me: "Howdy — you arrive like a fairy with a bomb bag"')
+
+
+def test_letter_thread_option_leads_with_its_subject_without_markdown_or_refs():
+    from orion.prime.choice import option_text
+    text = option_text(ShownConcern("c1", LIVE_LETTER, "orion_day_letter:2026-11-13#thread0"))
+    assert text.startswith("The walkway render break is unresolved and still live each morning — 59 http_500")
+    assert text.endswith("(a thread from my letter for 11-13)")
+    assert "**" not in text and "`" not in text
+    ref = option_text(ShownConcern("c2", LIVE_LETTER_REF, "orion_day_letter:2026-11-13#thread1"))
+    assert ref.startswith("Chat memory has never been promoted — 1,133 rows")
+    assert "juniper_chat:" not in ref and "[" not in ref
+
+
+def test_promise_option_names_where_it_was_made_never_the_promise_sentence():
+    from orion.prime.choice import option_text
+    # The concern carries promise_text, but S-1.8 keeps it in Prime's frame only: never in the record text,
+    # which becomes tendency labels shown in every turn's Prime block.
+    text = option_text(ShownConcern("c3", LIVE_PROMISE, "turn:d98"))
+    assert text == "Curiosity run promise — the words stay in my own thinking"
+    assert "harness_turn_trace" not in text and "TurnOutcome" not in text
+
+
+def test_chat_promise_option_leads_with_the_line_juniper_is_owed_a_reply_to():
+    from orion.prime.choice import option_text
+    text = option_text(ShownConcern("c4", LIVE_CHAT, "turn:a12"))
+    assert text.startswith('"howdy, just saying hi on my way to play Zelda')
+    assert text.endswith("— a reply I owe Juniper from chat")
+    assert "/ me:" not in text and "harness_turn_trace" not in text and "fairy" not in text
+
+
+def test_letter_option_keeps_its_tail_when_the_thread_is_long():
+    from orion.prime.choice import option_text
+    long = "a thread from my letter for 2026-11-13: **Head line.** " + "word " * 200
+    text = option_text(ShownConcern("c6", long, "orion_day_letter:2026-11-13#thread2"))
+    assert len(text) <= 400 and text.endswith("(a thread from my letter for 11-13)")
+
+
+def test_choice_record_text_is_clean_but_prime_concern_text_is_untouched():
+    shown = shown_concerns([
+        PrimeConcernV1(concern_id="c1", text=LIVE_LETTER, event_ref="orion_day_letter:2026-11-13#thread0",
+                       opened_at=NOW, last_evidence_at=NOW),
+        PrimeConcernV1(concern_id="c3", text=LIVE_PROMISE, event_ref="turn:d98", promise_text=LIVE_PROMISE_TEXT,
+                       opened_at=NOW, last_evidence_at=NOW),
+    ])
+    assert shown[0].text == LIVE_LETTER
+    choice, _ = _choice({"pick": "c3"}, shown=shown)
+    assert choice.chosen.key == "c3"  # the ref lives on the key and the concern, not the text
+    assert choice.chosen.text.startswith("Curiosity run promise")
+    # S-1.8: the promise sentence reaches neither the record nor the label built from it.
+    from orion.personality.graph import pair_label
+    texts = [choice.chosen.text, *(o.text for o in choice.alternatives)]
+    assert not any("TurnOutcome" in t for t in [*texts, pair_label(texts[0], texts[1:])])
+    assert choice.alternatives[0].text.startswith("The walkway render break")
+    assert all(len(o.text) <= 400 for o in [choice.chosen, *choice.alternatives])
+
+
+def test_free_text_concern_keeps_its_words_minus_markup():
+    from orion.prime.choice import option_text
+    assert option_text(ShownConcern("c5", "**agent lane** congestion [thought:abc123def]")) == "agent lane congestion"
+
+
+# --- ChoiceOptionV1.detail: a curiosity-run promise's sentence, for the Hub card only (2026-11-16) ---------------
+SENTENCE = 'a promise I made in a curiosity run at 2026-11-15 08:00Z: "I will check the walkway logs tomorrow."'
+CUR = ShownConcern("c-p", "a promise I made in a curiosity run (1 promise, harness_turn_trace:abc#promises_made[0])",
+                   "turn:abc", promise_text=SENTENCE)
+CHAT = ShownConcern("c-q", 'a promise I made in a chat with Juniper (1 promise): Juniper: "can you look?"',
+                    "turn:def", promise_text='a promise I made to Juniper in chat at 2026-11-15 09:00Z: "I will look."')
+
+
+def test_curiosity_promise_sentence_is_detail_only_never_text_or_label():
+    from orion.personality.graph import choice_label, pair_label
+    from orion.personality.relabel import excerpt_from_choice_row
+
+    for pick in ("c-p", "c-a", "none"):
+        choice, _ = _choice({"text": "x", "pick": pick}, shown=(A, CUR, CHAT))
+        opts = ([choice.chosen] if choice.chosen else []) + list(choice.alternatives)
+        promise = next(o for o in opts if o.key.endswith("c-p"))
+        assert promise.detail == SENTENCE
+        # Only a curiosity-run promise carries it; a chat promise and a reading concern do not.
+        assert [o.detail for o in opts if not o.key.endswith("c-p")] == [None, None]
+        assert all("walkway logs" not in o.text for o in opts)
+        row = choice.model_dump(mode="json")
+        label = choice_label(excerpt_from_choice_row({**row, "choice_id": row["choice_id"]}), 1, 1)
+        assert "walkway logs" not in label
+        chosen = choice.chosen.text if choice.chosen else "no move"
+        assert "walkway logs" not in pair_label(chosen, [o.text for o in choice.alternatives])
+
+
+def test_shown_concerns_carry_the_promise_sentence_from_the_concern():
+    c = PrimeConcernV1(concern_id="c-p", text=CUR.text, event_ref="turn:abc", promise_text=SENTENCE,
+                       opened_at=NOW, last_evidence_at=NOW)
+    from orion.prime.choice import shown_concerns
+
+    assert shown_concerns([c])[0].promise_text == SENTENCE

@@ -4,6 +4,10 @@
 
 services:
   orion-sql-db:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: postgres:15
     container_name: ${PROJECT}-sql-db
     shm_size: '1gb'
@@ -143,6 +147,10 @@ services:
       - "${POSTGRES_PORT:-55432}:5432"
 
   orion-sql-client:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: dpage/pgadmin4:8
     container_name: ${PROJECT}-sql-client
     restart: unless-stopped

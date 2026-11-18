@@ -34,6 +34,9 @@ from app.worker import BiometricsSubstrateWorker
 def _make_worker(
     monkeypatch, *, broadcast_enabled: bool = True, self_model_enabled: bool = True
 ) -> BiometricsSubstrateWorker:
+    # Pins the pre-world-first competition (flag off). World-first is pinned
+    # in test_worker_world_first_broadcast.py.
+    monkeypatch.setenv("ATTENTION_WORLD_FIRST_ENABLED", "false")
     monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
     monkeypatch.setenv(
         "ORION_ATTENTION_BROADCAST_ENABLED", "true" if broadcast_enabled else "false"
@@ -58,7 +61,12 @@ def _make_worker(
 
 
 def _pe_node(node_id: str, error: float) -> SimpleNamespace:
-    return SimpleNamespace(node_id=node_id, metadata={"prediction_error": error})
+    # Fresh observed_at: nodes without one are omitted by the stale-reading rule.
+    return SimpleNamespace(
+        node_id=node_id,
+        metadata={"prediction_error": error},
+        temporal=SimpleNamespace(observed_at=datetime.now(timezone.utc)),
+    )
 
 
 def _fake_store(*extra_nodes: SimpleNamespace) -> MagicMock:
@@ -261,7 +269,7 @@ def test_trend_buffer_respects_configured_maxlen(monkeypatch):
 
     fake_store = MagicMock()
     fake_store.snapshot.side_effect = [
-        _fake_store(_pe_node("node:substrate.route", error)).snapshot.return_value
+        _fake_store(_pe_node("node:substrate.execution", error)).snapshot.return_value
         for error in (0.1, 0.2, 0.3, 0.4, 0.5)
     ]
     with patch(
@@ -273,9 +281,9 @@ def test_trend_buffer_respects_configured_maxlen(monkeypatch):
 
     assert len(worker._attention_self_model_trend_buffer) == 3
     assert list(worker._attention_self_model_trend_buffer) == [
-        {"route": 0.3},
-        {"route": 0.4},
-        {"route": 0.5},
+        {"execution": 0.3},
+        {"execution": 0.4},
+        {"execution": 0.5},
     ]
 
 

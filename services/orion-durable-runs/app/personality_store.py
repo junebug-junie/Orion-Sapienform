@@ -1,0 +1,874 @@
+"""Persistence for the personality graph (``manual_migration_personality_graph_v1.sql`` +
+``manual_migration_personality_choice_v1.sql``).
+
+Single writer of ``personality_*``: orion-durable-runs.
+
+* ``insert_choices``: ``PersonalityChoiceV1`` rows into ``personality_choice`` (insert-only,
+  ``ON CONFLICT (choice_id) DO NOTHING``), from the bus (``orion:personality:choice``) or from the
+  curiosity sync (with its cursor, in the same transaction).
+* ``commit_tick``: one transaction per reducer tick writes new evidence rows (``ON CONFLICT DO
+  NOTHING``), changed dispositions, weight-history rows and the cursors. A tick that failed before
+  commit wrote nothing and is re-read in full next tick.
+
+Rev 4: only ``origin='choice'`` dispositions are loaded, folded, counted or shown. The rev 2 prose
+nodes stay in the table (retired by ``scripts/personality_rev3_retire_prose_nodes.py``) for audit.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable, Mapping, Optional, Sequence
+from uuid import uuid4
+
+from orion.personality.situation import COMPANY_CLOSE_GRACE, SituationInputs
+from orion.personality.graph import (
+    EVIDENCE_PREFIX,
+    ORIGIN_CHOICE,
+    EvidenceRow,
+    HistoryRow,
+    Node,
+    choice_style_from_rows,
+    project_frame,
+)
+from orion.schemas.personality import FRAME_MAX_DISPOSITIONS, PersonalityChoiceV1, PersonalityFrameV1
+
+from app.personality_sources import Cursor
+
+logger = logging.getLogger("orion-durable-runs.personality_store")
+
+STATEMENT_TIMEOUT = "30s"
+CHOICE_STYLE_WINDOW_DAYS = 14
+
+
+def covered_days(now: datetime, graph_born_at: Optional[datetime]) -> int:
+    """Days the choice window really covers: the graph's age, at least 1, at most 14. The cue
+    says "over the last N days"; with a 14 claimed on a one-day-old graph it read as a two-week
+    pattern from one choice (live 2026-10-17)."""
+    if graph_born_at is None:
+        return 1
+    age_days = (now - graph_born_at).total_seconds() / 86400.0
+    return max(1, min(CHOICE_STYLE_WINDOW_DAYS, math.ceil(age_days)))
+
+
+def choice_window_days(now: datetime, graph_born_at: Optional[datetime],
+                       choice_times: Sequence[datetime]) -> int:
+    """The window starts at the earlier of graph birth and the oldest choice held. A choice is
+    dated by its turn's start, which can precede the seed; measuring from the seed alone made such
+    a choice drop out of the count and come back at each day boundary (review 2026-10-17)."""
+    starts = [t for t in [graph_born_at, *choice_times] if t is not None]
+    return covered_days(now, min(starts) if starts else None)
+TICK_HEARTBEAT = "__tick__"  # personality_cursor row written by every committed tick
+HISTORY_POINTS = 60
+
+FRAME_NODE_COLUMNS = ("disposition_id, origin, status, label, label_similarity, centroid_n, weight, evidence_count, "
+                      "lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, lane_recent, "
+                      "opposed_count, name, name_sentence, orion_verdict")
+# Self-naming columns (manual_migration_personality_naming_v1.sql). Written only by apply_namings.
+NAMING_NODE_FIELDS = ("name", "name_sentence", "named_at", "naming_id", "orion_verdict", "merged_into",
+                      "name_grounding_rank", "name_grounding_margin", "last_shown_at", "shown_count",
+                      "verdict_evidence_count")
+NODE_COLUMNS = ("disposition_id, origin, status, label, label_similarity, centroid, centroid_n, weight, "
+                "evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, "
+                "lane_recent, last_folded_at, history_weight, opposed_count, " + ", ".join(NAMING_NODE_FIELDS))
+# Rev 4: every read below sees only choice nodes (rev 2 prose nodes are retired history).
+ORIGIN_FILTER = f"origin = '{ORIGIN_CHOICE}'"
+NAMING_CURSOR = "naming"  # personality_cursor row: keyset (created_at, naming_id) into orion_disposition_naming
+NAMING_LOG_COLUMNS = ("naming_id, run_id, packet_id, disposition_id, verdict, name, sentence, merge_with, "
+                      "evidence_refs, shown, hub_check, refused_reasons, written_at, created_at")
+
+INSERT_CHOICE_SQL = """
+INSERT INTO personality_choice (choice_id, lane, occurred_at, chosen, alternatives, chosen_market_rank,
+  declined_all, care_promoted, picks_in_decision, situation, act_id, correlation_id, written_by)
+VALUES (%(choice_id)s, %(lane)s, %(occurred_at)s, %(chosen)s::jsonb, %(alternatives)s::jsonb, %(chosen_market_rank)s,
+  %(declined_all)s, %(care_promoted)s, %(picks_in_decision)s, %(situation)s::jsonb, %(act_id)s, %(correlation_id)s,
+  %(written_by)s)
+ON CONFLICT (choice_id) DO NOTHING
+"""
+
+
+def choice_row(c: PersonalityChoiceV1, written_by: str) -> dict:
+    d = c.model_dump(mode="json")
+    return {
+        "choice_id": c.choice_id, "lane": c.lane, "occurred_at": c.occurred_at,
+        "chosen": json.dumps(d["chosen"], sort_keys=True) if c.chosen is not None else None,
+        "alternatives": json.dumps(d["alternatives"], sort_keys=True), "chosen_market_rank": c.chosen_market_rank,
+        "declined_all": c.declined_all, "care_promoted": c.care_promoted, "picks_in_decision": c.picks_in_decision,
+        "situation": json.dumps(d["situation"], sort_keys=True, default=str), "act_id": c.act_id,
+        "correlation_id": c.correlation_id, "written_by": written_by,
+    }
+
+
+INSERT_EVIDENCE_SQL = """
+INSERT INTO personality_evidence (evidence_id, lane, source_ref, occurred_at, excerpt, disposition_id,
+  similarity, weight_delta, meta)
+VALUES (%(evidence_id)s, %(lane)s, %(source_ref)s, %(occurred_at)s, %(excerpt)s, %(disposition_id)s,
+  %(similarity)s, %(weight_delta)s, %(meta)s::jsonb)
+ON CONFLICT (evidence_id) DO NOTHING
+"""
+# Per disposition, how its evidence's situations (meta.situation, stamped since 2026-10-16) split by
+# arousal, day phase and company. Rows without a situation are left out. Observability only:
+# nothing Orion reads uses this. The 'n' dimension counts the rows that do carry a situation.
+SITUATION_MIX_SQL = """
+SELECT e.disposition_id, v.dim, v.val, count(*) AS c
+FROM personality_evidence e
+CROSS JOIN LATERAL (VALUES ('n'::text, ''::text),
+  ('arousal', e.meta->'situation'->>'arousal'),
+  ('day_phase', e.meta->'situation'->>'day_phase'),
+  ('company', e.meta->'situation'->>'company')) AS v(dim, val)
+WHERE e.disposition_id = ANY(%(ids)s) AND jsonb_typeof(e.meta->'situation') = 'object'
+GROUP BY e.disposition_id, v.dim, v.val
+"""
+SITUATION_DIMS = ("arousal", "day_phase")
+
+
+def empty_situation_mix() -> dict:
+    return {"n": 0, "arousal": {}, "day_phase": {}, "company": {"true": 0, "false": 0}}
+
+
+def situation_mix_by_id(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict]:
+    """Fold ``SITUATION_MIX_SQL`` rows into ``{disposition_id: situation_mix}``. A missing key in one
+    row's situation (NULL ``val``) is not counted in that dimension; it still counts in ``n``."""
+    out: dict[str, dict] = {}
+    for r in rows:
+        mix = out.setdefault(r["disposition_id"], empty_situation_mix())
+        dim, val, c = r["dim"], r["val"], int(r["c"])
+        if dim == "n":
+            mix["n"] += c
+        elif val is None:
+            continue
+        elif dim == "company":
+            if val in ("true", "false"):
+                mix["company"][val] += c
+        elif dim in SITUATION_DIMS:
+            mix[dim][val] = mix[dim].get(val, 0) + c
+    return out
+
+
+UPSERT_NODE_SQL = """
+INSERT INTO personality_disposition (disposition_id, origin, status, label, label_similarity, centroid,
+  centroid_n, weight, evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at,
+  retired_at, updated_at, lane_recent, last_folded_at, history_weight, opposed_count, name, name_sentence, named_at,
+  naming_id, orion_verdict, merged_into, name_grounding_rank, name_grounding_margin, last_shown_at, shown_count,
+  verdict_evidence_count)
+VALUES (%(disposition_id)s, %(origin)s, %(status)s, %(label)s, %(label_similarity)s, %(centroid)s::real[],
+  %(centroid_n)s, %(weight)s, %(evidence_count)s, %(lane_counts)s::jsonb, %(chosen_count)s, %(first_seen_at)s,
+  %(last_reinforced_at)s, %(retired_at)s, %(updated_at)s, %(lane_recent)s::jsonb, %(last_folded_at)s,
+  %(history_weight)s, %(opposed_count)s, %(name)s, %(name_sentence)s, %(named_at)s, %(naming_id)s, %(orion_verdict)s, %(merged_into)s,
+  %(name_grounding_rank)s, %(name_grounding_margin)s, %(last_shown_at)s, %(shown_count)s, %(verdict_evidence_count)s)
+ON CONFLICT (disposition_id) DO UPDATE SET origin = EXCLUDED.origin, status = EXCLUDED.status,
+  label = EXCLUDED.label, label_similarity = EXCLUDED.label_similarity, centroid = EXCLUDED.centroid,
+  centroid_n = EXCLUDED.centroid_n, weight = EXCLUDED.weight, evidence_count = EXCLUDED.evidence_count,
+  lane_counts = EXCLUDED.lane_counts, chosen_count = EXCLUDED.chosen_count,
+  first_seen_at = EXCLUDED.first_seen_at, last_reinforced_at = EXCLUDED.last_reinforced_at,
+  retired_at = EXCLUDED.retired_at, updated_at = EXCLUDED.updated_at, lane_recent = EXCLUDED.lane_recent,
+  last_folded_at = EXCLUDED.last_folded_at, history_weight = EXCLUDED.history_weight,
+  opposed_count = EXCLUDED.opposed_count, name = EXCLUDED.name, name_sentence = EXCLUDED.name_sentence, named_at = EXCLUDED.named_at,
+  naming_id = EXCLUDED.naming_id, orion_verdict = EXCLUDED.orion_verdict, merged_into = EXCLUDED.merged_into,
+  name_grounding_rank = EXCLUDED.name_grounding_rank, name_grounding_margin = EXCLUDED.name_grounding_margin,
+  last_shown_at = EXCLUDED.last_shown_at, shown_count = EXCLUDED.shown_count,
+  verdict_evidence_count = EXCLUDED.verdict_evidence_count
+"""
+# Fade-only change (no evidence folded into the node this tick): skip rewriting the 1024-float
+# centroid. Every non-retired node fades every tick, so this is the common case. lane_recent fades
+# with the weight, so it is written here too (a few keys of jsonb).
+UPDATE_NODE_WEIGHT_SQL = """
+UPDATE personality_disposition SET status = %(status)s, weight = %(weight)s, retired_at = %(retired_at)s,
+  updated_at = %(updated_at)s, lane_recent = %(lane_recent)s::jsonb, history_weight = %(history_weight)s
+WHERE disposition_id = %(disposition_id)s
+"""
+INSERT_HISTORY_SQL = """
+INSERT INTO personality_weight_history (disposition_id, at, weight, status, evidence_count)
+VALUES (%(disposition_id)s, %(at)s, %(weight)s, %(status)s, %(evidence_count)s)
+ON CONFLICT (disposition_id, at) DO NOTHING
+"""
+UPSERT_CURSOR_SQL = """
+INSERT INTO personality_cursor (source, cursor_at, cursor_ref, updated_at)
+VALUES (%(source)s, %(at)s, %(ref)s, %(now)s)
+ON CONFLICT (source) DO UPDATE SET cursor_at = EXCLUDED.cursor_at, cursor_ref = EXCLUDED.cursor_ref,
+  updated_at = EXCLUDED.updated_at
+"""
+
+
+@dataclass
+class TickWrite:
+    now: datetime
+    evidence: list[EvidenceRow] = field(default_factory=list)
+    nodes: list[Node] = field(default_factory=list)
+    # disposition_id -> node_key() as loaded; a node whose key did not move only faded or changed
+    # status, so only its weight/status columns are written.
+    loaded: dict[str, tuple] = field(default_factory=dict)
+    history: list[HistoryRow] = field(default_factory=list)
+    cursors: dict[str, Cursor] = field(default_factory=dict)
+
+
+def _lane_recent(raw: Any) -> dict[str, float]:
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return {str(k): float(v) for k, v in (raw or {}).items()}
+
+
+def _json_lane_recent(n: Node) -> str:
+    return json.dumps({k: float(v) for k, v in (n.lane_recent or {}).items()}, sort_keys=True)
+
+
+def node_from_row(r: Mapping[str, Any]) -> Node:
+    lane_counts = r.get("lane_counts") or {}
+    if isinstance(lane_counts, str):
+        lane_counts = json.loads(lane_counts)
+    return Node(
+        disposition_id=r["disposition_id"], origin=r["origin"], status=r["status"], label=r["label"],
+        label_similarity=float(r["label_similarity"] or 0.0), centroid=[float(x) for x in (r["centroid"] or [])],
+        centroid_n=int(r["centroid_n"] or 0), weight=float(r["weight"] or 0.0),
+        evidence_count=int(r["evidence_count"] or 0), lane_counts={str(k): int(v) for k, v in lane_counts.items()},
+        chosen_count=int(r["chosen_count"] or 0), first_seen_at=r["first_seen_at"],
+        last_reinforced_at=r["last_reinforced_at"], retired_at=r["retired_at"], updated_at=r["updated_at"],
+        lane_recent=_lane_recent(r.get("lane_recent")),
+        last_folded_at=r.get("last_folded_at"), history_weight=float(r.get("history_weight") or 0.0),
+        opposed_count=int(r.get("opposed_count") or 0), name=r.get("name"), name_sentence=r.get("name_sentence"), named_at=r.get("named_at"),
+        naming_id=r.get("naming_id"), orion_verdict=r.get("orion_verdict"), merged_into=r.get("merged_into"),
+        name_grounding_rank=r.get("name_grounding_rank"),
+        name_grounding_margin=(float(r["name_grounding_margin"]) if r.get("name_grounding_margin") is not None
+                               else None),
+        last_shown_at=r.get("last_shown_at"), shown_count=int(r.get("shown_count") or 0),
+        verdict_evidence_count=r.get("verdict_evidence_count"),
+    )
+
+
+def node_row(n: Node) -> dict:
+    return {
+        "disposition_id": n.disposition_id, "origin": n.origin, "status": n.status, "label": n.label,
+        "label_similarity": float(n.label_similarity), "centroid": [float(x) for x in n.centroid],
+        "centroid_n": int(n.centroid_n), "weight": float(n.weight), "evidence_count": int(n.evidence_count),
+        "lane_counts": json.dumps(n.lane_counts, sort_keys=True), "chosen_count": int(n.chosen_count),
+        "first_seen_at": n.first_seen_at, "last_reinforced_at": n.last_reinforced_at, "retired_at": n.retired_at,
+        "updated_at": n.updated_at, "lane_recent": _json_lane_recent(n),
+        "last_folded_at": n.last_folded_at, "history_weight": float(n.history_weight),
+        "opposed_count": int(n.opposed_count), **{f: getattr(n, f) for f in NAMING_NODE_FIELDS},
+    }
+
+
+def evidence_row(e: EvidenceRow) -> dict:
+    return {
+        "evidence_id": e.evidence_id, "lane": e.lane, "source_ref": e.source_ref, "occurred_at": e.occurred_at,
+        "excerpt": e.excerpt, "disposition_id": e.disposition_id, "similarity": e.similarity,
+        "weight_delta": float(e.weight_delta), "meta": json.dumps(e.meta or {}, sort_keys=True, default=str),
+    }
+
+
+def history_row(h: HistoryRow) -> dict:
+    return {"disposition_id": h.disposition_id, "at": h.at, "weight": float(h.weight), "status": h.status,
+            "evidence_count": int(h.evidence_count)}
+
+
+def cursor_rows(cursors: Mapping[str, Cursor], now: datetime) -> list[dict]:
+    return [{"source": k, "at": c.at, "ref": c.ref or None, "now": now} for k, c in sorted(cursors.items())]
+
+
+def node_key(n: Node) -> tuple:
+    """Every column the weight/status-only UPDATE does NOT write (it writes status, weight,
+    retired_at, updated_at, lane_recent, history_weight). If any of these moved, the node gets a
+    full upsert."""
+    return (n.origin, n.label, n.label_similarity, n.centroid_n, n.evidence_count, n.chosen_count,
+            json.dumps(n.lane_counts, sort_keys=True), n.first_seen_at, n.last_reinforced_at,
+            n.last_folded_at, n.opposed_count, *(getattr(n, f) for f in NAMING_NODE_FIELDS))
+
+
+def split_nodes(nodes: Sequence[Node], loaded: Mapping[str, tuple]) -> tuple[list[dict], list[dict]]:
+    """(full upserts, weight/status-only updates)."""
+    full, light = [], []
+    for n in nodes:
+        prev = loaded.get(n.disposition_id)
+        if prev is not None and prev == node_key(n):
+            light.append({"disposition_id": n.disposition_id, "status": n.status, "weight": float(n.weight),
+                          "retired_at": n.retired_at, "updated_at": n.updated_at,
+                          "lane_recent": _json_lane_recent(n), "history_weight": float(n.history_weight)})
+        else:
+            full.append(node_row(n))
+    return full, light
+
+
+def _iso(v: Any) -> Any:
+    return v.isoformat() if isinstance(v, datetime) else v
+
+
+# Juniper's answers (``personality_juniper_verdict``, written by the Hub Personality tab route): every
+# retired choice node SHE retired (some answer of hers retired it), with her latest answer. "no": it stays
+# retired and absorbs choices in its direction; "yes" after it: the reducer revives it
+# (``orion.personality.graph._Tick``). Only retired nodes: a live node's answer changes nothing here.
+JUNIPER_NODES_SQL = f"""
+WITH latest AS (
+  SELECT DISTINCT ON (disposition_id) disposition_id, verdict AS juniper_verdict, created_at AS juniper_at
+  FROM personality_juniper_verdict
+  ORDER BY disposition_id, created_at DESC, verdict_id
+), by_juniper AS (
+  SELECT disposition_id FROM personality_juniper_verdict GROUP BY disposition_id HAVING bool_or(retired)
+)
+SELECT {NODE_COLUMNS}, latest.juniper_verdict, latest.juniper_at
+FROM personality_disposition JOIN latest USING (disposition_id) JOIN by_juniper USING (disposition_id)
+WHERE status = 'retired' AND {ORIGIN_FILTER}
+"""
+_UNDEFINED_TABLE = "42P01"
+
+
+class TendencyRetired(Exception):
+    """The tendency is already retired; an answer cannot change it."""
+
+
+VERDICT_YES = "yes"
+VERDICT_NO = "no"
+JUNIPER_VERDICTS = (VERDICT_YES, VERDICT_NO)
+EXAMPLES_PER_TENDENCY = 3
+CHOICE_VIEW_COLUMNS = ("c.choice_id, c.lane, c.occurred_at, c.chosen, c.alternatives, c.chosen_market_rank, "
+                       "c.declined_all, c.care_promoted, c.picks_in_decision")
+RECENT_CHOICES_SQL = f"""
+SELECT {CHOICE_VIEW_COLUMNS}, d.disposition_id, d.label AS tendency_label, d.status AS tendency_status
+FROM personality_choice c
+LEFT JOIN personality_evidence e ON e.evidence_id = %(p)s || c.choice_id
+LEFT JOIN personality_disposition d ON d.disposition_id = e.disposition_id AND d.{ORIGIN_FILTER}
+ORDER BY c.occurred_at DESC, c.choice_id
+LIMIT %(limit)s
+"""
+TENDENCIES_SQL = f"""
+SELECT disposition_id, label, status, weight, evidence_count, opposed_count, name, orion_verdict, first_seen_at,
+  last_reinforced_at
+FROM personality_disposition
+WHERE {ORIGIN_FILTER} AND status <> 'retired'
+ORDER BY weight DESC, disposition_id
+LIMIT %(limit)s
+"""
+# A tendency's newest folded choices (evidence id ``choice:<choice_id>``), joined back to the choice.
+TENDENCY_EXAMPLES_SQL = f"""
+SELECT x.disposition_id, {CHOICE_VIEW_COLUMNS}
+FROM (
+  SELECT e.disposition_id, e.evidence_id,
+         row_number() OVER (PARTITION BY e.disposition_id ORDER BY e.occurred_at DESC, e.evidence_id) AS rn
+  FROM personality_evidence e
+  WHERE e.disposition_id = ANY(%(ids)s) AND starts_with(e.evidence_id, %(p)s)
+) x
+JOIN personality_choice c ON c.choice_id = substr(x.evidence_id, length(%(p)s) + 1)
+WHERE x.rn <= %(n)s
+ORDER BY x.disposition_id, c.occurred_at DESC
+"""
+LATEST_VERDICTS_SQL = """
+SELECT DISTINCT ON (disposition_id) disposition_id, verdict, created_at
+FROM personality_juniper_verdict
+WHERE disposition_id = ANY(%(ids)s)
+ORDER BY disposition_id, created_at DESC, verdict_id
+"""
+# Retired choice nodes whose latest answer from Juniper is a "no" that retired them ("You said no to").
+SAID_NO_SQL = f"""
+SELECT d.disposition_id, d.label, d.status, d.weight, d.evidence_count, d.opposed_count, d.name, d.orion_verdict,
+  d.first_seen_at, d.last_reinforced_at
+FROM personality_disposition d
+JOIN (
+  SELECT DISTINCT ON (disposition_id) disposition_id, verdict, retired, created_at
+  FROM personality_juniper_verdict
+  ORDER BY disposition_id, created_at DESC, verdict_id
+) v ON v.disposition_id = d.disposition_id
+WHERE d.{ORIGIN_FILTER} AND d.status = 'retired' AND v.verdict = 'no' AND v.retired
+ORDER BY v.created_at DESC, d.disposition_id
+LIMIT %(limit)s
+"""
+LATEST_VERDICT_ONE_SQL = """
+SELECT verdict, retired FROM personality_juniper_verdict WHERE disposition_id = %(d)s
+ORDER BY created_at DESC, verdict_id LIMIT 1
+"""
+# "Changed my mind": the same revive the reducer applies on a later yes (#3336, orion/personality/graph.py):
+# status, retired_at and last_folded_at only. updated_at stays at the retire time on purpose: weight is "as
+# of updated_at", so the next tick fades it across the whole time it was retired, exactly as the reducer's
+# revive does. Moving it would keep the full pre-No weight and could jump the node straight to active.
+REVIVED_STATUS = "candidate"
+REVIVE_BY_JUNIPER_SQL = f"""
+UPDATE personality_disposition SET status = %(status)s, retired_at = NULL, last_folded_at = %(now)s,
+  history_weight = weight
+WHERE disposition_id = %(d)s AND {ORIGIN_FILTER}
+"""
+INSERT_VERDICT_SQL = """
+INSERT INTO personality_juniper_verdict (verdict_id, disposition_id, verdict, label_at_verdict, weight_at_verdict,
+  n_at_verdict, m_at_verdict, status_before, retired, created_at)
+VALUES (%(verdict_id)s, %(d)s, %(verdict)s, %(label)s, %(weight)s, %(n)s, %(m)s, %(status_before)s, %(retired)s,
+  %(now)s)
+"""
+RETIRE_BY_JUNIPER_SQL = f"""
+UPDATE personality_disposition SET status = 'retired', retired_at = %(now)s, updated_at = %(now)s,
+  history_weight = weight
+WHERE disposition_id = %(d)s AND {ORIGIN_FILTER}
+"""
+ARM_COUNTS_SQL = """
+SELECT substring(w FROM '^personality:arm=([a-z_]+)') AS arm, l.outcome, count(*) AS n
+FROM want_ledger l
+CROSS JOIN LATERAL jsonb_array_elements_text(
+  CASE WHEN jsonb_typeof(l.decision->'warnings') = 'array' THEN l.decision->'warnings' ELSE '[]'::jsonb END) w
+WHERE l.decided_at > %(since)s AND starts_with(w, 'personality:arm=')
+GROUP BY 1, 2
+"""
+
+
+class PersonalityStore:
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+        self._warned_no_verdicts = False
+
+    async def load_juniper_nodes(self) -> tuple[list[Node], dict[str, tuple]]:
+        """(retired nodes Juniper retired, disposition_id -> (her latest answer, when)). The verdict table comes with
+        the Hub Personality tab migration (manual_migration_personality_juniper_verdict_v1.sql); while it is
+        missing there are no answers: ([], {}), logged once."""
+        try:
+            async with self._pool.connection() as conn:
+                rows = await (await conn.execute(JUNIPER_NODES_SQL)).fetchall()
+        except Exception as exc:  # noqa: BLE001 - only a missing table is "no answers"; anything else fails the tick
+            if getattr(exc, "sqlstate", None) != _UNDEFINED_TABLE:
+                raise
+            if not self._warned_no_verdicts:
+                self._warned_no_verdicts = True
+                logger.warning("personality_juniper_verdicts_unread: table personality_juniper_verdict missing "
+                               "(apply manual_migration_personality_juniper_verdict_v1.sql); no answers applied")
+            return [], {}
+        nodes = [node_from_row(r) for r in rows]
+        return nodes, {str(r["disposition_id"]): (str(r["juniper_verdict"]), r.get("juniper_at")) for r in rows}
+
+    async def load_nodes(self) -> list[Node]:
+        """Every non-retired choice node. Retired nodes are not matched again, except the ones Juniper retired
+        (``load_juniper_nodes``)."""
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(
+                f"SELECT {NODE_COLUMNS} FROM personality_disposition WHERE status <> 'retired' AND {ORIGIN_FILTER}"
+            )).fetchall()
+        return [node_from_row(r) for r in rows]
+
+    async def load_cursors(self) -> dict[str, Cursor]:
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(
+                "SELECT source, cursor_at, cursor_ref FROM personality_cursor WHERE source <> %(beat)s",
+                {"beat": TICK_HEARTBEAT})).fetchall()
+        return {r["source"]: Cursor(r["cursor_at"], r["cursor_ref"] or "") for r in rows}
+
+    async def insert_choices(self, choices: Sequence[PersonalityChoiceV1], *, written_by: str,
+                             cursor: Optional[tuple[str, Cursor]] = None) -> int:
+        """Insert-only; a choice_id already stored is a no-op. With ``cursor`` (name, value) the
+        cursor moves in the same transaction, so a crash re-reads the batch and re-inserts nothing.
+        Returns the number of NEW rows."""
+        rows = [choice_row(c, written_by) for c in choices]
+        new = 0
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                    for row in rows:
+                        await cur.execute(INSERT_CHOICE_SQL, row)
+                        new += max(0, cur.rowcount or 0)
+                    if cursor is not None:
+                        name, at = cursor
+                        await cur.execute(UPSERT_CURSOR_SQL, {"source": name, "at": at.at, "ref": at.ref or None,
+                                                              "now": datetime.now(timezone.utc)})
+        return new
+
+    async def existing_evidence_ids(self, ids: Iterable[str]) -> set[str]:
+        want = sorted(set(ids))
+        if not want:
+            return set()
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(
+                "SELECT evidence_id FROM personality_evidence WHERE evidence_id = ANY(%(ids)s)", {"ids": want})).fetchall()
+        return {r["evidence_id"] for r in rows}
+
+    async def commit_tick(self, w: TickWrite) -> None:
+        full, light = split_nodes(w.nodes, w.loaded)
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                    if w.evidence:
+                        await cur.executemany(INSERT_EVIDENCE_SQL, [evidence_row(e) for e in w.evidence])
+                    if full:
+                        await cur.executemany(UPSERT_NODE_SQL, full)
+                    if light:
+                        await cur.executemany(UPDATE_NODE_WEIGHT_SQL, light)
+                    if w.history:
+                        await cur.executemany(INSERT_HISTORY_SQL, [history_row(h) for h in w.history])
+                    if w.cursors:
+                        await cur.executemany(UPSERT_CURSOR_SQL, cursor_rows(w.cursors, w.now))
+                    # Heartbeat: the frame's generated_at is the last COMMITTED tick, so a reducer
+                    # that stops committing reads as stale to every lane (cue max_age).
+                    await cur.execute(UPSERT_CURSOR_SQL, {"source": TICK_HEARTBEAT, "at": w.now,
+                                                          "ref": None, "now": w.now})
+
+    async def load_situation_inputs(self, since: datetime, until: datetime) -> SituationInputs:
+        """Temporal Self's stored arousal transitions and company arcs covering [since, until], for
+        stamping each evidence row with the situation it happened in. Read-only. Includes the last
+        transition before ``since`` so the first row has a level. No row cap: a cap would silently
+        give every later row the capped row's level, and the volume is tiny (~20 transitions and a
+        few dozen company arcs a day; 56 transitions in all as of 2026-10-16)."""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                arousal = await (await conn.execute(
+                    "(SELECT occurred_at, label FROM temporal_self_event WHERE source_kind = 'arousal_transition' "
+                    "AND occurred_at < %(since)s ORDER BY occurred_at DESC LIMIT 1) UNION ALL "
+                    "(SELECT occurred_at, label FROM temporal_self_event WHERE source_kind = 'arousal_transition' "
+                    "AND occurred_at >= %(since)s AND occurred_at <= %(until)s ORDER BY occurred_at)",
+                    {"since": since, "until": until})).fetchall()
+                company = await (await conn.execute(
+                    "SELECT began_at, ended_at FROM temporal_self_arc WHERE kind = 'company' "
+                    "AND began_at <= %(until)s AND (ended_at IS NULL OR ended_at > %(since)s) "
+                    "ORDER BY began_at", {"since": since, "until": until})).fetchall()
+                beat = await (await conn.execute("SELECT max(watermark) AS w FROM temporal_self_state")).fetchone()
+        return SituationInputs(
+            arousal=[(r["occurred_at"], str(r["label"] or "")) for r in arousal],
+            company=[(r["began_at"], r["ended_at"]) for r in company],
+            # The chronicle closes company arcs ~5 min late: spans are only trusted up to here.
+            company_known_until=(((beat or {}).get("w") or datetime(1970, 1, 1, tzinfo=timezone.utc))
+                                 - COMPANY_CLOSE_GRACE),
+        )
+
+    async def chronicle_watermark(self) -> Optional[datetime]:
+        """The Temporal Self chronicle's watermark (everything before it is folded), or None."""
+        async with self._pool.connection() as conn:
+            row = await (await conn.execute("SELECT max(watermark) AS w FROM temporal_self_state")).fetchone()
+        return row["w"] if row else None
+
+    # --- reads for the routes ------------------------------------------------------------------
+
+    async def status_counts(self) -> dict[str, int]:
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(
+                f"SELECT status, count(*) AS n FROM personality_disposition WHERE {ORIGIN_FILTER} GROUP BY status"
+            )).fetchall()
+        return {r["status"]: int(r["n"]) for r in rows}
+
+    async def frame(self, now: datetime, warnings: Sequence[str] = ()) -> PersonalityFrameV1:
+        """One read-only snapshot (a tick committing mid-request cannot split nodes from counts).
+        Only the strongest active nodes are loaded, without centroids; counts come from SQL."""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                active = await (await conn.execute(
+                    f"SELECT {FRAME_NODE_COLUMNS} FROM personality_disposition WHERE status = 'active' "
+                    f"AND {ORIGIN_FILTER} AND orion_verdict IS DISTINCT FROM 'rejected' "
+                    "ORDER BY weight DESC, disposition_id LIMIT %(n)s", {"n": FRAME_MAX_DISPOSITIONS})).fetchall()
+                counts = {r["status"]: int(r["n"]) for r in await (await conn.execute(
+                    f"SELECT status, count(*) AS n FROM personality_disposition WHERE {ORIGIN_FILTER} "
+                    "GROUP BY status")).fetchall()}
+                choice_rows = await (await conn.execute(
+                    "SELECT choice_id, act_id, occurred_at, chosen_market_rank, declined_all FROM personality_choice "
+                    "WHERE occurred_at > %(since)s",
+                    {"since": now - timedelta(days=CHOICE_STYLE_WINDOW_DAYS)})).fetchall()
+                n_ev = (await (await conn.execute(
+                    "SELECT count(*) AS n FROM personality_evidence WHERE starts_with(evidence_id, %(p)s)",
+                    {"p": EVIDENCE_PREFIX})).fetchone())["n"]
+                beat = await (await conn.execute(
+                    "SELECT cursor_at FROM personality_cursor WHERE source = %(s)s", {"s": TICK_HEARTBEAT})).fetchone()
+        # The window covers the oldest choice held (at most 14 days), never more than the data does.
+        style = choice_style_from_rows(choice_rows, now=now, window_days=choice_window_days(
+            now, None, [r["occurred_at"] for r in choice_rows]))
+        nodes = [node_from_row({**r, "centroid": []}) for r in active]
+        # "As of" the last committed tick, never the request time: before the first commit the
+        # frame is dated at the epoch, so every reader sees it as stale rather than fresh.
+        as_of = beat["cursor_at"] if beat else datetime(1970, 1, 1, tzinfo=timezone.utc)
+        frame = project_frame(nodes, now=as_of, choice_style=style, evidence_rows=int(n_ev), warnings=warnings)
+        return frame.model_copy(update={"active_count": counts.get("active", 0),
+                                        "candidate_count": counts.get("candidate", 0),
+                                        "retired_count": counts.get("retired", 0)})
+
+    async def dispositions(self, status: str = "active", limit: int = 50) -> list[dict]:
+        sql = ("SELECT disposition_id, origin, status, label, label_similarity, centroid_n, weight, evidence_count, "
+               "lane_counts, lane_recent, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, "
+               "name, name_sentence, orion_verdict, merged_into, name_grounding_rank, name_grounding_margin, "
+               "named_at, last_shown_at, shown_count, opposed_count "
+               f"FROM personality_disposition WHERE {ORIGIN_FILTER}")
+        params: dict = {"limit": limit}
+        if status != "all":
+            sql += " AND status = %(status)s"
+            params["status"] = status
+        sql += " ORDER BY weight DESC, disposition_id LIMIT %(limit)s"
+        async with self._pool.connection() as conn:
+            rows = [dict(r) for r in await (await conn.execute(sql, params)).fetchall()]
+            ids = [r["disposition_id"] for r in rows]
+            hist, mix_rows = [], []
+            if ids:
+                mix_rows = await (await conn.execute(SITUATION_MIX_SQL, {"ids": ids})).fetchall()
+                hist = await (await conn.execute(
+                    "SELECT disposition_id, at, weight, status, evidence_count FROM ("
+                    " SELECT h.*, row_number() OVER (PARTITION BY disposition_id ORDER BY at DESC) AS rn"
+                    " FROM personality_weight_history h WHERE disposition_id = ANY(%(ids)s)) x"
+                    " WHERE rn <= %(n)s ORDER BY disposition_id, at", {"ids": ids, "n": HISTORY_POINTS})).fetchall()
+        by_id: dict[str, list[dict]] = {}
+        for h in hist:
+            by_id.setdefault(h["disposition_id"], []).append(
+                {"at": _iso(h["at"]), "weight": h["weight"], "status": h["status"], "evidence_count": h["evidence_count"]})
+        mixes = situation_mix_by_id(mix_rows)
+        return [{**{k: _iso(v) for k, v in r.items()}, "history": by_id.get(r["disposition_id"], []),
+                 "situation_mix": mixes.get(r["disposition_id"]) or empty_situation_mix()} for r in rows]
+
+    async def evidence(self, disposition_id: Optional[str] = None, limit: int = 50) -> list[dict]:
+        sql = ("SELECT evidence_id, lane, source_ref, occurred_at, excerpt, disposition_id, similarity, weight_delta, "
+               "meta, created_at FROM personality_evidence WHERE starts_with(evidence_id, %(p)s)")
+        params: dict = {"limit": limit, "p": EVIDENCE_PREFIX}
+        if disposition_id:
+            sql += " AND disposition_id = %(d)s"
+            params["d"] = disposition_id
+        sql += " ORDER BY occurred_at DESC, evidence_id LIMIT %(limit)s"
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(sql, params)).fetchall()
+        return [{k: _iso(v) for k, v in dict(r).items()} for r in rows]
+
+    # --- self-naming ----------------------------------------------------------------------------
+
+    async def naming_log(self, disposition_ids: Optional[Iterable[str]] = None) -> list[dict]:
+        """``orion_disposition_naming`` rows for ``naming_due`` / ``prior_verdict``, oldest first. Only
+        the packet's ``evidence_count`` and ``lane_counts`` are read from ``shown``."""
+        sql = ("SELECT naming_id, disposition_id, verdict, hub_check, name, sentence, written_at, "
+               "jsonb_build_object('evidence_count', shown->'evidence_count', 'lane_counts', shown->'lane_counts') "
+               "AS shown FROM orion_disposition_naming")
+        params: dict = {}
+        if disposition_ids is not None:
+            sql += " WHERE disposition_id = ANY(%(ids)s)"
+            params["ids"] = sorted(set(disposition_ids))
+        sql += " ORDER BY written_at, naming_id"
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(sql, params)).fetchall()
+        return [dict(r) for r in rows]
+
+    async def packet_evidence(self, disposition_id: str, limit: int = 5000) -> list[dict]:
+        """A node's evidence for its naming packet, including rows of nodes merged into it (history
+        is not rewritten by a MERGE). Only ``meta.situation`` is read from meta."""
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(
+                "SELECT evidence_id, lane, occurred_at, excerpt, similarity, "
+                "jsonb_build_object('situation', meta->'situation') AS meta FROM personality_evidence "
+                "WHERE disposition_id = %(d)s OR disposition_id IN "
+                "(SELECT disposition_id FROM personality_disposition WHERE merged_into = %(d)s) "
+                "ORDER BY similarity DESC NULLS LAST, evidence_id LIMIT %(limit)s",
+                {"d": disposition_id, "limit": limit})).fetchall()
+        return [dict(r) for r in rows]
+
+    async def naming_next(self, now: datetime):
+        """The packet for the most-due node, or None. Read-only: nothing is marked shown here; the
+        shown bookkeeping moves when Orion's answer row is applied."""
+        from orion.personality.naming import build_packet, naming_due, prior_verdict
+
+        nodes = await self.load_nodes()
+        log = await self.naming_log()
+        for node in naming_due(nodes, log, now):
+            evidence = await self.packet_evidence(node.disposition_id)
+            packet = build_packet(node, evidence, nodes, prior_verdict(log, node.disposition_id), now)
+            if packet is not None:
+                return packet
+        return None
+
+    async def namings(self, disposition_id: Optional[str] = None, limit: int = 50) -> list[dict]:
+        """The naming log, newest first; optionally one disposition's."""
+        sql = f"SELECT {NAMING_LOG_COLUMNS} FROM orion_disposition_naming"
+        params: dict = {"limit": limit}
+        if disposition_id:
+            sql += " WHERE disposition_id = %(d)s"
+            params["d"] = disposition_id
+        sql += " ORDER BY written_at DESC, naming_id LIMIT %(limit)s"
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(sql, params)).fetchall()
+        return [{k: _iso(v) for k, v in dict(r).items()} for r in rows]
+
+    # --- Hub Personality tab (rev 4 move 4): choices, tendencies, Juniper's yes / no -------------
+
+    async def recent_choices(self, limit: int = 30) -> list[dict]:
+        """The newest ``personality_choice`` rows, every lane, each with the tendency it was folded
+        into (if the reducer has folded it yet, and only a choice-built one)."""
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(RECENT_CHOICES_SQL, {"limit": limit, "p": EVIDENCE_PREFIX})).fetchall()
+        return [choice_view(r) for r in rows]
+
+    async def tendencies(self, limit: int = 20, examples: int = EXAMPLES_PER_TENDENCY) -> dict:
+        """Choice-built tendencies that are not retired, strongest first, each with its newest
+        ``examples`` choices and Juniper's latest answer; and ``said_no``: the retired ones Juniper
+        retired herself (latest answer "no"), so the tab can offer "Changed my mind". A missing verdict
+        table (migration not applied yet) still lists the tendencies, with a warning and no answers."""
+        warnings: list[str] = []
+        async with self._pool.connection() as conn:
+            nodes = [dict(r) for r in await (await conn.execute(TENDENCIES_SQL, {"limit": limit})).fetchall()]
+        said_no: list[dict] = []
+        verdicts: dict[str, dict] = {}
+        try:
+            async with self._pool.connection() as conn:
+                said_no = [dict(r) for r in await (await conn.execute(SAID_NO_SQL, {"limit": limit})).fetchall()]
+                ids = [n["disposition_id"] for n in [*nodes, *said_no]]
+                if ids:
+                    for r in await (await conn.execute(LATEST_VERDICTS_SQL, {"ids": ids})).fetchall():
+                        verdicts[r["disposition_id"]] = {"verdict": r["verdict"], "at": _iso(r["created_at"])}
+        except Exception as exc:  # noqa: BLE001 - answers are an annotation on the list, never a gate
+            from psycopg.errors import UndefinedTable
+
+            if not isinstance(exc, UndefinedTable):
+                raise
+            warnings.append("answers_table_missing: apply manual_migration_personality_juniper_verdict_v1.sql")
+        ids = [n["disposition_id"] for n in [*nodes, *said_no]]
+        ex_rows = []
+        if ids:
+            async with self._pool.connection() as conn:
+                ex_rows = await (await conn.execute(TENDENCY_EXAMPLES_SQL, {
+                    "ids": ids, "n": examples, "p": EVIDENCE_PREFIX})).fetchall()
+        by_id: dict[str, list[dict]] = {}
+        for r in ex_rows:
+            by_id.setdefault(r["disposition_id"], []).append(choice_view(r))
+
+        def view(n: dict) -> dict:
+            n_ways = int(n.get("evidence_count") or 0)
+            return {
+                "disposition_id": n["disposition_id"], "label": n["label"], "status": n["status"],
+                "weight": float(n["weight"] or 0.0), "n": n_ways, "m": n_ways + int(n.get("opposed_count") or 0),
+                "name": n.get("name"), "orion_verdict": n.get("orion_verdict"),
+                "first_seen_at": _iso(n["first_seen_at"]),
+                "last_reinforced_at": _iso(n["last_reinforced_at"]),
+                "examples": by_id.get(n["disposition_id"], []),
+                "juniper": verdicts.get(n["disposition_id"]),
+            }
+
+        return {"tendencies": [view(n) for n in nodes], "said_no": [view(n) for n in said_no], "warnings": warnings}
+
+    async def record_juniper_verdict(self, disposition_id: str, verdict: str, now: datetime) -> Optional[dict]:
+        """Juniper's yes / no on one choice-built tendency, in one transaction: the answer row, and
+        on "no" the tendency retired (with its weight-history row). None when there is no such
+        choice-built tendency.
+
+        A retired tendency takes only one answer: a "yes" when Juniper retired it herself (her latest
+        answer is a "no" that retired it). That revives it as a candidate, the way the reducer revives
+        one on a later yes (#3336: status candidate, retired_at cleared, last_folded_at now), with its
+        weight-history row. Any other answer on a retired tendency (it faded out, or a second "no")
+        raises ``TendencyRetired``. Call it under the reducer's lock so a tick in flight cannot write
+        the old status back."""
+        if verdict not in JUNIPER_VERDICTS:
+            raise ValueError(f"verdict must be one of {', '.join(JUNIPER_VERDICTS)}")
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                    await cur.execute(
+                        "SELECT disposition_id, status, label, weight, evidence_count, opposed_count "
+                        f"FROM personality_disposition WHERE disposition_id = %(d)s AND {ORIGIN_FILTER} FOR UPDATE",
+                        {"d": disposition_id})
+                    node = await cur.fetchone()
+                    if node is None:
+                        return None
+                    revive = False
+                    if node["status"] == "retired":
+                        await cur.execute(LATEST_VERDICT_ONE_SQL, {"d": disposition_id})
+                        last = await cur.fetchone()
+                        retired_by_her = last is not None and last["verdict"] == VERDICT_NO and bool(last["retired"])
+                        if not (retired_by_her and verdict == VERDICT_YES):
+                            raise TendencyRetired(disposition_id)
+                        revive = True
+                    n_ways = int(node["evidence_count"] or 0)
+                    retire = verdict == VERDICT_NO
+                    row = {"verdict_id": f"jv-{uuid4().hex}", "d": disposition_id, "verdict": verdict,
+                           "label": node["label"], "weight": float(node["weight"] or 0.0), "n": n_ways,
+                           "m": n_ways + int(node["opposed_count"] or 0), "status_before": node["status"],
+                           "retired": retire, "now": now}
+                    await cur.execute(INSERT_VERDICT_SQL, row)
+                    status = node["status"]
+                    if retire:
+                        status = "retired"
+                        await cur.execute(RETIRE_BY_JUNIPER_SQL, {"d": disposition_id, "now": now})
+                    elif revive:
+                        status = REVIVED_STATUS
+                        await cur.execute(REVIVE_BY_JUNIPER_SQL, {"d": disposition_id, "now": now,
+                                                                  "status": REVIVED_STATUS})
+                    if retire or revive:
+                        await cur.execute(INSERT_HISTORY_SQL, {
+                            "disposition_id": disposition_id, "at": now, "weight": row["weight"],
+                            "status": status, "evidence_count": n_ways})
+        return {"verdict_id": row["verdict_id"], "disposition_id": disposition_id, "verdict": verdict,
+                "status": status, "retired": retire, "revived": revive, "at": _iso(now)}
+
+    async def relabel_choice_nodes(self, *, apply: bool,
+                                   expected: Optional[Mapping[str, Sequence[str]]] = None) -> dict:
+        """#3444: rebuild every non-retired choice node's label from its own stored choices with the current
+        label maker (``orion.personality.relabel``). One transaction; with ``apply`` the nodes are locked
+        (FOR UPDATE) and each change is written only while the row still holds the label it was planned
+        from. ``expected`` (disposition_id -> [old_label, new_label], a reviewed dry run) limits the write to
+        those exact changes. Call it under the reducer's lock: a tick writes the whole row back when it
+        folds a choice, and would put the old label back. The lock is per process: this is safe while
+        durable-runs runs one uvicorn worker (today). With more workers or replicas a tick in another
+        process could still upsert its loaded label over the new one (``UPSERT_NODE_SQL`` has no label guard)."""
+        from orion.personality.relabel import (
+            RELABEL_EVIDENCE_SQL,
+            RELABEL_NODES_SQL,
+            RELABEL_UPDATE_SQL,
+            approved,
+            plan_relabel,
+            relabel_view,
+        )
+
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    if not apply:
+                        await cur.execute("SET TRANSACTION READ ONLY")
+                    await cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                    nodes_sql = RELABEL_NODES_SQL.rstrip() + (" FOR UPDATE" if apply else "")
+                    await cur.execute(nodes_sql)
+                    nodes = await cur.fetchall()
+                    await cur.execute(RELABEL_EVIDENCE_SQL)
+                    evidence = await cur.fetchall()
+                    plan = plan_relabel(nodes, evidence)
+                    todo, refused = approved(plan, expected)
+                    written: list[str] = []
+                    if apply:
+                        for r in todo:
+                            await cur.execute(RELABEL_UPDATE_SQL, {
+                                "disposition_id": r.disposition_id, "old_label": r.old_label,
+                                "new_label": r.new_label, "new_similarity": float(r.new_similarity)})
+                            if (cur.rowcount or 0) > 0:
+                                written.append(r.disposition_id)
+        changes = [relabel_view(r) for r in plan if r.changed]
+        return {"applied": bool(apply), "nodes": len(plan), "changes": len(changes), "written": len(written),
+                "written_ids": written, "refused_ids": refused, "plan": changes,
+                "anomalies": {r.disposition_id: list(r.anomalies) for r in plan if r.anomalies}}
+
+    async def arm_counts(self, since: datetime) -> dict:
+        """Market decisions since ``since`` that carry a ``personality:arm=<arm>`` trace line (rev 4
+        move 2), by arm and outcome. Empty until the personality values term is live."""
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(ARM_COUNTS_SQL, {"since": since})).fetchall()
+        arms: dict[str, dict[str, int]] = {}
+        for r in rows:
+            if not r["arm"]:
+                continue
+            arms.setdefault(r["arm"], {})[r["outcome"]] = int(r["n"])
+        return {"since": _iso(since), "arms": arms, "total": sum(sum(v.values()) for v in arms.values())}
+
+
+def _jsonish(v: Any) -> Any:
+    return json.loads(v) if isinstance(v, str) else v
+
+
+def _option(o: Any) -> Optional[dict]:
+    if not isinstance(o, Mapping):
+        return None
+    rank = o.get("market_rank")
+    out = {"key": str(o.get("key") or ""), "text": str(o.get("text") or ""),
+           "market_rank": int(rank) if isinstance(rank, (int, float)) and not isinstance(rank, bool) else None}
+    # ``ChoiceOptionV1.detail`` (a curiosity-run promise's sentence): for the Hub tendency card only.
+    if isinstance(o.get("detail"), str) and o["detail"].strip():
+        out["detail"] = o["detail"]
+    return out
+
+
+def choice_view(r: Mapping[str, Any]) -> dict:
+    """One choice for the Hub: what was picked, what was passed over (ranked options first, in the
+    market's order, then the unranked), and the tendency it counted toward, if any."""
+    chosen = _option(_jsonish(r.get("chosen")))
+    alts = [a for a in (_option(x) for x in (_jsonish(r.get("alternatives")) or [])) if a is not None]
+    alts.sort(key=lambda a: (a["market_rank"] is None, a["market_rank"] or 0))
+    out = {"choice_id": r["choice_id"], "lane": r["lane"], "occurred_at": _iso(r["occurred_at"]),
+           "chosen": chosen, "passed_over": alts, "chosen_market_rank": r.get("chosen_market_rank"),
+           "declined_all": bool(r.get("declined_all")), "care_promoted": bool(r.get("care_promoted")),
+           "picks_in_decision": int(r.get("picks_in_decision") or 1)}
+    if "tendency_label" in r:
+        out["tendency"] = ({"disposition_id": r["disposition_id"], "label": r["tendency_label"],
+                            "status": r["tendency_status"]} if r.get("disposition_id") else None)
+    return out

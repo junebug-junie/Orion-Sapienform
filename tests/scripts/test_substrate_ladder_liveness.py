@@ -45,7 +45,6 @@ def _replay(fixture: dict) -> ll.LadderReport:
     report.rungs = ll.evaluate_ladder(
         {k: _ts(v) for k, v in fixture["newest"].items()},
         now,
-        consolidation_motif_counts=fixture["consolidation_motif_counts"],
     )
     containers = [
         ll.RunningContainer(c["name"], c["service_dir"], _ts(c["image_created"]), schema_sha256=c.get("schema_sha256"))
@@ -69,10 +68,11 @@ def test_replay_of_2026_09_20_incident_is_red():
     assert report.red
     red = {r.rung for r in report.red_rungs}
     # The dead rungs, and only those: field_state and everything under it kept writing.
-    assert red == {"attention", "proposal", "policy", "dispatch", "feedback", "consolidation:motifs"}
+    # (feedback and consolidation were red too on 09-20, and proposal, policy and dispatch; those
+    # rungs retired 2026-11-04 and 2026-11-07. Attention, the first dead rung, still catches it.)
+    assert red == {"attention"}
     status = {r.rung: r.status for r in report.rungs}
     assert status["field_state"] == "fresh"
-    assert status["consolidation"] == "fresh"  # it kept writing -- empty
     attention = next(r for r in report.rungs if r.rung == "attention")
     assert attention.age_sec > 47 * 3600
     skewed = {s.container for s in report.red_skew}
@@ -104,7 +104,6 @@ def test_feedback_runtime_shape_is_caught_by_skew_while_its_rung_is_fresh():
     kept writing frames (field_before=None). Freshness is green; skew must not be."""
     fx = json.loads(FIXTURE.read_text())
     fx["newest"] = {k: fx["now"] for k in fx["newest"]}
-    fx["consolidation_motif_counts"] = [3, 2, 3]
     fx["containers"] = [c for c in fx["containers"] if c["service_dir"] in ("orion-field-digester", "orion-feedback-runtime")]
     report = _replay(fx)
     assert not report.red_rungs
@@ -115,9 +114,8 @@ def test_incident_is_caught_by_freshness_within_the_limit_not_after_48h():
     """At 22:20Z on 09-20 (22 minutes in) attention is already past its 15m limit."""
     fx = json.loads(FIXTURE.read_text())
     fx["now"] = "2026-09-20T22:20:00+00:00"
-    fx["newest"] = {k: ("2026-09-20T22:19:50+00:00" if k not in ("attention", "proposal", "policy", "dispatch", "feedback") else v)
+    fx["newest"] = {k: ("2026-09-20T22:19:50+00:00" if k not in ("attention", "proposal", "policy", "dispatch") else v)
                     for k, v in fx["newest"].items()}
-    fx["consolidation_motif_counts"] = [2, 3, 2]
     report = _replay(fx)
     assert "rung:attention" in report.red_keys()
 
@@ -125,10 +123,24 @@ def test_incident_is_caught_by_freshness_within_the_limit_not_after_48h():
 def test_healthy_ladder_is_green():
     now = datetime(2026, 9, 25, 0, 16, tzinfo=timezone.utc)
     newest = {r.name: now - timedelta(seconds=30) for r in ll.RUNGS}
-    newest["consolidation"] = now - timedelta(minutes=16)
-    rungs = ll.evaluate_ladder(newest, now, consolidation_motif_counts=[3, 2, 3])
+    rungs = ll.evaluate_ladder(newest, now)
     assert all(not r.red for r in rungs)
-    assert len(rungs) == len(ll.RUNGS) + 1
+    assert len(rungs) == len(ll.RUNGS)
+
+
+def test_retired_rungs_are_listed_and_never_checked():
+    """Feedback and consolidation retired 2026-11-04; proposal, policy and dispatch (L7-L9) 2026-11-07.
+    The check names them as retired (with what does their job now) and never reads their tables,
+    which are dropped after a backup."""
+    retired = {name for name, _, _ in ll.RETIRED_RUNGS}
+    assert retired == {"feedback", "consolidation", "proposal", "policy", "dispatch"}
+    assert not retired & {r.name for r in ll.RUNGS}
+    assert not {r.table for r in ll.RUNGS} & {
+        "substrate_feedback_frames", "substrate_consolidation_frames", "substrate_proposal_frames",
+        "substrate_policy_decision_frames", "substrate_execution_dispatch_frames"}
+    assert all(row["replaced_by"] for row in ll.LadderReport().to_dict()["retired_rungs"])
+    # The top live rung is attention (M5); the sensing half stays checked.
+    assert [r.name for r in ll.RUNGS][-2:] == ["field_state", "attention"]
 
 
 # ----------------------------------------------------------------- freshness
@@ -158,21 +170,6 @@ def test_freshness_sql_is_always_time_bounded():
 def test_rung_names_are_unique():
     names = [r.name for r in ll.RUNGS]
     assert len(names) == len(set(names))
-
-
-@pytest.mark.parametrize(
-    "counts,red",
-    [
-        ([0, 0, 0], True),
-        ([0, 0, 0, 4], True),
-        ([0, 0, 2], False),  # longest normal empty run in 60 days of live data was 1
-        ([0, 0], False),  # not enough frames to say
-        ([], False),
-        ([3, 0, 0], False),
-    ],
-)
-def test_consolidation_empty_run(counts, red):
-    assert ll.evaluate_consolidation_empty(counts).red is red
 
 
 # ---------------------------------------------------------------------- skew
@@ -409,17 +406,17 @@ def test_pinned_schemas_are_still_discovered(discovery):
         assert hits, f"{pin.path} written by {pin.producer_service} fell out of discovery"
         assert set(pin.models) <= set(hits[0].models)
         readers = {r for r, _ in hits[0].reader_models}
-        # The two services that broke on 09-20, and feedback, still broken on 09-25.
-        assert {"orion-attention-runtime", "orion-proposal-runtime", "orion-feedback-runtime"} <= readers
+        # The services that broke on 09-20: attention (live), proposal (retired 2026-11-07) and
+        # feedback (still broken on 09-25, retired 2026-11-04).
+        assert "orion-attention-runtime" in readers
+        assert not readers & {"orion-feedback-runtime", "orion-proposal-runtime"}
 
 
-def test_second_real_pair_is_discovered(discovery):
+def test_the_retired_proposal_pair_is_no_longer_discovered(discovery):
+    """proposal_frame.py and its writer/readers retired 2026-11-07 (ladder retirement PR 6). The
+    replay of its real 2026-08-21 skew (above) stays: it pins the nested-forbid-model mechanism."""
     schemas, _ = discovery
-    hit = next(s for s in schemas if s.path == PF_PATH and s.producer_service == "orion-proposal-runtime")
-    assert hit.strict
-    readers = dict(hit.reader_models)
-    assert "orion-execution-dispatch-runtime" in readers
-    assert "ProposalCandidateV1" in readers["orion-execution-dispatch-runtime"]
+    assert not [s for s in schemas if s.path == PF_PATH]
 
 
 # ------------------------------------------------------------ CLI / notify
@@ -503,11 +500,6 @@ def test_flaky_read_does_not_rearm_a_delivered_card(tmp_path):
     assert len(ok.calls) == 1
 
 
-def test_severity_is_warning_only_for_empty_consolidation_alone():
-    assert _red_report(("consolidation:motifs",)).severity() == "warning"
-    assert _red_report(("consolidation:motifs", "attention")).severity() == "critical"
-
-
 @pytest.mark.parametrize(
     "report,code",
     [
@@ -556,12 +548,12 @@ class _Conn:
 
 def test_a_failed_rung_query_is_cannot_check_not_fresh():
     cli = _load_cli()
-    newest, motifs, errors = cli.read_freshness(_Conn("orion-cortex-exec"), 3600)
+    newest, errors = cli.read_freshness(_Conn("orion-cortex-exec"), 3600)
     assert "grammar:orion-cortex-exec" not in newest
     assert len(errors) == 1 and errors[0].startswith("grammar:orion-cortex-exec")
-    rungs = ll.evaluate_ladder(newest, datetime.now(timezone.utc), consolidation_motif_counts=motifs)
+    rungs = ll.evaluate_ladder(newest, datetime.now(timezone.utc))
     assert "grammar:orion-cortex-exec" not in {r.rung for r in rungs}
-    assert len(rungs) == len(ll.RUNGS)  # every other rung + motifs
+    assert len(rungs) == len(ll.RUNGS) - 1  # every other rung
 
 
 # ---------------------------------------- escalation must never be silent
@@ -747,3 +739,130 @@ def test_a_crash_inside_the_dedupe_path_still_cards_the_red(monkeypatch, capsys)
     assert cli.main(["--notify"]) == cli.EXIT_ESCALATION_FAILED
     assert len(ok.calls) == 1
     assert "dedupe state unusable (unexpected ValueError: bug)" in capsys.readouterr().err
+
+
+# ------------------------------------------------- merged SQL migration section
+# Incidents: PR #2424 (hardware_watch_incident table never created, orion-hardware-watch
+# crash-looped 13x) and PR #2400 (a column never added, attention silently degraded). The parser
+# and replay are covered in tests/test_sql_migration_drift_gate.py; these pin the WIRING: a
+# missing object becomes a debounced Hub card naming the file and the apply command.
+
+from orion import sql_migration_drift as drift  # noqa: E402
+
+_HW = "manual_migration_hardware_watch_v1.sql"
+
+
+def _migration_report(hw_present: bool) -> drift.DriftReport:
+    now = datetime.now(timezone.utc)
+    f = drift.MigrationFile(_HW, "create table if not exists hardware_watch_incident (id text);",
+                            now - timedelta(days=2), now - timedelta(days=1))
+    tables = {"hardware_watch_incident"} if hw_present else set()
+    return drift.evaluate([f], drift.LiveState(tables, set(), {}, set()), now=now)
+
+
+def test_missing_migration_object_makes_the_ladder_red_with_a_card_naming_the_file(tmp_path):
+    cli = _load_cli()
+    rep = ll.LadderReport(migrations=_migration_report(hw_present=False))
+    assert rep.red
+    assert rep.red_keys() == [f"migration:{_HW}"]
+    assert rep.severity() == "critical"
+    ok = _FakeClient()
+    state = str(tmp_path / "state.json")
+    assert cli.notify(rep, state_file=state, base_url="x", token=None, client=ok).sent is True
+    msg = ok.calls[0]["message"]
+    assert _HW in msg and "hardware_watch_incident" in msg
+    assert f"psql -U postgres -d conjourney -v ON_ERROR_STOP=1 < services/orion-sql-db/{_HW}" in msg
+    # Debounced while still missing; re-arms after a verified apply.
+    assert cli.notify(rep, state_file=state, base_url="x", token=None, client=ok).sent is None
+    applied = ll.LadderReport(migrations=_migration_report(hw_present=True))
+    assert not applied.red and f"migration:{_HW}" in applied.green_keys()
+    assert cli.notify(applied, state_file=state, base_url="x", token=None, client=ok).sent is None
+    assert cli.notify(rep, state_file=state, base_url="x", token=None, client=ok).sent is True
+
+
+def test_migration_section_that_could_not_run_is_cannot_check_not_green(monkeypatch):
+    cli = _load_cli()
+
+    def boom(*a, **k):
+        raise RuntimeError("git log failed")
+
+    monkeypatch.setattr(cli.drift, "check_repo", boom)
+    rep = ll.LadderReport()
+    args = type("A", (), {"repo": str(REPO), "migration_days": 30})()
+    cli.check_migrations(None, args, rep)
+    assert rep.migrations is None
+    assert rep.cannot_check == ["migrations: RuntimeError: git log failed"]
+    assert not any(k.startswith("migration:") for k in rep.green_keys())
+
+
+def test_migration_section_is_in_json_and_human_output(capsys):
+    cli = _load_cli()
+    rep = ll.LadderReport(migrations=_migration_report(hw_present=False))
+    d = rep.to_dict()
+    assert d["red"] and d["migrations"][0]["file"] == _HW and d["migrations"][0]["apply"]
+    cli.print_human(rep)
+    out = capsys.readouterr().out
+    assert f"RED migration {_HW}" in out and "apply:" in out
+    assert out.strip().endswith("RED")
+
+
+def test_the_watch_keeps_a_carded_migration_red_past_the_window(tmp_path, monkeypatch):
+    """Review finding 1: the delivered-card list is passed as sticky keys, so a carded file
+    stays red until applied instead of ageing out with its debounce key stuck."""
+    cli = _load_cli()
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"notified_keys": [f"migration:{_HW}", "rung:attention"]}))
+    seen = {}
+
+    def fake_check_repo(conn, repo, **kw):
+        seen.update(kw)
+        return _migration_report(hw_present=True)
+
+    monkeypatch.setattr(cli.drift, "check_repo", fake_check_repo)
+    args = type("A", (), {"repo": str(REPO), "migration_days": 30, "state_file": str(state)})()
+    cli.check_migrations(None, args, ll.LadderReport())
+    assert seen["sticky_keys"] == [f"migration:{_HW}"]
+    assert cli._delivered_migration_keys(str(tmp_path / "absent.json")) == []
+
+
+# --- Camera input rungs (2026-10-21) ----------------------------------------
+# Timestamps from live substrate_perception_embedding_baseline: the newest cam0
+# embedding before the 2026-10-18 outage and the first one after it. Receipts
+# kept arriving through all 49 h (the tick writes a placeholder), so only an
+# input rung can see it.
+_CAM0_LAST_BEFORE_GAP = datetime(2026, 10, 18, 4, 6, 45, 132976, tzinfo=timezone.utc)
+_CAM0_FIRST_AFTER_GAP = datetime(2026, 10, 20, 5, 51, 28, 892306, tzinfo=timezone.utc)
+
+
+def _camera_rung(stream: str) -> "ll.Rung":
+    (rung,) = [r for r in ll.RUNGS if r.name == f"camera_input:{stream}"]
+    return rung
+
+
+def test_camera_input_rungs_cover_the_24_7_cameras_only() -> None:
+    assert set(ll.CAMERA_INPUT_STREAMS_EXPECTED_ONLINE) == {"cam0", "walkway"}
+    for stream in ll.CAMERA_INPUT_STREAMS_EXPECTED_ONLINE:
+        rung = _camera_rung(stream)
+        assert (rung.table, rung.ts_column, rung.lane_column, rung.lane_value) == (
+            "substrate_perception_embedding_baseline", "generated_at", "stream_id", stream,
+        )
+        assert rung.max_age == timedelta(minutes=15)
+    assert not [r for r in ll.RUNGS if r.lane_value in ("doorbell", "carbon-webcam")]
+
+
+def test_camera_input_rung_fires_within_one_cron_tick_of_the_2026_10_18_outage() -> None:
+    rung = _camera_rung("cam0")
+    # Cron runs every 10 min: the first run past 15 min of silence is red.
+    first_red = None
+    t = _CAM0_LAST_BEFORE_GAP
+    while t < _CAM0_FIRST_AFTER_GAP:
+        if ll.evaluate_rung(rung, _CAM0_LAST_BEFORE_GAP, t).red:
+            first_red = t
+            break
+        t += timedelta(minutes=10)
+    assert first_red is not None
+    assert first_red - _CAM0_LAST_BEFORE_GAP <= timedelta(minutes=25)
+    # Healthy cadence (a frame ~5 s ago) is green; recovery clears it.
+    assert not ll.evaluate_rung(rung, _CAM0_FIRST_AFTER_GAP, _CAM0_FIRST_AFTER_GAP + timedelta(seconds=5)).red
+    # The 3-day lookback returning no row at all is red, never "fine".
+    assert ll.evaluate_rung(rung, None, _CAM0_FIRST_AFTER_GAP).red

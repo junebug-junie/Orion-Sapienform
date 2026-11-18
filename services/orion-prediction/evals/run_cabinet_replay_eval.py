@@ -1,0 +1,181 @@
+"""Backtest the full model zoo on REAL cabinet history and check the served blend is honest.
+
+Fixture: evals/fixtures/cabinet_5min.csv.gz (export_cabinet_fixture.py; 5-min means from production,
+2026-09-26 AC install -> 2026-11-03, with the office room sensor from 2026-10-28). Same code production runs: app.backtest + app.models, the repo
+registry entry for athena.cabinet_temp_c, no database.
+
+Checks (exit 1 on failure):
+- monthly seasonality is refused on this history; daily is used.
+- every model produces residuals on >= 80% of windows (a model that silently fails is caught) -- except
+  an overlap-window model (direct_arx_overlap), which refuses windows before its young covariate has
+  enough history by design; its window count is reported instead.
+- the served champion blend never loses to the better baseline at any horizon (rel_mae <= 1).
+- the blend's time-ordered holdout 80% coverage (newest third of windows) is not rejected by a binomial
+  test against 0.8 at p < 0.01, counting only independent windows (holdout / ceil(h / step)). A fixed
+  band on ~13 overlapping windows fails by chance (13/13 covered happens 5.5% of the time).
+- every served non-baseline horizon won its paired test (p < GATE_ALPHA).
+- at least one horizon is served by a non-baseline model, or the report says the baseline is served.
+Also reports (not gated): a conditional scenario for +200 W chassis power and the AC covariate.
+
+    cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py   # 40 windows, as production
+    ... --train-from 2026-10-23T19:25:21Z   # the live training start (break adopted by a change event)
+    ... --without-overlap                   # the registry before office.temp_c joined (A/B for the room covariate)
+"""
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import math
+import gzip
+import json
+import sys
+import time
+from pathlib import Path
+
+import pandas as pd
+from scipy.stats import binomtest
+
+SERVICE = Path(__file__).resolve().parents[1]
+REPO = SERVICE.parents[1]
+sys.path[:0] = [str(SERVICE), str(REPO)]
+
+from app.backtest import GATE_ALPHA, horizon_metrics, run_backtest, select_champion, step_owner, stitch  # noqa: E402
+from app.causal import CausalError, scenario  # noqa: E402
+from app.frame import mask_windows, to_grain, training_slice  # noqa: E402
+from app.models import BASELINES, build_models, split_seasonalities  # noqa: E402
+from app.series import _ts, load_registry  # noqa: E402
+
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "cabinet_5min.csv.gz"
+
+
+def load(col: str, spec, fill: bool = True) -> pd.Series:
+    with gzip.open(FIXTURE, "rt") as fh:
+        df = pd.read_csv(fh)
+    ts = pd.to_datetime(df["bucket_start"], utc=True)
+    return to_grain(zip(ts, df[col].astype(float)), spec.grain_min, spec.agg, spec.max_fill_min if fill else 0)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--windows", type=int, default=40)
+    ap.add_argument("--step-min", type=int, default=180)
+    ap.add_argument("--json", type=Path)
+    ap.add_argument("--train-from", help="override the registry train_from (ISO time with zone)")
+    ap.add_argument("--without-overlap", action="store_true", help="drop overlap_covariates (no room covariate)")
+    args = ap.parse_args()
+    reg = load_registry(REPO / "config" / "prediction" / "series.v1.yaml")
+    spec = reg.get("athena.cabinet_temp_c")
+    if args.train_from:
+        spec = dataclasses.replace(spec, train_from=_ts(args.train_from, "--train-from"))
+    if args.without_overlap:
+        spec = dataclasses.replace(spec, covariates=tuple(c for c in spec.covariates if c not in spec.overlap_covariates),
+                                   overlap_covariates=())
+    y = load("cabinet_temp_c", spec)
+    actuals = load("cabinet_temp_c", spec, fill=False).reindex(y.index)
+    cov_cols = {"athena.chassis_watts": "chassis_watts", "athena.cabinet_cooling_watts": "cooling_watts",
+                "circe.chassis_watts": "circe_watts", "hecate.chassis_watts": "hecate_watts",
+                "office.temp_c": "office_temp_c"}
+    skipped = [c for c in spec.covariates if c not in cov_cols]
+    # The models index covariate columns by position in spec.covariates: drop what the fixture lacks
+    # from the spec itself so the columns and the spec stay aligned.
+    spec = dataclasses.replace(spec, covariates=tuple(c for c in spec.covariates if c in cov_cols))
+    # Each covariate's own exclusions masked, as covariate_series does live (office sensor settling).
+    covariates = pd.DataFrame({cid: mask_windows(load(cov_cols[cid], reg.get(cid), fill=False),
+                                                 reg.get(cid).exclude).reindex(y.index)
+                               for cid in spec.covariates}, index=y.index)
+    if "hecate.chassis_watts" in covariates:          # zero_before_first, as covariate_series does live
+        first = covariates["hecate.chassis_watts"].first_valid_index()
+        if first is None:
+            covariates["hecate.chassis_watts"] = 0.0
+        else:
+            covariates.loc[covariates.index < first, "hecate.chassis_watts"] = 0.0
+    print("covariates in fixture:", list(covariates.columns), "| not in fixture (live only):", skipped)
+    train = training_slice(y, spec)
+    usable, refused = split_seasonalities(spec, len(train))
+    zoo = build_models(spec, usable)
+    step = args.step_min // spec.grain_min
+    results, timing = {}, {}
+    for name in zoo:
+        t0 = time.monotonic()
+        results[name] = run_backtest(y, spec, name, lambda u, n=name: build_models(spec, u)[n], args.windows, step,
+                                     actuals=actuals, covariates=covariates)
+        timing[name] = time.monotonic() - t0
+    sel = select_champion(results, spec, args.step_min)
+    h = spec.max_horizon_steps
+    res = {n: r.residuals for n, r in results.items()}
+    blend = stitch(res, step_owner(sel.assignment, spec.grain_min, h))
+    blend_m = {str(hm): horizon_metrics(blend, spec.steps(hm) - 1) for hm in spec.horizons_min}
+
+    failures = []
+    if "monthly" not in refused or "daily" not in {s.name for s in usable}:
+        failures.append(f"seasonality split wrong: usable={[s.name for s in usable]} refused={refused}")
+    for name, r in results.items():
+        if name == "direct_arx_overlap":
+            print(f"{name}: residuals on {r.n_windows}/{len(r.origins)} windows (young covariate; not gated)")
+            continue
+        if r.n_windows < 0.8 * len(r.origins):
+            failures.append(f"{name} produced residuals on only {r.n_windows}/{len(r.origins)} windows: {r.errors[:2]}")
+    for hm in spec.horizons_min:
+        key = str(hm)
+        ref = min(sel.metrics[b][key]["mae"] for b in BASELINES)
+        bm = blend_m[key]
+        if bm["mae"] is None or bm["mae"] > ref + 1e-9:
+            failures.append(f"{hm}min: blend MAE {bm['mae']} worse than best baseline {ref}")
+        c, n_h = bm["coverage80_holdout"], bm["n_holdout"]
+        n_eff = max(1, n_h // max(1, math.ceil(hm / args.step_min)))
+        if c is None:
+            failures.append(f"{hm}min: no holdout coverage")
+        elif binomtest(round(c * n_eff), n_eff, 0.8).pvalue < 0.01:
+            failures.append(f"{hm}min: blend holdout coverage80 {c:.2f} rejects 0.8 ({n_eff} independent windows)")
+        served = sel.assignment[hm]
+        if served not in BASELINES and not (sel.metrics[served][key]["p_win"] < GATE_ALPHA):
+            failures.append(f"{hm}min: {served} served without a significant win")
+
+    print(f"history buckets={len(y)} train={len(train)} usable={[s.name for s in usable]} refused={refused}")
+    print(f"windows={args.windows} step={args.step_min}min\n")
+    hdr = "model".ljust(20) + "".join(f"{hm:>16}min" for hm in spec.horizons_min) + "   seconds"
+    print(hdr + "\n" + "-" * len(hdr))
+    for name in results:
+        cells = []
+        for hm in spec.horizons_min:
+            m = sel.metrics[name][str(hm)]
+            mark = "*" if sel.assignment[hm] == name else " "
+            pw = m.get("p_win")
+            cells.append((f"{m['mae'] or float('nan'):.3f}/{m['rel_mae'] or float('nan'):.2f}"
+                          f"/{'-' if pw is None else f'{pw:.2f}'}{mark}").rjust(19))
+        print(name.ljust(20) + "".join(cells) + f"{timing[name]:10.1f}")
+    print("\ncells: MAE C / MAE relative to the better baseline / paired-win p; * = serves that horizon")
+    print("blend:", {hm: f"MAE {blend_m[str(hm)]['mae']:.3f} cov80 {'-' if blend_m[str(hm)]['coverage80_holdout'] is None else format(blend_m[str(hm)]['coverage80_holdout'], '.2f')}"
+                     for hm in spec.horizons_min})
+    print("assignment:", sel.assignment, "served_baseline:", sel.served_baseline)
+
+    scen = {}
+    for cov_id in [c for c in spec.covariates if c in ("athena.chassis_watts", "athena.cabinet_cooling_watts")]:
+        cov_spec = reg.get(cov_id)
+        col = cov_cols[cov_id]
+        x = load(col, cov_spec).reindex(y.index)
+        # End where the covariate's own history ends (the fixture's AC tail can be empty).
+        last = x.last_valid_index()
+        stop = y.index.get_loc(last) + 1 if last is not None else len(y)
+        tail = slice(stop - 7 * 288, stop)
+        try:
+            hold = float(x.iloc[tail].dropna().iloc[-12:].mean())
+            r = scenario(y.iloc[tail], x.iloc[tail], cov_id, [hold + 200.0] * 24, spec.grain_min)
+            scen[cov_id] = {"long_run_C_per_100": 100 * r.long_run_effect_per_unit, "delta_2h_C": r.delta[-1]}
+        except CausalError as exc:
+            scen[cov_id] = {"error": str(exc)}
+    print("\nconditional scenarios (+200 units for 2h; correlation, not cause):")
+    for k, v in scen.items():
+        print(f"  {k}: {json.dumps({a: (round(b, 3) if isinstance(b, float) else b) for a, b in v.items()})}")
+
+    if args.json:
+        args.json.write_text(json.dumps({"metrics": sel.metrics, "assignment": sel.assignment, "blend": blend_m,
+                                         "timing": timing, "scenarios": scen, "failures": failures}, default=str))
+    print("\nRESULT:", "PASS" if not failures else "FAIL")
+    for f in failures:
+        print("  -", f)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

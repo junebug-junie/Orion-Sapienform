@@ -1,0 +1,11 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer, orion-hub
+-- Temporal Self patch 4 (Orion uses its own day): the citation gate's result per stance decision.
+-- Writer: orion-sql-writer (ThoughtDecisionSQL.day_citations, from ThoughtEventV1.day_citations on
+-- orion:thought:artifact). Reader: orion-hub turn trace (scripts/chat_turn_trace_routes.py), which
+-- shows the label UNVERIFIED when a sentence about the day cited no arc.
+--
+-- Apply BEFORE deploying orion-sql-writer (its insert names the column) and orion-hub (its turn-trace
+-- SELECT names it):
+--   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_thought_decision_day_citations_v1.sql
+-- Additive, nullable, idempotent. Rollback: ALTER TABLE thought_decision DROP COLUMN day_citations;
+ALTER TABLE thought_decision ADD COLUMN IF NOT EXISTS day_citations jsonb;

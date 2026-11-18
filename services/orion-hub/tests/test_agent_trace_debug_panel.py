@@ -88,7 +88,8 @@ def test_memory_and_autonomy_modals_coordinate_scroll_lock_and_visibility() -> N
     assert "closeMemoryDebugModal();" in app_js
     assert "const shouldLock = isModalVisible(memoryDebugModalRoot)" in app_js
     assert "|| isModalVisible(autonomyDebugModalRoot)" in app_js
-    assert "|| isModalVisible(agentTraceModal);" in app_js
+    # Not the last term any more (cockpitHudRoot follows), so no trailing ";".
+    assert "|| isModalVisible(agentTraceModal)" in app_js
     assert "document.body.classList.toggle('overflow-hidden', shouldLock);" in app_js
 
 

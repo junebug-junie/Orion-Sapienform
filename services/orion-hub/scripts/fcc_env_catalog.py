@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from orion.core.redact import remember_secret_env
+
 FCC_MODEL_ENV_KEYS: tuple[str, ...] = (
     "MODEL",
     "MODEL_OPUS",
@@ -28,6 +30,8 @@ def load_fcc_env(path: Path | str) -> Dict[str, str]:
             continue
         key, _, value = stripped.partition("=")
         out[key.strip()] = value.strip().strip('"').strip("'")
+    # These become the Claude subprocess env; its trace must not echo them.
+    remember_secret_env(out)
     return out
 
 

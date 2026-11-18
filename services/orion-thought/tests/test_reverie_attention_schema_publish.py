@@ -32,12 +32,12 @@ def _thought(idx: int) -> SpontaneousThoughtV1:
     return SpontaneousThoughtV1(
         thought_id=f"th-{idx}", correlation_id="corr-r",
         coalition=CoalitionSnapshotV1(attended_node_ids=["n-1"], selected_open_loop_id="ol-1", open_loop_ids=["ol-1"], generated_at=NOW),
-        interpretation=f"thought {idx}: the loop ol-1 keeps recurring", salience=0.7,
-        next_focus="the deploy" if idx == 1 else None,
+        interpretation=("thought 0: the loop ol-1 keeps recurring" if idx == 0 else f"step {idx} turns toward why the deploy window matters"), salience=0.7,
+        next_focus="the deploy" if idx == 1 else "the backup window",
     )
 
 
-async def _step(chain_id, index):
+async def _step(chain_id, index, continuity=None):
     return _thought(index)
 
 

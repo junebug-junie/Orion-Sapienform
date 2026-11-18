@@ -1,0 +1,511 @@
+"""The chronicle's reads: every bound Temporal Self source, by the reducer's own clock.
+
+``orion/temporal_self/evals/export_fixture_day.sql`` is the reference for every query and every
+flag column here (``has_prompt``, ``unsolicited``, the ``chat_turn`` EXISTS, the nested thought
+list, ``trigger_timestamp``); the replay eval loads that export into these same table shapes and
+checks that this module reproduces it.
+
+How a window is read. The reducer orders items by when they became AVAILABLE (a process event at
+its end, ``arcs._event_available_at``). Each query selects a SUPERSET by an indexed natural column
+(widened by ``slack`` where available time can sit after it), every row goes through the reducer's
+own adapter, and only events whose available time is in ``[lo, hi)`` are kept. So a window never
+double-reads and never needs SQL to restate an adapter's time rule.
+
+Rows that change after insert (stated, so a live/replay difference is never a surprise):
+
+* ``reverie_visual_attempt.outcome`` reads ``active``/``unknown`` while in flight (the table's own
+  partial index); those are skipped here. ``abandoned`` lands ~90 min after ``started_at``, so it
+  is always a late row live (the chronicle probes 3 h back for it): stored ``late_unfolded`` in
+  ``temporal_self_event``, counted, never folded.
+* ``attention_salience_trace``'s ``chat_turn`` EXISTS becomes true when sql-writer lands the chat
+  row: up to 141 s after the trace (live, 7 days to 10-10). The read lag covers it.
+* ``episode_memory`` rows are written 0.5 to 97 h after ``occurred_at`` (live 11-05 to 11-13). They
+  are read by ``created_at``, the write time, and fold in the window they land in (#3400); the
+  reducer still binds each by ``occurred_at``. Read by ``occurred_at`` they were always late:
+  counted, never bound.
+* ``vision_presence_transition`` ``unknown`` rows are written ~120 s (the producer's
+  ``STALE_AFTER_MS``) after their ``occurred_at`` (the last observation); inside the 300 s read lag.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable, Optional
+
+from orion.schemas.temporal_self import TemporalSelfEventV1
+from orion.temporal_self.arcs import event_available_at
+from orion.temporal_self.broadcast import BroadcastTickView, tick_from_log_row
+from orion.temporal_self.day import as_utc
+from orion.temporal_self.sources import ADAPTERS, ROOM_STREAMS, STREET_STORY_KINDS
+
+STATEMENT_TIMEOUT = "30s"  # a stalled read fails the window (retried next step), never hangs it
+
+# Outcomes of an attempt still running (reverie_visual_attempt's own "active" partial index).
+VISUAL_IN_FLIGHT = ("active", "unknown")
+
+BROADCAST_SQL = """
+SELECT log_id, generated_at,
+  json_build_object('selected_open_loop_id', projection_json->'selected_open_loop_id',
+    'frame', json_build_object('open_loops', COALESCE((SELECT json_agg(json_build_object(
+        'id', l->'id', 'source_refs', l->'source_refs', 'description', l->'description'))
+      FROM jsonb_array_elements(projection_json->'frame'->'open_loops') l), '[]'::json))) AS projection_json
+FROM substrate_attention_broadcast_log
+WHERE generated_at >= %(lo)s AND generated_at < %(hi)s
+"""
+
+
+@dataclass(frozen=True)
+class SourceQuery:
+    kind: str
+    sql: str
+    # How far before ``lo`` the natural column may sit while the event is still available
+    # inside the window (a process that started earlier, a joined timestamp that precedes it).
+    slack: timedelta = timedelta(0)
+    # A table that may not exist yet (its migration lands with the producer): checked with
+    # to_regclass first, and skipped while missing, so one new source can never fail the whole read.
+    optional_table: str | None = None
+    # More tables the query needs, checked the same way (a join across several new tables).
+    also_requires: tuple[str, ...] = ()
+
+
+# %(lo)s / %(hi)s are the superset bounds (already widened by ``slack``); timestamptz params.
+QUERIES: tuple[SourceQuery, ...] = (
+    SourceQuery("chat_turn", """
+SELECT id, correlation_id, session_id, source, created_at,
+  btrim(coalesce(prompt, '')) <> '' AS has_prompt,
+  coalesce((client_meta->>'unsolicited')::boolean, false) AS unsolicited
+FROM chat_history_log
+WHERE created_at >= (%(lo)s::timestamptz AT TIME ZONE 'UTC') AND created_at < (%(hi)s::timestamptz AT TIME ZONE 'UTC')
+"""),
+    SourceQuery("curiosity_run", """
+SELECT d.run_id, d.turn_started_at, d.decided_at, d.arm, d.offered, o.completed_at, o.turn_ok,
+  o.n_tested, o.n_moved, o.n_formed
+FROM curiosity_run_outcomes o JOIN curiosity_offer_decisions d USING (run_id)
+WHERE o.completed_at >= %(lo)s AND o.completed_at < %(hi)s
+""", slack=timedelta(days=1)),
+    # reverie_chain is read in two steps (chains, then their thoughts): see Reader._reverie.
+    SourceQuery("expectation_verdict", """
+SELECT thought_id, correlation_id, thought_json->>'chain_id' AS chain_id, created_at,
+  expectation_verdict, expectation_scored_at
+FROM substrate_reverie_thought
+WHERE expectation_scored_at >= %(lo)s AND expectation_scored_at < %(hi)s
+"""),
+    SourceQuery("visual_run", """
+SELECT c.chain_id, c.created_at, c.theme_key, c.terminal_reason, a.started_at AS attempt_started_at,
+  a.result_json->'detail'->>'state' AS thermal_state
+FROM reverie_visual_chain c LEFT JOIN LATERAL (
+  SELECT started_at, result_json FROM reverie_visual_attempt a
+  WHERE a.result_json->>'chain_id' = c.chain_id ORDER BY started_at DESC LIMIT 1) a ON true
+WHERE c.created_at >= %(lo)s AND c.created_at < %(hi)s
+""", slack=timedelta(days=1)),
+    SourceQuery("visual_deferral", """
+SELECT attempt_id, started_at, outcome,
+  json_build_object('reason', result_json->>'reason', 'refused', result_json->'refused',
+    'detail', json_build_object('state', result_json->'detail'->>'state')) AS result_json
+FROM reverie_visual_attempt
+WHERE started_at >= %(lo)s AND started_at < %(hi)s
+  AND outcome IS NOT NULL AND outcome <> 'produced' AND outcome <> ALL(%(in_flight)s)
+"""),
+    SourceQuery("gpu_wait", """
+SELECT event_id, generated_at, event, holder, priority, work_class, waited_ms, turn_correlation_id
+FROM gpu_pool_events
+WHERE generated_at >= %(lo)s AND generated_at < %(hi)s
+  AND priority = 'background' AND holder NOT LIKE 'http:%%'
+  AND (event = 'unavailable' OR (event = 'granted' AND waited_ms >= 500))
+"""),
+    SourceQuery("dream_cycle", """
+SELECT cycle_id, trigger, status, started_at, ended_at, pressure, replay_count, hypothesis_count,
+  json_build_object('pressure', json_build_object('since', cycle_json->'pressure'->>'since')) AS cycle_json
+FROM dream_cycle
+WHERE status = 'completed' AND ended_at >= %(lo)s AND ended_at < %(hi)s
+""", slack=timedelta(days=1)),
+    SourceQuery("dream_hypothesis", """
+SELECT hypothesis_id, cycle_id, arm, created_at, expires_at, offered_at, offered_run_id
+FROM dream_hypothesis WHERE created_at >= %(lo)s AND created_at < %(hi)s
+"""),
+    # Time is observed_at, else created_at; observed_at is indexed (and never null live: 0 of
+    # 144,909 on 10-10), so the two branches keep the read off a 201 MB seq scan.
+    # Act rows only (2026-11-07, ladder retirement PR 6): the act ledger's ``act:<verb>`` rows and the
+    # cooling world act's ``self_regulate`` rows. The dispatch ladder's own kinds (summarize, maintain,
+    # inspect) stopped with dispatch; reading a kind that cannot arrive any more is a dead source.
+    SourceQuery("action_outcome", """
+SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error, surprise_nats
+FROM substrate_action_outcomes WHERE observed_at >= %(lo)s AND observed_at < %(hi)s
+  AND (dispatch_kind LIKE 'act:%%' OR dispatch_kind = 'self_regulate')
+UNION ALL
+SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error, surprise_nats
+FROM substrate_action_outcomes WHERE observed_at IS NULL AND created_at >= %(lo)s AND created_at < %(hi)s
+  AND (dispatch_kind LIKE 'act:%%' OR dispatch_kind = 'self_regulate')
+"""),
+    # Time is the trigger's naive-UTC timestamp; the metacog row is written up to ~9 min later
+    # (live p99 12.7 s, max 532 s), so the TEXT row time is only a lower-bounded superset. The
+    # indexed TEXT prefix (a day wider, either separator) keeps it off a 611 MB seq scan; the
+    # cast then decides exactly.
+    SourceQuery("metacog_observation", """
+SELECT m.id, m.correlation_id, m.severity, m.trigger_kind, m.timestamp, t.timestamp AS trigger_timestamp
+FROM orion_metacog m LEFT JOIN LATERAL (
+  SELECT timestamp FROM metacog_trigger t WHERE t.correlation_id = m.correlation_id
+  ORDER BY timestamp LIMIT 1) t ON true
+WHERE m.timestamp >= %(lo_key)s AND m.severity IN ('degraded', 'critical') AND m.timestamp::timestamptz >= %(lo)s
+""", slack=timedelta(days=1)),
+    SourceQuery("consolidation_window_close", """
+SELECT memory_window_id, closed_at, turn_correlation_ids, close_reason, source_platform
+FROM memory_consolidation_windows WHERE closed_at >= %(lo)s AND closed_at < %(hi)s
+"""),
+    SourceQuery("attention_row", """
+SELECT entry_id, generated_at, process, correlation_id, attention_reason
+FROM substrate_attention_schema WHERE generated_at >= %(lo)s AND generated_at < %(hi)s
+"""),
+    SourceQuery("attention_loop_raised", """
+SELECT trace_id, loop_id, scope, correlation_id, created_at,
+  EXISTS (SELECT 1 FROM chat_history_log c WHERE c.correlation_id = t.correlation_id) AS chat_turn
+FROM attention_salience_trace t
+WHERE scope = 'chat' AND created_at >= %(lo)s AND created_at < %(hi)s
+"""),
+    SourceQuery("attention_loop_verdict", """
+SELECT outcome_id, loop_id, verdict, actor, created_at
+FROM attention_loop_outcome WHERE created_at >= %(lo)s AND created_at < %(hi)s
+"""),
+    SourceQuery("field_dominance_run", """
+SELECT run_id, target_id, target_kind, started_at, ended_at, tick_count, min_streak_at_run, left_censored
+FROM field_dominance_run WHERE ended_at >= %(lo)s AND ended_at < %(hi)s
+""", slack=timedelta(hours=1)),
+    SourceQuery("vision_percept", """
+SELECT event_id, stream_id, event_type, entities, created_at
+FROM vision_events
+WHERE created_at >= %(lo)s AND created_at < %(hi)s
+  AND jsonb_typeof(entities::jsonb) = 'array' AND jsonb_array_length(entities::jsonb) > 0
+"""),
+    # Read by write time (idx_episode_memory_created): available at created_at, so no slack.
+    SourceQuery("memory_episode", """
+SELECT memory_id::text AS memory_id, episode_id, purpose, occurred_at, created_at
+FROM episode_memory WHERE created_at >= %(lo)s AND created_at < %(hi)s AND occurred_at IS NOT NULL
+"""),
+    # Seam S1. The label column is selected only where identity was confirmed; the adapter
+    # enforces the same rule again.
+    SourceQuery("presence_transition", """
+SELECT transition_id, presence_id, from_state, to_state, occurred_at, identity_confirmed,
+  CASE WHEN identity_confirmed THEN label END AS label
+FROM vision_presence_transition WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
+    # Strain loop part 1: the regulation step's own rows in the event table (the chronicle's
+    # copies of other kinds share the table; only regulation writes this kind).
+    SourceQuery("arousal_transition", """
+SELECT event_id, occurred_at, payload_json FROM temporal_self_event
+WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
+  AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
+    # Felt state (body economy Organ 5): the physiology node's own binding rows in the event table
+    # (app/body_binding.py). Only the physiology node writes this kind; the adapter keeps their ids.
+    SourceQuery("body_binding", """
+SELECT event_id, occurred_at, payload_json FROM temporal_self_event
+WHERE source_kind = 'body_binding' AND source_table = 'physiology'
+  AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
+    # Self-monitor organ patch 2: the self_monitor node's own faculty rows (status changes, keepalives).
+    SourceQuery("faculty_status_changed", """
+SELECT event_id, occurred_at, payload_json FROM temporal_self_event
+WHERE source_kind = 'faculty_status_changed' AND source_table = 'self_monitor'
+  AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
+    # Orion plays Zelda (section F): one finished Retro session per row (orion-hub writes it at
+    # session end). Available when WRITTEN (the later of ended_at and created_at;
+    # arcs.event_available_at): a person's sitting (kind human_play) ends at its last button press and
+    # its row is written 5 minutes later, when the gap is noticed, or later still by its recovery. A
+    # read by ended_at alone that landed in between stored the row late and never folded it. The
+    # ended_at bound keeps the read on the index (a row is written within a week of its end).
+    # player_stated (game company patch 1, kind human_play) needs manual_migration_retro_watch_v1.sql.
+    SourceQuery("retro_play", """
+SELECT session_id, retro_session_id, lineage_id, game_id, game_title, kind, started_at, ended_at, summary,
+  control_basis, human_may_be_in_control, played_together, human_share, decisions, predictions_met, predictions_unknown, rooms_new, deaths, memory_card_id,
+  duration_sec, player_stated, created_at
+FROM retro_play_sessions
+WHERE ended_at >= %(lo)s::timestamptz - interval '8 days' AND ended_at < %(hi)s
+  AND greatest(ended_at, coalesce(created_at, ended_at)) >= %(lo)s
+  AND greatest(ended_at, coalesce(created_at, ended_at)) < %(hi)s
+""", optional_table="retro_play_sessions"),
+    # Episodes from the street (PR #2763 item 1), three reads of one kind; the adapter
+    # (sources.street_event) decides every rule again, these only narrow the rows.
+    # 1. Published clean motion stories, with the spot-check verdict counts of the newest rules version
+    #    (vision_rollup.py story_gate's rule). The gate is read as of the read, not as of the story:
+    #    a re-fold after Juniper's tally or the rules version moves can keep a different set. One
+    #    story per walking-together group: a story is skipped when a lower-id member of its group
+    #    qualifies too (live groups list every member symmetrically). Available when WRITTEN (the later
+    #    of ended_at and created_at; arcs.event_available_at): a story is written a median 49 s after it
+    #    ends (p99 20 min, 7 days to 10-23), and one read by ended_at that landed after the read lag was
+    #    stored late and never folded. The started_at bound keeps the read on the published index.
+    #    SourceReader._street_story_extras then adds the visit links and Juniper's word on the name.
+    SourceQuery("street_event", """
+WITH gate AS (SELECT max(rules_version) AS v FROM vision_motion_story WHERE published AND clean),
+counts AS (
+  SELECT json_object_agg(verdict, n) AS c FROM (
+    SELECT CASE WHEN vd.cant_tell THEN 'cant_tell' ELSE vd.verdict END AS verdict, count(*) AS n
+    FROM vision_motion_story_verdict vd JOIN vision_motion_story vs ON vs.story_id = vd.story_id, gate
+    WHERE vs.published AND vs.clean AND vs.rules_version = gate.v GROUP BY 1) x
+  WHERE verdict IS NOT NULL)
+SELECT 'motion_story' AS origin, s.story_id, s.stream_id, s.kind, s.started_at, s.ended_at, s.speed_class,
+  s.dir_lateral, s.dir_depth, s.name_label, s.individual_id, s.companion_kinds, s.together_story_ids,
+  s.published, s.clean, s.rules_version, s.created_at, gate.v AS gate_rules_version, counts.c AS gate_counts
+FROM vision_motion_story s CROSS JOIN gate CROSS JOIN counts
+WHERE s.published AND s.clean AND s.started_at >= %(lo)s::timestamptz - interval '1 day' AND s.started_at < %(hi)s
+  AND greatest(s.ended_at, coalesce(s.created_at, s.ended_at)) >= %(lo)s
+  AND greatest(s.ended_at, coalesce(s.created_at, s.ended_at)) < %(hi)s
+  AND s.stream_id <> ALL(%(room_streams)s) AND s.kind = ANY(%(story_kinds)s)
+  AND NOT EXISTS (
+    SELECT 1 FROM vision_motion_story t
+    WHERE t.story_id = ANY(s.together_story_ids) AND t.story_id < s.story_id AND t.published AND t.clean
+      AND t.rules_version = s.rules_version AND t.stream_id = s.stream_id AND t.kind = ANY(%(story_kinds)s))
+""", optional_table="vision_motion_story",
+                also_requires=("vision_motion_story_verdict",)),
+    # 2. Doorbell rings (orion-vision-retina writes one vision_events row per Ring push).
+    SourceQuery("street_event", """
+SELECT 'doorbell_ring' AS origin, event_id, stream_id, event_type, created_at
+FROM vision_events WHERE event_type = 'doorbell_ring' AND created_at >= %(lo)s AND created_at < %(hi)s
+"""),
+    # 3. Graded handoffs from sql-writer's StreetEventV1 outbox. The event's occurred_at is the time;
+    #    the row is written after it, so created_at (widened by slack for clock skew between the
+    #    story times and sql-writer's clock) bounds the read from below. No SQL cast of occurred_at:
+    #    one malformed row would fail the whole window; the adapter parses it and the reader keeps
+    #    only events available in [lo, hi). The table holds a handful of rows (5 ever, to 10-23).
+    SourceQuery("street_event", """
+SELECT 'street_event' AS origin, event_id, handoff_id, event, created_at
+FROM vision_handoff_street_outbox
+WHERE created_at >= %(lo)s AND kind IN ('handoff_met', 'handoff_late', 'handoff_missed')
+""", slack=timedelta(minutes=10), optional_table="vision_handoff_street_outbox"),
+    # Office sessions (office camera design PR #3127 step B): one FINAL row per visit to a room camera
+    # (orion-sql-writer app/vision_office_sessions.py). Available at closed_at (when the row became
+    # final, never rewritten after), so the window is on closed_at and needs no slack.
+    SourceQuery("office_session", """
+SELECT session_id, stream_id, status, started_at, ended_at, closed_at, who_text, label, unknown_people, ask_id
+FROM vision_office_session
+WHERE status = 'closed' AND closed_at >= %(lo)s AND closed_at < %(hi)s AND stream_id = ANY(%(room_streams)s)
+""", optional_table="vision_office_session"),
+    # Orion's now, patch 1 (integration design A1). Each is optional: a missing table skips the kind.
+    # A finished reading: a closed hub.world_pulse_read act, available at closed_at. Readings run up to
+    # ~5 h (live max 5.2 h, p99 1 h, to 11-15), so opened_at (the indexed column) is widened by a day.
+    # The seed title joins by the seed id ('reading:<uuid>') or a digest seed's request id.
+    SourceQuery("reading_turn", """
+SELECT a.act_id, a.object_ref, a.correlation_id, a.opened_at, a.closed_at, a.outcome_value, a.outcome_note,
+  a.surprise_nats, s.title AS seed_title
+FROM grammar_acts a LEFT JOIN LATERAL (
+  SELECT title FROM world_pulse_read_seed s
+  WHERE s.seed_id = 'reading:' || a.correlation_id OR s.request_id::text = a.correlation_id
+  ORDER BY s.created_at DESC LIMIT 1) s ON true
+WHERE a.verb = 'look' AND a.actor = 'hub.world_pulse_read' AND a.opened_at >= %(lo)s
+  AND a.closed_at >= %(lo)s::timestamptz + interval '1 day' AND a.closed_at < %(hi)s
+""", slack=timedelta(days=1), optional_table="grammar_acts", also_requires=("world_pulse_read_seed",)),
+    # A scored exceedance forecast, available at scored_at (scored up to ~11 min after its window ends).
+    # Joint-surprise rows scored for a target inside the same window ride along as related refs.
+    SourceQuery("prediction_surprise", """
+SELECT e.exceedance_id, e.series_id, e.name, e.threshold, e.window_start, e.window_end, e.probability,
+  e.n_paths, e.scored_at, e.hit_raw, e.max_raw,
+  ARRAY(SELECT j.joint_id FROM prediction_joint_surprise j WHERE j.status = 'scored'
+        AND j.target_ts >= e.window_start AND j.target_ts <= e.window_end ORDER BY j.joint_id) AS joint_ids
+FROM prediction_exceedance e
+WHERE e.scored_at IS NOT NULL AND e.scored_at >= %(lo)s AND e.scored_at < %(hi)s
+""", optional_table="prediction_exceedance", also_requires=("prediction_joint_surprise",)),
+    # A finished randomised experiment run (Family C, 2026-11-16): orion-prediction's ONE pooled result row per
+    # run, available at created_at. Blocks and nights are not experiences; the run's result is.
+    SourceQuery("experiment_result", """
+SELECT estimate_id, action, series_id, effect, ci_lo, ci_hi, p_value, details, created_at
+FROM prediction_effect_estimate
+WHERE claim_kind = 'experimental_effect' AND details->>'estimator' = 'family_c_pooled_run'
+  AND created_at >= %(lo)s AND created_at < %(hi)s
+""", optional_table="prediction_effect_estimate"),
+    # A Prime thought: a closed prime/infer act, available at closed_at. Most close in seconds; one
+    # closed 2.3 days late (live, to 11-15), so opened_at is widened by three days.
+    SourceQuery("prime_thought", """
+SELECT act_id, object_ref, correlation_id, opened_at, closed_at, outcome_value, outcome_note, surprise_nats
+FROM grammar_acts
+WHERE verb = 'infer' AND actor = 'prime' AND opened_at >= %(lo)s
+  AND closed_at >= %(lo)s::timestamptz + interval '3 days' AND closed_at < %(hi)s
+""", slack=timedelta(days=3), optional_table="grammar_acts"),
+)
+
+TABLE_EXISTS_SQL = "SELECT to_regclass(%(t)s) IS NOT NULL AS present"
+
+# One visit (sources.py "one visit", rule 1): the handoff loop's own same-passage links for these
+# stories (the statuses the Hub story card shows as "came from the door camera ..."). ``ambiguous``
+# is not a link. Read as of the read: a link written after the story was folded joins the LATER story
+# of the pair, which is read after it.
+STREET_VISIT_LINKS_SQL = """
+SELECT source_story_id, target_story_id, target_event_id FROM vision_handoff
+WHERE status IN ('paired', 'met', 'early', 'late')
+  AND (source_story_id = ANY(%(ids)s) OR target_story_id = ANY(%(ids)s))
+"""
+# Juniper's word on a named story (sources.story_name): her spot-check verdict and her answers on it.
+STREET_STORY_VERDICT_SQL = """
+SELECT story_id, CASE WHEN cant_tell THEN 'cant_tell' ELSE verdict END AS verdict
+FROM vision_motion_story_verdict WHERE story_id = ANY(%(ids)s)
+"""
+# The answers the Hub story card writes (motion_story_routes._STORY_ACTIONS_SQL), oldest first, about
+# the story's walker only (its individual_id or an id on its own crops), as the card's story_display
+# keeps them: a name given to a companion never names the walker.
+STREET_STORY_ANSWERS_SQL = """
+SELECT a.answer_detail->>'story_id' AS story_id, a.answer_detail->>'action' AS action,
+  a.answer_detail->>'name' AS name
+FROM orion_ask a JOIN vision_motion_story s ON s.story_id = a.answer_detail->>'story_id'
+WHERE a.source_kind IN ('vision_individual', 'vision_story_person') AND a.status = 'answered'
+  AND a.answer_detail->>'story_id' = ANY(%(ids)s)
+  AND (a.source_ref = s.individual_id OR a.source_ref IN (
+    SELECT e->>'individual_id' FROM jsonb_array_elements(
+      CASE WHEN jsonb_typeof(s.evidence) = 'array' THEN s.evidence ELSE '[]'::jsonb END) e))
+ORDER BY a.answered_at, a.created_at, a.ask_id
+"""
+
+REVERIE_CHAINS_SQL = """
+SELECT chain_id, created_at, theme_key, terminal_reason FROM substrate_reverie_chain
+WHERE created_at >= %(lo)s AND created_at < %(hi)s AND terminal_reason IS NOT NULL AND terminal_reason <> ''
+"""
+# No upper bound: a chain's available time is its LAST thought, so every thought is needed.
+REVERIE_THOUGHTS_SQL = """
+SELECT thought_id, created_at, correlation_id, thought_json->>'chain_id' AS chain_id
+FROM substrate_reverie_thought
+WHERE created_at >= %(since)s AND thought_json->>'chain_id' = ANY(%(ids)s)
+"""
+REVERIE_SLACK = timedelta(hours=6)  # chains run minutes (live max 0.6 min, 3 days to 10-10)
+REVERIE_THOUGHT_LOOKBACK = timedelta(days=1)
+
+BODY_CLUSTER_SQL = """
+SELECT observed_at, chassis_watts FROM orion_biometrics_cluster
+WHERE observed_at >= %(lo)s AND observed_at <= %(hi)s
+"""
+# TEXT timestamps with ' ' or 'T' separators: the indexed text range is widened by a day on each
+# side (so either separator sorts inside it), then the cast decides exactly (PR #2597 drift 7).
+BODY_CABINET_SQL = """
+SELECT timestamp, measurements->'cabinet_temp_c' AS cabinet_temp_c FROM orion_biometrics_summary
+WHERE node = 'athena' AND timestamp >= %(lo_key)s AND timestamp <= %(hi_key)s
+  AND measurements ? 'cabinet_temp_c'
+  AND timestamp::timestamptz >= %(lo)s AND timestamp::timestamptz <= %(hi)s
+"""
+BODY_SPIKE_SQL = """
+SELECT spike_id, timestamp FROM cabinet_ambient_spike WHERE timestamp >= %(lo)s AND timestamp <= %(hi)s
+"""
+
+
+def available_at(e: TemporalSelfEventV1) -> datetime:
+    """The reducer's order key time (``arcs.event_available_at``): one rule, never restated."""
+    return event_available_at(e)
+
+
+def _text_key(ts: datetime) -> str:
+    return ts.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+
+async def _fetch(conn: Any, sql: str, params: dict) -> list[dict]:
+    cur = await conn.execute(sql, params)
+    return list(await cur.fetchall())
+
+
+async def _tables_present(conn: Any, tables: Iterable[str]) -> bool:
+    for t in tables:
+        present = await _fetch(conn, TABLE_EXISTS_SQL, {"t": t})
+        if not present or not present[0]["present"]:
+            return False
+    return True
+
+
+class SourceReader:
+    """Reads one window from Postgres on the service's psycopg pool (dict rows)."""
+
+    def __init__(self, pool: Any, tz_name: str, *, exclude_kinds: Iterable[str] = ()) -> None:
+        self._pool = pool
+        self._tz = tz_name
+        self._exclude = frozenset(exclude_kinds)
+
+    async def read(
+        self, lo: datetime, hi: datetime, *, ticks: bool = True, kinds: Optional[Iterable[str]] = None,
+    ) -> tuple[list[BroadcastTickView], list[TemporalSelfEventV1]]:
+        """Broadcast ticks with ``generated_at`` in ``[lo, hi)`` and every adapted event whose
+        available time is in ``[lo, hi)``, from one read-only transaction."""
+        want = set(kinds) if kinds is not None else None
+        events: list[TemporalSelfEventV1] = []
+        out_ticks: list[BroadcastTickView] = []
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                if ticks:
+                    out_ticks = [tick_from_log_row(r) for r in await _fetch(conn, BROADCAST_SQL, {"lo": lo, "hi": hi})]
+                for q in QUERIES:
+                    if (want is not None and q.kind not in want) or q.kind in self._exclude:
+                        continue
+                    needed = ((q.optional_table,) if q.optional_table else ()) + q.also_requires
+                    if needed and not await _tables_present(conn, needed):
+                        continue
+                    qlo = lo - q.slack
+                    rows = await _fetch(conn, q.sql, {"lo": qlo, "hi": hi, "in_flight": list(VISUAL_IN_FLIGHT),
+                                                      "lo_key": _text_key(qlo - timedelta(days=1)),
+                                                      "room_streams": sorted(ROOM_STREAMS),
+                                                      "story_kinds": sorted(STREET_STORY_KINDS)})
+                    if q.kind == "street_event" and q.optional_table == "vision_motion_story":
+                        rows = await self._street_story_extras(conn, rows)
+                    events.extend(ADAPTERS[q.kind](r, self._tz) for r in rows)
+                if want is None or "reverie_chain" in want:
+                    events.extend(await self._reverie(conn, lo, hi))
+        kept = [e for e in events if e is not None and lo <= available_at(e) < hi]
+        return out_ticks, kept
+
+    async def _street_story_extras(self, conn: Any, rows: list[dict]) -> list[dict]:
+        """Adds ``visit_story_ids`` / ``visit_event_ids`` (the handoff loop's links) to every story row,
+        and ``story_verdict`` / ``story_answers`` to named ones. Each extra table is optional: without
+        it the story still reads, unlinked, and a written name stays a guess."""
+        if not rows:
+            return rows
+        ids = sorted({str(r["story_id"]) for r in rows})
+        stories: dict[str, set[str]] = {i: set() for i in ids}
+        events: dict[str, set[str]] = {i: set() for i in ids}
+        if await _tables_present(conn, ("vision_handoff",)):
+            for link in await _fetch(conn, STREET_VISIT_LINKS_SQL, {"ids": ids}):
+                src, dst, ev = link["source_story_id"], link["target_story_id"], link["target_event_id"]
+                if src in stories:
+                    if dst:
+                        stories[src].add(dst)
+                    if ev:
+                        events[src].add(ev)
+                if dst in stories and src:
+                    stories[dst].add(src)
+        named = sorted({str(r["story_id"]) for r in rows if str(r.get("name_label") or "").strip()})
+        verdicts: dict[str, str] = {}
+        answers: dict[str, list[dict]] = {}
+        # An answer can name an unnamed story too, so answers are read for every story.
+        if await _tables_present(conn, ("orion_ask",)):
+            for a in await _fetch(conn, STREET_STORY_ANSWERS_SQL, {"ids": ids}):
+                answers.setdefault(a["story_id"], []).append({"action": a["action"], "name": a["name"]})
+        if named:  # the story read already requires the verdict table
+            verdicts = {v["story_id"]: v["verdict"] for v in await _fetch(conn, STREET_STORY_VERDICT_SQL, {"ids": named})}
+        out = []
+        for r in rows:
+            sid = str(r["story_id"])
+            out.append(dict(r, visit_story_ids=sorted(stories[sid] - {sid}), visit_event_ids=sorted(events[sid]),
+                            story_verdict=verdicts.get(sid), story_answers=answers.get(sid, [])))
+        return out
+
+    async def _reverie(self, conn: Any, lo: datetime, hi: datetime) -> list[Optional[TemporalSelfEventV1]]:
+        chains = await _fetch(conn, REVERIE_CHAINS_SQL, {"lo": lo - REVERIE_SLACK, "hi": hi})
+        if not chains:
+            return []
+        since = min(as_utc(c["created_at"]) for c in chains) - REVERIE_THOUGHT_LOOKBACK
+        thoughts = await _fetch(conn, REVERIE_THOUGHTS_SQL, {"since": since, "ids": [c["chain_id"] for c in chains]})
+        by_chain: dict[str, list[dict]] = {}
+        for t in thoughts:
+            by_chain.setdefault(t["chain_id"], []).append(t)
+        return [ADAPTERS["reverie_chain"](dict(c, thoughts=by_chain.get(c["chain_id"], [])), self._tz) for c in chains]
+
+    async def read_body(self, lo: datetime, hi: datetime) -> dict[str, list[dict]]:
+        """Body sensor rows in the closed interval ``[lo, hi]``, each with a UTC ``_t``."""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                cluster = await _fetch(conn, BODY_CLUSTER_SQL, {"lo": lo, "hi": hi})
+                cabinet = await _fetch(conn, BODY_CABINET_SQL, {
+                    "lo": lo, "hi": hi, "lo_key": _text_key(lo - timedelta(days=1)),
+                    "hi_key": _text_key(hi + timedelta(days=1)) + "~"})
+                spikes = await _fetch(conn, BODY_SPIKE_SQL, {"lo": lo, "hi": hi})
+        return {
+            "cluster": [dict(r, _t=as_utc(r["observed_at"])) for r in cluster],
+            "cabinet": [dict(r, _t=as_utc(r["timestamp"])) for r in cabinet],
+            "spike": [dict(r, _t=as_utc(r["timestamp"])) for r in spikes],
+        }

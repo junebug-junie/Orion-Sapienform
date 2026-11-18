@@ -94,3 +94,29 @@ def test_presence_invalid_payload_is_422(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         hub_api_routes.api_presence_set(None, x_orion_session_id="sid-3")  # type: ignore[arg-type]
     assert exc.value.status_code == 422
+
+
+def test_presence_save_stores_clean_values(monkeypatch):
+    """Regression, corr 21c8a610 (2026-10-14): the child's name was typed into
+    the relationship and age boxes; it saved fine and crashed the next turn's
+    situation brief. Saving now stores only schema-valid values."""
+    store = _Store()
+    monkeypatch.setitem(sys.modules, "scripts.main", types.SimpleNamespace(presence_context_store=store, presence_state=None))
+    saved = hub_api_routes.api_presence_set(
+        {
+            "audience_mode": "solo",
+            "companions": [
+                {"display_name": "Pip", "relationship": "Pip", "role": "listener", "age_band": "Pip"},
+                {"display_name": "Wren", "relationship": "child", "role": "listener", "age_band": "unknown"},
+            ],
+            "browser_client_id": "browser_x",
+        },
+        x_orion_session_id="sid-2",
+    )
+    pip, wren = saved["companions"]
+    assert (pip["relationship"], pip["age_band"]) == ("other", "unknown")
+    assert wren["age_band"] == "child"
+    # Derived from the companions, not the stale "solo": a child plus a
+    # not-known-to-be-a-child companion is a family audience.
+    assert saved["audience_mode"] == "family"
+    assert "browser_client_id" not in saved

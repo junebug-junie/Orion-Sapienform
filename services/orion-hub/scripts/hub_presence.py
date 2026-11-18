@@ -2,7 +2,11 @@
 
 Records chat-turn timestamps in-process and mirrors a small snapshot to the
 ``substrate_hub_presence`` Postgres row (single-row upsert, presence_id='hub')
-so the self-state runtime can hydrate ``SelfStateV1.hub_presence``.
+read back by the Hub's own substrate observability route
+(``substrate_observability_routes._hub_presence_section``). Originally written
+for the self-state runtime's ``SelfStateV1.hub_presence``; that consumer and
+schema are retired (2026-07-22 / 2026-10-07), the observability read is the
+live one.
 
 Every path here is best-effort: a presence write must NEVER break a chat turn.
 Apply ``services/orion-sql-db/manual_migration_hub_presence_v1.sql`` before

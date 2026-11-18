@@ -1,0 +1,1628 @@
+{
+"source": "live Postgres reverie_visual_attempt (started_at, outcome), read 2026-10-20",
+"first_attempt": "2026-09-14 02:22:30.235273+00",
+"last_attempt": "2026-10-19 08:07:27.105894+00",
+"attempt_count": 405,
+"attempts": [
+{
+"started_at": "2026-09-14 02:22:30.235273+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-14 03:09:12.824+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-14 17:06:03.510291+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-23 23:51:30.930988+00",
+"outcome": "failed"
+},
+{
+"started_at": "2026-09-24 00:09:36.707818+00",
+"outcome": "failed"
+},
+{
+"started_at": "2026-09-25 00:03:10.423135+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-25 01:36:37.945012+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-25 03:10:09.804189+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-25 04:44:43.931961+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-25 06:18:35.812886+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-25 08:02:18.586066+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-25 19:15:38.060455+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-25 19:35:07.327071+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-25 19:54:26.058737+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-25 20:13:31.325294+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-25 20:42:16.582312+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-25 21:01:43.9889+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-25 21:30:26.621302+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-25 21:59:30.648651+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-25 22:18:41.657696+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-25 23:53:37.188856+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 00:12:23.820933+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 00:32:17.719111+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 00:52:18.884711+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 01:12:20.565319+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-26 02:45:59.243173+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 03:05:47.029296+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 03:15:49.481411+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 03:25:56.28117+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-26 04:59:54.719112+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-26 06:33:49.976099+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 06:43:55.170879+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 07:03:49.270354+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 07:14:00.292366+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 07:34:12.972786+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 07:54:15.163219+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-26 11:09:53.892155+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-26 12:50:53.375242+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 13:19:47.918279+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 13:38:57.940601+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 13:58:14.315971+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-26 15:32:40.104509+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 15:52:19.38232+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 16:12:22.751638+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-26 16:32:30.053855+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-26 18:16:26.100887+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-26 18:26:27.445383+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-26 18:36:47.209345+00",
+"outcome": "deferred_thermal"
+},
+{
+"started_at": "2026-09-27 00:06:49.873093+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 01:40:23.633019+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 01:50:26.238173+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 02:00:27.803543+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 02:20:32.001107+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 02:30:33.459669+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 02:40:34.189107+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 04:14:24.4699+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 04:24:29.495637+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 04:44:24.902304+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 06:18:13.013443+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 08:02:00.744364+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 09:58:20.935045+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 10:17:21.061811+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 10:36:08.329458+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 12:10:59.010475+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 12:30:12.035455+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 12:50:08.130617+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 13:00:12.317287+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 13:30:14.04823+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 15:04:15.713399+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 15:24:13.90204+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 15:44:13.537106+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-27 16:04:10.383926+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 17:37:59.526234+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 19:12:01.60279+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 20:46:10.015564+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-27 22:20:06.753334+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 00:03:37.607897+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 01:36:49.455094+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 03:10:03.171287+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 04:44:08.359681+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 06:17:35.238643+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 07:51:04.678384+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-28 08:11:12.265074+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-28 08:51:26.354217+00",
+"outcome": "deferred_resource"
+},
+{
+"started_at": "2026-09-28 09:01:45.944063+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 10:49:18.421603+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 12:54:31.607889+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 14:39:43.109047+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 16:14:16.521549+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 17:55:38.841382+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 19:29:28.649319+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 21:03:53.952732+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-28 22:37:57.471946+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 00:11:15.627707+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 01:44:32.187511+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 03:17:51.514044+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 04:51:21.297906+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 06:25:09.545776+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 08:09:35.859236+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 10:04:35.53699+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 11:54:14.888289+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 13:29:36.944491+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 15:03:29.235223+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 16:37:21.937905+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 18:11:15.404136+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 19:45:07.659311+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 21:29:16.982553+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-29 23:03:43.449802+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 00:36:52.463859+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 02:10:13.01016+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 03:43:33.907231+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 05:17:06.576536+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 06:50:53.591046+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 08:35:17.767594+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 10:34:57.491132+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 12:30:11.980958+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 14:25:24.782175+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 16:20:32.660716+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 18:15:58.880728+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 20:09:13.895368+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 22:15:15.01651+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-09-30 23:59:55.959434+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 01:32:59.437264+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 03:06:39.303146+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 04:41:20.823314+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 06:14:58.012731+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 07:48:54.839747+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 09:43:13.385029+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 11:41:52.302153+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 13:26:03.923919+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 15:10:39.270123+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 16:44:27.517995+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 18:18:16.361253+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 19:52:29.123545+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 21:36:27.146395+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-01 23:10:19.725474+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 00:43:06.888383+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 02:16:09.811607+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 03:49:24.564472+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 05:22:49.600401+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 06:56:20.462778+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 08:50:37.551412+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 10:36:22.720476+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 12:10:25.14705+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 13:44:09.260623+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 15:28:06.311661+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 17:22:19.873655+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 18:56:35.937129+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 20:30:46.401519+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 22:05:00.513867+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-02 23:49:16.550284+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 01:21:54.595591+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 02:54:55.127875+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 04:29:16.324663+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 06:02:56.549435+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 07:36:35.518086+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 09:56:56.654141+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 11:32:19.517036+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 13:06:02.43988+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 14:39:47.637293+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 16:13:58.316056+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 17:47:58.041317+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 19:21:48.005518+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-03 22:46:52.125526+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-04 00:18:27.78665+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 02:49:09.620132+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 04:23:04.500662+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 05:56:40.810991+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 07:30:06.14512+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 09:43:29.062287+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 11:21:46.296906+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 12:55:22.163361+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 14:29:04.041388+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 16:22:54.798442+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-04 17:55:57.088561+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 20:35:08.87453+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-04 22:19:17.279446+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 00:02:53.388284+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 01:36:04.455738+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 03:09:26.95948+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 04:43:33.382628+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 06:16:54.417219+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 07:50:29.531143+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 09:24:18.140115+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 10:57:56.259555+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 12:41:46.702812+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 14:15:44.112417+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 15:59:17.607832+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 17:43:20.605598+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 19:17:12.718506+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 22:06:22.051838+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-05 23:50:17.024039+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 01:23:26.952466+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 02:56:53.832354+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 05:22:50.527835+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 06:57:35.684819+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 08:30:52.066191+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 10:13:36.732834+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 11:51:28.959314+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 13:34:54.119203+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 15:08:29.938046+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 16:42:20.604121+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 18:16:08.011088+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 20:09:46.364366+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 21:43:31.078764+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-06 23:47:14.677475+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 01:19:22.838399+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 02:51:41.664295+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 04:25:02.184557+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 05:58:10.559916+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 07:31:35.501304+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 09:53:43.325764+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 11:38:17.92609+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 13:22:28.631272+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 15:06:33.653955+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-07 16:39:22.459171+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-07 18:22:03.00252+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-07 20:04:58.988162+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-07 22:29:58.64994+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-08 00:13:02.24611+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-08 01:45:00.505509+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-08 03:16:45.2518+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-08 05:00:28.056841+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-08 06:32:48.838057+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-08 08:15:36.205451+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-08 09:51:19.862632+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-08 11:24:12.108954+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-08 12:57:25.313876+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-08 14:30:12.330046+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-08 16:33:02.099031+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-08 18:06:13.41066+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-08 19:49:51.514838+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-08 22:37:34.836832+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-09 00:31:11.352129+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-09 02:12:24.929257+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-09 03:57:02.98324+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 05:29:23.484346+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 07:22:00.473145+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 08:54:42.145126+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 10:33:01.291977+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 12:05:43.136029+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 13:38:34.991734+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 15:11:44.291647+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 17:04:36.235093+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 18:37:45.898366+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 20:10:51.394202+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 21:44:14.751509+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-09 23:17:46.041174+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-10 00:49:10.347601+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-10 02:28:52.143801+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-10 04:00:14.060887+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-10 05:32:30.886556+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 06:05:44.072896+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 06:15:50.799129+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-10 07:02:18.110359+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 07:12:23.159386+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 07:35:22.554644+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 09:57:16.764107+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 11:33:04.697833+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 13:06:41.07888+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 14:50:14.455069+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 16:23:56.33393+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 17:57:36.897548+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 18:31:52.705736+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 18:41:55.617548+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 18:51:55.770139+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 19:28:35.675557+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 21:00:02.245797+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-10 22:31:04.837311+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 00:02:25.709981+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 01:15:24.015321+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 01:25:25.562827+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 01:35:28.275655+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 01:45:29.426223+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 03:06:23.66491+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 04:37:28.361128+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 06:08:26.760552+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 07:39:24.994172+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 09:05:49.397435+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 09:15:50.891096+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 09:25:54.502193+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 09:52:39.853127+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 11:24:28.613492+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 12:55:42.231029+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 14:27:09.858951+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 15:58:43.450827+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 17:30:01.347929+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 19:11:22.518234+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 20:44:43.554111+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 22:26:27.737371+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-11 23:59:17.244213+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 01:30:22.242908+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 03:01:22.517565+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 04:05:02.737397+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 04:15:05.6716+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 04:25:06.201275+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 04:35:16.065562+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 06:16:17.989809+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 07:47:21.448821+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 09:53:22.301144+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 11:24:23.976257+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 12:55:27.492414+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 13:45:31.295091+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 13:55:34.222081+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 14:05:36.227604+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 14:36:32.990297+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 16:07:43.014456+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 17:39:02.959574+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 19:10:20.582274+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 20:41:28.061783+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 22:12:31.378733+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-12 23:43:37.608706+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 01:24:37.10918+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 02:55:36.718937+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 04:26:56.130328+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 05:58:05.766018+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 07:29:05.550324+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 09:51:24.781267+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 11:22:23.065492+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 12:53:35.880258+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 14:24:38.165591+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 15:55:43.775198+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 17:27:20.737547+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 18:58:38.31753+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 20:29:56.536657+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 22:01:42.204817+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-13 23:35:35.343382+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 01:06:39.772941+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 02:37:43.28194+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 04:10:08.530656+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 04:43:49.508641+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 04:53:50.110219+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 05:03:54.331449+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 05:43:32.672984+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 07:16:50.21937+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 08:51:27.91375+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 10:39:47.64318+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 10:49:57.052095+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 10:59:58.16864+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 11:09:58.579442+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 12:26:22.602175+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 14:40:59.929697+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 16:24:40.611725+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 18:07:32.041026+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 19:50:27.591976+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 21:54:46.130427+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-14 23:49:28.268892+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 01:31:11.174801+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 01:43:49.678579+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 01:53:51.208352+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 02:04:10.848944+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 03:13:19.979083+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 05:09:07.919517+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 10:53:48.66082+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 11:16:00.846305+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 11:26:04.411191+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 11:44:03.229162+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 13:28:27.00759+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 15:12:34.212028+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 16:54:09.046797+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-15 17:46:20.054805+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-15 19:17:04.097003+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-15 19:27:04.588141+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 22:07:12.560231+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 23:13:29.350723+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 23:23:37.523847+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 23:33:37.99452+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-15 23:43:51.419138+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-16 01:15:40.603811+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-16 03:01:08.853139+00",
+"outcome": "produced"
+},
+{
+"started_at": "2026-10-16 04:34:49.693115+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-16 06:15:43.835161+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-16 06:58:00.621593+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-16 08:30:24.497286+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-16 11:57:18.384243+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-16 18:56:18.898249+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-16 19:51:42.392546+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-16 20:44:42.570757+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-16 22:17:35.118577+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 00:19:36.787721+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 01:50:25.393754+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 03:21:19.480424+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 04:53:45.354174+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 06:26:07.374584+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 07:58:31.623818+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 10:12:38.822174+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 11:45:25.434355+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 12:01:25.760112+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 13:34:43.174233+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 15:07:19.706872+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 16:49:44.372328+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 18:22:13.790159+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 20:05:05.322061+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 22:17:51.275052+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-17 23:50:44.250349+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-18 01:22:03.782216+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-18 02:52:14.436724+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-18 03:25:57.232955+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-18 04:58:24.987011+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-18 07:20:58.045007+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-18 10:37:22.215678+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-18 12:10:00.569018+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-19 06:16:39.671884+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-19 07:11:56.322583+00",
+"outcome": "abandoned"
+},
+{
+"started_at": "2026-10-19 08:07:27.105894+00",
+"outcome": "abandoned"
+}
+]
+}

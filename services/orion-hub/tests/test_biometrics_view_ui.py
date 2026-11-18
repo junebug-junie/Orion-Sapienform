@@ -61,7 +61,11 @@ def test_app_js_deactivates_biometrics_view_when_leaving_the_hub_tab() -> None:
     accompanying OrionBiometricsView.deactivate() call (every sibling panel,
     e.g. isFieldAttention/isReverie, already had this pair)."""
     toggle_idx = APP_JS.index('hubTabPanel.classList.toggle("hidden", !isHub);')
-    nearby = APP_JS[toggle_idx : toggle_idx + 700]
+    # Bounded by the next top-level panel toggle rather than a fixed character
+    # count: the graph-workbench block and the explanatory comment between the
+    # two lines grew past the old 700-char window without changing behavior.
+    end_idx = APP_JS.index('topicStudioPanel.classList.toggle("hidden"', toggle_idx)
+    nearby = APP_JS[toggle_idx:end_idx]
     assert "window.OrionBiometricsView" in nearby
     assert "window.OrionBiometricsView.deactivate()" in nearby
 
@@ -99,6 +103,7 @@ def test_template_declares_four_subtabs_and_subview_panels() -> None:
     for subtab_id in (
         "biometricsSubtabAthena",
         "biometricsSubtabCirce",
+        "biometricsSubtabHecate",
         "biometricsSubtabGpu",
         "biometricsSubtabCabinet",
     ):
@@ -137,10 +142,11 @@ def test_app_js_notifies_biometrics_view_of_open_and_close() -> None:
 
 def test_biometrics_view_js_declares_subview_switch_and_lazy_load_state() -> None:
     assert "function showModalSubview(" in BIOMETRICS_VIEW_JS
-    for name in ("athena", "circe", "gpu", "cabinet"):
+    for name in ("athena", "circe", "hecate", "gpu", "cabinet"):
         assert f'"{name}"' in BIOMETRICS_VIEW_JS
     assert "loaded.athena" in BIOMETRICS_VIEW_JS
     assert "loaded.circe" in BIOMETRICS_VIEW_JS
+    assert "loaded.hecate" in BIOMETRICS_VIEW_JS
     assert "loaded.gpu" in BIOMETRICS_VIEW_JS
 
 

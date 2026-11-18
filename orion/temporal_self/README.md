@@ -1,0 +1,235 @@
+# Temporal Self reducer (patch 2)
+
+A pure reducer that turns rows Orion already writes into one chronology of **arcs**: stretches
+of the day Orion kept returning to one subject, or one bounded process. Spec:
+`docs/superpowers/specs/2026-09-26-temporal-self-design.md` (PR #2369, rev 4). No I/O, no LLM,
+no narrative. Patch 3 runs it live: the `chronicle` node of orion-durable-runs'
+`temporal_self.update` thread (`services/orion-durable-runs/app/temporal_self_chronicle.py`, see
+that service's README).
+
+```python
+from orion.temporal_self import ReducerConfig, fold, advance_clock, build_frame, drain_closed_days
+from orion.temporal_self.sources import adapt          # row dicts -> TemporalSelfEventV1
+from orion.temporal_self.broadcast import tick_from_log_row
+
+state = fold(state, ticks, events, cfg)       # one merged, time-ordered fold
+state = advance_clock(state, watermark, cfg)  # nothing strictly before watermark will arrive
+frame = build_frame(state, watermark, cfg)
+state, closed_days = drain_closed_days(state)
+```
+
+| Lane | Subject (exact ref) | Opens / returns / closes |
+|---|---|---|
+| attention | broadcast winner `source_refs[0]` | K=3 ticks open or resume; K no-winner ticks suspend; R=30 min |
+| interoception | `field_dominance_run.target_id` | a run with `tick_count >= min_streak_at_run`; R=30 min |
+| conversation | `chat_history_log.session_id`, Juniper's turns only | idle 45 min suspends; R=3 h |
+| concern | `loop_id` of a chat-scope trace that resolves to a real chat turn | closes on its verdict; carried across midnight |
+| curiosity / reverie / imagery / sleep | run id / chain id / visual chain id / cycle id | one completed process, born closed |
+
+Subject-less events (metacog observations, GPU waits, Orion's own outreach rows, attention
+rows, room percepts, memory episodes) bind by time to the arcs open then, or to the day.
+Reverie attention rows bind to their chain by correlation id. Late verdicts attach by id and
+never reopen an arc.
+
+Gates: `pytest orion/temporal_self/tests` (rules, sources, day boundary, replay identity) and
+`python orion/temporal_self/evals/run_arc_precision_eval.py` (real 10-09 rows; `--sweep` for K/R,
+`--timeline` for the day). Re-export the fixture with `evals/export_fixture_day.sql` (read-only).
+
+## Readers (patch 4: Orion uses its own day)
+
+Spec: `docs/superpowers/specs/2026-10-11-temporal-self-patch4-orion-uses-its-day.md` (PR #2616,
+with Juniper's decisions). Both renderers are fixed templates over stored rows; no model writes them.
+
+| Module | Reader | What it renders |
+|---|---|---|
+| `stance_cue.py` (`project_stance_cue`) | orion-thought, the unified turn's `stance_react` | <= 400 chars: phase and local time, what Orion is on, what it came from, Juniper's last turn, open threads, last sleep. Every clause cites `[arc:<id>]`. Frame missing / invalid / another local day / older than 900 s: `text == ""` with `skip_reason`. No open arc: a rest line. |
+| `day_block.py` (`render_closed_day_block`) | Orion's Day letter (Hub gather -> digest) | <= 2,400 chars for one closed day: arc counts, Juniper's turns, top attention subjects, curiosity runs, sleep, images, expectations, refusals, threads, instrument warnings. Lines cite `[arc:<id>]`, whole-day counts `[day:<date>]`. First line: "as recorded at close". |
+| `citations.py` | stance pipeline, durable-runs letter graph, Hub letter reread | The gate: unknown `arc:` ids removed and counted; a sentence naming a shown label or local clock time with no `[arc:]` counted and labelled `UNVERIFIED` (never blocked). |
+
+Results land in `thought_decision.day_citations` (Hub turn trace) and
+`orion_day_letter.sources.arc_citations`. Kill switches: `TEMPORAL_SELF_STANCE_CUE_ENABLED`
+(orion-thought), `TEMPORAL_SELF_DAY_BLOCK_ENABLED` (orion-hub). Fixtures: `tests/patch4_rows/`
+(rebuild with `tests/patch4_rows/build_fixtures.py`). Latency eval:
+`services/orion-thought/evals/run_temporal_self_cue_latency_eval.py`.
+
+### Strain arcs (strain loop part 1, 2026-10-20)
+
+Spec: `docs/superpowers/specs/2026-10-20-strain-loop-design.md`. Source: the regulation step's own
+`arousal_transition` rows in `temporal_self_event` (level changes plus cause/seed rows). The
+adapter keeps each row's own `event_id`: the chronicle stores every folded event in that same
+table, so a new id would insert a copy that the next read folds again. One `strain` arc per
+episode: opens on `strained`, causes join its label in the order they joined, closes on
+`idle`/`engaged` (`process_ended`) or `unknown` (`source_stale`); a strained row with a new
+episode start, a not-strained row after an outage (`prev_dropped:gap`), or no row for
+`strain_stale_sec` (4,500 s; regulation writes a keepalive every 30 min while strained) closes the
+open arc at its last row (`source_stale`), so a lost closing row or the flag turned off can never
+leave "strained since" standing. It carries over midnight like `company`, and `episode_began_at`
+keeps when the episode began. `causes_now` holds the causes present at the newest row (the label
+keeps every cause seen), so the stance cue can say "(now: GPU jobs backed up; earlier: cabinet too
+hot)"; `None` means not recorded (arcs folded before the field), and then the cue keeps the plain
+label wording rather than claim every cause cleared. Nothing binds to it by time, and dream replay skips it
+(`services/orion-dream/app/replay.py` `ARC_EXCLUDED_KINDS`: a days-long arc would fill every
+replay). Known limit, shared with `company`: a reducer state reset that re-folds from local
+midnight has no onset row for an episode carried from yesterday, so that arc is missing until the
+next keepalive (at most 30 min).
+Readers: stance cue ("Strained since Sat 12:07 (GPU jobs backed up, cabinet too hot) [arc:]",
+or "Was strained 09:00 to 09:40 (...)"), Day letter ("Strained: ..."), reverie block, citation
+truth (`strained since` / `was strained`, matched against `episode_began_at` too). Kill switch:
+`TEMPORAL_SELF_STRAIN_ARCS_ENABLED` (orion-durable-runs).
+
+### Binding arcs (felt state, body economy Organ 5, 2026-11-03)
+
+Spec: `docs/superpowers/specs/2026-10-23-organism-body-economy-design.md`, Organ 5 "Where Orion sees
+it". Strain only reaches Orion at the 34 °C reflex; between the soft line and that, the heat price
+binds and the hot gate refuses GPU work, and nothing in the day said so. Source: the physiology
+node's own `body_binding` rows in `temporal_self_event` (`source_table='physiology'`, subject
+`orion:body:<constraint>`; producer `services/orion-durable-runs/app/body_binding.py`). The adapter
+keeps each row's own `event_id` (same reason as strain). Bound = the price's `bind_state` is
+`binding`, `exogenous_bind` or `stuck_at_ceiling`. One `binding` arc per constraint episode, several
+open at once (`state.active` / `frame.active_by_kind` key `binding:<constraint>`): opens on an
+`onset` row (bound for 240 s), `change` / `keepalive` rows refresh `ArcBindingV1` (bind state,
+level, line, price, ceiling, `self_spent`, the price's `why`), a `release` row (slack for 240 s)
+closes it `process_ended` at the first slack reading. `no_reading` writes nothing: no row for
+`binding_stale_sec` (4,500 s) closes it at its last row (`source_stale`), and so does a row from a new
+episode. It carries over midnight like strain, binds no context, and dream replay skips it.
+An `after_gap` row (the constraint went unread: no_reading or a reading gap) starts a new segment, so
+the unread stretch is never counted as binding time, and a release after a gap closes the arc at its
+last bound row (`source_stale`). A real release sets `binding.released`.
+Readers: stance cue ("Binding now: cabinet running hot (32.4 °C, line 31 °C) since 14:02 [arc:]" for
+one constraint; "Binding now: cabinet running hot since 14:02 [arc:]; my agent GPU lane full since
+13:10 [arc:] (out of my hands: Claude limit reached [arc:])" for more), placed after company and play
+and before threads and sleep; over the 400-char cap it names one constraint ("; and N more") before it
+is dropped. Energy's always-on bind is never "out of my hands" and is named only when nothing else
+binds. With none open: "Was binding 14:02 to 14:30: ..." after a release in the last 6 h, or "Last
+read binding at 14:30: ..." after a stale close),
+Day letter ("Body limits binding: ..."), recent arcs, citation truth (`binding now:` /
+`was binding HH:MM` / `body limits binding:`). Awareness only: no price, gate or veto reads these
+arcs. Kill switch: `TEMPORAL_SELF_BINDING_ARCS_ENABLED` (orion-durable-runs). Replay:
+`services/orion-durable-runs/evals/body_binding_replay.py [--live --days 7]`.
+
+### Faculty arcs (self-monitor organ patch 2, 2026-11-03)
+
+Spec: `docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md` ("Self-knowledge"). Source: the
+self_monitor node's own `faculty_status_changed` rows in `temporal_self_event` (orion-durable-runs,
+`orion/self_monitor/host.py` `event_row`): one row per held faculty status change, a keepalive every
+12 h while a notable status holds, and one closing row when a notable faculty leaves the 7-day window.
+The adapter keeps each row's own `event_id`, like strain. One `faculty` arc per stretch a faculty spends
+`broken`, `unreliable` or `miscalibrated`: subject `faculty:<name>`, label `<name> <status>`,
+`episode_began_at` = when the held status began. A change to another notable status closes the arc and
+opens the next; a change to `reliable` or `unknown` closes it (`process_ended`); no row for
+`faculty_stale_sec` (30 h, 2.5x the keepalive) closes it at its last row (`source_stale`), so a
+stopped organ never leaves "broken since" standing. It carries over midnight like strain. Nothing binds
+to it by time, it carries no body summary, it fills only leftover frame slots (with reverie and street),
+and dream replay skips it (`ARC_EXCLUDED_KINDS`). Readers: Day letter ("Track record: <name> <status>
+from 09:00 to 14:00 [arc:]"), recent arcs ("track record: <name> <status>"), citation truth (`track
+record`, `broken since` / `unreliable since` / `miscalibrated since`). The stance cue does not read it:
+the track-record cue is the organ's patch 3. Kill switch: `SELF_MONITOR_ENABLED` (orion-durable-runs).
+
+### Play arcs (Orion plays Zelda, 2026-10-22)
+
+Spec: `docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md` section F. Source `retro_play`:
+orion-hub's `retro_play_sessions` (one row per finished co-play or leisure session, written by
+`services/orion-hub/scripts/retro_memory_export.py`). One closed `play` process arc per session,
+`started_at` to `ended_at`, subject `retro_session:<id>`, label `sources.retro_play_label` ("The Legend
+of Zelda solo, 14 of 31 predictions met"; `together` when a human drove more than half of the frames,
+`with a human` otherwise for co-play). `build_frame` keeps today's latest play arc in `arcs_today`
+even past `ARCS_IN_FRAME_CAP`. Stance cue: "Played <label> (10:02 to 10:24) [arc:]", ranked above the
+thread and sleep clauses (as the last clause it was dropped on both real 10-11 frames). Recent arcs:
+"played <label>". Day letter: counted as `play`. Eval: `evals/run_play_cue_eval.py`. Kill switch:
+`TEMPORAL_SELF_RETRO_PLAY_ENABLED` (orion-durable-runs); a database without the table skips the source.
+
+### Street arcs (episodes from the street, 2026-10-23)
+
+Spec: walkway follow-ups, PR #2763 item 1 ("Memory and day letter"). Before this, episodes were
+room-only (`ROOM_STREAMS = {"cam0"}`): the walkway and doorbell cameras reached no arc at all. Source
+`street_event` (`sources.street_event`) reads only events something already marked notable:
+
+- a `vision_motion_story` that is published and clean, on a non-room stream, kind person / dog /
+  bicycle / stroller (not vehicles), whose rules version passed Juniper's spot-check gate
+  (`orion/vision/motion_story_gate.py`); one story per walking-together group;
+- a doorbell ring (`vision_events.event_type = 'doorbell_ring'`);
+- a graded handoff from sql-writer's `StreetEventV1` outbox with `p_value < 0.05` (the street attention
+  gate's event clause, `orion/substrate/street_attention.py`).
+
+Each is one closed `street` process arc, subject `street:<origin>:<id>`, evidence the source row
+(`vision_motion_story:<id>`, `vision_events:<id>`, `vision_handoff_street_outbox:<id>`). The label
+always starts "Outside (<camera>):" and is built from the row's fields, never the story sentence
+(which says "moving alongside another person", older rows "together with 1 other person", a bare track count). The label carries no people count at
+all: the honest range (`walkway_rollup`, PR #2781) exists only once the hour's rollup closes, a median
+~3 h after the hour, so using it would give one arc a different label live and on a re-fold. "How many"
+stays the rollups' job (the Day letter line). Nothing binds to a street arc by time (room percepts are
+not about the street), it reads no body, and `presence_transition` / `vision_percept` stay room-only.
+Cap: `ReducerConfig.street_arcs_per_day` (12), first come first kept. In the frame, street arcs rank
+with reverie (they fill leftover slots, so they never push Orion's own arcs out) and today's latest one
+is pinned like the latest play arc. Recent arcs show only the latest street arc ("saw Outside (walkway
+camera): ..."). The spot-check gate is read as of the read, not as of the story. Kill switch:
+`TEMPORAL_SELF_STREET_EPISODES_ENABLED` (orion-durable-runs); cap `TEMPORAL_SELF_STREET_EPISODES_PER_DAY`.
+Proof on the live rail: `temporal_self_arc` rows with `kind = 'street'`, and the chronicle's
+`temporal_self_street_episode arc_id=... source=vision_motion_story:...` log line.
+
+**One visit, one arc (2026-10-29, follow-up to PR #2876).** One visit used to spend up to 3 daily slots
+(walkway story, doorbell story, ring). `arcs._fold_street` now folds a street event into today's street
+arc of the same visit, without spending a slot: (1) linked: the handoff loop (`vision_handoff`, PR #2828)
+paired / met / early / late the two stories, or a graded handoff names the story (refs
+`street:story:<id>` / `street:ring:<id>` in `related_refs`), at any distance in the day; (2) a ring and a
+story at most `ReducerConfig.street_visit_gap_sec` (84 s, the handoff loop's own walkway-to-door bound,
+read from `config/vision_topology.yaml` by a test) apart, measured part to part. Two stories with no link
+never merge, not even through a ring: an arc holds at most one story joined by time. A merged arc keeps every row as evidence (`segments[i]` is `evidence_refs[i]`'s interval),
+spans all parts, and its label joins the parts: "Outside (walkway camera and doorbell camera): a person
+walked toward the house; someone rang the doorbell". A visit lives in one local day.
+
+**Late rows fold.** A street event is available when its row was WRITTEN (`payload.available_at`, the
+later of its end and `created_at`; `arcs.event_available_at`), so a story written after the chronicle's
+read lag is read in the window it was written in instead of being stored late and never folded. The
+arc keeps the real times. A story ending just before midnight and written after it lands in the next
+day's arcs.
+
+**Late memories join the day they were written.** An episode memory (`memory_episode`) is distilled 0.5 to 97 h after the moment it is about. It is ordered by its write time and binds by `occurred_at` to an arc of the current day that covers that moment. When none does (for example, the moment is in an earlier, closed day), it joins the current day's unbound context: the day it was remembered. The closed day is not rewritten, and the event row keeps `occurred_at`. Nothing is dropped (#3584).
+
+**Names say where they came from.** A story's written name (`name_label`) is the recognizer matching its
+crops to a cluster Juniper named: the label says "Robin (a guess)", like a handoff's person guess. It
+says "Robin (named by Juniper)" only when she vouched for that story: her latest name answer on it (the
+Hub story card), or her spot-check verdict "right" on it (`sources.story_name`). Payload `name_source`:
+`juniper` | `recognizer`. Read as of the read, like the gate.
+
+### Office sessions label company arcs (2026-11-05)
+
+Spec: `docs/superpowers/specs/2026-11-05-office-camera-attention-and-reach-out-design.md` step B. Source
+`office_session` (`sources.office_session`): orion-sql-writer's `vision_office_session`, one FINAL row per
+visit to a room camera (span, who probably, activity timeline from the camera's own captions; no model
+prose in the label). Available at `closed_at` (`arcs.AVAILABLE_AT_KINDS`, like street events). It opens no
+arc: `arcs._fold_office_session` sets the label of today's CLOSED `company` arc of the same camera that
+overlaps the visit most ("Juniper (probably) in the office: sitting at a desk, opening a box; reaching into a
+cabinet") and adds `vision_office_session:<id>` to its `related_refs`. A name the presence row confirmed is
+always kept, never downgraded to "probably" ("Juniper and someone I don't know in the office: ..."). Open arcs are never relabelled,
+so the stance cue's "Someone has been here since" is unchanged. Recent arcs show the label without the
+"company:" prefix. Known limit: a visit final after local midnight labels nothing. Kill switch:
+`TEMPORAL_SELF_OFFICE_SESSIONS_ENABLED` (orion-durable-runs). Tests: `tests/test_office_session_arcs.py`.
+
+### Thread arc ids and the truth eval (2026-10-12)
+
+`OpenThreadV1.arc_id` names the concern arc a thread is, so the cue cites every open thread
+(`2 open threads from conversation [arc:684d45c2010540ed] [arc:fd63c7ab0ad3ecbe].`) even when that
+arc fell off `arcs_today`'s 64-arc cap; over 5 threads it says "the 5 most recent". The field is
+optional: frames and closed days stored before it still load (the cue falls back to the old
+subject_ref lookup and its "N with its record" wording). Rollout is consumer-first: orion-thought
+and orion-hub before orion-durable-runs.
+
+`citation_truth.py` + `evals/run_day_citation_truth_eval.py` (`make eval-temporal-self-truth`):
+the gate proves a cited arc exists and was shown; this measures whether the sentence around it is
+true to that arc. Read-only over `thought_decision.day_citations`, the stored reply
+(`chat_history_log`, else `harness_turn_trace.run_artifact.final_text`) and `temporal_self_arc`.
+Deterministic only (kind, attention subject, "N min ago" / "for N min" / local clocks, return and
+open-thread counts), using the renderers' own phrasing; anything else is **undecidable** and
+counted, never guessed. No LLM judge. Output: per sentence match / mismatch / undecidable with
+reasons, and per ISO week `truth_rate = match / (match + mismatch)`. A measurement, not a gate.
+Calibration tests run it over the renderers' own output (`tests/test_citation_truth.py`).
+
+`now.py` (integration design 2026-11-15, Part A patch 1): Orion's now. Every `temporal_self_event`
+row is an experience owned by one organ (`config/integration/organs.yaml`, read by
+`orion/integration/organs.py`). `build_now` picks at most 12 experiences of OTHER organs, at most 2 per
+organ, by salience (the kind's own 30-day strictly-below percentile; NULL under 20 past events or with
+no declared magnitude, ranked last). `record_use` checks a reader's cites against what it was shown
+(at most 3 count); `use_rate` is the integration metric (share of experiences a different organ used
+within 24 h, and the closed organs). The three new kinds (`reading_turn`, `prediction_surprise`,
+`prime_thought`) fold into no arc. Served by orion-durable-runs `/temporal-self/now`.

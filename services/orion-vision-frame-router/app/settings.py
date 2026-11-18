@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,6 +9,8 @@ class Settings(BaseSettings):
 
     SERVICE_NAME: str = "vision-frame-router"
     SERVICE_VERSION: str = "0.1.0"
+    # Host this process runs on, reported in the SystemHealthV1 heartbeat.
+    NODE_NAME: str = "athena"
     LOG_LEVEL: str = "INFO"
 
     ORION_BUS_URL: str = "redis://localhost:6379/0"
@@ -15,6 +18,10 @@ class Settings(BaseSettings):
 
     CHANNEL_FRAMES_IN: str = "orion:vision:frames"
     CHANNEL_HOST_INTAKE: str = "orion:exec:request:VisionHostService"
+    # The Qwen2-VL lane (orion-vision-host docker-compose.circe-qwen.yml).
+    # Streams with a caption_dispatch block in the policy file get their
+    # captions from here instead of the athena host's BLIP.
+    CHANNEL_CAPTION_INTAKE: str = "orion:exec:request:VisionHostService:circe-vl"
     CHANNEL_HOST_ARTIFACTS: str = "orion:vision:artifacts"
     CHANNEL_REPLY_PREFIX: str = "orion:vision:reply"
     CHANNEL_SYSTEM_HEALTH: str = "orion:system:health"
@@ -50,3 +57,20 @@ class Settings(BaseSettings):
     # reads as "no expectation".
     ROUTER_EXPECTATION_STEERING_ENABLED: bool = True
     ROUTER_EXPECTATION_REFRESH_SEC: float = 5.0
+    # Experiment override (app/expectation.py): Redis key
+    # orion:vision:experiment:<stream_id> = "on" (with a TTL) forces the
+    # triggered tier, triggered_by="experiment". Written only by
+    # orion-prediction's switchback runner. Absent / "off" / no TTL / Redis
+    # down = today's behaviour. Read by the same cache and refresh period.
+    ROUTER_EXPERIMENT_OVERRIDE_ENABLED: bool = True
+
+    # Vision organ self-report (app/grammar_emit.py): once per window, publish
+    # what the eye did per stream (frames, tasks, failures by class, yield) as
+    # one grammar trace (vision.organ:) on orion:grammar:event. Off in code; the
+    # operator template turns it on. Consumed by orion-substrate-runtime's
+    # vision_organ reducer (ENABLE_VISION_ORGAN_REDUCER).
+    VISION_ORGAN_GRAMMAR_ENABLED: bool = False
+    # Bounded: orion-field-digester expires the organ channels after 300 s
+    # without a write, so a window much longer than ~100 s would read as
+    # "unmeasured" between two healthy reports.
+    VISION_ORGAN_WINDOW_SEC: float = Field(60.0, ge=5.0, le=100.0)

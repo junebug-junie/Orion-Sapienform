@@ -27,7 +27,7 @@ class _Conn:
 
 def test_fetch_chat_history_pairs_suppresses_active_prompt(monkeypatch):
     rows = [
-        {"prompt": "Teddy loves Addy", "response": "ok", "created_at": 1},
+        {"prompt": "Pip loves Wren", "response": "ok", "created_at": 1},
         {"prompt": "older prompt", "response": "old", "created_at": 0},
     ]
 
@@ -39,7 +39,7 @@ def test_fetch_chat_history_pairs_suppresses_active_prompt(monkeypatch):
     out = asyncio.run(sql_chat.fetch_chat_history_pairs(
         limit=5,
         since_minutes=60,
-        exclude_text="Teddy loves Addy",
+        exclude_text="Pip loves Wren",
     ))
 
     assert len(out) == 1
@@ -74,8 +74,8 @@ def test_fetch_chat_history_pairs_unions_the_aitown_table(monkeypatch):
 
 def test_fetch_chat_messages_suppresses_user_echo(monkeypatch):
     rows = [
-        {"role": "user", "text": "Teddy loves Addy", "created_at": 1},
-        {"role": "assistant", "text": "Teddy loves Addy", "created_at": 1},
+        {"role": "user", "text": "Pip loves Wren", "created_at": 1},
+        {"role": "assistant", "text": "Pip loves Wren", "created_at": 1},
     ]
 
     async def _connect(_dsn):
@@ -87,7 +87,7 @@ def test_fetch_chat_messages_suppresses_user_echo(monkeypatch):
     out = asyncio.run(sql_chat.fetch_chat_messages(
         limit=5,
         since_minutes=60,
-        exclude_text="Teddy loves Addy",
+        exclude_text="Pip loves Wren",
     ))
 
     assert len(out) == 1

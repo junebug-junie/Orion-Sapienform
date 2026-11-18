@@ -218,3 +218,45 @@ def test_write_and_read_roundtrip_sqlite() -> None:
         assert fetched.correlation_id == "corr-1"
     finally:
         sess.close()
+
+
+def test_real_write_row_persists_day_citations(sqlite_worker_session) -> None:
+    """Temporal Self patch 4: the citation gate's result (incl. the UNVERIFIED label) is stored."""
+    from orion.schemas.temporal_self import DayCitationCheckV1
+
+    _engine, session_factory = sqlite_worker_session
+    check = DayCitationCheckV1(shown=3, cited_valid=["arc:ae0a3cb57ae73ee4"], rejected_unknown=["arc:deadbeefdeadbeef"],
+                               uncited_day_sentences=1, uncited_examples=["Bus synaptic prediction error held me."],
+                               label="UNVERIFIED", action="stripped")
+    thought = _thought(event_id="thought-day", day_citations=check)
+    assert worker._write_row(ThoughtDecisionSQL, thought.model_dump()) is True
+    fetched = session_factory().query(ThoughtDecisionSQL).filter_by(event_id="thought-day").first()
+    assert fetched.day_citations == check.model_dump()
+    assert fetched.day_citations["label"] == "UNVERIFIED"
+
+
+def test_day_citations_column_has_a_migration() -> None:
+    sql = (REPO_ROOT / "services/orion-sql-db/manual_migration_thought_decision_day_citations_v1.sql").read_text()
+    assert sql.startswith("-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer, orion-hub")
+    assert "ADD COLUMN IF NOT EXISTS day_citations jsonb" in sql
+
+
+def test_real_write_row_persists_self_prediction(sqlite_worker_session) -> None:
+    """Self-prediction A1: stance's bet is stored for the self-monitor organ to settle later."""
+    from orion.schemas.thought import TurnSelfPredictionV1
+
+    _engine, session_factory = sqlite_worker_session
+    bet = TurnSelfPredictionV1(asks_question_p=0.7, steps_lo=3, steps_hi=9)
+    thought = _thought(event_id="thought-bet", self_prediction=bet)
+    assert worker._write_row(ThoughtDecisionSQL, thought.model_dump()) is True
+    fetched = session_factory().query(ThoughtDecisionSQL).filter_by(event_id="thought-bet").first()
+    assert fetched.self_prediction == bet.model_dump()
+    assert fetched.self_prediction["coverage"] == 0.8
+
+
+def test_real_write_row_without_self_prediction_stores_null(sqlite_worker_session) -> None:
+    _engine, session_factory = sqlite_worker_session
+    thought = _thought(event_id="thought-nobet")
+    assert worker._write_row(ThoughtDecisionSQL, thought.model_dump()) is True
+    fetched = session_factory().query(ThoughtDecisionSQL).filter_by(event_id="thought-nobet").first()
+    assert fetched.self_prediction is None

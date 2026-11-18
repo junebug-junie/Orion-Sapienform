@@ -7,7 +7,7 @@ URN form:
 Examples::
 
     metric://field_channel/orion-field-digester/cpu_pressure
-    metric://inner_state/orion-self-state-runtime/self_state.v1#reasoning_pressure
+    metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score
     metric://organ_signal/biometrics/gpu_load#level
     metric://bus_channel/orion-substrate-runtime/orion:substrate:brain_frame
 
@@ -86,6 +86,27 @@ class MetricNode:
     schema_id: str | None = None
     meaning: str | None = None
     notes: str | None = None
+    # "Why is it in this state" semantics (2026-10-10, closes R6 of the
+    # phase-5 liveness scope). Declared on the source registry entry, never
+    # here; see orion/metrics/semantics.py for each field's vocabulary.
+    # `polarity` is DERIVED for field channels from
+    # orion.field.pressure.HIGHER_IS_BETTER_CHANNELS.
+    value_kind: str | None = None
+    rest: str | None = None
+    sparsity: str | None = None
+    absent_means: str | None = None
+    polarity: str | None = None
+    # Machine-readable calm band [lo, hi] (orion.metrics.semantics); a tuple
+    # so the node stays hashable/frozen. Ordered, never sorted.
+    rest_range: tuple[float, float] | None = None
+    # `module:callable` sites that render this number into an Orion LLM
+    # prompt. Non-empty means the prompt gate requires value_kind/rest/
+    # sparsity (orion.metrics.semantics.check_node_semantics).
+    prompt_sites: tuple[str, ...] = ()
+
+    @property
+    def reaches_prompt(self) -> bool:
+        return bool(self.prompt_sites)
 
     @property
     def scan_token(self) -> str:
@@ -109,11 +130,16 @@ def _urn(surface: str, producer: str, name: str, metric_field: str | None = None
 
 def resolve_field_channels(path: Path | None = None) -> list[MetricNode]:
     """Project config/field/field_channel_glossary.v1.yaml."""
+    from orion.metrics.semantics import MetricSemantics, derived_channel_polarity
+
     target = path or GLOSSARY_PATH
     if not target.exists():
         return []
     raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    source = str(target.relative_to(REPO_ROOT))
+    try:
+        source = str(target.relative_to(REPO_ROOT))
+    except ValueError:  # a test fixture outside the repo
+        source = str(target)
 
     nodes: list[MetricNode] = []
     for entry in raw.get("channels", []):
@@ -137,16 +163,44 @@ def resolve_field_channels(path: Path | None = None) -> list[MetricNode]:
             for v in (entry.get("self_state_dimension"), entry.get("evidence_dimension"))
             if v
         )
+        sem = MetricSemantics.from_mapping(entry.get("semantics"))
+        if sem.polarity is not None:
+            # Polarity of a field channel is decided by the pressure merge
+            # (HIGHER_IS_BETTER_CHANNELS); a second, declared copy here is
+            # exactly the kind of list that drifts.
+            raise ValueError(
+                f"{source}: {name} declares semantics.polarity; field-channel "
+                "polarity is derived from orion.field.pressure."
+                "HIGHER_IS_BETTER_CHANNELS, never declared"
+            )
+        # `producer:` (2026-10-10) names the service that actually computes
+        # a node-qualified value when it is not the digester -- e.g. every
+        # node:substrate.* prediction_error is computed by
+        # orion-substrate-runtime, and two of them never reach the digester.
+        producer = entry.get("producer") or FIELD_DIGESTER
         nodes.append(
             MetricNode(
-                urn=_urn("field_channel", FIELD_DIGESTER, name),
+                urn=_urn("field_channel", producer, name),
                 surface="field_channel",
-                producer_service=FIELD_DIGESTER,
+                producer_service=producer,
                 name=name,
                 registry_source=source,
                 meaning=entry.get("meaning"),
                 notes=f"category={entry.get('category')} level={','.join(entry.get('level', []))}",
                 feeds_dimensions=feeds,
+                # Declared consumers for a node-qualified entry: the generic
+                # readers take prediction_error off a node vector by node id,
+                # so no literal "<node>.<channel>" string exists for the AST
+                # scan to find. Same `module:callable` form, same existence
+                # check, as the inner-state and bus registries.
+                declared_consumers=tuple(entry.get("consumers") or ()),
+                value_kind=sem.value_kind,
+                rest=sem.rest,
+                rest_range=sem.rest_range,
+                sparsity=sem.sparsity,
+                absent_means=sem.absent_means,
+                polarity=derived_channel_polarity(channel, sem.value_kind),
+                prompt_sites=sem.prompt_sites,
             )
         )
     return nodes
@@ -195,6 +249,20 @@ def _is_float_like(ann: Any) -> bool:
     return False
 
 
+def _semantic_kwargs(sem: Any) -> dict[str, Any]:
+    if sem is None:
+        return {}
+    return {
+        "value_kind": sem.value_kind,
+        "rest": sem.rest,
+        "rest_range": sem.rest_range,
+        "sparsity": sem.sparsity,
+        "absent_means": sem.absent_means,
+        "polarity": sem.polarity,
+        "prompt_sites": tuple(sem.prompt_sites),
+    }
+
+
 def resolve_inner_state() -> list[MetricNode]:
     """Project orion/inner_state_registry.py::REGISTRY."""
     # Import errors deliberately propagate: a registry that no longer imports
@@ -210,6 +278,7 @@ def resolve_inner_state() -> list[MetricNode]:
         schema_id = schema.__name__ if schema is not None else None
         consumers = tuple(sig.cognition_consumers)
         scalar_overrides = dict(sig.scalar_cognition_consumers)
+        semantics = sig.semantics_by_key()
 
         # The signal itself is addressable even when it has no enumerable
         # float fields (schema=None entries are real registry entries).
@@ -223,9 +292,19 @@ def resolve_inner_state() -> list[MetricNode]:
                 schema_id=schema_id,
                 declared_consumers=consumers,
                 notes=f"cadence={sig.cadence.value} composition={sig.composition_status.value}",
+                **_semantic_kwargs(semantics.get("")),
             )
         )
-        for fname in _float_fields(schema):
+        float_fields = _float_fields(schema)
+        stray = set(semantics) - set(float_fields) - {""}
+        if stray:
+            # A semantics key that names no addressable scalar would be
+            # recorded nowhere -- a silent no-op, which is worse than an error.
+            raise ValueError(
+                f"{sig.signal_id}: semantics declared for {sorted(stray)}, which "
+                f"are not float fields of {schema_id}"
+            )
+        for fname in float_fields:
             field_consumers = scalar_overrides.get(fname, consumers)
             nodes.append(
                 MetricNode(
@@ -239,6 +318,7 @@ def resolve_inner_state() -> list[MetricNode]:
                     declared_consumers=field_consumers,
                     upstream=(_urn("inner_state", producer, sig.signal_id),),
                     notes=f"scalar field on {schema_id}",
+                    **_semantic_kwargs(semantics.get(fname)),
                 )
             )
     return nodes
@@ -326,7 +406,7 @@ SUBSTRATE_RUNTIME = "orion-substrate-runtime"
 # approximation of something larger. Producer is the service that actually
 # COMPUTES the region's value inside assemble_brain_frame()
 # (services/orion-substrate-runtime/app/brain_frame_producer.py), which for
-# 5 of the 6 dimensions is the same service that owns the whole brain-frame
+# 4 of the 5 dimensions is the same service that owns the whole brain-frame
 # tick. `field_anomaly` is the one exception: its true producer is
 # orion-field-digester's mood-arc encoder (app/anomaly_scorer.py), relayed
 # onto the bus and merely cached/assembled by substrate-runtime -- see its
@@ -335,7 +415,6 @@ SUBSTRATE_RUNTIME = "orion-substrate-runtime"
 _BRAIN_REGION_PRODUCERS: dict[str, str] = {
     "node_kind": SUBSTRATE_RUNTIME,
     "lane": SUBSTRATE_RUNTIME,
-    "self_state": SUBSTRATE_RUNTIME,
     "lattice_layer": SUBSTRATE_RUNTIME,
     "honesty_metrics": SUBSTRATE_RUNTIME,
     "field_anomaly": FIELD_DIGESTER,
@@ -349,7 +428,7 @@ def resolve_brain_regions() -> list[MetricNode]:
     field channels, inner-state signals, organ signals, and bus channels,
     but nothing named which service backs an EKG *region* -- the Self tab's
     Self-Observability panel had no way to answer "what produced this bar"
-    for any of its 6 dimensions.
+    for any of its dimensions (6 until 2026-10-07, 5 since).
 
     `declared_consumers` names `orion-hub` (resolves to `services/orion-hub/`
     via the bare-service-name form `_resolve_consumer_path()` already
@@ -456,4 +535,11 @@ def to_dict(node: MetricNode) -> dict[str, Any]:
         "feeds_dimensions": list(node.feeds_dimensions),
         "all_producers": list(node.all_producers),
         "notes": node.notes,
+        "value_kind": node.value_kind,
+        "rest": node.rest,
+        "rest_range": list(node.rest_range) if node.rest_range is not None else None,
+        "sparsity": node.sparsity,
+        "absent_means": node.absent_means,
+        "polarity": node.polarity,
+        "prompt_sites": list(node.prompt_sites),
     }

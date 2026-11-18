@@ -41,13 +41,13 @@ def test_classify_closure_and_prediction_error() -> None:
     assert hop == "closure_received"
     assert fields["surprise_unresolved"] == "True"
 
+    # The harness_closure prediction-error write (and its log line) was retired 2026-11-11.
     pe = (
         "post_turn_closure_prediction_error_write corr=1d7965dc-6cd3-44b2-88af-a001c51fbb45 "
-        "node_id=harness_closure:1d7965dc-6cd3-44b2-88af-a001c51fbb45 error=0.65"
+        "node_id=node:substrate.harness_closure error=0.65"
     )
-    hop2, fields2 = classify_log_line(pe)
-    assert hop2 == "prediction_error"
-    assert fields2["error"] == "0.65"
+    hop2, _ = classify_log_line(pe)
+    assert hop2 != "prediction_error"
 
 
 def test_parse_service_logs_filters_by_correlation() -> None:

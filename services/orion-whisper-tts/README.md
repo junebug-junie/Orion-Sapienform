@@ -66,11 +66,11 @@ separate hard-fail paths regressed the exact resilience this closes:
   exactly what survived the real incident. Boot-broken must degrade the
   same way mid-uptime-broken does, not worse.
 - **The CUDA watchdog** (`app/cuda_watchdog.py`), a background task started
-  alongside the existing heartbeat loop -- the single real enforcement path
+  alongside the bus heartbeat (`HeartbeatOnly`) -- the single real enforcement path
   for BOTH "broken at boot" and "broken mid-uptime". Polls
   `torch.cuda.is_available()` (off the event loop, under a timeout -- a
   genuine NVML wedge can hang rather than fast-return, and an in-line
-  synchronous call would freeze `heartbeat_loop`/`listener_task`/`stt_task`
+  synchronous call would freeze the heartbeat/`listener_task`/`stt_task`
   right along with itself) every `CUDA_WATCHDOG_POLL_SEC`. On
   `CUDA_WATCHDOG_FAILURE_THRESHOLD` consecutive failures (debounced against
   a single transient hiccup; a hang counts as a failure, a raised exception
@@ -310,11 +310,15 @@ instance of this service at a time.**
 
 This service previously ran on circe (first the P100 at index 4, later
 "moonlighting" on a shared V100 after the P100 was pulled for a card
-upgrade). As of 2026-09-21 it runs only on athena, pinned to the Tesla T10
-16GB that upgrade added at nvidia-smi index 1 (`WHISPER_TTS_GPU_DEVICE_ID=1`,
-no fallback default — see `docker-compose.yml`'s own comment on why an
-unset var must fail loudly rather than silently grab GPU0, which is
-vision-host's Tesla P4). If this service ever needs to move to a different
+upgrade). From 2026-09-21 it ran on athena's Tesla T10 16GB. Since
+2026-10-15 it runs on athena's Tesla P4 (7.68GB, PCI bus id
+`00000000:86:00.0`, `WHISPER_TTS_GPU_DEVICE_ID=00000000:86:00.0`), shared
+with orion-vision-edge; vision-host took the T10. No fallback default — see
+`docker-compose.yml`'s own comment on why an unset var must fail loudly
+rather than silently grab GPU0. Pascal (sm_61) check, 2026-10-15: the
+image's torch 2.8.0+cu126 ships sm_60 kernels, XTTS loads fp32, Whisper runs
+`fp16=False`; whisper "base" on one 30 s window measured 0.37 s on the P4 vs
+0.10 s on the T10. If this service ever needs to move to a different
 host again, the compose file is still host-agnostic (the only host-specific
 value is `WHISPER_TTS_GPU_DEVICE_ID`) — verify the target card live with
 `nvidia-smi` first, never trust a table in this README, and follow the same

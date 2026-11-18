@@ -1,0 +1,143 @@
+# orion-prediction series registry. Loaded and validated by services/orion-prediction/app/series.py.
+# Spec: docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md
+#
+# role: target    -> forecast every grain bucket, backtest-gated, scored live, published.
+# role: covariate -> loaded only for /scenario and causal analysis; never forecast on its own.
+# Every entry names its consumers; an entry nobody reads does not belong here.
+#
+# Durations: "<n>min", "<n>h", "<n>d". A seasonality is used only when the training window holds
+# at least 2 full cycles of it (the fit records the rest under refused_seasonalities).
+version: 1
+series:
+  - series_id: athena.cabinet_temp_c
+    role: target
+    source: {kind: biometrics, node: athena, key: cabinet_temp_c}
+    unit: C
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    transform: none
+    # The portable AC was installed 2026-09-26 (home_cooling_sample starts that day): a structural break.
+    train_from: "2026-09-26T00:00:00Z"
+    train_window: 21d
+    seasonalities:
+      - {name: daily, period: 1d, fourier_order: 6}
+      - {name: weekly, period: 7d, fourier_order: 3}
+      - {name: monthly, period: 30d, fourier_order: 2}   # refused until 60 days of post-break data exist
+    exclude: []
+    horizons: [5min, 15min, 1h, 6h, 24h]
+    thresholds:
+      # Cabinet lines are owned by orion/autonomy/thermal_gate.py (body economy Patch B); a literal
+      # value here is refused by app/series.py. shed = hardware-watch's reflex line (critical, 34 C).
+      - {name: shed, value_from: thermal_gate.critical, window: 30min}
+      # Switchback experiments may start only while this probability is under max_probability (hot, 32 C).
+      - {name: experiment_guard, value_from: thermal_gate.hot, window: 30min, max_probability: 0.05}
+    # The three machines (athena inside the cabinet; circe and hecate above it, in the closet's top
+    # half), the portable AC, the central-AC proxy, and the room air the cabinet draws in (metric gate
+    # in the spec). Room-to-cabinet hourly corr 0.97 (2026-10-29..11-03).
+    covariates: [athena.chassis_watts, circe.chassis_watts, hecate.chassis_watts, athena.cabinet_cooling_watts,
+                 athena.central_ac_proxy, office.temp_c]
+    # Younger than the training window (room sensor from 2026-10-29, cabinet history from 2026-10-23):
+    # direct_arx leaves it out; direct_arx_overlap uses it, trained on the overlap only. The gate decides
+    # whether the overlap model serves (app/direct.py, app/backtest.py). Remove from this list once the
+    # room sensor's history covers the whole training window.
+    overlap_covariates: [office.temp_c]
+    # hardware-watch shows the "shed" exceedance beside each reflex decision (observe-only). Exceedance
+    # is on the 5-min MEAN, so it understates a single raw reading crossing 34 C.
+    consumers: [hardware-watch, prediction-scoreboard, causal-effects]
+
+  # The office (room) air, from the pan-1 SHT40 installed 2026-10-28 (orion-office-env -> office_env_sample).
+  # The cabinet draws its intake air from this room, so this is the cabinet's heat-balance boundary.
+  # Young: no selection until the backtest has enough history (~4.1 days at 40 windows x 3 h; /health
+  # shows not_ready + ready_at until then). Weekly is refused until 14 days exist.
+  # Also a covariate of athena.cabinet_temp_c (overlap_covariates there: only the overlap-window model
+  # uses it until its history covers the cabinet's training window), and the room side of
+  # GET /effects/heat-per-watt (cabinet - room vs machine watts).
+  - series_id: office.temp_c
+    role: target
+    source: {kind: office_env, node: pan-1, key: office_temp_c}
+    unit: C
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    transform: none
+    train_from: "2026-10-28T22:16:00Z"
+    train_window: 21d
+    seasonalities:
+      - {name: daily, period: 1d, fourier_order: 6}
+      - {name: weekly, period: 7d, fourier_order: 3}
+    # Placement: 22:16-22:35 at a first spot (RH ~30%), no data 22:35-23:10, then 28.2 C settling to
+    # ~25.3 C by 00:10 while RH rose 21.7 -> 24.5% (vapour pressure ~flat): the sensor cooling, not the room.
+    exclude:
+      - {start: "2026-10-28T22:16:00Z", end: "2026-10-29T00:10:00Z"}
+    horizons: [5min, 15min, 1h, 6h, 24h]
+    consumers: [prediction-scoreboard, causal-effects, heat-per-watt]
+
+  # The closet top: the pan-1 SCD40 board (node pan-1, sensor_id scd40-closet; orion-office-env with
+  # ENV_ROOM=closet -> closet_env_sample) in the top half of the server closet, ABOVE the cabinet, where
+  # circe's (and hecate's) exhaust goes. It is not in the cabinet and not on athena. The only sensor that
+  # sees circe's heat (+0.25 C per 100 W, 95% +0.16..+0.32, hourly fit 2026-11-05..12; the cabinet reads
+  # ~0). Read ONLY by GET/POST /effects/heat-per-watt?series_id=closet.top_temp_c (heat_balance.HEAT_BALANCE),
+  # as a second target beside the cabinet. Not forecast and not a cabinet covariate: it does not lead the
+  # cabinet (one-hour cabinet MAE 0.581 -> 0.583 C with it, 2026-11-05..12). Use slopes, not the level (possible SCD40 vs SHT40
+  # offset). Metric gate + rollback: docs/superpowers/specs/2026-11-12-orion-air-path-design.md (#3234).
+  - series_id: closet.top_temp_c
+    role: covariate
+    source: {kind: closet_env, node: pan-1, key: closet_temp_c}
+    unit: C
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    train_from: "2026-11-05T00:45:00Z"
+    consumers: [heat-per-watt]
+
+  - series_id: athena.chassis_watts
+    role: covariate
+    source: {kind: biometrics, node: athena, key: chassis_watts}
+    unit: W
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    consumers: [scenario, causal-effects]
+
+  - series_id: athena.cabinet_cooling_watts
+    role: covariate
+    source: {kind: cooling, role: cabinet_cooling}
+    unit: W
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    consumers: [scenario, causal-effects]
+
+  - series_id: circe.chassis_watts
+    role: covariate
+    source: {kind: cluster, node: circe, key: chassis_watts}   # circe has no BMC: PDU proxy via athena
+    unit: W
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    consumers: [scenario, causal-effects]
+
+  - series_id: hecate.chassis_watts
+    role: covariate
+    source: {kind: cluster, node: hecate, key: chassis_watts}  # hecate's BMC, read remotely from athena
+    unit: W
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    zero_before_first: true   # first reading 2026-10-04: before that hecate was not running
+    consumers: [scenario, causal-effects]
+
+  # The central AC runs when it is warm outside (house meter, 2026-10-20: household + central load
+  # +0.33 kWh/h per F above 75 F, 3 h earlier; p ~1e-18), and while it runs the cabinet is ~1.3 C cooler.
+  # Hourly from the shared Open-Meteo client, spread over 5-min buckets.
+  - series_id: athena.central_ac_proxy
+    role: covariate
+    source: {kind: weather, key: temp_f}
+    unit: F above 75
+    grain: 5min
+    agg: mean
+    max_fill: 60min
+    lag: 3h
+    above: 75
+    consumers: [scenario, causal-effects]

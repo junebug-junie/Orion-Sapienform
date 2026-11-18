@@ -14,18 +14,6 @@ from orion.core.schemas.cognitive_substrate import (
 from orion.core.schemas.substrate_consolidation import GraphConsolidationRequestV1
 from orion.core.schemas.substrate_review_queue import GraphReviewCycleBudgetV1, GraphReviewQueueItemV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeRequestV1
-from orion.graph_cognition.evidence import EvidenceSpanV1, SignalEvidenceBundleV1
-from orion.graph_cognition.interpreters import (
-    CoherenceAssessmentV1,
-    ConceptDriftSignalV1,
-    ContradictionCandidateSetV1,
-    GoalPressureStateV1,
-    GraphCognitionReportV1,
-    IdentityConflictSignalV1,
-    SocialContinuityAssessmentV1,
-)
-from orion.graph_cognition.views import build_graph_views_from_store
-from orion.graph_cognition.brief import build_metacog_perception_brief
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.review_queue import GraphReviewQueue
 from orion.substrate.review_runtime import GraphReviewRuntimeExecutor
@@ -55,8 +43,6 @@ class FakeSemanticStore(InMemorySubstrateGraphStore):
     def query_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
         return self._wrap("hotspot_region", self.read_hotspot_region(min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges))
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
-        return self._wrap("contradiction_region", self.read_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges))
 
     def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
         return self._wrap("concept_region", self.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges))
@@ -87,14 +73,6 @@ class EmptySemanticStore(FakeSemanticStore):
             limits={"limit_nodes": limit_nodes, "limit_edges": limit_edges},
         )
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
-        return SubstrateQueryResultV1(
-            query_kind="contradiction_region",
-            source_kind="fallback",
-            degraded=True,
-            slice=SubstrateNeighborhoodSliceV1(nodes=[], edges=[]),
-            limits={"limit_nodes": limit_nodes, "limit_edges": limit_edges},
-        )
 
 
 def _seed_store(store: InMemorySubstrateGraphStore) -> None:
@@ -144,39 +122,6 @@ def _seed_store(store: InMemorySubstrateGraphStore) -> None:
     store.upsert_edge(identity_key=f"{concept.node_id}|contradicts|{contradiction.node_id}", edge=edge)
 
 
-def _bundle() -> SignalEvidenceBundleV1:
-    return SignalEvidenceBundleV1(spans=(EvidenceSpanV1(node_ids=("node-concept",), edge_ids=(), reason="test", weight=1.0),), truncated=False, degraded=False, notes=())
-
-
-def _report() -> GraphCognitionReportV1:
-    evidence = _bundle()
-    return GraphCognitionReportV1(
-        coherence=CoherenceAssessmentV1(score=0.7, confidence=0.8, evidence=evidence, notes=()),
-        identity_conflict=IdentityConflictSignalV1(conflict_score=0.4, active=True, confidence=0.7, evidence=evidence),
-        goal_pressure=GoalPressureStateV1(pressure_score=0.8, stalled_goal_count=1, competing_goal_density=0.2, confidence=0.7, evidence=evidence),
-        social_continuity=SocialContinuityAssessmentV1(continuity_score=0.6, confidence=0.7, degraded=False, evidence=evidence),
-        concept_drift=ConceptDriftSignalV1(drift_score=0.6, active=True, confidence=0.7, evidence=evidence),
-        contradiction_candidates=ContradictionCandidateSetV1(candidates=(), confidence=0.7, evidence=evidence),
-    )
-
-
-def test_graph_cognition_prefers_semantic_query_store() -> None:
-    store = FakeSemanticStore(source_kind="graphdb", degraded=False)
-    _seed_store(store)
-    bundle, basis, state = build_graph_views_from_store(
-        store=store,
-        now=datetime.now(timezone.utc),
-        scope="orion",
-        subject_ref="orion",
-        max_nodes=16,
-        max_edges=16,
-    )
-    assert basis.source_kind == "graphdb"
-    assert basis.degraded is False
-    assert len(state.nodes) >= 1
-    assert len(bundle.concept.node_ids) >= 1
-
-
 def test_consolidation_reports_semantic_source_and_explicit_fallback() -> None:
     graphdb_store = FakeSemanticStore(source_kind="graphdb", degraded=False)
     _seed_store(graphdb_store)
@@ -206,9 +151,7 @@ def test_curiosity_region_selection_uses_semantic_store_and_keeps_bounded_behavi
     result = evaluator.evaluate(
         anchor_scope="orion",
         subject_ref="orion",
-        cognition_report=_report(),
-            perception_brief=build_metacog_perception_brief(_report()),
-        operator_requested=False,
+        operator_requested=True,
     )
     assert any(note.startswith("semantic_source:") for note in result.notes)
     assert len(result.signals) >= 1

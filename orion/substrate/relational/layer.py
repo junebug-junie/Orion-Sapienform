@@ -103,8 +103,9 @@ class CognitiveUnificationLayer:
         self._store = store
         self._base_ephemeral = ephemeral_store  # prototype; rebuilt per call
         self._durable_materializer = SubstrateGraphMaterializer(store=store)
-        # Per-producer last-materialized timestamps for accurate per-producer TTL checks.
-        # Updated after each successful cold fan-out materialization.  Falls back to
+        # Per-producer last-pulled timestamps for accurate per-producer TTL checks.
+        # Updated after each successful cold fan-out pull, including one that
+        # returned no record (nothing to add is still fresh).  Falls back to
         # anchor-node age estimate for producers not yet tracked (e.g. first call after
         # restart, or when the store was pre-populated externally).
         self._last_materialized_at: dict[str, datetime] = {}
@@ -137,6 +138,14 @@ class CognitiveUnificationLayer:
             )
             return _lightweight_belief_set(anchors_resolved)
 
+        # A store that only snapshots some anchor scopes (FalkorAnchorStanceStore)
+        # cannot answer for the others; refuse rather than return an empty slice.
+        served_scopes = getattr(self._store, "snapshot_anchor_scopes", None)
+        if served_scopes is not None:
+            unserved = sorted(set(anchors) - set(served_scopes))
+            if unserved:
+                raise ValueError(f"store does not snapshot anchor scopes {unserved}")
+
         # Fresh ephemeral store per call (snapshot_ephemeral nodes are never cached)
         ephemeral_store = InMemorySubstrateGraphStore()
         ephemeral_materializer = SubstrateGraphMaterializer(store=ephemeral_store)
@@ -145,6 +154,9 @@ class CognitiveUnificationLayer:
         degraded_producers: list[str] = []
         lineage: list[str] = []
         materialization_results: list[MaterializationResultV1] = []
+        # Node ids a non-write-through cold producer re-read from the durable
+        # store (concept_induction). Only these are deduped against durable.
+        reread_node_ids: set[str] = set()
 
         # ---- Warm path check (per-producer TTL) ----
         now = datetime.now(timezone.utc)
@@ -212,12 +224,26 @@ class CognitiveUnificationLayer:
                                 degraded_producers.append(producer.producer_id)
                                 continue
 
-                            if record is not None:
+                            if record is None:
+                                # A completed pull that had nothing to add is
+                                # still a fresh pull. Without this, a producer
+                                # that returns None (autonomy, live) was never
+                                # tracked, so its anchors fell back to the seed
+                                # nodes' day-old observed_at and read cold on
+                                # every turn (2026-10-06, turn-latency L6).
+                                # Failures and timeouts above stay untracked so
+                                # they retry next turn.
+                                self._last_materialized_at[producer.producer_id] = datetime.now(timezone.utc)
+                            else:
                                 try:
                                     if producer.trust_tier.write_through:
                                         mat_result = self._durable_materializer.apply_record(record)
                                     else:
                                         mat_result = ephemeral_materializer.apply_record(record)
+                                        reread_node_ids.update(n.node_id for n in record.nodes)
+                                        reread_node_ids.update(
+                                            d.canonical_node_id for d in mat_result.node_decisions
+                                        )
                                     materialization_results.append(mat_result)
                                     self._last_materialized_at[producer.producer_id] = datetime.now(timezone.utc)
                                 except Exception as exc:
@@ -267,7 +293,21 @@ class CognitiveUnificationLayer:
         anchor_slices: dict[str, AnchorBeliefSliceV1] = {}
         for anchor in anchors:
             durable_nodes = [n for n in updated_durable_snapshot.nodes.values() if n.anchor_scope == anchor]
-            ephemeral_nodes = [n for n in ephemeral_snapshot.nodes.values() if n.anchor_scope == anchor]
+            # A non-write-through cold producer can re-read a node that already
+            # lives durably (concept_induction reads the concept region). Show it
+            # once, with the durable values: the durable copy is the one decay
+            # and other writers keep current (2026-10-06, unified-turn latency
+            # L6). Scoped to re-reads so a per-turn ctx producer that happens to
+            # reuse a durable id is not silently dropped. Side effect: the
+            # adapter's concept_type default does not reach the stance; the
+            # stance's anchor fallback gives the same bucket for orion/
+            # relationship/juniper (only "claude" would differ, not an anchor).
+            durable_ids = {n.node_id for n in durable_nodes}
+            ephemeral_nodes = [
+                n for n in ephemeral_snapshot.nodes.values()
+                if n.anchor_scope == anchor
+                and not (n.node_id in durable_ids and n.node_id in reread_node_ids)
+            ]
             all_nodes = durable_nodes + ephemeral_nodes
 
             anchor_producers = self._registry.producers_for_anchor(anchor)

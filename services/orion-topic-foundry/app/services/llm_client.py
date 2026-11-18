@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, LLMMessage, ServiceRef
+from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_error_reason, gateway_shed_refusal
 
 from app.settings import settings
 
@@ -68,6 +69,14 @@ class TopicFoundryLLMClient:
             node=settings.node_name,
             version=settings.service_version,
         )
+        # A batch run makes one LLM call per topic/boundary. While the GPU pool sheds the route
+        # (shed:cabinet_hot), skip the calls (each returns None, exactly as a refused call did)
+        # instead of sending hundreds of refusals a minute; one log line per episode with the
+        # skip count (orion/gpu_pool/shed_backoff.py).
+        self._shed_backoff = ShedBackoff(name="topic-foundry", log=logger.warning)
+
+    def _shed_key(self) -> str:
+        return str(settings.topic_foundry_llm_bus_route or "llm")
 
     def _use_bus(self) -> bool:
         return bool(settings.topic_foundry_llm_use_bus and settings.orion_bus_enabled)
@@ -81,19 +90,39 @@ class TopicFoundryLLMClient:
         max_tokens: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         use_bus = self._use_bus()
+        shed_key = self._shed_key()
+        probe = None
         try:
             if not use_bus:
                 logger.warning("LLM request skipped; bus transport disabled")
                 return None
-            content = self._bus_chat(
+            wait, probe = self._shed_backoff.admit(shed_key)
+            if wait is not None:
+                logger.debug("LLM request skipped; GPU pool shedding (%s)", self._shed_backoff.reason(shed_key))
+                return None
+            result = self._bus_chat_result(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001
+            self._shed_backoff.abandon(shed_key, token=probe)
             logger.warning("LLM request failed: %s", exc)
             return None
+        except BaseException:
+            self._shed_backoff.abandon(shed_key, token=probe)
+            raise
+
+        if result is None:   # the worker thread died without a stored exception
+            self._shed_backoff.abandon(shed_key, token=probe)
+            return None
+        shed = gateway_shed_refusal(result)
+        if shed is not None:
+            self._shed_backoff.resolve(shed_key, shed[0], token=probe, hint_sec=shed[1])
+            return None
+        self._shed_backoff.resolve(shed_key, gateway_error_reason(result), token=probe)
+        content = str(result.content or result.text or "")
 
         if not content:
             return None
@@ -119,15 +148,15 @@ class TopicFoundryLLMClient:
             logger.warning("LLM bus probe failed: %s", exc)
             return {"ok": False, "detail": str(exc)}
 
-    def _bus_chat(
+    def _bus_chat_result(
         self,
         *,
         system_prompt: str,
         user_prompt: str,
         temperature: float,
         max_tokens: Optional[int],
-    ) -> str:
-        async def _call() -> str:
+    ) -> ChatResultPayload:
+        async def _call() -> ChatResultPayload:
             bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
             await bus.connect()
             try:
@@ -169,12 +198,11 @@ class TopicFoundryLLMClient:
                 decoded = bus.codec.decode(msg.get("data"))
                 if not decoded.ok:
                     raise RuntimeError(f"LLM bus decode failed: {decoded.error}")
-                result = ChatResultPayload.model_validate(decoded.envelope.payload)
-                return result.content or result.text
+                return ChatResultPayload.model_validate(decoded.envelope.payload)
             finally:
                 await bus.close()
 
-        return str(_run_blocking(_call()) or "")
+        return _run_blocking(_call())
 
 
 _llm_client: Optional[TopicFoundryLLMClient] = None

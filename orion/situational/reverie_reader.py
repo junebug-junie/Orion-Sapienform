@@ -86,8 +86,23 @@ class ReverieRow(NamedTuple):
     salience: float | None
 
 
+# Rows read per requested snippet before de-duplication. Reverie repeats one
+# interpretation many times in a row when it fixates, so newest-N without a
+# dedupe filled every slot with the same line (2026-10-06: the "fixated on bus
+# synaptic prediction error" line appeared twice in one reply-writer prompt).
+_OVERFETCH_FACTOR = 5
+_OVERFETCH_CAP = 100
+
+
+def _normalize_reverie_text(value: str) -> str:
+    return " ".join(str(value or "").split()).casefold().rstrip(" .!?;:,")
+
+
 def fetch_recent_reverie_snippets(limit: int) -> list[ReverieRow]:
-    """Newest `limit` non-empty reverie interpretations, newest first.
+    """Newest `limit` distinct non-empty reverie interpretations, newest first.
+
+    Distinct by normalized text (case, whitespace and trailing punctuation
+    ignored); the newest occurrence of a repeated line is the one kept.
 
     Returns `[]` on no DSN configured, no rows yet, or any read error --
     the caller cannot distinguish those cases from this return value alone
@@ -96,6 +111,9 @@ def fetch_recent_reverie_snippets(limit: int) -> list[ReverieRow]:
     unconfigured/erroring reader must degrade to "nothing to show", never
     raise into turn assembly).
     """
+    want = max(0, int(limit))
+    if want == 0:
+        return []
     engine = _get_engine()
     if engine is None:
         return []
@@ -108,16 +126,24 @@ def fetch_recent_reverie_snippets(limit: int) -> list[ReverieRow]:
                     "WHERE interpretation IS NOT NULL AND interpretation <> '' "
                     "ORDER BY created_at DESC LIMIT :limit"
                 ),
-                {"limit": max(0, int(limit))},
+                {"limit": min(want * _OVERFETCH_FACTOR, max(want, _OVERFETCH_CAP))},
             ).all()
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_reverie_read_failed err=%s", exc)
         return []
 
     out: list[ReverieRow] = []
+    seen: set[str] = set()
     for row in rows:
+        text_value = str(row[0]).strip()
+        key = _normalize_reverie_text(text_value)
+        if not key or key in seen:
+            continue
+        seen.add(key)
         observed_at = row[1]
         if observed_at is not None and observed_at.tzinfo is None:
             observed_at = observed_at.replace(tzinfo=timezone.utc)
-        out.append(ReverieRow(text=str(row[0]).strip(), observed_at=observed_at, salience=row[2]))
+        out.append(ReverieRow(text=text_value, observed_at=observed_at, salience=row[2]))
+        if len(out) >= want:
+            break
     return out

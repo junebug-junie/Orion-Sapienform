@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import logging
 import time
@@ -21,11 +23,49 @@ from app.services.enrichment_contract import (
     coerce_sentiment,
     describe_enrichment_shape,
 )
-from app.storage.repository import create_event, fetch_model, fetch_run, fetch_segments, update_run, update_segment_enrichment, utc_now
+from app.storage.repository import (
+    create_event,
+    fetch_enrichment_cache,
+    fetch_model,
+    fetch_run,
+    fetch_segments,
+    insert_enrichment_cache,
+    update_run,
+    update_segment_enrichment,
+    utc_now,
+)
 from orion.schemas.topic_foundry import TopicFoundryEnrichCompleteV1
 
 
 logger = logging.getLogger("topic-foundry.enrichment")
+
+# Bump to throw away every cached enrichment, e.g. when _finalize_enrichment
+# changes what it keeps. Prompt, taxonomy and text changes need no bump: they
+# are already part of the key.
+ENRICHMENT_CACHE_VERSION = "v1"
+_LLM_SYSTEM_PROMPT = "You are an analyst. Return STRICT JSON only."
+_LLM_TEMPERATURE = 0.2
+
+
+def enrichment_cache_key(text: str, taxonomy: List[str], enricher: str) -> Optional[str]:
+    """Key for reusing an LLM enrichment across runs, or None if not cacheable.
+
+    The key is a hash of the exact LLM request: system prompt, user prompt
+    (which holds the segment text, the taxonomy and the output shape), bus
+    route and temperature. The same text under the same prompt gets the
+    same key in every run. Heuristic enrichment is cheap, so it is not cached.
+    """
+    if enricher != "llm" or not settings.topic_foundry_llm_enable or not text:
+        return None
+    payload = {
+        "v": ENRICHMENT_CACHE_VERSION,
+        "system": _LLM_SYSTEM_PROMPT,
+        "user": _llm_prompt(text, taxonomy),
+        "route": settings.topic_foundry_llm_bus_route or "",
+        "temperature": _LLM_TEMPERATURE,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def enqueue_enrichment(background_tasks, run_id: UUID, *, force: bool, enricher: Optional[str], limit: Optional[int]) -> None:
@@ -85,6 +125,7 @@ def _run_enrichment(
 
     enriched_count = 0
     failed_count = 0
+    cache_hits = 0
     enriched_payloads: List[Dict[str, Any]] = []
     # try/finally starts HERE, immediately after the status="running" write,
     # not just around the segment loop. Without it ANY raise below left the
@@ -101,19 +142,71 @@ def _run_enrichment(
         segments = fetch_segments(UUID(run_row["run_id"]), has_enrichment=None)
         if not force:
             segments = [seg for seg in segments if seg.get("enriched_at") is None]
-        if limit:
-            segments = segments[:limit]
         text_map = _load_segment_text_map(run_row)
 
+        # Every new training run makes new segment_ids, so enriched_at never
+        # carries over between runs. Before 2026-10-30 that meant the chat
+        # model's ~409 segments went back through the LLM after every Hub
+        # restart, and Self Atlas (~14,553 segments, only ~1,984 distinct
+        # texts) never finished. A segment whose exact LLM request was already
+        # answered now reuses that answer. `limit` caps fresh enrichments
+        # only; cache hits do not count against it.
+        cache_keys = {
+            str(seg.get("segment_id")): enrichment_cache_key(
+                _segment_text(seg, text_map), taxonomy, chosen_enricher
+            )
+            for seg in segments
+        }
+        # force=True means "redo it": skip the cache read, overwrite on write.
+        cache: Dict[str, Dict[str, Any]] = (
+            {} if force else fetch_enrichment_cache([k for k in cache_keys.values() if k])
+        )
+        fresh_attempts = 0
+
         for segment in segments:
+            segment_id = str(segment.get("segment_id"))
+            key = cache_keys.get(segment_id)
             try:
-                enrichment = _enrich_segment(segment, taxonomy, chosen_enricher, text_map)
-                update_segment_enrichment(UUID(segment["segment_id"]), enrichment=enrichment, enrichment_version="v1")
+                if key and key in cache:
+                    enrichment = copy.deepcopy(cache[key])
+                    update_segment_enrichment(UUID(segment_id), enrichment=enrichment, enrichment_version="v1")
+                    cache_hits += 1
+                    enriched_count += 1
+                    enriched_payloads.append({"segment_id": segment_id, "enrichment": enrichment})
+                    continue
+                if limit and fresh_attempts >= limit:
+                    continue
+                fresh_attempts += 1
+                enrichment, source = _enrich_segment(segment, taxonomy, chosen_enricher, text_map)
+                # Copy BEFORE update_segment_enrichment: it stamps enriched_at
+                # into the dict, which must not be reused by another segment.
+                cacheable = (
+                    copy.deepcopy(enrichment)
+                    if key and source == "llm" and _is_substantive(enrichment)
+                    else None
+                )
+                update_segment_enrichment(UUID(segment_id), enrichment=enrichment, enrichment_version="v1")
                 enriched_count += 1
-                enriched_payloads.append({"segment_id": segment["segment_id"], "enrichment": enrichment})
+                enriched_payloads.append({"segment_id": segment_id, "enrichment": enrichment})
+                if cacheable is not None:
+                    # A cache write failure must not fail a segment that is
+                    # already enriched; the next run just pays for it again.
+                    try:
+                        insert_enrichment_cache(key, enrichment=cacheable, enricher="llm")
+                        cache[key] = cacheable
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("enrichment_cache_write_failed segment_id=%s error=%s", segment_id, exc)
             except Exception as exc:  # noqa: BLE001
                 failed_count += 1
-                logger.warning("Enrichment failed segment_id=%s error=%s", segment.get("segment_id"), exc)
+                logger.warning("Enrichment failed segment_id=%s error=%s", segment_id, exc)
+        logger.info(
+            "enrichment_pass run_id=%s enriched=%s cache_hits=%s fresh=%s failed=%s",
+            run_id,
+            enriched_count,
+            cache_hits,
+            fresh_attempts,
+            failed_count,
+        )
     except Exception:  # noqa: BLE001
         # Deliberately re-raised, not swallowed: before this patch there was
         # no try at all, so a raise here already propagated out of the
@@ -133,6 +226,7 @@ def _run_enrichment(
         try:
             stats["segments_enriched"] = stats.get("segments_enriched", 0) + enriched_count
             stats["enrichment_failed"] = stats.get("enrichment_failed", 0) + failed_count
+            stats["enrichment_cache_hits"] = stats.get("enrichment_cache_hits", 0) + cache_hits
             stats["enrichment_secs"] = stats.get("enrichment_secs", 0) + _elapsed_secs(started)
 
             # Only claim "enriched" if something actually was. On the raise
@@ -229,13 +323,32 @@ def _load_enrichment_spec(run_row: Dict[str, Any]) -> EnrichmentSpec:
 
 def _enrich_segment(
     segment: Dict[str, Any], taxonomy: List[str], enricher: str, text_map: Dict[str, str]
-) -> Dict[str, Any]:
+) -> tuple[Dict[str, Any], str]:
+    """Return ``(enrichment, source)``; source is ``"llm"`` or ``"heuristic"``.
+
+    The source matters to the cache: an LLM request that failed and fell back
+    to the heuristic must not be stored under the LLM request's key.
+    """
     text = _segment_text(segment, text_map)
     if enricher == "llm" and settings.topic_foundry_llm_enable:
         result = _llm_enrich(text, taxonomy)
         if result is not None:
-            return _finalize_enrichment(result)
-    return _finalize_enrichment(_heuristic_enrich(text, taxonomy))
+            return _finalize_enrichment(result), "llm"
+    return _finalize_enrichment(_heuristic_enrich(text, taxonomy)), "heuristic"
+
+
+def _is_substantive(enrichment: Dict[str, Any]) -> bool:
+    """True when an LLM enrichment carries real content worth reusing.
+
+    The LLM path counts as "llm" whenever it returns any parsed JSON, so
+    ``{}`` becomes title="untitled" with empty fields. Caching that would pin
+    an empty answer to this text for every later run, so it is not cached;
+    the next run gets a fresh try.
+    """
+    title = str(enrichment.get("title") or "").strip().lower()
+    if not title or title == "untitled":
+        return False
+    return any(enrichment.get(field) for field in ("aspects", "meaning", "sentiment"))
 
 
 def _segment_text(segment: Dict[str, Any], text_map: Dict[str, str]) -> str:
@@ -277,9 +390,9 @@ def _llm_enrich(text: str, taxonomy: List[str]) -> Optional[Dict[str, Any]]:
         return None
     try:
         return get_llm_client().request_json(
-            system_prompt="You are an analyst. Return STRICT JSON only.",
+            system_prompt=_LLM_SYSTEM_PROMPT,
             user_prompt=_llm_prompt(text, taxonomy),
-            temperature=0.2,
+            temperature=_LLM_TEMPERATURE,
             max_tokens=None,
         )
     except Exception as exc:  # noqa: BLE001

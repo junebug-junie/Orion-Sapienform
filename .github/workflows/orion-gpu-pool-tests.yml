@@ -4,17 +4,26 @@ on:
   pull_request:
     paths:
       - "services/orion-gpu-pool/**"
+      - "services/orion-vllm-host/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
+      # the swap guard's thermal line is owned here (test_guard_thermal_line_pin.py)
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/autonomy/cabinet_heat.py"
+      # the controller-health alert builds orion-notify's ChatAttentionRequest
+      - "orion/schemas/notify.py"
       # U4 shed lever: the pool consumes hardware-watch incidents (cooling_incident)
       - "orion/schemas/hardware_watch.py"
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
+      - "config/chat_templates/**"
       - "services/orion-llamacpp-host/**"
       - "services/orion-llamacpp-bonsai-host/**"
-      - "services/orion-sql-db/manual_migration_gpu_pool_v1.sql"
-      - "services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql"
-      - "services/orion-sql-db/manual_migration_gpu_pool_v3_actuation_pause.sql"
+      # bonsai is manual-only: its test guards the auto-rebuild host lists
+      - "mesh-utilities/common/include_services*"
+      - "mesh-utilities/common/exclude_services.txt"
+      # every pool migration: tests/test_schema_drift_gate.py holds them against the boot self-heal list
+      - "services/orion-sql-db/manual_migration_gpu_pool_*.sql"
       # stage 5.4: world-model takes a pool lease (the "world" job below)
       - "services/orion-world-model/**"
       - "services/orion-equilibrium-service/app/settings.py"
@@ -44,6 +53,7 @@ on:
       # stage 4.4: consumers of the GPU lease ref (the "consumers" job below)
       - "orion/harness/fcc_motor.py"
       - "orion/harness/finalize.py"
+      - "orion/harness/structured_output.py"
       - "orion/harness/runner.py"
       - "orion/harness/tests/test_gpu_lease_transport.py"
       - "orion/hub/turn_orchestrator.py"
@@ -56,9 +66,22 @@ on:
       - "services/orion-field-digester/tests/test_queue_contention_digestion.py"
       - "services/orion-field-digester/tests/test_durable_waiting_sql_postgres.py"
       - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/tests/test_stance_context_response_format.py"
+      - "orion/cognition/verbs/stance_react.yaml"
+      # finalize 5b judge request shape (consumers job: schema, thinking off, grade turn)
+      - "orion/cognition/verbs/harness_finalize_reflect.yaml"
+      - "orion/cognition/prompts/harness_finalize_reflect.j2"
+      - "orion/harness/tests/test_finalize_reflect_judge_contract.py"
+      - "orion/harness/evals/judge_crash_replay_eval.py"
+      - "orion/harness/evals/test_judge_crash_replay_eval.py"
+      - "orion/harness/evals/fixtures/judge_crash_cases.json"
+      - "services/orion-cortex-exec/tests/test_finalize_reflect_request_shape.py"
+      - "services/orion-llm-gateway/app/structured_output.py"
+      - "services/orion-cortex-exec/app/exec_ctx.py"
+      - "services/orion-cortex-exec/app/stance_prepare.py"
       - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-cortex-exec/tests/test_stance_react_thinking_forwarding.py"
       - "services/orion-cortex-exec/tests/test_gpu_lease_forwarding.py"
-      - "services/orion-cortex-exec/tests/test_orion_day_verbs.py"
       - "services/orion-harness-governor/app/bus_listener.py"
       - "services/orion-hub/scripts/curiosity_investigation.py"
       - "services/orion-hub/scripts/thought_client.py"
@@ -66,6 +89,7 @@ on:
       # stage 3 loose ends: self-knowledge + fcc hop key follow the granted role
       - "orion/harness/prefix.py"
       - "orion/situational/context.py"
+      - "orion/weather/**"
       - "orion/schemas/situation.py"
       - "orion/harness/tests/test_harness_runner.py"
       - "orion/harness/tests/test_harness_prefix.py"
@@ -76,18 +100,28 @@ on:
     branches: [main]
     paths:
       - "services/orion-gpu-pool/**"
+      - "services/orion-vllm-host/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
+      # the swap guard's thermal line is owned here (test_guard_thermal_line_pin.py)
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/autonomy/cabinet_heat.py"
+      # the controller-health alert builds orion-notify's ChatAttentionRequest
+      - "orion/schemas/notify.py"
       # U4 shed lever: the pool consumes hardware-watch incidents (cooling_incident)
       - "orion/schemas/hardware_watch.py"
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
+      - "config/chat_templates/**"
       - "services/orion-llamacpp-host/**"
       - "services/orion-llamacpp-bonsai-host/**"
+      # bonsai is manual-only: its test guards the auto-rebuild host lists
+      - "mesh-utilities/common/include_services*"
+      - "mesh-utilities/common/exclude_services.txt"
       - "services/orion-hub/scripts/gpu_pool_routes.py"
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "scripts/check_gpu_pool_config.py"
-      - "services/orion-sql-db/manual_migration_gpu_pool_v*.sql"
+      - "services/orion-sql-db/manual_migration_gpu_pool_*.sql"
       - "services/orion-world-model/**"
       - "services/orion-diffusion-host/docker-compose.yml"
       - "services/orion-diffusion-host/.env_example"
@@ -95,6 +129,7 @@ on:
       # stage 4.4: consumers of the GPU lease ref (the "consumers" job below)
       - "orion/harness/fcc_motor.py"
       - "orion/harness/finalize.py"
+      - "orion/harness/structured_output.py"
       - "orion/harness/runner.py"
       - "orion/harness/tests/test_gpu_lease_transport.py"
       - "orion/hub/turn_orchestrator.py"
@@ -107,15 +142,29 @@ on:
       - "services/orion-field-digester/tests/test_queue_contention_digestion.py"
       - "services/orion-field-digester/tests/test_durable_waiting_sql_postgres.py"
       - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/tests/test_stance_context_response_format.py"
+      - "orion/cognition/verbs/stance_react.yaml"
+      # finalize 5b judge request shape (consumers job: schema, thinking off, grade turn)
+      - "orion/cognition/verbs/harness_finalize_reflect.yaml"
+      - "orion/cognition/prompts/harness_finalize_reflect.j2"
+      - "orion/harness/tests/test_finalize_reflect_judge_contract.py"
+      - "orion/harness/evals/judge_crash_replay_eval.py"
+      - "orion/harness/evals/test_judge_crash_replay_eval.py"
+      - "orion/harness/evals/fixtures/judge_crash_cases.json"
+      - "services/orion-cortex-exec/tests/test_finalize_reflect_request_shape.py"
+      - "services/orion-llm-gateway/app/structured_output.py"
+      - "services/orion-cortex-exec/app/exec_ctx.py"
+      - "services/orion-cortex-exec/app/stance_prepare.py"
       - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-cortex-exec/tests/test_stance_react_thinking_forwarding.py"
       - "services/orion-cortex-exec/tests/test_gpu_lease_forwarding.py"
-      - "services/orion-cortex-exec/tests/test_orion_day_verbs.py"
       - "services/orion-harness-governor/app/bus_listener.py"
       - "services/orion-hub/scripts/curiosity_investigation.py"
       - "services/orion-hub/scripts/thought_client.py"
       - "services/orion-hub/tests/test_curiosity_gpu_lease.py"
       - "orion/harness/prefix.py"
       - "orion/situational/context.py"
+      - "orion/weather/**"
       - "orion/schemas/situation.py"
 
 jobs:
@@ -123,9 +172,16 @@ jobs:
     name: gpu-pool — config gate, scheduler, lease graph, runtime, Postgres, eval
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # packages: read lets GITHUB_TOKEN pull the private GHCR postgres copy.
+    permissions:
+      contents: read
+      packages: read
     services:
       postgres:
-        image: postgres:16
+        image: ghcr.io/junebug-junie/postgres:16  # private GHCR copy of postgres:16; Docker Hub and ECR Public both rate-limit shared runner IPs
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_PASSWORD: gpu-pool-test
           POSTGRES_DB: gpu_pool_test
@@ -159,12 +215,16 @@ jobs:
         env:
           GPU_POOL_TEST_POSTGRES_URI: postgresql://postgres:gpu-pool-test@127.0.0.1:5432/gpu_pool_test
         run: cd services/orion-gpu-pool && python -m pytest tests -q -p no:cacheprovider
+      - name: vLLM launch, discovery middleware and announcement (CPU only)
+        run: |
+          python -m pip install -r services/orion-vllm-host/requirements.txt
+          PYTHONPATH="$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/services/orion-vllm-host" python -m pytest services/orion-vllm-host/tests -q -p no:cacheprovider
       - name: Worker announce (llamacpp-host side of the discovery bridge)
         env:
           LLM_PROFILE_NAME: ci
         run: |
           python -m pip install -r services/orion-llamacpp-host/requirements.txt
-          cd services/orion-llamacpp-host && python -m pytest tests/test_worker_announce.py -q -p no:cacheprovider
+          cd services/orion-llamacpp-host && python -m pytest tests/test_worker_announce.py tests/test_prism_seat.py tests/test_bonsai_chat_template.py tests/test_probe_slot_bleed.py tests/test_strata_apply_defaults.py tests/test_probe_structured_output.py tests/test_qwen35_fast_eval_leased.py tests/test_operator_scripts_leased.py -q -p no:cacheprovider
       - name: Bonsai fork worker contract (runs the llamacpp-host wrapper)
         env:
           LLM_PROFILE_NAME: ci
@@ -186,14 +246,25 @@ jobs:
           python -m pytest tests/test_biometrics_view_ui.py -k lane_badge -q -p no:cacheprovider
       - name: Policy eval (owner starvation, lost leases, spill-down violations)
         run: python services/orion-gpu-pool/evals/run_pool_day_eval.py
+      - name: Stale-controller incident replay (2026-10-09, config_unloadable -> alert within ~10 min)
+        run: python services/orion-gpu-pool/evals/run_controller_stale_eval.py
+      - name: Value-ordered background hold queue eval (attention patch 3 replay D, fixture)
+        run: python services/orion-gpu-pool/evals/value_queue_replay.py
 
   consumers:
     name: gpu-pool stage 4.4 — callers carry the lease ref (gateway attach is in durable-runs' gateway job)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # packages: read lets GITHUB_TOKEN pull the private GHCR postgres copy.
+    permissions:
+      contents: read
+      packages: read
     services:
       postgres:
-        image: postgres:16
+        image: ghcr.io/junebug-junie/postgres:16  # private GHCR copy of postgres:16; Docker Hub and ECR Public both rate-limit shared runner IPs
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_PASSWORD: gpu-pool-test
           POSTGRES_DB: gpu_pool_test
@@ -216,15 +287,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
           python -m pip install fastapi==0.111.0 httpx==0.27.2 pydantic==2.11.5 pydantic-settings==2.5.2 \
-            SQLAlchemy==2.0.43 aiohttp==3.12.15 python-multipart requests python-dotenv loguru numpy==1.26.4
+            SQLAlchemy==2.0.43 aiohttp==3.12.15 python-multipart requests python-dotenv loguru numpy==1.26.4 jsonschema
       - name: Pool client attach/status + harness/FCC ref transport
         run: python -m pytest orion/gpu_pool/tests/test_client_attach.py orion/harness/tests/test_gpu_lease_transport.py -q -p no:cacheprovider
       - name: field-digester durable_demand_pending from pool holds (real Postgres)
         run: cd services/orion-field-digester && python -m pytest tests/test_queue_contention_digestion.py tests/test_durable_waiting_sql_postgres.py -q -p no:cacheprovider
-      - name: orion-thought stance carries the ref
-        run: cd services/orion-thought && python -m pytest tests/test_stance_context_llm_route.py -q -p no:cacheprovider
-      - name: cortex-exec forwards options.gpu_lease; Orion's Day verb budgets and lane
-        run: cd services/orion-cortex-exec && python -m pytest tests/test_gpu_lease_forwarding.py tests/test_orion_day_verbs.py -q -p no:cacheprovider
+      - name: orion-thought stance carries the ref; JSON mode and thinking off on every lane
+        run: cd services/orion-thought && python -m pytest tests/test_stance_context_llm_route.py tests/test_stance_context_response_format.py -q -p no:cacheprovider
+      - name: cortex-exec forwards options.gpu_lease and stance thinking-off
+        run: cd services/orion-cortex-exec && python -m pytest tests/test_gpu_lease_forwarding.py tests/test_stance_react_thinking_forwarding.py -q -p no:cacheprovider
+      - name: finalize 5b judge asks for a grade under the judgement schema, thinking off (cortex-exec seam + replay eval units)
+        run: |
+          python -m pytest orion/harness/tests/test_finalize_reflect_judge_contract.py orion/harness/evals/test_judge_crash_replay_eval.py -q -p no:cacheprovider
+          (cd services/orion-cortex-exec && python -m pytest tests/test_finalize_reflect_request_shape.py -q -p no:cacheprovider)
       - name: harness-governor admits hold-carrying turns
         run: cd services/orion-harness-governor && python -m pytest tests/test_lane_dispatch_channels.py -q -p no:cacheprovider
       - name: Hub fences the ref with pool status and runs the turn under it

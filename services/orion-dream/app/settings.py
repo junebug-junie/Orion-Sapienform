@@ -38,17 +38,28 @@ class Settings(BaseSettings):
     # Cap on requests drained per REM pass (§cap-all-collections).
     DREAM_REM_MAX_REQUESTS: int = Field(default=50)
 
-    # --- Compaction APPLIER (Phase G — the hot gate, hard-off) ---
-    # THIS MUTATES MEMORY. It stays off pending explicit proposal-mode sign-off +
-    # a live §14 backfill verification. Even when on it applies ONLY deltas whose
-    # proposal was policy-approved for execution (reverie proposals carry
-    # operator_review, so they require a human). Snapshot precedes every apply.
-    ORION_DREAM_COMPACTION_APPLY_ENABLED: bool = Field(default=False)
+    # --- Compaction APPLIER (Phase G — the hot gate) ---
+    # THIS MUTATES MEMORY: substrate_reverie_thought.salience only (app/compaction_store.py), downscale
+    # only, snapshot first. On since 2026-11-13 (Juniper's standing consent dream-compaction-downscale).
+    # Even when on it applies ONLY deltas the want market's consent gate allows
+    # (config/physiology/consent.yaml: downscale needs the standing consent; prune is always refused).
+    # false -> every consented delta reads `disabled`, nothing is written.
+    ORION_DREAM_COMPACTION_APPLY_ENABLED: bool = Field(default=True)
     # Safer subset first: apply downscale-renormalize only; prune stays gated
     # behind this flag being flipped false (never prune before downscale is trusted).
     ORION_DREAM_COMPACTION_DOWNSCALE_ONLY: bool = Field(default=True)
-    # §14 snapshot destination (before/after + rollback artifact).
-    DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/tmp/dream-compaction-apply")
+    # §14 snapshot destination (before-state + rollback artifact). Under /app/logs, the persistent host
+    # mount, so a snapshot outlives the container: restore with
+    # `python -m app.compaction_store restore <dir>/<delta_id>/snapshot_before.json`.
+    DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/app/logs/compaction-snapshots")
+    # REM proposes new salience = salience x this factor for each settled reverie thought a consolidate
+    # entry folds in (once per thought). Must be in (0, 1): any other value fails at boot.
+    DREAM_COMPACTION_DOWNSCALE_FACTOR: float = Field(default=0.8, gt=0.0, lt=1.0)
+    # Attention patch 3d: after REM stages a delta, ask the want market's consent gate about it
+    # (app/compaction_consent.py) and, on allow + apply on, apply it through the real store. Every
+    # real delta leaves a verdict (want_ledger, producer orion-dream.compaction_applier.consent).
+    # false -> no ask and no apply.
+    DREAM_COMPACTION_CONSENT_ASK_ENABLED: bool = Field(default=True)
 
     # --- Dream cycle v2 (sleep pressure -> replay -> REM recombination) ---
     # Default off. When on, a background loop checks sleep pressure every
@@ -62,16 +73,101 @@ class Settings(BaseSettings):
     DREAM_IDLE_MINUTES: float = Field(default=45.0, ge=0.0)
     DREAM_MIN_INTERVAL_HOURS: float = Field(default=6.0, ge=0.0)
     DREAM_LOOKBACK_HOURS: float = Field(default=48.0, gt=0.0)
-    DREAM_CANDIDATES_PER_SOURCE: int = Field(default=50, ge=1)
     DREAM_REPLAY_MAX: int = Field(default=12, ge=0, le=24)
     # Arms: dream pairs come from the replay set; control pairs are random pairs
     # from the whole candidate pool through the same prompt (the baseline).
     DREAM_HYPOTHESES_PER_CYCLE: int = Field(default=3, ge=0, le=8)
     DREAM_CONTROL_PER_CYCLE: int = Field(default=1, ge=0, le=4)
+    # Dream-arm pairs: different organs, times within this many minutes of each other (#3664).
+    DREAM_PAIR_WINDOW_MINUTES: float = Field(default=120.0, gt=0.0, le=1440.0)
     DREAM_HYPOTHESIS_TTL_HOURS: float = Field(default=72.0, gt=0.0)
     CHANNEL_LLM_INTAKE: str = Field(default="orion:exec:request:LLMGatewayService")
     DREAM_LLM_ROUTE: str = Field(default="metacog_background")
     DREAM_LLM_TIMEOUT_SEC: float = Field(default=90.0, gt=0.0)
+    # A completed sleep starts one narrative dream (cortex-orch dream_cycle verb,
+    # `dreams` table) fed that sleep's replay, on CHANNEL_DREAM_TRIGGER.
+    DREAM_STORY_AFTER_SLEEP_ENABLED: bool = Field(default=True)
+    # The rest drive (Temporal Self rev 4, R2): every check's pressure as a
+    # DriveReadingV1, to Redis orion:drive:rest:latest (readers: Hub curiosity
+    # and outreach). The TTL is the readers' staleness bound: 3 checks. Off =
+    # no reading, and every reader behaves exactly as before the drive existed.
+    DREAM_REST_DRIVE_PUBLISH_ENABLED: bool = Field(default=True)
+    DREAM_REST_DRIVE_REDIS_TTL_SEC: float = Field(default=1800.0, gt=0.0)
+    # Arousal reader (Temporal Self rev 4, R3, reader 1): durable-runs' Redis
+    # orion:regulation:latest. The dream sleeps only when arousal reads `idle`:
+    # `engaged` or `strained` holds a sleep the idle query would have allowed.
+    # Arousal can only veto, never authorize -- the Juniper-filtered idle query
+    # still has to say idle. Absent / stale (older than
+    # ORION_REGULATION_READER_MAX_AGE_SEC) / unknown / flag off = exactly the
+    # idle query alone, so a durable-runs or Redis outage cannot stop sleep.
+    DREAM_IDLE_FROM_AROUSAL_ENABLED: bool = Field(default=True)
+    ORION_REGULATION_READER_MAX_AGE_SEC: float = Field(default=360.0, gt=0.0)
+    # A level that has held this long (from its `since`) no longer holds a sleep, so a
+    # fault-jammed GPU queue (reads strained) cannot stop Orion sleeping for a day.
+    DREAM_AROUSAL_MAX_HOLD_HOURS: float = Field(default=6.0, gt=0.0)
+    # Closed Temporal Self arcs as replay candidates (rev 4 patch 7): arcs that ended since
+    # the last sleep began (sleep arcs excluded, <= 20 per sleep), read from temporal_self_arc.
+    # Replay material only: never sleep pressure or the rest drive. Off, or any read
+    # failure = replay exactly as before arcs existed.
+    DREAM_REPLAY_ARC_CANDIDATES_ENABLED: bool = Field(default=True)
+    # Graded walkway-camera predictions (2026-10-15): met/missed vision_percept_expectation
+    # rows scored since the last sleep, one replay candidate per subject with its 14-day
+    # hit rate, at most a sixth of the replay. Replay material only, never pressure.
+    # Empty for the camera's first week (expectations need >= 5 days of support).
+    # Off, empty stream list, or any read failure = replay exactly as before.
+    DREAM_REPLAY_WALKWAY_ENABLED: bool = Field(default=True)
+    DREAM_WALKWAY_STREAM_IDS: str = Field(default="walkway")
+    DREAM_WALKWAY_TIMEZONE: str = Field(default="America/Denver")
+
+    # Act ledger (body economy A5): each sleep that starts replay publishes one `make` act
+    # (actor dream.cycle) on orion:grammar:event, opened at the start and closed when the cycle
+    # is persisted (0 on any failure). Its recombination LLM calls then share the act's
+    # correlation id, so the ledger charges the cycle for its GPU leases. Off = no act, and each
+    # LLM call keeps its own correlation id. app/act_emit.py.
+    DREAM_ACT_EMIT_ENABLED: bool = Field(default=True)
+
+    # Body economy Patch C3b: a check that would sleep places a SHADOW bid (orion.physiology.client
+    # -> durable-runs POST /physiology/bid) and logs it beside the real outcome (held, empty, ran).
+    # Never obeyed; off = no bid, no log line. app/physiology_shadow.py.
+    DREAM_PHYSIOLOGY_SHADOW_BID_ENABLED: bool = Field(default=True)
+    # Body economy Patch D (2026-10-30): the sleep OBEYS its bid. on: a check that clears every gate of
+    # the dream's own asks the market just before the sleep's act opens; funded (or the metacog lane full
+    # but worth its price) -> sleep; price (Prime's slow charge included), no hunger or net <= 0 -> held,
+    # bid again at a later check, never past the family's 6 h window or the overdue line
+    # (DREAM_LOOKBACK_HOURS since the last good sleep; an overdue sleep never bids). No market answer ->
+    # sleep as before. shadow (or anything else) -> the C3b shadow bid above, exactly as before.
+    # app/physiology_bind.py.
+    ORION_PHYSIOLOGY_BID_DREAM_CYCLE: str = Field(default="on")
+
+    # Weekly/monthly Curiosity write-up summaries after a persisted successful sleep.
+    DREAM_CURIOSITY_COMPACTION_ENABLED: bool = Field(default=False)
+
+    # --- Dream carry-through (dream.carry durable run) ---
+    # On: the dream a completed sleep ends in is a carried dream (text -> picture ->
+    # text ... six hops, run by orion-durable-runs), submitted through cortex-orch's
+    # durable ingress, instead of the one-shot story on CHANNEL_DREAM_TRIGGER, and
+    # allows POST /dreams/carry/run. Off: the #2565 one-paragraph story for new sleeps.
+    # The step responder (orion:dream:carry:step:request) runs regardless, so carries
+    # already in flight still finish.
+    DREAM_CARRY_ENABLED: bool = Field(default=True)
+    # The run finishes partial (keeping every hop it made) once this passes.
+    DREAM_CARRY_DEADLINE_SEC: float = Field(default=14400.0, gt=0.0)
+    CHANNEL_CORTEX_REQUEST: str = Field(default="orion:cortex:request")
+    # sql-writer reads dream.result.v1 here into the dreams table.
+    CHANNEL_DREAM_LOG: str = Field(default="orion:dream:log")
+
+    # --- Introspect responder (orion-introspect `dreams` tool; read-only) ---
+    # Answers orion:introspect:dream:request. Empty search URLs keep recent/one
+    # working and make query= answer "unknown".
+    DREAM_INTROSPECT_ENABLED: bool = Field(default=True)
+    DREAM_SEARCH_CHROMA_URL: str = Field(default="")
+    DREAM_SEARCH_EMBED_URL: str = Field(default="")
+    DREAM_SEARCH_COLLECTION: str = Field(default="orion_dreams")
+    DREAM_SEARCH_MIN_SIMILARITY: float = Field(
+        default=0.65, ge=0.0, le=1.0, alias="DREAM_SEARCH_MIN_SIMILARITY"
+    )
+    DREAM_SEARCH_INDEX_INTERVAL_SEC: float = Field(default=300.0, gt=0.0)
+    DREAM_SEARCH_INDEX_BATCH: int = Field(default=10, ge=1, le=50)
 
     # --- Stores ---
     POSTGRES_URI: str = Field(default="postgresql://postgres:postgres@postgres:5432/conjourney")

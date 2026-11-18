@@ -21,10 +21,9 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import uuid4
 
-import requests
-
 from orion.notify.client import NotifyClient
 
+from .notify_pending import RECOVERED_PREFIX, open_alert_reasons
 from .settings import ThoughtSettings
 from .settings import settings as _default_settings
 
@@ -113,35 +112,11 @@ class ReverieMetacogHealthMonitor:
             self._last_healthy = check.healthy
 
     def _has_open_alert(self) -> bool:
-        headers = {}
-        if self._settings.notify_api_token:
-            headers["X-Orion-Notify-Token"] = self._settings.notify_api_token
-        try:
-            response = requests.get(
-                f"{self._settings.notify_base_url}/attention",
-                params={"status": "pending", "limit": 200},
-                headers=headers,
-                timeout=10,
-            )
-            response.raise_for_status()
-            items = response.json()
-        except Exception:
-            logger.exception("reverie_metacog_health_pending_lookup_failed")
-            # Fail open: if we can't confirm an existing alert, prefer attempting a possibly
-            # duplicate one over silently missing a real incident.
-            return False
-        if not isinstance(items, list):
-            return False
-        return any(
-            isinstance(item, dict)
-            and item.get("source_service") == _SOURCE_SERVICE
-            and item.get("reason") == _CHECK_KEY
-            for item in items
-        )
+        return _CHECK_KEY in open_alert_reasons(self._settings, log_label="reverie_metacog_health")
 
     def _publish(self, check: HealthCheck, *, recovered: bool) -> bool:
         if recovered:
-            message = f"[Orion reverie] recovered: {check.key}"
+            message = f"{RECOVERED_PREFIX} {check.key}"
             severity: Severity = "info"
         else:
             message = f"[Orion reverie] {check.message}"

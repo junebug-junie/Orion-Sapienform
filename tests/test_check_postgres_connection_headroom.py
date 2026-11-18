@@ -673,3 +673,26 @@ def test_the_notify_client_is_importable_when_run_as_a_script(tmp_path):
         "--notify would report 'notify unavailable' in production\n"
         f"stdout={result.stdout!r}\nstderr={result.stderr[-900:]!r}"
     )
+
+
+def test_the_alarm_card_names_the_top_connection_holders(monkeypatch, tmp_path):
+    """A card that says only 'headroom low' sends the operator hunting by IP."""
+    recorder = {}
+    conn = _FakeConn([(300, 3, 280, 280), [("orion-hub", 59), ("172.18.0.29", 16)]])
+    rc = _run(monkeypatch, conn, recorder, tmp_path / "s.json", extra=["--notify"])
+    assert rc == EXIT_ALARM
+    assert "Top holders: orion-hub 59, 172.18.0.29 16." in recorder["calls"][0]["message"]
+    assert any("application_name" in sql for sql in conn.executed)
+
+
+def test_the_alarm_still_fires_when_the_holder_breakdown_fails(monkeypatch, tmp_path):
+    recorder = {}
+    rc = _run(monkeypatch, _alarming_conn(), recorder, tmp_path / "s.json", extra=["--notify"])
+    assert rc == EXIT_ALARM
+    assert "Top holders" not in recorder["calls"][0]["message"]
+
+
+def test_a_healthy_reading_does_not_query_holders(monkeypatch, tmp_path):
+    conn = _healthy_conn()
+    assert _run(monkeypatch, conn, {}, tmp_path / "s.json") == EXIT_OK
+    assert len(conn.executed) == 1

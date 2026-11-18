@@ -1,0 +1,9 @@
+# Person model: linkage reducer (pure) + pinned extractor (dry-run CLI, bake-off eval).
+# Linkage only: rapidfuzz + jellyfish. Extraction adds torch (CPU) + gliner + transformers.
+rapidfuzz==3.14.6
+jellyfish==1.2.1
+gliner==0.2.29
+transformers==4.57.6
+sentencepiece
+protobuf
+# torch==2.14.1 CPU wheel: pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu

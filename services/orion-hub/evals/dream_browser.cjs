@@ -5,10 +5,11 @@ const puppeteer = require(process.env.PUPPETEER_MODULE || 'puppeteer');
 const base = process.argv[2] || 'http://127.0.0.1:18091';
 const now = '2026-09-26T01:00:00Z';
 const pressure = {enabled:true, ready:false, too_soon:true, offer_enabled:true,
-  pressure:{pressure:9,threshold:3,idle_minutes:50,idle_required_minutes:45,computed_at:now,since:now,counts:{metacog:9}}};
+  pressure:{pressure:9,threshold:3,idle_minutes:50,idle_required_minutes:45,computed_at:now,since:now,counts:{metacog:9},new_counts:{metacog:2}}};
 const arm = {offered:1,adopted:0,tested:0,adoption_rate:0,support_rate:null};
 const score = {arms:{dream:arm,control:arm},verdict:'too early: need 20 / 5',unmatched_priors:0};
-const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed',trigger:'pressure',replay_count:1,hypothesis_count:1,no_link_count:2,unparseable_count:1,llm_failures:0,replay:[{source_kind:'metacog',weight:1,text:'A real replay fragment',reason:'critical recall',ref_id:'metacog:1'}]});
+const pairAnswers = [{arm:'dream',ref_a:'metacog:1',ref_b:'crystallization:2',outcome:'echo',answer:'{"link": true, "claim": "<img src=x onerror=\\"window.injected=3\\"> pasted back"}'}];
+const cycle = id => ({...(id === 'dc-old' ? {} : {echo_count:1,pair_answers:pairAnswers}),cycle_id:id,started_at:now,ended_at:now,status:'completed',trigger:'pressure',replay_count:1,hypothesis_count:1,no_link_count:2,unparseable_count:1,llm_failures:0,replay:[{source_kind:'metacog',weight:1,text:'A real replay fragment',reason:'critical recall',ref_id:'metacog:1'}]});
 (async () => {
   const browser = await puppeteer.launch({headless:true,args:['--no-sandbox']});
   try {
@@ -24,7 +25,12 @@ const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed'
         requests.push({path:url.pathname,search:url.search,method:req.method()});
         let data;
         if (mode === 'unavailable') return req.respond({status:503,contentType:'application/json',body:'{"detail":"unavailable"}'});
-        if (url.pathname.endsWith('/pressure')) data = pressure;
+        if (url.pathname.startsWith('/api/dream/carry/image/')) return req.respond({status:200,contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==','base64')});
+        if (url.pathname.endsWith('/carries')) data = mode === 'empty' ? {carries:[]} : {carries:[{id:22,created_at:now,tldr:'t',trigger_id:'sleep:dc-new',sleep_cycle_id:'dc-new',stopped_reason:'deadline at hop 3: thermal_refused',hops:[
+          {index:0,kind:'text',passage:'Machines hum in a basement.',image_prompt:'a humming basement'},
+          {index:1,kind:'image',sha256:'a'.repeat(64),caption:'<img src=x onerror="window.injected=2"> a dim room with cables'},
+          {index:2,kind:'text',passage:'The cables become roots.',image_prompt:'roots in a dim room'}]}]};
+        else if (url.pathname.endsWith('/pressure')) data = pressure;
         else if (url.pathname.endsWith('/scorecard')) data = score;
         else if (url.pathname.endsWith('/cycles')) data = mode === 'empty' ? {cycles:[],has_more:false} : {cycles:[cycle(url.search ? 'dc-old' : 'dc-new')],has_more:!url.search,next_cursor:{before:now,before_id:'dc-new'}};
         else data = {cycle:cycle(url.pathname.split('/').pop()),hypotheses:[{hypothesis_id:'dh-1',arm:'control',claim:'<img src=x onerror="window.injected=1"> A testable link',why:'Specific shared mechanism',ref_a:'metacog:1',ref_b:'crystallization:2',offered_at:null,expired:false}]};
@@ -39,12 +45,26 @@ const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed'
     await page.goto(base+'/#dream',{waitUntil:'domcontentloaded'});
     await page.waitForFunction(() => !document.getElementById('dream').classList.contains('hidden') && document.getElementById('dreamDetail').textContent.includes('dh-1'));
     assert.match(await page.$eval('#dreamPressure', e => e.textContent), /waiting for sleep gates/);
+    assert.match(await page.$eval('#dreamPressure', e => e.textContent), /New since last sleep \(drives pressure\): metacog: 2.*Distinct things to replay: metacog: 9/s);
     assert.match(await page.$eval('#dreamDetail', e => e.textContent), /Random control.*waiting for waking offer/s);
+    // #3412: echoes are counted apart and every pair's raw answer is shown, escaped.
+    assert.match(await page.$eval('#dreamDetail', e => e.textContent), /No link: 2.*Echo: 1.*Garbled: 1/s);
+    assert.match(await page.$eval('#dreamDetail', e => e.textContent), /Pair answers.*Dream · echo.*pasted back.*metacog:1 ↔ crystallization:2/s);
     assert.match(await page.$eval('#dreamDetail', e => e.textContent), /<img src=x/);
     assert.equal(await page.evaluate(() => window.injected), undefined);
     assert.equal(await page.$('#dreamDetail img'), null);
+    await page.waitForFunction(() => document.getElementById('dreamCarries').textContent.includes('Orion saw:'));
+    const carryText = await page.$eval('#dreamCarries', e => e.textContent);
+    assert.match(carryText, /Machines hum in a basement\..*Orion saw:.*a dim room with cables.*The cables become roots\./s);
+    assert.match(carryText, /After sleep dc-new.*stopped early: deadline at hop 3/s);
+    assert.match(carryText, /<img src=x/);
+    assert.deepEqual(await page.$$eval('#dreamCarries img', imgs => imgs.map(i => i.getAttribute('src'))), ['/api/dream/carry/image/' + 'a'.repeat(64)]);
+    assert.equal(await page.evaluate(() => window.injected), undefined);
     await page.click('#dreamOlder');
     await page.waitForFunction(() => document.getElementById('dreamDetail').textContent.includes('dc-old'));
+    // A sleep stored before pair answers existed: no echo count, no answers section.
+    assert.match(await page.$eval('#dreamDetail', e => e.textContent), /Echo: —/);
+    assert(!(await page.$eval('#dreamDetail', e => e.textContent)).includes('Pair answers'));
     await page.click('#dreamNewer');
     await page.waitForFunction(() => document.getElementById('dreamDetail').textContent.includes('dc-new'));
     await page.click('#hubTabLauncherButton');
@@ -64,12 +84,13 @@ const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed'
     mode = 'empty';
     await page.click('#dreamRefresh');
     await page.waitForFunction(() => document.getElementById('dreamCycles').textContent.includes('No sleep cycles'));
+    await page.waitForFunction(() => document.getElementById('dreamCarries').textContent.includes('No carried dreams yet'));
     mode = 'unavailable';
     await page.click('#dreamRefresh');
-    await page.waitForFunction(() => ['dreamPressure','dreamCycles','dreamScore'].every(id => document.getElementById(id).textContent.includes('unavailable')));
+    await page.waitForFunction(() => ['dreamPressure','dreamCycles','dreamScore','dreamCarries'].every(id => document.getElementById(id).textContent.includes('unavailable')));
     assert(!await page.$('#dreamDetail [data-cycle]'));
     assert(requests.every(r => r.method === 'GET'), 'operator view issued a write');
     assert(requests.some(r => r.search.includes('before_id=dc-new')));
-    console.log(JSON.stringify({passed:true,checks:['deep link','navigation','all sleep gates','cycle selection','compound cursor pagination','safe claim rendering','hidden tab quiet','single refresh listener','empty state','unavailable state','GET only'],requests:requests.length}));
+    console.log(JSON.stringify({passed:true,checks:['deep link','navigation','all sleep gates','new vs distinct counts','cycle selection','compound cursor pagination','safe claim rendering','hidden tab quiet','single refresh listener','carried dream strip','carry caption escaped','carry empty state','empty state','unavailable state','GET only'],requests:requests.length}));
   } finally { await browser.close(); }
 })().catch(e => {console.error(e);process.exitCode=1;});

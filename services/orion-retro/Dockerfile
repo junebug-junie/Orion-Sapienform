@@ -1,0 +1,38 @@
+FROM python@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89 AS core
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential ca-certificates
+RUN git clone https://github.com/libretro/libretro-fceumm.git /src && \
+    cd /src && git checkout ac0d00a7fc01166f84c7bac01d1084ebfd2b865e && \
+    make -f Makefile.libretro -j2
+
+FROM python@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89 AS snes
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential ca-certificates
+RUN git clone https://github.com/snes9xgit/snes9x.git /src && \
+    cd /src && git checkout 1bcc369e89f08243e0a462882fb1f3e42e51de3a && \
+    make -C libretro -j2
+
+# N64: software rendering only (no GPU/GL context in this service). THR_AL = Angrylion
+# RDP, LLE = CXD4 RSP. The core links libGL but never calls it with Angrylion.
+FROM python@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89 AS n64
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential ca-certificates nasm libgl-dev zlib1g-dev libpng-dev
+RUN git clone https://github.com/libretro/mupen64plus-libretro-nx.git /src && \
+    cd /src && git checkout 6752836de8b224febfd5708444755b77712ac939 && \
+    make -j8 HAVE_THR_AL=1 LLE=1
+
+FROM python@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY services/orion-retro/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends libgl1 && rm -rf /var/lib/apt/lists/*
+COPY --from=core /src/fceumm_libretro.so /opt/retro/core.so
+COPY --from=core /src/Copying /opt/retro/FCEUmm-GPL-2.0.txt
+COPY --from=snes /src/libretro/snes9x_libretro.so /opt/retro/snes9x.so
+COPY --from=snes /src/LICENSE /opt/retro/Snes9x-LICENSE.txt
+COPY --from=n64 /src/mupen64plus_next_libretro.so /opt/retro/mupen64plus_next.so
+COPY --from=n64 /src/LICENSE /opt/retro/Mupen64Plus-Next-LICENSE.txt
+COPY orion/retro /app/orion/retro
+COPY services/orion-retro/settings.py /app/settings.py
+COPY services/orion-retro/app /app/app
+COPY services/orion-retro/evals /app/evals
+USER 1000:1000
+CMD ["uvicorn", "app.main:app", "--uds", "/ipc/retro.sock", "--workers", "1", "--ws-max-size", "4096", "--ws-max-queue", "4", "--limit-concurrency", "32", "--no-access-log"]

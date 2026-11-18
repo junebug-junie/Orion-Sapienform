@@ -5,3 +5,6 @@ pydantic-settings>=2.4.0
 # this repo's other bus-consuming services.
 redis==5.2.1
 pyyaml==6.0.3
+# Orion's tools (Patch 1b): the stdio MCP server orion/claude_tools/mcp_server.py, started by the claude
+# subprocess from the per-turn --mcp-config. Same pin as orion-harness-governor.
+mcp>=1.0.0,<2

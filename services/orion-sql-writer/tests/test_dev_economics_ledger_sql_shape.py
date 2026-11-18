@@ -1,6 +1,6 @@
 """Shape checks for the dev-economics ledger SQL write path (no Postgres required).
 
-Mirrors test_dominance_streak_tick_sql_shape.py's pattern: asserts the real
+Asserts the real
 wiring for `orion:substrate:dev_economics_ledger` -> `DevEconomicsLedgerSQL`
 is registered in `MODEL_MAP` under the `DevEconomicsLedgerSQL` route key,
 keyed off kind `substrate.dev_economics_ledger.v1`.
@@ -107,7 +107,7 @@ def test_event_data_handles_null_cost() -> None:
 
 def test_merge_redelivery_upserts_one_row_and_preserves_created_at() -> None:
     """Re-delivery of the same event_id must upsert (one row), not
-    duplicate -- mirrors DominanceStreakTickSQL's own merge-idempotency
+    duplicate -- verifies merge idempotency
     test against in-memory SQLite."""
     engine = create_engine("sqlite://")
     DevEconomicsLedgerSQL.__table__.create(bind=engine)

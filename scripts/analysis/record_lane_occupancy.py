@@ -113,7 +113,7 @@ def read_route_table(env_files: Sequence[str] = ()) -> Dict[str, dict]:
     table: Dict[str, dict] = {}
     for route, spec in cfg.routes.items():
         role = cfg.classes[spec.work_class].roles[0]
-        table[route] = {"url": cfg.url(role), "served_by": f"{cfg.host.name}-worker-{role}"}
+        table[route] = {"url": cfg.url(role), "served_by": f"{cfg.role_host(role)}-worker-{role}"}
     return table
 
 

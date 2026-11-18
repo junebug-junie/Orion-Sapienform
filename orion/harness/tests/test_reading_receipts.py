@@ -409,6 +409,30 @@ def test_source_fetches_records_only_usable_fetch_results():
     assert fetches[0].content_chars == len(("The paper describes three agent systems. " * 10).strip())
 
 
+def test_source_fetches_carry_the_raw_tool_result_text_for_retention():
+    # #2497 evidence: Hub retains exactly what the fetch tool returned, never model prose.
+    from orion.harness.reading_receipts import MAX_RETAINED_FETCH_CHARS
+
+    body = "  A heat pump transfers heat using a refrigeration cycle. " * 5
+    tracker = ReadingReceiptTracker(None, retain_text=True)
+    tracker.observe(_tool_use("f-1", name="WebFetch", url=URL))
+    tracker.observe(_tool_result("f-1", body))
+    tracker.observe(_tool_use("big-1", name="WebFetch", url="https://example.org/huge"))
+    tracker.observe(_tool_result("big-1", "x" * (MAX_RETAINED_FETCH_CHARS + 1)))
+    small, big = tracker.source_fetches()
+    assert small.content_text == body.strip() and small.content_chars == len(body.strip())
+    # Over the cap: the read still counts, but nothing truncated is retained as evidence.
+    assert big.content_text is None and big.content_chars == MAX_RETAINED_FETCH_CHARS + 1
+
+
+def test_non_reading_turns_never_carry_fetched_text():
+    tracker = ReadingReceiptTracker(None)  # chat / outreach / curiosity turns
+    tracker.observe(_tool_use("f-1", name="WebFetch", url=URL))
+    tracker.observe(_tool_result("f-1", "Body of the source. " * 20))
+    (fetch,) = tracker.source_fetches()
+    assert fetch.content_text is None and fetch.content_chars > 0
+
+
 def test_source_fetches_empty_when_turn_made_no_tool_calls():
     tracker = ReadingReceiptTracker(None)
     tracker.observe({"type": "system", "raw": {"type": "system", "subtype": "init"}})
@@ -446,3 +470,31 @@ def test_webfetch_redirect_notice_is_not_source_content():
         "with these parameters to fetch the content from the redirect URL.",
     ))
     assert tracker.source_fetches() == []
+
+
+
+def test_webfetch_http_error_notice_is_reported_but_not_a_source_read():
+    from orion.harness.reading_receipts import ReadingReceiptTracker, _RECOMMEND_TOOL
+
+    notice = ("The server returned HTTP 404 Not Found.\n\nThe response body was not retrieved. "
+              "If this URL requires authentication, use an authenticated tool (e.g. `gh` for "
+              "GitHub, or an MCP-provided fetch tool) instead of WebFetch.")
+
+    def run(body):
+        url = "https://www.coreweave.com/architecture"
+        tracker = ReadingReceiptTracker(None, retain_text=True)
+        tracker.observe({"message": {"content": [
+            {"type": "tool_use", "id": "f1", "name": "WebFetch", "input": {"url": url, "prompt": "p"}},
+            {"type": "tool_use", "id": "r1", "name": _RECOMMEND_TOOL,
+             "input": {"url": url, "why_now": "follow up"}},
+        ]}})
+        tracker.observe({"message": {"content": [
+            {"type": "tool_result", "tool_use_id": "f1", "content": body},
+        ]}})
+        return tracker
+
+    dead = run(notice)
+    (fetch,) = dead.source_fetches()
+    assert fetch.content_text == notice  # Hub sees it and rejects it (read_evidence.py)
+    assert [o.source_read for o in dead.outcomes()] == [False]
+    assert [o.source_read for o in run("CoreWeave architecture overview. " * 8).outcomes()] == [True]

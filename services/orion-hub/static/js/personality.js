@@ -1,0 +1,487 @@
+/* Personality tab (templates/personality.html, scripts/personality_routes.py).
+ *
+ * Personality spec rev 4, move 4: the tab is built around Orion's CHOICES (what Orion picked, and
+ * what Orion passed over), never around Orion's prose. Three parts:
+ *   1. Recent choices      GET /api/personality/choices?limit=30
+ *   2. Tendencies          GET /api/personality/tendencies?limit=20, each with a Yes / No:
+ *                          POST /api/personality/tendencies/<id>/verdict {"verdict": "yes"|"no"}
+ *                          A "no" retires the tendency (durable-runs writes it).
+ *   3. Is it changing anything   GET /api/personality/arms?days=7
+ * Pure view functions are exported for node:test. The DOM layer writes every piece of upstream text
+ * with textContent (option texts and labels come from Orion's lanes), and never uses innerHTML.
+ */
+(function () {
+  "use strict";
+
+  const CHOICE_LIMIT = 30;
+  const TENDENCY_LIMIT = 20;
+  const ARM_DAYS = 7;
+  const PASSED_OVER_SHOWN = 3;
+  // orion/prime/tending.py MIN_WEIGHT and MAX_LINES: the strongest active tendencies at this weight
+  // (at most MAX_LINES, never one Orion rejected while naming it) reach Prime's block.
+  const PRIME_MIN_WEIGHT = 10;
+  const PRIME_MAX_LINES = 2;
+  const NO_CONFIRM = "Retire this tendency? Orion stops leaning on it. "
+    + "You can change your mind later under \"You said no to\".";
+
+  const LANE_TEXT = {
+    prime: "Orion's own next move",
+    outreach: "Reaching out to you",
+    curiosity: "What to look into",
+    reading: "What to read",
+    chat: "In chat",
+  };
+  const DECLINE_TEXT = {
+    prime: "Made no move",
+    outreach: "Said nothing",
+  };
+  const DECLINE_TEXT_DEFAULT = "Picked none of them";
+  const STATUS_TEXT = {
+    active: "Orion leans on this now",
+    candidate: "Still forming",
+    retired: "Retired",
+  };
+  const ARM_TEXT = {
+    care: "With Orion's tendencies counted",
+    holdback: "Without them (the comparison group)",
+  };
+
+  function fmtAt(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function num(value) {
+    const n = Number(value);
+    return value == null || value === "" || !Number.isFinite(n) ? null : n;
+  }
+
+  function laneText(lane) {
+    return LANE_TEXT[lane] || String(lane || "unknown lane");
+  }
+
+  function rankText(rank) {
+    const r = num(rank);
+    return r == null ? "not ranked" : `ranked #${r}`;
+  }
+
+  function optionText(opt) {
+    if (!opt || typeof opt !== "object") return "";
+    const r = num(opt.market_rank);
+    return r == null ? String(opt.text || "") : `#${r} ${String(opt.text || "")}`;
+  }
+
+  // One choice, in plain words: what was picked (or that Orion declined every option) and what
+  // was passed over, ranked options first in the market's order.
+  function choiceView(c) {
+    const choice = c && typeof c === "object" ? c : {};
+    const passed = Array.isArray(choice.passed_over) ? choice.passed_over : [];
+    const declined = Boolean(choice.declined_all) || !choice.chosen;
+    const picked = declined
+      ? (DECLINE_TEXT[choice.lane] || DECLINE_TEXT_DEFAULT)
+      : `Picked: ${String(choice.chosen.text || "")} (${rankText(choice.chosen.market_rank)})`;
+    const shown = passed.slice(0, PASSED_OVER_SHOWN).map(optionText);
+    const notes = [];
+    if (!declined && num(choice.chosen.market_rank) === 1) notes.push("Same as the market's first pick.");
+    if (choice.care_promoted) notes.push("Orion's care for a tendency moved this up.");
+    const picks = num(choice.picks_in_decision);
+    if (picks != null && picks > 1) notes.push(`One of ${picks} picks in this decision.`);
+    let tendency = "";
+    if (choice.tendency && choice.tendency.label) {
+      tendency = choice.tendency.status === "retired"
+        ? `Counted toward: ${choice.tendency.label} (retired)`
+        : `Counts toward: ${choice.tendency.label}`;
+    }
+    return {
+      id: String(choice.choice_id || ""),
+      lane: laneText(choice.lane),
+      when: fmtAt(choice.occurred_at),
+      declined,
+      picked,
+      passedOverLabel: declined ? "Options Orion turned down" : "Passed over",
+      passedOver: shown,
+      allPassedOver: passed.map(optionText),
+      more: Math.max(0, passed.length - shown.length),
+      notes,
+      tendency,
+    };
+  }
+
+  // The reducer's label is "<chosen> over <declined>, n of m"; the count is shown on its own line.
+  function labelBase(label) {
+    return String(label || "").replace(/, \d+ of \d+$/, "") || "(no label)";
+  }
+
+  function verdictText(j) {
+    if (!j || !j.verdict) return "You have not answered yet.";
+    const when = fmtAt(j.at);
+    const said = j.verdict === "yes" ? "yes" : "no";
+    return when ? `You said ${said} on ${when}.` : `You said ${said}.`;
+  }
+
+  function exampleText(e) {
+    const v = choiceView(e);
+    const over = v.passedOver.length ? ` over ${v.passedOver.join(", ")}${v.more ? ` and ${v.more} more` : ""}` : "";
+    const head = v.declined ? v.picked : v.picked.replace(/^Picked: /, "Picked ");
+    return `${head}${over} (${v.lane}${v.when ? ", " + v.when : ""})`;
+  }
+
+  // "About": the full words of the options behind a tendency, as stored (no model writes them): what Orion
+  // chose and what Orion passed over in its example choices, each text once. A declined-all choice's chosen
+  // side is the lane's "made no move" words.
+  // ``details``: an option's fuller words where the producer stored them (a curiosity-run promise's own
+  // sentence, ChoiceOptionV1.detail), each tagged with the side it was on. Shown here only, never in a label.
+  function aboutView(examples) {
+    const chose = [];
+    const over = [];
+    const details = [];
+    const add = (list, text) => {
+      const t = String(text || "").trim();
+      if (t && !list.includes(t)) list.push(t);
+    };
+    for (const e of Array.isArray(examples) ? examples : []) {
+      if (!e || typeof e !== "object") continue;
+      if (e.declined_all || !e.chosen) add(chose, DECLINE_TEXT[e.lane] || DECLINE_TEXT_DEFAULT);
+      else {
+        add(chose, e.chosen.text);
+        if (e.chosen.detail) add(details, `Chose: ${e.chosen.detail}`);
+      }
+      for (const o of Array.isArray(e.passed_over) ? e.passed_over : []) {
+        add(over, o && o.text);
+        if (o && o.detail) add(details, `Passed over: ${o.detail}`);
+      }
+    }
+    return { chose, over, details };
+  }
+
+  function tendencyView(t) {
+    const tend = t && typeof t === "object" ? t : {};
+    const weight = num(tend.weight);
+    const n = num(tend.n);
+    const m = num(tend.m);
+    const status = String(tend.status || "");
+    return {
+      id: String(tend.disposition_id || ""),
+      label: labelBase(tend.label),
+      name: tend.name ? `Orion calls this: ${tend.name}` : "",
+      status: STATUS_TEXT[status] || status || "unknown",
+      count: n != null && m != null ? `${n} of ${m} choices went this way` : "",
+      strength: weight == null ? "" : `Strength ${weight.toFixed(1)} (Orion's Prime sees it from ${PRIME_MIN_WEIGHT})`,
+      primeEligible: status === "active" && weight != null && weight >= PRIME_MIN_WEIGHT
+        && tend.orion_verdict !== "rejected",
+      inPrime: false,
+      examples: (Array.isArray(tend.examples) ? tend.examples : []).map(exampleText),
+      about: aboutView(tend.examples),
+      verdict: verdictText(tend.juniper),
+      answered: tend.juniper && tend.juniper.verdict ? String(tend.juniper.verdict) : "",
+    };
+  }
+
+  // Views for a list sorted strongest first: only the first PRIME_MAX_LINES eligible reach Prime.
+  function tendencyViews(list) {
+    let left = PRIME_MAX_LINES;
+    return (Array.isArray(list) ? list : []).map((t) => {
+      const v = tendencyView(t);
+      if (v.primeEligible && left > 0) { v.inPrime = true; left -= 1; }
+      return v;
+    });
+  }
+
+  function armsView(body) {
+    const b = body && typeof body === "object" ? body : {};
+    const days = num(b.days) || ARM_DAYS;
+    const total = num(b.total) || 0;
+    if (!total) {
+      return {
+        live: false,
+        summary: `Not live yet. In the last ${days} days no decision was made with or without Orion's tendencies counted.`,
+        rows: [],
+      };
+    }
+    const arms = b.arms && typeof b.arms === "object" ? b.arms : {};
+    const rows = Object.keys(arms).sort().map((arm) => {
+      const outcomes = arms[arm] || {};
+      const funded = num(outcomes.funded) || 0;
+      const all = Object.values(outcomes).reduce((s, v) => s + (num(v) || 0), 0);
+      const pct = all ? Math.round((100 * funded) / all) : 0;
+      return { arm: ARM_TEXT[arm] || arm, text: `${all} decisions, ${funded} given the go-ahead (${pct}%)` };
+    });
+    return { live: true, summary: `${total} decisions in the last ${days} days.`, rows };
+  }
+
+  function choicesFrom(body) {
+    if (Array.isArray(body)) return body;
+    return body && Array.isArray(body.choices) ? body.choices : [];
+  }
+
+  function tendenciesFrom(body) {
+    if (Array.isArray(body)) return body;
+    return body && Array.isArray(body.tendencies) ? body.tendencies : [];
+  }
+
+  // The tendencies route's warnings, in plain words. Answers cannot be saved while one is set.
+  function answersBlockedText(warnings) {
+    const w = Array.isArray(warnings) ? warnings : [];
+    if (!w.length) return "";
+    if (w.some((x) => String(x).startsWith("answers_table_missing"))) {
+      return "Your answers can't be saved until a database update is applied.";
+    }
+    return "Your answers can't be saved right now.";
+  }
+
+  function saidNoFrom(body) {
+    return body && Array.isArray(body.said_no) ? body.said_no : [];
+  }
+
+  function verdictUrl(id) {
+    return `/api/personality/tendencies/${encodeURIComponent(id)}/verdict`;
+  }
+
+  // What the card says after an answer is saved.
+  function afterVerdictText(result) {
+    if (result && result.retired) return "Retired. Orion will not lean on this any more. It is now under \"You said no to\".";
+    if (result && result.revived) return "Back. Orion can lean on this again as it grows.";
+    return "Saved. You said yes.";
+  }
+
+  const api = {
+    laneText, rankText, optionText, choiceView, labelBase, verdictText, exampleText, aboutView, tendencyView, tendencyViews,
+    armsView, choicesFrom, tendenciesFrom, verdictUrl, afterVerdictText, answersBlockedText, PRIME_MIN_WEIGHT,
+    PRIME_MAX_LINES, NO_CONFIRM, LANE_TEXT, saidNoFrom,
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (typeof document === "undefined") return;
+
+  // --- DOM layer --------------------------------------------------------------------------------
+
+  const $ = (id) => document.getElementById(id);
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  async function readJson(resp) {
+    let body = null;
+    try { body = await resp.json(); } catch (_e) { body = null; }
+    if (!resp.ok) throw new Error((body && body.detail) || `HTTP ${resp.status}`);
+    return body;
+  }
+
+  async function getJson(url) {
+    return readJson(await fetch(url, { headers: { Accept: "application/json" } }));
+  }
+
+  function renderChoices(list) {
+    const host = $("pChoices");
+    host.replaceChildren();
+    if (!list.length) {
+      host.appendChild(el("div", "muted", "No choices recorded yet."));
+      return;
+    }
+    for (const c of list) {
+      const v = choiceView(c);
+      const card = el("div", "choice");
+      const head = el("div", "row");
+      head.appendChild(el("span", "badge", v.lane));
+      head.appendChild(el("span", "muted", v.when));
+      card.appendChild(head);
+      card.appendChild(el("div", v.declined ? "picked declined" : "picked", v.picked));
+      if (v.passedOver.length) {
+        const line = el("div", "passed");
+        line.appendChild(el("span", "muted", `${v.passedOverLabel}: `));
+        line.appendChild(el("span", null, v.passedOver.join(" · ")));
+        card.appendChild(line);
+        if (v.more) {
+          const det = el("details", "more");
+          det.appendChild(el("summary", null, `and ${v.more} more`));
+          const ul = el("ul");
+          for (const t of v.allPassedOver.slice(v.passedOver.length)) ul.appendChild(el("li", null, t));
+          det.appendChild(ul);
+          card.appendChild(det);
+        }
+      }
+      for (const n of v.notes) card.appendChild(el("div", "muted", n));
+      if (v.tendency) card.appendChild(el("div", "muted", v.tendency));
+      host.appendChild(card);
+    }
+  }
+
+  async function sendVerdict(card, id, verdict) {
+    const msg = card.querySelector(".verdict-msg");
+    const buttons = card.querySelectorAll("button.verdict");
+    if (verdict === "no" && !window.confirm(NO_CONFIRM)) {
+      return;
+    }
+    buttons.forEach((b) => { b.disabled = true; });
+    msg.classList.remove("err");
+    msg.textContent = "Saving…";
+    try {
+      const body = await readJson(await fetch(verdictUrl(id), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ verdict }),
+      }));
+      if (body && (body.retired || body.revived)) {
+        // The tendency moved between "Tendencies" and "You said no to": redraw both lists.
+        $("pTendencyFlash").textContent = afterVerdictText(body);
+        await loadTendencies();
+        return;
+      }
+      msg.textContent = afterVerdictText(body);
+      card.dataset.answered = verdict;
+      buttons.forEach((b) => { b.disabled = false; });
+    } catch (err) {
+      msg.textContent = `Not saved: ${err.message}`;
+      msg.classList.add("err");
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+  }
+
+  function tendencyCard(v) {
+    const card = el("div", "tendency");
+    card.dataset.id = v.id;
+    if (v.answered) card.dataset.answered = v.answered;
+    card.appendChild(el("div", "tendency-label", v.label));
+    if (v.name) card.appendChild(el("div", "muted", v.name));
+    const facts = el("div", "row");
+    facts.appendChild(el("span", "badge", v.status));
+    if (v.inPrime) facts.appendChild(el("span", "badge prime", "In Orion's Prime block now"));
+    if (v.count) facts.appendChild(el("span", "muted", v.count));
+    if (v.strength) facts.appendChild(el("span", "muted", v.strength));
+    card.appendChild(facts);
+    if (v.about.chose.length || v.about.over.length || v.about.details.length) {
+      // Collapsed by default: the full option words behind the label.
+      const det = el("details", "more about");
+      det.appendChild(el("summary", null, "About"));
+      for (const [head, list] of [["Chose", v.about.chose], ["Passed over", v.about.over],
+        ["The promise, in its own words", v.about.details]]) {
+        if (!list.length) continue;
+        det.appendChild(el("div", "muted", `${head}:`));
+        const ul = el("ul");
+        for (const t of list) ul.appendChild(el("li", null, t));
+        det.appendChild(ul);
+      }
+      card.appendChild(det);
+    }
+    if (v.examples.length) {
+      card.appendChild(el("div", "muted", "Example choices:"));
+      const ul = el("ul", "examples");
+      for (const e of v.examples) ul.appendChild(el("li", null, e));
+      card.appendChild(ul);
+    }
+    return card;
+  }
+
+  function verdictButton(card, id, cls, label, verdict, blocked) {
+    const b = el("button", `verdict ${cls}`, label);
+    b.type = "button";
+    b.disabled = Boolean(blocked);
+    b.addEventListener("click", () => sendVerdict(card, id, verdict));
+    return b;
+  }
+
+  function renderTendencies(list, blocked) {
+    const host = $("pTendencies");
+    host.replaceChildren();
+    if (!list.length) {
+      host.appendChild(el("div", "muted",
+        "No tendencies yet. One forms when Orion makes the same kind of choice a few times."));
+      return;
+    }
+    for (const v of tendencyViews(list)) {
+      const card = tendencyCard(v);
+      const row = el("div", "row verdict-row");
+      row.appendChild(el("span", null, "Does this look like Orion?"));
+      row.appendChild(verdictButton(card, v.id, "yes", "Yes", "yes", blocked));
+      row.appendChild(verdictButton(card, v.id, "no", "No", "no", blocked));
+      card.appendChild(row);
+      card.appendChild(el("div", "muted verdict-msg", v.verdict));
+      host.appendChild(card);
+    }
+  }
+
+  function renderSaidNo(list, blocked) {
+    const host = $("pSaidNo");
+    host.replaceChildren();
+    $("pSaidNoCount").textContent = `(${list.length})`;
+    if (!list.length) {
+      host.appendChild(el("div", "muted", "Nothing yet."));
+      return;
+    }
+    for (const v of list.map(tendencyView)) {
+      const card = tendencyCard(v);
+      card.classList.add("retired");
+      const row = el("div", "row verdict-row");
+      row.appendChild(verdictButton(card, v.id, "yes", "Changed my mind", "yes", blocked));
+      card.appendChild(row);
+      card.appendChild(el("div", "muted verdict-msg", v.verdict));
+      host.appendChild(card);
+    }
+  }
+
+  async function loadTendencies() {
+    const body = await getJson(`/api/personality/tendencies?limit=${TENDENCY_LIMIT}`);
+    const blocked = answersBlockedText(body && body.warnings);
+    renderTendencies(tendenciesFrom(body), blocked);
+    renderSaidNo(saidNoFrom(body), blocked);
+    $("pTendencyWarn").textContent = blocked;
+    $("pTendencyWarn").title = blocked ? String(((body && body.warnings) || []).join("; ")) : "";
+  }
+
+  function renderArms(body) {
+    const v = armsView(body);
+    $("pArmsSummary").textContent = v.summary;
+    const host = $("pArms");
+    host.replaceChildren();
+    for (const r of v.rows) {
+      const line = el("div", "arm");
+      line.appendChild(el("strong", null, `${r.arm}: `));
+      line.appendChild(el("span", null, r.text));
+      host.appendChild(line);
+    }
+  }
+
+  async function load() {
+    const status = $("pStatus");
+    status.textContent = "loading…";
+    status.classList.remove("err");
+    $("pTendencyFlash").textContent = "";
+    const [choices, tendencies, arms] = await Promise.allSettled([
+      getJson(`/api/personality/choices?limit=${CHOICE_LIMIT}`),
+      loadTendencies(),
+      getJson(`/api/personality/arms?days=${ARM_DAYS}`),
+    ]);
+    const errors = [];
+    if (choices.status === "fulfilled") {
+      renderChoices(choicesFrom(choices.value));
+    } else {
+      $("pChoices").replaceChildren();
+      errors.push(`choices: ${choices.reason.message}`);
+    }
+    if (tendencies.status !== "fulfilled") {
+      $("pTendencies").replaceChildren();
+      $("pSaidNo").replaceChildren();
+      $("pTendencyWarn").textContent = "";
+      errors.push(`tendencies: ${tendencies.reason.message}`);
+    }
+    if (arms.status === "fulfilled") {
+      renderArms(arms.value);
+    } else {
+      $("pArms").replaceChildren();
+      $("pArmsSummary").textContent = "";
+      errors.push(`market: ${arms.reason.message}`);
+    }
+    status.textContent = errors.length ? `Could not load: ${errors.join(" | ")}` : "";
+    status.classList.toggle("err", errors.length > 0);
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    $("pRefresh").addEventListener("click", load);
+    load();
+  });
+})();

@@ -1,5 +1,9 @@
 services:
   topic-foundry:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-topic-foundry/Dockerfile
@@ -24,6 +28,8 @@ services:
       - TOPIC_FOUNDRY_LLM_REPLY_PREFIX=${TOPIC_FOUNDRY_LLM_REPLY_PREFIX}
       - TOPIC_FOUNDRY_LLM_ENABLE=${TOPIC_FOUNDRY_LLM_ENABLE}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - TOPIC_FOUNDRY_ACT_EMIT_ENABLED=${TOPIC_FOUNDRY_ACT_EMIT_ENABLED:-true}
+      - TOPIC_FOUNDRY_PHYSIOLOGY_SHADOW_BID_ENABLED=${TOPIC_FOUNDRY_PHYSIOLOGY_SHADOW_BID_ENABLED:-true}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
       - TOPIC_FOUNDRY_DRIFT_DAEMON=${TOPIC_FOUNDRY_DRIFT_DAEMON}
@@ -58,6 +64,10 @@ services:
       retries: 3
 
   topic-foundry-chat-corpus-builder:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-topic-foundry/Dockerfile

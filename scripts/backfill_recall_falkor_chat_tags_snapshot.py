@@ -28,7 +28,7 @@ from typing import Any
 
 # Running as `python scripts/backfill_....py` puts scripts/ on sys.path[0],
 # which shadows stdlib `platform` via scripts/platform/ and breaks asyncpg
-# (same issue documented in scripts/backfill_phi_corpus.py).
+# (same issue documented in scripts/fit_phi_encoder.py).
 _SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if sys.path and sys.path[0] == _SCRIPT_DIR:
     sys.path.pop(0)

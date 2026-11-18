@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.repair_evidence import RepairEvidenceV1
 
 
@@ -12,6 +14,23 @@ class TurnWindowMessageV1(BaseModel):
 
     role: Literal["user", "assistant", "system"]
     content: str = Field(min_length=1)
+    # When the message was said, if a real timestamp exists for it (the Hub's
+    # receive time for a live websocket turn, or chat_history_log.created_at
+    # for a rehydrated one). None means "unknown" -- never invented. Rendered
+    # into the harness RECENT CONVERSATION block (orion/harness/prefix.py) so
+    # the motor can tell order and elapsed time apart.
+    at: datetime | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unknown_at(self, handler):  # type: ignore[no-untyped-def]
+        # Every consumer of this model validates with extra="forbid". Dropping
+        # `at` when it is None keeps payloads that carry no timestamp (every
+        # pre-turn appraisal request) byte-identical to before this field
+        # existed, so an un-rebuilt consumer never sees a key it would reject.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("at") is None:
+            data.pop("at", None)
+        return data
 
 
 class PreTurnAppraisalOptionsV1(BaseModel):
@@ -31,6 +50,22 @@ class PreTurnAppraisalRequestV1(BaseModel):
     paradigms_requested: list[str] = Field(default_factory=lambda: ["repair_pressure"])
     contract_before: dict[str, Any] = Field(default_factory=lambda: {"mode": "default"})
     options: PreTurnAppraisalOptionsV1 = Field(default_factory=PreTurnAppraisalOptionsV1)
+    # The turn's GPU pool hold, when it has one (durable/background turns: world-pulse reads,
+    # curiosity, field notes). cortex-exec then runs the probe ON that seat (route `agent` + this
+    # ref; orion.llm.resource_lease.held_call_route) instead of the small `quick_turn` lane. None
+    # (Juniper's chat turns) keeps `quick_turn`. Added 2026-11-12: consumer-first deploy --
+    # cortex-exec must accept this field before the Hub sends it.
+    gpu_lease: GpuLeaseRefV1 | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_gpu_lease(self, handler):  # type: ignore[no-untyped-def]
+        # extra="forbid" on every consumer: a request with no hold stays byte-identical to before
+        # this field existed, so an un-rebuilt cortex-exec never sees `gpu_lease: null` on
+        # Juniper's turns. Only a held turn's request carries the key.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("gpu_lease") is None:
+            data.pop("gpu_lease", None)
+        return data
 
 
 class TurnAppraisalParadigmSliceV1(BaseModel):
@@ -53,3 +88,18 @@ class TurnAppraisalBundleV1(BaseModel):
     metadata_attachments: dict[str, Any] = Field(default_factory=dict)
     grammar_scalars: dict[str, dict[str, float]] = Field(default_factory=dict)
     failed_paradigms: list[str] = Field(default_factory=list)
+    # Why each failed paradigm produced no reading, e.g. {"repair_pressure": "shed:cabinet_hot"}
+    # (the GPU pool refused the probe), "llm_unavailable" (empty reply), "TimeoutError".
+    # A failed paradigm has NO slice in `paradigms`: its level is unknown, never 0.0.
+    failure_reasons: dict[str, str] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_failure_reasons(self, handler):  # type: ignore[no-untyped-def]
+        # Every consumer validates with extra="forbid" (Hub, orion-thought via the stance
+        # request). Dropping the key when empty keeps a successful bundle byte-identical to
+        # before this field existed, so an un-rebuilt consumer only ever sees it on a turn whose
+        # appraisal already failed.
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("failure_reasons"):
+            data.pop("failure_reasons", None)
+        return data

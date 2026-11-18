@@ -18,11 +18,14 @@ check_mod = importlib.import_module("check_metric_lineage")
 
 
 class _FakeNode:
-    def __init__(self, urn: str, *, name: str, schema_id=None, metric_field=None):
+    def __init__(self, urn: str, *, name: str, schema_id=None, metric_field=None, surface=None):
         self.urn = urn
         self.name = name
         self.schema_id = schema_id
         self.metric_field = metric_field
+        # MetricNode carries a surface; the repair_pressure route reads it (2026-09-04). Without it
+        # every node that falls past the attention route raised AttributeError here.
+        self.surface = surface
 
 
 def test_skips_db_entirely_when_no_node_has_a_source():
@@ -62,7 +65,8 @@ def test_query_failure_degrades_to_db_unreachable_not_a_crash():
     place that must. A failure on one node must not prevent other nodes in
     the same --metric call from getting a real verdict."""
     broken = _FakeNode("metric://broken", name="confidence", schema_id="AttentionSelfModelV1", metric_field="confidence")
-    healthy = _FakeNode("metric://healthy", name="l7_l11_ladder", schema_id=None, metric_field=None)
+    # Was the l7_l11_ladder node until that ladder retired (2026-11-07).
+    healthy = _FakeNode("metric://healthy", name="repair_pressure", surface="organ_signal", metric_field="level")
     fake_conn = mock.Mock()
     fake_outcome = mock.Mock()
 

@@ -323,6 +323,10 @@ def list_unused_ok_briefs_from_rows(rows: Sequence[dict[str, Any]]) -> list[Peer
     return out
 
 
+REFUSAL_NUDGE_CHARS = 700
+REFUSAL_OTHER_NUDGE_CHARS = 300
+
+
 def format_soft_nudge(briefs: Sequence[PeerBriefV1], *, consumer_run_id: str | None = None) -> list[str]:
     """Invitational soft-nudge lines for kickoff. Never 'you must incorporate'."""
     ok = [b for b in briefs if b.status == "ok" and (b.summary or b.evidence_pointers)]
@@ -370,7 +374,18 @@ def format_soft_nudge(briefs: Sequence[PeerBriefV1], *, consumer_run_id: str | N
             "",
         ]
         for b in refused + failed:
-            lines.append(f"  brief {b.brief_id} (peer={b.peer}, status={b.status}): no usable peer help returned.")
+            line = f"  brief {b.brief_id} (peer={b.peer}, status={b.status}): no usable peer help returned."
+            # The reason is the only place the real cause lives (e.g. Cursor's
+            # monthly usage limit + reset date). Hiding it let Orion theorise a
+            # "regime break" around a billing cap (2026-10-10).
+            reason = (b.refusal_reason or "").strip()
+            if reason:
+                # Chained reasons put the plain cause first; other reasons
+                # (e.g. `cursor_other: <raw stderr>`) are third-party text, so
+                # keep them short.
+                limit = REFUSAL_NUDGE_CHARS if " [" in reason else REFUSAL_OTHER_NUDGE_CHARS
+                line += f" Why: {clip(reason, limit)}"
+            lines.append(line)
     if consumer_run_id and brief_ids_for_consume(briefs):
         from orion.curiosity.agency_episode import decision_prompt
 

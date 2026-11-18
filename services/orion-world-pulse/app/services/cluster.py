@@ -51,6 +51,9 @@ def build_article_clusters(articles: list[ArticleRecordV1], *, clustering_policy
     max_articles_per_cluster = int(policy.get("max_articles_per_cluster", 8))
     min_strong_terms = int(policy.get("min_strong_terms", 2))
     preserve_section_boundaries = bool(policy.get("preserve_section_boundaries", True))
+    # Sources whose every article is its own item (an arXiv paper is a distinct
+    # work, not one report of a shared story): never merged in either direction.
+    singleton_source_ids = {str(s) for s in (policy.get("singleton_source_ids") or [])}
 
     sorted_articles = sorted(articles, key=lambda a: a.published_at or a.fetched_at, reverse=True)
     states: list[_ClusterState] = []
@@ -68,7 +71,7 @@ def build_article_clusters(articles: list[ArticleRecordV1], *, clustering_policy
                 topic_bucket=normalization.topic_bucket,
             )
 
-        if not enabled:
+        if not enabled or article.source_id in singleton_source_ids:
             state = _ClusterState(normalization=normalization)
             state.articles.append(article)
             state.terms.update(normalization.topic_terms)
@@ -80,6 +83,8 @@ def build_article_clusters(articles: list[ArticleRecordV1], *, clustering_policy
         best_score = 0.0
         for idx, state in enumerate(states):
             if len(state.articles) >= max_articles_per_cluster:
+                continue
+            if state.articles[0].source_id in singleton_source_ids:
                 continue
             score = _score_match(
                 normalization=normalization,

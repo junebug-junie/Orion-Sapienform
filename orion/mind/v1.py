@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.mind.synthesis_v1 import (
     ActiveCognitiveFrontierV1,
     MindStanceHandoffV1,
@@ -45,6 +46,12 @@ class MindRunRequestV1(BaseModel):
     policy: MindRunPolicyV1 = Field(default_factory=MindRunPolicyV1)
     upstream_artifacts: dict[str, Any] | None = None
     utterance_origin: Literal["juniper", "orion"] | None = None
+    # The turn's GPU pool hold (durable/background turns, e.g. world-pulse reads). When set, every
+    # Mind phase runs on that seat (route `agent` + this ref as options.gpu_lease;
+    # orion.llm.resource_lease.held_call_route), never on the small metacog lane. None keeps the
+    # configured MIND_*_MODEL_ROUTE. Added 2026-11-12 (Juniper: world-pulse work never on fast or
+    # metacog). The model ignores unknown fields, so either service may deploy first.
+    gpu_lease: GpuLeaseRefV1 | None = None
 
 
 class MindSnapshotFacetV1(BaseModel):

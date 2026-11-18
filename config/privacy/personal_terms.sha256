@@ -1,0 +1,16 @@
+# SHA-256 of lowercased personal terms that must never appear in a tracked file.
+# Gate: scripts/check_personal_terms.py (CI: orion-static-gates). Add terms with
+#   printf '%s\n' 'name one' 'name two' | python scripts/check_personal_terms.py --add
+# Never write the plaintext term here or anywhere else in the repo.
+# Allow a genuine non-personal use: allow <sha256> <path-glob>
+52e8e47b38e854580afce4aade15dbd5ce0c0464da711afe71da123687d5a4cd
+65c3f75641b22925c737ca657b126cd68c39e423349d43031cf9a3b9a18cee1f
+671c6577d1c62f4ed20be20643446afe4e0c5f1101fd4de7717783be1f870fd0
+8c41d6e37d0b85d1ddf7306a08e6a6fc37184dfb93f1f8c0467f1d3372dfbacd
+8de85d6d6394dce9a483b086c293bf02b0ed32545fbd470883b491a5e2b7f10b
+972964b66bdfe6b5b181c5112a6a0470204f64661ee7e3efb9aab0ce3cc403ff
+9eb6835cc95b053818b660bd9fc9f092a0b30cef89c1f0f17f469d5caa0ae617
+bfef4adc39f01b033fe749bb5f28f10b581fef319d34445d21a7bc63fe732fa3
+d39fe9c594bc52eeb1aeea9126af4bcdd720a8230543403c77d26888008bd26c
+e403fa10bc5a0425fe96fc988e6efefc65d9e85d71cf948b676310c366411076
+13f7eac6f16ca900cd528d082ccc876022b4759a7c4482430c1b498ebb9dea83

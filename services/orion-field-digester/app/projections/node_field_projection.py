@@ -18,7 +18,7 @@ def build_node_field_projection(state: FieldStateV1, node_id: str) -> dict:
         connected.append(
             {
                 "capability_id": cap,
-                "pressure": state.capability_vectors.get(edge.target_id, {}).get("pressure", 0.0),
+                "pressure": state.capability_vectors.get(edge.target_id, {}).get("pressure"),  # None = unmeasured
                 "edge_weight": edge.weight,
             }
         )

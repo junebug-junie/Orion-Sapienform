@@ -11,7 +11,7 @@
 
 Memory Cards is a persistent, operator-curated fact store that gives Oríon durable, structured knowledge about Juniper that survives session boundaries. It solves two problems the existing recall stack cannot:
 
-1. **Zero-latency always-on facts** — high-priority cards (e.g., "Lives in Ogden, UT") are prepended to every prompt without waiting for a retrieval query.
+1. **Zero-latency always-on facts** — high-priority cards (e.g., "Lives in [home city]") are prepended to every prompt without waiting for a retrieval query.
 2. **Structured biographical memory** — cards carry typed fields (anchor class, temporal horizon, confidence, visibility scope) that the existing vector/SQL/RDF backends cannot represent.
 
 Cards are data, not prompt/identity mutations. The auto-extractor ships disabled by default.

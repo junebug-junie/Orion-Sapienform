@@ -11,16 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable, NamedTuple, Optional
 from uuid import uuid4, uuid5, NAMESPACE_URL
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
+
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.llm_json import parse_json_object
 from orion.world_pulse_read.journal import publish_journal
 from orion.llm.routes import fcc_model_for_route
-from orion.schemas.reading import ReadingRequestedV1
+from orion.schemas.reading import ReadingRequestedV1, SourceFetchEvidenceV1
 from orion.schemas.reading_turn import ReadingRunBriefV1
 from orion.world_pulse_read.durable import (
     ReadingCancelled,
@@ -37,7 +41,28 @@ from orion.schemas.world_pulse_read import (
     WorldPulseReadHandoffV1,
     WorldPulseReadSeedV1,
     WorldPulseReadStage2ResultV1,
+    strip_model_claim_receipts,
 )
+from orion.world_pulse_read.assertions import (
+    MEANING_POLICY,
+    READING_ACTOR,
+    ClaimContextV1,
+    build_claim_context,
+    claim_prompt_section,
+    journal_claims,
+    plan_claims,
+    stored_object_lookup,
+)
+from orion.substrate.graph_journal import SubstrateGraphJournal
+from orion.introspect.semantic_index import SearchConfig
+from orion.world_pulse_read.concept_search import (
+    HTTP_TIMEOUT_SEC as CONCEPT_SEARCH_TIMEOUT_SEC,
+    index_atlas_concepts,
+    related_objects,
+    with_related_objects,
+)
+from orion.world_pulse_read.fetch_text import WEBFETCH_LIMIT_NOTE, load_retained_texts
+from orion.world_pulse_read.timestamps import stamp_server_created_at
 from orion.world_pulse_read.queue import (
     ALREADY_READ,
     READ_URL_SQL,
@@ -56,7 +81,25 @@ from orion.world_pulse_read.queue import (
     skip_already_read_stage2,
 )
 from orion.world_pulse_read.retry import is_refused_before_work
-from orion.world_pulse_read.read_evidence import NO_READ_EVIDENCE
+from orion.world_pulse_read.next_read_choice import (
+    ALREADY_READ_URLS_SQL,
+    NextReadLink,
+    candidate_links,
+    link_labels,
+    next_read_options,
+    parse_next_read_section,
+    publish_choice,
+    reading_choices,
+    render_next_read_section,
+)
+from orion.world_pulse_read.reader_contract import defuse_fence_markers, fence_reader_contract
+from orion.world_pulse_read.fetch_provenance import (
+    hop_allowlist,
+    hop_refusal_reason,
+    parent_read_state,
+    reached_pages,
+)
+from orion.world_pulse_read.read_evidence import NO_READ_EVIDENCE, NO_READ_EVIDENCE_HTTP_ERROR
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
     read_wallet_a_retry_wait,
@@ -107,6 +150,24 @@ class GenerateOutcome(NamedTuple):
     text: str
     fail_reason: Optional[str] = None
     trace_id: str | None = None
+    # The Stage 2 turn's own fetches (harness tool trace, with text on a reading
+    # turn). Hop provenance only: a URL it reached, or a link in what it read,
+    # may re-enter Stage 1.
+    source_fetches: Optional[list[SourceFetchEvidenceV1]] = None
+
+
+# The same count enqueue_reading's round_trip_cap reads (orion/world_pulse_read/queue.py).
+CHAIN_HOPS_SQL = (
+    "SELECT count(*) FROM world_pulse_read_seed WHERE root_request_id = $1 "
+    "AND request_id <> $1 AND duplicate_of IS NULL"
+)
+
+
+class ParentRead(NamedTuple):
+    """What the Stage 1 read behind this handoff actually retained."""
+
+    texts: list[tuple[str, str]]  # (page url, retained text) -- pages, not HTTP error notices
+    dead: bool  # see fetch_provenance.parent_read_state
 
 
 def _reason_from_non_final_frame(frames: list[Any]) -> str:
@@ -151,7 +212,41 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
     return payload
 
 
-def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str:
+# Our own error codes for "the attempt ran out of time" (reading_turn_listener,
+# durable-runs reading_graph, fcc_motor). A retry after one of these must not
+# send the model down the same road.
+_TIMEOUT_FAILURE_MARKERS = (
+    # durable-runs' attempt timeout surfaces as turn_exception:TimeoutError (the live
+    # seed c31227dc failure); a bare TimeoutError elsewhere (bus/RPC) is not this.
+    "turn_exception:TimeoutError", "turn_timeout", "fcc_timeout", "fcc_stream_stalled",
+    "workflow_deadline",
+)
+
+
+def is_timeout_failure(error: str | None) -> bool:
+    text = str(error or "")
+    return any(marker in text for marker in _TIMEOUT_FAILURE_MARKERS)
+
+
+def retry_note(prior_error: str | None) -> str:
+    """Extra instruction for a retry whose previous attempt timed out; "" otherwise."""
+    if not is_timeout_failure(prior_error):
+        return ""
+    reason = " ".join(str(prior_error).split())[:_FAIL_REASON_DETAIL_MAX_LEN]
+    return (
+        f"\nRETRY: the previous attempt of this pass ran out of time ({reason}). Do not call "
+        "WebFetch or WebSearch this time. Answer from the handoff "
+        "and any retained text above, and say what could not be read.\n"
+    )
+
+
+def _build_stage2_prompt(
+    handoff: WorldPulseReadHandoffV1,
+    trace_id: str,
+    claim_context: ClaimContextV1 | None = None,
+    prior_error: str | None = None,
+    next_read: list[NextReadLink] | None = None,
+) -> str:
     """Prompt and schema must agree, the way Stage 1's prompt already does.
 
     Before this the prompt said "form/test priors, note hops" but listed only
@@ -165,12 +260,22 @@ def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str
     return (
         "You are continuing a deliberate source reading. Start from this Stage 1 handoff "
         "JSON (do not ignore it). Treat source claims as attributed candidates, not settled truth. "
-        "Do not write RDF, execute graph queries, or call Graphiti. Form/test priors, note hops, and return ONE "
-        "JSON object — no prose outside a fenced JSON block.\n"
-        f"handoff={payload}\n"
+        "Do not write RDF, execute graph queries, or call Graphiti. Form/test priors and note hops.\n"
+        # Labelled as input: the stance pass reads it, and a bare dict here looked like an
+        # output shape to the stance model (review of the 2026-10-29 fix).
+        "Stage 1 handoff (input data from the earlier read, not an output shape): "
+        f"handoff={defuse_fence_markers(str(payload))}\n"
+        # The reading choice point (orion/world_pulse_read/next_read_choice.py): the links
+        # Stage 1's read contained, numbered in page order. Empty when there are none.
+        + render_next_read_section(next_read or [])
+        # Fenced so the stance pass does not see the reader's keys
+        # (orion/world_pulse_read/reader_contract.py).
+        + fence_reader_contract(
+        "Return ONE JSON object — no prose outside a fenced JSON block.\n"
         "Required JSON shape (use exactly these top-level keys; anything else is dropped):\n"
         "{\n"
         '  "summary": "non-empty prose",\n'
+        '  "article_summary": "3-5 sentences: what the source itself says",\n'
         '  "priors_tested": [{"claim_ref": "a Stage 1 claim", '
         '"verdict": "supported|revised|refuted|untested", "why": "string"}],\n'
         '  "candidate_priors": [{"claim": "new or revised claim", "confidence": 0.5}],\n'
@@ -179,11 +284,24 @@ def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str
         '  "hops": ["what you fetched/searched and what came back"],\n'
         '  "need_stage1_urls": ["http(s) URLs that still need a heavy Stage 1 read, or empty"],\n'
         f'  "trace_id": {trace_id!r},\n'
-        '  "created_at": "ISO-8601 UTC",\n'
         f'  "seed_id": {handoff.seed_ref.seed_id!r}\n'
         "}\n"
+        "article_summary is what the PIECE says -- its claims, findings and facts, in 3-5 plain "
+        "sentences, taken only from text you or Stage 1 actually fetched -- not your reaction, "
+        "not what it means for you (that goes in summary). Use an empty string if nothing "
+        "substantive was fetched (an error page, a 404, a paywall). "
         "candidate_priors MUST be objects with claim (not bare strings). "
-        "priors_tested MUST be objects with claim_ref. producer_hint is forced server-side."
+        "priors_tested MUST be objects with claim_ref. producer_hint and created_at are forced server-side. "
+        # Enforced server-side (fetch_provenance.py); said here so the model does not
+        # spend output on hops that are dropped.
+        "need_stage1_urls may only hold URLs written in a page that was fetched (by you this "
+        "turn, or by Stage 1) or URLs you fetched yourself this turn; a guessed URL is dropped, never read.\n"
+        )
+        + WEBFETCH_LIMIT_NOTE
+        + retry_note(prior_error)
+        # Only when this read has retained text, stored concepts and existing candidates
+        # (orion/world_pulse_read/assertions.py); otherwise the prompt is unchanged.
+        + claim_prompt_section(claim_context or ClaimContextV1())
     )
 
 
@@ -218,7 +336,7 @@ def _as_stage2_result(
         return raw
     if not isinstance(raw, dict):
         raise ValueError("stage2_result_not_object")
-    parsed, unknown = _split_unknown_top_level_keys(dict(raw))
+    parsed, unknown = _split_unknown_top_level_keys(strip_model_claim_receipts(dict(raw)))
     if unknown:
         logger.warning(
             "world_pulse_read_stage2_unknown_keys_dropped seed=%s n=%s keys=%s",
@@ -229,7 +347,8 @@ def _as_stage2_result(
         if on_dropped is not None:
             on_dropped(unknown)
     parsed.setdefault("trace_id", fallback_trace)
-    parsed.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    # Never trust a model-written time, whichever caller handed us raw JSON.
+    stamp_server_created_at(parsed, seed_id=seed_id, stage="stage2")
     parsed.setdefault("seed_id", seed_id)
     parsed["producer_hint"] = "world_pulse_read_stage2"
     return WorldPulseReadStage2ResultV1.model_validate(parsed)
@@ -249,6 +368,7 @@ class WorldPulseReadStage2Pipeline:
         timezone_name: str = "UTC",
         max_round_trips: int = 5,
         max_attempts: int = 1,
+        max_in_flight: int = 1,
         wallet_a_window_start_hour: int = 0,
         wallet_a_window_end_hour: int = 0,
         pool_provider: Callable[[], Any],
@@ -256,8 +376,35 @@ class WorldPulseReadStage2Pipeline:
         step_relay_provider: Optional[Callable[[], Any]] = None,
         store_provider: Optional[Callable[[], Any]] = None,
         durable_url: str = "http://127.0.0.1:8124",
+        assertions_enabled: bool = True,
+        meaning_target_links: bool = True,
+        projector_readiness: Optional[Callable[[], Any]] = None,
+        concept_search: Optional[SearchConfig] = None,
+        resonance: Optional[dict[str, Any]] = None,
+        choice_enabled: bool = True,
     ) -> None:
+        self._resonance = resonance
+        # HUB_WORLD_PULSE_READ_CHOICE_ENABLED: show the next-read link list in the Stage 2
+        # prompt and publish Orion's pick as a PersonalityChoiceV1 (lane reading).
+        self.choice_enabled = bool(choice_enabled)
+        self._next_read: list[NextReadLink] = []
+        # The prompt actually bound to this seed's durable turn (the first committed one).
+        self._stage2_prompt: str | None = None
+        self._resonance_task: Optional[asyncio.Task] = None
         self.enabled = enabled
+        # HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: kill switch for relationship claims
+        # (prompt block, journal writes, and Hub's reading assertion projector).
+        self.assertions_enabled = bool(assertions_enabled)
+        # HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED: reading_meaning_target_v1,
+        # bound onto each read's ClaimContextV1 so its prompt and its rule agree.
+        self.meaning_target_links = bool(meaning_target_links)
+        self._projector_readiness = projector_readiness
+        self._assertion_projector: Any = None
+        self._claim_context: ClaimContextV1 = ClaimContextV1()
+        # Claim objects by meaning (orion/world_pulse_read/concept_search.py). None or an
+        # unconfigured search = exact-label objects only.
+        self.concept_search = concept_search if concept_search is not None and concept_search.enabled else None
+        self._concept_index_task: Optional[asyncio.Task] = None
         self.durable_url = durable_url
         self.tick_interval_sec = tick_interval_sec
         self.window_start_hour = int(window_start_hour)
@@ -271,6 +418,8 @@ class WorldPulseReadStage2Pipeline:
         # Bounded retry for transient turn failures (orion/world_pulse_read/retry.py).
         # 1 == legacy terminal-on-first-failure.
         self.max_attempts = max(1, int(max_attempts))
+        # Stage 2 turns in flight at once (HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT); 1 == serial.
+        self.max_in_flight = max(1, int(max_in_flight))
         self.wallet_a_window_start_hour = int(wallet_a_window_start_hour)
         self.wallet_a_window_end_hour = int(wallet_a_window_end_hour)
         try:
@@ -290,6 +439,13 @@ class WorldPulseReadStage2Pipeline:
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self.last_round_trips: int = 0
+        self._stage2_fetches: list[SourceFetchEvidenceV1] = []
+        # stage2_error left by the previous attempt (retry_note reads it).
+        self._prior_stage2_error: str | None = None
+        # Refused Stage 1 re-entries by reason, since process start (like
+        # unknown_keys_dropped_total). Each refusal is logged with its URL; the stored
+        # stage2_result_json keeps the model's need_stage1_urls as asked.
+        self.hops_refused_total: dict[str, int] = {}
         # Running count of unknown top-level keys dropped from model output
         # (each is also a WARNING log line naming the keys).
         self.unknown_keys_dropped_total: int = 0
@@ -308,6 +464,9 @@ class WorldPulseReadStage2Pipeline:
             return
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
+        if self.assertions_enabled and self.concept_search is not None:
+            self._concept_index_task = asyncio.create_task(
+                self._concept_index_loop(), name="hub-reading-concept-index")
         logger.info(
             "world_pulse_read_stage2 started tick=%ss round_trips=%s max_attempts=%s",
             self.tick_interval_sec,
@@ -316,7 +475,18 @@ class WorldPulseReadStage2Pipeline:
         )
 
     async def stop(self) -> None:
+        if self._resonance_task is not None:
+            self._resonance_task.cancel()
+            await asyncio.gather(self._resonance_task, return_exceptions=True)
+            self._resonance_task = None
         self._stop.set()
+        if self._concept_index_task is not None:
+            self._concept_index_task.cancel()
+            try:
+                await self._concept_index_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._concept_index_task = None
         if self._task is not None:
             self._task.cancel()
             try:
@@ -338,6 +508,49 @@ class WorldPulseReadStage2Pipeline:
             except (TimeoutError, asyncio.TimeoutError):
                 continue
 
+    def _http_client(self) -> httpx.AsyncClient:
+        """Embedder + Chroma client for one concept-search call (tests replace this)."""
+        return httpx.AsyncClient(timeout=CONCEPT_SEARCH_TIMEOUT_SEC)
+
+    async def index_concepts_once(self) -> Any:
+        """One pass of the atlas concept index; None when the store is not up yet."""
+        store = self._store_provider() if self._store_provider else None
+        if store is None or self.concept_search is None:
+            return None
+        async with self._http_client() as client:
+            result = await index_atlas_concepts(store, self.concept_search, client=client,
+                                                bus=self._bus, source=self._source_ref)
+        logger.info("reading_concept_index indexed=%d pending=%d", result.indexed, result.pending)
+        return result
+
+    async def _concept_index_loop(self) -> None:
+        # Backlog (indexed + pending) seen by the previous pass. Upserts reach Chroma via
+        # vector-writer asynchronously, so a pass only proves progress when the backlog
+        # it sees has shrunk; otherwise (writer down or behind) wait the full interval
+        # rather than re-embedding the same batch every few seconds.
+        last_backlog: Optional[int] = None
+        while not self._stop.is_set():
+            delay = self.concept_search.index_interval_sec
+            try:
+                result = await self.index_concepts_once()
+                if result is None:
+                    delay = min(delay, 30.0)
+                else:
+                    backlog = result.indexed + result.pending
+                    if result.pending and (last_backlog is None or backlog < last_backlog):
+                        # First build: keep going while the backlog drains.
+                        delay = min(delay, 5.0)
+                    last_backlog = backlog
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("reading_concept_index_failed exc_type=%s detail=%s",
+                               type(exc).__name__, str(exc)[:300])
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=delay)
+            except (TimeoutError, asyncio.TimeoutError):
+                continue
+
     async def _with_conn(self, fn):
         pool = self._pool_provider() if self._pool_provider else None
         if pool is None:
@@ -345,11 +558,25 @@ class WorldPulseReadStage2Pipeline:
         async with pool.acquire() as conn:
             return await fn(conn)
 
+    async def _reconcile_resonance(self):
+        from orion.world_pulse_read.resonance_submit import reconcile
+        try:
+            await self._with_conn(lambda conn: reconcile(conn, cfg=self.concept_search,
+                bus=self._bus, source=self._source_ref, durable_url=self.durable_url,
+                substrate_store=self._store_provider() if self._store_provider else None, **self._resonance))
+        except Exception:
+            logger.exception("reading_resonance_reconcile_failed")
+
     async def tick(self, *, force: bool = False) -> str | None:
+        if self._resonance and self.concept_search and (self._resonance_task is None or self._resonance_task.done()):
+            self._resonance_task = asyncio.create_task(self._reconcile_resonance())
         now = datetime.now(timezone.utc)
         self.last_round_trips = 0
         await self._reclaim_stale_claimed()
         await self._repair_journal_landings()
+        # Every tick, not only after a read: retries decisions whose endpoints or
+        # readers were not ready yet.
+        await self._project_assertions()
         for landed in (await self._with_conn(confirm_landings) or []):
             await publish_lifecycle(self._bus, landed, "landing_completed", source=self._source_ref)
         try:
@@ -386,15 +613,42 @@ class WorldPulseReadStage2Pipeline:
             logger.info("world_pulse_read_stage2_blocked reason=%s", reason)
             return reason
 
+        # Up to max_in_flight claims per tick, in-flight turns first (CLAIM_STAGE2_SQL
+        # order): see WorldPulseReadPipeline.tick. One claim per tick serialized Stage 2.
         # Admission gates must not strand an already-submitted durable result.
-        claim = await self._with_conn(
-            lambda conn: claim_next_stage2_seed(conn, active_only=reason is not None)
-        )
-        if claim is None:
+        handled: list[str] = []
+        first: str | None = None
+        while len(handled) < self.max_in_flight:
+            exclude = tuple(handled)
+            claim = await self._with_conn(
+                lambda conn: claim_next_stage2_seed(
+                    conn, active_only=reason is not None, exclude=exclude
+                )
+            )
+            if claim is None:
+                break
+            handled.append(claim.seed.seed_id)
+            outcome = await self._pass_claimed(claim, redis)
+            if reason is None and not force and redis is not None and len(handled) < self.max_in_flight:
+                # A turn refused before work this tick set the refund backoff: start no new
+                # turn behind it (in-flight ones are still polled), as the next tick would.
+                wait = await read_wallet_b_retry_wait(redis, now=datetime.now(timezone.utc))
+                if wait is not None and wait > 0:
+                    reason = "refund_backoff"
+            if len(handled) == 1:
+                first = outcome
+        if not handled:
             if reason is not None:
                 logger.info("world_pulse_read_stage2_blocked reason=%s", reason)
             return reason or "empty_queue"
+        if len(handled) > 1:
+            logger.info("world_pulse_read_stage2_tick_claims n=%d max_in_flight=%d",
+                        len(handled), self.max_in_flight)
+        return first
 
+    async def _pass_claimed(self, claim: Any, redis: Any) -> str | None:
+        """One claimed seed: start, poll, or finish its Stage 2 turn. Returns the outcome."""
+        self.last_round_trips = 0
         await publish_lifecycle(self._bus, claim.seed, "stage2_started", source=self._source_ref)
 
         try:
@@ -425,10 +679,34 @@ class WorldPulseReadStage2Pipeline:
             )
             return NO_READ_EVIDENCE
 
+        parent = await self._parent_read(handoff)
+        if parent.dead:
+            # A read stored `done` on nothing but "The server returned HTTP 404"
+            # (every such row before the Stage 1 status check). No second pass,
+            # no claims, and no hop chain from a page that was never there.
+            await self._with_conn(
+                lambda conn: mark_stage2_skipped(
+                    conn, claim.seed.seed_id, reason=NO_READ_EVIDENCE_HTTP_ERROR
+                )
+            )
+            logger.info(
+                "world_pulse_read_stage2_skipped_dead_parent seed=%s", claim.seed.seed_id
+            )
+            await publish_lifecycle(
+                self._bus, claim.seed, "stage2_failed", source=self._source_ref,
+                error=NO_READ_EVIDENCE_HTTP_ERROR,
+            )
+            return NO_READ_EVIDENCE_HTTP_ERROR
+
         # Debit only once a turn is actually about to run: an invalid stored
         # handoff never reaches the model and must not spend a Wallet B slot.
         receipt = None
         self._settlement_run_id = None
+        self._claim_context = await self._build_claim_context(handoff)
+        self._stage2_fetches = []
+        self._stage2_prompt = None
+        self._next_read = await self._next_read_options(handoff, parent)
+        self._prior_stage2_error = await self._prior_error(claim.seed.seed_id)
 
         try:
             result = _as_stage2_result(
@@ -455,8 +733,22 @@ class WorldPulseReadStage2Pipeline:
         await self._settle_wallet(redis, receipt, None, claim.seed.seed_id)
 
         result.request = request_for_seed(claim.seed)
+        allowed = self._hop_allowlist(parent)
+        hops_refused: list[dict[str, str]] = []
         round_trips = 0
         for url in result.need_stage1_urls:
+            refused = hop_refusal_reason(url, allowed)
+            if refused is not None:
+                # A model-written URL nobody fetched or linked (live 2026-10-13:
+                # three guessed CoreWeave siblings, each a 404 read). Not a
+                # round trip; the rest of the list is still considered.
+                logger.info(
+                    "world_pulse_read_stage2_reentry_refused reason=%s seed=%s url=%s",
+                    refused, claim.seed.seed_id, url,
+                )
+                self.hops_refused_total[refused] = self.hops_refused_total.get(refused, 0) + 1
+                hops_refused.append({"url": url, "reason": refused})
+                continue
             if round_trips >= self.max_round_trips:
                 logger.info(
                     "world_pulse_read_stage2_round_trip_ceiling seed=%s cap=%s",
@@ -482,6 +774,12 @@ class WorldPulseReadStage2Pipeline:
             round_trips += 1
         self.last_round_trips = round_trips
         result.round_trips = round_trips
+        if hops_refused:
+            logger.info(
+                "world_pulse_read_stage2_hops seed=%s asked=%d refused=%d followed=%d",
+                claim.seed.seed_id, len(result.need_stage1_urls), len(hops_refused), round_trips,
+            )
+        result = await self._record_claims(claim.seed.seed_id, result)
 
         try:
             await self._journal(handoff, result)
@@ -500,7 +798,190 @@ class WorldPulseReadStage2Pipeline:
             await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error=str(exc))
             return "post_failed"
         await publish_lifecycle(self._bus, claim.seed, "stage2_completed", source=self._source_ref, trace_id=result.trace_id)
+        await self._publish_reading_choices(claim.seed, result, allowed, round_trips)
+        await self._project_assertions()
         return None
+
+    async def _next_read_options(self, handoff: WorldPulseReadHandoffV1, parent: ParentRead) -> list[NextReadLink]:
+        """The links this read's Stage 2 prompt shows: Stage 1's retained text, page order, minus the
+        pages Stage 1 fetched and links Orion already read. Fail-open: [] costs the list, not the pass."""
+        if not self.choice_enabled or not parent.texts or self.max_round_trips <= 0:
+            return []
+        try:
+            req = request_for_seed(handoff.seed_ref)
+            root = req.root_request_id or req.request_id
+            hops = await self._with_conn(lambda conn: conn.fetchval(CHAIN_HOPS_SQL, root))
+            if hops is not None and int(hops) >= self.max_round_trips:
+                # enqueue_reading refuses every further hop in this chain (round_trip_cap), so
+                # "read next" is not on offer: no list, and no choice is recorded.
+                logger.info("reading_next_read_chain_full seed=%s hops=%s cap=%s",
+                            handoff.seed_ref.seed_id, hops, self.max_round_trips)
+                return []
+            fetched = [handoff.seed_ref.url, *(e.url for e in handoff.read_evidence)]
+            candidates = candidate_links(parent.texts, exclude_urls=fetched)
+            if not candidates:
+                return []
+            read_urls = await self._with_conn(
+                lambda conn: conn.fetch(ALREADY_READ_URLS_SQL, [c.url for c in candidates])) or []
+            from orion.world_pulse_read.fetch_provenance import hop_url_key
+            done = {k for k in (hop_url_key(str(r["url"])) for r in read_urls) if k}
+            return next_read_options(parent.texts, exclude_urls=fetched, already_read_keys=done)
+        except Exception:  # noqa: BLE001
+            logger.warning("reading_next_read_options_failed seed=%s", handoff.seed_ref.seed_id, exc_info=True)
+            return []
+
+    async def _publish_reading_choices(
+        self, seed: WorldPulseReadSeedV1, result: WorldPulseReadStage2ResultV1, allowed: set[str],
+        round_trips: int,
+    ) -> None:
+        """Orion's next-read pick as personality choices: the links the BOUND prompt showed, and
+        ``need_stage1_urls``. Best-effort; never raises, never touches the read."""
+        if not self.choice_enabled:
+            return
+        try:
+            shown = parse_next_read_section(self._stage2_prompt)
+            _reached, fetched_texts = reached_pages(self._stage2_fetches)
+            labels: dict[str, str] = {}
+            for _url, text in fetched_texts:
+                for k, v in link_labels(text).items():
+                    labels.setdefault(k, v)
+            situation = {"seed_kind": seed.kind, "hops_followed": int(round_trips)}
+            if seed.section:
+                situation["section"] = seed.section[:200]
+            choices, reason = reading_choices(
+                seed_id=seed.seed_id, shown=shown, picked_urls=result.need_stage1_urls,
+                allowlist=allowed, occurred_at=result.created_at, labels_for_unlisted=labels,
+                act_id=f"reading_stage2:{seed.seed_id}"[:300], correlation_id=result.trace_id,
+                situation=situation,
+            )
+            published = 0
+            for choice in choices:
+                published += int(await publish_choice(self._bus, choice, source=self._source_ref))
+            logger.info(
+                "reading_choice seed=%s reason=%s shown=%d picked=%d published=%d",
+                seed.seed_id, reason, len(shown),
+                0 if not choices or choices[0].declined_all else len(choices), published,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("reading_choice_failed seed=%s", seed.seed_id, exc_info=True)
+
+    async def _prior_error(self, seed_id: str) -> str | None:
+        """The last Stage 2 failure on this seed (a retry's reason), if any."""
+        try:
+            return await self._with_conn(lambda conn: conn.fetchval(
+                "SELECT stage2_error FROM world_pulse_read_seed WHERE seed_id=$1", seed_id))
+        except Exception:  # noqa: BLE001 - a missing note costs the hint, not the pass
+            logger.warning("world_pulse_read_stage2_prior_error_unavailable seed=%s", seed_id, exc_info=True)
+            return None
+
+    async def _build_claim_context(self, handoff: WorldPulseReadHandoffV1) -> ClaimContextV1:
+        """Subjects, existing candidates and retained text for this read's claims. Empty
+        (no prompt block, no claims) when disabled, or anything needed is missing."""
+        if not self.assertions_enabled:
+            return ClaimContextV1()
+        store = self._store_provider() if self._store_provider else None
+        if store is None:
+            return ClaimContextV1()
+        unretained = [e for e in handoff.read_evidence if not e.content_sha256]
+        if unretained:
+            # A web read with no retained text: an old read (expected) or a governor /
+            # durable-runs still on code that drops SourceFetchEvidenceV1.content_text.
+            logger.info("reading_claim_text_missing seed=%s fetches=%d tools=%s",
+                        handoff.seed_ref.seed_id, len(unretained),
+                        ",".join(sorted({e.tool_name for e in unretained})))
+        try:
+            texts = await self._with_conn(lambda conn: load_retained_texts(conn, handoff.read_evidence)) or []
+            ctx = await asyncio.to_thread(build_claim_context, store, handoff, texts)
+        except Exception:  # noqa: BLE001 - a read without claims is still a read
+            logger.warning("reading_claim_context_failed seed=%s", handoff.seed_ref.seed_id, exc_info=True)
+            return ClaimContextV1()
+        named = len(ctx.objects)
+        related: list = []
+        related_ms = 0
+        if self.concept_search is not None and ctx.subjects and ctx.texts:
+            started = time.perf_counter()
+            try:
+                async with self._http_client() as client:
+                    related = await related_objects(store, ctx, self.concept_search, client=client)
+            except Exception as exc:  # noqa: BLE001 - label objects still stand
+                logger.warning("reading_claim_related_unavailable seed=%s exc_type=%s detail=%s",
+                               handoff.seed_ref.seed_id, type(exc).__name__, str(exc)[:300])
+            related_ms = int((time.perf_counter() - started) * 1000)
+            ctx = with_related_objects(ctx, related)
+        ctx = replace(ctx, meaning_links=self.meaning_target_links)
+        logger.info(
+            "reading_claim_context seed=%s texts=%d subjects=%d objects=%d named=%d related=%d "
+            "related_top=%s related_ms=%d usable=%s",
+            handoff.seed_ref.seed_id, len(ctx.texts), len(ctx.subjects), len(ctx.objects), named,
+            len(related), f"{related[0][1]:.3f}" if related else "-", related_ms, ctx.usable,
+        )
+        return ctx
+
+    async def _record_claims(
+        self, seed_id: str, result: WorldPulseReadStage2ResultV1
+    ) -> WorldPulseReadStage2ResultV1:
+        """Validate the model's claims, journal them, and put a receipt on each."""
+        if not self.assertions_enabled:
+            return result.model_copy(update={"relationship_claims": []})
+        if not result.relationship_claims:
+            return result
+        store = self._store_provider() if self._store_provider else None
+        ctx = self._claim_context
+        # Not ctx.usable: the offered object list may have emptied since the prompt was bound.
+        lookup = stored_object_lookup(store, ctx) if store is not None and ctx.subjects and ctx.texts else None
+        plans = await asyncio.to_thread(
+            lambda: plan_claims(result.relationship_claims, ctx, seed_id=seed_id,
+                                recorded_at=datetime.now(timezone.utc), object_lookup=lookup))
+        pool = self._pool_provider() if self._pool_provider else None
+        report = await journal_claims(SubstrateGraphJournal(pool) if pool is not None else None, plans)
+        outcomes: dict[str, int] = {}
+        for c in report.claims:
+            outcomes[c.receipt.reason] = outcomes.get(c.receipt.reason, 0) + 1
+        meaning = sum(1 for p in plans if p.decision is not None and p.decision.policy == MEANING_POLICY)
+        logger.info("reading_claims_recorded seed=%s claims=%d proposals=%d accepted=%d "
+                    "meaning_rule_decisions=%d meaning_links=%s reasons=%s",
+                    seed_id, len(report.claims), report.proposals, report.accepted, meaning, ctx.meaning_links,
+                    ",".join(f"{k}:{v}" for k, v in sorted(outcomes.items())))
+        return result.model_copy(update={"relationship_claims": report.claims})
+
+    def _build_projector(self) -> Any:
+        store = self._store_provider() if self._store_provider else None
+        pool = self._pool_provider() if self._pool_provider else None
+        if store is None or pool is None:
+            return None
+        from orion.substrate.assertion_projector import AssertionProjector
+        from orion.substrate.materializer import SubstrateGraphMaterializer
+
+        readiness = self._projector_readiness
+        if readiness is None:
+            import os
+            from orion.substrate.reader_capability import readiness as reader_readiness, required_readers_from_env
+
+            uri = str(os.getenv("FALKORDB_URI", "") or "").strip()
+            required = required_readers_from_env()
+            readiness = lambda: reader_readiness(uri, required)  # noqa: E731
+        return AssertionProjector(
+            journal=SubstrateGraphJournal(pool), materializer=SubstrateGraphMaterializer(store=store),
+            readiness=readiness, proposal_actors=(READING_ACTOR,),
+        )
+
+    async def _project_assertions(self) -> None:
+        """Apply pending reading decisions to the graph Hub reads and writes (the store the
+        reading concepts live in). Memory's projector applies only memory's own claims."""
+        if not self.assertions_enabled:
+            return
+        try:
+            if self._assertion_projector is None:
+                self._assertion_projector = self._build_projector()
+            if self._assertion_projector is None:
+                return
+            report = await self._assertion_projector.run_once()
+        except Exception:  # noqa: BLE001 - one bad pass must not stop reading
+            logger.warning("reading_assertion_projection_failed", exc_info=True)
+            return
+        if report.applied or report.failed:
+            logger.info("reading_assertions_projected applied=%d failed=%s waiting=%d",
+                        len(report.applied), dict(report.failed), len(report.waiting))
 
     async def _reclaim_stale_claimed(self) -> None:
         older = 0.0 if not self._startup_reclaim_done else float(self.timeout_sec)
@@ -612,6 +1093,28 @@ class WorldPulseReadStage2Pipeline:
             except Exception:
                 logger.warning("reading_journal_replay_failed seed=%s", row["seed_id"], exc_info=True)
 
+    async def _parent_read(self, handoff: WorldPulseReadHandoffV1) -> ParentRead:
+        """Retained Stage 1 texts for hop provenance, and whether the read was dead.
+        A load failure is "unknown", never "dead": it costs the hops, not the pass."""
+        evidence = handoff.read_evidence
+        try:
+            rows = await self._with_conn(
+                lambda conn: load_retained_texts(conn, evidence, drop_http_errors=False)
+            ) or []
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_stage2_parent_text_unavailable seed=%s",
+                           handoff.seed_ref.seed_id, exc_info=True)
+            return ParentRead(texts=[], dead=False)
+        texts, dead = parent_read_state(evidence, rows)
+        return ParentRead(texts=texts, dead=dead)
+
+    def _hop_allowlist(self, parent: ParentRead) -> set[str]:
+        """URLs Stage 1 re-entry may follow: links written in the parent's retained
+        text or in the Stage 2 turn's own fetch results, plus URLs a Stage 2 fetch
+        reached with a page (not an HTTP error notice)."""
+        reached, texts = reached_pages(self._stage2_fetches)
+        return hop_allowlist([*parent.texts, *texts], reached)
+
     async def _reenter_stage1(
         self, url: str, *, parent_seed: WorldPulseReadSeedV1
     ) -> str | None:
@@ -676,19 +1179,23 @@ class WorldPulseReadStage2Pipeline:
     async def _stage2_pass(self, handoff: WorldPulseReadHandoffV1) -> WorldPulseReadStage2ResultV1:
         """Production path: unified turn + fenced JSON. Tests replace this."""
         trace_id = str(uuid4())
-        created_at = datetime.now(timezone.utc)
         outcome = await self._generate(
-            _build_stage2_prompt(handoff, trace_id), trace_id, seed_id=handoff.seed_ref.seed_id,
+            _build_stage2_prompt(handoff, trace_id, self._claim_context,
+                                 prior_error=getattr(self, "_prior_stage2_error", None),
+                                 next_read=getattr(self, "_next_read", None)), trace_id,
+            seed_id=handoff.seed_ref.seed_id,
             # Recall searches the source and what stage 1 concluded, not the
             # stage-2 prompt (which embeds the whole stage-1 handoff JSON).
             retrieval_query=reading_retrieval_query(handoff.seed_ref, handoff.what_i_learned),
         )
         trace_id = outcome.trace_id or trace_id
+        self._stage2_fetches = list(outcome.source_fetches or [])
         if not outcome.text:
             raise ValueError(outcome.fail_reason or "empty_generation")
         parsed = parse_json_object(outcome.text)
         parsed["trace_id"] = trace_id
-        parsed.setdefault("created_at", created_at.isoformat())
+        # Server clock at receipt, never the model's text (see stamp_server_created_at).
+        stamp_server_created_at(parsed, seed_id=handoff.seed_ref.seed_id, stage="stage2")
         parsed["seed_id"] = handoff.seed_ref.seed_id
         parsed["request"] = request_for_seed(handoff.seed_ref).model_dump(mode="json")
         return _as_stage2_result(
@@ -713,5 +1220,9 @@ class WorldPulseReadStage2Pipeline:
             raise ReadingPending(f"reading_binding_unavailable:{type(exc).__name__}") from exc
         self._settlement_run_id = request.run_id
         self._settlement_seed_id = seed_id
+        # The authoritative prompt (durable.bind_turn keeps the first committed one): the
+        # reading choice point reads the links it showed from here, never a recomputation.
+        self._stage2_prompt = getattr(getattr(request, "brief", None), "prompt", None)
         result = await poll_turn(request, self.durable_url)
-        return GenerateOutcome(result.text, result.error, result.correlation_id)
+        return GenerateOutcome(result.text, result.error, result.correlation_id,
+                               source_fetches=result.source_fetches)

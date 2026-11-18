@@ -31,11 +31,11 @@ def _store_with_conn() -> tuple[BiometricsSubstrateStore, MagicMock]:
 def _signal(signal_id: str, strength: float = 0.8) -> FrontierInvocationSignalV1:
     return FrontierInvocationSignalV1(
         signal_id=signal_id,
-        signal_type="ontology_sparse_region",
+        signal_type="evidence_gap_cluster",
         anchor_scope="orion",
         subject_ref="entity:orion",
         target_zone="world_ontology",
-        task_type_candidate="ontology_expand",
+        task_type_candidate="evidence_gap_scan",
         signal_strength=strength,
         confidence=0.7,
         evidence_summary="gap",

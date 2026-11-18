@@ -1,0 +1,62 @@
+name: prediction-surprise-node-tests
+
+# node:prediction.room / node:prediction.body (and node:prediction.chat_turn, 2026-11-13: settled
+# chat-turn self-bets as surprise): orion-prediction's gated surprise events folded
+# into two body nodes (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md,
+# build item 3), and the attention/curiosity/self-readings readers that accept value_kind
+# surprise_excess.
+on:
+  pull_request:
+    paths:
+      - "orion/substrate/prediction_surprise.py"
+      - "orion/substrate/tests/test_prediction_surprise.py"
+      - "orion/substrate/prediction_turn_surprise.py"
+      - "orion/substrate/tests/test_prediction_turn_surprise.py"
+      - "orion/schemas/prediction.py"
+      - "orion/attention/world_first.py"
+      - "orion/attention/self_readings.py"
+      - "orion/substrate/attention_broadcast.py"
+      - "orion/substrate/endogenous_curiosity.py"
+      - "orion/metrics/semantics.py"
+      - "config/field/field_channel_glossary.v1.yaml"
+      - "services/orion-substrate-runtime/**"
+      - ".github/workflows/prediction-surprise-node-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/substrate/prediction_surprise.py"
+      - "orion/substrate/prediction_turn_surprise.py"
+      - "orion/schemas/prediction.py"
+      - "orion/attention/world_first.py"
+      - "services/orion-substrate-runtime/**"
+      - ".github/workflows/prediction-surprise-node-tests.yml"
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-substrate-runtime/requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install pytest-asyncio httpx
+      - name: Fold (pure) + readers accept surprise_excess
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            orion/substrate/tests/test_prediction_surprise.py \
+            orion/substrate/tests/test_prediction_turn_surprise.py \
+            orion/substrate/tests/test_endogenous_curiosity.py \
+            tests/test_attention_world_first.py \
+            tests/test_attention_self_readings.py
+      - name: Runtime wiring (listener, node write, PE history)
+        env:
+          POSTGRES_URI: postgresql://unused/unused
+        run: |
+          PYTHONPATH=.:services/orion-substrate-runtime python -m pytest -q -p no:cacheprovider \
+            services/orion-substrate-runtime/tests/test_prediction_surprise_listener.py \
+            services/orion-substrate-runtime/tests/test_prediction_turn_surprise_listener.py

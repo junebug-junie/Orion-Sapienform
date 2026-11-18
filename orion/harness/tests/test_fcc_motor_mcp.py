@@ -160,7 +160,7 @@ async def test_run_fcc_turn_fails_fast_on_draft_length_ceiling(
         events.append(ev)
 
     assert events[-1]["type"] == "error"
-    assert events[-1]["error_code"] == "fcc_draft_length_ceiling_exceeded"
+    assert events[-1]["error_code"] == "fcc_context_ceiling_exceeded"
     assert proc.killed is True
 
 
@@ -200,7 +200,7 @@ async def test_run_fcc_turn_normal_turn_unaffected_by_draft_length_ceiling(
 
     assert [ev["type"] for ev in events] == ["step", "step", "final"]
     assert all(ev["type"] != "error" for ev in events)
-    assert all(ev.get("error_code") != "fcc_draft_length_ceiling_exceeded" for ev in events)
+    assert all(ev.get("error_code") != "fcc_context_ceiling_exceeded" for ev in events)
 
 
 @pytest.mark.asyncio
@@ -216,7 +216,7 @@ async def test_run_fcc_turn_does_not_kill_on_terminal_result_event(
     tight ceiling on the very event that completes the turn). Regression
     test for a review finding on this same patch: before the fix, this
     scenario killed an already-finished process and discarded its answer as
-    fcc_draft_length_ceiling_exceeded instead of yielding it.
+    fcc_context_ceiling_exceeded instead of yielding it.
     """
     monkeypatch.setenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", "30")
     monkeypatch.setenv("ORION_FCC_CHARS_PER_TOKEN", "1")
@@ -876,7 +876,7 @@ async def test_thinking_progress_is_not_draft_or_grammar(
     )]
     assert proc.killed is should_fail
     if should_fail:
-        assert events[-1]["error_code"] == "fcc_draft_length_ceiling_exceeded"
+        assert events[-1]["error_code"] == "fcc_context_ceiling_exceeded"
     else:
         assert events[-1]["type"] == "final"
         assert events[-1]["llm_response"] == "Evidence verified."

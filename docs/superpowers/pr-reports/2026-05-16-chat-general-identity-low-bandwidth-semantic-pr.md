@@ -88,7 +88,7 @@ rg "_SOMATIC_USER_LOAD_RE|_INTERACTION_DEMAND_RE|_INTERACTION_DEMAND_REPLACEMENT
 
 ## Test plan (manual)
 
-- [ ] `chat_general` turn: *"I'm getting dizzy typing to you while my wife drives the car lol"* — short reply, no `"You're Oríon"`, no poetic loyalty/presence centering, no open-ended questions.
+- [ ] `chat_general` turn: *"[quote from chat, redacted]"* — short reply, no `"You're Oríon"`, no poetic loyalty/presence centering, no open-ended questions.
 - [ ] Forced bad LLM output containing `You're Oríon` — exec log shows `identity_boundary_applied=True`.
 - [ ] `chat_quick` / other verbs — identity guard does not run.
 - [ ] Normal identity line *"I'm Oríon. You're Juniper."* — unchanged when model emits it correctly.

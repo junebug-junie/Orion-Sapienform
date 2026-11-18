@@ -4,6 +4,10 @@
 
 services:
   cortex-exec:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     volumes:
       - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
       - ${ORION_HOST_TAILSCALE_RUN:-/var/run/tailscale}:/var/run/tailscale:ro

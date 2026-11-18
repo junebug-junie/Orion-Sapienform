@@ -198,3 +198,44 @@ def test_env_example_subscribe_channels_include_all_four_channels() -> None:
                 assert channel in line
             return
     raise AssertionError("SQL_WRITER_SUBSCRIBE_CHANNELS not found in .env_example")
+
+
+def _compiled(payload: dict) -> str:
+    sess = MagicMock()
+    assert upsert_harness_turn_trace(sess, payload) is True
+    stmt = sess.execute.call_args[0][0]
+    return str(stmt.compile(dialect=create_engine("postgresql://").dialect))
+
+
+def test_run_artifact_workflow_fills_the_workflow_column() -> None:
+    # #3255: the turn's kind is stored beside the stop reason, on insert and on a later upsert.
+    sess = MagicMock()
+    payload = {**RUN_ARTIFACT_PAYLOAD, "workflow": " endogenous_outreach "}
+    assert upsert_harness_turn_trace(sess, payload) is True
+    stmt = sess.execute.call_args[0][0]
+    params = stmt.compile(dialect=create_engine("postgresql://").dialect).params
+    assert params["workflow"] == "endogenous_outreach"
+    compiled = str(stmt.compile(dialect=create_engine("postgresql://").dialect))
+    assert "workflow" in compiled.split("ON CONFLICT")[0]
+    assert "WORKFLOW" in compiled.upper().split("DO UPDATE SET")[1]
+
+
+def test_artifact_without_workflow_never_names_the_column() -> None:
+    # An older governor's artifact must not overwrite a stored label with NULL.
+    for payload in (RUN_ARTIFACT_PAYLOAD, {**RUN_ARTIFACT_PAYLOAD, "workflow": None},
+                    {**RUN_ARTIFACT_PAYLOAD, "workflow": "  "}):
+        assert "workflow" not in _compiled(payload)
+
+
+def test_workflow_is_read_from_the_run_artifact_only() -> None:
+    # The other three molecules carry no such field; a stray key there is not a label.
+    assert "workflow" not in _compiled({**VERDICT_PAYLOAD, "workflow": "chat"}).replace("'workflow'", "")
+
+
+def test_workflow_column_is_nullable_text_and_has_its_migration() -> None:
+    column = HarnessTurnTraceSQL.__table__.c.workflow
+    assert column.nullable is True
+    migration = (REPO_ROOT / "services/orion-sql-db/manual_migration_harness_turn_trace_workflow_v1.sql").read_text()
+    assert migration.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer"
+    statements = [line for line in migration.splitlines() if line.strip() and not line.startswith("--")]
+    assert statements == ["ALTER TABLE harness_turn_trace ADD COLUMN IF NOT EXISTS workflow text;"]

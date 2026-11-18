@@ -194,3 +194,383 @@ test('a thumbnail that fails to load is hidden, not shown broken', () => {
   img.listeners.error();
   assert.equal(img.hidden, true);
 });
+
+// --- memory confirmation cards (2026-10-06) ---------------------------------
+
+const MEM_ASK = {
+  ask_id: 'm1', question: 'You told me something on Oct 3, and I wrote it down like this: “X.” Want me to remember that?',
+  source_kind: 'memory_confirmation', source_ref: 'memory-confirm-00000000-0000-0000-0000-000000000007',
+  memory_statement: 'Juniper told me that X happened today.',
+};
+
+function memMount(postReply) {
+  const doc = fakeDoc();
+  let open = [MEM_ASK];
+  const posts = [];
+  const fetchFn = async (url, init) => {
+    if (init && init.method === 'POST') {
+      posts.push({ url, body: JSON.parse(init.body || '{}') });
+      const reply = postReply ? postReply(posts) : { ok: true, status: 200, body: { ok: true } };
+      if (reply.ok) open = [];
+      return { ok: reply.ok, status: reply.status, json: async () => reply.body };
+    }
+    return { ok: true, status: 200, json: async () => ({ asks: open }) };
+  };
+  return { doc, posts, handle: asks.mount(doc, fetchFn) };
+}
+
+const settle = async () => { for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0)); };
+const action = (card, a) => find(card, (n) => n.attrs && n.attrs['data-ask-action'] === a);
+
+test('a memory card offers Confirm / Revise / Reject, not Answer / Dismiss', async () => {
+  const { doc, handle } = memMount();
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  assert.equal(card.attrs['data-ask-kind'], 'resolvable');
+  for (const a of ['confirm', 'revise', 'reject']) assert.ok(action(card, a), a);
+  assert.equal(action(card, 'answer'), null);
+  assert.equal(action(card, 'dismiss'), null);
+  assert.ok(asks.isResolvable(MEM_ASK) && !asks.isResolvable({ source_kind: 'vision_individual' }));
+  handle.stop();
+});
+
+for (const [btn, resolution] of [['confirm', 'confirmed'], ['reject', 'rejected']]) {
+  test(`${btn} posts {resolution: ${resolution}} to the resolve route and refreshes`, async () => {
+    const { doc, posts, handle } = memMount();
+    await handle.refresh();
+    await action(doc.byId.visionAsksList.children[0], btn).listeners.click();
+    await settle();
+    assert.deepEqual(posts, [{ url: '/api/asks/m1/resolve', body: { resolution, note: '' } }]);
+    assert.equal(doc.byId.visionAsksStatus.textContent, 'Orion has no open questions for you.');
+    handle.stop();
+  });
+}
+
+test('Revise opens a box prefilled with the current wording and posts the edit', async () => {
+  const { doc, posts, handle } = memMount();
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  const box = find(card, (n) => n.tagName === 'textarea');
+  assert.equal(box.value, '');
+  const panel = find(card, (n) => n.attrs && n.attrs['data-ask-revise'] === 'm1');
+  assert.equal(panel.hidden, true);
+  action(card, 'revise').listeners.click();
+  assert.equal(panel.hidden, false);
+  assert.equal(box.value, 'Juniper told me that X happened today.');
+  box.value = '  Juniper told me Y happened, not X. ';
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.deepEqual(posts, [{ url: '/api/asks/m1/resolve', body: { resolution: 'revised', note: 'Juniper told me Y happened, not X.' } }]);
+  handle.stop();
+});
+
+test('Revise with an empty box does not POST and says why', async () => {
+  const { doc, posts, handle } = memMount();
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  find(card, (n) => n.tagName === 'textarea').value = '   ';
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.equal(posts.length, 0);
+  assert.ok(find(card, (n) => n.textContent === 'Write how I should remember it first.'));
+  handle.stop();
+});
+
+test('a stale memory card (409) explains and refreshes', async () => {
+  const { doc, handle } = memMount(() => ({ ok: false, status: 409, body: { detail: 'ask_not_open:answered' } }));
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  await action(card, 'confirm').listeners.click();
+  await settle();
+  assert.ok(find(card, (n) => /already answered/.test(n.textContent)));
+  handle.stop();
+});
+
+test('revisionProblem mirrors the server: empty, too short, unchanged (structural, no word list)', () => {
+  assert.equal(asks.revisionProblem('   ', 'a b c d e f'), 'revised_needs_note');
+  assert.equal(asks.revisionProblem("no that's wrong", 'a b c d e f'), 'revised_too_short');
+  assert.equal(asks.revisionProblem(' Juniper told me X   happened today ', 'juniper told me x happened today'), 'revised_unchanged');
+  assert.equal(asks.revisionProblem('Juniper told me Y happened, not X.', 'Juniper told me X happened.'), null);
+});
+
+test('a meta-note revision is refused in the card, points at Reject, and does not POST', async () => {
+  const { doc, posts, handle } = memMount();
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  action(card, 'revise').listeners.click();
+  find(card, (n) => n.tagName === 'textarea').value = 'no, wrong';
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.equal(posts.length, 0);
+  assert.ok(find(card, (n) => /press Reject/.test(n.textContent)));
+  find(card, (n) => n.tagName === 'textarea').value = ' juniper told me that X happened today. ';  // the prefill, unchanged
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.equal(posts.length, 0);
+  assert.ok(find(card, (n) => /same as what I have/.test(n.textContent)));
+  handle.stop();
+});
+
+test('asks list: only the first two cards are visible, the rest scroll', () => {
+  assert.equal(asks.visibleAsksMaxHeight([100, 120, 90, 300], 8), 228);
+  assert.equal(asks.visibleAsksMaxHeight([100, 120], 8), null);
+  assert.equal(asks.visibleAsksMaxHeight([], 8), null);
+  assert.equal(asks.visibleAsksMaxHeight([50, 60, 70], 0), 110);
+});
+
+// --- visual confirmation asks (2026-10-15) ----------------------------------
+
+test('image_refs: all pictures in order, no repeats; old rows fall back to image_ref', () => {
+  const a = 'aa'.repeat(32);
+  const b = 'bb'.repeat(32);
+  const views = asks.askImageViews({ image_refs: ['thumb:' + a, 'thumb:' + b, 'thumb:' + a], image_ref: 'thumb:' + a });
+  assert.deepEqual(views.map((v) => v.ref), ['/api/vision/crop-thumbs/' + a, '/api/vision/crop-thumbs/' + b]);
+  assert.deepEqual(asks.askImageViews({ image_ref: 'thumb:' + b }).map((v) => v.ref), ['/api/vision/crop-thumbs/' + b]);
+  assert.deepEqual(asks.askImageViews({ image_refs: [], image_ref: null }), []);
+  assert.equal(asks.askImageViews({ image_refs: ['https://x/1', 'https://x/2', 'https://x/3', 'https://x/4', 'https://x/5'] }).length, 4);
+});
+
+test('a who-is-this card with two pictures renders both, side by side, with alt text', () => {
+  const doc = fakeDoc();
+  const a = 'a1'.repeat(32);
+  const b = 'b1'.repeat(32);
+  const card = asks.renderAsk(doc, { ask_id: 'w1', question: 'Who?', source_kind: 'vision_individual',
+    image_ref: 'thumb:' + a, image_refs: ['thumb:' + a, 'thumb:' + b] }, () => {});
+  const row = find(card, (n) => n.attrs && n.attrs['data-ask-images'] === '2');
+  assert.ok(row, 'expected an images row');
+  assert.match(row.className, /flex/);
+  const imgs = [];
+  (function walk(n) { if (n.tagName === 'img') imgs.push(n); (n.children || []).forEach(walk); })(card);
+  assert.deepEqual(imgs.map((i) => i.attrs.src), ['/api/vision/crop-thumbs/' + a, '/api/vision/crop-thumbs/' + b]);
+  assert.equal(imgs[0].attrs.alt, 'Picture 1 of 2 of what Orion is asking about');
+  assert.match(imgs[0].className, /w-full/); // shares the card width on a phone
+});
+
+test('a same-person card shows both faces, a choice and one Send', async () => {
+  const doc = fakeDoc();
+  const a = 'c1'.repeat(32);
+  const b = 'd1'.repeat(32);
+  const calls = [];
+  const render = () => asks.renderAsk(doc, { ask_id: 'p1', question: 'Are these the same person?',
+    source_kind: 'vision_same_individual', source_ref: 'x|y', image_ref: 'thumb:' + a,
+    image_refs: ['thumb:' + a, 'thumb:' + b] }, (id, action, text, _note, _res, extra) => { calls.push([id, action, text, extra]); });
+  let card = render();
+  assert.equal(card.attrs['data-ask-kind'], 'same-person');
+  const imgs = [];
+  (function walk(n) { if (n.tagName === 'img') imgs.push(n); (n.children || []).forEach(walk); })(card);
+  assert.equal(imgs.length, 2);
+  assert.equal(imgs[0].attrs.alt, 'Left face Orion is asking about');
+  assert.equal(imgs[1].attrs.alt, 'Right face Orion is asking about');
+  const sends = [];
+  (function walk(n) { if (n.attrs && n.attrs['data-ask-action']) sends.push(n.attrs['data-ask-action']); (n.children || []).forEach(walk); })(card);
+  assert.deepEqual(sends, ['send'], 'one submit per card');
+  // Name boxes exist but stay hidden until a choice needs them.
+  const named = (c, k) => find(c, (n) => n.attrs && n.attrs['data-ask-name'] === k);
+  for (const k of ['same', 'left', 'right']) assert.ok(named(card, k), k);
+  const wrapOf = (c, k) => find(c, (n) => (n.children || []).includes(named(c, k)));
+  assert.equal(wrapOf(card, 'same').hidden, true);
+  assert.equal(wrapOf(card, 'left').hidden, true);
+  const pick = (c, v) => find(c, (n) => n.attrs && n.attrs['data-ask-choice'] === v).listeners.change();
+  const send = (c) => find(c, (n) => n.attrs && n.attrs['data-ask-action'] === 'send').listeners.click();
+
+  // Send with no choice: nothing posted, the card says what to do.
+  await send(card);
+  assert.equal(calls.length, 0);
+  assert.ok(find(card, (n) => /Pick Same person/.test(n.textContent)));
+
+  pick(card, 'same');
+  assert.equal(wrapOf(card, 'same').hidden, false);
+  assert.equal(wrapOf(card, 'left').hidden, true);
+  await send(card);                                   // no name: plain yes
+  named(card, 'same').value = '  Kid   next door ';
+  await send(card);                                   // one name for both
+  card = render();
+  pick(card, 'different');
+  assert.equal(wrapOf(card, 'same').hidden, true);
+  assert.equal(wrapOf(card, 'left').hidden, false);
+  assert.equal(wrapOf(card, 'right').hidden, false);
+  named(card, 'right').value = 'Maya';
+  await send(card);                                   // only the right face named
+  card = render();
+  pick(card, 'unsure');
+  await send(card);
+  assert.deepEqual(calls, [
+    ['p1', 'answer', 'yes', null],
+    ['p1', 'answer', 'yes', { names: { x: 'Kid next door', y: 'Kid next door' } }],
+    ['p1', 'answer', 'no', { names: { y: 'Maya' } }],
+    ['p1', 'dismiss', '', null],
+  ]);
+});
+
+test('samePersonSubmission: names only for the right choice, never for Not sure', () => {
+  const ids = ['x', 'y'];
+  assert.equal(asks.samePersonSubmission('', ids), null);
+  assert.deepEqual(asks.samePersonSubmission('unsure', ids, 'A', 'B', 'C'), { action: 'dismiss', answer: '', extra: null });
+  assert.deepEqual(asks.samePersonSubmission('same', ids, '', 'B', 'C'), { action: 'answer', answer: 'yes', extra: null });
+  assert.deepEqual(asks.samePersonSubmission('different', ids, 'A', 'B', ' '),
+    { action: 'answer', answer: 'no', extra: { names: { x: 'B' } } });
+  // A malformed source_ref: answer still works, no names.
+  assert.deepEqual(asks.samePersonSubmission('same', [], 'A'), { action: 'answer', answer: 'yes', extra: null });
+});
+
+test('a who-is-this card with three pictures asks about pictures 2 and 3', async () => {
+  const doc = fakeDoc();
+  const [a, b, c] = ['a2', 'b2', 'c2'].map((x) => 'thumb:' + x.repeat(32));
+  const calls = [];
+  const card = asks.renderAsk(doc, { ask_id: 'w3', question: 'Who is this?', source_kind: 'vision_individual',
+    source_ref: 'ind-1', image_ref: a, image_refs: [a, b, c] },
+  (id, action, text, _note, _res, extra) => { calls.push([id, action, text, extra]); });
+  const selects = [];
+  (function walk(n) { if (n.tagName === 'select') selects.push(n); (n.children || []).forEach(walk); })(card);
+  assert.deepEqual(selects.map((s) => s.attrs['data-ask-picture']), ['1', '2']);
+  assert.ok(selects.every((s) => s.value === 'same'), 'default: the same person');
+  // Every select has a real label.
+  for (const s of selects) assert.ok(find(card, (n) => n.tagName === 'label' && n.attrs.for === s.attrs.id));
+  const third = find(card, (n) => n.attrs && n.attrs['data-ask-name'] === 'picture-2');
+  const thirdWrap = find(card, (n) => (n.children || []).includes(third));
+  assert.equal(thirdWrap.hidden, true);
+  selects[1].value = 'different';
+  selects[1].listeners.change();
+  assert.equal(thirdWrap.hidden, false);
+  third.value = ' Other kid ';
+  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'w3' && n.attrs.placeholder).value = 'Theo';
+  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'answer').listeners.click();
+  assert.deepEqual(calls, [['w3', 'answer', 'Theo', { pictures: [
+    { image_ref: b, verdict: 'same' },
+    { image_ref: c, verdict: 'different', name: 'Other kid' },
+  ] }]]);
+});
+
+test('a who-is-this card with one picture sends no picture list', async () => {
+  const doc = fakeDoc();
+  const calls = [];
+  const card = asks.renderAsk(doc, { ask_id: 'w1', question: 'Who?', source_kind: 'vision_individual',
+    image_refs: ['thumb:' + 'a3'.repeat(32)] }, (id, action, text, _n, _r, extra) => { calls.push(extra); });
+  assert.equal(find(card, (n) => n.tagName === 'select'), null);
+  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'w1').value = 'Theo';
+  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'answer').listeners.click();
+  assert.deepEqual(calls, [undefined]);
+});
+
+test('pictureSubmission: unsure and unnamed someone-else carry no name', () => {
+  const v = [{ raw: 'r0' }, { raw: 'r1' }, { raw: 'r2' }, { raw: 'r3' }];
+  assert.equal(asks.pictureSubmission(v.slice(0, 1), {}, {}), null);
+  assert.deepEqual(asks.pictureSubmission(v, { 1: 'unsure', 2: 'different', 3: 'same' }, { 1: 'X', 2: '  ', 3: 'Y' }), [
+    { image_ref: 'r1', verdict: 'unsure' },
+    { image_ref: 'r2', verdict: 'different' },
+    { image_ref: 'r3', verdict: 'same' },
+  ]);
+});
+
+test('submitAction carries names / pictures only when there are some', async () => {
+  const bodies = [];
+  const fetchFn = async (url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, status: 200, json: async () => ({}) }; };
+  await asks.submitAction(fetchFn, 'p', 'answer', 'yes', undefined, { names: { x: 'A' } });
+  await asks.submitAction(fetchFn, 'p', 'answer', 'yes', undefined, { names: {} });
+  await asks.submitAction(fetchFn, 'w', 'answer', 'Theo', undefined, { pictures: [{ image_ref: 'r1', verdict: 'same' }] });
+  assert.deepEqual(bodies, [
+    { answer: 'yes', names: { x: 'A' } },
+    { answer: 'yes' },
+    { answer: 'Theo', pictures: [{ image_ref: 'r1', verdict: 'same' }] },
+  ]);
+});
+
+test('a picked choice keeps the poll from wiping the card', async () => {
+  const doc = fakeDoc();
+  const fetchFn = async () => ({ ok: true, status: 200, json: async () => ({ asks: [{ ask_id: 'p1', question: 'q',
+    source_kind: 'vision_same_individual', source_ref: 'x|y' }] }) });
+  const handle = asks.mount(doc, fetchFn);
+  await handle.refresh();
+  assert.equal(handle.isTyping(), false);
+  const card = doc.byId.visionAsksList.children[0];
+  find(card, (n) => n.attrs && n.attrs['data-ask-choice'] === 'different').listeners.change();
+  assert.equal(handle.isTyping(), true);
+  handle.stop();
+});
+
+test('a missing face says so instead of a broken image', () => {
+  const doc = fakeDoc();
+  const card = asks.renderAsk(doc, { ask_id: 'p2', question: 'Same?', source_kind: 'vision_same_individual',
+    image_refs: ['thumb:' + 'e1'.repeat(32), 'thumb:' + 'f1'.repeat(32)] }, () => {});
+  const img = find(card, (n) => n.tagName === 'img');
+  const gone = find(card, (n) => n.textContent === 'Picture no longer available.');
+  assert.equal(gone.hidden, true);
+  img.listeners.error();
+  assert.equal(img.hidden, true);
+  assert.equal(gone.hidden, false);
+});
+
+test('a refused free-text answer to a same-person card explains the buttons', () => {
+  assert.match(asks.errorLine(422, 'answer_must_be_yes_or_no'), /Same person/);
+});
+
+// "I don't know" (2026-10-27): typed non-answers ("no", "unsure") were being saved
+// as names. The who-is-this card has an explicit button instead of a word list.
+test('submitAction dismiss with dontKnow sends {reason: dont_know}', async () => {
+  const calls = [];
+  const fetchFn = async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  await asks.submitAction(fetchFn, 'a3', 'dismiss', '', undefined, { dontKnow: true });
+  assert.equal(calls[0].url, '/api/asks/a3/dismiss');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { reason: 'dont_know' });
+});
+
+test('a who-is-this card has an I don\'t know button; other cards do not', () => {
+  const doc = fakeDoc();
+  const who = asks.renderAsk(doc, { ask_id: 'w9', question: 'Do you know whose vehicle this is?',
+    source_kind: 'vision_individual', image_refs: ['thumb:' + 'c4'.repeat(32)] }, () => {});
+  const btn = find(who, (n) => n.attrs && n.attrs['data-ask-action'] === 'dont-know');
+  assert.ok(btn);
+  assert.equal(btn.textContent, "I don't know");
+  assert.ok(find(who, (n) => n.attrs && n.attrs['data-ask-action'] === 'dismiss'));
+  const other = asks.renderAsk(doc, { ask_id: 'o1', question: 'Anything?', source_kind: 'something_else' }, () => {});
+  assert.equal(find(other, (n) => n.attrs && n.attrs['data-ask-action'] === 'dont-know'), null);
+});
+
+test('I don\'t know posts a dont_know dismissal, ignores the typed box, and refreshes', async () => {
+  const doc = fakeDoc();
+  let open = [{ ask_id: 'v1', question: 'Do you know whose vehicle this is?', image_ref: '/mnt/x.jpg',
+    source_kind: 'vision_individual', source_ref: 'ind-v1' }];
+  const posts = [];
+  const fetchFn = async (url, init) => {
+    if (init && init.method === 'POST') {
+      posts.push({ url, body: init.body });
+      open = [];
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ asks: open }) };
+  };
+  const handle = asks.mount(doc, fetchFn);
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  // Whatever is in the box is not a name when she presses I don't know.
+  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'v1').value = 'unsure';
+  const btn = find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'dont-know');
+  const pending = btn.listeners.click();
+  assert.equal(btn.disabled, true);
+  await pending;
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, '/api/asks/v1/dismiss');
+  assert.deepEqual(JSON.parse(posts[0].body), { reason: 'dont_know' });
+  assert.equal(doc.byId.visionAsksStatus.textContent, 'Orion has no open questions for you.');
+  handle.stop();
+});
+
+test('an empty Answer on a who-is-this card points at I don\'t know', async () => {
+  const doc = fakeDoc();
+  let posted = false;
+  const fetchFn = async (url, init) => {
+    if (init && init.method === 'POST') posted = true;
+    return { ok: true, status: 200, json: async () => ({ asks: [{ ask_id: 'w2', question: 'q', source_kind: 'vision_individual' }] }) };
+  };
+  const handle = asks.mount(doc, fetchFn);
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  await handle.onAction('w2', 'answer', '  ', card.children[card.children.length - 1]);
+  assert.equal(posted, false);
+  assert.match(card.children[card.children.length - 1].textContent, /press I don't know/);
+  handle.stop();
+});

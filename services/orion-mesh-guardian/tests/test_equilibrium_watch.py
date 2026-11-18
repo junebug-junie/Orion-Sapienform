@@ -49,3 +49,23 @@ def test_equilibrium_bad_when_degraded_beyond_grace() -> None:
     bad, reason = equilibrium_status_for_service(_snapshot(svc), heartbeat_name="landing-pad", grace_sec=30)
     assert bad is True
     assert reason == "degraded_beyond_grace"
+
+
+def test_fresh_degraded_heartbeat_never_triggers_remediation() -> None:
+    """A heartbeat now says "degraded" while a bus listener reconnects or stays
+    down (bus_service_chassis._listener_heartbeat_status). That must not restart
+    the container: equilibrium's down_for_ms only measures heartbeat lateness, so
+    an on-time degraded heartbeat has down_for_ms=0. If down_for_ms ever starts
+    measuring time-in-degraded, this test must be revisited before shipping --
+    otherwise a stuck listener turns into a restart loop after grace_sec."""
+    svc = EquilibriumServiceState(
+        service="landing-pad",
+        status="degraded",
+        last_seen_ts=datetime.now(timezone.utc),
+        heartbeat_interval_sec=10.0,
+        down_for_ms=0,
+        details={"listeners": {"ok": False, "down": ["x"], "count": 1}},
+    )
+    bad, reason = equilibrium_status_for_service(_snapshot(svc), heartbeat_name="landing-pad", grace_sec=30)
+    assert bad is False
+    assert reason is None

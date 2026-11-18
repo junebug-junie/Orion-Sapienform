@@ -140,10 +140,9 @@ class Settings(BaseSettings):
     # lane, every time -- the exact `chat_turn` bug (2026-07-23, see
     # `_PER_KIND_COOLDOWN_SETTINGS_ATTR` in service.py) recurring in a new
     # place. Once `is_sustained_trend` goes true it typically STAYS true for
-    # many subsequent messages while the elevated run continues (same shape
-    # as `flow`'s sustained-plateau regime, not a per-turn event) -- 1800s
-    # default matches `metacog_flow_cooldown_sec`'s own reasoning exactly:
-    # re-announcing the same ongoing elevated regime every 30s would be noise.
+    # many subsequent messages while the elevated run continues (a sustained
+    # regime, not a per-turn event) -- 1800s: re-announcing the same ongoing
+    # elevated regime every 30s would be noise.
     metacog_repair_pressure_trend_cooldown_sec: float = Field(
         1800.0, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_COOLDOWN_SEC"
     )
@@ -153,13 +152,108 @@ class Settings(BaseSettings):
     # (recon_loss vs. its own train-time recon_error_p95), this service owns
     # the trigger-sensitivity knob via its own threshold multiplier rather
     # than trusting the producer's embedded "anomalous" flag.
+    # OFF 2026-11 until the mood-arc encoder is retrained (see .env_example).
     metacog_telemetry_anomaly_trigger_enable: bool = Field(
-        True, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE"
+        False, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE"
     )
     # Matches fit_encoder.py detect-anomalies's own --threshold-multiplier
     # default (3.0x the encoder's held-out recon_error_p95).
     metacog_telemetry_anomaly_threshold_multiplier: float = Field(
         3.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER"
+    )
+    # Episode gate (2026-10-13, orion/metacog/anomaly_episode.py): fire once per
+    # anomaly episode, not once per flagged 60s window. Off = the old
+    # per-window behaviour on the shared cooldown lane.
+    metacog_telemetry_anomaly_episode_enable: bool = Field(
+        True, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_ENABLE"
+    )
+    # An episode ends after this long with no flagged window: >= 2 calm 60s
+    # scoring windows. Live 15-day gap histogram: 90-149s gaps are single-window
+    # flicker around the threshold; 150s is where episodes separate.
+    metacog_telemetry_anomaly_episode_calm_gap_sec: float = Field(
+        150.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_CALM_GAP_SEC"
+    )
+    # After this many flagged windows within the trailing horizon (counted
+    # across episode closes, so a flickering outage still accumulates) a window
+    # fires even while a turn explains it: past the p75 turn length, and a hung
+    # turn is itself the symptom of a real outage (10-08). 0 disables it.
+    metacog_telemetry_anomaly_episode_sustained_windows: int = Field(
+        15, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_SUSTAINED_WINDOWS"
+    )
+    metacog_telemetry_anomaly_episode_sustained_horizon_sec: float = Field(
+        1800.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_SUSTAINED_HORIZON_SEC"
+    )
+    # Persisted open-episode state, so a restart mid-anomaly does not re-fire it.
+    metacog_telemetry_anomaly_episode_state_key: str = Field(
+        "equilibrium:telemetry_anomaly_episode:v1",
+        alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_STATE_KEY",
+    )
+    # self_signal_episode (spec 2026-10-07 section D, orion/metacog/
+    # self_signal_episode.py): a calibrated internal prediction-error node that
+    # stays high/unusual for itself (the attention seam's judge_candidate) for
+    # MORE than OPEN_DWELL_SEC within OPEN_WINDOW_SEC opens an episode (one
+    # LLM-drafted open row); CALM_GAP_SEC of continuous calm closes it (a
+    # deterministic close row, no prose). SILENT_CLOSE_SEC of absent/stale
+    # readings closes it as went_silent (never as calm). MAX_OPENS_PER_HOUR
+    # caps drafts across all signals. Live 7-day replay: ~9.5 opens/day.
+    # Reads substrate_node_prediction_error_history over
+    # EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI (read-only). OPEN_DWELL_SEC /
+    # OPEN_WINDOW_SEC govern poll-counted signals; continuous body signals
+    # (biometrics, bus_synaptic) use the attention contest's own 300 s / 600 s
+    # rule while ATTENTION_SUSTAINED_BODY_ENABLED is on.
+    metacog_self_signal_episodes_enabled: bool = Field(True, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_ENABLED")
+    # Continuous body signals must last (spec docs/superpowers/specs/2026-10-16-
+    # attention-continuous-signal-quota-design.md, option (b)). A body node the
+    # glossary marks as read every tick (biometrics, bus_synaptic) qualifies
+    # only when hot for more than 300 s of the last 600 s of its own readings
+    # and hot now (orion.attention.sustained). false = today's verdict exactly.
+    # Ships on (Juniper's rule).
+    attention_sustained_body_enabled: bool = Field(True, alias="ATTENTION_SUSTAINED_BODY_ENABLED")
+    metacog_self_signal_episodes_poll_interval_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_POLL_INTERVAL_SEC")
+    metacog_self_signal_episodes_open_dwell_sec: float = Field(300.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_OPEN_DWELL_SEC")
+    metacog_self_signal_episodes_open_window_sec: float = Field(600.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_OPEN_WINDOW_SEC")
+    metacog_self_signal_episodes_calm_gap_sec: float = Field(600.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_CALM_GAP_SEC")
+    metacog_self_signal_episodes_silent_close_sec: float = Field(3600.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_SILENT_CLOSE_SEC")
+    metacog_self_signal_episodes_max_opens_per_hour: int = Field(6, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_MAX_OPENS_PER_HOUR")
+    metacog_self_signal_episodes_state_key: str = Field("equilibrium:self_signal_episodes:v1", alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_STATE_KEY")
+    # Self-signal -> outcome association (spec 2026-10-07 section E; app/self_signal_outcome_rollup.py
+    # -> orion/attention/self_signal_outcomes.py, no LLM). Once per completed hour (+GRACE_SEC):
+    # each body signal's hour as high/normal/unknown + that hour's outcome counts (failed harness
+    # turns, repaired replies, RPC timeouts) -> self_signal_hour; then per (signal, outcome) the
+    # next-hour rate when high vs normal with a 95% interval -> self_signal_outcome_association.
+    # An episode open row carries the signal's association only when both sides have MIN_HOURS
+    # hours and the interval excludes 1. Rides the self_signal_episode poll loop and its PE cache;
+    # reads harness_turn_trace / transport_baseline_hourly / self_signal_hour read-only over
+    # EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI. Deploy orion-sql-writer FIRST (it creates the
+    # tables). Kill switch: false = no rows published, episode open rows exactly as before.
+    self_signal_outcome_association_enabled: bool = Field(
+        True, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED"
+    )
+    self_signal_outcome_min_hours: int = Field(24, ge=1, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_MIN_HOURS")
+    self_signal_outcome_grace_sec: float = Field(600.0, ge=0.0, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_GRACE_SEC")
+    # Repeated looks: the association is re-tested every hour, so a clause reaches an open row
+    # only after its verdict (same direction) held on each of the last CONSECUTIVE_HOLDS hourly
+    # computations; a missing hour or a different verdict resets the run. Same rule and default
+    # as orion-thought's SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS. 1 = the old newest-row rule.
+    self_signal_outcome_consecutive_holds: int = Field(
+        6, ge=1, le=48, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS"
+    )
+    # Leave windows led by a task_execution channel (glossary category) to the
+    # chat_turn trigger while a harness turn is active. Needs the episode gate.
+    metacog_telemetry_anomaly_turn_suppress_enable: bool = Field(
+        True, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TURN_SUPPRESS_ENABLE"
+    )
+    # How long a turn-derived channel can keep a window elevated after the
+    # turn's last delta: digester holds 90s (FIELD_DECAY_STALENESS_THRESHOLD_SEC)
+    # then decays 0.92/2s tick (~55s to 10%).
+    metacog_telemetry_anomaly_turn_carry_sec: float = Field(
+        150.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TURN_CARRY_SEC"
+    )
+    # An unclosed turn stops counting as active after this long with no harness
+    # grammar event (lost HarnessRunV1 + lost timeout). Live: longest in-turn
+    # silence between harness events p99 840s, max 855s (3 days, 182 turns).
+    metacog_telemetry_anomaly_turn_open_max_sec: float = Field(
+        900.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TURN_OPEN_MAX_SEC"
     )
 
     metacog_publish_verb_request: bool = Field(
@@ -222,8 +316,11 @@ class Settings(BaseSettings):
     # rpc_transport_timeout atom for that same timeout is dropped
     # (app/transport_timeout_owner.py). (The pooled rpc_health legacy timeout
     # branch was retired 2026-09-29; the atom owns timeouts while EMIT is off.)
+    # On since 2026-10-01: the first graded night passed 11 of 11 hops that can
+    # alert (no spike/saturation opened at rest), and every would-emit row
+    # matched a real timeout.
     transport_baseline_emit: bool = Field(
-        False, alias="EQUILIBRIUM_TRANSPORT_BASELINE_EMIT"
+        True, alias="EQUILIBRIUM_TRANSPORT_BASELINE_EMIT"
     )
     # Comma-separated health labels / verb names / whole hop keys that are
     # baselined and logged but never trigger. Default breaks metacog's self-loop.
@@ -283,16 +380,20 @@ class Settings(BaseSettings):
         True, alias="EQUILIBRIUM_TRANSPORT_BASELINE_HOURLY_PUBLISH_ENABLE"
     )
     # ---------------------------------------------------------------------
-    # Generative (non-rupture) metacog triggers: insight + flow.
+    # Generative (non-rupture) metacog trigger: insight.
     # docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md
     #
-    # Both read one already-live field, AttentionSelfModelV1.prediction_error_
+    # Reads one already-live field, AttentionSelfModelV1.prediction_error_
     # confidence, from `substrate_attention_self_model` (written every ~30s by
-    # orion-substrate-runtime's _attention_self_model_tick, PR #1459) as two
-    # different windowing functions -- insight looks for a low->high transition,
-    # flow looks for a sustained plateau. No new producer, reducer or schema.
+    # orion-substrate-runtime's _attention_self_model_tick, PR #1459) and looks
+    # for a low->high transition. No new producer, reducer or schema.
     #
-    # Both ship DISABLED. Matching the (since retired) bus_synaptic precedent (PR #1385 ->
+    # The sibling "flow" (sustained-plateau) trigger was RETIRED 2026-10-10:
+    # its plateau turned out to be the field's idle rest state, not a distinct
+    # state -- see docs/superpowers/pr-reports/2026-10-10-metacog-flow-trigger-
+    # calibration-pr.md. All EQUILIBRIUM_METACOG_FLOW_* keys are gone.
+    #
+    # Ships DISABLED in code. Matching the (since retired) bus_synaptic precedent (PR #1385 ->
     # #1387): a gate that dispatches a real MetacogTriggerV1 into orion_metacog
     # gets flipped on by a human only after its own post-merge live-data check,
     # separately from "is the underlying signal worth reading."
@@ -300,10 +401,7 @@ class Settings(BaseSettings):
     metacog_insight_trigger_enable: bool = Field(
         False, alias="EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE"
     )
-    metacog_flow_trigger_enable: bool = Field(
-        False, alias="EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE"
-    )
-    # One poll serves both gates -- same table, same row window, evaluated twice.
+    # One poll per interval; reads the trailing row window once.
     # Matches the ~30s cadence of the tick that writes the rows.
     metacog_generative_poll_interval_sec: float = Field(
         30.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_POLL_INTERVAL_SEC"
@@ -312,16 +410,11 @@ class Settings(BaseSettings):
         "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
         alias="EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI",
     )
-    # Own cooldown lanes, from day one. chat_turn shipped the shared-lane bug
+    # Own cooldown lane, from day one. chat_turn shipped the shared-lane bug
     # once already (a burst of one kind silently starved every other kind);
-    # see _PER_KIND_COOLDOWN_SETTINGS_ATTR in service.py. Generous defaults:
-    # both of these describe slow-moving regimes, not per-turn events, so
-    # re-announcing the same calm every 30s would be noise.
+    # see _PER_KIND_COOLDOWN_SETTINGS_ATTR in service.py.
     metacog_insight_cooldown_sec: float = Field(
         300.0, alias="EQUILIBRIUM_METACOG_INSIGHT_COOLDOWN_SEC"
-    )
-    metacog_flow_cooldown_sec: float = Field(
-        1800.0, alias="EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC"
     )
     # PROVISIONAL thresholds, pending the longer-window re-run scheduled
     # 2026-08-02. Picked in PR #1463's baseline pass to match this metric's real
@@ -336,26 +429,25 @@ class Settings(BaseSettings):
     metacog_insight_high_threshold: float = Field(
         0.90, alias="EQUILIBRIUM_METACOG_INSIGHT_HIGH_THRESHOLD"
     )
-    # Trailing rows fetched per poll. Must cover the widest window either
-    # detector needs (insight's max_ticks_to_cross + confirm, flow's min_ticks) --
-    # enforced in the poll loop rather than trusted, since setting this below
-    # flow's min_ticks would otherwise make flow a silent permanent no-op.
+    # Trailing rows fetched per poll. Must cover insight's max_ticks_to_cross +
+    # confirm_ticks -- enforced in the poll loop rather than trusted.
     metacog_generative_window_ticks: int = Field(
         20, alias="EQUILIBRIUM_METACOG_GENERATIVE_WINDOW_TICKS"
     )
     # Staleness guard. The tick that writes these rows is itself flag-gated
     # (SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED), so it can simply stop --
-    # and a frozen window still satisfies both gate conditions forever.
-    # Reproduced pre-fix: 20 rows all 3 days old fired the flow gate. 120s:
+    # and a frozen window can keep satisfying a gate condition forever.
+    # Reproduced pre-fix: 20 rows all 3 days old fired the (since retired)
+    # flow gate. 120s:
     # a few multiples of the write cadence, not a tight bound.
     metacog_generative_max_age_sec: float = Field(
         120.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_MAX_AGE_SEC"
     )
-    # Real cadence of the writing tick, used to convert both detectors' tick
+    # Real cadence of the writing tick, used to convert the detector's tick
     # windows into wall-clock bounds. Row adjacency is NOT tick adjacency: the
     # reader drops rows with a missing/non-finite confidence, so 20 "consecutive"
     # rows can span hours (reproduced pre-fix: a 20-row window covering 6.08h
-    # fired flow while reporting tick_count=20 as if it were 10 minutes).
+    # fired the since-retired flow gate as if it were 10 minutes).
     metacog_generative_expected_tick_sec: float = Field(
         30.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_EXPECTED_TICK_SEC"
     )
@@ -378,24 +470,16 @@ class Settings(BaseSettings):
     metacog_insight_confirm_ticks: int = Field(
         2, alias="EQUILIBRIUM_METACOG_INSIGHT_CONFIRM_TICKS"
     )
-    # Flow: min over the window >= floor AND stdev <= max_stdev. Calibrated
-    # 2026-07-30 against 2246 real 20-tick windows: at floor=0.90, 71 windows
-    # (3.2%) qualify -- selective but non-degenerate. floor=0.92 measured 0
-    # qualifying windows (degenerate, do not use). The variance ceiling is
-    # currently non-binding at floor=0.90 (identical 71 windows at 0.02/0.03/
-    # 0.05, since the field's ~0.977 ceiling squeezes any min>=0.90 window into
-    # a <0.08 band) and is kept for when the floor is lowered or the field's
-    # range shifts -- see detect_flow_regime's docstring. Provisional.
-    metacog_flow_floor: float = Field(0.90, alias="EQUILIBRIUM_METACOG_FLOW_FLOOR")
-    metacog_flow_max_stdev: float = Field(
-        0.02, alias="EQUILIBRIUM_METACOG_FLOW_MAX_STDEV"
-    )
-    # ~10 minutes of consecutive calm at a ~30s tick cadence.
-    metacog_flow_min_ticks: int = Field(20, alias="EQUILIBRIUM_METACOG_FLOW_MIN_TICKS")
-
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_transport_baseline_hourly: str = Field(
         "orion:equilibrium:transport_baseline:hourly", alias="CHANNEL_TRANSPORT_BASELINE_HOURLY"
+    )
+    channel_self_signal_hour: str = Field(
+        "orion:equilibrium:self_signal:hour", alias="CHANNEL_EQUILIBRIUM_SELF_SIGNAL_HOUR"
+    )
+    channel_self_signal_outcome_association: str = Field(
+        "orion:equilibrium:self_signal:outcome_association",
+        alias="CHANNEL_EQUILIBRIUM_SELF_SIGNAL_OUTCOME_ASSOCIATION",
     )
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
     channel_repair_pressure_appraisal: str = Field(

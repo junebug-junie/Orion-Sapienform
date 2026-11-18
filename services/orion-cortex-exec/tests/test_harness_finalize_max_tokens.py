@@ -64,36 +64,6 @@ def test_stance_react_uses_general_max_tokens_budget(monkeypatch) -> None:
     assert src == "settings.llm_chat_general_max_tokens_stance_react"
 
 
-def test_self_study_reflect_uses_general_max_tokens_budget(monkeypatch) -> None:
-    """Regression, 2026-09-04: self_study.reflect (Layer 3 real reflection,
-    PR #2080) was missing from this mapping too -- same disease as its six
-    siblings above, discovered the same way: live-confirmed
-    corr=871934fd-4095-55b6-82b0-a8784eda8998 hit payload_max_tokens=512
-    (this function's own un-special-cased default), completion_tokens=512,
-    finish_reason=length -- the agent-route reasoning model (Qwen3-27B)
-    spent its entire budget on reasoning_content (2417 chars) and never
-    wrote a single character of the strict-JSON findings answer, so
-    self_study.py's own json.loads() found nothing to parse. Same fix, same
-    settings field as its six siblings."""
-    import app.executor as executor_mod
-
-    monkeypatch.setattr(
-        executor_mod,
-        "settings",
-        SimpleNamespace(
-            llm_chat_general_max_tokens=8000,
-            llm_chat_max_tokens_default=512,
-            llm_dream_max_tokens=32768,
-            llm_chat_quick_max_tokens=384,
-            llm_memory_graph_suggest_max_tokens=4096,
-        ),
-    )
-    step = _step(verb_name="self_study.reflect", step_name="draft_self_study_reflection")
-    eff, _req, src = _resolve_llm_chat_max_tokens(step, {})
-    assert eff == 8000
-    assert src == "settings.llm_chat_general_max_tokens_self_study_reflect"
-
-
 def test_orion_response_repair_uses_general_max_tokens_budget(monkeypatch) -> None:
     import app.executor as executor_mod
 
@@ -113,3 +83,34 @@ def test_orion_response_repair_uses_general_max_tokens_budget(monkeypatch) -> No
     eff, src, _ = _resolve_llm_max_tokens(ctx={}, step=step)
     assert eff == 8000
     assert src == "harness_finalize_default"
+
+
+def test_orion_response_repair_context_budget_wins_and_thinking_is_forwardable(monkeypatch) -> None:
+    """The repair request's own context (orion/harness/finalize.py) carries max_tokens and
+    chat_template_kwargs; ctx.max_tokens must win over the 8000 general budget that let the
+    thinking-on agent lane spend every token reasoning (live 2026-09-28..30)."""
+    import app.executor as executor_mod
+    from orion.harness.finalize import build_response_repair_context
+    from orion.harness.tests.fixtures import make_reflection
+
+    monkeypatch.setattr(
+        executor_mod,
+        "settings",
+        SimpleNamespace(
+            llm_chat_general_max_tokens=8000,
+            llm_chat_max_tokens_default=512,
+            llm_dream_max_tokens=32768,
+            llm_chat_quick_max_tokens=384,
+            llm_memory_graph_suggest_max_tokens=4096,
+        ),
+    )
+    ctx = build_response_repair_context(
+        correlation_id="c-1",
+        draft_text="draft",
+        reflection=make_reflection(alignment_verdict="misaligned"),
+        user_message="hi",
+    )
+    step = _step(verb_name="orion_response_repair", step_name="llm_orion_response_repair")
+    eff, req, src = _resolve_llm_chat_max_tokens(step, ctx)
+    assert (eff, req, src) == (3072, 3072, "ctx.max_tokens")
+    assert ctx["chat_template_kwargs"] == {"enable_thinking": False}

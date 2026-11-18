@@ -147,7 +147,7 @@ explicitly deferred pending live data on whether tension volume drops enough aft
 | `NOTIFY_API_TOKEN` | (empty) | `orion-notify` auth token, if configured |
 | `LOG_LEVEL` | `INFO` | Python log level |
 | `FIELD_DIGESTER_PORT` | `8116` | Host port for `docker compose` (compose-only) |
-| `FIELD_CHANNEL_CORPUS_PATH` | (empty) | Field-channel raw-substrate corpus sink path — see section below. Empty/unset = disabled |
+| `FIELD_CHANNEL_CORPUS_PATH` | `/mnt/telemetry/field_channels/corpus/field_channels.jsonl` in compose/.env_example (code default empty) | Field-channel raw-substrate corpus sink path — see section below. Back on since 2026-11 to collect mood-arc retraining data. Empty/unset = disabled |
 | `CORPUS_SINK_MAX_BYTES` | `200000000` | Corpus sink rotation threshold (bytes) |
 | `CORPUS_SINK_ROTATED_KEEP` | `5` | Corpus sink rotated-file retention count |
 | `FIELD_SIGNIFICANCE_WINDOW_SECONDS` | `900.0` | Replay window for `sustained_load_pressure` — see section below |
@@ -230,7 +230,7 @@ recomputation only happens every `FIELD_SIGNIFICANCE_CHECK_INTERVAL_SEC`
 `sustained_load_pressure` in the returned dims dict on the tick that
 ACTUALLY recomputed it (`sustained_load_computed_at == generated_at`) — an
 unconditional read would feed ~15 duplicate "fresh" observations per real
-computation into `orion/proposals/scoring.py`'s per-dimension EWMA precision
+computation into the per-dimension EWMA precision
 tracking, biasing its variance estimate low. `deviation_pressure` has no
 such gate because it genuinely is fresh every tick.
 
@@ -243,7 +243,7 @@ measure_sustained_load_pressure.py --include-volatile`, 24h real replay,
 2026-08-18): `loaded_steady`-only correlates with `deviation_pressure` at
 r=-0.0313; widening to also count `loaded_volatile` gives r=-0.0021 — both
 essentially zero, so the correlation number does not itself justify the
-scope choice. See `orion/proposals/scoring.py`'s `PRESSURE_DIMENSIONS`
+scope choice. See `orion/field/pressure_dimensions.py`'s `PRESSURE_DIMENSIONS`
 comment and `orion/field/significance.py`'s own module docstring for the
 full write-up, including the disclosed flat-repeat-channel limitation (a
 channel held at an exactly flat value for the whole window reads `static` →
@@ -337,7 +337,7 @@ Requires a real trained artifact (`manifest.json` + `weights.npz`, written by `o
 
 **Converged onto `orion/mood_arc`'s own promotion mechanism, 2026-09-03.** Before this, `FIELD_CHANNEL_ANOMALY_ENCODER_DIR` was a literal versioned directory under a separate tree (`/mnt/telemetry/models/field_channel_anomaly/`), manually re-pointed by hand on every retrain -- disconnected from `orion/mood_arc/fit_encoder.py`'s own `promote`/`active.json` mechanism (`/mnt/telemetry/models/mood_arc/`). Two parallel "which model is active" mechanisms for the same encoder code was a real architectural gap (see `orion/mood_arc/README.md`'s "Status" note and `orion/inner_state_registry.py`'s `mood_arc_encoder.v1` entry for the full history of that disconnect and its correction). `FIELD_CHANNEL_ANOMALY_MODELS_ROOT` now points at that same shared tree -- train and promote a new version with `orion/mood_arc/fit_encoder.py train` + `promote` (see that module's own README), restart this service to pick it up, done. The old `field_channel_anomaly/` tree is retired; the table below is now a historical record of it, not a live path.
 
-Since `v4`'s manifest also needs 6 channels (`action_warrant`, `heartbeat_mean_ratio`, `prediction_error_{execution,chat,biometrics,bus_synaptic}`) that this service's own in-process row-building (`collect_field_channel_pressures()`) never produces, `app/anomaly_scorer.py` also does its own small live Postgres lookup for those 6 fields every tick (`orion.mood_arc.corpus_enrichment.resolve_live_enrichment()`, a live "latest value in a narrow trailing window" counterpart to the offline `enrich-corpus` batch join) -- reuses `POSTGRES_URI`, no new env key. A field with nothing in the trailing window is left absent from that tick's row (never fabricated as `0.0`), same convention as the offline join; a transient DB error skips live enrichment for one tick and self-heals the next, without disabling scoring itself.
+**Since 2026-11-07 (ladder retirement PR 6), `action_warrant` is computed in-process:** `app/worker.py` calls `orion.field.action_warrant.action_warrant(state)` on the tick's final state and writes it into the corpus row (absent, never `0.0`, when nothing can be scored), so the JSONL corpus and the anomaly scorer both carry it. Until then it was read back from `substrate_proposal_frames`, which the retired proposal runtime wrote from the same persisted state (300 of 300 live ticks recompute to the exact stored value). Since `v4`'s manifest also needs 5 more channels (`heartbeat_mean_ratio`, `prediction_error_{execution,chat,biometrics,bus_synaptic}`) that this service's own in-process row-building (`collect_field_channel_pressures()`) never produces, `app/anomaly_scorer.py` also does its own small live Postgres lookup for those 5 fields every tick (`orion.mood_arc.corpus_enrichment.resolve_live_enrichment()`, a live "latest value in a narrow trailing window" counterpart to the offline `enrich-corpus` batch join) -- reuses `POSTGRES_URI`, no new env key. A field with nothing in the trailing window is left absent from that tick's row (never fabricated as `0.0`), same convention as the offline join; a transient DB error skips live enrichment for one tick and self-heals the next, without disabling scoring itself.
 
 Every `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` (default 60s -- the encoder's own `window_size` is ~30 rows / ~60s at the default 2s tick cadence, so this scores a genuinely new window each check), the most recent complete window's reconstruction loss is published on `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` (`orion:field_channel:anomaly_score`) alongside the encoder's own train-time `recon_error_p95` reference. `orion-equilibrium-service`'s `telemetry_anomaly_metacog_gate.py` is one consumer -- it applies its own threshold multiplier rather than trusting this service's `FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER` (informational only here), so trigger sensitivity is tunable on the equilibrium side without redeploying this service. See `services/orion-equilibrium-service/README.md`'s matching section. A second, independent consumer: this same published score feeds the Hub's main-page Cognitive EKG / Substrate Brain State viz's "Field Anomaly" region, via `orion-substrate-runtime`'s `brain_frame_producer.py` -- see `orion/mood_arc/README.md`'s "Status" note for the full chain.
 
@@ -778,6 +778,75 @@ in code, on in `.env_example`). Not the same event as `inference_failure_pressur
 is the gateway's count of backend calls that came back with an error; this one is callers
 whose reply did not arrive before their own deadline, whatever the reason.
 
+## `write_failure_pressure` (2026-10-02)
+
+Storage writes that did not land, written only on `node:substrate.storage_write` by
+orion-substrate-runtime's storage_write reducer (`orion/substrate/storage_write_loop/`) from
+orion-sql-writer's own per-window write outcomes (`services/orion-sql-writer/app/write_health.py`).
+The reading is the worst table family's `failed / max(attempted, 10)` over the last 600 s of
+writer windows, 0.0 until a family has 2+ failures. Failures are writes that did not reach their
+table: validation/schema reject, constraint violation, serialization error, database
+unavailable, timeout, other DB error, grammar-queue shed. Idempotent duplicates are not failures
+and unrouted kinds are not counted (`fallback_watch` owns those). `mode="replace"`, NOT in
+`NODE_DECAY_CHANNELS`, in `EXPIRING_NODE_CHANNELS` at 180 s (three missed 60 s writer windows):
+a dead writer, a stopped reducer, or a Postgres outage long enough that the writer's own report
+cannot be stored all read as unmeasured, never as the last calm value. Single-observer: never
+seeded on any other node. The edge maps it to `capability:storage` `reliability_pressure`, which
+had no input before (athena's disk/memory biometrics only feed `pressure`). Gated by
+`ENABLE_STORAGE_WRITE_FIELD_DIGESTION` (default off in code, on in `.env_example`).
+
+## Unmeasured capability channels are absent (2026-10-07)
+
+When no edge source measured a capability channel this tick, `apply_diffusion()` drops the key
+(and its `capability_provenance` entry) instead of writing 0.0. If `pressure` is unmeasured, the
+derived `confidence` / `available_capacity` are dropped too, instead of being computed as
+`1 - 0` = 1.0. Before this, a capability whose inputs had all expired (`EXPIRING_NODE_CHANNELS`)
+read pressure 0.0, confidence 1.0, capacity 1.0: unmeasured looked perfect, and an eye reporting
+"no camera" (pressure 0.85) flipped to perfect the moment the frame router died.
+
+Reconcile re-seeds the default keys every tick (`_ensure_capability_vector`), so the drop has to
+happen in diffusion, the last writer before the tick is saved. A measured zero still writes 0.0
+with provenance (`measured_zero_source`), so for a channel an edge feeds, "absent" means "nobody
+measured it". Channels no edge ever feeds (e.g. graph/memory `reliability_pressure`, vision
+`contract_pressure`) still carry reconcile's seeded 0.0 with no provenance -- not a measurement;
+left for a follow-up. Exception (2026-11): `pressure` itself, and the derived `confidence` /
+`available_capacity`, are dropped for any capability that has edges but none into `pressure`.
+That became live when `capability:transport` lost its only pressure source
+(`node:substrate.bus_synaptic`, retired in PE suite rebuild step 5); without it transport would
+have read pressure 0.0 / confidence 1.0 with nothing measured. `node:substrate.bus_synaptic` and
+`node:substrate.route` are also on `RETIRED_PSEUDO_NODES` (pruned on reconcile, perturbations
+refused, tension baselines dropped). A capability->capability edge counts its source as measured only when the
+source channel has provenance (reconcile re-seeds the key itself). A derived confidence /
+available_capacity no longer keeps a direct edge's stale provenance: live, `capability:transport`
+confidence named `node:athena` on 123,095 / 123,095 ticks (72 h), left over from the direct
+confidence edge retired 2026-09-25.
+
+What this does not change (simulated outages on 2,051 real ticks, 72 h, against a frozen copy of the
+previous `apply_diffusion`, `scripts/eval_capability_unmeasured_replay.py`; the real 72 h held no
+capability-level outage at all):
+proposal dimensions, feedback credit, merged confidence and the attention pressure proxy read the
+same values and winners as before in every simulated outage, because an unmeasured 0.0 never won a
+max() and a fabricated 1.0 never won a min() while other capabilities were measured. The one
+difference (1 tick in 2,051) is the merged confidence winner's label, from the stale-provenance fix
+above. Partial coverage is not
+"unmeasured": `capability:transport` `reliability_pressure` kept node:athena's
+`observer_failure_pressure` reading (0.0 on every tick in that window) when the RPC bridge expired.
+**Superseded 2026-10-07:** `observer_failure_pressure` is retired (below), so an RPC-bridge outage now
+leaves transport reliability unmeasured (absent).
+
+## Field decisions follow-up (2026-10-07, #2534 decisions 1, 2, 4 and D3)
+
+- **D3:** `capability:transport.contract_pressure` renamed `catalog_drift_pressure` (same values);
+  persisted rows lose the old key on reconcile (`RETIRED_CAPABILITY_CHANNELS`).
+- **Decision 4:** `observer_failure_pressure` retired end to end (bus observer atom, reducer field,
+  node channel, topology edge mapping, glossary, lattice row, hub card). Transport reliability has one
+  source, the RPC delivery bridge, and reads unmeasured when it stops reporting.
+- **Decision 2** lives outside this service: attention novelty
+  (`orion/attention/field_attention/selectors.py`), reading the absent-key convention above.
+  Decision 1, the feedback credit guard (`orion/field/credit_integrity.py`), retired with the
+  feedback rung on 2026-11-04.
+- Replay: `scripts/eval_field_decisions_replay.py`.
+
 ## Retired: `stream_backlog_pressure` / `stream_backlog_health` / `delivery_confidence` (2026-09-25)
 
 Removed from `NODE_CHANNELS` (and `stream_backlog_pressure` from `CAPABILITY_CHANNELS`), with no
@@ -789,8 +858,9 @@ observer cannot publish, so 0.0 could never arrive). `RETIRED_NODE_CHANNELS` /
 `RETIRED_CAPABILITY_CHANNELS` in `app/tensor/channels.py` prune the names from every persisted vector
 on the next reconcile, including the stale capability-level `transport_pressure` left over from the
 2026-07-24 rename. The `capability:transport -> capability:orchestration` edge (whose source channel
-was never written) is deleted. Transport health lives on `capability:transport.pressure`
-(`node:substrate.bus_synaptic`), `catalog_drift_pressure`, `observer_failure_pressure` and RPC health.
+was never written) is deleted. Transport health lives on `catalog_drift_pressure` and RPC health
+(`observer_failure_pressure` retired 2026-10-07; `capability:transport.pressure` and its source
+`node:substrate.bus_synaptic` retired 2026-11).
 Historical sections below still name these channels; they describe the past.
 See `docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md`.
 
@@ -1583,6 +1653,23 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   yet wired to replace this channel or feed the field-digester corpus.
 
 #### `contract_pressure`
+> **2026-10-07 update (fix/transport-lattice-names-and-contract,
+> `docs/superpowers/specs/2026-10-07-transport-lattice-names-and-contract.md`):**
+> the **node-level** channel is retired (`RETIRED_NODE_CHANNELS`, no
+> successor). Its last producer was the bus observer's XREVRANGE schema
+> sample of two world_pulse streams: 0.0 on 123,412 of 123,412 ticks, and a
+> mesh-wide version would read 0 by construction because
+> `OrionBusAsync.publish()` validates every payload before sending. The
+> **capability-level** `capability:transport.contract_pressure` was 0.85 x
+> `node:athena` `catalog_drift_pressure` (topology channel_map) under a
+> misleading name. **Renamed to `catalog_drift_pressure` the same day**
+> (decision D3, approved by Juniper 2026-10-07; fix/field-decisions-d3-credit-
+> novelty-observer). Same values; the old key is pruned from persisted rows
+> (`RETIRED_CAPABILITY_CHANNELS`). The rename moved no downstream reading
+> (replay: `scripts/eval_field_decisions_replay.py`), because
+> `collect_field_channel_pressures()` max()-merges both levels by name and the
+> node reading always wins. The history below predates both changes.
+
 - **Meaning**: intended to represent pressure from bus/schema "contract"
   mismatches (the precise real-world condition isn't otherwise documented
   in code — it's perturbed from the same `transport_bus` hint dict as
@@ -1614,6 +1701,11 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   confirmed; a separate investigation is tracking the actual root cause.
 
 #### `catalog_drift_pressure`
+> **2026-10-07:** now also a **capability** channel: `capability:transport`
+> carries 0.85 x the `node:athena` reading (formerly named `contract_pressure`,
+> decision D3). It is the only channel name present at both levels; the
+> merged (node + capability) value is always the node's.
+
 - **Meaning**: intended to represent drift/staleness in the bus event
   "catalog" (schema registry) relative to what's actually flowing.
 - **Producer**: `transport_bus` delta, `hints["catalog_drift_pressure"]`,
@@ -1706,6 +1798,9 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   above was corrupting.
 
 #### `observer_failure_pressure`
+> **Retired 2026-10-07** (#2534 decision 4): 0.0 on 123,099 of 123,099 ticks; pruned via
+> `RETIRED_NODE_CHANNELS`. History below kept for reference.
+
 - **Meaning**: pressure from failures of the bus "observer" role
   (monitoring/subscriber-side failures).
 - **Producer**: `transport_bus` delta, `hints["observer_failure_pressure"]`,
@@ -1750,8 +1845,23 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 - **Meaning**: how much a recent prediction (from the prediction/surprise
   subsystem) missed reality.
 - **Producer**: `prediction_signal` delta, `hints["prediction_error"]`,
-  `max(0.0, min(1.0, ...))`, mode=`replace`. In `NODE_DECAY_CHANNELS`. Not a
-  diffusion source/target.
+  `max(0.0, min(1.0, ...))`, mode=`replace`. Removed from `NODE_DECAY_CHANNELS`
+  2026-07-26 (see `decay.py`). Not a diffusion source/target.
+- **Missing input is absent, never 0.0** (2026-11-10, PE suite rebuild spec
+  retire step 8). When the delta's `after` carries
+  `prediction_error_missing_reason` (the producer has no reading this tick:
+  camera embeddings stale, baseline warming, no new frame), the digester emits
+  a mode=`clear` perturbation: the node's `prediction_error` key and its
+  `node_vector_updated_at` stamp are dropped, so every consumer reads
+  "unmeasured". A reason wins over any value sent alongside it. Only the camera
+  surprise nodes (`node:substrate.perception`, `node:substrate.perception_walkway`)
+  send it today. Before this they sent a 0.0 placeholder that the field held as
+  a calm reading (live 2026-11-08 09:00:33-09:01:34, a 95 s embedding gap).
+  The same two nodes' `prediction_error` also expires after 180 s with no
+  write at all (`decay.py` `EXPIRING_NODE_CHANNELS_BY_NODE`, node-scoped so
+  slower writers such as `node:substrate.route` still hold), so a stopped
+  producer reads unmeasured instead of holding its last spike.
+  Test: `tests/test_prediction_signal_missing_is_absent.py`.
 - **SelfState dimension fed**: `channel_dimension_map`: `prediction_error` →
   `uncertainty` (direct).
 - **Live-data verdict**: quiet-so-far-but-correctly-wired, not dead. Flat
@@ -1961,7 +2071,7 @@ loads). New additive `FieldStateV1` fields: `dimension_precision_ewma`/`_var`/`_
 keyed by dimension id). A dimension absent from a given tick's `field_pressures()` is left
 untouched rather than absorbing a fabricated reading — same "absent this tick holds, doesn't fake
 zero" convention `_update_recent_perturbation_baseline` above already uses. Each dimension has its
-own hand-verified `min_variance` floor (`orion.proposals.scoring.DIMENSION_PRECISION_MIN_VARIANCE`)
+own hand-verified `min_variance` floor (`DIMENSION_PRECISION_MIN_VARIANCE`, in `orion/field/pressure_dimensions.py` since the proposal rung retired on 2026-11-07)
 — deliberately *not* reusing `execution_prediction_error`'s calibrated floor from PR #1434 the same
 night, after that PR found a shared default five orders of magnitude wrong when borrowed across
 domains without re-verification.

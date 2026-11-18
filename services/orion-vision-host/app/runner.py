@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import threading
+
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from loguru import logger
@@ -12,17 +15,35 @@ from PIL import Image
 
 import torch
 
-from orion.vision.caption_echo import strip_echoed_prompt_prefix
+from orion.vision.caption_echo import CAPTION_PROMPT, strip_echoed_prompt_prefix
 
 from .artifacts import merge_result_inputs
-from .caption_sanitize import CAPTION_PROMPT, sanitize_answer, sanitize_caption
-from .crop_embeddings import ThumbRateLimiter, ThumbStore, attach_crop_embeddings, load_zones_fail_closed
-from .detections import cap_by_score, nms
+from .box_thresholds import apply_box_thresholds, resolve_box_thresholds
+from .caption_sanitize import sanitize_answer, sanitize_caption
+from .crop_embeddings import (
+    ThumbRateLimiter,
+    ThumbStore,
+    attach_crop_embeddings,
+    crop_faces,
+    load_zones_fail_closed,
+)
+from .detections import cap_by_score, drop_undersized, nms
+from .gdino import detect_images
+from .tiling import (
+    merge_tiled_detections,
+    tile_layout,
+    tiling_params,
+    tiling_requested,
+    to_frame_coords,
+)
 from .model_manager import ModelManager
+from .osnet_shadow import MODEL_ID as OSNET_MODEL_ID
+from .osnet_shadow import OsnetShadow
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
 from .settings import Settings
-from .vlm_family import is_chat_template_vlm
+from .caption_crop import crop_for_caption
+from .vlm_family import caption_prompt_for, is_chat_template_vlm, matches_null_answer, resolve_caption_prompt
 from .when_guard import safe_when
 
 settings = Settings()
@@ -30,7 +51,35 @@ settings = Settings()
 _safe_when = safe_when
 
 _THUMB_STORE: ThumbStore | None = None
+_FACE_FRAMES: "FaceFrameStore | None" = None
+_FACE_FRAMES_LOCK = threading.Lock()   # tasks run via asyncio.to_thread, up to VISION_MAX_INFLIGHT at once
+
+
+def _face_frame_store():
+    """Frames where a face check found a face (app/face_frames.py). Empty VISION_FACE_FRAMES_DIR
+    disables it."""
+    global _FACE_FRAMES
+    from .face_frames import FaceFrameStore
+
+    raw = getattr(settings, "VISION_FACE_FRAMES_DIR", "")
+    root = raw.strip() if isinstance(raw, str) else ""
+    if not root:
+        return None
+    with _FACE_FRAMES_LOCK:
+        if _FACE_FRAMES is None or str(_FACE_FRAMES.root) != root:
+            if _FACE_FRAMES is not None:
+                _FACE_FRAMES.stop_pruner()
+            _FACE_FRAMES = FaceFrameStore(
+                root,
+                retention_days=float(getattr(settings, "VISION_FACE_FRAMES_RETENTION_DAYS", 0.0)),
+                min_interval_sec=float(getattr(settings, "VISION_FACE_FRAMES_MIN_INTERVAL_SEC", 5.0)),
+            )
+            _FACE_FRAMES.start_pruner()
+        return _FACE_FRAMES
 _THUMB_LIMITER = ThumbRateLimiter(float(getattr(settings, "VISION_CROP_THUMB_MIN_INTERVAL_SEC", 10.0)))
+# Face thumbnails (the ask card's preferred picture) get their own budget, so
+# a face is not starved by the crop thumbnail of a parked car in the same frame.
+_FACE_THUMB_LIMITER = ThumbRateLimiter(float(getattr(settings, "VISION_CROP_THUMB_MIN_INTERVAL_SEC", 10.0)))
 
 
 def _thumb_store() -> ThumbStore | None:
@@ -42,31 +91,52 @@ def _thumb_store() -> ThumbStore | None:
         return None
     if _THUMB_STORE is None or str(_THUMB_STORE.root) != root:
         _THUMB_STORE = ThumbStore(
-            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 10.0)))
+            root, retention_days=float(getattr(settings, "VISION_CROP_THUMB_RETENTION_DAYS", 0.0)))
         # Retention runs on its own daemon thread, never on the detect path.
         _THUMB_STORE.start_pruner()
     return _THUMB_STORE
 
 
-def _resolve_latest_frame_path() -> Path:
+# The camera "look now" means when the caller names none: the office camera.
+LATEST_FRAME_DEFAULT_STREAM = "cam0"
+
+
+def _latest_frame_prefix(stream_id: str) -> str:
+    """File prefix of one camera's frames: retina naming ``<camera>_<stream>_``
+    (orion-vision-retina app/frame_store.py; every camera's retina uses its
+    stream id as its camera id)."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stream_id).strip("_") or "unknown"
+    return f"{safe}_{safe}_"
+
+
+def _resolve_latest_frame_path(stream_id: str | None = None) -> Path:
     """The "on-demand capture" primitive P1's design doc calls for --
     docs/superpowers/specs/2026-08-12-perception-frontier-design.md names
     this explicitly as separate, larger work from the passive window/
     council pipeline ("bypassing window/council... a direct vision-host
-    RPC"). Doesn't trigger a NEW capture (vision-edge already captures
-    continuously regardless of any downstream consumer, confirmed live at
-    ~5s cadence) -- resolves to whatever it captured most recently, which
-    for a slow-moving room is the practical equivalent of "look now" without
-    inventing a second capture path. Raises (not a fabricated/empty result)
-    if the frames directory is empty or unreadable -- an honest "nothing to
-    look at" is the caller's problem to handle, not this function's to hide.
+    RPC"). Doesn't trigger a NEW capture (the camera's retina captures
+    continuously regardless of any downstream consumer) -- resolves to the
+    newest frame of ONE camera, ``stream_id`` (default: the office camera,
+    cam0), which for a slow-moving room is the practical equivalent of "look
+    now" without inventing a second capture path. Raises (not a
+    fabricated/empty result) if that camera has no frame -- an honest
+    "nothing to look at" is the caller's problem to handle, not this
+    function's to hide.
+
+    One camera, never "the newest file" (2026-11-04): the frames directory
+    is shared by every athena retina. The walkway writes 2 frames/s there,
+    so once the office camera moved from orion-vision-edge (15 frames/s) to
+    its own 2 frames/s retina, "look at the room" would have answered from
+    the walkway about half the time.
     """
     frames_dir = Path(settings.VISION_FRAMES_DIR)
     if not frames_dir.is_dir():
         raise FileNotFoundError(f"frames directory not found: {frames_dir}")
-    candidates = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    stream = str(stream_id or "").strip() or LATEST_FRAME_DEFAULT_STREAM
+    prefix = _latest_frame_prefix(stream)
+    candidates = sorted(frames_dir.glob(f"{prefix}*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
-        raise FileNotFoundError(f"no frames found in: {frames_dir}")
+        raise FileNotFoundError(f"no frames found for stream {stream!r} in: {frames_dir}")
     return candidates[0]
 
 
@@ -137,7 +207,8 @@ def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
       request.image_path (preferred)
       request.frame_path (alias)
       request.use_latest_frame: true -- resolves to the most recently
-        captured frame instead of a caller-supplied path (see
+        captured frame of request.stream_id (default cam0, the office camera)
+        instead of a caller-supplied path (see
         _resolve_latest_frame_path). Opt-in, not a silent fallback when
         image_path is merely absent -- every existing caller that relies on
         the prior "image_path is required" error for a genuinely missing
@@ -153,7 +224,7 @@ def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
             # percept store expires its own copy on its own schedule.
             return _load_image_from_percept_store(sha)
         if request.get("use_latest_frame"):
-            p = _resolve_latest_frame_path()
+            p = _resolve_latest_frame_path(request.get("stream_id"))
             img = Image.open(p).convert("RGB")
             return img
         raise ValueError(
@@ -194,6 +265,13 @@ class VisionRunner:
 
         self.models = ModelManager()
         self.warm_errors: Dict[str, str] = {}
+        # Shadow person re-identification vector (app/osnet_shadow.py). Its
+        # failures never reach warm_errors: OSNet is not allowed to make the
+        # host "not ready".
+        self.osnet = OsnetShadow(
+            enabled=bool(getattr(settings, "VISION_OSNET_SHADOW_ENABLED", True)),
+            weights_path=str(getattr(settings, "VISION_OSNET_WEIGHTS_PATH", "") or ""),
+        )
 
     def _is_enabled(self, name: str) -> bool:
         return name in self.enabled
@@ -249,7 +327,26 @@ class VisionRunner:
                 msg = str(e)
                 logger.warning(f"[WARM] profile={name} kind={p.kind} err={msg}")
                 self.warm_errors[name] = msg
+        if self.osnet.enabled and self._is_enabled("embed_image"):
+            # Load at start so its VRAM shows up before the first walkway frame
+            # and a missing weights file is logged at boot, not on frame one.
+            # Only where crop embeddings can run (a captioner-only host such as
+            # the circe Qwen lane never loads it; the crop path loads lazily).
+            self.osnet.warm(device)
         return warmed
+
+    def model_status(self) -> Dict[str, Any]:
+        """The models that ACTUALLY loaded (for /health and /ready).
+
+        ``body_embedder``: per embedder slot, the requested id, the loaded id,
+        and whether the loader fell back (SigLIP2 -> SigLIP v1 today).
+        ``osnet_shadow``: app/osnet_shadow.py's status.
+        """
+        body = {
+            f"{k.profile}@{k.device}": dict(v) for k, v in sorted(
+                self.models.embedder_status.items(), key=lambda kv: (kv[0].profile, kv[0].device))
+        }
+        return {"body_embedder": body, "osnet_shadow": self.osnet.status()}
 
     def _warm_profile_backend(self, p: ProfileDef, device: str) -> None:
         dtype = self._resolve_dtype(p)
@@ -625,8 +722,12 @@ class VisionRunner:
         if gallery_embedding is None:
             warnings.append("identity_gallery_not_enrolled")
 
-        faces, probs = mtcnn(img, return_prob=True)
+        # detect + extract is exactly what mtcnn(img) runs with keep_all=True, split so the face
+        # boxes are kept: face_frames saves each face at the source resolution from them.
+        boxes, probs = mtcnn.detect(img)
+        faces = mtcnn.extract(img, boxes, None) if boxes is not None else None
         candidates: List[Dict[str, Any]] = []
+        kept_boxes: List[List[float]] = []
 
         if faces is not None:
             # keep_all=True (model_manager.py's construction) always stacks
@@ -643,6 +744,7 @@ class VisionRunner:
             order = order[:max_faces]
             faces = faces[order]
             probs = [probs[i] for i in order]
+            kept_boxes = [[float(v) for v in boxes[i]] for i in order]
             if device.startswith("cuda"):
                 # Must match the embedder's own resident dtype (now
                 # dtype-aware per the review finding above) -- a plain
@@ -671,6 +773,25 @@ class VisionRunner:
                 )
         else:
             warnings.append("no_face_detected")
+
+        if candidates:
+            # Keep this frame: the camera buffer rolls over in ~65 s, and re-enrollment and
+            # sighting audits need the frames behind face matches and misses. Never fails the check.
+            try:
+                store = _face_frame_store()
+                if store is not None:
+                    store.save(str(request.get("stream_id") or request.get("camera_id") or "unknown"), img, {
+                        "candidates": candidates,
+                        "face_boxes": kept_boxes,      # in source_size pixels, not the shrunk saved frame
+                        "source_size": list(img.size),
+                        "image_source": request.get("image_source") or "stream_frame",
+                        "enrolled_subject": enrolled_subject,
+                        "image_path": request.get("image_path") or request.get("frame_path"),
+                        "match_threshold": match_threshold,
+                        "probable_threshold": probable_threshold,
+                    })
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"face_frame_save_failed:{type(exc).__name__}")
 
         return {
             "configured": True,
@@ -711,9 +832,12 @@ class VisionRunner:
 
         # `score_threshold` is the historical spelling in vision_profiles.yaml and
         # was silently ignored; honour it as an alias so the documented knob works.
-        box_th = float(
-            p.params.get("box_threshold", p.params.get("score_threshold", 0.25))
-        )
+        # Per-stream, per-label cut-offs (app/box_thresholds.py): the detector
+        # runs at the lowest cut-off that applies, then each box must reach its
+        # own label's. box_th stays this stream's default (reported as before).
+        thresholds = resolve_box_thresholds(p.params, request.get("stream_id"))
+        box_th = thresholds.default
+        detect_th = thresholds.floor
         text_th = float(p.params.get("text_threshold", 0.25))
         max_det = int(p.params.get("max_detections", 30))
         nms_iou = float(p.params.get("nms_iou", 0.6))
@@ -725,92 +849,108 @@ class VisionRunner:
             model_id=model_id,
         )
 
-        inputs = processor(images=img, text=text, return_tensors="pt")
-        inputs = self._cast_inputs_to_model_dtype(inputs, model, device)
+        def _cast(inputs: Dict[str, Any]) -> Dict[str, Any]:
+            return self._cast_inputs_to_model_dtype(inputs, model, device)
 
-        with torch.inference_mode():
-            outputs = model(**inputs)
+        def _detect(images: List[Any]) -> List[List[Dict[str, Any]]]:
+            raw = detect_images(model, processor, images, text, detect_th, text_th, device, _cast)
+            return [apply_box_thresholds(objs, thresholds) for objs in raw]
 
-        # target size: (h, w)
-        target_sizes = torch.tensor([[img.height, img.width]], device=device)
+        t_full = time.perf_counter()
+        objects = _detect([img])[0]
+        full_s = time.perf_counter() - t_full
 
-        # Robust call (transformers signature differences)
-        try:
-            results = processor.post_process_grounded_object_detection(
-                outputs=outputs,
-                input_ids=inputs.get("input_ids"),
-                box_threshold=box_th,
-                text_threshold=text_th,
-                target_sizes=target_sizes,
-            )
-        except TypeError:
-            results = processor.post_process_grounded_object_detection(
-                outputs,
-                inputs.get("input_ids"),
-                box_threshold=box_th,
-                text_threshold=text_th,
-                target_sizes=target_sizes,
-            )
-
-        r0 = results[0] if isinstance(results, list) and results else (results or {})
-
-        boxes = r0.get("boxes")
-        scores = r0.get("scores")
-        labels = r0.get("text_labels") or r0.get("labels") or []
-
-        if boxes is None or scores is None:
-            return {
-                "configured": True,
-                "implemented": True,
-                "kind": "detect_open_vocab",
-                "model_id": model_id,
-                "device": device,
-                "objects": [],
-                "note": "no boxes/scores returned",
-            }
-
-        boxes = boxes.detach().float().cpu().numpy()
-        scores = scores.detach().float().cpu().numpy()
-
-        # labels might be list[str] OR list[int]
-        if isinstance(labels, torch.Tensor):
-            labels = labels.detach().cpu().tolist()
-
-        objects = []
-        for i in range(min(len(scores), len(boxes))):
-            lab = labels[i] if i < len(labels) else "object"
-            if isinstance(lab, (int, float)):
-                lab = str(lab)
-            obj = {
-                "label": str(lab),
-                "score": float(scores[i]),
-                "box_xyxy": [float(x) for x in boxes[i].tolist()],
-            }
-            objects.append(obj)
+        # Tiled full-resolution pass (walkway only: the router sets
+        # request.detect_tiles on at most one frame per tiled_detect
+        # interval). Geometry comes from this profile's tile_* params.
+        tiling_stats = None
+        if tiling_requested(request):
+            tiling_stats = {"full_frame_s": round(full_s, 3)}
+            tp = tiling_params(p.params, request)
+            min_short = int(p.params.get("tile_min_short_side_px", 1200))
+            if min(img.width, img.height) < min_short:
+                tiling_stats["skipped"] = f"short_side<{min_short}"
+            else:
+                tiles = tile_layout(img.width, img.height, tp["grid"], tp["overlap"], tp["region"])
+                crops = [img.crop(t.as_box()) for t in tiles]
+                t_tiles = time.perf_counter()
+                budget = tp["time_budget_s"]
+                if tp["batch"]:
+                    per_tile = _detect(crops)
+                else:
+                    # Sequential, with a wall-clock budget: once the tiles
+                    # have used it up, the rest are skipped so a slow GPU
+                    # moment cannot push the task past the router timeout.
+                    per_tile = []
+                    for c in crops:
+                        if budget > 0 and per_tile and time.perf_counter() - t_tiles >= budget:
+                            break
+                        per_tile.append(_detect([c])[0])
+                tiles_s = time.perf_counter() - t_tiles
+                tile_objs = [
+                    to_frame_coords(o, t, img.width, img.height)
+                    for t, objs in zip(tiles, per_tile)
+                    for o in objs
+                ]
+                full_count = len(objects)
+                objects = merge_tiled_detections(
+                    objects if tp["include_full_frame"] else [],
+                    tile_objs,
+                    nms_iou,
+                    tp["contain_frac"],
+                    tp["seam_merge_frac"],
+                )
+                tiling_stats.update({
+                    "tiles": len(tiles),
+                    "tiles_run": len(per_tile),
+                    "grid": tp["grid"],
+                    "tiles_s": round(tiles_s, 3),
+                    "batched": tp["batch"],
+                    "full_frame_raw": full_count,
+                    "tile_raw": len(tile_objs),
+                    "merged": len(objects),
+                })
+                logger.info(
+                    f"[DETECT_TILES] stream={request.get('stream_id')} tiles={len(per_tile)}/{len(tiles)} "
+                    f"full_s={full_s:.3f} tiles_s={tiles_s:.3f} full_raw={full_count} "
+                    f"tile_raw={len(tile_objs)} merged={len(objects)}"
+                )
 
         # Suppress duplicate boxes before capping, so the cap spends its budget
         # on distinct objects rather than on six views of the same desk.
-        raw_count = len(objects)
+        # (A tiled merge is already NMS-ed; running it again is a no-op.)
+        raw_count = (
+            tiling_stats["full_frame_raw"] + tiling_stats["tile_raw"]
+            if tiling_stats and "tile_raw" in tiling_stats
+            else len(objects)
+        )
+        # Per-camera size floor (cam0: a desk photo of two people read as two
+        # tiny `person` boxes). See detections.drop_undersized.
+        floors = p.params.get("min_box_long_side_frac_by_stream") or {}
+        size_floor = floors.get(str(request.get("stream_id") or "")) if isinstance(floors, dict) else None
+        objects, undersized_dropped = drop_undersized(objects, size_floor or {}, img.width, img.height)
         objects = nms(objects, nms_iou)
         objects = cap_by_score(objects, max_det)
         if raw_count != len(objects):
             logger.debug(
-                f"[DETECT] profile={p.name} raw={raw_count} after_nms_and_cap={len(objects)} "
-                f"nms_iou={nms_iou} max_det={max_det}"
+                f"[DETECT] profile={p.name} raw={raw_count} undersized_dropped={undersized_dropped} "
+                f"after_nms_and_cap={len(objects)} nms_iou={nms_iou} max_det={max_det}"
             )
 
         crop_stats = None
         if request.get("want_crop_embeddings") is True and objects:
             try:
-                crop_stats = self._attach_crop_embeddings(p, objects, img, request, device, box_th)
+                # detect_th: every box that survived its own label's cut-off
+                # is eligible for a crop (equal to box_th when no label is lower).
+                crop_stats = self._attach_crop_embeddings(p, objects, img, request, device, detect_th)
             except Exception as exc:
                 # A crop-embedding failure must not cost the detection or the
                 # whole-frame embedding. Strip any partial vectors.
                 logger.warning(f"[CROP] crop embeddings failed, detections kept: {exc}")
                 for o in objects:
-                    o.pop("embedding", None)
-                    o.pop("embedding_ref", None)
-                    o.pop("thumb_ref", None)
+                    for k in ("embedding", "embedding_ref", "thumb_ref", "face_embedding", "face_score",
+                              "face_thumb_ref", "embedding_model_id", "osnet_embedding", "osnet_model_id"):
+                        o.pop(k, None)
                 crop_stats = {"error": 1, "error_detail": str(exc)[:200]}
 
         # Store as JSON artifact
@@ -826,12 +966,15 @@ class VisionRunner:
             "model_id": model_id,
             "prompts": prompts,
             "box_threshold": box_th,
+            "box_threshold_by_label": dict(thresholds.by_label),
             "text_threshold": text_th,
             "nms_iou": nms_iou,
             "max_detections": max_det,
+            "undersized_dropped": undersized_dropped,
             # Crop vectors ride the bus inline (VisionObject.embedding); the
             # on-disk debug copy keeps the ref only, not a second vector store.
-            "objects": [{k: v for k, v in o.items() if k != "embedding"} for o in objects],
+            "objects": [{k: v for k, v in o.items() if k not in ("embedding", "face_embedding", "osnet_embedding")}
+                        for o in objects],
         }
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -849,6 +992,7 @@ class VisionRunner:
             "frame_width": int(img.width),
             "frame_height": int(img.height),
             **({"crop_embeddings": crop_stats} if crop_stats is not None else {}),
+            **({"detect_tiles": tiling_stats} if tiling_stats is not None else {}),
         }
 
     def _attach_crop_embeddings(
@@ -873,6 +1017,13 @@ class VisionRunner:
             model, processor, _model_id = self._load_embedder(embed_profile, device)
             return self._embed_images(model, processor, crops, device)
 
+        # Read after the embedder ran (it loads lazily inside _embed), so a frame
+        # with nothing to embed never forces a load.
+        def body_model_id() -> Optional[str]:
+            return self.models.loaded_embedder_id(embed_profile.name, device)
+
+        osnet_fn = self.osnet.embed_fn(device)
+
         embed_model_id = (
             embed_profile.model_id
             if embed_profile.model_id and not embed_profile.model_id.startswith("REPLACE_ME")
@@ -883,6 +1034,9 @@ class VisionRunner:
             min_score = p.params.get("crop_embedding_min_score")
         min_score = float(box_th if min_score is None else min_score)
         thumb_store = _thumb_store()
+        face_fn = None
+        if request.get("want_crop_faces") is True:
+            face_fn = self._crop_face_fn(p, device)
         return attach_crop_embeddings(
             objects,
             img,
@@ -895,7 +1049,41 @@ class VisionRunner:
             min_score=min_score,
             thumb_fn=thumb_store.put if thumb_store is not None else None,
             thumb_limiter=_THUMB_LIMITER,
+            face_fn=face_fn,
+            face_thumb_limiter=_FACE_THUMB_LIMITER,
+            body_model_id=body_model_id,
+            osnet_fn=osnet_fn,
+            osnet_model_id=OSNET_MODEL_ID,
         )
+
+    def _crop_face_fn(self, p: ProfileDef, device: str):
+        """Faces inside walkway person crops, on the identity_face profile's
+        own MTCNN + InceptionResnetV1 (same model-manager cache slot when the
+        detect task runs on the same device as identity_face; another device
+        loads its own copy). Returns None (no faces this request) when that
+        profile is disabled. Never reads or writes Juniper's enrolled gallery:
+        the vector goes to the individuals reducer, not to identity matching.
+        """
+        face_profile_name = str(p.params.get("crop_face_profile") or "identity_face")
+        try:
+            face_profile = self.profiles.get_profile(face_profile_name)
+        except Exception as exc:
+            logger.warning(f"[CROP] crop face profile missing name={face_profile_name}: {exc}")
+            return None
+        if not face_profile.enabled or not self._is_enabled(face_profile_name):
+            return None
+        min_prob = float(p.params.get("crop_face_min_prob", 0.95))
+        min_side = float(p.params.get("crop_face_min_side_px", 40))
+        dtype = self._resolve_dtype(face_profile)
+
+        def _faces(crops: List[Image.Image]) -> List[Optional[Tuple[List[float], float, Image.Image]]]:
+            model, mtcnn = self.models.load_face_identity_models(
+                profile_name=face_profile.name, device=device, dtype=dtype, torch_home=settings.MODEL_CACHE_DIR
+            )
+            return crop_faces(crops, mtcnn=mtcnn, model=model, device=device,
+                              min_prob=min_prob, min_side_px=min_side)
+
+        return _faces
 
     # ------------------------
     # Real Captioning (VLM)
@@ -905,7 +1093,7 @@ class VisionRunner:
         model: Any,
         processor: Any,
         img: Image.Image,
-        text_prompt: str,
+        text_prompt: Optional[str],
         model_id: str,
         device: str,
         max_tokens: int,
@@ -927,8 +1115,14 @@ class VisionRunner:
         is not reliable against a chat template's special tokens, so this
         slices the reply by the real input token length instead, the
         standard Qwen2-VL usage pattern.
+
+        ``text_prompt=None`` on the plain path means unconditional generation
+        (the processor gets only the image), which is how a BLIP captioner is
+        meant to be called -- see ``vlm_family.caption_prompt_for``.
         """
         if is_chat_template_vlm(model_id):
+            if not text_prompt:
+                raise ValueError("chat-template VLM requires a text prompt")
             messages = [{
                 "role": "user",
                 "content": [{"type": "image"}, {"type": "text", "text": text_prompt}],
@@ -937,8 +1131,10 @@ class VisionRunner:
                 messages, tokenize=False, add_generation_prompt=True
             )
             inputs = processor(text=[chat_text], images=[img], return_tensors="pt")
-        else:
+        elif text_prompt:
             inputs = processor(images=img, text=text_prompt, return_tensors="pt")
+        else:
+            inputs = processor(images=img, return_tensors="pt")
 
         inputs = self._cast_inputs_to_model_dtype(inputs, model, device)
 
@@ -964,13 +1160,33 @@ class VisionRunner:
         device: str,
         warnings: List[str],
     ) -> Dict[str, Any]:
-        img = _load_image_from_request(request)
-
         # Use env defaults if not specified in profile
         model_id = settings.VISION_VLM_MODEL_ID
         if p.model_id and not p.model_id.startswith("REPLACE_ME"):
             model_id = p.model_id
 
+        # request.caption_prompt (walkway: people/animals/vehicles only) replaces
+        # the default on instruction-tuned VLMs only; see resolve_caption_prompt.
+        text_prompt, prompt_warning = resolve_caption_prompt(model_id, request)
+        if prompt_warning:
+            warnings.append(prompt_warning)
+            # The caller asked a question this model cannot follow (e.g. the
+            # qwen lane drifted back to BLIP). Answering with the model's own
+            # unprompted caption is exactly the walkway failure this prompt
+            # exists to prevent: no caption, with the reason.
+            return {
+                "configured": True,
+                "implemented": True,
+                "kind": "caption_frame",
+                "model_id": model_id,
+                "device": device,
+                "caption": {"text": "", "confidence": 0.0, "rejected_reason": "caller_prompt_unsupported"},
+            }
+
+        img = _load_image_from_request(request)
+        # Walkway: caption the detector's boxes, not the whole 2560x1920 frame
+        # shrunk to ~1 MP (app/caption_crop.py has the 2026-10-16 incident).
+        img, crop_box = crop_for_caption(img, request)
         dtype = self._resolve_dtype(p)
 
         model, processor = self.models.load_vlm_captioner(
@@ -982,7 +1198,11 @@ class VisionRunner:
             qwen_max_pixels=settings.VISION_VLM_QWEN_MAX_PIXELS,
         )
 
-        text_prompt = CAPTION_PROMPT
+        if text_prompt is None and "blip" not in model_id.lower():
+            # Unknown family: sent no prompt like BLIP. Instruction-tuned
+            # models outside vlm_family's allowlist (LLaVA, Florence-2) may
+            # need one -- add their markers to vlm_family when one ships.
+            logger.warning(f"caption_frame: unrecognized VLM family {model_id!r}; captioning with no prompt")
         max_tokens = settings.VISION_VLM_MAX_TOKENS
         temperature = settings.VISION_VLM_TEMPERATURE
 
@@ -995,11 +1215,34 @@ class VisionRunner:
         # silently failed to strip a lowercased echo of a mixed-case prompt.
         # For a chat-template model this is already a no-op safety net --
         # _generate_vlm_text already trimmed the reply by input token length.
-        cleaned = strip_echoed_prompt_prefix(generated_text, prompt=text_prompt)
-        caption_text, ok, reason = sanitize_caption(cleaned)
+        cleaned = (
+            strip_echoed_prompt_prefix(generated_text, prompt=text_prompt)
+            if text_prompt
+            else (generated_text or "").strip()
+        )
+        if matches_null_answer(cleaned, request.get("caption_null_answers")):
+            # The model said the agreed "nothing here" sentence: no caption,
+            # recorded as a rejection with its reason, never a caption at 1.0.
+            caption_text, ok, reason = None, False, "null_answer"
+        else:
+            caption_text, ok, reason = sanitize_caption(cleaned, prompt=text_prompt or CAPTION_PROMPT)
         if not ok:
             warnings.append(f"caption_rejected:{reason}")
-            caption_text = ""
+            # The model's own words, so a rejection streak can be read back
+            # (2026-10-16: 24/24 walkway "null_answer"s left no trace of what
+            # the model actually said or what it was shown).
+            # Caller-prompted tasks only (walkway); cam0 BLIP rejections stay quiet.
+            if request.get("caption_prompt"):
+                logger.info(
+                    "caption_frame rejected reason={} crop_box={} raw={!r}",
+                    reason, crop_box, (generated_text or "")[:200],
+                )
+            # A rejected caption is published as rejected, never as an empty
+            # string at full confidence (what every cam0 artifact carried
+            # before 2026-10-08, indistinguishable from a real result).
+            caption = {"text": "", "confidence": 0.0, "rejected_reason": reason}
+        else:
+            caption = {"text": caption_text, "confidence": 1.0}  # Placeholder for accepted text
 
         return {
             "configured": True,
@@ -1007,10 +1250,8 @@ class VisionRunner:
             "kind": "caption_frame",
             "model_id": model_id,
             "device": device,
-            "caption": {
-                "text": caption_text,
-                "confidence": 1.0 # Placeholder
-            }
+            "caption": caption,
+            "crop_box": list(crop_box) if crop_box else None,
         }
 
     # ------------------------
@@ -1079,6 +1320,9 @@ class VisionRunner:
         if not ok:
             warnings.append(f"answer_rejected:{reason}")
             answer_text = ""
+        # Same rule as captions: a rejected answer is never published at full
+        # confidence.
+        vqa_confidence = 1.0 if ok else 0.0
 
         return {
             "configured": True,
@@ -1089,6 +1333,7 @@ class VisionRunner:
             "vqa": {
                 "question": question,
                 "answer": answer_text,
-                "confidence": 1.0,  # Placeholder -- same convention _run_caption_frame uses.
+                "confidence": vqa_confidence,  # 1.0 is a placeholder for accepted text.
+                **({} if ok else {"rejected_reason": reason}),
             },
         }

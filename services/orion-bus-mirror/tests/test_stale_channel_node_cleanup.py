@@ -7,7 +7,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from stale_channel_node_cleanup import compute_stale_channel_candidates  # type: ignore
+from stale_channel_node_cleanup import _fetch_channel_rows, compute_stale_channel_candidates  # type: ignore
 
 
 def test_literal_uuid_reply_channel_is_a_candidate() -> None:
@@ -69,3 +69,20 @@ def test_mixed_batch_only_flags_the_stale_ones() -> None:
         "orion:vision:reply:aaaa-bbbb",
         "orion:vision:reply:cccc-dddd",
     }
+
+
+def test_fetch_pages_past_the_falkordb_resultset_cap() -> None:
+    # FalkorDB silently truncates any single result at RESULTSET_SIZE (10000
+    # by default). Live 2026-10-02 an unpaged fetch saw 10,000 of 118,112
+    # Channel nodes, so the cleanup reported <9% of the real debt.
+    names = [f"orion:gpu_pool:reply:{i:05d}" for i in range(12)]
+
+    class PagingClient:
+        def graph_query(self, cypher: str, params: dict | None = None) -> list[dict]:
+            assert "id(ch) > $after" in cypher
+            page = [i for i in range(len(names)) if i > params["after"]][: params["limit"]]
+            return [{"nid": i, "channel": names[i], "edge_count": 1} for i in page]
+
+    rows = _fetch_channel_rows(PagingClient(), page_size=5)
+
+    assert [r["channel"] for r in rows] == names

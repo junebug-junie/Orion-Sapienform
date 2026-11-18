@@ -16,12 +16,18 @@ rules:
   # condition at all beyond requires_goal_status -- flagged in the Wave 2a PR
   # report as a real, intentional narrowing of live gating semantics, not
   # silently absorbed.
+  # requires_world_goal (2026-11-10, Decision 1 of docs/superpowers/specs/
+  # 2026-11-08-prediction-error-suite-rebuild-design.md): the active goal must
+  # name a world source (chat, reading, camera surprise), not a body
+  # prediction-error node. Before this, 6,005 of 6,005 goals in the log window
+  # came from body signals, 39% from the broken bus_synaptic number.
   - capability_id: web.fetch.readonly
     side_effect_class: readonly
     auto_execute: true
     requires_goal_status: proposed
     required_signal_kinds: [world_coverage_gap]
     budget_per_cycle: 2
+    requires_world_goal: true
   - capability_id: journal.compose.episode
     side_effect_class: write
     auto_execute: true
@@ -46,3 +52,4 @@ rules:
     requires_goal_status: proposed
     required_signal_kinds: [world_coverage_gap]
     budget_per_cycle: 2
+    requires_world_goal: true

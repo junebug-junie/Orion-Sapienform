@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from orion.memory.low_info_social import is_low_info_social
+from orion.memory.intake_junk import prompt_junk_reason
 
 _SHIFT_FORCE = frozenset({"TOPIC", "STANCE", "REPAIR"})
 
@@ -55,11 +55,22 @@ def consolidation_memory_gate(
             best_novelty = n
             dominant_shift = shift
 
-    all_low_info = all(
-        is_low_info_social(str(t.get("prompt") or ""))
-        and is_low_info_social(str(t.get("response") or ""))
-        for t in turns
-    ) if turns else True
+    # Judge the USER's prompt alone. Orion's reply is almost never small talk,
+    # so "prompt AND response are low-info" was never true and greetings and
+    # Hub skill commands sailed through as "substantive". This runs BEFORE the
+    # repair shortcut: a repair signal on "sup" is still "sup".
+    junk_reasons = [prompt_junk_reason(str(t.get("prompt") or "")) for t in turns]
+    all_low_info = all(r is not None for r in junk_reasons) if turns else True
+    if all_low_info:
+        kinds = sorted({r for r in junk_reasons if r is not None}) or ["low_info_social"]
+        return ConsolidationGateResult(
+            action="skip",
+            reasons=kinds,
+            dominant_shift=None,
+            grammar_event_ids=list(grammar_event_ids or []),
+            window_novelty_max=novelty_max,
+            window_significance_max=significance_max,
+        )
 
     if grammar_repair_signal:
         return ConsolidationGateResult(
@@ -88,9 +99,16 @@ def consolidation_memory_gate(
 
     # A bare novelty/significance float has no relation to whether the text has
     # any content -- a noisy/high score on a low-info turn (e.g. "hi") was
-    # sailing through to crystallization. Require the window not be all
-    # low-info-social as corroboration before trusting the float alone.
-    if novelty_max >= min_novelty and not all_low_info:
+    # sailing through to crystallization. The all-junk return above is the
+    # corroboration: past it, at least one prompt has real content.
+    #
+    # NOTE (Stage 0A review): past the junk return, every window proposes --
+    # through one of the branches below or the `substantive_text` fallback.
+    # The novelty/significance floors can no longer cause a skip; they only
+    # choose the reason recorded on the row. Whether a non-junk window is
+    # worth a memory is the Stage 1 writer's judgment
+    # (docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md).
+    if novelty_max >= min_novelty:
         return ConsolidationGateResult(
             action="propose",
             reasons=["novelty_above_floor"],
@@ -100,7 +118,7 @@ def consolidation_memory_gate(
             window_significance_max=significance_max,
         )
 
-    if significance_max >= min_significance and not all_low_info:
+    if significance_max >= min_significance:
         return ConsolidationGateResult(
             action="propose",
             reasons=["significance_above_floor"],
@@ -110,11 +128,9 @@ def consolidation_memory_gate(
             window_significance_max=significance_max,
         )
 
-    has_substantive_text = any(
-        not is_low_info_social(str(t.get("prompt") or ""))
-        or not is_low_info_social(str(t.get("response") or ""))
-        for t in turns
-    ) if turns else False
+    # Always true here (an all-junk window returned above); kept explicit so
+    # the reason recorded on the row still says why it was admitted.
+    has_substantive_text = any(r is None for r in junk_reasons)
     if has_substantive_text:
         return ConsolidationGateResult(
             action="propose",
@@ -124,9 +140,6 @@ def consolidation_memory_gate(
             window_novelty_max=novelty_max,
             window_significance_max=significance_max,
         )
-
-    if all_low_info:
-        reasons.append("low_info_social")
 
     if novelty_max < min_novelty:
         reasons.append("novelty_below_floor")

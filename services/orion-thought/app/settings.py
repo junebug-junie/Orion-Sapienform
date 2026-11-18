@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import AliasChoices, Field
@@ -80,6 +81,11 @@ class ThoughtSettings(BaseSettings):
     # completed correctly at 122s was thrown away at 120.006s. Must stay under
     # Hub's own TIMEOUT_SEC=400 outer wait. See services/orion-thought/.env_example.
     stance_react_timeout_sec: float = Field(360.0, alias="STANCE_REACT_TIMEOUT_SEC")
+    # Unified-turn latency L4 (2026-10-06): send cortex-exec a
+    # stance_context_prepare at the same time as the orion-mind call, so the
+    # ~9 s stance context build overlaps mind instead of following it. Off ->
+    # stance_react builds its context after mind, as before.
+    stance_prepare_parallel_enabled: bool = Field(True, alias="ORION_THOUGHT_STANCE_PREPARE_PARALLEL")
 
 
     # --- Reverie: spontaneous-thought mode (Phase A, default-off) ---
@@ -144,6 +150,32 @@ class ThoughtSettings(BaseSettings):
         "carbon,cam0", alias="ORION_REVERIE_PERCEPTION_STREAM_IDS"
     )
 
+    # 2026-10-15 (walkway into the mind): what is outside, on the walkway,
+    # as its OWN reverie input next to the room percepts above -- never merged
+    # into them, never seen by the room-only expectation judge. Captions are
+    # the latest distinct walkway narratives within MAX_AGE_SEC; graded are
+    # the rhythm reducer's met/missed expectations within the lookback, each
+    # with the subject's 14-day hit rate. Empty stream ids switch both off.
+    reverie_street_enabled: bool = Field(True, alias="ORION_REVERIE_STREET_ENABLED")
+    reverie_street_stream_ids: str = Field("walkway,doorbell", alias="ORION_REVERIE_STREET_STREAM_IDS")
+    reverie_street_max_age_sec: float = Field(900.0, alias="ORION_REVERIE_STREET_MAX_AGE_SEC")
+    reverie_street_max_events: int = Field(2, alias="ORION_REVERIE_STREET_MAX_EVENTS")
+    reverie_street_graded_lookback_hours: float = Field(
+        24.0, alias="ORION_REVERIE_STREET_GRADED_LOOKBACK_HOURS"
+    )
+    reverie_street_graded_max: int = Field(4, alias="ORION_REVERIE_STREET_GRADED_MAX")
+    reverie_street_timezone: str = Field("America/Denver", alias="ORION_REVERIE_STREET_TIMEZONE")
+    # 2026-10-23 (walkway day line): today's running walkway day rollup line
+    # (people as a range, via orion.vision.walkway_rollup.display_line); never
+    # yesterday's. Cut at a clause boundary to MAX_CHARS; a row that cannot be
+    # shown honestly is dropped. Same stream ids and timezone as the street captions above.
+    reverie_street_day_enabled: bool = Field(True, alias="ORION_REVERIE_STREET_DAY_ENABLED")
+    reverie_street_day_max_chars: int = Field(480, alias="ORION_REVERIE_STREET_DAY_MAX_CHARS")
+
+    @property
+    def reverie_street_stream_id_list(self) -> list[str]:
+        return [p.strip() for p in (self.reverie_street_stream_ids or "").split(",") if p.strip()]
+
     # Read by app/vision_reader.py via the environment (same key as
     # orion/situational/perception_reader.py); declared here so it is visible.
     vision_events_legacy_cutoff: str = Field(
@@ -163,9 +195,10 @@ class ThoughtSettings(BaseSettings):
     # on: (a) a newly-set expectation gets an `expectation_checkable_by`
     # window opened on it, and (b) every tick spends at most one bounded
     # judge-LLM call resolving the single most-overdue still-pending
-    # expectation against a fresh percept (confirmed/disconfirmed) -- or, if
-    # no fresh-enough percept exists, writes "unscored" with no LLM call at
-    # all. Never fabricates a confirmed/disconfirmed verdict on stale or
+    # expectation against every room caption from its own check window,
+    # creation to checkable_by (confirmed/disconfirmed; #3403) -- or, if
+    # the room camera wrote nothing in that window, writes "unscored" with
+    # no LLM call at all. Never fabricates a confirmed/disconfirmed verdict on stale or
     # ambiguous evidence -- same honesty discipline as PerceptionContextV1's
     # staleness gate (P4). Flag off means this is a complete no-op: no pending
     # scan, no judge call, no checkable window ever opened.
@@ -190,15 +223,29 @@ class ThoughtSettings(BaseSettings):
     reverie_no_coalition_max_repeats: int = Field(
         3, alias="ORION_REVERIE_NO_COALITION_MAX_REPEATS"
     )
-    reverie_drift_temp: float = Field(0.7, alias="ORION_REVERIE_DRIFT_TEMP")
+    # Temporal Self rev 4, R3 reader 5: while Orion's arousal (Redis orion:regulation:latest,
+    # written by orion-durable-runs) reads `strained`, the pause between reverie chains is
+    # multiplied (each chain step is a background-lane LLM call). Read right before each pause.
+    # Missing / stale / unknown / Redis down / flag off = today's interval.
+    reverie_chain_arousal_enabled: bool = Field(True, alias="ORION_REVERIE_CHAIN_AROUSAL_ENABLED")
+    # No `ge` bound on purpose: a value at or below 1 must change nothing (chain.py guards it),
+    # not stop the service from booting.
+    reverie_chain_arousal_strained_multiplier: float = Field(
+        2.0, alias="ORION_REVERIE_CHAIN_AROUSAL_STRAINED_MULTIPLIER"
+    )
+    regulation_reader_max_age_sec: float = Field(
+        360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"
+    )
     channel_reverie_chain: str = Field(
         "orion:reverie:chain",
         alias="CHANNEL_REVERIE_CHAIN",
     )
 
-    # --- Reverie grounding (Phase D, default-off, read-only) ---
-    reverie_ground_consolidation: bool = Field(
-        False, alias="ORION_REVERIE_GROUND_CONSOLIDATION"
+    # --- Reverie grounding (Phase D, read-only): recent rung-4 episode ids. Renamed from
+    # ORION_REVERIE_GROUND_CONSOLIDATION when the consolidation rung (its motif half) was killed
+    # 2026-11-04. ON, as it was live. ---
+    reverie_ground_episodes: bool = Field(
+        True, alias="ORION_REVERIE_GROUND_EPISODES"
     )
 
     # --- Compaction request (Phase E, default-off, queue only) ---
@@ -260,6 +307,33 @@ class ThoughtSettings(BaseSettings):
     # from reverie_chain above; sequential single-flight by construction (see
     # visual_chain.py module docstring), not a check-and-set marker.
     visual_chain_enabled: bool = Field(False, alias="ORION_VISUAL_CHAIN_ENABLED")
+    # Act ledger (rung 2, "doing on one track"): each durable painting run publishes a
+    # ``make`` act (act_opened on prepare, act_closed on produced/terminal/abandon) to
+    # orion:grammar:event; orion-sql-writer persists and grades it into L10.
+    thought_act_ledger_enabled: bool = Field(True, alias="THOUGHT_ACT_LEDGER_ENABLED")
+    # Body economy Patch C3b: the painting / dream-hop generate step places a SHADOW bid
+    # (orion.physiology.client -> durable-runs POST /physiology/bid) and logs it beside the step's
+    # real outcome (app/physiology_shadow.py). Never obeyed; off = no bid, no log line.
+    thought_physiology_shadow_bid_enabled: bool = Field(True, alias="THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED")
+    # Ladder retirement PR 2 (2026-11-05): Orion starts its own waking paintings
+    # (app/painting_self_start.py): the visual-baseline schedule (config/reverie/visual_baseline.v1.yaml,
+    # 5400 s after each painting, 600 s retry), arousal deferral, the self-monitor act gate, a SHADOW
+    # hunger bid on thought.painting, then one reverie.visual durable run (POST <url>/runs). The
+    # proposal template render_scene and proposal-runtime's baseline read are gone: this is the only
+    # trigger. Off = Orion paints only when a dream hop or a manual run asks.
+    painting_self_start_enabled: bool = Field(True, alias="ORION_PAINTING_SELF_START_ENABLED")
+    painting_self_start_tick_sec: float = Field(60.0, gt=0.0, alias="ORION_PAINTING_SELF_START_TICK_SEC")
+    painting_self_start_durable_runs_url: str = Field(
+        "http://orion-athena-durable-runs:8121", alias="ORION_PAINTING_SELF_START_DURABLE_RUNS_URL"
+    )
+    # Temporal Self rev 4, R3 reader 4 (moved from orion-proposal-runtime with the schedule, same
+    # name): while arousal reads `strained`, a due baseline painting is deferred by retry_sec.
+    visual_baseline_arousal_enabled: bool = Field(True, alias="ORION_VISUAL_BASELINE_AROUSAL_ENABLED")
+    # Self-monitor E1 (orion/self_monitor/gate.py), the gate execution-dispatch held for this act:
+    # a painting faculty held broken/unreliable is refused `track_record_failing`, except one
+    # re-test probe per window. Same names and defaults as orion-execution-dispatch-runtime.
+    self_monitor_act_gate_enabled: bool = Field(True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    self_monitor_probe_interval_sec: float = Field(21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
     # Slower than the text chain's ~90s cadence (design doc §4: "slower cadence
     # than the text chain"). Real cadence is max(this, actual run duration) --
     # intentional, not a bug (design doc §4).
@@ -308,13 +382,9 @@ class ThoughtSettings(BaseSettings):
     cabinet_sensors_timeout_sec: float = Field(
         3.0, alias="ORION_CABINET_SENSORS_TIMEOUT_SEC"
     )
-    # Trip and re-arm. Re-arm is deliberately COOLER than the trip: a bare
-    # threshold on a wandering reading flaps every tick, and a gate that flaps
-    # is worse than no gate. 32.0 sits below the ~34C Juniper reported on
-    # 2026-08-30 so it can actually fire; a threshold nothing crosses is a
-    # switch that changes nothing.
-    thermal_hot_c: float = Field(32.0, alias="ORION_THERMAL_HOT_C")
-    thermal_hot_rearm_c: float = Field(30.5, alias="ORION_THERMAL_HOT_REARM_C")
+    # Trip and re-arm lines are NOT settings: they are owned by
+    # orion/autonomy/thermal_gate.py (DEFAULT_HOT_C / DEFAULT_HOT_REARM_C) and read
+    # from there by visual_chain.py (body economy Patch B: one owner for the hot line).
     # 30s (this field's original value) was tuned for sdxl-turbo's
     # single-step, near-instant generation. Real bug, caught live
     # 2026-08-28 the same day orion-diffusion-host swapped to
@@ -375,6 +445,33 @@ class ThoughtSettings(BaseSettings):
     # without false-alarming, still catches a real wedge well under an hour in.
     visual_chain_staleness_threshold_min: float = Field(
         45.0, alias="ORION_VISUAL_CHAIN_STALENESS_THRESHOLD_MIN", gt=0
+    )
+    # Painting-gap check (2026-10-10): hours since the last PRODUCED painting
+    # (production receipt). Own loop started from main.py, NOT gated on
+    # visual_chain_enabled (legacy worker flag, off in production -- which is
+    # why the staleness watchdog above never ran during the 27.6 h 10-09/10
+    # outage). Fires orion-notify severity "error". Threshold picked in-sample
+    # on 2026-09-14..10-10: no gap between 7.6 h and 14.7 h, see
+    # evals/test_painting_gap_replay.py.
+    visual_painting_gap_check_enabled: bool = Field(
+        True, alias="ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED"
+    )
+    visual_painting_gap_threshold_hours: float = Field(
+        12.0, alias="ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS", gt=0
+    )
+    visual_painting_gap_check_interval_sec: float = Field(
+        600.0, alias="ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC", gt=0
+    )
+    # Failed-attempt streak (2026-10-20, same loop as the gap check): N painting attempts in a
+    # row (reverie_visual_attempt) produced nothing -> CRITICAL card (emailed at once). 6 = one
+    # more than the longest ordinary streak 2026-09-14..10-19; every streak >= 6 was an outage
+    # (35 on 10-16, 16 on 10-09, 9 on 10-08 and 09-25). See evals/test_attempt_streak_replay.py.
+    # Runs inside the painting-gap loop: ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=false stops it too.
+    visual_attempt_streak_check_enabled: bool = Field(
+        True, alias="ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED"
+    )
+    visual_attempt_failure_streak_threshold: int = Field(
+        6, alias="ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD", ge=1
     )
     # How often the watchdog re-checks reverie_visual_chain's newest row age.
     # 600s (not field-digester's own 900s precedent -- review finding, fixed:
@@ -505,6 +602,10 @@ class ThoughtSettings(BaseSettings):
         3, alias="ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS"
     )
 
+    # Source repointed 2026-11-07 (ladder retirement PR 6): curiosity's self-inquiry
+    # answers (self_concept_history, ~6 a day; a 6 h window holds one 78.7% of the
+    # time, read live), because the analysis rows below had one trigger, the retired
+    # dispatch rung. The history that follows is about the old source.
     # Patch 5 (design doc §16): a second, richer context-seed alongside
     # reverie_context_* above -- self_study_analysis.py's four deterministic
     # window-contrast analyses (concept induction, vision events, affective
@@ -535,19 +636,23 @@ class ThoughtSettings(BaseSettings):
     self_study_context_max_age_sec: float = Field(
         21600.0, alias="ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC", gt=0
     )
+    # Stage 2 PR G: visual reverie reads the validated episode-memory store by
+    # default. ``crystallization`` is a bounded rollback while the legacy
+    # reader remains present; Stage 2 PR H removes that reader at cutover.
+    visual_memory_seed_source: Literal["episode_memory", "crystallization"] = Field(
+        "episode_memory", alias="REVERIE_VISUAL_MEMORY_SEED_SOURCE"
+    )
     memory_crystallization_context_char_limit: int = Field(
         _MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS,
         alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT",
         gt=0,
     )
-    # 604800s (7 days), NOT self_study_context_max_age_sec's 6h -- that 6h
-    # value was wrongly copied from self-study without checking whether it
-    # fits (real bug, caught live 2026-08-28: the 6h default meant this
-    # context-seed read empty on every single tick, because a
-    # crystallization is not a time-window-bound comparison the way a
-    # self-study body is ("the last 6h against the 6h before it") -- a
-    # crystallized memory from yesterday is still a real memory, it doesn't
-    # go stale on that clock.
+    # 604800s (7 days), NOT self_study_context_max_age_sec's 6h. Stage 2
+    # episode-memory eligibility is explicitly bounded to seven days; the
+    # same field remains wired to the legacy crystallization reader during
+    # rollback so this cutover does not add a second drifting age control.
+    # The episode reader clamps this value to seven days, so an operator may
+    # narrow but cannot widen its governance boundary.
     #
     # 7 days, not this fix's first draft of 3 days: a code-review pass on
     # this exact patch caught that the 3-day pick rested on an all-time-max
@@ -607,6 +712,107 @@ class ThoughtSettings(BaseSettings):
     )
     mind_coloring_max_items: int = Field(3, alias="ORION_THOUGHT_MIND_COLORING_MAX_ITEMS")
     channel_mind_artifact: str = Field("orion:mind:artifact", alias="CHANNEL_MIND_ARTIFACT")
+
+    # --- Temporal Self patch 4: "my day" cue for stance_react (app/temporal_self_cue.py) ---
+    # One short paragraph rendered from orion-durable-runs' current day frame (no LLM), shown to
+    # the unified turn's stance step. Kill switch: false = stance_react runs exactly as before.
+    # The frame older than MAX_AGE_SEC, for another local day, or not fetched within
+    # FETCH_TIMEOUT_SEC renders nothing. The fetch overlaps Mind enrichment.
+    temporal_self_stance_cue_enabled: bool = Field(True, alias="TEMPORAL_SELF_STANCE_CUE_ENABLED")
+    temporal_self_frame_url: str = Field("http://durable-runs:8121", alias="TEMPORAL_SELF_FRAME_URL")
+    temporal_self_cue_max_age_sec: float = Field(900.0, gt=0.0, alias="TEMPORAL_SELF_CUE_MAX_AGE_SEC")
+    temporal_self_cue_fetch_timeout_sec: float = Field(
+        0.5, gt=0.0, le=5.0, alias="TEMPORAL_SELF_CUE_FETCH_TIMEOUT_SEC"
+    )
+
+    # --- Personality graph read-back (app/personality_cue.py; spec 2026-10-16 rev 2) ---
+    # What Orion keeps coming back to, in Orion's own words, rendered by a fixed template
+    # (orion/personality/cue.py, no LLM) from orion-durable-runs' GET /personality/frame. A record,
+    # not an instruction. Shown to stance_react (fetched alongside Mind) and reverie (alongside its
+    # other reads). Missing / stale (> MAX_AGE_SEC) / empty frame or no reply within TIMEOUT_SEC
+    # renders nothing. Kill switch: false = both prompts exactly as before.
+    personality_cue_enabled: bool = Field(False, alias="PERSONALITY_CUE_ENABLED")
+    personality_frame_url: str = Field("http://durable-runs:8121", alias="PERSONALITY_FRAME_URL")
+    personality_cue_timeout_sec: float = Field(0.5, gt=0.0, le=5.0, alias="PERSONALITY_CUE_TIMEOUT_SEC")
+    personality_cue_max_age_sec: float = Field(3600.0, gt=0.0, alias="PERSONALITY_CUE_MAX_AGE_SEC")
+    personality_cue_top_k: int = Field(5, ge=1, le=12, alias="PERSONALITY_CUE_TOP_K")
+
+    # --- Self-monitor track record (app/self_track_record_cue.py; spec 2026-10-20 step 3) ---
+    # What Orion is failing at or misjudging right now (broken / unreliable / miscalibrated
+    # faculties only, <= 300 chars), rendered by a fixed template (orion/self_monitor/cue.py, no
+    # LLM) from the state orion-durable-runs publishes to Redis orion:self_monitor:latest on
+    # ORION_BUS_URL. Read every 5 min in the background; absent / stale / unparseable renders
+    # nothing. Shown to stance_react and reverie's coalition branch. false = both prompts as before.
+    self_track_record_cue_enabled: bool = Field(True, alias="SELF_TRACK_RECORD_CUE_ENABLED")
+
+    # --- Intention ledger D3: open promises for stance_react (app/open_promises_cue.py) ---
+    # Up to 3 of Orion's open promises (hub.promise acts, oldest first) on Juniper's own turns. Ships
+    # OFF on purpose: the promise acts are shadow until #3531 measures the finder's live precision,
+    # and a false promise shown to stance would steer Orion. true = render the block.
+    open_promises_cue_enabled: bool = Field(False, alias="THOUGHT_OPEN_PROMISES_CUE_ENABLED")
+
+    # --- Self-readings: body signals against their own 7 days (self-calibration spec section C) ---
+    # app/self_readings_cue.py -> orion/attention/self_readings.py. A fixed template (no LLM) over
+    # substrate_node_prediction_error_history, calibrated by the attention seam's own rule; only
+    # unusual signals render, a calm body renders nothing. Kill switches: false = that prompt
+    # exactly as before. The read+render is bounded by FETCH_TIMEOUT_SEC (renders nothing on miss).
+    # Unified-turn self-prediction (docs/superpowers/specs/2026-10-23-unified-turn-self-prediction-
+    # design.md, A1): stance also writes a private bet about this turn's own behaviour
+    # (ThoughtEventV1.self_prediction). Never shown to the motor or judge. false = the stance
+    # prompt exactly as before.
+    stance_self_prediction_enabled: bool = Field(True, alias="STANCE_SELF_PREDICTION_ENABLED")
+    self_readings_stance_enabled: bool = Field(True, alias="SELF_READINGS_STANCE_ENABLED")
+    self_readings_reverie_enabled: bool = Field(True, alias="SELF_READINGS_REVERIE_ENABLED")
+    self_readings_fetch_timeout_sec: float = Field(
+        0.5, gt=0.0, le=5.0, alias="SELF_READINGS_FETCH_TIMEOUT_SEC"
+    )
+    # Continuous body signals must last (spec docs/superpowers/specs/2026-10-16-
+    # attention-continuous-signal-quota-design.md, option (b)). A body node the
+    # glossary marks as read every tick (biometrics, bus_synaptic) qualifies
+    # only when hot for more than 300 s of the last 600 s of its own readings
+    # and hot now (orion.attention.sustained). false = today's verdict exactly.
+    # Ships on (Juniper's rule).
+    attention_sustained_body_enabled: bool = Field(True, alias="ATTENTION_SUSTAINED_BODY_ENABLED")
+    # What each body signal tends to lead to (self-calibration spec section E): a self-reading line
+    # gets "; when this is high, my next hour had <outcome> Nx as often at equal activity (...) [assoc:<id>]" from the
+    # newest self_signal_outcome_association row (orion-equilibrium-service's hourly rollup) only
+    # when both sides have enough hours and the 95% interval excludes 1. Kill switch: false = the
+    # self-readings block is byte-identical to before.
+    self_signal_outcome_association_enabled: bool = Field(
+        True, alias="SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED"
+    )
+    # Repeated looks: the association is re-tested every hour, so a clause renders only after its
+    # verdict (same direction) held on each of the last CONSECUTIVE_HOLDS hourly computations; a
+    # missing hour or a different verdict resets the run. Same rule and default as
+    # orion-equilibrium-service's EQUILIBRIUM_SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS.
+    self_signal_outcome_consecutive_holds: int = Field(
+        6, ge=1, le=48, alias="SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS"
+    )
+
+    # --- Temporal Self rev 4: reverie gets the last few closed arcs (app/reverie.py) ---
+    # The reverie tick fetches the same frame as the stance cue (TEMPORAL_SELF_FRAME_URL, same
+    # TEMPORAL_SELF_CUE_MAX_AGE_SEC gate) and renders LIMIT lines of today's closed arcs, most
+    # recent first, each citing [arc:<id>] (orion/temporal_self/recent_arcs.py, no LLM). Reverie's
+    # own daydreams share ONE grouped line (a count), so they take one of the LIMIT lines. The fetch
+    # runs alongside reverie's other reads and gives up after FETCH_TIMEOUT_SEC with no block.
+    # Kill switch: false = reverie_narrate runs exactly as before.
+    reverie_recent_arcs_enabled: bool = Field(True, alias="ORION_REVERIE_RECENT_ARCS_ENABLED")
+    reverie_recent_arcs_limit: int = Field(3, ge=1, le=5, alias="ORION_REVERIE_RECENT_ARCS_LIMIT")
+    reverie_recent_arcs_fetch_timeout_sec: float = Field(
+        1.0, gt=0.0, le=1.5, alias="ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC"
+    )
+
+    # --- Integration patch 3: reverie reads Orion's now (app/reverie.py build_reverie_day_cue) ---
+    # Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md (A3/A4). Reverie
+    # reads GET /temporal-self/now?organ=reverie on TEMPORAL_SELF_FRAME_URL (other organs' most salient
+    # experiences since reverie last looked) instead of the closed-arcs block, once per chain, and
+    # posts the thought's cites to POST /temporal-self/now/use at its close. The now off on the server
+    # (404), unreachable, or slower than FETCH_TIMEOUT_SEC -> the closed-arcs block as before, logged
+    # reverie_now_fallback. The same timeout bounds the cites post. Kill switch: false = arcs only.
+    reverie_now_enabled: bool = Field(True, alias="ORION_REVERIE_NOW_ENABLED")
+    reverie_now_fetch_timeout_sec: float = Field(
+        2.0, gt=0.0, le=5.0, alias="ORION_REVERIE_NOW_FETCH_TIMEOUT_SEC"
+    )
 
     # --- Reasoning activity projection (always-on consumer; harmless when idle) ---
     # Consume per-call ReasoningCallV1 telemetry and materialize a rolling-window

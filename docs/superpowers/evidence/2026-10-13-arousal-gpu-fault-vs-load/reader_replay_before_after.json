@@ -1,0 +1,497 @@
+{
+ "before": {
+  "level_minutes_per_day": {
+   "2026-10-09": {
+    "engaged": 0.0,
+    "idle": 2.0,
+    "strained": 1028.0,
+    "unknown": 0.0
+   },
+   "2026-10-10": {
+    "engaged": 59.0,
+    "idle": 1071.0,
+    "strained": 310.0,
+    "unknown": 0.0
+   },
+   "2026-10-11": {
+    "engaged": 181.5,
+    "idle": 1238.5,
+    "strained": 20.0,
+    "unknown": 0.0
+   },
+   "2026-10-12": {
+    "engaged": 2.0,
+    "idle": 1412.0,
+    "strained": 26.0,
+    "unknown": 0.0
+   },
+   "2026-10-13": {
+    "engaged": 0.0,
+    "idle": 1020.0,
+    "strained": 0.0,
+    "unknown": 0.0
+   }
+  },
+  "strained_spans": [
+   {
+    "from": "2026-10-09T06:52:00+00:00",
+    "to": "2026-10-10T02:52:00+00:00",
+    "minutes": 1200.0,
+    "reasons": {
+     "gpu_queue_sustained": 597,
+     "strain_clearing": 5
+    }
+   },
+   {
+    "from": "2026-10-10T03:52:00+00:00",
+    "to": "2026-10-10T04:16:00+00:00",
+    "minutes": 24.0,
+    "reasons": {
+     "strain_clearing": 6,
+     "gpu_queue_sustained": 3,
+     "strain_holding": 3
+    }
+   },
+   {
+    "from": "2026-10-10T04:46:00+00:00",
+    "to": "2026-10-10T05:12:00+00:00",
+    "minutes": 26.0,
+    "reasons": {
+     "gpu_queue_sustained": 7,
+     "strain_clearing": 5,
+     "strain_holding": 1
+    }
+   },
+   {
+    "from": "2026-10-10T06:18:00+00:00",
+    "to": "2026-10-10T06:32:00+00:00",
+    "minutes": 14.0,
+    "reasons": {
+     "strain_clearing": 5,
+     "gpu_queue_sustained": 2
+    }
+   },
+   {
+    "from": "2026-10-10T09:56:00+00:00",
+    "to": "2026-10-10T10:10:00+00:00",
+    "minutes": 14.0,
+    "reasons": {
+     "strain_clearing": 5,
+     "gpu_queue_sustained": 2
+    }
+   },
+   {
+    "from": "2026-10-10T10:28:00+00:00",
+    "to": "2026-10-10T11:28:00+00:00",
+    "minutes": 60.0,
+    "reasons": {
+     "gpu_queue_sustained": 14,
+     "strain_holding": 8,
+     "strain_clearing": 8
+    }
+   },
+   {
+    "from": "2026-10-11T06:16:00+00:00",
+    "to": "2026-10-11T06:36:00+00:00",
+    "minutes": 20.0,
+    "reasons": {
+     "gpu_queue_sustained": 5,
+     "strain_clearing": 5
+    }
+   },
+   {
+    "from": "2026-10-12T14:08:00+00:00",
+    "to": "2026-10-12T14:34:00+00:00",
+    "minutes": 26.0,
+    "reasons": {
+     "gpu_queue_sustained": 7,
+     "strain_clearing": 5,
+     "strain_holding": 1
+    }
+   }
+  ],
+  "unknown_spans": [],
+  "readers_per_day": {
+   "2026-10-09": {
+    "dream": {
+     "decisions": 0,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 5,
+     "held": 5
+    },
+    "self_inquiry": {
+     "decisions": 6,
+     "held": 6
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 4
+    }
+   },
+   "2026-10-10": {
+    "dream": {
+     "decisions": 2,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 7,
+     "held": 0
+    },
+    "self_inquiry": {
+     "decisions": 7,
+     "held": 1
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 0
+    }
+   },
+   "2026-10-11": {
+    "dream": {
+     "decisions": 2,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 7,
+     "held": 0
+    },
+    "self_inquiry": {
+     "decisions": 7,
+     "held": 0
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 0
+    }
+   },
+   "2026-10-12": {
+    "dream": {
+     "decisions": 2,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 7,
+     "held": 0
+    },
+    "self_inquiry": {
+     "decisions": 7,
+     "held": 0
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 0
+    }
+   },
+   "2026-10-13": {
+    "dream": {
+     "decisions": 0,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 7,
+     "held": 0
+    },
+    "self_inquiry": {
+     "decisions": 6,
+     "held": 0
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 0
+    }
+   }
+  },
+  "readers_totals": {
+   "dream": {
+    "decisions": 6,
+    "held": 0
+   },
+   "curiosity": {
+    "decisions": 33,
+    "held": 5
+   },
+   "self_inquiry": {
+    "decisions": 33,
+    "held": 7
+   },
+   "outreach": {
+    "decisions": 20,
+    "held": 4
+   }
+  },
+  "held_reasons": {
+   "curiosity": {
+    "arousal_strained": 5
+   },
+   "self_inquiry": {
+    "arousal_strained": 7
+   },
+   "outreach": {
+    "arousal_strained": 4
+   }
+  }
+ },
+ "window": {
+  "start": "2026-10-09T06:50:00+00:00",
+  "end": "2026-10-13T17:00:00+00:00",
+  "input_counts": {
+   "turn": 11,
+   "heat": 12355,
+   "gpu_state": 64104,
+   "gpu_event": 154,
+   "decision": 106,
+   "live_level": 8
+  }
+ },
+ "after": {
+  "level_minutes_per_day": {
+   "2026-10-09": {
+    "engaged": 0.0,
+    "idle": 0.0,
+    "strained": 0.0,
+    "unknown": 1030.0
+   },
+   "2026-10-10": {
+    "engaged": 59.0,
+    "idle": 1089.0,
+    "strained": 88.0,
+    "unknown": 204.0
+   },
+   "2026-10-11": {
+    "engaged": 181.5,
+    "idle": 1238.5,
+    "strained": 20.0,
+    "unknown": 0.0
+   },
+   "2026-10-12": {
+    "engaged": 2.0,
+    "idle": 1412.0,
+    "strained": 26.0,
+    "unknown": 0.0
+   },
+   "2026-10-13": {
+    "engaged": 0.0,
+    "idle": 1020.0,
+    "strained": 0.0,
+    "unknown": 0.0
+   }
+  },
+  "strained_spans": [
+   {
+    "from": "2026-10-10T06:18:00+00:00",
+    "to": "2026-10-10T06:32:00+00:00",
+    "minutes": 14.0,
+    "reasons": {
+     "strain_clearing": 5,
+     "gpu_queue_sustained": 2
+    }
+   },
+   {
+    "from": "2026-10-10T09:56:00+00:00",
+    "to": "2026-10-10T10:10:00+00:00",
+    "minutes": 14.0,
+    "reasons": {
+     "strain_clearing": 5,
+     "gpu_queue_sustained": 2
+    }
+   },
+   {
+    "from": "2026-10-10T10:28:00+00:00",
+    "to": "2026-10-10T11:28:00+00:00",
+    "minutes": 60.0,
+    "reasons": {
+     "gpu_queue_sustained": 14,
+     "strain_holding": 8,
+     "strain_clearing": 8
+    }
+   },
+   {
+    "from": "2026-10-11T06:16:00+00:00",
+    "to": "2026-10-11T06:36:00+00:00",
+    "minutes": 20.0,
+    "reasons": {
+     "gpu_queue_sustained": 5,
+     "strain_clearing": 5
+    }
+   },
+   {
+    "from": "2026-10-12T14:08:00+00:00",
+    "to": "2026-10-12T14:34:00+00:00",
+    "minutes": 26.0,
+    "reasons": {
+     "gpu_queue_sustained": 7,
+     "strain_clearing": 5,
+     "strain_holding": 1
+    }
+   }
+  ],
+  "unknown_spans": [
+   {
+    "from": "2026-10-09T06:50:00+00:00",
+    "to": "2026-10-10T02:42:00+00:00",
+    "minutes": 1192.0,
+    "reasons": {
+     "gpu_fault:config_unreadable:agent-gpu2": 598
+    }
+   },
+   {
+    "from": "2026-10-10T03:48:00+00:00",
+    "to": "2026-10-10T04:00:00+00:00",
+    "minutes": 12.0,
+    "reasons": {
+     "gpu_fault:config_unreadable:agent-gpu2": 6
+    }
+   },
+   {
+    "from": "2026-10-10T04:02:00+00:00",
+    "to": "2026-10-10T04:06:00+00:00",
+    "minutes": 4.0,
+    "reasons": {
+     "gpu_fault:config_unreadable:agent-gpu2": 2
+    }
+   },
+   {
+    "from": "2026-10-10T04:40:00+00:00",
+    "to": "2026-10-10T05:02:00+00:00",
+    "minutes": 22.0,
+    "reasons": {
+     "gpu_fault:config_unreadable:agent-gpu2": 11
+    }
+   },
+   {
+    "from": "2026-10-10T05:30:00+00:00",
+    "to": "2026-10-10T05:32:00+00:00",
+    "minutes": 2.0,
+    "reasons": {
+     "gpu_fault:config_unreadable:agent-gpu2": 1
+    }
+   },
+   {
+    "from": "2026-10-10T05:52:00+00:00",
+    "to": "2026-10-10T05:54:00+00:00",
+    "minutes": 2.0,
+    "reasons": {
+     "gpu_fault:config_unreadable:agent-gpu2": 1
+    }
+   }
+  ],
+  "readers_per_day": {
+   "2026-10-09": {
+    "dream": {
+     "decisions": 0,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 5,
+     "held": 0
+    },
+    "self_inquiry": {
+     "decisions": 6,
+     "held": 0
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 0
+    }
+   },
+   "2026-10-10": {
+    "dream": {
+     "decisions": 2,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 7,
+     "held": 0
+    },
+    "self_inquiry": {
+     "decisions": 7,
+     "held": 1
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 0
+    }
+   },
+   "2026-10-11": {
+    "dream": {
+     "decisions": 2,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 7,
+     "held": 0
+    },
+    "self_inquiry": {
+     "decisions": 7,
+     "held": 0
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 0
+    }
+   },
+   "2026-10-12": {
+    "dream": {
+     "decisions": 2,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 7,
+     "held": 0
+    },
+    "self_inquiry": {
+     "decisions": 7,
+     "held": 0
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 0
+    }
+   },
+   "2026-10-13": {
+    "dream": {
+     "decisions": 0,
+     "held": 0
+    },
+    "curiosity": {
+     "decisions": 7,
+     "held": 0
+    },
+    "self_inquiry": {
+     "decisions": 6,
+     "held": 0
+    },
+    "outreach": {
+     "decisions": 4,
+     "held": 0
+    }
+   }
+  },
+  "readers_totals": {
+   "dream": {
+    "decisions": 6,
+    "held": 0
+   },
+   "curiosity": {
+    "decisions": 33,
+    "held": 0
+   },
+   "self_inquiry": {
+    "decisions": 33,
+    "held": 1
+   },
+   "outreach": {
+    "decisions": 20,
+    "held": 0
+   }
+  },
+  "held_reasons": {
+   "self_inquiry": {
+    "arousal_strained": 1
+   }
+  }
+ },
+ "how": "scripts/analysis/measure_arousal_reader_replay.py --print-sql --start 2026-10-09T06:50:00+00:00 --end 2026-10-13T17:00:00+00:00 | psql (read-only) > rows.jsonl; then the script on rows.jsonl, with --no-gpu-fault for 'before'. Export taken 2026-10-13 ~17:40 UTC."
+}

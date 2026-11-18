@@ -214,7 +214,8 @@ def load_pending_expectations(limit: int = 1) -> list[dict[str, Any]]:
     -- nothing is re-filtered in Python after the row set comes back.
 
     Returns [{"thought_id": str, "expectation": str, "expectation_checkable_by":
-    datetime}], ordered `expectation_checkable_by ASC` -- the row whose window
+    datetime, "created_at": datetime}] (``created_at`` opens the check window the
+    judge reads captions from, #3403), ordered `expectation_checkable_by ASC` -- the row whose window
     closed longest ago (most overdue) sorts first.
     """
     limit = max(0, int(limit))
@@ -228,7 +229,7 @@ def load_pending_expectations(limit: int = 1) -> list[dict[str, Any]]:
             rows = (
                 conn.execute(
                     text(
-                        "SELECT thought_id, expectation, expectation_checkable_by "
+                        "SELECT thought_id, expectation, expectation_checkable_by, created_at "
                         "FROM substrate_reverie_thought "
                         "WHERE expectation IS NOT NULL "
                         "AND expectation_verdict IS NULL "
@@ -484,6 +485,181 @@ def visual_chain_age_minutes() -> float | None:
         return None if age is None else float(age)
     except Exception as exc:
         logger.warning("visual_chain_age_minutes query failed err=%s", exc)
+        return None
+
+
+# Bounded look-back for the cheap first pass of visual_last_painting_age_hours:
+# lets Postgres walk idx_reverie_visual_chain_created_at instead of seq-scanning
+# every row's chain_json (measured live 2026-10-10: ~1.7 ms index scan vs ~11 ms
+# seq scan). Only when nothing turns up inside the window does it fall back to
+# the unbounded scan, so a >7-day outage still reports its real age, not None.
+_PAINTING_AGE_LOOKBACK_DAYS = 7
+
+_PAINTING_AGE_SQL = (
+    "SELECT EXTRACT(EPOCH FROM (now() - max("
+    "(chain_json->'production_receipt'->>'produced_at')::timestamptz))) / 3600.0 "
+    "FROM reverie_visual_chain "
+    "WHERE chain_json ? 'production_receipt'"
+)
+
+
+def visual_last_painting_age_hours() -> float | None:
+    """Hours since Orion last actually produced a painting, or None if no
+    painting was ever produced (or the DB read failed). Never raises.
+
+    "Produced" means a `reverie_visual_chain` row carrying a `production_
+    receipt` -- timestamped by the receipt's own `produced_at`, not the row's
+    `created_at`. Read by the painting-gap check, which caught nothing during
+    the 2026-10-09/10 outage only because it did not exist yet; the staleness
+    check (`visual_chain_age_minutes()`) was silent because its watchdog is
+    gated on the legacy `visual_chain_enabled` flag and never ran. (Deferrals
+    land in `reverie_visual_attempt`, not this table -- live, only the two
+    real paintings bracketing the 27.6 h gap were in it.)
+
+    Deliberately receipt-only, not `_VISUAL_PRODUCTION_SQL` below (the
+    canonical "produced" definition, which also joins `reverie_visual_
+    artifact` and accepts pre-receipt historical rows). That join would make
+    this per-tick read touch a second table and give up the created_at index;
+    every painting since receipts shipped carries one. Checked live
+    2026-10-10: both give the same latest painting (17:58:31Z); the canonical
+    one's extra 1,433 receipt-less paintings all fall 08-25 -> 09-08, before
+    the first receipt (09-14), so they never affect "how long since the last".
+
+    Dream carry pictures (brief.dream_hop) deliberately write NO chain row,
+    so they never count here -- this measures the reverie painting pipeline
+    only.
+    """
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    _PAINTING_AGE_SQL
+                    + " AND created_at > now() - make_interval(days => :days)"
+                ),
+                {"days": _PAINTING_AGE_LOOKBACK_DAYS},
+            ).first()
+            age = row[0] if row else None
+            if age is None:
+                row = conn.execute(text(_PAINTING_AGE_SQL)).first()
+                age = row[0] if row else None
+        return None if age is None else float(age)
+    except Exception as exc:
+        logger.warning("visual_last_painting_age_hours query failed err=%s", exc)
+        return None
+
+
+# Decided attempts since the newest produced one (bounded lookback; the table is small). Closed
+# outcomes: produced, abandoned, deferred_resource, deferred_thermal, failed. 'active' (inserted when
+# an attempt starts) and 'unknown' (a generate may still be on the card) are undecided: never a
+# failure, or 5 ordinary failures + 1 painting in progress would page as 6.
+_ATTEMPT_STREAK_SQL = """
+SELECT count(*) FROM reverie_visual_attempt
+WHERE started_at > now() - make_interval(days => :days)
+  AND outcome NOT IN ('active', 'unknown')
+  AND started_at > COALESCE(
+      (SELECT max(started_at) FROM reverie_visual_attempt
+        WHERE outcome = 'produced' AND started_at > now() - make_interval(days => :days)),
+      '-infinity'::timestamptz)
+"""
+
+
+_BASELINE_DEFERRAL_SQL = "SELECT state->'deferral' FROM visual_baseline_checkpoint WHERE id = 1"
+
+
+def visual_baseline_eligibility(activity, *, now, policy, arousal_level=None):
+    """Run the baseline schedule (``orion.reverie.baseline.schedule``) on its one durable
+    checkpoint row, under ``FOR UPDATE``: two replicas (or a deploy overlap) never issue the same
+    need twice. Returns (eligibility or None, reason).
+
+    Moved from orion-proposal-runtime's store on 2026-11-05 (ladder retirement PR 2): the painting
+    starts itself here now (app/painting_self_start.py). Same row, same reducer, so a need that was
+    pending at the switch-over keeps its id and its retry clock.
+
+    ``arousal_level`` (R3 reader 4) is a callable that ``schedule`` invokes only when a baseline
+    would be issued; ``strained`` defers it by ``retry_sec``. A missing checkpoint table issues
+    nothing (``visual_baseline_checkpoint_missing``)."""
+    import json
+
+    from sqlalchemy import text
+
+    from orion.reverie.baseline import schedule
+
+    with _get_engine().begin() as conn:
+        if not conn.execute(text("SELECT to_regclass('visual_baseline_checkpoint')")).scalar():
+            return None, "visual_baseline_checkpoint_missing"
+        row = conn.execute(text("SELECT state FROM visual_baseline_checkpoint WHERE id = 1 FOR UPDATE")).scalar()
+        if row is None:
+            return None, "visual_baseline_checkpoint_missing"
+        if isinstance(row, str):
+            row = json.loads(row)
+        eligibility, state, reason = schedule(activity, row, now=now, policy=policy, arousal_level=arousal_level)
+        conn.execute(text("UPDATE visual_baseline_checkpoint SET state = CAST(:state AS jsonb) WHERE id = 1"),
+                     {"state": json.dumps(state)})
+        return eligibility, reason
+
+
+def painting_act_attempt_rows(actor: str, verb: str, secs: float) -> list[dict]:
+    """The act-ledger rows the self-monitor gate reads (``orion.self_monitor.gate.last_attempt_sql``):
+    this actor's acts opened in the last ``secs``. Raises on a failed read (the gate treats that as
+    "unreadable ledger", never as a refusal)."""
+    from sqlalchemy import text
+
+    from orion.self_monitor.gate import last_attempt_sql
+
+    with _get_engine().connect() as conn:
+        rows = conn.execute(text(last_attempt_sql("sqlalchemy")),
+                            {"actor": actor, "verb": verb, "secs": float(secs)}).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def visual_baseline_deferral() -> dict | None:
+    """The waking baseline painting's current run of arousal deferrals, as the painting
+    self-start's scheduler records it (``orion.reverie.baseline.DEFERRAL_KEY``: reason, since, last_at), or None
+    (none recorded, no checkpoint table, or the read failed). Never raises.
+
+    2026-10-18 12:07 -> 10-20: arousal read strained (cabinet heat + GPU queue) and every due
+    baseline was deferred; the painting-gap alert blamed the GPU controller instead."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            if not conn.execute(text("SELECT to_regclass('visual_baseline_checkpoint')")).scalar():
+                return None
+            row = conn.execute(text(_BASELINE_DEFERRAL_SQL)).first()
+            value = row[0] if row else None
+            if isinstance(value, str):
+                import json
+
+                value = json.loads(value)
+            return value if isinstance(value, dict) and value.get("reason") else None
+    except Exception as exc:
+        logger.warning("visual_baseline_deferral query failed err=%s", exc)
+        return None
+
+
+def visual_attempt_failure_streak() -> int | None:
+    """How many painting attempts in a row produced nothing (newest first, back to the last
+    produced one, within the painting-age lookback). None if the read failed. Never raises.
+
+    Incident 2026-10-16 -> 10-20: 35 attempts in a row ended `abandoned` (gpu2 faulted, the pool
+    granted no diffusion hold). History 2026-09-14 -> 10-19 (405 attempts): every streak of 6 or
+    more was an outage (35; 16 = the 10-09/10 controller incident; 9 on 10-08 and 09-25), and the
+    longest ordinary streak was 5. See evals/test_attempt_streak_replay.py."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            if not conn.execute(text("SELECT to_regclass('reverie_visual_attempt')")).scalar():
+                return None
+            row = conn.execute(text(_ATTEMPT_STREAK_SQL), {"days": _PAINTING_AGE_LOOKBACK_DAYS}).first()
+            return int(row[0]) if row else None
+    except Exception as exc:
+        logger.warning("visual_attempt_failure_streak query failed err=%s", exc)
         return None
 
 
@@ -767,107 +943,57 @@ def load_latest_reverie_interpretation(
 # budget.
 MAX_SELF_STUDY_CONTEXT_CHARS = 150
 
-# The ONLY four source_ref prefixes self_study_analysis.py's SOURCE_SPECS
-# actually writes (services/orion-cortex-exec/app/self_study_analysis.py,
-# `source_ref=f"{result.source}:{result.finding_digest}"`) -- deterministic,
-# templated, numeric window-contrast prose, never free-form LLM narration.
-# A whitelist, not a "source_ref NOT LIKE 'curiosity:%'" blacklist: safer
-# against a future new producer writing source_kind='self_study' under some
-# other prefix this list doesn't yet know about (fails closed -- an unknown
-# prefix is excluded, not admitted by default).
+# Where the self-study seed comes from (repointed 2026-11-07, ladder retirement PR 6).
 #
-# Real incident this list exists because of (2026-08-27): the SAME
-# source_kind='self_study' also covers a separate, free-form LLM-narrated
-# "Curiosity" reflection (source_ref prefix "curiosity:") that turned out to
-# quote real, sensitive personal content when reflecting on memory patterns
-# (a live sample referenced "wife Amanda, hospital" while discussing which
-# crystallizations get kept vs rejected) -- confirmed live before this list
-# was written, not a hypothetical. The four prefixes below are the deliberate
-# subset of source_kind='self_study' this reader will EVER touch.
+# Until then it read `journal_entries` rows from cortex-exec's `skills.self_study.analyze.v1`
+# (four window-contrast analyses: vision events, affective state, co-creation signals, concept
+# induction). The ONLY trigger of that skill was the dispatch rung's `analyze_self_study_source`
+# template, so when dispatch went read-only on 2026-11-05 those rows stopped (last one 11-05
+# 16:24Z) and with the dispatch retirement they never come back.
 #
-# Derived from orion.schemas.self_study_analysis.ANALYSIS_SOURCES at call
-# time (review finding: an earlier version hardcoded a private duplicate of
-# that shared schema tuple with no import tying them together -- if the real
-# producer's source list ever changed, this privacy-critical allowlist would
-# silently go stale instead of failing loud). Computed inside the function
-# below, not at module import time -- this module's own docstring: "never
-# the heavy orion.substrate package", and its top-level imports are
-# stdlib-only by convention (see `SpontaneousThoughtV1`'s own TYPE_CHECKING-
-# only import above) even though `self_study_analysis` itself is confirmed
-# pydantic/stdlib-only and safe to import.
+# Curiosity has owned self-study since commit a41aa36ea (2026-10-30). Its answer of record for
+# each self-inquiry run is one `self_concept_history` row, `produced_by='curiosity_self_inquiry'`:
+# first-person prose about what Orion went and counted ("Four prediction-error loops hold 97,976
+# of my 201,515 attention rows ..."), ~1,150-1,200 chars, ~6 a day. Read live 2026-11-07: a 6 h
+# window holds a fresh row 78.7% of the last 7 days, against 70.7% for the old analysis rows
+# over their last 12 days -- the same `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` still fits.
 #
-# NOT wired to grow automatically if ANALYSIS_SOURCES gains a fifth source:
-# a new analysis producer must be independently reviewed for real content
-# (the same live-data check that qualified these four) before this allowlist
-# admits it -- see this comment's own reasoning for why an allowlist that
-# silently grows with new producers would defeat the point.
+# Not the `journal_entries` "curiosity:" rows: those bodies open with bookkeeping ("The answer
+# of record is in the graph at 1,192 characters ..."), so their first 150 chars would be no
+# self-observation at all. The old prefix allowlist excluded them for a 2026-08-27 privacy
+# concern; Juniper's standing rule (2026-10-07) is that there is no privacy boundary between her
+# and Orion, so this seed does not re-impose one.
+SELF_STUDY_PRODUCED_BY = "curiosity_self_inquiry"
 
 
 def load_latest_self_study_reflection(
     *, char_limit: int | None = None, max_age_sec: float | None = None, with_identity: bool = False
 ) -> str | None:
-    """Most recent real self-study analysis body -- a second, richer
-    context-seed for the visual chain alongside `load_latest_reverie_
-    interpretation` (design doc §16).
+    """Most recent self-study answer -- a second, richer context-seed for the visual chain
+    alongside `load_latest_reverie_interpretation` (design doc §16).
 
-    Source: `journal_entries` rows self_study_analysis.py's four
-    deterministic window-contrast analyses write (concept induction, vision
-    events, affective state, co-creation signals) -- real quantified
-    self-observation ("vision events dropped 0.36x vs baseline, a status
-    category disappeared"), not a bare narration sentence. Restricted to
-    ONLY those four producers, by `source_ref` prefix -- see the module-level
-    comment above this function for the real live incident (a sibling
-    `source_kind='self_study'` producer, the free-form "Curiosity"
-    reflection, was confirmed live to quote sensitive personal content) that
-    makes this an allowlist, not "any self_study row". Matched via SQL
-    `starts_with()`, not `LIKE ... %` (review finding: every one of the four
-    prefixes contains an underscore, which `LIKE` treats as a single-
-    character wildcard, not a literal -- `starts_with()` does exact literal
-    prefix matching, closing a real gap in the allowlist's own "fails
-    closed" guarantee).
+    Source: curiosity's self-inquiry answer of record, the newest `self_concept_history` row with
+    `produced_by = 'curiosity_self_inquiry'` (see the comment above for why this, and why it moved
+    from the retired analysis rows). `with_identity` returns its `entry_id` as the source id.
 
-    `char_limit`/`max_age_sec` follow `load_latest_reverie_interpretation`'s
-    own contract exactly (None = MAX_SELF_STUDY_CONTEXT_CHARS / unbounded).
-    `max_age_sec` should be looser than the reverie context's 900s default --
-    these analyses fire on their own 6-72h window-contrast cadence (real
-    values seen in bodies: "last 6h", "last 12h", "last 72h"), not a fast
-    per-tick producer, so a tight window would read as permanently absent.
+    `char_limit`/`max_age_sec` follow `load_latest_reverie_interpretation`'s own contract
+    (None = MAX_SELF_STUDY_CONTEXT_CHARS / unbounded). The visual chain passes
+    `settings.self_study_context_max_age_sec`; the `created_at` index keeps the read under 1 ms
+    (live EXPLAIN ANALYZE, 2026-11-07: 0.31 ms over 8,913 rows).
 
-    Read-only, best-effort: None on any error, empty table, or nothing
-    matching the four safe prefixes -- degrades exactly like an absent
-    `context_text` does (visual_chain.build_visual_prompt).
-
-    Performance note (review finding, not fixed): with `max_age_sec=None`,
-    the `source_ref` prefix filter cannot use an index and Postgres runs a
-    full `journal_entries` scan (live `EXPLAIN ANALYZE`, 2026-08-27: ~23ms /
-    4,747 buffers against 38,886 rows, vs ~0.2ms / 85 buffers when
-    `max_age_sec` is bound). `visual_chain.py`, this function's only real
-    caller, always passes `settings.self_study_context_max_age_sec`, so this
-    is not reachable in production today -- but any future caller that
-    omits `max_age_sec` reproduces the full scan. A sibling function in this
-    codebase, `services/orion-cortex-exec/app/self_study_analysis.py::
-    recently_journaled`, deliberately moved away from this exact `source_ref`
-    pattern-match shape for this exact reason -- worth revisiting the same
-    way if a second unbounded caller ever appears.
+    Read-only, best-effort: None on any error, empty table, or nothing fresh -- degrades exactly
+    like an absent `context_text` does (visual_chain.build_visual_prompt).
     """
     try:
         from sqlalchemy import text
 
         from orion.cognition.compactor.truncate import truncate_at_word_boundary
-        from orion.schemas.self_study_analysis import ANALYSIS_SOURCES
 
-        safe_prefixes = tuple(f"{source}:" for source in ANALYSIS_SOURCES)
-        prefix_clauses = " OR ".join(
-            f"starts_with(source_ref, :prefix{i})" for i in range(len(safe_prefixes))
-        )
-        params: dict[str, Any] = {
-            f"prefix{i}": prefix for i, prefix in enumerate(safe_prefixes)
-        }
-        where_sql = f"source_kind = 'self_study' AND body <> '' AND ({prefix_clauses})"
+        params: dict[str, Any] = {"produced_by": SELF_STUDY_PRODUCED_BY}
+        where_sql = "produced_by = :produced_by AND content <> ''"
         if max_age_sec is not None:
             # Same now() - make_interval() freshness idiom load_latest_
-            # reverie_interpretation already uses -- see that function's own
-            # comment on the repo-wide precedent for this shape.
+            # reverie_interpretation already uses.
             where_sql += " AND created_at > now() - make_interval(secs => :max_age_sec)"
             params["max_age_sec"] = float(max_age_sec)
 
@@ -876,8 +1002,8 @@ def load_latest_self_study_reflection(
             row = (
                 conn.execute(
                     text(
-                        f"SELECT body, entry_id AS source_id FROM journal_entries WHERE {where_sql} "
-                        "ORDER BY created_at DESC LIMIT 1"
+                        f"SELECT content AS body, entry_id AS source_id FROM self_concept_history "
+                        f"WHERE {where_sql} ORDER BY created_at DESC LIMIT 1"
                     ),
                     params,
                 )
@@ -911,6 +1037,116 @@ def load_latest_self_study_reflection(
 # this cap sits between MAX_SELF_STUDY_CONTEXT_CHARS and
 # MAX_REVERIE_CONTEXT_CHARS rather than matching either.
 MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS = 180
+
+# Episode-memory statements are natural prose under the same diffusion prompt
+# budget as legacy crystallization summaries. Keep one cap until the real
+# tokenizer demonstrates they need different budgets.
+MAX_EPISODE_MEMORY_CONTEXT_CHARS = MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS
+EPISODE_MEMORY_MAX_AGE_SEC = 604800.0
+
+
+def load_episode_memory_seed(
+    *,
+    char_limit: int | None = None,
+    max_age_sec: float = 604800.0,
+    with_identity: bool = False,
+) -> "Any | None":
+    """Least-recently-seeded eligible Stage 2 episode memory.
+
+    This is the approved PR G read seam from the Stage 2 referent-memory
+    design. Eligibility is deliberately stricter than ``status='active'``:
+    only ``happened``/``about_juniper`` memories with verified evidence may
+    seed an image; low-stakes memories must be automatic, while any high-
+    stakes memory must have been confirmed. Expired facts are excluded even
+    if their lifecycle worker has not changed ``status`` yet.
+
+    The seven-day policy is a hard ceiling: callers may narrow it for testing
+    or emergency operation, but cannot widen it through the legacy age env.
+
+    Selection is deterministic and diversity-preserving: memories never used
+    by a visual chain sort first, oldest memory first; after every eligible
+    memory has appeared, the least-recently-used one wins. Usage is read from
+    the visual chain's own typed ``context_selection`` receipt, so a stored
+    prompt attempt advances rotation even when generation later fails.
+
+    Read-only and best-effort. With ``with_identity=True``, returns
+    ``VisualSourceV1`` so the exact ``memory_id`` follows the prompt into the
+    chain receipt; otherwise returns its text. Returns ``None`` on an empty
+    set or any database failure.
+    """
+    try:
+        from sqlalchemy import text
+
+        from orion.cognition.compactor.truncate import truncate_at_word_boundary
+        from orion.schemas.reverie_visual import VisualSourceV1
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        WITH eligible AS (
+                            SELECT m.memory_id, m.statement, m.created_at
+                            FROM episode_memory m
+                            WHERE m.purpose IN ('happened', 'about_juniper')
+                              AND m.status = 'active'
+                              AND m.created_at > now() - make_interval(secs => :max_age_sec)
+                              AND (m.expires_at IS NULL OR m.expires_at > now())
+                              AND (
+                                (m.stakes = 'low' AND m.confirmation_state = 'auto')
+                                OR m.confirmation_state = 'confirmed'
+                              )
+                              AND EXISTS (
+                                SELECT 1 FROM episode_memory_evidence ev
+                                WHERE ev.memory_id = m.memory_id AND ev.verified IS TRUE
+                              )
+                              AND NOT EXISTS (
+                                SELECT 1 FROM episode_memory_evidence ev
+                                WHERE ev.memory_id = m.memory_id AND ev.verified IS NOT TRUE
+                              )
+                              AND NOT EXISTS (
+                                SELECT 1 FROM episode_memory_event e
+                                WHERE e.memory_id = m.memory_id
+                                  AND e.op IN ('downgraded_voice', 'rejected_invalid')
+                              )
+                        ), seeded AS (
+                            SELECT
+                                chain_json->'context_selection'->'source'->>'source_id' AS memory_id,
+                                max(created_at) AS last_seeded_at
+                            FROM reverie_visual_chain
+                            WHERE chain_json->'context_selection'->>'source_kind' = 'episode_memory'
+                            GROUP BY 1
+                        )
+                        SELECT e.memory_id::text AS source_id, e.statement
+                        FROM eligible e
+                        LEFT JOIN seeded s ON s.memory_id = e.memory_id::text
+                        WHERE btrim(e.statement) <> ''
+                        ORDER BY s.last_seeded_at ASC NULLS FIRST,
+                                 e.created_at ASC,
+                                 e.memory_id ASC
+                        LIMIT 1
+                        """
+                    ),
+                    {"max_age_sec": min(float(max_age_sec), EPISODE_MEMORY_MAX_AGE_SEC)},
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        value = str(row.get("statement") or "").strip()
+        source_id = str(row.get("source_id") or "").strip()
+        if not value or not source_id:
+            return None
+        limit_chars = MAX_EPISODE_MEMORY_CONTEXT_CHARS if char_limit is None else char_limit
+        trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
+        if with_identity:
+            return VisualSourceV1(source_id=source_id, text=trimmed)
+        return trimmed
+    except Exception as exc:
+        logger.debug("episode memory visual context-seed load failed: %s", exc)
+        return None
 
 
 def load_latest_memory_crystallization(
@@ -1053,8 +1289,9 @@ def persist_compaction_request(request) -> bool:
         return False
 
 
-def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object]]:
-    """Recent (theme_key, created_at) chain rows for the resonance detector.
+def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object, str]]:
+    """Recent (theme_key, created_at, terminal_reason) chain rows for the
+    resonance detector.
 
     Read-only, best-effort — returns [] on any miss so the tripwire degrades to
     "no evidence" rather than raising. Skips null/unknown themes."""
@@ -1069,7 +1306,7 @@ def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object]]:
             rows = (
                 conn.execute(
                     text(
-                        "SELECT theme_key, created_at FROM substrate_reverie_chain "
+                        "SELECT theme_key, created_at, terminal_reason FROM substrate_reverie_chain "
                         "WHERE theme_key IS NOT NULL AND theme_key <> 'unknown' "
                         "ORDER BY created_at DESC LIMIT :limit"
                     ),
@@ -1078,7 +1315,11 @@ def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object]]:
                 .mappings()
                 .all()
             )
-        return [(str(r["theme_key"]), r["created_at"]) for r in rows if r.get("created_at")]
+        return [
+            (str(r["theme_key"]), r["created_at"], str(r.get("terminal_reason") or ""))
+            for r in rows
+            if r.get("created_at")
+        ]
     except Exception as exc:
         logger.debug("resonance chain-event load failed: %s", exc)
         return []
@@ -1226,19 +1467,48 @@ def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
         return False
 
 
-def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """Most recent `attention_loop_outcome` verdict per loop_id (orion-hub table,
-    written by a human's Resolve/Dismiss action; read directly, no orion-hub import).
+# A loop verdict older than this is not shown to reverie at all.
+#
+# Loop ids hash the loop's label (orion/substrate/attention/scoring.py), so the
+# same id comes back on every later spike of the same signal: an old verdict is
+# about an earlier episode, not about today's spike. 24h matches the decay
+# digest's own episode boundary (it calls a loop finished after 24h of silence,
+# orion/substrate/attention/implicit_outcome.py DEFAULT_MIN_SILENCE).
+#
+# In practice this bound acts on system:implicit_decay verdicts. A human
+# resolve/dismiss already keeps that loop out of the live coalition for 48h
+# (orion/substrate/attention/verdicts.py VERDICT_EXCLUSION_TTL_HOURS), so a
+# human verdict under 24h can only appear here on a non-selected open loop.
+#
+# Live 2026-10-16: of the 753 thoughts in the prior 7 days whose loop carried a
+# verdict, every one carried a system:implicit_decay verdict 17-37 days old
+# (p50 20.7d), which the old prompt called human ground truth ("unattended 22
+# days"). Over 60 days no human verdict was narrated within 24h (p10 6.3 days).
+LOOP_VERDICT_MAX_AGE_SEC = 24 * 3600.0
 
-    Read-only, best-effort — returns {} on any miss or empty input, so a lookup
+
+def load_recent_loop_outcomes(
+    loop_ids: list[str], *, max_age_sec: float = LOOP_VERDICT_MAX_AGE_SEC
+) -> dict[str, dict[str, Any]]:
+    """Most recent, still-current `attention_loop_outcome` verdict per loop_id
+    (orion-hub table; read directly, no orion-hub import).
+
+    Writers: a human's Resolve/Dismiss in the Hub (actor = the person),
+    `scripts/attention_loop_decay_digest.py` (actor = `system:implicit_decay`),
+    and Orion's own non-final `acted` (excluded here). The actor is returned so
+    the prompt can say who recorded the verdict; a `system:*` verdict must never
+    be presented as a human's.
+
+    Verdicts older than `max_age_sec` are dropped (see LOOP_VERDICT_MAX_AGE_SEC):
+    a stale verdict is about an earlier episode of a reused loop id and must not
+    reach the prompt as current ground truth.
+
+    Read-only, best-effort -- returns {} on any miss or empty input, so a lookup
     failure never breaks a reverie tick. Keyed by the *bare* loop id, matching
-    `attention_loops_store.suppress_loop`'s write format (see `chain.theme_key_for`
-    for the sibling refractory-key fix this mirrors).
+    `attention_loops_store.suppress_loop`'s write format.
 
-    Returns {loop_id: {"verdict": str, "note": str, "age_days": int}} — age is
-    computed here (deterministic code), not left for the prompt/LLM to infer from
-    a raw timestamp. `age_days` is omitted (never `None`) when `created_at` can't
-    be read, so the prompt never has to render a null age.
+    Returns {loop_id: {"verdict", "note", "actor", "age_sec"}} -- age is
+    computed here (deterministic code), never left for the LLM to infer.
     """
     ids = [str(i) for i in (loop_ids or []) if i]
     if not ids:
@@ -1249,31 +1519,45 @@ def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
         engine = _get_engine()
         stmt = text(
             """
-            SELECT DISTINCT ON (loop_id) loop_id, verdict, note, created_at
+            SELECT DISTINCT ON (loop_id) loop_id, verdict, note, actor, created_at
             FROM attention_loop_outcome
             WHERE loop_id IN :ids
+              AND verdict <> 'acted'   -- Orion's non-final verdict never hides a human one
             ORDER BY loop_id, created_at DESC
             """
         ).bindparams(bindparam("ids", expanding=True))
         with engine.connect() as conn:
             rows = conn.execute(stmt, {"ids": ids}).mappings().all()
-
-        now = datetime.now(timezone.utc)
-        out: dict[str, dict[str, Any]] = {}
-        for r in rows:
-            entry: dict[str, Any] = {
-                "verdict": str(r.get("verdict") or ""),
-                "note": str(r.get("note") or ""),
-            }
-            created = r.get("created_at")
-            if isinstance(created, datetime):
-                c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
-                entry["age_days"] = max(0, int((now - c).total_seconds() // 86400))
-            out[str(r["loop_id"])] = entry
-        return out
+        return loop_outcomes_from_rows(rows, now=datetime.now(timezone.utc), max_age_sec=max_age_sec)
     except Exception as exc:
         logger.debug("loop outcome load failed ids=%s err=%s", ids, exc)
         return {}
+
+
+def loop_outcomes_from_rows(
+    rows: Any, *, now: datetime, max_age_sec: float = LOOP_VERDICT_MAX_AGE_SEC
+) -> dict[str, dict[str, Any]]:
+    """Pure half of `load_recent_loop_outcomes`: age + staleness filter.
+
+    A row with an unreadable `created_at` is dropped: an undated verdict cannot
+    be shown as current.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        created = r.get("created_at")
+        if not isinstance(created, datetime):
+            continue
+        c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+        age_sec = max(0.0, (now - c).total_seconds())
+        if age_sec > max_age_sec:
+            continue
+        out[str(r["loop_id"])] = {
+            "verdict": str(r.get("verdict") or ""),
+            "note": str(r.get("note") or ""),
+            "actor": str(r.get("actor") or ""),
+            "age_sec": age_sec,
+        }
+    return out
 
 
 def reverie_refractory_suppress(theme_key: str, until) -> bool:

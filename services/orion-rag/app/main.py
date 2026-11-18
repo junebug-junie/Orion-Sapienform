@@ -5,21 +5,7 @@ from fastapi import FastAPI
 from .settings import settings
 from .vector_store import vector_store
 from .listener import listener_worker # Import the refactored worker
-from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.telemetry.system_health import SystemHealthV1
-import asyncio
-import uuid
-from datetime import datetime, timezone
-
-# SystemHealthV1 requires boot_id and last_seen_ts. Constructing it without them
-# raises inside the heartbeat loop's own try/except, which logs a warning and
-# sleeps -- so the service looks alive while publishing no heartbeat at all.
-# Confirmed live 2026-08-29 on orion-gpu-cluster-power: one failure per 30s tick,
-# indefinitely, and nothing downstream noticed the silence.
-# BOOT_ID identifies THIS process run, so a consumer can tell a restart from a
-# continuous uptime (same convention as services/orion-whisper-tts/app/main.py).
-BOOT_ID = str(uuid.uuid4())
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 
 # --- Logging Setup ---
@@ -43,51 +29,59 @@ def startup_event():
         logger.info("Starting listener thread...")
         # Start the listener worker from the new module
         threading.Thread(target=listener_worker, daemon=True).start()
-
-        # Start Heartbeat Thread
-        threading.Thread(target=heartbeat_worker_thread, daemon=True).start()
     else:
         logger.warning("Bus is disabled; RAG service will be idle.")
 
-def heartbeat_worker_thread():
-    """Synchronous worker for heartbeats."""
+heartbeat_chassis: HeartbeatOnly | None = None
 
-    async def _run():
-        bus = OrionBusAsync(settings.ORION_BUS_URL)
-        await bus.connect()
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Standard SystemHealthV1 heartbeat (orion:system:health) on its own bus
+    connection. Replaces a hand-rolled 30s loop in a private thread that reported
+    the made-up node name "rag-node". Pattern:
+    docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.SERVICE_NAME,
+            service_version=settings.SERVICE_VERSION,
+            node_name=settings.NODE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            bus_enabled=settings.ORION_BUS_ENABLED,
+            heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    )
+
+
+@app.on_event("startup")
+async def start_heartbeat() -> None:
+    """Runs after startup_event. A failure is logged, never fatal."""
+    global heartbeat_chassis
+    if not settings.ORION_BUS_ENABLED:
+        return
+    try:
+        chassis = build_heartbeat_chassis()
+        await chassis.start_background()
+        heartbeat_chassis = chassis
+        logger.info(
+            "system_health_heartbeat_started service=%s node=%s interval_sec=%s",
+            settings.SERVICE_NAME,
+            settings.NODE_NAME,
+            settings.HEARTBEAT_INTERVAL_SEC,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
+
+
+@app.on_event("shutdown")
+async def stop_heartbeat() -> None:
+    global heartbeat_chassis
+    if heartbeat_chassis is not None:
         try:
-            while True:
-                try:
-                    payload = SystemHealthV1(
-                        service=settings.SERVICE_NAME,
-                        version=settings.SERVICE_VERSION,
-                        node="rag-node",
-                        status="ok",
-                        boot_id=BOOT_ID,
-                        last_seen_ts=datetime.now(timezone.utc),
-                        # heartbeat_interval_sec must match this loop's real period. Left at the
-                        # schema default of 10.0, orion-equilibrium-service computes
-                        # grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0) = 30.0s and marks the
-                        # service "down" once delta > grace (service.py's status check). Publishing
-                        # every 30s leaves ZERO margin, so any event-loop delay or bus latency flips
-                        # it to down, emits a spurious transition and pushes distress_score.
-                        heartbeat_interval_sec=30.0,
-                    ).model_dump(mode="json")
-
-                    await bus.publish("orion:system:health", BaseEnvelope(
-                        kind="system.health.v1",
-                        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
-                        payload=payload
-                    ))
-                except Exception as e:
-                    logger.warning(f"Heartbeat failed: {e}")
-
-                await asyncio.sleep(30)
-        finally:
-            await bus.close()
-
-    # Create a new loop for this thread
-    asyncio.run(_run())
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+        heartbeat_chassis = None
 
 
 @app.get("/health")

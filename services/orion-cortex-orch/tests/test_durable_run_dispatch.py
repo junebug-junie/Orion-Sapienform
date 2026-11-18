@@ -207,3 +207,29 @@ def test_durable_kickoff_in_main_uses_get_settings_not_bare_settings() -> None:
     assert "settings.durable_receipt_timeout_sec" not in text
     assert "get_settings()" in text
     assert "durable_admission_enabled" in text
+
+
+def test_admission_forwards_a_dream_carry_run_from_orion_dream():
+    """dream.carry (orion-dream, end of a sleep) goes through the same ingress: no allowlist,
+    the brief (sleep digest included) survives the forward, and the receipt is checked."""
+    from orion.schemas.durable_run import DurableRunRequestV1
+
+    payload = {
+        "run_id": "dream-carry-0123456789abcdef", "workflow": "dream.carry",
+        "correlation_id": "7dcc3944-29bb-5d8f-915f-90f4e6968d47",
+        "brief": {"trigger_id": "sleep:dc-abc", "sleep": {
+            "cycle_id": "dc-abc", "started_at": "2026-10-09T06:33:00+00:00", "pressure": 13.26,
+            "threshold": 3.0, "overdue": False, "material": ["metacog: a thing"]}},
+        "admission": {"resource": "llm.route.metacog_background", "preferred_lane": "metacog_background",
+                      "priority": "background", "deadline_at": "2026-10-09T10:33:00+00:00"},
+    }
+    bus = _admission_bus({"run_id": payload["run_id"], "status": "waiting_resource",
+                          "workflow_kind": "dream.carry", "requested_resource": "llm.route.metacog_background"})
+    result = asyncio.run(dispatch_durable_run(
+        bus=bus, source=ServiceRef(name="orion-cortex-orch"), req=_req({"durable_run": payload}),
+        correlation_id="corr-1", admission_enabled=True,
+    ))
+    assert result.ok and result.status == "accepted" and result.verb == "durable:dream.carry"
+    assert result.metadata["durable_run"]["workflow"] == "dream.carry"
+    forwarded = DurableRunRequestV1.model_validate(bus.rpc_request.await_args.args[1].payload)
+    assert forwarded.brief.sleep.material == ["metacog: a thing"]

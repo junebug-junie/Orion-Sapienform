@@ -32,23 +32,34 @@ def _render_reflect() -> str:
     )
 
 
-def test_reflect_prompt_judges_the_task_before_the_imperative() -> None:
+def test_reflect_prompt_grades_answer_and_grounding_not_obedience() -> None:
+    # Unified-turn spec A2: the judge stops grading obedience to stance's imperative.
     rendered = _render_reflect()
-    assert rendered.index("The task is user_message") < rendered.index("thought_event.imperative")
-    assert "not misaligned for that reason alone" in rendered
+    assert rendered.index("Does draft_text respond to what user_message asked?") < rendered.index("thought_event (imperative")
+    assert "Is what draft_text says grounded in what this turn actually saw" in rendered
+    assert "Never call a draft misaligned or uncertain for departing from thought_event.imperative." in rendered
+    assert "corrects the imperative from evidence" in rendered
+    # The old obedience framing is gone.
+    assert "compare draft_text against thought_event.imperative" not in rendered
+    assert "felt stance" not in rendered
 
 
 def test_reflect_prompt_does_not_excuse_skipped_verification() -> None:
+    # Dropping obedience must not drop grounding: a draft that needed world contact and had none
+    # still leans misaligned, keyed on the answer, not on what the imperative commanded.
     rendered = _render_reflect()
-    excuse = rendered.index("not misaligned for that reason alone")
-    verification = rendered.index(
-        "Verification or world-contact the imperative commanded in order to answer "
-        "user_message is part of how to answer, not an extra: skipping it can still be misaligned."
-    )
-    assert excuse < verification
+    assert ("When answering user_message needed world contact (current facts, a page, a file, a\n"
+            "  camera) and grammar_receipts is empty, lean misaligned or uncertain.") in rendered
 
 
-def test_reflect_prompt_world_contact_rule_keys_on_the_task() -> None:
-    rendered = _render_reflect()
-    assert "when imperative required world-contact" not in rendered.lower()
-    assert "when the task required world-contact" in rendered.lower()
+def test_reflect_prompt_world_contact_rule_keys_on_the_answer() -> None:
+    rendered = _render_reflect().lower()
+    assert "when imperative required world-contact" not in rendered
+    assert "imperative commanded" not in rendered
+    assert "when answering user_message needed world contact" in rendered
+
+
+def test_reflect_prompt_says_a_tool_call_draft_is_not_a_reply() -> None:
+    # A2 replay 11-04: 7 of 14 marked-down turns had a raw tool call as the draft, and the new prompt
+    # once called such a draft aligned because the call "addresses" the question.
+    assert "A draft that is a tool call, or tool-call\n   markup, instead of a reply" in _render_reflect()

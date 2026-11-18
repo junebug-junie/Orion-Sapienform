@@ -33,3 +33,16 @@ def test_persist_loop_outcome_never_raises(monkeypatch):
     )
     assert store.persist_loop_outcome(outcome) is False
     assert store.suppress_loop("x") is False
+
+
+def test_build_loop_outcome_accepts_orions_non_final_acted_verdict():
+    """2026-10-01 attend-to-act loop: Orion's world-action settle path writes `acted`; the Hub
+    validator must accept it, and it must never be terminal (verdicts.TERMINAL_VERDICTS)."""
+    from orion.substrate.attention.verdicts import TERMINAL_VERDICTS
+
+    outcome = build_loop_outcome(
+        loop_id="open-loop-cab", theme_key="open-loop-cab", verdict="acted",
+        actor="orion", note="shed_background_gpu expired", salience_at_close=0.4, features_at_close={},
+    )
+    assert outcome.verdict == "acted" and outcome.actor == "orion"
+    assert "acted" not in TERMINAL_VERDICTS

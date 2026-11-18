@@ -74,13 +74,6 @@ def test_insight_maps_to_epiphany() -> None:
     assert entry.change_type == "reorientation"
 
 
-def test_flow_maps_to_flow() -> None:
-    module = _load_executor_module()
-    entry = _draft(module, trigger_kind="flow")
-    assert entry.type == "flow"
-    assert entry.change_type == "stabilizing"
-
-
 def test_insight_beats_every_phi_band_guess() -> None:
     """trigger_kind is consulted FIRST, so bands that would otherwise produce
     turbulence/flow/idle must not override it."""
@@ -90,10 +83,14 @@ def test_insight_beats_every_phi_band_guess() -> None:
         assert entry.type == "epiphany", bands
 
 
-def test_flow_kind_beats_turbulence_bands() -> None:
+def test_retired_flow_kind_no_longer_overrides_phi_bands() -> None:
+    """The flow trigger was retired 2026-10-10 (its producer gate is gone), so
+    its kind-specific override branch went with it. A stray historical/replayed
+    trigger_kind="flow" falls through to the phi-band guess like any other kind
+    with no direct mapping -- it must not still force type="flow"."""
     module = _load_executor_module()
-    entry = _draft(module, trigger_kind="flow", phi_hint=_BANDS_TURBULENCE)
-    assert entry.type == "flow"
+    assert _draft(module, trigger_kind="flow", phi_hint=_BANDS_TURBULENCE).type == "turbulence"
+    assert _draft(module, trigger_kind="flow", phi_hint=_BANDS_IDLE).type == "idle"
 
 
 # ===========================================================================

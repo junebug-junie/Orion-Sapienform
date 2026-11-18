@@ -1,0 +1,146 @@
+{
+    "note": "pairs dream=3 control=1",
+    "replay": [
+        {
+            "tags": [
+                "severity_def:event_v1"
+            ],
+            "text": "A transport spike triggered a saturation cascade in Orion's thought cortex, indicating a critical overload in processing demand.",
+            "reason": "metacog flagged critical (transport)",
+            "ref_id": "metacog:metacog_15e46f3a-82b4-40d9-8b10-955c2d05c752",
+            "weight": 1.0,
+            "source_kind": "metacog"
+        },
+        {
+            "tags": [
+                "severity_def:event_v1"
+            ],
+            "text": "Background request execution in cortex-orch is severely saturated, with peak duration over 100 seconds and load 8x higher than usual.",
+            "reason": "metacog flagged critical (transport)",
+            "ref_id": "metacog:metacog_4341884d-e0ed-4dbd-bc15-fcb2eef479cb",
+            "weight": 1.0,
+            "source_kind": "metacog"
+        },
+        {
+            "tags": [
+                "severity_def:event_v1"
+            ],
+            "text": "A critical system failure occurred during reflection and repair processes, indicating a loss of execution capability and grounding.",
+            "reason": "metacog flagged critical (chat_turn)",
+            "ref_id": "metacog:metacog_4852a1a2-505d-4bb9-8484-216ef14fd06b",
+            "weight": 1.0,
+            "source_kind": "metacog"
+        },
+        {
+            "tags": [
+                "severity_def:event_v1"
+            ],
+            "text": "Cortex request saturation spiked, indicating system overload or bottleneck in processing actions.",
+            "reason": "metacog flagged critical (transport)",
+            "ref_id": "metacog:metacog_4858e04f-ecf6-4e4b-bd24-7445afb03a96",
+            "weight": 1.0,
+            "source_kind": "metacog"
+        },
+        {
+            "tags": [
+                "severity_def:event_v1"
+            ],
+            "text": "A compliance failure occurred with exit code -9, indicating a critical issue in the execution process.",
+            "reason": "metacog flagged critical (chat_turn)",
+            "ref_id": "metacog:metacog_4b418319-9165-473e-a98e-99f078ef5a1b",
+            "weight": 1.0,
+            "source_kind": "metacog"
+        },
+        {
+            "tags": [
+                "severity_def:event_v1"
+            ],
+            "text": "A partial compliance with uncertain alignment triggered by a failed exit code, indicating a mismatch between expected and actual outcomes in the graph query process.",
+            "reason": "metacog flagged critical (chat_turn)",
+            "ref_id": "metacog:metacog_548d9646-af0d-4df4-990d-e7f81e7e2eac",
+            "weight": 1.0,
+            "source_kind": "metacog"
+        },
+        {
+            "tags": [
+                "open-loop-968fda08910c"
+            ],
+            "text": "a theme reverie kept returning to: open-loop-968fda08910c",
+            "reason": "reverie re-ignited 'open-loop-968fda08910c' past its refractory bound (17 violations)",
+            "ref_id": "resonance:resonance:open-loop-968fda08910c:1990583",
+            "weight": 1.0,
+            "source_kind": "resonance"
+        },
+        {
+            "tags": [
+                "consolidation_window"
+            ],
+            "text": "hi there, can you see me?: hi there, can you see me?",
+            "reason": "active crystallization touched since last sleep (salience 0.66)",
+            "ref_id": "crystallization:c8c07d3d-101d-4474-b52d-48c954f42152",
+            "weight": 0.662,
+            "source_kind": "crystallization"
+        },
+        {
+            "tags": [
+                "open-loop-7376a3da4050"
+            ],
+            "text": "open-loop-7376a3da4050: reverie_chain_max_steps",
+            "reason": "reverie asked sleep to consolidate 'open-loop-7376a3da4050'",
+            "ref_id": "compaction_request:compaction-request:08634a5b-8804-49b0-926a-8b8c43734a0a",
+            "weight": 0.5,
+            "source_kind": "compaction_request"
+        },
+        {
+            "tags": [
+                "open-loop-4409448b6975"
+            ],
+            "text": "open-loop-4409448b6975: reverie_chain_max_steps",
+            "reason": "reverie asked sleep to consolidate 'open-loop-4409448b6975'",
+            "ref_id": "compaction_request:compaction-request:0bc9de65-4a71-43cd-90de-fb213b623ca4",
+            "weight": 0.5,
+            "source_kind": "compaction_request"
+        },
+        {
+            "tags": [
+                "open-loop-7597ff641a23"
+            ],
+            "text": "open-loop-7597ff641a23: reverie_chain_max_steps",
+            "reason": "reverie asked sleep to consolidate 'open-loop-7597ff641a23'",
+            "ref_id": "compaction_request:compaction-request:213c81a6-c6f1-4733-a417-60f440a2ca23",
+            "weight": 0.5,
+            "source_kind": "compaction_request"
+        },
+        {
+            "tags": [
+                "open-loop-08d23ba68a84"
+            ],
+            "text": "open-loop-08d23ba68a84: reverie_chain_max_steps",
+            "reason": "reverie asked sleep to consolidate 'open-loop-08d23ba68a84'",
+            "ref_id": "compaction_request:compaction-request:301050c0-b036-4089-b984-3ba91ef0d987",
+            "weight": 0.5,
+            "source_kind": "compaction_request"
+        }
+    ],
+    "status": "completed",
+    "cycle_id": "dc-981127ddbddf",
+    "pressure": {
+        "since": "2026-10-09T00:27:59.265633Z",
+        "counts": {
+            "metacog": 38,
+            "resonance": 1,
+            "crystallization": 1,
+            "compaction_request": 9
+        },
+        "pressure": 13.262,
+        "threshold": 3.0,
+        "new_counts": {
+            "metacog": 17,
+            "crystallization": 1
+        },
+        "computed_at": "2026-10-09T06:33:24.443274Z",
+        "idle_minutes": 156.65691675,
+        "idle_required_minutes": 45.0
+    },
+    "started_at": "2026-10-09T06:33:24.443274+00:00"
+}

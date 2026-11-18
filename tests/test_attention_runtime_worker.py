@@ -70,8 +70,13 @@ def test_worker_tick_advances_baseline_per_native_target_and_wires_into_frame(mo
     alpha/min_variance constants and the configured fetch_limit; (2) the returned
     baselines actually reach the saved frame (a real node target appears, scored
     off the mocked baseline), not silently dropped somewhere in the wiring.
+
+    Pins the flag-off path (ATTENTION_WORLD_FIRST_ENABLED=false): the previous
+    five-node ranking. World-first is pinned in
+    services/orion-attention-runtime/tests/test_world_first_worker.py.
     """
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
+    monkeypatch.setenv("ATTENTION_WORLD_FIRST_ENABLED", "false")
     import app.settings as settings_mod
 
     settings_mod._settings = None

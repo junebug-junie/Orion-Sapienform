@@ -52,3 +52,60 @@ def test_every_schema_field_lands_on_a_column() -> None:
 def test_the_table_has_bounded_retention_by_default() -> None:
     assert "substrate_durable_run_state" in dict(GRAMMAR_RETENTION_TABLES)
     assert retention_days_for(Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=[]))["substrate_durable_run_state"] == 90
+
+
+def test_curiosity_compaction_state_is_accepted_by_real_writer_route():
+    model, schema = MODEL_MAP["DurableRunStateSQL"]
+    event = schema.model_validate({
+        "run_id": "curiosity-compaction:weekly:2026-10-05:r0", "workflow": "curiosity.compaction",
+        "thread_id": "curiosity-compaction:weekly:2026-10-05:r0", "node": "compact",
+        "status": "running", "correlation_id": "trace-compaction",
+        "detail": {"compaction_id": "curiosity-compaction:weekly:2026-10-05"},
+    })
+    values = event.model_dump(exclude={"schema_version"})
+    assert model(**values).workflow == "curiosity.compaction"
+
+
+def test_harness_echo_smoke_state_is_accepted_by_real_writer_route():
+    # Consumer side of the durable-run -> harness step seam (orion/schemas/harness_step_run.py):
+    # sql-writer must accept the new workflow value before durable-runs runs a smoke.
+    model, schema = MODEL_MAP["DurableRunStateSQL"]
+    event = schema.model_validate({
+        "run_id": "harness-echo-smoke-20261029T000000Z-abc123", "workflow": "harness.echo_smoke",
+        "thread_id": "harness-echo-smoke-20261029T000000Z-abc123", "node": "finish",
+        "status": "completed", "correlation_id": "trace-smoke",
+        "detail": {"line": "harness_smoke", "turn_correlation_id": "c-1",
+                   "steps": {"echo": {"text": "harness echo smoke ok", "turn_correlation_id": "c-1"}}},
+    })
+    values = event.model_dump(exclude={"schema_version"})
+    assert model(**values).workflow == "harness.echo_smoke"
+
+
+def test_pr_field_note_state_is_accepted_by_real_writer_route():
+    # Consumer side of PR field notes Patch 2 (orion/schemas/pr_field_note_run.py): sql-writer must accept
+    # the new workflow value before orion-durable-runs submits the first pr.field_note run.
+    model, schema = MODEL_MAP["DurableRunStateSQL"]
+    event = schema.model_validate({
+        "run_id": "pr-field-note-3105", "workflow": "pr.field_note",
+        "thread_id": "pr-field-note-3105", "node": "finish",
+        "status": "completed", "correlation_id": "trace-fn",
+        "detail": {"line": "pr_field_note", "pr_number": 3105, "outcome": "noted",
+                   "note_id": "fn:3105:0123456789", "turn_correlation_id": "c-1"},
+    })
+    values = event.model_dump(exclude={"schema_version"})
+    assert model(**values).workflow == "pr.field_note"
+
+
+def test_reminiscence_state_is_accepted_by_real_writer_route():
+    # Consumer side of daily reminiscence Patch 2 (orion/schemas/reminiscence_run.py): sql-writer must accept
+    # the new workflow value before orion-durable-runs submits the first reminiscence.episode run.
+    model, schema = MODEL_MAP["DurableRunStateSQL"]
+    event = schema.model_validate({
+        "run_id": "reminiscence-2026-11-08", "workflow": "reminiscence.episode",
+        "thread_id": "reminiscence-2026-11-08", "node": "finish",
+        "status": "completed", "correlation_id": "trace-rm",
+        "detail": {"line": "reminiscence", "episode": "2026-11-08", "outcome": "complete",
+                   "hop_ids": {"what_it_was": "rm:2026-11-08:what_it_was:0123456789"}, "turns": 6},
+    })
+    values = event.model_dump(exclude={"schema_version"})
+    assert model(**values).workflow == "reminiscence.episode"

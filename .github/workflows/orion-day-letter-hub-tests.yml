@@ -13,15 +13,47 @@ on:
       - "services/orion-hub/app/settings.py"
       - "services/orion-hub/.env_example"
       - "services/orion-hub/templates/orion_day_letter.html.j2"
-      - "services/orion-hub/tests/test_orion_day_letter.py"
+      - "services/orion-hub/tests/test_orion_day_mailer.py"
+      - "services/orion-hub/tests/test_orion_day_order.py"
+      # The retired letter verbs / timer / carry-forward offer must stay retired (grep gate).
+      - "orion/cognition/verbs/**"
+      - "orion/cognition/prompts/**"
+      - "services/orion-cortex-exec/app/**"
+      - "services/orion-hub/tests/test_orion_day_what_i_read.py"
+      - "orion/schemas/reading_finding.py"
+      - "orion/world_pulse_read/findings.py"
+      - "orion/world_pulse_read/introspect.py"
+      - "services/orion-hub/tests/test_orion_day_introspect_listener.py"
+      - "services/orion-hub/tests/test_orion_day_correction_listener.py"
+      - "orion/curiosity/worldview.py"
+      - "orion/curiosity/value.py"
+      - "services/orion-hub/scripts/curiosity_offer_decisions.py"
+      - "services/orion-sql-db/manual_migration_orion_day_correction_v1.sql"
+      - "services/orion-hub/scripts/curiosity_introspect_listener.py"
+      - "services/orion-hub/scripts/node_history_introspect_listener.py"
+      - "services/orion-hub/tests/test_node_history_introspect_listener.py"
+      - "orion/introspect/**"
+      - "orion/schemas/introspect.py"
       - "services/orion-hub/evals/*orion_day*"
       - "services/orion-hub/requirements.txt"
+      # Integration patch 4: the daily organ roundup in the letter; the Daily Digest stays retired.
+      - "orion/dig/organs.py"
+      - "config/integration/**"
+      - "orion/journaler/**"
+      - "services/orion-actions/app/**"
+      - "services/orion-actions/.env_example"
+      - "scripts/smoke_all_notifications.sh"
       - ".github/workflows/orion-day-letter-hub-tests.yml"
   push:
     branches: [main]
     paths:
       - "orion/orion_day/**"
       - "services/orion-hub/scripts/orion_day_*.py"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "orion/curiosity/kickoff_prompt.py"
+      - "orion/introspect/**"
+      - "orion/schemas/introspect.py"
+      - "services/orion-sql-db/manual_migration_orion_day_correction_v1.sql"
       - "services/orion-hub/templates/orion_day_letter.html.j2"
 
 jobs:
@@ -37,11 +69,35 @@ jobs:
         run: |
           python -m pip install -r services/orion-hub/tests/requirements-reading.txt \
             "markdown-it-py>=3.0,<5" "Pillow>=10.4,<13" "httpx>=0.27,<1"
-      - name: Scheduler, render, carry-forward
+      - name: Mailer, Prime's order, render
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          python -m pytest -q services/orion-hub/tests/test_orion_day_letter.py \
-            services/orion-hub/tests/test_curiosity_dream_hypotheses.py
+          python -m pytest -q services/orion-hub/tests/test_orion_day_mailer.py \
+            services/orion-hub/tests/test_orion_day_order.py \
+            services/orion-hub/tests/test_orion_day_what_i_read.py \
+            services/orion-hub/tests/test_curiosity_dream_hypotheses.py \
+            services/orion-hub/tests/test_orion_day_introspect_listener.py \
+            services/orion-hub/tests/test_orion_day_correction_listener.py \
+            services/orion-hub/tests/test_node_history_introspect_listener.py
+      - name: Corrections (offer once, kickoff section, outcome, next letter)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider orion/orion_day/tests/test_corrections.py
+      - name: Retired letter verbs, timer and carry-forward offer stay retired (living Prime Part 3)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider orion/orion_day/tests/test_retired_letter_verbs.py
+      - name: Organ roundup in the letter; Daily Digest retired, curiosity digests kept (integration patch 4)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pip install "PyYAML>=6.0"
+          python -m pytest -q -p no:cacheprovider orion/orion_day/tests/test_organ_roundup_letter.py \
+            orion/orion_day/tests/test_daily_digest_retired.py
       - name: Email full-text eval (fixture day)
         run: python services/orion-hub/evals/run_orion_day_email_eval.py
+      - name: Reread eval (orion_day tool, fixture letter, 10 planted references)
+        run: python services/orion-hub/evals/run_orion_day_reread_eval.py
+      - name: Correction eval (record, offer once, re-test stamped, untouched prior absent)
+        run: python services/orion-hub/evals/run_orion_day_correction_eval.py

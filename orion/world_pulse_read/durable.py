@@ -1,6 +1,8 @@
 """Immutable stage-attempt bindings to the existing durable runner API."""
 
 import json
+from datetime import datetime, timedelta
+from typing import Any, Callable, Optional
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
@@ -127,7 +129,48 @@ async def _insert_binding(conn, brief, correlation_id, attempt):
     return _stored_request(raw)
 
 
-async def poll_turn(request: DurableRunRequestV1, base_url: str) -> ReadingTurnResultV1:
+def _parse_ts(raw: Any) -> Optional[datetime]:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo is not None else None
+
+
+def work_started_at(state: dict) -> Optional[datetime]:
+    """When the durable run first started real work (its first ``run.started``), or None.
+
+    None while the run is still queued for a resource, and for a run that ended
+    before any work (an admission refusal). Falls back to ``created_at`` plus the
+    queue wait when the history carries no usable ``run.started`` timestamp.
+    """
+    if not isinstance(state, dict) or not state.get("work_started"):
+        return None
+    starts = [
+        ts for ts in (
+            _parse_ts(h.get("generated_at"))
+            for h in (state.get("history") or [])
+            if isinstance(h, dict) and h.get("event") == "run.started"
+        )
+        if ts is not None
+    ]
+    if starts:
+        return min(starts)
+    created = _parse_ts(state.get("created_at"))
+    wait = state.get("queue_wait_seconds")
+    if created is None or not isinstance(wait, (int, float)):
+        return None
+    return created + timedelta(seconds=float(wait))
+
+
+async def poll_turn(
+    request: DurableRunRequestV1,
+    base_url: str,
+    *,
+    on_state: Optional[Callable[[dict], None]] = None,
+) -> ReadingTurnResultV1:
     try:
         async with httpx.AsyncClient(
             base_url=base_url.rstrip("/"), timeout=10
@@ -148,6 +191,13 @@ async def poll_turn(request: DurableRunRequestV1, base_url: str) -> ReadingTurnR
         or state.get("workflow_kind") != READING_WORKFLOW
     ):
         raise ReadingPending(f"durable_identity_mismatch:{request.run_id}")
+    if on_state is not None:
+        # The caller sees every verified status (the act ledger opens a read's `look`
+        # act when its work starts); its error must not turn a poll into a failure.
+        try:
+            on_state(state)
+        except Exception:  # noqa: BLE001
+            pass
     if state["status"] == "completed":
         result = ReadingTurnResultV1.model_validate(state.get("reading_result"))
         if result.run_id != request.run_id or not result.ok or not result.text.strip():

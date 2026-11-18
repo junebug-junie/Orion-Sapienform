@@ -54,6 +54,15 @@ class TransportBaselineHourlyV1(BaseModel):
     windows_evaluated: int = Field(..., ge=0, description="Folds that produced a latency evaluation (>= min_calls pooled).")
     success_count: int = Field(0, ge=0)
     timeout_count: int = Field(0, ge=0)
+    degraded_count: int = Field(
+        0,
+        ge=0,
+        description="Replies the replying service marked degraded (orion/core/bus/rpc_degraded.py: a GPU-pool "
+        "refusal, a canned fallback, a system.error) -- delivered, but never a latency reading, so never in "
+        "the z/ratio/floor of this row. Disjoint from success_count/timeout_count. Added 2026-10-13; rows "
+        "from before then carry 0 (NULL in SQL) even where refusals happened (2026-10-08 06:00 and "
+        "14:00-19:00 UTC were counted as successes).",
+    )
 
     z_p50: Optional[float] = Field(None, description="Median z over evaluated windows; None if none evaluated.")
     z_p90: Optional[float] = None
@@ -66,6 +75,13 @@ class TransportBaselineHourlyV1(BaseModel):
     conditions_opened: Dict[str, int] = Field(
         default_factory=dict,
         description="condition -> episodes opened this hour, excluded keys included (regime_shift is an open).",
+    )
+    conditions_closed: Dict[str, int] = Field(
+        default_factory=dict,
+        description="'condition:close_reason' -> episodes closed this hour, excluded keys included. "
+        "close_reason is quiet (timeout/zero_success fault stopped), calm (latency episode observed calm), "
+        "went_silent (latency episode with no evaluated traffic for max_silence_s -- NOT a recovery) or "
+        "evicted. Added 2026-10-13; rows from before then carry {}.",
     )
     open_at_hour_end: List[str] = Field(default_factory=list)
     would_emit_by_condition: Dict[str, int] = Field(

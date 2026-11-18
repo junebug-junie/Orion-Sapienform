@@ -27,6 +27,12 @@ from scripts.websocket_handler import websocket_endpoint
 from orion.schemas.cortex.contracts import CortexChatResult, CortexClientResult
 from fastapi import WebSocketDisconnect
 
+import pytest
+
+
+# See conftest.pre_turn_appraisal_off: these tests assume pre-turn appraisal is off.
+pytestmark = pytest.mark.usefixtures("pre_turn_appraisal_off")
+
 
 class _FakeCortexClient:
     def __init__(self) -> None:

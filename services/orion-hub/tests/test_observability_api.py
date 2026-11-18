@@ -90,8 +90,10 @@ class _FakeSignalsCache:
 def test_api_signals_trace_invalid_id_returns_400() -> None:
     import scripts.main as hub_main
 
+    # No `with TestClient(...)`: that runs the app's startup, which replaces
+    # signals_inspect_cache -- with None when the bus is unreachable (a CI
+    # runner), so this got 503 there and 400 only on a host with a live bus.
     with patch.object(hub_main, "signals_inspect_cache", _FakeSignalsCache()):
-        with TestClient(hub_main.app) as client:
-            r = client.get("/api/signals/trace/not-a-32-char-hex-trace-id")
+        r = TestClient(hub_main.app).get("/api/signals/trace/not-a-32-char-hex-trace-id")
     assert r.status_code == 400
     assert r.json().get("detail") == "invalid_otel_trace_id"

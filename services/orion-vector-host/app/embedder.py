@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple
 
 import httpx
@@ -18,10 +19,17 @@ class Embedder:
         self._tokenizer: AutoTokenizer | None = None
         self._model: AutoModel | None = None
         self._device = torch.device(settings.VECTOR_HOST_EMBEDDING_DEVICE)
+        # One HF forward pass at a time. Each calling thread gets its own
+        # OpenMP team, so letting asyncio's default executor run them in
+        # parallel stacked ~10 teams (450+ threads) on a shared 96-core host
+        # and made each embed ~13x slower. Thread count per pass is capped by
+        # OMP_NUM_THREADS in the Dockerfile.
+        self._hf_executor: ThreadPoolExecutor | None = None
 
         backend = settings.VECTOR_HOST_EMBED_BACKEND
         if backend == "hf":
             self._load_hf_model()
+            self._hf_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hf-embed")
         elif backend == "vllm":
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(
@@ -71,7 +79,7 @@ class Embedder:
     async def embed(self, text: str) -> Tuple[List[float], str, int]:
         backend = self._settings.VECTOR_HOST_EMBED_BACKEND
         if backend == "hf":
-            return await asyncio.to_thread(self._embed_hf, text)
+            return await asyncio.get_running_loop().run_in_executor(self._hf_executor, self._embed_hf, text)
 
         url = self._embedding_url()
         payload = {"model": self._settings.VECTOR_HOST_EMBEDDING_MODEL, "input": [text]}
@@ -90,5 +98,7 @@ class Embedder:
         return embedding, embedding_model, len(embedding)
 
     async def close(self) -> None:
+        if self._hf_executor:
+            self._hf_executor.shutdown(wait=False)
         if self._client:
             await self._client.aclose()

@@ -21,7 +21,7 @@ _LABELS = {
     "cross_cutting": "cross-cutting",
 }
 _DEEP_HIRE_NUDGE = (
-    "Mind reads this sitting as deep work. Write hire_cursor and HelpRequest "
+    "Mind reads this sitting as deep work. Write hire_peer and HelpRequest "
     "now — do not take a short local look first. You still author priors and "
     "findings; the peer digs."
 )
@@ -30,7 +30,7 @@ _DEEP_HIRE_NUDGE = (
 def ensure_orion_hire_depth(
     mind_work_shape: Mapping[str, Any] | None,
 ) -> dict[str, str]:
-    """Orion-origin fail-open: missing/unknown depth becomes deep (use Cursor).
+    """Orion-origin fail-open: missing/unknown depth becomes deep (hire the peer).
 
     When Mind coloring is skipped or stance omits expected_depth, Hub still
     owed Orion a hire path — not an empty advisory header + queue-only line.
@@ -50,17 +50,34 @@ def format_access_refusal_progress(count: int) -> list[str]:
     if count < 2:
         return []
     return [
-        "Access refused at least twice this sitting. Hand off to Cursor now "
-        "(write hire_cursor + HelpRequest with what you already tried)."
+        "Access refused at least twice this sitting. Hand off to Claude now "
+        "(write hire_peer + HelpRequest with what you already tried)."
     ]
 
 
-def format_budget_spent_progress(*, status: str, next_hop_n: int | None = None) -> list[str]:
+BUDGET_REASON_CHARS = 320
+
+
+def format_budget_spent_progress(
+    *, status: str, next_hop_n: int | None = None, reason: str | None = None
+) -> list[str]:
     if status != "refused_budget":
         return []
     hop = f"hop {next_hop_n}" if next_hop_n is not None else "your last hop notes"
+    # Prefer the brief's own refusal_reason: "Cursor budget is spent" was said
+    # for every refusal, including Claude-side ones, and hid the real cause
+    # (e.g. Cursor's monthly usage limit + reset date). Only the plain part
+    # before the "[codes]" block is shown here.
+    # Only the chained format ("<sentences> [codes] cursor said: ...") has a
+    # plain part; bare codes (pre-Cursor gate, pre-2026-10-10 briefs) keep the
+    # old sentence rather than leak jargon.
+    reason = reason or ""
+    plain = reason.split(" [", 1)[0].strip() if " [" in reason else ""
+    if plain:
+        plain = plain[:BUDGET_REASON_CHARS].rstrip(".") + "."
+    head = f"Peer hire refused: {plain}" if plain else "Peer hire budget is spent."
     return [
-        f"Cursor budget is spent. Do not open another HelpRequest until budget is clear. "
+        f"{head} Do not open another HelpRequest until budget is clear. "
         f"Resume from {hop} / continue local crawl from what you already wrote."
     ]
 

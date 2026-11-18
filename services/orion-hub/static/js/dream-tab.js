@@ -17,6 +17,9 @@
   function unavailable(id, label, error) {
     if (error.name !== "AbortError") el(id).textContent = `${label} unavailable (${error.message}). Refresh to retry; this is not an empty result.`;
   }
+  function countsText(counts) {
+    return Object.entries(counts || {}).map(([kind,count]) => `${esc(kind.replaceAll("_", " "))}: ${esc(count)}`).join(" · ") || "None";
+  }
   function renderPressure(data) {
     const p = data.pressure;
     const gates = [
@@ -29,7 +32,8 @@
     el("dreamPressure").innerHTML = `<h3 class="font-semibold text-lg ${data.ready ? "text-emerald-300" : "text-gray-200"}">${data.ready ? "Ready for the next sleep check" : data.enabled ? "Not ready · waiting for sleep gates" : "Sleep loop is disabled"}</h3>
       <div class="grid grid-cols-2 lg:grid-cols-5 gap-4 my-3">${gates.map(([name,value]) => `<div><div class="text-xs text-gray-400">${esc(name)}</div><div class="text-sm mt-1">${esc(value)}</div></div>`).join("")}</div>
       <p class="text-xs text-gray-400">Read ${esc(time(p.computed_at))} · Material since ${esc(time(p.since))}</p>
-      <p class="text-xs text-gray-400 mt-1">Candidate counts: ${Object.entries(p.counts || {}).map(([kind,count]) => `${esc(kind.replaceAll("_", " "))}: ${esc(count)}`).join(" · ") || "None reported"}</p>`;
+      <p class="text-xs text-gray-400 mt-1">New since last sleep (drives pressure): ${countsText(p.new_counts)}</p>
+      <p class="text-xs text-gray-400 mt-1">Distinct things to replay: ${countsText(p.counts)}</p>`;
   }
   function renderScore(data) {
     el("dreamScore").innerHTML = `<p class="text-sm text-indigo-200 mb-3">${esc(data.verdict)}</p>
@@ -48,10 +52,11 @@
       const c = data.cycle;
       el("dreamDetail").innerHTML = `<h3 class="font-semibold text-lg">${esc(time(c.started_at))} · ${esc(c.status)}</h3>
         <p class="text-xs text-gray-400 mt-1">${esc(c.cycle_id)} · ${esc(c.trigger)} · ended ${esc(time(c.ended_at))}</p>
-        <div class="grid grid-cols-3 gap-3 my-4 text-sm"><div>No link: ${esc(c.no_link_count)}</div><div>Garbled: ${esc(c.unparseable_count)}</div><div>LLM failures: ${esc(c.llm_failures)}</div></div>
+        <div class="grid grid-cols-4 gap-3 my-4 text-sm"><div>No link: ${esc(c.no_link_count)}</div><div>Echo: ${esc(c.echo_count ?? "—")}</div><div>Garbled: ${esc(c.unparseable_count)}</div><div>LLM failures: ${esc(c.llm_failures)}</div></div>
         ${c.status === "failed" ? '<p class="text-amber-300 text-sm mb-3">Failed sleep. Its backlog is retained for a later attempt.</p>' : ""}
         <p class="text-sm text-gray-400 mb-3">REM compaction: ${c.compaction_delta_id ? `staged receipt ${esc(c.compaction_delta_id)}; nothing applied` : "no staged receipt recorded"}.</p>
         ${c.note ? `<p class="text-xs text-gray-400 mb-3">${esc(c.note)}</p>` : ""}
+        ${(c.pair_answers || []).length ? `<h4 class="font-semibold">Pair answers</h4><div class="flex flex-col gap-2 my-3">${c.pair_answers.map(a => `<article class="rounded-lg bg-gray-950/60 p-3"><div class="text-xs text-indigo-300">${a.arm === "control" ? "Random control" : "Dream"} · ${esc(a.outcome)}</div><p class="text-xs my-1 whitespace-pre-wrap break-all">${esc(a.answer)}</p><p class="text-xs text-gray-500 break-all">${esc(a.ref_a)} ↔ ${esc(a.ref_b)}</p></article>`).join("")}</div>` : ""}
         <h4 class="font-semibold">Replayed memories</h4><div class="flex flex-col gap-2 my-3">${(c.replay || []).map(item => `<article class="rounded-lg bg-gray-950/60 p-3"><div class="text-xs text-indigo-300">${esc(item.source_kind)} · weight ${num(item.weight)}</div><p class="text-sm my-1 whitespace-pre-wrap">${esc(item.text)}</p><p class="text-xs text-gray-400">${esc(item.reason)}</p><p class="text-xs text-gray-500 break-all">${esc(item.ref_id)}</p></article>`).join("") || '<p class="text-gray-400 text-sm">No replay items recorded.</p>'}</div>
         <h4 class="font-semibold">Proposed links</h4><div class="flex flex-col gap-3 mt-3">${data.hypotheses.map(h => `<article class="rounded-lg border border-gray-700 p-3"><div class="text-xs text-indigo-300">${h.arm === "control" ? "Random control" : "Dream"} · ${h.offered_at ? `offered ${esc(time(h.offered_at))}` : h.expired ? "expired without offer" : "waiting for waking offer"}</div><p class="text-sm my-2 whitespace-pre-wrap">${esc(h.claim)}</p><p class="text-xs text-gray-400 whitespace-pre-wrap">${esc(h.why)}</p><p class="text-xs text-gray-500 mt-2 break-all">${esc(h.hypothesis_id)}<br>${esc(h.ref_a)} ↔ ${esc(h.ref_b)}</p>${h.offered_run_id ? `<p class="text-xs text-gray-400 mt-1 break-all">Curiosity run: ${esc(h.offered_run_id)}</p>` : ""}</article>`).join("") || '<p class="text-sm text-gray-400">No hypotheses recorded. See the pair counts and outcomes above.</p>'}</div>`;
     } catch (error) { unavailable("dreamDetail", "Sleep details", error); }
@@ -77,6 +82,18 @@
       if (error.name !== "AbortError") el("dreamDetail").textContent = "Sleep history unavailable. Refresh to retry.";
     }
   }
+  function renderCarries(data) {
+    const carries = data.carries || [];
+    el("dreamCarries").innerHTML = carries.map(c => {
+      const hops = c.hops.map(h => h.kind === "text"
+        ? `<article class="rounded-lg bg-gray-950/60 p-3"><div class="text-xs text-indigo-300">Hop ${esc(h.index)} · dream</div><p class="text-sm my-1 whitespace-pre-wrap">${esc(h.passage)}</p><p class="text-xs text-gray-500">Painted from: ${esc(h.image_prompt)}</p></article>`
+        : `<figure class="rounded-lg border border-gray-700 p-3 flex flex-col sm:flex-row gap-3"><img src="/api/dream/carry/image/${esc(h.sha256)}" alt="${esc(h.caption)}" loading="lazy" class="w-full sm:w-56 rounded"><figcaption class="text-sm"><div class="text-xs text-indigo-300">Hop ${esc(h.index)} · picture</div><span class="text-gray-400">Orion saw:</span> ${esc(h.caption)}</figcaption></figure>`).join("");
+      const made = c.hops.length;
+      return `<section><h4 class="font-semibold text-gray-100">${esc(time(c.created_at))} · ${esc(made)} hop${made === 1 ? "" : "s"}</h4>
+        <p class="text-xs text-gray-400 mb-2">${c.sleep_cycle_id ? `After sleep ${esc(c.sleep_cycle_id)}` : "Started by hand"}${c.stopped_reason ? ` · <span class="text-amber-300">stopped early: ${esc(c.stopped_reason)}</span>` : ""}</p>
+        <div class="flex flex-col gap-2">${hops}</div></section>`;
+    }).join("") || '<p class="text-sm text-gray-400">No carried dreams yet. The first one comes after the next completed sleep.</p>';
+  }
   async function refresh() {
     if (!active) return;
     controller?.abort(); detailController?.abort();
@@ -86,10 +103,12 @@
     el("dreamPressure").textContent = "Reading sleep readiness…";
     el("dreamScore").textContent = "Reading both groups…";
     el("dreamDetail").textContent = "Loading sleep history…";
+    el("dreamCarries").textContent = "Loading carried dreams…";
     await Promise.all([
       read("pressure", signal).then(renderPressure).catch(e => unavailable("dreamPressure", "Readiness", e)),
       read("scorecard", signal).then(renderScore).catch(e => unavailable("dreamScore", "Scorecard", e)),
       loadCycles(signal),
+      read("carries", signal).then(renderCarries).catch(e => unavailable("dreamCarries", "Carried dreams", e)),
     ]);
   }
   function activate() {

@@ -356,11 +356,20 @@ def test_the_operator_surface_exposes_no_write_route() -> None:
     # an urgent run request on the bus (Juniper's question plus a hardware
     # snapshot) and writes nothing to Orion's graph itself; the run's own
     # incident record is written by `start_urgent`, not by this route.
+    #
+    # A fifth, 2026-10-16: `DELETE /api/focus/{focus_id}` is Juniper's Clear
+    # button on the curiosity focus Orion queued from chat. It marks that one
+    # PENDING `curiosity_focus_request` row `cleared` (Postgres, never Orion's
+    # graph); a focus a run already took cannot be cleared, so no record of what
+    # a run saw is rewritten.
     assert sorted(r.path for r in writes) == [
+        "/curiosity/api/focus/{focus_id}",
         "/curiosity/api/run-now", "/curiosity/api/run/{run_id}/reply",
         "/curiosity/api/self-inquiry/run-now", "/curiosity/api/urgent",
     ], [(r.path, sorted(r.methods)) for r in writes]
-    assert all(r.methods == {"POST"} for r in writes)
+    methods = {r.path: r.methods for r in writes}
+    assert methods.pop("/curiosity/api/focus/{focus_id}") == {"DELETE"}
+    assert all(m == {"POST"} for m in methods.values())
 
 
 def test_the_schedule_keys_are_imported_from_the_loop_that_writes_them() -> None:

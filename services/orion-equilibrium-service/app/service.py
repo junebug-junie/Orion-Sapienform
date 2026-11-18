@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 from uuid import UUID, uuid4
@@ -13,7 +14,18 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .repair_pressure_metacog_gate import build_repair_pressure_metacog_trigger
-from .telemetry_anomaly_metacog_gate import build_telemetry_anomaly_metacog_trigger
+from .telemetry_anomaly_metacog_gate import (
+    HARNESS_TURN_SOURCE_SERVICE,
+    build_telemetry_anomaly_metacog_trigger,
+    evaluate_telemetry_anomaly_episode,
+)
+from orion.metacog.anomaly_episode import (
+    AnomalyEpisodeStateV1,
+    TurnActivityTracker,
+    mark_published as mark_anomaly_episode_published,
+    state_from_dict as anomaly_episode_state_from_dict,
+    state_to_dict as anomaly_episode_state_to_dict,
+)
 from .chat_turn_metacog_gate import (
     ChatTurnCorrelator,
     build_chat_turn_metacog_trigger,
@@ -24,7 +36,6 @@ from .transport_metacog_gate import (
     build_transport_metacog_trigger_from_grammar_atom,
 )
 from .insight_metacog_gate import build_insight_metacog_trigger
-from .flow_metacog_gate import build_flow_metacog_trigger
 from .transport_baseline_gate import (
     TransportBaselineGate,
     gate_from_settings as transport_baseline_gate_from_settings,
@@ -40,10 +51,22 @@ from .repair_pressure_trend_gate import (
 )
 from orion.metacog.trend_reducer import MetacogTrendStateV1
 from .attention_self_model_reader import AttentionSelfModelReader
+from .self_signal_outcome_rollup import (
+    SelfSignalOutcomeReader,
+    SelfSignalOutcomeRollup,
+    association_payload,
+    summarize as summarize_self_signal_associations,
+)
+from orion.schemas.self_signal_outcome import SELF_SIGNAL_ASSOCIATION_KIND, SELF_SIGNAL_HOUR_KIND
+from .self_signal_episode_gate import (
+    SelfSignalEpisodeGate,
+    config_from_settings as self_signal_config_from_settings,
+    observe_signals,
+)
+from orion.attention.pe_history_cache import NodePeHistoryCache
 from orion.substrate.metacog_trigger_signals import (
     ConfidenceSample,
     detect_confidence_recovery,
-    detect_flow_regime,
 )
 from .downtime_transition_tracker import DowntimeTransitionTracker
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
@@ -121,8 +144,7 @@ class EquilibriumService(BaseChassis):
         self._chat_turn_correlator: ChatTurnCorrelator | None = None
         self._downtime_tracker = DowntimeTransitionTracker()
         self._attention_self_model_reader: AttentionSelfModelReader | None = None
-        # De-dupe keys for the two generative gates. These two are NOT equally
-        # strong, on purpose -- stated plainly rather than implied:
+        # De-dupe key for the generative insight gate.
         #
         # insight: keyed on `low_at`, the tick that armed the recovery. That is
         #   real episode identity: a genuinely new recovery requires a new low
@@ -134,25 +156,14 @@ class EquilibriumService(BaseChassis):
         #   twice, 390s apart, clearing the 300s cooldown. `low_at` was
         #   identical across both fires.
         #
-        # flow: there is no equivalent stable anchor. `ended_at` is the newest
-        #   tick in a trailing window, so it advances every tick while the
-        #   plateau continues; this key therefore only suppresses re-processing
-        #   the *same* newest row (real, since the 30s poll and the ~30s
-        #   write tick drift against each other). Flow is treated as an ongoing
-        #   *state* re-announced no more often than its own cooldown lane
-        #   (EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC, default 1800s), not as a
-        #   once-per-episode event. Anchoring it to the true start of the
-        #   contiguous run would require fetching further back than the
-        #   evaluation window, which is not worth the extra query today.
-        #   Measured over 21h of real history: 71 condition-true windows reduce
-        #   to 7 actual publishes once that cooldown is applied.
+        # (The sibling "flow" gate keyed on a trailing `ended_at` was retired
+        # 2026-10-10 -- see the PR report
+        # docs/superpowers/pr-reports/2026-10-10-metacog-flow-trigger-calibration-pr.md.)
         #
-        # Both keys are recorded only after an *actual* publish, never on a
+        # The key is recorded only after an *actual* publish, never on a
         # cooldown-suppressed one -- otherwise the event would be marked seen
-        # while never having been emitted, and (since insight's key is stable)
-        # never retried.
+        # while never having been emitted, and never retried.
         self._last_insight_low_at: str | None = None
-        self._last_flow_ended_at: str | None = None
         # Consecutive stale-window polls, for rate-limiting that warning the same
         # way AttentionSelfModelReader._log_failure rate-limits its own.
         self._stale_window_polls: int = 0
@@ -162,6 +173,21 @@ class EquilibriumService(BaseChassis):
         # a restart legitimately re-enters cold-start rather than fabricating
         # history, same discipline as every other persisted-state field here.
         self._repair_pressure_trend_state: MetacogTrendStateV1 = MetacogTrendStateV1()
+        # telemetry_anomaly episode gate (orion/metacog/anomaly_episode.py).
+        # State restored from Redis in _run() so a restart mid-anomaly does not
+        # re-fire it; the turn tracker is in-memory only (a turn already in
+        # flight at boot is learned from its next harness grammar event, and its
+        # real start from HarnessRunV1.fcc_elapsed_sec).
+        self._anomaly_episode_state: AnomalyEpisodeStateV1 = AnomalyEpisodeStateV1()
+        self._anomaly_turns: TurnActivityTracker | None = (
+            TurnActivityTracker(
+                turn_carry_sec=settings.metacog_telemetry_anomaly_turn_carry_sec,
+                open_max_sec=settings.metacog_telemetry_anomaly_turn_open_max_sec,
+            )
+            if settings.metacog_telemetry_anomaly_episode_enable
+            and settings.metacog_telemetry_anomaly_turn_suppress_enable
+            else None
+        )
         # Per-hop transport baselines (app/transport_baseline_gate.py). State is
         # restored from Redis in _run(); a config change cold-starts it.
         self._transport_baseline_gate: TransportBaselineGate | None = (
@@ -186,6 +212,32 @@ class EquilibriumService(BaseChassis):
             else None
         )
         self._hourly_outbox: list[Any] = []
+        # self_signal_episode gate (orion/metacog/self_signal_episode.py). State
+        # restored from Redis in _run(); the 7-day PE window is re-seeded from
+        # Postgres on the first poll.
+        self._self_signal_gate: SelfSignalEpisodeGate | None = (
+            SelfSignalEpisodeGate(self_signal_config_from_settings(settings))
+            if settings.metacog_enable and settings.metacog_self_signal_episodes_enabled
+            else None
+        )
+        self._pe_history_cache = NodePeHistoryCache()
+        self._pe_history_reader: SelfSignalOutcomeReader | None = None
+        # Self-signal -> outcome association (spec section E): rides the same poll and PE cache.
+        self._self_signal_rollup: SelfSignalOutcomeRollup | None = (
+            SelfSignalOutcomeRollup(
+                grace_sec=float(settings.self_signal_outcome_grace_sec),
+                min_hours=int(settings.self_signal_outcome_min_hours),
+                consecutive_holds=int(settings.self_signal_outcome_consecutive_holds),
+            )
+            if settings.self_signal_outcome_association_enabled
+            else None
+        )
+        # One poll task and one state load per PROCESS, not per _run:
+        # _supervise_run restarts _run after a crash, and a per-_run task
+        # would (a) double-poll (halving the dwell, which counts polls) and
+        # (b) reload Redis state over newer in-memory state (review 2026-10-14).
+        self._self_signal_task: asyncio.Task | None = None
+        self._self_signal_state_loaded: bool = False
         # One housekeeping task per process, not per _run: _supervise_run
         # restarts _run after a crash, and a per-_run task would pile up.
         self._transport_housekeeping_task: asyncio.Task | None = None
@@ -257,6 +309,303 @@ class EquilibriumService(BaseChassis):
             )
         except Exception as e:
             logger.warning("Failed to persist repair_pressure_trend state: %s", e)
+
+    async def _load_anomaly_episode_state(self) -> None:
+        if not settings.metacog_telemetry_anomaly_episode_enable:
+            return
+        try:
+            raw = await self.bus.redis.get(settings.metacog_telemetry_anomaly_episode_state_key)
+            if raw is None:
+                return
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8")
+            self._anomaly_episode_state = anomaly_episode_state_from_dict(json.loads(raw))
+            logger.info(
+                "telemetry_anomaly_episode_state_restored episode_id=%s windows=%s fired_rank=%s",
+                self._anomaly_episode_state.episode_id,
+                self._anomaly_episode_state.flagged_windows,
+                self._anomaly_episode_state.fired_rank,
+            )
+        except Exception as e:
+            logger.warning("Failed to load telemetry_anomaly episode state: %s", e)
+
+    async def _persist_anomaly_episode_state(self) -> None:
+        try:
+            await self.bus.redis.set(
+                settings.metacog_telemetry_anomaly_episode_state_key,
+                json.dumps(anomaly_episode_state_to_dict(self._anomaly_episode_state)),
+            )
+        except Exception as e:
+            logger.warning("Failed to persist telemetry_anomaly episode state: %s", e)
+
+    def _observe_turn_activity(self, channel: str, payload: Dict[str, Any]) -> None:
+        """Feed harness-turn activity to the anomaly gate's turn tracker.
+
+        Harness-governor grammar events stream through a turn (live: first one at
+        turn start, last at turn end); HarnessRunV1 closes it and carries
+        fcc_elapsed_sec; Hub's exec_turn_timeout atom closes a turn whose run
+        artifact will never arrive."""
+        if self._anomaly_turns is None or not isinstance(payload, dict):
+            return
+        cid = str(payload.get("correlation_id") or "")
+        if not cid:
+            return
+        now = time.time()
+        if channel == settings.channel_harness_run_artifact:
+            elapsed = payload.get("fcc_elapsed_sec")
+            self._anomaly_turns.observe(
+                cid,
+                now,
+                closed=True,
+                elapsed_sec=float(elapsed) if isinstance(elapsed, (int, float)) else None,
+            )
+        elif channel == settings.channel_grammar_event:
+            provenance = payload.get("provenance")
+            source = provenance.get("source_service") if isinstance(provenance, dict) else None
+            atom = payload.get("atom")
+            role = atom.get("semantic_role") if isinstance(atom, dict) else None
+            if role == "exec_turn_timeout":
+                self._anomaly_turns.observe(cid, now, closed=True)
+            elif source == HARNESS_TURN_SOURCE_SERVICE:
+                # Producer emitted_at when sane (same clock family as the
+                # digester's window_end), else receipt time.
+                at = now
+                emitted = payload.get("emitted_at")
+                if isinstance(emitted, str):
+                    try:
+                        ts = datetime.fromisoformat(emitted.replace("Z", "+00:00"))
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        if 0.0 <= now - ts.timestamp() <= 600.0:
+                            at = ts.timestamp()
+                    except ValueError:
+                        pass
+                self._anomaly_turns.observe(cid, at)
+
+    async def _handle_anomaly_score(self, payload: Dict[str, Any], *, zen: float, distress: float) -> None:
+        zen_state = "zen" if zen > 0.5 else "not_zen"
+        correlation_id = str(payload.get("correlation_id") or "")
+        if not settings.metacog_telemetry_anomaly_episode_enable:
+            trigger = build_telemetry_anomaly_metacog_trigger(
+                correlation_id=correlation_id,
+                score=payload,
+                zen_state=zen_state,
+                pressure=distress,
+                recall_enabled=settings.metacog_recall_enabled,
+                threshold_multiplier=settings.metacog_telemetry_anomaly_threshold_multiplier,
+            )
+            if trigger is not None:
+                await self._publish_metacog_trigger(trigger)
+            return
+
+        before = self._anomaly_episode_state
+        state, decision, trigger = evaluate_telemetry_anomaly_episode(
+            before,
+            correlation_id=correlation_id,
+            score=payload,
+            turns=self._anomaly_turns,
+            zen_state=zen_state,
+            pressure=distress,
+            recall_enabled=settings.metacog_recall_enabled,
+            threshold_multiplier=settings.metacog_telemetry_anomaly_threshold_multiplier,
+            calm_gap_sec=settings.metacog_telemetry_anomaly_episode_calm_gap_sec,
+            sustained_windows=settings.metacog_telemetry_anomaly_episode_sustained_windows,
+            sustained_horizon_sec=settings.metacog_telemetry_anomaly_episode_sustained_horizon_sec,
+            now=time.time(),
+        )
+        if decision is None:
+            return
+        published = False
+        if trigger is not None:
+            # Already episode-shaped: skip the shared lane so another kind's
+            # fire cannot swallow this episode's single trigger.
+            published = await self._publish_metacog_trigger(trigger, bypass_cooldown=True)
+            if published:
+                state = mark_anomaly_episode_published(state, decision.severity)
+        if decision.reason != "calm" or before.active != state.active:
+            logger.info(
+                "telemetry_anomaly_episode decision=%s published=%s episode_id=%s windows=%s "
+                "turn_explained_windows=%s severity=%s turn_explained=%s corr=%s",
+                decision.reason,
+                published,
+                state.episode_id,
+                state.flagged_windows,
+                state.turn_explained_windows,
+                decision.severity,
+                decision.turn_explained,
+                correlation_id,
+            )
+        self._anomaly_episode_state = state
+        if state != before:
+            await self._persist_anomaly_episode_state()
+
+    async def _load_self_signal_state(self) -> None:
+        gate = self._self_signal_gate
+        if gate is None or self._self_signal_state_loaded:
+            return
+        self._self_signal_state_loaded = True
+        try:
+            raw = await self.bus.redis.get(settings.metacog_self_signal_episodes_state_key)
+        except Exception as e:
+            # Unreadable is not "nothing stored": stay cold so already-hot
+            # signals are adopted silently rather than re-opened as new.
+            logger.warning("Failed to load self_signal_episode state: %s", e)
+            return
+        gate.load(raw)
+
+    async def _persist_self_signal_state(self) -> None:
+        gate = self._self_signal_gate
+        if gate is None:
+            return
+        try:
+            await self.bus.redis.set(settings.metacog_self_signal_episodes_state_key, gate.dump())
+        except Exception as e:
+            logger.warning("Failed to persist self_signal_episode state: %s", e)
+
+    async def _self_signal_episode_poll_once(self) -> None:
+        """One poll: refresh the 7-day PE window, judge every internal node
+        with the attention seam's rule, fold into episodes, publish rows."""
+        gate = self._self_signal_gate
+        rollup = self._self_signal_rollup
+        if gate is None and rollup is None:
+            return
+        now = _utcnow()
+        if self._pe_history_reader is None:
+            self._pe_history_reader = SelfSignalOutcomeReader(dsn=settings.metacog_generative_postgres_uri)
+        reader = self._pe_history_reader
+        magnitudes: dict = {}
+        history_error: str | None = None
+        try:
+            await asyncio.to_thread(self._pe_history_cache.refresh, reader.fetch_since, now=now)
+            if gate is not None:
+                magnitudes = await asyncio.to_thread(self._pe_history_cache.magnitudes, now=now)
+        except Exception as exc:
+            # Absent, never calm: every signal reads unknown this poll.
+            history_error = f"prediction-error history unreadable ({type(exc).__name__})"
+        if gate is None:
+            await self._self_signal_outcome_maybe(rollup, reader, now, history_error)
+            return
+        observations = observe_signals(
+            magnitudes,
+            now=now,
+            history_error=history_error,
+            known_signal_ids=list(gate.state.episodes),
+            pe_history=self._pe_history_cache.history,
+            sustain=settings.attention_sustained_body_enabled,
+        )
+        distress, zen, _ = self._calculate_metrics()
+        before = gate.dump()
+        outgoing = gate.step(
+            observations,
+            zen_state="zen" if zen > 0.5 else "not_zen",
+            pressure=distress,
+            recall_enabled=settings.metacog_recall_enabled,
+            history_ok=history_error is None,
+            tends_to=(
+                {sid: association_payload(a) for sid, a in rollup.renderable(now).items()}
+                if rollup is not None
+                else None
+            ),
+        )
+        for out in outgoing:
+            # Episode-shaped and budgeted by the gate: skip the shared lane so
+            # another kind's fire cannot swallow an episode's one open/close.
+            if await self._publish_metacog_trigger(out.trigger, bypass_cooldown=True):
+                gate.mark_published(out, now=now.timestamp())
+        if gate.dump() != before:
+            await self._persist_self_signal_state()
+        # After the gate, so an hourly backfill never delays an episode poll.
+        await self._self_signal_outcome_maybe(rollup, reader, now, history_error)
+
+    async def _self_signal_outcome_maybe(self, rollup, reader, now, history_error) -> None:
+        if rollup is not None and history_error is None:
+            try:
+                await self._self_signal_outcome_cycle(rollup, reader, now)
+                self._self_signal_outcome_failures = 0
+            except Exception:
+                # A deterministic bug would fail every 30 s poll: traceback once, then one line
+                # every 120 polls (~1 h).
+                n = self._self_signal_outcome_failures = getattr(self, "_self_signal_outcome_failures", 0) + 1
+                if n == 1:
+                    logger.exception("self_signal_outcome_cycle_failed")
+                elif n % 120 == 0:
+                    logger.warning("self_signal_outcome_cycle_failed consecutive=%d (traceback suppressed)", n)
+
+    async def _self_signal_outcome_cycle(
+        self, rollup: SelfSignalOutcomeRollup, reader: SelfSignalOutcomeReader, now: datetime
+    ) -> None:
+        """Hourly: publish new SelfSignalHourV1 rows, then every (signal, outcome) association.
+        A row that fails to publish is forgotten so the next poll recomputes and retries it."""
+        cache = self._pe_history_cache
+        history_start = cache.earliest()
+        if not rollup.needs_cycle(now, history_start):
+            return
+        node_ids = list(cache.current())
+        result = await asyncio.to_thread(
+            rollup.run_cycle,
+            now=now,
+            reader=reader,
+            history=cache.history,
+            node_ids=node_ids,
+            history_start=history_start,
+        )
+        if result.skipped:
+            if result.skipped != "nothing_due":
+                logger.info("self_signal_outcome_skipped reason=%s", result.skipped)
+            return
+        published_hours = 0
+        for row in result.hour_rows:
+            if await self._publish_row(settings.channel_self_signal_hour, SELF_SIGNAL_HOUR_KIND, row):
+                published_hours += 1
+            else:
+                rollup.known_hours.pop(row.hour_start, None)
+        published_assoc = 0
+        for a in result.associations:
+            if await self._publish_row(
+                settings.channel_self_signal_outcome_association, SELF_SIGNAL_ASSOCIATION_KIND, a
+            ):
+                published_assoc += 1
+                rollup.published_ids.add(a.association_id)
+        logger.info(
+            "self_signal_outcome_cycle hours=%d/%d associations=%d/%d renderable=%s %s",
+            published_hours, len(result.hour_rows), published_assoc, len(result.associations),
+            ",".join(sorted(rollup.renderable(now))) or "-",
+            summarize_self_signal_associations(result.associations),
+        )
+
+    async def _publish_row(self, channel: str, kind: str, row: Any) -> bool:
+        try:
+            env = BaseEnvelope(kind=kind, source=self._source(), payload=row.model_dump(mode="json"))
+            await self.bus.publish(channel, env)
+            return True
+        except Exception as e:
+            logger.warning("publish_failed channel=%s kind=%s err=%s", channel, kind, e)
+            return False
+
+    def _ensure_self_signal_task(self) -> None:
+        if self._self_signal_gate is None and self._self_signal_rollup is None:
+            return
+        t = self._self_signal_task
+        if t is None or t.done():
+            self._self_signal_task = asyncio.create_task(
+                self._self_signal_episode_poll_loop(), name="equilibrium-self-signal-episodes"
+            )
+
+    async def _self_signal_episode_poll_loop(self) -> None:
+        if self._self_signal_gate is None and self._self_signal_rollup is None:
+            return
+        interval = float(settings.metacog_self_signal_episodes_poll_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await self._self_signal_episode_poll_once()
+            except Exception:
+                logger.exception("self_signal_episode_poll_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
 
     async def _load_transport_baseline_state(self) -> None:
         if self._transport_baseline_gate is None:
@@ -477,11 +826,11 @@ class EquilibriumService(BaseChassis):
         cancels the _run task while it is parked in iter_messages(), so nothing
         after that loop runs on a real shutdown -- this override is the only
         place a shutdown flush can happen with the bus still open."""
-        t = self._transport_housekeeping_task
-        if t is not None and not t.done():
-            t.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await t
+        for t in (self._transport_housekeeping_task, self._self_signal_task):
+            if t is not None and not t.done():
+                t.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await t
         await self._transport_shutdown_flush()
         await super()._shutdown()
 
@@ -778,15 +1127,14 @@ class EquilibriumService(BaseChassis):
     # see this service's README.md "chat_turn metacog trigger" section, "Operational
     # note"). transport (2026-07-24) got its own lane from day one instead of
     # repeating that bug.
-    # insight/flow (2026-07-30) likewise get their own lanes from day one: they
-    # are the first non-rupture generative kinds, fire on slow-moving regimes
-    # rather than discrete incidents, and must not be able to starve any
-    # rupture-shaped kind's fires (or each other's).
+    # insight (2026-07-30) likewise got its own lane from day one: it is a
+    # non-rupture generative kind and must not be able to starve any
+    # rupture-shaped kind's fires. (Its sibling "flow" lane was retired with the
+    # flow trigger, 2026-10-10.)
     _PER_KIND_COOLDOWN_SETTINGS_ATTR = {
         "chat_turn": "metacog_chat_turn_cooldown_sec",
         "transport": "metacog_transport_cooldown_sec",
         "insight": "metacog_insight_cooldown_sec",
-        "flow": "metacog_flow_cooldown_sec",
         # Own lane from day one -- code review (2026-07-30) caught that this
         # trigger is evaluated on the same message, same branch, as the
         # pre-existing `relational` trigger; without its own lane, any
@@ -1032,16 +1380,14 @@ class EquilibriumService(BaseChassis):
     def _generative_fetch_limit(self) -> int:
         """Rows to fetch per poll.
 
-        Deliberately not just `window_ticks`: an operator raising
-        EQUILIBRIUM_METACOG_FLOW_MIN_TICKS above it would otherwise turn the flow
-        gate into a silent permanent no-op (the detector returns None whenever
-        it receives fewer than min_ticks samples). Taking the max makes the
-        documented "must cover the widest window either detector needs"
-        invariant true by construction instead of by operator discipline.
+        Deliberately not just `window_ticks`: insight needs
+        max_ticks_to_cross + confirm_ticks rows, and setting window_ticks below
+        that would otherwise make the gate a silent permanent no-op. Taking the
+        max makes the "must cover the detector's window" invariant true by
+        construction instead of by operator discipline.
         """
         return max(
             int(settings.metacog_generative_window_ticks),
-            int(settings.metacog_flow_min_ticks),
             int(settings.metacog_insight_max_ticks_to_cross)
             + int(settings.metacog_insight_confirm_ticks),
         )
@@ -1051,8 +1397,8 @@ class EquilibriumService(BaseChassis):
 
         The tick that writes these rows is itself flag-gated, so it can stop
         while this loop keeps polling -- and a frozen window keeps satisfying
-        both gate conditions indefinitely (reproduced pre-fix: a window of rows
-        3 days old fired the flow gate). Without this, the gates would be the
+        a gate condition indefinitely (reproduced pre-fix: a window of rows
+        3 days old fired the since-retired flow gate). Without this, the gates would be the
         "reducers alive but cursors stale" failure CLAUDE.md §0A calls out.
         """
         if not samples:
@@ -1091,24 +1437,20 @@ class EquilibriumService(BaseChassis):
         return True
 
     async def _generative_metacog_poll_loop(self) -> None:
-        """Evaluates the two generative (non-rupture) gates -- insight and flow.
+        """Evaluates the generative (non-rupture) insight gate.
 
-        One loop, one query per tick, two conditions: both read the same
-        trailing window of `prediction_error_confidence` rows, so polling the
-        same table twice would be pure waste. Not message-driven (nothing
+        One loop, one query per tick over the trailing window of
+        `prediction_error_confidence` rows. Not message-driven (nothing
         publishes this table to the bus), so it needs its own timer -- same
         shape as _spark_heartbeat_loop.
 
         See docs/superpowers/specs/2026-07-28-collapse-mirror-generative-
-        triggers-design.md. Both gates ship disabled; this returns immediately
-        unless one is explicitly enabled.
+        triggers-design.md. The sibling "flow" gate was retired 2026-10-10.
+        Ships disabled in code; returns immediately unless insight is enabled.
         """
         if not settings.metacog_enable:
             return
-        if not (
-            settings.metacog_insight_trigger_enable
-            or settings.metacog_flow_trigger_enable
-        ):
+        if not settings.metacog_insight_trigger_enable:
             return
 
         interval = float(settings.metacog_generative_poll_interval_sec)
@@ -1127,14 +1469,9 @@ class EquilibriumService(BaseChassis):
                     distress, zen, _ = self._calculate_metrics()
                     zen_state = "zen" if zen > 0.5 else "not_zen"
 
-                    if settings.metacog_insight_trigger_enable:
-                        await self._evaluate_insight_gate(
-                            samples, zen_state=zen_state, pressure=distress
-                        )
-                    if settings.metacog_flow_trigger_enable:
-                        await self._evaluate_flow_gate(
-                            samples, zen_state=zen_state, pressure=distress
-                        )
+                    await self._evaluate_insight_gate(
+                        samples, zen_state=zen_state, pressure=distress
+                    )
             except Exception:
                 logger.exception("generative_metacog_poll_loop_failed")
 
@@ -1195,62 +1532,19 @@ class EquilibriumService(BaseChassis):
         if await self._publish_metacog_trigger(trigger):
             self._last_insight_low_at = low_at
 
-    async def _evaluate_flow_gate(
-        self, samples: List[ConfidenceSample], *, zen_state: str, pressure: float
-    ) -> None:
-        min_ticks = int(settings.metacog_flow_min_ticks)
-        regime = detect_flow_regime(
-            samples,
-            floor=settings.metacog_flow_floor,
-            max_stdev=settings.metacog_flow_max_stdev,
-            min_ticks=min_ticks,
-            # A window of N rows should cover about (N-1) tick intervals; anything
-            # much longer means rows are missing and "sustained" would be a lie.
-            max_span_sec=(
-                max(min_ticks - 1, 1)
-                * float(settings.metacog_generative_expected_tick_sec)
-                * float(settings.metacog_generative_span_tolerance)
-            ),
-        )
-        if regime is None:
-            return
-
-        ended_at = regime.ended_at.isoformat()
-        if ended_at == self._last_flow_ended_at:
-            return
-
-        trigger = build_flow_metacog_trigger(
-            regime,
-            zen_state=zen_state,
-            pressure=pressure,
-            recall_enabled=settings.metacog_recall_enabled,
-            floor=settings.metacog_flow_floor,
-            max_stdev=settings.metacog_flow_max_stdev,
-        )
-        if trigger is None:
-            return
-
-        logger.info(
-            "flow_gate_fired min=%.3f mean=%.3f stdev=%.4f ticks=%d span_sec=%.1f",
-            regime.min_value,
-            regime.mean_value,
-            regime.stdev_value,
-            regime.tick_count,
-            regime.span_sec,
-        )
-        if await self._publish_metacog_trigger(trigger):
-            self._last_flow_ended_at = ended_at
-
     async def _run(self) -> None:
         await self._load_state()
         await self._load_repair_pressure_trend_state()
+        await self._load_anomaly_episode_state()
         await self._load_transport_baseline_state()
+        await self._load_self_signal_state()
         publisher = asyncio.create_task(self._publish_loop())
         collapse_task = asyncio.create_task(self._collapse_loop())
         heartbeat_task = None
         if settings.equilibrium_spark_heartbeat_enable:
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
         generative_poll_task = asyncio.create_task(self._generative_metacog_poll_loop())
+        self._ensure_self_signal_task()
         self._ensure_transport_housekeeping()
 
         # Build list of channels to subscribe to
@@ -1276,6 +1570,11 @@ class EquilibriumService(BaseChassis):
                 # avoid a duplicate pubsub subscription to the same channel.
                 if settings.channel_grammar_event not in channels:
                     channels.append(settings.channel_grammar_event)
+            if settings.metacog_telemetry_anomaly_trigger_enable and self._anomaly_turns is not None:
+                # Turn activity for the anomaly gate's turn suppression.
+                for turn_channel in (settings.channel_grammar_event, settings.channel_harness_run_artifact):
+                    if turn_channel not in channels:
+                        channels.append(turn_channel)
 
         async with self.bus.subscribe(*channels) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -1304,6 +1603,11 @@ class EquilibriumService(BaseChassis):
                     # Metacog Triggers (only if enabled)
                     elif settings.metacog_enable:
                         distress, zen, _ = self._calculate_metrics()
+                        if channel in (
+                            settings.channel_grammar_event,
+                            settings.channel_harness_run_artifact,
+                        ):
+                            self._observe_turn_activity(channel, payload_dict)
 
                         if channel == settings.channel_collapse_mirror_user_event:
                             # User manually triggered collapse
@@ -1374,17 +1678,9 @@ class EquilibriumService(BaseChassis):
                             # Real field_channel_corpus.v1 anomaly score,
                             # published by orion-field-digester's periodic
                             # anomaly-scoring loop against a trained
-                            # orion/mood_arc/fit_encoder.py encoder.
-                            trigger = build_telemetry_anomaly_metacog_trigger(
-                                correlation_id=str(payload_dict.get("correlation_id") or ""),
-                                score=payload_dict,
-                                zen_state="zen" if zen > 0.5 else "not_zen",
-                                pressure=distress,
-                                recall_enabled=settings.metacog_recall_enabled,
-                                threshold_multiplier=settings.metacog_telemetry_anomaly_threshold_multiplier,
-                            )
-                            if trigger is not None:
-                                await self._publish_metacog_trigger(trigger)
+                            # orion/mood_arc/fit_encoder.py encoder. Episode
+                            # gate: see _handle_anomaly_score.
+                            await self._handle_anomaly_score(payload_dict, zen=zen, distress=distress)
 
                         elif (
                             channel == settings.channel_thought_artifact
@@ -1500,3 +1796,5 @@ class EquilibriumService(BaseChassis):
         # it holds a real long-lived psycopg2 socket.
         if self._attention_self_model_reader is not None:
             self._attention_self_model_reader.close()
+        if self._pe_history_reader is not None:
+            self._pe_history_reader.close()

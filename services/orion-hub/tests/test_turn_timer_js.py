@@ -28,7 +28,7 @@ def test_turn_timer_formatter_cases_pass_under_node() -> None:
     assert TEST_JS.is_file(), TEST_JS
 
     result = subprocess.run(
-        [node, "--test", str(TEST_JS)],
+        [node, "--test", "--test-reporter=tap", str(TEST_JS)],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),

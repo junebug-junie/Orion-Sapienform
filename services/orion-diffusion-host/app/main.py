@@ -70,7 +70,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from orion.schemas.power import PowerIntentV1
 
-from .power_prior import PowerPrior
+from .power_prior import PowerPrior, load_prior_file, save_prior_file
 from .settings import Settings
 
 settings = Settings()
@@ -129,10 +129,27 @@ def warn_on_unresolved_power_intent_gpu_index() -> None:
         )
 
 
-# What this workload has actually cost, learned from its own settlements. In
-# memory on purpose: a restart declares None again rather than a stale guess,
-# and re-warms after MIN_SAMPLES settlements. See the design doc.
+# What this workload has actually cost, learned from its own settlements.
+# Persisted to DIFFUSION_POWER_PRIOR_STATE_PATH since 2026-11-03: the GPU pool
+# relaunches this container for almost every generation, and an in-memory-only
+# prior restarted empty each time (expected_watts None on 0 of 9 intents
+# 2026-11-02). Samples older than DIFFUSION_POWER_PRIOR_MAX_AGE_SEC are dropped,
+# so a long gap still declares None rather than a stale guess.
 _power_prior: Optional[PowerPrior] = None
+
+
+def _prior_max_age_sec() -> Optional[float]:
+    age = float(settings.DIFFUSION_POWER_PRIOR_MAX_AGE_SEC)
+    return age if age > 0 else None
+
+
+def _prior_fingerprint() -> str:
+    """What the saved peaks were drawn by. A different model, dtype, step count or image
+    size starts the prior empty instead of inheriting watts from another regime."""
+    return "|".join(str(x) for x in (
+        settings.DIFFUSION_MODEL_ID, settings.DIFFUSION_DTYPE, settings.DIFFUSION_NUM_INFERENCE_STEPS,
+        settings.DIFFUSION_DEFAULT_WIDTH, settings.DIFFUSION_DEFAULT_HEIGHT,
+    ))
 
 
 def get_power_prior() -> PowerPrior:
@@ -141,6 +158,14 @@ def get_power_prior() -> PowerPrior:
         _power_prior = PowerPrior(
             window=settings.DIFFUSION_POWER_PRIOR_WINDOW,
             min_samples=settings.DIFFUSION_POWER_PRIOR_MIN_SAMPLES,
+            max_age_sec=_prior_max_age_sec(),
+            fingerprint=_prior_fingerprint(),
+        )
+        kept = load_prior_file(_power_prior, settings.DIFFUSION_POWER_PRIOR_STATE_PATH, now=time.time())
+        logger.info(
+            "power_prior_loaded path={} samples={}",
+            settings.DIFFUSION_POWER_PRIOR_STATE_PATH or "(disabled)",
+            kept,
         )
     return _power_prior
 
@@ -159,14 +184,23 @@ async def handle_settled_intent(env: BaseEnvelope) -> None:
             payload = payload.model_dump(mode="json")
         if not isinstance(payload, dict):
             return
+        now = time.time()
         counted = get_power_prior().observe(
             workload_kind=str(payload.get("workload_kind") or ""),
             node=str(payload.get("node") or ""),
             gpu_index=payload.get("gpu_index"),
             outcome=str(payload.get("outcome") or ""),
             actual_peak_watts=payload.get("actual_peak_watts"),
+            at=now,
         )
         if counted:
+            if settings.DIFFUSION_POWER_PRIOR_STATE_PATH and not save_prior_file(
+                get_power_prior(), settings.DIFFUSION_POWER_PRIOR_STATE_PATH
+            ):
+                logger.warning(
+                    "power_prior_save_failed path={} (the prior still works for this container's life)",
+                    settings.DIFFUSION_POWER_PRIOR_STATE_PATH,
+                )
             logger.info(
                 "power_prior_observed workload={} peak={} n={}",
                 payload.get("workload_kind"),
@@ -175,6 +209,7 @@ async def handle_settled_intent(env: BaseEnvelope) -> None:
                     workload_kind=str(payload.get("workload_kind") or ""),
                     node=str(payload.get("node") or ""),
                     gpu_index=payload.get("gpu_index"),
+                    now=now,
                 ),
             )
     except Exception:  # noqa: BLE001
@@ -422,13 +457,56 @@ async def health() -> dict:
     }
 
 
+_GPU_CHECK_TIMEOUT_SEC = 5.0
+
+
+def _gpu_available_gb() -> float:
+    """GiB of this card this process could use right now: the card's free memory plus what this
+    process's torch allocator already reserved (so a generation in flight does not read as "no
+    room"). cudaMemGetInfo, i.e. the driver's own count -- other tenants included. Blocking (the
+    first call may initialise CUDA, ~1-5 s and a ~0.3-0.5 GiB context): /ready runs it in a
+    thread with a timeout, never on the event loop. The first /ready after boot can therefore
+    read not-ready once (timeout while CUDA initialises); the next poll answers."""
+    import torch
+
+    device = torch.device(settings.DIFFUSION_DEVICE)
+    free, _total = torch.cuda.mem_get_info(device)
+    return (free + torch.cuda.memory_reserved(device)) / 1024 ** 3
+
+
 @app.get("/ready")
 async def ready():
+    """Ready = the model is loaded, not draining, AND the card has room to generate.
+
+    With CPU offload (the FLUX deployment) a "loaded" pipeline sits in CPU RAM and holds almost no
+    GPU memory, so `_pipe is not None` alone says nothing about the card. Incident 2026-10-16 ->
+    10-20: this container restarted onto gpu2 while the agent-gpu2 llama seat held ~24GB of its
+    32GB, loaded "successfully" into CPU RAM, and answered ready for 4 days with ~7.8GB free --
+    a generation needs ~24GB at peak. The GPU pool probes this path (launch.ready), so it must
+    say no when the card is taken. DIFFUSION_READY_MIN_GPU_GB=0 turns the room check off.
+    "Ready" means the card is not taken, NOT a promise that a generation fits: the threshold (20
+    GiB) sits below the ~24 GB peak on purpose, to separate "seat on the card" (~7.6 GiB free)
+    from "card free" (~30 GiB) with margin either side."""
+    need = settings.DIFFUSION_READY_MIN_GPU_GB
+    available: Optional[float] = None
+    gpu_error: Optional[str] = None
+    room = True
+    if _pipe is not None and need > 0:
+        try:
+            available = round(await asyncio.wait_for(asyncio.to_thread(_gpu_available_gb),
+                                                      _GPU_CHECK_TIMEOUT_SEC), 2)
+            room = available >= need
+        except Exception as exc:  # noqa: BLE001 -- cannot see the card = not ready (fail closed)
+            gpu_error = f"{type(exc).__name__}: {exc}"[:200]
+            room = False
     body = {
-        "ready": _pipe is not None and not _draining,
+        "ready": _pipe is not None and not _draining and room,
         "draining": _draining,
         "model_loaded": _pipe is not None,
         "load_error": _load_error,
+        "gpu_available_gb": available,
+        "gpu_min_gb": need,
+        "gpu_check_error": gpu_error,
     }
     return JSONResponse(body, status_code=200 if body["ready"] else 503)
 
@@ -668,6 +746,7 @@ async def _publish_power_intent() -> None:
                 workload_kind="reverie_diffusion",
                 node=settings.NODE_NAME,
                 gpu_index=gpu_index,
+                now=time.time(),
             ),
             deadline=now
             + timedelta(seconds=settings.DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC),
@@ -725,10 +804,9 @@ async def generate(req: GenerateRequest) -> Response:
         # invisible: the standing 31s GPU sampler caught 4 of 332 real generations over
         # three days (measured 2026-08-28).
         #
-        # expected_watts is deliberately NOT set. Nobody has measured this workload yet,
-        # and inventing a plausible constant would bake a fabricated number into the
-        # first day of the dataset that is later fitted against. It stays None until
-        # real settlements produce a distribution to derive it from.
+        # expected_watts is the learned prior (get_power_prior), or None while fewer than
+        # MIN_SAMPLES recent settlements exist -- never an invented constant, which would
+        # bake a fabricated number into the dataset that is later fitted against.
         await _publish_power_intent()
 
         loop = asyncio.get_running_loop()

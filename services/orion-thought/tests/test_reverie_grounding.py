@@ -1,4 +1,4 @@
-"""Phase D — episode + motif grounding (read-only). Refs are capped, degrade to
+"""Phase D — episode grounding (read-only). Refs are capped, degrade to
 empty, attach to the thought, and the adapter never writes."""
 from __future__ import annotations
 
@@ -25,12 +25,7 @@ def _broadcast():
 
 def test_collect_grounding_caps_and_shapes():
     from app import grounding
-    m, e = grounding.collect_grounding(
-        motif_loader=lambda n: [f"frame-{i}" for i in range(10)],
-        episode_loader=lambda n: [f"ep-{i}" for i in range(10)],
-        cap=3,
-    )
-    assert m == ["frame-0", "frame-1", "frame-2"]
+    e = grounding.collect_grounding(episode_loader=lambda n: [f"ep-{i}" for i in range(10)], cap=3)
     assert e == ["ep-0", "ep-1", "ep-2"]
 
 
@@ -40,8 +35,14 @@ def test_collect_grounding_degrades_to_empty_on_loader_error():
     def boom(n):
         raise RuntimeError("db down")
 
-    m, e = grounding.collect_grounding(motif_loader=boom, episode_loader=boom)
-    assert m == [] and e == []
+    assert grounding.collect_grounding(episode_loader=boom) == []
+
+
+def test_grounding_never_reads_the_retired_consolidation_table():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app" / "grounding.py").read_text()
+    assert "substrate_consolidation_frames" not in src
 
 
 def test_grounding_adapter_is_read_only():
@@ -58,8 +59,7 @@ async def test_tick_attaches_grounding_when_flag_on(monkeypatch):
     from app import reverie, grounding
     from app.settings import settings
 
-    monkeypatch.setattr(settings, "reverie_ground_consolidation", True)
-    monkeypatch.setattr(grounding, "default_motif_loader", lambda n: ["frame-9"])
+    monkeypatch.setattr(settings, "reverie_ground_episodes", True)
     monkeypatch.setattr(grounding, "default_episode_loader", lambda n: ["ep-9"])
     monkeypatch.setattr(reverie, "persist_reverie_thought", lambda t: True)
 
@@ -72,8 +72,8 @@ async def test_tick_attaches_grounding_when_flag_on(monkeypatch):
         bus, broadcast_reader=_broadcast, cortex_client=cortex,
     )
     assert thought is not None
-    assert thought.motif_refs == ["frame-9"]
     assert thought.episode_summary_refs == ["ep-9"]
+    assert "motif_refs" not in thought.model_dump()
 
 
 @pytest.mark.asyncio
@@ -81,7 +81,7 @@ async def test_tick_no_grounding_when_flag_off(monkeypatch):
     from app import reverie
     from app.settings import settings
 
-    monkeypatch.setattr(settings, "reverie_ground_consolidation", False)
+    monkeypatch.setattr(settings, "reverie_ground_episodes", False)
     monkeypatch.setattr(reverie, "persist_reverie_thought", lambda t: True)
     bus = AsyncMock()
     cortex = AsyncMock()
@@ -92,4 +92,10 @@ async def test_tick_no_grounding_when_flag_off(monkeypatch):
         bus, broadcast_reader=_broadcast, cortex_client=cortex,
     )
     assert thought is not None
-    assert thought.motif_refs == [] and thought.episode_summary_refs == []
+    assert thought.episode_summary_refs == []
+
+
+def test_episode_grounding_ships_on():
+    from app.settings import ThoughtSettings
+
+    assert ThoughtSettings.model_fields["reverie_ground_episodes"].default is True

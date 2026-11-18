@@ -1,0 +1,22 @@
+# orion-mesh-guardian had no CI. Added with the remote crash-loop watch (2026-10-23: circe's
+# affectgpt worker restarted 601 times unseen). Runs the unit suite and the incident-replay evals
+# (10-02 bus-mirror, 10-09 GPU controller, 10-14 circe affectgpt).
+name: Mesh guardian (stability, GPU watch, remote crash loops)
+on:
+  pull_request:
+    paths:
+      - 'services/orion-mesh-guardian/**'
+      - 'services/orion-gpu-lane-controller/app/container_census.py'
+      - 'orion/schemas/telemetry/system_health.py'
+      - 'orion/core/bus/bus_service_chassis.py'
+      - '.github/workflows/mesh-guardian-tests.yml'
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r services/orion-mesh-guardian/requirements.txt -r requirements-dev.txt
+      - run: python -m pytest services/orion-mesh-guardian/tests services/orion-mesh-guardian/evals -q

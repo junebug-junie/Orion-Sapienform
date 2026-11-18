@@ -60,22 +60,29 @@ def _memory_cards_sql_path() -> Path:
     return legacy
 
 
-def apply_memory_cards_schema(dsn: str) -> None:
-    """Apply idempotent DDL using psycopg2 (sync bootstrap)."""
+def apply_memory_cards_schema(dsn: str, *, force: bool = False) -> bool:
+    """Apply idempotent DDL using psycopg2 (sync bootstrap).
+
+    Skipped (returns False) while the file's fingerprint is already recorded,
+    so a boot during the nightly backup does not queue a no-op ALTER behind
+    pg_dump's locks -- see orion/core/storage/schema_fingerprint.py.
+    Returns True when the DDL ran."""
+    from orion.core.storage.schema_fingerprint import apply_schema_file_once
+
     sql_path = _memory_cards_sql_path()
     if not sql_path.is_file():
         raise FileNotFoundError(
             f"memory_cards DDL not found at {sql_path} (expected bundled sql/memory_cards.sql or repo services/orion-recall/sql/memory_cards.sql)"
         )
-    sql = sql_path.read_text(encoding="utf-8")
-    connect_options = (
-        f"-c lock_timeout={_SCHEMA_APPLY_LOCK_TIMEOUT_MS} "
-        f"-c statement_timeout={_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS}"
+    return apply_schema_file_once(
+        dsn,
+        name="memory_cards",
+        sql=sql_path.read_text(encoding="utf-8"),
+        lock_timeout_ms=_SCHEMA_APPLY_LOCK_TIMEOUT_MS,
+        statement_timeout_ms=_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS,
+        connect=psycopg2.connect,
+        force=force,
     )
-    with psycopg2.connect(dsn, options=connect_options) as conn:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute(sql)
 
 
 def _slugify(title: str) -> str:

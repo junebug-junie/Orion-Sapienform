@@ -28,7 +28,7 @@ def test_transport_bus_delta_maps_to_node_channels() -> None:
                 "stream_backlog_health": 1.0,
                 "delivery_confidence": 1.0,
                 "catalog_drift_pressure": 1.0,
-                "contract_pressure": 1.0,
+                "contract_pressure": 1.0,  # retired 2026-10-07
                 "stream_backlog_pressure": 0.0,
             },
         },
@@ -37,13 +37,17 @@ def test_transport_bus_delta_maps_to_node_channels() -> None:
     )
     perturbations = delta_to_perturbations(delta)
     channels = {p.channel: p.intensity for p in perturbations}
-    assert channels["contract_pressure"] == 1.0
     assert channels["catalog_drift_pressure"] == 1.0
     # Retired 2026-09-25: still present in this (pre-retirement-shaped) delta,
     # but must not reach the field.
-    for retired in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure"):
+    for retired in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure", "contract_pressure"):
         assert retired not in channels
     assert perturbations[0].node_id == "node:athena"
+
+
+class _NoHistoryStore:
+    def load_recent_field_json(self, *, window_seconds: float) -> list:
+        return []
 
 
 def test_transport_perturbations_diffuse_to_transport_capability() -> None:
@@ -59,7 +63,6 @@ def test_transport_perturbations_diffuse_to_transport_capability() -> None:
             "node_id": "athena",
             "pressure_hints": {
                 "catalog_drift_pressure": 1.0,
-                "contract_pressure": 1.0,
             },
         },
         caused_by_event_ids=["gev_2"],
@@ -72,9 +75,18 @@ def test_transport_perturbations_diffuse_to_transport_capability() -> None:
         decay_rate=1.0,
         diffusion_rate=1.0,
         staleness_threshold_sec=90.0,
+        # run_digestion_tick grew these (significance pressure); this test
+        # was failing on main for that reason alone, hiding its assertion.
+        store=_NoHistoryStore(),
+        significance_window_seconds=60.0,
+        significance_check_interval_sec=1e9,
     )
     cap = field.capability_vectors.get("capability:transport") or {}
-    assert cap.get("contract_pressure", 0.0) > 0.0
+    # capability:transport.catalog_drift_pressure (named contract_pressure
+    # until 2026-10-07, decision D3) is fed by node:athena catalog_drift_pressure
+    # through the topology channel_map.
+    assert cap.get("catalog_drift_pressure", 0.0) > 0.0
+    assert "contract_pressure" not in cap
 
 
 def test_field_digester_store_does_not_query_grammar_events() -> None:

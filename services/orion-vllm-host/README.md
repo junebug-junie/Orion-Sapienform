@@ -7,8 +7,16 @@ the real vLLM OpenAI-compatible server subprocess.
 ## Usage
 
 ```bash
-docker compose -f services/orion-vllm-host/docker-compose.yml up -d
+scripts/safe_docker_build.sh orion-vllm-host --profile vllm-worker up -d
 ```
+
+The worker requires the explicit `vllm-worker` Compose profile and remains in
+Athena's pull/rebuild exclusion list. A routine pull must not start it.
+For Hecate's dedicated dual-V100 lane, use `services/orion-vllm-host/scripts/hecate-deep.sh build`
+and `services/orion-vllm-host/scripts/hecate-deep.sh up -d` from Hecate's clean primary main checkout synchronized with origin/main.
+Builds may run in a worktree.
+That wrapper checks the host and NVMe mount before selecting the SM70 override.
+The older `hecate.sh` wrapper is retained for the single-card operational rollback.
 
 Health: `GET http://localhost:${VLLM_HOST_PORT:-7000}/health`
 
@@ -16,3 +24,46 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 `HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection, separate from
 the vLLM server subprocess this service launches. See
 docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+
+## Hecate GLM 5.3 Flash (staged)
+
+`glm-5.3-flash-exl3-hecate` is a launch profile for a **custom, pinned 1Cat-vLLM
+build**, not this service's legacy `vllm/vllm-openai:v0.6.0` Docker image.
+See [the build and activation runbook](../../docs/runbooks/hecate-glm53-vllm.md).
+The GLM profile is not the active Hecate deployment. Its GPU inference remains **UNVERIFIED**.
+
+The profile's `vllm` block supplies serving arguments and a small allow-list of
+engine environment settings. `pool_discovery: true` loads
+`app.discovery.pool_server_info` through vLLM's `--middleware` option. Its
+read-only `GET /orion/server-info` exposes only initialized engine model path,
+context limit, scheduler sequence limit and parallel layout. It does not enable
+developer mode; the fork's built-in `/server_info` is otherwise hidden behind it.
+
+`LLM_ROLE`, `LLM_ANNOUNCE_HOST`, and `LLM_ANNOUNCE_PORT` identify a pool role and
+its externally reachable host/port. Role/port are disabled by default. Setting
+either requires both and an explicit `VLLM_PROFILE_NAME`, checked before startup.
+The worker publishes the existing `llm.worker.announce.v1` every 30 seconds;
+the pool requires live HTTP facts to agree before making grants.
+
+CPU checks (from repository root):
+
+```bash
+PYTHONPATH=.:services/orion-vllm-host python -m pytest services/orion-vllm-host/tests -q
+python services/orion-vllm-host/scripts/stage_pool.py > /tmp/hecate-pool.candidate.yaml
+```
+
+`evals/smoke_glm.py` is an opt-in inference acceptance check against a real
+endpoint; a passing CPU test is not evidence of model quality or GPU readiness.
+It takes a GPU pool operator hold on `--lane agent-deep` and calls only through
+orion-llm-gateway (`orion/evals/leased_llm.py`; needs `ORION_BUS_URL`).
+
+## Hecate deep thinker (two V100s)
+
+`deep.thinker.v1` uses pinned 1Cat 1.5.3 and QUASAR Qwen3.8 27B, TP2,
+262144 combined tokens, a 16K–32K reasoning/output reserve and one active request.
+Use `scripts/hecate-deep.sh` for this explicit alternative; preserve the old image
+for rollback. [Runbook and acceptance evidence](../../docs/runbooks/hecate-deep-thinking.md).
+The exact-token eval is `evals/deep_context.py`; `--endurance` must pass before
+claiming full-window residency. The engine's own renderer enforces the prompt
+budget for OpenAI Chat and Anthropic Messages. Unsupported generation APIs and
+silent prompt truncation are rejected. No env template changes.

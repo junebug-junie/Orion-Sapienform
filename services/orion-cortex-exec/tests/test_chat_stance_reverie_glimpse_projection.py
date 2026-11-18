@@ -10,6 +10,10 @@ from app.chat_stance import _project_reverie_glimpse
 # thought -- this is the whole point of re-deriving hollowness from the
 # schema instead of trusting a bare stored `hollow` bool.
 _INTERPRETATION = "The coalition is fixated on unresolved transport anomalies."
+# What the stance prompt actually receives: the interpretation, labelled as
+# Orion's own reverie by orion.memory.voice_render (source monitoring).
+_RENDERED = ("Something I was turning over on my own (reverie, 07-12), "
+             "not something Juniper and I discussed: " + _INTERPRETATION)
 
 
 def _fresh_payload(**overrides):
@@ -27,6 +31,7 @@ def _fresh_payload(**overrides):
             "broadcast_stale": False,
         },
         "chain_id": "chain:123",
+        "created_at": "2026-07-12T00:05:00+00:00",
     }
     payload.update(overrides)
     return payload
@@ -82,7 +87,7 @@ def test_returns_interpretation_verbatim_for_dict_payload():
     payload = _fresh_payload()
     ctx = {"latest_reverie_thought": payload}
     result = _project_reverie_glimpse(ctx)
-    assert result == _INTERPRETATION
+    assert result == _RENDERED
     assert isinstance(result, str)
     # Only the interpretation string comes back -- no other field's concrete
     # values leak into the projected result.
@@ -97,7 +102,7 @@ def test_returns_interpretation_verbatim_for_json_string_payload():
     payload = _fresh_payload()
     ctx = {"latest_reverie_thought": json.dumps(payload)}
     result = _project_reverie_glimpse(ctx)
-    assert result == _INTERPRETATION
+    assert result == _RENDERED
 
 
 def test_none_when_payload_is_malformed_json_string():
@@ -120,5 +125,16 @@ def test_ctx_key_wiring_only_sets_no_other_fields(monkeypatch):
     glimpse = chat_stance._project_reverie_glimpse(ctx)
     if glimpse:
         ctx["chat_reverie_glimpse"] = glimpse
-    assert ctx["chat_reverie_glimpse"] == _INTERPRETATION
+    assert ctx["chat_reverie_glimpse"] == _RENDERED
     assert isinstance(ctx["chat_reverie_glimpse"], str)
+
+
+def test_glimpse_is_never_presented_as_juniper_or_as_shared():
+    """A reverie reaching the stance prompt is Orion's own thought, by construction."""
+    ctx = {"latest_reverie_thought": _fresh_payload(
+        interpretation="Juniper told me Hecate is flashed and we decided to rack it.")}
+    result = _project_reverie_glimpse(ctx)
+    assert result.startswith("Something I was turning over on my own (reverie, ")
+    assert "not something Juniper and I discussed" in result
+    prefix = result.split(": ", 1)[0]
+    assert "Juniper told me" not in prefix and "I told Juniper" not in prefix and "worked out" not in prefix

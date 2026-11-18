@@ -1,0 +1,64 @@
+name: telemetry-anomaly-episode-tests
+
+# Deterministic gate for the telemetry_anomaly episode gate (2026-10-13): the
+# pure episode/turn state machine, its equilibrium wiring, the 15-day replay
+# eval over real stored fires (10-08 outage must still fire), and the
+# sql-writer row that persists every anomaly score. No DB, bus or LLM.
+
+on:
+  pull_request:
+    paths:
+      - "orion/metacog/anomaly_episode.py"
+      - "orion/metacog/evidence_map.py"
+      - "orion/field/channel_glossary.py"
+      - "config/field/field_channel_glossary.v1.yaml"
+      - "orion/schemas/telemetry/field_channel_anomaly_score.py"
+      - "services/orion-equilibrium-service/app/telemetry_anomaly_metacog_gate.py"
+      - "services/orion-equilibrium-service/app/service.py"
+      - "services/orion-equilibrium-service/app/settings.py"
+      - "services/orion-equilibrium-service/tests/test_telemetry_anomaly_*.py"
+      - "services/orion-equilibrium-service/evals/test_telemetry_anomaly_*.py"
+      - "services/orion-equilibrium-service/evals/fixtures/telemetry_anomaly_*.jsonl"
+      - "services/orion-sql-writer/app/models/field_channel_anomaly_score.py"
+      - "services/orion-sql-writer/app/settings.py"
+      - "services/orion-sql-writer/app/worker.py"
+      - "services/orion-sql-writer/tests/test_field_channel_anomaly_score_sql.py"
+      - "scripts/analysis/replay_telemetry_anomaly_episodes.py"
+      - ".github/workflows/telemetry-anomaly-episode-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/metacog/anomaly_episode.py"
+      - "orion/metacog/evidence_map.py"
+      - "config/field/field_channel_glossary.v1.yaml"
+      - "services/orion-equilibrium-service/app/telemetry_anomaly_metacog_gate.py"
+      - "services/orion-equilibrium-service/app/service.py"
+      - "services/orion-sql-writer/app/models/field_channel_anomaly_score.py"
+      - "scripts/analysis/replay_telemetry_anomaly_episodes.py"
+      - ".github/workflows/telemetry-anomaly-episode-tests.yml"
+
+jobs:
+  unit:
+    name: Telemetry anomaly — episode gate, wiring, replay eval, score persistence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-equilibrium-service/requirements.txt
+          python -m pip install -r services/orion-sql-writer/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Equilibrium episode gate + wiring + replay eval
+        working-directory: services/orion-equilibrium-service
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
+            tests/test_telemetry_anomaly_episode.py \
+            tests/test_telemetry_anomaly_metacog_gate.py \
+            evals/test_telemetry_anomaly_episode_replay_eval.py
+      - name: sql-writer anomaly score row
+        working-directory: services/orion-sql-writer
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_field_channel_anomaly_score_sql.py

@@ -13,8 +13,12 @@ class BrainRegionV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # "self_state" removed 2026-10-07: its only source table
+    # (substrate_self_state) has had 0 rows since the 2026-07-22 SelfStateV1
+    # burn, so no frame has carried a self_state region since (0 of 4,743
+    # frames in substrate_brain_frame_log, checked live 2026-10-07).
     dimension: Literal[
-        "node_kind", "lane", "self_state", "lattice_layer", "honesty_metrics", "field_anomaly"
+        "node_kind", "lane", "lattice_layer", "honesty_metrics", "field_anomaly"
     ]
     region_id: str
     label: str

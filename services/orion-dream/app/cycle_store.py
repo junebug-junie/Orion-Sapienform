@@ -1,11 +1,12 @@
-"""Dream cycle v2 store. Reads four producer tables; writes only v2 tables.
+"""Dream cycle v2 store. Reads four producer tables; writes only v2 cycle/observation tables.
 
-Read-only on every source (orion_metacog, dream_compaction_request_queue,
+Read-only on every source (orion_metacog, dream_compaction_request_queue, temporal_self_arc,
 substrate_reverie_resonance_alert, memory_crystallizations, chat_history_log).
 Writes exactly CYCLE_WRITE_TABLES -- a test pins that no canonical memory
 table ever appears in a write statement here.
 
-Every loader degrades to empty/None on failure and logs why: a missing table
+Every loader retains the existing empty/None fallback and logs why; source and
+cycle-clock errors also invalidate observation history: a missing table
 (migration not applied yet) must read as "nothing to replay", never raise.
 """
 
@@ -13,51 +14,121 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
+from orion.regulation.juniper_turns import JUNIPER_IDLE_MINUTES_SQL
 from orion.schemas.dream_cycle import DreamCycleV1
 
 from app.settings import settings
 
 logger = logging.getLogger("orion-dream.cycle_store")
 
-CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis")
+CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis", "dream_pressure_observation")
 
+# One row per THING (`dedupe_key`), newest first, in [since, until). The key
+# rule lives here once; app/replay.py row_key only namespaces it.
+#   metacog          trigger_reason with ids/numbers -> '#': structured, written
+#                    by the producer (`transport:rpc_timeout:<channel>`). Not
+#                    `summary`: model prose, reworded per row for one event.
+#                    No reason -> the row id (counts as its own thing).
+#   compaction       the theme.   resonance  the theme_key.
+#                    Both are bare open-loop ids (`open-loop-968fda08910c`). `title` is the
+#                    loop's latest human description from attention_salience_trace
+#                    (theme_key == loop id, indexed), for replay text only: the key
+#                    stays the id, so tiredness and novelty are unchanged.
+#   crystallization  activation events (auto_activate / approve), NOT
+#                    updated_at: recall rewrites updated_at on all ~100
+#                    rendered crystallizations per retrieval (retriever.py
+#                    _apply_recall_boost), which is activity, not new material.
 # `timestamp` on orion_metacog is a producer-written ISO string, not a
 # timestamptz. Cast only well-formed values so one bad row cannot fail the read
 # (CASE, not AND: Postgres does not promise AND short-circuits).
+METACOG_KEY_RE = r"[0-9a-f]{8,}|-?[0-9]+(\.[0-9]+)?"
+
+def _title_join(theme_col: str) -> str:
+    """The open loop's latest non-empty human description before the window's end."""
+    return (
+        "\n        LEFT JOIN LATERAL (SELECT a.description AS title FROM attention_salience_trace a"
+        f" WHERE a.theme_key = {theme_col} AND coalesce(a.description, '') <> ''"
+        # As described when the window closed, not today's (titles drift: "1 message" -> "2").
+        " AND a.created_at < :until"
+        " ORDER BY a.created_at DESC LIMIT 1) t ON true"
+    )
+
+
+def _chain_thought_join(chain_col: str) -> str:
+    """What the reverie chain behind a compaction request last thought, in its own words (primary
+    keys on both tables). The request's own `reason` is only how the chain ended
+    ("reverie_chain_settled"), which gives the recombine model nothing to link (#3412)."""
+    return (
+        "\n        LEFT JOIN LATERAL (SELECT th.interpretation FROM substrate_reverie_chain ch"
+        " JOIN substrate_reverie_thought th ON th.thought_id = ch.chain_json->'thought_ids'->>-1"
+        f" WHERE ch.chain_id = {chain_col} LIMIT 1) r ON true"
+    )
+
+
 SOURCE_QUERIES: dict[str, str] = {
-    "metacog": """
-        SELECT id, summary, severity, trigger_kind, tags FROM orion_metacog
-         WHERE severity IN ('degraded', 'critical')
-           AND CASE WHEN timestamp ~ '^\\d{4}-\\d{2}-\\d{2}T'
-                    THEN CAST(timestamp AS timestamptz) END > :since
-         ORDER BY timestamp DESC LIMIT :limit
+    "metacog": f"""
+        SELECT id, summary, severity, trigger_kind, tags, dedupe_key, ts AS occurred_at, evidence FROM (
+          SELECT DISTINCT ON (dedupe_key) id, summary, severity, trigger_kind, tags, dedupe_key, ts, evidence FROM (
+            SELECT id, summary, severity, trigger_kind, tags,
+                   -- The facts behind the summary ("exit_code=-9", "finalize cut after 207s"): the
+                   -- summary alone is prose the recombine model rightly declines to link (#3412).
+                   (SELECT string_agg(e, '; ') FROM jsonb_array_elements_text(
+                        CASE WHEN jsonb_typeof(what_changed->'evidence') = 'array'
+                             THEN what_changed->'evidence' ELSE '[]'::jsonb END) e) AS evidence,
+                   COALESCE(regexp_replace(NULLIF(trigger_reason, ''), '{METACOG_KEY_RE}', '#', 'g'),
+                            'id:' || id) AS dedupe_key,
+                   CASE WHEN timestamp ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}T'
+                        THEN CAST(timestamp AS timestamptz) END AS ts
+              FROM orion_metacog
+             WHERE severity IN ('degraded', 'critical')
+          ) m WHERE ts > :since AND ts < :until
+          ORDER BY dedupe_key, (severity = 'critical') DESC, ts DESC
+        ) d ORDER BY ts DESC LIMIT :limit
     """,
-    "compaction_request": """
-        SELECT request_id, theme, reason FROM dream_compaction_request_queue
-         WHERE created_at > :since
-         ORDER BY created_at DESC LIMIT :limit
+    "compaction_request": f"""
+        SELECT d.request_id, d.theme, d.reason, d.dedupe_key, t.title,
+               d.created_at AS occurred_at, r.interpretation FROM (
+          SELECT request_id, theme, reason, dedupe_key, created_at, origin_chain_id FROM (
+            SELECT DISTINCT ON (lower(theme)) request_id, theme, reason, lower(theme) AS dedupe_key, created_at,
+                   origin_chain_id
+              FROM dream_compaction_request_queue
+             WHERE created_at > :since AND created_at < :until
+             ORDER BY lower(theme), created_at DESC
+          ) k ORDER BY created_at DESC LIMIT :limit
+        ) d{_title_join('d.theme')}{_chain_thought_join('d.origin_chain_id')} ORDER BY d.created_at DESC
     """,
-    "resonance": """
-        SELECT alert_id, theme_key, violation_count FROM substrate_reverie_resonance_alert
-         WHERE created_at > :since
-         ORDER BY created_at DESC LIMIT :limit
+    "resonance": f"""
+        SELECT d.alert_id, d.theme_key, d.violation_count, d.dedupe_key, t.title, d.created_at AS occurred_at FROM (
+          SELECT alert_id, theme_key, violation_count, dedupe_key, created_at FROM (
+            SELECT DISTINCT ON (lower(theme_key)) alert_id, theme_key, violation_count,
+                   lower(theme_key) AS dedupe_key, created_at
+              FROM substrate_reverie_resonance_alert
+             WHERE created_at > :since AND created_at < :until
+             ORDER BY lower(theme_key), violation_count DESC, created_at DESC
+          ) k ORDER BY created_at DESC LIMIT :limit
+        ) d{_title_join('d.theme_key')} ORDER BY d.created_at DESC
     """,
     "crystallization": """
-        SELECT crystallization_id, subject, summary, salience, tags FROM memory_crystallizations
-         WHERE status = 'active' AND updated_at > :since
-         ORDER BY salience DESC, updated_at DESC LIMIT :limit
+        SELECT crystallization_id, subject, summary, salience, tags, dedupe_key, created_at AS occurred_at FROM (
+          SELECT DISTINCT ON (c.crystallization_id) c.crystallization_id, c.subject, c.summary,
+                 c.salience, c.tags, c.crystallization_id::text AS dedupe_key, h.created_at
+            FROM memory_crystallization_history h
+            JOIN memory_crystallizations c USING (crystallization_id)
+           WHERE h.op IN ('auto_activate', 'approve') AND c.status = 'active'
+             AND h.created_at > :since AND h.created_at < :until
+           ORDER BY c.crystallization_id, h.created_at DESC
+        ) d ORDER BY created_at DESC LIMIT :limit
     """,
 }
 
-# chat_history_log.created_at is `timestamp without time zone` defaulted by the
-# server's now(), so compare against LOCALTIMESTAMP on the same server clock.
-IDLE_MINUTES_SQL = """
-    SELECT EXTRACT(EPOCH FROM (LOCALTIMESTAMP - max(created_at))) / 60.0 AS idle
-      FROM chat_history_log
-"""
+# Minutes since JUNIPER's last turn (Temporal Self rev 4, R2 repair 1). Before
+# 2026-10-10 this read max(created_at) over every row, so Orion's own outreach
+# (promptless rows, client_meta.unsolicited) reset Orion's own idle clock. The
+# rule lives in orion.regulation.juniper_turns, shared with arousal E1.
+IDLE_MINUTES_SQL = JUNIPER_IDLE_MINUTES_SQL
 
 # Two different clocks, on purpose (review finding, 2026-09-25):
 #   window start = the last NON-failed cycle's started_at. started_at, not
@@ -69,7 +140,16 @@ IDLE_MINUTES_SQL = """
 LAST_WINDOW_START_SQL = "SELECT max(started_at) AS at FROM dream_cycle WHERE status <> 'failed'"
 LAST_ATTEMPT_END_SQL = "SELECT max(ended_at) AS at FROM dream_cycle"
 
+_FAR_FUTURE = datetime(9999, 1, 1, tzinfo=timezone.utc)
+
 _engine = None
+
+
+class SourceRows(dict):
+    """Existing row mapping plus source failures for observation validity only."""
+    def __init__(self):
+        super().__init__()
+        self.read_errors = []
 
 
 def _get_engine():
@@ -77,29 +157,83 @@ def _get_engine():
     if _engine is None:
         from sqlalchemy import create_engine
 
-        _engine = create_engine(settings.POSTGRES_URI, pool_pre_ping=True)
+        # connect_timeout: statement_timeout only starts after connecting; a hung connect must not
+        # pin a default-executor thread (the cycle's wait_for only stops waiting, not the thread).
+        _engine = create_engine(settings.POSTGRES_URI, pool_pre_ping=True, connect_args={"connect_timeout": 5})
     return _engine
 
 
-def load_source_rows(since: datetime, limit_per_source: int) -> dict[str, list[dict[str, Any]]]:
-    """source_kind -> rows. A failing source is empty and logged, not fatal."""
+def load_source_rows(
+    since: datetime, limit_per_source: int, until: Optional[datetime] = None
+) -> dict[str, list[dict[str, Any]]]:
+    """source_kind -> one row per thing in [since, until). A failing source is
+    empty and logged, not fatal."""
     from sqlalchemy import text
 
-    out: dict[str, list[dict[str, Any]]] = {}
+    out = SourceRows()
     engine = _get_engine()
+    params = {"since": since, "until": until or _FAR_FUTURE, "limit": int(limit_per_source)}
     for kind, sql in SOURCE_QUERIES.items():
         try:
             with engine.connect() as conn:
-                rows = conn.execute(text(sql), {"since": since, "limit": int(limit_per_source)}).mappings().all()
+                rows = conn.execute(text(sql), params).mappings().all()
             out[kind] = [dict(r) for r in rows]
         except Exception as exc:
             logger.warning("dream_cycle source read failed kind=%s err=%s", kind, exc)
+            out.read_errors.append(kind)
             out[kind] = []
     return out
 
 
+_history_engine = None
+
+
+def persist_pressure_observation(observation) -> bool:
+    """Append-only, idempotent check history. A missing migration is loud, not fatal.
+
+    A separate small pool bounds instrumentation connection/lock/statement waits.
+    Retention only touches this table, 1,000 expired rows at most per check.
+    """
+    global _history_engine
+    from sqlalchemy import create_engine, text
+
+    try:
+        if _history_engine is None:
+            _history_engine = create_engine(settings.POSTGRES_URI, pool_size=1, max_overflow=0,
+                pool_timeout=2, connect_args={"connect_timeout": 2})
+        with _history_engine.begin() as conn:
+            conn.execute(text("SET LOCAL statement_timeout = '2000ms'"))
+            conn.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            conn.execute(text("""
+                INSERT INTO dream_pressure_observation (check_id, observed_at, observation_json)
+                VALUES (:check_id, :observed_at, CAST(:payload AS jsonb))
+                ON CONFLICT (check_id) DO NOTHING
+            """), dict(check_id=observation.check_id, observed_at=observation.observed_at,
+                       payload=observation.model_dump_json()))
+        # Separate transaction: cleanup cannot roll back the new observation.
+        try:
+            with _history_engine.begin() as conn:
+                conn.execute(text("SET LOCAL statement_timeout = '2000ms'"))
+                conn.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                conn.execute(text("""
+                    DELETE FROM dream_pressure_observation WHERE check_id IN (
+                        SELECT check_id FROM dream_pressure_observation
+                        WHERE created_at < now() - interval '30 days'
+                        ORDER BY created_at LIMIT 1000
+                    )
+                """))
+        except Exception:
+            logger.exception("dream_pressure_history_retention_failed")
+        return True
+    except Exception:
+        logger.exception("dream_pressure_history_write_failed check_id=%s", observation.check_id)
+        return False
+
+
 def load_idle_minutes() -> Optional[float]:
-    """Minutes since the last chat turn. None = unknown (treated as NOT idle)."""
+    """Minutes since Juniper's last turn (never Orion's outreach). None = unknown
+    (treated as NOT idle). A log with no Juniper turn at all also reads None,
+    exactly as an empty log did before this fix."""
     try:
         from sqlalchemy import text
 
@@ -113,7 +247,7 @@ def load_idle_minutes() -> Optional[float]:
         return None
 
 
-def _load_at(sql: str) -> Optional[datetime]:
+def _load_at(sql: str, *, read_errors=None, source="cycle_clock") -> Optional[datetime]:
     try:
         from sqlalchemy import text
 
@@ -121,16 +255,18 @@ def _load_at(sql: str) -> Optional[datetime]:
             row = conn.execute(text(sql)).mappings().first()
         return row["at"] if row else None
     except Exception as exc:
+        if read_errors is not None:
+            read_errors.append(source)
         logger.warning("dream_cycle last-cycle read failed err=%s", exc)
         return None
 
 
-def load_last_window_start() -> Optional[datetime]:
-    return _load_at(LAST_WINDOW_START_SQL)
+def load_last_window_start(*, read_errors=None) -> Optional[datetime]:
+    return _load_at(LAST_WINDOW_START_SQL, read_errors=read_errors, source="last_window_start")
 
 
-def load_last_attempt_end() -> Optional[datetime]:
-    return _load_at(LAST_ATTEMPT_END_SQL)
+def load_last_attempt_end(*, read_errors=None) -> Optional[datetime]:
+    return _load_at(LAST_ATTEMPT_END_SQL, read_errors=read_errors, source="last_attempt_end")
 
 
 def persist_cycle(cycle: DreamCycleV1) -> bool:
@@ -206,3 +342,85 @@ def persist_cycle(cycle: DreamCycleV1) -> bool:
     except Exception as exc:
         logger.warning("dream_cycle persist failed id=%s err=%s", cycle.cycle_id, exc)
         return False
+
+
+# Closed Temporal Self arcs that ENDED in [since, until), sleep excluded (Temporal Self
+# rev 4 patch 7). Read-only on temporal_self_arc (written by orion-durable-runs, same
+# database). Narrow columns, never the whole arc_json: evidence ids stay in the arc row,
+# cited by arc_id. ARC_ROW_LIMIT bounds the read; replay.arc_candidates ranks and caps.
+ARC_ROW_LIMIT = 2000
+ARC_READ_STATEMENT_TIMEOUT_MS = 2000
+ARC_ROWS_SQL = """
+    SELECT arc_id, kind, subject_ref,
+           coalesce(arc_json->>'subject_label', '') AS subject_label,
+           began_at, ended_at, status, attention_returns,
+           CASE WHEN jsonb_typeof(arc_json->'cumulative_dwell_sec') = 'number'
+                THEN (arc_json->>'cumulative_dwell_sec')::double precision ELSE 0 END
+             AS cumulative_dwell_sec
+      FROM temporal_self_arc
+     WHERE status = 'closed' AND kind <> 'sleep'
+       AND ended_at >= :since AND ended_at < :until
+     ORDER BY ended_at DESC
+     LIMIT :limit
+"""
+
+
+def load_arc_rows(since: datetime, until: datetime) -> list[dict[str, Any]]:
+    """Closed arcs for replay. Any failure (missing table, timeout) is [] and logged:
+    the sleep then replays exactly what it did before arcs existed."""
+    try:
+        from sqlalchemy import text
+
+        with _get_engine().begin() as conn:
+            conn.execute(text(f"SET LOCAL statement_timeout = '{int(ARC_READ_STATEMENT_TIMEOUT_MS)}ms'"))
+            rows = conn.execute(
+                text(ARC_ROWS_SQL), {"since": since, "until": until, "limit": ARC_ROW_LIMIT}
+            ).mappings().all()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("dream_cycle arc read failed err=%s", exc)
+        return []
+
+
+# Graded walkway predictions (2026-10-15): met/missed rows from
+# vision_percept_expectation (written by orion-sql-writer's rhythm reducer, same
+# database) scored in [since, until), plus each subject's 14-day met/missed
+# tally. Read-only; SQL shared with orion-thought (orion/situational/street_material.py).
+WALKWAY_ROW_LIMIT = 200
+WALKWAY_READ_STATEMENT_TIMEOUT_MS = 2000
+
+
+def load_walkway_rows(since: datetime, until: datetime, *, stream_ids: list[str] | None = None) -> dict[str, list[dict[str, Any]]]:
+    """{"graded": rows, "calibration": rows}. Any failure (missing table, timeout)
+    is empty and logged: the sleep then replays exactly what it did before."""
+    from datetime import timedelta
+
+    from orion.situational.street_material import (
+        CALIBRATION_LOOKBACK_DAYS,
+        CALIBRATION_SQL,
+        GRADED_EXPECTATIONS_SQL,
+        parse_stream_ids,
+    )
+
+    ids = stream_ids if stream_ids is not None else parse_stream_ids(settings.DREAM_WALKWAY_STREAM_IDS)
+    if not ids:
+        return {"graded": [], "calibration": []}
+    try:
+        from sqlalchemy import bindparam, text
+
+        with _get_engine().begin() as conn:
+            conn.execute(text(f"SET LOCAL statement_timeout = '{int(WALKWAY_READ_STATEMENT_TIMEOUT_MS)}ms'"))
+            graded = conn.execute(
+                text(GRADED_EXPECTATIONS_SQL).bindparams(bindparam("stream_ids", expanding=True)),
+                {"stream_ids": ids, "since": since, "until": until, "limit": WALKWAY_ROW_LIMIT},
+            ).mappings().all()
+            if not graded:
+                return {"graded": [], "calibration": []}
+            cal = conn.execute(
+                text(CALIBRATION_SQL).bindparams(bindparam("stream_ids", expanding=True)),
+                {"stream_ids": ids, "cal_since": until - timedelta(days=CALIBRATION_LOOKBACK_DAYS)},
+            ).mappings().all()
+        return {"graded": [dict(r) for r in graded], "calibration": [dict(r) for r in cal]}
+    except Exception as exc:
+        logger.warning("dream_cycle walkway read failed err=%s", exc)
+        return {"graded": [], "calibration": []}

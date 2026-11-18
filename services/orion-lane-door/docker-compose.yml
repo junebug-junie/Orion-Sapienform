@@ -1,0 +1,84 @@
+# Lane doors (leased-evals design Phase 2; spec docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md,
+# runbook docs/runbooks/2026-11-14-lane-door.md). One door per model server.
+#
+# circe: the four circe doors have no profile, so circe's post-pull rebuild (include_services_circe.txt) starts
+# and updates them with a plain `up -d --build`; scripts/post_rebuild.sh then moves any engine still on its
+# public lane port to loopback. athena never runs them (mesh-utilities/common/exclude_services.txt).
+# hecate: services/orion-vllm-host/scripts/hecate-deep.sh starts lane-door-agent-deep with the deep engine.
+#
+# Host network: each door binds its lane port on the host itself, and only once its engine answers on the
+# loopback upstream (127.0.0.1:180xx, the engine's *_ENGINE_PUBLISH). Until then it waits and logs
+# `lane_door_waiting`. So the door never takes a port the engine still publishes, and the deploy order does
+# not matter. circe's port gate (scripts/ops/circe_llm_port_gate.sh, mangle PREROUTING) covers a host-network
+# listener the same as a docker-published port: only athena reaches the lane ports.
+x-door: &door
+  logging:
+    driver: journald
+    options:
+      tag: "{{.Name}}"
+  build:
+    context: ../..
+    dockerfile: services/orion-lane-door/Dockerfile
+  image: orion-lane-door:0.2.0
+  restart: unless-stopped
+  network_mode: host
+  # On a stop (a door redeploy) the door stops taking calls and lets the ones in flight finish
+  # (LANE_DOOR_DRAIN_SEC, default 100 s) before it exits.
+  stop_grace_period: 120s
+  env_file:
+    - .env
+  volumes:
+    - "${LANE_DOOR_LOG_HOST_DIR:-/mnt/telemetry/lane-door}:/var/log/lane-door"
+
+services:
+  lane-door-chat:
+    <<: *door
+    container_name: ${PROJECT:-orion}-lane-door-chat
+    environment:
+      - LANE_DOOR_LANE=chat
+      - LANE_DOOR_LISTEN_PORT=${LANE_DOOR_CHAT_PORT:-8011}
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_CHAT_UPSTREAM:-127.0.0.1:18011}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_CHAT:-${LANE_DOOR_MODE:-shadow}}
+
+  lane-door-agent:
+    <<: *door
+    container_name: ${PROJECT:-orion}-lane-door-agent
+    environment:
+      - LANE_DOOR_LANE=agent
+      - LANE_DOOR_LISTEN_PORT=${LANE_DOOR_AGENT_PORT:-8015}
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_AGENT_UPSTREAM:-127.0.0.1:18015}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_AGENT:-${LANE_DOOR_MODE:-shadow}}
+
+  # agent-gpu2's engine comes and goes (the lane controller swaps it). Before the engine's first loopback
+  # load the door waits (its old engine keeps 8016). The controller's next load starts the engine on
+  # loopback (the compose default) and the door takes 8016; after that it holds 8016 and answers 502 while
+  # the seat is unloaded (the pool sees the seat down either way). The seat is standby: warm, so that first
+  # load can be days away (the next swap, e.g. a diffusion lease).
+  lane-door-agent-gpu2:
+    <<: *door
+    container_name: ${PROJECT:-orion}-lane-door-agent-gpu2
+    environment:
+      - LANE_DOOR_LANE=agent-gpu2
+      - LANE_DOOR_LISTEN_PORT=${LANE_DOOR_AGENT_GPU2_PORT:-8016}
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_AGENT_GPU2_UPSTREAM:-127.0.0.1:18016}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_AGENT_GPU2:-${LANE_DOOR_MODE:-shadow}}
+
+  lane-door-fast:
+    <<: *door
+    container_name: ${PROJECT:-orion}-lane-door-fast
+    environment:
+      - LANE_DOOR_LANE=fast
+      - LANE_DOOR_LISTEN_PORT=${LANE_DOOR_FAST_PORT:-8013}
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_FAST_UPSTREAM:-127.0.0.1:18013}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_FAST:-${LANE_DOOR_MODE:-shadow}}
+
+  # hecate only: started and stopped by services/orion-vllm-host/scripts/hecate-deep.sh.
+  lane-door-agent-deep:
+    <<: *door
+    profiles: ["hecate"]
+    container_name: ${PROJECT:-orion}-lane-door-agent-deep
+    environment:
+      - LANE_DOOR_LANE=agent-deep
+      - LANE_DOOR_LISTEN_PORT=${LANE_DOOR_AGENT_DEEP_PORT:-8021}
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_AGENT_DEEP_UPSTREAM:-127.0.0.1:18021}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_AGENT_DEEP:-${LANE_DOOR_MODE:-shadow}}

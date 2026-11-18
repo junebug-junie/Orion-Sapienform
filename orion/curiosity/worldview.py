@@ -29,6 +29,9 @@ WHAT HUB READS, AND WHY EACH ONE EARNS ITS QUERY.
                    shipped -- see `study_material.py` where it used to live for
                    the full account of why a prose heuristic was the wrong
                    source and structure Orion authored is the right one.
+  own concepts     the `:Concept` nodes Orion coined, most-linked first, so a
+                   run reuses one instead of coining it again. See
+                   `CONCEPTS_CYPHER`.
   run footprint    what Orion actually wrote this run, counted by label. This
                    is the inspectable evidence behind the journal's claim that
                    a run formed structure -- AGENTS.md 0A's no-empty-shell
@@ -53,7 +56,7 @@ import hashlib
 import logging
 import re
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional, Sequence
 
 from orion.curiosity.value import valid_confidence
@@ -134,7 +137,7 @@ def _stamp_ms(value: Any) -> Optional[int]:
         return None
     try:
         return int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # "inf" is a float, not an int
         pass
     try:
         parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
@@ -179,6 +182,10 @@ class Prior:
     times_tested: int
     formed_from: str = ""
     last_tested_at: str = ""
+    # True when the pick came from a coverage slot, not from the uncertainty order. Recorded in
+    # the offer log so the order experiment can tell the two apart.
+    coverage: bool = False
+    strain_note: str = ""
 
     @property
     def uncertainty(self) -> float:
@@ -229,6 +236,8 @@ class Prior:
         # `tested 3x` is what made a shortened one look like a name in the
         # first place.
         line += f"\n      prior_id: {self.prior_id}"
+        if self.strain_note:
+            line += "\n      " + self.strain_note
         if self.formed_from:
             # `formed_from`, not "formed from": these labelled lines are now
             # load-bearing, and an earlier run scraped `prior_id: "curation
@@ -329,6 +338,35 @@ class ReviewRoleRecord:
 
 
 @dataclass(frozen=True)
+class ConceptRecord:
+    """One `:Concept` Orion coined in an earlier run, shown back so it can be reused.
+
+    `degree` counts every edge on the node, either direction. `newest_ms` is the
+    concept's own `written_at`, or else the newest `:TurnOutcome.written_at` of the
+    run that wrote it (most concepts carry no timestamp of their own).
+    """
+
+    concept_id: str
+    name: str
+    note: str = ""
+    degree: int = 0
+    run_id: str = ""
+    newest_ms: Optional[int] = None
+
+    def preview(self, note_chars: int = 200) -> str:
+        links = "no links" if self.degree <= 0 else (
+            "1 link" if self.degree == 1 else f"{self.degree} links"
+        )
+        line = f"[{links}] {_clip(self.name, 120)}"
+        # Labelled on its own line, same reason as `Prior.preview`: the MATCH binds
+        # by exact string, and an id sharing a line with a name gets shortened.
+        line += f"\n      concept_id: {self.concept_id}"
+        if self.note:
+            line += f"\n      note: {_clip(self.note, note_chars)}"
+        return line
+
+
+@dataclass(frozen=True)
 class RecentRun:
     """One earlier run, as a subject rather than as a pointer."""
 
@@ -401,8 +439,17 @@ class WorldviewSnapshot:
     live_total: int = 0
     closed_total: int = 0
     concept_total: int = 0
+    # Orion's own coined concepts, most-linked then newest, capped at CONCEPTS_SHOWN.
+    # Empty here means the graph was read and holds none; an unreadable graph is
+    # `unavailable_reason`, never an empty list.
+    concepts: list[ConceptRecord] = field(default_factory=list)
     continuation: Optional[TurnOutcome] = None
     unavailable_reason: Optional[str] = None
+    # The raw live-prior rows this snapshot was selected from, kept so the curiosity replica's validated
+    # plan can re-select the SAME read with its picks at the top (`with_head`) instead of a second graph
+    # read that could differ. Not part of equality or repr.
+    prior_rows: tuple = field(default=(), repr=False, compare=False)
+    strain_notes: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def is_unavailable(self) -> bool:
@@ -567,6 +614,106 @@ COUNTS_CYPHER = (
 
 CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
 
+# ORION'S OWN CONCEPTS, SHOWN BACK SO A RUN CAN REUSE ONE INSTEAD OF COINING IT AGAIN.
+#
+# The kickoff prompt only ever said `CREATE (:Concept ...)` and never showed an
+# existing one, so each concept was born, linked once, and forgotten: live
+# 2026-11-13, 9 of 35 concepts had 2+ links. Priors ARE shown back and collected
+# 341 revisions. Same fix, same reader.
+#
+# Degree is counted BEFORE the TurnOutcome join, or a run with two outcomes would
+# double every count. Ordering, grouping and the cap happen in Python, for the
+# same reason as LIVE_PRIORS_CYPHER: `written_at` is hand-written, sometimes ISO,
+# sometimes an int, and a Cypher ORDER BY over mixed types misorders or fails.
+CONCEPTS_SHOWN = 15
+# The last slots go to the newest concepts not already shown. Ranked by links
+# alone, the 9 concepts with 2+ links would hold their places forever and the
+# one-link concepts this read exists to rescue would never come back.
+CONCEPT_FRESH_SLOTS = 5
+CONCEPT_NOTE_CHARS = 200
+CONCEPTS_READ_LIMIT = 2000
+
+CONCEPTS_CYPHER = (
+    f"MATCH (c:{LABEL_CONCEPT}) "
+    "OPTIONAL MATCH (c)-[r]-() "
+    "WITH c, count(r) AS concept_degree "
+    f"OPTIONAL MATCH (t:{LABEL_TURN_OUTCOME}) WHERE t.run_id = c.run_id "
+    "RETURN c.concept_id AS concept_id, c.name AS name, c.note AS note, "
+    "c.run_id AS run_id, c.written_at AS concept_written_at, "
+    "concept_degree, t.written_at AS concept_run_written_at "
+    f"LIMIT {CONCEPTS_READ_LIMIT}"
+)
+
+
+def build_concepts(
+    rows: Sequence[dict[str, Any]],
+    *,
+    limit: int = CONCEPTS_SHOWN,
+    fresh_slots: int = CONCEPT_FRESH_SLOTS,
+) -> list[ConceptRecord]:
+    """Group the per-(concept, outcome) rows into concepts, rank, and cap.
+
+    Order: the first `limit - fresh_slots` by most links, then newest, then
+    concept_id so a tie is stable. The last `fresh_slots` are the newest of the
+    rest, so a new, barely-linked concept still gets seen and reused.
+    A concept with no `concept_id` is dropped: the prompt asks Orion to MATCH on
+    that id, and there is nothing to match. Two nodes sharing one id (a fork)
+    show once, as the copy with the most links.
+    """
+    by_id: dict[str, ConceptRecord] = {}
+    # Rows repeat for one node when its run has several TurnOutcomes; a FORK is
+    # the same id with a different (run_id, name, note), i.e. a second node.
+    shapes: dict[str, set] = {}
+    for row in rows:
+        concept_id = str(row.get("concept_id") or "").strip()
+        if not concept_id:
+            continue
+        own = _stamp_ms(row.get("concept_written_at"))
+        newest = own if own is not None else _stamp_ms(row.get("concept_run_written_at"))
+        shapes.setdefault(concept_id, set()).add(
+            (str(row.get("run_id") or ""), str(row.get("name") or ""), str(row.get("note") or ""))
+        )
+        record = ConceptRecord(
+            concept_id=concept_id,
+            name=str(row.get("name") or "").strip() or concept_id,
+            note=str(row.get("note") or "").strip(),
+            degree=_as_int(row.get("concept_degree"), 0),
+            run_id=str(row.get("run_id") or "").strip(),
+            newest_ms=newest,
+        )
+        held = by_id.get(concept_id)
+        if held is None:
+            by_id[concept_id] = record
+            continue
+        # Same node seen again through a second TurnOutcome, or a forked copy.
+        best = record if record.degree > held.degree else held
+        newest_ms = max(
+            (s for s in (held.newest_ms, record.newest_ms) if s is not None),
+            default=None,
+        )
+        by_id[concept_id] = replace(best, newest_ms=newest_ms)
+    forks = {cid: len(v) for cid, v in shapes.items() if len(v) > 1}
+    for concept_id, copies in sorted(forks.items()):
+        logger.warning(
+            "curiosity_worldview_duplicate_concept concept_id=%s copies=%s -- one "
+            "concept is stored as several nodes; a MATCH on its id binds all of "
+            "them. Shown once. Needs a manual repair; Hub never writes this graph",
+            concept_id,
+            copies,
+        )
+    limit = max(0, limit)
+    by_links = max(0, limit - max(0, fresh_slots))
+    ranked = sorted(
+        by_id.values(),
+        key=lambda c: (-c.degree, -(c.newest_ms or 0), c.concept_id),
+    )
+    head = ranked[:by_links]
+    rest = sorted(
+        ranked[by_links:],
+        key=lambda c: (-(c.newest_ms or 0), -c.degree, c.concept_id),
+    )
+    return head + rest[: limit - len(head)]
+
 # THE LAST FEW RUNS, SO ORION CAN SEE THE THREAD IT IS ON.
 #
 # Continuity was one run deep and it pointed INWARD: the loop read a single
@@ -583,19 +730,43 @@ CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
 # commas, so there is nothing reliable to split on. Same family as the
 # floats-come-back-as-strings note at the top of this module. One row per
 # (run, claim), grouped in Python where the types are real.
-# Named so a caller reading past this row bound (orion/curiosity/supervisor.py
-# :build_run_order, which repurposes this row-per-(run,claim) read as a
-# run_id -> written_at map for the WHOLE history rather than "recent") can
-# tell it was hit, the same way LIVE_PRIORS_LIMIT/HOPS_LIMIT are named for
-# their own truncation warnings elsewhere in this module.
-RECENT_RUNS_LIMIT = 200
+# TWO reads, not one join (#3398). The old query joined every TurnOutcome to its
+# priors and took `LIMIT 200` with no ORDER BY. Once the graph held 752 joined
+# rows the 200 kept were the oldest, so "your last runs" stayed frozen near
+# 2026-09-29 and the supervisor's run order lost every run after it.
+#
+# Read 1 is one row per TurnOutcome, newest first, no join. ORDER BY in Cypher
+# only decides WHICH rows survive the bound: FalkorDB sorts integer stamps
+# ahead of ISO strings under DESC (read live 2026-11-15: 543 integer, 8 string),
+# so a cut drops the oldest and the hand-written ISO ones, never the newest.
+# The real order is still decided in Python by `_stamp_ms`, which reads both.
+# Read 2 fetches the claims of only the runs that will be shown.
+RECENT_RUNS_LIMIT = 2000
 
 RECENT_RUNS_CYPHER = (
     f"MATCH (t:{LABEL_TURN_OUTCOME}) "
-    f"OPTIONAL MATCH (p:{LABEL_PRIOR} {{run_id: t.run_id}}) "
     "RETURN t.run_id AS run_id, t.written_at AS written_at, "
-    f"t.continue_note AS continue_note, p.claim AS claim LIMIT {RECENT_RUNS_LIMIT}"
+    "t.continue_note AS continue_note "
+    f"ORDER BY t.written_at DESC LIMIT {RECENT_RUNS_LIMIT}"
 )
+
+
+def recent_run_claims_cypher(run_ids: Sequence[str]) -> Optional[str]:
+    """Claims for the named runs, one row per (run, claim). None when no id is usable.
+
+    The reader takes no parameters, so ids go into the query text. Only ids that
+    match `_RUN_ID_RE` (hex) are used; a run with any other id is shown by its
+    continue note instead of its claims.
+    """
+    safe = [r for r in run_ids if _RUN_ID_RE.match(r)]
+    if not safe:
+        return None
+    id_list = ", ".join(f"'{r}'" for r in safe)
+    return (
+        f"MATCH (p:{LABEL_PRIOR}) WHERE p.run_id IN [{id_list}] "
+        "RETURN p.run_id AS run_id, p.claim AS claim"
+    )
+
 
 # Priors Orion has closed, newest first. `last_tested_at` is a string Orion
 # writes by hand, so this ordering is only as good as what it wrote -- which is
@@ -1006,6 +1177,9 @@ def select_priors(
     stale_after: int,
     rotate_seed: str = "",
     expected_nats_for: Optional[Callable[[Prior], float]] = None,
+    coverage_slots: int = 0,
+    head_ids: Sequence[str] = (),
+    strained: Optional[dict] = None,
 ) -> tuple[list[Prior], list[Prior], int]:
     """Split LIVE priors into (offered, stale, dropped_count).
 
@@ -1037,6 +1211,19 @@ def select_priors(
     float bit; 0.0 and 0.005 share one clamped entropy). The same tie-break
     keeps the uncertainty order among priors that are all worth zero -- the
     likely early state, when every scored test moved nothing.
+
+    `head_ids`, when given, are the curiosity replica's validated picks
+    (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 4).
+    They fill the first ordered slots in their own order; the rest of the
+    ordered slots continue the order above with the picks skipped; the
+    coverage slots draw exactly as on any other run, skipping the picks; the
+    stale bucket is unchanged. So the layout and the number of priors shown
+    are the same on every arm -- only the top differs. A head id that is not a
+    fresh live prior here (stale, unreadable, or gone) is skipped, never
+    padded in: Hub validates the plan against this same read before passing
+    it, so a skip only happens if a caller passes an unvalidated plan. At most
+    `sample - coverage_slots` picks are used. Empty (the default) changes
+    nothing, so every existing caller gets byte-identical output.
     """
     priors: list[Prior] = []
     dropped = 0
@@ -1051,6 +1238,15 @@ def select_priors(
     # live AND closed reads together -- `read_snapshot` owns the census.
     priors, _ = collapse_duplicate_priors(priors)
 
+    strain_picks = []
+    for p in priors:
+        note = (strained or {}).get(p.prior_id)
+        if note and (_stamp_ms(p.last_tested_at) or 0) < int(note.strained_at.timestamp() * 1000):
+            strain_picks.append(replace(p, strain_note=note.preview()))
+    strain_picks.sort(key=lambda p: (-(strained[p.prior_id].strained_at.timestamp()), p.prior_id))
+    strain_picks = strain_picks[:min(2, max(0, sample - max(0, coverage_slots)))]
+    strain_ids = {p.prior_id for p in strain_picks}
+    priors = [p for p in priors if p.prior_id not in strain_ids]
     stale = [p for p in priors if stale_after > 0 and p.times_tested >= stale_after]
     stale_ids = {p.prior_id for p in stale}
     fresh = [p for p in priors if p.prior_id not in stale_ids]
@@ -1074,7 +1270,27 @@ def select_priors(
     stale.sort(
         key=lambda p: (-p.times_tested, _rotation_key(p.prior_id, rotate_seed))
     )
-    return fresh[: max(0, sample)], stale[: max(0, sample)], dropped
+    sample = max(0, sample)
+    k = min(max(0, coverage_slots), sample)
+    if head_ids:
+        by_id = {p.prior_id: p for p in fresh}
+        picks: list[Prior] = []
+        for prior_id in head_ids:
+            prior = by_id.get(str(prior_id))
+            if prior is not None and prior not in picks:
+                picks.append(prior)
+        picks = picks[: sample - k]
+        picked_ids = {p.prior_id for p in picks}
+        fresh = picks + [p for p in fresh if p.prior_id not in picked_ids]
+    fresh = strain_picks + fresh
+    head, tail = fresh[: sample - k], fresh[sample - k :]
+    # Coverage slots: the order above only ever reaches priors near 0.5, so a confident prior with
+    # a few tests ranked past the sample is never shown and never re-checked (live 2026-10-16: 72
+    # of 119 live self-priors never offered in 140 runs). These slots draw from the rest by the
+    # per-run rotation, so one run is reproducible and the draw moves between runs.
+    tail.sort(key=lambda p: _rotation_key(p.prior_id, rotate_seed))
+    picked = [replace(p, coverage=True) for p in tail[:k]]
+    return head + picked, stale[:sample], dropped
 
 
 def build_recent_runs(
@@ -1121,6 +1337,25 @@ def build_recent_runs(
     return built[: max(0, limit)]
 
 
+def read_recent_runs(reader: "WorldviewReader", *, limit: int) -> list[RecentRun]:
+    """The newest `limit` runs with their claims. Raises `WorldviewUnavailable`."""
+    stamp_rows = reader.query(RECENT_RUNS_CYPHER)
+    if len(stamp_rows) >= RECENT_RUNS_LIMIT:
+        logger.warning(
+            "curiosity_worldview_recent_runs_truncated limit=%s -- more run "
+            "outcomes than one read holds; the oldest are cut, and a run whose "
+            "written_at is an ISO string can be cut ahead of older integer ones",
+            RECENT_RUNS_LIMIT,
+        )
+    newest = build_recent_runs(stamp_rows, limit=limit)
+    cypher = recent_run_claims_cypher([r.run_id for r in newest])
+    if cypher is None:
+        return newest
+    shown = {r.run_id for r in newest}
+    kept = [row for row in stamp_rows if str(row.get("run_id") or "").strip() in shown]
+    return build_recent_runs(kept + list(reader.query(cypher)), limit=limit)
+
+
 def read_snapshot(
     reader: WorldviewReader,
     *,
@@ -1131,8 +1366,13 @@ def read_snapshot(
     priors_cypher: str = LIVE_PRIORS_CYPHER,
     counts_cypher: str = COUNTS_CYPHER,
     expected_nats_for: Optional[Callable[[Prior], float]] = None,
+    coverage_slots: int = 0,
+    strained: Optional[dict] = None,
+    read_concepts: bool = True,
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
+
+    `read_concepts=False` skips the concept list (callers that never render it).
 
     `priors_cypher` selects WHICH live priors are offered -- the default is
     every live prior; the self-inquiry line passes its own
@@ -1150,10 +1390,17 @@ def read_snapshot(
         prior_rows = reader.query(priors_cypher)
         count_rows = reader.query(counts_cypher)
         concept_rows = reader.query(CONCEPT_COUNT_CYPHER)
+        concept_list_rows = reader.query(CONCEPTS_CYPHER) if read_concepts else []
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
-        recent_rows = reader.query(RECENT_RUNS_CYPHER)
+        recent = read_recent_runs(reader, limit=recent_runs)
     except WorldviewUnavailable as exc:
         return WorldviewSnapshot(unavailable_reason=str(exc)[:200])
+    if len(concept_list_rows) >= CONCEPTS_READ_LIMIT:
+        logger.warning(
+            "curiosity_worldview_concepts_truncated limit=%s -- concept rows past "
+            "the limit are never ranked, so some concepts can never be shown",
+            CONCEPTS_READ_LIMIT,
+        )
     if len(prior_rows) >= LIVE_PRIORS_LIMIT:
         logger.warning(
             "curiosity_worldview_priors_truncated limit=%s -- the live pool has "
@@ -1182,6 +1429,8 @@ def read_snapshot(
         stale_after=stale_after,
         rotate_seed=rotate_seed,
         expected_nats_for=expected_nats_for,
+        coverage_slots=coverage_slots,
+        strained=strained,
     )
     if dropped:
         logger.warning(
@@ -1190,7 +1439,6 @@ def read_snapshot(
             "schema the prompt states",
             dropped,
         )
-    recent = build_recent_runs(recent_rows, limit=recent_runs)
     counts = count_rows[0] if count_rows else {}
     live_total = _as_int(counts.get("live_total"), len(offered))
     closed_total = _as_int(counts.get("closed_total"), 0)
@@ -1221,7 +1469,45 @@ def read_snapshot(
         live_total=live_total,
         closed_total=closed_total,
         concept_total=_as_int((concept_rows[0] if concept_rows else {}).get("n"), 0),
+        concepts=build_concepts(concept_list_rows) if read_concepts else [],
+        prior_rows=tuple(prior_rows),
+        strain_notes=strained or {},
     )
+
+
+def fresh_priors(view: WorldviewSnapshot, *, stale_after: int) -> list[Prior]:
+    """Every fresh (not stale) live prior in the read ``view`` was selected from, collapsed the same way
+    `select_priors` collapses forks: the curiosity replica's candidate pool
+    (orion/curiosity/replica/candidates.py). Unordered."""
+    priors = [p for p in (build_prior(r) for r in view.prior_rows) if p is not None]
+    priors, _ = collapse_duplicate_priors(priors)
+    return [p for p in priors if not (stale_after > 0 and p.times_tested >= stale_after)]
+
+
+def with_head(
+    view: WorldviewSnapshot,
+    head_ids: Sequence[str],
+    *,
+    sample: int,
+    stale_after: int,
+    rotate_seed: str,
+    coverage_slots: int,
+) -> WorldviewSnapshot:
+    """``view`` re-selected from its own rows with ``head_ids`` at the top (`select_priors` head_ids):
+    the offer a validated replica plan produces. Same rows, sample, seed and coverage draw as the rule
+    order it replaces, so only the top differs. Empty ``head_ids`` returns ``view`` unchanged."""
+    if not head_ids or view.is_unavailable:
+        return view
+    offered, stale, _ = select_priors(
+        list(view.prior_rows),
+        sample=sample,
+        stale_after=stale_after,
+        rotate_seed=rotate_seed,
+        coverage_slots=coverage_slots,
+        head_ids=head_ids,
+        strained=view.strain_notes,
+    )
+    return replace(view, live_priors=offered, stale_priors=stale)
 
 
 def read_turn_outcome(reader: WorldviewReader, run_id: str) -> Optional[TurnOutcome]:

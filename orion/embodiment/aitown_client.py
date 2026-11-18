@@ -107,6 +107,42 @@ def heartbeat_world(world_id: Optional[str] = None) -> Any:
     return convex_mutation("world:heartbeatWorld", {"worldId": wid})
 
 
+def resume_world() -> Any:
+    """Unpause the town (``testing:resume``, the same call as Hub's Unfreeze button). Works from both
+    paused states (``stoppedByDeveloper`` and the idle ``inactive``); a running town is a no-op."""
+    return convex_mutation("testing:resume", {})
+
+
+def stop_world() -> Any:
+    """Pause the town (``testing:stop``, the same call as Hub's Freeze button): the engine stops and
+    NPCs make no more LLM calls. A page heartbeat does not wake a world stopped this way; Juniper
+    presses Unfreeze. An already paused town is a no-op."""
+    return convex_mutation("testing:stop", {})
+
+
+def set_deployment_env(name: str, value: Optional[str]) -> None:
+    """Set (or, with None, remove) one Convex deployment env var. Same admin call as
+    ``npx convex env set|remove`` (POST /api/update_environment_variables). Convex functions read
+    the new value on their next run; no redeploy."""
+    base = _base_url()
+    key = _admin_key()
+    if not base or not key:
+        raise AitownClientError("AITOWN_CONVEX_URL / AITOWN_ADMIN_KEY is not set")
+    body = json.dumps({"changes": [{"name": name, "value": value}]}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}/api/update_environment_variables", data=body, method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Convex {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_http_timeout_sec()) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:300]
+        raise AitownClientError(f"Convex env HTTP {exc.code}: {detail}", status=exc.code) from exc
+    except urllib.error.URLError as exc:
+        raise AitownClientError(f"Convex unreachable: {exc.reason}") from exc
+
+
 def join_player(*, name: str, character: str, description: str, world_id: Optional[str] = None) -> Any:
     """Spawn a named, externally-driven player (no town-AI agent) via the ``join`` input."""
     return send_input(
@@ -122,6 +158,15 @@ def _world_snapshot(world_id: Optional[str] = None) -> Dict[str, Any]:
         raise AitownClientError("AITOWN_WORLD_ID is not set")
     ws = convex_query("world:worldState", {"worldId": wid})
     return ws if isinstance(ws, dict) else {}
+
+
+def engine_running(world_id: Optional[str] = None) -> bool:
+    """Whether the world's engine is processing inputs. Hub's Freeze button
+    (``testing:stop``) stops it; inputs sent meanwhile queue unprocessed and the
+    engine must replay them all after Unfreeze (~84k on 2026-10-28). A snapshot
+    without the field reads as running."""
+    engine = _world_snapshot(world_id).get("engine") or {}
+    return bool(engine.get("running", True))
 
 
 def _game_descriptions(world_id: Optional[str] = None) -> Dict[str, Any]:

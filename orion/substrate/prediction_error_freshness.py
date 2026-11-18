@@ -1,0 +1,196 @@
+"""Omit-when-stale rule for a domain's prediction_error reading.
+
+A domain whose Falkor node ``temporal.observed_at`` is older than the shared
+horizon has "no current reading". It is LEFT OUT of aggregates (not faded to
+zero -- a faded value reads as calm, the same decayed-to-zero lie as
+``orion-field-digester``'s NODE_DECAY_CHANNELS incident).
+
+Horizon: the same ``PressureConfig().prediction_error_decay_horizon_seconds``
+(1800 s) that ``pressure.py`` and ``endogenous_curiosity.py`` use -- imported,
+not copied, so it cannot drift.
+
+Missing/unparseable ``observed_at`` -> OMITTED with age ``None`` (status
+``unknown_age``). Rationale: we cannot show it is fresh, and treating it as
+fresh (curiosity's choice) or zero would hide exactly the failure this rule
+exists to expose. Real nodes always carry ``temporal``; this only fires on
+corrupt/foreign nodes, and it is traced in the omitted map.
+
+Missing input (2026-10-21). A producer that writes on a clock (the camera
+surprise nodes) still writes a 0.0 placeholder when its own input is missing
+-- camera embeddings stale, baseline still warming, or no scored frame since
+the last write -- because the field digester's receipt path needs a write every
+tick (worker.py ``_publish_perception_group``). That 0.0 is not a reading. The
+producer says so in ``metadata[PREDICTION_ERROR_MISSING_REASON_KEY]``, and
+``classify_reading`` then returns ``STATUS_MISSING_INPUT`` however fresh
+``observed_at`` is, so every caller that omits non-fresh readings omits it too.
+Seen live 2026-10-18 04:06 -> 10-20 05:51: no embeddings for 49 h, the room
+camera node wrote 0.0 every 30 s, and those zeros (31% of its 7-day window)
+pulled its p90 to 0.137 against 0.205 over live hours only.
+
+Field side (2026-11-10). The same key also rides on the field-bound
+``prediction_signal`` receipt, with no value. orion-field-digester then drops
+the node's ``prediction_error`` field channel instead of writing 0.0, so the
+field reads "unmeasured" too (services/orion-field-digester/app/ingest/
+state_deltas.py). The 0.0 placeholder now lives only on the graph node.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from orion.substrate.pressure import PressureConfig
+
+PE_STALENESS_HORIZON_SEC: float = float(PressureConfig().prediction_error_decay_horizon_seconds)
+
+STATUS_FRESH = "fresh"
+STATUS_STALE = "stale"
+STATUS_UNKNOWN_AGE = "unknown_age"
+STATUS_MISSING_INPUT = "missing_input"
+
+# Node metadata key: a non-empty string means "the prediction_error on this
+# node is a placeholder, its input is missing", and says why. Absent/empty =
+# a real reading.
+PREDICTION_ERROR_MISSING_REASON_KEY = "prediction_error_missing_reason"
+
+# Prediction-error nodes whose producers were retired (2026-11, PE suite
+# rebuild step 5; docs/superpowers/specs/2026-11-08-prediction-error-suite-
+# rebuild-design.md). Neither was a forecast: node:substrate.bus_synaptic was a
+# lull-ending detector (fraction of bus edges with |z| >= 3), and
+# node:substrate.route a categorical decision-mismatch rate. Killing the
+# producer is not enough on its own: the FalkorDB node keeps its last
+# prediction_error and can be resurrected by cortex-exec's materializer
+# (services/orion-substrate-runtime/README.md, "materializer" section), and
+# substrate_node_prediction_error_history rows linger for their 7-day
+# retention. Every generic prediction-error reader skips these ids so a stored
+# value is never read as a current reading (CLAUDE.md 0A: kill means kill).
+#
+# node:substrate.chat joined 2026-11-13 (retire step 6): an EWMA z of the change
+# in two chat pressure hints, negatives clipped -- not a forecast. Successor:
+# node:prediction.chat_turn (settled chat-turn self-bets, scored as surprise).
+#
+# node:substrate.codebase joined 2026-11-13: a clipped z of git/PR/graph churn
+# per codebase delta event, not a forecast. No successor. The churn score itself
+# stays in substrate_codebase_delta_log for the Hub co-creation tab and Orion's
+# self-study reader; only the prediction-error node, its field receipt and its
+# history rows are gone.
+#
+# node:substrate.harness_closure joined 2026-11-16 (retire step 7, history
+# fence): a fixed 0.65 written on every unresolved harness closure, never a
+# measured size. Its producer was removed 2026-11-11 (retire step 3) and its
+# readers were fenced by the glossary value-kind rule (no entry = not a
+# measurement); listing it here makes every generic reader drop its lingering
+# history rows and close any tracked episode, the same as the others.
+RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
+    {
+        "node:substrate.harness_closure",
+        "node:substrate.bus_synaptic",
+        "node:substrate.route",
+        "node:substrate.chat",
+        "node:substrate.codebase",
+    }
+)
+
+# Alarms and news, not prediction errors (PE suite rebuild, "Alarms move out of
+# the PE group"). Each fires on a fact (the cabinet rose >= 0.5 C in 15 min while
+# elevated; a strain news event; a doorbell ring or a graded street handoff), not
+# on a miss against a forecast. They still travel on the node's
+# ``prediction_error`` field and in substrate_node_prediction_error_history,
+# because that is the attention contest's input and strain news rebuilds its
+# budget from those rows after a restart. What changes is who may read them:
+#
+# - Alarm-aware readers keep them: the attention contests (a ``trigger`` value
+#   means "it fired"), the dynamics pressure seed that admits them to the
+#   workspace, self-readings (fires per hour), the hourly outcome rollup (on/off
+#   hours) and the metacog episode gate (judged by the same trigger rule).
+# - Readers that treat the value as a surprise SIZE skip them: endogenous
+#   curiosity's prediction-error seeds, the self-model's prediction-error
+#   domains, the Hub prediction-error domain panel.
+#
+# A NEW reader must decide which kind it is: scripts/check_pe_alarm_readers.py (CI, #3307) fails on any
+# file that touches node prediction_error and neither skips alarms (is_alarm_node) nor is registered with
+# a class and a reason in config/substrate/prediction_error_readers.yaml.
+#
+# The glossary is the semantic owner: every ``prediction_error`` entry whose
+# value_kind is ``trigger`` is an alarm, and this set must equal that list
+# (tests/test_pe_alarm_refile.py). The set exists so readers need no glossary
+# I/O to ask the question.
+# Defined in the stdlib-only orion/prediction/alarm_nodes.py so light modules can import it.
+from orion.prediction.alarm_nodes import ALARM_NODE_IDS, is_alarm_node  # noqa: E402  (re-export)
+
+# What each alarm is called where a person or Orion reads it. Never
+# "prediction error".
+ALARM_LABELS: dict[str, str] = {
+    "node:substrate.cabinet": "cabinet warming alarm",
+    "node:substrate.strain": "strain news",
+    "node:substrate.street": "street event alarm",
+}
+
+
+def is_retired_prediction_error_node(node_id: Any) -> bool:
+    """True when ``node_id`` names a retired prediction-error node."""
+    return str(node_id or "") in RETIRED_PREDICTION_ERROR_NODE_IDS
+
+
+def node_signal_label(node_id: Any, short_name: str | None = None) -> str:
+    """Display label for a node that carries a ``prediction_error`` field:
+    the alarm's own name for an alarm, else "<short name> prediction error"."""
+    nid = str(node_id or "")
+    if nid in ALARM_LABELS:
+        return ALARM_LABELS[nid]
+    name = short_name if short_name is not None else nid
+    return f"{name} prediction error"
+
+
+def missing_input_reason(node: Any) -> str | None:
+    """The producer's own "this value is a placeholder" reason, or None."""
+    metadata = getattr(node, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    reason = metadata.get(PREDICTION_ERROR_MISSING_REASON_KEY)
+    if reason is None:
+        return None
+    reason = str(reason).strip()
+    return reason or None
+
+
+def _as_dt(value: Any) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def reading_age_sec(node: Any, *, now: datetime) -> float | None:
+    """Seconds since the node's ``temporal.observed_at``; None if unknown."""
+    observed = _as_dt(getattr(getattr(node, "temporal", None), "observed_at", None))
+    if observed is None:
+        return None
+    return max(0.0, (now - observed).total_seconds())
+
+
+def classify_reading(
+    node: Any, *, now: datetime, horizon_sec: float = PE_STALENESS_HORIZON_SEC
+) -> tuple[str, float | None]:
+    """Return ``(status, age_sec)``. Age exactly at the horizon is still fresh.
+    A placeholder written for missing input is ``STATUS_MISSING_INPUT``."""
+    age = reading_age_sec(node, now=now)
+    if missing_input_reason(node) is not None:
+        return STATUS_MISSING_INPUT, age
+    if age is None:
+        return STATUS_UNKNOWN_AGE, None
+    if age > horizon_sec:
+        return STATUS_STALE, age
+    return STATUS_FRESH, age
+
+
+def describe_omitted(omitted: dict[str, float | None], n_total: int) -> str:
+    """Human/gate-readable trace, e.g. ``omitted 1 of 5: chat(7200s)``."""
+    parts = [
+        f"{d}({'age unknown' if a is None else f'{int(a)}s'})" for d, a in sorted(omitted.items())
+    ]
+    return f"omitted {len(omitted)} of {n_total}: " + ", ".join(parts)

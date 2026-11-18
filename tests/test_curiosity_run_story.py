@@ -182,7 +182,7 @@ def test_legacy_hops_without_a_clock_stay_ordered_by_n_and_get_no_attempt() -> N
 
 def test_a_reflect_row_is_excluded_from_the_strip() -> None:
     rows = RunStoryRows(lifecycle=[
-        _life("reflect1", "finish", "completed", 0, workflow="self_study.reflect", detail={"line": "reflect"}),
+        _life("reflect1", "finish", "completed", 0, workflow="reading.turn", detail={"line": "reflect"}),
         _completed("real1", 10),
     ])
     assert set(build_stories(rows)) == {"real1"}
@@ -572,6 +572,22 @@ def test_a_pause_for_urgent_work_is_on_the_timeline_and_the_wait_after_it_shows(
     assert story.run.retries == 0 and story.run.status == STATUS_COMPLETED   # a pause is not a failure
 
 
+def test_an_economy_hold_shows_once_per_reason_with_the_markets_why() -> None:
+    """Body economy Patch D: a held run re-bids every few minutes; the story shows one row per reason."""
+    rows = _admission_run(bridge=False)
+    run_id = "446ddd7165d5"
+    held = {"reason": "price", "binding_constraint": "lane:agent", "why": "charge beats value", "net": -0.2}
+    rows.resource_events[1:1] = [
+        _event(run_id, "run.economy_held", 10, held),
+        _event(run_id, "run.economy_held", 700, held),
+        _event(run_id, "run.economy_held", 1400, {**held, "reason": "sated", "why": "no hunger"}),
+    ]
+    story = build_stories(rows)[run_id]
+    holds = [it.data for it in story.timeline if it.data.get("status") == "economy_held"]
+    assert [(h["reason"], h["binding"], h["why"]) for h in holds] == [
+        ("price", "lane:agent", "charge beats value"), ("sated", "lane:agent", "no hunger")]
+
+
 def test_every_event_the_story_reads_is_fetched_by_the_hub() -> None:
     """The Hub fetches events row by row only when listed in RENDERED_EVENTS; one the story reads
     but the Hub never fetches silently never appears."""
@@ -665,7 +681,7 @@ def test_a_failed_and_a_cancelled_admission_run() -> None:
 
 def test_a_reflect_admission_row_and_its_events_are_excluded() -> None:
     rows = RunStoryRows(
-        admission=[_admission("refl", 0, workflow="self_study.reflect", line="reflect")],
+        admission=[_admission("refl", 0, workflow="reading.turn", line="reflect")],
         resource_events=[_event("refl", "run.accepted", 0), _event("refl", "run.completed", 5, {}, entry_id="refl:terminal:completed")],
         event_counts=[{"run_id": "refl", "event": "run.checkpoint_resume_failed", "n": 3}],
     )

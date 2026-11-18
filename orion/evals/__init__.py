@@ -5,4 +5,7 @@ The split is the Patch A rule from
 docs/superpowers/specs/2026-09-08-orion-sense-of-self-design.md: the runner
 owns the live endpoint (Hub owns chat), the scorer owns the number. A scorer
 here must never touch the network or a database.
+
+Exceptions that DO own live calls: ``leased_llm`` (the only way an eval calls a
+model: a GPU pool operator hold + orion-llm-gateway) and ``model_replay``.
 """

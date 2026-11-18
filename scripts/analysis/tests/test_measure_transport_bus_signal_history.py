@@ -1,7 +1,7 @@
 """Deterministic unit tests for measure_transport_bus_signal_history.py.
 
 No DB. All pure functions operate on synthetic BusTick lists, same
-module-loading pattern as scripts/analysis/tests/test_measure_self_state_signal_quality.py.
+module-loading pattern as scripts/analysis/tests/test_measure_autonomy_gate.py.
 """
 
 from __future__ import annotations

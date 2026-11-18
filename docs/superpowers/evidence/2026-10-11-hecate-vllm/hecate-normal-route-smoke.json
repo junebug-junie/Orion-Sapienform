@@ -1,0 +1,12 @@
+{
+  "correlation_id": "a6eabc40-bbf8-40cc-8b80-9eaac5d94da9",
+  "model": "qwen3-4b-instruct",
+  "content": "{\n  \"answer\": 391\n}",
+  "usage": {
+    "prompt_tokens": 31,
+    "total_tokens": 43,
+    "completion_tokens": 12,
+    "prompt_tokens_details": null
+  },
+  "passed": true
+}

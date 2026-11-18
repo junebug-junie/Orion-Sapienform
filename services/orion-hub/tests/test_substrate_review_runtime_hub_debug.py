@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import asyncio
 import importlib.util
@@ -180,9 +181,12 @@ def test_self_experiments_trigger_daily_publishes_bus_event(monkeypatch) -> None
 def test_app_js_includes_substrate_in_shell_tab_switching_without_full_navigation() -> None:
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert 'const substrateTabButton = document.getElementById("substratePageLink");' in app_js
+    # The button now prefers #substrateTabButton and falls back to the legacy
+    # #substratePageLink; the tab key goes through `effectiveTab` (tab aliases).
+    assert 'const substrateLegacyTabButton = document.getElementById("substratePageLink");' in app_js
+    assert 'document.getElementById("substrateTabButton") || substrateLegacyTabButton;' in app_js
     assert 'const substratePanel = document.getElementById("substrate");' in app_js
-    assert 'const isSubstrate = tabKey === "substrate";' in app_js
+    assert 'const isSubstrate = effectiveTab === "substrate";' in app_js
     assert 'substratePanel.classList.toggle("hidden", !isSubstrate);' in app_js
     assert 'styleTabButton(substrateTabButton, isSubstrate);' in app_js
     assert 'substrateTabButton.addEventListener("click", (event) => {' in app_js
@@ -683,7 +687,10 @@ def test_hub_substrate_debug_surface_does_not_embed_standalone_page() -> None:
     assert 'id="substratePanelFrame"' in index_html
     assert 'src="/substrate"' in index_html
     assert "substrate.js" not in index_html
-    assert "window.OrionHub" not in app_js
+    # substrate.js's `window.OrionHub` namespace must not be merged into the Hub
+    # bundle. Word boundary: app.js legitimately exports unrelated
+    # `window.OrionHubOpenOrganSignals`.
+    assert not re.search(r"window\.OrionHub\b", app_js)
 
 
 def test_autonomy_readiness_endpoint_returns_unified_read_only_snapshot() -> None:
@@ -752,21 +759,20 @@ def test_autonomy_constitution_endpoint_shape_and_invariants() -> None:
     assert "identity_kernel" in by_surface
     assert "policy_safety" in by_surface
     assert "production_prompt" in by_surface
-    # routing_threshold_patch was parked 2026-09-03, retired 2026-09-05 --
-    # zero surfaces currently have live apply, which is the correct,
-    # expected state, not a regression of the constitution's own invariant.
+    # Since 2026-11-03 no surface applies live without approval: rung 6's
+    # self-tuned prediction expectation (the only one, 2026-10-16..11-03) is
+    # retired. Anything appearing here is a constitution regression.
     assert payload["summary"]["live_apply_surfaces"] == []
+    assert by_surface["prediction_expectation_patch"]["status"] == "retired"
+    assert by_surface["prediction_expectation_patch"]["apply"] == "forbidden"
+    assert by_surface["prediction_expectation_patch"]["autonomous_apply_allowed"] is False
+    assert by_surface["prediction_expectation_patch"]["human_required"] is True
     assert by_surface["routing_threshold_patch"]["status"] == "retired"
     assert by_surface["routing_threshold_patch"]["live_apply_allowed"] is False
-    # graph_consolidation_param_patch (2026-09-08/09) is real -- real
-    # proposals, real trial evidence -- but stages rather than activates
-    # (SubstratePolicyProfileStore is manual/operator-controlled), so it
-    # must not appear in live_apply_surfaces either.
-    assert by_surface["graph_consolidation_param_patch"]["status"] == "staged_review_only"
-    assert by_surface["graph_consolidation_param_patch"]["apply"] == "staged_no_activate"
+    # graph_consolidation_param_patch retired 2026-10-16.
+    assert by_surface["graph_consolidation_param_patch"]["status"] == "retired"
+    assert by_surface["graph_consolidation_param_patch"]["apply"] == "forbidden"
     assert by_surface["graph_consolidation_param_patch"]["live_apply_allowed"] is False
-    assert by_surface["graph_consolidation_param_patch"]["autonomous_apply_allowed"] is False
-    assert by_surface["graph_consolidation_param_patch"]["production_write_allowed"] is True
     assert by_surface["cognitive_self_model"]["apply"] == "forbidden"
     assert by_surface["recall_weighting_patch"]["apply"] == "forbidden"
     assert by_surface["identity_kernel"]["status"] == "protected"
@@ -979,3 +985,25 @@ def test_cognitive_review_action_returns_safety_block(monkeypatch) -> None:
     assert payload["data"]["review_recorded"] is True
     assert payload["data"]["safety"]["production_default_unchanged"] is True
     assert payload["data"]["safety"]["apply_performed"] is False
+
+
+def test_graphdb_payloads_mark_contradictions_unavailable_not_empty(monkeypatch) -> None:
+    """#3544: the substrate graph does not represent contradictions, on any backend.
+    Payloads must say so instead of serializing an empty slice that reads as 'none'."""
+    from types import SimpleNamespace
+
+    empty = SimpleNamespace(degraded=False, error=None, truncated=False, source_kind="falkor",
+                            slice=SimpleNamespace(nodes=[], edges=[]))
+    store = SimpleNamespace(
+        query_hotspot_region=lambda **kw: empty,
+        query_concept_region=lambda **kw: empty,
+    )
+    monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", store)
+    monkeypatch.setattr(api_routes, "_serialize_slice", lambda s: {"nodes": [], "edges": []})
+    for backend in ("FalkorSubstrateStore", "InMemorySubstrateGraphStore"):
+        monkeypatch.setattr(api_routes, "store_type_name", lambda s, b=backend: b)
+        hot = api_routes._graphdb_hotspots_payload(limit=5)["data"]["contradiction_hotspots"]
+        assert hot["available"] is False and "#3544" in hot["reason"]
+        overview = api_routes._graphdb_overview_payload(limit=5)["data"]
+        assert overview["contradiction_count"] is None
+        assert overview["regions"]["contradiction"]["available"] is False

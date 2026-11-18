@@ -6,6 +6,14 @@ It now supports **latent vector emission** for vLLM/llama-cola responses (when t
 
 For **llama.cpp** and **llama-cola** backends, `ChatRequestPayload.options` may include **`chat_template_kwargs`** (e.g. `{"enable_thinking": false}`). The gateway forwards that object to `/v1/chat/completions` so Qwen3-style thinking can be toggled **per request** without restarting the model host.
 
+For a llama.cpp grant in GPU pool class `fast` or `metacog`, both bus chat and
+OpenAI HTTP calls send `enable_thinking=false` when the caller omits it. An
+explicit `true` or `false` survives, except where structured-output policy
+disables thinking for an artifact. Metacog's old Qwen3 worker defaults now live
+in this request policy: temperature 0.35, top-p 0.90, presence penalty 0.20,
+and 1,024 output tokens. An explicit thinking-on metacog call without a token
+budget gets 4,096 tokens so reasoning can finish before the final answer.
+
 ### Spark metadata (v1)
 
 The gateway no longer runs tissue ingest on chat turns. Result `spark_meta` is thin metadata only:
@@ -33,6 +41,7 @@ Fix: `llm_backend.py`'s `_served_model()` now prefers the backend's own echoed m
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
 | (Caller-defined) | (via `reply_to`) | `llm.chat.result` | Chat completion result. |
+| `orion:llm:call:usage` | `LLM_GATEWAY_CALL_USAGE_ENABLED` | `llm.call.usage.v1` | One per call that reached a model: tokens + correlation id (see "Per-call token ledger"). |
 
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
@@ -45,6 +54,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `GPU_POOL_CONFIG_PATH` | `/app/config/gpu_pool.yaml` | Route -> pool class/priority map (`routes:`). A route not listed is refused (`route_not_in_gpu_pool`). |
 | `LLM_GATEWAY_POOL_WAIT_SEC` | `300` | Max wait for a pool grant (interactive/system); capped by the caller's own `gateway_read_timeout_sec`. |
 | `LLM_GATEWAY_POOL_BACKGROUND_WAIT_SEC` | `900` | Same, for background-priority routes. |
+| (option) `gateway_pool_wait_sec` | none | Per call, in a bus request's `options` (2026-11-03): the caller's own pool seat wait, **on top of** its `gateway_read_timeout_sec`. The pool wait is this number (capped at 900 s) instead of the priority's, and each upstream call still gets at most `gateway_read_timeout_sec`. Absent: the old rule (one budget for wait + generation). Caller today: Orion Prime (orion-mind `PRIME_SEAT_WAIT_SEC`). |
 | `LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC` | `60` | Max pool wait for the HTTP passthroughs (OpenAI/Anthropic); the queued acquire is withdrawn if the client disconnects. |
 | `LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE` | `8` | Threads per granted role URL (one executor per GPU role). |
 | `LLM_ROUTE_DEFAULT` | `quick` | Default routing key when none provided. |
@@ -66,6 +76,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | :--- | :--- |
 | `GET /health` | Service liveness and configured route keys. |
 | `GET /routes` | **Compatibility view generated from orion-gpu-pool state** (removed in stage 6). Same shape as before: per-route `id`, `served_by`, `backend`, `status` (`up`/`down`/`operator_closed`/`unknown`), `model` (discovered model file), `n_ctx` (discovered ctx per slot), `vision`, `upstream`, `gate_open`. `unknown` for every route when the pool cannot be reached -- never a fabricated `up`. |
+| `GET /debug/lane-senders` | GPU pool stage 6.4 census, in-process since boot: every bus call that carries a lane (`options.llm_lane` / `options.execution_lane`) or that lane routing re-routes, by caller `source` + lane + `route_in` + `route_chosen` (today) + `route_without_lane_routing` (after `lane_routes.py` is deleted). `rerouted_total == 0` with `uptime_sec >= 86400` means deleting lane routing changes nothing; otherwise every `rerouted: true` row needs an answer first. Each recorded call also logs `llm_gateway_lane_sender` (survives a restart). |
 | `GET /v1/models` | Anthropic-compatible model list from configured route keys (FCC / Claude Code). |
 | `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
 | `POST /v1/messages` | Anthropic Messages passthrough to the pool-granted llama.cpp role's `/v1/messages` (lease holder `http:anthropic`). |
@@ -78,11 +89,27 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 The gateway exposes an Anthropic Messages-compatible HTTP membrane for Claude Code and FCC. Traffic uses the same route names (`config/gpu_pool.yaml` `routes:` -- `agent`, `chat`, `harness`, `quick`, `metacog`, etc.) and takes a GPU pool lease like the bus path, but **does not** go through the bus-native `run_llm_chat()` path.
 
-Claude session hooks can append `role=system` context inside `messages` after a
-user turn. Gateway moves those blocks into Anthropic's top-level `system` field
-before forwarding to llama.cpp, whose model template requires system context
-first. Existing system blocks, cache metadata, and conversation/tool ordering
-are preserved. Durable-lease validation and a GPU pool lease still apply to the request.
+Claude Code puts `role=system` messages inside `messages`: SessionStart hook
+context, a `<total_tokens>` reminder every step, and PreToolUse hook context
+after tool calls. llama.cpp's Qwen templates reject (:8015) or drop (:8011) a
+system message that is not first, so the gateway reshapes them:
+
+- System messages **before** the first user/assistant turn are moved into the
+  top-level `system` field.
+- Every **later** system message stays where it is, as a `role=user` turn
+  wrapped in `<system-reminder>...</system-reminder>`.
+
+Later ones are deliberately not moved into `system`: that made the system block
+grow every step, which shifted the whole conversation, and these models then
+re-read the entire 13-30k-token prompt each step (~38 s) instead of only the
+new tokens (~1 s). Keeping them in place makes each step's prompt the previous
+prompt plus new text (figures from the design doc's replay). Blocks and
+`cache_control` are preserved; the wrapper text is added inside the first and
+last text block. A reminder that lands between an assistant `tool_use` and its
+`tool_result` is placed after the result, so tool pairing stays intact; empty
+reminders are dropped. See
+`docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md`.
+Durable-lease validation and a GPU pool lease still apply to the request.
 
 Topology:
 
@@ -175,6 +202,9 @@ Every LLM call -- bus RPC, `/v1/chat/completions`, `/v1/messages` -- goes throug
 3. **Run on the grant.** The call goes to `grant.url` on a per-role thread pool
    (`LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE`), never one executor shared across lanes. Streams
    hold the lease until the stream ends, errors, or the client leaves.
+   HTTP disconnects also cancel an in-flight non-streaming reply or the wait for initial
+   stream headers. The upstream connection closes before the lease is released as
+   `cancelled` with detail `http_client_disconnected` (499 in Gateway logs).
 4. **Release.** `ok` on success; `upstream_error` when the upstream failed (an exception, an HTTP
    error, or a returned `[Error: ...]`/`raw.error` result); `cancelled` when the gateway stopped
    the call because the pool took the lease back (below); `timeout` when the caller's budget ran
@@ -184,7 +214,10 @@ Every LLM call -- bus RPC, `/v1/chat/completions`, `/v1/messages` -- goes throug
    free: passthroughs cancel the request or close the stream (503 / an SSE `error` event, type
    `gpu_pool_recalled`); the bus path shuts down the worker thread's upstream sockets
    (`app/upstream_cancel.py`) and returns empty content with `raw.error = "gpu_pool_recalled"`,
-   `raw.details.reason = lease_lost | lease_recalled`.
+   `raw.details.reason = lease_lost | lease_recalled`. The worker thread's own failure from that
+   hang-up (usually `RemoteProtocolError`) is logged as `upstream_cancelled reason=<reason>` at
+   WARNING -- not `upstream_failed` at ERROR, which is kept for genuine worker failures -- for every
+   gateway cancel: lease loss/recall, caller budget exhausted, caller cancelled.
 6. **Context overflow.** If the pool answers `min_ctx_exceeds_class:<max>` (the estimate is bigger
    than every role of the class), the call is re-acquired **once** at `<max>` so it lands on the
    largest role and llama.cpp's real tokenizer decides. If the granted role rejects the prompt as
@@ -199,6 +232,32 @@ Failure shape (bus): empty text with `raw.error = "gpu_pool_unavailable"` and
 `no_serviceable_role`, ...) or `pool_bus_unavailable` / `pool_unreachable`. `/ready` answers 503 (`gpu_pool_bus_unavailable`,
 header `X-Gpu-Pool-Bus: down`) until the pool RPC client is connected. HTTP: 503
 with `error.type = "gpu_pool_unavailable"`.
+
+Heat-shed backoff (2026-10-20, `orion/gpu_pool/shed_backoff.py`): when the pool refuses a one-shot
+lease with `shed:<name>` (e.g. `shed:cabinet_hot`), the pool client in this process refuses later
+leases of the same priority locally, without asking the pool, for 30 s doubling to 180 s (+-20 %
+jitter); one probe per window goes to the pool, and the first grant ends the episode. Holds,
+attach children and retryable leases are never gated. Those refusals carry
+`raw.details.retry_after_sec` (bus) / `error.retry_after_sec` plus a `Retry-After` header (HTTP),
+and `local: true` when this gateway answered without asking the pool. A probe the pool queues
+instead of refusing ends the episode after 3 s (the pool refuses a shed lease on its first 1 s
+tick); a probe ending in `deadline`/`cancelled`/`pool_*` only releases the probe.
+Logs: one `gpu_shed_backoff_start` / `gpu_shed_backoff_end ... skipped=N` pair per episode; the
+per-call `gpu_pool_unavailable` warning is debug-level for a locally answered refusal.
+
+Upstream failure shape (bus, since 2026-10-07): when the granted worker answers non-2xx, answers
+2xx with an error body (`{"error": ...}` and no completion), returns an empty template, or never
+answers (timeout / refused connection), the reply is the same shape -- empty text,
+`raw.error` = `upstream_http_5xx` | `upstream_http_4xx` | `upstream_not_found` |
+`upstream_timeout` | `upstream_connect` | `upstream_error` (or `gateway_exception` when the
+gateway's own post-processing raised, which is not blamed on the worker), and
+`raw.details = {reason, status_code, message, backend, route, served_by, url}` where `message` is
+the worker's own error text (truncated to 500 chars) and `reason` is `http_<status>`,
+`error_body`, `empty_prompt` or the exception type. cortex-exec fails the step as
+`<raw.error>:<reason>: <message>`; the pool lease is released `upstream_error` with that
+message as its detail. No retry and no move to another card: only a context overflow re-leases.
+Before this, a worker 500 came back as text `[Error: llamacpp failed: Server error '500 ...']`
+with `raw={}`, which cortex-exec recorded as a successful step.
 
 Deleted with this cutover: `capacity.py` (durable-runs `/capacity` permits),
 `upstream_admission.py` (per-upstream semaphores), `priority_admission.py` (background `/slots`
@@ -237,7 +296,8 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 > Atlas's IP based on that naming alone -- wrong; nothing was listening there, and the
 > gateway correctly reported `agent` as down until this was corrected the same day.
 >
-> **2026-08-21: Atlas is retired for good** (chassis reused for other hardware; the
+> **Historical 2026-08-21 snapshot; superseded by the [GPU3 consolidation](../../docs/operations/qwen35-gpu3-consolidation.md).**
+> Atlas is retired for good (chassis reused for other hardware; the
 > Atlas Tailscale node itself is offline for good). `metacog`/`quick`/`quick_background`
 > below have been repointed from Atlas's old IP (`100.121.214.30`) to Circe -- confirmed
 > live before the fix that every call through those three routes was hanging up to 700s
@@ -262,8 +322,8 @@ curl http://localhost:8210/health
 ## Inference grammar lane (the gateway reporting on itself)
 
 The code default is off; `.env_example` turns it on (`LLM_GATEWAY_GRAMMAR_ENABLED=true`,
-since 2026-09-25, together with the reducer and field flags). When on, every bus-RPC chat
-reply is classified by what actually happened (`app/grammar_emit.py::classify_outcome`):
+since 2026-09-25, together with the reducer and field flags). When on, every chat
+reply -- bus RPC and, since stage 6.2, the OpenAI/Anthropic HTTP passthroughs -- is classified by what actually happened (`app/grammar_emit.py::classify_outcome`):
 `served`, a backend failure (`upstream_timeout`, `upstream_connect`, `upstream_http_5xx`,
 `upstream_http_4xx`, `upstream_not_found`, `upstream_error`), a gateway refusal
 (`gateway_overloaded`, `gateway_capacity_rejected`, `resource_lease_rejected`,
@@ -275,22 +335,62 @@ reply is classified by what actually happened (`app/grammar_emit.py::classify_ou
 one `llm_inference_window_observed` atom per node, plus an
 `llm_gateway_window_completed` atom that is sent even for an empty window.
 
-Why here: a failed backend call comes back to the caller as an ordinary reply whose
-text is `[Error: ...]`, so the caller's RPC health counts it a success, and an idle,
-broken backend reads as calm GPU pressure. Only the gateway sees the call fail.
+Why here: a failed backend call comes back to the caller as an ordinary reply (empty text and
+a typed `raw.error`, see the upstream failure shape above), so the caller's RPC health counts it
+a success, and an idle, broken backend reads as calm GPU pressure. Only the gateway sees the
+call fail.
 
-Counts, latency percentiles and token totals only -- no prompt or reply text leaves
-the process. Only the bus path (`handle_chat`) is counted; the OpenAI/Anthropic HTTP
-passthroughs are not.
+Counts, clock percentiles and token totals only -- no prompt or reply text leaves
+the process. Both the bus path (`handle_chat`) and the HTTP passthroughs
+(`/v1/messages`, `/v1/chat/completions`, `app/passthrough_proxy.py`) are counted, once
+per call. A passthrough is classified by its upstream status (`classify_http_outcome`);
+a client that leaves while queued or mid-stream is `client_gone` (inspection only).
+Passthrough calls land in the per-role clocks only (`http_calls` says how many):
+the node-level counts behind `inference_failure_pressure` stay bus-RPC calls, since
+widening that live field channel's population is a metric-definition change, not
+part of stage 6.2.
 
-What counts as a backend failure: only replies framed `[Error: ...` that are a
+**Two clocks per granted role (gpu-pool stage 6.2, 2026-09-30).** Each call carries a
+`CallClock`: `wait` is GPU-pool acquire -> grant (the line), `model` is grant -> reply
+or stream end (the worker). The intervals are disjoint; a re-lease (context overflow)
+sums each. Each node atom carries
+`roles=<role>[calls:n|served:n|upstream_failed:n|refused:n|request_invalid:n|wait_p50_ms:..|wait_p95_ms:..|model_p50_ms:..|model_p95_ms:..|decode_tps_p50:..|decode_tps_n:n]...`
+keyed by the granted pool role (`chat`, `agent`, `agent-gpu2`, `metacog`, `fast`;
+`ungranted` for calls that never held a lease -- filed under the pool's host node, so
+the wait survives the reducer while the node counts stay unattributed). `wait` counts
+every call that waited;
+`model` and `decode_tps` count served calls only. `decode_tps` is llama.cpp's own
+`timings.predicted_per_second` (bus reply `raw`, passthrough body, or a stream's last
+chunk) -- never derived from wall time; absent, not 0, when not reported. The reducer
+puts these on `nodes.<llm_node>.by_role` in `substrate_llm_inference_projection`
+(debug only, no field channel). The old `p50_ms`/`p95_ms` (one clock from before the
+lease: queue wait + model time, per machine) are retired.
+
+Covariates, so a per-role baseline does not read normal slot sharing as a degraded
+worker (stage 7 input): `busy` is this gateway's calls in flight on the granted role
+at grant, this one included (`pool_placement.busy_at_grant`, counted from grant to
+lease release); decode speed is also split `decode_tps_solo_p50` (busy == 1) vs
+`decode_tps_shared_p50`; `slots` is the pool's discovered slot count for the role,
+read once per window from pool state (omitted when the pool is unreachable);
+`prompt_n`/`cache_n` sum llama.cpp's `timings.prompt_n` (prompt tokens processed)
+and `timings.cache_n` (reused from the KV cache) over served calls that reported both.
+
+What counts as a backend failure: a typed `raw.error` in `UPSTREAM_FAILURE_CLASSES`
+(passed through as its own class), or a reply framed `[Error: ...` that is a
 timeout, refused/failed connection, HTTP 5xx, 404 or other backend error. Upstream
 4xx (e.g. an oversized prompt), image-to-text-route refusals and unreadable
 attachments are the caller's request, counted as `request_invalid`. A call that
 raises inside dispatch is counted as `gateway_exception` (unattributed). Known limits:
 - `upstream_timeout` includes calls whose read timeout was the caller's own leftover
   budget, so a short-budget caller on a busy-but-healthy lane can register one.
-- latency p50/p95 is the whole stay in the gateway (admission wait + generation).
+- `wait` is measured on the gateway's clock (acquire -> grant), not read from the
+  pool's `waited_ms`; the two should agree to within the bus round trip.
+- a streamed passthrough's `model` time runs to stream end, so a slow-reading client adds
+  its own time (`decode_tps` is unaffected). A call re-leased after a context overflow
+  sums both attempts under the final role.
+- a window with only per-role data (passthroughs, ungranted waits) sends a `calls=0`
+  node atom; the reducer updates `by_role` and leaves `inference_failure_pressure` and
+  its rolling span untouched.
 - the reducer keys state by serving node only; it assumes ONE gateway reports on a
   node (true today). A second gateway would overwrite the first's windows.
 - the publisher has no shutdown hook: the partial window at SIGTERM is lost, and a
@@ -314,6 +414,26 @@ recorded in the projection for inspection and never reach the field. Replay what
 channel would read from existing logs with
 `evals/run_inference_outcome_eval.py`.
 
+## Per-call token ledger (2026-10-29)
+
+One `llm.call.usage.v1` (`orion/schemas/llm_call_usage.py`) per call that reached a model: bus RPC,
+`/v1/chat/completions` and `/v1/messages`, streamed or not. It carries prompt tokens (cache reuse
+included), cached prompt tokens, completion tokens, route, model, served_by, the granted pool role,
+model time (grant -> reply) and pool wait, llama.cpp decode speed, and the caller's correlation id.
+orion-sql-writer stores it in `llm_call_usage`. No prompt or reply text.
+
+* Correlation id: bus envelope `correlation_id`; HTTP header `X-Orion-Correlation-Id` (then
+  `x-request-id`). FCC per-turn spawns send the header, so harness calls are no longer `corr=-`.
+* Streams: the first and last 4 KB are kept. An Anthropic stream has its prompt counts in
+  `message_start` (first event) and its completion count in `message_delta` (last). An OpenAI
+  stream from llama.cpp has no `usage` chunk; counts come from the last chunk's `timings`
+  (`token_source = 'timings'`).
+* Not recorded: a call the pool never granted that reported no tokens (a refusal). The grammar
+  windows still count it.
+* Telemetry never waits inside a reply: events go to a bounded in-memory queue (oldest dropped
+  and logged when full), drained every 2 s by `run_usage_publisher`.
+* Off switch: `LLM_GATEWAY_CALL_USAGE_ENABLED=false`.
+
 ## Calls under a durable run's GPU pool hold
 
 A durable run holds one GPU pool lease for its whole life. Every LLM call it makes carries that
@@ -333,3 +453,51 @@ Juniper's chat card is the GPU pool's `lent` flag on `gpu0` (Hub GPU pool panel 
 Until durable-runs reads pool state (stage 4), `GET /routes` still reports `chat-burst` as
 `operator_closed` (with `gate_open: false`) unless gpu0 is lent, and `agent-burst` as `up` only
 while the `agent-gpu2` swap seat is confirmed.
+
+### Staged vLLM roles
+
+Pool roles may declare `backend: vllm` (omitted means `llamacpp`). The gateway
+uses the **granted role**, including spill/retry, to choose the backend. For
+vLLM, `grant.model_file` carries the exact discovered `/v1/models` ID and
+replaces the route/request label in the upstream OpenAI body. The bus path
+also uses that ID; `chat_template_kwargs` is forwarded for vLLM as well.
+Existing llama.cpp requests retain their previous model-label behavior.
+
+OpenAI passthrough preserves streaming, tool payloads and the existing lease
+lifecycle. Anthropic passthrough refuses a vLLM grant with HTTP 400
+`unsupported_backend_protocol` and releases it. The pinned fork has an
+Anthropic endpoint, but Orion's integration with it has not been validated.
+The model-list backend is `mixed` when a route can be granted different backend
+types; it is not a promise that every role supports Anthropic.
+
+No active route has been switched. See
+[Hecate rollout](../../docs/runbooks/hecate-glm53-vllm.md) for candidate config,
+reader rollout order and acceptance gates.
+
+## Structured output on Strata lanes (chat, agent)
+
+Strata 0.2.7 has no constrained decoding: its capabilities say `"method": "prompt_and_validate"`.
+A `response_format` only adds a "return one JSON object" instruction to the system message, then
+runs a strict `json.loads` on the finished reply; on failure it answers HTTP 502
+`structured_output_failed` and the reply is lost. Grammar fields (`grammar`, `guided_json`) are
+ignored (probed live 2026-11-13).
+
+So for Strata the gateway does both steps itself (`app/strata_structured.py`, wired in
+`_execute_openai_chat`):
+
+1. It sends Strata's own instruction, word for word, without `response_format`.
+2. It runs Strata's own extraction and strict parse, so a valid reply comes back exactly as before
+   (canonical JSON).
+3. A Python-style dict (`{'key': ...}`, the "Expecting property name enclosed in double quotes"
+   error) is converted only when the meaning cannot change: adjacent strings, escapes Python reads
+   differently (`\a`, `\x41`, ...), prefixed or triple-quoted strings and repeated keys are refused.
+4. Otherwise, one corrective retry: the model sees its own reply and the parser's error. It runs only
+   when the first call used at most half the read timeout. A cut-off reply (`finish_reason` other
+   than `stop`) is not retried.
+5. Still bad: the same 502 message callers handled before
+   (`upstream_http_5xx:http_502: model did not return valid JSON: ...`). If the retry itself fails
+   (overflow, 5xx), the caller still gets that original JSON failure.
+
+Logs: `strata_json_recovered` (repaired, or fixed by the retry), `strata_json_rejected` (with up to
+1,500 chars of the raw reply, so the prompts that cause bad JSON can be fixed),
+`strata_json_retry_failed`, `strata_json_retry_skipped`.

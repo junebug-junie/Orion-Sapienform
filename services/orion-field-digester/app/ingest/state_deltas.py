@@ -4,8 +4,9 @@ import math
 from dataclasses import dataclass
 
 from orion.schemas.state_delta import StateDeltaV1
+from orion.substrate.prediction_error_freshness import PREDICTION_ERROR_MISSING_REASON_KEY
 
-from app.tensor.channels import RETIRED_PSEUDO_NODES
+from app.tensor.channels import PRUNED_NODE_IDS
 
 # atlas removed 2026-08-21 (decommissioned; its GPUs moved to circe, along
 # with athena's old P100 -- see config/biometrics/node_catalog.yaml). athena
@@ -19,7 +20,10 @@ class Perturbation:
     channel: str
     intensity: float
     label: str
-    mode: str = "add"  # "add" accumulates; "replace" sets the channel to exactly intensity
+    # "add" accumulates; "replace" sets the channel to exactly intensity;
+    # "clear" removes the channel (and its updated_at stamp): the producer says
+    # it has no reading, so the field reads unmeasured, never 0.0.
+    mode: str = "add"
 
 
 def _node_key(raw: str) -> str:
@@ -28,11 +32,15 @@ def _node_key(raw: str) -> str:
 
 
 def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
-    # Never write to a retired/phantom pseudo-node (channels.RETIRED_PSEUDO_NODES):
+    # Never write to a retired node -- a phantom pseudo-node (RETIRED_PSEUDO_NODES)
+    # or a host that no longer exists (RETIRED_LATTICE_NODES, e.g. node:atlas):
     # reconcile runs BEFORE perturbations each tick, so a late or replayed
     # delta (e.g. a pre-fix transport_bus delta for node:rpc_timeout) would
-    # otherwise resurrect the entry and persist it for one more tick.
-    return [p for p in _delta_to_perturbations(delta) if p.node_id not in RETIRED_PSEUDO_NODES]
+    # otherwise resurrect the entry and persist it for one more tick. Confirmed
+    # for node:atlas 2026-10-16: the substrate's stale atlas pressure kept
+    # emitting active_node_pressure deltas (~58k organ emissions/day), and the
+    # retired-host prune receipt itself carries an atlas `suppress` delta.
+    return [p for p in _delta_to_perturbations(delta) if p.node_id not in PRUNED_NODE_IDS]
 
 
 def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
@@ -537,9 +545,10 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # (RETIRED_NODE_CHANNELS).
         for channel, key in (
             ("catalog_drift_pressure", "catalog_drift_pressure"),
-            ("observer_failure_pressure", "observer_failure_pressure"),
+            # observer_failure_pressure retired 2026-10-07 (#2534 decision 4):
+            # a pre-deploy receipt still carrying the hint is ignored here and
+            # reconcile prunes the name (RETIRED_NODE_CHANNELS).
             ("reliability_pressure", "reliability_pressure"),
-            ("contract_pressure", "contract_pressure"),
         ):
             if key in hints:
                 out.append(
@@ -572,6 +581,27 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                 )
             )
 
+    if delta.target_kind == "vision_organ":
+        # orion-vision-frame-router's own report on the eye, folded by substrate-
+        # runtime's vision_organ reducer (orion/substrate/vision_organ_loop/). One
+        # fresh organ reading per router window (or per silence write), so
+        # mode="replace". A hint the reducer omits (no task dispatched in the
+        # failure span) writes nothing; both channels expire rather than decay
+        # (decay.py EXPIRING_NODE_CHANNELS), so a stopped lane reads unmeasured,
+        # never a fabricated calm 0.0.
+        hints = dict((delta.after or {}).get("pressure_hints") or {})
+        for channel in ("vision_frame_staleness", "vision_processing_failure_pressure"):
+            if channel in hints:
+                out.append(
+                    Perturbation(
+                        node_id=node_id,
+                        channel=channel,
+                        intensity=max(0.0, min(1.0, float(hints[channel]))),
+                        label=delta.delta_id,
+                        mode="replace",
+                    )
+                )
+
     if delta.target_kind == "rpc_delivery":
         # orion-substrate-runtime's RPC delivery bridge (orion/substrate/rpc_delivery.py):
         # the worst bus hop's share of rpc_request() calls that hit their deadline,
@@ -591,10 +621,46 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                 )
             )
 
-    if delta.target_kind == "prediction_signal":
+    if delta.target_kind == "storage_write":
+        # orion-sql-writer's own write outcomes (orion/substrate/storage_write_loop/):
+        # the worst table family's share of writes that did not reach their table,
+        # over a rolling 600 s of writer windows. A fresh full reading per writer
+        # window, so mode="replace". The reducer omits the hint when nothing was
+        # attempted; the channel is in EXPIRING_NODE_CHANNELS, so a silent writer
+        # reads as unmeasured, never as a held or decayed calm value.
         hints = dict((delta.after or {}).get("pressure_hints") or {})
-        node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id))
-        if "prediction_error" in hints:
+        if "write_failure_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="write_failure_pressure",
+                    intensity=max(0.0, min(1.0, float(hints["write_failure_pressure"]))),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
+
+    if delta.target_kind == "prediction_signal":
+        after = delta.after or {}
+        hints = dict(after.get("pressure_hints") or {})
+        node_key = _node_key(str(after.get("node_id") or delta.target_id))
+        # Missing input (2026-11-10, PE suite rebuild spec retire step 8): the
+        # producer has no reading this tick (camera stale, baseline warming,
+        # no new frame) and says why. Drop the channel instead of writing a
+        # value -- the old 0.0 placeholder read as "calm" to every field
+        # consumer. A missing reason wins over any value sent alongside it.
+        missing_reason = str(after.get(PREDICTION_ERROR_MISSING_REASON_KEY) or "").strip()
+        if missing_reason:
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="prediction_error",
+                    intensity=0.0,
+                    label=delta.delta_id,
+                    mode="clear",
+                )
+            )
+        elif "prediction_error" in hints:
             out.append(
                 Perturbation(
                     node_id=node_key,

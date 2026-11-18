@@ -24,6 +24,10 @@ def test_dockerfile_pins_prism_fork_for_volta():
     # Prism: CUDA 13.3 builds segfault; host nvcc 13.x dropped sm_70.
     assert "nvidia/cuda:12.8.1-devel-ubuntu24.04" in text
     assert "orion-llamacpp-host:0.1.0" in text
+    # Base image supplies deps only; its baked wrapper/profiles can predate this profile.
+    final = text.split("FROM ${HOST_IMAGE}", 1)[1]
+    for copy in ("COPY services/orion-llamacpp-host/app /app/app", "COPY config /app/config", "COPY orion /app/orion"):
+        assert copy in final
     # Build number = rev-list count; a shallow clone reports 1 and the wrapper
     # then drops --flash-attn off (main.py is_b5332_compatible).
     code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
@@ -34,7 +38,8 @@ def test_dockerfile_pins_prism_fork_for_volta():
 def test_compose_stays_off_shared_image_and_pool_ports():
     compose = yaml.safe_load((HOST / "docker-compose.yml").read_text(encoding="utf-8"))
     svc = compose["services"]["bonsai-worker"]
-    assert "build" not in svc  # built by scripts/build-bonsai-volta.sh only
+    # Auto-rebuild runs `up -d --build`: without a build section it only restarts a stale image.
+    assert svc["build"]["dockerfile"] == "services/orion-llamacpp-bonsai-host/Dockerfile"
     assert "llamacpp-bonsai-prism" in svc["image"]
     assert svc["restart"] == "no"
     env = "\n".join(svc["environment"])
@@ -50,11 +55,18 @@ def test_compose_stays_off_shared_image_and_pool_ports():
     assert f"BONSAI_PROFILE_NAME={PROFILE}" in example
 
 
-def test_shared_llamacpp_host_does_not_reference_the_fork():
+def test_shared_llamacpp_host_keeps_the_fork_off_every_lane_but_agent_gpu2():
+    """Stage 7.2 moved the fork into orion-llamacpp-host as Dockerfile.prism for atlas-agent-burst
+    (pool role agent-gpu2) only. The stock image, its compose and every other atlas worker stay off it."""
     shared = HOST.parent / "orion-llamacpp-host"
-    for name in ("Dockerfile", "docker-compose.yml", "docker-compose.atlas-workers.yml", ".env_example"):
-        text = (shared / name).read_text(encoding="utf-8")
-        assert "bonsai" not in text.lower(), name
+    for name in ("Dockerfile", "docker-compose.yml", ".env_example"):
+        text = (shared / name).read_text(encoding="utf-8").lower()
+        assert "bonsai" not in text and "prism" not in text, name
+    workers = yaml.safe_load((shared / "docker-compose.atlas-workers.yml").read_text(encoding="utf-8"))["services"]
+    for name, svc in workers.items():
+        # atlas-chat runs the Strata image and has no build block
+        uses_fork = "prism" in (str(svc.get("build", {}).get("dockerfile", "")) + str(svc["image"])).lower()
+        assert uses_fork == (name == "atlas-agent-burst"), name
 
 
 def test_profile_launch_argv(monkeypatch):
@@ -94,4 +106,86 @@ def test_profile_launch_argv(monkeypatch):
     assert kwargs["reasoning_effort"] == "medium"
     assert kwargs["preserve_thinking"] is False
     assert flag("--n-predict") == "16384"
-    assert flag("--flash-attn") == "off"
+    # Measured win on circe gpu0 2026-09-30; see the field note.
+    assert flag("--flash-attn") == "on"
+
+
+def test_never_auto_deployed():
+    """Manual only: it borrows a pool card (gpu1/gpu2) the lane controller does not know it holds,
+    so a post-merge `up` would collide with pool launches."""
+    common = REPO / "mesh-utilities" / "common"
+    service = "orion-llamacpp-bonsai-host"
+    for include in common.glob("include_services*"):
+        files = include.rglob("*.txt") if include.is_dir() else [include]
+        for f in files:
+            lines = {l.strip() for l in f.read_text(encoding="utf-8").splitlines()}
+            assert service not in lines, f
+    excludes = (common / "exclude_services.txt").read_text(encoding="utf-8").splitlines()
+    assert service in {l.strip() for l in excludes}
+
+
+def _card_indices(pool: dict, role: str) -> set[int]:
+    return {int(pool["cards"][c]["index"]) for c in pool["roles"][role]["cards"]}
+
+
+def test_no_bonsai_config_targets_chats_card():
+    """Juniper, 2026-09-30: Bonsai runs on gpu1/gpu2 (the agent cards), never chat's gpu0.
+
+    Card indices come from config/gpu_pool.yaml, so a card move there moves this gate too.
+    """
+    import re
+
+    pool = yaml.safe_load((REPO / "config" / "gpu_pool.yaml").read_text(encoding="utf-8"))
+    chat = _card_indices(pool, "chat")
+    allowed = _card_indices(pool, "agent") | _card_indices(pool, "agent-gpu2")
+    assert chat and allowed and not (chat & allowed)
+
+    # Compose: required, no fallback that could land on any card.
+    compose = yaml.safe_load((HOST / "docker-compose.yml").read_text(encoding="utf-8"))
+    env = compose["services"]["bonsai-worker"]["environment"]
+    cuda = next(e.split("=", 1)[1] for e in env if e.startswith("CUDA_VISIBLE_DEVICES_OVERRIDE="))
+    assert re.fullmatch(r"\$\{BONSAI_CUDA_VISIBLE_DEVICES:\?[^}]+\}", cuda), cuda
+
+    # Operator template.
+    example = (HOST / ".env_example").read_text(encoding="utf-8")
+    vals = re.findall(r"^BONSAI_CUDA_VISIBLE_DEVICES=(.*)$", example, re.M)
+    assert len(vals) == 1, vals
+    devices = {int(d) for d in vals[0].split(",")}
+    assert devices and devices <= allowed and not (devices & chat), devices
+
+    # Every Bonsai profile's (doc-only) pin.
+    profiles = yaml.safe_load((REPO / "config" / "llm_profiles.yaml").read_text(encoding="utf-8"))["profiles"]
+    bonsai = {k: v for k, v in profiles.items() if "bonsai" in k.lower()}
+    assert PROFILE in bonsai
+    for name, cfg in bonsai.items():
+        ids = set((cfg.get("gpu") or {}).get("device_ids") or [])
+        assert ids <= allowed and not (ids & chat), (name, ids)
+
+
+def test_compose_refuses_to_start_without_a_card(tmp_path):
+    """`docker compose config` with no BONSAI_CUDA_VISIBLE_DEVICES must fail, not pick a card."""
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if not shutil.which("docker"):
+        pytest.skip("docker CLI not installed")
+    probe = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True)
+    if probe.returncode != 0:
+        pytest.skip("docker compose plugin not installed")
+    envf = tmp_path / "empty.env"
+    envf.write_text("LLM_CACHE_DIR=/tmp\n", encoding="utf-8")
+    run = lambda extra: subprocess.run(  # noqa: E731
+        ["docker", "compose", "--env-file", str(envf), "-f", str(HOST / "docker-compose.yml"), "config"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={"PATH": __import__("os").environ["PATH"], **extra},
+    )
+    missing = run({})
+    assert missing.returncode != 0
+    assert "never 0" in missing.stderr
+    ok = run({"BONSAI_CUDA_VISIBLE_DEVICES": "2"})
+    assert ok.returncode == 0, ok.stderr
+    assert "CUDA_VISIBLE_DEVICES_OVERRIDE: \"2\"" in ok.stdout or "CUDA_VISIBLE_DEVICES_OVERRIDE: '2'" in ok.stdout or "CUDA_VISIBLE_DEVICES_OVERRIDE: 2" in ok.stdout

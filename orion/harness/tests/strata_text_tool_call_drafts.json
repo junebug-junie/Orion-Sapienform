@@ -1,0 +1,22 @@
+[
+ {
+  "correlation_id": "4bbaaf2a-0014-46ba-a73e-63d8c1b91dbd",
+  "created_at": "2026-11-03T03:24:43.420318",
+  "draft_text": "<tool_call>\n<function=mcp__plugin_context-mode_context-mode__ctx_execute_file>\n<parameter=path>\n/mnt/orion-fcc/dig/2026-11-02/capacities-1.json\n</parameter>\n<parameter=language>\njavascript\n</parameter>\n<parameter=code>\n\nconst d = JSON.parse(input);\nconsole.log('TOP KEYS:', Object.keys(d));\nfor (const k of Object.keys(d)) {\n  const v = d[k];\n  console.log('--', k, Array.isArray(v) ? `array(${v.length})` : typeof v);\n}\n\n</parameter>\n</function>\n</tool_call>"
+ },
+ {
+  "correlation_id": "05995161-2f11-43fd-a782-b0d728cb8856",
+  "created_at": "2026-10-31T14:01:41.127284",
+  "draft_text": "<tool_call>\n<function=mcp__plugin_context-mode_context-mode__ctx_batch_execute>\n<parameter=commands>\n[{\"label\": \"stance priors current state\", \"command\": \"psql \\\"$ORION_CURIOSITY_PG_DSN\\\" -At -c \\\"select prior_id, confidence, times_tested, updated_at from self_knowledge_prior_log where prior_id in ('gate_bias_manual_review_7736d5271d97','automated_intake_gate','auto_activate_kind_gate_no_content_analysis') order by updated_at desc limit 20;\\\" 2>&1 | head -40\"}, {\"label\": \"stance review ledger columns\", \"command\": \"psql \\\"$ORION_CURIOSITY_PG_DSN\\\" -At -c \\\"select table_name from information_schema.tables where table_schema='public' and table_name ilike '%stance%' order by 1;\\\" 2>&1 | head -20\"}, {\"label\": \"recent stance rows count\", \"command\": \"psql \\\"$ORION_CURIOSITY_PG_DSN\\\" -At -c \\\"select count(*) from stance_log;\\\" 2>&1 | head -5; psql \\\"$ORION_CURIOSITY_PG_DSN\\\" -At -c \\\"select count(*), min(created_at), max(created_at) from stance_log where created_at > '2026-10-01';\\\" 2>&1 | head -5\"}]\n</parameter>\n<parameter=queries>\n[\"stance prior confidence times_tested updated\", \"stance log table review decisions\"]\n</parameter>\n</function>\n</tool_call>"
+ },
+ {
+  "correlation_id": "4404ae82-b662-5127-aece-b5d666008a50",
+  "created_at": "2026-11-02T10:14:54.607999",
+  "draft_text": "<tool_call>\n<function=mcp__plugin_context-mode_context-mode__ctx_search>\n<parameter=queries>\n[\"TurnOutcome MERGE template continue_line reach_out properties\", \"run_id 176cbc50cd49 TurnOutcome cypher\"]\n</parameter>\n<parameter=source>\nsession-events\n</parameter>\n</function>\n</tool_call>"
+ },
+ {
+  "correlation_id": "5e37c1e8-7b6b-4ea0-afb8-eaef6be549bc",
+  "created_at": "2026-10-31T21:35:29.433557",
+  "draft_text": "<tool_call>\n<function=mcp__plugin_context-mode_context-mode__ctx_execute>\n<parameter=language>\nbash\n</parameter>\n<parameter=code>\npsql \"$ORION_CURIOSITY_PG_DSN\" -c \"select id, captured_at, caption from camera_frames where camera='doorbell' order by captured_at desc limit 5;\" 2>&1 | head -30\n</parameter>\n</function>\n</tool_call>"
+ }
+]

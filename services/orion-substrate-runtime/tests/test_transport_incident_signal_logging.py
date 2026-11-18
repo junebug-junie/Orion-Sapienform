@@ -57,13 +57,15 @@ def test_retired_depth_family_is_not_an_incident_field() -> None:
 
     assert "backpressure" not in _TRANSPORT_INCIDENT_FIELDS
     assert "stream_depth_pressure" not in _TRANSPORT_INCIDENT_FIELDS
+    # observer_failure_pressure retired 2026-10-07 (#2534 decision 4).
+    assert "observer_failure_pressure" not in _TRANSPORT_INCIDENT_FIELDS
 
 
 def test_multiple_buses_each_checked_independently(caplog) -> None:
     projection = _projection(
         **{
             "bus:athena": _bus(node_id="athena", target_id="bus:athena"),
-            "bus:atlas": _bus(node_id="atlas", target_id="bus:atlas", observer_failure_pressure=1.0, observer_failure_count=1),
+            "bus:atlas": _bus(node_id="atlas", target_id="bus:atlas", reliability_pressure=1.0, redis_ping_ok=False),
         }
     )
     with caplog.at_level(logging.INFO, logger="orion.substrate.runtime"):

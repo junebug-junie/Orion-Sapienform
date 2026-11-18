@@ -4,7 +4,7 @@ import uuid
 from typing import Any
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.harness_finalize import HarnessRunStepV1
+from orion.schemas.harness_finalize import HarnessRunDraftPreviewV1, HarnessRunStepV1
 
 
 def _envelope_correlation_id(raw: str) -> uuid.UUID:
@@ -30,6 +30,25 @@ async def publish_harness_run_step(
     )
     envelope = BaseEnvelope(
         kind="harness.run.step.v1",
+        source=ServiceRef(name=source_name),
+        correlation_id=_envelope_correlation_id(correlation_id),
+        payload=payload.model_dump(mode="json"),
+    )
+    await bus.publish(channel, envelope)
+
+
+async def publish_harness_run_draft_preview(
+    bus: Any,
+    *,
+    correlation_id: str,
+    text: str,
+    channel: str,
+    source_name: str = "orion-harness-governor",
+) -> None:
+    """Publish the pre-judge draft for draft-first display (spec L8)."""
+    payload = HarnessRunDraftPreviewV1(correlation_id=correlation_id, text=text)
+    envelope = BaseEnvelope(
+        kind="harness.run.draft_preview.v1",
         source=ServiceRef(name=source_name),
         correlation_id=_envelope_correlation_id(correlation_id),
         payload=payload.model_dump(mode="json"),

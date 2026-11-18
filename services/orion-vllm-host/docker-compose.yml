@@ -2,6 +2,12 @@
 
 services:
   vllm-host:
+    # Never start a GPU worker during a generic Athena pull/rebuild sweep.
+    profiles: [vllm-worker]
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-vllm-host/Dockerfile
@@ -22,6 +28,10 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+
+      - LLM_ROLE=${LLM_ROLE:-}
+      - LLM_ANNOUNCE_HOST=${LLM_ANNOUNCE_HOST:-hecate}
+      - LLM_ANNOUNCE_PORT=${LLM_ANNOUNCE_PORT:-}
 
       # HTTP bind
       - VLLM_HOST=0.0.0.0
@@ -51,7 +61,7 @@ services:
 
     ports:
       # Map to internal 8000
-      - "${VLLM_HOST_PORT:-7000}:8000"
+      - "${VLLM_ENGINE_PUBLISH:-${VLLM_HOST_PORT:-7000}}:8000"   # public; the lane door fronts only docker-compose.deep.yml
 
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]

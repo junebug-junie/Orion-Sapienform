@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -9,10 +10,20 @@ from uuid import UUID, uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import run_subscription
 from orion.harness.cortex_client import HarnessCortexClient
+from orion.harness.cut_short import (
+    FCC_CONTEXT_CEILING_ERROR_CODE,
+    LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE,
+    ensure_cut_short_marked,
+    is_cut_short_code,
+)
+from orion.harness.claim_gate import gate_correction_claims, gate_focus_claims
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
     HarnessFinalizeFailedError,
+    draft_preview_display_text,
+    draft_preview_hold_reason,
     emit_post_turn_closure,
     run_harness_finalize_chain,
 )
@@ -24,6 +35,7 @@ from orion.harness.grammar_emit import (
 )
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.runner import HarnessRunner, _record_recall_gate_from_debug
+from orion.harness.step_stream import publish_harness_run_draft_preview
 from orion.harness.substrate_client import HarnessSubstrateClient
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
 
@@ -34,6 +46,44 @@ logger = logging.getLogger("orion-harness-governor.bus")
 
 class SubstrateAppraisalUnavailableError(Exception):
     """Substrate finalize-appraisal RPC timed out (infra outage, not a content failure)."""
+
+
+class FinalizeReplyDeadlineError(Exception):
+    """The caller's reply budget (``HarnessRunRequestV1.reply_budget_sec``) ran out before
+    finalize could finish. Caught by the generic ``except Exception`` path (not
+    HarnessFinalizeFailedError: the chain was cancelled, so its own failure artifacts and any
+    partial appraisal/reflection are not emitted -- the log line and ``grounding_status`` are
+    the trace), which replies with ``draft_text`` while the caller is still waiting -- and, for a held curiosity turn,
+    while the run still holds its GPU (run a153451fe423 finalized after the hold was gone)."""
+
+
+def finalize_seconds_left(request: HarnessRunRequestV1, received_monotonic: float) -> float | None:
+    """Seconds left of the caller's reply budget, or None when the request set none."""
+    budget = getattr(request, "reply_budget_sec", None)
+    if budget is None:
+        return None
+    return float(budget) - (time.monotonic() - received_monotonic)
+
+
+async def run_bounded_finalize(awaitable: Any, seconds_left: float | None) -> Any:
+    """Await the finalize chain within ``seconds_left``; FinalizeReplyDeadlineError past it.
+    Only the budget's own expiry is renamed: a TimeoutError raised inside the chain
+    (an RPC's own timeout) propagates unchanged."""
+    if seconds_left is None:
+        return await awaitable
+    if seconds_left <= 0:
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
+        raise FinalizeReplyDeadlineError("finalize_reply_deadline: no time left after the motor")
+    try:
+        async with asyncio.timeout(seconds_left) as cm:
+            return await awaitable
+    except TimeoutError:
+        if cm.expired():
+            raise FinalizeReplyDeadlineError(
+                f"finalize_reply_deadline: finalize cut after {seconds_left:.0f}s"
+            ) from None
+        raise
 
 
 # User-facing text for a degraded turn -- deliberately generic. The real exception
@@ -50,7 +100,53 @@ _FCC_PRESPAWN_CODES = frozenset({"fcc_bad_model_label", "fcc_lane_context_too_sm
 # The motor's own output guards killing a still-working stream (orion/harness/fcc_motor.py):
 # the elapsed time is truncated by a content limit, neither a round trip nor a
 # deadline -- recording it either way would bias the baseline.
-_FCC_SELF_KILL_CODES = frozenset({"fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"})
+# `fcc_draft_length_ceiling_exceeded` is the pre-2026-10-02 name of
+# `fcc_context_ceiling_exceeded`; kept so a mixed-version deploy stays excluded.
+_FCC_SELF_KILL_CODES = frozenset(
+    {"fcc_stream_line_limit", FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE}
+)
+
+
+INTERRUPTED_RESUMABLE = "interrupted_resumable"
+
+
+def _gate_claims(text: str | None, motor: Any, corr: str) -> str | None:
+    """Every text that can reach a reader passes this: a correction_id the turn's
+    `record_correction` calls did not return (or a focus_id its `queue_curiosity_focus`
+    calls did not return) is replaced and the reply says so
+    (orion/harness/claim_gate.py). Returns None for None so it is safe on optional fields."""
+    if text is None:
+        return None
+    results = tuple(getattr(motor, "correction_results", ()) or ())
+    gate = gate_correction_claims(text, results)
+    if gate.changed:
+        logger.warning(
+            "harness_unverified_correction_claim corr=%s ids=%s correction_results=%s",
+            corr, ",".join(gate.unverified_ids), len(results),
+        )
+    focus_results = tuple(getattr(motor, "focus_results", ()) or ())
+    focus_gate = gate_focus_claims(gate.text, focus_results)
+    if focus_gate.changed:
+        logger.warning(
+            "harness_unverified_focus_claim corr=%s ids=%s focus_results=%s",
+            corr, ",".join(focus_gate.unverified_ids), len(focus_results),
+        )
+    return focus_gate.text
+
+
+def interrupted_for_resume(request: HarnessRunRequestV1, motor: Any) -> bool:
+    """A durable turn the motor's process lost to an outside signal (a cancel's
+    SIGKILL, a restart, an OOM kill): negative exit code, not one of the motor's
+    own cut-short kills. Its draft stops wherever the process was, so finalizing
+    it would speak a half-finished thought as Orion's answer. The caller instead
+    gets a failure and retries under the same `resume_key`, which picks the
+    `claude` session back up (orion/harness/session_resume.py)."""
+    if not getattr(request, "resume_key", None):
+        return False
+    exit_code = getattr(motor, "exit_code", None)
+    if not isinstance(exit_code, int) or exit_code >= 0:
+        return False
+    return not is_cut_short_code(str(getattr(motor, "grounding_status", "") or ""))
 
 
 def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None, fcc_backend: str | None = None) -> str:
@@ -276,6 +372,62 @@ def _recall_fields_from_thought(thought: Any) -> tuple[dict[str, Any] | None, st
     return recall_debug, memory_digest
 
 
+async def _maybe_publish_draft_preview(
+    bus: Any,
+    request: HarnessRunRequestV1,
+    motor: Any,
+    *,
+    repair_overlay: Any,
+    corr: str,
+    received_monotonic: float,
+) -> tuple[str | None, str | None]:
+    """Draft-first display (spec L8): publish the grounded draft before the judge.
+
+    Returns (published_text, held_reason). Both None when the caller did not
+    ask. Best-effort: a publish failure costs the early display, never the turn.
+    """
+    if not getattr(request, "draft_preview", False):
+        return None, None
+    held = draft_preview_hold_reason(
+        thought=request.thought_event,
+        repair_overlay=repair_overlay,
+        preserve_structured_output=bool(request.reading_only),
+        cut_short=bool(getattr(motor, "cut_short_reason", None)),
+    )
+    if held is not None:
+        logger.info("harness_draft_preview_held corr=%s reason=%s", corr, held)
+        return None, held
+    text = _gate_claims(draft_preview_display_text(motor.draft_text, motor.reading_receipts), motor, corr)
+    if not text.strip():
+        return None, "empty_draft"
+    try:
+        await publish_harness_run_draft_preview(
+            bus,
+            correlation_id=corr,
+            text=text,
+            channel=settings.channel_harness_run_draft_preview,
+            source_name=settings.service_name,
+        )
+    except Exception:  # noqa: BLE001 -- display is optional; the judge still runs
+        logger.warning("harness_draft_preview_publish_failed corr=%s", corr, exc_info=True)
+        return None, "publish_failed"
+    logger.info(
+        "harness_draft_preview_published corr=%s chars=%s since_request_ms=%.0f",
+        corr,
+        len(text),
+        (time.monotonic() - received_monotonic) * 1000.0,
+    )
+    return text, None
+
+
+def _finalize_notes(request: Any) -> str | None:
+    """What the finalize judge is told the motor saw: the Prime block (living Prime Part 1) first, so
+    the judge's 6,000-char notes clip can never cut it, then the Situation block. Without the Prime
+    block a correct "I'm holding X [prime_concern:..]" would read as ungrounded to the judge."""
+    parts = [p for p in (getattr(request, "prime_block", None), request.situation_prompt_fragment) if p]
+    return "\n\n".join(parts) if parts else None
+
+
 async def handle_harness_run_request(
     bus: OrionBusAsync,
     request: HarnessRunRequestV1,
@@ -299,6 +451,7 @@ async def handle_harness_run_request(
     plus lifecycle grammar events. Start here when Hub received nothing back,
     or an error frame whose failing phase is unclear.
     """
+    received_monotonic = time.monotonic()
     corr = correlation_id or request.correlation_id or str(uuid4())
     causality = list(causality_chain or [])
     recall_debug, memory_digest = _recall_fields_from_thought(request.thought_event)
@@ -321,7 +474,8 @@ async def handle_harness_run_request(
             recall_debug=recall_debug,
             mode=str(getattr(request, "mode", None) or "orion").strip().lower(),
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
 
     repair_overlay = map_repair_pressure_contract(request.repair_pressure_contract)
@@ -354,6 +508,35 @@ async def handle_harness_run_request(
         recall_debug=recall_debug,
     )
     record_fcc_hop(bus, motor)
+    if interrupted_for_resume(request, motor):
+        logger.warning(
+            "harness_turn_interrupted_resumable corr=%s key=%s exit_code=%s steps=%s draft_chars=%s",
+            corr, request.resume_key, motor.exit_code, motor.step_count, len(motor.draft_text or ""),
+        )
+        run = HarnessRunV1(
+            correlation_id=corr,
+            final_text=None,
+            # No draft on the reply: Hub's urgent path salvages `partial_draft` into
+            # text, which would turn a half-finished thought into a success and
+            # suppress the retry. The work lives in the resumable session.
+            draft_text=None,
+            finalize_ran=False,
+            step_count=motor.step_count,
+            exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
+            compliance_verdict="failed",
+            grounding_status=INTERRUPTED_RESUMABLE,
+            grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
+            recall_debug=recall_debug,
+            memory_digest=memory_digest,
+            fcc_served_model=motor.fcc_served_model,
+            fcc_elapsed_sec=motor.fcc_elapsed_sec,
+            reading_receipts=motor.reading_receipts,
+            source_fetches=motor.source_fetches,
+        )
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
+        return run
     if not motor.draft_text or motor.draft_molecule is None:
         run = HarnessRunV1(
             correlation_id=corr,
@@ -362,6 +545,7 @@ async def handle_harness_run_request(
             finalize_ran=False,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
             compliance_verdict=motor.compliance_verdict if motor.compliance_verdict != "completed" else "failed",
             grounding_status=motor.grounding_status,
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
@@ -372,8 +556,18 @@ async def handle_harness_run_request(
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
+
+    preview_text, preview_held = await _maybe_publish_draft_preview(
+        bus,
+        request,
+        motor,
+        repair_overlay=repair_overlay,
+        corr=corr,
+        received_monotonic=received_monotonic,
+    )
 
     async def _substrate_client(molecule: Any) -> Any:
         try:
@@ -382,9 +576,9 @@ async def handle_harness_run_request(
             raise SubstrateAppraisalUnavailableError(str(exc)) from exc
 
     try:
-        chain = await run_harness_finalize_chain(
+        chain = await run_bounded_finalize(run_harness_finalize_chain(
             correlation_id=corr,
-            draft_text=motor.draft_text,
+            draft_text=_gate_claims(motor.draft_text, motor, corr),
             draft_molecule=motor.draft_molecule,
             thought=request.thought_event,
             grammar_receipts=motor.grammar_receipts,
@@ -392,6 +586,17 @@ async def handle_harness_run_request(
             preserve_structured_output=bool(request.reading_only),
             gpu_lease=request.gpu_lease,
             fcc_model_label=request.fcc_model_label,
+            situation_notes=_finalize_notes(request),
+            # Intention ledger D1: Hub's view of open promises / pending offers, for the judge only.
+            pending_offers=list(getattr(request, "pending_offers", None) or []),
+            open_promises=list(getattr(request, "open_promises", None) or []),
+            cut_short=bool(getattr(motor, "cut_short_reason", None)),
+            # The perception re-check (finalize._recheck_unsupported_claim_repair)
+            # stays inside the reply budget instead of running it out.
+            deadline_monotonic=(
+                received_monotonic + float(request.reply_budget_sec)
+                if getattr(request, "reply_budget_sec", None) is not None else None
+            ),
             repair_overlay=repair_overlay,
             user_message=request.user_message,
             voice_contract=request.answer_contract,
@@ -407,22 +612,26 @@ async def handle_harness_run_request(
             grammar_channel=settings.channel_grammar_event,
             closure_channel=settings.channel_post_turn_closure,
             system_error_channel=settings.channel_system_error,
-        )
+        ), finalize_seconds_left(request, received_monotonic))
     except HarnessFinalizeFailedError as exc:
         logger.error("harness finalize chain error corr=%s err=%s", corr, exc)
         partial = exc.partial
         run = HarnessRunV1(
             correlation_id=corr,
             final_text=None,
-            draft_text=motor.draft_text,
+            draft_text=_gate_claims(motor.draft_text, motor, corr),
             substrate_appraisal=partial.substrate_appraisal,
             reflection=partial.reflection,
             verdict_molecule_id=partial.verdict_molecule_id,
             finalize_ran=False,
             finalize_changed=False,
+            # A required repair that failed: the run says it ran (#3686 review).
+            response_repair_ran=partial.outcome_molecule.response_repair_ran,
+            response_repair_reason=partial.outcome_molecule.response_repair_reason,
             quick_lane_skipped_5b=partial.quick_lane_skipped_5b,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
             compliance_verdict="failed",
             grounding_status=str(exc),
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
@@ -432,8 +641,11 @@ async def handle_harness_run_request(
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
+            draft_preview_text=preview_text,
+            draft_preview_held_reason=preview_held,
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
     except SubstrateAppraisalUnavailableError as exc:
         # Log the real exception (bus channel + correlation id) for operators only --
@@ -481,12 +693,15 @@ async def handle_harness_run_request(
             )
         run = HarnessRunV1(
             correlation_id=corr,
-            final_text=motor.draft_text,
-            draft_text=motor.draft_text,
+            # When a grounded draft was already shown, deliver that same text:
+            # swapping it for the raw draft would read as a revision no judge made.
+            final_text=_gate_claims(preview_text if preview_text is not None else motor.draft_text, motor, corr),
+            draft_text=_gate_claims(motor.draft_text, motor, corr),
             finalize_ran=False,
             finalize_degraded_reason=_SUBSTRATE_UNAVAILABLE_USER_REASON,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
             # Finalize/reflection genuinely did not complete for this turn even though the
             # motor stage did -- downgrade a "completed" motor verdict to "partial" so
             # compliance_verdict=="completed" never coexists with finalize_ran=False here,
@@ -500,18 +715,22 @@ async def handle_harness_run_request(
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
+            draft_preview_text=preview_text,
+            draft_preview_held_reason=preview_held,
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
     except Exception as exc:
         logger.error("harness finalize chain error corr=%s err=%s", corr, exc)
         run = HarnessRunV1(
             correlation_id=corr,
             final_text=None,
-            draft_text=motor.draft_text,
+            draft_text=_gate_claims(motor.draft_text, motor, corr),
             finalize_ran=False,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
             compliance_verdict="failed",
             grounding_status=str(exc),
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
@@ -521,14 +740,24 @@ async def handle_harness_run_request(
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
+            draft_preview_text=preview_text,
+            draft_preview_held_reason=preview_held,
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
 
+    final_text = chain.final_text
+    if getattr(motor, "cut_short_reason", None):
+        # Backstop only: the chain already skips repair for cut-short drafts
+        # (run_harness_finalize_chain(cut_short=True)) and passes the marked
+        # findings through. This keeps the marker if that ever regresses.
+        final_text = ensure_cut_short_marked(final_text)
+    final_text = _gate_claims(final_text, motor, corr)
     run = HarnessRunV1(
         correlation_id=corr,
-        final_text=chain.final_text,
-        draft_text=motor.draft_text,
+        final_text=final_text,
+        draft_text=_gate_claims(motor.draft_text, motor, corr),
         substrate_appraisal=chain.substrate_appraisal,
         reflection=chain.reflection,
         verdict_molecule_id=chain.verdict_molecule_id,
@@ -539,6 +768,7 @@ async def handle_harness_run_request(
         quick_lane_skipped_5b=chain.quick_lane_skipped_5b,
         step_count=motor.step_count,
         exit_code=motor.exit_code,
+        stop_reason=getattr(motor, "stop_reason", None),
         compliance_verdict=motor.compliance_verdict,
         grounding_status=motor.grounding_status,
         grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
@@ -548,7 +778,16 @@ async def handle_harness_run_request(
         fcc_elapsed_sec=motor.fcc_elapsed_sec,
         reading_receipts=motor.reading_receipts,
         source_fetches=motor.source_fetches,
+        draft_preview_text=preview_text,
+        draft_preview_held_reason=preview_held,
     )
+    if preview_text is not None and (run.final_text or "").strip() != preview_text.strip():
+        logger.info(
+            "harness_draft_preview_revised corr=%s reason=%s repair_ran=%s",
+            corr,
+            (run.response_repair_ran and run.response_repair_reason) or "finalize_changed",
+            run.response_repair_ran,
+        )
     if motor.grammar_collector is not None and run.final_text:
         await _emit_finalize_lifecycle_grammar(
             bus,
@@ -567,7 +806,8 @@ async def handle_harness_run_request(
             context_gathering_step_count=motor.context_gathering_step_count,
             execution_step_count=motor.execution_step_count,
         )
-    await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+    await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                              workflow=request.workflow)
 
     closure = await emit_post_turn_closure(
         correlation_id=corr,
@@ -597,7 +837,12 @@ async def _reply_and_artifact(
     reply_to: str,
     corr: str,
     causality: list[str],
+    workflow: str | None = None,
 ) -> None:
+    # The caller's own label for what kind of turn this was (HarnessRunRequestV1.workflow),
+    # copied onto the artifact so sql-writer can store it beside the stop reason (#3255).
+    if workflow and run.workflow is None:
+        run.workflow = workflow
     payload = run.model_dump(mode="json")
     envelope = BaseEnvelope(
         kind="harness.run.v1",
@@ -633,8 +878,12 @@ async def run_bus_worker(
     *,
     lane: str = "chat",
     bus: OrionBusAsync | None = None,
+    drain_sec: float = 0.0,
 ) -> None:
     """Consume one harness-run-request channel to completion, one turn at a time.
+
+    `drain_sec`: when `stop_event` is set the loop stops taking new requests, then waits up to
+    this long for turns already running to finish before cancelling the rest. 0 cancels at once.
 
     `main.py`'s lifespan runs TWO of these concurrently -- one per lane -- so a
     long agent-lane turn (curiosity, Mode=Agent+Compute=Agent) can never make a
@@ -678,7 +927,7 @@ async def run_bus_worker(
     if bus is None:
         bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
-    logger.info("subscribed lane=%s channel=%s", lane, channel)
+    logger.info("starting lane=%s channel=%s", lane, channel)
 
     legacy_lock = asyncio.Lock()
     tasks: set[asyncio.Task] = set()
@@ -701,46 +950,55 @@ async def run_bus_worker(
         for key in [key for key, running in admitted_inflight.items() if running is task]:
             admitted_inflight.pop(key, None)
 
+    def start_turn(msg: dict[str, Any]) -> None:
+        # Starts the turn as its own task and returns None: run_subscription awaits
+        # whatever this returns, and awaiting the turn would serialize the lane.
+        try:
+            decoded = bus.codec.decode(msg.get("data"))
+            payload = decoded.envelope.payload if decoded.ok else {}
+            body = payload if isinstance(payload, dict) else {}
+            # A turn under a GPU pool hold is admitted: it runs outside the legacy lock,
+            # or it would queue behind unrelated turns while its own card sits reserved for it.
+            admitted = isinstance(body.get("gpu_lease"), dict)
+            key = None
+            if admitted:
+                # One outstanding motor per fenced turn. Duplicate
+                # pub/sub delivery shares the original reply channel.
+                request = HarnessRunRequestV1.model_validate(payload)
+                fence = request.gpu_lease
+                key = f"{request.correlation_id}:{fence.lease_id}:{fence.generation}"
+                if key in admitted_inflight:
+                    return
+            task = asyncio.create_task(dispatch(msg, admitted))
+            tasks.add(task)
+            task.add_done_callback(finished)
+            if key is not None:
+                admitted_inflight[key] = task
+        except Exception:
+            logger.exception("unhandled bus worker error lane=%s", lane)
+
     try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    decoded = bus.codec.decode(msg.get("data"))
-                    payload = decoded.envelope.payload if decoded.ok else {}
-                    body = payload if isinstance(payload, dict) else {}
-                    # A turn under a GPU pool hold is admitted: it runs outside the legacy lock,
-                    # or it would queue behind unrelated turns while its own card sits reserved for it.
-                    admitted = isinstance(body.get("gpu_lease"), dict)
-                    key = None
-                    if admitted:
-                        # One outstanding motor per fenced turn. Duplicate
-                        # pub/sub delivery shares the original reply channel.
-                        request = HarnessRunRequestV1.model_validate(payload)
-                        fence = request.gpu_lease
-                        key = f"{request.correlation_id}:{fence.lease_id}:{fence.generation}"
-                        if key in admitted_inflight:
-                            continue
-                    task = asyncio.create_task(dispatch(msg, admitted))
-                    tasks.add(task)
-                    task.add_done_callback(finished)
-                    if key is not None:
-                        admitted_inflight[key] = task
-                except Exception:
-                    logger.exception("unhandled bus worker error lane=%s", lane)
+        # Resubscribes with backoff after a Redis drop; in-flight turns, the legacy
+        # lock and the dedup map live out here, so they carry across a resubscribe.
+        await run_subscription(
+            bus, channel, start_turn, stop_event=stop_event, name=f"harness-governor-{lane}-lane"
+        )
     except asyncio.CancelledError:
         raise
     finally:
+        if tasks and drain_sec > 0:
+            logger.info("governor_drain_begin lane=%s in_flight=%s budget_sec=%s", lane, len(tasks), drain_sec)
+            try:
+                _, pending = await asyncio.wait(set(tasks), timeout=drain_sec)
+            except asyncio.CancelledError:
+                # Lifespan gave up on this lane: do not orphan the turns, cancel them below.
+                pending = {task for task in tasks if not task.done()}
+                logger.warning("governor_drain_interrupted lane=%s cancelled=%s", lane, len(pending))
+            else:
+                logger.info(
+                    "governor_drain_end lane=%s finished=%s cancelled=%s",
+                    lane, len(tasks) - len(pending), len(pending),
+                )
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -802,4 +1060,5 @@ async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> No
             reply_to=reply_channel,
             corr=corr,
             causality=causality,
+            workflow=request.workflow if request is not None else None,
         )

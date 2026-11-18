@@ -59,7 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && git config --global --add safe.directory /mnt/scripts/Orion-Sapienform \
     && git config --global --add safe.directory '*' \
     && git config --global user.name "Orion FCC" \
-    && git config --global user.email "orion-fcc@orion-sapienform.local"
+    && git config --global user.email "353038244+orion-sapienform@users.noreply.github.com"
 
 # Self-indexing MCP toolchain: GitNexus (code graph) + Context Mode (context
 # virtualization). Pinned exact versions — both are third-party executables

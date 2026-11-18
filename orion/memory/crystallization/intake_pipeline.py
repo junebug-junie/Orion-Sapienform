@@ -23,6 +23,8 @@ from orion.memory.crystallization.formation_policy import (
 from orion.memory.crystallization.projector import ProjectionConfig, project_crystallization
 from orion.memory.crystallization.repository import (
     insert_crystallization,
+    find_exact_duplicates,
+    insert_history,
     list_crystallizations,
     update_crystallization,
 )
@@ -90,8 +92,24 @@ async def process_consolidation_crystallization(
         return None, crystallization, "discarded_external_platform"
 
     existing = await list_crystallizations(pool, status=None, limit=200)
+    # The window above is the top 200 by salience, so an older copy can sit outside it.
+    # An exact-text copy is looked up directly instead of hoping it ranks, and counts as
+    # a duplicate outright: the Jaccard score is 0 for text with no 3+ character tokens
+    # ("ok"), which would otherwise let identical short turns through.
+    exact = await find_exact_duplicates(
+        pool,
+        kind=crystallization.kind,
+        subject=crystallization.subject,
+        summary=crystallization.summary,
+    )
+    seen = {c.crystallization_id for c in existing}
+    existing += [c for c in exact if c.crystallization_id not in seen]
     detection = detect_duplicates(crystallization, existing)
-    duplicate_id = detection.duplicates[0] if detection.duplicates else None
+    duplicate_id = (
+        exact[0].crystallization_id
+        if exact
+        else (detection.duplicates[0] if detection.duplicates else None)
+    )
 
     # Mutually exclusive with the REINFORCE_EXISTING branch below by construction: this
     # only fires when no same-window duplicate was found, so the already-working
@@ -133,12 +151,36 @@ async def process_consolidation_crystallization(
         return cid, row, "proposed"
 
     try:
-        activated, _ = auto_activate(
+        activated, history = auto_activate(
             apply_salience(crystallization),
             encode_ratio=settings.MEMORY_FORMATION_AUTO_ENCODE_ACTIVATION_RATIO,
             discard_platforms=discard_platforms,
         )
         cid = await insert_crystallization(pool, activated)
+        # The audit trail for a decision nobody reviewed. Without this row an
+        # auto-saved memory has no history at all, which is how 350 of them
+        # came to be described as "approved". op='auto_activate', never
+        # 'approve': readers that want a real human decision
+        # (orion-thought's reverie seed) filter on op='approve' and must keep
+        # ignoring these.
+        # The row is already inserted, so a failure here cannot be undone by
+        # failing the window; it is logged at error level so the gap is
+        # findable (`crystallization_auto_activate_history_failed`) and the
+        # live check "every auto row has a history row" can name it.
+        try:
+            await insert_history(
+                pool,
+                crystallization_id=cid,
+                op=str(history.get("op") or "auto_activate"),
+                actor=str(history.get("actor") or "system:formation_policy"),
+                before=history.get("before"),
+                after=history.get("after"),
+                reason="; ".join(str(r) for r in (history.get("reasons") or [])) or None,
+            )
+        except Exception:
+            logger.error(
+                "crystallization_auto_activate_history_failed id=%s", cid, exc_info=True
+            )
         activated, _proj = await project_crystallization(
             pool,
             bus,

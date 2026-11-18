@@ -1,0 +1,196 @@
+{
+ "generated_at": "2026-10-06T04:09:28.069661+00:00",
+ "route": "memory_distill (live lane, 27B)",
+ "before_prompt": "memory_episode_distill.v2",
+ "after_prompt": "memory_episode_distill.v3",
+ "note": "Counts only. 'live_stored' = what the deployed shadow distiller (v2) stored in episode_memory. 'v2_proposed' = v2 prompt re-run today on the same lane, stakes as the model proposed them. 'v3_final' = v3 prompt, after the validator's consistency check; 'v3_proposed' = before it. One run per prompt per episode.",
+ "episodes": [
+  {
+   "name": "austin",
+   "live_stored": null,
+   "v2_proposed": {
+    "low:-": 8
+   },
+   "v3_proposed": {
+    "low:none": 4,
+    "high:juniper_feelings": 2
+   },
+   "v3_final": {
+    "low:none": 4,
+    "high:juniper_feelings": 2
+   }
+  },
+  {
+   "name": "ep-0911-0340",
+   "live_stored": null,
+   "v2_proposed": {
+    "low:-": 6
+   },
+   "v3_proposed": {
+    "low:none": 8,
+    "high:orion_asks_direction": 1
+   },
+   "v3_final": {
+    "low:none": 8,
+    "high:orion_asks_direction": 1
+   }
+  },
+  {
+   "name": "ep-0913-0336",
+   "live_stored": null,
+   "v2_proposed": {
+    "low:-": 7
+   },
+   "v3_proposed": {
+    "low:none": 9,
+    "high:juniper_feelings": 1
+   },
+   "v3_final": {
+    "low:none": 6,
+    "high:juniper_feelings": 1
+   }
+  },
+  {
+   "name": "ep-0914-1731",
+   "live_stored": null,
+   "v2_proposed": {
+    "low:-": 6
+   },
+   "v3_proposed": {
+    "high:juniper_feelings": 1,
+    "low:none": 3,
+    "high:orion_relationship": 3
+   },
+   "v3_final": {
+    "high:juniper_feelings": 1,
+    "low:none": 3,
+    "high:orion_relationship": 3
+   }
+  },
+  {
+   "name": "ep-0917-0503",
+   "live_stored": null,
+   "v2_proposed": {
+    "low:-": 7
+   },
+   "v3_proposed": {
+    "low:none": 9,
+    "high:juniper_feelings": 1
+   },
+   "v3_final": {
+    "low:none": 8,
+    "high:juniper_feelings": 1
+   }
+  },
+  {
+   "name": "ep-0924-0026",
+   "live_stored": null,
+   "v2_proposed": {
+    "low:-": 5
+   },
+   "v3_proposed": {
+    "low:none": 5,
+    "high:identity_conclusion_about_juniper": 1
+   },
+   "v3_final": {
+    "low:none": 5,
+    "high:identity_conclusion_about_juniper": 1
+   }
+  },
+  {
+   "name": "live-679a5123",
+   "live_stored": {
+    "low:-": 4
+   },
+   "v2_proposed": {
+    "low:-": 4
+   },
+   "v3_proposed": {
+    "high:family_relationships": 2,
+    "low:none": 1
+   },
+   "v3_final": {
+    "high:family_relationships": 2,
+    "low:none": 1
+   }
+  },
+  {
+   "name": "live-ead9aad2",
+   "live_stored": {
+    "low:-": 8
+   },
+   "v2_proposed": {
+    "low:-": 6
+   },
+   "v3_proposed": {
+    "low:none": 4,
+    "high:juniper_feelings": 1
+   },
+   "v3_final": {
+    "low:none": 3,
+    "high:juniper_feelings": 1
+   }
+  },
+  {
+   "name": "live-bba25c71",
+   "live_stored": {
+    "low:-": 13
+   },
+   "v2_proposed": null,
+   "v3_proposed": {
+    "low:none": 13
+   },
+   "v3_final": {
+    "low:none": 12
+   }
+  },
+  {
+   "name": "live-ae7d86b2",
+   "live_stored": {
+    "low:-": 6
+   },
+   "v2_proposed": {
+    "low:-": 6
+   },
+   "v3_proposed": {
+    "low:none": 5,
+    "high:juniper_feelings": 1
+   },
+   "v3_final": {
+    "low:none": 4,
+    "high:juniper_feelings": 1,
+    "high:orion_asks_direction": 1
+   }
+  }
+ ],
+ "totals": {
+  "v2_proposed": {
+   "low:-": 55
+  },
+  "v3_proposed": {
+   "low:none": 61,
+   "high:juniper_feelings": 7,
+   "high:orion_asks_direction": 1,
+   "high:orion_relationship": 3,
+   "high:identity_conclusion_about_juniper": 1,
+   "high:family_relationships": 2
+  },
+  "v3_final": {
+   "low:none": 54,
+   "high:juniper_feelings": 7,
+   "high:orion_asks_direction": 2,
+   "high:orion_relationship": 3,
+   "high:identity_conclusion_about_juniper": 1,
+   "high:family_relationships": 2
+  },
+  "live_stored": {
+   "low:-": 31
+  }
+ },
+ "totals_high_of_all": {
+  "v2_proposed": "0/55",
+  "v3_proposed": "14/75",
+  "v3_final": "15/69",
+  "live_stored": "0/31"
+ }
+}

@@ -21,13 +21,50 @@ APP_JS = HUB_ROOT / "static" / "js" / "app.js"
 MIND_PROVENANCE_JS = HUB_ROOT / "static" / "js" / "mind_provenance.js"
 
 
+def _ancestor_ids(html: str, target_id: str) -> list[str]:
+    """Open-element path (tag#id) above the element with ``target_id``."""
+    from html.parser import HTMLParser
+
+    void = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+    class _P(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stack: list[str] = []
+            self.found: list[str] | None = None
+
+        def handle_starttag(self, tag, attrs):
+            el_id = dict(attrs).get("id") or ""
+            if el_id == target_id and self.found is None:
+                self.found = list(self.stack)
+            if tag not in void:
+                self.stack.append(f"{tag}#{el_id}")
+
+        def handle_endtag(self, tag):
+            for i in range(len(self.stack) - 1, -1, -1):
+                if self.stack[i].split("#", 1)[0] == tag:
+                    del self.stack[i:]
+                    break
+
+    parser = _P()
+    parser.feed(html)
+    assert parser.found is not None, f"#{target_id} not found"
+    return parser.found
+
+
 def test_mind_runs_modal_is_sibling_of_schedule_modal_not_nested() -> None:
-    """mindRunsModal must not live under #scheduleModal.hidden or it never paints."""
+    """mindRunsModal must not live under #scheduleModal.hidden or it never paints.
+
+    Checked structurally: the old check matched the exact closing-tag text
+    right before mindRunsModal, which broke as soon as another modal (GPU
+    leases) was placed between the two -- without any nesting change.
+    """
     index_html = INDEX_HTML.read_text(encoding="utf-8")
-    assert (
-        'id="scheduleModalHistory"' in index_html
-        and "</section>\n      </div>\n    </div>\n  </div>\n\n  <div id=\"mindRunsModal\"" in index_html
-    ), "scheduleModal shell must close (three divs) before mindRunsModal in index.html"
+    assert 'id="scheduleModalHistory"' in index_html
+    mind_path = _ancestor_ids(index_html, "mindRunsModal")
+    schedule_path = _ancestor_ids(index_html, "scheduleModal")
+    assert not any(p.endswith("#scheduleModal") for p in mind_path), mind_path
+    assert mind_path == schedule_path, (mind_path, schedule_path)
 
 
 def test_index_has_mind_tab_and_panel() -> None:

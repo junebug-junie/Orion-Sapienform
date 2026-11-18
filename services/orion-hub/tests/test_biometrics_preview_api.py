@@ -395,6 +395,18 @@ def test_pool_labels_match_the_live_shape():
     assert default == "unassigned"
 
 
+def test_multi_host_pool_labels_each_node_only_with_its_own_cards():
+    """hecate's card is index 0 like circe's gpu0: each node gets only the cards whose host it is."""
+    state = _pool_state(generated_at=_NOW.isoformat())
+    state["cards"].append({"card": "hecate-gpu0", "index": 0, "host": "hecate", "lent": True,
+                           "swapped_in": [], "swap_state": "idle"})
+    state["roles"].append({"role": "agent-deep", "cards": ["hecate-gpu0"], "status": "confirmed"})
+    lm = biometrics_preview_routes.lane_map_from_pool_state
+    assert lm("circe", state, now=_NOW)[0]["0"] == "chat (lent)"
+    assert lm("hecate", state, now=_NOW) == ({"0": "agent-deep (lent)"}, "unassigned")
+    assert lm("athena", state, now=_NOW) == ({}, "unassigned")
+
+
 def test_pool_labels_follow_a_swap():
     """27B loaded on gpu2: diffusion is evicted, so it is not on the card."""
     state = _pool_state(generated_at=_NOW.isoformat())
@@ -842,3 +854,19 @@ def test_induction_engine_is_built_once_with_a_statement_timeout(monkeypatch):
     assert first is second, "engine rebuilt per call on a polled route"
     assert len(built) == 1, f"create_engine called {len(built)} times, expected 1"
     assert "statement_timeout=1234" in built[0]["connect_args"]["options"]
+
+
+def test_history_board_temp_reads_from_measurements_column(client, monkeypatch):
+    """board_temp_c_max (motherboard chipset/VR heat, degrees C) is a raw-units channel in
+    the `measurements` JSONB column, same as chassis_watts."""
+    from datetime import datetime, timezone
+
+    async def rows(*, node, channel, column, hours):
+        assert channel == "board_temp_c_max"
+        assert column == "measurements"
+        return [{"t": datetime(2026, 10, 9, 0, 0, 0, tzinfo=timezone.utc), "v": 45.0}]
+
+    monkeypatch.setattr(biometrics_preview_routes, "_history_query", rows)
+    r = client.get("/api/biometrics/preview/history?node=circe&channel=board_temp_c_max")
+    assert r.status_code == 200
+    assert r.json()["series"][0]["v"] == pytest.approx(45.0)

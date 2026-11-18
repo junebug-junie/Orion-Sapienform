@@ -10,7 +10,7 @@ from orion.schemas.gpu_pool import LlmWorkerAnnounceV1
 NOW = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
 CFG = load_pool_config()
 PROFILES = load_profiles()
-METACOG_PROFILE = "qwen3-8b-q5km-v100-16gb-atlas-metacog-16k"
+SHARED_PROFILE = "qwen35-9b-udq5kxl-v100-32gb-circe-shared-32k"
 
 
 def cards(**over):
@@ -19,7 +19,7 @@ def cards(**over):
     return base
 
 
-def props(file, slots=4, ctx=4096, vision=False):
+def props(file, slots=10, ctx=32768, vision=False):
     return {"model_path": f"/models/gguf/{file}", "total_slots": slots,
             "default_generation_settings": {"n_ctx": ctx}, "modalities": {"vision": vision}}
 
@@ -34,37 +34,37 @@ def by_role(discovered):
 
 
 def test_live_profiles_name_their_model_files():
-    assert profile_model_file(PROFILES[METACOG_PROFILE]) == "Qwen_Qwen3-8B-Q5_K_M.gguf"
+    assert profile_model_file(PROFILES[SHARED_PROFILE]) == "Qwen3.5-9B-UD-Q5_K_XL.gguf"
 
 
 def test_confirmed_when_announcement_profile_and_props_agree():
     d, live, _ = resolve_roles(
-        CFG, PROFILES, {"metacog": ann("metacog", METACOG_PROFILE, 8012)},
-        {"metacog": Probe(True, props("Qwen_Qwen3-8B-Q5_K_M.gguf"))}, cards(), NOW)
-    row = by_role(d)["metacog"]
-    assert row.status == "confirmed" and row.slots == 4 and row.ctx_per_slot == 4096
-    assert row.model_path == "/models/gguf/Qwen_Qwen3-8B-Q5_K_M.gguf"
-    assert live["metacog"].healthy
+        CFG, PROFILES, {"fast": ann("fast", SHARED_PROFILE, 8013)},
+        {"fast": Probe(True, props("Qwen3.5-9B-UD-Q5_K_XL.gguf"))}, cards(), NOW)
+    row = by_role(d)["fast"]
+    assert row.status == "confirmed" and row.slots == 10 and row.ctx_per_slot == 32768
+    assert row.model_path == "/models/gguf/Qwen3.5-9B-UD-Q5_K_XL.gguf"
+    assert live["fast"].healthy
 
 
 def test_mismatch_when_loaded_file_differs_gets_no_grants():
     d, live, _ = resolve_roles(
-        CFG, PROFILES, {"metacog": ann("metacog", METACOG_PROFILE, 8012)},
-        {"metacog": Probe(True, props("Something-Else.gguf"))}, cards(), NOW)
-    assert by_role(d)["metacog"].status == "mismatch" and not live["metacog"].healthy
+        CFG, PROFILES, {"fast": ann("fast", SHARED_PROFILE, 8013)},
+        {"fast": Probe(True, props("Something-Else.gguf"))}, cards(), NOW)
+    assert by_role(d)["fast"].status == "mismatch" and not live["fast"].healthy
 
 
 def test_unknown_profile_is_mismatch():
-    d, _, _ = resolve_roles(CFG, PROFILES, {"metacog": ann("metacog", "no-such-profile", 8012)},
-                            {"metacog": Probe(True, props("x.gguf"))}, cards(), NOW)
-    assert "not in llm_profiles" in by_role(d)["metacog"].detail
+    d, _, _ = resolve_roles(CFG, PROFILES, {"fast": ann("fast", "no-such-profile", 8013)},
+                            {"fast": Probe(True, props("x.gguf"))}, cards(), NOW)
+    assert "not in llm_profiles" in by_role(d)["fast"].detail
 
 
 def test_silent_when_port_answers_without_fresh_announcement():
     d, live, _ = resolve_roles(
-        CFG, PROFILES, {"metacog": ann("metacog", METACOG_PROFILE, 8012, age=600)},
-        {"metacog": Probe(True, props("Qwen_Qwen3-8B-Q5_K_M.gguf"))}, cards(), NOW)
-    assert by_role(d)["metacog"].status == "silent" and not live["metacog"].healthy
+        CFG, PROFILES, {"fast": ann("fast", SHARED_PROFILE, 8013, age=600)},
+        {"fast": Probe(True, props("Qwen3.5-9B-UD-Q5_K_XL.gguf"))}, cards(), NOW)
+    assert by_role(d)["fast"].status == "silent" and not live["fast"].healthy
 
 
 def test_down_when_probe_fails():

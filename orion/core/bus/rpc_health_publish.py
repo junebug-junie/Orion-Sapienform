@@ -61,6 +61,7 @@ def build_rpc_health_snapshot_envelope(
         window_end=snapshot.window_end,
         success_count=snapshot.success_count,
         timeout_count=snapshot.timeout_count,
+        degraded_count=snapshot.degraded_count,
         success_latency_ms_p50=snapshot.success_latency_ms_p50,
         success_latency_ms_p95=snapshot.success_latency_ms_p95,
         success_latency_ms_max=snapshot.success_latency_ms_max,
@@ -89,12 +90,7 @@ def merge_channel_latency(into: Dict[str, HopLatency], other: Dict[str, HopLaten
         if cur is None:
             into[key] = HopLatency(**stats.as_dict())
             continue
-        cur.success_count += stats.success_count
-        cur.timeout_count += stats.timeout_count
-        cur.log_ms_sum += stats.log_ms_sum
-        cur.log_ms_sumsq += stats.log_ms_sumsq
-        if stats.max_ms is not None and (cur.max_ms is None or stats.max_ms > cur.max_ms):
-            cur.max_ms = stats.max_ms
+        cur.merge(stats)
 
 
 async def rpc_health_publish_loop(

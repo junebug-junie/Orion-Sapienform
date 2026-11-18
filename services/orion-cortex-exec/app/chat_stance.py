@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import json
 import logging
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
 
@@ -29,12 +33,13 @@ from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWr
 from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, ReasoningSummaryV1
 from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompiler
 from orion.schemas.chat_stance import ChatStanceBrief
+from orion.text_fit import fit_to_budget
 from orion.schemas.reverie import SpontaneousThoughtV1
-from orion.substrate import build_substrate_store_from_env
+from orion.memory.voice_render import VoicedMemory, render_memory
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
+    CONCEPT_INDUCED_EPHEMERAL,
     GRAPHDB_DURABLE,
-    OPERATOR_STATIC,
     SNAPSHOT_EPHEMERAL,
     CognitiveUnificationLayer,
     ProducerEntryV1,
@@ -50,7 +55,11 @@ from .attention_frame import attention_frame_enabled, build_attention_frame
 from .autonomy_slice import build_autonomy_slice
 from .attention_schema_publish import publish_attention_schema
 from .chat_attention_salience_trace import persist_chat_attention_salience_trace
-from .current_turn_llm_signals import populate_current_turn_llm_signals
+from .current_turn_llm_signals import (
+    human_chat_turn_reason,
+    mark_current_turn_llm_skipped,
+    populate_current_turn_llm_signals,
+)
 
 from .endogenous_runtime import (
     consume_endogenous_runtime_for_reflective_review,
@@ -127,21 +136,137 @@ logger = logging.getLogger("orion.cortex.exec.chat_stance")
 
 _UNIFICATION_LAYER: CognitiveUnificationLayer | None = None
 
+# ---------------------------------------------------------------------------
+# Stance-build worker (2026-10-06, turn-latency L2)
+# ---------------------------------------------------------------------------
+# The synchronous half of build_chat_stance_inputs (felt-state hydrate, the
+# unified-beliefs Falkor snapshots, the dispatch-actions read, the attention
+# frame) used to run on the event loop and froze every other handler in this
+# process for ~9 s per build. It now runs here.
+#
+# One worker on purpose: it keeps today's one-build-at-a-time ordering for the
+# lazy, unlocked state the beliefs path touches (_UNIFICATION_LAYER, the
+# layer's _last_materialized_at, the layer's Falkor store), and it keeps this
+# ~9 s work out of the default executor that cortex-exec's ~38
+# asyncio.to_thread calls share. Each container (cortex-exec, -chat,
+# -background, -spark) gets its own worker.
+#
+# Not covered by the worker: the felt-state reader is also called straight
+# from the loop (identity injection, metacog). Its lazy init is locked and its
+# TTL cache is single-key dict get/set, so the worst overlap is a duplicate
+# fetch. A hung build blocks later stance builds in this container (the
+# worker cannot be cancelled), not the whole process as before.
+_STANCE_BUILD_EXECUTOR: ThreadPoolExecutor | None = None
+_STANCE_BUILD_EXECUTOR_LOCK = threading.Lock()
+# Per worker thread: the queue wait of the step currently running on it.
+_STANCE_WORKER_STATE = threading.local()
 
-def _build_unification_registry() -> ProducerRegistryV1:
-    """Construct the ProducerRegistryV1 wiring all known producer lanes."""
+
+def _stance_build_executor() -> ThreadPoolExecutor:
+    global _STANCE_BUILD_EXECUTOR
+    if _STANCE_BUILD_EXECUTOR is None:
+        with _STANCE_BUILD_EXECUTOR_LOCK:
+            if _STANCE_BUILD_EXECUTOR is None:
+                _STANCE_BUILD_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="stance-build"
+                )
+    return _STANCE_BUILD_EXECUTOR
+
+
+async def _run_on_stance_worker(fn, /, *args, **kwargs):
+    """Run a synchronous stance-build step on the dedicated worker.
+
+    Copies the caller's contextvars (run_in_executor does not) so anything
+    contextvar-scoped behaves as it did on the loop."""
+    loop = asyncio.get_running_loop()
+    caller_ctx = contextvars.copy_context()
+    submitted = time.perf_counter()
+
+    def _on_worker():
+        # How long this step sat behind earlier stance steps on the one worker.
+        _STANCE_WORKER_STATE.queue_wait_ms = (time.perf_counter() - submitted) * 1000.0
+        return caller_ctx.run(fn, *args, **kwargs)
+
+    return await loop.run_in_executor(_stance_build_executor(), _on_worker)
+
+
+def _unification_store_snapshot_stats() -> tuple[int, float]:
+    """(snapshot calls, total ms) across the unification layers' stores that count them."""
+    from orion.cognition import projection_builder
+
+    stores = []
+    for layer in (_UNIFICATION_LAYER, getattr(projection_builder, "_UNIFICATION_LAYER", None)):
+        store = getattr(layer, "_store", None)
+        if store is not None and hasattr(store, "snapshot_calls") and all(store is not s for s in stores):
+            stores.append(store)
+    return (
+        sum(int(getattr(s, "snapshot_calls", 0)) for s in stores),
+        sum(float(getattr(s, "snapshot_ms_total", 0.0)) for s in stores),
+    )
+
+
+def _hydrate_and_unify_beliefs(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefSetV1 | None:
+    from app.substrate_felt_state_reader import hydrate_felt_state_ctx
+
+    started = time.perf_counter()
+    queue_wait_ms = getattr(_STANCE_WORKER_STATE, "queue_wait_ms", None)
+    hydrate_felt_state_ctx(ctx)
+    felt_done = time.perf_counter()
+    snaps_before, snap_ms_before = _unification_store_snapshot_stats()
+    # Module-global lookup at call time: chat_stance_shared_spine swaps this
+    # name for the shared projection path.
+    beliefs = _unified_beliefs_for_stance(ctx)
+    beliefs_done = time.perf_counter()
+    snaps_after, snap_ms_after = _unification_store_snapshot_stats()
+    # Per-phase cost of the stance build's worker step (turn latency, 2026-10-06):
+    # the 17-28 s builds were one full-graph Falkor hydrate inside beliefs_ms.
+    # snapshot_calls/ms are process-wide counter deltas, so a concurrent
+    # projection build on another thread can add to them: approximate.
+    logger.info(
+        "stance_build_phase_timing corr=%s queue_wait_ms=%s felt_state_ms=%.1f beliefs_ms=%.1f "
+        "snapshot_calls=%d snapshot_ms=%.1f",
+        ctx.get("correlation_id") or ctx.get("trace_id"),
+        f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na",
+        (felt_done - started) * 1000.0,
+        (beliefs_done - felt_done) * 1000.0,
+        snaps_after - snaps_before,
+        snap_ms_after - snap_ms_before,
+    )
+    return beliefs
+
+
+def _concept_adapter(store: Any, adapter_fn: Any) -> Any:
+    """Bind concept_induction to the layer's own store (None = adapter fallback)."""
+    if store is None:
+        return adapter_fn
+    return functools.partial(adapter_fn, store=store)
+
+
+def _build_unification_registry(*, concept_store: Any = None) -> ProducerRegistryV1:
+    """Construct the ProducerRegistryV1 wiring all known producer lanes.
+
+    ``concept_store`` is the layer's durable store; concept_induction reads
+    its concept region through it instead of opening a second store.
+    """
     from orion.substrate.relational.adapters.autonomy_ctx import map_autonomy_ctx_to_substrate
     from orion.substrate.relational.adapters.concept_induction_ctx import map_concept_induction_ctx_to_substrate
     from orion.substrate.relational.adapters.self_definition_ctx import map_self_definition_ctx_to_substrate
 
     return ProducerRegistryV1(
         producers=[
+            # snapshot_ephemeral, re-read from ctx every call (2026-10-06,
+            # turn-latency L3). It was operator_static write-through, but its
+            # StateSnapshotNodeV1 is not a Falkor durable kind (concept/
+            # evidence/entity only), so every cold turn failed with
+            # producer_materialize_failed and marked the orion anchor degraded.
+            # Its input is ctx identity that _inject_identity_context already
+            # put there; nothing is lost by not persisting it.
             ProducerEntryV1(
                 producer_id="identity_yaml",
-                trust_tier=OPERATOR_STATIC,
+                trust_tier=SNAPSHOT_EPHEMERAL,
                 anchor_scopes=("orion",),
-                freshness_ttl_sec=86400,
-                pull_on_cold=True,
+                freshness_ttl_sec=0,
+                pull_on_cold=False,
                 adapter_fn=map_identity_yaml_to_substrate,
             ),
             ProducerEntryV1(
@@ -149,14 +274,25 @@ def _build_unification_registry() -> ProducerRegistryV1:
                 # curiosity line (orion/curiosity/self_inquiry.py) via the
                 # felt-state reader's `orion_self_definition` lane. Read into
                 # the identity kernel by `_project_identity_from_beliefs`.
+                # snapshot_ephemeral (2026-10-06, turn-latency L3): ctx-only
+                # StateSnapshotNodeV1, not a Falkor durable kind, same failure
+                # as identity_yaml above.
                 producer_id="self_definition",
-                trust_tier=GRAPHDB_DURABLE,
+                trust_tier=SNAPSHOT_EPHEMERAL,
                 anchor_scopes=("orion",),
-                freshness_ttl_sec=300,
-                pull_on_cold=True,
+                freshness_ttl_sec=0,
+                pull_on_cold=False,
                 adapter_fn=map_self_definition_ctx_to_substrate,
             ),
             ProducerEntryV1(
+                # Left write-through on purpose (2026-10-06, turn-latency L3).
+                # Its GoalNodeV1 is not a Falkor durable kind, so a non-None
+                # record would fail like identity_yaml did -- but live it
+                # returns None (autonomy graph gate off; 0 failures in 24 h).
+                # A non-write-through + pull_on_cold producer would make goals
+                # appear on cold turns and vanish on warm ones (the ephemeral
+                # store is per call), and this network adapter can't move to
+                # the always-run ephemeral path. Fix with the gate, not here.
                 producer_id="autonomy",
                 trust_tier=GRAPHDB_DURABLE,
                 anchor_scopes=("orion", "relationship", "juniper"),
@@ -165,12 +301,20 @@ def _build_unification_registry() -> ProducerRegistryV1:
                 adapter_fn=map_autonomy_ctx_to_substrate,
             ),
             ProducerEntryV1(
+                # Not write-through (2026-10-06, unified-turn latency L6 step
+                # 2). It reads concept nodes that already live in the durable
+                # store, so writing them back only re-saved stale copies (the
+                # max-merge undid activation decay) and bumped the store's
+                # write generation, forcing a full Falkor rehydrate on the
+                # layer's second snapshot(). The copies land in the per-call
+                # ephemeral store; the layer dedupes them against the durable
+                # nodes by node_id. Safe only after the decay fix (PR #2504).
                 producer_id="concept_induction",
-                trust_tier=CONCEPT_INDUCED,
+                trust_tier=CONCEPT_INDUCED_EPHEMERAL,
                 anchor_scopes=("orion", "relationship", "juniper"),
                 freshness_ttl_sec=300,
                 pull_on_cold=True,
-                adapter_fn=map_concept_induction_ctx_to_substrate,
+                adapter_fn=_concept_adapter(concept_store, map_concept_induction_ctx_to_substrate),
             ),
             ProducerEntryV1(
                 producer_id="spark",
@@ -204,8 +348,13 @@ def _get_unification_layer() -> CognitiveUnificationLayer:
     """Return (or initialise) the process-level CognitiveUnificationLayer."""
     global _UNIFICATION_LAYER
     if _UNIFICATION_LAYER is None:
-        registry = _build_unification_registry()
-        store = build_substrate_store_from_env()
+        # Never hydrates the whole graph (14 s at 38k edges, paid on every
+        # human turn once the 30 s refresh ceiling had lapsed); reads only the
+        # anchor-scoped nodes and concept region the layer uses.
+        from orion.substrate.falkor_anchor_store import build_unification_store_from_env
+
+        store = build_unification_store_from_env()
+        registry = _build_unification_registry(concept_store=store)
         _UNIFICATION_LAYER = CognitiveUnificationLayer(registry=registry, store=store)
     return _UNIFICATION_LAYER
 
@@ -256,8 +405,9 @@ def _unified_beliefs_for_stance(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefS
 async def _publish_chat_stance_belief(ctx: Dict[str, Any], beliefs: UnifiedRelationalBeliefSetV1 | None) -> None:
     """Durable per-turn behavioral fact (self-model rebuild arc, 2026-09-05):
     beliefs used to be computed every turn and thrown away. Now logged for
-    real so self_study.py's Layer 1 _behavioral_items() has actual history
-    to read, not nothing.
+    real so the history is readable. Its reader now is curiosity
+    self-inquiry (chat_stance_belief_log); the Layer 1 scan that copied it
+    into Self Atlas was retired 2026-11.
 
     Review finding (2026-09-05): the underlying publish is a real blocking
     Redis call (connect/ping/publish), and unlike
@@ -669,10 +819,14 @@ from orion.substrate.relational.adapters.self_definition_ctx import (  # noqa: E
 
 strip_self_definition_lines = _strip_self_definition_lines
 
-_SELF_DEFINITION_CHAT_CAP = 900
+# Equal to orion/curiosity/self_inquiry.py SELF_DEFINITION_TEXT_CAP: the budget
+# Orion is told to write to, and the one the fit hop shortens to. A smaller cap
+# here would cut an answer Orion already fitted (was 900 until 2026-11-03).
+_SELF_DEFINITION_CHAT_CAP = 1200
 LIVED_ANSWERS_CTX_KEY = "orion_lived_answers"
 LIVED_MARKER_PREFIX = "In my own words (lived /"
 _LIVED_ANSWERS_CHAR_CAP = 800
+_LIVED_ANSWER_MIN_CHARS = 40
 
 
 def _lived_question_slug(question_id: str) -> str:
@@ -695,10 +849,13 @@ def _lived_answer_lines(answers: list[dict[str, Any]]) -> list[str]:
         slug = _lived_question_slug(str(answer.get("question_id") or ""))
         prefix = f"{LIVED_MARKER_PREFIX} {slug}): "
         remaining = _LIVED_ANSWERS_CHAR_CAP - total
-        if remaining <= len(prefix):
+        # Too little room for a real sentence: stop instead of emitting a stub.
+        if remaining - len(prefix) < _LIVED_ANSWER_MIN_CHARS:
             break
         if len(prefix) + len(content) > remaining:
-            content = content[: max(0, remaining - len(prefix) - 1)].rstrip() + "…"
+            content = fit_to_budget(content, remaining - len(prefix))
+            if not content:
+                break
         line = f"{prefix}{content}"
         lines.append(line)
         total += len(line)
@@ -743,8 +900,7 @@ def _self_definition_line(beliefs: UnifiedRelationalBeliefSetV1 | None, ctx: Dic
         version = 1
     evidence_n = len(meta.get("evidence_refs") or [])
     stamp = str(meta.get("created_at") or "")[:10]
-    if len(content) > _SELF_DEFINITION_CHAT_CAP:
-        content = content[:_SELF_DEFINITION_CHAT_CAP].rstrip() + "…"
+    content = fit_to_budget(content, _SELF_DEFINITION_CHAT_CAP)
     return (
         f"{SELF_DEFINITION_MARKER}, written during my own self-inquiry "
         f"(v{version}{', ' + stamp if stamp else ''}, {evidence_n} evidence refs): {content}"
@@ -1433,59 +1589,6 @@ def _project_autonomy_from_beliefs(
     }
 
 
-_SELF_STATE_SEVERE_CONDITIONS = {"strained", "unstable"}
-
-
-def _project_self_state_from_beliefs(
-    beliefs: UnifiedRelationalBeliefSetV1 | None,
-    ctx: Dict[str, Any],
-) -> Dict[str, Any] | None:
-    """Projection helper: fold Orion's self-model condition into stance hazards.
-
-    Reads the ``self:overall_condition`` and ``self:{dimension_id}`` belief
-    nodes produced by ``orion.substrate.relational.adapters.self_state_ctx``.
-    Returns None if beliefs have no self-model nodes (nothing to fold in),
-    signalling the caller not to add any self_state-derived hazard.
-    """
-    if beliefs is None:
-        return None
-
-    anchor = beliefs.anchors.get("orion")
-    if not anchor:
-        return None
-
-    self_nodes = [n for n in anchor.concepts if str(getattr(n, "label", "")).startswith("self:")]
-    if not self_nodes:
-        return None
-
-    overall_condition: str | None = None
-    trajectory_condition: str | None = None
-    hazards: list[str] = []
-    pressure_threshold = _env_float("SELF_STATE_STANCE_PRESSURE_THRESHOLD", 0.8)
-
-    for node in self_nodes:
-        meta = node.metadata or {}
-        if node.label == "self:overall_condition":
-            overall_condition = meta.get("overall_condition")
-            trajectory_condition = meta.get("trajectory_condition")
-            if overall_condition in _SELF_STATE_SEVERE_CONDITIONS:
-                hazards.append(f"self_state overall_condition={overall_condition}")
-        else:
-            dim_id = meta.get("self_dimension_id")
-            score = meta.get("score")
-            if dim_id and isinstance(score, (int, float)) and score >= pressure_threshold:
-                hazards.append(f"self_state {dim_id} score={score:.2f} above threshold")
-
-    if overall_condition is None and not hazards:
-        return None
-
-    return {
-        "overall_condition": overall_condition,
-        "trajectory_condition": trajectory_condition,
-        "hazards": hazards,
-    }
-
-
 def _project_context_provenance_hazard(ctx: Dict[str, Any]) -> str | None:
     """Projection helper: name which of this turn's ctx keys are genuinely
     live substrate/biometric signal vs. retrieved/static/tool content.
@@ -1564,7 +1667,11 @@ def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
         interpretation = thought.interpretation.strip()
         if not interpretation:
             return None
-        return interpretation
+        # Source monitoring: a reverie is Orion's own private thought. The
+        # shared renderer labels it so, never as something Juniper said or
+        # the two of them discussed (memory redesign rev 3, section 7).
+        return render_memory(VoicedMemory(
+            voice="orion_thought", channel="reverie", statement=interpretation, when=thought.created_at))
     except Exception:
         logger.debug("reverie_glimpse_projection_failed", exc_info=True)
         return None
@@ -2372,12 +2479,26 @@ def _mutation_cognition_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+# The street clip in stance (2026-11-03, was 520): framing (~120 chars) + up to
+# two captions (~200) + who/rhythm (~200) + up to two spot-checked motion
+# stories (perception_reader.STREET_STORY_MAX x STREET_STORY_CHARS 160 + times
+# and label, ~380). Stories are the street summary's LAST line, so a cut drops
+# them first, never the camera framing, rhythm or patio head count.
+STREET_SUMMARY_CHARS = 900
+
+
 def _environmental_context(environment: Dict[str, Any]) -> str | None:
     """Weather, then the street -- so a turn at 07:45 when the dog did not
     come reads differently from one when it did (walkway spec idea 5)."""
     weather = _compact(environment.get("current_summary"), limit=120)
-    street = _compact(environment.get("street_summary"), limit=240)
-    parts = [p for p in (weather, f"Street: {street}" if street else "") if p]
+    # 420 (was 240, 2026-10-15): the street summary now opens with up to two
+    # walkway captions ("On the walkway just now: ..."), and 240 cut the
+    # rhythm/unresolved lines that follow them. 520 since it also opens with
+    # what the camera is ("Your outdoor camera (walkway, since ...), looking
+    # over ...: "), which is why there is no "Street:" prefix any more.
+    # STREET_SUMMARY_CHARS since 2026-11-03: spot-checked motion stories.
+    street = _compact(environment.get("street_summary"), limit=STREET_SUMMARY_CHARS)
+    parts = [p for p in (weather, street) if p]
     return "; ".join(parts) or None
 
 
@@ -2391,7 +2512,6 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
     time_ctx = brief.get("time") if isinstance(brief.get("time"), dict) else {}
     place = brief.get("place") if isinstance(brief.get("place"), dict) else {}
     environment = brief.get("environment") if isinstance(brief.get("environment"), dict) else {}
-    lab = brief.get("lab") if isinstance(brief.get("lab"), dict) else {}
     surface = brief.get("surface") if isinstance(brief.get("surface"), dict) else {}
     affordances_raw = brief.get("affordances") if isinstance(brief.get("affordances"), list) else []
     affordances = []
@@ -2439,7 +2559,7 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
         # Empty when there is nothing to say; walkway spec idea 5.
         "street_summary": _compact(
             (brief.get("perception") or {}).get("street_summary") if isinstance(brief.get("perception"), dict) else "",
-            limit=240,
+            limit=STREET_SUMMARY_CHARS,
         ),
     }
     relevance = "active" if has_active else ("background" if fragment else "none")
@@ -2476,17 +2596,10 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
             "coarse_location": _compact(place.get("coarse_location"), limit=48),
             "locality": _compact(place.get("locality"), limit=32),
             "region": _compact(place.get("region"), limit=32),
+            "home_location": _compact(place.get("home_location"), limit=48),
+            "physical_location": _compact(place.get("physical_location"), limit=96),
         },
         "environment": environment_summary,
-        "lab": {
-            "available": bool(lab.get("available", False)),
-            "thermal_risk": _compact(lab.get("thermal_risk"), limit=20),
-            "power_risk": _compact(lab.get("power_risk"), limit=20),
-            "summary": _compact(
-                f"thermal={_compact(lab.get('thermal_risk'), limit=20)} power={_compact(lab.get('power_risk'), limit=20)}",
-                limit=80,
-            ),
-        },
         "surface": {
             "surface": _compact(surface.get("surface"), limit=40),
             "input_modality": _compact(surface.get("input_modality"), limit=24),
@@ -2507,10 +2620,8 @@ def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) 
 
 async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Single unified beliefs call replaces independent producer fan-outs for
-    # identity, orionmem, recall, and social lanes.
-    from app.substrate_felt_state_reader import hydrate_felt_state_ctx
-    hydrate_felt_state_ctx(ctx)
-    beliefs = _unified_beliefs_for_stance(ctx)
+    # identity, orionmem, recall, and social lanes. Off the event loop (L2).
+    beliefs = await _run_on_stance_worker(_hydrate_and_unify_beliefs, ctx)
 
     identity = _project_identity_from_beliefs(beliefs, ctx)
     ctx.update(identity)
@@ -2524,21 +2635,16 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     reasoning = _compile_reasoning_summary(ctx)
     ctx["chat_reasoning_summary"] = reasoning["summary"]
     autonomy = _project_autonomy_from_beliefs(beliefs, ctx) or _load_autonomy_state(ctx)
-    self_state_projection = _project_self_state_from_beliefs(beliefs, ctx)
     context_provenance_hazard = _project_context_provenance_hazard(ctx)
-    # self_state severity and context-provenance are both standing epistemic/
-    # safety signals from this function's own reasoning, not reactive social
-    # hazards -- fold them in together, prepended ahead of the social/
-    # social_bridge hazards already in the list, so _unique(..., limit=8)'s
-    # truncation-in-order falls on the lower-stakes social hazards first
-    # instead of silently evicting one safety signal to make room for the
-    # other (a prior version prepended context_provenance_hazard alone,
-    # which could evict an already-folded self_state severity hazard once
-    # the list was full).
+    # Context-provenance is a standing epistemic/safety signal from this
+    # function's own reasoning, not a reactive social hazard -- prepended
+    # ahead of the social/social_bridge hazards already in the list, so
+    # _unique(..., limit=8)'s truncation-in-order falls on the lower-stakes
+    # social hazards first. (The self_state severity hazard that used to be
+    # folded in alongside it was retired 2026-10-07: its only producer, the
+    # self_state_ctx belief adapter, was deleted in the 2026-07-22 SelfStateV1
+    # burn, so it had returned None on every turn since.)
     priority_hazards: list[str] = []
-    if self_state_projection:
-        priority_hazards.extend(self_state_projection.get("hazards") or [])
-        ctx["chat_self_state_condition"] = self_state_projection.get("overall_condition")
     if context_provenance_hazard:
         priority_hazards.append(context_provenance_hazard)
     if priority_hazards:
@@ -2609,7 +2715,9 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Queries load_action_outcomes(subject="orion") directly (see
     # _project_recent_dispatch_actions' docstring) rather than reading ctx.
     # Fail-open: [] on any failure.
-    ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
+    ctx["chat_recent_dispatch_actions"] = await _run_on_stance_worker(
+        _project_recent_dispatch_actions, ctx
+    )
 
     # Built here (ctx key "autonomy_slice", matching what stance_react.j2 reads
     # directly) so it's present BEFORE the stance_react LLM step renders its
@@ -2634,14 +2742,33 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         # try/except: populate_current_turn_llm_signals() is fail-open by
         # contract and never raises, but this call happens before the frame
         # build itself, so a bug here must not skip the frame build outright.
+        #
+        # Only on turns with a real human message. Orion's own turns
+        # (journal.compose, metacognition, render_scene, outreach, ...) also
+        # build stance, and the probe runs on route `chat` -- interactive
+        # priority, gpu0's owner class -- so each one made the gpu-pool recall
+        # borrowed gpu0 holds from durable runs (live 2026-09-30: ~1,600
+        # chat-class admits, 248 recalled/owner_waiting, 2 of 202 recall
+        # triggers were real chat messages).
         try:
-            await populate_current_turn_llm_signals(ctx)
+            is_human, human_reason = human_chat_turn_reason(ctx)
+            if is_human:
+                await populate_current_turn_llm_signals(ctx)
+            else:
+                mark_current_turn_llm_skipped(ctx, human_reason)
+                logger.info(
+                    "current_turn_llm_signals_skipped corr=%s verb=%s reason=%s",
+                    ctx.get("correlation_id") or ctx.get("trace_id"),
+                    ctx.get("verb"),
+                    human_reason,
+                )
         except Exception as exc:
             logger.warning("current_turn_llm_signals_populate_call_failed error=%s", exc)
             ctx["current_turn_llm_signals"] = []
             ctx["current_turn_llm_read"] = {"ok": False, "wants_direct_answer": None}
         try:
-            attention_frame = build_attention_frame(
+            attention_frame = await _run_on_stance_worker(
+                build_attention_frame,
                 ctx=ctx,
                 inputs=inputs,
                 belief_lineage=(beliefs.lineage if beliefs is not None else []),
@@ -2954,7 +3081,6 @@ def build_chat_stance_debug_payload(
                 "time": situation.get("time") if isinstance(situation.get("time"), dict) else {},
                 "place": situation.get("place") if isinstance(situation.get("place"), dict) else {},
                 "environment": situation.get("environment") if isinstance(situation.get("environment"), dict) else {},
-                "lab": situation.get("lab") if isinstance(situation.get("lab"), dict) else {},
                 "surface": situation.get("surface") if isinstance(situation.get("surface"), dict) else {},
                 "affordances": list(situation.get("affordances") or []),
             },
@@ -3137,7 +3263,6 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
         temporal_context=_compact((situation.get("conversation_phase") or {}).get("phase_change"), limit=40) or None,
         audience_context=_compact((situation.get("presence") or {}).get("audience_mode"), limit=60) or None,
         environmental_context=_environmental_context(situation.get("environment") or {}),
-        operational_context=_compact((situation.get("lab") or {}).get("summary"), limit=120) or None,
         situation_response_guidance=_unique(situation_guidance, limit=6),
         answer_strategy=answer_strategy,
         stance_summary=(

@@ -390,3 +390,102 @@ def test_router_registered_on_api_routes():
     assert "/api/cabinet/ambient/latest" in paths
     assert "/api/cabinet/ambient/history" in paths
     assert "/api/cabinet/ambient/spikes" in paths
+
+
+# --- Live listen ----------------------------------------------------------
+
+from orion.schemas.telemetry.ambient_audio import (  # noqa: E402
+    AMBIENT_AUDIO_LIVE_SLOT_HEADER,
+    ambient_audio_live_slot_name,
+)
+
+
+class LiveRing:
+    """Writes slots exactly as the host reader's LiveRing does (shared contract);
+    the reader side is covered by tests/test_ambient_audio_reader.py."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        self.seq = 0
+
+    def write(self, pcm: bytes, *, sample_rate: int, channels: int) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.seq += 1
+        header = AMBIENT_AUDIO_LIVE_SLOT_HEADER.pack(self.seq, sample_rate, channels, 0)
+        (self.directory / ambient_audio_live_slot_name(self.seq)).write_bytes(header + pcm)
+
+
+def _live_app(monkeypatch, live_dir: Path) -> TestClient:
+    monkeypatch.setattr(cabinet_ambient_routes.settings, "AMBIENT_AUDIO_LIVE_DIR", str(live_dir))
+    app = FastAPI()
+    app.include_router(cabinet_ambient_routes.router)
+    return TestClient(app)
+
+
+def test_live_reads_the_ring_the_host_reader_writes(tmp_path: Path) -> None:
+    ring = LiveRing(tmp_path)
+    for i in range(3):
+        ring.write(bytes([i, 0]) * 4, sample_rate=16000, channels=1)
+    slots = cabinet_ambient_routes.read_live_slots(tmp_path)
+    assert sorted(slots) == [1, 2, 3]
+    assert slots[3] == (16000, 1, bytes([2, 0]) * 4)
+
+
+def test_next_live_chunks_starts_at_newest_then_follows_in_order() -> None:
+    slots = {5: (16000, 1, b"e"), 6: (16000, 1, b"f")}
+    chunks, nxt = cabinet_ambient_routes.next_live_chunks(slots, None)
+    assert (chunks, nxt) == ([b"f"], 7)
+    slots = {6: (16000, 1, b"f"), 7: (16000, 1, b"g"), 8: (16000, 1, b"h")}
+    assert cabinet_ambient_routes.next_live_chunks(slots, nxt) == ([b"g", b"h"], 9)
+    assert cabinet_ambient_routes.next_live_chunks(slots, 9) == ([], 9)
+
+
+def test_next_live_chunks_resyncs_after_reader_restart_and_lag() -> None:
+    # Reader restarted: seq reset to 1..2 while we wait for 40.
+    restarted = {1: (16000, 1, b"a"), 2: (16000, 1, b"b")}
+    assert cabinet_ambient_routes.next_live_chunks(restarted, 40) == ([b"b"], 3)
+    # Listener fell a full ring behind: jump to newest, no backlog burst.
+    ahead = {30: (16000, 1, b"x"), 31: (16000, 1, b"y")}
+    assert cabinet_ambient_routes.next_live_chunks(ahead, 3) == ([b"y"], 32)
+
+
+def test_live_endpoint_503_when_reader_has_written_nothing(monkeypatch, tmp_path: Path) -> None:
+    client = _live_app(monkeypatch, tmp_path / "missing")
+    resp = client.get("/api/cabinet/ambient/live")
+    assert resp.status_code == 503
+    assert "no chunks" in resp.json()["detail"]
+
+
+def test_live_endpoint_streams_pcm_with_format_headers_and_ends_on_stall(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ring = LiveRing(tmp_path)
+    ring.write(b"\x01\x00" * 4, sample_rate=16000, channels=1)
+    ring.write(b"\x02\x00" * 4, sample_rate=16000, channels=1)
+    monkeypatch.setattr(cabinet_ambient_routes, "_LIVE_STALL_SEC", 0.05)
+    monkeypatch.setattr(cabinet_ambient_routes, "_LIVE_POLL_SEC", 0.01)
+    client = _live_app(monkeypatch, tmp_path)
+    resp = client.get("/api/cabinet/ambient/live")
+    assert resp.status_code == 200
+    assert resp.headers["x-orion-sample-rate"] == "16000"
+    assert resp.headers["x-orion-channels"] == "1"
+    assert resp.headers["x-orion-sample-format"] == "s16le"
+    # Newest chunk only, then the stream ends because the reader went quiet.
+    assert resp.content == b"\x02\x00" * 4
+
+
+def test_next_live_chunks_skips_a_seq_the_reader_failed_to_write() -> None:
+    slots = {5: (16000, 1, b"e"), 7: (16000, 1, b"g"), 8: (16000, 1, b"h")}
+    assert cabinet_ambient_routes.next_live_chunks(slots, 6) == ([b"g", b"h"], 9)
+
+
+def test_live_endpoint_503_when_reader_stopped_but_slots_remain(monkeypatch, tmp_path: Path) -> None:
+    ring = LiveRing(tmp_path)
+    ring.write(b"\x01\x00" * 4, sample_rate=16000, channels=1)
+    old = datetime.now(timezone.utc).timestamp() - 60
+    for path in tmp_path.glob("slot-*.pcm"):
+        os.utime(path, (old, old))
+    client = _live_app(monkeypatch, tmp_path)
+    resp = client.get("/api/cabinet/ambient/live")
+    assert resp.status_code == 503
+    assert "stopped writing" in resp.json()["detail"]

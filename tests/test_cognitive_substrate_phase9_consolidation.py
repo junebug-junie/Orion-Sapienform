@@ -15,16 +15,6 @@ from orion.core.schemas.cognitive_substrate import (
 )
 from orion.core.schemas.frontier_landing import FrontierLandingResultV1
 from orion.core.schemas.substrate_consolidation import GraphConsolidationRequestV1, GraphReviewCycleRecordV1
-from orion.graph_cognition.evidence import EvidenceSpanV1, SignalEvidenceBundleV1
-from orion.graph_cognition.interpreters import (
-    CoherenceAssessmentV1,
-    ConceptDriftSignalV1,
-    ContradictionCandidateSetV1,
-    GoalPressureStateV1,
-    GraphCognitionReportV1,
-    IdentityConflictSignalV1,
-    SocialContinuityAssessmentV1,
-)
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.frontier_landing import FrontierLandingExecutionResultV1
 from orion.substrate.materializer import SubstrateGraphMaterializer
@@ -53,18 +43,6 @@ def _edge(source: str, target: str, predicate: str = "supports") -> SubstrateEdg
         confidence=1.0,
         salience=0.5,
         provenance=_prov(),
-    )
-
-
-def _cognition(pressure: float = 0.8) -> GraphCognitionReportV1:
-    evidence = SignalEvidenceBundleV1(spans=(EvidenceSpanV1(node_ids=("n",), edge_ids=(), reason="r", weight=1.0),), truncated=False, degraded=False, notes=())
-    return GraphCognitionReportV1(
-        coherence=CoherenceAssessmentV1(score=0.5, confidence=0.7, evidence=evidence, notes=()),
-        identity_conflict=IdentityConflictSignalV1(conflict_score=0.2, active=False, confidence=0.7, evidence=evidence),
-        goal_pressure=GoalPressureStateV1(pressure_score=pressure, stalled_goal_count=1, competing_goal_density=0.2, confidence=0.8, evidence=evidence),
-        social_continuity=SocialContinuityAssessmentV1(continuity_score=0.6, confidence=0.7, degraded=False, evidence=evidence),
-        concept_drift=ConceptDriftSignalV1(drift_score=0.3, active=False, confidence=0.7, evidence=evidence),
-        contradiction_candidates=ContradictionCandidateSetV1(candidates=(), confidence=0.6, evidence=evidence),
     )
 
 
@@ -139,12 +117,14 @@ def test_strict_zone_is_operator_only_and_no_hidden_escalation() -> None:
     assert {d.outcome for d in res.result.decisions} == {"operator_only"}
 
 
-def test_integration_reads_cognition_and_landing_and_remains_bounded() -> None:
+def test_integration_reads_landing_and_remains_bounded() -> None:
     store = _build_store(with_gap=True)
     evaluator = GraphConsolidationEvaluator(store=store, max_region_nodes=2, max_region_edges=1)
     req = GraphConsolidationRequestV1(anchor_scope="orion", subject_ref="entity:orion", reason_for_review="integration", target_zone="autonomy_graph")
-    res = evaluator.consolidate(request=req, cognition_report=_cognition(pressure=0.9), landing_result=_landing_exec(materialized_items=0))
+    res = evaluator.consolidate(request=req, landing_result=_landing_exec(materialized_items=0))
 
     assert len(res.cycle_record.focal_node_refs) <= 2
     assert len(res.cycle_record.focal_edge_refs) <= 1
-    assert any(d.outcome in {"keep_provisional", "maintain_priority", "requeue_review"} for d in res.result.decisions)
+    assert any(d.outcome in {"keep_provisional", "requeue_review"} for d in res.result.decisions)
+    # The goal-pressure branch is retired (#3393): nothing emits its note.
+    assert not any("autonomy_pressure_followup" in d.notes for d in res.result.decisions)

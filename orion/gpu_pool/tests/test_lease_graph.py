@@ -122,7 +122,8 @@ def test_urgent_preempt_requeues_a_retryable_hold_in_place_without_spending_an_a
     assert s["status"] == "granted" and s["generation"] == 2 and s["attempt"] == 1
 
 
-@pytest.mark.parametrize("recall_reason", ["max_hold", "owner_waiting", "card_unlent", "draining"])
+@pytest.mark.parametrize("recall_reason", ["max_hold", "background_max_hold", "owner_waiting", "card_unlent", "draining",
+                                           "draining_background"])
 def test_a_recalled_hold_aborted_past_its_grace_requeues_in_place_every_time(recall_reason):
     """Live 2026-09-26..28: each abort of a recalled durable-run hold spent a pool attempt, so the
     third recall (every run longer than gpu2's max_hold_sec) dead-lettered the hold and the run saw
@@ -137,6 +138,16 @@ def test_a_recalled_hold_aborted_past_its_grace_requeues_in_place_every_time(rec
         assert s["role"] is None and s["not_before"] is None and s["expires_at"] is None
         s = step(s, ev("grant", t + 700, role="agent"))
         assert s["status"] == "granted" and s["generation"] == cycle + 1
+
+
+def test_a_capped_hold_nobody_retries_is_released_for_good():
+    """#3391: the 11-13 trial hold was not retryable. At the cap it is recalled, then aborted after
+    its grace, and that ends it: nothing re-grants it."""
+    s = step(fresh("hold", retryable=False), ev("grant", role="agent"),
+             ev("recall", 9000, recall_by=(T0 + timedelta(seconds=9600)).isoformat(), reason="background_max_hold"))
+    assert s["status"] == "recalling"
+    s = step(s, ev("abort", 9600, reason="recall_grace_exceeded"))
+    assert s["status"] == "released"
 
 
 def test_plain_abort_of_a_request_lease_still_spends_an_attempt():

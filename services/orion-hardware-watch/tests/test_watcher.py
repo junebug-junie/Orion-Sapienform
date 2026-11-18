@@ -49,9 +49,12 @@ class Recorder:
 
 
 def settings(**kw):
+    # This file is the v1 controller's regression (the one-week rollback path, spec 2026-10-06
+    # "Rollback"); v2 lives in test_watcher_v2.py. Delete this pin with v1.
     base = dict(ORION_BUS_URL="redis://x", POSTGRES_URI="x", HARDWARE_WATCH_ENABLED=True,
                 HARDWARE_WATCH_SHED_ENABLED=True, HARDWARE_WATCH_URGENT_ENABLED=True,
-                HARDWARE_WATCH_HEAT_NODES="athena", HARDWARE_WATCH_GPU_NODES="circe")
+                HARDWARE_WATCH_HEAT_NODES="athena", HARDWARE_WATCH_GPU_NODES="circe",
+                HARDWARE_WATCH_HEAT_CONTROLLER="v1")
     base.update(kw)
     return Settings(**base)
 
@@ -292,24 +295,30 @@ def test_bus_down_urgent_request_is_retried():
 
 # --- heat ------------------------------------------------------------------------------------
 
-def test_cpu_heat_opens_one_incident_and_resolves_below_p75():
+def test_cpu_heat_opens_on_the_ceiling_not_the_p95_and_resolves_below_rearm():
+    """D7 (thermal controller v2, unflagged): the p95 is an annotation; 90 C held 10 min opens."""
     w, store, rec, clock = make()
-    feed_cooling(store, -4000, 1500, varying)
+    feed_cooling(store, -4000, 2200, varying)
     feed_temp(store, "athena", "temp_c_max", -3 * 86400, 0, lambda t: 55.0 + (int(t) // 30) % 20)  # 55..74
-    feed_temp(store, "athena", "temp_c_max", 30, 700, 80.0)
+    feed_temp(store, "athena", "temp_c_max", 30, 700, 80.0)          # far above p95, below the ceiling
     at(clock, 700)
     go(w.tick())
-    [row] = store.open_incidents()
-    assert (row["rule"], row["subject"], row["open_reason"]) == ("cpu_heat", "athena", "above_p95")
-    urgent = CuriosityUrgentRequestV1.model_validate(rec.on(URGENT_REQUEST_CHANNEL)[0])
-    assert urgent.trigger == "heat" and "p95" in urgent.question
-    assert not rec.on("notify")                      # heat: the investigation's report is the notice
-    feed_temp(store, "athena", "temp_c_max", 730, 1400, 80.0)
+    assert store.open_incidents() == []
+    assert w.last.verdicts["cpu_heat:athena"]["above_p95_c"] > 0        # still shown, as context
+    feed_temp(store, "athena", "temp_c_max", 730, 1400, 92.0)
     at(clock, 1400)
     go(w.tick())
-    assert len(store.list_incidents()) == 1          # feedback guard: still one incident
-    feed_temp(store, "athena", "temp_c_max", 1430, 1460, 56.0)
+    [row] = store.open_incidents()
+    assert (row["rule"], row["subject"], row["open_reason"]) == ("cpu_heat", "athena", "above_ceiling")
+    urgent = CuriosityUrgentRequestV1.model_validate(rec.on(URGENT_REQUEST_CHANNEL)[0])
+    assert urgent.trigger == "heat" and "ceiling" in urgent.question
+    assert not rec.on("notify")                      # heat: the investigation's report is the notice
+    feed_temp(store, "athena", "temp_c_max", 1430, 1460, 86.0)
     at(clock, 1460)
+    go(w.tick())
+    assert store.list_incidents()[0]["status"] == "open"   # 86 is not below the 85 C re-arm
+    feed_temp(store, "athena", "temp_c_max", 1490, 1520, 84.0)
+    at(clock, 1520)
     go(w.tick())
     assert store.list_incidents()[0]["status"] == "resolved"
 

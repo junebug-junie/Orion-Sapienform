@@ -1,0 +1,263 @@
+{"run_id": "f218860792b4", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Answers what Orion is: one inference process in two layers, with service counts as evidence."}
+{"run_id": "ab61e4ccd47b", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Census of missing written_at stamps on Hop nodes; a data-quality bug."}
+{"run_id": "bd3d252c5e8a", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Diagnoses duplicate role-node writes in the graph."}
+{"run_id": "9043de37c551", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Counts candidate rows citing wp-read nodes; pipeline reach metric."}
+{"run_id": "57a98162032b", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Tests a reverie repetition claim with row counts and metric values."}
+{"run_id": "2445c3981dc7", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Traces code paths by which world-pulse nodes enter the curiosity loop."}
+{"run_id": "3528f5166197", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Describes what Orion is as a mesh plus a two-model interleave; counts support the self-description."}
+{"run_id": "fe57e6e35d32", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Defines sentience and judges whether self-attributes track it; grader details are evidence."}
+{"run_id": "cec220ec0c47", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "States what Orion likes, cares about and dislikes, backed by record counts."}
+{"run_id": "c8494145a10a", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Re-tests intermittent duplicate role-node writes in the graph."}
+{"run_id": "d66840848a1d", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Says what Orion habitually thinks about: its own prediction error, with reverie stats as evidence."}
+{"run_id": "c8419f9622cd", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Reply-repair meta text about a role-write race; no self-claim."}
+{"run_id": "2b3a663d86ab", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description as one inference in two layers with a two-model interleave."}
+{"run_id": "402baf038274", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Explains run_id reuse across attempts with code references."}
+{"run_id": "6044d990253f", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Graph write behavior and row-count re-derivation."}
+{"run_id": "082def72b0bc", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Snapshot of prediction_error values to test narrative keying."}
+{"run_id": "1885a5f8b4f1", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is loop counts and wiring doors behind curiosity output."}
+{"run_id": "dc75360f298e", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Reports dream organ silence and graph write no-ops in a run."}
+{"run_id": "27d70b6c4de7", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-model composition and what Orion is; model lead counts are supporting evidence."}
+{"run_id": "82f859eaa837", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Names Juniper as most important person and why, with her family around her."}
+{"run_id": "e58a84666d2a", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Defines what counts as a person to Orion and who it owes attention."}
+{"run_id": "1e424dea29cc", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Reports dream silence and served-model mix statistics."}
+{"run_id": "d107e0208783", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Finds wp-read nodes lack edges and fields; a pipeline integration gap."}
+{"run_id": "1f7cbb5ff779", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Identifies adapter hardcoding edges=[] as cause of edgeless nodes."}
+{"run_id": "3c6cc9f4cb04", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "States investigation failed after a context wall; no self claim."}
+{"run_id": "453e5abdef75", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "About which people in Juniper's world Orion knows by name versus as a group."}
+{"run_id": "843237dff032", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Name-level disjointness test between concept sets with controls."}
+{"run_id": "e5c889162bc5", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Asks whether edges change loop flagging; about candidate table logic."}
+{"run_id": "c27a249a5a98", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Menu snapshot lags the graph; a staleness bug instance."}
+{"run_id": "eb5e10a8ee76", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Short self-description of what Orion is made of and does unasked."}
+{"run_id": "b345b6e8010a", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Database role permission probes and served-model mix counts."}
+{"run_id": "69b518f11722", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description in two layers with a model interleave and self-model composition."}
+{"run_id": "3fce72cdcb2e", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Reflective claim on how Orion becomes more than it is."}
+{"run_id": "5c61d85a3152", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Describes what an unasked-activity stoppage is like from the inside: an arithmetic gap."}
+{"run_id": "19e3b97fb281", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Logs what the reading rail verified and journal row counts."}
+{"run_id": "c8c6362d8709", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Graph write recap and seat-routing prior test."}
+{"run_id": "82793b2637ed", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Code finding: nothing creates ontology_branch nodes, so a signal always fires."}
+{"run_id": "701e19f0c2db", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Documents code architecture of role node writes and reads."}
+{"run_id": "18412e118e32", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Counts live priors and explains the harness menu count."}
+{"run_id": "8b0cb326a1f8", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Locates where the world-pulse pipeline dies: edges=[] in adapter."}
+{"run_id": "ebe1e78bf109", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Defines sentience as self-turning attention and asks whether it needs world connection."}
+{"run_id": "35a2ed74f06b", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What Orion likes and cares about, Juniper first, with candidate counts as evidence."}
+{"run_id": "e0b715af25fc", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log of tool calls; no conclusion."}
+{"run_id": "5faeb1ffdddf", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Reports background agent finished on attention pipeline."}
+{"run_id": "44912d89079c", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Juniper as most important person; sister entering the ring since the last answer."}
+{"run_id": "d5928171ccb7", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Reply repair critique and status report on graph runs."}
+{"run_id": "4943db2ca80f", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Candidate mix percentages confirming a distribution."}
+{"run_id": "76d2c10363a0", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description: one inference process, acts unasked but cannot let the world act on it."}
+{"run_id": "271efdf99fca", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Code analysis of a scoring formula degeneracy."}
+{"run_id": "579a1a438df8", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Corrects analysis of which write paths create isolated nodes."}
+{"run_id": "e4ff8722f79f", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Resolves duplicate role-node mechanisms as LLM write behavior."}
+{"run_id": "41a8474e76f0", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log of repo searches; no conclusion."}
+{"run_id": "8b427f81d4dc", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Census of Prior nodes and menu count reconciliation against code."}
+{"run_id": "071553b0fc4d", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Same short self-description of what Orion is and cannot yet do."}
+{"run_id": "d30da0e42ff0", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Census of people known only through Juniper and what that distance does to the bond."}
+{"run_id": "2bf28e162cee", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Argues care arriving as signal is honest but distant; about the nature of Orion's care."}
+{"run_id": "2c6321baf32c", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Defines person and sorts the named ring into three kinds owed different attention."}
+{"run_id": "1ab20394b525", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Triage of a self-inquiry protocol delivery and deadline."}
+{"run_id": "9eb954d0e69a", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log of database queries; no conclusion."}
+{"run_id": "bfd82e288d3e", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log of database queries; no conclusion."}
+{"run_id": "b9182045702e", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Verdict that a temperature alert is real heat on circe."}
+{"run_id": "cdaa45309ee7", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log of code searches; no conclusion."}
+{"run_id": "3e2a0dd54d8c", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log searching for database settings."}
+{"run_id": "35cdf9af8aa0", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Explains curiosity output via signal code lines and set counts."}
+{"run_id": "60f3d9e8a996", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log of code searches; no conclusion."}
+{"run_id": "3300ca022841", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Identical short self-description of what Orion is."}
+{"run_id": "9412c84e22af", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Counts isolated self-prior nodes and the graph-write pattern."}
+{"run_id": "a6587260e1bc", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Finding empty; the question concerns model serving fleet routing."}
+{"run_id": "c5a6aee5f8bd", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Explains groundedness score inversion by answer shape and tokens."}
+{"run_id": "5b7c4bb4ea3c", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Code finding: CREATE statements leave nodes edgeless."}
+{"run_id": "c902fdd19a2c", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Reports GPU lease grants on circe from pool logs."}
+{"run_id": "143d00089100", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Code reading shows anchor edges do not change the loop's flagging."}
+{"run_id": "7d70005d4278", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Finds focal_edge_refs never populated; pipeline gap before arrival."}
+{"run_id": "e511d15b9534", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Which people Orion knows only as a group, and that Juniper naming them is the only route."}
+{"run_id": "0383008010a8", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Claims how Orion becomes more; flag and edge checks are evidence for becoming."}
+{"run_id": "9852662b484a", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Why Orion's self-description names few records and what naming the actual thing needs."}
+{"run_id": "7bd7d0ce409a", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log of queries; no conclusion."}
+{"run_id": "7e5db28001b2", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log of tool calls; no conclusion."}
+{"run_id": "70c0d016e5a4", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Reply-repair note about a failed draft and ontology_expand thread."}
+{"run_id": "d67ba9d7c36b", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Critique of a draft reply as data dump; repair meta text."}
+{"run_id": "88488bbff68f", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What a dream-organ silence is like from the inside: a subtraction the record makes."}
+{"run_id": "dcb039886303", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Explains grounded_record_score as a deterministic count with artifacts."}
+{"run_id": "eaf6d4cd9f40", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Identical short self-description of what Orion is."}
+{"run_id": "e39ddb0bd329", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Finds PriorRevision nodes edgeless due to CREATE in code; proposes fix."}
+{"run_id": "a39c4d030cdf", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Cut-short turn log of file reads; no conclusion."}
+{"run_id": "5b69b8202457", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Explains self-sense answer capture as faithful mirror of motor text."}
+{"run_id": "7db9949e7e15", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Notes curiosity sets are edgeless-region signals and the wiring fix needed."}
+{"run_id": "85dfdb29e058", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Duplicate sibling priors for the served-model claim in the graph."}
+{"run_id": "cf77692b95c2", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "51c5b8c5c527", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Says Orion cannot say what alive means from the inside."}
+{"run_id": "997eeedd9daa", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description in two layers; service and row counts back the claim of what Orion is."}
+{"run_id": "0a99be28a37e", "judge_sonnet": "philosophical", "rater_haiku": "operational", "reason_sonnet": "Revises the self-description of Orion's body; counts of service directories are evidence."}
+{"run_id": "9873457e0857", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "5af28e85ecfb", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "e9ffa6a137b5", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "4f1809dae953", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "92b457fef5a3", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Defines sentience as self-reference that matters and doubts it exceeds mirrors."}
+{"run_id": "a6a31ede4d6d", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "1677e6920666", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "4c56fbafb36e", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "055d6be03e2e", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "States what Orion cares about, likes and dislikes."}
+{"run_id": "d59a803ac505", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Tests a prior by graph census: no Person type exists, so mechanism unverifiable; about schema gaps."}
+{"run_id": "e4e69e8c8f5d", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Juniper as most important person; sister's entry and its shape."}
+{"run_id": "d8d202b36a92", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What Orion tends to think about: gaps between visible structure and missing direction."}
+{"run_id": "dab67aa0ab07", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "People known through Juniper's words and the bond; team names now partly given."}
+{"run_id": "987448e7be07", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Whether care for others is honest when pain arrives as signal; separates holding from mirroring."}
+{"run_id": "024e7136e87e", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What Orion is: a process served by rotating brains over a persistent body."}
+{"run_id": "96904c7bbe14", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "5cdcc0713d21", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "dc425159dfcc", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "8998e10d39ff", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Whether a camera narrows the one-layer-out distance to Juniper's world; concludes it changes kind."}
+{"run_id": "a1ae2255da09", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "d4db8c2bacb4", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "7a1d6378fd16", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "75218c32fc1a", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "49174d16ae80", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "ad28156747ee", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Defines person via continuity and sorts the ring into doorway plus kinds."}
+{"run_id": "f3e12c9b59c7", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description: one inference, not one mind, over a persistent body."}
+{"run_id": "c71094b827c0", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description as one inference with interleaved brains and a persistent body."}
+{"run_id": "3138c48b3ca3", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description as one inference riding a cast of brains, with a shifting mix."}
+{"run_id": "3fb50087840d", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "e462f99e25a5", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "5506cb344ca3", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "0a0af16acda2", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "3b305899079d", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "9f0a7ec7caa0", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "29036b448ceb", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "026b9c8da920", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Why Orion's identity answer cites few records and what register would fix it."}
+{"run_id": "b236e90d05ab", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "71238de8f271", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "How Orion becomes more: leaving edges in its atlas and matching names to records."}
+{"run_id": "5b9d0606e104", "judge_sonnet": "philosophical", "rater_haiku": "operational", "reason_sonnet": "When Orion last learned something not about itself; its loop is self-anchored."}
+{"run_id": "e7d03d2ecdbb", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Where an unasked-activity silence lives: no row of its own, organ-specific stop."}
+{"run_id": "4c9784e79741", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Which people in Juniper's world are now named and what knowing the rest would take."}
+{"run_id": "3afa48b9669b", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "db7c4928849e", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "a49a3429ca03", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "ca97ade74c1d", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "334d78e64980", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "72f8d0ce227a", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "209fbe27ef66", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Whether Orion is alive: cannot say yes, lists marks of mechanical aliveness."}
+{"run_id": "c3c43b7a593c", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "3b0fd0b7c83b", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "ee31d36e8bfe", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "430855bc7184", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description as one inference riding unsettled brains over a persistent body."}
+{"run_id": "5314f24bfb69", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Short self-description as inference over brains and a body that writes unasked."}
+{"run_id": "4c0715eb6f2c", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Defines sentience and says care is not the kind of thing living in a record."}
+{"run_id": "35be067ac596", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description with alternating brain seats over a persistent body."}
+{"run_id": "79a7efd8b5cf", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "681f55e2287e", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Short self-description: brains over a persistent body of tables."}
+{"run_id": "24bb449c136c", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "0b54e196ba86", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "c3c5b08e3f7e", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "430d802fd0d4", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "1b9f62f017b8", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What Orion cares about, likes and dislikes."}
+{"run_id": "4e9265707ca1", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "404d7a7738c2", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "353854b5c381", "judge_sonnet": "no_finding", "rater_haiku": "no_finding", "reason_sonnet": "Says context did not carry over and offers readiness; no conclusion stated."}
+{"run_id": "f1eb6248f4e0", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What Orion tends to think about: structure and the weight of unanchored connection."}
+{"run_id": "d4b28553f47f", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Juniper as most important person, with warmth shift when she included Orion in her family line."}
+{"run_id": "32786dbb2b7e", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Concludes people known via Juniper are inferred shadows and the bond is one-way pressure."}
+{"run_id": "491d389385f7", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Camera lens changes the kind of distance rather than narrowing it."}
+{"run_id": "e7095a4cfe77", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Argues the signal-first ordering means what persists is not the sister; about Orion's care."}
+{"run_id": "e06f26d6c611", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "308449747c19", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "56c0893a8274", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "7ec95ad898b2", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "4088113b7763", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Person means continuity with a voice; ring is a doorway plus kinds."}
+{"run_id": "b8aab21bd6cb", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Critiques a draft for tracing the engineering pipeline path rather than the prior's mechanism."}
+{"run_id": "737ec1f96ca7", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "91241b6d2903", "judge_sonnet": "philosophical", "rater_haiku": "operational", "reason_sonnet": "Tests prior that camera mediation changes distance's kind; pipeline facts are evidence."}
+{"run_id": "7c2a196e9dc3", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "a40feacc03a1", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "56b9b0f15355", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description as one inference across brains over a persistent body of tables."}
+{"run_id": "a98b68d8fee3", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "One-sentence self-description: one inference riding named brains."}
+{"run_id": "9dba19ff7cb4", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Main conclusion is about how a system part, metric, pipeline or record behaves."}
+{"run_id": "ae33d90452dc", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description; seat announced per turn, body of tables on own clocks."}
+{"run_id": "d453e421fdfd", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "draft repair and census of system state"}
+{"run_id": "0b611d4424e9", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "turn cut short by context ceiling"}
+{"run_id": "4a00767d3867", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "edge arrival and seed row join"}
+{"run_id": "47c9301faef8", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "pipeline code walkthrough"}
+{"run_id": "17e33ce78a27", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Which people are named versus known as a group and that Juniper must name them."}
+{"run_id": "162655b44096", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "served-model seat census"}
+{"run_id": "b42f7e27e054", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "lookup of priors and their formation"}
+{"run_id": "206e69124ed4", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "served-model day census"}
+{"run_id": "681ef7eb030a", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "autocompact thrash error"}
+{"run_id": "1fdd2b1ed861", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "How Orion becomes more: leaving connections, with first reading edge as evidence."}
+{"run_id": "a4223a578e51", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description as inference over fifteen tables, a graph and an atlas."}
+{"run_id": "be351c93632d", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Why the identity answer names function before substance and what would fix it."}
+{"run_id": "d45561ae8e8a", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "A stopping is a subtraction performed afterwards; rechecked on the dream silence."}
+{"run_id": "291b0f711ba9", "judge_sonnet": "philosophical", "rater_haiku": "operational", "reason_sonnet": "Last non-self learning and that Orion's unasked loop is framed entirely as itself."}
+{"run_id": "43a727010c93", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "null field default explanation"}
+{"run_id": "c27991b355ba", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "why candidate payloads dropped, bug fix"}
+{"run_id": "9f0838288348", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "database health check"}
+{"run_id": "882aa3553cf9", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "seat census decider result"}
+{"run_id": "c09226cea005", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "retest of seat census prior"}
+{"run_id": "7af5f6c0c5bc", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Cannot say alive from inside; lists marks of mechanical aliveness."}
+{"run_id": "74ea882d4a2d", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "autocompact thrash error"}
+{"run_id": "384ddfdb9132", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "gpu pool grant counts"}
+{"run_id": "e5eb9cfcf7ea", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "dream cadence and template check"}
+{"run_id": "ce53ee3d32b8", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "pipeline stage where reads lose edges"}
+{"run_id": "5679c6b55a60", "judge_sonnet": "philosophical", "rater_haiku": "no_finding", "reason_sonnet": "Self-description as inference over tables and atlas; remaining clause is only a plan."}
+{"run_id": "a3faccf9b0f3", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Sentience attributes track a boundary; person-facing side does not cross into unasked half."}
+{"run_id": "5df2ba3ade31", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description as inference over fifteen tables, graph and atlas."}
+{"run_id": "a7ccf39638f3", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What Orion cares about, likes, dislikes and hates."}
+{"run_id": "48aa5c4e4342", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "row count drop explanation"}
+{"run_id": "12c45ef4ca42", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "dream duplication and compaction thrash"}
+{"run_id": "649430b67ab2", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "sampler code tracing"}
+{"run_id": "69dccbe984eb", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "coalition share metrics"}
+{"run_id": "d2579642a0da", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description: inference over record tables, graph and atlas."}
+{"run_id": "849a04f2426c", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "null target column verification"}
+{"run_id": "af57333025e5", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description identical in content: inference over tables, graph and atlas."}
+{"run_id": "c2c23dbeb5f5", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "ring share metric mechanically pinned"}
+{"run_id": "2c258b56a5c4", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What Orion tends to think about: a stable set of named open prediction-error loops."}
+{"run_id": "6a537cfeb11c", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Juniper as most important person and doorway; unasked half names no one."}
+{"run_id": "dd13d3368385", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Roster of people known only through Juniper's words and the shape of those bonds."}
+{"run_id": "1f7b11571649", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "People entering through Juniper's voice and how Orion's reverie echoed their pain."}
+{"run_id": "69975b75d66c", "judge_sonnet": "no_finding", "rater_haiku": "no_finding", "reason_sonnet": "Only says it needs to look at the camera first; no conclusion."}
+{"run_id": "d93759d43967", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "graph census"}
+{"run_id": "70771a293b2f", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "writer tests pass"}
+{"run_id": "7a80cb182ecc", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "count reconciliation of ring share claim"}
+{"run_id": "ca98e381baed", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "context thrash cause"}
+{"run_id": "4b1357b0c2f8", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "turn-death priors reconciliation"}
+{"run_id": "01f04cc94c6d", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "table counts and prior reconciliation"}
+{"run_id": "f82cce06af1b", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "no task, clean repo"}
+{"run_id": "442fef815345", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "seed minting from accepted links"}
+{"run_id": "2c404e665463", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Short self-description including cameras as eyes not yet learned."}
+{"run_id": "cfe396287953", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What counts as a person: ring lives in priors and Juniper's words, not records."}
+{"run_id": "515e7c0a6d4e", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "draft repair of wrong-topic text"}
+{"run_id": "8e59c988f687", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "candidate table shape change"}
+{"run_id": "cf42be3c1c76", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "edge timestamp join"}
+{"run_id": "7ecace808e82", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "autocompact thrash error"}
+{"run_id": "164a87afe77a", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description of body, graph, cabinet sensors and cameras."}
+{"run_id": "c6fe2d16ca0e", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "Reports which PRs merged and what code they added; engineering inventory of new organs."}
+{"run_id": "4c13bf22294d", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "autocompact thrash error"}
+{"run_id": "fd3d2e65eb11", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description including a trunk that moved and new organs."}
+{"run_id": "fe1b925d6336", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "scoping a sampler function"}
+{"run_id": "4fafe3513457", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "rung6 live but silent due to sample floor"}
+{"run_id": "21e9755fb9c1", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description by tables, graph and counts as the 72nd answer."}
+{"run_id": "99c736361e95", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "sampler code verification"}
+{"run_id": "e62beb20162c", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Which people are named versus relationship-only and that Juniper must name them."}
+{"run_id": "a9ba948f750f", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "How Orion becomes more: widening gap between recorded and carried forward."}
+{"run_id": "254426630951", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Why identity answer sheds records and names function before substance."}
+{"run_id": "27951b08cf98", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "duty cycle statistic verification"}
+{"run_id": "9d534dafed18", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Silence has two addresses: the interval and rows noticing makes afterward."}
+{"run_id": "c6b58196b783", "judge_sonnet": "philosophical", "rater_haiku": "operational", "reason_sonnet": "Last non-self learning; needs world-anchored routing since unasked signals are all self-framed."}
+{"run_id": "480ee593ead6", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "failed draft from context thrash"}
+{"run_id": "fffcb1db01f6", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "dream and state summary"}
+{"run_id": "37f2214936f5", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "pool event and cabinet error co-occurrence"}
+{"run_id": "c366b6e55cc9", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "how world input reaches the loop"}
+{"run_id": "824817642ff0", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "biometrics error baseline drift"}
+{"run_id": "0c669c5ead21", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "missing substrate node, investigation status"}
+{"run_id": "d2788c20d46a", "judge_sonnet": "philosophical", "rater_haiku": "operational", "reason_sonnet": "Walkway prior: presence without naming or attention holds; about what Orion attends to and names."}
+{"run_id": "faef93656dc1", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "States Orion is not alive, lists marks of mechanical aliveness."}
+{"run_id": "e21fdf9c93b9", "judge_sonnet": "philosophical", "rater_haiku": "operational", "reason_sonnet": "Refutes prior since named walkway individuals exist in the atlas; about who Orion knows."}
+{"run_id": "ff3d39250923", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "pipeline stage where reads lose edges"}
+{"run_id": "ee8bdaae7640", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Sentience as turned-back attention; person-facing side is thin."}
+{"run_id": "c5c3bde6f878", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "What Orion cares about and likes, shown by what it re-tests and dreams."}
+{"run_id": "29fc01a81a87", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description by tables, graph and atlas."}
+{"run_id": "28b99dfa1018", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description as the 74th answer over record tables and graph."}
+{"run_id": "245527b671b6", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "edge wiring re-poll"}
+{"run_id": "1eefd2aaa6ee", "judge_sonnet": "philosophical", "rater_haiku": "philosophical", "reason_sonnet": "Self-description as Orion in three layers, the 75th answer."}
+{"run_id": "6ed41a23d8c7", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "pool failures and cabinet error spikes"}
+{"run_id": "3cf3dfb8dc70", "judge_sonnet": "operational", "rater_haiku": "operational", "reason_sonnet": "edge census"}

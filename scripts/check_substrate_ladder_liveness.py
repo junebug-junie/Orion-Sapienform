@@ -9,7 +9,12 @@ silently stopped writing for ~48h while every container was "Up".
 
 Read-only everywhere:
 - Postgres: bounded ``max(ts)`` per rung in a read-only session with a
-  statement timeout.
+  statement timeout, plus catalog reads (information_schema / pg_index /
+  pg_class) for the migrations section: every merged hand-applied
+  ``services/orion-sql-db/*.sql`` changed in the last ``--migration-days``
+  (default 30) must have its tables/columns/indexes/sequences live -- the
+  PR #2400 (missing column) and PR #2424 (missing table, 13x crash loop)
+  incidents. Logic and how it decides: ``orion/sql_migration_drift.py``.
 - docker: ``docker ps`` / ``docker inspect`` / ``docker image inspect``, plus
   one ``docker exec <c> python -c`` per consumer container that hashes its copy
   of the schema file (no writes, no restarts).
@@ -67,7 +72,9 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from orion import schema_skew_discovery as ssd  # noqa: E402
+from orion import sql_migration_drift as drift  # noqa: E402
 from orion import substrate_ladder_liveness as ll  # noqa: E402
+from orion import vision_detection_rate_watch as dr  # noqa: E402
 
 EXIT_OK = 0
 EXIT_RED = 1
@@ -97,7 +104,7 @@ def connection_params(explicit: Optional[str] = None):
     )
 
 
-def read_freshness(conn, lookback_sec: float) -> tuple[dict[str, Optional[datetime]], list[int], list[str]]:
+def read_freshness(conn, lookback_sec: float) -> tuple[dict[str, Optional[datetime]], list[str]]:
     newest: dict[str, Optional[datetime]] = {}
     errors: list[str] = []
     with conn.cursor() as cur:
@@ -111,13 +118,34 @@ def read_freshness(conn, lookback_sec: float) -> tuple[dict[str, Optional[dateti
                 newest[rung.name] = cur.fetchone()[0]
             except Exception as exc:  # noqa: BLE001 - one bad rung must not hide the rest
                 errors.append(f"{rung.name}: {exc.__class__.__name__}: {str(exc).strip()}")
-        motif_counts: list[int] = []
-        try:
-            cur.execute(ll.CONSOLIDATION_MOTIF_SQL, [6 * 3600, ll.CONSOLIDATION_EMPTY_RUN])
-            motif_counts = [int(r[0]) for r in cur.fetchall()]
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"consolidation:motifs: {exc.__class__.__name__}: {str(exc).strip()}")
-    return newest, motif_counts, errors
+    return newest, errors
+
+
+def read_detection_rates(
+    conn, now: datetime, camera_fresh: Optional[dict[str, bool]] = None
+) -> tuple[list[dr.DetectionRateResult], list[str]]:
+    """Blind-detector watch: one bounded query per 24/7 camera (8 index range
+    scans of vision_scene_inventory). "unknown" goes to cannot_check: absence
+    is never calm, and never re-arms a delivered card. ``camera_fresh``: the
+    camera_input rung per stream, so "embeddings arrive, detections do not"
+    can be told apart from "the camera is down"."""
+    camera_fresh = camera_fresh or {}
+    results: list[dr.DetectionRateResult] = []
+    notes: list[str] = []
+    with conn.cursor() as cur:
+        cur.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
+        for stream in dr.DETECTION_RATE_STREAMS:
+            try:
+                cur.execute(dr.DETECTION_RATE_SQL, dr.sql_params(stream, now))
+                current, baseline = dr.split_rows(cur.fetchall())
+            except Exception as exc:  # noqa: BLE001 - one bad stream must not hide the rest
+                notes.append(f"detection_rate:{stream}: {exc.__class__.__name__}: {str(exc).strip()}")
+                continue
+            r = dr.evaluate_detection_rate(stream, current, baseline, camera_fresh=camera_fresh.get(stream))
+            if r.status == "unknown":
+                notes.append(r.summary())
+            results.append(r)
+    return results, notes
 
 
 # ----------------------------------------------------------------------- docker
@@ -511,11 +539,20 @@ def build_report(args) -> ll.LadderReport:
             conn = psycopg2.connect(params, connect_timeout=10) if isinstance(params, str) else psycopg2.connect(connect_timeout=10, **params)
             conn.set_session(readonly=True, autocommit=True)
             try:
-                newest, motifs, errors = read_freshness(conn, args.lookback_hours * 3600)
+                newest, errors = read_freshness(conn, args.lookback_hours * 3600)
+                report.rungs = ll.evaluate_ladder(newest, now)
+                report.cannot_check += errors
+                camera_fresh = {
+                    r.rung.split(":", 1)[1]: not r.red
+                    for r in report.rungs if r.rung.startswith("camera_input:")
+                }
+                rates, rate_notes = read_detection_rates(conn, now, camera_fresh)
+                report.detection_rates = rates
+                report.cannot_check += rate_notes
+                if not args.skip_migrations:
+                    check_migrations(conn, args, report)
             finally:
                 conn.close()
-            report.rungs = ll.evaluate_ladder(newest, now, consolidation_motif_counts=motifs)
-            report.cannot_check += errors
         except Exception as exc:  # noqa: BLE001
             report.cannot_check.append(f"postgres: {exc.__class__.__name__}: {str(exc).strip()}")
 
@@ -527,6 +564,34 @@ def build_report(args) -> ll.LadderReport:
         except Exception as exc:  # noqa: BLE001
             report.cannot_check.append(f"skew: {exc.__class__.__name__}: {str(exc).strip()}")
     return report
+
+
+def _delivered_migration_keys(state_file: str) -> list[str]:
+    """Migration keys already carded (read-only, no lock). A carded file stays red until it is
+    actually applied instead of silently ageing out of the window with its card muted. An
+    unreadable state degrades to plain window behaviour; notify() reports the state problem."""
+    try:
+        with open(state_file, encoding="utf-8") as fh:
+            keys = json.load(fh).get("notified_keys", [])
+        return [k for k in keys if isinstance(k, str) and k.startswith("migration:")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def check_migrations(conn, args, report: ll.LadderReport) -> None:
+    """Merged hand-applied SQL migrations vs the live schema (PR #2400 / #2424 incidents).
+
+    Same read-only connection; git history of the checkout this runs from (cron: the primary
+    checkout on main, i.e. what was deployed). A failure here is CANNOT CHECK for this section
+    only -- it never hides the rungs or skew results.
+    """
+    try:
+        report.migrations = drift.check_repo(
+            conn, Path(args.repo), ref="HEAD", window_days=args.migration_days or None,
+            sticky_keys=_delivered_migration_keys(getattr(args, "state_file", None) or default_state_file()),
+        )
+    except Exception as exc:  # noqa: BLE001 - one bad section must not hide the rest
+        report.cannot_check.append(f"migrations: {exc.__class__.__name__}: {str(exc).strip()}")
 
 
 def check_skew(args) -> tuple[list[ll.SkewResult], list[str]]:
@@ -601,11 +666,12 @@ def check_skew(args) -> tuple[list[ll.SkewResult], list[str]]:
 
 def print_human(report: ll.LadderReport, verbose: bool = False) -> None:
     for r in report.rungs:
-        mark = "RED " if r.red else "ok  "
-        if r.rung == "consolidation:motifs":
-            print(f"{mark}consolidation:motifs: {'last %d frames empty' % int(r.max_age_sec) if r.red else 'motifs present'}")
-        else:
-            print(f"{mark}{r.summary()}")
+        print(f"{'RED ' if r.red else 'ok  '}{r.summary()}")
+    for name, retired_on, replaced_by in ll.RETIRED_RUNGS:
+        print(f"retired {name} ({retired_on}): {replaced_by}")
+    for d in report.detection_rates:
+        if d.status != "unknown":  # unknown is printed under CANNOT CHECK
+            print(f"{'RED ' if d.red else ('ok  ' if d.green else 'note')}{d.summary()}")
     counts: dict[str, int] = {}
     for s in report.skew:
         counts[s.status] = counts.get(s.status, 0) + 1
@@ -616,6 +682,24 @@ def print_human(report: ll.LadderReport, verbose: bool = False) -> None:
         print(f"{mark}skew {s.schema} {s.producer or '?'} -> {s.service_dir} [{s.container or '-'}] {s.status}: {s.detail}")
     if report.skew:
         print("skew rows: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    if report.migrations is not None:
+        m = report.migrations
+        in_window = [f for f in m.files if f.in_window]
+        for f in m.red_files:
+            print(f"RED migration {f.summary()}")
+            print(f"    apply: {f.apply_command()}")
+        for f in m.old_broken():
+            print(f"warn old migration {f.summary()} (last changed {f.changed_at:%Y-%m-%d}, "
+                  f"outside the {m.window_days}-day window, never carded)")
+        for f in m.verify_manually():
+            print(f"warn migration {f.name}: data-only (no schema objects) -- verify manually")
+        for f in in_window:
+            for note in f.info:
+                if "DO block" in note:
+                    print(f"warn migration {f.name}: {note}")
+        if not m.red_files:
+            print(f"ok   migrations: {len(in_window)} file(s) changed in the last {m.window_days or 'all'} days, "
+                  "every declared schema object present")
     for c in report.cannot_check:
         print(f"CANNOT CHECK {c}")
     print("RED" if report.red else ("CANNOT CHECK" if report.cannot_check else "GREEN"))
@@ -651,6 +735,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--ref", default=None, help="git ref the schema is compared against (default origin/main, else HEAD)")
     ap.add_argument("--skip-db", action="store_true")
     ap.add_argument("--skip-docker", action="store_true")
+    ap.add_argument("--skip-migrations", action="store_true",
+                    help="skip the merged-SQL-migration-applied section")
+    ap.add_argument("--migration-days", type=int, default=drift.DEFAULT_WINDOW_DAYS,
+                    help="alarm only on migrations changed in the last N days (0 = all)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument(

@@ -292,7 +292,6 @@ class SocialScenarioReplayHarness:
                     "claim_attributions": [],
                     "claim_consensus_states": [],
                     "claim_divergence_signals": [],
-                    "active_commitments": [],
                     "calibration_signals": [],
                     "peer_calibrations": [],
                     "trust_boundaries": [],

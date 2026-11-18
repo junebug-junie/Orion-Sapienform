@@ -63,5 +63,11 @@ class Settings(BaseSettings):
     # of steps; 200 is generous headroom, not a tuned real-world ceiling.
     MIRROR_GRAPH_MAX_VERB_STEPS: int = Field(default=200, ge=1)
 
+    # Five-minute bus traffic rollup (Patch 1 of
+    # docs/superpowers/specs/2026-11-11-causal-geometry-redesign.md). Publishes one
+    # BusTrafficRollupV1 per closed bucket on orion:bus:traffic:rollup; orion-sql-writer
+    # stores it in bus_traffic_rollup_5m. Independent of MIRROR_GRAPH_ENABLED.
+    MIRROR_TRAFFIC_ROLLUP_ENABLED: bool = Field(default=True)
+
 
 settings = Settings()

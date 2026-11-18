@@ -16,6 +16,10 @@ networks:
 
 services:
   falkordb:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: ${FALKORDB_IMAGE:-falkordb/falkordb:latest}
     container_name: orion-${NODE_NAME}-falkordb
     restart: unless-stopped

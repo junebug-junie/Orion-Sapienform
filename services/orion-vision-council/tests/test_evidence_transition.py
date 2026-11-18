@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -233,6 +234,33 @@ async def test_generate_interpretation_retries_after_parse_failure() -> None:
         await svc._generate_interpretation(entered, source_env=None)  # type: ignore[arg-type]
         await svc._generate_interpretation(entered, source_env=None)  # type: ignore[arg-type]
 
+    assert mock_llm.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_rejected_entity_event_does_not_commit_transition() -> None:
+    svc = CouncilService()
+    window = _window(hard_labels=["vehicle"], object_counts={"vehicle": 1})
+    base = {
+        "schema_version": "1.0", "window_id": window.window_id,
+        "scene_summary": "A vehicle is visible.",
+        "salient_observations": [], "uncertainties": [], "evidence_refs": ["art-1"],
+    }
+    rejected = json.dumps({**base, "event_candidates": [{
+        "event_type": "dragon_present", "narrative": "A dragon is visible.",
+        "entities": [{"type": "dragon"}],
+    }]})
+    valid = json.dumps({**base, "event_candidates": [{
+        "event_type": "vehicle_present", "narrative": "A vehicle is visible.",
+        "entities": ["vehicle"],
+    }]})
+
+    with patch.object(svc, "_call_llm_raw", new_callable=AsyncMock, side_effect=[rejected, valid]) as mock_llm:
+        first, first_outcome = await svc._generate_interpretation(window, source_env=None)  # type: ignore[arg-type]
+        second, second_outcome = await svc._generate_interpretation(window, source_env=None)  # type: ignore[arg-type]
+
+    assert first is None and first_outcome.parse_mode == "parse_failed"
+    assert second is not None and second_outcome.parse_mode == "strict_v2"
     assert mock_llm.call_count == 2
 
 

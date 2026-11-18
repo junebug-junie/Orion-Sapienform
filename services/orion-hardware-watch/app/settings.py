@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -49,12 +50,29 @@ class Settings(BaseSettings):
 
     # --- shed (cabinet sensor on this node's biometrics summary) ---
     cabinet_node: str = Field("athena", alias="HARDWARE_WATCH_CABINET_NODE")
+    # v1 only (incident-scoped rise shed); deleted with v1 after v2 runs clean for a week.
     shed_rise_c: float = Field(1.0, alias="HARDWARE_WATCH_SHED_RISE_C")
     shed_rise_window_sec: float = Field(900.0, alias="HARDWARE_WATCH_SHED_RISE_WINDOW_SEC")
 
+    # --- thermal controller v2 (docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md) ---
+    # v2: the reflex sheds on cabinet heat (>= 34 C -> cabinet_hot, unreadable -> cabinet_unknown) every
+    # tick, and AC power only opens an alert-only incident while the cabinet is warm (D2/D5).
+    # v1: the 2026-09-29 rules (AC-power incident + latched shed), the one-week rollback path.
+    heat_controller: Literal["v1", "v2"] = Field("v2", alias="HARDWARE_WATCH_HEAT_CONTROLLER")
+    reading_grace_sec: float = Field(300.0, gt=0, alias="HARDWARE_WATCH_READING_GRACE_SEC")
+    # orion-prediction forecast shown beside each reflex decision (observe-only; never sheds).
+    forecast_series: str = Field("athena.cabinet_temp_c", alias="HARDWARE_WATCH_FORECAST_SERIES")
+    forecast_threshold: str = Field("shed", alias="HARDWARE_WATCH_FORECAST_THRESHOLD")
+    forecast_stale_sec: float = Field(900.0, gt=0, alias="HARDWARE_WATCH_FORECAST_STALE_SEC")
+    heat_lookahead_min: float = Field(20.0, ge=0, alias="HARDWARE_WATCH_HEAT_LOOKAHEAD_MIN")
+    ac_low_mean_w: float = Field(140.0, gt=0, alias="HARDWARE_WATCH_AC_LOW_MEAN_W")
+    ac_low_window_sec: float = Field(900.0, gt=0, alias="HARDWARE_WATCH_AC_LOW_WINDOW_SEC")
+    # D6: no second alert / urgent investigation for the same rule+subject within this sliding window.
+    alert_dedupe_window_sec: float = Field(21600.0, ge=0, alias="HARDWARE_WATCH_ALERT_DEDUPE_WINDOW_SEC")
+
     # --- heat ---
-    heat_nodes: str = Field("athena,circe", alias="HARDWARE_WATCH_HEAT_NODES")
-    gpu_nodes: str = Field("athena,circe", alias="HARDWARE_WATCH_GPU_NODES")
+    heat_nodes: str = Field("athena,circe,hecate", alias="HARDWARE_WATCH_HEAT_NODES")
+    gpu_nodes: str = Field("athena,circe,hecate", alias="HARDWARE_WATCH_GPU_NODES")
     heat_sustain_sec: float = Field(600.0, alias="HARDWARE_WATCH_HEAT_SUSTAIN_SEC")
     heat_baseline_days: float = Field(7.0, gt=0, alias="HARDWARE_WATCH_HEAT_BASELINE_DAYS")
     heat_baseline_refresh_sec: float = Field(3600.0, gt=0, alias="HARDWARE_WATCH_HEAT_BASELINE_REFRESH_SEC")
@@ -63,6 +81,27 @@ class Settings(BaseSettings):
     gpu_ceiling_c: float = Field(85.0, alias="HARDWARE_WATCH_GPU_CEILING_C")
     gpu_ceiling_sustain_sec: float = Field(120.0, alias="HARDWARE_WATCH_GPU_CEILING_SUSTAIN_SEC")
     gpu_ceiling_rearm_c: float = Field(80.0, alias="HARDWARE_WATCH_GPU_CEILING_REARM_C")
+    # D7: heat incidents open on fixed ceilings only; the trailing p95 is an annotation.
+    # CPU 90 C is the spec's Q3 proposed default (typical Xeon throttle territory), unconfirmed.
+    cpu_ceiling_c: float = Field(90.0, alias="HARDWARE_WATCH_CPU_CEILING_C")
+    cpu_ceiling_rearm_c: float = Field(85.0, alias="HARDWARE_WATCH_CPU_CEILING_REARM_C")
+    # An open heat incident whose sensor is silent this long resolves as sensor_lost (C12).
+    heat_sensor_lost_sec: float = Field(900.0, gt=0, alias="HARDWARE_WATCH_HEAT_SENSOR_LOST_SEC")
+
+    # --- docker image prune (ladder retirement PR 4): the disk rule asks cortex-exec for
+    # skills.runtime.image_prune.v1 when the docker volume is at/above the skill's own 70 % floor.
+    # ON in code too (ship flags on): a process started without the compose env still asks.
+    image_prune_enabled: bool = Field(True, alias="HARDWARE_WATCH_IMAGE_PRUNE_ENABLED")
+    # The docker data-root, bind-mounted read-only (docker-compose.yml), as in orion-cortex-exec.
+    image_prune_mount_path: str = Field("/hostfs/docker", alias="HARDWARE_WATCH_IMAGE_PRUNE_MOUNT_PATH")
+    image_prune_cooldown_sec: float = Field(43200.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_COOLDOWN_SEC")
+    image_prune_retry_sec: float = Field(1800.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_RETRY_SEC")
+    image_prune_start_delay_sec: float = Field(600.0, ge=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_START_DELAY_SEC")
+    # Above the verb's own timeout_ms (660 s), which is above the docker subprocess's 600 s: the
+    # innermost budget fires first (the staggering dispatch's route used).
+    image_prune_rpc_timeout_sec: float = Field(720.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_RPC_TIMEOUT_SEC")
+    cortex_exec_channel: str = Field("orion:cortex:exec:request:background", alias="CORTEX_EXEC_CHANNEL")
+    cortex_exec_result_prefix: str = Field("orion:exec:result", alias="CORTEX_EXEC_RESULT_PREFIX")
 
     @model_validator(mode="after")
     def _shed_signal_outlives_refresh(self) -> "Settings":

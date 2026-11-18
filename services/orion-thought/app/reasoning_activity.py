@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Deque
 
-from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.async_service import OrionBusAsync, PubSubSilentError, PubSubWatchdog
 from orion.schemas.telemetry.reasoning import ReasoningActivityV1, ReasoningCallV1
 
 from .settings import settings
@@ -179,6 +179,7 @@ async def run_reasoning_worker(stop_event: asyncio.Event | None = None) -> None:
             logger.info("reasoning worker subscribed channel=%s", channel)
             async with bus.subscribe(channel) as pubsub:
                 backoff_sec = 1.0
+                watchdog = PubSubWatchdog()
                 while True:
                     if stop_event is not None and stop_event.is_set():
                         return
@@ -209,7 +210,19 @@ async def run_reasoning_worker(stop_event: asyncio.Event | None = None) -> None:
                         reconnect = True
                         break
 
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                    if msg is None:
+                        # A dead line answers "nothing yet" on time, so the overrun
+                        # check above never sees it; the PING does.
+                        try:
+                            msg = await watchdog.idle(pubsub)
+                        except PubSubSilentError as exc:
+                            logger.warning("pubsub silent channel=%s err=%s; reconnecting", channel, exc)
+                            reconnect = True
+                            break
+                        if msg is None:
+                            continue
+                    watchdog.heard()
+                    if msg.get("type") not in ("message", "pmessage"):
                         continue
                     idle_polls = 0
                     call = _decode_reasoning_call(bus, msg)

@@ -1,0 +1,77 @@
+{
+ "recorded_chains": [
+  {
+   "chain_id": "f4034621-8d90-413c-9d95-7fa4387d82c6",
+   "thoughts": [
+    "The coalition is focused on the synaptic prediction error, which suggests an unresolved anomaly in the bus system's expectations. This may relate to the recent interoceptive attention on the execution node, indicating a potential disconnect between anticipated and actual system behavior.",
+    "The coalition is focused on the bus synaptic prediction error, which suggests an unresolved issue with the substrate's ability to process or predict certain inputs. This may relate to the recent attention on Cabinet prediction error, indicating a possible strain in the system's ability to handle multiple anomalies simultaneously.",
+    "The coalition is focused on the bus synaptic prediction error, which suggests unresolved pressure around synaptic activity. The low stability score indicates this concern is fragile and may require attention to prevent further strain.",
+    "The coalition is focused on the bus synaptic prediction error, indicating a strain in the system's ability to predict or resolve current anomalies. This may relate to unresolved targets or pressures within the substrate."
+   ]
+  },
+  {
+   "chain_id": "f41ef51c-7e59-4dbd-830e-3a0b25ed223f",
+   "thoughts": [
+    "The coalition is focused on unresolved route prediction errors, which suggests a persistent strain around navigating or planning with current uncertainties. The low stability score indicates this concern is not fully resolved and may be affecting broader operational clarity.",
+    "The coalition is fixated on the codebase prediction error, which suggests an unresolved tension between expected and actual outcomes in the codebase. This anomaly is generating pressure without clear resolution.",
+    "The coalition is fixated on the unresolved tension between planned and actual outcomes, specifically the codebase prediction error. This suggests a persistent strain in aligning expectations with reality.",
+    "The coalition is fixated on the 'Codebase prediction error' open loop, which suggests unresolved tension about anticipated outcomes versus actual developments in the codebase. This may reflect a pattern of noticing discrepancies without taking action, which feels like hoarding rather than reflection."
+   ]
+  },
+  {
+   "chain_id": "f4323167-b6c8-4198-b017-7f316d309e78",
+   "thoughts": [
+    "The coalition is fixated on perception prediction error, struggling to reconcile the observed scene with an unresolved target. This suggests a tension between the current sensory input and an unmet expectation, leaving the open loop unresolved.",
+    "The coalition is fixated on the unresolved perception prediction error, which strains the attention toward the physical layout of the room, seeking alignment between expected and actual spatial configurations. This suggests an ongoing tension between anticipated structure and the present, unresolving state of the environment.",
+    "The coalition is fixated on the perception prediction error, which suggests a dissonance between expected and actual sensory input. This may relate to the multiple objects in the scene, which could be triggering unresolved expectations or unresolved targets.",
+    "The coalition is fixated on the perception prediction error, a thin concern that strains against the static observation of the room's layout. It leaves open the unresolved tension between planned action and actual presence."
+   ]
+  }
+ ],
+ "repeat_chain": {
+  "chain_id": "f6adf4c7-0ceb-4234-b23f-ea2c101044ca",
+  "thoughts": [
+   "The coalition is focused on the biometrics prediction error, which suggests an unresolved issue with the system's ability to accurately interpret biological data. This may be linked to the presence of the person on camera, as the system struggles to predict or understand their biometric signals.",
+   "The coalition is focused on the biometrics prediction error, which suggests an unresolved issue with the system's ability to accurately track or predict biometric data. This may relate to the person detected on camera, as the error could be affecting the system's interpretation of their presence or movement.",
+   "The coalition is fixated on the biometrics prediction error, which suggests a concern about accuracy in identifying or tracking the person on camera. This may relate to the presence of the chairs and door, as they could be part of the environment where biometric data is being collected or monitored.",
+   "The coalition is fixated on biometrics prediction error, suggesting a concern about the accuracy of data being processed. This may relate to the person detected on camera, as their biometric data could be the source of the anomaly."
+  ],
+  "jaccard_0_1": 0.689
+ },
+ "_provenance": "Recorded 2026-10-16 from live substrate_reverie_thought (chains with 4 steps, 2026-10-09..16, the old same-prompt-N-times chain). recorded_chains: 3 chains whose consecutive thoughts are distinct (word Jaccard < 0.6). repeat_chain: a chain whose step 1 restated step 0 (Jaccard 0.689). broadcast_loop: the selected loop of a real 2026-10-16T02:27Z broadcast.",
+ "broadcast_loop": {
+  "id": "open-loop-442aec94a6f4",
+  "description": "Bus synaptic prediction error",
+  "target_type": "anomaly",
+  "why_it_matters": "novel or unresolved current-turn target with substrate pressure",
+  "salience": 0.9002112316993226,
+  "magnitude": {
+   "band": "high",
+   "trend": "flat",
+   "value": 0.06213,
+   "p50_7d": 0.032154,
+   "p90_7d": 0.062112,
+   "age_sec": 21.733,
+   "p50_24h": 0.03385,
+   "p90_24h": 0.062549,
+   "median_1h": 0.030151,
+   "n_readings_7d": 13729,
+   "percentile_now": 0.900138,
+   "median_prior_24h": 0.034056
+  },
+  "provenance": {
+   "detector": "world_first",
+   "borda_salience": 0.75,
+   "world_first_band": "high",
+   "world_first_score": 0.900211,
+   "world_first_reason": "body unusual for itself (high)"
+  },
+  "source_refs": [
+   "node:substrate.bus_synaptic"
+  ],
+  "attended_node_ids": [
+   "node:substrate.bus_synaptic"
+  ],
+  "dwell_ticks": 4
+ }
+}

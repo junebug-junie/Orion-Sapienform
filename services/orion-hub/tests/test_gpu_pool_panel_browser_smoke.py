@@ -151,7 +151,15 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
                      "actuation": {"action": "load", "role": "agent-gpu2", "generation": 4, "reason": "demand",
                                    "profile": "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex",
                                    "phase": "rolling_back", "outcome": "failed",
-                                   "sent_at": "2026-09-24T11:59:00Z"}}],
+                                   "sent_at": "2026-09-24T11:59:00Z",
+                                   # orion-gpu-pool controller health (2026-10-09 stale-controller incident)
+                                   "controller_degraded": {"agent-gpu2": {
+                                       "degraded": True, "kind": "config_unreadable",
+                                       "reason": "config_unloadable:ValidationError", "refusals": 3,
+                                       "first_seen": "2026-09-24T11:40:00Z", "host": "circe",
+                                       "advice": "The GPU lane controller on circe can't read its config "
+                                                 "(config_unloadable:ValidationError): its code is older than "
+                                                 "the checkout it reads. Rebuild the controller on circe."}}}}],
                  leases=STATE["leases"] + [
                      {"lease_id": "H1holdholdhold", "request_id": "run1:1", "holder": "durable-runs:run1",
                       "work_class": "chat", "priority": "background", "kind": "hold", "status": "granted",
@@ -194,6 +202,10 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
         # stage 5.3: the model the load named, and the phase the controller last reported on the bus
         assert "model qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex" in gpu2 and "phase rolling_back" in gpu2
         assert page.locator('[data-card="gpu2"] button[data-verb="clear_fault"][data-card="gpu2"]').count() == 1
+        broken = page.inner_text('[data-card="gpu2"] [data-controller-degraded="agent-gpu2"]')
+        assert "CONTROLLER BROKEN" in broken and "Rebuild the controller on circe" in broken
+        assert "3 refusals" in broken and "config_unloadable:ValidationError" in broken
+        assert page.locator('[data-card="gpu0"] [data-controller-degraded]').count() == 0
         assert "observe only" in page.inner_text('[data-card="gpu0"]') or "swap:" not in page.inner_text('[data-card="gpu0"]')
         guards = page.inner_text("#swapGuards")
         assert "thermal: hot:temp_over_hot" in guards and "visual_baseline" not in guards
@@ -223,7 +235,13 @@ def test_gpu_pool_panel_emergency_stop_and_hold_refusal():
                                        "slots": 1, "vram_gb": 24, "launch": launch}})
     running = dict(STATE, mode="enforce", config=config, actuation_paused=None,
                    cards=STATE["cards"] + [{"card": "gpu2", "vram_gb": 32, "swapped_in": [], "swap_state": "idle",
-                                            "actuated_roles": ["agent-gpu2"]}])
+                                            "actuated_roles": ["agent-gpu2"],
+                                            # degraded by boot-reconcile refusals alone: no action record yet
+                                            "actuation": {"controller_degraded": {"agent-gpu2": {
+                                                "degraded": True, "kind": "config_unreadable",
+                                                "reason": "config_unloadable:ValidationError", "refusals": 2,
+                                                "first_seen": "2026-09-30T06:00:00Z", "host": "circe",
+                                                "advice": "Rebuild the controller on circe."}}}}])
     paused = dict(running, actuation_paused={"paused": True, "since": "2026-09-30T07:00:00Z", "by": "hub-operator"})
     template = (HUB / "templates" / "gpu_pool.html").read_text().replace("{{HUB_UI_ASSET_VERSION}}", "t")
     script = (HUB / "static" / "js" / "gpu_pool.js").read_text()
@@ -265,6 +283,8 @@ def test_gpu_pool_panel_emergency_stop_and_hold_refusal():
         assert "nothing can load it" in page.inner_text("#holdControls")
         assert page.locator('button[data-verb="hold"]').count() == 0
         assert "pool actuates agent-gpu2" in page.inner_text('[data-card="gpu2"]')
+        gpu2 = page.inner_text('[data-card="gpu2"]')
+        assert "CONTROLLER BROKEN" in gpu2 and "in flight" not in gpu2   # no fake action line
         assert page.inner_text("#poolMode") == "mode: enforce"
 
         page.once("dialog", lambda d: d.accept())

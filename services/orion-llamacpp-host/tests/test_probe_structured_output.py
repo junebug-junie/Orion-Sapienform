@@ -176,3 +176,29 @@ def test_chat_template_kwargs_retry(tmp_path: Path) -> None:
     )
     assert len(calls) >= 2
     assert summary["thinking_control_supported"] is False
+
+
+def test_a_recall_stops_the_probe_instead_of_scoring_a_failed_method(tmp_path: Path) -> None:
+    class LaneRecalled(RuntimeError):
+        pass
+
+    class _Client:
+        def get(self, url: str, timeout: float = 10.0):
+            raise OSError("no reads")
+
+        def post(self, url: str, json: Dict[str, Any], timeout: float = 120.0):
+            raise LaneRecalled("the GPU pool took the seat back")
+
+        def close(self) -> None:
+            pass
+
+    with pytest.raises(LaneRecalled):
+        run_probe(base_url="", model="m", timeout_sec=1.0, artifact_dir=tmp_path,
+                  include_thinking_on_probe=False, verbose=False, client_factory=lambda: _Client())
+
+
+def test_main_has_no_direct_url_mode() -> None:
+    from probe_structured_output import main
+
+    with pytest.raises(SystemExit):
+        main(["--base-url", "http://100.112.254.99:8013"])

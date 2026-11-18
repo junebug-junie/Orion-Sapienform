@@ -74,8 +74,10 @@ def test_live_config_carries_the_5_1_values():
     launch = CFG.roles["agent-gpu2"].launch
     assert launch.cuda_env == "ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES"
     assert launch.profile_var == "ATLAS_AGENT_BURST_PROFILE_NAME"
-    # 5.3: one allowed profile, the one the seat has always announced; the pool sends it on a load
-    assert launch.profiles == ["qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"]
+    # 5.3: the seat's allow-list; the pool sends the first entry on a load. Stage 7.2 put
+    # Ternary-Bonsai first and kept the 27B Q4 second as the rollback.
+    assert launch.profiles == ["ternary-bonsai2-27b-pq2-v100-32gb-circe-agent",
+                               "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"]
     assert CFG.load_profile("agent-gpu2") == launch.profiles[0]
     assert CFG.load_profile("diffusion") is None and CFG.load_profile("chat") is None
     assert launch.timeout_sec == 900
@@ -388,8 +390,11 @@ def test_unserviceable_world_request_waits_instead_of_backlogging():
 def test_agent_gpu2_seat_limit_is_9000s(loaded_sec, drains):
     crds = {c: CardLive(c) for c in CFG.cards}
     crds["gpu2"] = CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0 - timedelta(seconds=loaded_sec))
-    d = schedule(CFG, _live(), crds, [], T0)
+    from orion.gpu_pool.tests.test_scheduler import cold
+
+    d = schedule(cold(CFG), _live(), crds, [], T0)   # warm standby (the live default) never max-holds idle
     assert bool([u for u in _of(SwapUnload, d) if u.reason == "max_hold"]) is drains
+    assert not [u for u in _of(SwapUnload, schedule(CFG, _live(), crds, [], T0)) if u.reason == "max_hold"]
 
 
 # --- worked example A: add gpu4 hosting an 8B or a vision model -----------------------------------
@@ -429,9 +434,9 @@ def _example_a() -> dict:
                    "profile_var": "ATLAS_VISION4_PROFILE_NAME", "profiles": [VISION_PROFILE],
                    "ready": "/health", "timeout_sec": 600},
         "swap": {"evicts": ["fast2"], "guards": ["thermal"]}}
-    data["classes"]["fast"] = {"roles": ["fast", "metacog", "fast2", "agent", "agent-gpu2", "chat"],
+    data["classes"]["fast"] = {"roles": ["fast", "fast2", "agent", "agent-gpu2", "chat"],
                                "on_unavailable": "wait"}
-    data["classes"]["metacog"] = {"roles": ["metacog", "fast", "fast2", "agent", "agent-gpu2", "chat"],
+    data["classes"]["metacog"] = {"roles": ["fast", "fast2", "agent", "agent-gpu2", "chat"],
                                   "on_unavailable": "backlog"}
     data["classes"]["vision"] = {"roles": ["vision4"], "on_unavailable": "backlog"}
     return data

@@ -66,3 +66,14 @@ def test_build_persona_card_provenance_has_content_hash(tmp_path, monkeypatch):
     assert persona.provenance["source"] == "town_cards.yaml"
     assert len(persona.provenance["content_sha256"]) == 12
     assert persona.provenance["chars"] == len("Orion is a distributed digital mind.")
+
+
+def test_load_town_card_blurb_prefers_local_sibling(tmp_path, monkeypatch):
+    """The real card (personal details) is written to the gitignored
+    orion_town_card.local.txt; the tracked .txt is the redacted example."""
+    card = tmp_path / "orion_town_card.txt"
+    card.write_text("example card\n", encoding="utf-8")
+    monkeypatch.setenv("EMBODIMENT_TOWN_CARDS_PATH", str(card))
+    assert _load_town_card_blurb() == "example card"
+    (tmp_path / "orion_town_card.local.txt").write_text("real card\n", encoding="utf-8")
+    assert _load_town_card_blurb() == "real card"

@@ -1,0 +1,67 @@
+name: body-atlas-tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/body_atlas/**"
+      - "orion/privacy/**"
+      - "config/body_atlas/**"
+      - "config/physiology/families.yaml"
+      - "config/physiology/contract.yaml"
+      - "config/biometrics/node_catalog.yaml"
+      - "config/vision_frame_router.yaml"
+      - "orion/evals/model_replay/sandbox.py"
+      - "services/orion-substrate-runtime/app/worker.py"
+      - "orion/substrate/*_loop/constants.py"
+      - "orion/schemas/*_projection.py"
+      - ".github/workflows/body-atlas-tests.yml"
+      # test_field_notes.py checks NOTES_BEGAN_AT against the poller's PR_FIELD_NOTES_NOT_BEFORE
+      - "services/orion-durable-runs/.env_example"
+      - "services/orion-durable-runs/docker-compose.yml"
+      - "services/orion-durable-runs/app/settings.py"
+  push:
+    branches: [main]
+    paths:
+      - "orion/body_atlas/**"
+      - "orion/privacy/**"
+      - "config/body_atlas/**"
+      - "config/physiology/families.yaml"
+      - "config/physiology/contract.yaml"
+      - "config/biometrics/node_catalog.yaml"
+      - "config/vision_frame_router.yaml"
+      - "orion/evals/model_replay/sandbox.py"
+      - "services/orion-substrate-runtime/app/worker.py"
+      - "orion/substrate/*_loop/constants.py"
+      - "orion/schemas/*_projection.py"
+      - ".github/workflows/body-atlas-tests.yml"
+      # test_field_notes.py checks NOTES_BEGAN_AT against the poller's PR_FIELD_NOTES_NOT_BEFORE
+      - "services/orion-durable-runs/.env_example"
+      - "services/orion-durable-runs/docker-compose.yml"
+      - "services/orion-durable-runs/app/settings.py"
+
+jobs:
+  body-atlas:
+    name: Body atlas — tests + organ structure + capacity roles + wire evals
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: python -m pip install "pydantic>=2,<3" pyyaml pytest
+      - name: Tests
+        run: PYTHONPATH=. python -m pytest -q orion/body_atlas/tests
+      - name: Organ structure eval (frozen bus graph + frozen whole bodies)
+        run: python orion/body_atlas/evals/run_organ_structure_eval.py
+      - name: Capacity roles eval (rules vs reviewed sets, held-out 10-29, mutation must fail)
+        run: python orion/body_atlas/evals/run_capacity_roles_eval.py
+      - name: Wire eval (HTTP calls + Redis keys vs hand-checked facts, v2 gap rules, mutations must fail)
+        run: python orion/body_atlas/evals/run_wire_eval.py
+      - name: Portrait eval (reach vs an independent oracle, reviewed cases, full-ledger size, mutations must fail)
+        run: python orion/body_atlas/evals/run_portrait_eval.py
+      - name: Field note truth eval (planted bad notes must each fail their own check)
+        run: python orion/body_atlas/evals/run_field_note_truth_eval.py
+      - name: Reminiscence source-truth eval (reviewed hops, label truth vs an oracle, mutations must fail)
+        run: python orion/body_atlas/evals/run_reminiscence_source_truth_eval.py

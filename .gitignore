@@ -134,12 +134,8 @@ desktop.ini
 
 .orion_dev/
 
-# scripts/self_study_enrichment_hook.py's own local git-hook state (last-
-# enriched SHA, daily publish-rate-limit counter) -- per-checkout/worktree
-# operational state, not repo content. Same category as .orion_dev/ and
-# .orion-smoke-logs/ just below; was missing here (found live 2026-08-12
-# while verifying the enrichment trigger loop end-to-end -- nothing had
-# ever created this dir before then, so the gap went unnoticed).
+# Per-checkout local operational state (first used by a git hook retired 2026-10-30).
+# Not repo content; same category as .orion_dev/.
 .orion/
 
 # === ML training runs (checkpoints/logs; too large for GitHub) ===
@@ -193,3 +189,16 @@ graphify-out/graph.html
 # Generated Graphify data lives on warm storage, including the directory symlink.
 /graphify-out
 /.graphify-migrated-*
+
+# Review/labeling artifacts carry Juniper chat + memory snippets; the repo is public.
+docs/superpowers/evals/*-review.html
+docs/superpowers/evals/*-decisions.csv
+docs/superpowers/evals/*labeling-set*
+
+# Person model: real personal data stays local (redacted *.example.* files are
+# committed; orion.person_model.person.local_first reads the local file first).
+config/person_model/*.local.yaml
+orion/person_model/evals/*.local.jsonl
+
+# Graphiti trial: real names for the scorer stay local (privacy gate)
+services/orion-graphiti-adapter/scripts/*.local.json

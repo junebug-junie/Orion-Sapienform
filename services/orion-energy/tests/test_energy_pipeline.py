@@ -194,3 +194,18 @@ def test_mid_cycle_only_ingest_logs_incomplete_and_blocks_run_cost(
     assert any("energy_cycle_incomplete" in r.getMessage() for r in caplog.records)
     est = p.on_settlement(_settled(), now=NOW)[0].payload
     assert est.run_cost_gap == "no_cycle_usage"
+
+
+def test_redropped_fall_back_file_republishes_the_restamped_hours() -> None:
+    """#3284: Postgres still holds the old 11-01 stamps. Re-dropping the day's file (newer retrieved_at)
+    must publish every hour again, including the 11-02 08:00 UTC hour that was empty."""
+    from orion.energy.espi import parse_espi
+    from orion.energy.tests.test_energy_dst_gap import _HOLE, _nov1_nov2_feed
+
+    pipe = _pipeline()
+    first = datetime(2026, 11, 4, 5, 46, tzinfo=timezone.utc)
+    pipe.replay(parse_espi(_nov1_nov2_feed(), retrieved_at=first, source="rockymountain_power"))   # boot
+    again = parse_espi(_nov1_nov2_feed(), retrieved_at=first + timedelta(days=9), source="rockymountain_power")
+    out = pipe.ingest_intervals(again, now=first + timedelta(days=9))
+    published = {o.payload.interval_start for o in out if o.kind == ENERGY_USAGE_KIND}
+    assert len(published) == 49 and _HOLE in published

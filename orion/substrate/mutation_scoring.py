@@ -13,7 +13,7 @@ class ClassSpecificScorer:
         notes: list[str] = []
         passed = True
         for metric in contract.evaluation_metrics:
-            if not metric_passed(metrics, metric):
+            if not metric_passed(metrics, metric, minimum=contract.metric_minimums.get(metric, 0.0)):
                 passed = False
                 notes.append(f"metric_failed:{metric}")
         if passed:

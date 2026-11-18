@@ -1,7 +1,7 @@
-"""Unit tests for the two generative (non-rupture) metacog trigger detectors.
+"""Unit tests for the generative (non-rupture) insight metacog trigger detector.
 
 Covers orion/substrate/metacog_trigger_signals.py's `detect_confidence_recovery`
-("insight") and `detect_flow_regime` ("flow") against synthetic tick sequences
+("insight") against synthetic tick sequences
 shaped like the real `substrate_attention_self_model` history they were
 calibrated on (see docs/superpowers/specs/2026-07-28-collapse-mirror-generative-
 triggers-design.md).
@@ -15,7 +15,6 @@ from datetime import datetime, timedelta, timezone
 from orion.substrate.metacog_trigger_signals import (
     ConfidenceSample,
     detect_confidence_recovery,
-    detect_flow_regime,
 )
 
 TICK = timedelta(seconds=30)
@@ -26,14 +25,10 @@ LOW = 0.70
 HIGH = 0.90
 MAX_CROSS = 15
 CONFIRM = 2
-FLOOR = 0.90
-MAX_STDEV = 0.02
-MIN_TICKS = 20
 EXPECTED_TICK_SEC = 30.0
 SPAN_TOLERANCE = 2.0
 # Derived exactly as services/orion-equilibrium-service/app/service.py does.
 MAX_CROSS_SPAN_SEC = MAX_CROSS * EXPECTED_TICK_SEC * SPAN_TOLERANCE
-MAX_FLOW_SPAN_SEC = (MIN_TICKS - 1) * EXPECTED_TICK_SEC * SPAN_TOLERANCE
 
 
 def _samples(values: list[float]) -> list[ConfidenceSample]:
@@ -54,19 +49,6 @@ def _recovery(values: list[float], samples=None, **kwargs):
     }
     params.update(kwargs)
     return detect_confidence_recovery(
-        _samples(values) if samples is None else samples, **params
-    )
-
-
-def _flow(values: list[float], samples=None, **kwargs):
-    params = {
-        "floor": FLOOR,
-        "max_stdev": MAX_STDEV,
-        "min_ticks": MIN_TICKS,
-        "max_span_sec": MAX_FLOW_SPAN_SEC,
-    }
-    params.update(kwargs)
-    return detect_flow_regime(
         _samples(values) if samples is None else samples, **params
     )
 
@@ -93,7 +75,7 @@ def test_real_shaped_gradual_recovery_fires() -> None:
 
 
 def test_flat_calm_sequence_does_not_fire() -> None:
-    """Sustained high confidence is `flow`, not `insight` -- with no preceding
+    """Sustained high confidence is not `insight` -- with no preceding
     low band there was no surprise to resolve."""
     assert _recovery([0.93] * 10) is None
 
@@ -153,63 +135,6 @@ def test_too_few_samples_for_confirm_does_not_fire() -> None:
 
 
 # ===========================================================================
-# flow: detect_flow_regime
-# ===========================================================================
-
-
-def test_sustained_high_low_variance_fires() -> None:
-    values = [0.93, 0.94, 0.93, 0.95, 0.94] * 4  # 20 ticks, tight band
-    regime = _flow(values)
-    assert regime is not None
-    assert regime.tick_count == MIN_TICKS
-    assert regime.min_value >= FLOOR
-    assert regime.stdev_value <= MAX_STDEV
-    assert regime.started_at == T0
-    assert regime.ended_at == T0 + 19 * TICK
-
-
-def test_one_dip_below_floor_blocks_flow() -> None:
-    """The hard floor on the window *minimum* is the whole point: a single real
-    dip cannot be averaged away, which `mean - k*stdev >= floor` would allow."""
-    values = [0.93] * 19 + [0.85]
-    assert _flow(values) is None
-    # Same window with the dip removed does fire, proving the dip was the cause.
-    assert _flow([0.93] * 20) is not None
-
-
-def test_noisy_high_variance_window_blocks_flow() -> None:
-    """All ticks above the floor but swinging -- high confidence, not calm."""
-    values = [0.91, 0.99, 0.91, 0.99] * 5
-    assert min(values) >= FLOOR
-    assert _flow(values) is None
-
-
-def test_declining_sequence_does_not_fire() -> None:
-    values = [0.98 - 0.01 * i for i in range(20)]
-    assert _flow(values) is None
-
-
-def test_only_trailing_window_is_evaluated() -> None:
-    """"Sustained" means the last N consecutive ticks -- an old rough patch
-    before a genuinely calm run must not veto it."""
-    values = [0.40, 0.99, 0.55] + [0.93] * MIN_TICKS
-    regime = _flow(values)
-    assert regime is not None
-    assert regime.tick_count == MIN_TICKS
-    assert regime.started_at == T0 + 3 * TICK
-
-
-def test_too_few_ticks_does_not_fire() -> None:
-    """A calm window shorter than min_ticks is not yet evidence of sustained
-    calm -- fail closed rather than claiming a regime from 3 samples."""
-    assert _flow([0.93] * (MIN_TICKS - 1)) is None
-
-
-def test_non_finite_value_fails_closed_for_flow() -> None:
-    assert _flow([0.93] * (MIN_TICKS - 1) + [math.inf]) is None
-
-
-# ===========================================================================
 # Contiguity / staleness regressions (review finding M1, 2026-07-30).
 # Row adjacency is not tick adjacency: the reader drops rows whose confidence is
 # missing/non-finite, so a "20 consecutive tick" window can really span hours.
@@ -240,20 +165,6 @@ def test_insight_span_bound_is_enforced_in_seconds() -> None:
     values = [0.66, 0.80, 0.91, 0.92]
     assert _recovery(values) is not None
     assert _recovery(values, max_cross_span_sec=1.0) is None
-
-
-def test_flow_rejects_a_window_that_only_looks_consecutive() -> None:
-    """Pre-fix, 20 rows spanning 6h fired while reporting tick_count=20 as
-    though it were 10 minutes of sustained calm."""
-    samples = _gappy([0.93] * MIN_TICKS, gap_after=5, gap=timedelta(hours=6))
-    assert _flow([], samples=samples) is None
-    assert _flow([0.93] * MIN_TICKS) is not None
-
-
-def test_flow_records_real_span_for_auditing() -> None:
-    regime = _flow([0.93] * MIN_TICKS)
-    assert regime is not None
-    assert regime.span_sec == (MIN_TICKS - 1) * 30.0
 
 
 def test_insight_records_real_cross_span_for_auditing() -> None:
@@ -293,12 +204,3 @@ def test_low_at_is_stable_when_the_high_run_breaks_and_reforms() -> None:
     assert len(high_ats) > 1, "expected high_at to re-anchor when the run breaks"
     assert len(low_ats) == 1, f"low_at must identify one episode, got {low_ats}"
     assert low_ats == {T0 + 1 * TICK}
-
-
-def test_degenerate_floor_documented_in_settings_blocks_everything() -> None:
-    """floor=0.92 measured 0 qualifying windows against 2246 real 20-tick
-    windows. Locks in that finding: a window whose real min is 0.91 must not
-    qualify at that floor, which is why settings.py warns against raising it."""
-    values = [0.91, 0.93] * 10
-    assert _flow(values) is not None  # fires at the shipped floor of 0.90
-    assert _flow(values, floor=0.92) is None

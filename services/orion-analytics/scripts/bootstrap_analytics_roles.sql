@@ -184,6 +184,7 @@ select
       'fcc_timeout',
       'fcc_stream_line_limit',
       'fcc_draft_length_ceiling_exceeded',
+      'fcc_context_ceiling_exceeded',
       'fcc_nonzero_exit',
       'fcc_context_overflow',
       'fcc_mcp_github_missing'

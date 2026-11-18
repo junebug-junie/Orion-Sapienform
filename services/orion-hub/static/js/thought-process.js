@@ -381,8 +381,31 @@
       slice ? `<div class="mt-1 text-[10px] text-gray-500">${escapeHtml(cleanText(slice.task_mode) || '--')} · ${escapeHtml(cleanText(slice.conversation_frame) || '--')} · ${escapeHtml(cleanText(slice.answer_strategy) || '--')}</div>` : '',
       _turnTraceList(thought.strain_refs, ''),
       _turnTraceList(thought.disposition_reasons, 'No reasons recorded.'),
+      _turnTraceDayCitations(thought.day_citations),
     ].join('');
     return _turnTraceStep('1-3 · Ingress / Association / Stance', badge, inner);
+  }
+
+  // Temporal Self patch 4: what the citation gate found in the stance's references to Orion's own
+  // day. UNVERIFIED = a sentence named the shown day without citing an arc (counted, never blocked).
+  function _turnTraceDayCitations(dc) {
+    const check = asObject(dc);
+    if (!check) return '';
+    const label = cleanText(check.label) || 'no_day_claims';
+    const cls = label === 'UNVERIFIED'
+      ? 'border-amber-500/60 text-amber-300'
+      : (label === 'verified' ? 'border-emerald-500/50 text-emerald-300' : 'border-gray-600 text-gray-400');
+    const cited = asList(check.cited_valid);
+    const rejected = asList(check.rejected_unknown);
+    const uncited = Number(check.uncited_day_sentences) || 0;
+    const summary = `day cue: ${escapeHtml(check.shown ?? 0)} arcs shown · ${cited.length} cited · `
+      + `${rejected.length} unknown removed · ${uncited} uncited day sentence${uncited === 1 ? '' : 's'}`;
+    return [
+      `<div class="mt-2 text-[10px] text-gray-400">${_turnTraceBadge(label, cls)} ${summary}</div>`,
+      cited.length ? _turnTraceList(cited.map((r) => `cited ${r}`), '') : '',
+      rejected.length ? _turnTraceList(rejected.map((r) => `removed (not shown) ${r}`), '') : '',
+      uncited ? _turnTraceList(asList(check.uncited_examples).map((t) => `UNVERIFIED: ${t}`), '') : '',
+    ].join('');
   }
 
   function _turnTraceHarnessWorkStep(executionRun, grammarTrace) {

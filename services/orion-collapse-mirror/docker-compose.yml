@@ -1,5 +1,9 @@
 services:
   collapse-mirror:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-collapse-mirror/Dockerfile

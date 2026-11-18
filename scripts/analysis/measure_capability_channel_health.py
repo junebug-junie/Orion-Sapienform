@@ -100,7 +100,11 @@ CAPABILITY_CHANNELS: tuple[str, ...] = (
     "reasoning_pressure",
     "reliability_pressure",
     "stream_backlog_pressure",
+    # Historical name: renamed catalog_drift_pressure 2026-10-07 (decision D3).
+    # Kept so pre-rename windows still measure; post-rename rows read under
+    # the new name below, and the old name will show as absent.
     "contract_pressure",
+    "catalog_drift_pressure",
     "confidence",
     "available_capacity",
 )

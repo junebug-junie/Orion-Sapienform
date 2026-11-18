@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from orion.autonomy.goal_state import set_active_goal
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 logger = logging.getLogger("orion.autonomy.goal_state_listener")
@@ -65,31 +66,16 @@ async def run_goal_state_listener(
     """Subscribe to the goal-proposal channel and keep this process's goal_state
     cache current. Always safe to run: it only updates an in-memory store that
     nothing reads unless the caller's capability-gating path actually consults
-    ``get_active_goal()``, so it is harmless when idle.
+    ``get_active_goal()``, so it is harmless when idle. A dropped subscription is
+    opened again with backoff (``run_subscription``) until ``stop_event`` is set.
     """
-    logger.info("goal_state listener subscribing channel=%s", channel)
-    try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await _handle_bus_message(bus, msg)
-                except Exception:
-                    logger.exception("goal_state unhandled bus worker error")
-    except asyncio.CancelledError:
-        raise
-    finally:
-        logger.info("goal_state listener stopped channel=%s", channel)
+    await run_subscription(
+        bus,
+        channel,
+        lambda msg: _handle_bus_message(bus, msg),
+        stop_event=stop_event,
+        name=f"goal-state-listener:{channel}",
+    )
 
 
 async def start_goal_state_listener(

@@ -97,6 +97,9 @@ async def project_crystallization(
 
     if updated.governance.sensitivity == "intimate":
         result.errors.append("graphiti_projection_skipped:intimate_sensitivity")
+    elif project_graphiti and cfg.graphiti_enabled and not (cfg.graphiti_url or "").strip():
+        result.graphiti = {"error": "graphiti_adapter_url_missing"}
+        result.errors.append("graphiti_sync_failed:graphiti_adapter_url_missing")
     elif project_graphiti and cfg.graphiti_enabled:
         try:
             adapter = GraphitiAdapter(enabled=True, url=cfg.graphiti_url, falkordb_uri=cfg.falkordb_uri)
@@ -108,7 +111,13 @@ async def project_crystallization(
                 "edge_ids": gresult.edge_ids,
                 "canonical_mutated": gresult.canonical_mutated,
             }
+            if gresult.error:
+                # Surfaced in the approve / sync responses (and the Hub status
+                # line), not only in the adapter's warning log.
+                result.graphiti["error"] = gresult.error
+                result.errors.append(f"graphiti_sync_failed:{gresult.error}")
         except Exception as exc:
+            result.graphiti = {**result.graphiti, "error": f"{type(exc).__name__}: {exc}"}
             result.errors.append(f"graphiti_projection_failed:{exc}")
 
     result.bus_project_emitted = await emit_crystallization_lifecycle(

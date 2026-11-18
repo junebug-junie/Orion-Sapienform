@@ -114,3 +114,17 @@ async def test_coloring_selector_receives_utterance_origin_from_mind_request(mon
         cortex_client=client,
     )
     assert captured.get("utterance_origin") == "orion"
+
+
+def test_build_light_mind_request_carries_the_turns_hold() -> None:
+    """Juniper 2026-11-12: a held turn's Mind phases run on its seat, never on metacog. The hold
+    rides the Mind request; orion-mind routes every phase onto it."""
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
+
+    hold = GpuLeaseRefV1(lease_id="hold-1", generation=1, role="agent", holder="durable-runs:reading-1")
+    stance = _stance("read this source", origin=None).model_copy(update={"gpu_lease": hold})
+    req = build_light_mind_request(stance, wall_time_ms=1000, router_profile="default")
+    assert req.gpu_lease == hold
+    assert req.model_dump(mode="json")["gpu_lease"] == hold.model_dump(mode="json")
+    assert build_light_mind_request(_stance("hi", origin="juniper"), wall_time_ms=1000,
+                                    router_profile="default").gpu_lease is None

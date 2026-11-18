@@ -54,6 +54,10 @@ from scripts.world_pulse_read_stage2 import (
     _build_stage2_prompt,
 )
 
+# The production _generate, kept before the autouse fixture swaps it out (the reading choice
+# point reads the bound prompt there).
+_REAL_GENERATE = WorldPulseReadStage2Pipeline._generate
+
 SOURCE = ServiceRef(name="orion-hub", version="0.1.0", node="test")
 NOW = datetime(2026, 9, 6, 15, 0, tzinfo=timezone.utc)
 
@@ -281,6 +285,15 @@ def _handoff(seed: WorldPulseReadSeedV1 | None = None) -> WorldPulseReadHandoffV
     )
 
 
+def _linked_by_stage2(pipe, urls: list[str]) -> None:
+    """The Stage 2 turn fetched a page that links ``urls`` -- the only way a
+    model-named hop is allowed to re-enter Stage 1 (fetch_provenance.py)."""
+    pipe._stage2_fetches = [SourceFetchEvidenceV1(
+        url="https://ex.com/index-of-links", tool_name="WebFetch", content_chars=900,
+        content_text="Related pages:\n" + "\n".join(f"- {u}" for u in urls),
+    )]
+
+
 def _result(*, urls: list[str] | None = None) -> WorldPulseReadStage2ResultV1:
     return WorldPulseReadStage2ResultV1(
         summary="Priors updated.",
@@ -289,6 +302,26 @@ def _result(*, urls: list[str] | None = None) -> WorldPulseReadStage2ResultV1:
         created_at=NOW,
         seed_id="finding:r1:x",
     )
+
+
+def test_stage2_stance_view_hides_the_reader_contract_only() -> None:
+    """Live 2026-10-27/28, 6 of 6 Qwen3.6-35B stances on Stage 2 wrote these keys
+    (summary in the imperative's slot, or the whole reading answer)."""
+    from orion.world_pulse_read.reader_contract import stance_view_of_reading_prompt
+
+    handoff = _handoff()
+    prompt = _build_stage2_prompt(handoff, "tr-s2", prior_error="turn_exception:TimeoutError: ")
+    view = stance_view_of_reading_prompt(prompt)
+    assert view is not None
+    for key in ('"summary"', "article_summary", "priors_tested", "need_stage1_urls", '"hops"', "tr-s2"):
+        assert key in prompt, key
+        assert key not in view, key
+    assert "You are continuing a deliberate source reading" in view
+    assert handoff.seed_ref.url in view
+    assert "RETRY: the previous attempt" in view
+    assert "```json" not in view and "JSON object" not in view
+    # The handoff is input the stance reads: present once, labelled as input data.
+    assert view.count("Stage 1 handoff (input data from the earlier read, not an output shape): handoff=") == 1
 
 
 def test_prompt_has_no_prior_write_instruction_when_no_candidates() -> None:
@@ -510,7 +543,9 @@ def test_round_trip_ceiling_stops_at_five() -> None:
     reentered: list[str] = []
 
     async def _pass(handoff):
-        return _result(urls=[f"https://ex.com/more-{i}" for i in range(10)])
+        urls = [f"https://ex.com/more-{i}" for i in range(10)]
+        _linked_by_stage2(pipe, urls)
+        return _result(urls=urls)
 
     async def _reenter(url, *, parent_seed):
         reentered.append(url)
@@ -536,7 +571,9 @@ def test_already_read_followup_is_passed_on_without_stopping_the_rest() -> None:
     tried: list[str] = []
 
     async def _pass(handoff):
-        return _result(urls=["https://ex.com/read-before", "https://ex.com/new"])
+        urls = ["https://ex.com/read-before", "https://ex.com/new"]
+        _linked_by_stage2(pipe, urls)
+        return _result(urls=urls)
 
     async def _reenter(url, *, parent_seed):
         tried.append(url)
@@ -561,7 +598,9 @@ def test_reentry_stops_when_wallet_a_blocked() -> None:
     reentered: list[str] = []
 
     async def _pass(handoff):
-        return _result(urls=["https://ex.com/more-0", "https://ex.com/more-1"])
+        urls = ["https://ex.com/more-0", "https://ex.com/more-1"]
+        _linked_by_stage2(pipe, urls)
+        return _result(urls=urls)
 
     async def _reenter(url, *, parent_seed):
         if reentered:
@@ -587,6 +626,7 @@ def test_default_reentry_enqueues_reading_seed_with_world_pulse_lineage() -> Non
     pipe = _pipeline(bus, conn)
 
     async def _pass(handoff):
+        _linked_by_stage2(pipe, ["https://ex.com/follow"])
         return _result(urls=["https://ex.com/follow"])
 
     pipe._stage2_pass = _pass  # type: ignore[method-assign]
@@ -1167,3 +1207,418 @@ def test_stage2_turn_recalls_about_title_and_stage1_claim(monkeypatch) -> None:
         pass
 
     assert captured["retrieval_query"] == "A — Learned about packaging."
+
+
+# --- created_at is the server clock, never the model's text (live 2026-10-10:
+# model-written round future times reached journal rows and wp-read nodes). ---
+
+
+def test_stage2_model_written_future_created_at_is_overwritten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipe = _pipeline(_FakeBus(), _FakeConn())
+    future = (datetime.now(timezone.utc) + timedelta(hours=4)).replace(minute=30, second=0, microsecond=0)
+    body = {"summary": "Tested the packaging prior.", "created_at": future.isoformat()}
+    _patch_turn(monkeypatch, [{"type": "final", "llm_response": "```json\n" + json.dumps(body) + "\n```"}])
+
+    before = datetime.now(timezone.utc)
+    result = asyncio.run(pipe._stage2_pass(_handoff()))
+    after = datetime.now(timezone.utc)
+
+    assert before <= result.created_at <= after
+
+
+def test_stage2_prompt_no_longer_asks_the_model_for_created_at() -> None:
+    from scripts.world_pulse_read_stage2 import _build_stage2_prompt
+
+    prompt = _build_stage2_prompt(_handoff(), "tr-1")
+    assert '"created_at":' not in prompt
+    assert "created_at are forced server-side" in prompt
+
+
+# --- Hop provenance (live 2026-10-13): Stage 2 of a CoreWeave read asked Stage 1
+# to read three sibling URLs it had guessed; each was a 404 and each was marked
+# `done`. A hop must come from a URL Orion actually fetched or saw linked.
+
+_LIVE_404_NOTICE = (
+    "The server returned HTTP 404 Not Found.\n\nThe response body was not retrieved. "
+    "If this URL requires authentication, use an authenticated tool (e.g. `gh` for "
+    "GitHub, or an MCP-provided fetch tool) instead of WebFetch."
+)
+
+
+def _retained_parent(conn: _FakeConn, seed: WorldPulseReadSeedV1, *texts: str) -> WorldPulseReadHandoffV1:
+    import hashlib
+
+    evidence = []
+    for text in texts:
+        sha = hashlib.sha256(text.encode()).hexdigest()
+        conn.__dict__.setdefault("snapshots", {})[sha] = {"content": text, "first_source": seed.url}
+        evidence.append(SourceFetchEvidenceV1(url=seed.url, tool_name="WebFetch",
+                                              content_chars=len(text), content_sha256=sha))
+    return WorldPulseReadHandoffV1(seed_ref=seed, what_i_learned="Learned.", trace_id="tr-pipeline-1",
+                                   created_at=NOW, read_evidence=evidence)
+
+
+def _hop_run(conn, pipe, handoff, urls, *, stage2_fetches=()):
+    tried: list[str] = []
+
+    async def _pass(_handoff):
+        pipe._stage2_fetches = list(stage2_fetches)
+        return _result(urls=urls)
+
+    async def _reenter(url, *, parent_seed):
+        tried.append(url)
+        return None
+
+    pipe._stage2_pass = _pass  # type: ignore[method-assign]
+    pipe._reenter_stage1 = _reenter  # type: ignore[method-assign]
+
+    async def _run():
+        seed = handoff.seed_ref
+        await enqueue_seeds(conn, [seed])
+        await mark_seed_done(conn, seed.seed_id, trace_id="tr-pipeline-1", handoff=handoff)
+        return await pipe.tick(force=True)
+
+    return asyncio.run(_run()), tried
+
+
+def test_invented_hop_url_is_refused_and_logged(caplog) -> None:
+    conn = _FakeConn()
+    pipe = _pipeline(_FakeBus(), conn)
+    page = "CoreWeave offers bare-metal NVIDIA GPUs for AI training. " * 5
+    handoff = _retained_parent(conn, _seed(), page)
+    guessed = ["https://www.coreweave.com/architecture", "https://www.coreweave.com/infrastructure"]
+    with caplog.at_level("INFO"):
+        outcome, tried = _hop_run(conn, pipe, handoff, guessed)
+    assert outcome is None
+    assert tried == []
+    assert pipe.last_round_trips == 0
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "done"
+    refused = [r.getMessage() for r in caplog.records if "reentry_refused" in r.getMessage()]
+    assert len(refused) == 2 and all("reason=url_not_in_fetched_content" in m for m in refused)
+
+
+def test_hop_url_linked_in_parent_retained_text_is_followed() -> None:
+    conn = _FakeConn()
+    pipe = _pipeline(_FakeBus(), conn)
+    page = ("The full benchmark is described at https://www.ex.com/benchmarks/gb200/ "
+            "(see methodology). " * 3)
+    handoff = _retained_parent(conn, _seed(), page)
+    # The model's copy differs only in www / trailing slash; a guessed sibling does not.
+    outcome, tried = _hop_run(conn, pipe, handoff,
+                              ["https://ex.com/benchmarks/gb200", "https://ex.com/benchmarks/h100"])
+    assert outcome is None
+    assert tried == ["https://ex.com/benchmarks/gb200"]
+    assert pipe.last_round_trips == 1
+
+
+def test_hop_reached_by_a_stage2_fetch_is_followed_but_not_one_that_404d() -> None:
+    conn = _FakeConn()
+    pipe = _pipeline(_FakeBus(), conn)
+    handoff = _retained_parent(conn, _seed(), "A real page about packaging costs. " * 8)
+    fetched = [
+        SourceFetchEvidenceV1(url="https://ex.com/real", tool_name="WebFetch", content_chars=900,
+                              content_text="Packaging costs rose 12% in Q3. " * 10),
+        SourceFetchEvidenceV1(url="https://ex.com/gone", tool_name="WebFetch",
+                              content_chars=len(_LIVE_404_NOTICE), content_text=_LIVE_404_NOTICE),
+    ]
+    outcome, tried = _hop_run(conn, pipe, handoff, ["https://ex.com/gone", "https://ex.com/real"],
+                              stage2_fetches=fetched)
+    assert outcome is None
+    assert tried == ["https://ex.com/real"]
+
+
+def test_hop_from_a_dead_parent_read_is_never_attempted() -> None:
+    """A parent stored `done` on nothing but a 404 notice (pre-fix rows): no Stage 2
+    turn, no claims, no hop chain."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn)
+    handoff = _retained_parent(conn, _seed(), _LIVE_404_NOTICE)
+    ran: list[str] = []
+
+    async def _pass(_handoff):
+        ran.append("pass")
+        return _result(urls=["https://ex.com/a/more"])
+
+    pipe._stage2_pass = _pass  # type: ignore[method-assign]
+
+    async def _run():
+        await enqueue_seeds(conn, [handoff.seed_ref])
+        await mark_seed_done(conn, handoff.seed_ref.seed_id, trace_id="tr-pipeline-1", handoff=handoff)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) == "no_read_evidence:http_error"
+    assert ran == []
+    row = conn.rows["finding:r1:x"]
+    assert row["stage2_status"] == "skipped"
+    assert row["stage2_error"] == "no_read_evidence:http_error"
+    assert not [r for r in conn.rows.values() if r["url"] == "https://ex.com/a/more"]
+    assert bus.redis.store.get(_count_key_b()) in (None, "0")  # no Wallet B debit
+
+
+def test_stage2_turn_fetches_reach_the_hop_gate_through_the_real_pass() -> None:
+    """The production _stage2_pass -> _generate path carries the turn's own fetches
+    (ReadingTurnResultV1.source_fetches) to the hop gate; no test-side injection."""
+    import json as _json
+
+    conn = _FakeConn()
+    pipe = _pipeline(_FakeBus(), conn)
+    handoff = _retained_parent(conn, _seed(), "A real page about packaging costs. " * 8)
+    body = {"summary": "Priors updated.", "need_stage1_urls": ["https://ex.com/linked", "https://ex.com/guessed"]}
+    linked = SourceFetchEvidenceV1(url="https://ex.com/related", tool_name="WebFetch", content_chars=400,
+                                   content_text="Further reading: https://ex.com/linked " * 5)
+
+    async def _generate(prompt, correlation_id, *, seed_id, retrieval_query=None):
+        return GenerateOutcome("```json\n" + _json.dumps(body) + "\n```", None, None,
+                               source_fetches=[linked])
+
+    pipe._generate = _generate  # type: ignore[method-assign]
+    tried: list[str] = []
+
+    async def _reenter(url, *, parent_seed):
+        tried.append(url)
+        return None
+
+    pipe._reenter_stage1 = _reenter  # type: ignore[method-assign]
+
+    async def _run():
+        await enqueue_seeds(conn, [handoff.seed_ref])
+        await mark_seed_done(conn, handoff.seed_ref.seed_id, trace_id="tr-pipeline-1", handoff=handoff)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert tried == ["https://ex.com/linked"]
+    assert pipe.hops_refused_total == {"url_not_in_fetched_content": 1}
+
+
+# --- huge-page Stage 2 (seed c31227dc, 2026-10-14) ---
+
+
+def test_prompt_states_webfetch_limit_once():
+    from orion.world_pulse_read.fetch_text import WEBFETCH_LIMIT_NOTE
+
+    prompt = _build_stage2_prompt(_handoff(), "tr-s2")
+    assert prompt.count(WEBFETCH_LIMIT_NOTE) == 1
+    assert "RETRY:" not in prompt
+
+
+@pytest.mark.parametrize("error", [
+    "turn_exception:TimeoutError: ", "stage2_turn_timeout", "turn_error:fcc_timeout",
+    "turn_error:fcc_stream_stalled", "workflow_deadline",
+])
+def test_retry_after_timeout_tells_model_not_to_fetch(error):
+    prompt = _build_stage2_prompt(_handoff(), "tr-s2", prior_error=error)
+    assert "RETRY:" in prompt and "Do not call WebFetch or WebSearch" in prompt
+    assert error.split(":")[-1].strip() in prompt
+
+
+@pytest.mark.parametrize("error", [None, "", "interrupted:process_restart", "parse_failed", "blank_final_response",
+                                   "reading_binding_unavailable:TimeoutError"])
+def test_retry_note_absent_for_non_timeout_failures(error):
+    assert "RETRY:" not in _build_stage2_prompt(_handoff(), "tr-s2", prior_error=error)
+
+
+def test_stage2_pass_builds_prompt_with_the_seeds_prior_error():
+    pipe = object.__new__(WorldPulseReadStage2Pipeline)
+    pipe._claim_context = None
+    pipe._prior_stage2_error = "turn_exception:TimeoutError: "
+    pipe._stage2_fetches = []
+    seen = {}
+
+    async def generate(prompt, corr, *, seed_id, retrieval_query=None):
+        seen["prompt"] = prompt
+        return GenerateOutcome("")
+
+    pipe._generate = generate
+    with pytest.raises(ValueError):
+        asyncio.run(pipe._stage2_pass(_handoff()))
+    assert "RETRY:" in seen["prompt"]
+
+
+def test_prior_error_reads_the_seed_row_and_fails_open():
+    pipe = object.__new__(WorldPulseReadStage2Pipeline)
+
+    class Conn:
+        async def fetchval(self, sql, seed_id):
+            assert "stage2_error" in sql and seed_id == "s1"
+            return "turn_exception:TimeoutError: "
+
+    async def with_conn(fn):
+        return await fn(Conn())
+
+    pipe._with_conn = with_conn
+    assert asyncio.run(pipe._prior_error("s1")) == "turn_exception:TimeoutError: "
+
+    async def broken(fn):
+        raise RuntimeError("db down")
+
+    pipe._with_conn = broken
+    assert asyncio.run(pipe._prior_error("s1")) is None
+
+
+# --- Reading choice point (personality rev 4, Move 1) -----------------------------------------
+
+_PARENT_TEXT = (
+    "Fact checks:\n- [Stroke claim checked](https://politifact.com/a/stroke)\n"
+    "- Tariff refunds explained: https://ex.com/news/tariffs\n"
+)
+
+
+def _choice_pipe(bus, conn, picked, **over):
+    from scripts.world_pulse_read_stage2 import ParentRead
+
+    pipe = _pipeline(bus, conn, **over)
+    prompts: list[str] = []
+
+    async def _parent(handoff):
+        return ParentRead(texts=[("https://ex.com/a", _PARENT_TEXT)], dead=False)
+
+    async def _pass(handoff):
+        # What _generate does: the bound prompt is the one built from this read's list.
+        prompt = _build_stage2_prompt(handoff, "tr-s2", next_read=pipe._next_read)
+        prompts.append(prompt)
+        pipe._stage2_prompt = prompt
+        return _result(urls=picked)
+
+    async def _reenter(url, *, parent_seed):
+        return None
+
+    pipe._parent_read = _parent  # type: ignore[method-assign]
+    pipe._stage2_pass = _pass  # type: ignore[method-assign]
+    pipe._reenter_stage1 = _reenter  # type: ignore[method-assign]
+    return pipe, prompts
+
+
+def _choice_rows(bus):
+    from orion.schemas.personality import PERSONALITY_CHOICE_CHANNEL, PersonalityChoiceV1
+
+    return [PersonalityChoiceV1.model_validate(e.payload) for c, e in bus.published if c == PERSONALITY_CHOICE_CHANNEL]
+
+
+def test_stage2_shows_the_parent_links_and_publishes_orions_pick() -> None:
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, prompts = _choice_pipe(bus, conn, ["https://ex.com/news/tariffs"])
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert "[1] Stroke claim checked (politifact.com) -> https://politifact.com/a/stroke" in prompts[0]
+    assert "[2] Tariff refunds explained (ex.com) -> https://ex.com/news/tariffs" in prompts[0]
+    rows = _choice_rows(bus)
+    assert len(rows) == 1
+    assert rows[0].lane == "reading" and rows[0].chosen_market_rank == 2
+    assert [a.market_rank for a in rows[0].alternatives] == [1]
+    assert rows[0].act_id == "reading_stage2:finding:r1:x" and rows[0].correlation_id == "tr-s2"
+    assert rows[0].situation["seed_kind"] == "finding" and rows[0].situation["hops_followed"] == 1
+
+
+def test_stage2_empty_pick_is_a_decline_and_the_flag_turns_it_all_off() -> None:
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, _ = _choice_pipe(bus, conn, [])
+
+    async def _run(p):
+        await _ready_stage2(conn)
+        return await p.tick(force=True)
+
+    asyncio.run(_run(pipe))
+    rows = _choice_rows(bus)
+    assert len(rows) == 1 and rows[0].declined_all and len(rows[0].alternatives) == 2
+
+    bus2, conn2 = _FakeBus(), _FakeConn()
+    off, prompts = _choice_pipe(bus2, conn2, ["https://ex.com/news/tariffs"], choice_enabled=False)
+    conn = conn2
+    asyncio.run(_run(off))
+    assert "NEXT READ LINKS" not in prompts[0]
+    assert _choice_rows(bus2) == []
+
+
+def test_stage2_prompt_bound_before_the_list_existed_records_no_choice() -> None:
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, _ = _choice_pipe(bus, conn, ["https://ex.com/news/tariffs"])
+    inner = pipe._stage2_pass
+
+    async def _old_bound_prompt(handoff):
+        result = await inner(handoff)
+        pipe._stage2_prompt = "an older prompt with no link list"
+        return result
+
+    pipe._stage2_pass = _old_bound_prompt  # type: ignore[method-assign]
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "done"
+    assert _choice_rows(bus) == []
+
+
+def test_stage2_choice_uses_the_bound_prompt_not_the_list_just_computed(monkeypatch) -> None:
+    """A turn bound earlier (restart, poll on a later tick) keeps its first committed prompt; the
+    choice must read the list THAT prompt showed, through the real _stage2_pass/_generate."""
+    import types
+
+    from orion.schemas.reading_turn import ReadingTurnResultV1
+    from orion.world_pulse_read.next_read_choice import NextReadLink, render_next_read_section
+
+    bound_list = [NextReadLink(url="https://bound.example/one/piece", label="Bound one", rank=1),
+                  NextReadLink(url="https://bound.example/two/piece", label="Bound two", rank=2)]
+    bound_prompt = "earlier bound prompt\n" + render_next_read_section(bound_list)
+
+    async def _bind(conn, brief, correlation_id):
+        return types.SimpleNamespace(run_id="run-1", brief=brief.model_copy(update={"prompt": bound_prompt}))
+
+    async def _poll(request, base_url):
+        text = json.dumps({"summary": "Read it.", "need_stage1_urls": ["https://bound.example/two/piece"]})
+        return types.SimpleNamespace(text=text, error=None, correlation_id="tr-bound", source_fetches=[
+            SourceFetchEvidenceV1(url="https://x.example/p", tool_name="WebFetch", content_chars=900,
+                                  content_text="links: https://bound.example/two/piece")])
+
+    # Patch the globals _REAL_GENERATE actually reads: another test may have reloaded the module.
+    monkeypatch.setitem(_REAL_GENERATE.__globals__, "bind_turn", _bind)
+    monkeypatch.setitem(_REAL_GENERATE.__globals__, "poll_turn", _poll)
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, _ = _choice_pipe(bus, conn, [])
+    del pipe._stage2_pass  # the real one
+    pipe._generate = types.MethodType(_REAL_GENERATE, pipe)
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert pipe._next_read and pipe._next_read[0].url == "https://politifact.com/a/stroke"  # computed now
+    rows = _choice_rows(bus)
+    assert len(rows) == 1 and rows[0].chosen.text == "Bound two (bound.example)"
+    assert rows[0].chosen_market_rank == 2 and [a.text for a in rows[0].alternatives] == ["Bound one (bound.example)"]
+
+
+def test_stage2_shows_no_list_when_the_chain_is_full() -> None:
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, prompts = _choice_pipe(bus, conn, [], max_round_trips=0)
+    asyncio.run(_ready_stage2(conn))
+    asyncio.run(pipe.tick(force=True))
+    assert "NEXT READ LINKS" not in prompts[0] and _choice_rows(bus) == []
+
+    # The chain already holds max_round_trips hops: enqueue_reading would refuse every pick.
+    from scripts.world_pulse_read_stage2 import CHAIN_HOPS_SQL
+
+    bus2, conn2 = _FakeBus(), _FakeConn()
+    pipe2, prompts2 = _choice_pipe(bus2, conn2, [], max_round_trips=2)
+    real_fetchval = conn2.fetchval
+    asked: list = []
+
+    async def _fetchval(sql, *args):
+        if sql == CHAIN_HOPS_SQL:
+            asked.append(args)
+            return 2
+        return await real_fetchval(sql, *args)
+
+    conn2.fetchval = _fetchval  # type: ignore[method-assign]
+    asyncio.run(_ready_stage2(conn2))
+    asyncio.run(pipe2.tick(force=True))
+    assert asked and "NEXT READ LINKS" not in prompts2[0] and _choice_rows(bus2) == []

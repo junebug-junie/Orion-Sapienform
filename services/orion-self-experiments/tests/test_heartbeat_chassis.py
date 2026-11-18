@@ -3,9 +3,8 @@
 Part of the service-heartbeat rollout, see
 docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
 orion-self-experiments had no bus-native heartbeat before this patch (confirmed via
-`grep -rl "BaseChassis"` returning nothing for this service) -- its existing bus usage
-(dispatch to context-exec via `SELF_EXPERIMENTS_CONTEXT_EXEC_DISPATCH_TRANSPORT=bus`) is
-per-request, not a persistent connection.
+`grep -rl "BaseChassis"` returning nothing for this service). Its old per-request bus
+dispatch to context-exec was removed with that service (retired 2026-10-10).
 
 `init_db()` is mocked out here so this test exercises only the new heartbeat wiring in
 app/main.py's lifespan, without touching the sqlite store.

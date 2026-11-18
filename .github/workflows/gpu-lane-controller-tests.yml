@@ -8,6 +8,7 @@ on:
       - 'services/orion-gpu-lane-controller/**'
       - 'services/orion-diffusion-host/**'
       - 'orion/schemas/gpu_pool.py'
+      - 'orion/schemas/telemetry/system_health.py'
       - 'orion/gpu_pool/config.py'
       - 'config/gpu_pool.yaml'
       - '.github/workflows/gpu-lane-controller-tests.yml'

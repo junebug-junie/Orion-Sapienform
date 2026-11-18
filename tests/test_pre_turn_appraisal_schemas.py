@@ -42,3 +42,32 @@ def test_bundle_carries_metadata_attachments() -> None:
         grammar_scalars={"repair_pressure": {"level": 0.82, "confidence": 0.71}},
     )
     assert bundle.metadata_attachments["repair_pressure_contract"]["mode"] == "repair_concrete"
+
+
+def test_failure_reasons_round_trip_and_are_omitted_when_empty() -> None:
+    """Additive field on an extra="forbid" model: a successful bundle must serialize exactly as
+    before (no key), so an un-rebuilt consumer (Hub, orion-thought) keeps accepting it."""
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
+
+    ok = TurnAppraisalBundleV1(correlation_id="c")
+    assert "failure_reasons" not in ok.model_dump(mode="json")
+    failed = TurnAppraisalBundleV1(
+        correlation_id="c", failed_paradigms=["repair_pressure"],
+        failure_reasons={"repair_pressure": "shed:cabinet_hot"},
+    )
+    dumped = failed.model_dump(mode="json")
+    assert dumped["failure_reasons"] == {"repair_pressure": "shed:cabinet_hot"}
+    assert TurnAppraisalBundleV1.model_validate(dumped) == failed
+
+
+def test_stance_prompt_view_marks_a_failed_paradigm_unknown() -> None:
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
+    from orion.thought.stance_react import slim_repair_bundle_for_prompt
+
+    slim = slim_repair_bundle_for_prompt(TurnAppraisalBundleV1(
+        correlation_id="c", failed_paradigms=["repair_pressure"],
+        failure_reasons={"repair_pressure": "shed:cabinet_hot"},
+    ))
+    assert slim["paradigms"] == {}
+    assert slim["unmeasured"] == {"repair_pressure": "level unknown: shed:cabinet_hot"}
+    assert "unmeasured" not in slim_repair_bundle_for_prompt(TurnAppraisalBundleV1(correlation_id="c"))

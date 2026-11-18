@@ -1,0 +1,55 @@
+name: Post-pull migration apply
+# scripts/apply_post_pull_migrations.py applies safe hand-written SQL migrations on `git pull`,
+# BEFORE the post-merge rebuilds (Juniper, 2026-10-15). The unit tests pin the safety filter,
+# ordering, stop-on-failure and kill switch; the Postgres test runs the real rebuild script,
+# applier and checker against a throwaway server and proves the migration lands before the build.
+on:
+  pull_request:
+    paths:
+      - 'scripts/apply_post_pull_migrations.py'
+      - 'scripts/check_sql_migrations_applied.py'
+      - 'scripts/rebuild_services_from_git_diff.sh'
+      - 'scripts/rebuild_affected_services.py'
+      - 'orion/sql_migration_drift.py'
+      - 'tests/test_post_pull_apply_migrations.py'
+      - 'tests/test_post_pull_apply_migrations_postgres.py'
+      - 'tests/scripts/test_rebuild_services_from_git_diff.py'
+      - '.github/workflows/post-pull-migrations.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    # packages: read lets GITHUB_TOKEN pull the private GHCR postgres copy.
+    permissions:
+      contents: read
+      packages: read
+    services:
+      postgres:
+        image: ghcr.io/junebug-junie/postgres:15  # private GHCR copy of postgres:15; Docker Hub and ECR Public both rate-limit shared runner IPs
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: post_pull_migrations_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      POST_PULL_MIGRATIONS_TEST_POSTGRES_URI: postgresql://postgres:test-only@localhost:5432/post_pull_migrations_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest psycopg2-binary PyYAML
+      - name: psql client
+        run: command -v psql || (sudo apt-get update && sudo apt-get install -y postgresql-client)
+      - name: Safety filter, ordering, stop-on-failure, kill switch, host gate
+        run: python -m pytest -q tests/test_post_pull_apply_migrations.py tests/scripts/test_rebuild_services_from_git_diff.py
+      - name: Apply-then-rebuild against real Postgres
+        run: python -m pytest -q -rs tests/test_post_pull_apply_migrations_postgres.py

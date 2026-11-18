@@ -1,0 +1,407 @@
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from orion.evals.model_replay.pool_hold import (
+    BONSAI_PROFILE, Q4_PROFILE, HoldLedger, HoldRefused, PoolHolds, release_leftovers,
+)
+
+GRANTS = {
+    "operator_agent": {"role": "agent", "profile_name": Q4_PROFILE, "url": "http://c:8015", "cards": ["gpu1"]},
+    "operator_agent_gpu2": {"role": "agent-gpu2", "profile_name": BONSAI_PROFILE, "url": "http://c:8016",
+                            "cards": ["gpu2"]},
+    # The hand-run reservation's classes (RESERVE_SEATS, scripts/gpu_pool_clear_gpu2.py).
+    "memory_distill": {"role": "agent", "profile_name": Q4_PROFILE, "url": "http://c:8015", "cards": ["gpu1"]},
+    "agent": {"role": "agent-gpu2", "profile_name": BONSAI_PROFILE, "url": "http://c:8016", "cards": ["gpu2"]},
+}
+
+
+class FakePool:
+    """Grants by work class; records every verb. ``plan`` overrides grants per hold call (in order)."""
+
+    def __init__(self, plan=None, queued=False):
+        self.n = 0
+        self.plan = list(plan or [])
+        self.queued = queued
+        self.verbs = []
+        self.live = set()
+
+    async def hold(self, work_class, actor):
+        self.n += 1
+        lid = f"L{self.n}"
+        self.verbs.append(("hold", work_class, lid))
+        self.live.add(lid)
+        grant = dict(self.plan.pop(0) if self.plan else GRANTS[work_class])
+        if grant.get("refuse"):
+            return {"ok": False, "reason": "actuation_paused", "detail": {"status": "unavailable", "lease_id": lid}}
+        grant.update(lease_id=lid, generation=1, served_by="x")
+        if self.queued:
+            self._pending = grant
+            return {"ok": True, "detail": {"status": "queued", "lease_id": lid}}
+        return {"ok": True, "detail": {"status": "granted", "lease_id": lid, "grant": grant}}
+
+    async def wait_granted(self, lease_id, timeout_sec):
+        return self._pending
+
+    async def release(self, lease_id, actor):
+        self.verbs.append(("release", lease_id))
+        self.live.discard(lease_id)
+        return {"ok": True}
+
+    async def cancel(self, lease_id, actor):
+        self.verbs.append(("cancel", lease_id))
+        self.live.discard(lease_id)
+        return {"ok": True}
+
+
+def _holds(pool, tmp_path):
+    return PoolHolds(transport=pool, ledger=HoldLedger(tmp_path / "holds.jsonl"))
+
+
+def test_both_seats_verified_and_released(tmp_path):
+    pool = FakePool()
+
+    async def go():
+        async with _holds(pool, tmp_path) as seats:
+            assert seats["q4"].role == "agent" and seats["bonsai"].role == "agent-gpu2"
+            assert len(pool.live) == 2      # gpu1 + gpu2 (one hold per role)
+
+    asyncio.run(go())
+    assert pool.live == set()
+    assert [v[1] for v in pool.verbs if v[0] == "hold"] == ["operator_agent", "operator_agent_gpu2"]
+    assert HoldLedger(tmp_path / "holds.jsonl").outstanding() == []
+
+
+def test_released_when_task_body_raises(tmp_path):
+    pool = FakePool()
+
+    async def go():
+        async with _holds(pool, tmp_path):
+            raise RuntimeError("model crashed")
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(go())
+    assert pool.live == set()
+
+
+def test_released_when_cancelled(tmp_path):
+    pool = FakePool()
+
+    async def go():
+        async with _holds(pool, tmp_path):
+            await asyncio.sleep(3600)
+
+    async def main():
+        t = asyncio.create_task(go())
+        await asyncio.sleep(0.01)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+
+    asyncio.run(main())
+    assert pool.live == set()
+
+
+def test_wrong_seat_refused_and_everything_released(tmp_path):
+    # class `agent` lands on hecate's agent-deep instead of gpu2: refuse, give gpu1 back too.
+    pool = FakePool(plan=[GRANTS["memory_distill"], {"role": "agent-deep", "profile_name": Q4_PROFILE,
+                                                      "url": "http://h:8021", "cards": ["hecate-gpu0"]}])
+
+    async def go():
+        async with _holds(pool, tmp_path):
+            pytest.fail("must not enter")
+
+    with pytest.raises(HoldRefused, match="wrong seat"):
+        asyncio.run(go())
+    assert pool.live == set()
+
+
+def test_wrong_profile_on_gpu2_refused(tmp_path):
+    pool = FakePool(plan=[GRANTS["memory_distill"], {**GRANTS["agent"], "profile_name": Q4_PROFILE}])
+    with pytest.raises(HoldRefused):
+        asyncio.run(_holds(pool, tmp_path).__aenter__())
+    assert pool.live == set()
+
+
+def test_pool_refusal_releases_earlier_holds(tmp_path):
+    pool = FakePool(plan=[GRANTS["memory_distill"], {"refuse": True}])
+    with pytest.raises(HoldRefused, match="refused"):
+        asyncio.run(_holds(pool, tmp_path).__aenter__())
+    assert pool.live == set()
+
+
+def test_queued_hold_waits_for_grant(tmp_path):
+    pool = FakePool(queued=True)
+    holds = PoolHolds(transport=pool, ledger=HoldLedger(tmp_path / "h.jsonl"), models=("q4",))
+
+    async def go():
+        async with holds as seats:
+            assert seats["q4"].url == "http://c:8015"
+
+    asyncio.run(go())
+    assert pool.live == set()
+
+
+def test_leftovers_after_sigkill_are_released(tmp_path):
+    ledger = HoldLedger(tmp_path / "holds.jsonl")
+    ledger.append(action="acquired", lease_id="A")
+    ledger.append(action="acquired", lease_id="B")
+    ledger.append(action="released", lease_id="A")
+    assert ledger.outstanding() == ["B"]
+    pool = FakePool()
+    pool.live = {"B"}
+    released = asyncio.run(release_leftovers(pool, ledger, "t"))
+    assert released == ["B"] and pool.live == set() and ledger.outstanding() == []
+
+
+def test_lease_ended_reads_pool_replies():
+    from orion.evals.model_replay.pool_hold import lease_ended
+
+    assert lease_ended({"ok": True})
+    assert lease_ended({"ok": False, "detail": {"status": "unavailable", "reason": "cancelled"}})   # release of a queued lease
+    assert lease_ended({"ok": False, "reason": "not_cancelable_from_released"})
+    assert lease_ended({"ok": False, "reason": "unknown_lease"})
+    assert not lease_ended({"ok": False, "reason": "TimeoutError: "})
+    assert not lease_ended({"ok": False, "detail": {"status": "granted"}})
+
+
+def test_bus_transport_sends_only_control_envelopes():
+    import json as _json
+
+    from orion.evals.model_replay.pool_hold import BusControlTransport
+    from orion.schemas.gpu_pool import GPU_POOL_CONTROL_REQUEST_CHANNEL
+
+    sent = []
+
+    class Bus:
+        async def rpc_request(self, channel, env, *, reply_channel, timeout_sec):
+            sent.append((channel, env.payload, env.reply_to == reply_channel))
+            reply = {"payload": {"ok": True, "reason": None,
+                                 "detail": {"status": "queued", "lease_id": "L9"}}}
+            return {"data": _json.dumps(reply)}
+
+    t = BusControlTransport("redis://unused")
+    t._bus = Bus()
+
+    async def go():
+        res = await t.hold("memory_distill", "bonsai-replay-eval")
+        await t.release("L9", "bonsai-replay-eval")
+        await t.cancel("L9", "bonsai-replay-eval")
+        return res
+
+    res = asyncio.run(go())
+    assert res["detail"]["lease_id"] == "L9" and "L9" in t._grants
+    assert [s[0] for s in sent] == [GPU_POOL_CONTROL_REQUEST_CHANNEL] * 3
+    assert [s[1]["verb"] for s in sent] == ["hold", "release", "cancel"]
+    assert sent[0][1]["work_class"] == "memory_distill" and all(s[2] for s in sent)
+
+
+def test_hold_rpc_timeout_sweeps_the_pool_for_our_lease(tmp_path):
+    """The pool created the lease but the reply never came: the sweep finds and releases it."""
+    pool = FakePool()
+    calls = {"n": 0}
+
+    async def hold(work_class, actor):
+        calls["n"] += 1
+        if work_class == "operator_agent_gpu2":
+            pool.live.add("GHOST")
+            raise TimeoutError("no reply")
+        return await FakePool.hold(pool, work_class, actor)
+
+    pool.hold = hold
+
+    async def sweep():
+        return sorted(pool.live)
+
+    holds = PoolHolds(transport=pool, ledger=HoldLedger(tmp_path / "h.jsonl"), sweep=sweep)
+    with pytest.raises(TimeoutError):
+        asyncio.run(holds.__aenter__())
+    assert pool.live == set()
+    rows = (tmp_path / "h.jsonl").read_text()
+    assert '"requested"' in rows and '"GHOST"' in rows
+
+
+def test_second_cancel_during_release_still_releases_everything(tmp_path):
+    pool = FakePool()
+    real_release = pool.release
+
+    async def slow_release(lease_id, actor):
+        await asyncio.sleep(0.05)
+        return await real_release(lease_id, actor)
+
+    pool.release = slow_release
+
+    async def main():
+        holds = _holds(pool, tmp_path)
+        await holds.__aenter__()
+        task = asyncio.create_task(holds.release_all(reason="x"))
+        await asyncio.sleep(0.01)
+        task.cancel()                      # cancel while the first release is in flight
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.2)           # shielded releases finish
+
+    asyncio.run(main())
+    assert pool.live == set()
+
+
+def test_seat_problem_reads_pool_state():
+    from orion.evals.model_replay.pool_hold import HOLDER, seat_problem
+
+    roles = [{"role": "agent", "status": "confirmed", "profile_name": Q4_PROFILE},
+             {"role": "agent-gpu2", "status": "confirmed", "profile_name": BONSAI_PROFILE}]
+    assert seat_problem({"roles": roles, "leases": []}) is None
+    busy = [{"role": "agent-gpu2", "kind": "hold", "status": "granted", "holder": "durable-runs:x"}]
+    assert "held by durable-runs:x" in seat_problem({"roles": roles, "leases": busy})
+    ours = [{"role": "agent-gpu2", "kind": "hold", "status": "granted", "holder": HOLDER}]
+    assert seat_problem({"roles": roles, "leases": ours}) is None
+    swapped = [roles[0], {**roles[1], "profile_name": Q4_PROFILE}]
+    assert "want ternary" in seat_problem({"roles": swapped, "leases": []})
+
+
+def test_leftovers_sweep_finds_unledgered_lease(tmp_path):
+    pool = FakePool()
+    pool.live = {"UNSEEN"}
+
+    async def sweep():
+        return sorted(pool.live)
+
+    released = asyncio.run(release_leftovers(pool, HoldLedger(tmp_path / "h.jsonl"), "t", sweep=sweep))
+    assert released == ["UNSEEN"] and pool.live == set()
+
+
+def test_bus_transport_grant_listener_resubscribes_after_a_drop():
+    """Live 2026-10-20: one redis error ended a bare subscribe loop; every later grant was missed."""
+    import contextlib
+    from types import SimpleNamespace
+
+    from orion.evals.model_replay.pool_hold import BusControlTransport
+
+    class _PubSub:
+        def __init__(self, script):
+            self.script = list(script)
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            if not self.script:
+                await asyncio.sleep(0.01)
+                return None
+            item = self.script.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    grant = {"event": "granted", "lease_id": "L1", "detail": {"grant": {"url": "http://c:8015"}}}
+    sessions = [_PubSub([ConnectionError("Connection reset by peer")]),
+                _PubSub([{"type": "message", "data": grant}])]
+    calls = []
+
+    class _Bus:
+        codec = SimpleNamespace(decode=lambda data: SimpleNamespace(envelope=SimpleNamespace(payload=data)))
+
+        def subscribe(self, *channels):
+            @contextlib.asynccontextmanager
+            async def _cm():
+                calls.append(channels)
+                yield sessions.pop(0)
+
+            return _cm()
+
+    t = BusControlTransport("redis://unused")
+    t._bus = _Bus()
+
+    async def go():
+        import time as _time
+
+        since = _time.time()
+        t._listener = asyncio.create_task(t._listen())
+        try:
+            await asyncio.wait_for(t._subscribed(since), timeout=5)
+            return await t.wait_granted("L1", timeout_sec=10)
+        finally:
+            t._listener.cancel()
+
+    assert asyncio.run(go()) == {"url": "http://c:8015"}
+    assert len(calls) == 2
+
+
+def test_bus_transport_enter_timeout_stops_the_listener_and_closes_the_bus(monkeypatch):
+    """The listener retries forever, so a failed __aenter__ must cancel it, not leave it behind."""
+    import orion.core.bus.async_service as async_service
+    from orion.evals.model_replay.pool_hold import BusControlTransport
+
+    closed = []
+
+    class _DownBus:
+        def __init__(self, url):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def close(self):
+            closed.append(True)
+
+        def subscribe(self, *channels):
+            raise ConnectionError("bus down")
+
+    monkeypatch.setattr(async_service, "OrionBusAsync", _DownBus)
+    t = BusControlTransport("redis://unused", timeout_sec=0.2)
+
+    async def go():
+        with pytest.raises(asyncio.TimeoutError):
+            await t.__aenter__()
+        return t._listener.done()
+
+    assert asyncio.run(go()) is True
+    assert closed == [True]
+
+
+def test_lease_hold_transport_asks_background_operator_holds_and_stops_on_recall(monkeypatch):
+    """Leased evals (2026-11-12): the replay's holds go through the lease RPC at background, are not
+    retryable, are heartbeated, and a recall sets ``recalled`` and releases as cancelled."""
+    import orion.gpu_pool.client as client
+    from orion.evals.model_replay.pool_hold import LeaseHoldTransport
+    from orion.schemas.gpu_pool import GpuLeaseReplyV1
+
+    sent = []
+    grant = {"lease_id": "L1", "generation": 1, "role": "agent", "cards": ["gpu1"], "url": "http://c:8015",
+             "served_by": "x"}
+
+    async def lease_rpc(bus, req, *, source, timeout_sec=10.0):
+        sent.append(req)
+        if req.verb == "acquire":
+            return GpuLeaseReplyV1(status="granted", lease_id="L1", grant=grant)
+        return GpuLeaseReplyV1(status="ok", lease_id=req.lease_id)
+
+    async def heartbeat_lease(bus, lease_id, *, source, timeout_sec=10.0):
+        return GpuLeaseReplyV1(status="recall", lease_id=lease_id)
+
+    monkeypatch.setattr(client, "lease_rpc", lease_rpc)
+    monkeypatch.setattr(client, "heartbeat_lease", heartbeat_lease)
+    t = LeaseHoldTransport("redis://unused", heartbeat_sec=0.01)
+    t._bus = object()
+
+    async def go():
+        res = await t.hold("operator_agent", "bonsai-replay-eval")
+        await asyncio.wait_for(t.recalled.wait(), 2.0)
+        rel = await t.release("L1", "bonsai-replay-eval")
+        return res, rel
+
+    res, rel = asyncio.run(go())
+    acquire = sent[0]
+    assert (acquire.work_class, acquire.priority, acquire.kind, acquire.retryable) == (
+        "operator_agent", "background", "hold", False)
+    assert acquire.holder.startswith("operator:") and acquire.deadline_at is not None
+    assert res["ok"] and res["detail"]["grant"]["role"] == "agent"
+    assert t.recall_reason.startswith("L1:recall")
+    assert sent[-1].verb == "release" and sent[-1].outcome == "cancelled" and rel["ok"]
+    assert t._beats == {}
+
+
+def test_replay_seats_are_pinned_operator_classes_and_reservation_keeps_its_own():
+    from orion.evals.model_replay.pool_hold import RESERVE_SEATS, SEATS
+
+    assert {s.work_class for s in SEATS.values()} == {"operator_agent", "operator_agent_gpu2"}
+    assert {s.work_class for s in RESERVE_SEATS.values()} == {"memory_distill", "agent"}

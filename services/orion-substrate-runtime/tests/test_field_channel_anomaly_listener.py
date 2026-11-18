@@ -103,11 +103,12 @@ def test_prediction_error_by_domain_reads_fixed_nodes(monkeypatch):
         _node("node:substrate.execution", 0.001),
         _node("node:substrate.biometrics", 0.002),
         _node("node:substrate.bus_synaptic", 1.0),
-        _node("node:substrate.harness_closure", 0.65),  # not a recognized domain
+        _node("node:substrate.codebase", 0.65),  # not a recognized domain (deliberately)
         _node("sub-concept-seed-orion", None),  # unrelated node, no prediction_error
     ]
     out = worker._brain_frame_prediction_error_by_domain(nodes)
-    assert out == {"execution": 0.001, "biometrics": 0.002, "bus_synaptic": 1.0}
+    # bus_synaptic retired 2026-11 (PE step 5): not a domain any more.
+    assert out == {"execution": 0.001, "biometrics": 0.002}
 
 
 def test_prediction_error_by_domain_empty_when_no_nodes(monkeypatch):

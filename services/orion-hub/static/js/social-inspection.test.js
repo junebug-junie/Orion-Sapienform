@@ -46,14 +46,6 @@ test('buildOperatorSummary keeps operator-facing routing fields and bounded badg
           decision_traces: [],
         },
         {
-          section_kind: 'commitments',
-          selected_state: ['summarize_room: give a brief recap before switching topics'],
-          softened_state: [],
-          excluded_state: [],
-          included_artifact_summaries: ['summarize_room: give a brief recap before switching topics'],
-          decision_traces: [],
-        },
-        {
           section_kind: 'freshness',
           selected_state: ['claim_consensus: refresh before treating as settled'],
           softened_state: [],
@@ -90,6 +82,7 @@ test('buildOperatorSummary keeps operator-facing routing fields and bounded badg
   assert.equal(model.summaryRows[4].value, 'repair_softly · yield_to_peer');
   assert.equal(model.badges.find((badge) => badge.label === 'Context').value, '2 selected');
   assert.equal(model.badges.find((badge) => badge.label === 'Safety').value, '1 omitted');
+  assert.equal(model.badges.find((badge) => badge.label === 'Commitments'), undefined);
 });
 
 test('normalizeSnapshot omits blocked/private phrases before rendering', () => {

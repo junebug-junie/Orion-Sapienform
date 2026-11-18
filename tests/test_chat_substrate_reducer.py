@@ -301,3 +301,41 @@ def test_reducer_updates_projection_turns():
     assert receipt.accepted_event_ids  # non-empty
     assert receipt.state_deltas[0].target_kind == "chat_turn"
     assert receipt.state_deltas[0].operation == "create"
+
+
+def test_reducer_keeps_first_observed_at_on_re_reduction():
+    """A reprocess/late event for an old turn must not re-freshen its age:
+    endogenous curiosity decays repair pressure by observed_at (2026-10-10)."""
+    from datetime import timedelta
+
+    trace_id = "hub.chat:athena:turn-77"
+    events = [
+        _atom_event(trace_id, "repair_signal", "signal", "repair", salience=0.913, confidence=0.65),
+    ]
+    t0 = datetime(2026, 10, 6, 2, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(days=3)
+    first, _ = reduce_chat_trace_events(events=events, projection=_fresh_projection(), now=t0)
+    second, receipt = reduce_chat_trace_events(events=events, projection=first, now=t1)
+    assert receipt.state_deltas[0].operation == "update"
+    assert second.turns["turn-77"].observed_at == t0
+    assert second.turns["turn-77"].last_updated_at == t1
+
+
+def test_unknown_repair_level_carries_no_repair_hint() -> None:
+    """2026-10-23: a turn with no repair reading carries level None (not 0.0) and no
+    `repair_pressure` hint. (chat_prediction_error, which used to diff this hint, was retired
+    2026-11-13; the hint itself still feeds the chat receipt state.)"""
+    from datetime import datetime, timezone
+
+    from orion.schemas.chat_projection import ChatTurnStateV1
+    from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
+
+    t0 = datetime(2026, 10, 23, tzinfo=timezone.utc)
+
+    def turn(tid, level):
+        return ChatTurnStateV1(trace_id=f"hub.chat:athena:{tid}", turn_id=tid, session_id="s",
+                               node_id="athena", observed_at=t0, word_count=30,
+                               repair_pressure_level=level, last_updated_at=t0)
+
+    assert "repair_pressure" not in compute_chat_pressure_hints(turn("b", None))
+    assert compute_chat_pressure_hints(turn("b", 0.0))["repair_pressure"] == 0.0

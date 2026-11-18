@@ -2,6 +2,10 @@
 # Bootstrap: clone upstream before first build (see README.md).
 services:
   frontend:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ./upstream
       dockerfile: Dockerfile
@@ -19,6 +23,10 @@ services:
       - ai-town-network
 
   backend:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: ghcr.io/get-convex/convex-backend:latest
     restart: unless-stopped
     ports:
@@ -44,6 +52,10 @@ services:
       - ai-town-network
 
   dashboard:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: ghcr.io/get-convex/convex-dashboard:latest
     restart: unless-stopped
     ports:

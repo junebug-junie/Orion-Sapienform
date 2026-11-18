@@ -9,17 +9,31 @@ Candidates are what the day left unprocessed since the last cycle:
                      bound allows (emotional charge / rumination).
   crystallization    active memory crystallizations touched since the last
                      cycle, weighted by their own salience.
+  arc                closed Temporal Self arcs since the last sleep (bottom of
+                     this file). Replay material only, never sleep pressure.
+  walkway            graded walkway-camera predictions (met/missed) scored since
+                     the last sleep, one per subject. Replay material only.
 
-Weights are declared heuristics, stated here once. Pressure is the SUM of
-candidate weights -- the same numbers replay ranks on -- so the trigger and the
-selection cannot drift apart. Every source is windowed on `since` (the last
-cycle's end), which gives pressure a true rest point: right after a cycle it
-reads exactly 0.0, and it only rises as new unprocessed rows arrive.
+Weights are declared heuristics, stated here once.
+
+Each candidate has a KEY naming the thing it is about, not the row it came
+from: metacog's normalized `trigger_reason` (its `summary` is model prose,
+reworded every time for the same event), the reverie theme, or the
+crystallization id. Rows sharing a key are one candidate at their highest
+weight, so 222 copies of one gateway timeout are one item to replay.
+
+Pressure counts only NEW keys: keys present since the last sleep and absent
+from the lookback before it (two-process model, Process S, read through the
+synaptic homeostasis hypothesis: new encoding builds sleep need, re-meeting a
+known thing does not). Right after a sleep the window is empty and pressure
+reads exactly 0.0. A chronic problem adds pressure once, on first appearance;
+it stays a replay candidate every window it recurs.
 """
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from datetime import datetime, timezone
+from typing import Any, Iterable, Mapping, Optional
 
 from orion.schemas.dream_cycle import MAX_REPLAY_ITEMS, ReplayItemV1
 
@@ -49,10 +63,52 @@ def _tags(value: Any) -> list[str]:
     return []
 
 
+def row_key(kind: str, row: dict[str, Any]) -> Optional[str]:
+    """`kind:<what this is about>`. SQL supplies `dedupe_key` (cycle_store);
+    without one, fall back to the row's own identity so it counts as new."""
+    key = str(row.get("dedupe_key") or "").strip().lower()
+    if not key:
+        fallback = {
+            "metacog": row.get("id"),
+            "compaction_request": row.get("theme"),
+            "resonance": row.get("theme_key"),
+            "crystallization": row.get("crystallization_id"),
+        }.get(kind)
+        key = " ".join(str(fallback or "").split()).lower()
+    return f"{kind}:{key}" if key else None
+
+
+def _as_utc(value: Any) -> Optional[datetime]:
+    """A row's time as an aware UTC datetime: timestamptz, naive (read as UTC) or ISO text. None
+    for anything else; a bad time is dropped, never guessed."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _when(value: Any) -> str:
+    """'[11-17 17:58 UTC] ' for a time the row carries, else ''. A link the dream claims between two
+    fragments is only checkable when each says when it happened (#3412)."""
+    at = _as_utc(value)
+    return f"[{at:%m-%d %H:%M} UTC] " if at else ""
+
+
 def candidate_from_metacog(row: dict[str, Any]) -> Optional[ReplayItemV1]:
     severity = str(row.get("severity") or "").strip().lower()
     weight = SEVERITY_WEIGHT.get(severity)
-    text = _clip(row.get("summary"))
+    summary = _clip(row.get("summary"))
+    head = f"{_when(row.get('occurred_at'))}{summary}"
+    # Evidence gets the room the summary leaves, so the overall cap never cuts its end.
+    room = min(300, TEXT_CAP - len(head) - len(" Evidence: ."))
+    evidence = _clip(row.get("evidence"), room).rstrip(". ") if room >= 20 else ""
+    text = _clip(head + (f" Evidence: {evidence}." if evidence else "")) if summary else ""
     rid = str(row.get("id") or "").strip()
     if weight is None or not text or not rid:
         return None
@@ -64,7 +120,15 @@ def candidate_from_metacog(row: dict[str, Any]) -> Optional[ReplayItemV1]:
         weight=weight,
         reason=f"metacog flagged {severity} ({kind})",
         tags=_tags(row.get("tags")),
+        occurred_at=_as_utc(row.get("occurred_at")),
     )
+
+
+def _loop_name(row: dict[str, Any], theme: str) -> str:
+    """What the dream reads for a reverie theme: the open loop's human title when the
+    source query found one (cycle_store _title_join), else the bare id. Text only:
+    ref_id, tags and the novelty key keep the id."""
+    return _clip(row.get("title"), 200) or theme
 
 
 def candidate_from_compaction_request(row: dict[str, Any]) -> Optional[ReplayItemV1]:
@@ -73,7 +137,11 @@ def candidate_from_compaction_request(row: dict[str, Any]) -> Optional[ReplayIte
     if not rid or not theme:
         return None
     reason_text = _clip(row.get("reason"), 400)
-    text = f"{theme}: {reason_text}" if reason_text else theme
+    name = _loop_name(row, theme)
+    # What the chain actually thought beats how it ended ("reverie_chain_settled").
+    thought = _clip(row.get("interpretation"), 450)
+    body = f"{name}: {thought or reason_text}" if (thought or reason_text) else name
+    text = _clip(f"{_when(row.get('occurred_at'))}{body}")
     return ReplayItemV1(
         ref_id=f"compaction_request:{rid}",
         source_kind="compaction_request",
@@ -81,6 +149,7 @@ def candidate_from_compaction_request(row: dict[str, Any]) -> Optional[ReplayIte
         weight=COMPACTION_REQUEST_WEIGHT,
         reason=f"reverie asked sleep to consolidate {theme!r}",
         tags=[theme.lower()],
+        occurred_at=_as_utc(row.get("occurred_at")),
     )
 
 
@@ -94,10 +163,11 @@ def candidate_from_resonance(row: dict[str, Any]) -> Optional[ReplayItemV1]:
     return ReplayItemV1(
         ref_id=f"resonance:{aid}",
         source_kind="resonance",
-        text=f"a theme reverie kept returning to: {theme}",
+        text=f"a theme reverie kept returning to: {_loop_name(row, theme)}",
         weight=weight,
         reason=f"reverie re-ignited {theme!r} past its refractory bound ({violations} violations)",
         tags=[theme.lower()],
+        occurred_at=_as_utc(row.get("occurred_at")),
     )
 
 
@@ -117,6 +187,7 @@ def candidate_from_crystallization(row: dict[str, Any]) -> Optional[ReplayItemV1
         weight=salience,
         reason=f"active crystallization touched since last sleep (salience {salience:.2f})",
         tags=_tags(row.get("tags")),
+        occurred_at=_as_utc(row.get("occurred_at")),
     )
 
 
@@ -128,48 +199,355 @@ _BUILDERS = {
 }
 
 
-def build_candidates(raw: dict[str, Iterable[dict[str, Any]]]) -> list[ReplayItemV1]:
-    """raw: source_kind -> rows. Unusable rows are dropped, never invented."""
-    out: list[ReplayItemV1] = []
-    seen: set[str] = set()
+def keyed_candidates(raw: dict[str, Iterable[dict[str, Any]]]) -> dict[str, ReplayItemV1]:
+    """raw: source_kind -> rows, newest first. key -> one candidate per thing:
+    the first row's text, the highest weight any row carried. Unusable rows
+    are dropped, never invented."""
+    out: dict[str, ReplayItemV1] = {}
     for kind, rows in raw.items():
         builder = _BUILDERS.get(kind)
         if builder is None:
             continue
         for row in rows:
             item = builder(row)
-            if item is not None and item.ref_id not in seen:
-                seen.add(item.ref_id)
-                out.append(item)
+            key = row_key(kind, row)
+            if item is None or key is None:
+                continue
+            kept = out.get(key)
+            if kept is None:
+                out[key] = item
+            elif item.weight > kept.weight:
+                out[key] = kept.model_copy(update={"weight": item.weight})
     return out
 
 
-def compute_pressure(candidates: Iterable[ReplayItemV1]) -> tuple[float, dict[str, int]]:
+def build_candidates(raw: dict[str, Iterable[dict[str, Any]]]) -> list[ReplayItemV1]:
+    return list(keyed_candidates(raw).values())
+
+
+def prior_keys(raw: dict[str, Iterable[dict[str, Any]]]) -> set[str]:
+    """Keys seen in the lookback before the window (same rows, same key rule)."""
+    out: set[str] = set()
+    for kind, rows in raw.items():
+        for row in rows:
+            key = row_key(kind, row)
+            if key is not None:
+                out.add(key)
+    return out
+
+
+def compute_pressure(
+    keyed: Mapping[str, ReplayItemV1], seen_before: Iterable[str] = ()
+) -> tuple[float, dict[str, int], dict[str, int]]:
+    """(pressure, counts, new_counts). counts: distinct things per source in the
+    window. pressure and new_counts: only keys absent from `seen_before`."""
+    before = set(seen_before)
     total = 0.0
     counts: dict[str, int] = {}
-    for c in candidates:
-        total += c.weight
+    new_counts: dict[str, int] = {}
+    for key, c in keyed.items():
         counts[c.source_kind] = counts.get(c.source_kind, 0) + 1
-    return round(total, 6), counts
+        if key in before:
+            continue
+        total += c.weight
+        new_counts[c.source_kind] = new_counts.get(c.source_kind, 0) + 1
+    return round(total, 6), counts, new_counts
 
 
-def select_replay(candidates: Iterable[ReplayItemV1], k: int) -> list[ReplayItemV1]:
+def select_replay(
+    candidates: Iterable[ReplayItemV1],
+    k: int,
+    source_caps: Optional[Mapping[str, int]] = None,
+    source_floors: Optional[Mapping[str, int]] = None,
+) -> list[ReplayItemV1]:
     """Top-k by weight, at most ceil(k/2) from any one source.
 
     The per-source cap keeps one noisy producer (e.g. a burst of degraded
     metacog during an outage) from turning the whole night into one topic --
     recombination needs material from different places to pair.
+    `source_caps` tightens (never loosens) that cap for named sources.
+
+    `source_floors` reserves slots for named sources BEFORE the weight ranking
+    fills the rest: up to `n` of that source's heaviest items (ties: the order
+    the source produced them) are kept even when every other candidate outweighs
+    them. A floor never exceeds the source's cap, never exceeds k, and reserves
+    nothing when the source has no candidates. Output is ordered by weight.
+    Floor ties trust the caller's order (walkway_candidates sorts newest first), so
+    give a floor only to a source that orders its own output deterministically.
     """
     k = max(0, min(int(k), MAX_REPLAY_ITEMS))
     per_source = max(1, (k + 1) // 2)
-    ranked = sorted(candidates, key=lambda c: (-c.weight, c.ref_id))
+    caps = {src: min(per_source, max(0, int(n))) for src, n in (source_caps or {}).items()}
+    pool = list(candidates)
     picked: list[ReplayItemV1] = []
     used: dict[str, int] = {}
-    for c in ranked:
+    taken: set[int] = set()
+    for src, n in sorted((source_floors or {}).items()):
+        want = min(max(0, int(n)), caps.get(src, per_source))
+        # Stable sort: equal weights keep the producer's own order (walkway: newest first).
+        own = sorted((i for i, c in enumerate(pool) if c.source_kind == src), key=lambda i: -pool[i].weight)
+        for i in own[:want]:
+            if len(picked) >= k:
+                break
+            taken.add(i)
+            used[src] = used.get(src, 0) + 1
+            picked.append(pool[i])
+    ranked = sorted(
+        (i for i in range(len(pool)) if i not in taken), key=lambda i: (-pool[i].weight, pool[i].ref_id)
+    )
+    for i in ranked:
+        c = pool[i]
         if len(picked) >= k:
             break
-        if used.get(c.source_kind, 0) >= per_source:
+        if used.get(c.source_kind, 0) >= caps.get(c.source_kind, per_source):
             continue
         used[c.source_kind] = used.get(c.source_kind, 0) + 1
         picked.append(c)
+    picked.sort(key=lambda c: (-c.weight, c.ref_id))
     return picked
+
+
+# --- closed Temporal Self arcs (rev 4 patch 7) --------------------------------
+#
+# A closed arc is one stretch of the chronology Orion lived through (a concern it
+# held, a curiosity it chased, a body state). Replay material ONLY: arcs are added
+# after the pressure read (app/cycle.py), so they never touch sleep pressure,
+# new_counts, has_candidates or the rest drive.
+#
+# Weight (declared heuristic, the arc's own two measures of how much it held Orion):
+#   dwell   = min(1, ln(1 + dwell_sec/60) / ln(1 + 60))   log: live dwell spans 5 s
+#             (reverie p50) to hours (curiosity p90 ~66 min); saturates at 60 min.
+#   returns = min(1, attention_returns / 3)                coming back to a thing after
+#             it was suspended; three returns is "kept returning".
+#   weight  = ARC_WEIGHT_MAX * (dwell + returns) / 2
+# ARC_WEIGHT_MAX (0.75) < 1.0 so a critical metacog (1.0) always outranks an arc. Weight 0
+# (no dwell, no return) carries nothing and is dropped, like a 0-salience crystallization.
+
+ARC_WEIGHT_MAX = 0.75  # below a 0.8-salience crystallization too: an arc never wins a tie
+ARC_DWELL_SATURATE_MIN = 60.0
+ARC_RETURNS_SATURATE = 3
+ARC_CANDIDATES_MAX = 20
+# A sleep never replays a sleep. A strain arc is a body state lasting hours to days: its dwell
+# would saturate the weight and put it in every replay while strained (strain loop part 1 keeps it
+# out of dreams until that is designed on purpose). A binding arc (felt state: a body-economy
+# constraint whose price binds) is the same kind of body state, several open at once for hours: out
+# of dreams for the same reason.
+# A faculty arc (self-monitor patch 2) is a days-long stretch of a track record: same reason.
+ARC_EXCLUDED_KINDS = frozenset({"sleep", "strain", "binding", "faculty"})
+
+
+def arc_replay_slots(k: int) -> int:
+    """At most a third of the replay is arcs (they DO displace lower-weight existing items
+    within that third; the existing sources keep at least two thirds). The other sources are things the day
+    explicitly flagged (a critical metacog, a theme reverie ASKED sleep to consolidate);
+    arcs are the chronology around them. Live 10-12: under the plain ceil(k/2) per-source
+    cap, six arcs at >= 0.5 would have displaced all six compaction requests (0.5)."""
+    return max(0, int(k)) // 3
+
+
+def arc_weight(dwell_sec: Any, returns: Any) -> float:
+    import math
+
+    try:
+        dwell = max(0.0, float(dwell_sec or 0.0))
+    except (TypeError, ValueError):
+        dwell = 0.0
+    try:
+        ret = max(0, int(returns or 0))
+    except (TypeError, ValueError):
+        ret = 0
+    d = min(1.0, math.log1p(dwell / 60.0) / math.log1p(ARC_DWELL_SATURATE_MIN))
+    r = min(1.0, ret / ARC_RETURNS_SATURATE)
+    return round(ARC_WEIGHT_MAX * (d + r) / 2.0, 4)
+
+
+def _hhmm(value: Any) -> str:
+    try:
+        return value.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+    except Exception:  # noqa: BLE001 -- text only
+        return "?"
+
+
+def candidate_from_arc(row: dict[str, Any]) -> Optional[ReplayItemV1]:
+    aid = str(row.get("arc_id") or "").strip()
+    kind = str(row.get("kind") or "").strip().lower()
+    if not aid or not kind or kind in ARC_EXCLUDED_KINDS:
+        return None
+    if str(row.get("status") or "") != "closed" or row.get("ended_at") is None:
+        return None
+    dwell = row.get("cumulative_dwell_sec")
+    returns = row.get("attention_returns")
+    weight = arc_weight(dwell, returns)
+    if weight <= 0.0:
+        return None
+    subject = _clip(row.get("subject_label"), 200) or _clip(row.get("subject_ref"), 200)
+    try:
+        dwell_min = max(0.0, float(dwell or 0.0)) / 60.0
+    except (TypeError, ValueError):
+        dwell_min = 0.0
+    try:
+        ret = max(0, int(returns or 0))
+    except (TypeError, ValueError):
+        ret = 0
+    return ReplayItemV1(
+        ref_id=f"arc:{aid}",
+        source_kind="arc",
+        text=_clip(
+            f"{kind} arc: {subject or '(no subject)'}, {_hhmm(row.get('began_at'))} to "
+            f"{_hhmm(row.get('ended_at'))} UTC, held {dwell_min:.0f} min, returned to {ret} times"
+        ),
+        weight=weight,
+        reason=f"closed {kind} arc since last sleep (dwell {dwell_min:.1f} min, {ret} returns)",
+        tags=[kind],
+        occurred_at=_as_utc(row.get("began_at")),
+        occurred_until=_as_utc(row.get("ended_at")),
+    )
+
+
+def arc_candidates(
+    rows: Iterable[dict[str, Any]], since: datetime, until: datetime, *,
+    cap: int = ARC_CANDIDATES_MAX, one_per_kind: bool = True,
+) -> list[ReplayItemV1]:
+    """Closed, non-sleep arcs that ENDED in [since, until): one per subject, then one per
+    kind, then the top `cap` by weight (ties: newest end, then arc_id). The store filters the same way; this re-checks so a loose
+    source can never widen the window.
+
+    One candidate per THING, the same rule as every other source: arcs sharing
+    (kind, subject_ref) are one candidate, the heaviest arc (its arc_id is the one cited).
+    Live 10-12: node:substrate.bus_synaptic closed three interoception arcs in one window
+    and took 3 of the top 5 slots before this.
+
+    Then one candidate per KIND (the heaviest thing of that kind), before the cap, so a
+    flood of one kind cannot push the others out of the top `cap` either. Live 11-12: over
+    5 days 15 of 18 replayed arcs were interoception (14 days: 35 of 39) (substrate execution / perception /
+    chat / bus_synaptic as separate things): body arcs run for hours and their returns count
+    sensor flicker, so they outweigh every other kind. `one_per_kind=False` is the old rule,
+    kept only so the replay eval can rebuild what past sleeps really did."""
+    best: dict[tuple[str, str], tuple[ReplayItemV1, Any]] = {}
+    for row in rows or ():
+        ended = row.get("ended_at")
+        try:
+            in_window = ended is not None and since <= ended < until
+        except TypeError:
+            in_window = False
+        if not in_window:
+            continue
+        item = candidate_from_arc(row)
+        if item is None:
+            continue
+        key = (item.tags[0], str(row.get("subject_ref") or item.ref_id).strip())  # an exact id: no case fold
+        kept = best.get(key)
+        if kept is None or (item.weight, ended.timestamp(), item.ref_id) > (kept[0].weight, kept[1].timestamp(), kept[0].ref_id):
+            best[key] = (item, ended)
+    ranked = [item for item, _ in sorted(best.values(), key=lambda t: (-t[0].weight, -t[1].timestamp(), t[0].ref_id))]
+    if one_per_kind:
+        heaviest: dict[str, ReplayItemV1] = {}
+        for item in ranked:  # ranked heaviest first: the first of a kind is its heaviest
+            heaviest.setdefault(item.tags[0], item)
+        ranked = list(heaviest.values())  # dicts keep insertion order: still ranked
+    return ranked[: max(0, int(cap))]
+
+
+# --- graded walkway predictions (2026-10-15) ----------------------------------
+#
+# What Orion expected to see on the street and whether it came: the rhythm
+# reducer's met/missed `vision_percept_expectation` rows scored in the window,
+# one candidate per (stream, subject), with the subject's 14-day hit rate when
+# there is one. Replay material ONLY, like arcs: added after the pressure read
+# (app/cycle.py), so the street never makes Orion tired.
+#
+# Weight (declared heuristic): a miss is a prediction error, the thing sleep
+# most plausibly has work to do on, so a subject with any miss in the window
+# weighs WALKWAY_WEIGHT_MISSED; all-met weighs WALKWAY_WEIGHT_MET. Both sit below
+# a critical metacog (1.0), a 0.8-salience crystallization and ARC_WEIGHT_MAX,
+# and at most `walkway_replay_slots` of a replay are walkway items.
+#
+# Floor (2026-11-03): the weights alone never won a slot. Live 10-29..11-03,
+# 26 cycles had >= 1 walkway candidate and every replay filled all 12 slots
+# with metacog/arc/resonance/crystallization/compaction at >= 0.5, so 0
+# `dream_replay_item` rows ever had source_kind='walkway'. Raising the weights
+# would reorder every other source; instead `walkway_replay_floor` reserves one
+# slot in select_replay for the heaviest walkway item (a miss outweighs a met)
+# whenever one exists. The ceiling above still bounds it.
+#
+# Empty for the walkway camera's first week: the reducer emits an expectation
+# only after >= 5 days of support.
+
+WALKWAY_WEIGHT_MISSED = 0.5
+WALKWAY_WEIGHT_MET = 0.3
+WALKWAY_CANDIDATES_MAX = 10
+
+
+def walkway_replay_slots(k: int) -> int:
+    """At most a sixth of the replay (2 of 12), never zero when k > 0."""
+    k = max(0, int(k))
+    return (k + 5) // 6
+
+
+def walkway_replay_floor(k: int) -> int:
+    """One slot is reserved for the best walkway item whenever one exists, once the
+    replay is big enough for a sixth to be a whole slot (k >= 6). Below that the floor
+    is 0, so a tiny replay is never handed to the street over a critical metacog."""
+    return min(1, max(0, int(k)) // 6)
+
+
+def walkway_candidates(
+    rows: Iterable[dict[str, Any]],
+    calibration_rows: Iterable[dict[str, Any]],
+    since: datetime,
+    until: datetime,
+    *,
+    tz: Any,
+    cap: int = WALKWAY_CANDIDATES_MAX,
+) -> list[ReplayItemV1]:
+    """met/missed rows scored in [since, until) -> one ReplayItemV1 per subject,
+    heaviest first (ties: newest, then ref_id). Re-checks the window so a loose
+    source can never widen it. [] when nothing was graded."""
+    from orion.situational.street_material import (
+        build_calibration,
+        build_graded_expectations,
+        calibration_phrase,
+    )
+
+    graded = []
+    for g in build_graded_expectations(rows):
+        try:
+            if g.scored_at is not None and since <= g.scored_at < until:
+                graded.append(g)
+        except TypeError:
+            continue
+    cal = build_calibration(calibration_rows or ())
+    by_subject: dict[tuple[str, str], list] = {}
+    for g in graded:  # newest scored first
+        by_subject.setdefault((g.stream_id, g.subject_key), []).append(g)
+    items: list[tuple[ReplayItemV1, datetime]] = []
+    for (stream, key), gs in by_subject.items():
+        newest = gs[0]
+        missed = sum(1 for g in gs if not g.came)
+        weight = WALKWAY_WEIGHT_MISSED if missed else WALKWAY_WEIGHT_MET
+        outcomes = []
+        for g in gs[:5]:
+            day = (g.window_start or g.scored_at).astimezone(tz).strftime("%a %d %b")
+            outcomes.append(("came" if g.came else "did not come") + f" on {day}")
+        at = f" around {newest.around}" if newest.around else ""
+        text = f"On the {stream or 'street camera'} I expected {newest.subject}{at}: " + "; ".join(outcomes) + "."
+        phrase = calibration_phrase(cal.get((stream, key)))
+        if phrase:
+            text += f" {phrase[:1].upper()}{phrase[1:]}."
+        rid = newest.expectation_id or f"{stream}:{key}"
+        items.append((
+            ReplayItemV1(
+                ref_id=f"walkway:{rid}",
+                source_kind="walkway",
+                text=_clip(text),
+                weight=weight,
+                reason=f"walkway prediction graded since last sleep ({len(gs) - missed} met, {missed} missed)",
+                tags=["walkway", newest.subject.lower()],
+                # From the expected arrival window to its grading: the street event, not just the grade.
+                occurred_at=_as_utc(newest.window_start or newest.scored_at),
+                occurred_until=_as_utc(newest.scored_at),
+            ),
+            newest.scored_at,
+        ))
+    items.sort(key=lambda t: (-t[0].weight, -t[1].timestamp(), t[0].ref_id))
+    return [item for item, _ in items[: max(0, int(cap))]]

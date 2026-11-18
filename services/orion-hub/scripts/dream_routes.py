@@ -5,8 +5,11 @@ orion-dream's /dreams/cycle/pressure; scoring reuses the waking offer contract.
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -17,12 +20,17 @@ from sqlalchemy import create_engine, text
 from app.settings import settings
 from orion.curiosity.worldview import WorldviewReader
 from orion.dream.hypotheses import score_hypotheses
+from orion.reverie.visual_storage import SUPPORTED_MIMES, load_visual_artifact, sniff_image
 from orion.schemas.dream_cycle import SleepPressureV1
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/dream", tags=["dream"])
 _engine_instance: Any = None
 SCORE_LIMIT = 10000
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# Carried dreams (orion-dream app/carry.py finish): dream.result.v1 with profile dream.carry,
+# one fragment per hop. The dreams table is the only record; no carry table exists.
+CARRY_PROFILE = "dream.carry"
 
 
 def _engine():
@@ -146,3 +154,58 @@ def scorecard(response: Response) -> dict:
     if len(offered) > SCORE_LIMIT or len(priors) > SCORE_LIMIT:
         raise HTTPException(503, "dream_scorecard_limit_exceeded")
     return score_hypotheses(offered, priors).as_dict()
+
+
+@router.get("/carries")
+def carries(response: Response, limit: int = Query(6, ge=1, le=20)) -> dict:
+    """Recent carried dreams, hops in order: passage, picture, what Orion saw, ..."""
+    _no_store(response)
+    rows = _rows(
+        "SELECT id, created_at, tldr, fragments, metrics->'_dream_audit' AS audit FROM dreams "
+        "WHERE metrics->'_dream_audit'->>'profile' = :profile ORDER BY created_at DESC, id DESC LIMIT :limit",
+        {"profile": CARRY_PROFILE, "limit": limit},
+    )
+    out = []
+    for row in rows:
+        audit = row["audit"] if isinstance(row["audit"], dict) else {}
+        trigger = audit.get("trigger") if isinstance(audit.get("trigger"), dict) else {}
+        hops = [f for f in (row["fragments"] or []) if isinstance(f, dict) and f.get("kind") in ("text", "image")]
+        hops.sort(key=lambda f: int(f.get("index") or 0))
+        out.append({
+            "id": row["id"], "created_at": row["created_at"], "tldr": row["tldr"],
+            "trigger_id": trigger.get("trigger_id"), "stopped_reason": trigger.get("stopped_reason"),
+            "sleep_cycle_id": (trigger.get("sleep") or {}).get("cycle_id") if isinstance(trigger.get("sleep"), dict) else None,
+            "hops": [{k: f.get(k) for k in ("index", "kind", "passage", "image_prompt", "sha256", "caption")} for f in hops],
+        })
+    return {"carries": out}
+
+
+def _carry_image_known(sha256: str) -> bool:
+    # Only pictures a carried dream names: the route is not a general file reader.
+    return bool(_rows(
+        "SELECT 1 FROM dreams WHERE metrics->'_dream_audit'->>'profile' = :profile "
+        "AND fragments @> CAST(:needle AS jsonb) LIMIT 1",
+        {"profile": CARRY_PROFILE, "needle": f'[{{"sha256": "{sha256}"}}]'},
+    ))
+
+
+@router.get("/carry/image/{sha256}")
+async def carry_image(sha256: str) -> Response:
+    if not _SHA256_RE.match(sha256):
+        raise HTTPException(400, "invalid artifact id")
+    if not await asyncio.to_thread(_carry_image_known, sha256):
+        raise HTTPException(404, "dream picture not found")
+    try:
+        data = await asyncio.to_thread(load_visual_artifact, sha256, base_dir=settings.REVERIE_VISUAL_STORAGE_DIR)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "dream picture missing on disk") from exc
+    if hashlib.sha256(data).hexdigest() != sha256:
+        logger.error("dream carry image hash mismatch sha=%s", sha256[:12])
+        raise HTTPException(500, "artifact integrity check failed")
+    sniffed = sniff_image(data)
+    mime = sniffed[0] if sniffed and sniffed[0] in SUPPORTED_MIMES else "application/octet-stream"
+    return Response(content=data, media_type=mime, headers={
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "X-Content-Type-Options": "nosniff",
+    })

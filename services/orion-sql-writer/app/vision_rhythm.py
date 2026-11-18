@@ -260,12 +260,18 @@ def coverage_fraction(
     return min(1.0, covered / (b - a))
 
 
-def score_window(*, occurred: bool, coverage: float, min_coverage: float = 0.8) -> str:
+def score_window(*, occurred: bool, coverage: float, min_coverage: float = 0.8,
+                 parked_in_window: bool = False) -> str:
     """met if it happened; missed only if the camera watched enough of the
-    window to have seen it; otherwise unscorable."""
+    window to have seen it; otherwise unscorable.
+
+    ``parked_in_window``: the subject was in view during the window, parked
+    (a stationary sighting). It did not arrive, and it was not absent: the
+    window cannot say whether the expected arrival happened, so it is
+    unscorable, never "did not come" (#3388: 12 of 127 misses on 2026-11-15)."""
     if occurred:
         return "met"
-    if coverage < min_coverage:
+    if parked_in_window or coverage < min_coverage:
         return "unscorable"
     return "missed"
 
@@ -293,6 +299,21 @@ def expect_key_ttl(open_windows: Sequence[Tuple[datetime, datetime, bool]], now:
     if not ends:
         return None
     return max(1, int(math.ceil((max(ends) - now).total_seconds())))
+
+
+def handoff_hold(raw, now: datetime) -> Tuple[Optional[int], dict]:
+    """Seconds an open handoff still needs ``orion:vision:expect:<stream>``
+    (its ``handoff_until``, written by app/vision_handoff_loop.py), and the
+    handoff fields to carry over. (None, {}) when none is open."""
+    try:
+        val = json.loads(raw) if raw else {}
+        until = datetime.fromisoformat(val["handoff_until"]) if isinstance(val, dict) and val.get("handoff_until") else None
+    except (ValueError, TypeError, KeyError):
+        return None, {}
+    if until is None or until <= now:
+        return None, {}
+    return int(math.ceil((until - now).total_seconds())), {"handoff_ids": val.get("handoff_ids") or [],
+                                                           "handoff_until": val["handoff_until"]}
 
 
 def _hhmm(ts: datetime, tz: ZoneInfo) -> str:
@@ -383,12 +404,14 @@ def _load_subjects(conn, now: datetime, cfg: RhythmConfig) -> List[Subject]:
     since = now - timedelta(days=cfg.history_days)
     subjects: List[Subject] = []
     inds = conn.execute(text(
-        "SELECT individual_id, stream_id, kind, label FROM vision_individual WHERE sighting_count >= :n"),
+        # Stationary fixtures (a prop that never moves) are not a rhythm.
+        "SELECT individual_id, stream_id, kind, label FROM vision_individual "
+        "WHERE sighting_count >= :n AND NOT stationary"),
         {"n": cfg.min_occurrences}).fetchall()
     for iid, stream_id, kind, label in inds:
         occ = [r[0] for r in conn.execute(text(
             "SELECT started_at FROM vision_individual_sighting WHERE individual_id=:i AND started_at >= :since "
-            "ORDER BY started_at"), {"i": iid, "since": since}).fetchall()]
+            "AND NOT stationary ORDER BY started_at"), {"i": iid, "since": since}).fetchall()]
         subjects.append(Subject(stream_id, f"individual:{iid}", individual_display_label(label, kind, iid), tuple(occ)))
     for stream_id in cfg.label_streams:
         for label in cfg.labels:
@@ -415,13 +438,27 @@ def _occurred(conn, stream_id: str, subject_key: str, start: datetime, end: date
     if kind == "individual":
         row = conn.execute(text(
             "SELECT min(GREATEST(started_at, :a)) FROM vision_individual_sighting WHERE individual_id=:i "
-            "AND started_at <= :b AND ended_at >= :a"), {"i": ref, "a": start, "b": end}).fetchone()
+            "AND started_at <= :b AND ended_at >= :a AND NOT stationary"), {"i": ref, "a": start, "b": end}).fetchone()
     else:
         row = conn.execute(text(
             "SELECT min(observed_at) FROM vision_scene_inventory WHERE stream_id=:s AND observed_at >= :a "
             "AND observed_at <= :b AND COALESCE((counts->>:l)::numeric, 0) > 0"),
             {"s": stream_id, "a": start, "b": end, "l": ref}).fetchone()
     return row[0] if row and row[0] else None
+
+
+def _parked_in_window(conn, subject_key: str, start: datetime, end: datetime) -> bool:
+    """True when the individual has a stationary (parked) sighting that
+    overlaps [start, end]. Label subjects have no sightings: always False."""
+    from sqlalchemy import text
+
+    kind, _, ref = subject_key.partition(":")
+    if kind != "individual":
+        return False
+    row = conn.execute(text(
+        "SELECT 1 FROM vision_individual_sighting WHERE individual_id=:i "
+        "AND started_at <= :b AND ended_at >= :a AND stationary LIMIT 1"), {"i": ref, "a": start, "b": end}).fetchone()
+    return row is not None
 
 
 def _census_coverage(conn, stream_id: str, start: datetime, end: datetime) -> float:
@@ -462,7 +499,7 @@ def run_one_rhythm_cycle(
     ts = now or datetime.now(timezone.utc)
     tz = ZoneInfo(cfg.local_tz)
     summary = {"subjects": 0, "fitted": 0, "emitted": 0, "met": 0, "missed": 0, "unscorable": 0,
-               "expect_keys": 0}
+               "parked_in_window": 0, "expect_keys": 0}
     engine = create_engine(postgres_uri, pool_pre_ping=True)
     lock_conn = None
     per_stream: Dict[str, List[Tuple[datetime, datetime, bool]]] = {}
@@ -488,9 +525,14 @@ def run_one_rhythm_cycle(
                     summary["deferred"] = summary.get("deferred", 0) + 1
                     continue
                 coverage = _census_coverage(conn, r.stream_id, r.window_start, r.window_end)
+                parked = arrived is None and _parked_in_window(conn, r.subject_key, r.window_start, r.window_end)
                 status = score_window(occurred=arrived is not None, coverage=coverage,
-                                      min_coverage=cfg.min_coverage)
+                                      min_coverage=cfg.min_coverage, parked_in_window=parked)
                 summary[status] += 1
+                if parked:
+                    summary["parked_in_window"] += 1
+                    logger.info("vision_rhythm_parked_in_window expectation_id=%s subject=%s status=%s",
+                                r.expectation_id, r.subject_key, status)
                 event_id = None
                 if status in ("met", "missed"):
                     event_id = f"rhythm-{r.expectation_id}"
@@ -630,15 +672,22 @@ def _set_expect_keys(redis_url: Optional[str], per_stream: Dict[str, List[Tuple[
         client = redis.Redis.from_url(redis_url, socket_timeout=3, socket_connect_timeout=3)
         try:
             for stream_id, windows in per_stream.items():
+                key = f"{EXPECT_KEY_PREFIX}{stream_id}"
                 ttl = expect_key_ttl(windows, now)
+                # The handoff loop (app/vision_handoff_loop.py) shares this key:
+                # an open handoff window must not be cut short by a rhythm DEL/SET.
+                hold, handoff_fields = handoff_hold(client.get(key), now)
                 if ttl is None:
-                    # Everything open on this stream has already arrived:
-                    # stop steering attention toward it now, not at the old TTL.
-                    client.delete(f"{EXPECT_KEY_PREFIX}{stream_id}")
+                    if hold:
+                        client.expire(key, hold)
+                    else:
+                        # Everything open on this stream has already arrived:
+                        # stop steering attention toward it now, not at the old TTL.
+                        client.delete(key)
                     continue
-                client.set(f"{EXPECT_KEY_PREFIX}{stream_id}",
-                           json.dumps({"expectation_ids": per_stream_ids.get(stream_id, []),
-                                       "set_at": now.isoformat()}), ex=ttl)
+                client.set(key, json.dumps({"expectation_ids": per_stream_ids.get(stream_id, []),
+                                            "set_at": now.isoformat(), **handoff_fields}),
+                           ex=max(ttl, hold or 0))
                 n += 1
         finally:
             client.close()

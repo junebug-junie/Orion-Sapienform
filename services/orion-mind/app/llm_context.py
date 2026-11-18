@@ -17,6 +17,9 @@ class MindLLMRequestContext:
     router_profile_id: str = "default"
     trigger: str = "user_turn"
     causality_chain: list[Any] | None = None
+    # The turn's GPU pool hold ref (JSON form), sent as the gateway's options.gpu_lease so the call
+    # attaches to the hold's seat. None for unheld runs.
+    gpu_lease: dict[str, Any] | None = None
 
     def envelope_correlation_id(self) -> UUID:
         try:

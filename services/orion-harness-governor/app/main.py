@@ -12,8 +12,11 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 
+from orion.harness.fcc_warm_pool import WarmPoolConfig, get_warm_pool, start_warm_pool, stop_warm_pool
+
 from .bus_listener import run_bus_worker
 from .cancel_listener import run_cancel_worker
+from .claude_tools_listener import run_claude_tools_worker
 from .settings import settings
 
 logging.basicConfig(
@@ -52,8 +55,42 @@ def build_rpc_health_publisher(bus_getter) -> RpcHealthPublisher:
     )
 
 
+async def start_fcc_warm_pool() -> None:
+    """Start the chat warm pool; on any failure log it and leave turns on the spawn path."""
+    try:
+        await start_warm_pool(
+            WarmPoolConfig.from_runtime_env(
+                size=settings.harness_fcc_chat_warm_pool_size,
+                max_turns=settings.harness_fcc_chat_warm_pool_max_turns,
+                max_age_sec=settings.harness_fcc_chat_warm_pool_max_age_sec,
+                warm_model_label=settings.harness_fcc_chat_warm_pool_model_label,
+                relay_port=settings.harness_fcc_chat_warm_pool_relay_port,
+                spawn_timeout_sec=settings.harness_fcc_chat_warm_pool_spawn_timeout_sec,
+                clear_timeout_sec=settings.harness_fcc_chat_warm_pool_clear_timeout_sec,
+            )
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("fcc_warm_pool_start_failed -- chat turns will spawn per turn")
+
+
+def drain_grace_problem() -> str | None:
+    """Docker SIGKILLs at the stop grace period; a drain that cannot fit inside it is silently void."""
+    drain = max(settings.harness_shutdown_drain_sec_chat, settings.harness_shutdown_drain_sec_agent)
+    if drain > 0 and settings.harness_stop_grace_sec < drain + 60:
+        return (
+            f"HARNESS_STOP_GRACE_SEC={settings.harness_stop_grace_sec:g} is shorter than the longest drain "
+            f"({drain:g}s) + 60s: Docker will SIGKILL mid-drain. Raise it or lower HARNESS_SHUTDOWN_DRAIN_SEC_*."
+        )
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    problem = drain_grace_problem()
+    if problem:
+        logger.error("governor_drain_exceeds_stop_grace %s", problem)
     logger.info(
         "Starting orion-harness-governor service=%s v=%s port=%s",
         settings.service_name,
@@ -94,12 +131,30 @@ async def lifespan(app: FastAPI):
     # workspace changed here -- true per-turn workspace isolation is a
     # separate, larger change. See this PR's report for the tradeoff.
     app.state.bus_task_chat = asyncio.create_task(
-        run_bus_worker(stop_event=app.state.bus_stop_event, lane="chat", bus=app.state.dispatch_bus)
+        run_bus_worker(
+            stop_event=app.state.bus_stop_event, lane="chat", bus=app.state.dispatch_bus,
+            drain_sec=settings.harness_shutdown_drain_sec_chat,
+        )
     )
     app.state.bus_task_agent = asyncio.create_task(
-        run_bus_worker(stop_event=app.state.bus_stop_event, lane="agent", bus=app.state.dispatch_bus)
+        run_bus_worker(
+            stop_event=app.state.bus_stop_event, lane="agent", bus=app.state.dispatch_bus,
+            drain_sec=settings.harness_shutdown_drain_sec_agent,
+        )
     )
-    app.state.cancel_task = asyncio.create_task(run_cancel_worker(app.state.bus_stop_event))
+    # Own stop flag: a cancel (durable-runs stopping an attempt) must still reach a turn that is
+    # draining, so this listener stops only after both lanes have finished draining.
+    app.state.cancel_stop_event = asyncio.Event()
+    app.state.cancel_task = asyncio.create_task(run_cancel_worker(app.state.cancel_stop_event))
+    # Claude's tools in Hub chat (Patch 1b, app/claude_tools_listener.py): its own bus connection and stop flag.
+    app.state.claude_tools_stop_event = asyncio.Event()
+    app.state.claude_tools_task = asyncio.create_task(run_claude_tools_worker(app.state.claude_tools_stop_event))
+    # Warm Claude Code pool for chat replies (spec L5). Started in the background so
+    # a slow MCP start-up never delays the governor's readiness; until a slot is
+    # warm, chat turns simply spawn as before.
+    app.state.fcc_warm_pool_task = None
+    if settings.harness_fcc_chat_warm_pool_enabled and settings.orion_harness_governor_enabled:
+        app.state.fcc_warm_pool_task = asyncio.create_task(start_fcc_warm_pool())
     app.state.heartbeat_chassis = build_heartbeat_chassis()
     try:
         await app.state.heartbeat_chassis.start_background()
@@ -113,16 +168,35 @@ async def lifespan(app: FastAPI):
         app.state.heartbeat_chassis = None
     yield
     app.state.bus_stop_event.set()
-    for task in (
-        app.state.bus_task_chat,
-        app.state.bus_task_agent,
-        getattr(app.state, "cancel_task", None),
-    ):
-        if task is None:
-            continue
+    # Let the lanes drain (each worker cancels its own leftovers after its budget). The slack
+    # covers the loop noticing the stop flag and the final cancel.
+    lanes = {app.state.bus_task_chat, app.state.bus_task_agent}
+    _, pending = await asyncio.wait(
+        lanes, timeout=max(settings.harness_shutdown_drain_sec_chat, settings.harness_shutdown_drain_sec_agent) + 15
+    )
+    for task in pending:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+    app.state.claude_tools_stop_event.set()
+    claude_tools_task = getattr(app.state, "claude_tools_task", None)
+    if claude_tools_task is not None:
+        claude_tools_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await claude_tools_task
+    app.state.cancel_stop_event.set()
+    cancel_task = getattr(app.state, "cancel_task", None)
+    if cancel_task is not None:
+        cancel_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cancel_task
+    warm_task = getattr(app.state, "fcc_warm_pool_task", None)
+    if warm_task is not None and not warm_task.done():
+        warm_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await warm_task
+    with suppress(Exception):
+        await stop_warm_pool()
     publisher = getattr(app.state, "rpc_health_publisher", None)
     if publisher is not None:
         await publisher.stop()
@@ -152,6 +226,21 @@ def _lane_alive(task: "asyncio.Task | None") -> bool | None:
     return task is not None and not task.done()
 
 
+def _task_alive(task: "asyncio.Task | None") -> bool:
+    return task is not None and not task.done()
+
+
+def _warm_pool_status() -> dict | None:
+    pool = get_warm_pool()
+    if pool is not None:
+        return pool.status()
+    from orion.harness import fcc_warm_pool
+
+    if fcc_warm_pool.LAST_START_ERROR:
+        return {"running": False, "start_error": fcc_warm_pool.LAST_START_ERROR}
+    return None
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     return JSONResponse(
@@ -170,6 +259,13 @@ async def health() -> JSONResponse:
             # not a crash -- see `_lane_alive`.
             "lane_chat_alive": _lane_alive(getattr(app.state, "bus_task_chat", None)),
             "lane_agent_alive": _lane_alive(getattr(app.state, "bus_task_agent", None)),
+            # Warm chat pool (spec L5): slot states, hit/miss/respawn counters.
+            # null = disabled or not started (chat turns spawn per turn).
+            "fcc_warm_pool": _warm_pool_status(),
+            # Claude's tools broker (Patch 1b). null = bus disabled.
+            "claude_tools_alive": (None if not settings.orion_bus_enabled
+                                   else _task_alive(getattr(app.state, "claude_tools_task", None))),
+            "claude_tools_enabled": settings.claude_tools_enabled,
         }
     )
 

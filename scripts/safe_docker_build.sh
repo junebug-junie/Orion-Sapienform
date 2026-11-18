@@ -1,27 +1,27 @@
 #!/bin/sh
-# safe_docker_build.sh — wrapper around `docker compose` that refuses to run
-# from the shared/primary git checkout of this repo.
+# safe_docker_build.sh — wrapper around `docker compose` that requires live
+# deployments to run from the clean, synchronized primary `main` checkout.
 #
-# Rationale: a real incident occurred where a concurrent AI coding-agent
-# session ran `docker compose build`+`up` directly from the shared/primary
-# checkout (not a worktree) against services/orion-cortex-orch, and silently
-# reverted another session's already-verified fix. A git hook cannot prevent
-# this category of incident — `docker compose` is not a git operation, so
-# git hooks have no jurisdiction over it. This wrapper is the weaker,
-# convention-based mitigation: it is only effective if callers route their
-# docker compose invocations through it instead of calling `docker compose`
-# directly.
+# Builds and read-only compose commands may run from development worktrees.
+# `up`, however, changes the live runtime and therefore has one canonical
+# source: the primary checkout on `main`, clean and equal to `origin/main`
+# (or, when ORION_DEPLOY_PINNED_HEAD is set by a post-pull rebuild run, equal
+# to that pinned commit and behind-or-equal to `origin/main`; see 2.1).
+# This prevents a feature-named or stale worktree from becoming an accidental
+# deployment source while preserving isolated worktrees for development.
 #
 # Usage:
-#   scripts/safe_docker_build.sh <service-name> [docker compose args...]
+#   scripts/safe_docker_build.sh <service-name> [--compose-file docker-compose.<name>.yml] [docker compose args...]
+#
+# --compose-file targets a second compose file of the same service INSTEAD of
+# services/<service>/docker-compose.yml (never merged with it), e.g. the Qwen
+# caption lane in services/orion-vision-host/docker-compose.circe-qwen.yml.
+# Every check below still applies. Only docker-compose.<name>.yml basenames.
 #
 # Example:
 #   scripts/safe_docker_build.sh orion-cortex-orch build
 #   scripts/safe_docker_build.sh orion-cortex-orch up -d --build
 #
-# Escape hatch (use deliberately, not by default):
-#   ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh ...
-
 set -e
 
 # --- 1. Detect whether this is the shared/primary checkout -----------------
@@ -45,36 +45,107 @@ if [ -n "$_COMMONDIR" ] && [ "$_GITDIR" = "$_COMMONDIR" ]; then
     IS_SHARED_CHECKOUT=1
 fi
 
-if [ "$IS_SHARED_CHECKOUT" = "1" ] && [ "$ORION_ALLOW_SHARED_CHECKOUT_WRITE" != "1" ]; then
-    echo "safe_docker_build.sh: REFUSING to run docker compose from the shared/primary git checkout." >&2
-    echo "" >&2
-    echo "This repo has had a real incident where a concurrent agent session ran" >&2
-    echo "'docker compose build'/'up' directly from the shared checkout and silently" >&2
-    echo "reverted another session's already-verified fix. Docker compose is not a" >&2
-    echo "git operation, so a git hook cannot block it — this wrapper is the only" >&2
-    echo "available mitigation, and it only works if you route through it." >&2
-    echo "" >&2
-    echo "Fix: run this from a git worktree instead of the shared checkout, e.g.:" >&2
-    echo "  git worktree add ../Orion-Sapienform-<task-name> -b <type>/<task-name>" >&2
-    echo "  cd ../Orion-Sapienform-<task-name>" >&2
-    echo "  scripts/safe_docker_build.sh <service-name> ..." >&2
-    echo "" >&2
-    echo "Escape hatch (only if you are certain this is safe right now):" >&2
-    echo "  ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh <service-name> ..." >&2
-    exit 1
-fi
-
 # --- 2. Validate service argument and its docker-compose.yml ---------------
 SERVICE="$1"
 if [ -z "$SERVICE" ]; then
     echo "safe_docker_build.sh: missing required <service-name> argument." >&2
-    echo "Usage: scripts/safe_docker_build.sh <service-name> [docker compose args...]" >&2
+    echo "Usage: scripts/safe_docker_build.sh <service-name> [--compose-file docker-compose.<name>.yml] [docker compose args...]" >&2
     exit 1
 fi
 shift
 
-if [ ! -f "services/$SERVICE/docker-compose.yml" ]; then
-    echo "safe_docker_build.sh: no such service compose file: services/$SERVICE/docker-compose.yml" >&2
+COMPOSE_FILE_NAME="docker-compose.yml"
+if [ "$1" = "--compose-file" ]; then
+    COMPOSE_FILE_NAME="$2"
+    case "$COMPOSE_FILE_NAME" in
+        docker-compose.yml) ;;
+        docker-compose.*.yml)
+            case "$COMPOSE_FILE_NAME" in
+                */*|*..*)
+                    echo "safe_docker_build.sh: --compose-file takes a basename, got '$COMPOSE_FILE_NAME'" >&2
+                    exit 1 ;;
+            esac ;;
+        *)
+            echo "safe_docker_build.sh: --compose-file must be docker-compose.<name>.yml, got '$COMPOSE_FILE_NAME'" >&2
+            exit 1 ;;
+    esac
+    shift 2
+fi
+
+# --- 2.1. Require live deployments to originate from canonical main --------
+IS_DEPLOY=0
+for arg in "$@"; do
+    if [ "$arg" = "up" ]; then
+        IS_DEPLOY=1
+        break
+    fi
+done
+
+if [ "$IS_DEPLOY" = "1" ]; then
+    if [ "$IS_SHARED_CHECKOUT" != "1" ]; then
+        PRIMARY_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '
+            /^worktree / { sub(/^worktree /, ""); print; exit }
+        ')
+        echo "safe_docker_build.sh: REFUSING live deployment from a linked worktree." >&2
+        echo "Deploy from the clean primary main checkout instead:" >&2
+        echo "  cd \"${PRIMARY_ROOT:-<primary-checkout>}\"" >&2
+        echo "  scripts/safe_docker_build.sh $SERVICE up -d --build" >&2
+        exit 1
+    fi
+
+    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
+    if [ "$CURRENT_BRANCH" != "main" ]; then
+        echo "safe_docker_build.sh: REFUSING live deployment from branch '$CURRENT_BRANCH'; main is required." >&2
+        exit 1
+    fi
+
+    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+        echo "safe_docker_build.sh: REFUSING live deployment from dirty main." >&2
+        echo "Commit, move, or remove local changes before deploying." >&2
+        exit 1
+    fi
+
+    if ! git fetch --quiet origin main; then
+        echo "safe_docker_build.sh: REFUSING live deployment because origin/main could not be refreshed." >&2
+        echo "Restore access to origin, then retry." >&2
+        exit 1
+    fi
+    if ! ORIGIN_MAIN=$(git rev-parse --verify origin/main 2>/dev/null); then
+        echo "safe_docker_build.sh: REFUSING live deployment because origin/main is unavailable after fetch." >&2
+        exit 1
+    fi
+    LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null)
+    # ORION_DEPLOY_PINNED_HEAD: set by rebuild_services_from_git_diff.sh to the
+    # full commit its run started on. A post-pull run brings services up one by
+    # one over many minutes; a PR merging on GitHub mid-run used to refuse every
+    # remaining service in ~1s (2026-10-20, three runs that day). With a pin,
+    # main must still be exactly that commit, and that commit must be in
+    # origin/main's history: main merely BEHIND is accepted, ahead or diverged
+    # is still refused. Without the pin, main must equal origin/main.
+    PINNED_HEAD="${ORION_DEPLOY_PINNED_HEAD:-}"
+    if [ -n "$PINNED_HEAD" ]; then
+        if [ "$LOCAL_HEAD" != "$PINNED_HEAD" ]; then
+            echo "safe_docker_build.sh: REFUSING live deployment because main moved during this run." >&2
+            echo "main=$LOCAL_HEAD pinned=$PINNED_HEAD (ORION_DEPLOY_PINNED_HEAD)" >&2
+            exit 1
+        fi
+        if ! git merge-base --is-ancestor "$LOCAL_HEAD" "$ORIGIN_MAIN" 2>/dev/null; then
+            echo "safe_docker_build.sh: REFUSING live deployment because main is not synchronized with origin/main." >&2
+            echo "main=$LOCAL_HEAD origin/main=$ORIGIN_MAIN (pinned main is not in origin/main's history)" >&2
+            exit 1
+        fi
+        if [ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]; then
+            echo "safe_docker_build.sh: deploying pinned main=$LOCAL_HEAD; origin/main advanced to $ORIGIN_MAIN during this run." >&2
+        fi
+    elif [ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]; then
+        echo "safe_docker_build.sh: REFUSING live deployment because main is not synchronized with origin/main." >&2
+        echo "main=$LOCAL_HEAD origin/main=$ORIGIN_MAIN" >&2
+        exit 1
+    fi
+fi
+
+if [ ! -f "services/$SERVICE/$COMPOSE_FILE_NAME" ]; then
+    echo "safe_docker_build.sh: no such service compose file: services/$SERVICE/$COMPOSE_FILE_NAME" >&2
     echo "Expected path does not exist. Check the service name and that you are" >&2
     echo "running this from the repo root." >&2
     exit 1
@@ -100,11 +171,11 @@ _SCRIPT_DIR_FOR_BOARD=$(cd "$(dirname "$0")" && pwd)
 if [ -f "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" ] && command -v python3 >/dev/null 2>&1; then
     if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
         python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
-            --summary "docker compose $* for services/$SERVICE" \
+            --summary "docker compose $* for services/$SERVICE/$COMPOSE_FILE_NAME" \
             --task "deploy:$SERVICE" --session-id "$CLAUDE_CODE_SESSION_ID" >/dev/null 2>&1 || true
     else
         python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
-            --summary "docker compose $* for services/$SERVICE" \
+            --summary "docker compose $* for services/$SERVICE/$COMPOSE_FILE_NAME" \
             --task "deploy:$SERVICE" >/dev/null 2>&1 || true
     fi
 fi
@@ -150,6 +221,51 @@ if [ -f "scripts/check_service_hostname_refs.py" ] && [ "${ORION_ALLOW_ENV_DRIFT
     fi
 fi
 
+# --- 2c. Refuse to bring up a service whose required SQL migration is unapplied
+# 2026-10-10 and 10-11: PRs #2594 and #2605 deployed orion-durable-runs before
+# their services/orion-sql-db/manual_migration_*.sql had been applied; the
+# service started, then failed every step with UndefinedTable until the
+# migration was applied by hand. A migration declares who needs it with a
+# header line `-- ORION-MIGRATION-REQUIRED-BY: <svc>, <svc>`; this asks the live
+# database (read-only) whether each one the service needs is applied.
+# Deploy-time, not a container boot guard: a service that refuses to start is
+# worse than one that degrades. Only `up` is gated (build/config/logs/ps pass).
+# Never auto-applies (a migration can be destructive); the post-pull flow
+# applies the safe ones before its rebuilds (scripts/apply_post_pull_migrations.py).
+# An unreachable database
+# is UNKNOWN and refuses -- no answer is not "applied".
+_GATE_UP=0
+for _a in "$@"; do
+    [ "$_a" = "up" ] && _GATE_UP=1
+done
+if [ "$_GATE_UP" = "1" ] && [ -f "scripts/check_sql_migrations_applied.py" ]; then
+    if [ "${ORION_ALLOW_UNAPPLIED_MIGRATION:-}" = "1" ]; then
+        echo "safe_docker_build.sh: ORION_ALLOW_UNAPPLIED_MIGRATION=1 -- SKIPPING the SQL migration gate for $SERVICE." >&2
+    else
+        # The repo venv has psycopg2; system python3 does not. Linked worktrees have
+        # no .venv of their own, so reach the main checkout's via git's common dir
+        # (same lookup as the Makefile's METRIC_PYTHON).
+        _GATE_PY=python3
+        _CD=$(git rev-parse --git-common-dir 2>/dev/null || true)
+        if [ -x .venv/bin/python ]; then
+            _GATE_PY=.venv/bin/python
+        elif [ -n "$_CD" ] && [ -x "$_CD/../.venv/bin/python" ]; then
+            _GATE_PY="$_CD/../.venv/bin/python"
+        fi
+        _GATE_RC=0
+        "$_GATE_PY" scripts/check_sql_migrations_applied.py --service "$SERVICE" || _GATE_RC=$?
+        if [ "$_GATE_RC" = "1" ]; then
+            echo "REFUSING to bring up $SERVICE: a SQL migration it needs is not applied (apply command above)." >&2
+            echo "Deliberate exception: ORION_ALLOW_UNAPPLIED_MIGRATION=1 scripts/safe_docker_build.sh $SERVICE ..." >&2
+            exit 1
+        elif [ "$_GATE_RC" != "0" ]; then
+            echo "REFUSING to bring up $SERVICE: whether its required SQL migrations are applied is UNKNOWN (see above)." >&2
+            echo "Deliberate exception: ORION_ALLOW_UNAPPLIED_MIGRATION=1 scripts/safe_docker_build.sh $SERVICE ..." >&2
+            exit 1
+        fi
+    fi
+fi
+
 # --- 3. Run docker compose with this repo's mandatory dual --env-file  -----
 # AGENTS.md section 8 requires every docker compose invocation in this repo
 # to load BOTH the root .env and the service's own .env, root first --
@@ -163,5 +279,5 @@ fi
 exec docker compose \
     --env-file .env \
     --env-file "services/$SERVICE/.env" \
-    -f "services/$SERVICE/docker-compose.yml" \
+    -f "services/$SERVICE/$COMPOSE_FILE_NAME" \
     "$@"

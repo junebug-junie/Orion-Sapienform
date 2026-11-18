@@ -204,7 +204,7 @@ def test_request_contract_requires_admission_and_matching_brief():
         DurableRunRequestV1(run_id="world-pulse-journal:wp-1", workflow=JOURNAL_COMPOSE_WORKFLOW,
                             correlation_id="c", brief=BRIEF)
     with pytest.raises(ValueError):
-        DurableRunRequestV1(run_id="world-pulse-journal:wp-1", workflow="self_study.reflect",
+        DurableRunRequestV1(run_id="world-pulse-journal:wp-1", workflow="self_sense_eval",
                             correlation_id="c", brief=BRIEF,
                             admission=ResourceRequirementV1())
 

@@ -9,6 +9,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY orion /app/orion
 COPY config/biometrics /app/config/biometrics
+# Glossary: world-first attention reads each node's value_kind/polarity.
+COPY config/field /app/config/field
 COPY services/orion-substrate-runtime /app
 COPY services/orion-substrate-organs/app /app/organs
 

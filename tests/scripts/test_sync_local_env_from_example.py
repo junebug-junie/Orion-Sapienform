@@ -21,6 +21,10 @@ def test_orion_bus_url_never_synced() -> None:
     assert should_sync_key("ORION_BUS_URL", all_keys=True) is False
 
 
+def test_visual_memory_seed_switch_is_in_default_sync_contract() -> None:
+    assert should_sync_key("REVERIE_VISUAL_MEMORY_SEED_SOURCE", all_keys=False) is True
+
+
 def test_default_sync_reaches_admission_templates_and_preserves_overrides(tmp_path, monkeypatch, capsys):
     """The documented default command must populate the real admission contract."""
     prefixes = {
@@ -67,41 +71,12 @@ def test_default_sync_reaches_admission_templates_and_preserves_overrides(tmp_pa
     capsys.readouterr()
 
 
-def test_recall_graphiti_chat_keys_never_synced() -> None:
-    """RECALL_GRAPHITI_IN_CHAT and RECALL_GRAPHITI_ADAPTER_URL gate real chat-time graph
-    search (orion-recall). Both must change together by hand or the feature silently
-    no-ops (enabled flag + empty/stale URL) -- the exact bug already hit twice this
-    session with CONCEPT_RELATION_RESOLUTION_ENABLED and GRAPHITI_BACKEND."""
-    for key in ("RECALL_GRAPHITI_IN_CHAT", "RECALL_GRAPHITI_ADAPTER_URL"):
-        assert key in NEVER_SYNC_KEYS
-        assert should_sync_key(key, all_keys=False) is False
-        assert should_sync_key(key, all_keys=True) is False
-
-
-def test_sync_file_force_does_not_touch_recall_graphiti_chat_keys(tmp_path: Path) -> None:
-    """Even --force (which overwrites ordinary diverged keys) must never touch these --
-    NEVER_SYNC_KEYS is a stricter, unconditional exclusion, unlike the diverged/--force
-    behavior that applies to everything else."""
-    svc = tmp_path / "orion-recall"
-    svc.mkdir()
-    (svc / ".env_example").write_text(
-        "RECALL_GRAPHITI_IN_CHAT=true\n"
-        "RECALL_GRAPHITI_ADAPTER_URL=http://orion-athena-graphiti-adapter:8000\n",
-        encoding="utf-8",
-    )
-    (svc / ".env").write_text(
-        "RECALL_GRAPHITI_IN_CHAT=false\nRECALL_GRAPHITI_ADAPTER_URL=\n",
-        encoding="utf-8",
-    )
-
-    result = sync_file(
-        svc / ".env", svc / ".env_example", dry_run=False, all_keys=True, force=True
-    )
-
-    text = (svc / ".env").read_text(encoding="utf-8")
-    assert "RECALL_GRAPHITI_IN_CHAT=false" in text
-    assert "RECALL_GRAPHITI_ADAPTER_URL=\n" in text
-    assert not any("RECALL_GRAPHITI" in c for c in result.updated + result.diverged)
+def test_orion_github_token_never_synced() -> None:
+    """Live PAT for Orion's own GitHub identity: the template ships it empty, so a
+    sync (even --all-keys --force) must never flatten the real token."""
+    assert "ORION_GITHUB_TOKEN" in NEVER_SYNC_KEYS
+    assert should_sync_key("ORION_GITHUB_TOKEN", all_keys=False) is False
+    assert should_sync_key("ORION_GITHUB_TOKEN", all_keys=True) is False
 
 
 def test_placeholder_bus_url_skipped_even_if_all_keys() -> None:
@@ -264,17 +239,14 @@ def test_gpu_pool_keys_are_reached_by_the_default_sync() -> None:
             assert should_sync_key(key, all_keys=False), key
 
 
-def test_substrate_reconcile_keys_are_reached_by_the_default_sync() -> None:
-    """The bounded-reconciler keys (2026-09-25) must land in local .env on a default sync."""
-    for service, prefix in (("orion-policy-runtime", "POLICY_RECONCILE_"),
-                            ("orion-execution-dispatch-runtime", "DISPATCH_RECONCILE_"),
-                            ("orion-feedback-runtime", "FEEDBACK_RECONCILE_")):
-        assert service in sync_mod.DEFAULT_SERVICES
-        keys = [k for k in sync_mod.parse_kv(ROOT / "services" / service / ".env_example")
-                if k.startswith(prefix)]
-        assert len(keys) == 4, (service, keys)
-        for key in keys:
-            assert should_sync_key(key, all_keys=False), key
+def test_retired_ladder_services_and_their_prefixes_are_gone() -> None:
+    """Ladder retirement PR 6 (2026-11-07): the proposal, policy and dispatch services are deleted.
+    A default sync must not visit their directories, and their prefixes must not linger."""
+    for service in ("orion-proposal-runtime", "orion-policy-runtime", "orion-execution-dispatch-runtime"):
+        assert service not in sync_mod.DEFAULT_SERVICES
+    for prefix in ("POLICY_RECONCILE_FULL_SWEEP_HOUR_UTC", "DISPATCH_RECONCILE_WINDOW_SEC",
+                   "TRANSPORT_PROPOSAL_MODE"):
+        assert not should_sync_key(prefix, all_keys=False), prefix
 
 
 def test_secret_values_never_printed(tmp_path) -> None:
@@ -341,3 +313,12 @@ def test_energy_usage_point_id_never_synced_even_with_force(tmp_path: Path) -> N
     assert "ENERGY_USAGE_POINT_ID=up-123\n" in text
     assert "ENERGY_STAKES_NEAR_RATIO=0.95" in text
     assert not any("ENERGY_USAGE_POINT_ID" in c for c in result.updated + result.diverged)
+
+
+def test_world_settlement_key_reaches_local_env_after_the_move_to_sql_writer() -> None:
+    """World-action settle scoring moved from the retired feedback runtime to sql-writer (2026-11-04)."""
+    assert "orion-sql-writer" in sync_mod.DEFAULT_SERVICES
+    assert "orion-feedback-runtime" not in sync_mod.DEFAULT_SERVICES
+    keys = sync_mod.parse_kv(ROOT / "services" / "orion-sql-writer" / ".env_example")
+    assert "SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC" in keys
+    assert should_sync_key("SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC", all_keys=False)

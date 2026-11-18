@@ -45,11 +45,11 @@ def test_settings_refresh_ttl_default_is_nonzero(monkeypatch: pytest.MonkeyPatch
     assert Settings().COUNCIL_TRANSITION_REFRESH_SEC == 600.0
 
 
-def test_council_llm_route_defaults_to_metacog_background(monkeypatch: pytest.MonkeyPatch) -> None:
-    """2026-09-07: council's metacog call is background perception work, not a
-    live chat turn -- it must yield slot slack to Mind's now-live metacog
-    traffic (gateway's priority_admission.py) rather than compete evenly."""
+def test_council_llm_route_defaults_to_metacog_perception(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-10-23 (body-economy design A0): vision is Orion's primary sense. On
+    metacog_background the 34 C heat reflex refused the council 25,430 times in a
+    week; metacog_perception is never shed by heat and ranks below Juniper's turn."""
     monkeypatch.delenv("COUNCIL_LLM_ROUTE", raising=False)
     from app.settings import Settings
 
-    assert Settings().COUNCIL_LLM_ROUTE == "metacog_background"
+    assert Settings().COUNCIL_LLM_ROUTE == "metacog_perception"

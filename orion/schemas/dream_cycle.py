@@ -7,7 +7,7 @@ exists so a dream can be *scored*: every hypothesis carries the two memory refs
 it linked and which experimental arm produced it.
 
 Arms:
-  dream    pairs chosen from the replay set (salient, distant).
+  dream    pairs chosen from the replay set: different organs, near in time (#3664).
   control  pairs drawn at random from the whole candidate pool, same prompt.
 
 Hub offers both arms to Orion's curiosity loop blind (arm is never shown). If
@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 # §cap-all-collections.
 MAX_REPLAY_ITEMS = 24
@@ -31,7 +31,15 @@ MAX_HYPOTHESES = 12
 # teaches it. One constant, three readers.
 FORMED_FROM_PREFIX = "dream_hypothesis:"
 
-ReplaySourceKind = Literal["metacog", "compaction_request", "resonance", "crystallization"]
+# "arc": a closed Temporal Self arc (temporal_self_arc), ref_id "arc:<arc_id>". Replay
+# material only: never counted in sleep pressure (orion-dream app/replay.py).
+# "walkway": graded walkway-camera predictions (vision_percept_expectation met/missed)
+# scored since the last sleep, one per subject, ref_id "walkway:<expectation_id>".
+# Replay material only, like "arc" (2026-10-15). Only orion-dream builds and
+# validates ReplayItemV1; dream_replay.source_kind is plain text.
+ReplaySourceKind = Literal[
+    "metacog", "compaction_request", "resonance", "crystallization", "arc", "walkway"
+]
 HypothesisArm = Literal["dream", "control"]
 CycleStatus = Literal["completed", "empty", "failed"]
 CycleTrigger = Literal["pressure", "manual"]
@@ -42,11 +50,14 @@ def _utc_now() -> datetime:
 
 
 class SleepPressureV1(BaseModel):
-    """How much the day left unprocessed since the last cycle.
+    """How much NEW unprocessed material arrived since the last cycle.
 
-    `pressure` is the sum of candidate weights — the same numbers replay ranks
-    on, so pressure and replay cannot drift apart. It returns to exactly 0 after
-    a cycle because every source is windowed on `since` (the last cycle's end).
+    `counts`: distinct things per source in the window (rows sharing a key,
+    e.g. one recurring gateway timeout, are one thing) -- what replay draws on.
+    `new_counts`: the subset absent from the lookback before the window.
+    `pressure`: sum of the replay weights of those new things only, so a
+    chronic problem adds pressure once. It is exactly 0 right after a cycle:
+    every source is windowed on `since` (the last good cycle's start).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -55,6 +66,7 @@ class SleepPressureV1(BaseModel):
     computed_at: datetime = Field(default_factory=_utc_now)
     pressure: float = Field(ge=0.0)
     counts: dict[str, int] = Field(default_factory=dict)
+    new_counts: dict[str, int] = Field(default_factory=dict)
     idle_minutes: Optional[float] = None
     threshold: float = Field(ge=0.0)
     idle_required_minutes: float = Field(ge=0.0)
@@ -70,6 +82,28 @@ class SleepPressureV1(BaseModel):
         return self.pressure >= self.threshold and self.is_idle
 
 
+class DreamPressureObservationV1(BaseModel):
+    """SQL-only observation of an actual check, before any scheduling gate.
+
+    source_errors makes degraded source reads unusable as evidence of calm.
+    It never changes the pressure or the decision made from that pressure.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    check_id: str
+    observed_at: AwareDatetime
+    reading: SleepPressureV1
+    formula: Literal["novelty.v1"] = "novelty.v1"
+    trigger: CycleTrigger
+    forced: bool
+    last_window_start: Optional[AwareDatetime] = None
+    last_attempt_end: Optional[AwareDatetime] = None
+    min_interval_hours: float = Field(ge=0)
+    check_interval_sec: float = Field(gt=0)
+    lookback_hours: float = Field(gt=0)
+    source_errors: list[str] = Field(default_factory=list)
+
+
 class ReplayItemV1(BaseModel):
     """One memory fragment chosen for replay, with the reason it was chosen."""
 
@@ -81,6 +115,11 @@ class ReplayItemV1(BaseModel):
     weight: float = Field(ge=0.0, le=1.0)
     reason: str
     tags: list[str] = Field(default_factory=list, max_length=32)
+    # When it happened: a point, or [occurred_at, occurred_until] for a span (an arc). The dream arm
+    # pairs fragments whose times fall near each other (#3664). None: no known time; never paired by
+    # the dream arm, still drawable by the random control arm.
+    occurred_at: Optional[AwareDatetime] = None
+    occurred_until: Optional[AwareDatetime] = None
 
 
 class DreamHypothesisV1(BaseModel):
@@ -103,6 +142,24 @@ class DreamHypothesisV1(BaseModel):
     expires_at: datetime
 
 
+PairOutcome = Literal["linked", "no_link", "echo", "unparseable", "failed"]
+PAIR_ANSWER_CHARS = 300
+
+
+class PairAnswerV1(BaseModel):
+    """What the model said for one recombination pair, kept so a sleep's counts can be read back
+    against the answers that produced them (#3412: 8 sleeps of 0 links, no answer stored)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    arm: HypothesisArm
+    ref_a: str
+    ref_b: str
+    outcome: PairOutcome
+    # First PAIR_ANSWER_CHARS of the raw answer; "" when the call failed.
+    answer: str = Field(default="", max_length=PAIR_ANSWER_CHARS)
+
+
 class DreamCycleV1(BaseModel):
     """One sleep. Persisted whole as dream_cycle.cycle_json (no bus channel:
     Hub reads hypotheses from Postgres, and a channel with no consumer is an
@@ -119,11 +176,16 @@ class DreamCycleV1(BaseModel):
     replay: list[ReplayItemV1] = Field(default_factory=list, max_length=MAX_REPLAY_ITEMS)
     hypotheses: list[DreamHypothesisV1] = Field(default_factory=list, max_length=MAX_HYPOTHESES)
     # Pairs the LLM declined to link (answered "no link"). Counted, not hidden:
-    # a dream that links everything is manufacturing significance.
+    # a dream that links everything is manufacturing significance. Before 2026-11-17 this also
+    # counted echoes (below); rows from before then cannot tell the two apart.
     no_link_count: int = 0
+    # The model answered "link" but its claim only pasted one fragment back (recombine._echoes).
+    echo_count: int = 0
     # LLM answered but not in the requested shape. Kept apart from no_link so
     # "the model honestly declined" is not overstated by format failures.
     unparseable_count: int = 0
     llm_failures: int = 0
     compaction_delta_id: Optional[str] = None
     note: str = ""
+    # One entry per pair asked, in order (dream arm first, then control).
+    pair_answers: list[PairAnswerV1] = Field(default_factory=list, max_length=MAX_HYPOTHESES)

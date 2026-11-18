@@ -1,0 +1,1795 @@
+{
+ "all_up_lent": {
+  "routes": [
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "chat",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/fast.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "up",
+    "upstream": "http://h:8013",
+    "vision": true
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/fast.gguf",
+    "n_ctx": 8192,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "up",
+    "upstream": "http://h:8013",
+    "vision": true
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/metacog.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "up",
+    "upstream": "http://h:8012",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/metacog.gguf",
+    "n_ctx": 8192,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "up",
+    "upstream": "http://h:8012",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "up",
+    "upstream": "http://h:8015",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "harness",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent-gpu2.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent-gpu2",
+    "status": "up",
+    "upstream": "http://h:8016",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": true,
+    "id": "chat-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "up",
+    "upstream": "http://h:8015",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_turn",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/metacog.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "up",
+    "upstream": "http://h:8012",
+    "vision": false
+   }
+  ],
+  "state": {
+   "cards": [
+    {
+     "card": "gpu0",
+     "lendable": true,
+     "lent": true,
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu1",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu2",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu3",
+     "vram_gb": 32
+    }
+   ],
+   "generated_at": "2026-09-30T00:00:00Z",
+   "roles": [
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "chat.gguf",
+     "model_path": "/models/gguf/chat.gguf",
+     "role": "chat",
+     "status": "confirmed",
+     "url": "http://h:8011",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "agent.gguf",
+     "model_path": "/models/gguf/agent.gguf",
+     "role": "agent",
+     "status": "confirmed",
+     "url": "http://h:8015",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "agent-gpu2.gguf",
+     "model_path": "/models/gguf/agent-gpu2.gguf",
+     "role": "agent-gpu2",
+     "status": "confirmed",
+     "url": "http://h:8016",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "metacog.gguf",
+     "model_path": "/models/gguf/metacog.gguf",
+     "role": "metacog",
+     "status": "confirmed",
+     "url": "http://h:8012",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "fast.gguf",
+     "model_path": "/models/gguf/fast.gguf",
+     "role": "fast",
+     "status": "confirmed",
+     "url": "http://h:8013",
+     "vision": true
+    }
+   ]
+  }
+ },
+ "all_up_unlent": {
+  "routes": [
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "chat",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/fast.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "up",
+    "upstream": "http://h:8013",
+    "vision": true
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/fast.gguf",
+    "n_ctx": 8192,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "up",
+    "upstream": "http://h:8013",
+    "vision": true
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/metacog.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "up",
+    "upstream": "http://h:8012",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/metacog.gguf",
+    "n_ctx": 8192,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "up",
+    "upstream": "http://h:8012",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "up",
+    "upstream": "http://h:8015",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "harness",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent-gpu2.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent-gpu2",
+    "status": "up",
+    "upstream": "http://h:8016",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": false,
+    "id": "chat-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "operator_closed",
+    "upstream": "http://h:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "up",
+    "upstream": "http://h:8015",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_turn",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/metacog.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "up",
+    "upstream": "http://h:8012",
+    "vision": false
+   }
+  ],
+  "state": {
+   "cards": [
+    {
+     "card": "gpu0",
+     "lendable": true,
+     "lent": false,
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu1",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu2",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu3",
+     "vram_gb": 32
+    }
+   ],
+   "generated_at": "2026-09-30T00:00:00Z",
+   "roles": [
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "chat.gguf",
+     "model_path": "/models/gguf/chat.gguf",
+     "role": "chat",
+     "status": "confirmed",
+     "url": "http://h:8011",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "agent.gguf",
+     "model_path": "/models/gguf/agent.gguf",
+     "role": "agent",
+     "status": "confirmed",
+     "url": "http://h:8015",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "agent-gpu2.gguf",
+     "model_path": "/models/gguf/agent-gpu2.gguf",
+     "role": "agent-gpu2",
+     "status": "confirmed",
+     "url": "http://h:8016",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "metacog.gguf",
+     "model_path": "/models/gguf/metacog.gguf",
+     "role": "metacog",
+     "status": "confirmed",
+     "url": "http://h:8012",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "fast.gguf",
+     "model_path": "/models/gguf/fast.gguf",
+     "role": "fast",
+     "status": "confirmed",
+     "url": "http://h:8013",
+     "vision": true
+    }
+   ]
+  }
+ },
+ "chat_down_lent": {
+  "routes": [
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "chat",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "down",
+    "upstream": "http://h:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8013",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8013",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "harness",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "down",
+    "upstream": "http://h:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent-gpu2",
+    "status": "down",
+    "upstream": "http://h:8016",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": true,
+    "id": "chat-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "down",
+    "upstream": "http://h:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_turn",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   }
+  ],
+  "state": {
+   "cards": [
+    {
+     "card": "gpu0",
+     "lendable": true,
+     "lent": true,
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu1",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu2",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu3",
+     "vram_gb": 32
+    }
+   ],
+   "generated_at": "2026-09-30T00:00:00Z",
+   "roles": [
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "chat.gguf",
+     "model_path": "/models/gguf/chat.gguf",
+     "role": "chat",
+     "status": "down",
+     "url": "http://h:8011",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "agent-gpu2.gguf",
+     "model_path": "/models/gguf/agent-gpu2.gguf",
+     "role": "agent-gpu2",
+     "status": "unloaded",
+     "url": "http://h:8016",
+     "vision": false
+    }
+   ]
+  }
+ },
+ "no_roles": {
+  "routes": [
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "chat",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8013",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8013",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "harness",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent-gpu2",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8016",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": false,
+    "id": "chat-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "operator_closed",
+    "upstream": "http://100.112.254.99:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_turn",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   }
+  ],
+  "state": {
+   "cards": [
+    {
+     "card": "gpu0",
+     "lendable": true,
+     "lent": false,
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu1",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu2",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu3",
+     "vram_gb": 32
+    }
+   ],
+   "generated_at": "2026-09-30T00:00:00Z",
+   "roles": []
+  }
+ },
+ "no_state": {
+  "routes": [
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "chat",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8013",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick_background",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8013",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_background",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "harness",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent-burst",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "chat-burst",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_turn",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   }
+  ],
+  "state": null
+ },
+ "only_chat_lent": {
+  "routes": [
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "chat",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "harness",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent-gpu2",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8016",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": true,
+    "id": "chat-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_turn",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   }
+  ],
+  "state": {
+   "cards": [
+    {
+     "card": "gpu0",
+     "lendable": true,
+     "lent": true,
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu1",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu2",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu3",
+     "vram_gb": 32
+    }
+   ],
+   "generated_at": "2026-09-30T00:00:00Z",
+   "roles": [
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "chat.gguf",
+     "model_path": "/models/gguf/chat.gguf",
+     "role": "chat",
+     "status": "confirmed",
+     "url": "http://h:8011",
+     "vision": false
+    }
+   ]
+  }
+ },
+ "only_chat_unlent": {
+  "routes": [
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "chat",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8013",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8013",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "harness",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent-gpu2",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8016",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": false,
+    "id": "chat-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "operator_closed",
+    "upstream": "http://h:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_turn",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-metacog",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8012",
+    "vision": null
+   }
+  ],
+  "state": {
+   "cards": [
+    {
+     "card": "gpu0",
+     "lendable": true,
+     "lent": false,
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu1",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu2",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu3",
+     "vram_gb": 32
+    }
+   ],
+   "generated_at": "2026-09-30T00:00:00Z",
+   "roles": [
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "chat.gguf",
+     "model_path": "/models/gguf/chat.gguf",
+     "role": "chat",
+     "status": "confirmed",
+     "url": "http://h:8011",
+     "vision": false
+    }
+   ]
+  }
+ },
+ "spill_agent_to_gpu2_metacog_to_fast": {
+  "routes": [
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "chat",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/fast.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "up",
+    "upstream": "http://h:8013",
+    "vision": true
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "quick_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/fast.gguf",
+    "n_ctx": 8192,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "up",
+    "upstream": "http://h:8013",
+    "vision": true
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/fast.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "up",
+    "upstream": "http://h:8013",
+    "vision": true
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_background",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/fast.gguf",
+    "n_ctx": 8192,
+    "priority": "background",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "up",
+    "upstream": "http://h:8013",
+    "vision": true
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent-gpu2.gguf",
+    "n_ctx": 8192,
+    "priority": null,
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent-gpu2",
+    "status": "up",
+    "upstream": "http://h:8016",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "harness",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/chat.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "up",
+    "upstream": "http://h:8011",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "agent-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent-gpu2.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent-gpu2",
+    "status": "up",
+    "upstream": "http://h:8016",
+    "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": false,
+    "id": "chat-burst",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-chat",
+    "status": "operator_closed",
+    "upstream": "http://h:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://h:8015",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "metacog_turn",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/fast.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-fast",
+    "status": "up",
+    "upstream": "http://h:8013",
+    "vision": true
+   }
+  ],
+  "state": {
+   "cards": [
+    {
+     "card": "gpu0",
+     "lendable": true,
+     "lent": false,
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu1",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu2",
+     "vram_gb": 32
+    },
+    {
+     "card": "gpu3",
+     "vram_gb": 32
+    }
+   ],
+   "generated_at": "2026-09-30T00:00:00Z",
+   "roles": [
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "chat.gguf",
+     "model_path": "/models/gguf/chat.gguf",
+     "role": "chat",
+     "status": "confirmed",
+     "url": "http://h:8011",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "agent.gguf",
+     "model_path": "/models/gguf/agent.gguf",
+     "role": "agent",
+     "status": "down",
+     "url": "http://h:8015",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "agent-gpu2.gguf",
+     "model_path": "/models/gguf/agent-gpu2.gguf",
+     "role": "agent-gpu2",
+     "status": "confirmed",
+     "url": "http://h:8016",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "metacog.gguf",
+     "model_path": "/models/gguf/metacog.gguf",
+     "role": "metacog",
+     "status": "mismatch",
+     "url": "http://h:8012",
+     "vision": false
+    },
+    {
+     "cards": [
+      "x"
+     ],
+     "checked_at": "2026-09-30T00:00:00Z",
+     "ctx_per_slot": 8192,
+     "kind": "llm",
+     "model_file": "fast.gguf",
+     "model_path": "/models/gguf/fast.gguf",
+     "role": "fast",
+     "status": "confirmed",
+     "url": "http://h:8013",
+     "vision": true
+    }
+   ]
+  }
+ }
+}

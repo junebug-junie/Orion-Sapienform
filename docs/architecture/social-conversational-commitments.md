@@ -1,5 +1,11 @@
 # Social conversational commitments
 
+> **Retired 2026-11-12.** The word-list detector described here made 1 commitment in
+> 67 rooms (18,702 room turns). It was removed with its schema, channels, env keys and every
+> consumer. Promise tracking moves to a judge on the unified turn (intention-ledger design,
+> step D). The `social_room_continuity.active_commitments` column is left in place, unread,
+> until a backup-then-drop. This page is kept as history.
+
 This phase adds a short-lived conversational-commitment layer on top of the
 existing social-room continuity path.
 

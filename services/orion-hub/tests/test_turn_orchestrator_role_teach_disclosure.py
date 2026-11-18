@@ -101,9 +101,9 @@ def test_splice_progress_only_without_mind_work_shape() -> None:
         utterance_origin="orion",
         mind_work_shape=None,
         enabled=True,
-        progress_lines=["Access refused at least twice this sitting. Hand off to Cursor now."],
+        progress_lines=["Access refused at least twice this sitting. Hand off to Claude now."],
     )
-    assert "Hand off to Cursor" in out
+    assert "Hand off to Claude" in out
     assert out.index("Hand off") < out.index("ASKING FOR CONTRACTOR HELP")
 
 
@@ -176,7 +176,7 @@ def test_gather_composes_refusal_budget_and_fieldstate_queue() -> None:
         )
     text = "\n".join(lines)
     assert "Access refused" in text
-    assert "Cursor budget is spent" in text
+    assert "Peer hire budget is spent" in text
     assert "hop 3" in text
     assert "8/10" in text
     assert "durable" in text.lower()
@@ -250,3 +250,33 @@ def test_no_hub_queue_pressure_ewma_keys() -> None:
             text = path.read_text(encoding="utf-8", errors="replace")
             for needle in forbidden:
                 assert needle not in text, f"{path} contains {needle}"
+
+
+def test_gather_carries_peer_refusal_reason_into_line() -> None:
+    """2026-10-10: the line Orion reads names the real cause, not a generic 'spent'."""
+    reason = (
+        "Cursor unavailable: it hit its usage limit (resets 2026-10-14). "
+        "Claude fallback refused: this service cannot see Claude's usage meter, "
+        "so it refuses rather than spend blind. "
+        "[cursor_token_unavailable:usage_limit; claude_budget_unobserved] "
+        "cursor said: cursor agent exited 1: You've hit your usage limit."
+    )
+    with patch(
+        "orion.hub.queue_contention_field_read.read_latest_queue_contention",
+        side_effect=RuntimeError("no field"),
+    ):
+        lines = _gather_role_teach_progress_lines(
+            {
+                "role_teach_peer_brief": {
+                    "status": "refused_budget",
+                    "next_hop_n": 4,
+                    "refusal_reason": reason,
+                },
+            }
+        )
+    text = "\n".join(lines)
+    assert "usage limit (resets 2026-10-14)" in text
+    assert "Claude fallback refused" in text
+    assert "Peer hire budget is spent" not in text
+    assert "cursor said" not in text
+    assert "hop 4" in text

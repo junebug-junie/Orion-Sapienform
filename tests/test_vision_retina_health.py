@@ -21,6 +21,7 @@ def test_system_health_envelope_ok() -> None:
         metrics=metrics,
         fps_target=1.0,
         storage_dir="/tmp/frames",
+        heartbeat_interval_sec=10.0,
     )
     assert env.kind == "system.health.v1"
     payload = SystemHealthV1.model_validate(env.payload)
@@ -44,7 +45,32 @@ def test_system_health_envelope_degraded_on_failure() -> None:
         metrics=metrics,
         fps_target=1.0,
         storage_dir="/tmp/frames",
+        heartbeat_interval_sec=10.0,
     )
     payload = SystemHealthV1.model_validate(env.payload)
     assert payload.status == "degraded"
     assert payload.details["last_error"] == "source read returned no frame"
+
+
+def test_system_health_reports_last_frame_age_and_stall_restarts() -> None:
+    import time
+
+    from app.health import last_frame_age_sec
+
+    metrics = RetinaMetrics(frames_published=5, last_frame_ts=time.time() - 40, source_stall_restarts=3)
+    env = make_system_health_envelope(
+        service_name="vision-retina-walkway",
+        service_version="0.2.0",
+        camera_id="walkway",
+        stream_id="walkway",
+        source_type="rtsp",
+        source_ok=False,
+        metrics=metrics,
+        fps_target=2.0,
+        storage_dir="/tmp/frames",
+        heartbeat_interval_sec=10.0,
+    )
+    details = SystemHealthV1.model_validate(env.payload).details
+    assert 39 <= details["last_frame_age_sec"] < 45
+    assert details["source_stall_restarts"] == 3
+    assert last_frame_age_sec(RetinaMetrics()) is None

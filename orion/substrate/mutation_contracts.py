@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from orion.core.schemas.substrate_mutation import MutationClassV1, MutationPatchV1, MutationRiskTierV1
@@ -17,6 +17,9 @@ class MutationClassContract:
     trial_method: str
     evaluation_metrics: tuple[str, ...]
     auto_promote_default: bool = False
+    # Per-metric pass floor; metrics not listed pass at >= 0.0 (metric_passed's
+    # default). A strictly-positive floor stops "exactly zero evidence" passing.
+    metric_minimums: dict[str, float] = field(default_factory=dict)
 
 
 # Target surfaces whose mutation is parked -- proposals for them are refused
@@ -53,7 +56,29 @@ PARKED_TARGET_SURFACES: frozenset[str] = frozenset()
 # backed by a real code-level gate until this set existed. Checked in both
 # `DecisionEngine.decide()` and `PatchApplier.apply()` (defense in depth,
 # same pattern PR #2088 already used for the rollback-cooldown gate).
-RETIRED_MUTATION_CLASSES: frozenset[str] = frozenset({"routing_threshold_patch"})
+#
+# "graph_consolidation_param_patch" retired 2026-10-16 (rung 6 rebuild). Live
+# for 6 weeks it adopted nothing: its evidence was "a graph review ran"
+# (normal operation, re-read every 30 s tick with no cursor -> ~65k signals a
+# day from ~30 real reviews), its patch was one hardcoded constant, its trial
+# needed reviews that resolve (0 of 300+ in 10 days did), and even an adoption
+# only staged a profile nobody activates. 930 proposals, 930 rejections in the
+# week before retirement. Its replacement as rung 6's live class was
+# prediction_expectation_patch.
+#
+# "prediction_expectation_patch" retired 2026-11-03 (the rung 6 expectation
+# tuner, PR #2715). It tuned the smoothing rate and variance floor of the
+# execution/chat/street-handoff surprise readings. 16 proposals, 1 adoption
+# (execution alpha 0.2 -> 0.05, 2026-10-26), 15 rejections; the raw reading it
+# learned from was mostly zeros. Its producer (prediction_expectation_tuner.py),
+# assessor (prediction_expectation.py), trial evaluator, apply branch and
+# control-surface accessors are deleted; the runtime scores with its
+# calibrated constants again. The literal stays in MutationClassV1 and the
+# contract below stays so the stored historical proposals still parse and
+# display. Successor: the self-monitor organ (design PR #2827).
+RETIRED_MUTATION_CLASSES: frozenset[str] = frozenset(
+    {"routing_threshold_patch", "graph_consolidation_param_patch", "prediction_expectation_patch"}
+)
 
 # Single shared reason string for "routing" specifically, for the Hub
 # endpoints/injected-cognition-context callers that report on it
@@ -198,6 +223,27 @@ CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
         required_evidence_types=("telemetry:review_churn", "telemetry:queue_stall"),
         trial_method="replay_consolidation_comparison",
         evaluation_metrics=("queue_resolution_delta", "requeue_rate_delta"),
+        auto_promote_default=True,
+    ),
+    # Retired 2026-11-03 (RETIRED_MUTATION_CLASSES above). Kept, like
+    # routing_threshold_patch's entry, only so the stored historical
+    # proposals still score and display; nothing can decide or apply it.
+    # Was rung 6 (2026-10-16): Orion revised how surprised they expect to be,
+    # per EWMA-scored prediction-error domain. target_ref is the domain.
+    "prediction_expectation_patch": MutationClassContract(
+        mutation_class="prediction_expectation_patch",
+        allowed_targets=("execution", "chat", "street_handoff"),
+        allowed_fields=("alpha", "min_variance"),
+        bounds={"alpha": (0.01, 0.6), "min_variance": (1e-13, 0.03)},
+        risk_tier="low",
+        required_evidence_types=("telemetry:prediction_raw_reading",),
+        trial_method="replay_log_score_holdout",
+        # Lower confidence bound of the paired per-reading log-score gain on
+        # readings the candidate was not chosen on. > 0 means "better with
+        # ~95% confidence", not "better on average by any sliver".
+        # And the mean gain had to be worth a live change.
+        evaluation_metrics=("holdout_log_score_gain_lower_bound", "holdout_log_score_gain_mean"),
+        metric_minimums={"holdout_log_score_gain_lower_bound": 1e-9, "holdout_log_score_gain_mean": 0.01},
         auto_promote_default=True,
     ),
     "approved_prompt_profile_variant_promotion": MutationClassContract(

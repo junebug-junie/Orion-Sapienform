@@ -14,7 +14,10 @@ Type=oneshot
 # scripts/backup/orion_backup_databases.py, so this outer ceiling keeps the
 # same ~5400s of headroom for falkordb/chroma after Postgres that it had
 # before, instead of becoming the next thing this fails on.
-TimeoutStartSec=3h
+# Widened 3h -> 4h on 2026-11-05 alongside POSTGRES_DUMP_TIMEOUT_SEC's
+# 5400s -> 7200s bump (same coupling): nightly runs were straddling the
+# inner ceiling at 105GB and failing 2 of 3 nights.
+TimeoutStartSec=4h
 UMask=0077
 WorkingDirectory=/mnt/scripts/Orion-Sapienform
 Environment=PYTHONPATH=/mnt/scripts/Orion-Sapienform

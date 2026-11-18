@@ -87,6 +87,9 @@ _EXPLICIT_TOOL_TAXONOMY: Dict[str, _ToolTaxonomy] = {
     "AgentChainService": _ToolTaxonomy(tool_family="orchestration", action_kind="delegate", effect_kind="read_only"),
     "context_exec": _ToolTaxonomy(tool_family="orchestration", action_kind="delegate", effect_kind="read_only"),
     "ContextExecService": _ToolTaxonomy(tool_family="orchestration", action_kind="delegate", effect_kind="read_only"),
+    # Depth-2 agent runtime stub (cortex-exec supervisor, since orion-context-exec's 2026-10-10 retirement).
+    "agent_runtime": _ToolTaxonomy(tool_family="orchestration", action_kind="delegate", effect_kind="read_only"),
+    "AgentRuntime": _ToolTaxonomy(tool_family="orchestration", action_kind="delegate", effect_kind="read_only"),
     "bound_capability_execution": _ToolTaxonomy(tool_family="runtime", action_kind="execute", effect_kind="external_io"),
     "council_checkpoint": _ToolTaxonomy(tool_family="communication", action_kind="delegate", effect_kind="read_only"),
     "CouncilService": _ToolTaxonomy(tool_family="communication", action_kind="delegate", effect_kind="read_only"),
@@ -156,6 +159,7 @@ def _taxonomy_for(tool_id: str | None, *, step_name: str | None = None) -> _Tool
 # ``next(iter(step.result.keys()))`` — that mis-labels the row and skips AgentChain failure overrides.
 _SERVICE_RESULT_KEYS: tuple[str, ...] = (
     "ContextExecService",
+    "AgentRuntime",
     "AgentChainService",
     "PlannerReactService",
     "RecallService",
@@ -166,7 +170,7 @@ _SERVICE_RESULT_KEYS: tuple[str, ...] = (
 def _agent_delegate_payload(step: StepExecutionResult) -> Dict[str, Any] | None:
     if not isinstance(step.result, dict):
         return None
-    for key in ("ContextExecService", "AgentChainService"):
+    for key in ("ContextExecService", "AgentRuntime", "AgentChainService"):
         payload = step.result.get(key)
         if isinstance(payload, dict):
             return payload
@@ -176,7 +180,7 @@ def _agent_delegate_payload(step: StepExecutionResult) -> Dict[str, Any] | None:
 def _agent_delegate_service_key(step: StepExecutionResult) -> str | None:
     if not isinstance(step.result, dict):
         return None
-    for key in ("ContextExecService", "AgentChainService"):
+    for key in ("ContextExecService", "AgentRuntime", "AgentChainService"):
         if key in step.result:
             return key
     return None
@@ -188,7 +192,9 @@ def _delegate_tool_id(step: StepExecutionResult, service_key: str | None) -> str
         return "bound_capability_execution"
     if sn == "context_exec":
         return "context_exec"
-    if service_key in {"AgentChainService", "ContextExecService"} or sn == "agent_chain":
+    if service_key == "AgentRuntime" or sn == "agent_runtime_unavailable":
+        return "agent_runtime"
+    if service_key in {"AgentChainService", "ContextExecService", "AgentRuntime"} or sn == "agent_chain":
         return "agent_chain" if service_key == "AgentChainService" or sn == "agent_chain" else "context_exec"
     return str(step.verb_name or service_key or sn or "delegate")
 
@@ -376,7 +382,7 @@ def _step_summary(step: StepExecutionResult, tool_id: str | None) -> str:
                 return f"Recall retrieved {count} memory item(s) with profile {profile}."
             return f"Recall retrieved {count} memory item(s)."
         return "Recall retrieved memory context."
-    if service_key in {"AgentChainService", "ContextExecService"}:
+    if service_key in {"AgentChainService", "ContextExecService", "AgentRuntime"}:
         agent_payload = _agent_delegate_payload(step) or {}
         bound_payload = _bound_capability_payload(agent_payload) if isinstance(agent_payload, dict) else {}
         if isinstance(bound_payload, dict):
@@ -491,7 +497,7 @@ def _normalized_steps(steps: Iterable[StepExecutionResult]) -> List[AgentTraceSt
             raw_tool_id = "planner_react"
         elif service_key == "RecallService":
             raw_tool_id = "recall"
-        elif service_key in {"AgentChainService", "ContextExecService"}:
+        elif service_key in {"AgentChainService", "ContextExecService", "AgentRuntime"}:
             event_type = "delegate"
             raw_tool_id = _delegate_tool_id(step, service_key)
         elif service_key == "CouncilService":
@@ -503,7 +509,7 @@ def _normalized_steps(steps: Iterable[StepExecutionResult]) -> List[AgentTraceSt
         summary_tool_id = str(raw_tool_id) if raw_tool_id else None
         step_status = step.status or "unknown"
         step_summary = _step_summary(step, summary_tool_id)
-        if service_key in {"AgentChainService", "ContextExecService"} and isinstance(step.result, dict):
+        if service_key in {"AgentChainService", "ContextExecService", "AgentRuntime"} and isinstance(step.result, dict):
             agent_payload = _agent_delegate_payload(step)
             if isinstance(agent_payload, dict):
                 bound_payload = _bound_capability_payload(agent_payload)
@@ -536,7 +542,7 @@ def _normalized_steps(steps: Iterable[StepExecutionResult]) -> List[AgentTraceSt
             )
         )
         next_index += 1
-        if service_key in {"AgentChainService", "ContextExecService"}:
+        if service_key in {"AgentChainService", "ContextExecService", "AgentRuntime"}:
             nested = _nested_agent_trace_steps(step, start_index=next_index)
             normalized.extend(nested)
             next_index += len(nested)

@@ -1,0 +1,961 @@
+"""orion-prediction: forecasting, evaluation, and cause-and-effect estimates over Orion's telemetry.
+
+Bus: forecasts on orion:prediction:forecast. Monitoring alerts are in /health and /series/{id}/live.
+HTTP: health, series + scoreboard, latest forecast, live metrics, ad-hoc backtest, scenario
+(conditional), interventions + effect estimates (observational), switchback experiments
+(experimental), GET /effects for the best available answer, and action bets (/action-bets: "this body
+action works with probability p", quoted, placed, settled, graded).
+Spec: docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+import uuid
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Literal
+from zoneinfo import ZoneInfo
+
+from fastapi import FastAPI, HTTPException, Query
+import psycopg
+from psycopg.errors import QueryCanceled
+from pydantic import AwareDatetime, BaseModel, Field
+
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import ServiceRef
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+
+from app.action_bets import ActionBets, ConflictError, WorldModelShadow
+from app.turn_self_bets import TurnSelfBets
+from app.reachable import Reachable
+from app.act_chain import ActChain
+from app.bill_forecast import BillForecast
+from app.causal import CausalError
+from app.effects import Effects
+from app.engine import Engine
+from app.event_pair import MIN_A_EVENTS, EventPairRefused
+from app.heat_balance import HeatBalanceRefused
+from app import learning_progress as lp
+from app.experiment_runner import ExperimentRunner, RouterProbe, RunnerRefused, recover as recover_experiments
+from app.family_a_live import FamilyALive
+from app.family_c import EffectTable
+from app.series import load_registry
+from app.town_hold import EmbodimentProbe, TownHoldConfig, TownHoldRefused, TownHoldRunner, run_result
+from app.settings import get_settings
+from app.store import PostgresStore
+from orion.energy.tariff import load_tariff
+from orion.schemas.prediction import ActionBetPlaceV1, ActionBetQuoteRequestV1, ActionBetQuoteV1, ActionBetSettleV1, ActionBetV1
+
+_settings = get_settings()
+logging.basicConfig(level=getattr(logging, _settings.log_level.upper(), logging.INFO))
+logger = logging.getLogger("orion-prediction.main")
+
+engine: Engine | None = None
+effects: Effects | None = None
+action_bets: ActionBets | None = None
+turn_self_bets: TurnSelfBets | None = None
+reachable: Reachable | None = None
+_last_reachable: dict[str, Any] = {"at": None, "ok": None, "error": None}
+act_chain: ActChain | None = None
+_last_act_chain: dict[str, Any] = {"at": None, "ok": None, "error": None}
+bill_forecast: BillForecast | None = None
+_last_bill: dict[str, Any] = {"at": None, "ok": None, "error": None}
+family_a: FamilyALive | None = None
+effect_table: EffectTable | None = None   # family C (app/family_c.py), read-only
+_blas_limit: list[Any] = []   # keeps the process-wide BLAS thread limit object alive
+_last_family_a: dict[str, Any] = {"at": None, "ok": None, "error": None}
+_last_settle: dict[str, Any] = {"at": None, "ok": None, "error": None}
+runner: ExperimentRunner | None = None
+town_hold: TownHoldRunner | None = None   # Family C Experiment 1 (app/town_hold.py)
+_runner_redis: Any = None
+_store: PostgresStore | None = None
+_bus: OrionBusAsync | None = None
+_tasks: list[asyncio.Task] = []
+_chassis: list[Any] = []
+_stop = asyncio.Event()
+_last_tick: dict[str, Any] = {"at": None, "ok": None, "error": None}
+
+
+async def _publish_turn_surprise() -> int:
+    """Publish the chat-turn surprise events of the last settle pass. Never raises; a failed publish
+    drops that event (the settled rows are the record) and keeps going."""
+    pending = turn_self_bets.take_pending_surprise()
+    if not pending:
+        return 0
+    if _bus is None or not _settings.publish_enabled:
+        turn_self_bets.surprise_counts["dropped_publish_disabled"] += len(pending)
+        return 0
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.prediction import PREDICTION_TURN_SURPRISE_CHANNEL, PREDICTION_TURN_SURPRISE_KIND
+
+    source = ServiceRef(name=_settings.service_name, version=_settings.service_version, node=_settings.node_name)
+    sent = 0
+    for ev in pending:
+        try:
+            await _bus.publish(PREDICTION_TURN_SURPRISE_CHANNEL, BaseEnvelope(
+                kind=PREDICTION_TURN_SURPRISE_KIND, source=source, payload=ev.model_dump(mode="json")))
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            turn_self_bets.surprise_counts["publish_failed"] += 1
+            logger.error("turn_surprise_publish_failed correlation_id=%s err=%s", ev.correlation_id, exc)
+    turn_self_bets.surprise_counts["published"] += sent
+    if sent:
+        logger.info("turn_surprise_published n=%d z=%s", sent, [round(ev.z, 2) for ev in pending])
+    return sent
+
+
+async def _settle_self_bets_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(turn_self_bets.settle_pending)
+            _last_settle.update(at=datetime.now(timezone.utc), ok=True, error=None)
+            await _publish_turn_surprise()
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_settle.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("turn_self_bets_settle_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=_settings.turn_self_bets_settle_sec)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _act_chain_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(act_chain.tick)
+            _last_act_chain.update(at=datetime.now(timezone.utc), ok=True, error=None)
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_act_chain.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("act_chain_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _reachable_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(reachable.tick)
+            _last_reachable.update(at=datetime.now(timezone.utc), ok=True, error=None)
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_reachable.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("reachable_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=60.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _bill_forecast_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(bill_forecast.tick)
+            _last_bill.update(at=datetime.now(timezone.utc), ok=True, error=None)
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_bill.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("bill_forecast_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=_settings.bill_forecast_tick_sec)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _family_a_forever() -> None:
+    """Family A (app/family_a_live.py): score -> issue -> select every tick, in a thread so a 6-hourly
+    selection (a few minutes of CPU) never blocks the single-series loop or the HTTP endpoints."""
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(family_a.tick)
+            _last_family_a.update(at=datetime.now(timezone.utc), ok=not family_a.state.errors,
+                                  error=None if not family_a.state.errors else dict(family_a.state.errors))
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_family_a.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("family_a_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=_settings.tick_sec)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _sync(fn, *args):
+    return await asyncio.to_thread(fn, *args)
+
+
+async def _tick_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await engine.tick(_sync)
+            _last_tick.update(at=engine.clock(), ok=True, error=None)
+        except Exception as exc:  # noqa: BLE001 -- one bad tick must not stop the loop
+            _last_tick.update(at=engine.clock(), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("prediction_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=_settings.tick_sec)
+        except asyncio.TimeoutError:
+            pass
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global engine, effects, action_bets, turn_self_bets, reachable, act_chain, bill_forecast, family_a, effect_table, runner, town_hold, _runner_redis, _store, _bus
+    heartbeat = HeartbeatOnly(ChassisConfig(
+        service_name=_settings.service_name, service_version=_settings.service_version,
+        node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
+        heartbeat_interval_sec=_settings.heartbeat_interval_sec))
+    await heartbeat.start_background()
+    _chassis.append(heartbeat)
+    registry = load_registry(_settings.series_path)
+    _store = PostgresStore(_settings.postgres_uri)
+    await asyncio.to_thread(_store.check_schema)
+    _bus = OrionBusAsync(url=_settings.orion_bus_url, enabled=_settings.orion_bus_enabled)
+    await _bus.connect()
+    engine = Engine(registry, _store, backtest_windows=_settings.backtest_windows,
+                    backtest_step_min=_settings.backtest_step_min,
+                    select_interval_sec=_settings.select_interval_sec, settle_sec=_settings.settle_sec,
+                    publish_enabled=_settings.publish_enabled, publish=_bus.publish,
+                    source=ServiceRef(name=_settings.service_name, version=_settings.service_version,
+                                      node=_settings.node_name),
+                    weather=({"lat": _settings.weather_lat, "lon": _settings.weather_lon,
+                              "refresh_sec": _settings.weather_refresh_sec}
+                             if _settings.weather_enabled and _settings.weather_lat is not None
+                             and _settings.weather_lon is not None else None),
+                    shadow_enabled=_settings.shadow_enabled,
+                    adaptive_intervals=_settings.adaptive_intervals_enabled,
+                    surprise_events_enabled=_settings.surprise_events_enabled)
+    effects = Effects(engine)
+    action_bets = ActionBets(_store, shadow=(WorldModelShadow(_settings.world_model_weights)
+                                             if _settings.world_model_shadow_enabled else None))
+    turn_self_bets = TurnSelfBets(_store, surprise_events_enabled=_settings.turn_surprise_events_enabled)
+    reachable = Reachable(_store)
+    act_chain = ActChain(_store)
+    if _settings.bill_forecast_enabled:
+        bill_forecast = BillForecast(_store, load_tariff(_settings.energy_tariff_path),
+                                     tz=ZoneInfo(_settings.energy_timezone),
+                                     cycle_start_day=_settings.energy_billing_cycle_start_day,
+                                     usage_point_id=_settings.energy_usage_point_id)
+    if _settings.family_a_enabled:
+        # A missing table or a bad config stops family A only (logged, in /health), never the service.
+        try:
+            from pathlib import Path
+
+            import yaml
+
+            from app import family_a as fa
+            from app.family_a_live import limit_blas
+            from app.family_a_load import load_frame
+            from app.store import FAMILY_TABLES
+
+            await asyncio.to_thread(_store.check_schema, FAMILY_TABLES)
+            fa_cfg = fa.parse_config(yaml.safe_load(Path(_settings.family_a_config_path).read_text(encoding="utf-8")))
+            _blas_limit.append(limit_blas())   # once, process-wide (see limit_blas)
+            family_a = FamilyALive(
+                _store, fa_cfg,
+                lambda start, end: load_frame(_settings.postgres_uri, fa_cfg.inputs, fa_cfg.grain_min, start, end),
+                settle_sec=_settings.settle_sec, select_interval_sec=_settings.select_interval_sec,
+                adaptive_intervals=_settings.adaptive_intervals_enabled)
+            # Family C's effect table measures every reading family A reads (read-only, on demand).
+            effect_table = EffectTable(
+                _store,
+                lambda start, end: load_frame(_settings.postgres_uri, fa_cfg.inputs, fa_cfg.grain_min, start, end),
+                units={i.id: i.unit for i in fa_cfg.inputs}, grain_min=fa_cfg.grain_min)
+        except Exception as exc:  # noqa: BLE001
+            _last_family_a.update(at=datetime.now(timezone.utc), ok=False,
+                                  error=f"not started: {type(exc).__name__}: {exc}"[:300])
+            logger.error("family_a_not_started %s: %s", type(exc).__name__, exc)
+    logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
+                [s.series_id for s in registry.targets()])
+    if _settings.experiment_runner_enabled:
+        # Plain redis-py on the bus Redis (where the frame router reads orion:vision:experiment:*).
+        import redis.asyncio as aioredis
+
+        _runner_redis = aioredis.from_url(_settings.orion_bus_url, decode_responses=True, socket_timeout=3.0,
+                                          socket_connect_timeout=3.0)
+        runner = ExperimentRunner(effects, _runner_redis, RouterProbe(_settings.vision_router_url),
+                                  override_ttl_sec=_settings.experiment_override_ttl_sec,
+                                  tick_sec=_settings.experiment_tick_sec,
+                                  guard_every_sec=_settings.experiment_guard_every_sec)
+        try:   # a run the last process left half-done is marked cancelled; nothing is resumed
+            cancelled = await recover_experiments(effects, _runner_redis)
+            if cancelled:
+                logger.warning("experiment_runner_recovered cancelled=%s", cancelled)
+        except Exception as exc:  # noqa: BLE001 -- the key's TTL still clears focus; boot goes on
+            logger.warning("experiment_runner_recover_failed %s: %s", type(exc).__name__, exc)
+        if _settings.town_hold_enabled:
+            tbl = effect_table
+            town_hold = TownHoldRunner(
+                effects, _runner_redis, EmbodimentProbe(_settings.embodiment_url),
+                cfg=TownHoldConfig(key_ttl_sec=_settings.experiment_override_ttl_sec,
+                                   tick_sec=_settings.experiment_tick_sec),
+                on_run_complete=(lambda run_id: run_result(tbl, _store, run_id)) if tbl is not None else None,
+                vision_runner=runner)
+            try:   # an EXPLICITLY started run continues from its next night (the interrupted night is cancelled)
+                if await town_hold.resume():
+                    logger.warning("town_hold_schedule_resumed")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("town_hold_resume_failed %s: %s", type(exc).__name__, exc)
+    _stop.clear()
+    if _settings.enabled:
+        _tasks.append(asyncio.create_task(_tick_forever()))
+    if _settings.turn_self_bets_enabled:
+        _tasks.append(asyncio.create_task(_settle_self_bets_forever()))
+    if _settings.reachable_enabled:
+        _tasks.append(asyncio.create_task(_reachable_forever()))
+    if _settings.act_chain_enabled:
+        _tasks.append(asyncio.create_task(_act_chain_forever()))
+    if bill_forecast is not None:
+        _tasks.append(asyncio.create_task(_bill_forecast_forever()))
+    if family_a is not None:
+        _tasks.append(asyncio.create_task(_family_a_forever()))
+    try:
+        yield
+    finally:
+        _stop.set()
+        if town_hold is not None:   # the night is cancelled; the schedule stays and resumes at boot
+            await town_hold.shutdown("service shutting down", clear_schedule=False)
+        if runner is not None:
+            await runner.shutdown("service shutting down")
+        if _runner_redis is not None:
+            try:
+                await _runner_redis.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+        for t in _tasks:
+            t.cancel()
+        await asyncio.gather(*_tasks, return_exceptions=True)
+        for c in _chassis:
+            try:
+                await c.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        if _bus is not None:
+            await _bus.close()
+        if _store is not None:
+            _store.close()
+
+
+app = FastAPI(title="orion-prediction", lifespan=lifespan)
+
+
+def _ready() -> Engine:
+    if engine is None:
+        raise HTTPException(503, "starting")
+    return engine
+
+
+def _jsonable(v: Any) -> Any:
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, dict):
+        return {k: _jsonable(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    return v
+
+
+async def _causal(fn, *args):
+    try:
+        return _jsonable(await asyncio.to_thread(fn, *args))
+    except CausalError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    e = engine
+    series = {}
+    if e is not None:
+        for sid, st in e.state.items():
+            sv = st.served
+            series[sid] = {
+                "selected_at": sv.selected_at.isoformat() if sv else None,
+                "next_select_at": st.next_select_at.isoformat() if st.next_select_at else None,
+                "assignment": sv.selection.assignment if sv else None,
+                "served_baseline": sv.selection.served_baseline if sv else None,
+                "refused_seasonalities": list(sv.refused) if sv else None,
+                "last_select_seconds": st.last_select_seconds,
+                "last_input_ts": st.last_input_ts.isoformat() if st.last_input_ts else None,
+                "alerts": st.alerts,
+                "not_ready": st.not_ready,
+                "change_events": st.events,
+                "shadow": list(sv.shadow) if sv else [], "shadow_failed": st.shadow_failed, "interval_source": {str(k): v for k, v in st.interval_source.items()},
+                "surprise_events": {"enabled": e.surprise_events_enabled, "published": st.surprise_published,
+                                    "publish_failed": st.surprise_publish_failed,
+                                    "gate_refused": dict(st.surprise_gate_refused),
+                                    "last_error": st.last_surprise_error},
+            }
+    return {"ok": e is not None and _last_tick["ok"] is not False, "service": _settings.service_name,
+            "enabled": _settings.enabled, "publish_enabled": _settings.publish_enabled,
+            "last_tick_at": _jsonable(_last_tick["at"]), "last_tick_error": _last_tick["error"],
+            "weather": _jsonable({k: v for k, v in e.weather_state.items()}) if e and e.weather else
+            {"ok": False, "error": "weather off (PREDICTION_WEATHER_ENABLED or ORION_SITUATION_WEATHER_LAT/LON unset)"},
+            "series": series, "action_bets": await _action_bets_health(),
+            "turn_self_bets": {"enabled": _settings.turn_self_bets_enabled, **_jsonable(_last_settle),
+                               "last_pass": _jsonable(turn_self_bets.last_pass if turn_self_bets else {}),
+                               "turn_surprise": {
+                                   "enabled": _settings.turn_surprise_events_enabled,
+                                   "counts": dict(turn_self_bets.surprise_counts) if turn_self_bets else {},
+                                   "last_error": turn_self_bets.last_surprise_error if turn_self_bets else None}},
+            "reachable": {"enabled": _settings.reachable_enabled, **_jsonable(_last_reachable),
+                          "last_pass": _jsonable(reachable.last_pass if reachable else {})},
+            "act_chain": {"enabled": _settings.act_chain_enabled, **_jsonable(_last_act_chain),
+                          "last_pass": _jsonable(act_chain.last_pass if act_chain else {})},
+            "bill_forecast": {"enabled": _settings.bill_forecast_enabled, **_jsonable(_last_bill),
+                              "last_pass": _jsonable(bill_forecast.last_pass if bill_forecast else {})},
+            "family_a": {"enabled": _settings.family_a_enabled, **_jsonable(_last_family_a),
+                         **(family_a.health() if family_a else {})},
+            "experiment_runner": runner.status() if runner else {"enabled": False},
+            "town_hold": ({"running": town_hold.running(), "schedule": town_hold.schedule,
+                           "night": town_hold.night.public() if town_hold.night else None}
+                          if town_hold else {"enabled": False})}
+
+
+async def _action_bets_health() -> dict[str, Any]:
+    if action_bets is None:
+        return {"ok": False, "error": "starting"}
+    try:
+        return await asyncio.to_thread(action_bets.health)
+    except psycopg.Error as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+@app.get("/series")
+async def series_list() -> dict[str, Any]:
+    e = _ready()
+    return {"series": [{"series_id": s.series_id, "role": s.role, "unit": s.unit, "grain_min": s.grain_min,
+                        "horizons_min": list(s.horizons_min), "covariates": list(s.covariates),
+                        "seasonalities": [x.__dict__ for x in s.seasonalities],
+                        "thresholds": [x.__dict__ for x in s.thresholds], "consumers": list(s.consumers)}
+                       for s in e.registry.series.values()]}
+
+
+@app.get("/series/{series_id}/models")
+async def scoreboard(series_id: str) -> dict[str, Any]:
+    """Latest selection: every model's backtest metrics per horizon, and which model serves which horizon."""
+    _ready()
+    rows = await asyncio.to_thread(_store.latest_selection, series_id)
+    if not rows:
+        raise HTTPException(404, "no selection yet")
+    keep = ("run_id", "kind", "model", "fitted_at", "n_obs", "n_windows", "metrics", "assignment", "served_baseline",
+            "usable_seasonalities", "refused_seasonalities", "backtest_seconds", "errors")
+    return {"series_id": series_id, "runs": [_jsonable({k: r[k] for k in keep}) for r in rows]}
+
+
+@app.get("/series/{series_id}/forecast")
+async def latest_forecast(series_id: str) -> dict[str, Any]:
+    _ready()
+    rows = await asyncio.to_thread(_store.latest_forecast, series_id)
+    if not rows:
+        raise HTTPException(404, "no forecast yet")
+    keep = ("origin_ts", "issued_at", "target_ts", "horizon_min", "point", "quantiles", "score_status", "actual")
+    return {"series_id": series_id, "steps": [_jsonable({k: r[k] for k in keep}) for r in rows]}
+
+
+@app.get("/series/{series_id}/live")
+async def live(series_id: str) -> dict[str, Any]:
+    e = _ready()
+    spec = e.registry.get(series_id)
+    if spec is None or spec.role != "target":
+        raise HTTPException(404, "unknown target series")
+    out = await asyncio.to_thread(e.live_metrics, spec, e.clock())
+    grades = await asyncio.to_thread(e.exceedance_grades, spec, e.clock())
+    return {"series_id": series_id, "live": out, "exceedance": grades, "alerts": e.state[series_id].alerts}
+
+
+def _learning_progress_read(today: date, series: tuple[str, ...]) -> dict[str, Any]:
+    since = datetime.combine(today - timedelta(days=2 * lp.WINDOW_DAYS + 1), datetime.min.time(), timezone.utc)
+    assert _store is not None
+    pairs = _store.daily_skill_pairs(series, lp.HORIZON_MIN, since)
+    rosters = _store.daily_rosters(series, since)
+    out = []
+    for sid in series:
+        days = [lp.DayStat(r["day"], int(r["pairs"]), float(r["mae_champion"]), float(r["mae_baseline"]))
+                for r in pairs if r["series_id"] == sid]
+        roster = {r["day"]: frozenset(r["models"]) for r in rosters if r["series_id"] == sid}
+        p = lp.progress(sid, days, roster, today)
+        out.append({
+            "series_id": p.series_id, "status": p.status, "reason": p.reason,
+            "learning_progress": p.learning_progress, "se": p.se, "t": p.t, "t_crit": p.t_crit,
+            "p_value": p.p_value, "direction": p.direction,
+            "recent": {"start": p.recent.start.isoformat(), "end": p.recent.end.isoformat(),
+                       "days": p.recent.days, "mean_skill": p.recent.mean_skill},
+            "prior": {"start": p.prior.start.isoformat(), "end": p.prior.end.isoformat(),
+                      "days": p.prior.days, "mean_skill": p.prior.mean_skill},
+            "roster_changed_on": p.roster_changed_on.isoformat() if p.roster_changed_on else None,
+        })
+    return {"as_of": today.isoformat(), "horizon_min": lp.HORIZON_MIN, "window_days": lp.WINDOW_DAYS,
+            "alpha": lp.ALPHA, "min_effect": lp.MIN_EFFECT, "series": out}
+
+
+@app.get("/learning-progress")
+async def learning_progress(series_id: str | None = None) -> dict[str, Any]:
+    """Are Orion's forecasts getting better or worse? Skill vs baseline, last 7 complete days vs the 7 before,
+    same model roster on both sides (app/learning_progress.py; choice-as-EFE design Step 1). Computed on read."""
+    e = _ready()
+    if series_id is not None and series_id not in lp.SERIES:
+        raise HTTPException(404, f"learning progress covers only {', '.join(lp.SERIES)}")
+    series = (series_id,) if series_id else lp.SERIES
+    return await asyncio.to_thread(_learning_progress_read, e.clock().astimezone(timezone.utc).date(), series)
+
+
+@app.get("/series/{series_id}/surprise")
+async def surprise(series_id: str, hours: float = 24.0) -> dict[str, Any]:
+    """Surprise calm check: mean excess surprise per horizon vs its null band, and each horizon's
+    publish gate. Spec: docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md."""
+    e = _ready()
+    spec = e.registry.get(series_id)
+    if spec is None or spec.role != "target":
+        raise HTTPException(404, "unknown target series")
+    if not 1 <= hours <= 24 * 35:
+        raise HTTPException(422, "hours must be between 1 and 840")
+    out = await asyncio.to_thread(e.surprise_summary, spec, e.clock(), timedelta(hours=hours))
+    return {"series_id": series_id, **out}
+
+
+class ScenarioBody(BaseModel):
+    series_id: str
+    covariate: str
+    path: list[float] = Field(..., min_length=1, max_length=2016)
+    days: float = Field(7.0, ge=2, le=21)
+
+
+@app.post("/scenario")
+async def post_scenario(body: ScenarioBody) -> dict[str, Any]:
+    _ready()
+    return await _causal(effects.scenario, body.series_id, body.covariate, body.path, body.days)
+
+
+class InterventionBody(BaseModel):
+    action: str = Field(..., pattern=r"^[a-z0-9_.:-]{1,120}$")
+    started_at: AwareDatetime
+    ended_at: AwareDatetime
+    source: str = Field(..., min_length=1, max_length=80)
+    notes: str = Field("", max_length=2000)
+    arm: str | None = Field(None, pattern=r"^(on|off)$")
+    experiment_id: uuid.UUID | None = None
+
+
+@app.post("/interventions")
+async def post_intervention(body: InterventionBody) -> dict[str, Any]:
+    _ready()
+    if (body.arm is None) != (body.experiment_id is None):
+        raise HTTPException(422, "arm and experiment_id go together")
+    return await _causal(effects.log_intervention, body.action, body.started_at, body.ended_at, body.source,
+                         body.notes, body.arm, str(body.experiment_id) if body.experiment_id else None)
+
+
+@app.get("/interventions")
+async def get_interventions(action: str | None = None, limit: int = 100) -> dict[str, Any]:
+    _ready()
+    rows = await asyncio.to_thread(_store.interventions, action, None, max(1, min(limit, 500)))
+    return {"interventions": _jsonable(rows)}
+
+
+class EstimateBody(BaseModel):
+    intervention_id: uuid.UUID
+    series_id: str
+    pre_days: float = Field(3.0, ge=1, le=7)
+    lag_min: int = Field(30, ge=0, le=720)
+
+
+@app.post("/effects/estimate")
+async def post_estimate(body: EstimateBody) -> dict[str, Any]:
+    _ready()
+    return await _causal(effects.estimate_intervention, str(body.intervention_id), body.series_id, body.pre_days,
+                         body.lag_min)
+
+
+class EventSelector(BaseModel):
+    """One event stream. ``source`` names the table (only ``vision_events`` today; see store.EVENT_SOURCES).
+    Lengths are bounded so the stored action / series labels fit their 120-char columns."""
+    source: Literal["vision_events"] = "vision_events"
+    event_type: str = Field(..., pattern=r"^[a-z0-9_.:-]{1,50}$")
+    stream_id: str | None = Field(None, pattern=r"^[a-z0-9_.:-]{1,33}$")
+    # > 0: rows closer than this to the previous row are one visit (a person logged as a burst counts once).
+    # Whole seconds, so each gap gets its own label; with the bounds above the longest label is 120 chars.
+    visit_gap_sec: int = Field(0, ge=0, le=3600)
+
+
+class EventPairBody(BaseModel):
+    a: EventSelector
+    b: EventSelector
+    start: AwareDatetime
+    end: AwareDatetime
+    lag_min_sec: float = Field(0.0, ge=0, le=86400)
+    lag_max_sec: float = Field(..., gt=0, le=86400)
+    n_placebo: int = Field(999, ge=99, le=9999)
+    seed: int = Field(0, ge=0)
+    # same_time_of_day: shift A by whole days (+/- 1 h), so a pair that only shares the daily rhythm
+    # reads as no effect (needs lag_max < 30 min). circular: shift A anywhere (rhythm-free series).
+    placebo: Literal["same_time_of_day", "circular"] = "same_time_of_day"
+
+
+@app.post("/effects/event-pair")
+async def post_event_pair(body: EventPairBody) -> dict[str, Any]:
+    """Does event A raise event B's rate within [lag_min_sec, lag_max_sec] after it? Always
+    ``observational_effect``. Too little data -> 422 with ``error: refused`` and the counts, never a guess."""
+    _ready()
+    if body.end - body.start > timedelta(days=90):
+        raise HTTPException(422, "time range is longer than 90 days")
+    try:
+        return _jsonable(await asyncio.to_thread(effects.event_pair, body.a.model_dump(), body.b.model_dump(),
+                                                 body.start, body.end, body.lag_min_sec, body.lag_max_sec,
+                                                 body.n_placebo, body.seed, body.placebo))
+    except EventPairRefused as exc:
+        raise HTTPException(422, {"error": "refused", "claim_kind": "observational_effect", "reason": exc.reason,
+                                  "min_a_events": MIN_A_EVENTS, **exc.detail}) from exc
+    except QueryCanceled as exc:   # the read hit its statement timeout; reported, not retried
+        raise HTTPException(504, "event read exceeded the statement timeout; narrow the time range") from exc
+
+
+@app.get("/experiments/guard")
+async def experiment_guard(series_id: str) -> dict[str, Any]:
+    e = _ready()
+    spec = e.registry.get(series_id)
+    if spec is None or spec.role != "target":
+        raise HTTPException(404, "unknown target series")
+    return await _causal(effects.guard, spec)
+
+
+class DesignBody(BaseModel):
+    action: str = Field(..., pattern=r"^[a-z0-9_.:-]{1,120}$")
+    series_id: str
+    start_at: AwareDatetime
+    block_min: int = Field(20, ge=5, le=240)
+    n_blocks: int = Field(8, ge=8, le=96)
+    burn_in_min: int = Field(5, ge=0, le=120)
+    seed: int | None = None
+
+
+@app.post("/experiments/design")
+async def post_design(body: DesignBody) -> dict[str, Any]:
+    _ready()
+    return await _causal(effects.design_experiment, body.action, body.series_id, body.start_at, body.block_min,
+                         body.n_blocks, body.burn_in_min, body.seed)
+
+
+@app.post("/experiments/{experiment_id}/analyze")
+async def post_analyze(experiment_id: uuid.UUID) -> dict[str, Any]:
+    _ready()
+    return await _causal(effects.analyze_experiment, str(experiment_id))
+
+
+class RunBody(BaseModel):
+    """Design AND perform a switchback experiment now. Defaults = the first vision focus experiment
+    (docs/superpowers/pr-reports/2026-10-29-vision-focus-experiment-pr.md has the power reasoning)."""
+    action: str = Field(..., pattern=r"^vision\.focus:[a-z0-9_-]{1,40}$")
+    series_id: str = "athena.cabinet_temp_c"
+    block_min: int = Field(20, ge=5, le=240)
+    n_blocks: int = Field(12, ge=8, le=96)
+    burn_in_min: int = Field(10, ge=0, le=120)
+    seed: int | None = None
+    start_delay_min: int = Field(2, ge=0, le=60)
+
+
+def _runner() -> ExperimentRunner:
+    _ready()
+    if runner is None:
+        raise HTTPException(503, "experiment runner disabled (PREDICTION_EXPERIMENT_RUNNER_ENABLED=false)")
+    return runner
+
+
+@app.post("/experiments/run")
+async def post_run(body: RunBody) -> dict[str, Any]:
+    """Refuses (409) unless GET /experiments/guard passes and no other run is active. Never auto-starts."""
+    r = _runner()
+    try:
+        out = await r.start(body.action, body.series_id, body.block_min, body.n_blocks, body.burn_in_min,
+                            body.seed, body.start_delay_min)
+    except RunnerRefused as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+    except CausalError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return _jsonable(out)
+
+
+@app.get("/experiments/runner")
+async def get_runner() -> dict[str, Any]:
+    return _jsonable(_runner().status())
+
+
+@app.post("/experiments/runner/abort")
+async def post_runner_abort() -> dict[str, Any]:
+    """Stop the active run now: focus key cleared, abort logged, experiment cancelled."""
+    r = _runner()
+    if not await r.shutdown("aborted by operator"):
+        raise HTTPException(409, "no experiment is running")
+    return _jsonable(r.status())
+
+
+# --- Family C Experiment 1: hold AI Town session starts at random (app/town_hold.py) --------------------
+
+class TownHoldRunBody(BaseModel):
+    """Start a run: one randomised experiment per night (00:00-08:00 America/Denver), ``nights`` nights from
+    ``first_night`` (default: the next night that has not started). Juniper's yes: #3482, ~16 nights."""
+    nights: int = Field(16, ge=1, le=30)
+    first_night: date | None = None
+    seed: int | None = Field(None, ge=0, lt=2 ** 31)
+
+
+def _town_hold() -> TownHoldRunner:
+    _ready()
+    if town_hold is None:
+        raise HTTPException(503, "town-hold runner disabled (PREDICTION_TOWN_HOLD_ENABLED=false or "
+                                 "PREDICTION_EXPERIMENT_RUNNER_ENABLED=false)")
+    return town_hold
+
+
+@app.post("/experiments/town-hold/run")
+async def post_town_hold_run(body: TownHoldRunBody) -> dict[str, Any]:
+    """The ONLY way a town-hold run starts. Refuses (409) while another run is scheduled or active, (422/503)
+    when embodiment cannot be read or does not obey the override. Holds nothing until the first night opens."""
+    t = _town_hold()
+    try:
+        return _jsonable(await t.start(body.nights, body.first_night, body.seed))
+    except TownHoldRefused as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+    except CausalError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/experiments/town-hold")
+async def get_town_hold() -> dict[str, Any]:
+    return _jsonable(_town_hold().status())
+
+
+@app.get("/experiments/town-hold/preview")
+async def get_town_hold_preview(night: date | None = None, seed: int | None = Query(None, ge=0, lt=2 ** 31)) -> dict[str, Any]:
+    """Dry run, read-only: a night's arm list for ``seed`` (default: the scheduled run's, else 0), the town's own
+    start gate, and every stop rule read now. Writes nothing, places no bid."""
+    return _jsonable(await _town_hold().preview(night, seed))
+
+
+@app.post("/experiments/town-hold/abort")
+async def post_town_hold_abort() -> dict[str, Any]:
+    """End the night now (hold key deleted, night cancelled) and delete the schedule: the run does not resume."""
+    t = _town_hold()
+    stopped = await t.shutdown("aborted by operator", clear_schedule=True)
+    return _jsonable({"stopped_a_task": stopped, **t.status()})
+
+
+@app.post("/experiments/town-hold/{run_id}/result")
+async def post_town_hold_result(run_id: uuid.UUID) -> dict[str, Any]:
+    """Pool a run's analysed nights and store its one result row (Orion's ``experiment_result`` experience).
+    The runner does this itself after the last night; this re-does it (e.g. after an aborted run)."""
+    _ready()
+    if effect_table is None:
+        raise HTTPException(503, "family C needs family A's input config (PREDICTION_FAMILY_A_ENABLED)")
+    return await _causal(run_result, effect_table, _store, str(run_id))
+
+
+class HeatPerWattBody(BaseModel):
+    series_id: str = "athena.cabinet_temp_c"
+    days: float = Field(7.0, ge=2, le=21)
+    experiment_id: uuid.UUID | None = None
+
+
+async def _heat(series_id: str, days: float, experiment_id: uuid.UUID | None, store: bool) -> dict[str, Any]:
+    _ready()
+    try:
+        return _jsonable(await asyncio.to_thread(effects.heat_per_watt, series_id, days,
+                                                 str(experiment_id) if experiment_id else None, store))
+    except HeatBalanceRefused as exc:
+        raise HTTPException(422, {"error": "refused", "claim_kind": "observational_effect", "reason": exc.reason,
+                                  **_jsonable(exc.detail)}) from exc
+    except CausalError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+# Declared before GET /effects/{action}, which would otherwise capture this path.
+@app.get("/effects/table")
+async def get_effect_table() -> dict[str, Any]:
+    """Family C: what Orion's own actions do. One row per (actuator, reading, window after the act),
+    measured only by finished randomised switchback experiments, recomputed from their logged blocks
+    and the raw readings. Read-only; nothing is stored. 503 when family A's config is not loaded."""
+    _ready()
+    if effect_table is None:
+        raise HTTPException(503, "family C needs family A's input config (PREDICTION_FAMILY_A_ENABLED)")
+    return await _causal(effect_table.build)
+
+
+@app.get("/effects/heat-per-watt")
+async def get_heat_per_watt(series_id: str = "athena.cabinet_temp_c", days: float = Query(7.0, ge=2, le=21),
+                            experiment_id: uuid.UUID | None = None) -> dict[str, Any]:
+    """How much warmer than the room each machine's sustained watts make the cabinet (C per W, HAC 95% CI),
+    fitted now on hourly data. ``series_id=closet.top_temp_c``: the closet top instead (a separate fit,
+    stored under its own series_id). ``experiment_id`` converts that experiment's measured watts into a
+    predicted target change. Read-only (POST stores). Too little data or a degenerate fit -> 422 ``refused``."""
+    return await _heat(series_id, days, experiment_id, False)
+
+
+@app.post("/effects/heat-per-watt")
+async def post_heat_per_watt(body: HeatPerWattBody) -> dict[str, Any]:
+    """Same fit, stored in prediction_effect_estimate (action ``heat_per_watt:<watts id>``, one row per
+    machine); GET /effects/{action} cites the newest stored fit beside an experimental answer."""
+    return await _heat(body.series_id, body.days, body.experiment_id, True)
+
+
+@app.get("/effects/{action}")
+async def get_effect(action: str, series_id: str) -> dict[str, Any]:
+    """The Orion-facing answer: best available estimate of how much `action` moves `series_id`."""
+    _ready()
+    return await _causal(effects.best_effect, action, series_id)
+
+
+class ChangeEventBody(BaseModel):
+    scope: str = Field(..., pattern=r"^(\*|[a-z0-9_]+(\.[a-z0-9_]+)+)$")
+    effect: str = Field(..., pattern=r"^(break|exclude)$")
+    started_at: AwareDatetime
+    ended_at: AwareDatetime | None = None
+    title: str = Field(..., min_length=1, max_length=200)
+    notes: str = Field("", max_length=2000)
+    source: str = Field(..., min_length=1, max_length=80)
+
+
+@app.post("/change-events")
+async def post_change_event(body: ChangeEventBody) -> dict[str, Any]:
+    """Record a known change under a series: ``break`` (a changepoint) or ``exclude`` (a window to mask).
+    Applied on the next tick: the selection reruns because its event fingerprint changed. A break
+    becomes the training start once enough post-break data exists for the backtest (/health shows when)."""
+    e = _ready()
+    if body.scope != "*" and e.registry.get(body.scope) is None:
+        raise HTTPException(422, f"unknown series {body.scope}")
+    if body.effect == "exclude" and (body.ended_at is None or body.ended_at <= body.started_at):
+        raise HTTPException(422, "exclude needs ended_at after started_at")
+    if body.effect == "break" and body.ended_at is not None:
+        raise HTTPException(422, "a break is a moment; leave ended_at empty")
+    if body.started_at > e.clock() + timedelta(minutes=5):
+        raise HTTPException(422, "started_at is in the future; record a change after it happens")
+    row = await asyncio.to_thread(_store.insert_change_event, body.model_dump())
+    return {"change_event": _jsonable(row)}
+
+
+@app.delete("/change-events/{event_id}")
+async def delete_change_event(event_id: uuid.UUID) -> dict[str, Any]:
+    """Retract a mistaken event (kept in the table, ignored from now on; the selection reruns)."""
+    _ready()
+    if not await asyncio.to_thread(_store.retract_change_event, str(event_id)):
+        raise HTTPException(404, "unknown or already retracted change event")
+    return {"retracted": str(event_id)}
+
+
+@app.get("/change-events")
+async def get_change_events() -> dict[str, Any]:
+    _ready()
+    return {"change_events": _jsonable(await asyncio.to_thread(_store.change_events))}
+
+
+# --- turn self-bets ------------------------------------------------------------------------------------
+# Spec: docs/superpowers/specs/2026-10-23-unified-turn-self-prediction-design.md (A3).
+@app.get("/turn-self-bets/live")
+async def get_turn_self_bets_live(force: bool = False, since: datetime | None = None) -> dict[str, Any]:
+    """Per faculty: settled/void counts, the overall grade and a grade per caller, for bets placed since
+    ``since`` (default: the last 7 days; cached 60 s)."""
+    if turn_self_bets is None:
+        raise HTTPException(503, "starting")
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    try:
+        return _jsonable(await asyncio.to_thread(turn_self_bets.live, force, since))
+    except psycopg.Error as exc:
+        raise HTTPException(503, "turn self-bet store unavailable") from exc
+
+
+@app.get("/act-chain")
+async def get_act_chain() -> dict[str, Any]:
+    """Act chain (family B): the current 15-min forecast of Orion's next act, issuance coverage and the
+    live grade vs the marginal / clock-hour / clock-block baselines over 14 days (app/act_chain.py)."""
+    if act_chain is None:
+        raise HTTPException(503, "starting")
+    try:
+        return _jsonable(await asyncio.to_thread(act_chain.live))
+    except psycopg.Error as exc:
+        raise HTTPException(503, "act chain store unavailable") from exc
+
+
+@app.get("/reachable")
+async def get_reachable() -> dict[str, Any]:
+    """Juniper reachable: the current hour's forecast and the live grade vs the base rate, overall and
+    for cold hours (no message in the prior 3 h). Spec 2026-11-10-juniper-reachable-forecast-design.md."""
+    if reachable is None:
+        raise HTTPException(503, "starting")
+    try:
+        return _jsonable(await asyncio.to_thread(reachable.live))
+    except psycopg.Error as exc:
+        raise HTTPException(503, "reachable store unavailable") from exc
+
+
+@app.get("/bill-forecast")
+async def get_bill_forecast() -> dict[str, Any]:
+    """The power-bill bet: today's projection of the current RMP bill (kWh, pre-tax $, 80 % ranges) and,
+    per bill period and origin (live / replay), how the bets came out once the bill landed."""
+    if bill_forecast is None:
+        raise HTTPException(503, "starting" if _settings.bill_forecast_enabled
+                            else "bill forecast off (PREDICTION_BILL_FORECAST_ENABLED=false)")
+    try:
+        return _jsonable(await asyncio.to_thread(bill_forecast.live))
+    except psycopg.Error as exc:
+        raise HTTPException(503, "bill forecast store unavailable") from exc
+
+
+# --- action bets ---------------------------------------------------------------------------------------
+# Spec: docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md ("the action bet").
+def _bets() -> ActionBets:
+    if action_bets is None:
+        raise HTTPException(503, "starting")
+    return action_bets
+
+
+async def _bets_call(fn, *args):
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except psycopg.Error as exc:   # DB down: the caller plans without a menu (a missing table stops boot)
+        logger.warning("action_bets_store_error %s: %s", type(exc).__name__, exc)
+        raise HTTPException(503, "action bet store unavailable") from exc
+
+
+def _bet_out(row: dict) -> dict[str, Any]:
+    return ActionBetV1.model_validate(row).model_dump(mode="json")
+
+
+@app.post("/action-bets/quote")
+async def post_action_bet_quote(body: ActionBetQuoteRequestV1) -> dict[str, Any]:
+    """Read-only. Per option: p, p_baseline, interval80, eig_nats, level, counts, model. One grouped query."""
+    ab = _bets()
+    out = await _bets_call(ab.quote, body.domain, [o.model_dump() for o in body.options])
+    return {"domain": body.domain, "body": body.body, "served_model": out["served_model"],
+            "quotes": [ActionBetQuoteV1.model_validate(q).model_dump(mode="json") for q in out["quotes"]]}
+
+
+@app.post("/action-bets")
+async def post_action_bet(body: ActionBetPlaceV1) -> dict[str, Any]:
+    """Place one bet. p and p_baseline are computed here. Idempotent by bet_id: a repeat returns the stored bet."""
+    row, _created = await _bets_call(_bets().place, body.model_dump())
+    return _bet_out(row)
+
+
+@app.post("/action-bets/{bet_id}/settle")
+async def post_action_bet_settle(bet_id: str, body: ActionBetSettleV1) -> dict[str, Any]:
+    """Open -> settled only. Same result again -> 200 with the stored bet; a conflicting result -> 409."""
+    try:
+        row = await _bets_call(_bets().settle, bet_id, body.result, body.outcome, body.detail)
+    except ConflictError as exc:
+        raise HTTPException(409, {"error": "already_settled", "bet": _bet_out(exc.bet)}) from exc
+    if row is None:
+        raise HTTPException(404, "unknown bet")
+    return _bet_out(row)
+
+
+@app.get("/action-bets/live")
+async def get_action_bets_live(domain: str | None = None, body: str | None = None) -> dict[str, Any]:
+    out = await _bets_call(_bets().live, domain, body)
+    out["last_bets"] = [_bet_out(r) for r in out["last_bets"]]
+    return _jsonable(out)
+
+
+@app.get("/action-bets")
+async def get_action_bets(session_id: str) -> dict[str, Any]:
+    """That session's bets, oldest first, at most 500."""
+    rows = await _bets_call(_bets().session_bets, session_id)
+    return {"session_id": session_id, "bets": [_bet_out(r) for r in rows]}

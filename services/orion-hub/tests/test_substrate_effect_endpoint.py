@@ -3,11 +3,20 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from scripts.substrate_effect_cache import (
-    SubstrateEffectSnapshot,
-    substrate_effect_cache,
-)
-from scripts.substrate_effect_pipeline import run_substrate_effect_pipeline
+
+
+def run_substrate_effect_pipeline(**kwargs):
+    # Resolved per call: conftest purges scripts.* before every test, so a
+    # module-level import would write into a stale cache the app never reads.
+    from scripts.substrate_effect_pipeline import run_substrate_effect_pipeline as run
+
+    return run(**kwargs)
+
+
+# These tests drive the legacy post-turn substrate pipeline, which only runs
+# while pre-turn appraisal is off. Its default flipped to on (2026-10-10), after
+# which run_substrate_effect_pipeline returned (None, None) and these failed.
+pytestmark = pytest.mark.usefixtures("pre_turn_appraisal_off")
 
 
 @pytest.fixture()
@@ -19,6 +28,8 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _reset_cache():
+    from scripts.substrate_effect_cache import substrate_effect_cache
+
     substrate_effect_cache.clear()
     yield
 
@@ -53,6 +64,8 @@ def test_high_pressure_turn_returns_view_with_repair_concrete(client):
 
 
 def test_known_turn_with_no_effect_returns_valid_empty_view(client):
+    from scripts.substrate_effect_cache import SubstrateEffectSnapshot, substrate_effect_cache
+
     snap = SubstrateEffectSnapshot(
         turn_id="turn-empty",
         message_id=None,

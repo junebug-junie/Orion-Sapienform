@@ -23,6 +23,7 @@ from orion.world_pulse_read.documents import (
 from orion.world_pulse_read.urls import normalize_reading_source, validate_source_url
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.world_pulse_read.retry import FailureOutcome, is_capacity_deferral, is_transient_failure
+from orion.world_pulse_read.reader_blocks import reader_block_reason
 from orion.world_pulse_read.seeds import seeds_from_digest_payload
 
 _PRIORITY = {"finding": 0, "reading": 0, "digest_item": 10}
@@ -132,9 +133,9 @@ INSERT INTO world_pulse_read_seed
     (seed_id, kind, run_id, url, title, section, item_id, priority, status,
      request_id, request_json, root_request_id, duplicate_of, stage2_status, last_error)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
-        CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END,
+        CASE WHEN $12::text IS NULL AND $13::text IS NULL THEN 'pending' ELSE 'skipped' END,
         $9,$10::jsonb,$11,$12,
-        CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END, $13)
+        CASE WHEN $12::text IS NULL AND $13::text IS NULL THEN 'pending' ELSE 'skipped' END, $13)
 ON CONFLICT DO NOTHING
 """
 
@@ -177,6 +178,7 @@ SET status = 'claimed', claimed_at = now()
 WHERE seed_id = (
     SELECT seed_id FROM world_pulse_read_seed
     WHERE status = 'pending'
+      AND seed_id <> ALL(COALESCE($2::text[], ARRAY[]::text[]))
       AND (NOT $1::boolean OR EXISTS (
           SELECT 1 FROM reading_durable_turn d
           WHERE d.seed_id=world_pulse_read_seed.seed_id
@@ -200,6 +202,7 @@ WHERE seed_id = (
     WHERE status = 'done'
       AND handoff_json IS NOT NULL
       AND stage2_status = 'pending'
+      AND seed_id <> ALL(COALESCE($2::text[], ARRAY[]::text[]))
       AND (NOT $1::boolean OR EXISTS (
           SELECT 1 FROM reading_durable_turn d
           WHERE d.seed_id=world_pulse_read_seed.seed_id
@@ -407,9 +410,13 @@ async def enqueue_seeds(
                 if count >= max_round_trips:
                     raise ValueError("round_trip_cap")
             await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", url)
-            duplicate_of = await conn.fetchval(READ_URL_SQL, url, seed.seed_id)
-            reason = ALREADY_READ if duplicate_of else None
-            if duplicate_of is None:
+            # A publisher that refuses the fetch tool (reader_blocks.py) is
+            # recorded skipped on arrival: no queue slot, no tick, and the
+            # requester's reading_status names the block at once.
+            blocked = reader_block_reason(url)
+            duplicate_of = None if blocked else await conn.fetchval(READ_URL_SQL, url, seed.seed_id)
+            reason = blocked or (ALREADY_READ if duplicate_of else None)
+            if duplicate_of is None and blocked is None:
                 active = await conn.fetchrow(ACTIVE_URL_SQL, url)
                 duplicate_of = active["seed_id"] if active and active["seed_id"] != seed.seed_id else None
             status = await conn.execute(
@@ -570,8 +577,12 @@ def _seed_from_row(row: Any) -> WorldPulseReadSeedV1:
     )
 
 
-async def claim_next_seed(conn: Any, *, active_only: bool = False) -> WorldPulseReadSeedV1 | None:
-    row = await conn.fetchrow(CLAIM_SQL, active_only)
+async def claim_next_seed(
+    conn: Any, *, active_only: bool = False, exclude: Sequence[str] = (),
+) -> WorldPulseReadSeedV1 | None:
+    """Claim the next Stage 1 seed. ``exclude``: seeds this tick already handled (a
+    released in-flight seed goes back to pending and would otherwise be claimed again)."""
+    row = await conn.fetchrow(CLAIM_SQL, active_only, list(exclude))
     if not row:
         return None
     return _seed_from_row(row)
@@ -665,6 +676,19 @@ async def mark_seed_failed(
     return _failure_outcome(row, status_key="status", attempts_key="attempts")
 
 
+PENDING_DURABLE_TURN_SQL = """
+SELECT 1 FROM reading_durable_turn
+WHERE seed_id = $1 AND stage = $2 AND consumed_at IS NULL LIMIT 1
+"""
+
+
+async def has_pending_durable_turn(conn: Any, seed_id: str, stage: int) -> bool:
+    """A submitted turn whose result is not consumed yet. Admission gates must
+    not skip such a seed: the turn already ran (or is running) and its result
+    would be stranded with the row unretryable (``active_durable_binding``)."""
+    return await conn.fetchrow(PENDING_DURABLE_TURN_SQL, seed_id, stage) is not None
+
+
 async def mark_seed_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
     """Mark without a Stage 1 debit — used for section-index URLs etc."""
     await conn.execute(
@@ -705,6 +729,10 @@ WHERE status = 'pending'
       WHERE alias.duplicate_of = world_pulse_read_seed.seed_id
         AND alias.kind <> 'digest_item'
   )
+  -- A pending row that already holds a read (handoff with fetch evidence) was put back
+  -- by an operator reread (operator.reread_read), not left waiting by the feed: its age
+  -- is the original read's, so the sweep would skip it before it could be read again.
+  AND (world_pulse_read_seed.handoff_json->'read_evidence'->0) IS NULL
 """
 
 
@@ -786,8 +814,11 @@ async def mark_stage2_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
     )
 
 
-async def claim_next_stage2_seed(conn: Any, *, active_only: bool = False) -> Stage2Claim | None:
-    row = await conn.fetchrow(CLAIM_STAGE2_SQL, active_only)
+async def claim_next_stage2_seed(
+    conn: Any, *, active_only: bool = False, exclude: Sequence[str] = (),
+) -> Stage2Claim | None:
+    """Claim the next Stage 2 seed; ``exclude`` as in claim_next_seed."""
+    row = await conn.fetchrow(CLAIM_STAGE2_SQL, active_only, list(exclude))
     if not row:
         return None
     raw = row["handoff_json"]

@@ -27,11 +27,42 @@ sandbox checkout is already a supported, pre-existing case, not a new risk this 
 | `CHANNEL_HARNESS_RUN_ARTIFACT` | `orion:harness:run:artifact` | Audit publish after each run |
 | `CHANNEL_FINALIZE_APPRAISAL_REQUEST` | `orion:substrate:finalize_appraisal:request` | 5a draft molecule RPC |
 | `CHANNEL_POST_TURN_CLOSURE` | `orion:substrate:post_turn_closure` | Step 7 learning closure |
+| `CHANNEL_HARNESS_RUN_DRAFT_PREVIEW` | `orion:harness:run:draft_preview` | Draft-first display: grounded draft published before the finalize judge when the request sets `draft_preview` (see below) |
 
 Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
 `HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the request/cancel bus workers above.
 `GET /health` reports `lane_chat_alive` / `lane_agent_alive` so a dispatch loop that dies
 silently is visible immediately rather than inferred later from turns going unanswered.
+
+## Why a turn stopped (`stop_reason`)
+
+`HarnessRunV1.stop_reason` (on the reply and the `orion:harness:run:artifact` record, stored in
+`harness_turn_trace.run_artifact`) says why the motor stopped: `cancel:<reason>` when a
+`harness.run.cancel.v1` killed the process (the cancel listener passes `HarnessRunCancelV1.reason`
+to `cancel_fcc_turn`), else the motor's error code (`fcc_timeout`, `fcc_stream_stalled`,
+`fcc_nonzero_exit`, ...), else null. orion-prediction voids a turn's self-bets `interrupted`
+(not `failed_to_execute`) only for the known outside cancels in `orion/harness/stop_reason.py`.
+Records written before 2026-11-04 have no `stop_reason` and stay as they are.
+
+## Draft-first display (spec L8)
+
+When the Hub sets `HarnessRunRequestV1.draft_preview` (interactive chat only,
+Hub flag `HUB_UNIFIED_DRAFT_FIRST_ENABLED`), the governor publishes the motor
+draft, after the same deterministic reading-receipt grounding finalize applies
+(no LLM call), as `HarnessRunDraftPreviewV1` on
+`orion:harness:run:draft_preview`, then runs the finalize judge as usual.
+
+- Held back (judge-first, as before) when the stance marks the turn sensitive:
+  boundary register, trust rupture at or above the defer threshold, repair
+  pressure at or above the quick-lane ceiling, or a non-default repair overlay
+  (`orion/harness/finalize.py::sensitive_turn_reason`, shared with the quick
+  lane). Also held for structured (reading) output and cut-short drafts.
+- `HarnessRunV1.draft_preview_text` records exactly what was published and
+  `draft_preview_held_reason` why not, so `harness_turn_trace.run_artifact`
+  holds both what Juniper saw first and the `final_text` it became.
+- Logs: `harness_draft_preview_published` / `_held` / `_revised` with `corr=`.
+- Nothing persists the draft as a turn; chat history and memory read
+  `final_text` only.
 
 ## RPC-health publish (on by default)
 
@@ -72,11 +103,58 @@ LISTEN orion:harness:run:request:agent    (agent lane, another loop — same cod
 
 Each turn's `claude -p` subprocess is still single-shot: it starts, runs, and exits with no mid-run injection point (see below). What changed (2026-08-20) is that the *prompt it starts with* now carries real recent-turn history, not just the current message. `HarnessRunRequestV1.recent_turns` (`orion/schemas/harness_finalize.py`) holds up to `HARNESS_RECENT_TURNS_MAX` (8) bounded prior user/assistant messages, built by `orion.hub.turn_orchestrator.execute_unified_turn` from the caller's `continuity_messages` via the same `build_turn_window` normalizer the pre-turn-appraisal client already used. `orion/harness/prefix.py::compile_harness_prefix()` renders it into a `RECENT CONVERSATION` section of the compiled prompt before the subprocess ever starts. Before this, every unified-turn (`mode="orion"`) prompt was built from only the single current `user_message` — no prior-turn content at all — which produced generic, isolated-per-turn responses and repeated opening greetings on a live multi-turn session.
 
+## Turn working notes (carry steps across messages)
+
+Every chat message starts a new CLI session, so a turn saw Orion's earlier replies
+but not the steps behind them. Spec: `docs/superpowers/specs/2026-11-05-turn-working-notes-design.md`.
+
+- **Exact record:** `python -P -m orion.dig turn-steps <chat_id> [<n>]` prints the tool calls
+  and the start of each result for the last n tool-using turns of a Hub chat
+  (`cockpit_turn_sighting` via the read-only psql path). Every chat turn's prompt names it.
+- **Short version:** each Hub chat reply gets a notes file
+  (`HARNESS_FCC_WORKING_NOTES_DIR/<session>/<correlation>.md`). Orion appends
+  `- <fcc|host|db|container:NAME> | <command or path> | ok|failed: <seen>` while it
+  works (no time: the model guessed the clock 1 h off live; a written time is removed and the
+  carried block dates each turn instead). At turn end (success or failure) `orion/harness/working_notes.py` keeps only lines in that
+  shape and carries them, quoted, to the next turn of the same session (Redis
+  `orion:harness:working_notes:<session>`, 24 h, 3,000 chars).
+- **Held back:** a turn that ran WebFetch/WebSearch, any MCP tool except orion-introspect and gitnexus,
+  an orion-reading call unless its receipt is a bare queue receipt for a chat-made request (no
+  `summary`/`error`, no `title`, not world-pulse or re-entry, only known fields; anything else,
+  including non-JSON, holds back), an orion-introspect `reading_results` call that returned any item
+  (each item is a page Orion read; only an empty `ok` result is clean),
+  an `orion_day` result that holds a `reading:`/`reading_journal:`/`world_pulse_digest:` record (readings or
+  world-news section, or a carry item's citations),
+  a subagent (`Task`/`Agent`), a resumed session, or `curl`/`wget`/`gh <cmd>`/`git fetch|pull|clone` in Bash has its
+  notes held back; the next turn sees only that they were. The Bash check is a floor, not a wall.
+- **Trace:** cockpit stage `working_notes` per chat turn (`carried_in`, `written`, kept/dropped,
+  `tainted_by`). Logs: `fcc_working_notes_empty|tainted|dropped|suspicious|carried`.
+- **Off:** `HARNESS_FCC_WORKING_NOTES_ENABLED=false` (no file, nothing carried; `turn-steps` stays).
+- **Baseline:** `python -m orion.harness.evals.turn_repeat_baseline --days 14` counts steps a turn
+  redoes from the previous turn of the same chat, and the share of turns the taint rule holds back.
+
 ## Tool-provenance audit
 
 `orion/harness/tool_provenance_audit.py::detect_tool_provenance_mismatch()` runs once per turn in `HarnessRunner.run()`, after the fcc stream completes: flags when `draft_text` uses live-immediacy language ("this turn", "right now", "happening now", "in the background") while that same turn's `grammar_receipts` show a fetch-shaped tool call (`get_file_contents`, `read_file`, a web fetch). It's a post-hoc audit, not prevention — the fcc subprocess is single-shot with no mid-run injection point (the prompt, including the `RECENT CONVERSATION` section above, is fully assembled before the subprocess starts and cannot be changed once it is running), so nothing here can stop a confabulated claim before it's generated (that's `orion/harness/prefix.py`'s `CONTEXT PROVENANCE` block's job, in the compiled motor prompt).
 
 On a mismatch: `HarnessMotorResult.tool_provenance_audit` / `HarnessDraftMoleculeV1.tool_provenance_audit` are set (both `None` otherwise), a `GrammarAtomV1(atom_type="uncertainty_marker", semantic_role="exec_tool_provenance_mismatch")` is published on `CHANNEL_HARNESS_RESULT_PREFIX`'s underlying grammar channel alongside the rest of the turn's grammar receipts, and a `harness_tool_provenance_mismatch` warning is logged with the correlation ID. Deliberately kept separate from `grounding_status` (an overloaded error/overflow code that downstream consumers surface as a user-visible error) — this is a soft grounding signal on the claim, not a motor failure.
+
+## Promises Orion makes (intention ledger D0)
+
+The 5b finalize judge also lists the promises a reply makes: things Orion says Orion will do
+or say after this reply. Each promise is an exact quote of the reply. Plain code
+(`orion/harness/promise_gate.py`) drops any quote that is not literally in the text, first
+against the draft the judge read, then against the final text Juniper saw. An offer that waits
+for Juniper's yes ("if you want, I'll ...") is marked `offer` and counts only after a later
+judge call accepts it from Juniper's next message.
+
+- **Where:** `reflection.promises_made` / `offers_accepted` / `promises_kept` on the turn record
+  (`harness_turn_trace.run_artifact.reflection`). Gate drops log as `promise_gate corr=...`.
+- **D0 only records.** No acts open and no cue reaches stance or the motor yet (D1-D3,
+  `docs/superpowers/specs/2026-11-11-intention-ledger-design.md`). The quick deterministic gate
+  writes no promises.
+- **Off:** `ORION_PROMISE_LEDGER_ENABLED=false` (the judge is not asked; the gate clears the fields).
+- **Eval:** `python -m orion.harness.evals.promise_ledger_replay_eval run|sheet|score`.
 
 ## Local checks
 
@@ -147,11 +225,60 @@ docker exec -it <container> claude plugin install context-mode@context-mode
 
 The smoke script `scripts/context_mode_hooks_smoke.py` must pass before enabling this on ordinary turns. No duplicate registration: when both `HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED` and `HARNESS_FCC_CONTEXT_MODE_ENABLED` are true, hook mode wins and the standalone server is skipped.
 
+#### Repeat-failing-call breaker
+
+Every FCC turn (including reading-only turns) gets a harness-owned PreToolUse hook, passed as `claude --settings` so it applies regardless of `--setting-sources` and independently of the Context Mode plugin. Before each tool call it re-reads the turn's own session transcript; once the same tool has failed `HARNESS_FCC_REPEAT_FAILURE_THRESHOLD` times (default 3, `0` disables) with the same normalized input, further identical calls are blocked for the rest of the turn and the model is told the call will not succeed and to change approach or answer with what it has. A call that ever succeeded in the turn is never blocked; different inputs are different calls. State is the transcript, so it is per turn by construction. Trace: governor log line `fcc_repeat_failure_breaker_fired corr=<id>`; the blocked tool_result (marker `[orion-repeat-failure-breaker]`) also rides the normal step frames. Code: `orion/fcc/repeat_failure_breaker.py`. Incident: urgent run a153451fe423 (2026-10-01), 19 identical failing `firecrawl_scrape` calls.
+
+Reading-only turns (world-pulse Stage 1/2) get two more rules in the same hook. **Refetch:** a `WebFetch` of a URL that already came back successfully in the turn is blocked once it has succeeded `HARNESS_FCC_READING_REFETCH_LIMIT` times (default 1; GitHub raw spellings of one file count as one URL) -- WebFetch only ever reads a page's first ~100k characters, so a repeat or a "slice" request reads the same characters and costs another full summarizer pass on the shared slot (trade-off: a differently-worded second question to the same page is refused too; two fetches of one URL in a single assistant message both run). **Tool window:** once `HARNESS_FCC_READING_TOOL_WINDOW_FRACTION` (default 0.5) of the turn's own budget (`ORION_TURN_BUDGET_SEC`/`ORION_TURN_DEADLINE_EPOCH`) has passed, new tool calls are blocked and the model is told to answer with what it has; a call already running is not stopped. `0` disables either. Hub's reading listener now stamps the brief's real limit on the turn (`inference_timeout_sec` + reply deadline + a 60 s finalize reserve re-applied after stance/recall), so that budget is the durable attempt's wall, not `HARNESS_FCC_TIMEOUT_SEC`. Same trace (`fcc_repeat_failure_breaker_fired`). Incident: reading seed c31227dc Stage 2 (2026-10-14), 54 min, five fetches of a 222 KB file, no draft; replay `services/orion-hub/evals/run_reading_huge_page_replay.py`.
+
 The unified-turn introspection experiment for these flags lives at `scripts/run_unified_turn_introspection_eval.py` with its fixture in `orion/harness/evals/fixtures/`.
 
 `HARNESS_FCC_SKIP_PERMISSIONS=true` (default in compose) makes `orion/fcc/claude_spawn.py::claude_permission_argv()` pass full-auto-approve permissions to `claude -p` — `--dangerously-skip-permissions` on the host, `--permission-mode bypassPermissions` when running as root (this container always does; no `USER` directive), requiring the Dockerfile's `ENV IS_SANDBOX=1`. See that function's docstring for why (Claude Code's own root-sandbox gate, and why the previous `dontAsk` mode was silently deny-by-default rather than auto-approve — confirmed live 2026-08-13). Otherwise Bash/MCP steps stall or get silently denied with no operator in Orion mode.
 
 **This is genuinely full, unprompted Bash/tool access, not a narrowed grant** — know what the container can reach before relying on it. This container mounts `/var/run/docker.sock` (host Docker daemon) and `${HOME}/.ssh:/root/.ssh:ro` (the operator's real SSH key, for `git push`) — both real capabilities, not repo-write-only. The two things standing between a bad turn and real damage are (1) `HARNESS_FCC_WORKSPACE`'s disposable sandbox checkout, whose only path back to this repo is `git push` to a non-main branch gated by GitHub branch protection (`orion/fcc/sandbox_sync.py`), and (2) `--setting-sources user,local`, which drops this repo's own project-level hooks (including `destructive_git_guard`) for FCC turns — deliberately, since the read-only repo mount already covers what that hook protects, but it means no repo-committed hook gates a root FCC Bash call; whatever gates it must live in the operator-managed `harness-claude-config` volume instead (not checked by this repo or its tests).
+
+### Orion's repo sub-agent (`orion-repo-agent`, #3650)
+
+Turns run with `--setting-sources user,local`, so the repo's own `.claude/agents/` is never loaded. Every non-reading turn (spawned and warm pool) instead passes `--agents` with one agent, built from `orion/fcc/agents/orion-repo-agent.md` (`orion/fcc/claude_spawn.py::fcc_agents_argv`). This adds the agent only: the repo's CLAUDE.md, hooks and settings stay off.
+
+The file is Orion's sandbox variant of the operator's `.claude/agents/orion-repo-agent.md`: branch in the sandbox clone (no worktree), never push or commit `main`, never force-push, no `reset --hard`/`clean`/`stash`, no deploys or `docker` writes, no live DB writes, no PR unless the brief asks, never merge. It has no `Agent` tool (no nested sub-agents) and no MCP tools (explicit `tools` list; it uses Bash and `python -P -m orion.dig`). The take-on hint (`CARRY_SUBAGENT_HINT`, `orion/prime/intention.py`) names it beside `Explore`; `python -P -m orion.dig take-ons` counts calls by type.
+
+`HARNESS_FCC_REPO_AGENT_ENABLED=true` (default). `false` = built-in agent types only. Check it: the `system/init` stream-json line of a turn lists `orion-repo-agent` in `agents` (confirmed against the governor CLI 2026-11-17 with a dead API URL: with the flag `agents` gains `orion-repo-agent`, without it only the built-ins).
+
+### Chat replies do not read Claude Code auto-memory
+
+Claude Code keeps an "auto-memory" notes folder per working directory and loads it into every session. Every FCC turn runs in the same sandbox checkout, so Hub chat replies were reading notes that curiosity, urgent, self-inquiry and mutation runs wrote there, with no review or provenance.
+
+`HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY=true` (default, shipped on) spawns `claude` with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` for chat-reply turns only: requests whose `utterance_origin` is `juniper` (`orion/harness/runner.py::is_chat_reply_request`). Investigation turns (`utterance_origin=orion`) and other callers (outreach, collapse mirror, reading) keep today's behavior. Nothing is deleted. Rollback: set it to `false` and restart. Spec: `docs/superpowers/specs/2026-10-06-unified-turn-latency-design.md`, L7.
+
+Proof query (read-only; phrase leak in Hub chat replies over 7 days):
+
+```sql
+select count(*) turns,
+  count(*) filter (where t.run_artifact->>'final_text' ~* '(prediction[ _-]?error|bus[ _-]?synaptic)') turns_with_phrase
+from harness_turn_trace t
+join chat_history_log c on c.correlation_id = t.correlation_id and c.source = 'hub_orion'
+where t.created_at > now() - interval '7 days';
+```
+
+### Warm Claude Code pool for chat replies (spec L5)
+
+A spawned `claude -p` spends about 3.4 s starting its MCP servers before it can talk to the model (measured in this container, PR #2509). Chat replies now skip that. The governor keeps `HARNESS_FCC_CHAT_WARM_POOL_SIZE` (default 1) `claude` processes running in streaming-input mode. Each chat-reply turn (`utterance_origin=juniper`, not reading-only) borrows one, wipes its conversation with `/clear`, sends the prompt on stdin, and reads until the CLI's own `result` event. Investigation, curiosity, outreach and reading turns always spawn.
+
+Nothing per-turn lives in the warm process's environment:
+
+- **Model upstream, credential, GPU lease header, correlation id.** The process's `ANTHROPIC_BASE_URL` points at a relay inside the container (`127.0.0.1:${HARNESS_FCC_CHAT_WARM_POOL_RELAY_PORT}`, one URL per slot, guarded by a per-process secret). The relay applies the current turn's values to every request. A model call with no turn bound gets 409 (not retryable), so a killed or overrun turn cannot keep spending its lease.
+- **Turn clock** (`ORION_TURN_BUDGET_SEC` / `_DEADLINE_EPOCH` / `_STEP_STALL_SEC`). Rewritten per turn into the slot's `CLAUDE_ENV_FILE`, which the CLI re-reads on every Bash call.
+- **Reading/introspect tool binding.** Every Unified Chat turn carries a reading binding (which turn a `recommend_reading` belongs to). The warm slot's `orion-reading`/`orion-introspect` MCP servers read it from a per-slot file (`ORION_READING_BINDING_FILE` / `ORION_INTROSPECT_BINDING_FILE`, `orion/fcc/turn_binding_file.py`) on every tool call; the motor writes it before the prompt and empties it when the turn ends, so a call with no turn bound fails instead of acting for the previous turn. (Until 2026-10-06 any turn with a binding spawned, so no Hub chat turn ever used the pool.)
+- **Model and context window.** Part of the slot's signature. A turn that needs a different one spawns as before, and the idle slot is respawned for it.
+
+Deadline and stall limits are enforced exactly as for a spawned turn. On overrun the process group is killed and the slot respawns. Slots recycle after `..._MAX_TURNS` turns or `..._MAX_AGE_SEC` seconds. A health loop respawns dead slots and `/clear`-probes slots that have been idle for 5 minutes.
+
+Any failure before the prompt is sent falls back to a per-turn spawn: pool not started, slot busy or warming, signature mismatch, `/clear` timeout, or the process dying before it says anything. It is logged as `fcc_warm_pool_fallback corr=... reason=...`. Every turn also logs `fcc_warm_path_decision corr=... decision=try_warm|spawn:not_chat_reply|spawn:reading_only|spawn:no_pool_running chat_reply=... reading_only=... has_reading_binding=...`. Every turn, in both modes, logs `fcc_turn_start_timing corr=... mode=warm|spawn spawn_or_acquire_ms=... first_event_ms=...`, and the same values go into the final frame metadata.
+
+`GET /health` → `fcc_warm_pool` shows the slot states and hit/miss/respawn counters.
+
+Rollback: `HARNESS_FCC_CHAT_WARM_POOL_ENABLED=false`, then restart. Design and per-value table: `docs/superpowers/pr-reports/2026-10-06-fcc-chat-warm-pool-pr.md`.
 
 ### Stream stall detection
 
@@ -165,7 +292,7 @@ This does not fix a runaway upstream generation (e.g. a local model that never e
 
 ### Served-model self-context
 
-`HARNESS_LLM_GATEWAY_URL` (default `http://llm-gateway:8210`, the same `app-net` bridge-network hostname `orion-cortex-exec`/`orion-context-exec` already use) points `orion.harness.fcc_motor.probe_current_served_model` at orion-llm-gateway's `GET /routes`. Before every turn's prompt is compiled, this resolves the requested `fcc_model_label` (e.g. `MODEL_SONNET`) through `~/.fcc/.env` to a route key, reads that route's live-probed real model off the (already-existing, 15s-TTL-cached) `/routes` response, and injects it into the harness system prompt as that route's *default* model (`Default backend model for route <route>: <model> ...`). Under the GPU pool that route read is only a default: a turn that holds a pool lease (`HarnessRunRequestV1.gpu_lease`, a durable run's hold) instead reads the pool's live state over `orion:gpu_pool:state:request` and states the model discovered on its granted role (`Backend model serving this turn: <model> (GPU pool role <role>, profile <profile>; ...)`), because every call under a hold runs on that role while an unheld call may be spilled elsewhere (`orion/gpu_pool/placement.py`; spec `docs/superpowers/specs/2026-09-24-gpu-pool-design.md`, reader impacts item 5).
+`HARNESS_LLM_GATEWAY_URL` (default `http://llm-gateway:8210`, the same `app-net` bridge-network hostname `orion-cortex-exec` already uses) is where a turn holding a GPU pool lease sends its Anthropic-compatible calls (below). It is no longer used for self-context: GPU pool stage 6.3 moved the pre-turn "what model am I about to run on" read off the gateway's retiring `GET /routes`. The runner now reads pool state once per turn over `orion:gpu_pool:state:request` (with the pool's config, `HarnessRunner._read_pool_state`) and shares it with the prompt line and the motor's context window (`orion/gpu_pool/route_view.py`). Before every turn's prompt is compiled, it resolves the requested `fcc_model_label` (e.g. `MODEL_SONNET`) through `~/.fcc/.env` to a route key, reads the model the pool discovered on the role that route lands on right now, and injects it into the harness system prompt as that route's *default* model (`Default backend model for route <route>: <model> ...`). Under the GPU pool that route read is only a default: a turn that holds a pool lease (`HarnessRunRequestV1.gpu_lease`, a durable run's hold) instead reads the pool's live state over `orion:gpu_pool:state:request` and states the model discovered on its granted role (`Backend model serving this turn: <model> (GPU pool role <role>, profile <profile>; ...)`), because every call under a hold runs on that role while an unheld call may be spilled elsewhere (`orion/gpu_pool/placement.py`; spec `docs/superpowers/specs/2026-09-24-gpu-pool-design.md`, reader impacts item 5).
 
 Fails open to no line at all (never a placeholder) on: no label, a non-llamacpp backend (`MODEL_HAIKU`'s `nvidia_nim` route isn't in this route table), an unreachable gateway, or a route with no cached model yet (worker down). A self-context probe must never block or fail a turn over a missing fact about itself.
 
@@ -177,13 +304,21 @@ counting each counter prematurely exhausted the ceiling and bloated finalization
 Actual assistant `thinking` text counts against the same context ceiling as
 other content. Whole-turn and stalled-stream deadlines remain in force.
 
-`orion/harness/fcc_motor.py::run_fcc_turn` kills the fcc subprocess with `error_code=fcc_draft_length_ceiling_exceeded` if the accumulated draft size reaches the model's context ceiling (`max_context_chars()` in `orion/fcc/context_budget.py` — `HARNESS_FCC_MAX_CONTEXT_TOKENS` tokens times `ORION_FCC_CHARS_PER_TOKEN`, 65536 × 4 chars by default). The ceiling is deliberately generous: it never fires on normal turns, and it explicitly skips the terminal `"result"` stream event (the CLI's own signal that a turn already finished), so a legitimately long-but-completed answer can't get its own already-generated payload double-counted into a false-positive kill. It only fires on true runaway generation.
+`orion/harness/fcc_motor.py::run_fcc_turn` kills the fcc subprocess with `error_code=fcc_context_ceiling_exceeded` (named `fcc_draft_length_ceiling_exceeded` before 2026-10-02 -- it was never about the draft) when its estimate of the turn's LIVE context reaches the lane's ceiling (`max_context_chars()` in `orion/fcc/context_budget.py` -- the lane's `n_ctx`, else `HARNESS_FCC_MAX_CONTEXT_TOKENS`, times `ORION_FCC_CHARS_PER_TOKEN`). The estimate starts at the prompt size, grows by every tool result, tool input, thinking and text block, and is **rebased** on every claude CLI `compact_boundary` stream event to the CLI's own `post_tokens` (or the prompt size when it reports none). Before that rebase it was a lifetime total, so long turns that had already compacted were still killed (live 2026-09-22..10-01). Whenever an assistant event carries the provider's own `usage`, the estimate is raised to that count (`observed_context_chars`): the char count alone never sees the CLI's ~24k-token system prompt and tool schemas, and read 18% on a turn the CLI was already compacting (live 2026-10-17). The CLI compacts at `min((window - HARNESS_FCC_MAX_OUTPUT_TOKENS) * HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE, window - HARNESS_FCC_MAX_OUTPUT_TOKENS - 13000)` (`autocompact_trigger_tokens`; output cap counted up to 20000); with the defaults (16384, 90%) that is ~36k on the 64k lane, and the trace's warn/critical lines sit below it. This guard now only fires when compaction failed to keep up.
+
+A compaction whose summary has no `Summary:` section kept no record of the task (9 of 22 stored compactions, 2026-09-15..10-11: the summarizer carried on with the task instead). The motor logs `fcc_compaction_degenerate`, emits a `context_compaction_degenerate` trace step, counts it in `fcc_degenerate_compactions`, and never takes the compaction message as the turn's draft. It skips the terminal `"result"` event so a finished answer is never double-counted into a kill.
+
+**Cut-short turns** (`orion/harness/cut_short.py`): when the motor stops a still-working turn (`fcc_context_ceiling_exceeded`, `fcc_timeout`, `fcc_stream_stalled`, `fcc_stream_line_limit`), the draft is no longer the last text fragment (usually a lead-in like "Let me check X:"). It is built from the turn's own recorded findings -- interim notes and every tool result paired with its call -- under a `[Cut short - not a finished answer.]` marker, with `compliance_verdict=partial`, `grounding_status=<code>`. A cut-short turn with no findings fails instead of shipping a marker with nothing behind it. Finalize skips response repair for cut-short drafts (`run_harness_finalize_chain(cut_short=True)`) so the findings are not rewritten into something that reads finished, and the governor re-attaches the marker as a backstop. Two exceptions keep the old path: a timeout/stall after the CLI's own `result` event (the process hung on exit, `fcc_result_seen`; the text is the finished answer) and reading-only machine turns (their consumer needs JSON and retries on a clean `turn_error:<code>`). Privacy: tool-result excerpts in a cut-short draft are capped at 300 chars and scrubbed of credential-shaped values (`scrub_secrets`, best effort), because this is the first path that puts tool output into user-visible text and journals.
+
+**Text tool calls** (`orion/harness/fcc_motor.py::text_tool_call`, `_resume_need`, `_resume_held_final`): Strata turns a `<tool_call>` into a real tool call only when the request declared that tool. FCC runs the CLI with `ENABLE_TOOL_SEARCH=true`, so an MCP tool is declared only after `ToolSearch` loads it. When an ordinary turn's final answer ENDS on a `<tool_call>` block, the call never ran. The motor holds that final and resumes the same CLI session once (`--resume`; a spawn even for a warm chat turn, after the slot is released) with a note that names the tool and, for an `mcp__*` tool, says to load it with `ToolSearch` `select:<name>` first. Reading turns use the same seam with their own needs (undeclared tool, not JSON). No resume without a session id, with too little time left, or without the session transcript on disk; the held final is then stamped `fcc_text_tool_call_resume_skipped` (`fcc_reading_resume_skipped` on reading turns). A resume that fails on its own before any step keeps the held final. A durable run records its session end on the frame that finally leaves, so a killed resume reads `interrupted`. If the answer is still a text call, the runner cuts the raw call out of the findings and builds a cut-short draft (`grounding_status=fcc_text_tool_call`) so finalize does not "repair" it into a summary of work that never ran; with no other findings the motor fails. Evidence: log lines `fcc_text_tool_call_resume` / `fcc_text_tool_call_resume_skipped` / `fcc_text_tool_call_resume_failed` / `harness_text_tool_call_final`, final metadata `fcc_text_tool_call_resume` (with `held_metadata` from the first run). Replay over live turns: `python -m orion.harness.evals.text_tool_call_replay`.
 
 ### Reflection fail-closed fallback
 
 If the 5b reflect LLM call itself fails (`run_finalize_reflection` in `orion/harness/finalize.py`) and the deterministic quick-lane gate is also blocked, the degraded fallback verdict is `alignment_verdict="misaligned"` (`reflection_source="degraded_llm_failure_fallback"`) — not `"aligned"`. Reflection failing is not evidence the draft is fine, so the fallback fails closed instead of open.
 
-Mandatory `orion_voice_finalize` is gone. After 5a/5b, an ordinary turn either returns the exact motor draft (aligned + strain resolved) or runs conditional `orion_response_repair` only when 5b marks the draft `misaligned`, `uncertain`, or `strain_unresolved`. Fail-closed: if repair is required and fails, the known-bad draft is not published. `finalize_ran=true` means 5a/5b completed — it is not “a rewrite LLM ran.” Use `response_repair_ran` / `response_repair_reason` for the repair pass. Reading-only machine turns still validate and canonicalize motor JSON and skip prose repair. This does not fix why 5b failed — check `alignment_notes` on the verdict artifact (`reflect_llm_failed: <exception excerpt>`) for that.
+For the Strata `HTTP 502: model did not return valid JSON` failure, 5b no longer retries on its own (2026-11-13): the gateway now runs Strata's structured-output check itself for every caller, repairs a Python-literal dict exactly, and retries a malformed reply once with the parser's error (`services/orion-llm-gateway/app/strata_structured.py`, logs `strata_json_recovered` / `strata_json_rejected`). A reply still bad after that takes the degraded path as before.
+
+Mandatory `orion_voice_finalize` is gone. After 5a/5b, an ordinary turn either returns the exact motor draft (aligned) or runs conditional `orion_response_repair` only when 5b marks the draft `misaligned` or `uncertain`, or writes an `unsupported claim:` note. Open strain alone does not trigger a rewrite (#3618): an aligned draft with `strain_unresolved=true` ships as written, with `response_repair_ran=false` and `response_repair_reason=strain_only_not_repaired`. `strain_unresolved` still reaches the outcome molecule (`surprise_resolved`) and the metacog chat-turn gate. Fail-closed: if repair is required and fails, the known-bad draft is not published. `finalize_ran=true` means 5a/5b completed — it is not “a rewrite LLM ran.” Use `response_repair_ran` / `response_repair_reason` for the repair pass. Reading-only machine turns still validate and canonicalize motor JSON and skip prose repair. This does not fix why 5b failed — check `alignment_notes` on the verdict artifact (`reflect_llm_failed: <exception excerpt>`) for that.
 
 ### Required secrets
 
@@ -227,18 +362,26 @@ Rebuild this service and Hub after applying the additive queue migration. See th
 
 ## orion-introspect: Orion reading back their own records
 
-**What it is.** A read-only tool server Orion gets during a harness turn. With
+**What it is.** A tool server Orion gets during a harness turn. With
 it, Orion can look up what actually happened to them instead of reconstructing
-it from impression.
-- Today it covers what they learned from reading.
-- As later slices land it will cover their dreams, reveries, curiosity runs
-  and memories.
+it from impression. Every tool but two is read-only; `record_correction` and
+`queue_curiosity_focus` each write one row (see their rows below) and change no
+belief.
+- Live today: what they learned from reading (`reading_results`), their
+  dreams (`dreams`), their curiosity runs (`curiosity`), their Orion's Day
+  letters with the records behind them (`orion_day`), recording a
+  correction to a letter claim (`record_correction`), queueing one question for
+  their next curiosity run (`queue_curiosity_focus`), a substrate node's
+  prediction-error history (`node_history`), and where their machines' power
+  (and so the cabinet's heat) went and since when (`power_attribution`).
+- Planned for later slices: reveries and memories.
 
 Every answer comes from the service that owns the data, over the bus, under a
 correlation ID, so any claim Orion makes from it can be traced back to a stored
 record.
 
 Design: [`2026-09-28-orion-introspect-mcp-design.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md).
+Dreams: [`2026-09-28-orion-introspect-slice2-dreams-design.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-slice2-dreams-design.md).
 Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-slice1b-semantic-search.md).
 
 ### Tools
@@ -246,9 +389,14 @@ Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](..
 | Tool | What Orion can ask | Answered by | Request channel | Status |
 |---|---|---|---|---|
 | `reading_results` | What a reading actually taught them: recent finished reads, one read by `url`/`request_id`, or `query=` by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-reading_results)) | `orion:reading:tool:request`, operation `reading_result` | Live (slices 1 + 1b) |
-| `dreams` | Narrative dreams and the sleep-cycle hypotheses they have already been offered, recent / one / by meaning | orion-dream | `orion:introspect:dream:request` | Designed (slice 2) |
+| `dreams` | Narrative dreams and the sleep-cycle hypotheses they have already been offered, recent / one / by meaning | orion-dream ([responder](../orion-dream/README.md#introspect-responder-dreams)) | `orion:introspect:dream:request` | Live (slice 2) |
 | `reveries` | Their spontaneous-thought chains | orion-thought | `orion:introspect:reverie:request` | Planned |
-| `curiosity` | What their curiosity runs set out to do and what came of it | orion-substrate-runtime | `orion:introspect:curiosity:request` | Planned |
+| `curiosity` | Their curiosity runs (failed ones included) and open self-questions: recent / one by `run_id` with the full write-up / by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-curiosity)) | `orion:introspect:curiosity:request` | Live (slice 3) |
+| `orion_day` | Their Orion's Day letters: outline, a note paragraph with a claim check, a carry item with its citations resolved, one day section's records, or parts by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-orion_day)) | `orion:introspect:orion_day:request` | Live (letter reread, patch 2) |
+| `record_correction` | Record a correction to a letter claim a conversation with Juniper showed was wrong, with its evidence and the priors it rested on. Writes one `orion_day_correction` row (ref and prior ids validated first); the next curiosity run re-tests the priors itself | orion-hub ([responder](../orion-hub/README.md#introspect-responder-record_correction)) | `orion:introspect:record_correction:request` | Live (letter reread, patch 3) |
+| `queue_curiosity_focus` | Queue one question (and why) for their next regular curiosity investigate run, from a chat with Juniper. One pending slot: a new focus replaces it (the reply names what it replaced), except Orion's own choice never replaces a focus Juniper asked for. Starts nothing; the run is shown it and records explored / set aside. `curiosity` with `kind=focus` reads back what happened | orion-hub ([responder](../orion-hub/README.md#introspect-responder-queue_curiosity_focus)) | `orion:introspect:queue_curiosity_focus:request` | Live once orion-hub and the governor are redeployed and the migration is applied (bus path UNVERIFIED until then) |
+| `node_history` | One substrate node's prediction-error readings over up to the last 7 days: count, min/median/max, first/last, a series of at most 48 buckets, and the largest changes; or which nodes have readings | orion-hub ([responder](../orion-hub/README.md#introspect-responder-node_history)) | `orion:introspect:node_history:request` | Live once orion-hub is redeployed (PE history read; bus path UNVERIFIED until then) |
+| `power_attribution` | Heat archaeology: per machine (circe, athena, hecate, cooling), the steps in hourly wall watts over 2-30 days, each split into GPU/CPU/rest watts and attributed by least squares to GPU-pool workloads and a CPU-load regime (R2 reported), plus CPU-load shifts and the SQL behind every number. Correlational; never verified | orion-hub ([responder](../orion-hub/README.md#introspect-responder-power_attribution)) | `orion:introspect:power_attribution:request` | Live once orion-hub and the governor are redeployed (analysis smoked on live Postgres 2026-10-23; bus path UNVERIFIED until then) |
 | `memories` | Memory cards by meaning, with sensitivity labels | orion-recall | `orion:introspect:memory:request` | Planned; never listed when an outward-facing tool is attached |
 
 `orion/introspect/tests/test_readme_coverage.py` fails when a tool the server
@@ -295,10 +443,18 @@ claude -p (FCC motor)
 
 - **Read-only.** SELECTs only. Nothing is queued, retried, charged or written.
 - **Bounded.** At most 5 items, 900-char text per item, `truncated` set when
-  cut. Five full items stay under the 12,000-char MCP result budget
-  (`ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS`); a test pins the worst case. The
-  proxy that enforces that budget does not wrap this server today; the
-  bound keeps wrapping it later safe.
+  cut. Two exceptions: fetching a single dream by `dream_id` returns that one
+  item with up to 4,000 chars (`FULL_TEXT_CAP`), and a single curiosity run by
+  `run_id` returns its write-up up to 9,000 chars *as serialized JSON*
+  (`CURIOSITY_FULL_JSON_BUDGET`, `clip_json_text`), so escaping cannot push it
+  past the budget.
+  - Every shape stays under the 12,000-char MCP result budget
+    (`ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS`). Tests pin the worst case for
+    readings (`orion/introspect/tests`) and for dreams, including the
+    single 4,000-char dream (`services/orion-dream/tests/test_introspect_dreams.py`),
+    and for a single worst-case curiosity run (quotes, newlines, accents).
+  - The proxy that enforces that budget does not wrap this server today;
+    the bound keeps wrapping it later safe.
 - **Scaled.** Every success carries `as_of` and `total_available`, so "5 of
   40" is distinguishable from "all 5".
 - **Empty is not unknown.**
@@ -308,8 +464,9 @@ claude -p (FCC motor)
     an empty list.
   - The brief tells Orion to say "unknown", never "nothing happened".
 - **Labeled.** Each item's `epistemic_status` is `record` (it happened, e.g.
-  a memory card or a run outcome) or `unsettled` (something Orion had or read,
-  not a settled fact: readings, dreams, reveries).
+  a memory card, a curiosity run that failed or wrote nothing, an open
+  self-question) or `unsettled` (something Orion had, read or concluded, not a
+  settled fact: readings, dreams, reveries, a curiosity run's write-up).
 - **Trusted reply path.** Responders answer only when `reply_to` is exactly
   the channel derived from the request's correlation ID and the message kind
   matches. They never reply to a model-supplied subject.
@@ -333,26 +490,50 @@ Same pattern for every domain that supports `query=`:
     view. The index is never the record.
 - **Failure.** An embedder or Chroma failure, or an unbuilt or empty index,
   means unknown.
-- **Floor.** Set per domain by a calibration eval on real data. Readings:
-  `services/orion-hub/evals/run_reading_search_calibration.py`.
-- **Code.** Reading search today: `orion/world_pulse_read/search.py`.
+- **Floor.** Set per domain by a calibration eval on real data; the value
+  lives in the owning service's `.env_example`.
+  - Readings: `HUB_READING_SEARCH_MIN_SIMILARITY` in
+    `services/orion-hub/.env_example`, set by
+    `services/orion-hub/evals/run_reading_search_calibration.py`.
+  - Dreams: `DREAM_SEARCH_MIN_SIMILARITY` in
+    `services/orion-dream/.env_example`, set by
+    `services/orion-dream/evals/run_dream_search_calibration.py`.
+- **Code.** Shared plumbing: `orion/introspect/semantic_index.py`. Domain
+  parts: `orion/world_pulse_read/search.py` (readings) and
+  `services/orion-dream/app/dream_search.py` (dreams).
 
 ### Verify it live
 
-- **Responder log.** `introspect op=<op> corr=<id> items=<n> total=<n> mode=<...>`
-  on success. Readings: `introspect op=reading_result`, failures
-  `reading_tool_failed ... category=...`.
+- **Responder logs.** Each answer logs one success line with its correlation
+  ID; each failure logs the reason category.
+  - Readings (orion-hub): `introspect op=reading_result corr=<id> items=<n> total=<n> mode=<...>`;
+    failures `reading_tool_failed correlation_id=<id> category=... phase=...`.
+  - Dreams (orion-dream): at startup `dream introspect responder started`
+    and `dream_introspect_listening channel=orion:introspect:dream:request`;
+    per answer `introspect op=dreams corr=<id> mode=recent|one|search items=<n> total=<n>`;
+    failures `introspect_failed op=dreams corr=<id> mode=... category=dream_query_failure|dream_search_failure`.
 - **Governor log.** `harness_grammar_step_published corr=<turn> ... tool=mcp__orion-introspect__<tool>`.
 - **Smoke (read-only).**
 
   ```bash
   ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --limit 3
   ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --query "graphics cards"
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --limit 3
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --query "vision"
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --dream-id dream:19
   ```
 
-  Exit 0 means a coherent answer, 1 a degenerate one, 2 an unknown one.
-- **Tests.** `orion/introspect/tests`, run in CI by
-  `.github/workflows/orion-reading-tests.yml`.
+  - Exit 0: a coherent answer.
+  - Exit 1: a degenerate one. That means a read source (`source_read=true`)
+    or a dream with no text, an empty
+    recent window, a search hit with no similarity score, or a named
+    `--dream-id` that did not come back.
+  - Exit 2: the answer is unknown (bus unreachable, timeout, owner error,
+    search outage), or bad arguments.
+- **Tests.** CI runs them in `.github/workflows/orion-reading-tests.yml`:
+  `orion/introspect/tests`, plus the orion-dream responder tests
+  `services/orion-dream/tests/test_introspect_dreams.py`,
+  `test_dream_search.py` and `test_introspect_listener.py`.
 
 ### Turn it off
 
@@ -387,6 +568,43 @@ Steps 1–5 land in the same PR. The coverage test fails if a request channel
 exists without a Live row, a responder section and a listed tool, so a
 contract-only PR ahead of the responder is refused on purpose: a channel with
 no responder would read as "unknown" on every call.
+
+## Dig kit: `dig body-economy` (skills.physiology.state.v1 from Bash, 2026-10-29)
+
+Turns import the sandbox's `orion/` before `/app` (`PYTHONPATH`, `orion/fcc/context_budget.py`), so a
+dig change is live for Orion only once the sandbox is at that commit. The post-pull rebuild resets it
+after each deploy (`SANDBOX_SYNC` line in `~/.orion/post_pull_rebuild.log`). Check it:
+`git -C /mnt/orion-fcc/repo log -1 --oneline`.
+
+Chat and curiosity turns both run here with Bash and the dig brief line (`orion/dig/brief.py`). Orion reads
+their own body economy with `python -P -m orion.dig body-economy [<section>...] [--window 24h|7d|30d]
+[--family <f>]`: plain text from orion-durable-runs `GET /physiology/report` (what binds now, money, wants
+funded vs deferred, failed lease time, services down; `all` or any single section for more). The full
+report JSON goes to `$ORION_DIG_HOME/dig/<dig>/body-economy-<window>-N.json`. URL:
+`ORION_PHYSIOLOGY_REPORT_URL` (`.env_example`; app-net, container port 8121). Unreachable or off ->
+exit 1 with a plain reason, never empty text.
+
+## Claude's tools broker (2026-11-13, Patch 1b)
+
+`app/claude_tools_listener.py` answers `orion:claude:tool:request` from the room companion's MCP server
+(Claude in Hub chat). The decisions are `orion/claude_tools/broker.py`; design
+`docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md`.
+
+- **Tools (fixed table, `orion/claude_tools/registry.py`):** `prime_now` (category `prime`, the 600-char
+  Prime block) and `body_economy` (category `body`, `python -P -m orion.dig --dig claude-tools
+  body-economy ...` as an argument list, no shell, 15 s). Nothing in the table writes.
+- **Grants:** `$ORION_DIG_HOME/self/claude_grants.jsonl`, newest line per category; none = `ask`. Only
+  Orion changes them: `python -P -m orion.dig claude-grants set <category> allow|ask|deny because <reason>`.
+- **Ask:** `orion:prime:consent:request` to orion-mind; no answer in `CLAUDE_TOOLS_CONSENT_DEADLINE_SEC`
+  (40) is a no. "Yes for this conversation" is a Redis key for the Claude session (24 h); an earlier no
+  in the session is repeated without asking again.
+- **Limits per Claude turn:** `CLAUDE_TOOLS_MAX_CALLS_PER_TURN` (6) and `CLAUDE_TOOLS_MAX_ASKS_PER_TURN` (3).
+- **Output:** redacted (`orion.core.redact` plus token shapes) and capped at 4,000 characters.
+- **Audit:** one `ClaudeToolCallV1` per phase (ask, answer, result) on `orion:claude:tool:audit`
+  (sql-writer -> `claude_tool_call_log`; Hub `GET /api/claude-tools/audit`).
+- **Off:** `CLAUDE_TOOLS_ENABLED=false` refuses every call; it never grants.
+- **Health:** `/health` reports `claude_tools_alive` and `claude_tools_enabled`.
+- **Live smoke:** `scripts/smoke_claude_tools.py`; weekly numbers: `scripts/claude_tools_consent_report.py`.
 
 ## Admitted turns (GPU pool hold)
 

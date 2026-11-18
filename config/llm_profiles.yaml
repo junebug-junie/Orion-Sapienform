@@ -186,7 +186,9 @@ profiles:
       n_predict: 8192
 
       no_context_shift: true
-      flash_attn: "off"
+      # on: the wrapper dropped "off", so this lane ran llama.cpp auto (probed: auto -> on for the
+      # 27B on the same build; not probed for this model). docs/2026-09-30-flash-attention-volta-circe.md
+      flash_attn: "on"
 
     notes: |
       Balanced profile for Qwen3-8B on one V100 16GB; thinking disabled only for workers using THIS profile key.
@@ -194,14 +196,103 @@ profiles:
       - Knobs: (1) chat_template_kwargs.enable_thinking false -> --chat-template-kwargs; (2) reasoning_budget 0 -> --reasoning-budget 0 (llama.cpp; use when kwargs alone still leave thinking on).
       - If thinking still appears: check logs for ERROR about missing flags; upgrade pinned llama-server (Dockerfile LLAMACPP_IMAGE_TAG) so --chat-template-kwargs and/or --reasoning-budget appear in llama-server --help.
       - Q4_K_M for VRAM headroom with 16k context split across n_parallel slots (4 x 4k per slot).
-      - Gateway does not set enable_thinking per request.
-      - For dedicated metacog lane: use qwen3-8b-q5km-v100-16gb-atlas-metacog-16k instead.
+      - Historical Qwen3 profile; the gateway now defaults fast and metacog thinking off per request.
       - If OOM: lower ctx_size or use Qwen_Qwen3-8B-Q3_K_M.gguf from the same repo.
 
-  # CORRECTION 2026-09-21: see the "fast" profile's own note above -- this
-  # lane's dedicated V100-16GB was physically pulled from circe, now shares
-  # a V100-32GB (host index 3) with atlas-fast. Key name kept as a
-  # historical label (ATLAS_METACOG_PROFILE_NAME references it).
+  # Circe gpu3 shared fast + metacog worker, replacing the initial four-slot fast trial.
+  # Keep the old key for discovery while Athena pulls before Circe. No worker selects it after cutover.
+  qwen35-9b-udq5kxl-v100-32gb-circe-fast-4k:
+    display_name: "Qwen3.5 9B – UD-Q5_K_XL (historical fast, 4 x 4k)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3.5-9b-ud-q5_k_xl"
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 16384
+      max_batch_tokens: 512
+      max_concurrent_requests: 4
+      gpu_memory_fraction: 0.88
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Qwen3.5-9B-GGUF"
+      hf_filename: "Qwen3.5-9B-UD-Q5_K_XL.gguf"
+      host: "0.0.0.0"
+      port: 8080
+      ctx_size: 16384
+      n_gpu_layers: 99
+      threads: 8
+      n_parallel: 4
+      batch_size: 512
+      reasoning: "auto"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        enable_thinking: false
+      temperature: 0.7
+      top_k: 20
+      top_p: 0.8
+      min_p: 0.0
+      presence_penalty: 0.0
+      n_predict: 8192
+      no_context_shift: true
+      flash_attn: "on"
+    notes: Historical fast profile retained for an Athena-first rolling cutover.
+
+  qwen35-9b-udq5kxl-v100-32gb-circe-shared-32k:
+    display_name: "Qwen3.5 9B – UD-Q5_K_XL (Circe fast + metacog, 10 x 32k)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3.5-9b-ud-q5_k_xl"
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 327680
+      max_batch_tokens: 512
+      max_concurrent_requests: 10
+      gpu_memory_fraction: 0.88
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Qwen3.5-9B-GGUF"
+      hf_filename: "Qwen3.5-9B-UD-Q5_K_XL.gguf"
+      host: "0.0.0.0"
+      port: 8080
+      ctx_size: 327680
+      n_gpu_layers: 99
+      threads: 8
+      n_parallel: 10
+      batch_size: 512
+      # The server defaults to non-thinking. Explicit per-call
+      # chat_template_kwargs.enable_thinking=true/false must still work, so do
+      # not force --reasoning off or --reasoning-budget 0 at launch.
+      reasoning: "auto"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        enable_thinking: false
+      temperature: 0.7
+      top_k: 20
+      top_p: 0.8
+      min_p: 0.0
+      presence_penalty: 0.0
+      n_predict: 8192
+      no_context_shift: true
+      flash_attn: "on"
+    notes: |
+      Shared fast + metacog worker (:8013); 327680 total ctx / 10 slots = 32768 per request.
+      No mmproj is loaded, so this is text-only despite Qwen3.5's vision capability.
+      The per-call option is chat_template_kwargs: {enable_thinking: true|false}.
+      Keep the server at reasoning=auto; reasoning=off or a zero launch budget
+      would prevent a request from enabling thinking.
+
+  # Historical Qwen3 metacog profile, retained for reproducing old evals.
+  # The active metacog routes use the shared Qwen3.5 fast worker above.
   qwen3-8b-q5km-v100-16gb-atlas-metacog-16k:
     display_name: "Qwen3 8B – Q5_K_M (llama.cpp, Atlas Metacog, V100 16GB, 16k single-lane, non-thinking)"
     task_type: chat
@@ -238,7 +329,9 @@ profiles:
       reasoning_budget: 0
 
       no_context_shift: true
-      flash_attn: "off"
+      # on: the wrapper dropped "off", so this lane ran llama.cpp auto (probed: auto -> on for the
+      # 27B on the same build; not probed for this model). docs/2026-09-30-flash-attention-volta-circe.md
+      flash_attn: "on"
 
       temperature: 0.35
       top_k: 20
@@ -265,7 +358,7 @@ profiles:
         llamacpp.n_parallel (see services/orion-llamacpp-host/app/main.py).
       - Thinking off via llamacpp.reasoning: off (--reasoning off); do not use deprecated enable_thinking kwargs.
       - Lower temperature + presence_penalty mirror qwen3-30b-a3b-instruct-2507-q5km-atlas-metacog-16k tuning.
-      - Set ATLAS_METACOG_PROFILE_NAME to this key on atlas-metacog worker.
+      - Historical profile only; no atlas-metacog worker is deployed.
       - If OOM at boot: drop ctx_size to 8192 before falling back to Q4_K_M (Qwen_Qwen3-8B-Q4_K_M.gguf).
 
   qwen36-35b-a3b-udq4km-v100-32gb-balanced:
@@ -324,8 +417,73 @@ profiles:
       - Thinking enabled, but generation budget kept moderate for survivable latency.
       - If OOM: lower ctx_size to 24576, then lower batch_size to 512.
 
+  qwen38-flash-next-iq3s-strata-1xv100-circe-chat:
+    display_name: "Qwen3.8-Flash-Next – IQ3_S (Strata, 1x V100 32GB, circe chat lane)"
+    task_type: chat
+    backend: strata
+    # Strata's own model name (GET /v1/models); any name in a request is served.
+    model_id: "qwen3.8-flash-next-iq3_s"
+
+    supports_tools: true
+    supports_embeddings: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 262144
+      max_concurrent_requests: 1
+
+    # Read by the GPU pool's discovery: the file Strata's /props reports as model_path (its --native
+    # GGUF, the first shard). The engine itself is launched by docker-compose.atlas-workers.yml atlas-chat.
+    strata:
+      family: qwen
+      model: IQ3_S
+      model_file: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+      # One request at a time, the whole window for it (the engine's --context; HARNESS_FCC_MAX_CONTEXT_TOKENS
+      # stays equal to this, scripts/check_fcc_context_parity.py).
+      ctx_size: 262144
+      defaults: services/orion-llamacpp-host/strata/chat-defaults.json
+    notes: >-
+      ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S (54.8 GB) on Strata 0.2.7 (engine 0.1.52), 256K context,
+      one request at a time, int8 KV, vision on. Benched on hecate 2026-10-30 (docs/bench/2026-10-30-strata-hecate):
+      hard set 20/20, 94 tok/s average output. Replaces qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition
+      on the chat role; thinking off by default and the same sampling, via strata/chat-defaults.json.
+
+  qwen38-flash-next-iq3s-strata-1xv100-circe-agent:
+    display_name: "Qwen3.8-Flash-Next – IQ3_S (Strata, 1x V100 32GB, circe agent lane)"
+    task_type: chat
+    backend: strata
+    model_id: "qwen3.8-flash-next-iq3_s"
+
+    supports_tools: true
+    supports_embeddings: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [1]
+      max_model_len: 131072
+      max_concurrent_requests: 1
+
+    strata:
+      family: qwen
+      model: IQ3_S
+      model_file: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+      # 131,072 like agent-gpu2 (Bonsai, 2 x 131072): a recalled curiosity run can resume on either.
+      ctx_size: 131072
+      defaults: services/orion-llamacpp-host/strata/agent-defaults.json
+    notes: >-
+      The agent role on gpu1 (agent + memory_distill), same model and engine as the chat lane's profile
+      above, sharing its model files. Replaces qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex (2026-10-31);
+      keeps its thinking-on, high-effort default and sampling via strata/agent-defaults.json.
+
   qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition:
-    display_name: "Qwen 3.6 35B A3B – UD-Q5_K_M (llama.cpp, 2x V100 32GB, deep cognition)"
+    # display_name said "2x V100 32GB" until 2026-10-14; the lane has run on ONE card
+    # since 2026-09-21 (device_ids [0], CUDA_VISIBLE_DEVICES_OVERRIDE=0 live on circe).
+    # The "2xv100" in the profile KEY is kept: LLM_PROFILE_NAME / ATLAS_CHAT_PROFILE_NAME
+    # and the pool's announce matching reference it by name.
+    display_name: "Qwen 3.6 35B A3B – UD-Q5_K_M (llama.cpp, 1x V100 32GB, deep cognition)"
     task_type: chat
     backend: llamacpp
     model_id: "qwen36-35b-a3b-ud-q5_k_m"
@@ -458,8 +616,23 @@ profiles:
       reasoning: "off"
       reasoning_budget: 0
       #reasoning_format: "deepseek"
-      #chat_template_kwargs:
-      #  enable_thinking: true
+      # ADDED 2026-10-02: keep earlier assistant turns' reasoning in the
+      # rendered prompt, same as the :8015 agent lane already does. Unlike
+      # that lane, THIS model's template treats an unset preserve_thinking as
+      # false: every time a new user turn appears (the gateway now forwards
+      # Claude Code's per-step reminders as in-place <system-reminder> user
+      # turns), the template strips the previous step's <think> block, so the
+      # old prompt is no longer a pure prefix of the new one. Measured with
+      # this lane's own /apply-template on captured FCC steps: unset -> 6
+      # chars lost per step (inside the end checkpoint, cheap but not zero,
+      # and the model loses its own prior reasoning); true -> 0 lost. See
+      # docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md
+      # (Fix B). Server-wide for every :8011 client, not only FCC: any history
+      # carrying reasoning_content / thinking blocks now keeps that text in
+      # the prompt (costs those tokens) instead of having it stripped. Inert
+      # for histories that carry none (most Hub/cortex chat).
+      chat_template_kwargs:
+        preserve_thinking: true
 
       no_context_shift: true
       # CHANGED 2026-09-21: single GPU now (num_gpus: 1 above), so split_mode/
@@ -468,7 +641,8 @@ profiles:
       # last known-stable combination (skew weights to the primary card so
       # the second card mostly carries KV/overflow; equal "1,1" paid PCIe tax
       # without buying context). No YaRN — native 262k first.
-      flash_attn: "off"
+      # on: measured on this model, 1 card, 2026-09-30 (docs/2026-09-30-flash-attention-volta-circe.md).
+      flash_attn: "on"
 
       # Cooler than Unsloth chat defaults (0.7/0.8/1.5) for FCC tool+code stability.
       temperature: 0.48
@@ -501,7 +675,7 @@ profiles:
       - Target lane: Cortex / planner / introspection / deep repo reasoning / FCC motor.
       - Uses Unsloth dynamic GGUF UD-Q5_K_M (~25GB) — prefer over Q6 so KV headroom survives.
       - 65536 ctx (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
-      - flash_attn off (Volta); sampling kept cooler than Unsloth chat card for agent stability.
+      - flash_attn on (measured 2026-09-30: 61K-depth decode 85 vs 45 tok/s off; docs/2026-09-30-flash-attention-volta-circe.md); sampling kept cooler than Unsloth chat card for agent stability.
       - If OOM at 65536 on one GPU: go back to 2 GPUs (see revert steps above), not
         further ctx reduction -- single-GPU headroom is already tighter than the
         old 2-GPU budget was.
@@ -692,7 +866,7 @@ profiles:
 
     notes: |
       Breadth-oriented Qwen3-Coder-Next profile for 2x V100 32GB (row split).
-      - Target lane: context-exec agent_repl / smolagents CodeAgent via gateway route="agent".
+      - Target lane: gateway route="agent" (originally sized for the context-exec agent_repl lane, retired 2026-10-10).
       - Q4_K_M (~48GB weights) fits two 32GB GPUs with headroom for ~40k KV cache.
       - Non-thinking coder: reasoning_budget 0 emits --jinja + --reasoning-budget 0 (no redacted_thinking blocks).
       - Sampling matches Qwen model-card agent defaults (temp 1.0, top_k 40, top_p 0.95).
@@ -759,6 +933,8 @@ profiles:
       - 64k ctx supports smolagents transcripts + repo snippets without YaRN (native 262k available if VRAM allows later tuning).
       - Same non-thinking launch policy as the breadth profile (reasoning_budget 0 → jinja path).
       - Circe llama-optimus (2026-07-09): flash_attn off, split_mode layer, ngl 87, batch 1175, ubatch 541, threads 18.
+      - That bench (older build, 2-GPU split) is the source of the "~20x FA collapse on Volta" rule. It did
+        not reproduce single-card on b10398 for 27B/35B/Bonsai (docs/2026-09-30-flash-attention-volta-circe.md); this profile is kept at its own measured value.
       - Use when Gate 1 smolcode live proof needs more reasoning depth; expect slower per-step latency.
       - Wire: dedicated atlas-agent worker OR swap ATLAS_AGENT_PROFILE_NAME for depth-first deployments.
       - If OOM: lower ctx_size to 49152 before falling back to qwen3-coder-next-q4km-2xv100-32gb-agent-breadth.
@@ -1186,12 +1362,12 @@ profiles:
       image_min_tokens: 256
       image_max_tokens: 1024
 
-      # V100 is Volta. Left off: qwen3-coder-next-q5km-2xv100-32gb-agent-depth's llama-optimus
-      # bench found flash_attn on collapses TG ~20x on Volta. The 1x-V100 qwen36-35b-a3b
-      # "balanced" profile sets it on anyway — untested here, treat that as an open
-      # inconsistency, not a precedent to copy without its own bench.
+      # The "~20x collapse on Volta" came from one 2026-07-09 llama-optimus bench of
+      # qwen3-coder-next split over 2 GPUs on an older build. On b10398, single card, flash
+      # attention on is ~2x faster at depth for every model re-benched (docs/2026-09-30-flash-attention-volta-circe.md).
+      # Not re-benched for this model; "on" is what the wrapper actually ran anyway.
       no_context_shift: true
-      flash_attn: "off"
+      flash_attn: "on"
 
       # Google-style sampling per Muse Glimmer model card (matches gemma4-*-it profiles).
       temperature: 1.0
@@ -1411,11 +1587,10 @@ profiles:
         preserve_thinking: true
 
       no_context_shift: true
-      # V100 is Volta -- same reasoning as muse-glimmer-30b-udq4kxl above
-      # (that profile's own bench found flash_attn on collapses TG ~20x on
-      # Volta). Off by default here for the same hardware reason, not
-      # re-benched separately for this specific model.
-      flash_attn: "off"
+      # Measured on circe gpu0 2026-09-30 (1 slot, 65K): on vs off -> 61K-depth decode
+      # 25.4 vs 12.8 tok/s, reasoning 20/20 (docs/2026-09-30-flash-attention-volta-circe.md). llama.cpp auto -> "Flash Attention
+      # enabled" for this model, which is what the live lane actually ran all along.
+      flash_attn: "on"
 
       # Unsloth's Thinking-Mode defaults (fetched 2026-09-02) -- reasoning_
       # effort defaults to xhigh above, so this lane runs in thinking mode
@@ -1651,12 +1826,10 @@ profiles:
       # 4th GPU (was "1,1,1" for 3).
       split_mode: "layer"
       tensor_split: "1,1,1,1"
-      # V100 is Volta (sm_70). Whether this brand-new architecture even runs
-      # on Volta at all is UNVERIFIED -- nothing in the sources fetched while
-      # writing this card confirms or denies it. Off by default for the same
-      # reason every other V100 profile in this file is off (Volta flash-attn
-      # regression), but this specific architecture was not itself bench-tested.
-      flash_attn: "off"
+      # V100 is Volta (sm_70). Whether this architecture runs on Volta at all is
+      # UNVERIFIED. flash_attn on: the old "Volta regression" rule did not hold for
+      # the 27B/35B/8B-class single-card lanes on b10398 (docs/2026-09-30-flash-attention-volta-circe.md); multi-GPU untested.
+      flash_attn: "on"
 
       # Unsloth's Thinking-Mode sampling (fetched from unsloth.ai/docs/models/
       # qwen3.8-next, 2026-09-03/04) -- matches reasoning_effort=xhigh above.
@@ -1830,7 +2003,8 @@ profiles:
       no_context_shift: true
       split_mode: "layer"
       tensor_split: "1,1,1,1"
-      flash_attn: "off"
+      # on: matches what actually ran (wrapper dropped "off"); multi-GPU untested (docs/2026-09-30-flash-attention-volta-circe.md).
+      flash_attn: "on"
 
       temperature: 1.0
       top_k: 20
@@ -1971,9 +2145,9 @@ profiles:
         preserve_thinking: true
 
       no_context_shift: true
-      # V100 is Volta -- same reasoning as the Q4_K_XL card, not re-benched
-      # separately for the BF16 weight format.
-      flash_attn: "off"
+      # on: the b10398 wrapper misread its build as 0, so "off" was never emitted and
+      # llama.cpp auto -> on is what actually ran. Multi-GPU split not re-benched (docs/2026-09-30-flash-attention-volta-circe.md).
+      flash_attn: "on"
       split_mode: "layer"
       tensor_split: "1,1,1,1"
 
@@ -2085,7 +2259,8 @@ profiles:
       no_context_shift: true
       split_mode: "layer"
       tensor_split: "1,1,1,1"
-      # Volta: flash-attn collapses TG elsewhere on Circe; keep off.
+      # Off as run in the 2026-09-18 soak on this fork. The general "Volta collapse" rule did
+      # not hold on stock b10398 (docs/2026-09-30-flash-attention-volta-circe.md); not re-benched on dsv41-porte.
       flash_attn: "off"
 
       temperature: 1.0
@@ -2141,7 +2316,7 @@ profiles:
       num_gpus: 1
       tensor_parallel_size: 1
       # Doc-only; the real pin is BONSAI_CUDA_VISIBLE_DEVICES in
-      # services/orion-llamacpp-bonsai-host/.env (default 2 = gpu2).
+      # services/orion-llamacpp-bonsai-host/.env (required; gpu1 or gpu2, never gpu0 = chat's card).
       device_ids: [2]
       max_model_len: 65536
       max_batch_tokens: 1024
@@ -2156,9 +2331,8 @@ profiles:
       port: 8080
 
       # llama-server splits --ctx-size across --parallel: 262144 / 4 = 65536
-      # per run. VRAM (UNVERIFIED on Volta): weights 7.21 GB + f16 KV at Prism's
-      # stated ~64 KB/token x 262144 = ~16 GiB, ~24 GiB before compute buffers.
-      # Measure per-run peak context before raising ctx or quantizing the cache.
+      # per run. VRAM on circe gpu0 2026-09-30: 24.1-24.3 GB flash_attn on (two nvidia-smi readings),
+      # 27.2-28.6 GB off (1,639 samples).
       ctx_size: 262144
       n_gpu_layers: 99
       threads: 16
@@ -2180,7 +2354,11 @@ profiles:
       n_predict: 16384
 
       no_context_shift: true
-      flash_attn: "off"
+      # Measured on circe gpu0 2026-09-30 (docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md):
+      # on vs off -> 61K-depth decode 32.3 vs 17.6 tok/s, VRAM 24.1 vs 27.2-28.6 GB,
+      # 4 concurrent 27 vs 25 tok/s each. Cost: exactly 2 concurrent runs drop to 23 tok/s
+      # each (off: 41). The "off on Volta" rule came from other models, not this one.
+      flash_attn: "on"
 
     notes: |
       Bake-off only (2026-09-29). Runs on services/orion-llamacpp-bonsai-host,
@@ -2188,5 +2366,240 @@ profiles:
       Question: can one 32 GB V100 serve 4 concurrent curiosity runs with
       acceptable answers? Measure per run: answer sanity, tok/s, prompt tokens
       re-processed per step (prompt-cache reuse), and peak VRAM.
-      UNVERIFIED: Prism publishes no Volta numbers; CUDA support is
-      "source level, not a guarantee for every device".
+      Runs on Volta (circe gpu0, 2026-09-30); results in
+      docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md.
+
+  ternary-bonsai2-27b-pq2-v100-32gb-circe-agent:
+    display_name: "Ternary Bonsai 2 27B – PQ2_0 (PrismML fork, 1x V100 32GB, Circe agent-gpu2, 2 x 131K)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "ternary-bonsai-2-27b-pq2_0"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      # Doc-only: the lane controller sets CUDA_VISIBLE_DEVICES_OVERRIDE from config/gpu_pool.yaml
+      # (agent-gpu2 -> gpu2, index 2). Never gpu0 (chat's card, Juniper 2026-09-30).
+      device_ids: [2]
+      # Per session (= per llama.cpp slot), same as the Q4 agent-flex lane it replaces on this seat.
+      max_model_len: 131072
+      max_batch_tokens: 1024
+      max_concurrent_requests: 2
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      # GPU pool stage 7.2 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md):
+      # the first entry of agent-gpu2's launch.profiles. Runs on the PrismML fork inside the
+      # orion-llamacpp-host-prism image (Dockerfile.prism); stock llama.cpp rejects PQ2_0.
+      server_build: prism
+      model_root: "/models/gguf"
+      hf_repo_id: "prism-ml/Ternary-Bonsai-2-27B-gguf"
+      hf_filename: "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      # llama-server splits --ctx-size evenly across --parallel: 262144 / 2 = 131072 per slot,
+      # the per-session context the harness budgets for (agent-lane prompts: p95 68K, max 82K).
+      # Total KV equals the measured 4 x 65K layout: ~24.1 GB with flash attention on (circe,
+      # 2026-09-30). The pool reads slots/ctx from /props (discovery) -- nothing in gpu_pool.yaml.
+      # Stage 7.3: config/gpu_pool.yaml agent-gpu2 max_holds: 2 lets a second durable run hold the
+      # second slot (one-off calls share the runs' gaps). Keep max_holds <= n_parallel here
+      # (scripts/check_gpu_pool_config.py checks it against launch.profiles[0]).
+      ctx_size: 262144
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 2
+      batch_size: 1024
+
+      # Prism KNOWN_ISSUES (2026-09-23): `--reasoning on` overrides a client's thinking-off
+      # request, so leave the server at auto. Bonsai's template rejects reasoning_effort "none"
+      # and "high" (HTTP 500); per-request `enable_thinking: false` works.
+      reasoning: "auto"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        # Parity with the Q4 agent-flex lane (stage 7 spec D7): xhigh, bounded by n_predict.
+        reasoning_effort: "xhigh"
+        # Parity with agent-flex (design doc question 3): the prompt cache misses the prior
+        # assistant reply on both Qwen3.8 builds (79.4% vs 79.7% reuse), so false buys nothing
+        # Bonsai-specific. The bake-off profile used false (Prism KNOWN_ISSUES, Bonsai-demo #183);
+        # revisit with the 7.2 per-role cache_n/prompt_n reuse (PR report query M2, cache_reuse).
+        preserve_thinking: true
+      # The GGUF's embedded template raises "No user query found in messages." (HTTP 500) on any
+      # request without a plain user turn -- cortex-exec sends system-only agent steps, so 44/44
+      # agent calls 500'd 10-02..10-06 -- and on a second leading system message. The shipped file
+      # is that template plus the Q4 (Unsloth) template's two hunks for both
+      # (services/orion-llamacpp-host/tests/bonsai_template_patch.py). Baked in via `COPY config`.
+      chat_template_file: "chat_templates/ternary-bonsai-2-27b.jinja"
+      # Prism KNOWN_ISSUES: small output caps end generation mid-thought.
+      n_predict: 16384
+      no_context_shift: true
+      # Measured on circe 2026-09-30: 61K-depth decode 32.3 (on) vs 17.6 (off) tok/s,
+      # VRAM 24.1 vs 27.2-28.6 GB. Cost: 2 concurrent runs at 4 x 65K dropped to 23.4 tok/s each.
+      flash_attn: "on"
+
+      # llama.cpp #27148 (RAM prompt cache restoring another conversation into a slot): left at
+      # the binary's defaults. The 2026-10-01 probe did not reproduce on metacog/fast; Juniper's
+      # rule is to set `cache_idle_slots: false` on every multi-slot lane only if it reproduces.
+      # services/orion-llamacpp-host/scripts/probe_slot_bleed.py checks this seat after deploy.
+
+      # Same sampling as agent-flex (Unsloth thinking-mode defaults for Qwen3.8).
+      temperature: 1.0
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+    notes: |
+      GPU pool stage 7.2: agent-gpu2's first launch profile (config/gpu_pool.yaml). The seat's
+      previous profile, qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex, stays second in that list
+      as the rollback: swap the two entries and the pool's next load serves the Q4 27B again, on
+      the same image's stock binary.
+      Quality: hard depth test 19/20 vs Q4 20/20 (docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md).
+      Acceptance (design doc): turn_ok within 5 points of Q4 over >= 1 day or 30 turns, read a
+      sample of curiosity findings by hand.
+
+  glm-5.3-flash-exl3-hecate:
+    display_name: "GLM 5.3 Flash EXL3 — Hecate staged, UNVERIFIED"
+    backend: vllm
+    task_type: chat
+    model_id: /models/GLM-5.3-Flash-EXL3
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 4
+      device_ids: [0, 1, 2, 3]
+      max_model_len: 131072
+      max_batch_tokens: 4096
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.92
+    vllm:
+      pool_discovery: true
+      served_model_name: glm-5.3-flash
+      dtype: half
+      kv_cache_dtype: fp8_e4m3
+      trust_remote_code: true
+      reasoning_parser: deepseek_r1
+      tool_call_parser: glm47
+      enable_auto_tool_choice: true
+      speculative_config:
+        method: mtp
+        num_speculative_tokens: 3
+        draft_sample_method: greedy
+      env:
+        VLLM_USE_V2_MODEL_RUNNER: "1"
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
+    notes: >-
+      Staged only. Requires pinned 1Cat-vLLM SM70 EXL3 build, not the stock host image.
+      No active pool role selects this profile. See docs/runbooks/hecate-glm53-vllm.md.
+
+  qwen3-4b-vllm-hecate:
+    display_name: "Qwen3 4B Instruct — Hecate vLLM validation"
+    backend: vllm
+    task_type: chat
+    model_id: /models/Qwen3-4B-Instruct-2507
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 8192
+      max_batch_tokens: 2048
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.85
+    vllm:
+      pool_discovery: true
+      served_model_name: qwen3-4b-instruct
+      dtype: half
+      tool_call_parser: hermes
+      enable_auto_tool_choice: true
+      env:
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+    notes: >-
+      Single-V100 validation model; no active pool role selects this profile.
+      Pin Qwen/Qwen3-4B-Instruct-2507 at cdbee75f17c01a7cc42f958dc650907174af0554.
+      See docs/runbooks/hecate-glm53-vllm.md for the explicit Hecate image build.
+
+  qwen38-flash-next-iq3s-strata-2xv100-hecate-eval:
+    display_name: "Hecate challenger — Qwen3.8 Flash-Next IQ3_S / Strata"
+    backend: strata
+    task_type: analysis
+    model_id: qwen3.8-flash-next-iq3_s
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [0, 1]
+      max_model_len: 262144
+      max_concurrent_requests: 1
+    strata:
+      family: qwen
+      model: IQ3_S
+      model_file: Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+      ctx_size: 262144
+      defaults: services/orion-llamacpp-host/strata/agent-defaults.json
+    notes: >-
+      Commissioning comparison only, UNVERIFIED. Two-card layer split (not TP2),
+      int8 KV, one slot, MTP, existing cached IQ3_S. Requires the explicit pool
+      and Gateway Strata evaluation overrides; never selected by default.
+      CPU first-touch follows NUMA1 CPU pinning; actual residency must be measured.
+
+  deep.thinker.v1:
+    display_name: "Hecate deep thinker — Qwen3.8 27B QUASAR NVFP4"
+    backend: vllm
+    task_type: analysis
+    model_id: /models/Qwen3.8-27B-QUASAR-NVFP4
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 2
+      device_ids: [0, 1]
+      max_model_len: 262144
+      max_batch_tokens: 4096
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.85
+    vllm:
+      pool_discovery: true
+      served_model_name: deep.thinker.v1
+      dtype: half
+      kv_cache_dtype: fp8_e4m3
+      attention_backend: FLASH_ATTN_V100
+      language_model_only: true
+      enable_prefix_caching: true
+      enable_chunked_prefill: true
+      enable_prompt_tokens_details: true
+      block_size: 2048
+      mamba_block_size: 2048
+      mamba_cache_mode: align
+      prefix_cache_retention_interval: 8192
+      reasoning_parser: qwen3
+      tool_call_parser: qwen3_coder
+      enable_auto_tool_choice: true
+      override_generation_config: {max_new_tokens: 32768}
+      default_chat_template_kwargs: {enable_thinking: true}
+      # DFlash2 draft: 2.2-4x decode, same target answers. Rollback = delete this block.
+      speculative_config:
+        method: dflash
+        model: /models/Qwen3.8-27B-DFlash2
+        num_speculative_tokens: 7
+        draft_tensor_parallel_size: 2
+        attention_backend: FLASH_ATTN_V100
+        kv_cache_dtype: auto
+      env:
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+    notes: >-
+      VERIFIED 2026-11-15 with DFlash2: 36/36 context checks to 245760 prompt tokens,
+      245760+16384 endurance with correct recovery, 12/12 task-quality runs; decode
+      104-190 tokens/s (dense baseline 38-48). Fixed resident agent-deep at hecate:8021
+      through the Gateway; one request plus pool queue. 262144 combined tokens, 229376
+      prompt tokens with a 32768 output reserve (reasoning included). Pinned 1Cat 1.5.3;
+      no CPU offload. See docs/bench/2026-11-14-hecate-deep/RESULTS.md,
+      docs/runbooks/hecate-deep-thinking.md and scripts/deep-thinker.lock.json.

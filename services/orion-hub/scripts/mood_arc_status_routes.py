@@ -26,7 +26,10 @@ Four views:
   from `orion-equilibrium-service` (Postgres `metacog_trigger`, written by
   orion-sql-writer) in the same window -- the actual causal effect of this
   signal, not a claim about what it's "wired to". Confirmed live 2026-09-04:
-  123 real fires in the preceding 24h.
+  123 real fires in the preceding 24h. Since 2026-10-13 equilibrium fires
+  once per anomaly EPISODE (orion/metacog/anomaly_episode.py), not once per
+  flagged window, so expect ~15x fewer rows; the per-window view is
+  field_channel_anomaly_score.
 """
 
 from __future__ import annotations

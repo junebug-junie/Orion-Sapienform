@@ -36,10 +36,43 @@ class Settings(BaseSettings):
     wander_radius: float = Field(3.0, alias="EMBODIMENT_WANDER_RADIUS")
     locations_json: str = Field("{}", alias="EMBODIMENT_LOCATIONS_JSON")
     idle_heartbeat_sec: float = Field(0.0, alias="EMBODIMENT_IDLE_HEARTBEAT_SEC")
-    # Keep the AI Town engine awake so queued inputs (moveTo) are processed. An
-    # `inactive` world silently drops all inputs. Off by default (keeping the town
-    # alive also runs the other town agents' LLM loops).
+    # LEGACY always-on town heartbeat. Read ONLY while EMBODIMENT_TOWN_SESSIONS_ENABLED=false (the
+    # rollback path): it keeps the town running all day (~1,100 NPC LLM calls/day, measured
+    # 2026-10-30). With sessions on, the session controller heartbeats during Orion's sessions only.
     world_heartbeat_enabled: bool = Field(False, alias="EMBODIMENT_WORLD_HEARTBEAT_ENABLED")
+    # AI Town sessions (Juniper 2026-10-30, app/town_sessions.py). true: the town is paused except in
+    # a session Orion chose (this service's own timer, app/town_self_start.py) or one Juniper
+    # opened by hand. false: Orion's sessions are refused and an open one is closed `disabled`;
+    # Juniper's manual sessions are still logged. Shipped ON.
+    town_sessions_enabled: bool = Field(True, alias="EMBODIMENT_TOWN_SESSIONS_ENABLED")
+    # One Orion session's limit, and Orion's total per local day (the hard cap, enforced every tick).
+    town_session_max_sec: float = Field(1800.0, gt=0.0, alias="EMBODIMENT_TOWN_SESSION_MAX_SEC")
+    town_daily_cap_sec: float = Field(7200.0, ge=0.0, alias="EMBODIMENT_TOWN_DAILY_CAP_SEC")
+    # Minimum time from the end of one Orion session to the start of the next (spreads the cap).
+    town_min_gap_sec: float = Field(3600.0, ge=0.0, alias="EMBODIMENT_TOWN_MIN_GAP_SEC")
+    # Do not start a session with less than this much of today's cap left.
+    town_min_session_sec: float = Field(300.0, ge=0.0, alias="EMBODIMENT_TOWN_MIN_SESSION_SEC")
+    # The day the cap counts in.
+    town_tz: str = Field("America/Denver", alias="EMBODIMENT_TOWN_TZ")
+    # How often the controller checks the caps and heartbeats an open Orion session.
+    town_tick_sec: float = Field(10.0, gt=0.0, alias="EMBODIMENT_TOWN_TICK_SEC")
+    # Set the Convex env var ORION_TOWN_CORRELATION_ID to the open session's id, so NPC LLM calls
+    # carry X-Orion-Correlation-Id (patches/orion-town-correlation-id.patch) into llm_call_usage.
+    town_correlation_env_enabled: bool = Field(True, alias="EMBODIMENT_TOWN_CORRELATION_ENV_ENABLED")
+    # Ladder retirement PR 3 (2026-11-05, app/town_self_start.py): Orion's sessions start on this
+    # service's own timer, which replaced the dispatch runtime's start RPC. Each tick bids, then asks
+    # the controller's caps above. false: Orion never starts a session (Juniper's Unfreeze still works).
+    # 300 s: dispatch's own ask cadence (its refusal hold, FAILURE_HOLD_SEC). Shipped ON.
+    town_self_start_enabled: bool = Field(True, alias="EMBODIMENT_TOWN_SELF_START_ENABLED")
+    town_self_start_tick_sec: float = Field(300.0, ge=10.0, alias="EMBODIMENT_TOWN_SELF_START_TICK_SEC")
+    # Self-monitor E1 (orion/self_monitor/gate.py), carried over from dispatch: a session whose
+    # faculty (act.aitown.session.play) is held broken/unreliable in a fresh orion:self_monitor:latest
+    # is refused `track_record_failing`, except one re-test probe per SELF_MONITOR_PROBE_INTERVAL_SEC.
+    # Unknown/stale/absent state changes nothing.
+    self_monitor_act_gate_enabled: bool = Field(True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    self_monitor_probe_interval_sec: float = Field(21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
+    # SHADOW bid for the aitown.session want at each timer attempt, before the caps (logged, never obeyed).
+    physiology_shadow_bid_enabled: bool = Field(True, alias="EMBODIMENT_PHYSIOLOGY_SHADOW_BID_ENABLED")
     orion_sprite: str = Field("f1", alias="EMBODIMENT_ORION_SPRITE")
     perception_interval_sec: float = Field(0.0, alias="EMBODIMENT_PERCEPTION_INTERVAL_SEC")
     social_cooldown_sec: float = Field(120.0, alias="EMBODIMENT_SOCIAL_COOLDOWN_SEC")
@@ -54,11 +87,11 @@ class Settings(BaseSettings):
     # from speech_lane, which also doubles as the cognition "mode" passed to
     # build_plan_for_verb -- conflating the two would mean changing one for
     # gateway-routing reasons silently changes the other's unrelated meaning.
-    # Set to quick_background (not quick) so Orion's own ai-town dialogue
-    # shares atlas-worker-fast-1 without competing evenly with orion-mind/
-    # orion-hub's own quick traffic -- see services/orion-llm-gateway/README.md's
-    # "Background-priority routes".
-    speech_quick_llm_route: str = Field("quick", alias="EMBODIMENT_SPEECH_QUICK_LLM_ROUTE")
+    # quick_embodied (2026-10-23): the fast lane at GPU pool priority
+    # interactive. On quick_background every reply queued behind system work
+    # past the 45 s speech RPC and Orion never answered in town
+    # (config/gpu_pool.yaml quick_embodied).
+    speech_quick_llm_route: str = Field("quick_embodied", alias="EMBODIMENT_SPEECH_QUICK_LLM_ROUTE")
     speech_verb: str = Field("chat_quick", alias="EMBODIMENT_SPEECH_VERB")
     speech_timeout_sec: float = Field(30.0, alias="EMBODIMENT_SPEECH_TIMEOUT_SEC")
     # Town speech must stay on the chat exec lane — the legacy intake queue is

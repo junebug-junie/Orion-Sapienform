@@ -1,5 +1,9 @@
 services:
   vision-host:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-vision-host/Dockerfile
@@ -81,8 +85,13 @@ services:
       - IDENTITY_ENROLLED_SUBJECT=${IDENTITY_ENROLLED_SUBJECT:-juniper}
 
       - VISION_CROP_THUMB_DIR=${VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}
-      - VISION_CROP_THUMB_RETENTION_DAYS=${VISION_CROP_THUMB_RETENTION_DAYS:-10}
+      - VISION_CROP_THUMB_RETENTION_DAYS=${VISION_CROP_THUMB_RETENTION_DAYS:-0}
       - VISION_CROP_THUMB_MIN_INTERVAL_SEC=${VISION_CROP_THUMB_MIN_INTERVAL_SEC:-10}
+      - VISION_FACE_FRAMES_DIR=${VISION_FACE_FRAMES_DIR:-/mnt/telemetry/orion-vision-host/face_frames}
+      - VISION_FACE_FRAMES_RETENTION_DAYS=${VISION_FACE_FRAMES_RETENTION_DAYS:-0}
+      - VISION_FACE_FRAMES_MIN_INTERVAL_SEC=${VISION_FACE_FRAMES_MIN_INTERVAL_SEC:-5}
+      - VISION_OSNET_SHADOW_ENABLED=${VISION_OSNET_SHADOW_ENABLED:-true}
+      - VISION_OSNET_WEIGHTS_PATH=${VISION_OSNET_WEIGHTS_PATH:-/app/models/osnet/osnet_ain_x1_0.pt}
 
     volumes:
       - /mnt/telemetry/orion-vision-host:/mnt/telemetry/orion-vision-host
@@ -93,7 +102,26 @@ services:
     ports:
       - "${HOST_PORT}:6600"
 
-    gpus: all
+    # GPU pin (2026-10-15: moved from the P4 to the T10). Not `gpus: all`:
+    # that exposed both athena cards, so NVML saw two GPUs while torch saw
+    # only CUDA_VISIBLE_DEVICES's one, and the two index spaces only agreed
+    # by luck. device_ids exposes exactly one card; inside the container it
+    # is NVML index 0 AND torch cuda:0, so CUDA_VISIBLE_DEVICES=0,
+    # VISION_DEVICES=cuda:0 and the VRAM admission gate all name the same
+    # physical card. Same pattern as services/orion-whisper-tts.
+    #
+    # The value is the HOST's PCI bus id (stable if a card is added; an
+    # nvidia-smi index shifts). Verified 2026-10-15 that docker accepts it
+    # (`docker run --gpus '"device=00000000:D8:00.0"'` -> Tesla T10 only).
+    # Do not add `runtime: nvidia`: in CDI mode that rejects a PCI bus id.
+    # No default: an unset key fails the bring-up instead of guessing a card.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VISION_HOST_GPU_DEVICE_ID:?VISION_HOST_GPU_DEVICE_ID must be set in services/orion-vision-host/.env}"]
+              capabilities: [gpu]
 
     networks:
       - app-net

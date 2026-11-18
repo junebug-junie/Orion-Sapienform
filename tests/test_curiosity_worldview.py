@@ -437,6 +437,7 @@ def test_a_redis_error_becomes_a_typed_failure_not_a_bare_exception() -> None:
 def test_a_view_with_only_stale_priors_does_not_print_an_empty_heading() -> None:
     from orion.curiosity.kickoff_prompt import _priors_section
     from orion.curiosity.worldview import WorldviewSnapshot
+    from orion.curiosity.worldview import WorldviewSnapshot
 
     view = WorldviewSnapshot(
         live_priors=[],
@@ -505,6 +506,7 @@ def test_unreadable_priors_are_never_reported_as_none_outstanding() -> None:
     """The counts query saw rows that `build_prior` could not read. Saying
     "none outstanding" would tell Orion the opposite of the truth."""
     from orion.curiosity.kickoff_prompt import _priors_section
+    from orion.curiosity.worldview import WorldviewSnapshot
     from orion.curiosity.worldview import WorldviewSnapshot
 
     text = "\n".join(
@@ -715,6 +717,7 @@ def test_the_2026_08_27_graph_state_is_not_read_back_as_an_empty_worldview() -> 
     assert len(view.live_priors) == 3, "the whole loop stops if this is empty"
 
     from orion.curiosity.kickoff_prompt import _priors_section
+    from orion.curiosity.worldview import WorldviewSnapshot
 
     text = "\n".join(_priors_section(view, stale_after=3))
     assert "NO PRIORS STILL IN PLAY" not in text
@@ -884,8 +887,124 @@ def test_an_undated_run_sorts_last_in_the_thread_too() -> None:
 def test_the_thread_query_does_not_use_collect() -> None:
     from orion.curiosity.worldview import RECENT_RUNS_CYPHER
 
-    assert "collect(" not in RECENT_RUNS_CYPHER
-    assert "p.claim AS claim" in RECENT_RUNS_CYPHER
+    from orion.curiosity.worldview import recent_run_claims_cypher
+
+    claims = recent_run_claims_cypher(["abc123"])
+    assert "collect(" not in RECENT_RUNS_CYPHER and "collect(" not in claims
+    assert "p.claim AS claim" in claims
+
+
+# --- #3398: the run menu was frozen on the oldest 200 of 752 joined rows -----
+
+
+class _GraphLikeReader(_FakeReader):
+    """Holds outcomes and priors and answers the way the graph does: an
+    unordered MATCH returns insertion order (oldest first), ORDER BY ... DESC
+    returns integer stamps newest first and string stamps after them, and
+    LIMIT cuts whatever order the query asked for."""
+
+    def __init__(self, outcomes, priors) -> None:
+        super().__init__()
+        self.outcomes, self.priors = list(outcomes), list(priors)
+
+    def query(self, cypher: str):
+        import re
+
+        self.queries.append(cypher)
+        if "MATCH (t:TurnOutcome)" in cypher:
+            rows = list(self.outcomes)
+            if "OPTIONAL MATCH (p:Prior" in cypher:  # the old join shape
+                rows = [
+                    {**o, "claim": p["claim"]}
+                    for o in rows
+                    for p in ([p for p in self.priors if p["run_id"] == o["run_id"]] or [{"claim": None}])
+                ]
+            if "ORDER BY t.written_at DESC" in cypher:
+                ints = sorted((r for r in rows if isinstance(r["written_at"], int)),
+                              key=lambda r: r["written_at"], reverse=True)
+                rows = ints + [r for r in rows if not isinstance(r["written_at"], int)]
+            limit = re.search(r"LIMIT (\d+)", cypher)
+            return rows[: int(limit.group(1))] if limit else rows
+        if "MATCH (p:Prior) WHERE p.run_id IN" in cypher:
+            wanted = set(re.findall(r"'([0-9a-f]+)'", cypher))
+            return [p for p in self.priors if p["run_id"] in wanted]
+        return []
+
+
+def _history(n_runs: int):
+    """`n_runs` runs, oldest first, two priors each -- more joined rows than the old LIMIT 200."""
+    outcomes = [
+        {"run_id": f"{i:06x}", "written_at": 1_790_000_000_000 + i * 1000, "continue_note": f"note {i}"}
+        for i in range(n_runs)
+    ]
+    priors = [
+        {"run_id": o["run_id"], "claim": f"claim {k} of {o['run_id']}"}
+        for o in outcomes for k in (1, 2)
+    ]
+    return outcomes, priors
+
+
+def test_recent_runs_are_the_newest_when_history_is_longer_than_one_old_read() -> None:
+    from orion.curiosity.worldview import read_recent_runs
+
+    outcomes, priors = _history(400)  # 800 joined rows; the old read kept the oldest 200
+    reader = _GraphLikeReader(outcomes, priors)
+
+    recent = read_recent_runs(reader, limit=4)
+
+    assert [r.run_id for r in recent] == ["00018f", "00018e", "00018d", "00018c"]
+    assert recent[0].claims == ["claim 1 of 00018f", "claim 2 of 00018f"]
+    # Claims are read for the shown runs only, not the whole history.
+    claims_query = reader.queries[-1]
+    assert "'00018f'" in claims_query and "'000000'" not in claims_query
+
+
+def test_the_old_join_shape_would_have_shown_the_oldest_runs() -> None:
+    """Pins the defect: this is the query #3398 replaced, on the same data."""
+    from orion.curiosity.worldview import build_recent_runs
+
+    outcomes, priors = _history(400)
+    old_cypher = (
+        "MATCH (t:TurnOutcome) OPTIONAL MATCH (p:Prior {run_id: t.run_id}) "
+        "RETURN t.run_id AS run_id, t.written_at AS written_at, "
+        "t.continue_note AS continue_note, p.claim AS claim LIMIT 200"
+    )
+    rows = _GraphLikeReader(outcomes, priors).query(old_cypher)
+    assert build_recent_runs(rows, limit=4)[0].run_id == "000063"  # run 99 of 400
+
+
+def test_recent_runs_read_through_the_snapshot_and_an_iso_stamp_still_sorts() -> None:
+    outcomes, priors = _history(300)
+    # The newest run wrote an ISO string. The graph sorts it after every integer.
+    outcomes.append({"run_id": "feedbeef", "written_at": "2030-01-01T00:00:00Z", "continue_note": "iso run"})
+    reader = _GraphLikeReader(outcomes, priors)
+
+    snap = read_snapshot(reader, sample=4, stale_after=3, recent_runs=4)
+
+    assert [r.run_id for r in snap.recent_runs][:2] == ["feedbeef", "00012b"]
+    assert snap.recent_runs[0].claims == ["iso run"]  # no prior written: its note stands in
+
+
+def test_recent_runs_warn_when_the_outcome_read_is_cut(caplog) -> None:
+    from orion.curiosity.worldview import RECENT_RUNS_LIMIT, read_recent_runs
+
+    outcomes, priors = _history(RECENT_RUNS_LIMIT + 5)
+    with caplog.at_level("WARNING"):
+        recent = read_recent_runs(_GraphLikeReader(outcomes, priors), limit=1)
+    assert recent[0].run_id == f"{RECENT_RUNS_LIMIT + 4:06x}"  # still the newest
+    assert any("curiosity_worldview_recent_runs_truncated" in m for m in caplog.messages)
+
+
+def test_a_run_id_that_is_not_hex_never_reaches_the_query_text() -> None:
+    from orion.curiosity.worldview import read_recent_runs, recent_run_claims_cypher
+
+    assert recent_run_claims_cypher(["x'] RETURN 1 //"]) is None
+    reader = _GraphLikeReader(
+        [{"run_id": "x'] RETURN 1 //", "written_at": 5, "continue_note": "odd id"}], []
+    )
+    recent = read_recent_runs(reader, limit=4)
+    assert recent[0].claims == ["odd id"]
+    assert len(reader.queries) == 1  # no claims query was built
 
 
 # --- edges are part of the footprint ----------------------------------------
@@ -1479,11 +1598,10 @@ def test_prompt_forms_a_prior_with_merge_not_create():
     """A CREATE here forks the node on every repeat; MERGE binds the existing one."""
     text = "\n".join(_write_section(own_graph="orion_worldview", run_id="RID", max_hops=3))
     assert 'MERGE (p:Prior {prior_id: "<something unique>"})' in text
-    # `CREATE (:Prior {` exactly -- `CREATE (:PriorRevision {` is correct and
-    # must stay: a revision is an append-only record of a claim MOVING, so a
-    # second one is a second real event, not a fork of an identity.
     assert "CREATE (:Prior {" not in text
-    assert "CREATE (:PriorRevision {" in text
+    # A revision MERGEs on the whole move (#3395): a replay folds, a second
+    # real move in the same run does not.
+    assert "MERGE (v:PriorRevision {" in text
 
 
 def test_prompt_sets_prior_properties_only_ON_CREATE():
@@ -1520,8 +1638,7 @@ def test_prompt_never_creates_a_prior_node_under_any_variable():
 
     text = "\n".join(_write_section(own_graph="orion_worldview", run_id="RID", max_hops=3))
     assert re.search(r"CREATE\s*\(\s*\w*\s*:Prior\s*\{", text) is None
-    # A revision is an append-only record of a claim MOVING; it stays a CREATE.
-    assert "CREATE (:PriorRevision {" in text
+    assert re.search(r"CREATE\s*\(\s*\w*\s*:(PriorRevision|Finding)\s*\{", text) is None
 
 
 def test_prompt_warns_that_a_bound_merge_writes_nothing():
@@ -1703,3 +1820,167 @@ def test_priors_worth_nothing_keep_the_uncertainty_order() -> None:
     for seed in ("", "run-a", "run-b", "run-c"):
         default, valued = _orders(rows, stuck, seed=seed)
         assert valued == default == ["half", "mid", "lean", "sure"]
+
+
+# --- coverage slots: the order alone never reaches confident priors ---------
+
+
+def _pool(n: int) -> list[dict]:
+    """n fresh priors; p00 is the most uncertain, confidence drifts away from 0.5 as the index grows."""
+    return [_prior_row(f"p{i:02d}", confidence=str(round(0.5 + i * 0.01, 2))) for i in range(n)]
+
+
+def test_coverage_slots_default_off_changes_nothing() -> None:
+    off, _, _ = select_priors(_pool(20), sample=8, stale_after=3)
+    zero, _, _ = select_priors(_pool(20), sample=8, stale_after=3, coverage_slots=0)
+    assert [p.prior_id for p in off] == [p.prior_id for p in zero] == [f"p{i:02d}" for i in range(8)]
+    assert not any(p.coverage for p in off)
+
+
+def test_coverage_slots_keep_the_sample_size_and_fill_from_past_the_order() -> None:
+    offered, _, _ = select_priors(_pool(20), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r1")
+    assert len(offered) == 8
+    assert [p.prior_id for p in offered[:6]] == [f"p{i:02d}" for i in range(6)]
+    drawn = offered[6:]
+    assert all(p.coverage for p in drawn) and not any(p.coverage for p in offered[:6])
+    # Drawn from past the ordered six, never a duplicate of one already shown.
+    assert all(p.prior_id >= "p06" for p in drawn)
+    assert len({p.prior_id for p in offered}) == 8
+
+
+def test_coverage_draw_is_reproducible_per_run_and_moves_between_runs() -> None:
+    def ids(seed):
+        o, _, _ = select_priors(_pool(40), sample=8, stale_after=3, coverage_slots=2, rotate_seed=seed)
+        return [p.prior_id for p in o if p.coverage]
+
+    assert ids("run-a") == ids("run-a")
+    assert any(ids(f"run-{i}") != ids("run-a") for i in range(10))
+
+
+def test_coverage_reaches_nearly_every_prior_the_order_cannot() -> None:
+    """The point of the patch: over a few weeks of runs the unreachable tail gets looked at."""
+    seen: set[str] = set()
+    for i in range(140):
+        o, _, _ = select_priors(_pool(60), sample=8, stale_after=3, coverage_slots=2, rotate_seed=f"run-{i}")
+        seen |= {p.prior_id for p in o}
+    unreachable_by_order = 60 - 8
+    assert len(seen) - 8 >= 0.85 * unreachable_by_order
+
+
+def test_coverage_with_a_short_pool_does_not_duplicate_or_invent() -> None:
+    offered, _, _ = select_priors(_pool(7), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r")
+    assert sorted(p.prior_id for p in offered) == [f"p{i:02d}" for i in range(7)]
+    one, _, _ = select_priors(_pool(1), sample=8, stale_after=3, coverage_slots=2)
+    assert [p.prior_id for p in one] == ["p00"]
+
+
+def test_coverage_slots_larger_than_sample_are_capped() -> None:
+    offered, _, _ = select_priors(_pool(20), sample=3, stale_after=3, coverage_slots=9, rotate_seed="r")
+    assert len(offered) == 3
+
+
+def test_the_prompt_labels_coverage_priors_as_random_not_ranked() -> None:
+    from orion.curiosity.kickoff_prompt import _priors_section
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    offered, stale, _ = select_priors(_pool(20), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r")
+    view = WorldviewSnapshot(live_priors=offered, stale_priors=stale, live_total=20, closed_total=0)
+    text = "\n".join(_priors_section(view, stale_after=3))
+    head, _, tail = text.partition("DRAWN AT RANDOM")
+    assert tail, "coverage priors need their own labelled block"
+    for p in offered:
+        assert p.prior_id in (tail if p.coverage else head)
+    # With no coverage priors the block is absent.
+    plain, _, _ = select_priors(_pool(20), sample=8, stale_after=3)
+    view2 = WorldviewSnapshot(live_priors=plain, live_total=20, closed_total=0)
+    assert "DRAWN AT RANDOM" not in "\n".join(_priors_section(view2, stale_after=3))
+
+
+# --- head_ids: the curiosity replica's picks fill the top (2026-11-04 design section 4) -------
+
+
+def test_head_ids_default_changes_nothing() -> None:
+    base, stale_a, _ = select_priors(_pool(20), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r")
+    same, stale_b, _ = select_priors(
+        _pool(20), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r", head_ids=()
+    )
+    assert same == base and stale_a == stale_b
+
+
+def test_head_ids_fill_the_top_then_the_order_continues_and_coverage_is_unchanged_in_shape() -> None:
+    rows = _pool(20) + [_prior_row("old", confidence="0.5", tested=3)]
+    base, base_stale, _ = select_priors(rows, sample=8, stale_after=3, coverage_slots=2, rotate_seed="r")
+    offered, stale, _ = select_priors(
+        rows, sample=8, stale_after=3, coverage_slots=2, rotate_seed="r", head_ids=["p15", "p03", "p11"]
+    )
+    ids = [p.prior_id for p in offered]
+    # Same layout: 6 ordered, 2 coverage, same stale bucket.
+    assert len(offered) == 8 and [p.coverage for p in offered] == [p.coverage for p in base]
+    assert stale == base_stale and [p.prior_id for p in stale] == ["old"]
+    # Picks first in the replica's order, then the uncertainty order skipping them.
+    assert ids[:3] == ["p15", "p03", "p11"]
+    assert ids[3:6] == ["p00", "p01", "p02"]
+    # Coverage draws from the rest and never repeats a pick.
+    assert len(set(ids)) == 8
+    assert not set(ids[6:]) & {"p15", "p03", "p11"}
+
+
+def test_head_ids_skip_stale_unknown_and_duplicate_ids_and_never_exceed_the_ordered_slots() -> None:
+    rows = _pool(20) + [_prior_row("old", confidence="0.5", tested=3)]
+    offered, stale, _ = select_priors(
+        rows, sample=8, stale_after=3, coverage_slots=2, rotate_seed="r",
+        head_ids=["old", "nope", "p09", "p09", "p08", "p07", "p06", "p05", "p04", "p19"],
+    )
+    ids = [p.prior_id for p in offered]
+    assert "old" not in ids and [p.prior_id for p in stale] == ["old"]
+    assert ids[:6] == ["p09", "p08", "p07", "p06", "p05", "p04"]  # capped at sample - coverage
+    assert "p19" not in ids[:6]
+    assert len(set(ids)) == len(ids) == 8
+
+
+# --- #3395 Patch F: worldview writes that are safe to repeat ------------------
+
+
+def _taught() -> str:
+    return "\n".join(_write_section(own_graph="orion_worldview", run_id="RID", max_hops=3))
+
+
+def test_prompt_merges_a_finding_on_finding_id_alone():
+    text = _taught()
+    assert 'MERGE (f:Finding {finding_id: "<something unique>"})' in text
+    at = text.index("MERGE (f:Finding")
+    assert "ON CREATE SET f.text" in text[at:at + 300]
+    assert "new finding is lost" in text
+
+
+def test_prompt_merges_a_revision_on_the_whole_move():
+    text = _taught()
+    at = text.index("MERGE (v:PriorRevision {")
+    key = text[at:text.index("})", at)]
+    for prop in ("prior_id", "run_id", "from_confidence", "to_confidence", "from_status", "to_status"):
+        assert prop in key, prop
+    assert "written_at" not in key
+    assert "ON CREATE SET v.written_at = timestamp()" in text
+
+
+def test_prompt_counts_a_test_once_per_run_in_one_command():
+    """Update, count and last_run_id in ONE command (#3395 follow-up, Orion Q1):
+    attention_schema, consult, atlas and value read last_run_id as "this run
+    tested it", so the count must move in the same write or they split."""
+    text = _taught()
+    assert "last_counted_run_id" not in text
+    assert "p.times_tested = p.times_tested + 1" not in text
+    lines = text.splitlines()
+    at = next(i for i, line in enumerate(lines) if 'MATCH (p:Prior {prior_id: "..."}) SET' in line)
+    cmd = " ".join(lines[at:at + 3])
+    assert 'CASE WHEN coalesce(p.last_run_id, "") <> "<RUN_ID>" THEN 1 ELSE 0 END' in cmd
+    assert 'p.last_run_id = "<RUN_ID>"' in cmd and "p.confidence" in cmd
+    assert "counts RUNS" in text
+
+
+def test_prompt_forbids_empty_or_placeholder_ids_and_explains_partial_batches():
+    text = _taught()
+    assert "AN ID IS NEVER EMPTY AND NEVER A PLACEHOLDER" in text
+    assert "<RUN_ID>-why-x-fails" in text
+    assert "read the output, not the exit code" in text
+    assert "unique constraint violation on node of type Prior" in text

@@ -1,5 +1,9 @@
 services:
   vector-host:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-vector-host/Dockerfile
@@ -38,6 +42,9 @@ services:
       - VECTOR_HOST_EMBED_BACKEND=${VECTOR_HOST_EMBED_BACKEND:-vllm}
       - VECTOR_HOST_EMBEDDING_MODEL=${VECTOR_HOST_EMBEDDING_MODEL}
       - VECTOR_HOST_SEMANTIC_COLLECTION=${VECTOR_HOST_SEMANTIC_COLLECTION:-orion_main_store}
+      # Local cross-encoder behind POST /rerank (app/reranker.py, issue #3533).
+      - VECTOR_HOST_RERANK_MODEL=${VECTOR_HOST_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      - VECTOR_HOST_RERANK_DEVICE=${VECTOR_HOST_RERANK_DEVICE:-cuda}
       # VECTOR_HOST_CHAT_MESSAGE_COLLECTION / VECTOR_HOST_CHAT_TURN_COLLECTION
       # removed 2026-08-14: chat vector-upsert-to-Chroma killed (dead pipeline).
       - VECTOR_HOST_GPT_MESSAGE_COLLECTION=${VECTOR_HOST_GPT_MESSAGE_COLLECTION:-orion_chat_gpt}
@@ -62,10 +69,22 @@ services:
     ports:
       - "8320:8320"
 
+    # The reranker's GPU (issue #3533). The embedder stays on CPU.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VECTOR_HOST_RERANK_GPU_DEVICE_ID:-00000000:86:00.0}"]
+              capabilities: [gpu]
+
     volumes:
       # Same tissue snapshot mount spark-introspector's docker-compose.yml
       # used -- see ORION_TISSUE_SNAPSHOT_PATH above.
       - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion/spark:/mnt/graphdb/orion/spark
+      # Persistent Hugging Face cache (embedder + reranker weights, issue #3533): a recreate
+      # loads them from disk instead of downloading ~2.5 GB again.
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion/hf-cache:/root/.cache/huggingface
 
 networks:
   app-net:

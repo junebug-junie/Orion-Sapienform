@@ -80,8 +80,8 @@ def test_semantic_synthesis_telemetry_carries_llm_uncertainty(monkeypatch: pytes
 
     pack = build_evidence_pack(
         {
-            "user_text": "watching a show with Amanda tonight",
-            "messages_tail": [{"role": "user", "content": "watching a show with Amanda tonight"}],
+            "user_text": "watching a show with Robin tonight",
+            "messages_tail": [{"role": "user", "content": "watching a show with Robin tonight"}],
         }
     )
     ctx = MindLLMRequestContext(

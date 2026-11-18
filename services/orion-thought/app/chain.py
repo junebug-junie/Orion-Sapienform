@@ -1,7 +1,10 @@
 """Phase C — reverie chain (a train of thought).
 
-Successive reverie steps that climb the ladder, terminating when the spawning
-pressure discharges (or a step-cap / low-salience floor). Continuity is the
+Successive reverie steps. Each step sees the thoughts before it and the
+forward pointer (`next_focus`) the last step wrote, so a chain is a train of
+thought rather than one prompt sampled N times. It ends when a step has nothing
+further (`settled`), a later step yields nothing, the step cap is hit, or the
+EMA salience floor is crossed. A calm tick (no attention winner) starts no chain. Continuity is the
 last-n verbatim thought ids; the wide-n memory is a *lossy* EMA low-pass, never
 a growing verbatim window. A discharged theme is put in a refractory table so it
 cannot immediately re-ignite (ouroboros habituation).
@@ -18,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from collections import Counter
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Protocol
@@ -26,6 +31,7 @@ from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
+from orion.regulation.arousal_read import read_arousal_async
 from orion.reverie.attention_schema import to_attention_schema
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND, bind_correlation
@@ -39,7 +45,13 @@ from orion.schemas.reverie import (
 )
 
 from .resonance_monitor import check_resonance_worsening
-from .reverie import _default_broadcast_reader, _source, run_reverie_once
+from .reverie import (
+    ChainContinuity,
+    ReverieLlmUnavailable,
+    _default_broadcast_reader,
+    _source,
+    run_reverie_once,
+)
 from .rpc_health import fold_bus
 from .settings import settings
 from .store import (
@@ -54,10 +66,52 @@ from .store import (
 
 logger = logging.getLogger("orion-thought.chain")
 
-# Pressure at/below this is considered discharged → the chain has done its job.
-PRESSURE_DISCHARGE_THRESHOLD = 0.15
+# A step whose words overlap the previous step's this much says nothing new.
+# Live 2026-10-16 (2,963 consecutive pairs from the old same-prompt chains):
+# word-set Jaccard p50 0.36, p90 0.53; 4.4% were >= 0.6. 0.6 therefore only
+# catches near-restatements; the main stop signal is the model's own null
+# next_focus.
+REPEAT_JACCARD_THRESHOLD = 0.6
 
-StepFn = Callable[[str, int], Awaitable[SpontaneousThoughtV1 | None]]
+StepFn = Callable[[str, int, ChainContinuity], Awaitable[SpontaneousThoughtV1 | None]]
+
+# Why chains did not start, counted per process and logged with each skip so
+# the rate is readable from the log alone.
+CHAIN_SKIP_COUNTS: Counter[str] = Counter()
+
+
+def _count_skip(reason: str, **fields: Any) -> None:
+    CHAIN_SKIP_COUNTS[reason] += 1
+    extra = " ".join(f"{k}={v}" for k, v in fields.items())
+    logger.info(
+        "reverie_chain_skipped reason=%s count=%d%s",
+        reason, CHAIN_SKIP_COUNTS[reason], f" {extra}" if extra else "",
+    )
+
+
+def has_attention_winner(broadcast: Any) -> bool:
+    """True when the broadcast attended something (a node or a selected loop).
+
+    The same calm rule `run_reverie_once` applies per tick; checked here before
+    a chain exists so a calm tick writes no chain row and no refractory entry.
+    """
+    if broadcast is None:
+        return False
+    return bool(getattr(broadcast, "attended_node_ids", None)) or bool(
+        getattr(broadcast, "selected_open_loop_id", None)
+    )
+
+
+_WORD = re.compile(r"[a-z0-9']+")
+
+
+def is_repeat_thought(current: str, previous: str, *, threshold: float = REPEAT_JACCARD_THRESHOLD) -> bool:
+    """Deterministic "nothing new": word-set Jaccard of two interpretations >= threshold."""
+    a = set(_WORD.findall((current or "").lower()))
+    b = set(_WORD.findall((previous or "").lower()))
+    if not a or not b:
+        return False
+    return len(a & b) / len(a | b) >= threshold
 
 
 class RefractoryStore(Protocol):
@@ -169,7 +223,7 @@ def build_compaction_request(chain: ReverieChainV1) -> CompactionRequestV1 | Non
     dream to consolidate it. Never a downscale/prune from the awake path — those
     are the dream's call. Applied by nothing; this only queues an ask.
     """
-    if chain.terminal_reason not in ("pressure_discharged", "max_steps"):
+    if chain.terminal_reason not in ("pressure_discharged", "max_steps", "settled"):
         return None
     if not chain.theme_key or chain.theme_key == "unknown":
         return None
@@ -201,12 +255,14 @@ async def _maybe_emit_resonance_alert(bus: OrionBusAsync) -> None:
 
         rows = load_recent_chain_theme_events(settings.reverie_resonance_window)
         events: list[ThemeEvent] = []
-        for theme_key, created_at in rows:
+        for theme_key, created_at, terminal_reason in rows:
             at = created_at
             if isinstance(at, datetime) and at.tzinfo is None:
                 at = at.replace(tzinfo=timezone.utc)
             if isinstance(at, datetime):
-                events.append(ThemeEvent(theme_key, at))
+                # no_coalition chains don't arm the cooldown (see the arm-list
+                # in run_reverie_chain), so a fast retry after one is no breach.
+                events.append(ThemeEvent(theme_key, at, armed=terminal_reason != "no_coalition"))
         alert = detect_resonance(events, refractory_sec=settings.reverie_refractory_sec)
         if alert is None:
             # No theme is currently resonant. Still let the health monitor
@@ -249,7 +305,6 @@ async def run_reverie_chain(
     step_fn: StepFn,
     refractory_store: RefractoryStore,
     broadcast_reader: Callable[[], AttentionBroadcastProjectionV1 | None] | None = None,
-    pressure_reader: Callable[[], float | None] | None = None,
     max_steps: int = 4,
     refractory_sec: float = 900.0,
     alpha: float = 0.5,
@@ -261,8 +316,8 @@ async def run_reverie_chain(
 ) -> ReverieChainV1 | None:
     """Run one train of thought. Returns the chain readout, or None.
 
-    Returns None when there is no coalition to think about or the theme is in
-    refractory (suppressed re-trigger). Never raises.
+    Returns None when there is no broadcast, the broadcast has no attention
+    winner (a calm tick), or the theme is in refractory. Never raises.
     """
     reader = broadcast_reader or _default_broadcast_reader
     try:
@@ -271,13 +326,18 @@ async def run_reverie_chain(
         logger.warning("reverie chain coalition read failed: %s", exc)
         coalition = None
     if coalition is None:
-        logger.info("reverie chain skipped: no coalition")
+        _count_skip("no_broadcast")
+        return None
+    if not has_attention_winner(coalition):
+        # Calm: nothing won attention. No chain row, no "unknown" refractory
+        # entry (live 2026-10-09..15: ~190 such hollow chains a day).
+        _count_skip("calm_no_winner")
         return None
 
     theme_key = theme_key_for(coalition)
     now = now_fn()
     if refractory_store.is_suppressed(theme_key, now):
-        logger.info("reverie chain suppressed by refractory theme=%s", theme_key)
+        _count_skip("refractory", theme=theme_key)
         return None
 
     chain_id = str(uuid4())
@@ -288,26 +348,68 @@ async def run_reverie_chain(
     thoughts: list[SpontaneousThoughtV1] = []
     ema = 0.0
     terminal: TerminalReason = "max_steps"
+    steps = max(1, max_steps)
+    next_focus_hint: str | None = None
 
-    for index in range(max(1, max_steps)):
+    for index in range(steps):
+        continuity = ChainContinuity(
+            index=index,
+            is_final=index == steps - 1,
+            prior_thoughts=[t.interpretation for t in thoughts],
+            next_focus_hint=next_focus_hint,
+        )
         try:
-            thought = await step_fn(chain_id, index)
+            thought = await step_fn(chain_id, index, continuity)
+        except ReverieLlmUnavailable as exc:
+            if index == 0:
+                # The GPU pool refused (shed for heat, deadline, outage): the model was
+                # never asked, so this says nothing about the theme. No chain row, no
+                # refractory, and the theme's no_coalition streak is left untouched --
+                # neither counted nor reset (2026-10-20: cabinet_hot sheds were forcing
+                # healthy themes into cooldown after 3 refusals).
+                _count_skip(
+                    "llm_unavailable",
+                    theme=theme_key,
+                    shed=exc.shed_reason or "-",
+                    detail=exc.reason[:120],
+                )
+                return None
+            # Mid-chain: earlier thoughts were already published; end the chain as before.
+            logger.info(
+                "reverie chain step refused by gpu pool chain=%s idx=%s reason=%s",
+                chain_id, index, exc.reason,
+            )
+            thought = None
         except Exception as exc:
             logger.warning("reverie chain step failed chain=%s idx=%s err=%s", chain_id, index, exc)
             thought = None
         if thought is None:
+            # Step 0: nothing grounded to say. Later step: it yielded nothing
+            # publishable (hollow, below the salience floor, or failed).
             terminal = "no_coalition" if index == 0 else "pressure_discharged"
             break
 
+        earlier = [t.interpretation for t in thoughts]
+        # The step already published and persisted this thought (run_reverie_once);
+        # a restatement is kept in thought_ids so the chain readout matches the
+        # thought table, and the chain stops here.
         thought_ids.append(thought.thought_id)
         thoughts.append(thought)
         ema = update_ema(ema, thought.salience, alpha=alpha)
 
-        if pressure_reader is not None:
-            pressure = pressure_reader()
-            if pressure is not None and pressure <= PRESSURE_DISCHARGE_THRESHOLD:
-                terminal = "pressure_discharged"
-                break
+        if any(is_repeat_thought(thought.interpretation, e) for e in earlier):
+            logger.info("reverie_chain_settled chain=%s idx=%d reason=repeat", chain_id, index)
+            terminal = "settled"
+            break
+        # Only the plain reverie prompt asks for next_focus; the semantic-lift
+        # (concern-card, llm_profile="metacog") prompt never does, so a missing
+        # next_focus there is not "nothing further".
+        asked_next_focus = thought.llm_profile != "metacog"
+        if asked_next_focus and not continuity.is_final and not thought.next_focus:
+            logger.info("reverie_chain_settled chain=%s idx=%d reason=no_next_focus", chain_id, index)
+            terminal = "settled"
+            break
+        next_focus_hint = thought.next_focus
         if ema < min_ema_salience:
             terminal = "low_salience"
             break
@@ -332,7 +434,7 @@ async def run_reverie_chain(
         )
 
     # Habituate a resolved theme so a discharged loop can't immediately re-ignite.
-    if terminal in ("pressure_discharged", "max_steps", "low_salience") or force_suppress:
+    if terminal in ("pressure_discharged", "max_steps", "low_salience", "settled") or force_suppress:
         with suppress(Exception):
             refractory_store.suppress(theme_key, now + timedelta(seconds=refractory_sec))
 
@@ -402,6 +504,38 @@ async def run_reverie_chain(
     return chain
 
 
+def reverie_chain_sleep_sec(base_sec: float, level: str | None, multiplier: float) -> float:
+    """R3 reader 5: the pause before the next chain. Strained stretches it; nothing shortens it.
+
+    ``level`` is Orion's arousal at the moment the pause starts (None = unknown / flag off /
+    Redis down = today's interval). A multiplier at or below 1 changes nothing."""
+    base = float(base_sec)
+    m = float(multiplier)
+    if level == "strained" and m > 1.0:
+        return base * m
+    return base
+
+
+async def _next_chain_sleep_sec(bus: OrionBusAsync) -> float:
+    """Read arousal right before the pause (the decision point), never at loop start."""
+    view = await read_arousal_async(
+        bus,
+        enabled=bool(settings.reverie_chain_arousal_enabled),
+        reader="reverie_chain",
+        max_age_sec=float(settings.regulation_reader_max_age_sec),
+    )
+    level = view.level if view.known else None
+    sleep_sec = reverie_chain_sleep_sec(
+        settings.reverie_interval_sec, level, settings.reverie_chain_arousal_strained_multiplier
+    )
+    if sleep_sec != float(settings.reverie_interval_sec):
+        logger.info(
+            "reverie_chain_paced reason=arousal_strained sleep_sec=%.0f base_sec=%.0f since=%s",
+            sleep_sec, float(settings.reverie_interval_sec), view.since,
+        )
+    return sleep_sec
+
+
 async def run_reverie_chain_worker(stop_event: asyncio.Event | None = None) -> None:
     """Self-driven chain loop. Default-off; no-op unless ORION_REVERIE_CHAIN_ENABLED."""
     if not settings.reverie_chain_enabled:
@@ -415,8 +549,15 @@ async def run_reverie_chain_worker(stop_event: asyncio.Event | None = None) -> N
     await bus.connect()
     refractory = DbRefractoryStore()
 
-    async def _step(chain_id: str, index: int) -> SpontaneousThoughtV1 | None:
-        return await run_reverie_once(bus, chain_context=(chain_id, index))
+    async def _step(
+        chain_id: str, index: int, continuity: ChainContinuity
+    ) -> SpontaneousThoughtV1 | None:
+        return await run_reverie_once(
+            bus,
+            chain_context=(chain_id, index),
+            continuity=continuity,
+            raise_llm_unavailable=True,
+        )
 
     logger.info("reverie chain worker started interval=%ss", settings.reverie_interval_sec)
     try:
@@ -435,11 +576,12 @@ async def run_reverie_chain_worker(stop_event: asyncio.Event | None = None) -> N
             except Exception:
                 logger.exception("unhandled reverie chain error")
             fold_bus(bus)  # per chain run: this worker bus lives for the process (app/rpc_health.py)
+            sleep_sec = await _next_chain_sleep_sec(bus)
             try:
                 if stop_event is not None:
-                    await asyncio.wait_for(stop_event.wait(), timeout=settings.reverie_interval_sec)
+                    await asyncio.wait_for(stop_event.wait(), timeout=sleep_sec)
                     break
-                await asyncio.sleep(settings.reverie_interval_sec)
+                await asyncio.sleep(sleep_sec)
             except asyncio.TimeoutError:
                 continue
     except asyncio.CancelledError:

@@ -1,22 +1,45 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any
 
+from pathlib import Path
+
+from orion.bus.census import load_channel_catalog_names
 from orion.core.bus.async_service import OrionBusAsync
+from orion.gpu_pool import actuator_probe
+from orion.gpu_pool.config import load_pool_config
+from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL
 
 from .attention import AttentionPublisher
-from .equilibrium_watch import equilibrium_status_for_service, watch_equilibrium
+from .equilibrium_watch import equilibrium_status_for_service, equilibrium_subscribed, watch_equilibrium
+from .gpu_watch import ActiveProbeTracker, RefusalWatch, RoleTarget, role_targets
 from .probe import run_probe
-from .remediator import execute_remediation
+from .remediator import docker_cli_selfcheck, execute_remediation
 from .roster import NEVER_REMEDIATE_IDS, RosterDocument, RosterEntry, load_roster, validate_roster
 from .settings import Settings
+from .stability import (
+    STOPPED_STATES,
+    AlertGate,
+    ContainerState,
+    CounterRiseTracker,
+    CrashLoopTracker,
+    StabilityAlert,
+    StoppedContainerTracker,
+    graph_inflation_alert,
+    qualify,
+    remote_restart_counts,
+    slow_consumer_alert,
+    snapshot_alerts,
+)
 from .state_machine import ServiceState, TransitionInput, transition
 from .state_store import load_all, save_one
 
 logger = logging.getLogger("orion.mesh.guardian")
+GPU_WATCH_CHECKS = ("digest",)
 
 
 class MeshGuardianService:
@@ -30,7 +53,18 @@ class MeshGuardianService:
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
         self._equilibrium_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
-        self._equilibrium_task_alive = False
+        self._crash_loops = CrashLoopTracker()
+        self._stopped = StoppedContainerTracker()
+        self._bus_disconnects = CounterRiseTracker()
+        self._alert_gate = AlertGate()
+        self._stability_cycles = 0
+        self._stability_started_at: float | None = None
+        self._falkordb = None
+        self._gpu_active = ActiveProbeTracker()
+        self._gpu_refusals = RefusalWatch()
+        self._gpu_targets: dict[str, RoleTarget] = {}
+        self._gpu_cycles = 0
+        self._gpu_config_failed_at: float | None = None
 
     async def start(self) -> None:
         if not self.settings.enabled:
@@ -45,6 +79,12 @@ class MeshGuardianService:
         if roster_errors:
             raise ValueError("invalid mesh guardian roster: " + "; ".join(roster_errors))
         await self._connect_bus_with_retry()
+        if self.settings.auto_remediate:
+            problem = await docker_cli_selfcheck(repo_root=self.settings.orion_repo_root)
+            if problem:
+                logger.error("auto-remediation enabled but docker CLI cannot reach the daemon: %s", problem)
+            else:
+                logger.info("auto-remediation enabled; docker CLI reaches the daemon")
         if self.bus.redis is not None:
             self.states = await load_all(self.bus.redis)
         for entry in self.roster.services:
@@ -54,6 +94,11 @@ class MeshGuardianService:
             asyncio.create_task(self._probe_loop(), name="mesh-guardian-probe"),
             asyncio.create_task(self._equilibrium_loop(), name="mesh-guardian-equilibrium"),
         ]
+        if self.settings.stability_enabled:
+            self._tasks.append(asyncio.create_task(self._stability_loop(), name="mesh-guardian-stability"))
+        if self.settings.gpu_watch_enabled:
+            self._tasks.append(asyncio.create_task(self._gpu_loop(), name="mesh-guardian-gpu-probe"))
+            self._tasks.append(asyncio.create_task(self._gpu_event_loop(), name="mesh-guardian-gpu-events"))
 
     async def stop(self) -> None:
         self._stop.set()
@@ -62,10 +107,15 @@ class MeshGuardianService:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        if self._falkordb is not None:
+            await self._falkordb.aclose()
+            self._falkordb = None
         await self.bus.close()
 
     def equilibrium_subscriber_alive(self) -> bool:
-        return self._equilibrium_task_alive
+        # Subscribed right now, not merely "task started": False while the watch backs
+        # off after a Redis drop, True again once it has resubscribed.
+        return equilibrium_subscribed()
 
     async def _connect_bus_with_retry(
         self,
@@ -96,19 +146,12 @@ class MeshGuardianService:
                 backoff = min(backoff * 2.0, 15.0)
 
     async def _equilibrium_loop(self) -> None:
-        self._equilibrium_task_alive = True
-        try:
-            await watch_equilibrium(
-                self.bus,
-                self.settings.channel_equilibrium_snapshot,
-                self._equilibrium_queue,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("equilibrium watch failed")
-        finally:
-            self._equilibrium_task_alive = False
+        await watch_equilibrium(
+            self.bus,
+            self.settings.channel_equilibrium_snapshot,
+            self._equilibrium_queue,
+            stop_event=self._stop,
+        )
 
     async def _drain_equilibrium(self) -> None:
         while not self._equilibrium_queue.empty():
@@ -211,3 +254,384 @@ class MeshGuardianService:
             except Exception:
                 logger.exception("probe loop error")
             await asyncio.sleep(self.settings.probe_interval_sec)
+
+    # --- host-wide stability checks (see app/stability.py) -------------------
+
+    async def _stability_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self.run_stability_checks(time.time())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("stability check cycle error")
+            await asyncio.sleep(self.settings.stability_interval_sec)
+
+    async def run_stability_checks(self, now: float) -> list[StabilityAlert]:
+        """One cycle. Each check is isolated: one unreachable source (FalkorDB
+        down, docker socket missing) must not blind the others."""
+        if self._stability_started_at is None:
+            self._stability_started_at = now
+        alerts: list[StabilityAlert] = []
+        summary: dict[str, object] = {}
+        checks = (
+            ("containers", self._check_crash_loops),
+            ("stopped", self._check_stopped_containers),
+            ("bus_redis", self._check_bus_redis),
+            ("falkordb", self._check_falkordb),
+        )
+        for name, check in checks:
+            try:
+                found, info = await check(now)
+                alerts.extend(found)
+                summary[name] = info
+            except Exception as exc:
+                summary[name] = f"error:{type(exc).__name__}"
+                logger.warning("stability check %s failed: %s", name, exc)
+        # First cycle, then hourly at the default interval: live evidence the
+        # loop is running and what it reads, without a line every minute.
+        if self._stability_cycles % 60 == 0 or alerts:
+            logger.info("stability cycle %s alerts=%d", summary, len(alerts))
+        self._stability_cycles += 1
+        delivered = await self._publish_alerts(alerts, now, heartbeat_name="stability")
+        self._stopped.confirm(delivered)
+        return alerts
+
+    async def _publish_alerts(
+        self, alerts: list[StabilityAlert], now: float, *, heartbeat_name: str
+    ) -> list[StabilityAlert]:
+        """The one path to a Hub card for host-wide checks: AlertGate dedup, then notify. Shared
+        by the stability and GPU loops, so a key seen by both still yields one card per window
+        (admit() never awaits, so concurrent loops cannot interleave inside it). Returns the
+        alerts whose card notify accepted."""
+        delivered: list[StabilityAlert] = []
+        for alert in self._alert_gate.admit(alerts, now):
+            logger.warning("%s alert kind=%s subject=%s: %s", heartbeat_name, alert.kind, alert.subject, alert.message)
+            ok = await asyncio.to_thread(
+                self.attention.publish_transition,
+                service_id=alert.subject,
+                heartbeat_name=heartbeat_name,
+                event={
+                    "severity": alert.severity,
+                    "message": alert.message,
+                    "context": {"event": alert.kind, **alert.context},
+                },
+            )
+            if ok:
+                delivered.append(alert)
+        return delivered
+
+    # --- GPU actuation watch (see app/gpu_watch.py) --------------------------
+
+    def _gpu_config_path(self) -> Path:
+        # The live repo checkout, not the copy baked into this image: the controller is compared
+        # against what main says now.
+        return Path(self.settings.orion_repo_root) / "config" / "gpu_pool.yaml"
+
+    async def _load_gpu_config(self, now: float):
+        """The live pool config, or None after raising a card. This image's own orion package
+        parses it, so a guardian image older than the YAML fails here the same way the controller
+        did -- say so instead of going quietly blind."""
+        path = self._gpu_config_path()
+        try:
+            cfg = await asyncio.to_thread(load_pool_config, path)
+        except Exception as exc:
+            self._gpu_config_failed_at = now
+            logger.warning("gpu watch cannot load %s: %s", path, exc)
+            await self._publish_alerts([StabilityAlert(
+                key="gpu_watch_config_unloadable",
+                subject="orion-mesh-guardian",
+                kind="gpu_watch_config_unloadable",
+                severity="error",
+                message=(
+                    f"The mesh guardian cannot read {path} ({type(exc).__name__}), so it cannot check "
+                    f"the GPU lane controllers. If the file exists, this guardian's image predates it: "
+                    f"rebuild orion-mesh-guardian from main."
+                ),
+                context={"path": str(path), "error": f"{type(exc).__name__}: {exc}"[:500]},
+            )], now, heartbeat_name="gpu_watch")
+            return None
+        self._gpu_config_failed_at = None
+        self._gpu_targets = role_targets(cfg)
+        return cfg
+
+    async def _gpu_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self.run_gpu_probes(time.time())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("gpu probe cycle error")
+            await asyncio.sleep(self.settings.gpu_probe_interval_sec)
+
+    async def run_gpu_probes(self, now: float) -> list[StabilityAlert]:
+        """One ACTIVE cycle: the digest probe for every role with a launch block. Never ``status``
+        (its replay can move the pool's belief; orion/gpu_pool/actuator_probe.py). Each probe is
+        isolated: one failing probe must not skip the others."""
+        cfg = await self._load_gpu_config(now)
+        if cfg is None:
+            return []
+        alerts: list[StabilityAlert] = []
+        summary: dict[str, str] = {}
+        for role, target in self._gpu_targets.items():
+            for check in GPU_WATCH_CHECKS:
+                try:
+                    verdict = await actuator_probe.probe(
+                        self.bus, cfg, role, check, self.settings.gpu_probe_wait_sec,
+                        source=f"{self.settings.service_name}:gpu-watch",
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    summary[f"{role}/{check}"] = f"error:{type(exc).__name__}"
+                    logger.warning("gpu probe %s %s failed: %s", role, check, exc)
+                    continue
+                summary[f"{role}/{check}"] = verdict.kind if verdict.ok else f"{verdict.kind}:{verdict.reason}"
+                alerts.extend(self._gpu_active.observe(target, verdict))
+        if self._gpu_cycles % 12 == 0 or alerts:  # first cycle, then hourly at the default interval
+            logger.info("gpu probe cycle %s alerts=%d", summary, len(alerts))
+        self._gpu_cycles += 1
+        await self._publish_alerts(alerts, now, heartbeat_name="gpu_watch")
+        return alerts
+
+    async def _gpu_event_loop(self) -> None:
+        """PASSIVE: the pool's actuate_refused events. Re-subscribes after any error."""
+        while not self._stop.is_set():
+            try:
+                async with self.bus.subscribe(GPU_POOL_EVENT_CHANNEL) as pubsub:
+                    async for raw in self.bus.iter_messages(pubsub):
+                        payload = _envelope_payload(raw)
+                        if payload is not None:
+                            await self.handle_gpu_pool_event(payload, time.time())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("gpu pool event watch failed; re-subscribing")
+            await asyncio.sleep(5.0)
+
+    async def handle_gpu_pool_event(self, payload: dict, now: float) -> list[StabilityAlert]:
+        if payload.get("event") != "actuate_refused":
+            return []
+        failed = self._gpu_config_failed_at
+        if not self._gpu_targets and (failed is None or now - failed >= self.settings.gpu_probe_interval_sec):
+            await self._load_gpu_config(now)  # host names for the card; alerts still fire without
+        alerts = self._gpu_refusals.observe(payload, now, self._gpu_targets)
+        await self._publish_alerts(alerts, now, heartbeat_name="gpu_watch")
+        return alerts
+
+    async def _check_crash_loops(self, now: float) -> tuple[list[StabilityAlert], object]:
+        """This host's docker socket plus every remote host's census from the latest equilibrium
+        snapshot, all host-qualified ("<host>/<name>@<id12>") into one tracker. Either source
+        failing must not blind the other: a dead local socket still lets circe through, and a
+        blind remote host is its own card, never zero restarts."""
+        if self._stability_started_at is None:
+            self._stability_started_at = now
+        local = self._local_node()
+        counts: dict[str, int] = {}
+        info: dict[str, object] = {}
+        try:
+            counts.update(qualify(local, await _docker_restart_counts()))
+            info["local"] = len(counts)
+        except Exception as exc:
+            info["local"] = f"error:{type(exc).__name__}"
+            logger.warning("stability local docker restart counts failed: %s", exc)
+        alerts: list[StabilityAlert] = []
+        if self.settings.remote_container_watch_enabled:
+            snapshot = self.latest_snapshot
+            census = remote_restart_counts(
+                snapshot.services if snapshot is not None else [],
+                expected_hosts=self.settings.remote_container_host_list(),
+                local_node=local,
+                now=now,
+                watching_since=self._stability_started_at,
+                stale_after_sec=self.settings.remote_container_stale_sec,
+            )
+            counts.update(census.counts)
+            alerts += census.alerts
+            info["remote"] = {h: f"{age:.0f}s" for h, age in census.fresh_hosts.items()}
+            if census.alerts:
+                info["blind"] = [a.subject for a in census.alerts]
+            read_hosts = set(census.fresh_hosts)
+        else:
+            read_hosts = set()
+        if not isinstance(info.get("local"), str):
+            read_hosts.add(local)
+        info["containers"] = len(counts)
+        info["max_restarts"] = max(counts.values(), default=0)
+        # Only hosts actually read this cycle may drop histories: a socket error or a blind host
+        # must not reset another host's (or its own) restart history.
+        return alerts + self._crash_loops.observe(counts, now, read_hosts=read_hosts), info
+
+    async def _check_stopped_containers(self, now: float) -> tuple[list[StabilityAlert], object]:
+        """This host's containers that should run and do not (stability.stopped_containers). Own
+        check, own docker read: it only inspects the few non-running containers, and a failure
+        here must not blind the crash-loop check."""
+        if not self.settings.stopped_container_watch_enabled:
+            return [], "disabled"
+        containers = await _docker_container_states()
+        alerts = self._stopped.observe(containers, now, grace_sec=self.settings.stopped_container_grace_sec)
+        stopped = sum(1 for c in containers if c.status in STOPPED_STATES)
+        return alerts, {"containers": len(containers), "not_running": stopped}
+
+    def _local_node(self) -> str:
+        node = (self.settings.node_name or "").strip()
+        return node if node and node != "unknown" else "local"
+
+    async def _check_bus_redis(self, now: float) -> tuple[list[StabilityAlert], object]:
+        redis = self.bus.redis  # raises RuntimeError when not connected
+        stats = await redis.info("stats")
+        total = int(stats.get("client_output_buffer_limit_disconnections", 0))
+        alerts = slow_consumer_alert("bus-redis", self._bus_disconnects.observe(total), total)
+        persistence = await redis.info("persistence")
+        alerts += snapshot_alerts("bus-redis", persistence, save_config=await _save_config(redis), now=now)
+        return alerts, {"disconnections": total, "bgsave_sec": persistence.get("rdb_current_bgsave_time_sec")}
+
+    async def _check_falkordb(self, now: float) -> tuple[list[StabilityAlert], object]:
+        if self._falkordb is None:
+            import redis.asyncio as aioredis
+
+            self._falkordb = aioredis.Redis.from_url(
+                self.settings.falkordb_uri,
+                socket_timeout=5.0,
+                socket_connect_timeout=5.0,
+                decode_responses=True,
+            )
+        persistence = await self._falkordb.info("persistence")
+        alerts = snapshot_alerts(
+            "falkordb", persistence, save_config=await _save_config(self._falkordb), now=now
+        )
+        info: dict[str, object] = {"bgsave_sec": persistence.get("rdb_current_bgsave_time_sec")}
+        # Own try: a missing/renamed graph or a query timeout must not discard
+        # the snapshot alerts above (the stuck-save detector is the critical one).
+        try:
+            result = await self._falkordb.execute_command(
+                "GRAPH.RO_QUERY", self.settings.falkordb_bus_graph, "MATCH (c:Channel) RETURN count(c)"
+            )
+            channel_nodes = int(result[1][0][0]) if result and len(result) > 1 and result[1] else 0
+            # The live repo checkout (mounted at its host path), not the copy baked
+            # into this image: a stale baked catalog is the exact failure this detects.
+            repo_catalog = Path(self.settings.orion_repo_root) / "orion" / "bus" / "channels.yaml"
+            catalog_size = len(
+                await asyncio.to_thread(load_channel_catalog_names, repo_catalog if repo_catalog.is_file() else None)
+            )
+            alerts += graph_inflation_alert(self.settings.falkordb_bus_graph, channel_nodes, catalog_size)
+            info.update(channel_nodes=channel_nodes, catalog=catalog_size)
+        except Exception as exc:
+            info["graph"] = f"error:{type(exc).__name__}"
+            logger.warning("stability graph-inflation check failed: %s", exc)
+        return alerts, info
+
+
+def _envelope_payload(raw) -> dict | None:
+    """A pub/sub message -> its envelope's payload dict, or None."""
+    data = raw.get("data") if isinstance(raw, dict) else raw
+    if isinstance(data, (bytes, bytearray)):
+        data = data.decode("utf-8", "replace")
+    try:
+        env = json.loads(data) if isinstance(data, str) else data
+    except (TypeError, ValueError):
+        return None
+    payload = env.get("payload") if isinstance(env, dict) else None
+    return payload if isinstance(payload, dict) else None
+
+
+async def _save_config(redis) -> str:
+    cfg = await redis.config_get("save")
+    value = cfg.get("save", cfg.get(b"save", ""))
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+async def _docker_restart_counts(socket_path: str = "/var/run/docker.sock", transport=None) -> dict[str, int]:
+    """Docker Engine API over the mounted socket, not the docker CLI: the CLI
+    is not in this image (Debian's docker.io package no longer ships it)."""
+    import httpx
+
+    transport = transport or httpx.AsyncHTTPTransport(uds=socket_path)
+    async with httpx.AsyncClient(transport=transport, base_url="http://docker", timeout=10.0) as client:
+        resp = await client.get("/containers/json", params={"all": "true"})
+        resp.raise_for_status()
+        lines = []
+        for container in resp.json():
+            detail = await client.get(f"/containers/{container['Id']}/json")
+            if detail.status_code != 200:
+                continue  # removed between list and inspect
+            body = detail.json()
+            lines.append(f"{body['Id']} {body['Name']} {body['RestartCount']}")
+    return _parse_restart_counts("\n".join(lines))
+
+
+def _parse_docker_time(value: object) -> float | None:
+    """Docker's RFC 3339 (nanosecond) timestamp -> epoch seconds. Docker writes
+    0001-01-01T00:00:00Z for "never"; that, and anything unparsable, is None."""
+    from datetime import datetime
+
+    text = str(value or "")
+    if not text or text.startswith("0001-"):
+        return None
+    text = text.replace("Z", "+00:00")
+    head, dot, rest = text.partition(".")
+    if dot:  # trim the fraction to microseconds; fromisoformat refuses nanoseconds
+        frac = rest[: len(rest) - len(rest.lstrip("0123456789"))]
+        text = f"{head}.{frac[:6]}{rest[len(frac):]}"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+async def _docker_container_states(socket_path: str = "/var/run/docker.sock", transport=None) -> list[ContainerState]:
+    """Every container on this host. Running ones from the list call only; the non-running
+    ones are inspected for their restart policy and FinishedAt (the list does not carry them)."""
+    import httpx
+
+    transport = transport or httpx.AsyncHTTPTransport(uds=socket_path)
+    out: list[ContainerState] = []
+    async with httpx.AsyncClient(transport=transport, base_url="http://docker", timeout=10.0) as client:
+        resp = await client.get("/containers/json", params={"all": "true"})
+        resp.raise_for_status()
+        for row in resp.json():
+            labels = row.get("Labels") or {}
+            project = labels.get("com.docker.compose.project")
+            service = labels.get("com.docker.compose.service")
+            workdir = labels.get("com.docker.compose.project.working_dir") or ""
+            # Only a services/<name> stack is a valid safe_docker_build.sh argument.
+            parent = workdir.rstrip("/").rsplit("/", 2)
+            if len(parent) < 2 or parent[-2] != "services":
+                workdir = ""
+            names = row.get("Names") or ["/?"]
+            status = str(row.get("State") or "")
+            policy, since = "", None
+            if status in STOPPED_STATES:
+                detail = await client.get(f"/containers/{row['Id']}/json")
+                if detail.status_code != 200:
+                    continue  # removed between list and inspect
+                body = detail.json()
+                policy = str(((body.get("HostConfig") or {}).get("RestartPolicy") or {}).get("Name") or "")
+                if status == "exited":
+                    since = _parse_docker_time((body.get("State") or {}).get("FinishedAt"))
+                else:
+                    since = float(row["Created"]) if row.get("Created") else _parse_docker_time(body.get("Created"))
+            out.append(
+                ContainerState(
+                    id=str(row["Id"]),
+                    name=str(names[0]).lstrip("/"),
+                    status=status,
+                    restart_policy=policy,
+                    since=since,
+                    compose_service=f"{project}/{service}" if project and service else None,
+                    compose_dir=workdir.rstrip("/").rsplit("/", 1)[-1] or None,
+                )
+            )
+    return out
+
+
+def _parse_restart_counts(text: str) -> dict[str, int]:
+    """``<id> /<name> <count>`` lines -> {"<name>@<id12>": count}. Keyed by id
+    too, so a container recreated under the same name starts a new history."""
+    counts: dict[str, int] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2].isdigit():
+            counts[f"{parts[1].lstrip('/')}@{parts[0][:12]}"] = int(parts[2])
+    return counts

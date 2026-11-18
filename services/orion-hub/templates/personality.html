@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Personality</title>
+<style>
+/* Theme tokens shared with templates/gpu_pool.html so the tab matches Hub in both modes. */
+:root {
+  color-scheme: light;
+  --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --ink-muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --hairline: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --good-text: #006300;
+  --shadow: 0 1px 2px rgba(11,11,11,0.05), 0 4px 12px rgba(11,11,11,0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --good-text: #0ca30c;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --good-text: #0ca30c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--plane); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1200px; margin: 0 auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 14px; margin: 0 0 8px; }
+.muted { color: var(--ink-muted); font-size: 12px; }
+.err { color: var(--critical); }
+.panel { background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px; padding: 12px; box-shadow: var(--shadow); min-width: 0; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline); font-size: 11px; }
+.big { font-size: 16px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+button, input { font: inherit; color: var(--ink); background: var(--plane); border: 1px solid var(--axis); border-radius: 8px; padding: 4px 10px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--ink-2); }
+.choice, .tendency { border-top: 1px solid var(--hairline); padding: 8px 0; }
+.choice:first-child, .tendency:first-child { border-top: 0; }
+.picked { font-weight: 600; margin: 2px 0; word-break: break-word; }
+.picked.declined { color: var(--ink-2); font-style: italic; }
+.passed, .tendency-label { word-break: break-word; }
+.tendency-label { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.badge.prime { border-color: var(--series-1); color: var(--series-1); }
+ul.examples, details.more ul { margin: 4px 0; padding-left: 18px; }
+ul.examples li, details.more li { word-break: break-word; }
+details.more summary { cursor: pointer; color: var(--ink-2); font-size: 12px; }
+.verdict-row { margin-top: 6px; }
+button.verdict.no:hover { border-color: var(--critical); }
+button:disabled { opacity: 0.5; cursor: default; }
+.tendency.retired { opacity: 0.6; }
+.arm { margin: 2px 0; }
+details.group { border: 1px solid var(--hairline); border-radius: 8px; padding: 6px 8px; margin-top: 8px; }
+details.group summary { cursor: pointer; font-weight: 600; }
+</style>
+</head>
+<body>
+<main id="personalityRoot">
+  <header>
+    <h1>Orion's personality</h1>
+    <span class="muted">Built only from choices Orion makes: what Orion picked, and what Orion passed over.</span>
+    <span class="row" style="margin-left:auto">
+      <button id="pRefresh" type="button">Refresh</button>
+    </span>
+  </header>
+  <div id="pStatus" class="muted" role="status"></div>
+
+  <section class="panel">
+    <h2>Recent choices</h2>
+    <div class="muted">The last 30 choices, newest first. Before Orion picks, the market (Orion's own ranking of what is worth doing next) puts the options in order: "ranked #1" is its first pick.</div>
+    <div id="pChoices"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Tendencies</h2>
+    <div class="muted">Kinds of choice Orion keeps making. A "No" retires the tendency: Orion stops leaning on it. You can take it back below.</div>
+    <div class="muted err" id="pTendencyWarn"></div>
+    <div class="muted" id="pTendencyFlash" role="status"></div>
+    <div id="pTendencies"></div>
+    <details class="group" id="pSaidNoGroup">
+      <summary>You said no to <span class="muted" id="pSaidNoCount"></span></summary>
+      <div class="muted">Tendencies you retired. "Changed my mind" brings one back as a new, still-forming tendency.</div>
+      <div id="pSaidNo"></div>
+    </details>
+  </section>
+
+  <section class="panel">
+    <h2>Is it changing anything?</h2>
+    <div class="muted">The market decides some things with Orion's tendencies counted and some without them, so the two groups can be compared.</div>
+    <div id="pArmsSummary"></div>
+    <div id="pArms"></div>
+  </section>
+</main>
+<script src="/static/js/personality.js?v={{HUB_UI_ASSET_VERSION}}"></script>
+</body>
+</html>

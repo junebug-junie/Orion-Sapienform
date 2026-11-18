@@ -19,10 +19,33 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 2. **GPU visibility:** `CUDA_VISIBLE_DEVICES` and `VISION_DEVICES` must list indices the container can see. NVML (`nvidia-ml-py`) must work for VRAM-aware scheduling.
 3. **Bus:** When `ORION_BUS_ENABLED=true`, Redis must be reachable before `/ready` goes green.
 4. **VRAM floors:** Tune `VISION_VRAM_RESERVE_MB`, `VISION_VRAM_SOFT_FLOOR_MB`, `VISION_VRAM_HARD_FLOOR_MB` to match co-hosted workloads.
+   The admission check is `nvml_free + own_reusable - reserve >= hard_floor`, where `own_reusable` is this process's own PyTorch cache (`memory_reserved - memory_allocated`) on that device. NVML counts that cache as used; without it the service refuses its own tasks once the cache grows (2026-10-15). Memory held by other processes still counts as used. Every refusal carries the breakdown in `error` / `meta.refusal_reason`, and `GET /health` → `scheduler` reports `gpu_hard_floor_refusals_total`, `gpu_hard_floor_refusal_streak`, `last_refusal_reason`, `last_refusal_at`, `last_admit_at`.
 5. **Concurrency:** `VISION_MAX_INFLIGHT`, `VISION_MAX_INFLIGHT_PER_GPU`, `VISION_QUEUE_WHEN_BUSY`, `VISION_MAX_QUEUE` — queue full returns `error_code=queue_full` on the bus reply and in structured logs.
 6. **Timeouts:** `VISION_TIMEOUT_S` wraps the threaded `VisionRunner.execute` path (wall-clock); logs include `scheduler_total_s`, estimated `queue_wait_est_s`, and `inference_s` when available.
 7. **Models:** Override `VISION_VLM_MODEL_ID` per node for your VRAM budget — default (`Salesforce/blip-image-captioning-base`) is sized for a shared/small card (e.g. athena's P4). `model_manager.py`'s `load_vlm_captioner` also supports BLIP2, Qwen2-VL, and Qwen2.5-VL model_ids (selected by substring match — see `.env_example` comment); Qwen2-VL-class models need real headroom (~4-5GB fp16) and route through a chat-template prompt, unlike BLIP's plain image+text call. Enable only profiles you need via `VISION_ENABLED_PROFILES`.
-8. **Caption quality:** VLM captions use a factual prompt and `caption_sanitize` rejects prompt-echo and stoplist garbage before artifacts are stored. Rejected captions append `caption_rejected:{reason}` to task meta warnings.
+8. **Caption quality:** the caption prompt is chosen by model family (`vlm_family.caption_prompt_for`): chat-template VLMs (Qwen2-VL/Qwen2.5-VL) get the factual `CAPTION_PROMPT`; BLIP/BLIP2 and unrecognized models get no prompt, because they continue text rather than follow it (handed the prompt, BLIP-base echoes it back -- every cam0 caption was blank until 2026-10-08 for this reason). `caption_sanitize` then rejects prompt-echo, too-short, stoplist and repetition garbage. A rejected caption publishes `{"text": "", "confidence": 0.0, "rejected_reason": "<reason>"}` and appends `caption_rejected:{reason}` to task warnings; empty text is never published at confidence 1.0.
+
+## GPU placement on athena (2026-10-15)
+
+The shared vision host now runs on athena's Tesla T10 (16GB, PCI bus id
+`00000000:D8:00.0`), next to the qwen lane below. Whisper-tts and
+orion-vision-edge moved to the Tesla P4 (`00000000:86:00.0`). Text below
+that says the shared instance is "on athena's P4" is history.
+
+The card is pinned by `docker-compose.yml`'s `device_ids` from
+`VISION_HOST_GPU_DEVICE_ID` (host PCI bus id, no default). The container
+then sees one card: NVML index 0 and torch `cuda:0` are the same card, so
+`CUDA_VISIBLE_DEVICES=0` and `VISION_DEVICES=cuda:0` stay container-relative.
+The scheduler maps each `cuda:N` through `CUDA_VISIBLE_DEVICES` to its NVML
+index (`gpu.torch_to_nvml_index`), so the VRAM gate checks the card the work
+runs on even in a container that sees several cards.
+
+Check the pin from the host:
+
+```bash
+docker inspect orion-athena-vision-host --format '{{json .HostConfig.DeviceRequests}}'
+nvidia-smi --query-compute-apps=gpu_bus_id,pid,used_memory --format=csv
+```
 
 ## "Circe" Qwen2-VL lane (`docker-compose.circe-qwen.yml`)
 
@@ -36,6 +59,32 @@ historical labels now, kept deliberately -- see
 bus channel and env prefix is a contract change, out of scope for a location
 move. Read every "circe" reference below as historical unless it says
 otherwise.
+
+**2026-10-15: walkway captions.** The lane now has a second caller: the frame
+router's walkway `caption_dispatch` (`config/vision_frame_router.yaml`). Those
+`caption_frame` tasks carry `request.caption_prompt` (honored only on
+instruction-tuned VLMs; on BLIP the task returns no caption with
+`rejected_reason="caller_prompt_unsupported"` instead of BLIP's own caption,
+see `vlm_family.resolve_caption_prompt`)
+and `request.caption_null_answers` (an exact "nothing notable" reply becomes
+`caption = {text: "", confidence: 0.0, rejected_reason: "null_answer"}`).
+Since 2026-10-16 they also carry `request.caption_crop_boxes` (frame-pixel
+`[x1, y1, x2, y2]` detector boxes) and `request.caption_crop_pad`: the host
+captions the top-scoring box plus any box touching it, padded evenly on all
+sides and grown to at least 448 px a side (`app/caption_crop.py`), instead of
+the whole 2560x1920 frame shrunk to `VISION_VLM_QWEN_MAX_PIXELS`. The crop
+used is returned as `crop_box`; it is `null` when there were no valid boxes
+or the crop would cover 80%+ of the frame (whole frame captioned). A rejected
+caller-prompted caption logs the model's raw reply
+(`caption_frame rejected reason=... raw=...`).
+They address the frame by `image_path`, so the compose file mounts
+`/mnt/telemetry/vision/frames` read-only, and the lane's artifact broadcast is
+opened for `stream_id=walkway` only (`VISION_ARTIFACT_BROADCAST_STREAMS` /
+`CIRCE_QWEN_VISION_ARTIFACT_BROADCAST_STREAMS`, `main.artifact_broadcast_allowed`)
+so orion-vision-window receives them; dream re-observations carry no
+stream_id and still never broadcast. The scheduler now queues up to 2 tasks
+(`VISION_QUEUE_WHEN_BUSY=true`, `VISION_MAX_QUEUE=2`) so the two callers wait
+for each other instead of being refused.
 
 A second, independent instance of this same service running
 `Qwen/Qwen2-VL-2B-Instruct` instead of the shared athena instance's
@@ -99,13 +148,19 @@ harmless only because the values happened to coincide — fixed for the same
 reason as round 1, not left as a known-benign exception now that the
 principle above is stated as a blanket "no exceptions."
 
-**Bring up (from a worktree ON ATHENA, never the shared checkout):**
+**Bring up (2026-10-20: from the clean primary main checkout, like every live
+deploy).** The post-pull rebuild redeploys this lane on its own whenever
+`services/orion-vision-host/` changes and the lane is running
+(`rebuild_affected_services.py --running-extra-compose`). Before that it never
+did, and the lane ran its 2026-10-16 image and env for days, dropping every
+doorbell caption. By hand, the wrapper's `--compose-file` flag targets this file
+INSTEAD of `docker-compose.yml` (never merged with it), with every deploy check:
 
-Not via `scripts/safe_docker_build.sh` -- that wrapper hardcodes
-`-f services/$SERVICE/docker-compose.yml` and has no hook for a second
-compose file for the same service; passing `-f` yourself would merge both
-files and risk touching the main vision-host service too. Run docker
-compose directly:
+```bash
+scripts/safe_docker_build.sh orion-vision-host --compose-file docker-compose.circe-qwen.yml up -d --build
+```
+
+The equivalent raw command, for reference:
 
 ```bash
 # Confirm the GPU is actually free RIGHT NOW -- do not trust an earlier
@@ -308,11 +363,11 @@ belong to":
 
 | Family | `model_id` match | Prompt / decode |
 |--------|------------------|------------------|
-| BLIP2 | contains `blip2` | `processor(images=, text=)`, full-sequence decode |
+| BLIP2 | contains `blip2` | `processor(images=, text=)`, full-sequence decode; captions sent with no text |
 | BLIP | contains `blip` (not `blip2`) | same as above |
 | Qwen2-VL | contains `qwen2-vl`/`qwen2_vl` | `apply_chat_template` + image, decode sliced by input token length |
 | Qwen2.5-VL | contains `qwen2.5-vl`/`qwen2_5_vl` | same chat-template path as Qwen2-VL |
-| anything else | — | generic `AutoModelForVision2Seq`, BLIP-style call shape |
+| anything else | — | generic `AutoModelForVision2Seq`, BLIP-style call shape; captions sent with no text |
 
 The chat-template path exists because a chat-tuned VLM echoes its whole
 templated prompt back through `generate()` — decoding the full sequence (as
@@ -320,6 +375,66 @@ BLIP correctly can) would hand the caller the prompt glued onto the real
 answer. `_generate_vlm_text` slices by real input token length instead of
 string-matching a prefix off the decoded text, which cannot reliably strip
 chat special tokens.
+
+## Tiled detection (walkway, 2026-10-15)
+
+The GroundingDINO processor resizes every image to 800 px on the short side
+(1333 max long side). The walkway frame is 2560x1920, so a person on the far
+sidewalk (~50 px tall at full resolution) reaches the model at ~21 px and is
+mostly missed. When a detect request sets `detect_tiles: true` (only the
+router's walkway `tiled_detect` block does, at most one frame per
+`min_seconds_between`), `_run_detect_grounding_dino` also runs the detector on
+overlapping crops of the full-resolution frame (`app/tiling.py`):
+
+1. Tile boxes are shifted into full-frame pixels. A box touching an interior
+   tile edge is "cut".
+2. A cut box mostly inside a same-label whole box is dropped (fragment).
+3. Cut boxes of one label from two tiles that overlap are unioned (an object
+   split by a seam).
+4. Per-label NMS over whole-frame + tile boxes, then `max_detections`.
+
+Everything downstream (zones, crop embeddings, faces, thumbnails, stationary
+rule, crop observations) sees ordinary full-frame boxes. The artifact gains a
+`detect_tiles` block (`tiles`, `tiles_s`, `full_frame_s`, raw/merged counts),
+and each tiled task logs one `[DETECT_TILES]` line with the per-pass timing.
+Frames whose short side is below `tile_min_short_side_px` are never tiled.
+
+Knobs (`retina_detect_open_vocab` params in `config/vision_profiles.yaml`;
+a dict `detect_tiles: {grid: [3, 2], ...}` in the request overrides them):
+`tile_grid`, `tile_overlap`, `tile_region` (normalized sub-rectangle to tile),
+`tile_include_full_frame`, `tile_batch` (one batched forward instead of
+sequential passes; off: no gain on CPU, and ~4x activation memory on the P4),
+`tile_min_short_side_px`, `tile_contain_frac`, `tile_seam_merge_frac`.
+
+Eval on real frames (frames are never committed -- they show neighbours):
+`evals/walkway_tiled_detection_eval.py <frames_dir> --out <dir> [--layout
+name:cols,rows,overlap[,x0,y0,x1,y1]] [--draw]`; see its docstring for the
+read-only docker command. Results: `docs/superpowers/pr-reports/
+2026-10-15-walkway-tiled-detection-pr.md`.
+
+## Detection cut-offs per camera and label (2026-10-29)
+
+The detector keeps a box only when its score reaches a cut-off. Before this
+change one cut-off (`score_threshold: 0.35`) served every camera and every
+label. Now `retina_detect_open_vocab` also reads `box_threshold_by_stream` in
+`config/vision_profiles.yaml`:
+
+```yaml
+box_threshold_by_stream:
+  walkway:
+    default: 0.35   # optional
+    vehicle: 0.35   # optional, one label
+```
+
+The request's `stream_id` picks the entry. The detector runs once at the
+lowest cut-off that applies, then each box must reach its own label's
+cut-off (`app/box_thresholds.py`). A label not listed gets the stream's
+`default`, else `score_threshold`. Invalid values are logged and ignored.
+Duplicate suppression is unchanged. The shipped values equal today's 0.35
+everywhere; the evidence for that is in
+`docs/superpowers/pr-reports/2026-10-29-vision-blind-detector-watch-pr.md`.
+The config is copied into the image, so a change needs a rebuild, not a
+restart.
 
 ## Crop embeddings (walkway individuals)
 
@@ -339,8 +454,21 @@ L2-normalized inline `embedding`; the detect artifact also carries
 
 - The camera name comes from task meta `stream_id` (set by the frame router),
   copied into the request by `VisionRunner._request_with_stream_id`.
-- **Patio rule:** a box in a no-embed zone (`config/vision_zones.yaml`,
-  `embed: false`) is never cropped; it keeps its zone and no vector.
+- **No-embed zones (generic):** a box in a no-embed zone (`config/vision_zones.yaml`,
+  `embed: false`) is never cropped; it keeps its zone and no vector. Since
+  2026-10-15 no zone uses this -- Juniper lifted the patio rule, so patio
+  boxes get vectors, thumbnails and faces like the rest of the walkway.
+- **Faces (walkway, 2026-10-15):** when the request also sets
+  `want_crop_faces: true` (router `walkway` policy only), each embedded crop in
+  `crop_face_labels` (default `person`) is run through the `identity_face`
+  profile's already-loaded MTCNN + InceptionResnetV1 (`crop_faces`). The most
+  confident face at or above `crop_face_min_prob` (0.95) and
+  `crop_face_min_side_px` (40) adds `face_embedding` (512-d, unit),
+  `face_score` and `face_thumb_ref` (own rate limiter, triggered tier only) to
+  the object. A face failure costs the face, never the crop vector. cam0/carbon
+  have no zones on file, never reach the embed list, and so never get a face
+  here; Juniper's enrolled gallery is not read or written by this path. If the
+  `identity_face` profile is disabled, crops get no face.
 - **Fails closed:** if the zones file is missing or unreadable, no crop is
   embedded at all. The Dockerfile copies `config/vision_zones.yaml` to
   `/app/config/`; override with `VISION_ZONES_PATH` only for local runs.
@@ -351,11 +479,62 @@ L2-normalized inline `embedding`; the detect artifact also carries
   embedder receives, so a no-embed-zone box cannot get one -- is also saved as
   a <=160 px JPEG (quality 70) named by its sha256 under
   `VISION_CROP_THUMB_DIR` (default `/mnt/telemetry/orion-vision-host/crop_thumbs`),
-  and the object gains `thumb_ref = "thumb:<sha256>"`. The host prunes files
-  not rewritten for `VISION_CROP_THUMB_RETENTION_DAYS` (10, longer than an
-  ask's 7-day life). orion-hub mounts the directory read-only and serves one
+  and the object gains `thumb_ref = "thumb:<sha256>"`. At most one per stream
+  AND label per `VISION_CROP_THUMB_MIN_INTERVAL_SEC` (per label since
+  2026-10-20: one shared slot let vehicles take ~2/3 of all thumbnails).
+  Kept forever: `VISION_CROP_THUMB_RETENTION_DAYS=0` (default since
+  2026-10-20; a positive value prunes files not rewritten for that many days).
+  `VISION_FACE_FRAMES_RETENTION_DAYS=0` keeps face frames forever the same way. orion-hub mounts the directory read-only and serves one
   thumbnail by hash at `/api/vision/crop-thumbs/<sha256>`. Empty dir disables.
-- Test: `tests/test_crop_embeddings_patio.py`, `tests/test_crop_thumbnails.py` (embedder mocked).
+- Test: `tests/test_crop_embeddings_patio.py`, `tests/test_crop_thumbnails.py`,
+  `tests/test_crop_faces.py` (embedder and face models mocked).
+
+### OSNet shadow body vector (2026-10-16)
+
+Juniper approved storing a person re-identification vector next to the SigLIP
+body vector for about a week, so the two can be scored against each other
+(`services/orion-sql-writer/evals/run_osnet_vs_siglip_eval.py`). **Shadow
+only:** the individuals matcher in orion-sql-writer never reads it, so
+nothing about who a crop is assigned to changes.
+
+- **What:** every embedded crop whose label is `person` also gets
+  `osnet_embedding` (512-d, unit) and `osnet_model_id`
+  (`osnet_ain_x1_0:ms_d_c:<sha12>`), from the same crop pixels SigLIP saw.
+  Torchreid's test transform: resize to 256 x 128, ImageNet mean/std, fp32.
+- **Model:** OSNet-AIN x1.0, Torchreid model zoo multi-source checkpoint
+  (MSMT17 + DukeMTMC-reID + CUHK03), classifier head stripped, as published at
+  a pinned revision of `huggingface.co/LibreYOLO/LibreReID-osnet` (MIT). The
+  network is vendored in `app/osnet_ain.py` (Torchreid source, MIT); the
+  `torchreid` 0.2.5 sdist on PyPI is a third-party repackaging that needs a
+  Cython build and pulls opencv-python/matplotlib/tensorboard.
+- **Weights:** downloaded at image build to `/app/models/osnet/osnet_ain_x1_0.pt`
+  (`VISION_OSNET_WEIGHTS_PATH`), sha256-checked by the Dockerfile and again by
+  `app/osnet_shadow.py`, loaded with `weights_only=True`. Never in git.
+- **Kill switch:** `VISION_OSNET_SHADOW_ENABLED` (default `true`). Loaded at
+  warm-up only on a host with `embed_image` enabled (not the circe Qwen lane).
+- **Failure is contained:** a missing or wrong weights file, a load error or
+  an inference error costs the OSNet vector only. The SigLIP vector, faces and
+  detections are unchanged. The load is retried at most every 10 minutes.
+- **Measured on the T10 (2026-10-16, built image, throwaway container):**
+  weights 8.4 MB on the GPU; peak allocated 188 MB, reserved 292 MB at a batch
+  of 8 (nvidia-smi delta 310 MiB including allocator slack); 15.5 ms for one
+  crop, 30 ms for a batch of 8 (3.8 ms per crop), while the live captioner
+  shared the card.
+- **Which body model actually runs:** the `embed_image` profile asks for
+  SigLIP2, which does not load under transformers 4.49.0, so the loader falls
+  back to SigLIP v1. That fallback is now visible: an ERROR log line at load,
+  `GET /health` -> `models.body_embedder` (requested vs loaded, the error), a
+  `body_embedder_fallback:<id>` entry in `/ready`'s `degraded_reasons` (does
+  not change `ready`), and `embedding_model_id` on every embedded crop.
+  `/health` -> `models.osnet_shadow` shows OSNet's state, VRAM, vector count
+  and last error; `osnet_shadow_failed` joins `degraded_reasons` when it
+  cannot load.
+- **Deploy last:** migration -> orion-sql-writer -> orion-vision-window ->
+  orion-vision-host. An older window drops the new fields silently (its
+  `VisionObject` ignores unknown keys). The kill switch does not remove the
+  order: `embedding_model_id` is sent on every embedded crop either way.
+- Test: `tests/test_osnet_shadow.py` (the real-weights test runs inside the
+  built image; it skips where the weights are absent).
 
 ## Observability (logs-first)
 

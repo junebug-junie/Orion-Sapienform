@@ -45,8 +45,11 @@ What does **not** change: which model loads (same profile), when it loads (same 
 1. **sql-writer first.** It validates every pool event against `GpuPoolEventV1`, whose event list gains
    `actuation_paused`/`actuation_resumed`. An old sql-writer would drop those rows (the pool keeps working; only the
    history row is lost).
-2. **Migration v3 before the pool.** A 5.7 pool refuses to boot without the two new `gpu_pool_cards` columns
-   (`check_schema`). A pool that will not boot is a full LLM outage (every gateway call leases through it).
+2. **Migration v3 before the pool** (recommended). Until 2026-09-30 a 5.7 pool refused to boot without the two
+   new `gpu_pool_cards` columns, and a pool that will not boot is a full LLM outage (every gateway call leases
+   through it) -- that happened 2026-09-30 09:01-09:09. Since the boot self-heal (services/orion-gpu-pool/README.md,
+   "Boot schema self-heal") the pool adds them itself; if it cannot get the lock it serves degraded and
+   `curl -s localhost:8127/health | jq .schema` says so. Running the file first just makes the boot a no-op.
 3. **The pool**, with `GPU_POOL_MODE=enforce`.
 4. **Hub last.** The Hub builds `GpuPoolControlV1` locally; its new verbs are refused by an old pool's validator.
 5. **circe: nothing.** No change to any launch block or to any config model field, so launch digests are unchanged

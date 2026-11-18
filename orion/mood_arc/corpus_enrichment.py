@@ -14,8 +14,11 @@ shift every signal by its own write-latency, which varies per producer.
 
 Of the ~13 signals the audit named, `fetch_all_series()` (below) only wires in the ones dense
 enough to carry real per-window trajectory information at `fit_encoder.py`'s default
-`window_size`/cadence -- `action_warrant` and `attention_self_model` (heartbeat_mean_ratio +
-per-domain prediction-error). The sparser ones (git/pr/graph_delta, dev_economics,
+`window_size`/cadence -- `attention_self_model` (heartbeat_mean_ratio + per-domain
+prediction-error). `action_warrant` was the other one; since 2026-11-07 (the proposal rung, whose
+frames it was read from, retired) orion-field-digester computes it in-process from the field state
+and writes it straight into each `field_channel_corpus.v1` row, so it no longer needs a join here.
+The sparser ones (git/pr/graph_delta, dev_economics,
 doc_semantic_drift, swear_frequency) are fully implemented and tested here but deliberately
 NOT called by `fetch_all_series()` -- see that function's docstring for why (cadence far
 coarser than the window, empirically confirmed to fail the floor gate when included naively).
@@ -54,7 +57,11 @@ from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 # One (timestamp, {channel_name: value}) entry per real reading, sorted ascending by timestamp.
 TimeSeries = list[tuple[datetime, dict[str, float]]]
 
-_PREDICTION_ERROR_DOMAINS = ("execution", "chat", "biometrics", "bus_synaptic")
+# bus_synaptic removed 2026-11 (PE suite rebuild step 5): node retired, so a
+# retrain must not forward-fill its last pre-retirement value into fresh rows.
+# v4 still names the channel; the scorer 0.0-fills it (known, documented).
+# chat removed 2026-11-13 (step 6) for the same reason: node:substrate.chat retired.
+_PREDICTION_ERROR_DOMAINS = ("execution", "biometrics")
 
 # substrate_codebase_delta_log.domain -> the channel name we train on. Kept
 # distinct from the raw domain string so `git_delta`/`pr_lifecycle_delta`/
@@ -71,38 +78,6 @@ def _fetch(conn, query: str, params: tuple) -> list[tuple]:
     with conn.cursor() as cur:
         cur.execute(query, params)
         return cur.fetchall()
-
-
-def fetch_action_warrant(
-    conn, since: datetime, until: datetime, *, limit: int | None = None
-) -> TimeSeries:
-    """substrate_proposal_frames.proposal_frame_json->>'action_warrant', ~2.1s cadence.
-
-    `limit` (default None -- every existing caller, unaffected): when set,
-    fetches only the `limit` MOST RECENT rows (ORDER BY ... DESC LIMIT) then
-    reverses back to this function's normal ascending-time contract before
-    returning -- for resolve_live_enrichment()'s live per-tick use, which
-    only ever wants the single latest value (review finding, 2026-09-03: an
-    unlimited ~15-minute-window query re-run every ~2s tick, at this
-    channel's own ~2.1s cadence, fetches ~428 rows just to use the newest
-    one). Every field here is single-valued per row (unlike
-    fetch_attention_self_model(), which needs a real lookback window because
-    its two field-groups can land on different rows -- limit is not offered
-    there for that reason), so limit=1 is always correct for "latest",
-    not just an approximation."""
-    query = """
-        SELECT generated_at, (proposal_frame_json ->> 'action_warrant')::float8
-        FROM substrate_proposal_frames
-        WHERE generated_at >= %s AND generated_at <= %s
-          AND (proposal_frame_json ->> 'action_warrant') IS NOT NULL
-        ORDER BY generated_at {order}
-        """
-    if limit is None:
-        rows = _fetch(conn, query.format(order="ASC"), (since, until))
-    else:
-        rows = _fetch(conn, query.format(order="DESC") + " LIMIT %s", (since, until, limit))
-        rows = list(reversed(rows))
-    return [(ts, {"action_warrant": v}) for ts, v in rows if v is not None]
 
 
 def fetch_attention_self_model(conn, since: datetime, until: datetime) -> dict[str, TimeSeries]:
@@ -304,7 +279,6 @@ def fetch_all_series(conn, since: datetime, until: datetime) -> dict[str, TimeSe
     trajectory information inside `fit_encoder.py`'s window (`window_size=30` at ~2s/tick
     default, ~60s span) are included here --
 
-      - action_warrant: ~2.1s cadence, well inside the window.
       - attention_self_model (heartbeat_mean_ratio + per-domain prediction-error): ~30.6s
         cadence -- coarser, but still 1-2 real transitions per window, not constant.
 
@@ -328,24 +302,20 @@ def fetch_all_series(conn, since: datetime, until: datetime) -> dict[str, TimeSe
     attention_self_model contributes 5 SEPARATE entries here (one per field:
     heartbeat_mean_ratio + 4 prediction_error_{domain} channels), not one combined
     "attention_self_model" entry -- see fetch_attention_self_model()'s docstring for why."""
-    return _fetch_action_warrant_and_attention_series(conn, since, until)
+    return _fetch_live_enrichment_series(conn, since, until)
 
 
-def _fetch_action_warrant_and_attention_series(
-    conn, since: datetime, until: datetime, *, action_warrant_limit: int | None = None
-) -> dict[str, TimeSeries]:
+def _fetch_live_enrichment_series(conn, since: datetime, until: datetime) -> dict[str, TimeSeries]:
     """Shared channel-set composition behind both fetch_all_series() (offline
-    batch, unlimited) and resolve_live_enrichment() (live per-tick,
-    action_warrant_limit=1) -- extracted (review finding, 2026-09-03) so the
-    two can't silently drift onto different channel sets if this list is
-    ever revisited (fetch_all_series()'s own docstring already flags that as
-    live, anticipated future work: re-including one of the currently-
-    deferred sparse signals)."""
-    series: dict[str, TimeSeries] = {
-        "action_warrant": fetch_action_warrant(conn, since, until, limit=action_warrant_limit)
-    }
-    series.update(fetch_attention_self_model(conn, since, until))
-    return series
+    batch) and resolve_live_enrichment() (live per-tick) -- extracted (review
+    finding, 2026-09-03) so the two can't silently drift onto different channel
+    sets if this list is ever revisited.
+
+    `action_warrant` left this set on 2026-11-07: it was read from
+    substrate_proposal_frames, and the proposal rung retired (ladder retirement
+    PR 6). orion-field-digester now computes it in-process (app/worker.py) and
+    writes it into the corpus row itself, so neither caller needs to join it."""
+    return dict(fetch_attention_self_model(conn, since, until))
 
 
 def asof_forward_fill(rows: list[FieldChannelCorpusRowV1], series: TimeSeries) -> int:
@@ -406,17 +376,17 @@ def resolve_live_enrichment(
     """Live counterpart to `enrich_corpus()`, added 2026-09-03 for
     `services/orion-field-digester/app/anomaly_scorer.py`'s per-tick scoring loop.
     Resolves the SINGLE latest known value (not a forward-filled per-row series) for
-    each of the 6 live-enrichment channels (`action_warrant`, `heartbeat_mean_ratio`,
-    `prediction_error_{execution,chat,biometrics,bus_synaptic}`) as of `now`, over a
+    each of the live-enrichment channels (`heartbeat_mean_ratio`,
+    `prediction_error_{execution,biometrics}`; bus_synaptic and chat retired 2026-11, so the v4
+    scorer 0.0-fills those two channels) as of `now`, over a
     narrow trailing window -- these are the only phi-v2-audit channels the live
-    scorer's in-process row-building path (`collect_field_channel_pressures()`) does
-    not already produce; every other v4 channel (including all 5 cabinet channels)
+    scorer's in-process row-building path does not already produce (`action_warrant`
+    was a sixth until 2026-11-07; the digester now computes it in-process); every other v4 channel (including all 5 cabinet channels)
     reaches it the same way it reaches `field_channel_corpus.v1`, with no gap.
 
-    `lookback_hours` defaults to 15 minutes -- `action_warrant`'s real cadence is
-    ~2.1s and `attention_self_model`'s is ~30.6s (both live-confirmed in this
-    module's other docstrings and re-queried on essentially every tick here), so 15
-    minutes is ~29x margin over the slower cadence while keeping the query itself
+    `lookback_hours` defaults to 15 minutes -- `attention_self_model`'s real cadence
+    is ~30.6s (live-confirmed in this module's other docstrings), so 15 minutes is
+    ~29x margin over it while keeping the query itself
     cheap and index-bound. Widen only if a live producer gap longer than that is
     actually observed -- this is a reversible keyword default, not a schema/contract
     decision.
@@ -424,25 +394,18 @@ def resolve_live_enrichment(
     A channel with no reading anywhere in [now - lookback_hours, now] is left
     ENTIRELY ABSENT from the returned dict -- never fabricated as 0.0, same
     convention as `asof_forward_fill()`. The caller is responsible for treating a
-    fully-empty return (all 6 channels absent) as worth logging loudly -- it can mean
+    fully-empty return (all 5 channels absent) as worth logging loudly -- it can mean
     the join found nothing at all (wrong table/column, DB unreachable, a real
     producer outage longer than the lookback), not that this tick is calm.
 
-    Uses `_fetch_action_warrant_and_attention_series()` -- the shared composition
-    behind this and `fetch_all_series()` -- with `action_warrant_limit=1`: this
-    function only ever wants the single latest value per channel, so fetching
-    action_warrant's own full ~2.1s-cadence window (up to ~428 rows at the default
-    15-minute lookback) just to discard all but the last one is pure waste (review
-    finding, 2026-09-03). `attention_self_model` is NOT limited the same way -- its
-    two field-groups can land on different rows (see that function's own docstring),
-    so it genuinely needs the real lookback window to find each field's true latest;
-    its own cadence (~30.6s) keeps that window small regardless (~29 rows at the
-    default lookback, not worth optimizing further).
+    Uses `_fetch_live_enrichment_series()` -- the shared composition behind this
+    and `fetch_all_series()`. `attention_self_model` genuinely needs the real
+    lookback window: its two field-groups can land on different rows (see that
+    function's own docstring); its cadence (~30.6s) keeps the window small (~29
+    rows at the default lookback).
     """
     since = now - timedelta(hours=lookback_hours)
-    series_by_name = _fetch_action_warrant_and_attention_series(
-        conn, since, now, action_warrant_limit=1
-    )
+    series_by_name = _fetch_live_enrichment_series(conn, since, now)
     latest: dict[str, float] = {}
     for series in series_by_name.values():
         if not series:

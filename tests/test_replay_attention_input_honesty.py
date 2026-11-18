@@ -23,12 +23,12 @@ gw = _load("replay_llm_inference_failure_window")
 T0 = datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc)
 
 
-def test_staleness_replay_moves_top1_off_a_stale_chat_reading(tmp_path) -> None:
+def test_staleness_replay_moves_top1_off_a_stale_reading(tmp_path) -> None:
     rows = []
     for i in range(3):
         gen = T0 + timedelta(minutes=i)
         rows.append(
-            f"{gen.isoformat()}\tnode:substrate.chat\t0.8\tprecision-weighted ... (current error 0.8000, precision 10.00, n=300)\t"
+            f"{gen.isoformat()}\tnode:substrate.biometrics\t0.8\tprecision-weighted ... (current error 0.8000, precision 10.00, n=300)\t"
             f"{(T0 - timedelta(hours=1)).isoformat()}"
         )
         rows.append(
@@ -38,7 +38,7 @@ def test_staleness_replay_moves_top1_off_a_stale_chat_reading(tmp_path) -> None:
     path = tmp_path / "frames.tsv"
     path.write_text("\n".join(rows) + "\n")
     r = fade.replay(fade.load(path))
-    assert r["before"]["node:substrate.chat"] == 3 and r["before_stale"]["node:substrate.chat"] == 3
+    assert r["before"]["node:substrate.biometrics"] == 3 and r["before_stale"]["node:substrate.biometrics"] == 3
     assert r["after"]["node:substrate.execution"] == 3 and r["changed"] == 3
 
 

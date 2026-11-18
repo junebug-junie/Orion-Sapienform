@@ -13,10 +13,23 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator, model_serializer
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
-PRIORITIES = ("urgent", "interactive", "system", "background")
+# ``perception`` (2026-10-23, docs/superpowers/specs/2026-10-23-organism-body-economy-design.md,
+# Patch A0): Orion's senses -- vision-council scene reads. Below Juniper's turn, above Orion's own
+# system/background work, and never shed by heat (``orion/gpu_pool/shed.py`` can only block
+# SHEDDABLE). A config file that predates it (no ``perception`` in ``priorities:``) still loads:
+# the validator inserts it just below ``interactive``. That is what lets this code ship to every
+# loader -- including circe's lane controller, which reads the live checkout's YAML -- before any
+# YAML names it.
+# ``starved`` (2026-11-03, Orion Prime reliability): Orion's own work whose last try already lost
+# its whole seat wait to the queue. Below perception, above system, so it goes ahead of other
+# system work by priority instead of by arrival; shed by heat like system (shed.py SHEDDABLE).
+# The word is the scheduling one: work that keeps losing to higher-priority work is starved.
+# A config file that predates it still loads: the validator inserts it just above ``system``.
+PRIORITIES = ("urgent", "interactive", "perception", "starved", "system", "background")
+Priority = Literal["urgent", "interactive", "perception", "starved", "system", "background"]
 # Pool-side swap preconditions (stage 4 spec, "Guards"). A guard named here must be one the
 # scheduler evaluates; the scheduler side lands with the actuation engine (stage 4.3).
 SwapGuard = Literal["thermal"]   # visual_baseline deleted in stage 5.4
@@ -46,6 +59,21 @@ class Defaults(BaseModel):
     # Stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     # Parsed and validated from 4.1; read by the hold/actuation engine from 4.3.
     hold_clawback_grace_sec: float = Field(600, ge=0)   # a recalled hold finishes its current node within this
+    # A swap seat drained only because BACKGROUND owner work is waiting (today: every diffusion
+    # job) gives a running hold this long instead, so a ~1 min image does not kill a 10-60 min
+    # reading/curiosity turn (live 10-28..11-04: 81 turns killed by gpu2 drains). A non-background
+    # owner arriving later still gets hold_clawback_grace_sec, counted from the recall.
+    background_drain_grace_sec: float = Field(3600, ge=0)
+    # #3391: a background-priority hold is taken back once it has been granted this long without a
+    # break, whatever its work class and role (reason ``background_max_hold``, then the normal
+    # hold_clawback_grace_sec). One trial hold kept the agent lane 25,126 s (7 h) on 2026-11-13
+    # while 215 of Orion's acts waited; before this only the gpu2 swap seat had a clock. 9000 s is
+    # that seat's own limit (2.5 h, Juniper 2026-09-29) and sits above every hold Orion's own work
+    # took 11-05..11-15 (1,650 durable-run holds: p50 337 s, p99 5,761 s, max 8,545 s). A
+    # retryable hold (every durable run) is re-queued in its old place, not failed, so it may be
+    # granted again at once when nothing of higher priority waits. Operator holds (the Hub button,
+    # interactive) are exempt. None = no cap (rollback).
+    background_max_hold_sec: float | None = Field(9000, gt=0)
     swap_min_residency_sec: float = Field(600, ge=0)    # after a seat unloads, evicted residents stay this long
     actuate_ack_sec: float = Field(10, gt=0)            # no "accepted" within this -> actuator_unreachable
     # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md).
@@ -56,6 +84,13 @@ class Defaults(BaseModel):
 class HostSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
+    address: str
+
+
+class ExtraHostSpec(BaseModel):
+    """A second GPU node (``hosts:``). Its cards say ``host: <name>``; the pool's own ``host`` stays
+    the default for every card that names none."""
+    model_config = ConfigDict(extra="forbid")
     address: str
 
 
@@ -70,7 +105,16 @@ class CardSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vram_gb: float = Field(gt=0)
     lendable: bool = False
-    index: int | None = Field(None, ge=0)   # the actuator host's CUDA device number for this card
+    index: int | None = Field(None, ge=0)   # the card's host's CUDA device number for this card
+    host: str | None = None                 # a ``hosts:`` name; None = the pool's ``host``
+
+
+def ready_body_ok(body: Any) -> bool:
+    """The one readiness contract for a ``launch.ready`` path, shared by the lane controller (its
+    wait after ``up``) and the pool's discovery probe: a JSON object saying ``{"ready": true}``
+    (diffusion-host /ready) or ``{"status": "ok"}`` (llama.cpp /health). Anything else is not ready.
+    The caller also requires a 2xx: diffusion-host answers 503 when not ready."""
+    return isinstance(body, dict) and (body.get("ready") is True or body.get("status") == "ok")
 
 
 def _http_path(value: str) -> str:
@@ -144,6 +188,17 @@ class SwapSpec(BaseModel):
     # role it evicts.
     after_wait_sec: float | None = Field(None, ge=0)   # per-seat override of defaults.swap_after_wait_sec
     guards: list[SwapGuard] = Field(default_factory=list)
+    # Warm standby (Juniper 2026-10-14: "gpu2 should not sit idle while agent work exists"):
+    # "warm" keeps the seat LOADED whenever what it evicts is idle -- loaded with no demand once
+    # the residents have been idle for standby_after_idle_sec, never unloaded for being idle, and
+    # not drained on a max_hold_sec clock. A resident's own demand still drains and unloads it
+    # exactly as before. Guards, cooldown, min_residency and any active shed block the warm load.
+    # "off" = load on demand only (after_wait_sec), unload after swap_idle_unload_sec.
+    standby: Literal["off", "warm"] = "off"
+    standby_after_idle_sec: float = Field(900, ge=0)
+    # After a load of this seat that did not succeed (warm or demand), no warm load for this long (the generic swap cooldown is
+    # 600 s): a seat that cannot start must not drain and restore diffusion every 10 minutes.
+    standby_retry_after_fail_sec: float = Field(3600, ge=0)
 
     @model_validator(mode="after")
     def _unique_guards(self):
@@ -154,6 +209,9 @@ class SwapSpec(BaseModel):
 
 class RoleSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    # strata: an engine that serves llama.cpp's /props shape, so discovery confirms it the same way;
+    # the gateway sends it OpenAI/Anthropic calls but never llama.cpp-only endpoints (/completion).
+    backend: Literal["llamacpp", "vllm", "strata"] = "llamacpp"
     kind: Literal["llm", "service"]
     cards: list[str] = Field(min_length=1)
     owner: list[str] = Field(default_factory=list)
@@ -165,9 +223,43 @@ class RoleSpec(BaseModel):
     launch: LaunchSpec | None = None
     operator_only: bool = False
     max_hold_sec: float | None = Field(None, gt=0)
+    # Stage 7.3 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md): how many
+    # durable-run holds this role may carry before a non-urgent one waits -- urgent holds count toward
+    # it and may stack past it, bounded by slots (each holds one slot; a run never holds
+    # two). 1 = the old "one hold per role" rule. The scheduler clamps it to the discovered slots and
+    # says so (scheduler.hold_cap; the pool's /health ``holds`` block and a warning log line).
+    max_holds: int = Field(1, ge=1)
+    # Slots kept for one-off calls (no hold): a hold is granted only while holds < slots - this. It never
+    # takes away the role's first hold (a 1-slot role still runs one run). 0 = holds may fill every slot
+    # up to max_holds and one-off calls share the runs' gaps (rule H3).
+    reserve_one_off_slots: int = Field(0, ge=0)
     # Stage 5: roles that must never compute at the same time as this one (same card). Symmetric:
     # the scheduler places nothing on R while a lease is active on a role R lists or that lists R.
     serialize_with: list[str] = Field(default_factory=list)
+
+    @property
+    def discovery_path(self) -> str:
+        """The path discovery probes for a ``kind: service`` role. A launch-managed service is
+        probed on its ``launch.ready`` path -- the same one the lane controller trusts -- not on
+        ``health``. Incident 2026-10-16 -> 10-20: diffusion-host's /health answered 200 for 4 days
+        while it could not generate (the gpu2 seat held the card), so the pool saw both sides of the
+        card "up" and never cleared the fault. llm roles ignore this (discovery reads /props)."""
+        if self.kind == "service" and self.launch is not None:
+            return self.launch.ready
+        return self.health
+
+    @property
+    def discovery_strict(self) -> bool:
+        """True = the probe must pass ``ready_body_ok`` on a 2xx, not just answer below 500."""
+        return self.kind == "service" and self.launch is not None
+
+    @model_serializer(mode="wrap")
+    def _wire(self, handler):
+        data = handler(self)
+        # Existing pool snapshots and actuator digests must stay byte-compatible.
+        if self.backend == "llamacpp":
+            data.pop("backend", None)
+        return data
 
     @field_validator("owner", mode="before")
     @classmethod
@@ -178,6 +270,10 @@ class RoleSpec(BaseModel):
     def _service_shape(self):
         if self.kind == "service" and (self.slots is None or self.vram_gb is None):
             raise ValueError("service roles must declare slots and vram_gb (no profile to discover)")
+        # A service declares its slots, so an impossible hold limit is refused here. An llm role's
+        # slots are discovered: the scheduler clamps to them at run time (scheduler.hold_cap).
+        if self.slots is not None and self.max_holds > self.slots:
+            raise ValueError(f"max_holds {self.max_holds} > slots {self.slots}")
         return self
 
 
@@ -190,13 +286,14 @@ class ClassSpec(BaseModel):
 class RouteSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     work_class: str = Field(alias="class")
-    priority: Literal["urgent", "interactive", "system", "background"] = "system"
+    priority: Priority = "system"
 
 
 class PoolConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal[1]
     host: HostSpec
+    hosts: dict[str, ExtraHostSpec] = Field(default_factory=dict)   # GPU nodes besides ``host``
     defaults: Defaults = Field(default_factory=Defaults)
     actuators: dict[str, ActuatorSpec] = Field(default_factory=dict)
     priorities: list[str] = Field(default_factory=lambda: list(PRIORITIES))
@@ -218,15 +315,34 @@ class PoolConfig(BaseModel):
             return value
         return {k: ({"class": v} if isinstance(v, str) else v) for k, v in value.items()}
 
+    @field_validator("priorities", mode="after")
+    @classmethod
+    def _insert_perception(cls, value: list[str]) -> list[str]:
+        """Pre-perception configs list four priorities; slot ``perception`` in below ``interactive``.
+        Pre-starved configs lack ``starved``; slot it in just above ``system``."""
+        out = list(value)
+        if "perception" not in out and "interactive" in out:
+            out.insert(out.index("interactive") + 1, "perception")
+        if "starved" not in out and "system" in out:
+            out.insert(out.index("system"), "starved")
+        return out
+
     @model_validator(mode="after")
     def _cross_refs(self):
         errors: list[str] = []
         if sorted(self.priorities) != sorted(PRIORITIES):
             errors.append(f"priorities must be a permutation of {PRIORITIES}")
+        if self.host.name in self.hosts:
+            errors.append(f"hosts: {self.host.name} is the pool host; list only the other nodes")
+        for card, spec in self.cards.items():
+            if spec.host is not None and spec.host != self.host.name and spec.host not in self.hosts:
+                errors.append(f"card {card}: unknown host {spec.host}")
         for name, role in self.roles.items():
             for card in role.cards:
                 if card not in self.cards:
                     errors.append(f"role {name}: unknown card {card}")
+            if len({self.card_host(c) for c in role.cards if c in self.cards}) > 1:
+                errors.append(f"role {name}: cards span hosts (one server serves a role)")
             for owner in role.owner:
                 if owner not in self.classes:
                     errors.append(f"role {name}: owner {owner} is not a class")
@@ -268,15 +384,24 @@ class PoolConfig(BaseModel):
                 errors.append(f"role {name}: swap seat and every role it evicts need a launch; "
                               f"missing on {unlaunched}")
         for name, act in self.actuators.items():
-            if act.host != self.host.name:
-                errors.append(f"actuator {name}: host {act.host} is not the pool host {self.host.name}")
-        indices: dict[int, str] = {}
+            if act.host != self.host.name and act.host not in self.hosts:
+                errors.append(f"actuator {name}: host {act.host} is not a known host")
+        for name, role in self.roles.items():
+            if role.launch is None or role.launch.actuator not in self.actuators:
+                continue
+            act_host = self.actuators[role.launch.actuator].host
+            for card in role.cards:
+                if card in self.cards and self.card_host(card) != act_host:
+                    errors.append(f"role {name}: card {card} is on {self.card_host(card)}, "
+                                  f"its actuator {role.launch.actuator} on {act_host}")
+        indices: dict[tuple[str, int], str] = {}
         for card, spec in self.cards.items():
             if spec.index is None:
                 continue
-            if spec.index in indices:
-                errors.append(f"cards {indices[spec.index]} and {card} share index {spec.index}")
-            indices[spec.index] = card
+            key = (self.card_host(card), spec.index)
+            if key in indices:
+                errors.append(f"cards {indices[key]} and {card} share index {spec.index}")
+            indices[key] = card
         for name, cls in self.classes.items():
             for role in cls.roles:
                 if role not in self.roles:
@@ -308,8 +433,19 @@ class PoolConfig(BaseModel):
     def priority_rank(self, priority: str) -> int:
         return self.priorities.index(priority)
 
+    def card_host(self, card: str) -> str:
+        """The node a card is in: its ``host``, else the pool's own ``host``."""
+        return self.cards[card].host or self.host.name
+
+    def role_host(self, role: str) -> str:
+        """The node serving ``role`` (the validator keeps a role's cards on one node)."""
+        return self.card_host(self.roles[role].cards[0])
+
+    def host_address(self, name: str) -> str:
+        return self.host.address if name == self.host.name else self.hosts[name].address
+
     def url(self, role: str) -> str:
-        return f"http://{self.host.address}:{self.roles[role].port}"
+        return f"http://{self.host_address(self.role_host(role))}:{self.roles[role].port}"
 
     def owns(self, work_class: str, role: str) -> bool:
         return work_class in self.roles[role].owner
@@ -526,6 +662,28 @@ def _known_profiles(root: Path) -> set[str] | None:
     return set((data.get("profiles") or {}).keys())
 
 
+def check_max_holds(cfg: PoolConfig, profiles: dict[str, dict[str, Any]]) -> list[str]:
+    """Stage 7.3: a role whose pool-loaded profile is known (``launch.profiles[0]``, the one every load
+    sends) must have at least ``max_holds`` llama.cpp slots (``llamacpp.n_parallel``). Roles the pool
+    does not load (gpu1's agent) are checked live instead: the scheduler clamps to discovered slots."""
+    problems: list[str] = []
+    for name, role in cfg.roles.items():
+        if role.kind != "llm" or role.max_holds <= 1 or role.launch is None or not role.launch.profiles:
+            continue
+        first = role.launch.profiles[0]
+        prof = profiles.get(first)
+        if prof is None:
+            continue   # check_launch reports an unknown profile
+        n_parallel = int((prof.get("llamacpp") or {}).get("n_parallel") or 1)
+        if role.max_holds > n_parallel:
+            problems.append(f"role {name}: max_holds {role.max_holds} > n_parallel {n_parallel} of its "
+                            f"loaded profile {first} (set max_holds back to {n_parallel} with the profile)")
+        if role.reserve_one_off_slots and role.max_holds > max(1, n_parallel - role.reserve_one_off_slots):
+            problems.append(f"role {name}: max_holds {role.max_holds} can never be reached: "
+                            f"reserve_one_off_slots {role.reserve_one_off_slots} of {n_parallel} slots")
+    return problems
+
+
 def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
     """Every ``launch`` block must name something real in its compose file (stage 4 spec,
     "Validation additions"): the service exists (under its profile, if one is named), an llm role's
@@ -616,7 +774,26 @@ def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
         for profile in launch.profiles if known_profiles is not None else []:
             if profile not in known_profiles:
                 problems.append(f"{where}.profiles: {profile} is not a profile in config/llm_profiles.yaml")
+                continue
+            # Stage 7.2: a profile on the PrismML fork (llamacpp.server_build: prism) only boots in an
+            # image that carries it; the wrapper refuses otherwise, so a load would fail on circe.
+            build = _profile_server_build(root, profile)
+            dockerfile = str((service.get("build") or {}).get("dockerfile") or "") \
+                if isinstance(service.get("build"), dict) else ""
+            if build == "prism" and not dockerfile.endswith(PRISM_DOCKERFILE):
+                problems.append(f"{where}.profiles: {profile} needs llamacpp.server_build=prism but "
+                                f"{launch.service} builds from {dockerfile or '(no build section)'}, "
+                                f"not {PRISM_DOCKERFILE}")
     return problems
+
+
+PRISM_DOCKERFILE = "Dockerfile.prism"
+
+
+def _profile_server_build(root: Path, profile: str) -> str | None:
+    data = yaml.safe_load((root / "config" / "llm_profiles.yaml").read_text()) or {}
+    llamacpp = ((data.get("profiles") or {}).get(profile) or {}).get("llamacpp") or {}
+    return llamacpp.get("server_build")
 
 
 def _pinned_device_ids(service: dict[str, Any], cuda_env: str) -> list[str]:

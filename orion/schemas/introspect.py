@@ -1,16 +1,23 @@
 """Introspect tool contracts: Orion reading back their own recorded activity.
 
 Design: docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md.
-Slice 1 carries only ``reading_result``; each later slice extends
-``IntrospectOperation`` when its owning service gains a responder.
+``reading_result`` travels on the reading contract; every other operation is an
+``IntrospectBusOperation`` answered by its owning service over
+``orion:introspect:<domain>:request``.
 """
 from __future__ import annotations
 
-from datetime import datetime
+import json
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from pydantic.json_schema import SkipJsonSchema
+
+from orion.refs import MAX_REFS as REF_MAX, RefV1
 
 # MAX_ITEMS full-size items stay under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS
 # (12000), the budget the harness proxy enforces on wrapped servers (it cuts
@@ -23,7 +30,79 @@ DEFAULT_TEXT_CAP = 900
 SHORT_FIELD_CAP = 200
 URL_CAP = 500
 
-IntrospectOperation = Literal["reading_result"]
+FULL_TEXT_CAP = 4000
+THEME_CAP = 8
+DREAM_ID_PATTERN = r"^(dream:[0-9]{1,12}|dh-[0-9a-f]{6,32})$"
+
+# One curiosity run by id returns its write-up up to this many characters AS
+# SERIALIZED JSON (`clip_json_text`), so quote/newline escaping cannot push a
+# full item past the 12k MCP budget. Same shape as
+# `orion.curiosity.atlas._RUN_ID_RE`; a test pins the two equal.
+CURIOSITY_FULL_JSON_BUDGET = 9000
+# The run join reads at most this far back (orion-hub curiosity_run_store
+# WINDOW_DAYS_MAX, pinned equal by a Hub test); an older `since` is refused
+# rather than silently answered from a shorter window.
+CURIOSITY_WINDOW_DAYS = 90
+CURIOSITY_RUN_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
+
+IntrospectBusOperation = Literal[
+    "dreams", "curiosity", "orion_day", "record_correction", "node_history", "queue_curiosity_focus",
+    "power_attribution",
+]
+IntrospectOperation = Literal[
+    "reading_result", "dreams", "curiosity", "orion_day", "record_correction", "node_history",
+    "queue_curiosity_focus", "power_attribution",
+]
+
+# power_attribution: heat archaeology over hourly watts (orion.physiology.heat_archaeology).
+# Raw per-node watts (orion_biometrics_cluster) are kept ~30 days, so the window may not start
+# earlier than that; a step needs 24 h on each side, so the window is at least 2 days.
+POWER_ATTRIBUTION_MAX_DAYS = 30
+POWER_ATTRIBUTION_MIN_DAYS = 2
+POWER_ATTRIBUTION_DEFAULT_DAYS = 14
+PowerNode = Literal["circe", "athena", "hecate", "cooling"]
+
+# node_history: a substrate node's prediction-error readings from
+# substrate_node_prediction_error_history. The writer prunes at
+# SUBSTRATE_PE_HISTORY_RETENTION_HOURS (default 168), so a window reaching
+# further back than that would read as a quiet stretch that is really a pruned
+# one; it is refused instead.
+NODE_HISTORY_MAX_HOURS = 168
+NODE_HISTORY_DEFAULT_HOURS = 24
+NODE_HISTORY_MAX_POINTS = 48
+NODE_HISTORY_TOP_CHANGES = 5
+NODE_ID_PATTERN = r"^node:[A-Za-z0-9_.:-]{1,120}$"
+# Shortest window: one minute (a smaller one buckets into nothing).
+NODE_HISTORY_MIN_HOURS = 1.0 / 60.0
+# An `until` this far past now is clock skew; further is a request about the future, refused.
+NODE_HISTORY_FUTURE_SLACK = timedelta(minutes=5)
+# The governor validates, then Hub re-validates a moment later; a window at the retention
+# edge must not pass the first and fail the second.
+NODE_HISTORY_EDGE_SLACK = timedelta(seconds=60)
+
+# The day sections of an Orion's Day letter, named as the email headings read
+# (services/orion-hub/scripts/orion_day_email.py). Each maps to the material
+# refs it is built from in orion.orion_day.letter_parts.SECTION_PREFIXES.
+OrionDaySection = Literal[
+    "curiosity", "self_sense", "readings", "dreams", "code_changes", "conversations",
+    "world_news", "reveries",
+]
+# A note has ~25 paragraphs and a carry-forward ~10 items; a bound only so a
+# typo cannot ask for paragraph 10**9.
+ORION_DAY_MAX_INDEX = 500
+
+# record_correction: a letter part by the ref the email and `orion_day` print, the corrected
+# words, and what the correction rests on. Bounds are generous for one claim, tight enough
+# that a whole letter cannot be pasted in as a "claim".
+CORRECTION_REF_PATTERN = r"^\d{4}-\d{2}-\d{2} (?:¶\d{1,4}|carry \d{1,4})$"
+CORRECTION_TEXT_CAP = 2000
+CORRECTION_EVIDENCE_MAX = 10
+CORRECTION_EVIDENCE_CAP = 500
+CORRECTION_PRIORS_MAX = 10
+CORRECTION_PRIOR_ID_PATTERN = r"^[^\s\"'\\`]{1,200}$"
+
+# queue_curiosity_focus: one question for Orion's next regular investigate run, and why.
+FOCUS_TEXT_CAP = 500
 
 
 def clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]:
@@ -31,6 +110,30 @@ def clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]
     if len(body) <= cap:
         return body, False
     return body[:cap], True
+
+
+def _json_len(text: str) -> int:
+    return len(json.dumps(text, ensure_ascii=False))
+
+
+def clip_json_text(text: str | None, budget: int) -> tuple[str, bool]:
+    """Longest prefix of ``text`` whose JSON string encoding fits ``budget``.
+
+    ``clip_text`` counts characters; a write-up full of quotes, backslashes
+    and newlines can nearly double when serialized, which is what the MCP
+    budget actually measures.
+    """
+    body = (text or "").strip()
+    if _json_len(body) <= budget:
+        return body, False
+    lo, hi = 0, len(body)
+    while lo < hi:  # largest n with _json_len(body[:n]) <= budget
+        mid = (lo + hi + 1) // 2
+        if _json_len(body[:mid]) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return body[:lo], True
 
 
 def _require_tz(value: datetime | None, field: str) -> None:
@@ -42,7 +145,9 @@ class IntrospectToolBindingV1(BaseModel):
     """Server-authored turn context; never part of model tool arguments."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    invocation_context: Literal["unified_chat", "curiosity"]
+    # "prime" (2026-10-30, Orion Prime 2A): Prime's resident loop in orion-mind, not a harness turn.
+    # Only Hub's queue_curiosity_focus responder accepts it (scripts/curiosity_focus_listener.py).
+    invocation_context: Literal["unified_chat", "curiosity", "prime"]
     parent_run_id: str
     parent_trace_id: str
     memory_allowed: bool
@@ -124,3 +229,280 @@ class ReadingResultArguments(BaseModel):
         if self.since is not None and (self.request_id is not None or self.url is not None):
             raise ValueError("since applies only to query or recent reads (no request_id or url)")
         return self
+
+
+class IntrospectRequestV1(BaseModel):
+    """Harness -> owning service. ``args`` is validated by the owner per operation."""
+
+    model_config = ConfigDict(extra="forbid")
+    operation: IntrospectBusOperation
+    binding: IntrospectToolBindingV1
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class DreamsArguments(BaseModel):
+    """Model-supplied arguments for the ``dreams`` tool."""
+
+    model_config = ConfigDict(extra="forbid")
+    query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
+    dream_id: str | None = Field(default=None, pattern=DREAM_ID_PATTERN)
+    kind: Literal["narrative", "hypothesis"] | None = None
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_ITEMS)
+    since: datetime | None = None
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _strip_query(cls, value: Any) -> Any:
+        return normalize_query(value)
+
+    @model_validator(mode="after")
+    def _selectors(self):
+        _require_tz(self.since, "since")
+        if self.dream_id is not None and (
+            self.query is not None or self.kind is not None or self.since is not None
+        ):
+            raise ValueError("dream_id fetches one dream; it cannot be combined with query, kind or since")
+        return self
+
+
+class CuriosityArguments(BaseModel):
+    """Model-supplied arguments for the ``curiosity`` tool."""
+
+    model_config = ConfigDict(extra="forbid")
+    query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
+    run_id: str | None = Field(default=None, pattern=CURIOSITY_RUN_ID_PATTERN)
+    kind: Literal["run", "self_question", "focus"] = "run"
+    line: Literal["investigate", "self_inquiry", "self_sense_eval"] | None = None
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_ITEMS)
+    since: datetime | None = None
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _strip_query(cls, value: Any) -> Any:
+        return normalize_query(value)
+
+    @model_validator(mode="after")
+    def _selectors(self):
+        _require_tz(self.since, "since")
+        if self.run_id is not None and (
+            self.query is not None or self.since is not None or self.line is not None
+            or self.kind != "run"
+        ):
+            raise ValueError("run_id fetches one run; it cannot be combined with query, since, line or kind")
+        if (
+            self.kind == "run" and self.since is not None
+            and self.since < datetime.now(timezone.utc) - timedelta(days=CURIOSITY_WINDOW_DAYS)
+        ):
+            raise ValueError(
+                f"since must be within the last {CURIOSITY_WINDOW_DAYS} days: curiosity runs are "
+                f"only readable {CURIOSITY_WINDOW_DAYS} days back"
+            )
+        if self.kind == "self_question" and (
+            self.query is not None or self.run_id is not None or self.line is not None
+        ):
+            raise ValueError("kind=self_question lists open self-questions; it takes only limit and since")
+        if self.kind == "focus" and (
+            self.query is not None or self.run_id is not None or self.line is not None
+        ):
+            raise ValueError("kind=focus lists the focuses you queued, newest first; it takes only limit and since")
+        return self
+
+
+class OrionDayArguments(BaseModel):
+    """Model-supplied arguments for the ``orion_day`` tool (rereading an Orion's Day letter).
+
+    ``part=list`` (default) is the letter's outline; ``note`` / ``carry_forward`` return
+    the exact words, one part by ``index`` or the first ``limit`` parts; ``section`` returns
+    the day's records behind one email section. ``query`` searches paragraphs and carry
+    items by meaning across letters (``letter_date`` narrows it to one letter, ``part``
+    note / carry_forward to one kind).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    letter_date: date | None = None
+    part: Literal["list", "note", "carry_forward", "section"] = "list"
+    index: int | None = Field(default=None, ge=1, le=ORION_DAY_MAX_INDEX)
+    section: OrionDaySection | None = None
+    query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_ITEMS)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _strip_query(cls, value: Any) -> Any:
+        return normalize_query(value)
+
+    @model_validator(mode="after")
+    def _selectors(self):
+        if self.index is not None and self.part not in ("note", "carry_forward"):
+            raise ValueError("index numbers a note paragraph or carry item; it needs part=note or part=carry_forward")
+        if self.part == "section" and self.section is None:
+            raise ValueError("part=section needs section=<curiosity|self_sense|readings|dreams|code_changes|"
+                             "conversations|world_news|reveries>")
+        if self.section is not None and self.part != "section":
+            raise ValueError("section applies only with part=section")
+        if self.query is not None and (self.index is not None or self.part == "section"):
+            raise ValueError("query searches note paragraphs and carry items by meaning; it cannot be "
+                             "combined with index or part=section")
+        return self
+
+
+def _strip_required(value: Any, field: str) -> Any:
+    if not isinstance(value, str):
+        return value
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{field} must not be blank")
+    return value
+
+
+class RecordCorrectionArguments(BaseModel):
+    """Model-supplied arguments for the ``record_correction`` tool.
+
+    A claim in an Orion's Day letter that a conversation with Juniper showed was wrong.
+    Recording it changes no belief: it is evidence offered to Orion's next curiosity run,
+    which re-tests ``prior_ids`` itself. ``ref`` must name a numbered note paragraph or carry
+    item (``2026-10-09 ¶3`` / ``2026-10-09 carry 5``); the responder checks it exists and that
+    every prior id is in Orion's worldview before anything is written.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    ref: str = Field(min_length=1, max_length=40, pattern=CORRECTION_REF_PATTERN)
+    claim: str = Field(min_length=1, max_length=CORRECTION_TEXT_CAP)
+    correction: str = Field(min_length=1, max_length=CORRECTION_TEXT_CAP)
+    evidence: list[str] = Field(min_length=1, max_length=CORRECTION_EVIDENCE_MAX)
+    prior_ids: list[str] = Field(default_factory=list, max_length=CORRECTION_PRIORS_MAX)
+
+    @field_validator("ref", mode="before")
+    @classmethod
+    def _strip_ref(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("claim", "correction", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any, info) -> Any:
+        return _strip_required(value, info.field_name)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _strip_evidence(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        out = [_strip_required(v, "evidence item") for v in value]
+        if any(isinstance(v, str) and len(v) > CORRECTION_EVIDENCE_CAP for v in out):
+            raise ValueError(f"each evidence item is at most {CORRECTION_EVIDENCE_CAP} characters")
+        return out
+
+    @field_validator("prior_ids", mode="before")
+    @classmethod
+    def _strip_prior_ids(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [_strip_required(v, "prior id") for v in value]
+
+    @model_validator(mode="after")
+    def _distinct(self):
+        bad = [p for p in self.prior_ids if not re.match(CORRECTION_PRIOR_ID_PATTERN, p)]
+        if bad:
+            raise ValueError(f"prior ids are exact :Prior prior_id strings; not valid: {bad[:3]}")
+        if len(set(self.prior_ids)) != len(self.prior_ids):
+            raise ValueError("prior_ids must not repeat")
+        return self
+
+
+class QueueCuriosityFocusArguments(BaseModel):
+    """Model-supplied arguments for the ``queue_curiosity_focus`` tool.
+
+    One question Orion chose for its next regular investigate run, and why. One pending slot: a
+    new focus replaces the pending one, except that Orion's own choice (origin "self") never
+    replaces a focus Juniper asked for (origin "juniper").
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
+    why: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
+    origin: Literal["self", "juniper"] = "self"
+    # Ids the question cites, each one a kind with a resolver and a dig command (orion/refs.py). Added
+    # 2026-10-30 (Orion Prime step 1), optional and consumer-first: Hub accepts it before orion-mind
+    # sends it, and a caller that sends none is unchanged. Stored on the focus row and shown to the run.
+    # Prime only: its runtime opens every ref before sending (services/orion-mind/app/prime_loop.py). Hidden
+    # from the chat tool's schema (SkipJsonSchema), and the chat tool never forwards it (orion/introspect/tools.py).
+    refs: SkipJsonSchema[list[RefV1]] = Field(default_factory=list, max_length=REF_MAX)
+
+    @field_validator("question", "why", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any, info) -> Any:
+        return _strip_required(value, info.field_name)
+
+
+class NodeHistoryArguments(BaseModel):
+    """Model-supplied arguments for the ``node_history`` tool.
+
+    ``node_id`` given: that node's prediction-error readings over the window ending at
+    ``until`` (default now) and reaching back ``hours``. Omitted: which nodes have readings
+    in the window. The whole window must sit inside the history's retention.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    node_id: str | None = Field(default=None, pattern=NODE_ID_PATTERN)
+    hours: float = Field(default=NODE_HISTORY_DEFAULT_HOURS, ge=NODE_HISTORY_MIN_HOURS, le=NODE_HISTORY_MAX_HOURS)
+    until: datetime | None = None
+
+    @field_validator("node_id", mode="before")
+    @classmethod
+    def _strip_node(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _window(self):
+        _require_tz(self.until, "until")
+        if self.until is not None:
+            now = datetime.now(timezone.utc)
+            if self.until > now + NODE_HISTORY_FUTURE_SLACK:
+                raise ValueError("until is in the future: no readings exist there yet; omit it to end the window now")
+            start = self.until - timedelta(hours=self.hours)
+            if start < now - timedelta(hours=NODE_HISTORY_MAX_HOURS) - NODE_HISTORY_EDGE_SLACK:
+                raise ValueError(
+                    f"the window must start within the last {NODE_HISTORY_MAX_HOURS} hours: older "
+                    "readings are pruned, so an earlier window would read as quiet when it is only gone"
+                )
+        return self
+
+    def window(self, now: datetime) -> tuple[datetime, datetime]:
+        # `until` within the clock-skew slack of now is now.
+        end = min(self.until, now) if self.until is not None else now
+        return end - timedelta(hours=self.hours), end
+
+
+class PowerAttributionArguments(BaseModel):
+    """Model-supplied arguments for the ``power_attribution`` tool.
+
+    ``node`` given: that node only (``cooling`` is the cabinet AC plug). Omitted: every node
+    with wall watts in the window. The window ends at ``until`` (default now), reaches back
+    ``days``, and must start inside raw-watts retention.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    node: PowerNode | None = None
+    days: float = Field(
+        default=POWER_ATTRIBUTION_DEFAULT_DAYS, ge=POWER_ATTRIBUTION_MIN_DAYS, le=POWER_ATTRIBUTION_MAX_DAYS,
+    )
+    until: datetime | None = None
+
+    @model_validator(mode="after")
+    def _window(self):
+        _require_tz(self.until, "until")
+        if self.until is not None:
+            now = datetime.now(timezone.utc)
+            if self.until > now + NODE_HISTORY_FUTURE_SLACK:
+                raise ValueError("until is in the future: no readings exist there yet; omit it to end the window now")
+            start = self.until - timedelta(days=self.days)
+            if start < now - timedelta(days=POWER_ATTRIBUTION_MAX_DAYS) - NODE_HISTORY_EDGE_SLACK:
+                raise ValueError(
+                    f"the window must start within the last {POWER_ATTRIBUTION_MAX_DAYS} days: older "
+                    "per-node watts are pruned, so an earlier window would read as missing, not quiet"
+                )
+        return self
+
+    def window(self, now: datetime) -> tuple[datetime, datetime]:
+        end = min(self.until, now) if self.until is not None else now
+        return end - timedelta(days=self.days), end

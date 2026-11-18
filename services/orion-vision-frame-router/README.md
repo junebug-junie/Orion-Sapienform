@@ -79,12 +79,85 @@ triggered). Disable with `ROUTER_EXPECTATION_STEERING_ENABLED=false`. `/healthz`
 Manual check: `redis-cli -u $ORION_BUS_URL SET orion:vision:expect:walkway 1 EX 60`,
 then the next walkway host task's meta carries `triggered_by: expectation`.
 
+### Experiment override (Redis key contract)
+
+Vision focus experiment, 2026-10-29 (`docs/superpowers/pr-reports/2026-10-29-vision-focus-experiment-pr.md`).
+
+| Key | Writer | Reader | Meaning |
+|-----|--------|--------|---------|
+| `orion:vision:experiment:<stream_id>` (bus Redis) | orion-prediction's switchback runner (`POST /experiments/run`), ON blocks only | this router (`app/expectation.py`, same cache and refresh as expectation) | Value `on` **with a TTL** forces the triggered tier, `triggered_by=experiment`. |
+
+Absent, `off`, any other value, a key with no TTL (refused and counted in
+`experiment_override_no_ttl_refusals`), or a Redis error all mean "no override":
+today's behaviour. So the experiment only adds focus; the OFF arm is normal operation.
+The override is checked before labels and expectation, so every ON-block dispatch is
+attributed to the experiment. Streams with no trigger labels are never forced.
+Disable with `ROUTER_EXPERIMENT_OVERRIDE_ENABLED=false` (or delete the key).
+
+`/healthz` shows `experiment_override_streams` (also in the heartbeat details) and
+`dispatch_tier_counts`: per-stream main-lane dispatches by `<tier>:<triggered_by>`
+since boot. The runner reads deltas of these at each block edge as its manipulation
+check.
+
+Manual check: `redis-cli -u $ORION_BUS_URL SET orion:vision:experiment:walkway on EX 60`,
+then `/healthz` lists `walkway` under `experiment_override_streams` within 5 s.
+
 ### Walkway stream
 
-`streams.walkway` (second orion-vision-edge instance, `STREAM_ID=walkway`): prompts
+`streams.walkway` (captured by the `orion-vision-retina-walkway` instance, `stream_id=walkway`, full-resolution main stream): prompts
 `person, dog, bicycle, stroller, vehicle, package, mail truck`, `trigger_labels:
 [person, dog]`, and `want_crop_embeddings: true` on both tiers (host zones + embeds
-tracked boxes; the patio is never embedded). No identity dispatch.
+tracked boxes, patio included since 2026-10-15) and `want_crop_faces` (a face
+vector + face thumbnail on each embedded person crop). No identity dispatch:
+Juniper's whole-frame identity check stays on the room cameras.
+
+**Walkway captions come from Qwen2-VL, not BLIP (2026-10-15).** The walkway
+primary task asks the athena host for no caption (`want_caption: false`). Its
+`caption_dispatch` block makes the router, after a *triggered*-tier detect
+reply that found at least one of `labels` at `>= min_score`, send the same
+frame as a `caption_frame` task to `CHANNEL_CAPTION_INTAKE`
+(`orion:exec:request:VisionHostService:circe-vl`, the Qwen2-VL-2B lane) with
+`request.caption_prompt` ("In one short sentence, describe what is happening
+in this image."), `request.caption_crop_boxes` + `request.caption_crop_pad`
+(the frame's gate boxes; the host captions a padded crop around them, see
+`crop_to_detections` / `crop_pad`) and `meta.source_objects` (the same
+detections, read by orion-vision-window's caption gate). **2026-10-16:** the
+10-15 prompt ("Are there any people, animals or vehicles ...? If there are
+none, reply with only: nothing notable.") got "nothing notable" on every
+walkway task (24/24 on 10-16, 44/50 on 10-15) because Qwen2-VL-2B answers
+"no" to an existence question even on a clear crop of a car, and the whole
+2560x1920 frame shrinks to ~1 MP for the model. No null answer is configured
+now; `caption_null_answers` still works if one is set. It is
+chained after the detect reply, so detection never waits on the ~3 s VLM; it
+has its own in-flight cap (`max_inflight`) and per-camera clock
+(`min_seconds_between_dispatch`) and never takes an athena host slot
+(`RouterState.inflight_total()` counts host-lane tasks only). A frame whose
+gate boxes all match (same label, IoU >= `same_scene_iou`) the last captioned
+frame's within `same_scene_ttl_sec` is skipped as `same_scene` -- the patio
+skeleton reads as `person` all night. Busy, timed out (`timeout_sec`, equal to
+the window's `WINDOW_CAPTION_MAX_AGE_SEC`) or down = no caption; nothing falls
+back to BLIP. The vision organ counts the lane's `caption_requested` when a
+task is sent and `captions` when one comes back, leaving `replies_ok`/`failed`
+to the athena host. Outcomes are counted in the health heartbeat:
+`caption_dispatched_total`, `caption_captioned_total`, `caption_skip_counts`
+(`no_detection`, `rate_limited`, `same_scene`, `lane_inflight_limit`), `caption_no_caption_counts`
+(`null_answer`, sanitizer reasons), `caption_failure_counts`. Tests:
+`tests/test_walkway_caption_dispatch.py`.
+
+**Walkway tiled detection (2026-10-15).** The stream-level `tiled_detect`
+block (`enabled`, `tiers`, `min_seconds_between`) makes
+`FrameDispatchPolicy.apply_tiled_detect` set `request.detect_tiles: true` on
+at most one primary walkway task per `min_seconds_between` (own per-camera
+clock, `CameraState.last_tiled_detect_ts`), on any listed tier. The athena
+host then also runs the detector on full-resolution tiles (see
+`services/orion-vision-host/README.md` "Tiled detection"). Opt-in per stream:
+cam0/carbon never get tiles, and only detect-bearing task types (`retina_fast`,
+`retina_dense`, `detect_open_vocab`) are marked. The dispatch log line shows
+`tiled=True|False`. Consequence for consumers: a far person only the tiles can
+see shows up on tiled frames (one per `min_seconds_between`) and not on the
+frames in between, so its trigger TTL (8 s) lapses between sightings and the
+individuals reducer gets sparser sightings for it than for a near person.
+Tests: `tests/test_walkway_tiled_detect.py`.
 
 Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-camera overrides remain under `cameras:` keyed by `camera_id`.
 
@@ -94,8 +167,30 @@ Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-
 |---------|-----------|---------|
 | `orion:vision:frames` | Subscribe | `VisionFramePointerPayload` (`vision.frame.pointer`) |
 | `orion:exec:request:VisionHostService` | Publish | `VisionTaskRequestPayload` (`vision.task.request`) |
+| `orion:exec:request:VisionHostService:circe-vl` | Publish | `VisionTaskRequestPayload` `caption_frame` for streams with `caption_dispatch` (walkway) |
 | `orion:vision:reply:*` | PSUBSCRIBE | `VisionTaskResultPayload` (`vision.task.result`) |
 | `orion:system:health` | Publish | `SystemHealthV1` router metrics |
+| `orion:grammar:event` | Publish | `GrammarEventV1` vision organ window (`vision.organ:`), when `VISION_ORGAN_GRAMMAR_ENABLED` |
+
+## Vision organ self-report
+
+`app/grammar_emit.py`. Every `VISION_ORGAN_WINDOW_SEC` (60 s) the router publishes one
+grammar trace `vision.organ:<router>:<window_id>` on `orion:grammar:event`: one
+`vision_stream_window_observed` atom per stream and a closing
+`vision_organ_window_completed` atom, sent even when no frame arrived.
+
+Per stream: frames received, age of the newest frame (`none` = nothing since the
+router started), tasks dispatched (primary and identity), ok replies, failures by
+class (`timeout`, `invalid_reply`, host `error_code` or `host_error`), policy skip
+reasons, and yield (detect replies, objects, captions requested vs produced).
+Reported streams = every enabled entry under `streams:` in the policy file, plus
+any other stream seen -- so a configured camera that never sends is reported as
+absent, never as calm. Counts and ages only: no paths, labels, captions or
+identities.
+
+Consumer: orion-substrate-runtime's `vision_organ` reducer
+(`orion/substrate/vision_organ_loop/`) -> `node:substrate.vision_organ` ->
+`capability:vision`. Off in code, on in `.env_example`.
 
 ## Policy file
 
@@ -110,7 +205,7 @@ cd services/orion-vision-frame-router
 cp .env_example .env   # edit ORION_BUS_URL, DRY_RUN, etc.
 ```
 
-Key env vars: `ROUTER_ENABLED`, `DRY_RUN`, `MAX_INFLIGHT_TOTAL`, `TASK_TIMEOUT_SECONDS`, `REQUIRE_IMAGE_PATH_EXISTS`.
+Key env vars: `ROUTER_ENABLED`, `DRY_RUN`, `MAX_INFLIGHT_TOTAL`, `TASK_TIMEOUT_SECONDS`, `REQUIRE_IMAGE_PATH_EXISTS`, `VISION_ORGAN_GRAMMAR_ENABLED`, `VISION_ORGAN_WINDOW_SEC`.
 
 **Deployment:** Vision Host should consume **only** `orion:exec:request:VisionHostService` when this router is enabled — do not also wire Host to auto-subscribe `orion:vision:frames`, or GPU work will bypass policy.
 

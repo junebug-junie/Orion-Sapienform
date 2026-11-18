@@ -118,12 +118,19 @@ def _prune_every_node_vector(state: FieldStateV1) -> None:
 _TENSION_KEY_SEP = "\x1f"  # same separator as app/digestion/tension.py::_KEY_SEP
 
 
+def _retired_tension_key(flat_key: str) -> bool:
+    node_id, _, channel = flat_key.partition(_TENSION_KEY_SEP)
+    return channel in RETIRED_NODE_CHANNELS or node_id in PRUNED_NODE_IDS
+
+
 def _prune_retired_tension_baselines(state: FieldStateV1) -> None:
     """Drop tension baseline entries (keyed "<node_id>\\x1f<channel>") whose
-    channel is retired. Otherwise they round-trip through tension.py's gate
-    state forever for a channel nothing writes (found in review, 2026-09-25)."""
+    channel is retired, or whose node is pruned wholesale (PRUNED_NODE_IDS).
+    Otherwise they round-trip through tension.py's gate state forever for a
+    channel/node nothing writes (found in review, 2026-09-25; node half added
+    2026-11 with the PE step 5 retirements)."""
     for store in (state.tension_baseline_mu, state.tension_baseline_var, state.tension_baseline_n):
-        for flat_key in [k for k in store if k.partition(_TENSION_KEY_SEP)[2] in RETIRED_NODE_CHANNELS]:
+        for flat_key in [k for k in store if _retired_tension_key(k)]:
             store.pop(flat_key, None)
 
 

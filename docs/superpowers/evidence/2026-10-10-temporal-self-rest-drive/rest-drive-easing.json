@@ -1,0 +1,360 @@
+{
+  "start": "2026-09-26T04:00:00+00:00",
+  "end": "2026-10-10T04:00:00+00:00",
+  "multiplier": 2.0,
+  "curiosity_base_cooldown_sec": 1800.0,
+  "outreach_base_cooldown_sec": 2700.0,
+  "saved": {
+    "checks": 127,
+    "span": [
+      "2026-10-09T06:53:30.453138+00:00",
+      "2026-10-10T03:52:08.597707+00:00"
+    ],
+    "tired_minutes_per_day": {
+      "2026-10-09": 0.0,
+      "2026-10-10": 20.1
+    },
+    "states_per_day": {
+      "2026-10-09": {
+        "refractory": 35,
+        "resting": 35,
+        "building": 33
+      },
+      "2026-10-10": {
+        "building": 4,
+        "due": 3,
+        "refractory": 17
+      }
+    },
+    "tired_minutes_total": 20.1,
+    "curiosity": {
+      "per_day": {
+        "2026-10-09": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        }
+      },
+      "events": 7,
+      "while_tired": 0,
+      "held": 0,
+      "examples": []
+    },
+    "outreach": {
+      "per_day": {
+        "2026-10-09": {
+          "events": 4,
+          "while_tired": 0,
+          "held": 0
+        }
+      },
+      "events": 4,
+      "while_tired": 0,
+      "held": 0,
+      "examples": []
+    },
+    "door_a_outreach_excluded": 0
+  },
+  "replay": {
+    "checks": 2016,
+    "span": [
+      "2026-09-26T04:00:00+00:00",
+      "2026-10-10T03:50:00+00:00"
+    ],
+    "tired_minutes_per_day": {
+      "2026-09-26": 106.0,
+      "2026-09-27": 12.0,
+      "2026-09-28": 0.0,
+      "2026-09-29": 6.0,
+      "2026-09-30": 42.0,
+      "2026-10-01": 38.0,
+      "2026-10-02": 182.0,
+      "2026-10-03": 12.0,
+      "2026-10-04": 6.0,
+      "2026-10-05": 232.0,
+      "2026-10-06": 12.0,
+      "2026-10-07": 0.0,
+      "2026-10-08": 58.0,
+      "2026-10-09": 56.0,
+      "2026-10-10": 26.0
+    },
+    "states_per_day": {
+      "2026-09-26": {
+        "refractory": 67,
+        "building": 42,
+        "due": 11
+      },
+      "2026-09-27": {
+        "building": 70,
+        "due": 2,
+        "refractory": 72
+      },
+      "2026-09-28": {
+        "building": 144
+      },
+      "2026-09-29": {
+        "due": 1,
+        "refractory": 36,
+        "building": 107
+      },
+      "2026-09-30": {
+        "building": 85,
+        "due": 5,
+        "refractory": 54
+      },
+      "2026-10-01": {
+        "refractory": 126,
+        "building": 13,
+        "due": 5
+      },
+      "2026-10-02": {
+        "building": 52,
+        "due": 19,
+        "refractory": 72,
+        "resting": 1
+      },
+      "2026-10-03": {
+        "building": 80,
+        "due": 2,
+        "refractory": 40,
+        "resting": 22
+      },
+      "2026-10-04": {
+        "refractory": 68,
+        "due": 1,
+        "building": 75
+      },
+      "2026-10-05": {
+        "building": 48,
+        "due": 24,
+        "refractory": 72
+      },
+      "2026-10-06": {
+        "building": 37,
+        "due": 2,
+        "refractory": 72,
+        "resting": 33
+      },
+      "2026-10-07": {
+        "building": 144
+      },
+      "2026-10-08": {
+        "building": 53,
+        "due": 7,
+        "refractory": 84
+      },
+      "2026-10-09": {
+        "refractory": 60,
+        "due": 6,
+        "building": 78
+      },
+      "2026-10-10": {
+        "building": 4,
+        "due": 3,
+        "refractory": 17
+      }
+    },
+    "tired_minutes_total": 788.0,
+    "curiosity": {
+      "per_day": {
+        "2026-09-26": {
+          "events": 7,
+          "while_tired": 1,
+          "held": 0
+        },
+        "2026-09-27": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-09-28": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-09-29": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-09-30": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-01": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-02": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-03": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-04": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-05": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-06": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-07": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-08": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-09": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        }
+      },
+      "events": 98,
+      "while_tired": 1,
+      "held": 0,
+      "examples": []
+    },
+    "outreach": {
+      "per_day": {
+        "2026-09-26": {
+          "events": 4,
+          "while_tired": 2,
+          "held": 2
+        },
+        "2026-09-27": {
+          "events": 4,
+          "while_tired": 1,
+          "held": 1
+        },
+        "2026-09-28": {
+          "events": 4,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-09-29": {
+          "events": 4,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-09-30": {
+          "events": 4,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-01": {
+          "events": 4,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-02": {
+          "events": 4,
+          "while_tired": 3,
+          "held": 3
+        },
+        "2026-10-03": {
+          "events": 4,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-04": {
+          "events": 4,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-05": {
+          "events": 4,
+          "while_tired": 2,
+          "held": 2
+        },
+        "2026-10-06": {
+          "events": 4,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-07": {
+          "events": 4,
+          "while_tired": 0,
+          "held": 0
+        },
+        "2026-10-09": {
+          "events": 7,
+          "while_tired": 0,
+          "held": 0
+        }
+      },
+      "events": 55,
+      "while_tired": 8,
+      "held": 8,
+      "examples": [
+        {
+          "at": "2026-09-26T16:28:41.006562+00:00",
+          "gap_sec": 3105,
+          "state_ref": "replay"
+        },
+        {
+          "at": "2026-09-26T17:21:06.377176+00:00",
+          "gap_sec": 3145,
+          "state_ref": "replay"
+        },
+        {
+          "at": "2026-09-27T15:43:43.786295+00:00",
+          "gap_sec": 3166,
+          "state_ref": "replay"
+        },
+        {
+          "at": "2026-10-02T14:57:10.081818+00:00",
+          "gap_sec": 3104,
+          "state_ref": "replay"
+        },
+        {
+          "at": "2026-10-02T15:47:24.612452+00:00",
+          "gap_sec": 3015,
+          "state_ref": "replay"
+        },
+        {
+          "at": "2026-10-02T16:36:57.864604+00:00",
+          "gap_sec": 2973,
+          "state_ref": "replay"
+        },
+        {
+          "at": "2026-10-05T14:52:01.828604+00:00",
+          "gap_sec": 2803,
+          "state_ref": "replay"
+        },
+        {
+          "at": "2026-10-05T15:42:23.839965+00:00",
+          "gap_sec": 3022,
+          "state_ref": "replay"
+        }
+      ]
+    },
+    "door_a_outreach_excluded": 1,
+    "simulated_sleeps": 23
+  },
+  "input": {
+    "rows_jsonl_sha256": "0d7b983719ee4ff8bf7ff6d44317776689fdb38d2af83f4caeb59ea8d9468b34",
+    "rows": 12951,
+    "exported_at": "2026-10-10T04:2xZ (one READ ONLY transaction, conjourney)",
+    "command": "python scripts/analysis/measure_rest_drive_easing.py rows.jsonl --start 2026-09-26T04:00:00Z --end 2026-10-10T04:00:00Z",
+    "note": "rows.jsonl not committed (12.9k rows; source keys are md5, no text); regenerate with --print-sql"
+  }
+}

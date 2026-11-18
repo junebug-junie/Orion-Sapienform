@@ -58,6 +58,10 @@
 
 services:
   bus-core-standby:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     # Same image as the primary bus-core, including the AOF auto-repair
     # entrypoint (see Dockerfile.bus-core / entrypoint.sh) -- this container
     # runs `restart: unless-stopped` unattended on atlas the same way the

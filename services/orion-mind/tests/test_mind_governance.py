@@ -23,7 +23,7 @@ _VALID_STANCE = {
     "conversation_frame": "playful_relational",
     "task_mode": "playful_exchange",
     "identity_salience": "low",
-    "user_intent": "User shares a life moment with Amanda.",
+    "user_intent": "User shares a life moment with Robin.",
     "self_relevance": "Receive warmly; do not over-interpret.",
     "juniper_relevance": "Honor the shared moment without inventing facts.",
     "answer_strategy": "WarmDirectAnswer",
@@ -68,7 +68,7 @@ def _frontier_payload(*, label: str = "shared evening moment") -> dict:
                 "matter_id": "m1",
                 "source_claim_id": "c1",
                 "label": label,
-                "summary": "User mentions watching a show with Amanda.",
+                "summary": "User mentions watching a show with Robin.",
                 "matter_kind": "relationship_opportunity",
                 "score": 0.88,
                 "features": {"current_turn_relevance": 0.9, "confidence": 0.85},
@@ -137,7 +137,7 @@ def test_llm_phases_propagate_request_identity(monkeypatch: pytest.MonkeyPatch) 
         correlation_id=corr,
         session_id=session,
         trace_id=trace,
-        snapshot_inputs={"user_text": "going to watch a show with Amanda"},
+        snapshot_inputs={"user_text": "going to watch a show with Robin"},
         policy=MindRunPolicyV1(n_loops_max=1, wall_time_ms_max=60_000, router_profile_id="default"),
     )
     result = run_mind(

@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
+from orion.llm.resource_lease import GPU_LEASE_OPTION, held_call_route
 from orion.schemas.pre_turn_appraisal import PreTurnAppraisalRequestV1, TurnAppraisalBundleV1
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 from orion.substrate.appraisal.paradigms.registry import PARADIGM_REGISTRY, ParadigmBuildContext
+from orion.substrate.appraisal.paradigms.repair_pressure_v2 import RepairProbeUnavailable
 
 from .settings import settings
 
@@ -35,22 +37,50 @@ def normalize_llm_gateway_probe_payload(payload: dict[str, Any]) -> dict[str, An
     }
 
 
-async def _llm_probe_call(bus: OrionBusAsync, *, prompt: str, route: str, timeout_sec: float) -> dict[str, Any]:
-    rpc_corr = str(uuid4())
-    reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_corr}"
+def _envelope_correlation_id(turn_correlation_id: str | None) -> str:
+    """The turn's id when it is a UUID (BaseEnvelope requires one), else a fresh one.
+
+    The gateway leases the GPU with ``turn_correlation_id=env.correlation_id``
+    (llm-gateway main._dispatch_on_pool), so carrying the turn's id here is what joins the probe's
+    pool events to the turn. Until 2026-10-23 this was always a fresh uuid4, so a shed probe could
+    not be traced back to the turn it starved."""
+    if turn_correlation_id:
+        try:
+            return str(UUID(str(turn_correlation_id)))
+        except (TypeError, ValueError):
+            logger.info("repair_probe_turn_corr_not_uuid corr=%s", turn_correlation_id)
+    return str(uuid4())
+
+
+async def _llm_probe_call(
+    bus: OrionBusAsync,
+    *,
+    prompt: str,
+    route: str,
+    timeout_sec: float,
+    turn_correlation_id: str | None = None,
+    gpu_lease: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    rpc_corr = _envelope_correlation_id(turn_correlation_id)
+    # The reply channel stays unique per call; only the envelope carries the turn's id.
+    reply_channel = f"orion:exec:result:LLMGatewayService:{uuid4()}"
+    options: dict[str, Any] = {
+        "return_logprobs": True,
+        "logprobs_top_k": 8,
+        "logprob_summary_only": False,
+        "logprob_probe_mode": "native_completion",
+        "max_tokens": 128,
+        "purpose": "repair_pressure_probe",
+        "skip_spark_candidate_publish": True,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    if gpu_lease is not None:
+        # The gateway attaches the call to the turn's hold (llm-gateway main: gpu_lease_from_options).
+        options[GPU_LEASE_OPTION] = gpu_lease
     payload = ChatRequestPayload(
         messages=[LLMMessage(role="user", content=prompt)],
         route=route,
-        options={
-            "return_logprobs": True,
-            "logprobs_top_k": 8,
-            "logprob_summary_only": False,
-            "logprob_probe_mode": "native_completion",
-            "max_tokens": 128,
-            "purpose": "repair_pressure_probe",
-            "skip_spark_candidate_publish": True,
-            "chat_template_kwargs": {"enable_thinking": False},
-        },
+        options=options,
     )
     env = BaseEnvelope(
         kind="llm.chat.request",
@@ -62,7 +92,7 @@ async def _llm_probe_call(bus: OrionBusAsync, *, prompt: str, route: str, timeou
     msg = await bus.rpc_request(settings.channel_llm_intake, env, reply_channel=reply_channel, timeout_sec=timeout_sec)
     decoded = bus.codec.decode(msg.get("data"))
     if not decoded.ok or not isinstance(decoded.envelope.payload, dict):
-        return {"text": "", "llm_uncertainty": {"available": False}}
+        return {"text": "", "llm_uncertainty": {"available": False}, "raw": {"error": "llm_reply_undecodable"}}
     return normalize_llm_gateway_probe_payload(decoded.envelope.payload)
 
 
@@ -70,19 +100,25 @@ async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
     payload_obj = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
     req = PreTurnAppraisalRequestV1.model_validate(payload_obj or {})
     failed: list[str] = []
+    failure_reasons: dict[str, str] = {}
     paradigms: dict[str, Any] = {}
     metadata_attachments: dict[str, Any] = {}
     grammar_scalars: dict[str, dict[str, float]] = {}
 
     bus = _get_bus()
     timeout_sec = max(0.1, req.options.timeout_ms / 1000.0)
+    # A held turn (world-pulse read, curiosity, ...) probes on its own seat; Juniper's turns keep
+    # REPAIR_PRESSURE_PROBE_ROUTE. One rule for every held call: orion.llm.resource_lease.
+    probe_route, probe_lease = held_call_route(req.gpu_lease, settings.repair_pressure_probe_route)
 
     async def llm_caller(prompt: str) -> dict[str, Any]:
         return await _llm_probe_call(
             bus,
             prompt=prompt,
-            route=settings.repair_pressure_probe_route,
+            route=probe_route,
             timeout_sec=timeout_sec,
+            turn_correlation_id=req.correlation_id,
+            gpu_lease=probe_lease,
         )
 
     build_ctx = ParadigmBuildContext(
@@ -99,6 +135,7 @@ async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
                 paradigm_name,
             )
             failed.append(paradigm_name)
+            failure_reasons[paradigm_name] = "unknown_paradigm"
             continue
         try:
             paradigm = factory(build_ctx)
@@ -114,10 +151,12 @@ async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
                 if before_mode != after_mode:
                     metadata_attachments[REPAIR_PRESSURE_CONTRACT_METADATA_KEY] = dict(slice_.contract_delta)
             logger.info(
-                "pre_turn_appraisal_paradigm_result corr=%s paradigm=%s level=%.3f confidence=%.3f "
-                "mode=%s evidence=%s notes=%s metadata_attached=%s",
+                "pre_turn_appraisal_paradigm_result corr=%s paradigm=%s route=%s held=%s level=%.3f "
+                "confidence=%.3f mode=%s evidence=%s notes=%s metadata_attached=%s",
                 req.correlation_id,
                 paradigm_name,
+                probe_route,
+                probe_lease is not None,
                 slice_.level,
                 slice_.confidence,
                 (slice_.contract_delta or {}).get("mode"),
@@ -126,7 +165,19 @@ async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
                 paradigm_name == "repair_pressure"
                 and REPAIR_PRESSURE_CONTRACT_METADATA_KEY in metadata_attachments,
             )
-        except Exception:
+        except RepairProbeUnavailable as exc:
+            # No measurement (shed, empty, unparseable): failed, level unknown -- never 0.0.
+            logger.warning(
+                "pre_turn_appraisal_paradigm_failed corr=%s paradigm=%s reason=%s route=%s held=%s",
+                req.correlation_id,
+                paradigm_name,
+                exc.reason,
+                probe_route,
+                probe_lease is not None,
+            )
+            failed.append(paradigm_name)
+            failure_reasons[paradigm_name] = exc.reason
+        except Exception as exc:
             logger.warning(
                 "pre_turn_appraisal_paradigm_failed corr=%s paradigm=%s",
                 req.correlation_id,
@@ -134,6 +185,7 @@ async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
                 exc_info=True,
             )
             failed.append(paradigm_name)
+            failure_reasons[paradigm_name] = type(exc).__name__
 
     bundle = TurnAppraisalBundleV1(
         correlation_id=req.correlation_id,
@@ -141,6 +193,7 @@ async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
         metadata_attachments=metadata_attachments,
         grammar_scalars=grammar_scalars,
         failed_paradigms=failed,
+        failure_reasons=failure_reasons,
     )
     return BaseEnvelope(
         kind="pre_turn_appraisal.result.v1",

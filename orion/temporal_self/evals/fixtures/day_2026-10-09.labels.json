@@ -1,0 +1,21 @@
+{
+  "_comment": "Hand labels for local day 2026-10-09 (America/Denver), each checked by hand against live Postgres on 2026-10-10, not against the reducer. began_at selects the arc; count is how many arcs of that kind+subject (+began_at) exist.",
+  "arcs": [
+    {"kind": "sleep", "subject_ref": "dc-981127ddbddf", "count": 1,
+     "began_at": "2026-10-09T06:33:24.443274+00:00", "ended_at": "2026-10-09T06:33:30.130486+00:00",
+     "_why": "dream_cycle row, completed; 00:33 local, the first sleep after #2557"},
+    {"kind": "sleep", "subject_ref": "dc-1b31a0ce6658", "count": 1,
+     "began_at": "2026-10-10T01:01:56.607322+00:00", "ended_at": "2026-10-10T01:02:03.966715+00:00",
+     "_why": "dream_cycle row; 19:01 local, 18.5 h after the previous sleep (pressure-driven)"},
+    {"kind": "curiosity", "subject_ref": "ca97ade74c1d", "count": 1,
+     "began_at": "2026-10-08T19:56:14.686452+00:00", "ended_at": "2026-10-09T16:31:20.803647+00:00",
+     "_why": "turn_started_at and completed_at are 20.6 h apart in the source rows; kept, and flagged"},
+    {"kind": "conversation", "subject_ref": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9", "count": 0,
+     "_why": "4 rows on 10-09, all unsolicited outreach with no prompt: Orion spoke, Juniper did not"},
+    {"kind": "conversation", "subject_ref": "orion_journal", "count": 2,
+     "_why": "Juniper turns at 21:00:53Z and 00:08:23Z (has_prompt), 3 h 7.5 min apart > the 3 h conversation window"},
+    {"kind": "attention", "subject_ref": "node:substrate.harness_closure", "count": 1,
+     "began_at": "2026-10-10T03:47:49.581455+00:00", "min_returns": 3,
+     "_why": "raw ticks: a 22-tick streak at 03:47Z, interrupted by execution streaks (>=3) at 04:16, 04:32 and 04:38, back at 04:27, 04:34 and 04:59"}
+  ]
+}

@@ -36,3 +36,88 @@ def test_dockerfile_binds_all_interfaces() -> None:
     text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert 'host="0.0.0.0"' in text
     assert "KEV_GIT_SHA=" in text
+
+
+def _env_value(path: Path, key: str) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].split("#", 1)[0].strip()
+    raise AssertionError(f"{key} missing from {path}")
+
+
+# config/gpu_pool.yaml names circe cards by index only (CardSpec has no UUID field), so the
+# card -> UUID join lives here. Verified live 2026-10-23 with `nvidia-smi -L` on circe, and
+# Kev's pid matched to gpu3's UUID with `nvidia-smi --query-compute-apps`. This is a
+# consistency check against a hand-kept table, not proof of placement: if circe renumbers,
+# re-verify these by hand. The test below forces an update when a circe card is added or renamed.
+CIRCE_CARD_UUIDS = {
+    "gpu0": "GPU-5b4609d2-95c2-2891-8aff-98ac1af92302",
+    "gpu1": "GPU-83b0aa77-90da-ed6c-cc04-a1e530d0a0f1",
+    "gpu2": "GPU-00e3b626-de2a-e344-796e-017b7a1b3f40",
+    "gpu3": "GPU-599d16a7-8c7c-1e3a-ac94-a01e5cb5cf7a",
+}
+
+
+def test_gpu_pin_matches_gpu_pool_kev_role() -> None:
+    """KEV_GPU_DEVICE_ID and the pool's `kev` role must name the same card and port,
+    or the pool counts Kev's VRAM on a card it is not on."""
+    repo = ROOT.parents[1]
+    pool = yaml.safe_load((repo / "config" / "gpu_pool.yaml").read_text(encoding="utf-8"))
+    role = pool["roles"]["kev"]
+    assert role["kind"] == "service"
+    circe_cards = {name for name, spec in pool["cards"].items() if spec.get("host") is None}
+    assert set(CIRCE_CARD_UUIDS) == circe_cards, "update CIRCE_CARD_UUIDS to match gpu_pool.yaml cards"
+    assert set(role["cards"]) <= circe_cards, "kev is a circe card"
+    uuids = {CIRCE_CARD_UUIDS[card] for card in role["cards"]}
+    assert uuids == {_env_value(ROOT / ".env_example", "KEV_GPU_DEVICE_ID")}
+    assert str(role["port"]) == _env_value(ROOT / ".env_example", "KEV_HOST_PORT")
+
+
+def test_substrate_points_at_kev_pool_address() -> None:
+    """Substrate's Kev URL must be the pool's own address for the kev role (node + port),
+    so moving the card to another host without moving the URL fails here."""
+    from orion.gpu_pool.config import load_pool_config
+
+    repo = ROOT.parents[1]
+    url = _env_value(repo / "services" / "orion-substrate-runtime" / ".env_example",
+                     "SUBSTRATE_SYSTEM_ONE_BASE_URL")
+    assert url == load_pool_config(repo / "config" / "gpu_pool.yaml").url("kev")
+
+
+def _service_list(path: Path) -> set[str]:
+    return {
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+
+def test_rebuild_lists_place_kev_on_circe_only() -> None:
+    """The post-merge rebuild must refresh Kev on circe and never recreate it on athena.
+    circe reads its allowlist; every host without one (athena) reads the exclude file."""
+    common = ROOT.parents[1] / "mesh-utilities" / "common"
+    assert "orion-kev" in _service_list(common / "include_services_circe.txt")
+    assert "orion-kev" in _service_list(common / "exclude_services.txt")
+
+
+def test_post_merge_resolver_rebuilds_kev_on_circe_not_athena() -> None:
+    """Pins the resolver's real output, so a change to include/exclude precedence fails here.
+    Runs it as a subprocess with --json, the same way tests/scripts/test_rebuild_affected_services.py does."""
+    import json
+    import subprocess
+    import sys
+
+    repo = ROOT.parents[1]
+
+    def resolve(host: str) -> list[str]:
+        proc = subprocess.run(
+            [sys.executable, str(repo / "scripts" / "rebuild_affected_services.py"),
+             "--paths", "services/orion-kev/entrypoint.sh", "--json",
+             "--repo-root", str(repo), "--host", host],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)["services"]
+
+    assert "orion-kev" in resolve("circe")
+    assert "orion-kev" not in resolve("athena")

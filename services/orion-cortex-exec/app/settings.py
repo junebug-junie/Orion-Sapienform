@@ -83,17 +83,9 @@ class Settings(BaseSettings):
         True, alias="MEMORY_COGNITION_BRAIN_BELIEF_DEFAULT"
     )
     orion_unified_grounding_enabled: bool = Field(True, alias="ORION_UNIFIED_GROUNDING_ENABLED")
-    channel_context_exec_intake: str = Field(
-        "orion:exec:request:ContextExecService",
-        alias="CHANNEL_CONTEXT_EXEC_INTAKE",
-    )
-    channel_context_exec_reply_prefix: str = Field(
-        "orion:exec:result:ContextExecService",
-        alias="CHANNEL_CONTEXT_EXEC_REPLY_PREFIX",
-    )
-    context_exec_enabled: bool = Field(False, alias="CONTEXT_EXEC_ENABLED")
-    context_exec_timeout_sec: float = Field(60.0, alias="CONTEXT_EXEC_TIMEOUT_SEC")
-    context_exec_depth2_default: bool = Field(False, alias="CONTEXT_EXEC_DEPTH2_DEFAULT")
+    # Core memory pages (Phase 1a): put Orion's page:juniper on the grounding capsule so the harness
+    # prefix renders it as RELATIONSHIP. false => today's identity-yaml RELATIONSHIP bullets.
+    orion_core_pages_enabled: bool = Field(True, alias="ORION_CORE_PAGES_ENABLED")
     channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")
     channel_council_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
     channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")
@@ -115,10 +107,6 @@ class Settings(BaseSettings):
     )
     # dream_cycle / dream_synthesis only (does not affect chat_quick / chat_general budgets)
     llm_dream_max_tokens: int = Field(32768, alias="LLM_DREAM_MAX_TOKENS")
-    # Orion's Day letter verbs (orion_day_note_v1 / orion_day_carry_forward_v1) only.
-    llm_orion_day_note_max_tokens: int = Field(12000, alias="LLM_ORION_DAY_NOTE_MAX_TOKENS")
-    llm_orion_day_carry_forward_max_tokens: int = Field(4000, alias="LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS")
-    atlas_metacog_profile_name: str | None = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")
     cortex_chat_return_logprobs: bool = Field(
         False,
         alias="CORTEX_CHAT_RETURN_LOGPROBS",
@@ -175,6 +163,8 @@ class Settings(BaseSettings):
     orion_situation_locality: str | None = Field(None, alias="ORION_SITUATION_LOCALITY")
     orion_situation_region: str | None = Field(None, alias="ORION_SITUATION_REGION")
     orion_situation_country: str | None = Field(None, alias="ORION_SITUATION_COUNTRY")
+    orion_situation_home_location: str | None = Field(None, alias="ORION_SITUATION_HOME_LOCATION")
+    orion_situation_physical_location: str | None = Field(None, alias="ORION_SITUATION_PHYSICAL_LOCATION")
     orion_situation_location_precision: str = Field("city", alias="ORION_SITUATION_LOCATION_PRECISION")
     orion_situation_weather_enabled: bool = Field(True, alias="ORION_SITUATION_WEATHER_ENABLED")
     orion_situation_weather_provider: str = Field("stub", alias="ORION_SITUATION_WEATHER_PROVIDER")
@@ -186,7 +176,6 @@ class Settings(BaseSettings):
     orion_situation_high_wind_mph_threshold: int = Field(25, alias="ORION_SITUATION_HIGH_WIND_MPH_THRESHOLD")
     orion_situation_hot_car_temp_f_threshold: int = Field(80, alias="ORION_SITUATION_HOT_CAR_TEMP_F_THRESHOLD")
     orion_situation_agenda_enabled: bool = Field(False, alias="ORION_SITUATION_AGENDA_ENABLED")
-    orion_situation_lab_context_enabled: bool = Field(True, alias="ORION_SITUATION_LAB_CONTEXT_ENABLED")
     # P4: the camera percept in the situation brief. Default OFF -- this puts
     # camera-derived content about a private home into the prompt, so it is
     # opt-in. See PerceptionContextV1's docstring for the exposed-field
@@ -223,7 +212,7 @@ class Settings(BaseSettings):
     # joins the situation brief. Empty string disables the street line.
     # Only read when ORION_SITUATION_PERCEPTION_ENABLED is true.
     orion_situation_street_stream_ids: str = Field(
-        "walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
+        "doorbell,walkway,cam0", alias="ORION_SITUATION_STREET_STREAM_IDS"
     )
     # 2026-08-29: the cooldown for the OTHER ask reason -- "I have no fresh
     # confirmed read of who this is at all" (lid closed, camera off, empty
@@ -280,19 +269,16 @@ class Settings(BaseSettings):
     orion_situation_reverie_ttl_seconds: int = Field(
         180, alias="ORION_SITUATION_REVERIE_TTL_SECONDS"
     )
-    orion_situation_lab_provider: str = Field("stub", alias="ORION_SITUATION_LAB_PROVIDER")
     # 2026-08-14: "does Orion know what model it's running on" (Juniper).
     # Default ON -- unlike perception, this carries no private-home content,
     # just a route name and a model id already visible in orion-llm-gateway's
-    # own logs. Probes orion-llm-gateway's GET /routes (already cached there
-    # 15s) for the `orion_situation_runtime_route`'s live model id; never
+    # own logs. Reads GPU pool state (orion:gpu_pool:state RPC with the pool's
+    # config; GPU pool stage 6.3 -- no longer the gateway's GET /routes) for the
+    # model a call on `orion_situation_runtime_route` would land on; never
     # infers, degrades to unavailable on any failure. See RuntimeContextV1
     # in orion/schemas/situation.py.
     orion_situation_runtime_enabled: bool = Field(True, alias="ORION_SITUATION_RUNTIME_ENABLED")
     orion_situation_runtime_route: str = Field("chat", alias="ORION_SITUATION_RUNTIME_ROUTE")
-    cortex_exec_llm_gateway_url: str = Field(
-        "http://llm-gateway:8210", alias="CORTEX_EXEC_LLM_GATEWAY_URL"
-    )
     # ROADMAP A5: read orion-gpu-pool's lease history (gpu_pool_events) and put "was my background
     # thinking made to wait, and for how long" into the metacog cue. Default ON, but the cue key is
     # simply absent whenever the history cannot be read -- unknown never renders as calm.
@@ -312,9 +298,8 @@ class Settings(BaseSettings):
         2.0, alias="ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC"
     )
     # Shorter than weather_ttl_seconds (600s): a model swap on the chat route
-    # is an operator action Orion should reflect fairly promptly, and the
-    # underlying orion-llm-gateway /routes read is already cached there 15s,
-    # so this cache is a second, cheap layer on top, not the only one.
+    # is an operator action Orion should reflect fairly promptly; each miss
+    # is one bus RPC to the GPU pool.
     orion_situation_runtime_ttl_seconds: int = Field(
         120, alias="ORION_SITUATION_RUNTIME_TTL_SECONDS"
     )
@@ -337,8 +322,9 @@ class Settings(BaseSettings):
     # is a seconds-scale command and must keep the short budget, so this
     # needs its own key rather than a raise of the shared one.
     #
-    # Must stay BELOW the verb's own timeout_ms (660s) and the maintenance
-    # route's rpc_timeout_sec (720s), so a real overrun is attributed to the
+    # Must stay BELOW the verb's own timeout_ms (660s) and any caller's RPC
+    # budget (720s: dispatch's maintenance route until 2026-11-06,
+    # orion-hardware-watch's disk rule for image_prune since), so a real overrun is attributed to the
     # docker command rather than surfacing as an opaque RPC timeout.
     builder_prune_timeout_sec: float = Field(600.0, alias="BUILDER_PRUNE_TIMEOUT_SEC")
     # Same footing as its sibling above. 2026-08-13 review finding: this was
@@ -369,6 +355,9 @@ class Settings(BaseSettings):
     # PageIndex query provenance includes enriched journal trigger/stance/facet metadata.
     journal_pageindex_service_url: str = Field("http://orion-pageindex:8360", alias="JOURNAL_PAGEINDEX_SERVICE_URL")
     biometrics_http_timeout_sec: float = Field(5.0, alias="BIOMETRICS_HTTP_TIMEOUT_SEC")
+    # skills.physiology.state.v1: orion-durable-runs' read-only GET /physiology/report (app-net, port 8121).
+    physiology_report_url: str = Field("http://orion-athena-durable-runs:8121", alias="ORION_PHYSIOLOGY_REPORT_URL")
+    physiology_report_timeout_sec: float = Field(10.0, alias="ORION_PHYSIOLOGY_REPORT_TIMEOUT_SEC")
     # skills.perception.look_at_camera.v1 -- reads orion-vision-window's already-
     # projected current-window snapshot (GET /api/vision-window/current). Does
     # NOT trigger a fresh capture; that would need a direct vision-host RPC, out
@@ -487,7 +476,10 @@ class Settings(BaseSettings):
         "config/substrate/repair_pressure_weights.v2.yaml",
         alias="REPAIR_PRESSURE_WEIGHTS_V2_PATH",
     )
-    repair_pressure_probe_route: str = Field("quick", alias="REPAIR_PRESSURE_PROBE_ROUTE")
+    # quick_turn (2026-10-23): the fast class at interactive pool priority. Every Hub turn awaits
+    # this probe; on `quick` (system) the heat reflex shed it on 19/19 of Juniper's turns 10-20..21.
+    # The gateway must know quick_turn (config/gpu_pool.yaml) before this is deployed.
+    repair_pressure_probe_route: str = Field("quick_turn", alias="REPAIR_PRESSURE_PROBE_ROUTE")
     # Same-turn LLM novelty/salience judgment for the chat-scoped attention/
     # curiosity pipeline (app/current_turn_llm_signals.py), replacing the
     # deleted LegacyRegexSignalDetector's "any capitalized word" regex.
@@ -556,18 +548,6 @@ class Settings(BaseSettings):
         30.0, alias="EMBODIMENT_BACKGROUND_INTERVAL_SEC"
     )
     embodiment_orion_player_id: str = Field("", alias="AITOWN_ORION_PLAYER_ID")
-
-    # --- Self-study Layer 1 periodic refresh (2026-09-19, chat lane only) ---
-    # 0 disables. See app/self_study_refresh.py for why a timer and not
-    # action-selection.
-    self_study_inspect_interval_sec: float = Field(86400.0, alias="SELF_STUDY_INSPECT_INTERVAL_SEC")
-
-    # --- Self-study Layer 3 periodic refresh (2026-09-20, chat lane only) ---
-    # Same fix as the Layer 1 timer above, applied to reflect_self_concepts()
-    # (self_study_reflect_refresh_loop). 0 disables.
-    self_study_reflect_refresh_interval_sec: float = Field(
-        86400.0, alias="SELF_STUDY_REFLECT_REFRESH_INTERVAL_SEC"
-    )
 
     @field_validator("orion_situation_weather_lat", "orion_situation_weather_lon", mode="before")
     @classmethod

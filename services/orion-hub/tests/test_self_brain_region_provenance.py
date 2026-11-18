@@ -35,14 +35,13 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
-def test_region_provenance_covers_all_six_dimensions() -> None:
+def test_region_provenance_covers_all_five_dimensions() -> None:
     resp = _client().get("/api/self-brain/region-provenance")
     assert resp.status_code == 200
     body = resp.json()
     assert set(body) == {
         "node_kind",
         "lane",
-        "self_state",
         "lattice_layer",
         "honesty_metrics",
         "field_anomaly",
@@ -50,7 +49,7 @@ def test_region_provenance_covers_all_six_dimensions() -> None:
 
 
 def test_field_anomaly_provenance_names_field_digester() -> None:
-    """The one dimension whose true producer differs from the other five --
+    """The one dimension whose true producer differs from the other four --
     regression guard for that distinction actually reaching the frontend."""
     resp = _client().get("/api/self-brain/region-provenance")
     entry = resp.json()["field_anomaly"]
@@ -63,7 +62,7 @@ def test_field_anomaly_provenance_names_field_digester() -> None:
 def test_other_dimensions_name_substrate_runtime() -> None:
     resp = _client().get("/api/self-brain/region-provenance")
     body = resp.json()
-    for dim in ("node_kind", "lane", "self_state", "lattice_layer", "honesty_metrics"):
+    for dim in ("node_kind", "lane", "lattice_layer", "honesty_metrics"):
         assert body[dim]["producer_service"] == "orion-substrate-runtime"
 
 

@@ -1,6 +1,6 @@
 """Hub read API backing the Cognitive EKG card's Biometrics toggle + deep-inspection modal.
 
-Athena and circe are the only two live host nodes; a third node (`atlas`) was
+Athena, circe and hecate are the live host nodes; a third node (`atlas`) was
 decommissioned 2026-08-20 and is rejected explicitly rather than silently
 dropped or forwarded as a doomed cross-host call (see `biometrics_node_client.py`).
 
@@ -67,6 +67,9 @@ _CHANNEL_COLUMN: dict[str, str] = {
     # above (cluster_measurements_by_node), not from history, since circe's own PDU proxy
     # value is computed on athena and never persisted into circe's own summary row.
     "chassis_watts": "measurements",
+    # Raw degrees C: hottest motherboard chipset/voltage-regulator sensor, read from each
+    # node's own BMC and written into its own summary row (see extract_measurements).
+    "board_temp_c_max": "measurements",
 }
 
 # Injectable seam for tests, same pattern as cabinet_sensors_routes._history_query.
@@ -137,6 +140,8 @@ def lane_map_from_pool_state(
     production, so every card read "unassigned".
 
     - A node the pool does not manage (athena: no pool, a non-goal) -> ``({}, "unassigned")``.
+    - Multi-host pool: only cards whose ``host`` (else the state's ``host``) is ``node`` are labelled;
+      ``index`` repeats across nodes (circe gpu0 and hecate's card are both 0).
     - No pool state, a state without ``host`` (a pre-5.5 pool) or one older than
       ``POOL_STATE_MAX_AGE_SEC`` -> ``({}, "no pool state")``: unknown, which is not the same fact as
       "nothing assigned".
@@ -152,7 +157,13 @@ def lane_map_from_pool_state(
     if not isinstance(host, str) or not host:
         # A pre-5.5 pool sends neither host nor card index: labels cannot be joined yet.
         return {}, LANE_NO_POOL_STATE
-    if host.strip().lower() != node:
+    host = host.strip().lower()
+
+    def card_node(card: dict) -> str:
+        # Multi-host pool: each card names its node; a pre-multi-host pool's cards are all on ``host``.
+        return str(card.get("host") or host).strip().lower()
+
+    if not any(isinstance(c, dict) and card_node(c) == node for c in state.get("cards") or []):
         return {}, LANE_UNASSIGNED
     generated = state.get("generated_at")
     try:
@@ -180,7 +191,7 @@ def lane_map_from_pool_state(
 
     labels: Dict[str, str] = {}
     for card in state.get("cards") or []:
-        if not isinstance(card, dict) or card.get("index") is None:
+        if not isinstance(card, dict) or card.get("index") is None or card_node(card) != node:
             continue
         roles = on_card.get(str(card.get("card")), [])
         label = ", ".join(roles) if roles else "nothing loaded"

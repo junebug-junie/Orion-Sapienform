@@ -25,7 +25,6 @@ SPEARMAN_TARGET = 0.6
 GATED_PROXIES = (
     "rpc_health:p95_over_threshold",
     "rpc_health:timeout_count",
-    "bus_synaptic:error_over_threshold",
     "telemetry:recon_over_threshold",
 )
 DISTINCT_DENSITY_PER_DAY_TARGET = 10
@@ -116,11 +115,6 @@ def proxy_for(kind: str, up: dict[str, Any]) -> tuple[str, float] | None:
         p95, thr = _f(up.get("success_latency_ms_p95")), _f(up.get("latency_p95_threshold_ms"))
         if p95 is not None and thr:
             return ("rpc_health:p95_over_threshold", p95 / thr)
-        return None
-    if kind == "transport" and src == "bus_synaptic_prediction_error":
-        e, thr = _f(up.get("error")), _f(up.get("error_threshold"))
-        if e is not None and thr:
-            return ("bus_synaptic:error_over_threshold", e / thr)
         return None
     if kind == "telemetry_anomaly":
         loss, thr = _f(up.get("recon_loss")), _f(up.get("threshold"))
@@ -290,7 +284,7 @@ def render_report(res: dict[str, Any], *, source: str) -> str:
             f"{_fmt_rho(old.get('rho'))} (n={old.get('n', 0)}) |"
         )
     L.append(
-        "\nNote: telemetry and bus_synaptic severities are banded functions of exactly this proxy, "
+        "\nNote: telemetry severities are banded functions of exactly this proxy, "
         "so their rho is high by construction (a regression guard, not independent validation). "
         "`rpc_health:*` rows split timeout rows from latency-only rows because the mapper leads with timeouts. "
         "The tie-limited ceiling is the best rho any 3-level severity with the same class sizes could reach; "

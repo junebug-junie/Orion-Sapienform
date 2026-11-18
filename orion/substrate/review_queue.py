@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
+from typing import Any
 import json
 import sqlite3
 
@@ -57,6 +58,7 @@ class GraphReviewQueue:
         self._items: dict[str, GraphReviewQueueItemV1] = {}
         self._source_kind = "memory"
         self._last_error: str | None = None
+        self._engine_cache: Any = None
 
         if self.postgres_url:
             try:
@@ -330,12 +332,25 @@ class GraphReviewQueue:
             item = GraphReviewQueueItemV1.model_validate(json.loads(payload_json))
             self._items[item.queue_item_id] = item
 
+    def _engine(self):
+        """One pool for the life of the store (see mutation_control_surface._engine).
+
+        A per-call create_engine() left one idle connection open per call until
+        garbage collection; the hub's 30 s autonomy loop pushed it to 149
+        Postgres connections on 2026-11-02.
+        """
+        if self._engine_cache is None:
+            from sqlalchemy import create_engine
+
+            self._engine_cache = create_engine(self.postgres_url, pool_pre_ping=True)
+        return self._engine_cache
+
     def _ensure_postgres_schema(self) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._engine()
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -352,9 +367,9 @@ class GraphReviewQueue:
     def _persist_to_postgres(self) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._engine()
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM substrate_review_queue_item"))
             for item in self._items.values():
@@ -375,9 +390,9 @@ class GraphReviewQueue:
     def _load_from_postgres(self) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._engine()
         with engine.begin() as conn:
             rows = conn.execute(
                 text("SELECT payload_json::text FROM substrate_review_queue_item ORDER BY created_at ASC")

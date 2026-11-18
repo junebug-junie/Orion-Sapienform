@@ -14,7 +14,6 @@ def _utcnow_iso() -> str:
 SocialInspectionSectionKind = Literal[
     "context_window",
     "claims",
-    "commitments",
     "routing",
     "repair",
     "deliberation",

@@ -27,6 +27,12 @@ SelfStateV1 itself), not just SelfStateV1's own module, and its CI gate
 (scripts/check_inner_state_registry.py) has real, independent value
 unrelated to whether SelfStateV1 specifically survives -- moved to a neutral
 location rather than deleted alongside orion/self_state/.
+
+2026-10-07: the self_state.v1 entry itself is removed, along with
+orion/schemas/self_state.py. It was already REHEARSAL with both ends gone
+(producer deleted 2026-07-22, consumer 2026-07-28, substrate_self_state at
+0 rows, re-counted live 2026-10-07); the entry only survived because the
+schema module did.
 """
 from __future__ import annotations
 
@@ -36,17 +42,30 @@ from typing import Optional, Type
 
 from pydantic import BaseModel
 
+from orion.metrics.semantics import MetricSemantics
+
 from orion.autonomy.models import AutonomyStateV2
 from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+from orion.schemas.attention_salience import AttentionSalienceTraceV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
+from orion.schemas.drive_reading import DriveReadingV1
+from orion.schemas.regulation import RegulationStateV1
+from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1
+from orion.schemas.physiology import PhysiologyStateV1
+from orion.schemas.physiology_want import WantDecisionV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
-from orion.schemas.self_state import SelfStateV1
+from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.biometrics import BiometricsClusterV1
+from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
+from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
+from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
+from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1
 
 
 class Cadence(str, Enum):
@@ -60,8 +79,12 @@ class Cadence(str, Enum):
 
 
 class CompositionStatus(str, Enum):
-    """Where a signal stands relative to SelfStateV1, the one schema every
-    cognition-facing prompt-builder is expected to read from."""
+    """Where a signal stands relative to cognition. The COMPOSED value's
+    string ("composed_into_self_state") is historical: it named SelfStateV1,
+    the composition target retired 2026-07-22 (schema module itself deleted
+    2026-10-07). The string is kept unchanged because it is recorded in
+    config/metrics/metric_definitions.lock.json notes for live entries;
+    renaming it is a separate definition change, not part of the retirement."""
 
     COMPOSED = "composed_into_self_state"
     SHADOW = "shadow_declared_not_composed"
@@ -85,6 +108,19 @@ class InnerStateSignal:
     duplicate_of: Optional[str] = None
     shadow_reason: Optional[str] = None
     notes: str = ""
+    # "Why is it in this state" semantics per scalar field (2026-10-10; see
+    # orion/metrics/semantics.py). Keys are float field names on `schema`;
+    # the key "" describes the signal-level node itself. Each entry cites the
+    # producer line it was read from in a comment beside it.
+    semantics: tuple[tuple[str, MetricSemantics], ...] = ()
+
+    def semantics_by_key(self) -> dict[str, MetricSemantics]:
+        out: dict[str, MetricSemantics] = {}
+        for key, sem in self.semantics:
+            if key in out:
+                raise ValueError(f"{self.signal_id}: duplicate semantics key {key!r}")
+            out[key] = sem
+        return out
 
     def __post_init__(self) -> None:
         if self.composition_status is CompositionStatus.DUPLICATE and not self.duplicate_of:
@@ -100,6 +136,56 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         producer_service="orion-field-digester",
         cadence=Cadence.PER_TICK,
         composition_status=CompositionStatus.COMPOSED,
+        # Semantics (2026-10-10, orion/metrics/semantics.py), read from code:
+        semantics=(
+            # orion/field/significance.py:205 sustained_load_pressure(): max
+            # pressure_equivalent_level over loaded_steady ballots, else 0.0;
+            # recomputed every 30 s over 900 s, carried forward between
+            # recomputes with no decay (services/orion-field-digester/app/
+            # digestion/significance.py:40-64).
+            (
+                "sustained_load_pressure",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = no (channel, node) is loaded AND steady this "
+                        "window; otherwise the highest such level, continuous in "
+                        "(0, 1] -- not two-valued."
+                    ),
+                    sparsity="designed_sparse",
+                    absent_means=(
+                        "carried forward unchanged between 30 s recomputes and "
+                        "on a failed window read (no decay)."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+            # orion/schemas/field_state.py:250-261 + orion/field/
+            # queue_contention.py: 0-10 max of per-source subs (depth vs own
+            # EWMA, oldest wait vs expected wait). Disclosed to Orion only at
+            # >= 0.5 (orion/curiosity/queue_contention_disclosure.py:68).
+            (
+                "queue_contention_score",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = every queue at or below its recent normal depth "
+                        "and nothing waited past its expected wait. Scale is "
+                        "0-10, not 0-1; below 0.5 it is never shown."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "schema default 0.0 -- a row from before the producer "
+                        "ran reads the same as calm."
+                    ),
+                    polarity="higher_is_worse",
+                    prompt_sites=(
+                        "orion.curiosity.queue_contention_disclosure:"
+                        "format_queue_contention_progress",
+                    ),
+                ),
+            ),
+        ),
         cognition_consumers=(),
         scalar_cognition_consumers=(
             (
@@ -142,7 +228,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "structured per-target data (target_kind, pressure_score, top "
             "dominant_channel, top reason) survives on the additive "
             "SelfStateV1.dominant_attention_target_details field via "
-            "AttentionTargetSummaryV1 (orion/schemas/self_state.py)."
+            "AttentionTargetSummaryV1 (orion/schemas/self_state.py, deleted 2026-10-07)."
         ),
     ),
     InnerStateSignal(
@@ -151,6 +237,30 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         producer_service="orion-substrate-runtime",
         cadence=Cadence.PER_TICK,
         composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/substrate/attention_broadcast.py:534-539: 0.9 if
+            # dwell_ticks > 3, 0.6 if > 0, else 0.3. Live 3 days to
+            # 2026-10-10: only those three values (as self-model confidence).
+            (
+                "coalition_stability_score",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "0.3 = no settled coalition (flickering). 0.6 = "
+                        "transitioning, 0.9 = held > 3 ticks. Three tiers, not "
+                        "a measured stability; the schema default 1.0 is never "
+                        "produced."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "dwell history is in-process, so it resets to 0.3 on a "
+                        "substrate-runtime restart."
+                    ),
+                    polarity="higher_is_better",
+                    prompt_sites=("services.orion-thought.app.reverie:build_reverie_context",),
+                ),
+            ),
+        ),
         shadow_reason=(
             "Not composed into self_state.v1, and cannot be: that producer "
             "(orion-self-state-runtime) was removed in PR #1266, so "
@@ -188,13 +298,94 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         producer_service="orion-substrate-runtime",
         cadence=Cadence.PER_TICK,
         composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/substrate/attention_self_model.py:746/:758 copy
+            # broadcast.coalition_stability_score (3 tiers); :768/:772
+            # (field_salience_only branch) are continuous. Live 3 days to
+            # 2026-10-10: 0.9 x3721, 0.6 x1708, 0.3 x504, nothing else.
+            (
+                "confidence",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "0.3 = no settled coalition. In practice a 3-tier dwell "
+                        "bucket (0.9/0.6/0.3) named 'confidence'; continuous "
+                        "only on the rare field-salience-only branch."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="schema allows None; never None in 5,933 live rows (3 days to 2026-10-10).",
+                    polarity="higher_is_better",
+                ),
+            ),
+            # :727 from frame.effort_budget_used = sum(applied_bias) in
+            # [0, effort_max * agency] (orion/substrate/attention/
+            # top_down.py:229-233); 0.0 with no goal or no loops (:193).
+            # Code is continuous; live 3 days: 0.0 x3959, 1.0 x1591, ~30
+            # other values -- binary in practice.
+            (
+                "top_down_effort_used",
+                MetricSemantics(
+                    value_kind="binary",
+                    rest=(
+                        "0.0 = no goal or no open loops, so attention ran "
+                        "bottom-up. When top-down fires it almost always spends "
+                        "the full budget (1.0)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None when the broadcast lane is stale.",
+                ),
+            ),
+            # :175-217 _unconditional_prediction_error_confidence = 1 - mean
+            # PE over active domains; None with no active domain. Live 3
+            # days: median 0.977, p5 0.79.
+            (
+                "prediction_error_confidence",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "about 0.97-0.99: near-ceiling because most domain "
+                        "prediction errors rest at or near 0. 1 - mean error, so "
+                        "only a broad surprise moves it."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "None when no active domain has a fresh reading (each "
+                        "drops after 1800 s, orion/substrate/"
+                        "prediction_error_freshness.py:26)."
+                    ),
+                    polarity="higher_is_better",
+                ),
+            ),
+            # services/orion-heartbeat/app/substrate/proprioception.py:89-105:
+            # far/near (mean of cuts 7-8 over mean of cuts 0-1); None when
+            # near < 1e-6 (:30). Live 3 days: median 2.6, max 1,459,596,
+            # 278 nulls -- a nearly-dead near end above the floor explodes.
+            (
+                "heartbeat_smear",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "about 2-3 (far end of the heartbeat profile twice the "
+                        "near end); 'smeared' at >= 0.5. Bounded at "
+                        "SMEAR_DEAD_RATIO=10 since PR #2571 (orion-heartbeat "
+                        "proprioception.py:46,123): healthy readings sit at "
+                        "0.94-5.5, so a value near 10 is the edge of 'alive'."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "None when the near end is dead: below the 1e-6 floor or "
+                        "far/near > 10 (near end carries < 1/10 of the far "
+                        "end's entanglement). Before #2571 this read 1e4-1.5e6."
+                    ),
+                ),
+            ),
+        ),
         shadow_reason=(
             "Same as attention_broadcast_projection.v1: self_state.v1's "
             "producer no longer exists, so composition into it is not a "
             "reachable status. Real live consumers are listed below."
         ),
         cognition_consumers=(
-            "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
             "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger",
         ),
         notes=(
@@ -206,10 +397,12 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "consumed by any live decision path -- that wiring is explicitly "
             "future work (Phase 3+)'. That is STALE. "
             "orion-equilibrium-service's generative_metacog_poll_loop reads it "
-            "via AttentionSelfModelReader.fetch_recent_samples and feeds both "
-            "metacog gates above; EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE "
-            "and EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE are both true in "
-            ".env_example, so the path is live by default, not future work."
+            "via AttentionSelfModelReader.fetch_recent_samples and feeds the "
+            "insight metacog gate above; EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE "
+            "is true in .env_example, so the path is live by default, not future "
+            "work. The flow gate consumer was retired 2026-10-10 (its plateau was "
+            "the idle rest state; see docs/superpowers/pr-reports/"
+            "2026-10-10-metacog-flow-trigger-calibration-pr.md)."
         ),
     ),
     InnerStateSignal(
@@ -239,35 +432,6 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "cortex, which already produces here every real chat turn and "
             "is the kickoff point for any later sequencing of these "
             "processes."
-        ),
-    ),
-    InnerStateSignal(
-        signal_id="self_state.v1",
-        schema=SelfStateV1,
-        producer_service="orion-self-state-runtime (DELETED 2026-07-22, PR #1266)",
-        cadence=Cadence.PER_TICK,
-        composition_status=CompositionStatus.REHEARSAL,
-        cognition_consumers=(),
-        notes=(
-            "RETIRED, corrected 2026-08-13. This entry previously read "
-            "COMPOSED with producer orion-self-state-runtime and consumer "
-            "services.orion-spark-introspector.app.inner_state:"
-            "build_inner_state_features, and claimed it 'feeds phi's "
-            "InnerStateFeaturesV1 and the L7 ladder'. All three are false: "
-            "services/orion-self-state-runtime was deleted (PR #1266, "
-            "71b6fac57, merged 2026-07-22), services/orion-spark-introspector "
-            "was deleted in the 2026-07-28 spark-introspector retirement, and "
-            "substrate_self_state holds 0 rows (counted live 2026-08-13). "
-            "REHEARSAL is accurate now -- no cognition consumer, because both "
-            "ends are gone. The schema itself is kept only because other "
-            "modules still import SelfStateV1 for typing. "
-            "This was found because adding two SHADOW entries above made the "
-            "registry visibly self-contradictory: their shadow_reason states "
-            "that composed_into_self_state is unreachable, while this entry "
-            "thirty lines down still claimed to be exactly that. "
-            "Retiring the dead consumer here also clears one of the three "
-            "known_missing_consumers carried in "
-            "config/metrics/orphan_baseline.json."
         ),
     ),
     InnerStateSignal(
@@ -498,36 +662,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "not this registry's job."
         ),
     ),
-    InnerStateSignal(
-        signal_id="l7_l11_ladder",
-        schema=None,
-        producer_service=(
-            "orion-proposal-runtime, orion-policy-runtime, "
-            "orion-execution-dispatch-runtime, orion-feedback-runtime, "
-            "orion-consolidation-runtime"
-        ),
-        cadence=Cadence.MULTI_SERVICE,
-        composition_status=CompositionStatus.REHEARSAL,
-        cognition_consumers=(),
-        notes=(
-            "Five schemas (ProposalFrameV1 -> ConsolidationV1), tracked as one "
-            "row. 2026-08-12: the historical rehearsal justification below is "
-            "NO LONGER TRUE and this classification is under review. "
-            "EXECUTION_DISPATCH_MODE is dispatch_read_only live (verified "
-            "inside the running container), and the ladder now carries a real "
-            "mutating route (`maintain` -> skills.runtime.builder_prune.v1) "
-            "whose terminal effect is deleting host data. A ladder that can "
-            "change the world is not rehearsing. Left as REHEARSAL pending a "
-            "measured re-classification rather than flipped on assertion -- "
-            "the honest state is 'stale label, known stale', not a new label "
-            "picked without evidence. Prior (now-false) justification: "
-            "docs/notes/2026-07-12-phase5-research-findings.md -- "
-            "EXECUTION_DISPATCH_MODE=dry_run live, every reader outside the "
-            "ladder a self-labeled Hub debug route, the one non-Hub reader "
-            "(orion-thought reverie grounding) only appending an inert ID tag "
-            "to an already-generated thought."
-        ),
-    ),
+    # "l7_l11_ladder" (orion-proposal-runtime -> orion-policy-runtime -> orion-execution-dispatch-runtime,
+    # REHEARSAL, no cognition consumer) retired 2026-11-07 with its three services (ladder retirement PR 6,
+    # docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md): no live producer remains.
     InnerStateSignal(
         signal_id="mood_arc_corpus.v1",
         schema=MoodArcCorpusRowV1,
@@ -560,6 +697,265 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "Superseded by field_channel_corpus.v1 (below) as roadmap item "
             "2's actual target substrate -- this sink is still real, still "
             "running, not a gap to close by disabling it here."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="transport_baseline_hourly.v1",
+        schema=TransportBaselineHourlyV1,
+        producer_service="orion-equilibrium-service",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        # Semantics (2026-10-13), read from code: per-hop readings of the
+        # transport baseline gate (orion/metacog/transport_baseline.py
+        # fold_snapshot), summarised per UTC hour by services/orion-
+        # equilibrium-service/app/transport_baseline_hourly.py:_row.
+        semantics=(
+            # transport_baseline.py fold_snapshot: ratio = exp(level - floor);
+            # floor follows the smoothed level (fast down, 3-day up), frozen
+            # upward while saturation is open or paused.
+            (
+                "saturation_ratio_p50",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "1.0 = the hop runs at its best recent speed (calm hops "
+                        "read ~1.0-1.2 by construction, floor follows level). "
+                        ">= 2.0 with >= 250 ms excess opens saturation. Never 0."
+                    ),
+                    sparsity="event_gated",
+                    absent_means=(
+                        "None = no evaluated window this hour (no traffic, or "
+                        "fewer than min_calls pooled). Not calm: an open latency "
+                        "episode is paused, not closed, until an evaluated calm "
+                        "window or 24 h without one (closed went_silent)."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+            (
+                "floor_ms",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "the hop's best recent typical latency, in ms -- its own "
+                        "scale per hop, no universal rest value. Moves up only "
+                        "slowly and never while saturation is open/paused; a "
+                        "stated regime_shift re-seeds it. Built from real round "
+                        "trips only: replies the replier marked degraded (row "
+                        "degraded_count) never enter it, and a pool where they "
+                        "outnumber real calls may not move it down (since "
+                        "2026-10-13; before then a burst of fast GPU-pool "
+                        "refusals dragged it ~10x low)."
+                    ),
+                    sparsity="event_gated",
+                    absent_means=(
+                        "None until the hop's first evaluation; otherwise "
+                        "carried unchanged through hours with no evaluation."
+                    ),
+                ),
+            ),
+            (
+                "z_p50",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = this hour's windows sit at the guarded baseline; "
+                        "spike needs z >= 3 sustained and >= 250 ms excess."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="None = no evaluated window this hour (see saturation_ratio_p50).",
+                    polarity="higher_is_worse",
+                ),
+            ),
+        ),
+        notes=(
+            "Durable hourly readings of the per-hop transport EWMA gate "
+            "(spec docs/superpowers/specs/2026-09-24-metacog-capture-and-"
+            "transport-ewma-baseline-design.md). Written by orion-sql-writer "
+            "to transport_baseline_hourly; read by scripts/analysis/"
+            "grade_transport_baseline.py (analysis, not cognition), hence "
+            "REHEARSAL. The gate's per-window conditions DO reach Orion: with "
+            "EQUILIBRIUM_TRANSPORT_BASELINE_EMIT=true they become transport "
+            "MetacogTriggerV1 rows banded by orion/metacog/evidence_map.py -- "
+            "that path has no schema field (see PROMPT_INVENTORY_URNS notes). "
+            "Registered 2026-10-13 with the silence-pause fix: the bug it "
+            "fixed (silence aged latency episodes out, so drift was absorbed "
+            "and never stated) is exactly the 'absent read as calm' failure "
+            "absent_means exists to name. "
+            "degraded_count (int, 2026-10-13) is not a semantics entry because "
+            "the lineage resolver addresses float fields only: it counts replies "
+            "the replying service marked degraded (orion/core/bus/rpc_degraded.py "
+            "-- the replier declined or skipped the work: GPU-pool refusal, "
+            "unusable request, canned fallback without a model call, system.error), "
+            "delivered but never a latency reading. Near 0 at rest (live "
+            "cognition_traces: ~1 gateway refusal/day across all cortex traces "
+            "2026-10-11..13, vs 486 on 2026-10-08); 0/NULL on rows before "
+            "2026-10-13 even where refusals happened (then counted in "
+            "success_count)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="self_signal_outcome_association.v1",
+        schema=SelfSignalOutcomeAssociationV1,
+        producer_service="orion-equilibrium-service",
+        cadence=Cadence.EVENT_GATED,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Not composed into self_state.v1 (that producer was removed in PR "
+            "#1266). Reaches Orion only as the self-reading 'tends to' clause and "
+            "the self_signal_episode open row's evidence line."
+        ),
+        cognition_consumers=(
+            "orion.attention.self_readings:render_self_readings",
+            "orion.metacog.evidence_map:map_self_signal_episode",
+        ),
+        # Semantics (2026-10-14), read from code: orion/attention/self_signal_outcomes.py
+        # associate(): hour H's signal condition (classify_signal_hours) paired with hour H+1's
+        # outcome; rates are next hours with >= 1 event over hours with exposure.
+        semantics=(
+            (
+                "ratio",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "1.0 = the next hour's outcome is as likely after a high hour "
+                        "as after a normal one (no association). Only shown when the "
+                        "95% interval [ci_low, ci_high] excludes 1 and both sides have "
+                        ">= min_hours hours."
+                    ),
+                    sparsity="event_gated",
+                    absent_means=(
+                        "None = no normal-hour events to divide by (the clause then "
+                        "says 'more often' with both rates), or no hours at all. Never "
+                        "treated as 1."
+                    ),
+                    prompt_sites=(
+                        "orion.attention.self_readings:render_self_readings",
+                        "orion.metacog.evidence_map:map_self_signal_episode",
+                    ),
+                    rest_range=(1.0, 1.0),
+                ),
+            ),
+            (
+                "rate_high",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "share of high hours whose next hour had >= 1 outcome event "
+                        "(0-1); no designed rest -- compare with rate_normal."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="None = no high hour with an exposed next hour yet.",
+                    polarity="higher_is_worse",
+                    prompt_sites=(
+                        "orion.attention.self_readings:render_self_readings",
+                        "orion.metacog.evidence_map:map_self_signal_episode",
+                    ),
+                ),
+            ),
+            (
+                "rate_normal",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "share of normal hours whose next hour had >= 1 outcome event "
+                        "(0-1): the base rate the high hours are compared against."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="None = no normal hour with an exposed next hour yet.",
+                    polarity="higher_is_worse",
+                    prompt_sites=(
+                        "orion.attention.self_readings:render_self_readings",
+                        "orion.metacog.evidence_map:map_self_signal_episode",
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "Self-calibration spec section E ('what it tends to lead to'). Hourly "
+            "rollup in orion-equilibrium-service (app/self_signal_outcome_rollup.py) "
+            "over the pure reducer orion/attention/self_signal_outcomes.py; durable "
+            "hour rows in self_signal_hour (SelfSignalHourV1) let it accumulate past "
+            "the 7-day PE prune. Outcomes, each traced to its producer: turn_failed = "
+            "harness run compliance_verdict 'failed' (orion/harness/runner.py motor "
+            "failed); response_repair = run_artifact response_repair_ran "
+            "(orion/harness/finalize.py needs_response_repair); rpc_timeout = "
+            "transport_baseline_hourly.timeout_count (gpu_pool_wait keys excluded). "
+            "Circular pairs (signal computed from, or sharing a short upstream with, "
+            "the outcome) are verdict excluded_circular and never rendered: "
+            "execution x turn_failed / response_repair, chat x response_repair "
+            "(CIRCULAR_PAIRS; bus_synaptic x rpc_timeout left with the retired node, 2026-11)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="field_channel_anomaly_score.v1",
+        schema=FieldChannelAnomalyScoreV1,
+        producer_service="orion-field-digester",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Reaches cognition through the telemetry_anomaly metacog trigger "
+            "(one LLM metacog entry per anomaly episode), not through a "
+            "composed self-state."
+        ),
+        cognition_consumers=(
+            "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode",
+            # Brain frame field_anomaly region (worker._field_channel_anomaly_listener_loop,
+            # a method -- named by service, the form the lineage resolver supports).
+            "orion-substrate-runtime",
+        ),
+        # Semantics (2026-10-13), read from services/orion-field-digester/app/
+        # anomaly_scorer.py:score_latest and the v4 manifest's training stats.
+        semantics=(
+            (
+                "recon_loss",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "mean squared reconstruction error of the latest 30-row "
+                        "(~60s) window of 37 field channels under the active "
+                        "mood-arc encoder. Calm = near the encoder's held-out "
+                        "median (v4: p50 0.0016, p95 0.0048); never exactly 0. "
+                        "The telemetry_anomaly trigger flags > p95 x "
+                        "EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER "
+                        "(3.0, uncalibrated)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "no row for a minute = scorer not loaded, inside its "
+                        "startup grace, or the buffer has under 30 rows -- not calm."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+            (
+                "mean_signed_deviation",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = reconstruction errors cancel (the 'mixed' "
+                        "direction); positive = channels above what the encoder "
+                        "expects (elevated), negative = below (depressed). "
+                        "0.0 is also the fallback when attribution_ok is false."
+                    ),
+                    sparsity="per_tick",
+                ),
+            ),
+        ),
+        notes=(
+            "One score per 60s scoring window (FIELD_CHANNEL_ANOMALY_CHECK_"
+            "INTERVAL_SEC) on orion:field_channel:anomaly_score. Since "
+            "2026-10-13 EVERY score -- flagged or not -- is persisted by "
+            "orion-sql-writer to field_channel_anomaly_score; before that only "
+            "flagged windows survived (as metacog_trigger rows), so the "
+            "threshold multiplier could not be fit from the calm side of the "
+            "distribution. Consumers: orion-equilibrium-service's episode gate "
+            "(orion/metacog/anomaly_episode.py -- one trigger per anomaly "
+            "episode, task_execution-led windows during a harness turn left to "
+            "the chat_turn trigger) and orion-substrate-runtime's brain frame "
+            "(field_anomaly region). Replay: scripts/analysis/"
+            "replay_telemetry_anomaly_episodes.py."
         ),
     ),
     InnerStateSignal(
@@ -711,7 +1107,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "resolve_live_enrichment(), a live per-tick counterpart to the "
             "offline enrich-corpus batch join. Full detail in "
             "orion/mood_arc/README.md's corrected 'Status' note "
-            "and its v4 section."
+            "and its v4 section. Since 2026-11-07 (ladder retirement PR 6) "
+            "action_warrant is computed in-process by orion-field-digester "
+            "(its source table, substrate_proposal_frames, retired); the live "
+            "lookup carries the other 5."
         ),
     ),
     InnerStateSignal(
@@ -750,6 +1149,674 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "disposition-inner-state-path.md -- none chosen yet. REHEARSAL "
             "is the honest status: real, computed, no cognition consumer, "
             "not a gap to silently close."
+        ),
+    ),
+    # ------------------------------------------------------------------
+    # Registered 2026-10-10 to carry rest semantics (spec
+    # docs/superpowers/specs/2026-10-07-orion-self-calibration-design.md
+    # section B). Each was already a live, persisted signal; none was in
+    # this registry, so the semantic layer could not say what its rest is.
+    # ------------------------------------------------------------------
+    InnerStateSignal(
+        signal_id="attention_salience_trace.v1",
+        schema=AttentionSalienceTraceV1,
+        producer_service="orion-cortex-exec",
+        cadence=Cadence.EVENT_GATED,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Persisted log of the per-loop salience stamped on OpenLoopV1 "
+            "(orion/substrate/attention/scoring.py:192-200). The same value "
+            "reaches the stance prompt through the chat attention frame; the "
+            "trace table itself is read by Hub's attention-loops view."
+        ),
+        cognition_consumers=(
+            "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs",
+            "services.orion-thought.app.reverie:build_reverie_context",
+        ),
+        semantics=(
+            # orion/substrate/attention/salience.py:128-178
+            # borda_coalition_salience(): two voters' Borda points / (n - 1),
+            # averaged; ties share points (orion/attention/rank_aggregation.py
+            # :60-103); n = 1 -> mean(evidence_strength, evidence_breadth).
+            (
+                "salience",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "none: this is a RANK among the loops scored together, "
+                        "not a magnitude. Steps of 1/(2(n-1)); every loop tied "
+                        "-> 0.5. Calm and crisis can read the same."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="no row when no loop was scored (one row per scored loop).",
+                    prompt_sites=(
+                        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs",
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "Writers: services/orion-cortex-exec/app/"
+            "chat_attention_salience_trace.py (chat lane) and services/"
+            "orion-thought/app/store.py:284-305 (reverie lane), table "
+            "attention_salience_trace."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="frontier_invocation_signal.v1",
+        schema=FrontierInvocationSignalV1,
+        producer_service="orion-substrate-runtime",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Curiosity candidates ranked by signal_strength (top 3 kept, "
+            "orion/substrate/endogenous_curiosity.py:391) and persisted to "
+            "substrate_endogenous_curiosity_candidates; not a self-state "
+            "dimension."
+        ),
+        cognition_consumers=(
+            "orion.autonomy.policy_act:curiosity_strength_from_signals",
+        ),
+        semantics=(
+            # Per source, orion/substrate/endogenous_curiosity.py:
+            # prediction_error :202-219 (node PE x linear age decay over
+            # 1800 s, emitted >= 0.55); repair_pressure :241-253 (appraisal
+            # level, emitted >= 0.6); attention_open_loop :278-292 (loop
+            # novelty, >= 0.5); world_coverage_gap :323 (upstream constant
+            # 0.65 / 0.45, orion/autonomy/substrate_metabolism.py:18-19).
+            (
+                "signal_strength",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "none: a candidate exists only above its source's floor "
+                        "(prediction_error >= 0.55, repair_pressure >= 0.6, "
+                        "open loop >= 0.5). Meaning differs by source: a decayed "
+                        "node prediction error, a repair appraisal level, loop "
+                        "novelty, or a fixed 0.65/0.45 coverage-gap bucket."
+                    ),
+                    sparsity="designed_sparse",
+                    absent_means=(
+                        "no candidate (not a 0.0) when nothing clears its floor. "
+                        "Exception: a seed noted strength:unscored_event "
+                        "(source:reading_link_accepted, an accepted reading link, "
+                        "orion/substrate/link_accepted_seeds.py) is an event with "
+                        "no score and carries exactly 0.0; it is not a level."
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "Declared consumer reads ONLY signal_type == 'world_coverage_gap' "
+            "(orion/autonomy/policy_act.py:43-47); the endogenous "
+            "curiosity_candidate sources described in the semantics are "
+            "persisted to substrate_endogenous_curiosity_candidates and are not "
+            "read by it. Also emitted by orion/spark/concept_induction and "
+            "frontier_curiosity.py with fixed/affine strengths."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="repair_pressure_appraisal.v1",
+        schema=RepairPressureAppraisalV1,
+        producer_service="orion-hub",
+        cadence=Cadence.CHAT_TURN_GATED,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Pre-turn repair appraisal, logged to repair_pressure_appraisal_log "
+            "by orion-sql-writer; gates behaviour through the repair contract, "
+            "not a self-state dimension."
+        ),
+        cognition_consumers=(
+            # Subscribes to the published repair_pressure appraisal channel and
+            # runs the relational metacog trigger (service.py:1261/:1328).
+            "services.orion-equilibrium-service.app.service:EquilibriumService",
+        ),
+        semantics=(
+            # orion/substrate/appraisal/paradigms/repair_pressure_v2.py:203-205
+            # text fallback NO = (-2.5, -0.15) -> e^-2.5/(e^-2.5+e^-0.15) =
+            # 0.0871 per kind; weights sum to 1.00 (config/substrate/
+            # repair_pressure_weights.v2.yaml), so all-NO level = 0.087.
+            (
+                "level",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.087 = the classifier's confident all-NO floor (every "
+                        "repair kind answered NO); never exactly 0 on the "
+                        "classifier path. 0.45 is the contract's mid."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="no row on a turn the appraisal did not run.",
+                    polarity="higher_is_worse",
+                ),
+            ),
+            # repair_pressure_v2.py:146-158: with no kind above 0.5,
+            # contribution-weighted mean confidence -> 0.65 on the text
+            # fallback (_TEXT_FALLBACK_CONFIDENCE, :204).
+            (
+                "confidence",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.65 at rest on the text-fallback path (a constant, "
+                        "not a measured confidence); min of the active kinds' "
+                        "confidences once any kind fires."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="no row on a turn the appraisal did not run.",
+                ),
+            ),
+        ),
+        notes=(
+            "Hub publishes; the level is computed by the repair_pressure_v2 "
+            "paradigm (orion/substrate/appraisal/paradigms/). "
+            "Distinct from the curiosity repair_pressure path: "
+            "services/orion-substrate-runtime/app/worker.py::"
+            "_repair_appraisal_from_chat reads ChatTurnStateV1."
+            "repair_pressure_level with its own 0.6 fallback confidence."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="equilibrium_snapshot.v1",
+        schema=EquilibriumSnapshotV1,
+        producer_service="orion-equilibrium-service",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Mesh-health snapshot. Redesign PARKED by Juniper (2026-10-10); "
+            "registered only so its semantics are recorded."
+        ),
+        cognition_consumers=(
+            "orion.signals.adapters.equilibrium:EquilibriumAdapter",
+        ),
+        semantics=(
+            # services/orion-equilibrium-service/app/service.py:617-621:
+            # distress = mean over tracked services of (1 - uptime_pct in the
+            # smallest window); uptime is graded (:526-532); a never-seen
+            # expected service counts as uptime 0 (:600-612); a long-silent
+            # one is purged from the denominator (:583-597).
+            (
+                "distress_score",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = every tracked service heartbeating within grace. "
+                        "Mean partial downtime across services, so one dead "
+                        "service among N reads 1/N (live median 0.025, "
+                        "2026-10-07)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "a service silent past state_retention_sec is purged "
+                        "and stops counting -- a long outage can read calmer."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+            (
+                "zen_score",
+                MetricSemantics(
+                    value_kind="level",
+                    rest="1.0; zen = 1 - distress exactly (not independent).",
+                    sparsity="per_tick",
+                    absent_means="same purge rule as distress_score.",
+                    polarity="higher_is_better",
+                ),
+            ),
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="drive_reading.rest.v1",
+        schema=DriveReadingV1,
+        producer_service="orion-dream",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/regulation/rest_drive.py read_rest_drive(): level is the
+            # dream's SleepPressureV1.pressure (services/orion-dream/app/
+            # replay.py compute_pressure, novelty.v1 since #2557), published
+            # by services/orion-dream/app/cycle.py run_cycle_once every 600 s
+            # check and right after each sleep.
+            (
+                "level",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = nothing new since the last sleep began; reached "
+                        "live at the first check after every sleep (2026-10-10 "
+                        "01:32 UTC). Rises in steps of one new thing's replay "
+                        "weight; due at >= threshold (3.0)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "Redis key expired (TTL 1800 s) or state no_reading: "
+                        "UNKNOWN, and every reader behaves as before the drive "
+                        "existed. Never read as rested or tired."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+        ),
+        shadow_reason=(
+            "Not composed into self_state.v1 (that producer was removed in PR "
+            "#1266, so no signal registered after 2026-07-23 can be). SHADOW in "
+            "the literal sense only: it has live readers listed below."
+        ),
+        cognition_consumers=(
+            "services.orion-hub.scripts.curiosity_investigation:"
+            "CuriosityInvestigation.tick (cooldown stretched while due)",
+            "services.orion-hub.scripts.endogenous_outreach:"
+            "EndogenousOutreach._gate_inputs (cooldown stretched while due)",
+        ),
+        notes=(
+            "Temporal Self rev 4 (PR #2369) R2, the one drive admitted. The "
+            "dream sleep pressure, published by the service that owns the "
+            "discharge action (sleep) from the same values its own gate uses. "
+            "state: resting / building / due / refractory / no_reading. "
+            "Transport: Redis orion:drive:rest:latest (TTL 1800 s); history "
+            "is dream_pressure_observation (check_id = source_ref, except the "
+            "post-sleep dp-postsleep-* reading). No bus "
+            "channel (no subscriber). Distinct from the retired "
+            "drive_state.v1 entry above."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="regulation.state.v1",
+        schema=RegulationStateV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/regulation/arousal.py classify_arousal(): arousal.arousal_level
+            # is one of engaged / idle / strained / unknown, computed by the
+            # regulate node (services/orion-durable-runs/app/temporal_self_graph.py)
+            # every 120 s and on each Juniper turn.
+            (
+                "",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "idle = Juniper quiet >= DREAM_IDLE_MINUTES (45) and no "
+                        "fresh strain input. The common state: 770 of 1080 min "
+                        "on 2026-10-10 in the shipped-reducer replay over saved "
+                        "history (docs/superpowers/evidence/2026-10-10-temporal-"
+                        "self-regulation-core/)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "Redis orion:regulation:latest expired (TTL 360 s, three "
+                        "ticks) or arousal_level unknown (a stale input, or "
+                        "ORION_REGULATION_AROUSAL_ENABLED=false): arousal "
+                        "unavailable, and every reader keeps its pre-arousal "
+                        "behaviour. Never read as idle."
+                    ),
+                ),
+            ),
+        ),
+        shadow_reason=(
+            "Not composed into self_state.v1 (that producer was removed in PR "
+            "#1266). SHADOW in the literal sense only: it has live readers "
+            "listed below (Temporal Self rev 4 order 6, R3 readers 1-7), "
+            "each with its own flag, a flag-off test and a must-not test."
+        ),
+        cognition_consumers=(
+            "services.orion-dream.app.cycle:run_cycle_once "
+            "(a due sleep is held while engaged or strained)",
+            "services.orion-hub.scripts.curiosity_investigation:"
+            "CuriosityInvestigation.tick (engaged doubles the cooldown; strain no longer "
+            "holds it since 2026-11-07, its durable-runs bid decides)",
+            "services.orion-hub.scripts.curiosity_investigation:"
+            "CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
+            "services.orion-hub.scripts.endogenous_outreach:"
+            "EndogenousOutreach._gate_inputs (strained refuses background outreach)",
+            "services.orion-hub.scripts.endogenous_outreach:"
+            "EndogenousOutreach._strain_report_once -> scripts.strain_report "
+            "(strain loop part 3: a strained episode >= 60 min may pass the strained refusal "
+            "with ONE grounded report, once per episode and once per local day; reads "
+            "since, reasons, cabinet_temp_c, gpu_queue_depth)",
+            "services.orion-thought.app.painting_self_start:arousal_level -> "
+            "orion.reverie.baseline:schedule "
+            "(strained defers a due visual baseline image by retry_sec; moved from "
+            "orion-proposal-runtime 2026-11-05, ladder retirement PR 2)",
+            "services.orion-thought.app.chain:_next_chain_sleep_sec "
+            "(strained doubles the pause between reverie chains)",
+            "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> "
+            "orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal "
+            "(no self-modification proposal while strained)",
+            "services.orion-substrate-runtime.app.worker:"
+            "BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news "
+            "(strained -> rare budgeted news events on node:substrate.strain for attention; "
+            "the level itself never competes)",
+            "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> "
+            "orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per "
+            "episode from the arousal_transition rows; read by the chat stance cue, the Day "
+            "letter and the reverie arc block)",
+        ),
+        notes=(
+            "Temporal Self rev 4 (PR #2369) R3. Inputs: E1 Juniper turns "
+            "(orion.regulation.juniper_turns), S1 cabinet reflex "
+            "(orion.autonomy.cabinet_heat), S2 GPU pool queue_depth sustained "
+            "(gpu_pool_state_history), not counted while a lane controller refuses "
+            "to act (gpu_pool_events; reason gpu_fault:<kind>:<seat>, reads unknown). Transport: Redis orion:regulation:latest "
+            "+ GET /regulation/state; history: temporal_self_event "
+            "arousal_transition rows. No bus channel (no subscriber)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="self_monitor.state.v1",
+        schema=SelfMonitorStateV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/self_monitor/host.py evaluate(): one held FacultyRecordV1 per faculty (status
+            # reliable / unreliable / broken / miscalibrated / unknown, with the rule that fired in
+            # reasons), reduced by orion/self_monitor/record.py reduce_bets from 7 days of settled bets
+            # and held by advance_carry (a new status must hold 3 hourly evaluations). Written by the
+            # `self_monitor` node of services/orion-durable-runs/app/temporal_self_graph.py hourly.
+            (
+                "",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "reliable or unknown for every faculty: no faculty fails to execute, works less "
+                        "than half the time, or states a confidence its outcomes contradict. Not the live "
+                        "state: patch 1's report (7 days to 2026-11-03) read 1 broken, 1 unreliable and 8 "
+                        "miscalibrated of 46 faculties, so the bucket can and does leave rest."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "Redis orion:self_monitor:latest expired (TTL 3 h, three hourly evaluations), the "
+                        "organ is off (SELF_MONITOR_ENABLED=false) or durable-runs is down: track record "
+                        "unknown, and every reader behaves as if the organ did not exist "
+                        "(orion.self_monitor.view: unknown changes nothing). A faculty missing from a "
+                        "fresh state is untracked, never reliable."
+                    ),
+                ),
+            ),
+        ),
+        shadow_reason=(
+            "Patch 2 of the self-monitor organ: published, no effects. Its one reader is Orion's own "
+            "chronology (faculty arcs, read back in the Day letter and recent arcs); no gate, budget "
+            "or loop obeys a faculty status until patch 4 (E1 act gate) lands with its own flag and "
+            "must-not test."
+        ),
+        cognition_consumers=(
+            "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> "
+            "orion.temporal_self.arcs:_fold_faculty (one `faculty` arc per stretch a faculty is "
+            "broken / unreliable / miscalibrated, from the self_monitor node's faculty_status_changed "
+            "rows; read by the Day letter and recent arcs)",
+        ),
+        notes=(
+            "Self-monitor organ (rung 6) patch 2, docs/superpowers/specs/2026-10-20-self-monitor-organ-"
+            "design.md. Inputs: grammar_acts, prediction_turn_self_bet, prediction_action_bet, "
+            "prediction_forecast (champion), vision_percept_expectation (orion/self_monitor/collect.py). "
+            "NOT independent of those sources' own graders: forecast coverage is prediction_forecast."
+            "in_80, act outcomes are grammar_acts' own; the organ re-reads them per faculty, it adds "
+            "no sensor. Transport: Redis orion:self_monitor:latest + GET /self_monitor/state; history: "
+            "substrate_self_monitor_history (30 days) and temporal_self_event faculty_status_changed "
+            "rows. No bus channel (no subscriber)."
+        ),
+    ),
+    # The per-faculty record inside self_monitor.state.v1 (`faculties[]`). Its own entry because the
+    # lineage resolver addresses only top-level float fields, and these are the numbers Orion is shown
+    # (2026-11-03). Values read from orion/self_monitor/record.py reduce_faculty: decay-weighted shares
+    # (half-life HALF_LIFE_DAYS) with Wilson score intervals at the Kish effective sample size.
+    InnerStateSignal(
+        signal_id="self_monitor.faculty_record.v1",
+        schema=FacultyRecordV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Not a signal of its own: one item of self_monitor.state.v1's faculties list, published with it "
+            "hourly. Registered so the numbers its readers put into Orion's prompts carry semantics."
+        ),
+        cognition_consumers=(
+            "orion.self_monitor.cue:project_track_record_cue",
+            "orion.self_monitor.questions:question_text",
+        ),
+        semantics=(
+            (
+                "reliability",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "no designed rest: the decay-weighted share of graded bets that came true (0-1). "
+                        "For a success faculty 1.0 is the good end; for event and interval faculties the "
+                        "judged number is calibrated_share, not this. Printed by the cue and E2 only for "
+                        "an unreliable faculty."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "None = no graded bet in the window: nothing is printed (the cue skips the "
+                        "sentence, E2 prints '?'). Never read as 0 or 1."
+                    ),
+                    prompt_sites=(
+                        "orion.self_monitor.cue:project_track_record_cue",
+                        "orion.self_monitor.questions:question_text",
+                    ),
+                ),
+            ),
+            (
+                "reliability_lo",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "no designed rest: Wilson lower bound of reliability. Not printed: its only "
+                        "reader, the E3 self-finding outreach, was retired 2026-11-10."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no graded bet.",
+                    prompt_sites=(),
+                ),
+            ),
+            (
+                "reliability_hi",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "no designed rest: Wilson upper bound of reliability. The cue does not print it; "
+                        "it decides whether an unreliable line prints (only when < 0.5). Saturates at 1.0 "
+                        "on a small or all-success window (11 of 39 live, "
+                        "2026-11-03)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no graded bet: no unreliable line.",
+                    prompt_sites=(
+                        "orion.self_monitor.cue:project_track_record_cue",
+                    ),
+                ),
+            ),
+            (
+                "execution_failure_lo",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = no try failed to start (24 of 40 live, 2026-11-03). Wilson lower bound of "
+                        "the failed-to-execute share; not printed, it decides whether a broken line prints "
+                        "the counts (only when > 0.5)."
+                    ),
+                    sparsity="designed_sparse",
+                    absent_means="None = no attempt in the window: no broken count line.",
+                    polarity="higher_is_worse",
+                    prompt_sites=("orion.self_monitor.cue:project_track_record_cue",),
+                    rest_range=(0.0, 0.0),
+                ),
+            ),
+            (
+                "stated_mean",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "no designed rest: the mean confidence Orion stated before the outcome, over the "
+                        "graded bets that stated one (interval bets: the stated coverage, 0.8). Printed by "
+                        "the cue next to calibrated_share for a miscalibrated faculty."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no graded bet stated a confidence: no miscalibrated line.",
+                    prompt_sites=(
+                        "orion.self_monitor.cue:project_track_record_cue",
+                    ),
+                ),
+            ),
+            (
+                "calibrated_share",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "calm = stated_mean inside [calibrated_lo - slack, calibrated_hi + slack] "
+                        "(record.py _slack); not judged when the confidence is pooled. Not one value: the "
+                        "share that came true over the same bets as stated_mean. Printed by the cue for a "
+                        "miscalibrated faculty only."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no graded bet stated a confidence: no miscalibrated line.",
+                    prompt_sites=("orion.self_monitor.cue:project_track_record_cue",),
+                ),
+            ),
+            (
+                "calibrated_lo",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "calm = at or below stated_mean + slack (record.py _slack). Wilson lower bound "
+                        "of calibrated_share; not printed. The cue re-checks it with no slack, only once "
+                        "the window's own candidate is no longer miscalibrated (hysteresis lag)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no stated graded bet: no miscalibrated line.",
+                    prompt_sites=("orion.self_monitor.cue:project_track_record_cue",),
+                ),
+            ),
+            (
+                "calibrated_hi",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "calm = at or above stated_mean - slack (record.py _slack). Wilson upper bound "
+                        "of calibrated_share; not printed. The cue re-checks it with no slack, only once "
+                        "the window's own candidate is no longer miscalibrated (hysteresis lag)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no stated graded bet: no miscalibrated line.",
+                    prompt_sites=("orion.self_monitor.cue:project_track_record_cue",),
+                ),
+            ),
+        ),
+        notes=(
+            "Self-monitor names-and-semantics (2026-11-03). Not independent of self_monitor.state.v1: the "
+            "same records, addressed per field. reliability, calibrated_share and stated_mean are three "
+            "reductions of one bet set (calibrated_share == reliability whenever every graded bet stated a "
+            "confidence: true for all 38 faculties with both values in the live state of 2026-11-03 "
+            "20:27Z). The int counts the cue and E2 also print "
+            "(n_graded, n_failed_to_execute, n_bets, streak_len) are not semantics entries because the "
+            "lineage resolver addresses float fields only (precedent: transport_baseline_hourly.v1 "
+            "degraded_count): they are plain counts of the window's bets, 0 when a faculty has none, and "
+            "a faculty with no bets renders no line. Every reader names the faculty with "
+            "orion.self_monitor.names.named (plain words, then the id)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="physiology.state.v1",
+        schema=PhysiologyStateV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Not composed into self_state.v1 (that producer was removed in PR #1266). "
+            "SHADOW in the literal sense only: the felt-state reader below turns each "
+            "constraint whose price binds into a Temporal Self arc Orion is shown; it "
+            "decides nothing (no price, gate or veto reads the arcs)."
+        ),
+        cognition_consumers=(
+            "services.orion-durable-runs.app.temporal_self_graph:_binding_step -> "
+            "app.body_binding:plan_constraint -> orion.temporal_self.arcs:_fold_binding "
+            "(felt state, body economy Organ 5: one `binding` arc per constraint episode "
+            "whose price.bind_state binds; read by the chat stance cue, the Day letter and "
+            "recent arcs)",
+        ),
+        semantics=(
+            # orion/physiology/body.py build_physiology_state(): one reading per constraint
+            # (heat, energy, lane:<role>, attention:juniper, claude), each in its own unit with
+            # a budget/line and an explicit no_reading. Written by the `physiology` node of
+            # services/orion-durable-runs/app/temporal_self_graph.py every ~120 s.
+            (
+                "",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "Each constraint at rest: heat below the 31 C soft line; lane "
+                        "slot-seconds well under slots x 3600 (0 when no lease ran); "
+                        "attention:juniper 0 sends today; claude state clear with 0 "
+                        "limit events. Energy (month-to-date USD) only grows within a "
+                        "month and resets at the local month start: its rest is the "
+                        "month start, not 0."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "A constraint whose source failed, went stale or was never "
+                        "observed has level=None and a no_reading reason (e.g. "
+                        "claude:no_observation while orion-cocreation-signals' "
+                        "COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED is false). Never 0. "
+                        "Redis orion:physiology:latest expired (TTL 360 s): the whole "
+                        "body is unknown."
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "Body economy Patch A3 (docs/superpowers/specs/2026-10-23-organism-body-"
+            "economy-design.md, Organ 1 Body). Transport: bus orion:physiology:state -> "
+            "sql-writer physiology_state (one row per tick: the persisted strain history "
+            "the design notes is missing), Redis orion:physiology:latest. REHEARSAL by "
+            "design: no prices and no reader until Patch B (Budget) and Patch C (Choice). "
+            "Heat is read from the regulate step's own cabinet inputs (same source as "
+            "regulation.state.v1's S1), so it is NOT independent of arousal's cabinet "
+            "reflex -- a mirror in a different unit, not a new signal. Known overcount: "
+            "lane slot-seconds count a durable-run hold and its child calls (which run in "
+            "the hold's slot) separately, because gpu_pool_events carry no hold_lease_id."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="physiology.want.decision.v1",
+        schema=WantDecisionV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.EVENT_GATED,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        semantics=(
+            # orion/physiology/choice.py decide(): one decision per POST /physiology/bid (want ->
+            # funded/deferred). net = family_weight x value_rank - sum(price x cost_frac).
+            (
+                "",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "With every price at 0 a want's net is family_weight x value_rank >= 0, "
+                        "so a want with any hunger is funded (reason net_positive). intensity "
+                        "rests at 0 right after the family's act closes (the discharge resets it)."
+                    ),
+                    sparsity="event_gated",
+                    absent_means=(
+                        "No bid was made (Patch C1 wires no producer: rows come only from "
+                        "explicit POST /physiology/bid calls). A decision with reason "
+                        "physiology_unavailable means the body state or act history was "
+                        "unread: unknown, never a fund."
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "Body economy Patch C1 (Organ 3 Appetite + Organ 4 Choice), SHADOW: nobody obeys "
+            "the decision. Transport: bus orion:physiology:want:decision -> sql-writer "
+            "want_ledger. Inputs are NOT new signal: the prices are physiology.state.v1's "
+            "(a rendering of the Body readings), intensity is a transform of grammar_acts "
+            "close times, value_rank a within-family percentile of the same acts' outcomes, "
+            "family_weight a shrinkage of act_downstream_use and Juniper-reply rates. "
+            "Personality endorsement (source c) is excluded until it is independent of (a). "
+            "Heat, energy and claude are listed unpriced per decision: per-act watt-hours and "
+            "limit events are not measured yet."
         ),
     ),
 )

@@ -41,6 +41,17 @@ class Settings(BaseSettings):
     # "absent" -- covers a bathroom break without flapping the state.
     WINDOW_PRESENCE_GRACE_SEC: float = 120.0
     WINDOW_PRESENCE_WRITE_MIN_INTERVAL_SEC: float = 5.0
+    # Append one vision_presence_transition row per presence state change
+    # (Temporal Self seam S1: company arcs). `unknown` is written after
+    # STALE_AFTER_MS with no window for a stream. Needs
+    # services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql;
+    # without it each write logs presence_transition_write_failed and the
+    # state machine carries on.
+    VISION_PRESENCE_TRANSITIONS_ENABLED: bool = True
+    # While someone is present/recent, a same-state keepalive row this often. The
+    # Temporal Self reducer closes a company arc with no row for 2.5x this
+    # (ReducerConfig.company_stale_sec = 1500 s), so keep the two in step.
+    VISION_PRESENCE_KEEPALIVE_SEC: float = 600.0
     POSTGRES_URI: str = ""
 
     # Identity hypothesis intake -- separate channel and separate consumer
@@ -59,10 +70,23 @@ class Settings(BaseSettings):
     # gate (a stale observation rendered as current is worse than none).
     # Identity dispatch is rate-limited to roughly once per
     # min_seconds_between_dispatch (config/vision_frame_router.yaml's
-    # identity_dispatch block, live default 30s) per camera, so this must
+    # identity_dispatch block, cam0 live 5s since 2026-10-10) per camera, so this must
     # comfortably exceed that cadence or a hypothesis would read as stale
     # between its own refreshes.
     WINDOW_IDENTITY_MAX_AGE_SEC: float = 90.0
+
+    # Home-camera sightings (2026-10-09, IdentitySightingV1): a "probable" face match on one of
+    # these streams is published once per sitting so Orion's situation graph knows Juniper is
+    # home. Never the laptop webcam (carbon) -- it travels with her. "possible" never counts.
+    WINDOW_SIGHTING_ENABLED: bool = True
+    WINDOW_SIGHTING_HOME_STREAMS: str = "cam0"
+    WINDOW_SIGHTING_MIN_INTERVAL_SEC: float = 1800.0
+    # One "probable" match publishes on its own. "possible" (0.35-0.55) needs this many
+    # possible-or-better matches on the same stream within the window (2026-10-10 loosening:
+    # Juniper's wave at cam0 got one 30s-gated check and never qualified).
+    WINDOW_SIGHTING_MIN_MATCHES: int = 2
+    WINDOW_SIGHTING_MATCH_WINDOW_SEC: float = 600.0
+    CHANNEL_IDENTITY_SIGHTING_PUB: str = "orion:vision:identity:sighting"
 
     # Per-window scene census -> orion-sql-writer -> vision_scene_inventory.
     # Written on every window because the council only emits an event on a
@@ -78,6 +102,36 @@ class Settings(BaseSettings):
     # request crop embeddings. See app/crops.py.
     WINDOW_CROP_OBSERVATIONS_ENABLED: bool = True
     CHANNEL_CROP_OBSERVATIONS_PUB: str = "orion:vision:crops:sql-write"
+
+    # Stationary fixtures (app/fixtures.py, orion/vision/stationary.py): on
+    # these streams a "person" box that keeps IoU >= VISION_STATIONARY_IOU with
+    # its first box (gaps <= VISION_STATIONARY_MAX_GAP_SEC) for
+    # VISION_STATIONARY_MIN_SEC is a prop, and a window whose people are all
+    # props does not make the stream "present". Same keys as orion-sql-writer.
+    # Room cameras stay out: a person at a desk sits still for hours.
+    WINDOW_STATIONARY_STREAMS: str = "walkway"
+    VISION_STATIONARY_MIN_SEC: float = 1800.0
+    VISION_STATIONARY_IOU: float = 0.5
+    VISION_STATIONARY_MAX_GAP_SEC: float = 300.0
+
+    # Caption gate (app/caption_gate.py, 2026-10-15). On these streams a
+    # caption reaches the window summary (and so the council, vision_events,
+    # the chat situation brief) only if the detections of its own frame
+    # (inputs.source_objects, attached by vision-frame-router caption_dispatch)
+    # include a GATE_LABELS object at >= GATE_MIN_SCORE that is not a
+    # stationary prop (VISION_STATIONARY_* above), and it arrived within
+    # MAX_AGE_SEC of its frame. Anything else is recorded as rejected, never
+    # narrated. Empty streams = gate off.
+    WINDOW_CAPTION_GATE_STREAMS: str = "walkway,doorbell,cam0"
+    WINDOW_CAPTION_GATE_LABELS: str = "person,dog,bicycle,stroller,vehicle,package,mail truck"
+    WINDOW_CAPTION_GATE_MIN_SCORE: float = 0.25
+    WINDOW_CAPTION_MAX_AGE_SEC: float = 20.0
+    # Accepted captions -> one `camera_caption` vision_events row each, via
+    # orion-vision-scribe (app/caption_events.py, 2026-10-16). The council
+    # skips stable-label windows, so without this an accepted caption never
+    # reaches vision_events, the street line, reverie, dreams or curiosity.
+    WINDOW_CAPTION_EVENTS_ENABLED: bool = True
+    CHANNEL_CAPTION_EVENTS_PUB: str = "orion:vision:events"
 
     # HTTP
     HTTP_HOST: str = "0.0.0.0"

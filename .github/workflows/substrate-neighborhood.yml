@@ -1,0 +1,235 @@
+name: Substrate neighborhood reads
+on:
+  pull_request:
+    paths:
+      - 'orion/core/schemas/substrate_graph_journal.py'
+      - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
+      - 'services/orion-substrate-runtime/app/worker.py'
+      - 'services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py'
+      - 'services/orion-substrate-runtime/app/walkway_seen_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_walkway_seen_loop.py'
+      - 'services/orion-substrate-runtime/app/person_graph_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_person_graph_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_person_sighting_refresh.py'
+      - 'orion/substrate/**'
+      - 'services/*/.env_example'
+      - 'services/*/docker-compose.yml'
+      - 'orion/graph/falkor_client.py'
+      - 'orion/graph/tests/test_falkor_client.py'
+      - 'orion/core/schemas/cognitive_substrate.py'
+      - 'orion/core/schemas/frontier_curiosity.py'
+      - 'services/orion-substrate-runtime/evals/**'
+      - 'scripts/replay_substrate_neighborhood.py'
+      - 'scripts/replay_substrate_complete_scan.py'
+      - 'scripts/replay_substrate_propagation_decay.py'
+      - 'tests/test_replay_substrate_propagation_decay.py'
+      - 'tests/test_cognitive_substrate_phase4_dynamics.py'
+      - 'scripts/repair_substrate_duplicate_identities.py'
+      - 'tests/test_repair_substrate_duplicate_identities.py'
+      - '.github/workflows/substrate-neighborhood.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'orion/core/schemas/substrate_graph_journal.py'
+      - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
+      - 'services/orion-substrate-runtime/app/worker.py'
+      - 'services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py'
+      - 'services/orion-substrate-runtime/app/walkway_seen_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_walkway_seen_loop.py'
+      - 'services/orion-substrate-runtime/app/person_graph_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_person_graph_loop.py'
+      - 'services/orion-substrate-runtime/tests/test_person_sighting_refresh.py'
+      - 'orion/substrate/**'
+      - 'services/*/.env_example'
+      - 'services/*/docker-compose.yml'
+      - 'orion/graph/falkor_client.py'
+      - 'orion/graph/tests/test_falkor_client.py'
+      - 'orion/core/schemas/cognitive_substrate.py'
+      - 'orion/core/schemas/frontier_curiosity.py'
+      - 'services/orion-substrate-runtime/evals/**'
+      - 'scripts/replay_substrate_neighborhood.py'
+      - 'scripts/replay_substrate_complete_scan.py'
+      - 'scripts/replay_substrate_propagation_decay.py'
+      - 'tests/test_replay_substrate_propagation_decay.py'
+      - 'tests/test_cognitive_substrate_phase4_dynamics.py'
+      - 'scripts/repair_substrate_duplicate_identities.py'
+      - 'tests/test_repair_substrate_duplicate_identities.py'
+      - '.github/workflows/substrate-neighborhood.yml'
+jobs:
+  neighborhood:
+    runs-on: ubuntu-latest
+    # packages: read lets GITHUB_TOKEN pull the private GHCR falkordb copies below.
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # v4.18.11 is production's engine; 6.0.1 is the next major. Both plan
+        # the neighborhood reads differently enough to need a run.
+        # Copies of the Docker Hub tags on GHCR: Docker Hub's anonymous pull limit is shared
+        # across GitHub runner IPs and failed these jobs before any test ran (2026-10-09).
+        falkordb: ['ghcr.io/junebug-junie/falkordb:v4.18.11', 'ghcr.io/junebug-junie/falkordb:6.0.1']
+    services:
+      # Throwaway FalkorDB for the direct-read equivalence lane: the concept
+      # ranking and edge cut run in Cypher, so a fake client cannot prove them.
+      falkordb:
+        image: ${{ matrix.falkordb }}
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        ports:
+          - 6379:6379
+      # Throwaway Postgres for the substrate graph journal + assertion projector lane.
+      postgres:
+        image: ghcr.io/junebug-junie/postgres:16  # private GHCR copy of postgres:16; Docker Hub and ECR Public both rate-limit shared runner IPs
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'pydantic>=2' pydantic-settings requests 'redis<6' PyYAML jinja2 pytest 'rdflib>=7' asyncpg==0.29.0 sqlalchemy==2.0.36 psycopg2-binary==2.9.10 fastapi
+      - name: Store contract and backend regressions
+        run: >-
+          python -m pytest -q
+          orion/substrate/tests/test_neighborhood.py
+          orion/substrate/tests/test_neighborhood_backends.py
+          orion/substrate/tests/test_neighborhood_batching_oracle.py
+          orion/substrate/tests/test_neighborhood_projection_endpoints.py
+          orion/graph/tests/test_falkor_client.py
+          orion/substrate/tests/test_falkor_store.py
+          orion/substrate/tests/test_complete_hydration.py
+          orion/substrate/tests/test_falkor_identity_dedupe.py
+          tests/test_repair_substrate_duplicate_identities.py
+          orion/substrate/tests/test_falkor_store_hydrate_signal.py
+          orion/substrate/tests/test_dynamics.py
+          orion/substrate/tests/test_dynamics_falkor_routed.py
+          orion/substrate/tests/test_dynamics_decay_since_last.py
+          orion/substrate/tests/test_dynamics_propagation_decay.py
+          tests/test_cognitive_substrate_phase4_dynamics.py::test_a_fresh_decaying_drive_keeps_an_old_neighbour_awake
+          tests/test_cognitive_substrate_phase4_dynamics.py::test_a_never_decaying_drive_is_still_decayed_once_by_the_neighbours_age
+          tests/test_cognitive_substrate_phase4_dynamics.py::test_the_same_drive_in_rollback_mode_is_muted_by_the_neighbours_age
+          tests/test_replay_substrate_propagation_decay.py
+          orion/substrate/tests/test_dynamics_lost_update.py
+          orion/substrate/tests/test_graphdb_store.py
+          orion/substrate/tests/test_routed_store.py
+          orion/substrate/tests/test_phase16_query_planning.py
+          orion/substrate/tests/test_assertion_core.py
+          orion/substrate/tests/test_required_reader_names_match_services.py
+          orion/substrate/tests/test_reader_capability.py
+          orion/substrate/tests/test_reconcile.py
+          orion/substrate/tests/test_attention_broadcast.py
+          orion/substrate/tests/test_attention_broadcast_world_first.py
+          orion/substrate/relational/tests/test_curiosity_ctx_reading_link_compat.py
+      - name: Direct concept-region reads equal the hydrated cache (real FalkorDB)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: python -m pytest -q -rs orion/substrate/tests/test_falkor_direct.py orion/substrate/tests/test_falkor_anchor_store.py
+      - name: Dynamics tick does not revert concurrent writes (real FalkorDB, must not skip)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs orion/substrate/tests/test_dynamics_lost_update.py -k "real_falkor" | tee lost_update.out
+          # The prediction-error writer vs the tick, both interleavings (needs
+          # fastapi: app.worker imports the service's HTTP routes).
+          python -m pytest -q -rs services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py | tee -a lost_update.out
+          if grep -q "SKIPPED" lost_update.out; then
+            echo "real-Falkor lost-update test skipped -- service wiring is broken" >&2
+            exit 1
+          fi
+      - name: Walkway "seen on this day" links land in real FalkorDB (must not skip)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: |
+          set -o pipefail
+          # The in-memory store accepts any node kind; only the real store proves the day node's
+          # kind is durable (2026-10-18: every live pass raised on node_kind='event').
+          # Selected by node id, not -k: a renamed real-Falkor test must fail collection, not drop out silently.
+          T=services/orion-substrate-runtime/tests/test_walkway_seen_loop.py
+          python -m pytest -q -rs "$T::test_real_falkor_writes_observed_in_edges_and_a_fresh_store_hydrates_them" \
+            "$T::test_every_emitted_node_kind_is_one_the_falkor_store_writes_durably" \
+            "$T::test_regression_an_event_day_node_fails_the_whole_pass_on_the_falkor_store" | tee walkway_seen.out
+          if grep -q "SKIPPED" walkway_seen.out || ! grep -q "3 passed" walkway_seen.out; then
+            echo "walkway_seen real-Falkor test skipped -- FalkorDB service wiring is broken" >&2
+            exit 1
+          fi
+      - name: A sighting refreshes the named cluster node in real FalkorDB (must not skip)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: |
+          set -o pipefail
+          # Falkor keeps no free-form entity metadata, so only a real store proves the rename
+          # guard's label_set_at stamp survives a restart (2026-11-03). The whole file runs; the
+          # real-Falkor test is required by node id so a rename fails collection, not a skip.
+          T=services/orion-substrate-runtime/tests/test_person_sighting_refresh.py
+          python -m pytest -q -rs "$T" services/orion-substrate-runtime/tests/test_person_graph_loop.py \
+            services/orion-substrate-runtime/evals/test_person_sighting_replay_eval.py | tee sighting.out
+          python -m pytest -q -rs "$T::test_real_falkor_refresh_round_trips_and_the_tick_still_owns_activation" | tee sighting_real.out
+          if grep -q "SKIPPED" sighting_real.out || ! grep -q "1 passed" sighting_real.out; then
+            echo "sighting refresh real-Falkor test skipped -- FalkorDB service wiring is broken" >&2
+            exit 1
+          fi
+      - name: Neighborhood reads equal the reference, with index seeks (real FalkorDB)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: python -m pytest -q -rs orion/substrate/tests/test_neighborhood_falkor_live.py
+      - name: Shared assertion core -- real FalkorDB + Postgres journal (must not skip)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+          ORION_SUBSTRATE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs orion/substrate/tests/test_assertion_core_falkor.py orion/substrate/tests/test_graph_journal_pg.py orion/substrate/tests/test_link_accepted_seeds_pg.py | tee assertion.out
+          if grep -q "SKIPPED" assertion.out; then
+            echo "assertion-core store tests skipped -- the Falkor/Postgres service wiring is broken" >&2
+            exit 1
+          fi
+      - name: Curiosity seeds pick up accepted reading links only (fixture eval)
+        run: python services/orion-substrate-runtime/evals/run_curiosity_seed_neighborhood_eval.py
+      - name: Hub-heavy budget and coverage eval
+        run: python -m orion.substrate.evals.run_neighborhood_eval
+      - name: Complete scan and dynamics equivalence eval
+        run: python -m orion.substrate.evals.run_complete_hydration_eval
+      - name: Identity convergence across runs and restarts eval
+        run: python -m orion.substrate.evals.run_identity_convergence_eval
+      - name: Duplicate-identity repair merges on a throwaway graph (real FalkorDB, must not skip)
+        env:
+          ORION_DEDUPE_TEST_FALKOR_URI: redis://localhost:6379
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs tests/test_repair_substrate_duplicate_identities.py | tee dedupe.out
+          if grep -q "SKIPPED" dedupe.out; then
+            echo "repair live test skipped -- FalkorDB service wiring is broken" >&2
+            exit 1
+          fi
+      - name: Activation decay since-last-tick eval (no compounding)
+        run: python -m orion.substrate.evals.run_decay_since_last_eval
+      - name: Propagation decay eval (a propagated activation is decayed once)
+        run: python -m orion.substrate.evals.run_propagation_decay_eval
+      - name: Dynamics tick lost-update eval (concurrent writes survive)
+        run: python -m orion.substrate.evals.run_dynamics_lost_update_eval
+      - name: PE writer vs dynamics tick lost-update eval (both interleavings)
+        run: PYTHONPATH=. python services/orion-substrate-runtime/evals/run_pe_writer_tick_lost_update_eval.py
+      - name: Camera surprise honest input (missing is not 0.0; eval logic on real rows)
+        working-directory: services/orion-substrate-runtime
+        run: >-
+          PYTHONPATH=${{ github.workspace }} python -m pytest -q
+          tests/test_worker_perception_honest_input.py
+          tests/test_worker_perception_prediction_error.py
+          tests/test_worker_perception_walkway_split.py
+          evals/test_camera_surprise_input_eval.py

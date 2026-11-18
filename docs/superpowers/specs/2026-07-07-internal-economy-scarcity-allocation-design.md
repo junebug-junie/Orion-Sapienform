@@ -1,5 +1,7 @@
 # Internal Economy — choice under scarcity, with real opportunity cost
 
+> **Superseded 2026-10-23** by `2026-10-23-organism-body-economy-design.md`. This step-4 economy was never built; its single metabolic budget `B` is replaced by per-constraint prices.
+
 > **Status:** Design proposal (proposal mode — governs which wants get to act). Single-scope spec: full mechanism, no phased future versions.
 >
 > **Research area 4 of 4** in the "move the origin of wanting inside" arc. Siblings: endogenous origination, φ intrinsic reward + value learning, voluntary attention override.

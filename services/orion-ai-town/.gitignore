@@ -1,2 +1,5 @@
 upstream/
 .env
+# Real cards + their generated outputs carry personal details: local only.
+cards/town_cards.local.yaml
+cards/generated/*.local.txt

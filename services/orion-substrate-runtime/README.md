@@ -37,6 +37,17 @@ orion:rpc_health:snapshot (every service's shared bus client, every 30 s)
   (SUBSTRATE_RPC_DELIVERY_BRIDGE_ENABLED, default off in code, on in .env_example.
   No migration: pub/sub listener + receipts only. Nothing is written when no bus
   RPC call happened in the window. Evidence: evals/run_rpc_delivery_eval.py.)
+
+grammar_events (orion-sql-writer, sql_writer.storage:*) → storage write projection
+  → storage_write_reducer: rolling 600 s (event time) of the writer's per-family
+    write outcomes, worst family's failed / max(attempted, 10), 2+ failures only
+  → StateDeltaV1(target_kind=storage_write) on node:substrate.storage_write, one per writer window
+  → substrate_reduction_receipts → orion-field-digester (when ENABLE_STORAGE_WRITE_FIELD_DIGESTION=true)
+  → capability:storage reliability_pressure
+  (SQL_WRITER_WRITE_HEALTH_ENABLED on the writer, ENABLE_STORAGE_WRITE_REDUCER here;
+  both off in code, on in .env_example. manual_migration_storage_write_substrate_loop.sql
+  must be applied first. No hint is written when nothing was attempted in the span.
+  Evidence: services/orion-sql-writer/evals/storage_write_replay.py.)
 ```
 
 ## Setup
@@ -75,6 +86,33 @@ Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-wo
 Known gap: this is plain pub/sub. If the Hub's publish fails or this service is down when Juniper answers, the `orion_ask` row is still answered (and sql-writer still labels the individual) but no entity node is written, and nothing replays it yet.
 
 Log line to look for: `ask_answered entity_created ask_id=... individual_id=... node_id=entity:vision_individual:...`.
+
+### A sighting refreshes the named cluster (2026-11-03)
+
+Design: `docs/superpowers/specs/2026-11-03-person-graph-sighting-refresh-design.md`. Before this, every named cluster node held the value of its first tick (0.625) forever, because it had no decay half-life, and its `observed_at` was the naming time, not the time the person was last seen.
+
+- Every 10 minutes the person-graph pass (`app/person_graph_loop.py`, `_refresh_sightings`) reads each linked, non-copied cluster's `vision_individual.last_seen_at` (orion-sql-writer updates it on every matched crop). It moves the cluster node's `observed_at` forward to that time and gives the node a 6 h half-life (`SIGHTING_HALF_LIFE_SECONDS` in `orion/substrate/adapters/vision_individual.py`). New walkway day nodes get the same half-life.
+- Every other typed named cluster (linked as a belonging, linked to a `not_a_person` row, or not linked) gets the half-life only (`half_lives_set=N` in the trace), so its frozen birth value can rest. Its `observed_at` does not move.
+- The pass never writes activation. The substrate tick seeds the node from the fresh `observed_at`: a sighting reads about 0.55, about 0.27 six hours later, and goes dormant (< 0.08) about 18 h later.
+- A rename is not a sighting: renaming keeps `observed_at` and moves only `label_set_at`, and rename writes skip the tick-owned activation fields.
+- Walkway day nodes stop reading a flat 0.3, but they do not light up with a sighting either. The tick decays propagated input by the day node's own age, and its `observed_at` is the start of the day, so its echo is small (about 0.04). The cluster carries the "seen recently" signal; the day node is not separate evidence.
+- The rename guard now compares Postgres `labeled_at` with the node's `label_set_at` (when its name was set), not with `observed_at`. The first refresh copies the old `observed_at` into `label_set_at`. It is a native Falkor property on entity nodes.
+- Person nodes, attention and `node:substrate.perception_walkway` do not change.
+- Trace: `person_graph synced ... sightings_refreshed=N`. A pass with no new sighting writes nothing (`sightings_refreshed=0`).
+- Kill switch: `PERSON_SIGHTING_REFRESH_ENABLED=false` (default true). Nodes then fade to rest within a day.
+- Eval: `python services/orion-substrate-runtime/evals/run_person_sighting_replay_eval.py` replays 14 days of walkway hour rollups (read-only) through the real dynamics engine and fails if one person holds more than 25% of the active person-hours.
+
+## Bus listener liveness on `/health`
+
+Every bus listener runs through `orion.core.bus.resilience.run_subscription`, which resubscribes after a Redis drop and records its state. `GET /health` reports it:
+
+- `listeners_ok`: false if any listener is not subscribed right now (backing off after a failure, or stopped).
+- `listeners_down`: names of those listeners.
+- `listeners[]`: per listener `channel`, `subscribed`, `messages_total`, `failures_total`, `last_failure`, and `last_subscribed_age_sec` / `last_message_age_sec` / `last_failure_age_sec`. A quiet channel is not down; `last_message_age_sec` only says when traffic last came.
+
+`ok`/`status` are degraded when either the grammar truth or the listeners are. `HealthMonitor` also raises a critical `substrate_listeners_down` attention card when a listener is still down after its recheck delay, so a listener that cannot reconnect pages instead of only showing on a curl. Before 2026-10-20 a listener that died left `/health` unchanged while chat lost finalize appraisal.
+
+`subscribed` means the subscription is open, not that messages are being processed: a hung handler still reads subscribed. A listener stopped on purpose at runtime stays listed as down.
 
 ## Health monitoring -> hub pending-attention box
 
@@ -182,10 +220,41 @@ nothing ever reads them back — the seeded surprise just sits inert on the node
 `SubstrateDynamicsEngine.tick()` against the same shared substrate graph store, which
 seeds and propagates activation pressure from those `prediction_error` values.
 
-- `SUBSTRATE_DYNAMICS_TICK_ENABLED` (default `false`): enable the tick loop.
+- `SUBSTRATE_DYNAMICS_TICK_ENABLED` (default `true` since 2026-10-06; it is the sole activation-decay writer): enable the tick loop.
 - `SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC` (default `30.0`): tick cadence. Deliberately slower
   than `GRAMMAR_POLL_INTERVAL_SEC` because each tick issues a bounded but real query
   (`snapshot()`, `limit_nodes=500`) against the configured store backend, not an in-memory read.
+- `SUBSTRATE_DYNAMICS_DECAY_MODE` (default `since_last`): how the tick decays a node's stored
+  activation. `since_last` decays it only by the time since its last decay, recorded on the
+  node as `activation_decayed_at` (durable Falkor property, decoded into `metadata`), falling
+  back to `observed_at` when absent; a node re-observed later than the stamp decays from the
+  newer `observed_at`. Fresh input (seed + propagation) is still decayed by full age, which is a
+  closed form, not a compound. `legacy` is the pre-2026-10-06 behavior: the already-decayed
+  stored value is decayed again by full age every tick, so loss compounds (~2.2% per 30 s tick
+  for a concept 23 h past `observed_at` on the default 30-day half-life). Rollback only. This tick
+  is the only decay writer: the Hub's decay scheduler was removed 2026-10-06, because two processes
+  decaying the same nodes from their own caches landed writes out of order (stamp stepping back,
+  activation ticking up). A write that doesn't carry the stamp (e.g.
+  concept_induction's re-save, the seed loader) is stamped with its own `observed_at` by
+  `FalkorSubstrateStore.upsert_node`, so its value decays by real age once instead of being
+  held fresh. Expect one visible drop per node on the first tick after deploy (no stamp yet,
+  so it decays by full age once), then a smooth curve. Known gap: `reconcile.merge_node` keeps
+  the existing stamp when an incoming record with an older `observed_at` wins the activation
+  max, so a replayed record's value is treated as fresh as of that stamp (under-decay, not
+  compounding).
+- `SUBSTRATE_DYNAMICS_PROPAGATION_DECAY_MODE` (default `source`, 2026-11-03): how activation
+  that arrives through an edge is decayed. `source`: a neighbour's activation is propagated as
+  it stands this tick (its seed decayed by its own age, its stored value decayed since its last
+  decay) and is not decayed again by the receiving node's age, so an old node reached by a fresh
+  neighbour hears it (a walkway day node, observed at the day's start, now reads about cluster
+  x 0.6 x 0.8 after a sighting instead of ~0.04, and fades with the cluster). A neighbour with no half-life carries no decay,
+  so the first decaying node it reaches still decays it by that node's age -- otherwise the
+  never-decaying topic-foundry evidence would pin ~700 old concepts at ~0.3 forever (measured
+  on the live graph, `scripts/replay_substrate_propagation_decay.py`). The same old rule applies
+  when the receiver decays more slowly than the signal (a 6 h hub feeding a 30-day concept): the
+  tick persists the echo into the receiver's stored value, which then fades on the receiver's
+  clock, so taking it as is would hold it for weeks after the hub went quiet. `receiver_age` is the old
+  double decay; rollback only. Ignored when `SUBSTRATE_DYNAMICS_DECAY_MODE=legacy`.
 
 Only meaningful once `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` and
 `SUBSTRATE_STORE_BACKEND=sparql` (Fuseki) are set — with the in-memory default store the
@@ -218,7 +287,8 @@ recency even though the stored copy may lag.
 speaks Kev's TypeSafe-compatible `POST /v1/systemone` API. It rides the existing attention-broadcast
 tick; there is no new timer or graph. The typed frame is published on
 `orion:system_one:appraisal`; the grammar projection on `orion:grammar:event` remains the causal
-shadow. The local Kev process is `services/orion-kev` (`orion-athena-kev` on `app-net`).
+shadow. The Kev process is `services/orion-kev`, deployed on circe (GPU 3) and reached at
+`http://100.112.254.99:8009`.
 
 Inputs are deliberately bounded existing artifacts:
 
@@ -258,12 +328,43 @@ SUBSTRATE_SYSTEM_ONE_CURIOSITY_GATE_KILL_SWITCH=true
 
 Default is live (`false`). Endogenous curiosity kill switch remains superior authority.
 
+### Curiosity seeds carry accepted reading links (2026-10-10)
+
+Two additions to the endogenous curiosity tick, both after the frontier decision or
+outside its ranking (design: `docs/plans/substrate/2026-10-10-curiosity-seed-neighborhood-design.md`):
+
+- **Neighborhood attach** (`ORION_ENDOGENOUS_CURIOSITY_SEED_NEIGHBORHOOD_ENABLED=true`):
+  every stored seed gets the accepted-claim links touching its focal nodes
+  (`focal_edge_refs` internal, `boundary_edge_refs`, `neighbor_node_refs`,
+  `projection_endpoint_node_refs`; budgets 12/16/16; legacy unreviewed edges dropped).
+  Keys are omitted when empty. Receipt per tick in `gate_json->'neighborhood'`.
+- **Link-accepted seeds** (`ORION_ENDOGENOUS_CURIOSITY_LINK_SEEDS_ENABLED=true`,
+  `..._LINK_SEED_CAP=2`, `..._LINK_SEED_LOOKBACK_HOURS=168`): an accepted, applied
+  reading claim (`substrate_graph_journal`, proposal actor `world_pulse_read_stage2`)
+  mints one unscored seed (strength 0.0, note `source:reading_link_accepted`) on its
+  two endpoints, once per assertion revision, stored in addition to the scored seeds.
+  Receipt in `gate_json->'link_seeds'`.
+
+**Deploy order:** cortex-exec (and Hub, for the new self-question) before
+substrate-runtime. cortex-exec's chat stance validates stored seeds with an
+`extra="forbid"` model; an older build drops seeds that carry the new keys.
+
+Proving SQL (empty until a reading claim is accepted):
+
+```sql
+select c.generated_at, s->'focal_node_refs', s->'focal_edge_refs', s->'projection_endpoint_node_refs'
+from substrate_endogenous_curiosity_candidates c, jsonb_array_elements(c.candidates_json) s
+where s->'notes' ? 'source:reading_link_accepted'
+  and jsonb_array_length(coalesce(s->'focal_edge_refs','[]')) > 0
+order by c.generated_at desc limit 10;
+```
+
 ```bash
-# bring up Kev (GPU Docker; survives reboot via restart: unless-stopped)
+# bring up Kev ON CIRCE (GPU Docker; survives reboot via restart: unless-stopped)
 scripts/safe_docker_build.sh orion-kev up -d --build
 
 SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED=true
-SUBSTRATE_SYSTEM_ONE_BASE_URL=http://orion-athena-kev:8009
+SUBSTRATE_SYSTEM_ONE_BASE_URL=http://100.112.254.99:8009
 SUBSTRATE_SYSTEM_ONE_MODEL=kev-latest
 ```
 
@@ -289,6 +390,101 @@ The evaluator reports variance/saturation/confidence/level distributions only; i
 behavior thresholds. See
 `docs/superpowers/specs/2026-09-23-system-one-substrate-appraisal-shadow-design.md` for the
 promotion gate and failure model.
+
+## Forecast surprise nodes (2026-11-11, default on)
+
+`node:prediction.room` (office temperature) and `node:prediction.body` (cabinet temperature): how
+much the world is surprising Orion's own forecasts. Spec
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md` (build item 3).
+
+- Listens on `orion:prediction:surprise` (`prediction.surprise.v1` from orion-prediction: one per
+  scored 5/15-min forecast that passed the producer's issue-time gate).
+- Folds each node's last 30 min of independent outcomes (`orion/substrate/prediction_surprise.py`):
+  one outcome per target bucket (shortest horizon), summed excess surprise over its calm spread
+  (a z-score, the spread set by theory), stored as `clip(z / 3, 0, 1)` through
+  `_write_prediction_error_node`. Rest point 0 (exact 0 56-58 % of writes in a 72 h live replay).
+- Not read (on purpose, for now) by equilibrium's self-signal episode gate / outcome rollup or
+  Hub's attention-organ history route: those still list `node:substrate.*` only. Widen them once
+  a week of live rows shows the nodes behave.
+- Written only on an accepted outcome. No outcomes = no writes: the node ages and every reader
+  (attention, self-readings, curiosity staleness decay) treats it as stale, never calm. FalkorDB
+  node only (no field receipt), so the field digester's decay never touches it.
+- Recorded in `substrate_node_prediction_error_history` (the history recorder covers
+  `node:prediction.*` as well as `node:substrate.*`); glossary `value_kind: surprise_excess`, a
+  measurement kind for attention, curiosity and self-readings.
+- `/health` `prediction_surprise`: per-node window (mean excess, value, n) and verdict counters.
+- Kill switch `SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED` (producer: `PREDICTION_SURPRISE_EVENTS_ENABLED`).
+
+## Chat-turn surprise node (2026-11-13, default on)
+
+`node:prediction.chat_turn`: how much Orion's recent chat turns surprised Orion's own stance bets
+about them. It replaces `node:substrate.chat` (retired the same day, PE suite rebuild step 6: an
+EWMA z of the change in two chat pressure hints, not a forecast).
+
+- Listens on `orion:prediction:turn_surprise` (`prediction.turn_surprise.v1` from orion-prediction:
+  one per settled chat turn; `services/orion-prediction/app/turn_surprise.py`).
+- Folds the turns settled in the last 30 min (`orion/substrate/prediction_turn_surprise.py`):
+  summed excess surprise over its calm variance (a z-score), stored as `clip(z / 3, 0, 1)` through
+  `_write_prediction_error_node`. A turn that went the way the bets leaned reads z < 0, so the node
+  rests at exactly 0 (85 % of 294 replayed turns, 79 % of node writes).
+- No chat turn = no write: the node ages to stale (absent), never calm. FalkorDB node only.
+- Not an Active-Inference domain (absent between chats by design), so the self-model confidence
+  averages execution and biometrics only.
+- `/health` `prediction_turn_surprise`; kill switch `SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED`
+  (producer: `PREDICTION_TURN_SURPRISE_EVENTS_ENABLED`).
+- `_chat_tick` still reduces chat grammar into the chat projection (repair appraisal and
+  `/projections/chat_session` read it); it no longer writes a prediction error.
+
+## Prediction-error magnitude history (2026-10-02, default on)
+
+Spec: `docs/superpowers/specs/2026-10-02-reverie-prediction-error-magnitude-proposal.md` (step 1).
+
+When `SUBSTRATE_PE_HISTORY_ENABLED=true`, every attention-broadcast tick:
+
+1. Reads `prediction_error` and `temporal.observed_at` from every `node:substrate.*`
+   node in the graph snapshot it already took.
+2. Writes a row to `substrate_node_prediction_error_history` only when that node's
+   `observed_at` moved since the last recorded sample. A stale node adds nothing.
+   The in-memory 7-day window is seeded once from Postgres at the first tick.
+3. Prunes rows older than `SUBSTRATE_PE_HISTORY_RETENTION_HOURS` (default 168), at most
+   once an hour.
+4. Computes `PredictionErrorMagnitudeV1` per node
+   (`orion/substrate/prediction_error_magnitude.py`): the current value and its age,
+   7-day and 24-hour p50/p90, `percentile_now` (the share of 7-day readings strictly
+   below now), `median_1h` vs `median_prior_24h`, `trend`, and `band`. With fewer than
+   200 readings, `band`/`trend` read `insufficient_history`.
+   `ORION_REVERIE_PE_TREND_MIN_DELTA` (default 0.01) sets the floor on the
+   rising/settling threshold.
+5. Attaches the result to each substrate broadcast loop as `OpenLoopV1.magnitude`.
+   This is descriptive only: it is never a ranking input. The broadcast log
+   (`substrate_attention_broadcast_log.projection_json`) is the trace.
+
+Fail-open throughout. A missing table or a write error logs
+`substrate_pe_history_tick_failed` / `substrate_pe_history_write_failed`, and the
+broadcast still runs with `magnitude=None`.
+
+**Rollout order.** `OpenLoopV1` is `extra="forbid"`:
+
+1. Apply `services/orion-sql-db/manual_migration_node_prediction_error_history_v1.sql`.
+2. Rebuild `orion-thought` and `orion-hub`, which validate the broadcast
+   (`orion-thought/app/broadcast_reader.py`, `bus_listener.py` via
+   `StanceReactRequestV1`; `orion/hub/association.py`). The spec also names
+   orion-attention-runtime, which was checked on 2026-10-02. It reads the
+   projection with SQL jsonb paths and never validates it, and neither do
+   proposal-runtime or feedback-runtime, so none of them need a rebuild.
+3. Rebuild this service.
+4. Only then set the flag.
+
+## Self-tuned prediction expectation (rung 6) -- retired 2026-11-03
+
+From 2026-10-16 to 2026-11-03 this service recorded each execution, chat and
+street-handoff raw reading to `substrate_prediction_raw_reading` and read
+Orion's self-tuned smoothing rate and variance floor from the control surface.
+That tuner proposed 16 times and adopted once; its input reading was mostly
+zeros. It is retired: this service no longer writes the table (kept, not
+dropped) and scores all three domains with their calibrated constants
+(`prediction_error.py`, `street_attention.py`). Successor: the self-monitor
+organ (design PR #2827, not yet merged).
 
 ## AST/HOT self-model tick (rung 4)
 
@@ -329,6 +525,11 @@ brand-new table with exactly one writer.
   old default (10) and the offline replay script's own `PREDICTION_ERROR_TREND_WINDOW_TICKS=30`
   default on held-out TEST (61.9% vs 56.4% vs 54.2% reversion accuracy). See `app/settings.py`'s
   `attention_self_model_trend_window_ticks` docstring for the full numbers and methodology.
+- `SUBSTRATE_ATTENTION_SELF_MODEL_OMIT_STALE_PE` (default `true`): a domain whose prediction_error node
+  (`temporal.observed_at`) is older than 1800 s is left out of `prediction_error_confidence` and the trend
+  buffer ("no reading", not "calm"; not faded). The basis string records `from N of M domains` and which were
+  omitted with ages; missing `observed_at` is omitted as `age unknown`. All omitted -> confidence `None`
+  (equilibrium readers skip None rows). `false` restores read-every-node. Stored node values are untouched.
 - `SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS` (default `168.0`): append-only retention,
   matching `ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS`'s own 7-day default.
 
@@ -381,48 +582,31 @@ same day this tick shipped). A table nothing else has ever written to makes that
 structurally impossible here, not just avoided by convention — see the design doc above for the full
 reasoning behind hosting this tick in this service instead of a separate one.
 
-**Seventh domain, codebase mass, wired and live as of 2026-07-31**
-(`docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md`;
-`orion/sentience_striving_program/README.md` §9b has the fuller cross-domain note). All external
-I/O for this domain (git/GitHub/graphify access) lives in a separate service,
-`orion-cocreation-signals`, which publishes `CodebaseDeltaV1` events (one of `git` / `pr_lifecycle` /
-`graph`) to the `orion:substrate:codebase_delta` bus channel (`orion/bus/channels.yaml`,
-`orion/schemas/codebase_delta.py`, PR #1515) — this service keeps doing zero external I/O of its
-own, same "read a cheap bus event, write a node" shape every domain above uses, just via a dedicated
-subscribe loop (`_codebase_delta_listener_loop()`) instead of the shared poll tick, since this
-domain's traffic isn't reducer-projection-shaped like the others.
+**Codebase delta listener (was the seventh prediction-error domain; node RETIRED 2026-11-13).**
+`orion-cocreation-signals` publishes `CodebaseDeltaV1` events (`git` / `pr_lifecycle` / `graph`)
+to `orion:substrate:codebase_delta`. `_codebase_delta_listener_loop()` (flag
+`SUBSTRATE_CODEBASE_DELTA_LISTENER_ENABLED`, default on; renamed from
+`SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE`) scores each event with
+`codebase_prediction_error()` and appends:
 
-Gated by its own dedicated flag `SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE` (default-on since
-2026-07-31; deliberately not reusing `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES` given this domain's
-different risk surface). On each event, `_handle_codebase_delta_message()`
-(`app/worker.py`) scores it via `codebase_prediction_error()` (`orion/substrate/prediction_error.py`,
-composites git/PR-lifecycle/graph structural deltas from `orion/structural_mass/`) and does four
-things every tick:
+1. the EWMA baseline to `substrate_codebase_mass_baseline`
+   (`SUBSTRATE_CODEBASE_MASS_BASELINE_RETENTION_DAYS`, default 30);
+2. the raw payload and the score to `substrate_codebase_delta_log`
+   (`SUBSTRATE_CODEBASE_DELTA_LOG_RETENTION_DAYS`, default 180).
 
-1. Writes `node:substrate.codebase` via the shared `_write_prediction_error_node()` upsert (same as
-   every other domain) — unconditional, every tick, including a genuine calm (score == 0.0) reading.
-2. If `score > 0.0`: emits a `ReductionReceiptV1` via `save_receipt()` (`target_kind=
-   "prediction_signal"`) — the only path `orion-field-digester`'s `state_deltas.py` actually ingests
-   into `field_channel_corpus.v1`; the FalkorDB node write above is a separate, parallel path that
-   does *not* by itself reach field-digester. Gated exactly like every sibling domain's own tick in
-   this file (a real gap here silently regressed for a full session in late July 2026 — caught by
-   diffing the live container's loaded source against `main`, not by trusting a prior PR's stated
-   scope).
-3. Appends the updated `CodebaseMassBaseline` (three independent EWMA sub-baselines: git/pr/graph)
-   to `substrate_codebase_mass_baseline` via `save_codebase_mass_baseline()` — this domain's only
-   persisted state across ticks, since (unlike every domain above) there is no reducer projection
-   object to carry it on. Retention: `SUBSTRATE_CODEBASE_MASS_BASELINE_RETENTION_DAYS` (default 30).
-4. Unconditionally appends the real per-tick payload (raw git churn / PR numbers / graph deltas, plus
-   this tick's score) to `substrate_codebase_delta_log` via `save_codebase_delta_log()` — a complete
-   real-event history distinct from the EWMA-only baseline table above, meant to back a future Hub
-   "cocreation signals" analytics tab. Not gated on score, unlike step 2 — the whole point is
-   accumulated history, not a curated audit trail. Retention:
-   `SUBSTRATE_CODEBASE_DELTA_LOG_RETENTION_DAYS` (default 180).
+It no longer writes `node:substrate.codebase` or a field receipt. PE suite rebuild
+(`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`): the churn z is not a
+forecast, yet in the 7 days before removal it won 2.8% of attention frames, seeded 128 curiosity
+candidates and opened 14 metacog episodes. The id is on
+`RETIRED_PREDICTION_ERROR_NODE_IDS` and the digester's `RETIRED_PSEUDO_NODES`. The score's
+remaining readers (Hub co-creation tab, cortex-exec self-study) read it as churn, not as
+prediction error.
 
-`node:substrate.codebase` is deliberately **not** added to this reducer's own
-`prediction_error_by_domain` (`_PREDICTION_ERROR_DOMAIN_NODE_IDS` in `app/worker.py`) — the design
-spec defers wiring any downstream consumer of that aggregate until Phase 1's replay reads land; see
-the comment at that dict's definition before adding it.
+**Alarms are not prediction errors (2026-11-13).** `node:substrate.cabinet`, `node:substrate.strain`
+and `node:substrate.street` still write the node's `prediction_error` field and history rows,
+because attention competes on them and strain news rebuilds its budget from those rows. They are
+listed in `orion.substrate.prediction_error_freshness.ALARM_NODE_IDS`: curiosity's
+prediction-error seeds and the PE domain panels skip them, and their labels say alarm / news.
 
 ## Unified turn bus listeners
 
@@ -434,14 +618,26 @@ Besides grammar poll reducers, substrate-runtime subscribes to RPC-style harness
 | Post-turn closure (step 7) | `orion:substrate:post_turn_closure` | `CHANNEL_POST_TURN_CLOSURE`, `ENABLE_POST_TURN_CLOSURE_LISTENER` |
 
 Post-turn closure logs `post_turn_closure received …` on ingest. When
-`surprise_unresolved=true`, it attempts a rung-1 prediction-error graph write only if
-`SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` (logs `post_turn_closure_prediction_error_write`
-or `…_skipped` otherwise). Full Task 21 strain reducers are not implemented here.
+`surprise_unresolved=true`, it persists the turn referent (`substrate_turn_referent`, read by
+reverie). It writes no prediction error: `node:substrate.harness_closure` (a fixed 0.65) was
+retired 2026-11-11 (retire step 3,
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`).
+
+**Retired 2026-11 (PE suite rebuild step 5): `node:substrate.bus_synaptic` and
+`node:substrate.route`'s prediction error.** Neither was a forecast: bus_synaptic counted the
+fraction of bus edges with `|z| >= 3` (a lull-ending detector), route scored a categorical
+decision-mismatch rate. `_bus_synaptic_tick`, `bus_synaptic_prediction_error()`,
+`route_prediction_error()` and the route PE receipt/node write are deleted; `_route_tick` still
+runs the route reducer and projection. The `SUBSTRATE_BUS_SYNAPTIC_*`, `FALKORDB_BUS_GRAPH` and
+`TRANSPORT_THRESHOLDS_*` env keys are gone from this service. Lingering stored values (the
+FalkorDB nodes, 7-day history rows) are skipped by every generic reader via
+`orion/substrate/prediction_error_freshness.py::RETIRED_PREDICTION_ERROR_NODE_IDS`, and the field
+digester prunes both node ids. `ACTIVE_INFERENCE_DOMAINS` is now execution/biometrics/chat. The
+history notes below describe these domains as they were.
 
 `_write_prediction_error_node()` (`app/worker.py`) writes to a single, fixed `node_id` per
 lane (`node:substrate.execution`, `node:substrate.transport`, `node:substrate.biometrics`,
-`node:substrate.chat`, `node:substrate.route`, `node:substrate.harness_closure` for post-turn
-closure), so repeat writes collapse instead of spawning a new node per event.
+`node:substrate.chat`, `node:substrate.route`), so repeat writes collapse instead of spawning a new node per event.
 
 `node:substrate.biometrics` (`biometrics_prediction_error()`, `orion/substrate/
 prediction_error.py`, wired into `_tick()`) is the third instrument in this family, shadow-
@@ -454,6 +650,7 @@ present on either side of a given node rather than a fixed list. See `docs/super
 specs/2026-07-21-biometrics-prediction-error-shadow-design.md` for the full metric-quality-
 gate writeup.
 
+(History: `node:substrate.chat` was retired 2026-11-13, successor `node:prediction.chat_turn`.)
 `node:substrate.chat` (`chat_prediction_error()`, wired into `_chat_tick()`) and
 `node:substrate.route` (`route_prediction_error()`, wired into `_route_tick()`) are the
 fourth and fifth instruments in this family, shadow-built 2026-07-21, closing charter §6
@@ -483,9 +680,9 @@ KEYS` (`orion/substrate/falkor_codec.py`) separately carries forward on every re
 ids` is durable against the live Falkor backend via `orion/substrate/falkor_codec.py`'s
 `DYNAMICS_METADATA_KEYS` allowlist (JSON-string-encoded as `contributing_turn_ids_json`,
 same pattern as `taxonomy_path_json`) and is consumed by `orion/substrate/attention_
-broadcast.py::substrate_pressure_signals()` (`evidence_refs`) and `orion/substrate/
-attention_self_model.py::reduce_attention_self_model()`'s optional `harness_closure_signal`
-narrative enrichment — see `docs/superpowers/specs/2026-07-18-prediction-error-attribution-
+broadcast.py::substrate_pressure_signals()` (`evidence_refs`) and world-first attention's
+`evidence_refs` (the `harness_closure_signal` reducer argument was removed 2026-11-11 with
+the node) — see `docs/superpowers/specs/2026-07-18-prediction-error-attribution-
 wiring-design.md`.
 
 **Fixed: execution/route prediction-error was structurally always 0.0, not "quiet" (2026-07-22).**
@@ -717,7 +914,7 @@ written.** Confirmed live: the node was frozen at `prediction_error=1.0` for hou
 kept logging real, varying, non-saturated values (0.000-0.144) every 30s the whole time --
 `orion-equilibrium-service`'s `_bus_synaptic_poll_loop` (`transport_metacog_gate.py`) polls this
 node's raw current value with no staleness check of its own, so the frozen value produced recurring
-false "Bus Anomaly Detected" alerts, functionally the same downstream symptom as the
+false "Bus Anomaly Detected" alerts (that Hub notifier was retired 2026-11-10), functionally the same downstream symptom as the
 `SubstrateDynamicsEngine.tick()` clobber bug fixed 2026-07-29 (`falkor_codec.py`'s
 `EXTERNALLY_OWNED_METADATA_KEYS`) but via a different, still-live mechanism that fix didn't touch.
 Split the gate in `_bus_synaptic_tick()`: the receipt write (an audit trail of notable events) stays
@@ -983,7 +1180,46 @@ adding all 5 keys to `docker-compose.yml`'s `environment:` list; confirmed live 
 `services/orion-sql-db/manual_migration_substrate_turn_referent_v1.sql` before enabling
 `ORION_REVERIE_SEMANTIC_LIFT_ENABLED` on orion-thought.
 
+## Vision organ lane (capability:vision)
+
+The frame router (`services/orion-vision-frame-router`) reports on the eye once per
+60 s window: per camera stream, frames received, age of the newest frame, tasks sent
+to the vision host, failures by class (timeout, invalid reply, host `error_code`),
+and detection/caption yield. Trace prefix `vision.organ:`, source
+`orion-vision-frame-router`, cursor `vision_organ_grammar_reducer`, reducer
+`orion/substrate/vision_organ_loop/`, projection table
+`substrate_vision_organ_projection` (migration
+`services/orion-sql-db/manual_migration_vision_organ_substrate_loop.sql`).
+
+One delta per completed window lands on `node:substrate.vision_organ`:
+
+- `vision_frame_staleness` -> `capability:vision` pressure. Staleness of the freshest
+  stream (can Orion see at all). A configured stream that never sent a frame is aged
+  from router start, never read as calm. If the router stops reporting for
+  `VISION_ORGAN_SILENCE_SEC` (180 s), this tick writes 1.0 on a clock.
+- `vision_processing_failure_pressure` -> `capability:vision` reliability_pressure.
+  Rolling 600 s share of dispatched frames with no usable answer (`hop_pressure`
+  rule: `failures / max(attempts, 10)`, 0 until 2 failures). Absent when nothing was
+  dispatched.
+
+Per-stream status (`live` / `stale` / `never_seen`) and yield are on the projection
+and in each receipt's delta, not in the field.
+
+This replaced the `SUBSTRATE_VISION_CHANNEL_TICK_*` artifact tick (retired
+2026-10-02): it pooled detect artifacts from every camera, so one live camera hid
+every dead one -- `node:substrate.vision` read 0.0 on all 124,612 field ticks
+2026-09-29..10-02 while the carbon webcam sent nothing.
+`node:substrate.vision` is pruned from the field (`RETIRED_PSEUDO_NODES`).
+
+Flags: `ENABLE_VISION_ORGAN_REDUCER` (here), `VISION_ORGAN_GRAMMAR_ENABLED` (router),
+`ENABLE_VISION_ORGAN_FIELD_DIGESTION` (field digester). All off in code, on in the
+`.env_example` templates.
+
 ## Perceptual prediction error (P2)
+
+> 2026-10-02: `node:substrate.vision`, `_vision_channel_tick` and
+> `SUBSTRATE_VISION_CHANNEL_TICK_*` mentioned below are retired; see "Vision organ
+> lane" above. The comparisons are kept as history.
 
 `docs/superpowers/specs/2026-08-12-perception-frontier-design.md`'s P2: `surprise = 1 -
 cos(frame_embedding, EWMA_embedding)` per camera stream, feeding a new node,
@@ -1036,11 +1272,77 @@ the frame, and is independent of both it and `node:substrate.bus_synaptic` -- se
   `vision_channel_staleness_pressure` genuinely-reachable-rest-point shape `node:substrate.vision`
   uses).
 
+**Walkway camera has its own node (2026-10-15).** Baselines were always per stream, but the
+published score used to be one process-wide cache that held whichever stream scored last. The
+outdoor walkway camera samples a busy street at 2 frames/s and would have overwritten the room
+cameras' reading. Now streams listed in `SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS` (comma-separated,
+default `walkway`) keep their own cache and feed `node:substrate.perception_walkway`; every other
+stream (cam0, carbon-webcam) feeds `node:substrate.perception` exactly as before. The tick writes
+both nodes every tick through `_publish_perception_group` (same missing-input marking, receipt
+every tick); a failure on one never skips the other. Receipts for the walkway node
+carry `reducer_name = substrate.perception_walkway`, which has its own rung in
+`orion/substrate_ladder_liveness.py`. The world-model `vision_embedding` group stays a room
+embedding: walkway frames never touch `_last_perception_embedding_vector`. Since 2026-10-15
+endogenous curiosity reads the walkway node like any other prediction-error node (live-data check
+in `docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md`). Since 2026-10-21 the
+walkway is a world source in the two world-first contests (substrate broadcast and
+orion-attention-runtime), eligible only at its own p99+ band by mid-rank
+(`orion/schemas/attention_candidate.py` `ATTENTION_MIN_BAND_BY_NODE_ID`); the broadcast's salience
+signals still skip it (`NO_ATTENTION_CONSUMER_NODE_IDS`). Set the key to `none` to fold the
+walkway back into the room node.
+
+**Missing input is missing, not 0.0 (2026-10-21).** Each tick publishes the latest scored frame
+that arrived since the previous tick (taken and cleared, so a frame is never published twice).
+When the input is missing -- embeddings stale (`embedding_staleness` 1.0, no embedding for 60 s),
+baseline still warming, or no new scored frame -- the tick still writes the receipt and the graph
+node (0.0, the field digester's refresh path), but marks the node
+`prediction_error_missing_reason` (`stale` / `warming` / `no_scored_frame_since_last_tick`). A
+marked node is never sampled into `substrate_node_prediction_error_history`, has no magnitude in the
+broadcast (absent), and is omitted by the self-model freshness rule
+(`orion/substrate/prediction_error_freshness.py` `STATUS_MISSING_INPUT`). Before this, 49 h with no
+embeddings (2026-10-18..20) were recorded as calm 0.0 readings and skewed the 7-day percentile
+window every attention contest ranks against. The latest frame, not the window peak: peak-hold
+failed the metric gate (the 1.0 ceiling made the window max saturate in 10% of windows), see
+`docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md`. A camera that stops
+delivering for 15 min is carded by the ladder watch (`camera_input:cam0` / `camera_input:walkway`
+rungs in `orion/substrate_ladder_liveness.py`, host cron every 10 min).
+
+**Reading is one world-first candidate (2026-10-31).** When
+`ATTENTION_WORLD_READING_ENABLED=true`, accepted `world_pulse_read_stage2` relationship-link
+materializations from `substrate_graph_journal` are counted in a trailing 15-minute window against
+their own seven-day minute grid. The candidate carries up to eight endpoint concept ids as evidence;
+it does not score or rewrite the existing unscored link seeds. `world:chat` yields over it whenever
+Juniper is busy, and the candidate is absent (not calm) if the journal query fails. A one-minute
+in-memory cache bounds the read path. Set the flag to `false` and restart substrate-runtime to
+disable it.
+
+**`world:chat` carries what Juniper said (2026-11-12).** The chat candidate's label is the fixed
+text "Juniper is talking", so its open-loop id stays the same through a conversation (it used to
+carry the message count, and each new message gave the conversation a new loop id). When a turn is
+in the 15-minute window, the worker reads Juniper's newest turn (`fetch_latest_chat_turn`, the same
+turn definition as the count) and puts a whitespace-collapsed excerpt of at most 200 characters,
+its `chat_history_log` id, its time and the window count on the candidate's `evidence`. The
+broadcast copies it to the winning loop's `provenance["world_evidence"]`; reverie renders it as her
+words. It is evidence only: ranking, band and refs do not change. A failed read drops the excerpt,
+never the candidate.
+
+Where the excerpt is stored: it is part of the broadcast frame, so it is in the current snapshot
+(`substrate_attention_broadcast_projection`), in `substrate_attention_broadcast_log` on every tick
+chat wins (168 h retention), on the broadcast bus message (and the bus mirror, 24 h), and in the
+reverie prompt. It is not in the world-first debug trace or any log line.
+
+One id for all conversations: the fixed label gives `world:chat` one loop id
+(`open-loop-3aa14b029771`) forever, not one per conversation. A Hub resolve/dismiss on it hides
+chat from the broadcast for the 48 h verdict TTL in later conversations too, and reverie's 15-min
+refractory treats chat as one theme. The old 1-message id, the most common, already worked this
+way. Replay: `evals/run_world_chat_loop_id_replay.py --days 7`; after deploy add
+`--stored-since <deploy time>` to check the stored ids directly.
+
 **Ships shadow-only, default off, no consumer wired.** Deliberately **not** added to
 `ACTIVE_INFERENCE_DOMAINS` or any capability edge in `config/field/orion_field_topology.v1.yaml`
 in this patch (that file documents the node's existence in a comment only -- no `edges:` entry).
 Unlike `SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED`/`SUBSTRATE_VISION_CHANNEL_TICK_ENABLED`/
-`SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE` above, this flag has **not** been given Juniper's
+`SUBSTRATE_CODEBASE_DELTA_LISTENER_ENABLED` above, this flag has **not** been given Juniper's
 explicit go-ahead to flip true yet.
 
 **NOT YET VERIFIED -- required before flipping the flag or wiring any consumer** (metric quality
@@ -1081,7 +1383,7 @@ must be flagged in `payload.meta`, not hidden):
 
 | Group | Status | Source |
 |---|---|---|
-| `execution_context` | **Real** | Four of this worker's existing per-domain prediction-error scalars, cached by their own `_execution_tick`/`_chat_tick`/`_route_tick`/`_bus_synaptic_tick` methods. Fixed slot order: `[execution, chat, route, bus_synaptic]`, remaining slots up to `SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT` (default 16) are 0.0. |
+| `execution_context` | **Real** | Two of this worker's existing per-domain prediction-error scalars, cached by their own `_execution_tick`/`_chat_tick` methods. Fixed slot order: `[execution, chat]`; slots 2-3 held route/bus_synaptic until their 2026-11 retirement and are now 0.0 like every remaining slot up to `SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT` (default 16, unchanged). |
 | `temporal` | **Real** | Pure function over wall-clock time (`world_model_features.temporal_features`): hour-of-day/day-of-week/minute-of-hour sin/cos pairs + tanh-squashed session-elapsed time. |
 | `vision_embedding` | **Real when available and correctly dimensioned; zero-filled + flagged otherwise** | See "Unresolved vision-embedding dim" below. |
 | `biometrics` | **Always zero-filled** | The real biometrics numeric vector lives in `orion-field-digester`, not cheaply reachable from this process per CLAUDE.md section 5's service-boundary rule. This is a different signal from `node:substrate.biometrics`'s own prediction-error *scalar* (which this worker does compute) -- that scalar is deliberately not folded into `execution_context` either; see `world_model_features.py`'s module docstring. |
@@ -1167,21 +1469,16 @@ L1-5  substrate_field_state          orion-field-digester        (this service's
 L6    substrate_self_state           orion-self-state-runtime    "how is Orion doing"
   |     13 named 0-1 dimensions, memoryless recompute every 2s (see below)
   v
-L7    substrate_proposal_frames      orion-proposal-runtime      self_state -> POSSIBLE actions
+L7    (retired 2026-11-07)          proposals: each real act starts itself (want market)
   v
-L8    substrate_policy_decision_frames orion-policy-runtime      proposals -> governed decision
+L8    (retired 2026-11-07)          policy: becomes the want market's consent gate
   v
-L9    ExecutionDispatchFrameV1       orion-execution-dispatch-   policy+proposal+self_state ->
-                                      runtime                     dispatch envelope
-                                                                   (EXECUTION_DISPATCH_MODE=
-                                                                    dry_run by default -- L9 has
-                                                                    never mutated the real world)
+L9    (retired 2026-11-07)          dispatch: the act ledger grades every real act
   v
-L10   substrate_feedback_frames      orion-feedback-runtime      scores the dry-run outcome
+L10   (retired 2026-11-04)          the act ledger grades every real act; world-action
+                                                                   scoring runs in orion-sql-writer
   v
-L11   consolidation windows/motifs   orion-consolidation-runtime  folds L6-L10 history into
-                                                                   memory windows; consumed by
-                                                                   orion-dream/compaction_applier.py
+L11   (retired 2026-11-04)          killed outright
 ```
 
 Each layer's own README states its literal `X + Y -> service -> Z` data flow; this
@@ -1191,7 +1488,11 @@ still an open question as of 2026-07-12 -- verify live before assuming either wa
 
 ### L6 (`SelfStateV1`) metric shape and mechanics
 
-Schema: `orion/schemas/self_state.py`. Computation: `orion/self_state/{builder,scoring,
+**Historical (retired).** Producer deleted 2026-07-22; the schema module and every
+remaining reader (brain-frame `self_state` region, causal-geometry
+`self_state_predictions` source) were removed 2026-10-07. Kept below as a record.
+
+Schema: `orion/schemas/self_state.py` (deleted). Computation: `orion/self_state/{builder,scoring,
 prediction}.py`. Tuning surface: `config/self_state/self_state_policy.v1.yaml` (weights,
 channel->dimension map, thresholds -- config, not code).
 
@@ -1266,7 +1567,7 @@ each individually live-verified against real running data before being wired in 
 |-----------|--------|-------------|-------------------------|
 | `node_kind` | graph | max activation per node category | **Ceiling-pinned** (0.9687–1.0 over 2min) — display only, not a good driver |
 | `lane` | reducer health | freshness + backlog composite | **Pinned regardless of `max()`/`min()`** — a dead reducer lane (`chat_grammar`, 70h+ stale) is either masked (`max`) or becomes a permanent floor (`min`) |
-| `self_state` | Postgres `substrate_self_state` | 13-dim projection read | **Dead.** Zero producer since the 2026-07-22 SelfStateV1 burn (confirmed in `orion-consolidation-runtime/app/store.py`) — this dimension never emits a region |
+| `self_state` | Postgres `substrate_self_state` | 13-dim projection read | **Dead.** Zero producer since the 2026-07-22 SelfStateV1 burn (confirmed in `orion-consolidation-runtime/app/store.py`) — this dimension never emits a region. **Removed from the brain-frame contract 2026-10-07.** |
 | `honesty_metrics` | Active Inference | `prediction_error_confidence`, no transform beyond clamp+threshold | **Real, live.** 0.7929–0.9935 over a real 2-minute window |
 | `field_anomaly` | mood-arc encoder (orion-field-digester) | `recon_loss`, calibrated against live-observed range | **Real, live.** Confirmed a genuine anomalous→calm state transition (~0.012 → 0.00012, both real ticks) |
 
@@ -1337,6 +1638,9 @@ deleted.
 
 ## Chat prediction error v3, gateway failure floor (2026-09-29)
 
+(History. `chat_prediction_error()` and its replay script were deleted 2026-11-13, PE suite rebuild
+step 6; see "Chat-turn surprise node" above.)
+
 - `chat_prediction_error()` averages over only the turns a batch touched (definition v3,
   same fix route got in v2). v2 averaged over every stored turn (~1,700, never evicted),
   so a new turn's change was divided by the whole history and the variance floor set the
@@ -1365,3 +1669,84 @@ deleted.
 - Before/after replay over the live projections:
   `scripts/analysis/replay_route_chat_prediction_error_definitions.py`; numbers in
   `docs/superpowers/pr-reports/2026-09-25-route-pe-touched-runs-and-topic-coherence-pr.md`.
+
+
+## Street events -> workspace attention (`node:substrate.street`, 2026-10-20)
+
+Spec: `docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md` section 6.
+Pure rules: `orion/substrate/street_attention.py`.
+
+- **Listener:** `SUBSTRATE_STREET_EVENTS_CHANNEL` (`orion:vision:street:events`,
+  `StreetEventV1`) via `run_subscription` (resubscribes after a drop; shown in `/health`
+  `listeners` as `substrate_street_events_listener`).
+- **Gate:** `doorbell_ring` always passes (it still uses up the hourly budget). Every other
+  kind needs `p_value < 0.05`, every camera in `stream_ids` up (a frame seen on
+  `orion:vision:artifacts` within `SUBSTRATE_STREET_CAMERA_UP_MAX_AGE_SEC`, 600 s; recorded by
+  the perception listener, so with `SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED=false`
+  every non-ring event is refused as `camera_unseen`), and fewer than
+  `SUBSTRATE_STREET_ATTENTION_MAX_PER_HOUR` (4) passes in the trailing hour. No event-level
+  "unusual for the hour" reading exists yet, so the event's own `p_value` stands in for it.
+- **Node:** every `SUBSTRATE_STREET_ATTENTION_TICK_INTERVAL_SEC` (30 s) and on every pass,
+  `prediction_error` = the strongest passed salience inside `SUBSTRATE_STREET_ATTENTION_HOLD_SEC`
+  (90 s), else a real 0.0. Nothing is written while the listener is down or no street camera
+  (walkway, doorbell) sent a frame recently (after one closing 0.0 if a hold just ended), so
+  attention reads the node absent, not calm. The
+  node is an outside-world source (`is_world_source_id`) and is fenced from endogenous curiosity.
+- **Trace:** one `substrate_street_event kind=... salience=... verdict=pass|block reason=...
+  correlation_id=...` line per event; `substrate_street_attention_won` when the broadcast's
+  coalition contains the node; counters under `/health` -> `street_attention`. A passed event's
+  correlation id rides on the node (`contributing_turn_ids`) into the broadcast's
+  `attended_node_ids`.
+- **Handoff surprise (`street_handoff`):** one raw reading per `handoff_met|late|missed`:
+  `-ln(p_value)` nats (p floored at 1e-6). Calibrated rest point: mean 1 nat, variance 1 (`-ln U`
+  is Exponential(1)). Scored against a fixed EWMA (alpha 0.2, variance floor 1e-3) and logged as
+  `handoff_surprise_z`; not stored.
+- **Kill switch:** `SUBSTRATE_STREET_ATTENTION_ENABLED=false` (no listener, no writes), or add
+  the id to `NO_ATTENTION_CONSUMER_NODE_IDS`.
+
+## Cabinet warming -> workspace attention (attend-to-act loop, 2026-10-01)
+
+`SUBSTRATE_CABINET_HEAT_ATTENTION_ENABLED` (OFF; Juniper flips): every 30 s writes
+`node:substrate.cabinet`'s `prediction_error` = the cabinet warming error
+(`orion/autonomy/cabinet_heat.py`: non-zero only while elevated AND rising >= 0.5 C / 15 min, via the
+shared `orion.hardware_watch.rules.cabinet_rise_c`), so the existing dynamics engine admits it to the
+broadcast. Replay: `scripts/analysis/replay_attention_eligibility.py --hours 72`.
+
+
+## Strain news -> workspace attention (strain loop Part 2, 2026-10-20)
+
+Spec: `docs/superpowers/specs/2026-10-20-strain-loop-design.md` Part 2. Pure rule:
+`orion/regulation/strain_news.py`.
+
+`SUBSTRATE_STRAIN_ATTENTION_ENABLED` (ON) runs a tick every
+`SUBSTRATE_STRAIN_ATTENTION_TICK_INTERVAL_SEC` (30 s). It reads Redis `orion:regulation:latest`
+(judged by `orion.regulation.arousal_view`) and writes `node:substrate.strain`'s `prediction_error`:
+
+- **1.0 on a strain news event.** Onset (the level turns strained), escalation (a new strain cause
+  joins the episode, or the cabinet first crosses critical 34 C in the episode), reminder (still
+  strained 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h after the onset was sent). At most 8 per local
+  day (`ORION_SITUATION_TIMEZONE`), at least 30 min apart; reminders may not take the last 2 slots.
+  An escalation blocked by the daily cap is carried to the next local day and sent if it still holds.
+- **Nothing for 300 s after an event**, so the 1.0's age is the event's age. World-first treats the
+  node as event-written (glossary `absent_means` starts "only written"): it fades and stops competing
+  at the 300 s orienting window.
+- **0.0 on every other tick with a known reading.** World-first needs 200 readings in 7 days before
+  it can call any value unusual. A node written only on events (<= 56 a week) would never compete.
+- **Nothing while the reading is unknown or stale.** Unknown is never strain and never relief.
+
+The strain level itself never competes for attention. Each event is also written straight to
+`substrate_node_prediction_error_history`. After a restart the tick rebuilds the budget from those
+rows (`seed_state`), so an onset that was already sent is not sent again. Until the node has 200
+history rows, the tick writes only 0.0 and sends no event (log `substrate_strain_news_tick_warming`).
+
+Logs: `substrate_strain_news_event kind=... episode_since=... causes=... events_today=...`,
+`substrate_strain_news_tick_completed ...`, `substrate_strain_news_tick_unmeasured reason=...`.
+
+Budget replay (exit 1 on any day over 8 events, 3 % of ticks, or 10 % taken from other winners):
+`python scripts/analysis/replay_strain_news.py`.
+
+### Follow-ups from reading resonance
+
+The existing curiosity tick reads accepted resonance receipts with `explore_next` and real landed/cited atlas IDs. It offers at most four unscored `concept_expand` candidates per tick. `source:reading_resonance` and the result ID identify their provenance; persisted candidate notes prevent reminting during the bounded retention window. Rows without graph anchors are filtered before the SQL limit so they cannot starve usable follow-ups. This adds no ranking score and does not assert a graph relationship.
+
+Apply `manual_migration_reading_resonance.sql` before rollout. Missing tables/stores log a source failure without stopping ordinary curiosity seeds. [Implementation report](../../docs/superpowers/pr-reports/2026-11-11-reading-resonance-runtime-pr.md).

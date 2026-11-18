@@ -11,12 +11,13 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import uvicorn
 from fastapi import FastAPI
 
+from orion.cognition.daily_metacog_budget import build_daily_metacog_skill_catalog
 from orion.cognition.skills_manifest import build_compact_skill_catalog, load_skill_manifest
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -32,8 +33,6 @@ from orion.journaler import (
     build_collapse_stored_trigger,
     build_compose_request,
     build_manual_trigger,
-    build_metacog_trigger,
-    build_notify_summary_trigger,
     build_scheduler_trigger,
     build_write_payload,
     cooldown_key_for_trigger,
@@ -45,11 +44,20 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL, DURABLE_RUN_STATE_KIND, DurableRunStateV1
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
-from orion.schemas.notify import NotificationRecord, NotificationRequest
-from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.notify import NotificationRequest
+from orion.self_monitor.gate import ActGate, last_attempt_sql, read_view_sync
+from orion.self_monitor.view import TRACK_RECORD_FAILING_REASON
+from . import act_emit
+from .vision_pg import fetch_rows_blocking as _fetch_ledger_rows_blocking
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
-from .walkway_forecast import collect_walkway_jobs, run_walkway_tick
+from .walkway_forecast import (
+    NIGHT_RECORD_ACTION,
+    NIGHT_RECORDS_FILENAME,
+    collect_walkway_jobs,
+    guard_walkway_draft,
+    run_walkway_schedule,
+)
 from .world_pulse_journal import handle_world_pulse_run_result_journal, submit_durable_run_via_cortex
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -72,6 +80,13 @@ from .logic import (
 from .settings import settings
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 
+from .daily_retry_gate import (
+    DAILY_ATTEMPT_STATE_FILENAME,
+    DailyAttemptGate,
+    DailyAttemptResult,
+    GaveUp,
+    run_gated_daily_tick,
+)
 from .scheduler_cursor_store import (
     SchedulerCursorStore,
     resolve_scheduler_cursor_store_path,
@@ -113,6 +128,23 @@ _SKILL_MANIFEST = load_skill_manifest()
 _SKILL_IDS = {item.skill_id for item in _SKILL_MANIFEST}
 _READ_ONLY_SKILL_IDS = {item.skill_id for item in _SKILL_MANIFEST if item.read_only}
 _SKILLS_CATALOG_COMPACT = build_compact_skill_catalog()
+# daily_metacog_v1 has a hard prompt budget in cortex-exec; the full JSON catalog
+# above pushed it over from 2026-09-03 and the report failed every night. Metacog
+# gets a one-line-per-read-only-skill catalog sized from the template + the max
+# recall digest (orion/cognition/daily_metacog_budget.py). Pulse keeps the JSON.
+_DAILY_METACOG_SKILLS_CATALOG, _DAILY_METACOG_SKILLS_CATALOG_COUNT = build_daily_metacog_skill_catalog(_SKILL_MANIFEST)
+
+
+def _daily_skills_catalog_context(action_name: str) -> dict[str, Any]:
+    if action_name == ACTION_DAILY_METACOG_V1:
+        return {
+            "skills_catalog_count": _DAILY_METACOG_SKILLS_CATALOG_COUNT,
+            "skills_catalog_compact": _DAILY_METACOG_SKILLS_CATALOG,
+        }
+    return {
+        "skills_catalog_count": len(_SKILL_MANIFEST),
+        "skills_catalog_compact": _SKILLS_CATALOG_COMPACT,
+    }
 
 
 def _runtime_identity() -> dict[str, str]:
@@ -293,6 +325,26 @@ def _extract_plan_final_text(result_payload: dict[str, Any]) -> str:
                     if isinstance(raw_text, str) and raw_text.strip():
                         return raw_text.strip()
     return ""
+
+
+def _plan_failure_detail(result_payload: dict[str, Any], *, max_chars: int = 500) -> str | None:
+    """Why a plan produced no text, from the step that failed.
+
+    Without this, a cortex-exec step failure (e.g. daily_metacog_prompt_over_limit)
+    reached orion-actions only as ``cortex_exec_missing_final_text`` and the real
+    cause lived only in cognition_traces.steps[].error.
+    """
+    result = result_payload.get("result") if isinstance(result_payload, dict) else None
+    if not isinstance(result, dict):
+        return None
+    steps = result.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if isinstance(step, dict) and step.get("error"):
+                return f"step={step.get('step_name') or '?'} error={str(step['error'])[:max_chars]}"
+    if result.get("error"):
+        return f"error={str(result['error'])[:max_chars]}"
+    return None
 
 
 def _json_loads_strict(text: str) -> dict[str, Any]:
@@ -665,6 +717,53 @@ def durable_failure_notify_request(item: dict) -> NotificationRequest | None:
     )
 
 
+def daily_failure_notify_request(
+    *,
+    action_name: str,
+    report_date: str,
+    scheduled_local_date: str,
+    attempts: int,
+    error: str | None,
+    correlation_id: str,
+    failure_class: str | None = None,
+) -> NotificationRequest:
+    """The one warning a night when a scheduled daily report stops retrying.
+
+    Durable and queryable in notify_requests (event_kind ``orion.daily.failed``);
+    the error text is the step error cortex-exec returned (see _plan_failure_detail).
+    """
+    label = "Daily Metacog" if action_name == "daily_metacog_v1" else "Daily Pulse"
+    err = (error or "unknown")[:600]
+    body = (
+        f"Orion's {label} for {report_date} was not written. It failed {attempts} time(s) "
+        f"and will not retry until the next scheduled day ({action_name}, scheduled {scheduled_local_date}). "
+        f"Last error ({failure_class or 'unclassified'}): {err}"
+    )
+    return NotificationRequest(
+        source_service=settings.service_name,
+        event_kind="orion.daily.failed",
+        severity="warning",
+        title=f"Orion — {label} failed",
+        body_text=body,
+        body_md=body,
+        recipient_group=settings.actions_recipient_group,
+        session_id=settings.actions_session_id,
+        correlation_id=correlation_id,
+        dedupe_key=f"actions:{action_name}:failed:{scheduled_local_date}",
+        dedupe_window_seconds=86400,
+        tags=["actions", "daily", "failed", action_name],
+        context={
+            "action_name": action_name,
+            "report_date": report_date,
+            "scheduled_local_date": scheduled_local_date,
+            "attempts": attempts,
+            "failure_class": failure_class,
+            "error": err,
+            "preview_text": body[:280],
+        },
+    )
+
+
 def _send_pending_attention(
     *,
     notify,
@@ -804,8 +903,8 @@ def _resolve_now_utc(now_utc: datetime | None) -> datetime:
 def _journal_email_daily_cap_key(*, scope: str = "shared", now_utc: datetime | None = None) -> str:
     """One key per local calendar day, per cap `scope` (see
     `JournalDispatchPolicy.daily_cap_scope`). The default "shared" scope is shared
-    across every trigger_kind still using it (daily_summary, metacog_digest,
-    notify_summary, autonomy_episode, collapse_response, manual) -- one send/day
+    across every email-enabled trigger_kind still using it (autonomy_episode,
+    collapse_response, manual) -- one send/day
     across all of them, regardless of which fires first. A non-"shared" scope (e.g.
     world_pulse_digest) gets its own independent slot/day, isolated from the shared
     pool. Journal entries always persist regardless of scope; only the email step is
@@ -1192,9 +1291,12 @@ async def lifespan(app: FastAPI):
     notify = NotifyClient(base_url=settings.notify_url, api_token=settings.notify_api_token, timeout=10)
     src = _source_ref()
     last_daily_run: dict[str, str] = {}
-    # Read-failure attempts per local date for the walkway journal (bounded
-    # retry; see walkway_forecast.run_walkway_tick).
+    # Read-failure attempts per night for the walkway journal (bounded retry; see
+    # walkway_forecast.run_walkway_tick). Failed composes are capped in
+    # daily_attempt_gate below, which survives a restart.
     walkway_read_attempts: dict[str, int] = {}
+    # Why each job of the open walkway night has no entry yet ({night: {kind: why}}).
+    walkway_open_reasons: dict[str, dict[str, str]] = {}
     last_skill_run_monotonic: float | None = None
     last_journal_run: str | None = None
     workflow_schedule_store = WorkflowScheduleStore(
@@ -1230,6 +1332,15 @@ async def lifespan(app: FastAPI):
         else:
             last_daily_run[_ck] = _cv
     cursor_keys_at_startup = frozenset(scheduler_cursor_store.all().keys())
+    # Bounded nightly retries for daily_pulse_v1 / daily_metacog_v1 and for each
+    # walkway journal job, persisted next to the scheduler cursors
+    # (app/daily_retry_gate.py).
+    daily_attempt_gate = DailyAttemptGate(
+        state_path=scheduler_cursor_store.path.parent / DAILY_ATTEMPT_STATE_FILENAME,
+    )
+
+    # Act ledger (body economy A5, app/act_emit.py). None = ACTIONS_ACT_EMIT_ENABLED off: no acts.
+    _act_publish = act_emit.bus_publisher(lambda: hunter.bus) if settings.actions_act_emit_enabled else None
 
     async def _audit(
         parent: BaseEnvelope,
@@ -1297,13 +1408,15 @@ async def lifespan(app: FastAPI):
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
         final_text = _extract_plan_final_text(payload)
         if not final_text:
-            raise RuntimeError("cortex_exec_missing_final_text")
+            detail = _plan_failure_detail(payload)
+            raise RuntimeError(f"cortex_exec_missing_final_text {detail}" if detail else "cortex_exec_missing_final_text")
         return final_text, payload
 
     async def _run_journal(
         parent: BaseEnvelope,
         *,
         trigger,
+        compose_correlation_id: str | None = None,
     ) -> dict[str, Any]:
         journal_llm_route = _normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route)
         tk = str(getattr(trigger, "trigger_kind", "") or "")
@@ -1311,16 +1424,12 @@ async def lifespan(app: FastAPI):
         sched_daily = tk == "daily_summary" and sk == "scheduler"
         if sched_daily:
             recall_profile = settings.actions_journal_scheduler_recall_profile
-        elif tk == "metacog_digest":
-            recall_profile = settings.actions_journal_metacog_recall_profile
-        elif tk == "notify_summary":
-            recall_profile = settings.actions_journal_notify_recall_profile
         elif tk == "world_pulse_digest":
             recall_profile = settings.actions_journal_world_pulse_recall_profile
         else:
             recall_profile = settings.actions_recall_profile
 
-        if sched_daily or tk in {"metacog_digest", "notify_summary", "world_pulse_digest"}:
+        if sched_daily or tk == "world_pulse_digest":
             logger.info(
                 "journal_compose profile=%s trigger_kind=%s recall_enabled=true",
                 recall_profile,
@@ -1338,7 +1447,14 @@ async def lifespan(app: FastAPI):
             },
         )
         reply_channel = new_reply_channel("orion:cortex:result")
-        req_env = parent.derive_child(kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel)
+        # The compose request carries its own correlation id (one per compose attempt), so the GPU
+        # leases it causes join exactly one actions.journal act. The parent's id is shared by other
+        # work (every walkway job in a scheduler tick; a collapse's chat reply), so it cannot be the
+        # cost key. The journal write below keeps the parent's id, as before.
+        req_env = parent.derive_child(
+            kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel,
+            **({"correlation_id": UUID(compose_correlation_id)} if compose_correlation_id else {}),
+        )
         msg = await _actions_rpc_bus.rpc_request(
             settings.cortex_request_channel,
             req_env,
@@ -1352,6 +1468,8 @@ async def lifespan(app: FastAPI):
         if not orch_payload.get("ok", False):
             raise RuntimeError(f"journal_compose_failed:{orch_payload.get('error') or orch_payload.get('status')}")
         draft = draft_from_cortex_result(orch_payload)
+        # Walkway entries may phrase the rollup, never invent numbers (walkway_forecast.py).
+        draft, _walkway_unsupported = guard_walkway_draft(draft, trigger)
         write = build_write_payload(
             draft,
             trigger=trigger,
@@ -1366,6 +1484,65 @@ async def lifespan(app: FastAPI):
             "orch_payload": orch_payload,
         }
 
+    def _journal_shadow(want_id: str, parent: BaseEnvelope, trigger: Any):
+        """The journal compose's shadow want (actions.journal, Tier 1), placed. ``want_id`` is the
+        act's correlation id (the compose id; the trigger's id when acts are off and no act exists).
+        None if it could not be built: the compose never depends on it."""
+        try:
+            from .physiology_shadow import ShadowBid
+
+            shadow = ShadowBid(
+                family=act_emit.JOURNAL_ACTOR, verb="make", tier=1, want_id=want_id,
+                object_ref=f"journal_trigger:{str(getattr(trigger, 'trigger_kind', '') or 'unknown')}",
+                component="journal",
+            )
+            shadow.place()
+            return shadow
+        except Exception:  # noqa: BLE001 -- shadow only
+            logger.info("journal_shadow_bid_not_built want_id=%s", want_id)
+            return None
+
+    def _settle_shadow(shadow: Any, real: str) -> None:
+        try:
+            if shadow is not None:
+                shadow.settle(real)
+        except Exception:  # noqa: BLE001 -- shadow only
+            logger.info("journal_shadow_settle_failed")
+
+    # Self-monitor E1 (orion/self_monitor/gate.py): every in-process journal compose passes here, so
+    # this one seam covers walkway_*, daily/notify summaries, town_episode, collapse and capability
+    # journals. Refuse-only; an unknown view admits with no ledger read.
+    _journal_gate = ActGate(
+        enabled=settings.self_monitor_act_gate_enabled,
+        probe_interval_sec=settings.self_monitor_probe_interval_sec,
+        read_view=lambda now: read_view_sync(settings.orion_bus_url, now=now),
+        # No DSN -> None: unreadable, so the in-process memo alone decides (never "no attempt").
+        ledger_rows=lambda actor, verb, secs: _fetch_ledger_rows_blocking(
+            settings.postgres_uri.strip(), last_attempt_sql("pyformat"),
+            {"actor": actor, "verb": verb, "secs": float(secs)}) if (settings.postgres_uri or "").strip() else None,
+        # Option A (2026-11-03): a retry of a journal job that already opened an act (same dedupe key:
+        # a walkway night, a daily window, one trigger) is admitted, never refused.
+        job_key_of=lambda row: row.get("test_before"),
+    )
+
+    def _journal_gate_decide(trigger_kind: str, dedupe_key: str):
+        now = datetime.now(timezone.utc)
+        _journal_gate.begin(now)
+        return _journal_gate.decide(act_emit.JOURNAL_ACTOR, "make", f"journal_trigger:{trigger_kind}", now=now,
+                                    job_key=act_emit.journal_job_key(dedupe_key))
+
+    # One audit row per (faculty, window): a held-open walkway night retries every scheduler tick.
+    _gate_refusals_audited: dict[str, str] = {}
+
+    async def _audit_gate_refusal(parent: BaseEnvelope, gate, *, dedupe_key: str, audit_action: str) -> None:
+        window = gate.last_attempt_at.isoformat() if gate.last_attempt_at else "none"
+        if _gate_refusals_audited.get(gate.faculty) == window:
+            logger.debug("self_monitor_refused_again faculty=%s window=%s", gate.faculty, window)
+            return
+        _gate_refusals_audited[gate.faculty] = window
+        await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action,
+                     reason=TRACK_RECORD_FAILING_REASON, extra={"self_monitor": gate.label()})
+
     async def _dispatch_journal(
         parent: BaseEnvelope,
         *,
@@ -1374,22 +1551,84 @@ async def lifespan(app: FastAPI):
         dedupe_key: str,
         reason: str | None = None,
     ) -> bool:
+        result = await _dispatch_journal_attempt(
+            parent, trigger=trigger, audit_action=audit_action, dedupe_key=dedupe_key, reason=reason
+        )
+        return result.completed
+
+    async def _dispatch_journal_attempt(
+        parent: BaseEnvelope,
+        *,
+        trigger,
+        audit_action: str,
+        dedupe_key: str,
+        reason: str | None = None,
+    ) -> DailyAttemptResult:
+        """``attempted`` is False only when no compose ran and no act opened (disabled, refused by
+        the self-monitor gate, cooling down). The walkway retry cap counts attempted failures only."""
         if not settings.actions_journaling_enabled:
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason="journaling_disabled")
-            return False
+            return DailyAttemptResult(completed=False, attempted=False, failure_reason="journaling_disabled")
+        gate_extra: dict = {}
+        gate_probe = None
+        gate = None
+        if settings.self_monitor_act_gate_enabled:
+            trigger_kind = str(getattr(trigger, "trigger_kind", "") or "unknown")
+            try:
+                gate = await asyncio.to_thread(_journal_gate_decide, trigger_kind, dedupe_key)
+            except Exception:  # noqa: BLE001 -- one direction only: a gate fault never refuses
+                logger.warning("self_monitor_gate_failed trigger_kind=%s", trigger_kind, exc_info=True)
+                gate = None
+            if gate is not None and not gate.admit:
+                await _audit_gate_refusal(parent, gate, dedupe_key=dedupe_key, audit_action=audit_action)
+                return DailyAttemptResult(completed=False, attempted=False, failure_reason=TRACK_RECORD_FAILING_REASON)
+            if gate is not None and gate.probe:
+                gate_probe = gate
+                gate_extra = {"self_monitor": gate.label(), "self_monitor_probe": True}
+            elif gate is not None and gate.same_job_retry:
+                gate_extra = {"self_monitor": gate.label(), "self_monitor_same_job_retry": True}
         if not journal_deduper.try_acquire(dedupe_key):
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason=reason or "journal_cooldown")
-            return False
+            return DailyAttemptResult(completed=False, attempted=False, failure_reason=reason or "journal_cooldown")
 
         acquired = False
         t0 = time.monotonic()
+        compose_corr = act_emit.compose_correlation_id(dedupe_key, str(parent.correlation_id)) if _act_publish else None
+        # Body economy Patch C3b: the point this journal would compose. A SHADOW bid, logged beside
+        # the real outcome and never obeyed (app/physiology_shadow.py). want_id = the compose
+        # correlation id, which is the journal act's correlation id.
+        jshadow = _journal_shadow(compose_corr or str(parent.correlation_id), parent, trigger)
+        jact = act_emit.ActTrace(
+            _act_publish,
+            act_emit.journal_act(
+                dedupe_key, str(parent.correlation_id),
+                trigger_kind=str(getattr(trigger, "trigger_kind", "") or "unknown"),
+                horizon=act_emit.journal_horizon_sec(settings.actions_exec_timeout_seconds),
+            ),
+            component=f"{audit_action}.act",
+            correlation_id=compose_corr or str(parent.correlation_id),
+        )
         try:
             await sem.acquire()
             acquired = True
+            job_key = act_emit.journal_job_key(dedupe_key)
+            if gate_probe is not None and not _journal_gate.claim_probe(
+                    gate_probe.faculty, now=datetime.now(timezone.utc), job_key=job_key):
+                # Another handler started this window's probe first: this attempt is refused.
+                _settle_shadow(jshadow, f"blocked:{TRACK_RECORD_FAILING_REASON}")
+                await _audit_gate_refusal(parent, gate_probe, dedupe_key=dedupe_key, audit_action=audit_action)
+                return DailyAttemptResult(completed=False, attempted=False, failure_reason=TRACK_RECORD_FAILING_REASON)
+            if gate is not None and gate_probe is None:
+                # Started: its next retry is the same job even before this act's row lands.
+                _journal_gate.note_job_started(gate.faculty, job_key, now=datetime.now(timezone.utc))
+            _settle_shadow(jshadow, "ran")
+            await jact.open()
             result = await _run_journal(
                 parent,
                 trigger=trigger,
+                compose_correlation_id=compose_corr,
             )
+            await jact.close(True, f"entry_id={result['write']['entry_id']} mode={result['draft']['mode']}")
             # Notification dispatch (email/in-app) happens exactly once, from the
             # post-persist consumer (_handle_journal_created) after the SQL write is
             # confirmed -- see _dispatch_journal_notifications. This function only
@@ -1408,37 +1647,65 @@ async def lifespan(app: FastAPI):
                     "journal_mode": result["draft"]["mode"],
                     "write_channel": settings.actions_journal_write_channel,
                     "journal_entry_id": result["write"]["entry_id"],
+                    **gate_extra,
                 },
             )
-            return True
+            return DailyAttemptResult(completed=True)
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
+            _settle_shadow(jshadow, f"blocked:raised:{type(exc).__name__}")  # no-op once settled "ran"
+            # Close first: a cancel during the audit await must not leave the act open.
+            await jact.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
             await _audit(
                 parent,
                 status="failed",
                 event_id=dedupe_key,
                 action_name=audit_action,
                 reason=str(exc),
-                extra={"duration_ms": dt_ms},
+                extra={"duration_ms": dt_ms, **gate_extra},
             )
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
-            return False
+            return DailyAttemptResult(completed=False, attempted=True, failure_reason=f"{type(exc).__name__}:{exc}")
+        except BaseException as exc:  # cancellation: close at 0, then re-raise
+            _settle_shadow(jshadow, f"blocked:raised:{type(exc).__name__}")  # no-op once settled "ran"
+            await jact.close(False, f"raised:{type(exc).__name__}")
+            raise
         finally:
             if acquired:
                 sem.release()
             journal_deduper.release(dedupe_key)
 
-    async def _execute_daily(parent: BaseEnvelope, *, action_name: str, window: DailyWindow, dedupe_key: str) -> bool:
+    async def _execute_daily(
+        parent: BaseEnvelope, *, action_name: str, window: DailyWindow, dedupe_key: str
+    ) -> DailyAttemptResult:
+        # The outcome is returned, never left in shared state: a concurrent manual
+        # run must not be able to overwrite a scheduled run's failure reason.
+        # Structural rule (pinned by test_daily_retry_gate): the dedupe skip below
+        # is the ONLY non-attempt; every other path ends at `return outcome`, which
+        # starts as an attempted failure and becomes a success only when the
+        # report was delivered. An early return added later cannot turn a failure
+        # into a free retry.
         if not deduper.try_acquire(dedupe_key):
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=action_name, reason="deduped")
-            return False
+            return DailyAttemptResult(completed=False, attempted=False, failure_reason="deduped")
 
         t0 = time.monotonic()
         acquired = False
-        completed = False
+        outcome = DailyAttemptResult(completed=False, attempted=True, failure_reason="daily_execute_no_outcome")
+        # Only daily_metacog_v1 is an act family (A5 verb map); daily_pulse_v1 opens nothing.
+        dact = act_emit.ActTrace(
+            _act_publish if action_name == ACTION_DAILY_METACOG_V1 else None,
+            act_emit.daily_metacog_act(
+                dedupe_key, str(parent.correlation_id),
+                horizon=act_emit.daily_metacog_horizon_sec(settings.actions_exec_timeout_seconds),
+            ),
+            component="daily_metacog.act",
+            correlation_id=str(parent.correlation_id),
+        )
         try:
             await sem.acquire()
             acquired = True
+            await dact.open()
             await _audit(parent, status="started", event_id=dedupe_key, action_name=action_name)
             context = {
                 "request_date": window.request_date,
@@ -1449,8 +1716,7 @@ async def lifespan(app: FastAPI):
                 "recipient_group": settings.actions_recipient_group,
                 "session_id": settings.actions_session_id,
                 "trace_id": str(parent.correlation_id),
-                "skills_catalog_count": len(_SKILL_MANIFEST),
-                "skills_catalog_compact": _SKILLS_CATALOG_COMPACT,
+                **_daily_skills_catalog_context(action_name),
             }
             parse_retry_used = False
             skill_validation_retry_used = False
@@ -1599,18 +1865,23 @@ async def lifespan(app: FastAPI):
 
             if generic_ok and chat_ok:
                 deduper.mark_done(dedupe_key)
+                await dact.close(True, f"delivered duration_ms={dt_ms}")
                 await _audit(parent, status="completed", event_id=dedupe_key, action_name=action_name, extra=extra)
-                completed = True
+                outcome = DailyAttemptResult(completed=True)
             else:
                 reason = None
                 if accepted and not accepted.ok:
                     reason = accepted.detail
                 elif chat_message_accepted and not chat_message_accepted.ok:
                     reason = chat_message_accepted.detail
+                outcome = DailyAttemptResult(completed=False, failure_reason=f"notify_failed:{reason or 'unknown'}")
+                await dact.close(False, f"notify_failed:{reason or 'unknown'}")
                 await _audit(parent, status="failed", event_id=dedupe_key, action_name=action_name, reason=reason, extra=extra)
 
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
+            outcome = DailyAttemptResult(completed=False, failure_reason=str(exc) or exc.__class__.__name__)
+            await dact.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
             await _audit(
                 parent,
                 status="failed",
@@ -1620,11 +1891,14 @@ async def lifespan(app: FastAPI):
                 extra={"duration_ms": dt_ms},
             )
             logger.exception("Daily action failed action=%s dedupe=%s", action_name, dedupe_key)
+        except BaseException as exc:  # cancellation: close at 0, then re-raise
+            await dact.close(False, f"raised:{type(exc).__name__}")
+            raise
         finally:
             if acquired:
                 sem.release()
             deduper.release(dedupe_key)
-        return completed
+        return outcome
 
     async def _handle_collapse(env: BaseEnvelope) -> None:
         try:
@@ -1697,7 +1971,7 @@ async def lifespan(app: FastAPI):
         override_date = payload.get("date") if isinstance(payload.get("date"), str) else settings.actions_daily_run_once_date
         window = build_daily_window(tz_name=settings.actions_daily_timezone, override_date=override_date)
         dedupe_key = _daily_pulse_dedupe_key(window) if action_name == ACTION_DAILY_PULSE_V1 else _daily_metacog_dedupe_key(window)
-        ok = await _execute_daily(env, action_name=action_name, window=window, dedupe_key=dedupe_key)
+        ok = (await _execute_daily(env, action_name=action_name, window=window, dedupe_key=dedupe_key)).completed
         if ok:
             tz = ZoneInfo(settings.actions_daily_timezone)
             today_iso = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
@@ -1735,33 +2009,9 @@ async def lifespan(app: FastAPI):
             dedupe_key=cooldown_key_for_trigger(trigger),
         )
 
-    async def _handle_journal_notify(env: BaseEnvelope) -> None:
-        try:
-            record = NotificationRecord.model_validate(env.payload)
-        except Exception:
-            return
-        if record.event_kind != "orion.digest.daily":
-            return
-        trigger = build_notify_summary_trigger(record)
-        await _dispatch_journal(
-            env,
-            trigger=trigger,
-            audit_action="journal.notify_summary",
-            dedupe_key=cooldown_key_for_trigger(trigger),
-        )
-
-    async def _handle_journal_metacog(env: BaseEnvelope) -> None:
-        try:
-            trigger_payload = MetacogTriggerV1.model_validate(env.payload)
-        except Exception:
-            return
-        trigger = build_metacog_trigger(trigger_payload)
-        await _dispatch_journal(
-            env,
-            trigger=trigger,
-            audit_action="journal.metacog_digest",
-            dedupe_key=cooldown_key_for_trigger(trigger),
-        )
+    # The notify_summary journal (one journal entry per "Orion Daily Digest" email) is retired with that
+    # email (2026-11-16, integration patch 4): orion-notify-digest is deleted, so no orion.digest.daily
+    # record is ever published again. The daily organ roundup in the day letter carries those counts.
 
     async def _handle_world_pulse_run_result_journal(env: BaseEnvelope) -> bool:
         # Submitted as an admitted journal.compose durable run (GPU pool hold, restart-durable,
@@ -2014,12 +2264,6 @@ async def lifespan(app: FastAPI):
         if kind == "orion.actions.trigger.journal.v1":
             await _handle_journal_manual(env)
             return
-        if kind == "notify.notification.request.v1":
-            await _handle_journal_notify(env)
-            return
-        if kind == "orion.metacog.trigger.v1":
-            await _handle_journal_metacog(env)
-            return
         if kind == "world.pulse.run.result.v1":
             if await _handle_world_pulse_run_result_journal(env):
                 return
@@ -2061,6 +2305,221 @@ async def lifespan(app: FastAPI):
             raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
         orch_payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
         return _extract_skill_result_from_orch(orch_payload)
+
+    # Last outcome logged per job, so the per-tick INFO log fires on change only.
+    daily_tick_last_logged: dict[str, tuple[str, str]] = {}
+
+    async def _scheduled_daily_tick(
+        *,
+        action_name: str,
+        due: bool,
+        local_date: str,
+        now_utc: datetime,
+        forced_date: str | None,
+    ) -> str:
+        """Scheduled daily_pulse_v1 / daily_metacog_v1 run, with bounded retries.
+
+        Retry policy by failure class lives in app/daily_retry_gate.py. After the
+        last allowed failure for a date: one audit row (status=gave_up), one
+        warning notification naming the error. The done-today cursor is still
+        only set on success.
+        """
+        window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
+        key = _daily_pulse_dedupe_key(window) if action_name == ACTION_DAILY_PULSE_V1 else _daily_metacog_dedupe_key(window)
+        trigger_kind = (
+            "orion.actions.trigger.daily_pulse.v1"
+            if action_name == ACTION_DAILY_PULSE_V1
+            else "orion.actions.trigger.daily_metacog.v1"
+        )
+        env = BaseEnvelope(
+            kind=trigger_kind,
+            source=src,
+            correlation_id=str(uuid4()),
+            payload={"date": window.request_date},
+        )
+
+        async def _execute() -> DailyAttemptResult:
+            return await _execute_daily(env, action_name=action_name, window=window, dedupe_key=key)
+
+        async def _on_completed(scheduled_local_date: str) -> None:
+            cursor = scheduler_cursor_completed_local_date(
+                forced_date=forced_date,
+                window_request_date=window.request_date,
+                scheduled_local_date=scheduled_local_date,
+            )
+            last_daily_run[action_name] = cursor
+            scheduler_cursor_store.set_last_completed(action_name, cursor)
+            _scheduler_daily_structured_log(
+                job_key=action_name,
+                local_date=cursor,
+                correlation_id=str(env.correlation_id),
+                restart_dedupe_source="durable" if action_name in cursor_keys_at_startup else "memory",
+            )
+
+        async def _on_gave_up(gave_up: GaveUp) -> None:
+            # The report covers the local day before the scheduled date unless
+            # an operator forced a date (build_daily_window's rule).
+            report_date = forced_date or (
+                datetime.strptime(gave_up.local_date, "%Y-%m-%d").date() - timedelta(days=1)
+            ).isoformat()
+            logger.warning(
+                "daily_job_gave_up action=%s local_date=%s attempts=%s failure_class=%s report_date=%s error=%s",
+                action_name,
+                gave_up.local_date,
+                gave_up.attempts,
+                gave_up.failure_class,
+                report_date,
+                gave_up.reason,
+            )
+            await _audit(
+                env,
+                status="gave_up",
+                event_id=key,
+                action_name=action_name,
+                reason=gave_up.reason,
+                extra={
+                    "attempts": gave_up.attempts,
+                    "failure_class": gave_up.failure_class,
+                    "scheduled_local_date": gave_up.local_date,
+                    "report_date": report_date,
+                },
+            )
+            req = daily_failure_notify_request(
+                action_name=action_name,
+                report_date=report_date,
+                scheduled_local_date=gave_up.local_date,
+                attempts=gave_up.attempts,
+                failure_class=gave_up.failure_class,
+                error=gave_up.reason,
+                correlation_id=str(env.correlation_id),
+            )
+            try:
+                await asyncio.to_thread(notify.send, req)
+            except Exception:
+                logger.warning("daily_job_gave_up_notify_failed action=%s", action_name, exc_info=True)
+
+        outcome = await run_gated_daily_tick(
+            job_key=action_name,
+            due=due,
+            local_date=local_date,
+            now=time.time(),
+            gate=daily_attempt_gate,
+            execute=_execute,
+            on_completed=_on_completed,
+            on_gave_up=_on_gave_up,
+        )
+        if outcome != "not_due":
+            state = (local_date, outcome)
+            changed = daily_tick_last_logged.get(action_name) != state
+            daily_tick_last_logged[action_name] = state
+            logger.log(
+                logging.INFO if changed else logging.DEBUG,
+                "daily_job_tick action=%s local_date=%s outcome=%s attempts=%s",
+                action_name,
+                local_date,
+                outcome,
+                daily_attempt_gate.attempts(action_name, local_date),
+            )
+        return outcome
+
+    app.state.scheduled_daily_tick = _scheduled_daily_tick
+
+    async def _walkway_journal_tick(*, now_utc: datetime) -> str:
+        """One scheduler pass for the nightly walkway journal. Returns run_walkway_schedule's word."""
+        if not (settings.actions_walkway_forecast_enabled and settings.actions_journaling_enabled):
+            return "disabled"
+        # Nightly: the walkway day rollup (plus week on Sunday, month on its last day), grade the
+        # day's expectations, then forecast the next day's (app/walkway_forecast.py). Never an entry
+        # about nothing. A failed compose is retried at most 4 times a night per job (#3384). A
+        # night still open at local midnight keeps going (#3385). Own try so a failure cannot cost
+        # the daily journal that runs after it.
+        walkway_corr = str(uuid4())
+
+        def _walkway_env(payload: dict[str, Any]) -> BaseEnvelope:
+            return BaseEnvelope(
+                kind="orion.actions.trigger.journal.v1",
+                source=src,
+                correlation_id=walkway_corr,
+                payload=payload,
+            )
+
+        async def _walkway_collect(night):
+            return await collect_walkway_jobs(
+                dsn=settings.postgres_uri,
+                stream_id=settings.actions_walkway_stream_id,
+                tz_name=settings.actions_daily_timezone,
+                now_utc=now_utc,
+                min_support_days=settings.actions_walkway_forecast_min_support_days,
+                node=settings.node_name,
+                night=night,
+            )
+
+        async def _walkway_dispatch(job) -> DailyAttemptResult:
+            return await _dispatch_journal_attempt(
+                _walkway_env(job.trigger.model_dump(mode="json")),
+                trigger=job.trigger,
+                audit_action=job.audit_action,
+                dedupe_key=job.dedupe_key,
+            )
+
+        def _walkway_mark(kind: str, local_date: str) -> None:
+            last_daily_run[kind] = local_date
+            scheduler_cursor_store.set_last_completed(kind, local_date)
+
+        async def _walkway_record(rec: dict[str, Any]) -> None:
+            # One "entry landed: yes or no" per night per job. The audit
+            # rail has no durable reader, so the same record is also a
+            # log line and a line in a file beside the cursors.
+            logger.info("walkway_night_record %s", json.dumps(rec, sort_keys=True))
+            try:
+                with (scheduler_cursor_store.path.parent / NIGHT_RECORDS_FILENAME).open("a") as fh:
+                    fh.write(json.dumps({**rec, "recorded_at": datetime.now(timezone.utc).isoformat()}, sort_keys=True) + "\n")
+            except Exception:
+                logger.warning("walkway_night_record_file_failed", exc_info=True)
+            await _audit(
+                _walkway_env(rec),
+                status="landed" if rec["landed"] else "not_landed",
+                event_id=f"walkway_night:{rec['kind']}:{settings.actions_walkway_stream_id}:{rec['night']}:{settings.node_name}",
+                action_name=NIGHT_RECORD_ACTION,
+                reason=rec["reason"],
+                extra={"night": rec["night"], "trigger_kind": rec["kind"], "landed": rec["landed"],
+                       "failed_attempts": rec["failed_attempts"]},
+            )
+
+        def _walkway_close(local_date: str, clean: bool) -> None:
+            last_daily_run[SCHEDULER_CURSOR_WALKWAY_KEY] = local_date
+            scheduler_cursor_store.set_last_completed(SCHEDULER_CURSOR_WALKWAY_KEY, local_date)
+            if clean:
+                _scheduler_daily_structured_log(
+                    job_key=SCHEDULER_CURSOR_WALKWAY_KEY,
+                    local_date=local_date,
+                    correlation_id=walkway_corr,
+                    restart_dedupe_source="durable" if SCHEDULER_CURSOR_WALKWAY_KEY in cursor_keys_at_startup else "memory",
+                )
+
+        try:
+            return await run_walkway_schedule(
+                now_utc=now_utc,
+                tz_name=settings.actions_daily_timezone,
+                hour_local=settings.actions_walkway_forecast_hour_local,
+                minute_local=settings.actions_walkway_forecast_minute_local,
+                night_closed_on=last_daily_run.get(SCHEDULER_CURSOR_WALKWAY_KEY),
+                collect=_walkway_collect,
+                dispatch=_walkway_dispatch,
+                job_done_on=last_daily_run.get,
+                mark_job_done=_walkway_mark,
+                read_attempts=walkway_read_attempts,
+                gate=daily_attempt_gate,
+                clock=time.time,
+                record=_walkway_record,
+                close_night=_walkway_close,
+                open_reasons=walkway_open_reasons,
+            )
+        except Exception:
+            logger.exception("walkway_journal_schedule_failed")
+            return "error"
+
+    app.state.walkway_journal_tick = _walkway_journal_tick
 
     async def _scheduler_loop() -> None:
         nonlocal last_skill_run_monotonic, last_journal_run
@@ -2173,32 +2632,15 @@ async def lifespan(app: FastAPI):
                     minute_local=settings.actions_daily_pulse_minute_local,
                     last_ran_date=last_daily_run.get(ACTION_DAILY_PULSE_V1),
                 )
-                if settings.actions_daily_pulse_enabled and (
-                    pulse_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_PULSE_V1 not in last_daily_run)
-                ):
-                    window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
-                    key = _daily_pulse_dedupe_key(window)
-                    env = BaseEnvelope(
-                        kind="orion.actions.trigger.daily_pulse.v1",
-                        source=src,
-                        correlation_id=str(uuid4()),
-                        payload={"date": window.request_date},
-                    )
-                    pulse_ok = await _execute_daily(env, action_name=ACTION_DAILY_PULSE_V1, window=window, dedupe_key=key)
-                    if pulse_ok:
-                        pulse_cursor = scheduler_cursor_completed_local_date(
-                            forced_date=forced_date,
-                            window_request_date=window.request_date,
-                            scheduled_local_date=pulse_local_date,
-                        )
-                        last_daily_run[ACTION_DAILY_PULSE_V1] = pulse_cursor
-                        scheduler_cursor_store.set_last_completed(ACTION_DAILY_PULSE_V1, pulse_cursor)
-                        _scheduler_daily_structured_log(
-                            job_key=ACTION_DAILY_PULSE_V1,
-                            local_date=pulse_cursor,
-                            correlation_id=str(env.correlation_id),
-                            restart_dedupe_source="durable" if ACTION_DAILY_PULSE_V1 in cursor_keys_at_startup else "memory",
-                        )
+                await _scheduled_daily_tick(
+                    action_name=ACTION_DAILY_PULSE_V1,
+                    due=settings.actions_daily_pulse_enabled and (
+                        pulse_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_PULSE_V1 not in last_daily_run)
+                    ),
+                    local_date=pulse_local_date,
+                    now_utc=now_utc,
+                    forced_date=forced_date,
+                )
 
                 world_pulse_should_run, world_pulse_date = should_run_daily(
                     now_utc=now_utc,
@@ -2243,102 +2685,17 @@ async def lifespan(app: FastAPI):
                     minute_local=settings.actions_daily_metacog_minute_local,
                     last_ran_date=last_daily_run.get(ACTION_DAILY_METACOG_V1),
                 )
-                if settings.actions_daily_metacog_enabled and (
-                    meta_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_METACOG_V1 not in last_daily_run)
-                ):
-                    window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
-                    key = _daily_metacog_dedupe_key(window)
-                    env = BaseEnvelope(
-                        kind="orion.actions.trigger.daily_metacog.v1",
-                        source=src,
-                        correlation_id=str(uuid4()),
-                        payload={"date": window.request_date},
-                    )
-                    meta_ok = await _execute_daily(env, action_name=ACTION_DAILY_METACOG_V1, window=window, dedupe_key=key)
-                    if meta_ok:
-                        meta_cursor = scheduler_cursor_completed_local_date(
-                            forced_date=forced_date,
-                            window_request_date=window.request_date,
-                            scheduled_local_date=meta_local_date,
-                        )
-                        last_daily_run[ACTION_DAILY_METACOG_V1] = meta_cursor
-                        scheduler_cursor_store.set_last_completed(ACTION_DAILY_METACOG_V1, meta_cursor)
-                        _scheduler_daily_structured_log(
-                            job_key=ACTION_DAILY_METACOG_V1,
-                            local_date=meta_cursor,
-                            correlation_id=str(env.correlation_id),
-                            restart_dedupe_source="durable" if ACTION_DAILY_METACOG_V1 in cursor_keys_at_startup else "memory",
-                        )
-
-                walkway_should_run, walkway_local_date = should_run_daily(
+                await _scheduled_daily_tick(
+                    action_name=ACTION_DAILY_METACOG_V1,
+                    due=settings.actions_daily_metacog_enabled and (
+                        meta_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_METACOG_V1 not in last_daily_run)
+                    ),
+                    local_date=meta_local_date,
                     now_utc=now_utc,
-                    tz_name=settings.actions_daily_timezone,
-                    hour_local=settings.actions_walkway_forecast_hour_local,
-                    minute_local=settings.actions_walkway_forecast_minute_local,
-                    last_ran_date=last_daily_run.get(SCHEDULER_CURSOR_WALKWAY_KEY),
+                    forced_date=forced_date,
                 )
-                if (
-                    settings.actions_walkway_forecast_enabled
-                    and settings.actions_journaling_enabled
-                    and walkway_should_run
-                ):
-                    # Nightly: grade today's walkway expectations, then forecast
-                    # tomorrow's (app/walkway_forecast.py). Zero, one, or two
-                    # entries -- never one about nothing. Own try so a read
-                    # failure cannot cost the daily journal below it.
-                    walkway_corr = str(uuid4())
 
-                    async def _walkway_collect():
-                        return await collect_walkway_jobs(
-                            dsn=settings.postgres_uri,
-                            stream_id=settings.actions_walkway_stream_id,
-                            tz_name=settings.actions_daily_timezone,
-                            now_utc=now_utc,
-                            min_support_days=settings.actions_walkway_forecast_min_support_days,
-                            node=settings.node_name,
-                        )
-
-                    async def _walkway_dispatch(job) -> bool:
-                        walkway_env = BaseEnvelope(
-                            kind="orion.actions.trigger.journal.v1",
-                            source=src,
-                            correlation_id=walkway_corr,
-                            payload=job.trigger.model_dump(mode="json"),
-                        )
-                        return await _dispatch_journal(
-                            walkway_env,
-                            trigger=job.trigger,
-                            audit_action=job.audit_action,
-                            dedupe_key=job.dedupe_key,
-                        )
-
-                    def _walkway_mark(kind: str, local_date: str) -> None:
-                        last_daily_run[kind] = local_date
-                        scheduler_cursor_store.set_last_completed(kind, local_date)
-
-                    walkway_ok, walkway_skips = await run_walkway_tick(
-                        collect=_walkway_collect,
-                        dispatch=_walkway_dispatch,
-                        job_done_on=last_daily_run.get,
-                        mark_job_done=_walkway_mark,
-                        local_date=walkway_local_date,
-                        read_attempts=walkway_read_attempts,
-                    )
-                    logger.info(
-                        "walkway_journal_tick date=%s complete=%s skips=%s",
-                        walkway_local_date,
-                        walkway_ok,
-                        ",".join(walkway_skips) or "none",
-                    )
-                    if walkway_ok:
-                        last_daily_run[SCHEDULER_CURSOR_WALKWAY_KEY] = walkway_local_date
-                        scheduler_cursor_store.set_last_completed(SCHEDULER_CURSOR_WALKWAY_KEY, walkway_local_date)
-                        _scheduler_daily_structured_log(
-                            job_key=SCHEDULER_CURSOR_WALKWAY_KEY,
-                            local_date=walkway_local_date,
-                            correlation_id=walkway_corr,
-                            restart_dedupe_source="durable" if SCHEDULER_CURSOR_WALKWAY_KEY in cursor_keys_at_startup else "memory",
-                        )
+                await _walkway_journal_tick(now_utc=now_utc)
 
                 journal_should_run, journal_local_date = should_run_daily(
                     now_utc=now_utc,

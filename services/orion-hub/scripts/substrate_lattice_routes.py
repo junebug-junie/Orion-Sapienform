@@ -18,11 +18,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
-from orion.field.transport_thresholds import (
-    RUNGS as _THRESHOLD_RUNGS,
-    fetch_effective_thresholds,
-)
-
 from .service_logs import resolve_repo_root_details
 
 router = APIRouter(prefix="/api/substrate-lattice", tags=["substrate-lattice"])
@@ -167,6 +162,22 @@ def _layer_meta(payload: dict | None, source_table: str, timestamp_str: str | No
     }
 
 
+RUNG_RETIRED_ON = "2026-11-04"  # L10 feedback, L11 consolidation
+LADDER_RETIRED_ON = "2026-11-07"  # L7 proposals, L8 policy, L9 dispatch
+
+
+def _retired_layer(source_table: str, *, note: str, retired_on: str = RUNG_RETIRED_ON) -> dict:
+    """A rung that no longer runs: status ``retired`` (not stale, not missing), with what replaced it.
+    Its table is never queried (the drop migrations remove them)."""
+    return {
+        "status": "retired",
+        "source_table": source_table,
+        "timestamp": None,
+        "age_sec": None,
+        "values": {"retired_on": retired_on, "note": note},
+    }
+
+
 def _coerce_str_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -299,79 +310,23 @@ def _load_transport_proof_chain(freshness_threshold_sec: int = 60) -> dict[str, 
         }
     m5 = _layer_meta(m5_values, "substrate_attention_frames", attn_ts, freshness_threshold_sec)
 
-    # L7 proposals
-    prop_raw, prop_ts = _first_json_with_ts(engine, "substrate_proposal_frames", "proposal_frame_json", "generated_at")
-    l7_values = None
-    if prop_raw:
-        candidates = prop_raw.get("candidates", [])
-        transport_candidates = [
-            c for c in candidates if "transport" in c.get("target_id", "")
-        ]
-        l7_values = {
-            "frame_id": prop_raw.get("frame_id"),
-            "count": len(candidates),
-            "transport_count": len(transport_candidates),
-            "candidates": transport_candidates,
-        }
-    l7 = _layer_meta(l7_values, "substrate_proposal_frames", prop_ts, freshness_threshold_sec)
+    # L7 proposals, L8 policy and L9 dispatch: retired 2026-11-07, ladder retirement PR 6
+    # (docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md). Every real act they
+    # carried starts itself now; their tables are never queried here.
+    l7 = _retired_layer("substrate_proposal_frames", retired_on=LADDER_RETIRED_ON,
+                        note="each real act starts itself through the want market (cooling, painting, "
+                             "retro, AI Town, image prune)")
+    l8 = _retired_layer("substrate_policy_decision_frames", retired_on=LADDER_RETIRED_ON,
+                        note="its consent checks become the want market's consent gate (attention patch 3)")
+    l9 = _retired_layer("substrate_execution_dispatch_frames", retired_on=LADDER_RETIRED_ON,
+                        note="retired with proposals and policy; the act ledger grades every real act")
 
-    # L8 policy decisions
-    pol_raw, pol_ts = _first_json_with_ts(engine, "substrate_policy_decision_frames", "policy_decision_frame_json", "generated_at")
-    l8_values = None
-    if pol_raw:
-        l8_values = {
-            "frame_id": pol_raw.get("frame_id"),
-            "approved_count": pol_raw.get("approved_count", 0),
-            "rejected_count": pol_raw.get("rejected_count", 0),
-            "policy_mode": pol_raw.get("policy_mode"),
-        }
-    l8 = _layer_meta(l8_values, "substrate_policy_decision_frames", pol_ts, freshness_threshold_sec)
-
-    # L9 execution dispatch
-    disp_raw, disp_ts = _first_json_with_ts(engine, "substrate_execution_dispatch_frames", "dispatch_frame_json", "generated_at")
-    l9_values = None
-    if disp_raw:
-        l9_values = {
-            "frame_id": disp_raw.get("frame_id"),
-            "dispatch_mode": disp_raw.get("dispatch_mode"),
-            "dispatch_count": disp_raw.get("dispatch_count", 0),
-            "blocked_count": disp_raw.get("blocked_count", 0),
-        }
-    l9 = _layer_meta(l9_values, "substrate_execution_dispatch_frames", disp_ts, freshness_threshold_sec)
-
-    # L10 feedback
-    fb_raw, fb_ts = _first_json_with_ts(engine, "substrate_feedback_frames", "feedback_frame_json", "generated_at")
-    l10_values = None
-    if fb_raw:
-        l10_values = {
-            "frame_id": fb_raw.get("frame_id"),
-            "outcome_status": fb_raw.get("outcome_status"),
-            "feedback_kind": fb_raw.get("feedback_kind"),
-        }
-    l10 = _layer_meta(l10_values, "substrate_feedback_frames", fb_ts, freshness_threshold_sec)
-
-    # L11 consolidation motifs
-    consol_raw, consol_ts = _first_json_with_ts(engine, "substrate_consolidation_frames", "consolidation_frame_json", "generated_at")
-    l11_values = None
-    if consol_raw:
-        obs = consol_raw.get("motif_observations", [])
-        motifs = [
-            {
-                "motif_id": m.get("motif_id"),
-                "label": m.get("label") or m.get("motif_label") or m.get("motif_id"),
-                "strength": m.get("strength"),
-                "recurrence_count": m.get("recurrence_count", 0),
-                "timestamp": consol_ts,
-                "reasons": m.get("reasons") or [],
-                "evidence": m.get("evidence") or [],
-            }
-            for m in obs
-        ]
-        l11_values = {
-            "frame_id": consol_raw.get("frame_id"),
-            "motifs": motifs,
-        }
-    l11 = _layer_meta(l11_values, "substrate_consolidation_frames", consol_ts, freshness_threshold_sec)
+    # L10 feedback and L11 consolidation: retired 2026-11-04
+    # (docs/superpowers/specs/2026-11-04-retire-feedback-and-consolidation-rungs.md). Shown as
+    # "retired", never as stale or missing.
+    l10 = _retired_layer("substrate_feedback_frames", note="act ledger grades every real act; "
+                         "world-action scoring moved to orion-sql-writer")
+    l11 = _retired_layer("substrate_consolidation_frames", note="killed outright (Juniper, 2026-11-04)")
 
     # L6 (SelfStateV1 "transport_integrity" dimension) removed 2026-07-22, SelfStateV1
     # burn: orion-self-state-runtime (the substrate_self_state producer) is deleted, so
@@ -379,7 +334,7 @@ def _load_transport_proof_chain(freshness_threshold_sec: int = 60) -> dict[str, 
     # flagged it "stale" forever rather than fabricating data, but a permanently-dead
     # layer sitting in an otherwise-live lane's proof chain is exactly the kind of panel
     # CLAUDE.md's burn spec called out to remove, not leave stale-forever. M5 (attention)
-    # now feeds directly into L7 (proposals) in the chain below.
+    # is the top live rung; L7-L11 are retired.
     transport = {
         "m3": m3,
         "m3_receipts": m3_receipts,
@@ -442,23 +397,22 @@ def _compute_verdict(chain: dict[str, Any]) -> str:
     return f"Transport lane partially stale: {stale_str} stale."
 
 
-# Where each transport-lattice channel's live value is read from. This is NOT a
-# copy of the policy: thresholds, ceilings and the channel list itself come only
-# from config/substrate-lattice/transport_lattice_policy.v1.yaml (`channels:`),
-# via _policy_channels(). This table only says which proof-chain layer holds a
-# channel's current reading. Default for a channel not listed here: the max of
-# that same key across M3's per-bus TransportBusStateV1 rows
-# (orion/schemas/transport_projection.py) -- M3's top level carries no pressure
-# fields at all, which is why the old simulator (reading M3's top level) always
-# saw 0.0.
-#
-# bus_synaptic_pressure has no M3 field; its only reading is M4's
-# capability:transport `pressure`, fed by node:substrate.bus_synaptic's
-# prediction_error edge in config/field/orion_field_topology.v1.yaml -- the same
-# value the pressure gate below already reads.
-_CHANNEL_VALUE_SOURCES: dict[str, tuple[str, str]] = {
-    "bus_synaptic_pressure": ("m4", "pressure"),
-}
+# Where each transport-lattice channel's live value is read from is declared
+# by the policy itself: every row in transport_lattice_policy.v1.yaml carries a
+# `source:` block (2026-10-07, fix/transport-lattice-names-and-contract).
+#   {layer: m4, vector: capability:transport, channel: <field channel>}
+#     -> M4's capability:transport field vector
+#   {layer: m3, field: <TransportBusStateV1 field>}
+#     -> max of that field over M3's fresh per-bus rows (M3's top level has no
+#        pressure fields, which is why the old simulator always saw 0.0)
+# The row id (e.g. `transport_reliability_pressure`) is a lane-local label;
+# the `source` is the metric. There used to
+# be a hand-kept `_CHANNEL_VALUE_SOURCES` table here mapping
+# a row id -> M4 channel: a second place the two names could
+# drift. tests/test_transport_lattice_policy_sources.py pins every `source` to
+# the field topology and the projection schema.
+_M4_VECTOR = "capability:transport"
+
 
 # Ordering used to pick the strongest action ceiling among channels that crossed
 # their watch threshold. The hub simulator's own ranking, not a mirror of any
@@ -476,36 +430,37 @@ def _policy_channels() -> dict[str, dict[str, Any]]:
     return {str(k): dict(v or {}) for k, v in channels.items()}
 
 
-def _effective_channels(channels: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Policy channels with watch/summarize/propose replaced by the effective
-    (EWMA-derived, static-floor-bounded) values, plus `threshold_provenance`.
-
-    Same shared function the mind recall resolver calls, so both readers see
-    the same numbers. TRANSPORT_THRESHOLDS_DERIVED_ENABLED=false (or any Redis
-    failure) returns exactly the static YAML values.
-    """
-    redis_url = os.getenv("ORION_BUS_URL", "").strip()
-    out: dict[str, dict[str, Any]] = {}
-    for ch_id, ch_def in channels.items():
-        eff = fetch_effective_thresholds(ch_id, ch_def, redis_url)
-        merged = dict(ch_def)
-        for rung in _THRESHOLD_RUNGS:
-            merged[rung] = eff[rung]["value"]
-        merged["threshold_provenance"] = eff
-        out[ch_id] = merged
-    return out
+def _channel_source(ch_def: dict[str, Any] | None) -> tuple[str, str] | None:
+    """(layer, key) from a policy row's `source:` block, or None if absent/invalid."""
+    src = (ch_def or {}).get("source")
+    if not isinstance(src, dict):
+        return None
+    layer = src.get("layer")
+    if layer == "m4" and src.get("vector") == _M4_VECTOR and src.get("channel"):
+        return "m4", str(src["channel"])
+    if layer == "m3" and src.get("field"):
+        return "m3_buses", str(src["field"])
+    return None
 
 
-def _channel_value(chain: dict[str, Any], channel_id: str) -> tuple[float | None, str]:
+def _channel_value(
+    chain: dict[str, Any], channel_id: str, ch_def: dict[str, Any] | None = None
+) -> tuple[float | None, str]:
     """Current reading for one policy channel, or None when it cannot be measured.
 
     Stale or missing source layers return None rather than 0.0: an unmeasured
-    channel must not read as a calm one.
+    channel must not read as a calm one. A row with no valid `source:` is
+    unmeasured too, never silently read from a guessed key.
     """
+    if ch_def is None:
+        ch_def = _policy_channels().get(channel_id)
+    resolved = _channel_source(ch_def)
+    if resolved is None:
+        return None, f"no valid source declared for {channel_id} in transport_lattice_policy"
+    layer, key = resolved
     transport = chain.get("transport", {})
-    layer, key = _CHANNEL_VALUE_SOURCES.get(channel_id, ("m3_buses", channel_id))
     if layer == "m4":
-        source = f"M4 capability:transport.{key}"
+        source = f"M4 {_M4_VECTOR}.{key}"
         m4 = transport.get("m4", {})
         if m4.get("status") in (None, "stale", "missing"):
             return None, source
@@ -549,14 +504,14 @@ def _bus_row_is_fresh(bus: dict[str, Any], max_age_sec: float) -> bool:
 
 
 def _channel_values(chain: dict[str, Any], channels: dict[str, dict[str, Any]]) -> dict[str, float | None]:
-    return {ch_id: _channel_value(chain, ch_id)[0] for ch_id in channels}
+    return {ch_id: _channel_value(chain, ch_id, ch_def)[0] for ch_id, ch_def in channels.items()}
 
 
 def _lattice_channel_rows(chain: dict[str, Any], channels: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Per-channel rows for the Lattice Values panel and the simulator inputs."""
     rows: list[dict[str, Any]] = []
     for ch_id, ch_def in channels.items():
-        value, source = _channel_value(chain, ch_id)
+        value, source = _channel_value(chain, ch_id, ch_def)
         watch_at = ch_def.get("watch_at")
         if value is None or watch_at is None:
             state = "unmeasured" if value is None else "no_threshold"
@@ -568,7 +523,6 @@ def _lattice_channel_rows(chain: dict[str, Any], channels: dict[str, dict[str, A
             "watch_at": watch_at,
             "summarize_at": ch_def.get("summarize_at"),
             "propose_at": ch_def.get("propose_at"),
-            "threshold_provenance": ch_def.get("threshold_provenance"),
             "action_ceiling": ch_def.get("action_ceiling"),
             "value": value,
             "value_source": source,
@@ -644,7 +598,7 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     m3_values = m3.get("values", {}) if m3_status != "missing" else {}
     buses = m3_values.get("buses", {})
 
-    # 2026-07-27: pressure/contract gates below read M4's capability:transport
+    # 2026-07-27: the pressure gate below reads M4's capability:transport
     # field_vector, not M3's raw projection. Found while wiring bus_synaptic in:
     # TransportBusProjectionV1 (orion/schemas/transport_projection.py) has NO
     # top-level stream_backlog_pressure/contract_pressure/observer_failure_pressure
@@ -658,9 +612,13 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     # real values (pressure/contract_pressure/reliability_pressure), fed by
     # config/field/orion_field_topology.v1.yaml's capability:transport edges
     # (bus_synaptic -> pressure per PR #1394; catalog_drift_pressure ->
-    # contract_pressure and observer_failure_pressure -> reliability_pressure,
-    # both still live) -- no new query needed, this data was already being
+    # contract_pressure and observer_failure_pressure -> reliability_pressure;
+    # 2026-10-07: the first renamed catalog_drift_pressure, the second retired,
+    # reliability_pressure now comes from node:substrate.rpc_delivery) -- no new query needed, this data was already being
     # fetched into the chain and simply never read from the right place.
+    # 2026-10-07: the contract gate that read M4 contract_pressure was deleted;
+    # the hub no longer reads M4 contract_pressure at all, and the capability
+    # channel itself was renamed catalog_drift_pressure (decision D3).
     m4_status = m4.get("status", "missing")
     m4_field_vector = (
         (m4.get("values") or {}).get("field_vector", {}) if m4_status != "missing" else {}
@@ -701,61 +659,72 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
     # --- pressure gate ---
-    channels = _effective_channels(lattice_policy.get("channels", {}))
+    # Each half is read from its own policy row's M4 source:
+    # transport_reliability_pressure (capability:transport.reliability_pressure,
+    # RPC delivery since observer_failure_pressure was retired 2026-10-07).
+    # The digester drops a capability channel nothing measured this tick
+    # (absent = unmeasured, never a quiet 0.0). Since the retirement,
+    # reliability is absent whenever the RPC bridge has no counted calls for
+    # 120 s, so each half is judged on its own: a measured half at or above its
+    # watch threshold makes the gate "watch" even while the other half is
+    # unmeasured (before, any absent half blanked the whole gate -- review
+    # finding, 2026-10-07). With nothing active, any unmeasured half keeps the
+    # gate "unknown": absent is never read as quiet.
+    channels = {str(k): dict(v or {}) for k, v in (lattice_policy.get("channels") or {}).items()}
+    # The bus_synaptic_pressure half (capability:transport.pressure) was
+    # retired 2026-11 with node:substrate.bus_synaptic (PE suite rebuild step
+    # 5): a lull-ending detector, not a forecast. Reliability is the only half.
+    halves = (
+        ("transport_reliability_pressure", "reliability"),
+    )
     if m4_status in ("stale", "missing"):
-        # Review-caught gap, 2026-07-27: the contract gate below already guards
-        # on m4_status; this one didn't, and a stale/missing M4 was silently
-        # read as "quiet" (0.0 default) or as a real reading of whatever value
-        # last happened to be cached -- the exact failure class (stale/absent
-        # data mistaken for a genuine calm reading) this patch exists to fix.
-        # M3 and M4 have independent freshness clocks in production
+        # Review-caught gap, 2026-07-27: a stale/missing M4 was silently read
+        # as "quiet" (0.0 default) or as whatever value was last cached --
+        # stale/absent data mistaken for a genuine calm reading. M3 and M4
+        # have independent freshness clocks in production
         # (substrate_transport_bus_projection.updated_at vs
-        # substrate_field_state.generated_at), so M4 going stale/missing while
-        # M3 stays fresh is a real, not just theoretical, scenario.
+        # substrate_field_state.generated_at).
         pressure_state = "unknown"
         pressure_reason = f"pressure state unknown: M4 field vector is {m4_status}"
     else:
-        transport_p = float(m4_field_vector.get("pressure") or 0.0)
-        observer_p = float(m4_field_vector.get("reliability_pressure") or 0.0)
-        transport_watch_at = float(
-            (channels.get("bus_synaptic_pressure") or {}).get("watch_at", 0.25)
-        )
-        observer_watch_at = float(
-            (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
-        )
-        pressure_active = transport_p >= transport_watch_at or observer_p >= observer_watch_at
-        pressure_state = "watch" if pressure_active else "quiet"
-        pressure_reason = (
-            # Labels name what is actually read. M4 reliability_pressure is
-            # diffused from node:athena's observer_failure_pressure, not the
-            # M3 observer_failure_pressure channel shown in Lattice Values.
-            f"bus_synaptic_pressure={transport_p:.2f} [M4 capability:transport.pressure] "
-            f"reliability_pressure={observer_p:.2f} [M4, vs observer_failure_pressure watch_at] "
-            f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
-        )
-
-    # --- contract gate ---
-    contract_watch_at = float(
-        (channels.get("contract_pressure") or {}).get("watch_at", 0.50)
-    )
-    if m4_status in ("stale", "missing"):
-        contract_state = "unknown"
-        contract_reason = f"contract state unknown: M4 field vector is {m4_status}"
-    else:
-        contract_p = float(m4_field_vector.get("contract_pressure") or 0.0)
-        if contract_p == 0.0:
-            contract_state = "quiet"
-        elif contract_p >= contract_watch_at:
-            contract_state = "watch"
+        parts: list[str] = []
+        thresholds: list[str] = []
+        measured = 0
+        active = False
+        for row_id, short in halves:
+            row_def = channels.get(row_id) or {}
+            src = _channel_source(row_def)
+            watch_at = float(row_def.get("watch_at", 0.25))
+            if src is None or src[0] != "m4":
+                # No fallback key: the policy row is the only place this
+                # reading's address lives (see _channel_source).
+                parts.append(f"{row_id} unmeasured: no M4 source in transport_lattice_policy ")
+                continue
+            key = src[1]
+            if key not in m4_field_vector:
+                parts.append(f"{row_id} unmeasured: {_M4_VECTOR}.{key} absent this tick ")
+                continue
+            value = float(m4_field_vector.get(key) or 0.0)
+            measured += 1
+            active = active or value >= watch_at
+            parts.append(f"{row_id}={value:.2f} [M4 {_M4_VECTOR}.{key}] ")
+            thresholds.append(f"{short}={watch_at}")
+        if active:
+            pressure_state = "watch"
+        elif measured < len(halves):
+            # A calm half cannot vouch for an unmeasured one: absent is not quiet.
+            pressure_state = "unknown"
         else:
-            contract_state = "pass"
-        # M4 contract_pressure is fed by catalog_drift_pressure (orion_field_topology
-        # channel_map), not by the reducer's own contract_pressure -- open
-        # vocabulary bug, see docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md.
-        contract_reason = (
-            f"contract_pressure={contract_p:.2f} [M4, fed by catalog_drift_pressure] "
-            f"(watch_at={contract_watch_at})"
-        )
+            pressure_state = "quiet"
+        pressure_reason = "".join(parts) + (f"(thresholds: {', '.join(thresholds)})" if thresholds else "")
+        if pressure_state == "unknown":
+            pressure_reason = "pressure state unknown: " + pressure_reason
+
+    # The contract gate was deleted 2026-10-07 (fix/transport-lattice-names-
+    # and-contract). It read M4 contract_pressure, which the topology fills
+    # from catalog_drift_pressure, under the threshold of a policy row whose own
+    # Lattice Values reading was the dead two-stream schema sample. Catalog
+    # drift is shown by its own catalog_drift_pressure row.
 
     # --- attention gate ---
     m5_status = m5.get("status", "missing")
@@ -772,25 +741,31 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
             attention_reason = "capability:transport not found in any attention bucket"
 
     # --- action_ceiling gate ---
+    # The ceiling was L9 dispatch's mode. L9 retired 2026-11-07 (ladder retirement PR 6): nothing in
+    # this lane dispatches any more, so the gate says "retired" rather than defaulting to dry_run.
     l9_status = l9.get("status", "missing")
-    if l9_status == "missing":
+    if l9_status == "retired":
+        dispatch_mode = "retired"
+    elif l9_status == "missing":
         dispatch_mode = "unknown"
     else:
         dispatch_mode = (l9.get("values") or {}).get("dispatch_mode") or "dry_run"
     _KNOWN_CEILING_STATES = {
         "dry_run", "read_only", "propose_read_only", "request_operator",
-        "summarize", "watch", "ignore",
+        "summarize", "watch", "ignore", "retired",
         "prepare_only", "dispatch_read_only",  # legacy runtime modes
     }
     action_ceiling_state = dispatch_mode if dispatch_mode in _KNOWN_CEILING_STATES else "unknown"
-    action_ceiling_reason = f"dispatch_mode={dispatch_mode}"
+    action_ceiling_reason = (
+        f"dispatch retired {(l9.get('values') or {}).get('retired_on')}: no action dispatcher"
+        if dispatch_mode == "retired" else f"dispatch_mode={dispatch_mode}"
+    )
 
     return [
         {"gate_id": "freshness", "state": freshness_state, "reason": freshness_reason},
         {"gate_id": "evidence", "state": evidence_state, "reason": evidence_reason},
         {"gate_id": "lineage", "state": lineage_state, "reason": lineage_reason},
         {"gate_id": "pressure", "state": pressure_state, "reason": pressure_reason},
-        {"gate_id": "contract", "state": contract_state, "reason": contract_reason},
         {"gate_id": "attention", "state": attention_state, "reason": attention_reason},
         {"gate_id": "action_ceiling", "state": action_ceiling_state, "reason": action_ceiling_reason},
     ]
@@ -807,7 +782,7 @@ async def transport_latest() -> dict[str, Any]:
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     try:
-        chain["lattice_channels"] = _lattice_channel_rows(chain, _effective_channels(_policy_channels()))
+        chain["lattice_channels"] = _lattice_channel_rows(chain, _policy_channels())
     except Exception as exc:  # a bad policy file must not hide the proof chain
         chain["lattice_channels"] = []
         chain["lattice_policy_error"] = f"{type(exc).__name__}: {exc}"
@@ -841,7 +816,7 @@ async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
 
     try:
-        channels = _effective_channels(_policy_channels())
+        channels = _policy_channels()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"transport_lattice_policy_invalid: {type(exc).__name__}") from exc
     if not channels:

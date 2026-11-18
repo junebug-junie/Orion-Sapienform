@@ -1,0 +1,575 @@
+"""Attention patch 4b: a camera ask bids before its card opens, and obeys (app/ask_bind.py).
+
+Lifecycle with a fake connection: a candidate bids -> funded opens; held does not open, the backoff is respected,
+a later re-bid can fund and open; no answer (timeout) admits; ``shadow`` is the behaviour before 4b; Juniper's own
+card never bids. Plus the no-deadline rule (issue #3285), the one-want-per-ask rule for the shadow loop, and a static
+guard that every camera opener goes through the bid site.
+
+Decision shapes are copied from a live ``want_ledger`` row of family vision.ask (read-only, 2026-11-13); the ask
+shapes from live ``orion_ask`` rows (a vehicle "seen N times" card and an "Is this <name>?" card).
+"""
+from __future__ import annotations
+
+import ast
+import copy
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from app import ask_bind as ab
+from app.ask_event_wants import ASKS_SQL, BID_AT_OPEN_SQL, BINDING_PRODUCER, GRADES_SQL, plan_asks, run_one_cycle
+from app.settings import settings
+from orion.grammar.camera_ask_acts import (
+    BID_WANT_REF_PREFIX, CANDIDATE_SOURCE, JUNIPER_STORY_CARD_REF, REBID_CAP_SEC, REBID_FIRST_SEC, bid_want_ref,
+    candidate_key, rebid_after_sec,
+)
+from orion.physiology.binding import BINDING_PRODUCERS
+from orion.physiology.event_wants import event_want_id
+from orion.schemas.ask import OrionAskV1
+from orion.schemas.physiology_want import WantDecisionV1
+
+NOW = datetime(2026, 11, 13, 14, 0, 53, tzinfo=timezone.utc)
+M = 146 / 190            # FakeConn's family answered share: confirm 141 of 145 + vehicle 5 of 45
+VEHICLE = "420762ba8f4b4e28af57ffe1e66c2889"
+PERSON = "10da7f9891364980bb6d3bc9e65b6340"
+
+# A live funded vision.ask decision (want_ledger, 2026-11-13 07:05Z), want id replaced per bid.
+LIVE_FUNDED = {
+    "net": 1.101074, "why": "vision.ask: weight 1.10 (prior) x rank 1.00 (event:graded) - charge 0.000 = net +1.101",
+    "lane": None, "tier": 2, "verb": "ask", "charge": 0.0, "family": "vision.ask", "graded": True,
+    "reason": "net_positive", "shadow": True, "outcome": "funded", "reserved": {}, "cost_frac": {}, "displaced": [],
+    "intensity": 1.0, "value_rank": 1.0, "decided_at": "2026-11-13T07:05:22.041219Z",
+    "value_basis": "event:graded", "displaced_by": [], "weight_basis": "prior", "family_weight": 1.101074,
+    "schema_version": "physiology.want.decision.v1", "retry_after_sec": None, "binding_constraint": None,
+}
+
+
+def _decision(want, **over):
+    d = {**copy.deepcopy(LIVE_FUNDED), "want": want.model_dump(mode="json"), "want_id": want.want_id,
+         "producer": want.producer, "decision_id": f"{want.want_id}@x", **over}
+    return WantDecisionV1.model_validate(d)
+
+
+def funded(want):
+    return _decision(want)
+
+
+def sated(want):
+    return _decision(want, outcome="deferred", reason="sated", net=0.0, value_rank=0.0,
+                     why="nothing charged, but the event is no bigger than this family's usual events")
+
+
+def unavailable(want):
+    return _decision(want, outcome="deferred", reason="physiology_unavailable", net=None, value_rank=None,
+                     binding_constraint="physiology_unavailable", retry_after_sec=300.0)
+
+
+class _Res:
+    def __init__(self, rows=None, scalar=None):
+        self._rows, self._scalar = rows or [], scalar
+
+    def scalar(self):
+        return self._scalar
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def mappings(self):
+        return self
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def all(self):
+        return self._rows
+
+
+class FakeConn:
+    """Answers the four reads ask_bind makes, and records the card inserts."""
+
+    def __init__(self, *, kinds=None, sightings=None, history_n=40, grades=None, now=NOW):
+        self.kinds = kinds or {VEHICLE: "vehicle", PERSON: "person"}
+        self.sightings = sightings or {VEHICLE: 86, PERSON: 9}
+        # 30 days of Orion-made asks' sightings: 2..41, so 86 ranks 1.0 and 9 ranks 7/40. Opened every 4 h before
+        # ``now`` (the rule floor's week count, issue #3381): one in four a vehicle ask (25% of the week's opens, far
+        # over the 2% floor), the rest "Is this <name>?".
+        self.history = [{"ask_id": f"ask-hist-{i}", "sightings": 2 + i, "created_at": now - timedelta(hours=4 * (i + 1)),
+                         **({"source_kind": "vision_individual", "evidence_refs": [], "individual_kind": "vehicle"}
+                            if i % 4 == 0 else
+                            {"source_kind": "vision_person_confirm", "evidence_refs": [], "individual_kind": "person"})}
+                        for i in range(history_n)]
+        self.grades = grades if grades is not None else (
+            [("camera_ask:confirm", 1.0)] * 141 + [("camera_ask:confirm", 0.0)] * 4
+            + [("camera_ask:vehicle", 1.0)] * 5 + [("camera_ask:vehicle", 0.0)] * 40)
+        self.inserted: list[dict] = []
+
+    def execute(self, clause, params=None):
+        sql = str(clause)
+        if sql == ab.KIND_SQL:
+            return _Res(scalar=self.kinds.get(params["i"]))
+        if sql == ab.SIGHTINGS_SQL:
+            return _Res(scalar=self.sightings.get(params["i"], 0))
+        if sql == ASKS_SQL:
+            return _Res(rows=self.history)
+        if sql == GRADES_SQL:
+            return _Res(rows=self.grades)
+        if "to_regclass('grammar_acts')" in sql:
+            return _Res(scalar=True)
+        if "INSERT INTO orion_ask" in sql:
+            if any(r["sk"] == params["sk"] and r["sr"] == params["sr"] for r in self.inserted):
+                return _Res(rows=[])                     # the open-card unique index
+            self.inserted.append(params)
+            # The card is now one of the family's asks: the next ask read (and the rule floor) sees it.
+            self.history.append({"ask_id": params["id"], "sightings": 0, "created_at": params["c"], "source_kind": params["sk"],
+                                 "evidence_refs": json.loads(params["ev"]),
+                                 "individual_kind": self.kinds.get(str(params["sr"]).split("|", 1)[0])})
+            return _Res(rows=[(params["id"],)])
+        raise AssertionError(f"unexpected SQL: {sql[:80]}")
+
+
+class Market:
+    """Records every bid; answers with ``answer(want)``."""
+
+    def __init__(self, answer):
+        self.answer, self.wants = answer, []
+
+    def __call__(self, want):
+        self.wants.append(want)
+        return self.answer(want)
+
+
+def vehicle_ask(now=NOW, ask_id="ask-5c5a0cca61174a35905ed71b5c97970c", refs=None):
+    return OrionAskV1(ask_id=ask_id, question="I have seen this same vehicle 86 times over 12 days. Whose is it?",
+                      evidence_refs=refs if refs is not None else [f"sighting:9b55d8b2{i}" for i in range(5)],
+                      image_ref="thumb:74cd", image_refs=["thumb:74cd"], created_at=now,
+                      expires_at=now + timedelta(days=7), source_kind="vision_individual", source_ref=VEHICLE)
+
+
+def confirm_ask(now=NOW, ask_id="ask-0aba677f3c0043d1bf32308fbb2e753a"):
+    return OrionAskV1(ask_id=ask_id, question="Is this Juniper? It is my best guess, but I am not sure.",
+                      evidence_refs=["sighting:18cc2b1a", "sighting:d5bd6387"], image_ref="thumb:ccdb",
+                      image_refs=["thumb:ccdb"], created_at=now, expires_at=now + timedelta(days=7),
+                      source_kind="vision_person_confirm", source_ref=f"{PERSON}|Juniper")
+
+
+@pytest.fixture(autouse=True)
+def _clean(monkeypatch):
+    ab.reset_state()
+    monkeypatch.setattr(settings, "orion_physiology_bid_camera_asks", "on")
+    monkeypatch.setattr(settings, "sql_writer_act_camera_asks_enabled", True)
+    monkeypatch.setattr(settings, "orion_camera_ask_rule_floor_enabled", True)
+    yield
+    ab.reset_state()
+
+
+# --- the want -----------------------------------------------------------------------------------
+
+def test_the_bid_is_a_binding_event_want_keyed_by_candidate_not_by_ask_id():
+    conn, market = FakeConn(), Market(funded)
+    ab.ask_bind(conn, vehicle_ask(ask_id="ask-a"), now=NOW, bid=market)
+    ab.reset_state()
+    ab.ask_bind(conn, vehicle_ask(ask_id="ask-b"), now=NOW, bid=market)
+    w1, w2 = market.wants
+    assert w1.want_id == w2.want_id == event_want_id(CANDIDATE_SOURCE, candidate_key("vehicle", "vision_individual",
+                                                                                     VEHICLE))
+    assert w1.producer == ab.PRODUCER and ab.PRODUCER in BINDING_PRODUCERS
+    assert w1.family == "vision.ask" and w1.verb == "ask" and w1.tier == 2
+    # Prime's menu labels and expires by the card's own ref.
+    assert (w1.event_ref, w2.event_ref) == ("orion_ask:ask-a", "orion_ask:ask-b")
+    assert w1.object_ref == f"vision_individual:{VEHICLE}"
+    assert w1.salience == 1.0                                       # 86 sightings, above all 40 past asks
+    assert w1.outcome_value == pytest.approx((5 + 2 * M) / 47)       # vehicle 5 of 45, toward the family share
+    assert w1.window.latest == NOW + timedelta(days=7)
+
+
+def test_a_confirm_ask_carries_its_own_rules_expected_answer():
+    market = Market(funded)
+    ab.ask_bind(FakeConn(), confirm_ask(), now=NOW, bid=market)
+    assert market.wants[0].outcome_value == pytest.approx((141 + 2 * M) / 147)
+    assert market.wants[0].salience == pytest.approx(7 / 40)
+
+
+def test_graded_off_sends_no_expected_answer(monkeypatch):
+    monkeypatch.setattr(settings, "sql_writer_act_camera_asks_enabled", False)
+    market = Market(funded)
+    ab.ask_bind(FakeConn(), vehicle_ask(), now=NOW, bid=market)
+    assert market.wants[0].outcome_value is None
+
+
+# --- the lifecycle ------------------------------------------------------------------------------
+
+def test_funded_opens_the_card_stamped_with_its_want():
+    conn, market = FakeConn(), Market(funded)
+    opened = ab.open_camera_ask(conn, vehicle_ask(), now=NOW, bid=market)
+    assert opened is not None and len(conn.inserted) == 1
+    assert bid_want_ref(opened.evidence_refs) == market.wants[0].want_id
+    assert f"{BID_WANT_REF_PREFIX}{market.wants[0].want_id}" in conn.inserted[0]["ev"]
+    assert ab.held_snapshot() == {}
+
+
+def test_held_does_not_open_then_backs_off_then_a_later_rebid_funds_and_opens():
+    conn = FakeConn()
+    answers = iter([sated, sated, funded])
+    market = Market(lambda w: next(answers)(w))
+    assert ab.open_camera_ask(conn, vehicle_ask(), now=NOW, bid=market) is None
+    assert conn.inserted == [] and len(market.wants) == 1
+    (held,) = ab.held_snapshot().values()
+    assert held.retry_at == NOW + timedelta(seconds=REBID_FIRST_SEC) and held.n_held == 1
+    # Every 60 s opener tick inside the backoff: no bid, no card.
+    for m in range(1, 10):
+        t = NOW + timedelta(minutes=m)
+        assert ab.open_camera_ask(conn, vehicle_ask(now=t, ask_id=f"ask-t{m}"), now=t, bid=market) is None
+    assert len(market.wants) == 1 and conn.inserted == []
+    # At retry_at: re-bid, held again, the wait doubles.
+    t1 = NOW + timedelta(seconds=REBID_FIRST_SEC)
+    assert ab.open_camera_ask(conn, vehicle_ask(now=t1, ask_id="ask-r1"), now=t1, bid=market) is None
+    (held,) = ab.held_snapshot().values()
+    assert held.n_held == 2 and held.retry_at == t1 + timedelta(seconds=2 * REBID_FIRST_SEC)
+    # The re-bid is the SAME want, opened when the candidate was first seen.
+    assert market.wants[1].want_id == market.wants[0].want_id and market.wants[1].opened_at == NOW
+    # Later: funded -> the card opens.
+    t2 = held.retry_at
+    opened = ab.open_camera_ask(conn, vehicle_ask(now=t2, ask_id="ask-r2"), now=t2, bid=market)
+    assert opened is not None and opened.ask_id == "ask-r2" and len(conn.inserted) == 1
+    assert ab.held_snapshot() == {}
+
+
+def test_no_deadline_a_held_ask_is_never_opened_by_the_clock(monkeypatch):
+    """Issue #3285: no 24 h cutoff and no cooldown. Ten days of sated answers never open the card, and the
+    re-bids never come closer than the cap allows once it is reached. (The rule floor is off: this fake's week of
+    asks ages out over the ten days, and the floor would then open the card; tested on its own below.)"""
+    monkeypatch.setattr(settings, "orion_camera_ask_rule_floor_enabled", False)
+    conn, market = FakeConn(), Market(sated)
+    t = NOW
+    while t < NOW + timedelta(days=10):
+        assert ab.open_camera_ask(conn, vehicle_ask(now=t, ask_id=f"ask-{t.timestamp():.0f}"), now=t,
+                                  bid=market) is None
+        t += timedelta(seconds=60)
+    assert conn.inserted == []
+    assert 70 < len(market.wants) < 10 * 86400 / REBID_CAP_SEC + 8     # ~8 a day once at the cap, not 1440 a day
+    assert all(w.want_id == market.wants[0].want_id for w in market.wants)
+
+
+def test_bid_timeout_or_market_down_admits_unstamped():
+    conn = FakeConn()
+    opened = ab.open_camera_ask(conn, vehicle_ask(), now=NOW, bid=Market(lambda w: None))
+    assert opened is not None and bid_want_ref(opened.evidence_refs) is None
+    conn2 = FakeConn()
+    opened = ab.open_camera_ask(conn2, vehicle_ask(), now=NOW, bid=Market(unavailable))
+    assert opened is not None and bid_want_ref(opened.evidence_refs) is None and len(conn2.inserted) == 1
+
+
+def test_a_market_call_that_raises_admits():
+    def boom(want):
+        raise RuntimeError("socket")
+    conn = FakeConn()
+    assert ab.open_camera_ask(conn, vehicle_ask(), now=NOW, bid=boom) is not None
+
+
+def test_shadow_mode_is_the_behaviour_before_4b(monkeypatch):
+    monkeypatch.setattr(settings, "orion_physiology_bid_camera_asks", "shadow")
+    conn, market = FakeConn(), Market(sated)
+    opened = ab.open_camera_ask(conn, vehicle_ask(), now=NOW, bid=market)
+    assert opened is not None and market.wants == [] and bid_want_ref(opened.evidence_refs) is None
+
+
+def test_juniper_story_card_never_bids():
+    conn, market = FakeConn(), Market(sated)
+    card = vehicle_ask(refs=["motion_story:f53dfa78", f"individual:{VEHICLE}", JUNIPER_STORY_CARD_REF])
+    v = ab.ask_bind(conn, card, now=NOW, bid=market)
+    assert v.admit and v.why == "juniper_card" and market.wants == []
+
+
+def test_too_little_history_admits_without_a_want():
+    conn, market = FakeConn(history_n=5), Market(sated)
+    opened = ab.open_camera_ask(conn, vehicle_ask(), now=NOW, bid=market)
+    assert opened is not None and market.wants == []
+
+
+def test_a_funded_card_that_loses_the_insert_is_not_reported_opened():
+    conn, market = FakeConn(), Market(funded)
+    assert ab.open_camera_ask(conn, vehicle_ask(ask_id="ask-1"), now=NOW, bid=market) is not None
+    assert ab.open_camera_ask(conn, vehicle_ask(ask_id="ask-2"), now=NOW, bid=market) is None
+
+
+def test_rebid_backoff_doubles_to_the_cap_and_respects_the_markets_wait():
+    assert [rebid_after_sec(n) for n in (1, 2, 3, 4, 5, 6, 50)] == [600, 1200, 2400, 4800, 9600, 10800, 10800]
+    assert rebid_after_sec(1, 3000.0) == 3000.0
+    assert rebid_after_sec(1, 99999.0) == REBID_CAP_SEC
+
+
+def test_in_backoff_is_true_only_while_a_held_candidates_next_bid_is_not_due():
+    conn = FakeConn()
+    assert not ab.in_backoff("vehicle", "vision_individual", VEHICLE, NOW)
+    ab.ask_bind(conn, vehicle_ask(), now=NOW, bid=Market(sated))
+    assert ab.in_backoff("vehicle", "vision_individual", VEHICLE, NOW + timedelta(seconds=599))
+    assert not ab.in_backoff("vehicle", "vision_individual", VEHICLE, NOW + timedelta(seconds=600))
+    assert not ab.in_backoff("sighting", "vision_individual", VEHICLE, NOW + timedelta(seconds=1))
+
+
+def test_a_known_kind_skips_the_kind_read():
+    conn, market = FakeConn(kinds={}), Market(funded)
+    ab.ask_bind(conn, vehicle_ask(), now=NOW, bid=market, individual_kind="vehicle")
+    assert market.wants[0].outcome_value == pytest.approx((5 + 2 * M) / 47)  # vehicle rule, though kinds={} here
+
+
+def test_fresh_bids_are_capped_per_minute_and_the_rest_wait_without_a_backoff_step():
+    """After a restart ``_held`` is empty, and a held candidate no longer stops an opener's loop: the cap keeps one
+    tick from bidding every candidate inside the opener's transaction."""
+    conn, market = FakeConn(sightings={f"v{i:02d}": 86 for i in range(40)}, kinds={f"v{i:02d}": "vehicle" for i in range(40)}), Market(sated)
+    verdicts = []
+    for i in range(40):
+        a = vehicle_ask(ask_id=f"ask-{i}").model_copy(update={"source_ref": f"v{i:02d}"})
+        verdicts.append(ab.ask_bind(conn, a, now=NOW, bid=market))
+    assert len(market.wants) == ab.BID_BUDGET
+    assert [v.why for v in verdicts[ab.BID_BUDGET:]] == ["bid_budget"] * (40 - ab.BID_BUDGET)
+    assert len(ab.held_snapshot()) == ab.BID_BUDGET                         # over budget: no backoff entry
+    later = NOW + ab.BID_BUDGET_WINDOW
+    a = vehicle_ask(ask_id="ask-x").model_copy(update={"source_ref": "v30"})
+    assert ab.ask_bind(conn, a, now=later, bid=market).why == "deferred:sated"
+
+
+def test_the_binding_producer_name_is_one_name():
+    assert BINDING_PRODUCER == ab.PRODUCER
+
+
+# --- one want per ask: the shadow loop -----------------------------------------------------------
+
+def _row(ask_id, refs, at):
+    return {"ask_id": ask_id, "source_kind": "vision_individual", "status": "open", "created_at": at,
+            "expires_at": at + timedelta(days=7), "iid": VEHICLE, "sightings": 86, "evidence_refs": refs,
+            "individual_kind": "vehicle"}
+
+
+def test_the_shadow_loop_posts_no_second_want_for_a_card_that_bid_at_open():
+    hist = [_row(f"h{i}", [], NOW - timedelta(days=2, minutes=i)) for i in range(25)]
+    stamped = _row("bid", [f"{BID_WANT_REF_PREFIX}abc"], NOW - timedelta(minutes=5))
+    plain = _row("plain", ["sighting:1"], NOW - timedelta(minutes=4))
+    plan = {p["ask_id"]: p for p in plan_asks(hist + [stamped, plain], now=NOW, lookback=timedelta(hours=24))}
+    assert plan["bid"]["bid_want"] == "abc" and plan["plain"]["bid_want"] is None
+
+    class Eng:
+        def connect(self):
+            outer = self
+
+            class C:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def execute(self, clause, params=None):
+                    sql = str(clause)
+                    if sql == ASKS_SQL:
+                        return _Res(rows=hist + [stamped, plain])
+                    if sql == GRADES_SQL:
+                        return _Res(rows=[])
+                    return _Res(rows=[])
+            return C()
+
+    posted, market = set(), Market(funded)
+    summary = run_one_cycle(postgres_uri="x", lookback=timedelta(hours=24), posted=posted, bid=market, now=NOW,
+                            engine=Eng())
+    assert summary["bid_at_open"] == 1 and summary["posted"] == 1
+    assert [w.event_ref for w in market.wants] == ["orion_ask:plain"]
+
+
+def test_the_shadow_loop_skips_an_unstamped_card_whose_bid_the_market_decided_after_the_client_timed_out():
+    hist = [_row(f"h{i}", [], NOW - timedelta(days=2, minutes=i)) for i in range(25)]
+    late = _row("late", ["sighting:1"], NOW - timedelta(minutes=5))
+    plain = _row("plain", ["sighting:2"], NOW - timedelta(minutes=4))
+    seen = {}
+
+    class Eng:
+        def connect(self):
+            class C:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def execute(self, clause, params=None):
+                    sql = str(clause)
+                    if sql == ASKS_SQL:
+                        return _Res(rows=hist + [late, plain])
+                    if sql == BID_AT_OPEN_SQL:
+                        seen.update(params)
+                        return _Res(rows=[("orion_ask:late",)])
+                    return _Res(rows=[])
+            return C()
+
+    market = Market(funded)
+    summary = run_one_cycle(postgres_uri="x", lookback=timedelta(hours=24), posted=set(), bid=market, now=NOW,
+                            engine=Eng())
+    assert seen["producer"] == ab.PRODUCER and sorted(seen["refs"]) == ["orion_ask:late", "orion_ask:plain"]
+    assert summary["bid_at_open"] == 1 and [w.event_ref for w in market.wants] == ["orion_ask:plain"]
+
+
+# --- the one bid site ----------------------------------------------------------------------------
+
+# --- the per-rule exploration floor (issue #3381) ------------------------------------------------------
+
+FACE_PERSON = "5f0c2a7e9d3b4c1a8e6f7d2b3c4a5e6f"
+
+
+def face_ask(now=NOW, ask_id="ask-face", iid=FACE_PERSON):
+    return OrionAskV1(ask_id=ask_id, question="Who is this? I have seen this face 6 times.",
+                      evidence_refs=["rule:face", "sighting:aa11"], image_ref="thumb:ff01", image_refs=["thumb:ff01"],
+                      created_at=now, expires_at=now + timedelta(days=7), source_kind="vision_individual",
+                      source_ref=iid)
+
+
+def price_held(want):
+    return _decision(want, outcome="deferred", reason="price", net=-0.2, value_rank=0.1, charge=0.31,
+                     binding_constraint="prime:slow", why="vision.ask: Prime's slow charge binds")
+
+
+def consent_held(want):
+    return _decision(want, outcome="deferred", reason="consent", net=None, value_rank=None,
+                     binding_constraint="consent", why="consent gate: refused")
+
+
+def _starvation_month(monkeypatch, *, floor_on: bool):
+    """28 days of the live shape: each morning 6 "Is this <name>?" asks the market funds, 3 new vehicle candidates and
+    1 new face candidate it holds (``sated``: hunger is saturated and their expected answers are below the family
+    mean, so they rank 0 at every bid; issue #3381). Re-read the asks at every bid (days apart, past the 300 s cache).
+    Returns (face opened, vehicle opened, vehicle candidates)."""
+    monkeypatch.setattr(settings, "orion_camera_ask_rule_floor_enabled", floor_on)
+    monkeypatch.setattr(ab, "CACHE_TTL_SEC", 0.0)
+    kinds = {PERSON: "person", FACE_PERSON: "person"}
+    sightings = {PERSON: 9, FACE_PERSON: 6}
+    start = NOW - timedelta(days=30)
+    # The 30 days before: confirm asks only (the face and vehicle rules ranked low and opened none).
+    conn = FakeConn(kinds=kinds, sightings=sightings, history_n=0)
+    conn.history = [{"sightings": 2 + i, "created_at": start - timedelta(hours=4 * (i + 1)),
+                     "source_kind": "vision_person_confirm", "evidence_refs": [], "individual_kind": "person"}
+                    for i in range(40)]
+
+    def answer(want):
+        return funded(want) if want.outcome_value and want.outcome_value > 0.9 else sated(want)
+
+    market = Market(answer)
+    face_open = vehicle_open = vehicle_n = 0
+    for d in range(28):
+        t = start + timedelta(days=d, hours=7)
+        for j in range(6):
+            iid = f"p{d:02d}{j}"
+            kinds[iid], sightings[iid] = "person", 9
+            a = confirm_ask(now=t, ask_id=f"ask-c{d}-{j}").model_copy(update={"source_ref": f"{iid}|Juniper"})
+            assert ab.open_camera_ask(conn, a, now=t, bid=market) is not None
+        for j in range(3):
+            iid = f"v{d:02d}{j}"
+            kinds[iid], sightings[iid] = "vehicle", 86
+            vehicle_n += 1
+            a = vehicle_ask(now=t, ask_id=f"ask-v{d}-{j}").model_copy(update={"source_ref": iid})
+            vehicle_open += ab.open_camera_ask(conn, a, now=t, bid=market) is not None
+        face_open += ab.open_camera_ask(conn, face_ask(now=t, ask_id=f"ask-f{d}", iid=FACE_PERSON if d == 0 else f"f{d}"),
+                                        now=t, bid=market) is not None
+        kinds[f"f{d + 1}"], sightings[f"f{d + 1}"] = "person", 6
+    return face_open, vehicle_open, vehicle_n
+
+
+def test_a_rule_below_the_family_mean_starves_without_the_floor(monkeypatch):
+    """Issue #3381 regression: on the old rule a face candidate is held at every bid, for 28 days, and never opens
+    (so it is never graded and its expected answer never moves)."""
+    face, vehicle, n = _starvation_month(monkeypatch, floor_on=False)
+    assert face == 0 and vehicle == 0
+
+
+def test_the_rule_floor_gives_a_starved_rule_its_share_and_keeps_vehicle_mostly_held(monkeypatch):
+    """With the floor a rule under 2% of the week's opens opens anyway: the face rule opens about once a week, and so
+    does the vehicle rule (Juniper answers ~13% of those). Vehicle stays mostly held."""
+    face, vehicle, n = _starvation_month(monkeypatch, floor_on=True)
+    assert 3 <= face <= 5                                    # ~ one a week over 4 weeks
+    assert 3 <= vehicle <= 5 and vehicle / n <= 0.1          # 84 vehicle candidates, >= 90% held
+
+
+def test_a_floor_open_is_stamped_logged_and_counted_at_once(monkeypatch, caplog):
+    """The market answered (held), so the card carries its want, like a funded one; a second candidate of the same
+    rule in the same 300 s cache window sees the first open and is held (the floor stops itself)."""
+    conn, market = FakeConn(kinds={FACE_PERSON: "person", "f2": "person"}, sightings={FACE_PERSON: 6, "f2": 6}), Market(sated)
+    with caplog.at_level("INFO", logger="sql-writer.ask_bind"):
+        opened = ab.open_camera_ask(conn, face_ask(), now=NOW, bid=market)
+    assert opened is not None and bid_want_ref(opened.evidence_refs) == market.wants[0].want_id
+    assert any("verdict=admit why=rule_floor market=deferred:sated" in r.getMessage() and "rule_share=0.0000" in r.getMessage()
+               for r in caplog.records)
+    v = ab.ask_bind(conn, face_ask(ask_id="ask-face-2", iid="f2"), now=NOW + timedelta(seconds=30), bid=market)
+    assert not v.admit and v.why == "deferred:sated"          # 1 face of 41 opens this week: 2.4%, over the floor
+
+
+def test_a_floor_open_still_counts_when_a_later_read_does_not_see_its_uncommitted_row(monkeypatch):
+    """Openers run in separate threads and transactions: a cache refresh after a floor open may not contain the new
+    card yet. The open stays counted until a read contains its ask_id (review finding), so a second candidate of the
+    same rule is held; once the row is seen it is counted once, not twice."""
+    monkeypatch.setattr(ab, "CACHE_TTL_SEC", 0.0)                 # every bid re-reads
+    kinds, sightings = {FACE_PERSON: "person", "f2": "person", "f3": "person"}, {FACE_PERSON: 6, "f2": 6, "f3": 6}
+    conn, market = FakeConn(kinds=kinds, sightings=sightings), Market(sated)
+    assert ab.open_camera_ask(conn, face_ask(), now=NOW, bid=market) is not None
+    row = conn.history.pop()                                        # the other transaction has not committed yet
+    assert row["ask_id"] == "ask-face"
+    v = ab.ask_bind(conn, face_ask(ask_id="ask-face-2", iid="f2"), now=NOW + timedelta(seconds=30), bid=market)
+    assert not v.admit and v.why == "deferred:sated"
+    conn.history.append(row)                                        # committed: the read now sees it
+    ab.ask_bind(conn, face_ask(ask_id="ask-face-3", iid="f3"), now=NOW + timedelta(seconds=60), bid=market)
+    assert [f[3] for f in ab._floor_opens] == []                    # dropped once seen: no double count
+
+
+def test_the_floor_opens_a_price_hold_but_never_a_consent_block():
+    conn = FakeConn(kinds={FACE_PERSON: "person"}, sightings={FACE_PERSON: 6})
+    assert ab.ask_bind(conn, face_ask(), now=NOW, bid=Market(price_held)).why == "rule_floor"
+    ab.reset_state()
+    v = ab.ask_bind(FakeConn(kinds={FACE_PERSON: "person"}, sightings={FACE_PERSON: 6}), face_ask(), now=NOW,
+                    bid=Market(consent_held))
+    assert not v.admit and v.why.startswith("deferred:consent")
+
+
+def test_a_rule_over_its_floor_share_stays_held_and_the_flag_turns_the_floor_off(monkeypatch):
+    conn = FakeConn()                                         # vehicle: 25% of the week's opens
+    assert ab.open_camera_ask(conn, vehicle_ask(), now=NOW, bid=Market(sated)) is None
+    monkeypatch.setattr(settings, "orion_camera_ask_rule_floor_enabled", False)
+    ab.reset_state()
+    conn = FakeConn(kinds={FACE_PERSON: "person"}, sightings={FACE_PERSON: 6})
+    assert ab.open_camera_ask(conn, face_ask(), now=NOW, bid=Market(sated)) is None
+
+
+def test_the_floor_flag_ships_on():
+    from app.settings import Settings
+
+    assert Settings.model_fields["orion_camera_ask_rule_floor_enabled"].default is True
+    env = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
+    assert "ORION_CAMERA_ASK_RULE_FLOOR_ENABLED=true" in env
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+    assert "ORION_CAMERA_ASK_RULE_FLOOR_ENABLED=${ORION_CAMERA_ASK_RULE_FLOOR_ENABLED:-true}" in compose
+
+
+def test_every_camera_opener_goes_through_the_bid_site():
+    """No module but app/ask_bind.py may call ``_insert_ask``: an opener that inserted directly would skip the bid."""
+    app_dir = Path(__file__).resolve().parents[1] / "app"
+    callers = []
+    for f in sorted(app_dir.glob("*.py")):
+        for node in ast.walk(ast.parse(f.read_text())):
+            if isinstance(node, ast.Call):
+                fn = node.func
+                name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else ""
+                if name == "_insert_ask":
+                    callers.append(f.name)
+    assert callers == ["ask_bind.py"]
+    # Nor may any module but vision_individuals.py (where _insert_ask lives) write a camera-kind card with raw SQL.
+    from orion.grammar.camera_ask_acts import CAMERA_ASK_KINDS
+    # person_record.py inserts only person_fact cards (source_kind=pf.SOURCE_KIND_PERSON_FACT); it names camera kinds
+    # in its reads. Pinned so a new raw insert elsewhere fails here.
+    raw = [f.name for f in sorted(app_dir.glob("*.py")) if f.name not in ("vision_individuals.py", "person_record.py")
+           and "INSERT INTO orion_ask" in f.read_text() and any(k in f.read_text() for k in CAMERA_ASK_KINDS)]
+    assert raw == []
+    pr = (app_dir / "person_record.py").read_text()
+    assert pr.count("INSERT INTO orion_ask") == 1 and "source_kind=pf.SOURCE_KIND_PERSON_FACT" in pr
+    openers = {"vision_individuals.py": 4, "vision_handoff_loop.py": 1, "vision_office_sessions.py": 1}
+    for name, n in openers.items():
+        assert (app_dir / name).read_text().count("open_camera_ask(") == n, name

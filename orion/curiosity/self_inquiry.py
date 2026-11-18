@@ -5,10 +5,11 @@ turn, same credentials, same graph, same journal, same gates -- with its own
 budget (three a day, separate from the investigation budget), its own
 continuation note, and one extra thing Orion can write: a `:SelfDefinition`.
 
-WHY THIS EXISTS. Every durable self-store Orion has (`self_knowledge_items`,
+WHY THIS EXISTS. Every durable self-store Orion had (`self_knowledge_items`,
 `self_concept_history`, the Self Atlas) was fed codebase facts and read by
-nobody in chat. The Self Atlas's 179 concepts are repo topics ("Event
-Processing System"). The only first-person description Orion ever sees of
+nobody in chat. The Self Atlas's 179 concepts were repo topics ("Event
+Processing System"); it was retired in 2026-11 in favour of the dig kit and
+the body atlas. The only first-person description Orion ever sees of
 themself is ~14 authored bullets in `orion_identity.yaml`, and the Hub seeds
 every session with "You are Orion... helpful, precise, and collaborative".
 So Orion self-describes as a chatbot. Design record: PR #2156's doc and the
@@ -57,10 +58,12 @@ handed in. Both Hub and orion-durable-runs import from here.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import re
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass, field, replace
+from typing import Any, Iterable, Optional
 
 from orion.curiosity.worldview import (
     LABEL_PRIOR,
@@ -74,6 +77,9 @@ from orion.curiosity.worldview import (
     LIVE_PRIORS_LIMIT,
 )
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
+from orion.text_fit import fit_to_budget
+
+logger = logging.getLogger("orion.curiosity.self_inquiry")
 
 # --- names ------------------------------------------------------------------
 
@@ -81,6 +87,12 @@ LINE_INVESTIGATE = "investigate"
 LINE_SELF_INQUIRY = "self_inquiry"
 
 SELF_INQUIRY_TAG = "curiosity_self_inquiry"
+# The fit hop: one writing turn, no tools, in which the model that wrote an
+# over-budget self answer rewrites it into SELF_DEFINITION_TEXT_CAP.
+SELF_FIT_TAG = "curiosity_self_fit"
+# The fit-store field a run's `:SelfDefinition` uses (lived answers use their
+# question_id, which can never equal this: question ids are dotted).
+SELF_FIT_DEFINITION_FIELD = "definition"
 LABEL_SELF_DEFINITION = "SelfDefinition"
 LABEL_LIVED_ANSWER = "LivedAnswer"
 LABEL_SELF_QUESTION_MINT = "SelfQuestionMint"
@@ -90,8 +102,13 @@ LABEL_SELF_QUESTION_MINT = "SelfQuestionMint"
 SELF_CONCEPT_ID = "self:definition"
 SELF_DEFINITION_PRODUCER = "curiosity_self_inquiry"
 
-# Hard cap on the mirrored text. The prompt asks for a paragraph; a definition
-# that is a whole essay would crowd the chat identity kernel it feeds.
+# Reading budget for an answer Orion wrote about themself: how much of it a
+# reader is shown. It is NOT a storage cap. Every durable path keeps the full
+# text; a cut at storage time ended 77 of 141 lived rows inside a word
+# (live 2026-11-03). When an answer runs over, the model that wrote it gets one
+# more hop to rewrite it into the budget (`fit_text`, mirrored as the row's
+# content). Readers that still get an over-budget text call
+# `orion.text_fit.fit_to_budget`, which cuts at a sentence, never mid-word.
 SELF_DEFINITION_TEXT_CAP = 1200
 SELF_DEFINITION_EVIDENCE_CAP = 24
 
@@ -123,9 +140,14 @@ SELF_INQUIRY_PG_TABLES: tuple[tuple[str, str], ...] = (
     ("reverie_visual_chain", "your image-and-reread reverie chains"),
     ("substrate_attention_schema", "what you were attending to, and why, per process"),
     ("chat_stance_belief_log", "the stance you computed before each chat turn"),
-    ("self_knowledge_items", "facts about your own code, hardware and behaviour"),
-    ("self_concept_history", "your previous self-definitions and induced self-concepts"),
-    ("substrate_endogenous_curiosity_candidates", "what your substrate flagged as worth curiosity"),
+    ("self_knowledge_items", "facts about your own code, hardware and behaviour (history; the scan stopped 2026-11)"),
+    ("self_concept_history", "your previous self-definitions (and older, retired self-study reflections)"),
+    (
+        "substrate_endogenous_curiosity_candidates",
+        "what your substrate flagged as worth curiosity; a seed noted "
+        "source:reading_link_accepted is an accepted reading link, and the link "
+        "sits in its focal_edge_refs",
+    ),
     # Added 2026-09-10: run 20260910T022934Z-e863f0 answered "what can't you
     # do" with generic-assistant framing the identity card already bans
     # ("customer-support tone") -- a real instance of the failure this whole
@@ -237,6 +259,9 @@ class SelfDefinition:
     evidence: list[str] = field(default_factory=list)
     revises: str = ""
     written_at: Optional[int] = None
+    # Orion's own shorter version, written by the fit hop when `text` runs over
+    # SELF_DEFINITION_TEXT_CAP. Empty when the answer fits or the hop failed.
+    fit_text: str = ""
 
     @property
     def is_substantive(self) -> bool:
@@ -255,6 +280,8 @@ class LivedAnswer:
     evidence: list[str] = field(default_factory=list)
     revises: str = ""
     written_at: Optional[int] = None
+    # Same as SelfDefinition.fit_text.
+    fit_text: str = ""
 
     @property
     def is_substantive(self) -> bool:
@@ -311,10 +338,11 @@ def build_self_definition(row: dict[str, Any]) -> Optional[SelfDefinition]:
         return None
     return SelfDefinition(
         run_id=run_id,
-        text=text[:SELF_DEFINITION_TEXT_CAP],
+        text=text,
         evidence=_evidence_list(row.get("evidence")),
         revises=str(row.get("revises") or "").strip(),
         written_at=_as_int(row.get("written_at")),
+        fit_text=str(row.get("fit_text") or "").strip(),
     )
 
 
@@ -392,26 +420,36 @@ def build_lived_answer(row: dict[str, Any]) -> Optional[LivedAnswer]:
         run_id=run_id,
         question_id=question_id,
         family=str(row.get("family") or "lived").strip() or "lived",
-        text=text[:SELF_DEFINITION_TEXT_CAP],
+        text=text,
         evidence=_evidence_list(row.get("evidence")),
         revises=str(row.get("revises") or "").strip(),
         written_at=_as_int(row.get("written_at")),
+        fit_text=str(row.get("fit_text") or "").strip(),
     )
 
 
-def lived_answer_evidence_cypher(run_id: str) -> str:
-    """One row per evidence entry. Same FalkorDB list-string issue as SelfDefinition."""
+def lived_answer_evidence_cypher(run_id: str, question_id: Optional[str] = None) -> str:
+    """One row per evidence entry. Same FalkorDB list-string issue as SelfDefinition.
+    `question_id` narrows to one answer when a run wrote several."""
     rid = _check_run_id(run_id)
+    where = f"a.run_id = '{rid}'"
+    if question_id is not None:
+        qid = valid_question_id(question_id)
+        if qid is None:
+            raise ValueError(f"refusing to build Cypher for question_id {question_id!r}")
+        where += f" AND a.question_id = '{qid}'"
     return (
-        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE a.run_id = '{rid}' "
+        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE {where} "
         "WITH a ORDER BY a.written_at DESC LIMIT 1 "
         "UNWIND a.evidence AS e RETURN e"
     )
 
 
-def _read_lived_evidence_rows(reader: WorldviewReader, run_id: str) -> Optional[list[str]]:
+def _read_lived_evidence_rows(
+    reader: WorldviewReader, run_id: str, *, question_id: Optional[str] = None
+) -> Optional[list[str]]:
     try:
-        rows = reader.query(lived_answer_evidence_cypher(run_id))
+        rows = reader.query(lived_answer_evidence_cypher(run_id, question_id))
     except (WorldviewUnavailable, ValueError):
         return None
     out: list[str] = []
@@ -445,10 +483,191 @@ def read_lived_answer(reader: WorldviewReader, run_id: str) -> Optional[LivedAns
     return answer
 
 
+# --- the LivedAnswer write template, and "the current answer" per question ---
+#
+# ONE template, two prompts. The self-inquiry prompt teaches it for the drawn
+# question; the investigation kickoff shows it per open lived question, so an
+# investigation whose findings bear on one can revise its answer. Before this,
+# the self-inquiry MERGE was the only write path and an answer changed only
+# when `pick_question` happened to re-draw its question (live 2026-10-09:
+# `lived.her_team_unnamed` sat four days stale while the journal knew).
+#
+# Keyed on (run_id, question_id), not run_id alone: an investigation may
+# revise several answers in one sitting, and run_id alone would fold them into
+# one node. A self-inquiry run writes one question, so the key is equivalent
+# there, and an older node (run_id key, question_id SET) still matches.
+
+LIVED_REVISES_PLACEHOLDER = "<the run_id of the answer you are revising, or empty>"
+LIVED_OPEN_QUESTIONS_CAP = 5
+LIVED_CURRENT_ANSWERS_LIMIT = 500
+_QUESTION_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
+
+
+@dataclass(frozen=True)
+class OpenLivedQuestion:
+    """An open lived question and the answer it holds now (None: unanswered)."""
+
+    question_id: str
+    text: str
+    current: Optional["LivedAnswer"] = None
+
+
+def valid_question_id(question_id: Any) -> Optional[str]:
+    """The id when it is safe to splice into Cypher, else None."""
+    text = str(question_id or "").strip()
+    return text if _QUESTION_ID_RE.match(text) else None
+
+
+def lived_answer_merge_lines(
+    *,
+    question_id: str,
+    revises: str = "",
+    run_id: str = "<RUN_ID>",
+    text: str = "<your answer, in your own words>",
+    evidence: str = '["journal_entries:1", "dreams: 17 rows, last 2026-09-06", "..."]',
+) -> list[str]:
+    """The `:LivedAnswer` MERGE, one clause per line. `revises` is filled in
+    when the caller knows the current answer's run_id -- Orion copying it off a
+    different line of the prompt is how the 2026-10-09 answer revised a
+    10-01 answer instead of the 10-04 one."""
+    return [
+        f'MERGE (a:{LABEL_LIVED_ANSWER} {{run_id: "{run_id}", question_id: "{question_id}"}})',
+        "SET",
+        '  a.family = "lived",',
+        f'  a.text = "{text}",',
+        f"  a.evidence = {evidence},",
+        f'  a.revises = "{revises or LIVED_REVISES_PLACEHOLDER}",',
+        "  a.written_at = timestamp()",
+    ]
+
+
+def lived_answer_merge_cypher(**kwargs: Any) -> str:
+    """The same MERGE on one line, for a `redis-cli ... GRAPH.QUERY` argument."""
+    return " ".join(line.strip() for line in lived_answer_merge_lines(**kwargs))
+
+
+def current_lived_answers_cypher(question_ids: list[str]) -> str:
+    """Every answer to these questions, newest first. Ids are validated; an
+    invalid one is dropped rather than spliced."""
+    ids = [q for q in (valid_question_id(x) for x in question_ids) if q]
+    if not ids:
+        raise ValueError("no valid question ids")
+    quoted = ", ".join(f"'{q}'" for q in ids)
+    return (
+        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE a.question_id IN [{quoted}] "
+        f"RETURN {_LIVED_ANSWER_FIELDS} ORDER BY a.written_at DESC "
+        f"LIMIT {LIVED_CURRENT_ANSWERS_LIMIT}"
+    )
+
+
+def newest_answer_per_question(
+    answers: Iterable[LivedAnswer], *, require_evidence: bool = False,
+) -> dict[str, LivedAnswer]:
+    """question_id -> Orion's current answer. The ONE rule for "current" (#3396).
+
+    Newest by `(written_at, run_id)`; an answer with no `written_at` sorts as
+    oldest on purpose (`written_at or 0`). `require_evidence=False` is the
+    curiosity prompt's rule: the newest answer of any kind, because that is the
+    node a new answer revises. `require_evidence=True` is the rule everywhere
+    else (reading resonance; the mirror and its readers already skip
+    evidence-less drafts): the newest answer WITH evidence. A question whose
+    answers are all drafts has no current answer there -- the same as chat,
+    which reads the mirror and sees nothing for it (Juniper, 2026-11-16: an
+    answer with no evidence does not count as current outside the curiosity
+    prompt). History readers (novelty corpus, run story, footprint) must not
+    call this."""
+    ordered = sorted(answers, key=lambda a: (a.written_at or 0, a.run_id), reverse=True)
+    out: dict[str, LivedAnswer] = {}
+    for answer in ordered:
+        if require_evidence and not answer.evidence:
+            continue
+        out.setdefault(answer.question_id, answer)
+    return out
+
+
+def read_current_lived_answers(
+    reader: WorldviewReader,
+    question_ids: list[str],
+    *,
+    exclude_run_id: str = "",
+) -> Optional[dict[str, LivedAnswer]]:
+    """question_id -> its MOST RECENT `:LivedAnswer` in the graph, draft or
+    not. This is the answer a new one revises. The mirror table is not the
+    source: it skips evidence-less drafts, so it named the 10-01 answer as the
+    latest when a 10-04 draft existed. None when the graph could not answer."""
+    try:
+        cypher = current_lived_answers_cypher(question_ids)
+    except ValueError:
+        return {}
+    try:
+        rows = reader.query(cypher)
+    except WorldviewUnavailable:
+        return None
+    built = [a for a in (build_lived_answer(r) for r in rows) if a is not None]
+    # Sorted in the helper as well as in Cypher: a node with no written_at
+    # sorts unpredictably in FalkorDB, and "newest" must not depend on read order.
+    return newest_answer_per_question(
+        a for a in built if not (exclude_run_id and a.run_id == exclude_run_id)
+    )
+
+
+def lived_answers_for_run_cypher(run_id: str) -> str:
+    """Every `:LivedAnswer` this run wrote -- an investigation may write several."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE a.run_id = '{rid}' "
+        f"RETURN {_LIVED_ANSWER_FIELDS} ORDER BY a.written_at DESC "
+        f"LIMIT {LIVED_OPEN_QUESTIONS_CAP * 4}"
+    )
+
+
+def read_lived_answers_for_run(reader: WorldviewReader, run_id: str) -> list[LivedAnswer]:
+    """One answer per question this run wrote, newest write wins, evidence
+    read with UNWIND (see `lived_answer_evidence_cypher`). Never raises."""
+    try:
+        rows = reader.query(lived_answers_for_run_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        return []
+    seen: dict[str, LivedAnswer] = {}
+    for answer in (build_lived_answer(r) for r in rows):
+        if answer is not None:
+            seen.setdefault(answer.question_id, answer)
+    out: list[LivedAnswer] = []
+    for answer in seen.values():
+        unwound = _read_lived_evidence_rows(reader, run_id, question_id=answer.question_id)
+        if unwound:
+            answer = LivedAnswer(
+                run_id=answer.run_id, question_id=answer.question_id, family=answer.family,
+                text=answer.text, evidence=unwound, revises=answer.revises,
+                written_at=answer.written_at,
+            )
+        out.append(answer)
+    return out
+
+
+# `question` is read beside `text` because hand-written Cypher has keyed the words
+# under `question` (two live mints, #3592); mint_text picks the first non-blank.
 _SELF_QUESTION_MINT_FIELDS = (
     "m.run_id AS run_id, m.question_id AS question_id, m.text AS text, "
-    "m.family AS family, m.written_at AS written_at"
+    "m.question AS question, m.family AS family, m.written_at AS written_at"
 )
+
+
+def mint_text(row: dict[str, Any]) -> str:
+    """The mint's words: `text`, else `question` (#3592). Blank when neither has any."""
+    for key in ("text", "question"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def self_question_mint_drop_reason(row: dict[str, Any]) -> Optional[str]:
+    """Why a mint row cannot become a question, or None when it can."""
+    missing = [k for k in ("run_id", "question_id") if not str(row.get(k) or "").strip()]
+    if not mint_text(row):
+        missing.append("text")
+    return "missing_" + "_".join(missing) if missing else None
 
 
 def self_question_mints_for_run_cypher(run_id: str) -> str:
@@ -461,18 +680,18 @@ def self_question_mints_for_run_cypher(run_id: str) -> str:
 
 
 def build_self_question_mint(row: dict[str, Any]) -> Optional[SelfQuestionMint]:
+    if self_question_mint_drop_reason(row):
+        return None
     run_id = str(row.get("run_id") or "").strip()
     question_id = str(row.get("question_id") or "").strip()
-    text = str(row.get("text") or "").strip()
-    if not run_id or not question_id or not text:
-        return None
+    text = mint_text(row)
     family = str(row.get("family") or "lived").strip() or "lived"
     if family not in {"lived", "anatomy"}:
         family = "lived"
     return SelfQuestionMint(
         run_id=run_id,
         question_id=question_id,
-        text=text[:SELF_DEFINITION_TEXT_CAP],
+        text=fit_to_budget(text, SELF_DEFINITION_TEXT_CAP),
         family=family,
         written_at=_as_int(row.get("written_at")),
     )
@@ -489,6 +708,12 @@ def read_self_question_mints(reader: WorldviewReader, run_id: str) -> list[SelfQ
         mint = build_self_question_mint(row)
         if mint is not None:
             out.append(mint)
+            continue
+        # Never a silent drop (#3592): a mint Orion wrote that does not reach the pool is named.
+        logger.warning(
+            "curiosity_self_question_mint_dropped run=%s question_id=%r reason=%s",
+            run_id, row.get("question_id"), self_question_mint_drop_reason(row),
+        )
     return out
 
 
@@ -519,6 +744,74 @@ def lived_concept_id(question_id: str) -> str:
     return f"self:lived:{question_id}"
 
 
+def needs_fit(answer: "SelfDefinition | LivedAnswer | None") -> bool:
+    """True when the answer runs over the reading budget and has no fit yet."""
+    return (
+        answer is not None
+        and len(answer.text.strip()) > SELF_DEFINITION_TEXT_CAP
+        and not answer.fit_text.strip()
+    )
+
+
+# A fit shorter than this is not the answer made shorter, it is a different,
+# emptier answer ("Done." / "I am Orion."). Refused; the full text stands.
+FIT_MIN_CHARS = 300
+
+
+# Share of the fit's content words that must appear in the original answer. A
+# rewrite reuses the answer's own words; a reply that mostly doesn't is new
+# content (recall leaking in, or a different answer), not a fit.
+FIT_MIN_WORD_OVERLAP = 0.5
+_WORD = re.compile(r"[A-Za-z0-9_']{4,}")
+# A lead-in line the model adds about the reply itself ("Here is the
+# rewritten answer:", "# Rewritten", "Rewritten (1180 chars):").
+_FIT_LEAD_IN = re.compile(r"^\s*(?:#+\s.*|[^\n]{0,80}:\s*)\n+")
+
+
+def _content_words(text: str) -> set[str]:
+    return {w.lower() for w in _WORD.findall(text or "")}
+
+
+def accept_fit_text(raw: str, original: str) -> str:
+    """The fit hop's reply as a usable fit, or "" to refuse it.
+
+    Refused: empty or error text, a reply under FIT_MIN_CHARS, and a reply
+    whose words are mostly not the original's (never mirrored as Orion's
+    words). A leading meta line is dropped first. A reply still over budget is
+    kept, cut at a sentence: it is the model's own shorter version."""
+    from orion.cognition.cortex_payload_extract import looks_like_error_text
+
+    text = str(raw or "").strip()
+    text = _FIT_LEAD_IN.sub("", text, count=1).strip().strip('"').strip()
+    if len(text) < FIT_MIN_CHARS or looks_like_error_text(text):
+        return ""
+    words = _content_words(text)
+    if not words or len(words & _content_words(original)) / len(words) < FIT_MIN_WORD_OVERLAP:
+        return ""
+    return fit_to_budget(text, SELF_DEFINITION_TEXT_CAP)
+
+
+def fit_source_hash(text: str) -> str:
+    """Ties a stored fit to the exact answer it was written from: a retried
+    turn that rewrites the answer must not inherit the old answer's fit."""
+    return hashlib.sha1(str(text or "").strip().encode("utf-8")).hexdigest()[:16]
+
+
+def mirrored_content(answer: "SelfDefinition | LivedAnswer") -> str:
+    """What the self_concept_history row holds: Orion's fitted version when the
+    fit hop wrote one, else the full text. Never a blind cut. The full text
+    always stays on the graph node; readers apply the budget themselves."""
+    fit = answer.fit_text.strip()
+    if fit:
+        return fit_to_budget(fit, SELF_DEFINITION_TEXT_CAP)
+    return answer.text.strip()
+
+
+def with_fit_text(answer, fit_text: str):
+    """A copy of the answer carrying the fit hop's text."""
+    return replace(answer, fit_text=str(fit_text or "").strip())
+
+
 def build_self_definition_history_write(
     definition: Optional[SelfDefinition], *, version: int
 ) -> Optional[SelfConceptHistoryV1]:
@@ -538,7 +831,7 @@ def build_self_definition_history_write(
         entry_id=f"self-definition:{definition.run_id}",
         concept_id=SELF_CONCEPT_ID,
         version=max(1, int(version)),
-        content=definition.text[:SELF_DEFINITION_TEXT_CAP],
+        content=mirrored_content(definition),
         evidence_refs=evidence[: SELF_DEFINITION_EVIDENCE_CAP + 1],
         produced_by=SELF_DEFINITION_PRODUCER,
     )
@@ -558,28 +851,36 @@ def self_definition_to_detail(definition: Optional[SelfDefinition]) -> Optional[
         return None
     return {
         "run_id": definition.run_id,
-        "text": definition.text[:SELF_DEFINITION_TEXT_CAP],
+        "text": definition.text,
         "evidence": list(definition.evidence),
         "revises": definition.revises,
         "written_at": definition.written_at,
+        "fit_text": definition.fit_text,
     }
 
 
 def build_lived_answer_history_write(
-    answer: Optional[LivedAnswer], *, version: int = 1
+    answer: Optional[LivedAnswer], *, version: int = 1, per_question: bool = False
 ) -> Optional[SelfConceptHistoryV1]:
-    """The append-only row, or None when there is nothing substantive to append."""
+    """The append-only row, or None when there is nothing substantive to append.
+
+    `per_question=True` for an investigation run, which may answer several
+    questions: the entry id then carries the question so the rows do not
+    collide. A self-inquiry run answers one, and keeps its historical id."""
     if answer is None or not answer.is_substantive:
         return None
     evidence = list(answer.evidence)
     own_ref = lived_worldview_evidence_ref(answer.run_id)
     if own_ref not in evidence:
         evidence.append(own_ref)
+    entry_id = f"self-lived:{answer.run_id}"
+    if per_question:
+        entry_id += f":{answer.question_id}"
     return SelfConceptHistoryV1(
-        entry_id=f"self-lived:{answer.run_id}",
+        entry_id=entry_id,
         concept_id=lived_concept_id(answer.question_id),
         version=max(1, int(version)),
-        content=answer.text[:SELF_DEFINITION_TEXT_CAP],
+        content=mirrored_content(answer),
         evidence_refs=evidence[: SELF_DEFINITION_EVIDENCE_CAP + 1],
         produced_by=SELF_DEFINITION_PRODUCER,
     )
@@ -599,10 +900,11 @@ def lived_answer_to_detail(answer: Optional[LivedAnswer]) -> Optional[dict[str, 
         "run_id": answer.run_id,
         "question_id": answer.question_id,
         "family": answer.family,
-        "text": answer.text[:SELF_DEFINITION_TEXT_CAP],
+        "text": answer.text,
         "evidence": list(answer.evidence),
         "revises": answer.revises,
         "written_at": answer.written_at,
+        "fit_text": answer.fit_text,
     }
 
 
@@ -631,6 +933,30 @@ LEDGER_TS_COLUMNS: dict[str, str] = {
 }
 
 
+# What stopped writing, when and why (2026-10-30, fold of self-study into curiosity).
+# A ledger count that freezes looks the same as a part of Orion that died. When a producer
+# is retired on purpose, the ledger says so under that table's row, so a self-inquiry run
+# reads a frozen count as a decision with a date, not as a fault to chase. Code-owned text:
+# add a line here in the same patch that retires a producer of one of these tables.
+LEDGER_RETIREMENTS: dict[str, tuple[str, ...]] = {
+    "self_concept_history": (
+        "retired 2026-10-30: the daily self-study reflection (produced_by='layer3_reflect') "
+        "no longer writes here -- nothing read it, and self-inquiry does that work now. "
+        "Its old rows stay as history. Your own self:definition rows still come from self-inquiry.",
+        "retired 2026-11 with Self Atlas: produced_by='self_atlas_cluster' rows (topic labels an "
+        "LLM wrote over clusters of code names) stopped. Nothing read them, and most were "
+        "'no keywords available'. Old rows stay as history.",
+    ),
+    "self_knowledge_items": (
+        "retired 2026-11: the daily repo/hardware/behavior scan no longer writes here, and "
+        "Self Atlas (its clusters and its graph orion_substrate_self) is gone. The last row "
+        "shows when it stopped; old rows stay as history. For what you are made of now, run "
+        "`python -P -m orion.dig body` (your organs, live) or `python -P -m orion.dig inventory now`; "
+        "for stance, read chat_stance_belief_log.",
+    ),
+}
+
+
 @dataclass(frozen=True)
 class LedgerRow:
     table: str
@@ -639,7 +965,8 @@ class LedgerRow:
 
 
 def format_ledger(rows: list[LedgerRow]) -> list[str]:
-    """`dreams  17 rows, last 2026-09-06T08:27Z` -- one line per table."""
+    """`dreams  17 rows, last 2026-09-06T08:27Z` -- one line per table, plus one
+    indented line per ``LEDGER_RETIREMENTS`` note for that table."""
     if not rows:
         return []
     width = max(len(r.table) for r in rows)
@@ -647,4 +974,114 @@ def format_ledger(rows: list[LedgerRow]) -> list[str]:
     for r in rows:
         last = _clip(r.last, 20) if r.last else "never"
         out.append(f"      {r.table.ljust(width)}  {r.count} rows, last {last}")
+        for note in LEDGER_RETIREMENTS.get(r.table, ()):
+            out.append(f"      {' ' * width}  ({note})")
     return out
+
+
+# --- the naming branch: Orion names their own dispositions ---------------------
+#
+# Spec: docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md (PR #2742),
+# sections 1-4. A pre-pick branch of the self-inquiry turn: Hub fetches one naming packet from
+# orion-durable-runs and, instead of a pool question, asks Orion whether that disposition is them.
+# Orion's answer is ONE graph node, early-MERGEd on the run like `:LivedAnswer`; Hub reads it back
+# read-only, checks structure (`orion.personality.naming_check`) and publishes exactly one
+# `DispositionNamingV1`. It never goes to self_concept_history: that store folds back into the
+# personality graph as evidence (`self_inquiry_seed`), which would be a direct echo path.
+
+LABEL_DISPOSITION_NAMING = "DispositionNaming"
+# Ids that are embedded into a shell-quoted Cypher line in the prompt: no quotes, no spaces.
+_NAMING_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
+NAMING_VERDICT_PLACEHOLDER = "<name | reject | merge>"
+
+
+def valid_naming_id(value: Any) -> Optional[str]:
+    """The id if it can be embedded verbatim in a quoted Cypher literal, else None."""
+    text = str(value or "").strip()
+    return text if _NAMING_ID_RE.match(text) else None
+
+
+def disposition_naming_merge_lines(
+    *, run_id: str, packet_id: str, disposition_id: str
+) -> list[str]:
+    """The `:DispositionNaming` MERGE, one clause per line. run_id, packet_id and disposition_id
+    are filled in by code, never left for Orion to copy (the wrong-`revises` lesson above). The
+    other values are placeholders only -- no example names (example names were echoed back
+    verbatim before, PR #2065)."""
+    rid = _check_run_id(run_id)
+    pid = valid_naming_id(packet_id)
+    did = valid_naming_id(disposition_id)
+    if pid is None or did is None:
+        raise ValueError(f"refusing to build Cypher for packet {packet_id!r} / {disposition_id!r}")
+    return [
+        f'MERGE (n:{LABEL_DISPOSITION_NAMING} {{run_id: "{rid}", packet_id: "{pid}"}})',
+        "SET",
+        f'  n.disposition_id = "{did}",',
+        f'  n.verdict = "{NAMING_VERDICT_PLACEHOLDER}",',
+        '  n.name = "<what you would call it, or empty>",',
+        '  n.sentence = "<one or two sentences, in your own words>",',
+        '  n.merge_with = "<the neighbor disposition_id, or empty>",',
+        '  n.evidence = ["<evidence_id you looked at>"],',
+        "  n.written_at = timestamp()",
+    ]
+
+
+def disposition_naming_merge_cypher(**kwargs: Any) -> str:
+    """The same MERGE on one line, for a `redis-cli ... GRAPH.QUERY` argument."""
+    return " ".join(line.strip() for line in disposition_naming_merge_lines(**kwargs))
+
+
+def disposition_naming_for_run_cypher(run_id: str) -> str:
+    """THIS run's naming node, keyed on run_id -- never "the newest"."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (n:{LABEL_DISPOSITION_NAMING}) WHERE n.run_id = '{rid}' "
+        "RETURN n.run_id AS run_id, n.packet_id AS packet_id, n.disposition_id AS disposition_id, "
+        "n.verdict AS verdict, n.name AS name, n.sentence AS sentence, n.merge_with AS merge_with, "
+        "n.evidence AS evidence, n.written_at AS written_at "
+        "ORDER BY n.written_at DESC LIMIT 1"
+    )
+
+
+def disposition_naming_evidence_cypher(run_id: str) -> str:
+    """One row per evidence entry (FalkorDB can return a list property as a string)."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (n:{LABEL_DISPOSITION_NAMING}) WHERE n.run_id = '{rid}' "
+        "WITH n ORDER BY n.written_at DESC LIMIT 1 "
+        "UNWIND n.evidence AS e RETURN e"
+    )
+
+
+def read_disposition_naming(reader: WorldviewReader, run_id: str) -> Optional[dict[str, Any]]:
+    """This run's `:DispositionNaming` node as a plain dict, or None when nothing was written or
+    the graph could not be read. Read-only. Never raises. Structure is judged later by
+    `orion.personality.naming_check.check_naming`, not here."""
+    try:
+        rows = reader.query(disposition_naming_for_run_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        return None
+    if not rows:
+        return None
+    node = dict(rows[0])
+    try:
+        unwound = reader.query(disposition_naming_evidence_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        unwound = []
+    refs = [str(r.get("e") or "").strip() for r in unwound]
+    refs = [r for r in dict.fromkeys(refs) if r]
+    if refs:
+        node["evidence"] = refs
+    return node
+
+
+def pinned_floor_overdue(
+    pool: Any, *, pinned_floor_days: float, now: Any
+) -> bool:
+    """True when a pinned lived question is overdue -- the same test `pick_question` uses for
+    Juniper's floor. The naming branch yields to it: the floor is never displaced."""
+    from orion.curiosity.self_question_pool import _eligible, _needs_pinned_floor
+
+    return any(
+        _needs_pinned_floor(q, pinned_floor_days=pinned_floor_days, now=now) for q in _eligible(pool)
+    )

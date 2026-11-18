@@ -1,6 +1,6 @@
 """Introspect contracts: bounded, empty-vs-unknown, caller-bound."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -203,3 +203,198 @@ def test_query_length_is_checked_after_stripping_on_both_contracts():
     assert wire.query == "gpus"
     with pytest.raises(ValidationError):
         ReadingToolRequestV1(operation="reading_result", query="   ")
+
+
+from orion.introspect.transport import DREAM_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX  # noqa: E402
+from orion.schemas.introspect import (  # noqa: E402
+    FULL_TEXT_CAP,
+    DreamsArguments,
+    IntrospectRequestV1,
+    IntrospectResultV1,
+    IntrospectToolBindingV1,
+)
+
+_BINDING = IntrospectToolBindingV1(
+    invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t", memory_allowed=True,
+)
+
+
+def test_transport_constants():
+    assert DREAM_REQUEST_CHANNEL == "orion:introspect:dream:request"
+    assert RESULT_PREFIX == "orion:introspect:result:"
+    assert (REQUEST_KIND, RESULT_KIND) == ("introspect.tool.request.v1", "introspect.tool.result.v1")
+
+
+def test_dreams_arguments_defaults_and_modes():
+    assert DreamsArguments().limit == 5
+    assert DreamsArguments(query="  vision  ").query == "vision"
+    assert DreamsArguments(dream_id="dream:19").dream_id == "dream:19"
+    assert DreamsArguments(dream_id="dh-33f002b0db4c").dream_id == "dh-33f002b0db4c"
+    assert DreamsArguments(kind="hypothesis", since=NOW).kind == "hypothesis"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"query": "   "},
+        {"query": "x" * 501},
+        {"dream_id": "19"},
+        {"dream_id": "dh-XYZ"},
+        {"dream_id": "dream:19", "query": "vision"},
+        {"dream_id": "dream:19", "kind": "narrative"},
+        {"dream_id": "dream:19", "since": NOW},
+        {"kind": "control"},
+        {"limit": 6},
+        {"since": NOW.replace(tzinfo=None)},
+        {"arm": "dream"},
+    ],
+)
+def test_dreams_arguments_reject_bad_input(fields):
+    with pytest.raises(ValidationError):
+        DreamsArguments(**fields)
+
+
+def test_request_carries_only_bus_operations():
+    req = IntrospectRequestV1(operation="dreams", binding=_BINDING, args={"limit": 2})
+    assert req.model_dump(mode="json")["operation"] == "dreams"
+    with pytest.raises(ValidationError):
+        IntrospectRequestV1(operation="reading_result", binding=_BINDING, args={})
+
+
+def test_result_accepts_dreams_operation():
+    result = IntrospectResultV1(ok=True, operation="dreams", as_of=NOW, total_available=0)
+    assert result.operation == "dreams"
+    assert FULL_TEXT_CAP == 4000
+
+
+def test_registry_and_channels_know_the_dream_contract():
+    import yaml
+    from pathlib import Path
+
+    from orion.schemas.registry import _REGISTRY
+
+    assert {"IntrospectRequestV1", "DreamsArguments", "IntrospectResultV1"} <= set(_REGISTRY)
+    channels = yaml.safe_load((Path(__file__).resolve().parents[3] / "orion/bus/channels.yaml").read_text())["channels"]
+    by_name = {c["name"]: c for c in channels}
+    req = by_name["orion:introspect:dream:request"]
+    assert (req["schema_id"], req["message_kind"], req["consumer_services"]) == (
+        "IntrospectRequestV1", "introspect.tool.request.v1", ["orion-dream"],
+    )
+    res = by_name["orion:introspect:result:*"]
+    assert (res["schema_id"], res["message_kind"]) == ("IntrospectResultV1", "introspect.tool.result.v1")
+    assert "orion-dream" in by_name["orion:vector:semantic:upsert"]["producer_services"]
+
+
+from orion.introspect.transport import CURIOSITY_REQUEST_CHANNEL  # noqa: E402
+from orion.schemas.introspect import (  # noqa: E402
+    CURIOSITY_FULL_JSON_BUDGET,
+    CURIOSITY_RUN_ID_PATTERN,
+    CuriosityArguments,
+    clip_json_text,
+)
+
+
+def test_curiosity_run_id_pattern_matches_the_atlas_guard():
+    from orion.curiosity.atlas import _RUN_ID_RE
+
+    assert _RUN_ID_RE.pattern == CURIOSITY_RUN_ID_PATTERN
+
+
+def test_curiosity_arguments_defaults_and_modes():
+    args = CuriosityArguments()
+    assert (args.kind, args.limit, args.line, args.query) == ("run", 5, None, None)
+    assert CuriosityArguments(query="  bees  ").query == "bees"
+    assert CuriosityArguments(run_id="3dc94088912b").run_id == "3dc94088912b"
+    assert CuriosityArguments(run_id="r1", kind="run").kind == "run"
+    recent = datetime.now(timezone.utc) - timedelta(days=3)
+    assert CuriosityArguments(line="self_inquiry", since=recent, query="x").line == "self_inquiry"
+    assert CuriosityArguments(kind="self_question", since=recent, limit=2).kind == "self_question"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"query": "   "},
+        {"query": "x" * 501},
+        {"run_id": "bad id"},
+        {"run_id": "r1' OR 1=1"},
+        {"run_id": "x" * 65},
+        {"run_id": "r1", "query": "bees"},
+        {"run_id": "r1", "since": datetime.now(timezone.utc)},
+        {"run_id": "r1", "line": "investigate"},
+        {"run_id": "r1", "kind": "self_question"},
+        {"kind": "self_question", "query": "bees"},
+        {"kind": "self_question", "line": "self_inquiry"},
+        {"kind": "candidate"},
+        {"line": "reflect"},
+        {"limit": 0},
+        {"limit": 6},
+        {"since": datetime.now().replace(tzinfo=None)},
+        {"status": "failed"},
+    ],
+)
+def test_curiosity_arguments_reject_bad_input(fields):
+    with pytest.raises(ValidationError):
+        CuriosityArguments(**fields)
+
+
+def test_clip_json_text_bounds_the_serialized_length():
+    assert clip_json_text("short", 100) == ("short", False)
+    assert clip_json_text(None, 100) == ("", False)
+    nasty = 'He said "no"\n\\ é ' * 2000
+    body, truncated = clip_json_text(nasty, CURIOSITY_FULL_JSON_BUDGET)
+    assert truncated
+    assert len(json.dumps(body, ensure_ascii=False)) <= CURIOSITY_FULL_JSON_BUDGET
+    # Longest prefix: one more character would not fit.
+    assert len(json.dumps(nasty.strip()[: len(body) + 1], ensure_ascii=False)) > CURIOSITY_FULL_JSON_BUDGET
+
+
+def test_worst_case_full_curiosity_run_fits_the_mcp_tool_result_cap():
+    nasty = '"Answer"\n\tbackslash \\ accent é ' * 1000
+    text, truncated = clip_json_text(nasty, CURIOSITY_FULL_JSON_BUDGET)
+    item = _item(
+        id="x" * 64, kind="curiosity_run", text=text, truncated=truncated,
+        extra={
+            "line": "self_inquiry", "status": "failed", "error": "e" * SHORT_FIELD_CAP,
+            "hops": 12, "findings": 3, "revisions": 2,
+            "prior_touched": {"claim": '"c"\n' * (SHORT_FIELD_CAP // 4), "from": 0.4, "to": 0.7},
+            "outcome_kind": "reached_out_blocked", "reach_out": "blocked:quiet_hours",
+            "turn_ok": True, "n_tested": 4, "n_moved": 2, "n_formed": 1, "unknown_reason": "u" * SHORT_FIELD_CAP,
+        },
+    )
+    result = IntrospectResultV1(ok=True, operation="curiosity", as_of=NOW, total_available=1, items=[item])
+    assert len(json.dumps(result.model_dump(mode="json"))) < MCP_TOOL_RESULT_MAX_CHARS
+    assert len(json.dumps(result.model_dump(mode="json"), ensure_ascii=False)) < MCP_TOOL_RESULT_MAX_CHARS
+
+
+def test_registry_and_channels_know_the_curiosity_contract():
+    import yaml
+    from pathlib import Path
+
+    from orion.schemas.registry import _REGISTRY
+
+    assert CURIOSITY_REQUEST_CHANNEL == "orion:introspect:curiosity:request"
+    assert IntrospectRequestV1(operation="curiosity", binding=_BINDING, args={}).operation == "curiosity"
+    assert _REGISTRY["CuriosityArguments"] is CuriosityArguments
+    channels = yaml.safe_load((Path(__file__).resolve().parents[3] / "orion/bus/channels.yaml").read_text())["channels"]
+    by_name = {c["name"]: c for c in channels}
+    req = by_name[CURIOSITY_REQUEST_CHANNEL]
+    assert (req["schema_id"], req["message_kind"], req["consumer_services"]) == (
+        "IntrospectRequestV1", "introspect.tool.request.v1", ["orion-hub"],
+    )
+    assert "orion-hub" in by_name["orion:introspect:result:*"]["producer_services"]
+    assert "orion-hub" in by_name["orion:vector:semantic:upsert"]["producer_services"]
+
+
+def test_curiosity_since_must_fall_inside_the_90_day_window():
+    """The run join keeps 90 days; an older since would silently undercount."""
+    from orion.schemas.introspect import CURIOSITY_WINDOW_DAYS
+
+    now = datetime.now(timezone.utc)
+    assert CURIOSITY_WINDOW_DAYS == 90
+    CuriosityArguments(since=now - timedelta(days=89))
+    for args in ({"since": now - timedelta(days=91)}, {"query": "bees", "since": now - timedelta(days=200)}):
+        with pytest.raises(ValidationError, match="within the last 90 days"):
+            CuriosityArguments(**args)
+    # Open self-questions are not windowed.
+    assert CuriosityArguments(kind="self_question", since=now - timedelta(days=400)).kind == "self_question"

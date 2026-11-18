@@ -86,16 +86,17 @@ class TestExtractPredictionErrorByDomain:
         out = mod.extract_prediction_error_by_domain(payload)
         assert out == {"execution": 0.1, "biometrics": 0.5}
 
-    def test_extracts_bus_synaptic_sixth_domain(self) -> None:
-        # 2026-07-25: bus_synaptic added to PREDICTION_ERROR_DOMAIN_NODES
-        # (PR #1377's node:substrate.bus_synaptic) -- must extract like any
-        # other domain, no special-casing needed given the generic
-        # dict-driven extraction loop.
-        assert "bus_synaptic" in mod.PREDICTION_ERROR_DOMAIN_NODES
-        assert mod.PREDICTION_ERROR_DOMAIN_NODES["bus_synaptic"] == "node:substrate.bus_synaptic"
-        payload = _field_state_payload(BASE, bus_synaptic=0.3)
-        out = mod.extract_prediction_error_by_domain(payload)
-        assert out == {"bus_synaptic": 0.3}
+    def test_retired_domains_are_not_extracted(self) -> None:
+        # 2026-11: route and bus_synaptic retired (PE suite rebuild step 5).
+        assert "bus_synaptic" not in mod.PREDICTION_ERROR_DOMAIN_NODES
+        assert "route" not in mod.PREDICTION_ERROR_DOMAIN_NODES
+        payload = {
+            "node_vectors": {
+                "node:substrate.bus_synaptic": {"prediction_error": 0.3},
+                "node:substrate.route": {"prediction_error": 0.2},
+            }
+        }
+        assert mod.extract_prediction_error_by_domain(payload) == {}
 
     def test_missing_node_vectors_yields_empty_dict(self) -> None:
         assert mod.extract_prediction_error_by_domain({}) == {}

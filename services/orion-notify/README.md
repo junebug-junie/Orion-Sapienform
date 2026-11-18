@@ -311,11 +311,9 @@ derives its value from `attention_require_ack` / `attention_acked_at`
 column. `health_monitor._has_open_alert` depends on that derived view for alert
 dedup and is unaffected by anything here.
 
-**One consumer does read this column:** `orion-notify-digest/app/digest.py`
-filters `status == "throttled"` and `== "deduped"`. Neither value was ever
-written before this change and neither is written by it, so those counters are
-unaffected -- but the column is not unread, and a future value must not collide
-with those two.
+**One consumer reads this column:** the daily organ roundup's footer
+(`orion/dig/organs.py`, query `notify`) counts requests by status. Its only other
+reader, `orion-notify-digest`, was retired 2026-11-16 (integration patch 4).
 
 **Known gap:** an escalation email sent by `attention_escalation.py` does not
 update the parent row, which stays `pending`. The escalation

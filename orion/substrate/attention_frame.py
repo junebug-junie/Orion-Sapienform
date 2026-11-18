@@ -66,6 +66,14 @@ def _detect_signals(
     return signals
 
 
+def _turn_read_skipped(ctx: dict[str, Any]) -> str | None:
+    read = ctx.get("current_turn_llm_read")
+    if not isinstance(read, dict):
+        return None
+    skipped = read.get("skipped")
+    return str(skipped) if skipped else None
+
+
 def build_attention_frame(
     *,
     ctx: dict[str, Any],
@@ -116,6 +124,10 @@ def build_attention_frame(
             "enabled": True,
             "direct_turn": direct,
             "direct_turn_cause": direct_cause,
+            # Set when cortex-exec deliberately skipped the same-turn read (no
+            # human message on this turn) -- tells a skipped read apart from a
+            # failed one, both of which make direct_turn_cause "unavailable".
+            "turn_read_skipped": _turn_read_skipped(ctx),
             "max_open_loops": max_open,
             "max_selected_asks": max_asks,
             "min_ask_score": min_ask,

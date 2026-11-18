@@ -204,11 +204,12 @@ def test_urns_are_unique_and_well_formed():
 
 
 def test_node_qualified_field_channel_gets_a_distinct_urn_from_the_bare_entry():
-    """bus_synaptic's qualified prediction_error entry (the real registry
-    content, 2026-09-03 glossary version 2) must not collide with the bare
-    prediction_error entry's URN."""
+    """A node-qualified prediction_error entry (the real registry content;
+    bus_synaptic's until its 2026-11 retirement, execution's now) must not
+    collide with the bare prediction_error entry's URN."""
     nodes = {n.name: n for n in resolve_field_channels()}
-    bus_name = "node:substrate.bus_synaptic.prediction_error"
+    assert "node:substrate.bus_synaptic.prediction_error" not in nodes  # retired 2026-11
+    bus_name = "node:substrate.execution.prediction_error"
     assert bus_name in nodes
     assert "prediction_error" in nodes
     assert nodes[bus_name].urn != nodes["prediction_error"].urn
@@ -278,18 +279,24 @@ def test_organ_signal_urn_carries_dimension_field():
     assert nodes[urn].producer_service == "orion-biometrics"
 
 
-def test_brain_region_resolver_covers_all_six_dimensions():
+def test_brain_region_resolver_covers_all_five_dimensions():
     """BrainRegionV1.dimension's full Literal set, no more no less -- a
-    closed enumeration, so this is an exact-equality check, not a floor."""
+    closed enumeration, so this is an exact-equality check, not a floor.
+    (self_state retired 2026-10-07: source table had 0 rows since 2026-07-22.)"""
+    from typing import get_args
+
+    from orion.schemas.brain_frame import BrainRegionV1
+
     nodes = {n.name: n for n in resolve_brain_regions()}
-    assert set(nodes) == {
+    expected = {
         "node_kind",
         "lane",
-        "self_state",
         "lattice_layer",
         "honesty_metrics",
         "field_anomaly",
     }
+    assert set(nodes) == expected
+    assert set(get_args(BrainRegionV1.model_fields["dimension"].annotation)) == expected
     assert nodes["field_anomaly"].producer_service == "orion-field-digester"
     assert nodes["lane"].producer_service == "orion-substrate-runtime"
 

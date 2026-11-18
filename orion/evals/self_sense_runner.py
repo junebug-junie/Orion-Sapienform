@@ -116,9 +116,15 @@ def build_row(
     self_definition_version: int | None,
     trace_missing_after_sec: float | None = None,
     lived_answers: list[dict[str, Any]] | None = None,
+    motor_steps: int | None = None,
 ) -> SelfSenseEvalV1:
     """Pick the answer source (trace beats HTTP; empty is 'none'), score it,
     and build the row. Pure: no network, no database.
+
+    `motor_steps`: how many harness steps the answering turn took. Every probe
+    runs as a full tool-using agent turn (measured 2026-10-15: 8-60 steps), so
+    an answer can be a research summary rather than the chat self speaking.
+    Recording the count lets a trend be split by it; the scorer does not judge it.
 
     `trace_missing_after_sec`: how long the runner waited for
     harness_turn_trace before giving up, recorded in notes whenever the
@@ -137,6 +143,8 @@ def build_row(
         notes.append("answer_empty_from_both_sources; scores are not a measurement")
     if source != "harness_trace" and correlation_id and trace_missing_after_sec is not None:
         notes.append(f"trace_missing_after={trace_missing_after_sec:.0f}s")
+    if motor_steps is not None:
+        notes.append(f"motor_steps={int(motor_steps)}")
     if not is_uuid(correlation_id):
         notes.append("envelope_corr=synthetic")
     if labels:

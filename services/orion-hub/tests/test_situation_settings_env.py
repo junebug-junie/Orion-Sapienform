@@ -24,7 +24,7 @@ def test_situation_enabled_defaults_true(monkeypatch):
 
 
 def test_situation_curiosity_and_reverie_default_true(monkeypatch):
-    # Deliberate contrast with perception/lab above: ON by default per
+    # Deliberate contrast with perception above: ON by default per
     # Juniper's explicit request (2026-08-30), not opt-in.
     monkeypatch.delenv("ORION_SITUATION_CURIOSITY_ENABLED", raising=False)
     monkeypatch.delenv("ORION_SITUATION_REVERIE_ENABLED", raising=False)

@@ -1,0 +1,178 @@
+const test = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+const p = require("./personality.js");
+
+const CHOICE = {
+  choice_id: "curiosity:r1:self:walkway", lane: "curiosity", occurred_at: "2026-11-13T07:29:39Z",
+  chosen: { key: "self:walkway", text: "walkway vehicle reports are mainly my own misnaming", market_rank: 4 },
+  passed_over: [
+    { key: "a", text: "peer briefs refused budget", market_rank: 1 },
+    { key: "b", text: "v2 relative switch", market_rank: 2 },
+    { key: "c", text: "wp read record grows", market_rank: 3 },
+    { key: "d", text: "four wiring points named", market_rank: null },
+  ],
+  chosen_market_rank: 4, declined_all: false, care_promoted: false, picks_in_decision: 1,
+  tendency: { disposition_id: "disp-1", label: "walkway misnaming over peer briefs, 3 of 3", status: "candidate" },
+};
+
+test("choiceView: what was picked, at which market rank, and the top passed-over options", () => {
+  const v = p.choiceView(CHOICE);
+  assert.strictEqual(v.lane, "What to look into");
+  assert.strictEqual(v.picked, "Picked: walkway vehicle reports are mainly my own misnaming (ranked #4)");
+  assert.deepStrictEqual(v.passedOver, ["#1 peer briefs refused budget", "#2 v2 relative switch", "#3 wp read record grows"]);
+  assert.strictEqual(v.more, 1);
+  assert.strictEqual(v.allPassedOver[3], "four wiring points named");   // unranked: no number
+  assert.strictEqual(v.passedOverLabel, "Passed over");
+  assert.strictEqual(v.tendency, "Counts toward: walkway misnaming over peer briefs, 3 of 3");
+  assert.deepStrictEqual(v.notes, []);
+});
+
+test("choiceView: a decline reads as 'said nothing' / 'made no move', never as a pick", () => {
+  const out = p.choiceView({ ...CHOICE, lane: "outreach", chosen: null, declined_all: true, tendency: null });
+  assert.strictEqual(out.picked, "Said nothing");
+  assert.strictEqual(out.declined, true);
+  assert.strictEqual(out.passedOverLabel, "Options Orion turned down");
+  assert.strictEqual(out.tendency, "");
+  assert.strictEqual(p.choiceView({ ...CHOICE, lane: "prime", chosen: null, declined_all: true }).picked, "Made no move");
+  assert.strictEqual(p.choiceView({ ...CHOICE, lane: "reading", chosen: null, declined_all: true }).picked,
+    "Picked none of them");
+});
+
+test("choiceView notes: market's first pick, care, several picks; tolerates junk", () => {
+  const v = p.choiceView({ ...CHOICE, chosen: { text: "x", market_rank: 1 }, care_promoted: true, picks_in_decision: 2 });
+  assert.deepStrictEqual(v.notes, ["Same as the market's first pick.", "Orion's care for a tendency moved this up.",
+    "One of 2 picks in this decision."]);
+  assert.strictEqual(p.choiceView({ ...CHOICE, chosen: { text: "x", market_rank: null } }).picked,
+    "Picked: x (not ranked)");
+  const blank = p.choiceView(null);
+  assert.strictEqual(blank.declined, true);
+  assert.deepStrictEqual(blank.passedOver, []);
+});
+
+test("tendencyView: label without the count, n of m, status in words, Prime reach, examples", () => {
+  const t = {
+    disposition_id: "disp-1", label: "turn start context is stale over camera layer (+13 more), 21 of 21",
+    status: "active", weight: 12.04, n: 21, m: 23, name: null,
+    examples: [CHOICE, { ...CHOICE, lane: "outreach", chosen: null, declined_all: true, passed_over: [] }],
+    juniper: null,
+  };
+  const v = p.tendencyView(t);
+  assert.strictEqual(v.label, "turn start context is stale over camera layer (+13 more)");
+  assert.strictEqual(v.count, "21 of 23 choices went this way");
+  assert.strictEqual(v.status, "Orion leans on this now");
+  assert.strictEqual(v.strength, "Strength 12.0 (Orion's Prime sees it from 10)");
+  assert.strictEqual(v.primeEligible, true);
+  assert.match(v.examples[0], /^Picked walkway vehicle reports .* over #1 peer briefs refused budget, #2 v2 relative switch, #3 wp read record grows and 1 more \(What to look into, /);
+  assert.match(v.examples[1], /^Said nothing \(Reaching out to you/);
+  assert.strictEqual(v.verdict, "You have not answered yet.");
+  assert.strictEqual(p.tendencyView({ ...t, status: "candidate" }).primeEligible, false);   // only active
+  assert.strictEqual(p.tendencyView({ ...t, weight: 9.9 }).primeEligible, false);
+  assert.strictEqual(p.tendencyView({ ...t, orion_verdict: "rejected" }).primeEligible, false);
+  assert.strictEqual(p.tendencyView({ ...t, status: "candidate" }).status, "Still forming");
+  assert.strictEqual(p.tendencyView(null).label, "(no label)");
+});
+
+test("tendencyViews marks only the first PRIME_MAX_LINES eligible tendencies as in Prime", () => {
+  const t = (id, w, extra) => ({ disposition_id: id, label: id, status: "active", weight: w, n: 1, m: 1, ...extra });
+  const views = p.tendencyViews([t("a", 30, { orion_verdict: "rejected" }), t("b", 20), t("c", 15), t("d", 12)]);
+  assert.deepStrictEqual(views.map((v) => v.inPrime), [false, true, true, false]);
+  assert.strictEqual(p.PRIME_MAX_LINES, 2);
+});
+
+test("a choice whose tendency was retired says so", () => {
+  const v = p.choiceView({ ...CHOICE, tendency: { ...CHOICE.tendency, status: "retired" } });
+  assert.strictEqual(v.tendency, "Counted toward: walkway misnaming over peer briefs, 3 of 3 (retired)");
+});
+
+test("the No confirm says the answer can be taken back", () => {
+  assert.match(p.NO_CONFIRM, /change your mind later under "You said no to"/);
+  assert.doesNotMatch(p.NO_CONFIRM, /cannot come back/);
+});
+
+test("saidNoFrom reads the said_no list; afterVerdictText names a revive", () => {
+  assert.deepStrictEqual(p.saidNoFrom({ said_no: [1] }), [1]);
+  assert.deepStrictEqual(p.saidNoFrom({}), []);
+  assert.strictEqual(p.afterVerdictText({ revived: true, retired: false }),
+    "Back. Orion can lean on this again as it grows.");
+});
+
+test("answersBlockedText is plain words, never a file name", () => {
+  assert.strictEqual(p.answersBlockedText([]), "");
+  assert.strictEqual(p.answersBlockedText(["answers_table_missing: apply manual_migration_x.sql"]),
+    "Your answers can't be saved until a database update is applied.");
+  assert.strictEqual(p.answersBlockedText(["other"]), "Your answers can't be saved right now.");
+});
+
+test("verdictText and afterVerdictText say what Juniper answered in plain words", () => {
+  assert.match(p.verdictText({ verdict: "yes", at: "2026-11-13T10:00:00Z" }), /^You said yes on /);
+  assert.strictEqual(p.verdictText({ verdict: "no", at: null }), "You said no.");
+  assert.match(p.afterVerdictText({ retired: true }), /^Retired\. Orion will not lean on this any more\. It is now under "You said no to"\.$/);
+  assert.strictEqual(p.afterVerdictText({ retired: false }), "Saved. You said yes.");
+  assert.strictEqual(p.verdictUrl("disp-1:a.b"), "/api/personality/tendencies/disp-1%3Aa.b/verdict");
+});
+
+test("armsView: not live yet with no marks; per-arm funded share when live", () => {
+  assert.strictEqual(p.armsView({ days: 7, total: 0, arms: {} }).live, false);
+  assert.match(p.armsView(null).summary, /^Not live yet/);
+  const v = p.armsView({ days: 7, total: 6, arms: { care: { funded: 3, deferred: 1 }, holdback: { funded: 1, deferred: 1 } } });
+  assert.strictEqual(v.live, true);
+  assert.deepStrictEqual(v.rows, [
+    { arm: "With Orion's tendencies counted", text: "4 decisions, 3 given the go-ahead (75%)" },
+    { arm: "Without them (the comparison group)", text: "2 decisions, 1 given the go-ahead (50%)" },
+  ]);
+});
+
+test("choicesFrom / tendenciesFrom accept the durable-runs wrapper or a bare list", () => {
+  assert.deepStrictEqual(p.choicesFrom({ choices: [1] }), [1]);
+  assert.deepStrictEqual(p.choicesFrom([2]), [2]);
+  assert.deepStrictEqual(p.choicesFrom(null), []);
+  assert.deepStrictEqual(p.tendenciesFrom({ tendencies: [3] }), [3]);
+  assert.deepStrictEqual(p.tendenciesFrom({}), []);
+});
+
+test("PRIME_MIN_WEIGHT / PRIME_MAX_LINES match orion/prime/tending.py", () => {
+  const src = fs.readFileSync(path.join(__dirname, "../../../../orion/prime/tending.py"), "utf8");
+  const m = src.match(/^MIN_WEIGHT = ([0-9.]+)$/m);
+  assert.ok(m, "MIN_WEIGHT not found in orion/prime/tending.py");
+  assert.strictEqual(Number(m[1]), p.PRIME_MIN_WEIGHT);
+  const lines = src.match(/^MAX_LINES = (\d+)$/m);
+  assert.ok(lines, "MAX_LINES not found in orion/prime/tending.py");
+  assert.strictEqual(Number(lines[1]), p.PRIME_MAX_LINES);
+});
+
+test("DOM layer never writes HTML: upstream text only via textContent", () => {
+  const src = fs.readFileSync(path.join(__dirname, "personality.js"), "utf8");
+  assert.deepStrictEqual(src.match(/\.(innerHTML|outerHTML|insertAdjacentHTML)\b/g), null);
+});
+
+test("aboutView: full chosen and passed-over words from the examples, each once, declines in words", () => {
+  const long = "The walkway render break is unresolved and still live each morning — 59 http_500 compose failures "
+    + "in 81 minutes on 11-13 (a thread from my letter for 11-13)";
+  const ex = [
+    { ...CHOICE, chosen: { text: long, market_rank: null }, passed_over: [{ text: "Chat memory has never been promoted" }] },
+    { ...CHOICE, chosen: { text: long, market_rank: null }, passed_over: [{ text: "Chat memory has never been promoted" }, null] },
+    { ...CHOICE, lane: "prime", chosen: null, declined_all: true, passed_over: [{ text: long }] },
+  ];
+  const a = p.aboutView(ex);
+  assert.deepStrictEqual(a.chose, [long, "Made no move"]);   // full text, never cut
+  assert.deepStrictEqual(a.over, ["Chat memory has never been promoted", long]);
+  assert.deepStrictEqual(a.details, []);
+  assert.deepStrictEqual(p.aboutView(null), { chose: [], over: [], details: [] });
+  assert.deepStrictEqual(p.tendencyView({ examples: ex }).about, a);
+});
+
+test("aboutView: a curiosity-run promise's sentence (option detail) shows in About only, once", () => {
+  const sentence = 'a promise I made in a curiosity run at 2026-11-15 08:00Z: "I will check the walkway logs tomorrow."';
+  const promise = { text: "Curiosity run promise — the words stay in my own thinking", market_rank: null, detail: sentence };
+  const ex = [
+    { ...CHOICE, lane: "prime", chosen: promise, passed_over: [{ text: "Chat memory has never been promoted" }] },
+    { ...CHOICE, lane: "prime", chosen: { text: "Other" }, passed_over: [promise] },
+  ];
+  const v = p.tendencyView({ label: "Curiosity run promise, 2 of 2", examples: ex });
+  assert.deepStrictEqual(v.about.details, [`Chose: ${sentence}`, `Passed over: ${sentence}`]);
+  assert.ok(!v.label.includes("I will check"));
+  assert.ok(v.examples.every((e) => !e.includes("I will check")));
+  assert.ok(v.about.chose.every((t) => !t.includes("I will check")));
+});

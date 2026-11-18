@@ -701,3 +701,57 @@ TOTAL         587 URNs
   excluded from high-confidence blast radius.
 - Liveness is still **not computed** (phase 5). Every lineage card says so
   explicitly rather than leaving a blank that reads as "fine".
+
+## Rest semantics (2026-10-10, closes phase-5 R6)
+
+Lineage said what a metric means and where it goes, never why it is in the
+state it is in. A 2026-10-07 sweep called seven designed signals "dead" for
+that reason. Each registry entry may now carry:
+
+| field | values | meaning |
+|---|---|---|
+| `value_kind` | level, trigger, binary, count, bucket, placeholder | what shape the number has |
+| `rest` | prose | the designed resting value and what 0 means |
+| `sparsity` | per_tick, event_gated, designed_sparse | how often a real reading is expected |
+| `absent_means` | prose | what happens when there is no reading |
+| `polarity` | higher_is_better, higher_is_worse, none | **derived** for field channels from `orion.field.pressure`'s two merge sets: `HIGHER_IS_BETTER_CHANNELS` (min-merged) and `PRESSURE_CHANNELS` (max-merged, calm 0.0 kept). Any other channel, and any trigger, gets none -- max() is only the default merge, not a claim that more is worse. Declared only on inner-state fields |
+| `prompt_sites` | `dotted.module:callable` | where the number is put into an Orion LLM prompt |
+
+Where they live (no new registry):
+- field channels: a `semantics:` mapping on the glossary entry
+  (`config/field/field_channel_glossary.v1.yaml`). Glossary entries may also
+  carry `consumers:` (declared consumers, same existence check as the other
+  registries) and `producer:` (the computing service, when not the digester).
+- inner-state fields: `InnerStateSignal.semantics`, keyed by float field name
+  (`orion/inner_state_registry.py`).
+
+`MetricNode` carries all six; the definition lock records them
+(`semantics` class, high severity, except `prompt_sites` which is `routing`);
+`--metric <token>` prints them, including "(not recorded)". Hub's Field Channel Glossary nests node-qualified entries under their bare channel as `node_variants` (meaning + semantics) instead of listing duplicate rows.
+
+**Gate:** `scripts/check_metric_lineage.py --prompt-semantics`, its own step in
+`.github/workflows/orion-static-gates.yml`. Fails when a metric with
+`prompt_sites` lacks value_kind/rest/sparsity, when a vocabulary value is
+unknown, when a prompt site's module or callable does not exist, and when a
+URN pinned in `PROMPT_INVENTORY_URNS` (the 2026-10-07 prompt trace) stops
+resolving or loses its prompt site. Whether a number reaches a prompt cannot
+be derived: the AST consumer scan does not read `.j2` templates and cannot
+follow context dicts into them, so it is declared and pinned.
+
+**Not covered (no URN):** mind frontier score, curiosity prior confidence,
+metacog biometrics cue composites (strain/homeostasis/stability) and
+fleet_watts, metacog transport severity. Listed beside
+`PROMPT_INVENTORY_URNS`; registering them is follow-up work.
+
+**Entries populated 2026-10-10:** node-qualified `prediction_error` for
+harness_closure, cabinet, perception, execution, chat, codebase, route,
+biometrics (plus semantics on bus_synaptic); vision_organ's two channels
+(it has no prediction_error); FieldStateV1 `sustained_load_pressure`,
+`queue_contention_score`; AttentionBroadcastProjectionV1
+`coalition_stability_score`; AttentionSelfModelV1 `confidence`,
+`top_down_effort_used`, `prediction_error_confidence`, `heartbeat_smear`; and
+four signals registered for their semantics: `attention_salience_trace.v1`,
+`frontier_invocation_signal.v1`, `repair_pressure_appraisal.v1`,
+`equilibrium_snapshot.v1`. Each cites its producer line, and the PE entries
+cite their live 3-day distribution.
+

@@ -221,7 +221,8 @@ def test_materialize_does_not_null_a_reducer_owned_field_it_collides_with() -> N
     ]
     assert node_calls
     for cypher, _ in node_calls:
-        assert "n.prediction_error = $prediction_error" not in cypher
+        # Never over an existing node (ON MATCH); ON CREATE may set it.
+        assert "n.prediction_error = $prediction_error" not in cypher.split("ON MATCH SET", 1)[1]
 
 
 class _ExplodingStore:

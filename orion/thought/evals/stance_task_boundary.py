@@ -14,13 +14,15 @@ import time
 import uuid
 
 import httpx
-from jinja2 import Environment
+from orion.cognition.prompt_render import prompt_environment
 
 from orion.schemas.thought import ThoughtEventV1
+from orion.thought.coalition import canonicalize_turn_refs
 
 
 def assess_response(raw: dict, correlation: str) -> dict:
-    allowed = set(ThoughtEventV1.model_fields) - {'grounding_capsule', 'autonomy_slice'}
+    # Transport-owned fields: the stance LLM must never author them.
+    allowed = set(ThoughtEventV1.model_fields) - {'grounding_capsule', 'autonomy_slice', 'day_citations'}
     allowed.update({'llm_profile', 'producer'})
     unexpected = sorted(set(raw) - allowed)
     # Only transport-owned metadata may be supplied by this evaluator. Missing
@@ -30,9 +32,12 @@ def assess_response(raw: dict, correlation: str) -> dict:
         'session_id': 'stance_boundary_eval', 'created_at': datetime.now(timezone.utc),
     })
     anchor = f'hub:turn:{correlation}'
+    # The prompt asks for the bare `hub:turn` token; the runtime expands it the same way.
+    evidence_refs = canonicalize_turn_refs(thought.evidence_refs, correlation)
+    strain_refs = canonicalize_turn_refs(thought.strain_refs, correlation)
     return {'unexpected_keys': unexpected, 'imperative': thought.imperative, 'valid_stance': (
-        not unexpected and thought.evidence_refs == [anchor]
-        and set(thought.strain_refs) <= {anchor}
+        not unexpected and evidence_refs == [anchor]
+        and set(strain_refs) <= {anchor}
         and bool(thought.imperative.strip()) and thought.disposition == 'proceed'
     )}
 
@@ -41,10 +46,13 @@ async def evaluate(args: argparse.Namespace) -> dict:
     task = args.task_file.read_text(encoding='utf-8')
     correlation = str(uuid.uuid4())
     anchor = f'hub:turn:{correlation}'
-    prompt = Environment().from_string(args.template.read_text(encoding='utf-8')).render(
+    prompt = prompt_environment().from_string(args.template.read_text(encoding='utf-8')).render(
         user_message=task, stance_inputs={'user_message': task},
         association={'correlation_id': correlation, 'attended_node_ids': [anchor]},
         coalition_projection={'attended_node_ids': [anchor], 'open_loop_ids': [], 'broadcast_stale': False},
+        # Temporal Self patch 4: with --temporal-self-cue the "my day" block is present, and a task
+        # stance must still cite only this turn's anchor (the day must not leak into task evidence).
+        temporal_self_cue=args.temporal_self_cue,
     )
     body = {
         'model': args.model, 'messages': [{'role': 'system', 'content': prompt}],
@@ -55,6 +63,7 @@ async def evaluate(args: argparse.Namespace) -> dict:
     if args.reasoning_effort:
         body['chat_template_kwargs'] = {'reasoning_effort': args.reasoning_effort}
     report = {'correlation_id': correlation, 'prompt_chars': len(prompt),
+              'temporal_self_cue': bool(args.temporal_self_cue),
               'requested_reasoning_effort': args.reasoning_effort or 'worker_default',
               'reasoning_chars': 0, 'content_chars': 0, 'passed': False}
     content = []
@@ -104,6 +113,8 @@ def main() -> int:
     parser.add_argument('--model', default='agent')
     parser.add_argument('--timeout', type=float, default=235)
     parser.add_argument('--reasoning-effort', choices=['xhigh', 'medium', 'low'])
+    parser.add_argument('--temporal-self-cue', default='',
+                        help='Render the MY DAY SO FAR block with this cue text (patch 4 boundary check).')
     parser.add_argument('--template', type=Path, default=Path(__file__).resolve().parents[2] / 'cognition/prompts/stance_react.j2')
     args = parser.parse_args()
     report = asyncio.run(evaluate(args))

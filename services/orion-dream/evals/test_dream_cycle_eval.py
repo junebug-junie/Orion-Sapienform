@@ -45,15 +45,16 @@ class _World:
         self.last_end = None
         self.answer = answer
         self.prompts = []
+        self.observations = []
 
     def deps(self):
         from app.cycle import CycleDeps
 
-        def load(since, limit):
+        def load(since, limit, until=None):
             out = {"metacog": [], "compaction_request": [], "resonance": [], "crystallization": []}
             for kind, ts, row in self.rows:
-                if ts > since:
-                    out[kind].append(row)
+                if ts > since and (until is None or ts < until):
+                    out[kind].append({**row, "occurred_at": ts})  # every source query returns its time
             return out
 
         def persist(cycle):
@@ -73,6 +74,7 @@ class _World:
             load_last_attempt_end=lambda: self.last_end,
             persist_cycle=persist,
             complete=complete,
+            persist_pressure_observation=lambda observation: self.observations.append(observation) or True,
         )
 
 
@@ -111,6 +113,21 @@ def test_gateway_outage_keeps_the_backlog():
     assert cycle.status == "failed"
     still, _ = read_pressure(world.deps(), datetime.now(timezone.utc), world.last_start)
     assert still.pressure > still.threshold  # nothing was thrown away
+
+
+def test_history_keeps_discharge_and_recovery_even_while_refractory_blocks_sleep():
+    from app.cycle import run_cycle_once
+    world = _World(_linker)
+    assert asyncio.run(run_cycle_once(world.deps())) is not None
+    assert asyncio.run(run_cycle_once(world.deps())) is None
+    world.rows.append(("metacog", datetime.now(timezone.utc), {
+        "id": "new-after-sleep", "summary": "new surprise", "severity": "critical",
+        "trigger_kind": "novel", "tags": [],
+    }))
+    assert asyncio.run(run_cycle_once(world.deps())) is None
+    curve = [observation.reading.pressure for observation in world.observations]
+    assert curve[0] > 3 and curve[1:] == [0, 1]
+    assert all(not o.source_errors for o in world.observations)
 
 
 def test_refusing_llm_yields_no_hypotheses_and_counts_no_link():

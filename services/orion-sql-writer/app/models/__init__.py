@@ -17,6 +17,8 @@ from .biometrics_cluster import BiometricsClusterSQL
 from .power_intent_settled import PowerIntentSettledSQL
 from .cabinet_ambient_spike import CabinetAmbientSpikeSQL
 from .home_cooling_sample import HomeCoolingSampleSQL
+from .office_env_sample import OfficeEnvSampleSQL
+from .closet_env_sample import ClosetEnvSampleSQL
 from .energy import (
     EnergyBillActualSQL,
     EnergyBillForecastSQL,
@@ -30,6 +32,7 @@ from .energy import (
 from .biometrics_summary import BiometricsSummarySQL
 from .biometrics_induction import BiometricsInductionSQL
 from .causal_geometry_snapshot import CausalGeometrySnapshotSQL
+from .bus_traffic_rollup import BusTrafficRollupSQL
 from .spark_introspection_log import SparkIntrospectionLogSQL
 from .spark_telemetry import SparkTelemetrySQL
 from .notify_models import (
@@ -54,9 +57,20 @@ from .curiosity_peer_brief import CuriosityPeerBriefSQL
 from .curiosity_hop_reading import CuriosityHopReadingSQL
 from .durable_run_state import DurableRunStateSQL
 from .gpu_pool_event import GpuPoolEventSQL
+from .gpu_pool_state import GpuPoolStateSQL
+from .physiology_state import PhysiologyStateSQL
+from .want_ledger import WantLedgerSQL
+from .claude_tool_call_log import ClaudeToolCallLogSQL
+from .llm_call_usage import LlmCallUsageSQL
 from .transport_baseline_hourly import TransportBaselineHourlySQL
+from .orion_energy_hourly import OrionEnergyHourlySQL
+from .orion_energy_attribution_hourly import OrionEnergyAttributionHourlySQL
+from .act_downstream_use import ActDownstreamUseSQL
+from .self_signal_outcome import SelfSignalHourSQL, SelfSignalOutcomeAssociationSQL
+from .field_channel_anomaly_score import FieldChannelAnomalyScoreSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .self_concept_history import SelfConceptHistorySQL
+from .disposition_naming import DispositionNamingSQL
 from .self_sense_eval_log import SelfSenseEvalLogSQL
 from .evidence_unit import EvidenceUnitSQL
 from .social_room_turn import SocialRoomTurnSQL
@@ -88,13 +102,13 @@ from .mind_run import MindRunSQL
 from .vision_event import VisionEventSQL
 from .vision_scene_inventory import VisionSceneInventorySQL
 from .action_outcome import ActionOutcomeSQL
-from .dominance_streak_tick import DominanceStreakTickSQL
 from .dev_economics_ledger import DevEconomicsLedgerSQL
 from .doc_semantic_drift import DocSemanticDriftSQL
 from .juniper_affective_state import JuniperAffectiveStateSQL
 from .juniper_multimodal_affect import JuniperMultimodalAffectSQL
 from .equilibrium_service_transition import EquilibriumServiceTransitionSQL
 from .grammar_trace import (
+    GrammarActSQL,
     GrammarAtomSQL,
     GrammarCompactionSQL,
     GrammarEdgeSQL,
@@ -126,6 +140,8 @@ __all__ = [
     "PowerIntentSettledSQL",
     "CabinetAmbientSpikeSQL",
     "HomeCoolingSampleSQL",
+    "OfficeEnvSampleSQL",
+    "ClosetEnvSampleSQL",
     "EnergyUsageIntervalSQL",
     "EnergyCostAccruedSQL",
     "EnergyRunCostSQL",
@@ -137,6 +153,7 @@ __all__ = [
     "BiometricsSummarySQL",
     "BiometricsInductionSQL",
     "CausalGeometrySnapshotSQL",
+    "BusTrafficRollupSQL",
     "SparkIntrospectionLogSQL",
     "SparkTelemetrySQL",
     "BusFallbackLog",
@@ -153,10 +170,22 @@ __all__ = [
     "CuriosityHopReadingSQL",
     "DurableRunStateSQL",
     "GpuPoolEventSQL",
+    "GpuPoolStateSQL",
+    "PhysiologyStateSQL",
+    "WantLedgerSQL",
+    "ClaudeToolCallLogSQL",
+    "LlmCallUsageSQL",
     "TransportBaselineHourlySQL",
+    "OrionEnergyHourlySQL",
+    "OrionEnergyAttributionHourlySQL",
+    "ActDownstreamUseSQL",
+    "SelfSignalHourSQL",
+    "SelfSignalOutcomeAssociationSQL",
+    "FieldChannelAnomalyScoreSQL",
     "JournalEntryIndexSQL",
     "ChatStanceBeliefLogSQL",
     "SelfConceptHistorySQL",
+    "DispositionNamingSQL",
     "EvidenceUnitSQL",
     "SocialRoomTurnSQL",
     "ExternalRoomMessageSQL",
@@ -185,13 +214,13 @@ __all__ = [
     "VisionEventSQL",
     "VisionSceneInventorySQL",
     "ActionOutcomeSQL",
-    "DominanceStreakTickSQL",
     "DevEconomicsLedgerSQL",
     "DocSemanticDriftSQL",
     "JuniperAffectiveStateSQL",
     "JuniperMultimodalAffectSQL",
     "EquilibriumServiceTransitionSQL",
     "GrammarTraceSQL",
+    "GrammarActSQL",
     "HarnessTurnTraceSQL",
     "CockpitTurnSightingSQL",
     "GrammarEventSQL",

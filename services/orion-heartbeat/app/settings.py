@@ -109,5 +109,27 @@ class Settings(BaseSettings):
     # events rather than unbounded memory growth.
     absorb_queue_maxsize: int = Field(10_000, alias="HEARTBEAT_ABSORB_QUEUE_MAXSIZE")
 
+    # Wall-clock window for organ occupancy (dark_seats / organ_fire_counts /
+    # organ_distinctness). Replaces the old 64-event count window, which read
+    # rare organs as dark by sampling. Must be long enough that a rare-but-
+    # healthy organ (cortex-orch ~26/h) usually fires inside it; dark_seats is
+    # still only a "silent this window" fact -- use organ_seconds_since_last_fire
+    # to tell dark from rare.
+    organ_fire_window_sec: float = Field(300.0, alias="HEARTBEAT_ORGAN_FIRE_WINDOW_SEC")
+
+    # --- H1 verdict atoms on orion:grammar:event (2026-10-07) ---
+    # app/substrate/verdict_atoms.py. Heartbeat publishes a grammar atom when
+    # the H1 verdict class changes and has HELD for verdict_settle_ticks
+    # consecutive H1 ticks, plus one summary atom per summary window.
+    # Ledger-only trace: no reducer, field channel or prior reads it.
+    verdict_atoms_enabled: bool = Field(True, alias="HEARTBEAT_VERDICT_ATOMS_ENABLED")
+    # 3 ticks (~90 s at the 30 s H1 cadence): on 7 days of recorded verdicts,
+    # 1 -> 31.8 atoms/h (threshold flicker), 2 -> 5.0/h, 3 -> 1.1/h.
+    verdict_settle_ticks: int = Field(3, ge=1, alias="HEARTBEAT_VERDICT_SETTLE_TICKS")
+    verdict_summary_interval_sec: float = Field(3600.0, gt=0, alias="HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC")
+    # Hard ceiling on transition atoms per rolling hour; extras are counted in
+    # the summary (transitions_suppressed), not dropped silently.
+    verdict_max_transitions_per_hour: int = Field(12, ge=1, alias="HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR")
+
 
 settings = Settings()

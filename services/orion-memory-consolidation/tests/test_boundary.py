@@ -249,3 +249,23 @@ def test_should_close_turn_uses_time_gap_fallback():
         {"memory_classify_ts": "2026-06-16T11:31:00+00:00"},
     ]
     assert should_close_turn(turn, scores, window_turns=window_turns) is True
+
+
+def test_logprob_walker_scores_real_streams_for_the_defined_boundary_prompt():
+    """Live scores come from the logprob walker, not the text fallback. These are real token streams
+    the classify lane returned for the prompt WITH BOUNDARY_DEFINITION (synthetic turn pairs)."""
+    import json
+
+    data = json.loads((SERVICE_ROOT / "tests" / "fixtures" / "boundary_prompt_logprob_streams.json").read_text())
+    got = {}
+    for name in ("continuation", "unrelated"):
+        case = data[name]
+        raw = {"choices": [{"logprobs": {"content": case["logprobs"]}}]}
+        got[name] = scores_from_llm_result(case["content"], raw)
+        assert got[name]["scoring_source"] == "logprobs"
+        assert got[name]["shift_kind"] == "TOPIC"          # BPE split " TOP" + "IC" resolved
+        for k in ("novelty_score", "memory_significance_score", "conversation_boundary_score"):
+            assert isinstance(got[name][k], float)
+            assert got[name][k] not in (0.15, 0.85)         # not the text-fallback constants
+    assert got["continuation"]["conversation_boundary_score"] < 0.5
+    assert got["unrelated"]["conversation_boundary_score"] >= 0.85

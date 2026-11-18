@@ -9,7 +9,6 @@ from orion.substrate.mutation_contracts import PARKED_TARGET_SURFACES
 # Single source of truth for zone -> surface, shared with _target_surface_for_zone
 # below (which is the only caller in this module) and with PARKED_TELEMETRY_ZONES.
 TARGET_SURFACE_BY_ZONE: dict[str, str] = {
-    "world_ontology": "graph_consolidation",
     "self_relationship_graph": "prompt_profile",
 }
 _DEFAULT_TARGET_SURFACE = "recall"
@@ -24,7 +23,12 @@ _DEFAULT_TARGET_SURFACE = "recall"
 # _build_rich_routing_signals() (removed) used to be skipped for parked
 # surfaces: no store write, no pressure-accumulation cycle, for a signal
 # with nowhere to go.
-_RETIRED_TELEMETRY_ZONES: frozenset[str] = frozenset({"autonomy_graph"})
+#
+# "world_ontology" retired 2026-10-16 with graph_consolidation_param_patch
+# (mutation_contracts.RETIRED_MUTATION_CLASSES): "a review executed" is normal
+# operation, not evidence of a problem, and it was the only base signal this
+# zone produced.
+_RETIRED_TELEMETRY_ZONES: frozenset[str] = frozenset({"autonomy_graph", "world_ontology"})
 
 # Telemetry zones whose base-signal target_surface is entirely parked (see
 # mutation_contracts.PARKED_TARGET_SURFACES) -- i.e. a record in one of these

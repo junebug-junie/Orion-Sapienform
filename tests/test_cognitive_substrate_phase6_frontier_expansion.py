@@ -112,7 +112,7 @@ def test_contract_validation_enforces_task_zone_and_item_shapes() -> None:
         request_id="req-1",
         provider="stub",
         model="stub-1",
-        task_type="ontology_expand",
+        task_type="taxonomy_proposal",
         target_zone="world_ontology",
         delta_items=[item],
     )
@@ -211,7 +211,7 @@ def test_non_destructive_integration_without_live_provider_dependency() -> None:
     store = _build_store()
     request = FrontierExpansionRequestV1(
         request_id="req-int",
-        task_type="ontology_expand",
+        task_type="taxonomy_proposal",
         anchor_scope="orion",
         subject_ref="entity:orion",
         target_zone="world_ontology",
@@ -223,7 +223,7 @@ def test_non_destructive_integration_without_live_provider_dependency() -> None:
         request_id="req-int",
         provider="stub",
         model="stub-v1",
-        task_type="ontology_expand",
+        task_type="taxonomy_proposal",
         target_zone="world_ontology",
         delta_items=[FrontierDeltaItemV1(item_kind="taxonomy_branch", candidate_node=node)],
     )

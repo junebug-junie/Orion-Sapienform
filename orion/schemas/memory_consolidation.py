@@ -28,6 +28,12 @@ class MemoryTurnPersistedV1(BaseModel):
     # pre-#1672 code hard-fails validation on an envelope carrying this field.
     # orion-memory-consolidation must be deployed BEFORE orion-sql-writer.
     source_platform: Optional[str] = None
+    # Who opened the turn. "orion": Orion wrote on their own (outreach / unprompted), so there is
+    # no prompt, only Orion's message in `response`. Before 2026-10-09 sql-writer dropped these
+    # turns (empty prompt) and they never reached episodes: about half of all chat turns
+    # (53/101 over 14 days). Same DEPLOY ORDER as source_platform: orion-memory-consolidation
+    # BEFORE orion-sql-writer (extra="forbid").
+    initiated_by: Literal["juniper", "orion"] = "juniper"
 
 
 class ChatHistorySparkMetaPatchV1(BaseModel):

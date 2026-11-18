@@ -5,6 +5,10 @@
 
 services:
   bus-core:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: .
       dockerfile: Dockerfile.bus-core
@@ -47,6 +51,10 @@ services:
           - bus-core
 
   bus-exporter:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: oliver006/redis_exporter:latest
     container_name: orion-${PROJECT}-bus-exporter
     environment:
@@ -61,6 +69,10 @@ services:
       - app-net
 
   bus-observer:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-bus/Dockerfile
@@ -77,7 +89,6 @@ services:
       BUS_OBSERVER_POLL_INTERVAL_SEC: ${BUS_OBSERVER_POLL_INTERVAL_SEC:-10}
       BUS_OBSERVER_STREAMS: ${BUS_OBSERVER_STREAMS:-orion:stream:world_pulse:run:result,orion:stream:world_pulse:run:result:dlq}
       BUS_OBSERVER_NODE_ID: ${BUS_OBSERVER_NODE_ID:-athena}
-      BUS_OBSERVER_SCHEMA_SAMPLE_COUNT: ${BUS_OBSERVER_SCHEMA_SAMPLE_COUNT:-5}
       BUS_OBSERVER_CENSUS_ENABLED: ${BUS_OBSERVER_CENSUS_ENABLED:-false}
       BUS_OBSERVER_CENSUS_WINDOW_MINUTES: ${BUS_OBSERVER_CENSUS_WINDOW_MINUTES:-5}
       BUS_ACTIVITY_EWMA_ALPHA: ${BUS_ACTIVITY_EWMA_ALPHA:-0.2}

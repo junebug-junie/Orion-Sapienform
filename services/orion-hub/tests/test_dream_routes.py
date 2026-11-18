@@ -121,3 +121,55 @@ def test_template_asset_and_router_are_wired():
     assert '/static/js/dream-tab.js?v=dream-test' in rendered
     assert 'router.include_router(dream_router)' in (root / 'scripts/api_routes.py').read_text()
     assert 'window.OrionDream?.activate()' in (root / 'static/js/app.js').read_text()
+
+
+# --- carried dreams -------------------------------------------------------------
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00\x00\x00\x10\x00\x00\x00\x10" + b"\x08\x02\x00\x00\x00" + b"rest"
+
+
+def test_carries_lists_hops_in_order_with_their_sleep(client, monkeypatch):
+    import hashlib
+    sha = hashlib.sha256(PNG).hexdigest()
+    seen = {}
+
+    def rows(sql, params=None):
+        seen["sql"], seen["params"] = sql, params
+        return [{"id": 22, "created_at": "2026-10-10T07:00:00Z", "tldr": "t", "audit": {
+            "profile": "dream.carry", "trigger": {"trigger_id": "sleep:dc-1", "stopped_reason": None,
+                                                    "sleep": {"cycle_id": "dc-1"}}},
+                 "fragments": [{"id": "hop-1", "kind": "image", "index": 1, "sha256": sha, "caption": "a porch"},
+                               {"id": "hop-0", "kind": "text", "index": 0, "passage": "p", "image_prompt": "q"},
+                               {"id": "junk", "kind": "memory"}]}]
+    monkeypatch.setattr(routes, "_rows", rows)
+    body = client.get("/api/dream/carries").json()
+    assert seen["params"]["profile"] == "dream.carry"
+    carry = body["carries"][0]
+    assert carry["sleep_cycle_id"] == "dc-1" and carry["trigger_id"] == "sleep:dc-1"
+    assert [h["kind"] for h in carry["hops"]] == ["text", "image"]
+    assert carry["hops"][1]["caption"] == "a porch"
+
+
+def test_carry_image_serves_only_pictures_a_dream_names(client, monkeypatch):
+    import hashlib
+    sha = hashlib.sha256(PNG).hexdigest()
+    asked = []
+
+    def rows(sql, params=None):
+        asked.append(params["needle"])
+        return [{"?column?": 1}] if sha in params["needle"] else []
+    monkeypatch.setattr(routes, "_rows", rows)
+    monkeypatch.setattr(routes, "load_visual_artifact", lambda s, base_dir: PNG)
+
+    assert client.get("/api/dream/carry/image/not-a-sha").status_code == 400
+    assert client.get(f"/api/dream/carry/image/{'0' * 64}").status_code == 404  # a real file a dream doesn't name
+    ok = client.get(f"/api/dream/carry/image/{sha}")
+    assert ok.status_code == 200 and ok.headers["content-type"] == "image/png"
+    assert ok.headers["x-content-type-options"] == "nosniff"
+    assert asked[-1] == f'[{{"sha256": "{sha}"}}]'
+
+
+def test_carry_image_refuses_bytes_that_do_not_hash_to_the_name(client, monkeypatch):
+    monkeypatch.setattr(routes, "_rows", lambda sql, params=None: [{"?column?": 1}])
+    monkeypatch.setattr(routes, "load_visual_artifact", lambda s, base_dir: b"tampered")
+    assert client.get(f"/api/dream/carry/image/{'a' * 64}").status_code == 500

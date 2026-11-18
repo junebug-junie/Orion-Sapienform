@@ -15,6 +15,7 @@ from orion.schemas.organ_emission import OrganEmissionV1
 
 from .candidate_events import PRESSURE_SOURCE_COMPONENT, build_pressure_candidate_events
 from .ids import parse_biometrics_trace_id, parse_pressure_trace_id
+from .room_hints import machine_body_hints
 
 ALLOWED_PRESSURE_ROLES = frozenset(
     {
@@ -163,6 +164,8 @@ def sweep_absent_nodes(
     clock = _utc_now(now)
     absent: list[str] = []
     for node_id, state in (node_bio.nodes or {}).items():
+        if catalog.is_retired(node_id):
+            continue
         if _expected_online(node_id, state, catalog) is not True:
             continue
         if not _is_stale(
@@ -204,6 +207,10 @@ def sweep_suppressible_nodes(
     clock = _utc_now(now)
     out: list[str] = []
     for node_id, state in (node_bio.nodes or {}).items():
+        # Retired hosts are pruned outright (pipeline.prune_retired_nodes), not
+        # suppressed: suppression is for a node that may come back.
+        if catalog.is_retired(node_id):
+            continue
         if _expected_online(node_id, state, catalog) is not False:
             continue
         if not _is_stale(
@@ -213,7 +220,16 @@ def sweep_suppressible_nodes(
         prior = (active_pressure.nodes or {}).get(node_id)
         if prior is None:
             continue
-        if not prior.active_pressures and not prior.capability_impacts:
+        # pressure_score counts too: before 2026-10-20 suppression cleared the lists
+        # but left the score, and live hecate sat suppressed at score 1.0 with empty
+        # lists -- never re-selected, so never cleared, and still read as "felt" by
+        # orion/substrate/relational/adapters/biometrics_ctx.py. Suppression now
+        # zeroes the score, so this still goes quiet after one pass.
+        if (
+            not prior.active_pressures
+            and not prior.capability_impacts
+            and float(prior.pressure_score or 0.0) <= 0.0
+        ):
             continue
         out.append(node_id)
     return sorted(out)
@@ -263,10 +279,12 @@ def invoke_biometrics_pressure(
     stale_after_sec: int = DEFAULT_STALE_AFTER_SEC,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     now: datetime | None = None,
+    offline_frozen_hint_guard: bool = True,
 ) -> OrganEmissionV1:
     clock = _utc_now(now)
     node_id = _node_id_from_trigger(trigger_event, catalog)
-    if node_id is None:
+    # A retired host gets no candidates: there is no machine to have pressure.
+    if node_id is None or catalog.is_retired(node_id):
         return OrganEmissionV1(
             emission_id=f"oem_{uuid4().hex[:12]}",
             organ_id="biometrics_pressure",
@@ -301,7 +319,9 @@ def invoke_biometrics_pressure(
         stale_after_sec=stale_after_sec,
         now=clock,
     )
-    hints = dict(bio_state.pressure_hints) if bio_state else {}
+    # Machine body only: athena's room-sensor hints (cabinet_*) are not the node's
+    # pressure (room_hints.py; Juniper 2026-11-12).
+    hints = machine_body_hints(bio_state.pressure_hints) if bio_state else {}
     capabilities = bio_state.capabilities if bio_state else []
 
     # Rule A: expected offline + stale/missing -> suppressed
@@ -378,6 +398,19 @@ def invoke_biometrics_pressure(
                 observed_at=clock,
             )
         )
+
+    # An expected-offline node that has gone stale is not reporting, so its
+    # `pressure_hints` are frozen at the last value it sent -- not a reading of now.
+    # Rules C/D/E below read those hints as current evidence: on the next sweep
+    # after Rule A suppressed `strain`, Rule C re-added it (reinforced/detected) --
+    # within one emission the merge window hides this. hecate's
+    # frozen `stability` 0.9996 clears HINT_THRESHOLD forever. Rule A is the whole
+    # verdict for such a node. Kill switch: BIOMETRICS_OFFLINE_FROZEN_HINT_GUARD=false
+    # (orion-substrate-runtime) restores the old behaviour.
+    if expected_online is False and stale and offline_frozen_hint_guard:
+        hints = {}
+        capabilities = []
+        active_pressures = []
 
     has_hints = _has_pressure_hints(hints)
     hint_kind = _primary_hint_kind(hints)

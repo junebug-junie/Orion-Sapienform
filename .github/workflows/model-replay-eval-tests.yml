@@ -1,0 +1,59 @@
+name: model replay eval tests
+
+# Bonsai-vs-Q4 replay quality test (orion/evals/model_replay). Gate tests only: fixture shape,
+# scorer incl. the planted d4db8c2bacb4 misreported write, the no-write guarantee per lane,
+# pool holds released on every exit path, and a dry run of the CLI. Nothing here talks to the
+# pool, a model, Postgres or FalkorDB.
+
+on:
+  pull_request:
+    paths:
+      - "orion/evals/model_replay/**"
+      - "scripts/run_bonsai_replay_eval.py"
+      - "scripts/extract_model_replay_fixture.py"
+      - "orion/harness/runner.py"
+      - "orion/harness/prefix.py"
+      - "orion/thought/stance_react.py"
+      - "orion/schemas/thought.py"
+      - "orion/schemas/world_pulse_read.py"
+      - "orion/schemas/gpu_pool.py"
+      - "orion/core/llm_json.py"
+      - "orion/cognition/prompts/stance_react.j2"
+      - "services/orion-cortex-exec/app/chat_stance.py"
+      - ".github/workflows/model-replay-eval-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/evals/model_replay/**"
+      - "scripts/run_bonsai_replay_eval.py"
+      - "scripts/extract_model_replay_fixture.py"
+      - "orion/harness/runner.py"
+      - "orion/harness/prefix.py"
+      - "orion/thought/stance_react.py"
+      - "orion/schemas/thought.py"
+      - "orion/schemas/world_pulse_read.py"
+      - "orion/schemas/gpu_pool.py"
+      - "orion/core/llm_json.py"
+      - "orion/cognition/prompts/stance_react.j2"
+      - "services/orion-cortex-exec/app/chat_stance.py"
+      - ".github/workflows/model-replay-eval-tests.yml"
+
+jobs:
+  model-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -r services/orion-hub/tests/requirements-reading.txt
+      - name: Gate tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider orion/evals/model_replay/tests
+      - name: Dry run (no pool, no containers, no network)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python scripts/run_bonsai_replay_eval.py --dry-run --out /tmp/model-replay-dry

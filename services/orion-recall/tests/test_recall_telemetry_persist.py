@@ -166,7 +166,7 @@ def test_sql_file_declares_every_bounded_retrieval_column() -> None:
 
 
 _NEW_COLS = ("query_chars", "retrieval_query_source", "sub_query_count", "candidates_fetched",
-             "candidates_kept", "deadline_hit", "timings_ms")
+             "candidates_kept", "deadline_hit", "timings_ms", "lived_status", "lived_trace")
 
 
 def test_existing_columns_take_no_alter_lock(monkeypatch) -> None:

@@ -37,6 +37,13 @@ from app.services.extract import (
 )
 from app.services.ingest.registry import fetch_source_candidates
 from app.services.normalize_article import normalize_article
+from app.services.source_health import (
+    assess_source_health,
+    candidate_field,
+    filter_fresh,
+    load_previous_source_health,
+    stuck_reason,
+)
 from app.services.source_registry import load_source_registry
 from app.services.trust import assess_source, source_allowed_for_fetch, source_allowed_for_graph
 
@@ -85,13 +92,22 @@ def _compute_coverage(
     registry,  # SourceRegistryV1
     all_articles,
     digest_items: list[DailyWorldPulseItemV1],
+    excluded_source_ids: set[str] | None = None,
 ) -> tuple[CoverageStatus, dict[str, SectionCoverageV1], list[str], list[str], list[str]]:
+    # Reserved-slot sources (arXiv) ride along in a news section but are not
+    # news coverage: counting them would read a tech-news outage as "covered"
+    # and suppress that section's curiosity gap-fill.
+    excluded = excluded_source_ids or set()
+    all_articles = [a for a in all_articles if a.source_id not in excluded]
+    digest_items = [i for i in digest_items if not (i.source_ids and set(i.source_ids) <= excluded)]
     accepted_source_ids = {a.source_id for a in all_articles}
     per_section: dict[str, SectionCoverageV1] = {}
     covered_sections: list[str] = []
     for section in SECTION_NAMES:
         enabled_sources = [
-            s for s in registry.sources if s.enabled and s.approved and section in (s.categories or [])
+            s
+            for s in registry.sources
+            if s.enabled and s.approved and section in (s.categories or []) and s.source_id not in excluded
         ]
         sources_enabled = len(enabled_sources)
         fetched_sources = len([s for s in enabled_sources if s.source_id in accepted_source_ids])
@@ -126,6 +142,42 @@ def _compute_coverage(
     else:
         coverage_status = "sparse"
     return coverage_status, per_section, missing_required, missing_recommended, covered_sections
+
+
+def _record_source_health(*, run: WorldPulseRunV1, run_id: str, observations: dict[str, dict[str, Any]]) -> None:
+    """Freshness counters + stuck-source flags onto run.metrics / run.warnings.
+
+    run.metrics is persisted in world_pulse_run.payload_json, which is where
+    the next run reads ``source_health`` back from.
+    """
+    previous, history_status = load_previous_source_health(
+        settings.world_pulse_source_health_db_url, run_id=run_id
+    )
+    health = assess_source_health(
+        observations,
+        previous,
+        stuck_after=settings.world_pulse_stuck_source_digests,
+    )
+    run.metrics["source_health"] = health
+    run.metrics["source_health_history"] = history_status
+    run.metrics["max_item_age_days"] = settings.world_pulse_max_item_age_days
+    run.metrics["stale_items_dropped"] = sum(h["stale_dropped"] for h in health.values())
+    run.metrics["undated_items_dropped"] = sum(h["undated_dropped"] for h in health.values())
+    run.metrics["future_items_dropped"] = sum(h["future_dropped"] for h in health.values())
+    stuck = sorted(sid for sid, h in health.items() if h["stuck"])
+    run.metrics["stuck_sources"] = stuck
+    for sid in stuck:
+        entry = health[sid]
+        reason = stuck_reason(entry)
+        run.warnings.append(f"source_stuck:{sid}:{reason}:{entry['consecutive_no_new']}")
+        logger.warning(
+            "world_pulse_source_stuck run_id=%s source_id=%s reason=%s consecutive_no_new=%s urls=%s",
+            run_id,
+            sid,
+            reason,
+            entry["consecutive_no_new"],
+            entry["urls"][:3],
+        )
 
 
 def run_world_pulse(
@@ -169,6 +221,8 @@ def run_world_pulse(
     source_skip_details: list[str] = []
     source_error_details: list[str] = []
     required_source_failures: list[str] = []
+    # Per-source accepted URLs + drop counters, for the stuck-source detector.
+    source_observations: dict[str, dict[str, Any]] = {}
     if fixture_items:
         source = next((s for s in registry.sources if s.enabled and s.approved), None)
         if source is None:
@@ -205,6 +259,7 @@ def run_world_pulse(
                     exc,
                 )
                 err = f"source_fetch_error:{source.source_id}"
+                source_observations[source.source_id] = {"urls": [], "fetched": 0, "fetch_error": True}
                 source_error_details.append(err)
                 sources_failed += 1
                 if source.required:
@@ -213,7 +268,27 @@ def run_world_pulse(
                 else:
                     run.warnings.append(f"optional_{err}")
                 continue
-            for candidate in candidates[: min(source.max_articles_per_day, settings.world_pulse_max_articles_per_source)]:
+            fresh, dropped = filter_fresh(
+                candidates,
+                now=now,
+                max_age_days=(
+                    source.max_item_age_days
+                    if source.max_item_age_days is not None
+                    else settings.world_pulse_max_item_age_days
+                ),
+            )
+            accepted = fresh[: min(source.max_articles_per_day, settings.world_pulse_max_articles_per_source)]
+            if assessment.allowed_uses.digest:
+                # A digest-disabled source contributes no articles by design;
+                # observing it would read as "zero fresh" and flag it stuck.
+                source_observations[source.source_id] = {
+                    "urls": [str(candidate_field(c, "url") or "") for c in accepted],
+                    "fetched": len(candidates),
+                    "stale_dropped": dropped["stale"],
+                    "undated_dropped": dropped["undated"],
+                    "future_dropped": dropped["future"],
+                }
+            for candidate in accepted:
                 if not assessment.allowed_uses.digest:
                     continue
                 all_articles.append(
@@ -226,13 +301,16 @@ def run_world_pulse(
                 )
             fetched_count += len(candidates)
             logger.info(
-                "world_pulse_fetch_source_result run_id=%s source_id=%s strategy=%s fetched=%s accepted=%s",
+                "world_pulse_fetch_source_result run_id=%s source_id=%s strategy=%s fetched=%s accepted=%s stale_dropped=%s undated_dropped=%s",
                 rid,
                 source.source_id,
                 strategy,
                 len(candidates),
-                min(source.max_articles_per_day, settings.world_pulse_max_articles_per_source, len(candidates)),
+                len(accepted),
+                dropped["stale"],
+                dropped["undated"],
             )
+        _record_source_health(run=run, run_id=rid, observations=source_observations)
     all_articles = dedupe_articles(all_articles)[: settings.world_pulse_max_articles_per_run]
     run.sources_considered = len(registry.sources)
     run.sources_fetched = len({a.source_id for a in all_articles})
@@ -261,6 +339,9 @@ def run_world_pulse(
 
     digest_policy = registry.digest_policy or {}
     max_digest_items_total = int(digest_policy.get("max_digest_items_total", 12))
+    reserved_source_slots = {
+        str(k): int(v) for k, v in (digest_policy.get("reserved_source_slots") or {}).items()
+    }
     max_digest_items_per_section = int(digest_policy.get("max_digest_items_per_section", 2))
     min_digest_items_per_required = int(digest_policy.get("min_digest_items_per_required_section", 1))
     max_worth_reading = int(digest_policy.get("max_worth_reading", 10))
@@ -279,8 +360,19 @@ def run_world_pulse(
     worth_reading = []
     worth_watching = []
     article_index = {a.article_id: a for a in all_articles}
+    # Clusters drawn only from a reserved source (reserved_source_slots) fill
+    # their own lists, appended after the ordinary caps below, so they never
+    # take a news cluster's worth-reading/watching or situation-change slot.
+    reserved_ids = {sid for sid, n in reserved_source_slots.items() if n > 0}
+    reserved_changes = []
+    reserved_worth_reading = []
+    reserved_worth_watching = []
     for idx, cluster in enumerate(clusters):
         cluster_articles = [article_index[aid] for aid in cluster.article_ids if aid in article_index]
+        is_reserved = bool(cluster_articles) and {a.source_id for a in cluster_articles} <= reserved_ids
+        changes_out = reserved_changes if is_reserved else changes
+        reading_out = reserved_worth_reading if is_reserved else worth_reading
+        watching_out = reserved_worth_watching if is_reserved else worth_watching
         if not cluster_articles:
             continue
         representative = cluster_articles[0]
@@ -327,7 +419,7 @@ def run_world_pulse(
         events.extend(cluster_events)
         entities.extend(cluster_entities)
         briefs.append(brief)
-        changes.append(consolidated_change)
+        changes_out.append(consolidated_change)
         # Prior candidates are retained on briefs; do not emit them as extra situation changes.
         _ = prior_candidates
         source_count = len({a.source_id for a in cluster_articles})
@@ -387,7 +479,7 @@ def run_world_pulse(
         items.append(item)
         best_articles = sorted(cluster_articles, key=lambda a: (a.source_trust_tier, -(a.published_at or a.fetched_at).timestamp()))[:2]
         for i2, article in enumerate(best_articles):
-            worth_reading.append(
+            reading_out.append(
                 WorthReadingItemV1(
                     reading_id=f"read:{idx}:{i2}:{article.article_id}",
                     title=article.title,
@@ -403,7 +495,7 @@ def run_world_pulse(
                     created_at=now,
                 )
             )
-        worth_watching.append(
+        watching_out.append(
             WorthWatchingItemV1(
                 watch_id=f"watch:{idx}:{topic.topic_id}",
                 topic_id=topic.topic_id,
@@ -419,7 +511,7 @@ def run_world_pulse(
             )
         )
     capped_situation_changes = len(changes) > max_situation_changes_per_run
-    changes = changes[:max_situation_changes_per_run]
+    changes = changes[:max_situation_changes_per_run] + reserved_changes
     run.metrics["capped_situation_changes"] = capped_situation_changes
     claims = apply_corroboration(claims)
     curated_items = curate_digest_items(
@@ -428,12 +520,13 @@ def run_world_pulse(
         max_total=max_digest_items_total,
         max_per_section=max_digest_items_per_section,
         min_per_required=min_digest_items_per_required,
+        reserved_source_slots=reserved_source_slots,
     )
     digest = build_digest(
         rid,
         curated_items,
-        worth_reading[:max_worth_reading],
-        worth_watching[:max_worth_watching],
+        worth_reading[:max_worth_reading] + reserved_worth_reading,
+        worth_watching[:max_worth_watching] + reserved_worth_watching,
     )
     capsule = build_world_context_capsule(
         digest,
@@ -451,6 +544,7 @@ def run_world_pulse(
         registry=registry,
         all_articles=all_articles,
         digest_items=items,
+        excluded_source_ids=reserved_ids,
     )
     section_rollups = build_section_rollups(section_coverage=section_coverage, digest_items=curated_items)
     digest.curiosity_followups = build_curiosity_followups(
@@ -470,7 +564,8 @@ def run_world_pulse(
         coverage_status=coverage_status,
         section_coverage=section_coverage,
         section_rollups=section_rollups,
-        max_digest_items_total=max_digest_items_total,
+        # Reported cap includes reserved source cards, so "N cards (cap: M)" stays honest.
+        max_digest_items_total=max_digest_items_total + sum(max(0, v) for v in reserved_source_slots.values()),
     )
     run.metrics["missing_required_sections"] = missing_required
     run.metrics["missing_recommended_sections"] = missing_recommended

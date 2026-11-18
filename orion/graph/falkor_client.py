@@ -43,14 +43,30 @@ class RecordingFalkorClient:
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         self.calls.append((cypher, params))
         if "WHERE n.payload_json IS NOT NULL" in cypher:
-            return self._hydrate_legacy_node_rows
-        if "WHERE e.payload_json IS NOT NULL" in cypher:
-            return self._hydrate_legacy_edge_rows
-        if "RETURN n.node_id AS node_id" in cypher:
-            return self._hydrate_node_rows
-        if "RETURN e.edge_id AS edge_id" in cypher:
-            return self._hydrate_edge_rows
-        return []
+            rows = self._hydrate_legacy_node_rows
+        elif "WHERE e.payload_json IS NOT NULL" in cypher:
+            rows = self._hydrate_legacy_edge_rows
+        elif "RETURN n.node_id AS node_id" in cypher:
+            rows = self._hydrate_node_rows
+        elif "RETURN e.edge_id AS edge_id" in cypher:
+            rows = self._hydrate_edge_rows
+        elif "RETURN count(n) AS node_count" in cypher:
+            # The post-refresh durable node count (FalkorSubstrateStore.
+            # _record_node_count_gap, #3455): every SubstrateNode row held.
+            return [{"node_count": len(self._hydrate_node_rows) + len(self._hydrate_legacy_node_rows)}]
+        elif "RETURN n.node_id AS applied_node_id" in cypher:
+            # A targeted dynamics write (FalkorSubstrateStore.
+            # update_node_dynamics): the recording double holds no graph to
+            # compare against, so it reports the compare-and-set as applied.
+            # A test exercising a miss scripts its own client.
+            return [{"applied_node_id": (params or {}).get("node_id")}]
+        else:
+            return []
+        if params is not None and "after_id" in params:
+            numbered = [dict(row, object_id=row.get("object_id", i)) for i, row in enumerate(rows)]
+            return [row for row in numbered if row["object_id"] > params["after_id"]][:params["page_size"]]
+        return rows
+
 
 
 class RedisGraphQueryClient:
@@ -119,6 +135,13 @@ class RedisGraphQueryClient:
     def read_only(self) -> bool:
         return self._read_only
 
+    def close(self) -> None:
+        """Release this client's connection pool. Safe to call twice and on a
+        client built with __new__ (no ``_r``)."""
+        r = getattr(self, "_r", None)
+        if r is not None:
+            r.close()
+
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         """Run Cypher and return rows as name-keyed dicts.
 
@@ -182,8 +205,8 @@ def _header_field_names(header: Any) -> list[str]:
 
 
 def _rows_from_query_result(header: Any, result_set: Any) -> list[dict[str, Any]]:
-    if result_set is None:
-        return []
+    if not isinstance(result_set, (list, tuple)):
+        raise ValueError("malformed Falkor result set")
     names = _header_field_names(header)
     out: list[dict[str, Any]] = []
     for record in result_set:
@@ -194,4 +217,6 @@ def _rows_from_query_result(header: Any, result_set: Any) -> list[dict[str, Any]
                 out.append(dict(zip(names, record)))
             else:
                 out.append({"_positional": list(record)})
+        else:
+            raise ValueError("malformed Falkor result row")
     return out

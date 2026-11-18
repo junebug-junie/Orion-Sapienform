@@ -7,6 +7,7 @@ import os
 import ipaddress
 import time
 import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 import asyncio
 from datetime import datetime, timezone, timedelta
@@ -16,6 +17,7 @@ from typing import Annotated, Optional, Any, List, Dict, Tuple, Literal
 from urllib.parse import urlparse
 import aiohttp
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import subscription_health
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -25,12 +27,12 @@ import requests
 from orion.hub.chat_route import (
     CHAT_ROUTE_AGENT_CLAUDE,
     CHAT_ROUTE_CLASSIC_PLANRUNNER,
-    CHAT_ROUTE_CONTEXT_EXEC_AGENT,
     CHAT_ROUTE_UNIFIED_TURN_HARNESS,
 )
 from .settings import settings
 from . import vision_affect_ambient
 from . import vision_frame_cache
+from . import vision_live_frame
 from .grafana_tempo_link import build_grafana_tempo_trace_explore_url
 from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
 from .session import ensure_session
@@ -50,13 +52,13 @@ from .autonomy_payloads import extract_autonomy_payload, log_autonomy_payload_ex
 from .workflow_payloads import extract_workflow_payload
 from .cortex_chat_display import hub_effective_chat_text
 from .cortex_request_builder import (
+    is_third_party_room,
     HubRequestValidationError,
     build_chat_request,
     build_continuity_messages,
     validate_single_verb_override,
 )
 from .mutation_cognition_context import build_mutation_cognition_context
-from .context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from .agent_claude_input import prepare_agent_claude_input
 from .fcc_claude_bridge import build_harness_reasoning_trace, run_turn_from_settings
 from .fcc_env_catalog import catalog_from_settings
@@ -64,6 +66,7 @@ from .fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from .substrate_effect_pipeline import run_substrate_effect_pipeline
 from .repair_pressure_wiring import attach_repair_pressure_contract
 from orion.substrate.appraisal.view_model import build_substrate_effect_view
+from orion.situational.presence import normalize_presence_context
 from .substrate_effect_cache import substrate_effect_cache
 from .autonomy_constitution import (
     COGNITIVE_LIVE_APPLY_ENABLED,
@@ -124,17 +127,19 @@ from orion.core.schemas.substrate_mutation import (
     RecallCanaryReviewArtifactV1,
     RecallCanaryRunV1,
     MutationPressureEvidenceV1,
-    MutationSignalV1,
     RecallProductionCandidateReviewV1,
     RecallShadowEvalRunV1,
     RecallStrategyProfileV1,
 )
-from orion.core.activation_decay import decay_activation
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
-from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
+from .substrate_store_warm import (
+    WarmingSubstrateStore,
+    resolve_ready_store,
+    start_background_warm,
+    store_type_name,
+)
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
-from orion.substrate.policy_profiles import SubstratePolicyProfileStore
 from orion.substrate.review_queue import GraphReviewQueue
 from orion.substrate.review_bootstrap import GraphReviewBootstrapper
 from orion.substrate.review_runtime import GraphReviewRuntimeExecutor
@@ -177,11 +182,6 @@ from .substrate_attention_routes import router as substrate_attention_router
 from .attention_loops_routes import router as attention_loops_router
 from .sentience_program_routes import router as sentience_program_router
 from .substrate_observability_routes import router as substrate_observability_router
-from .substrate_proposal_routes import router as substrate_proposal_router
-from .substrate_policy_routes import router as substrate_policy_router
-from .substrate_execution_dispatch_routes import router as substrate_execution_dispatch_router
-from .substrate_feedback_routes import router as substrate_feedback_router
-from .substrate_consolidation_routes import router as substrate_consolidation_router
 from .substrate_lattice_routes import router as substrate_lattice_router
 from .self_brain_routes import router as self_brain_router
 from .field_channel_glossary_routes import router as field_channel_glossary_router
@@ -194,10 +194,14 @@ from .chat_cockpit_routes import router as chat_cockpit_router
 from .cabinet_sensors_routes import router as cabinet_sensors_router
 from .cabinet_ambient_routes import router as cabinet_ambient_router
 from .cabinet_cooling_routes import router as cabinet_cooling_router
+from .office_env_routes import router as office_env_router
+from .closet_env_routes import router as closet_env_router
+from .cabinet_climate_routes import router as cabinet_climate_router
 from .energy_routes import router as energy_router
 from .biometrics_preview_routes import router as biometrics_preview_router
 from .reverie_routes import router as reverie_router
 from .dream_routes import router as dream_router
+from .hub_attention_routes import router as hub_attention_router
 router.include_router(grammar_atlas_router)
 router.include_router(chat_turn_trace_router)
 router.include_router(chat_cockpit_router)
@@ -207,11 +211,6 @@ router.include_router(substrate_attention_router)
 router.include_router(attention_loops_router)
 router.include_router(sentience_program_router)
 router.include_router(substrate_observability_router)
-router.include_router(substrate_proposal_router)
-router.include_router(substrate_policy_router)
-router.include_router(substrate_execution_dispatch_router)
-router.include_router(substrate_feedback_router)
-router.include_router(substrate_consolidation_router)
 router.include_router(substrate_lattice_router)
 router.include_router(self_brain_router)
 router.include_router(field_channel_glossary_router)
@@ -222,10 +221,14 @@ router.include_router(cocreation_signals_router)
 router.include_router(cabinet_sensors_router)
 router.include_router(cabinet_ambient_router)
 router.include_router(cabinet_cooling_router)
+router.include_router(office_env_router)
+router.include_router(closet_env_router)
+router.include_router(cabinet_climate_router)
 router.include_router(energy_router)
 router.include_router(biometrics_preview_router)
 router.include_router(reverie_router)
 router.include_router(dream_router)
+router.include_router(hub_attention_router)
 
 
 def _hub_uses_host_network_mode() -> bool:
@@ -297,7 +300,28 @@ SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
     sql_db_path=str(os.getenv("SUBSTRATE_REVIEW_TELEMETRY_SQL_DB_PATH", "")).strip() or None,
     postgres_url=_resolve_control_plane_postgres_url(),
 )
-SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
+_IN_MEMORY_SUBSTRATE_BACKENDS = frozenset({"", "in_memory", "memory", "mem", "local"})
+
+
+def _substrate_store_holder(name: str, builder: Any) -> WarmingSubstrateStore:
+    """Wrap a store builder so a durable backend never builds at import time.
+
+    In-memory backends (tests, dev) build right here: no network, no scan.
+    Every other backend (falkor in production) builds in the background
+    thread started below this block -- each FalkorSubstrateStore scans its
+    whole graph in its constructor, which held uvicorn off :8080 for ~3.5 min
+    before 2026-10-20. See scripts/substrate_store_warm.py.
+    """
+    holder = WarmingSubstrateStore(name, builder)
+    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
+    if backend in _IN_MEMORY_SUBSTRATE_BACKENDS:
+        # No network, no scan: safe even when this module is imported from a
+        # running event loop.
+        holder.build_blocking(allow_event_loop=True)
+    return holder
+
+
+SUBSTRATE_SEMANTIC_STORE = _substrate_store_holder("orion", build_substrate_store_from_env)
 
 
 def _build_aitown_substrate_store_from_env() -> Any:
@@ -343,34 +367,37 @@ def _build_aitown_substrate_store_from_env() -> Any:
     return InMemorySubstrateGraphStore()
 
 
-SUBSTRATE_SEMANTIC_STORE_AITOWN = _build_aitown_substrate_store_from_env()
+SUBSTRATE_SEMANTIC_STORE_AITOWN = _substrate_store_holder("aitown", _build_aitown_substrate_store_from_env)
 
 
-def _build_self_substrate_store_from_env() -> Any:
-    """Third, independently-named concept graph -- the Self Atlas
-    (self-model rebuild arc, Patch 3, 2026-09-05). Same shape, same
-    falkor-only scoping, same degrade-to-in-memory-and-warn behavior as
-    ``_build_aitown_substrate_store_from_env`` above."""
-    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
-    if backend in {"falkor", "falkordb"}:
-        from orion.substrate.falkor_store import build_self_falkor_substrate_store_from_env
-
-        return build_self_falkor_substrate_store_from_env()
-    from orion.substrate.store import InMemorySubstrateGraphStore
-
-    if backend and backend not in {"in_memory", "memory", "mem", "local"}:
-        logger.warning(
-            "self_substrate_store_backend_unsupported backend=%s -- falling back to in-memory "
-            "(the Self Atlas graph is falkor-only today; every write is lost on restart)",
-            backend,
-        )
-    return InMemorySubstrateGraphStore()
+# Orion's own graph first (cognition reads it), then AI Town (largest scan,
+# interpretability-only). The Self Atlas graph was retired 2026-11.
+# Never awaited by import/startup.
+start_background_warm((SUBSTRATE_SEMANTIC_STORE, SUBSTRATE_SEMANTIC_STORE_AITOWN))
 
 
-SUBSTRATE_SEMANTIC_STORE_SELF = _build_self_substrate_store_from_env()
+def _semantic_store_ready() -> bool:
+    store = SUBSTRATE_SEMANTIC_STORE
+    return not isinstance(store, WarmingSubstrateStore) or store.is_ready()
 
 
-def seed_golden_concepts_at_startup() -> int:
+def _require_semantic_store_ready() -> None:
+    """Raise SubstrateStoreNotReadyError (-> 503) before any side effect when
+    the Orion store is still loading."""
+    if isinstance(SUBSTRATE_SEMANTIC_STORE, WarmingSubstrateStore):
+        SUBSTRATE_SEMANTIC_STORE.require()
+
+
+def substrate_store_warm_status() -> list[dict[str, Any]]:
+    """Per-store warm-up state for the two concept graph holders above."""
+    return [
+        holder.warm_status()
+        for holder in (SUBSTRATE_SEMANTIC_STORE, SUBSTRATE_SEMANTIC_STORE_AITOWN)
+        if isinstance(holder, WarmingSubstrateStore)
+    ]
+
+
+def seed_golden_concepts_at_startup(*, wait_timeout_sec: float | None = None) -> int:
     """Load the 4 golden concepts (Orion, Juniper, Claude, relationship) into
     SUBSTRATE_SEMANTIC_STORE. Idempotent (fixed node_ids), safe to call on
     every startup. Never raises -- the try/except below degrades to 0 on
@@ -378,144 +405,34 @@ def seed_golden_concepts_at_startup() -> int:
     a Fuseki write timeout when SUBSTRATE_STORE_BACKEND=sparql). Callers on
     an async event loop should run this via asyncio.to_thread (see main.py's
     startup_event) since store writes can be blocking network calls.
+
+    The Orion store loads in the background (scripts/substrate_store_warm.py).
+    ``wait_timeout_sec`` lets a background caller wait for it; if it is still
+    not ready, this returns 0 and logs ``substrate_concept_seed_skipped`` --
+    it never seeds into a store that has not loaded.
     """
+    store = SUBSTRATE_SEMANTIC_STORE
+    if isinstance(store, WarmingSubstrateStore):
+        ready = store.wait_ready(wait_timeout_sec) if wait_timeout_sec is not None else store.get_ready()
+        if ready is None:
+            logger.warning("substrate_concept_seed_skipped reason=substrate_store_not_ready status=%s", store.warm_status())
+            return 0
+        store = ready
     try:
         from orion.substrate.seed import load_seed_concepts_into_store
 
-        return load_seed_concepts_into_store(SUBSTRATE_SEMANTIC_STORE)
+        return load_seed_concepts_into_store(store)
     except Exception as exc:  # pragma: no cover - defensive, mirrors other startup steps
         logger.warning("substrate_concept_seed_failed error=%s", exc)
         return 0
 
 
-def decay_concept_activations(elapsed_seconds: Optional[float] = None) -> dict[str, Any]:
-    """Apply half-life activation decay to every concept-kind node in
-    SUBSTRATE_SEMANTIC_STORE, in place (re-upserted with only
-    signals.activation.activation changed).
-
-    This is the live writer that ``SubstrateActivationV1.activation`` has
-    lacked -- see the honesty note in ``concept_atlas_routes.py``'s
-    ``_at_risk_concepts``. Reuses the same validated decay helper
-    (``orion.core.activation_decay.decay_activation``).
-
-    ``elapsed_seconds``, when given, is applied uniformly to every node as
-    the decay window (the caller -- the periodic scheduler in ``main.py`` --
-    passes the actual wall-clock time since its previous tick). This is the
-    correct mode for a function called repeatedly on a fixed cadence:
-    exponential decay is memoryless, so decaying an already-decayed
-    ``current`` value by the true inter-tick interval on every call is
-    equivalent to decaying once by the total elapsed time.
-
-    When ``elapsed_seconds`` is omitted (``None``), falls back to computing
-    elapsed time from ``node.temporal.observed_at`` per node -- a one-shot
-    decay against the node's full age, useful for an ad-hoc/manual
-    invocation. This mode must NOT be used by a loop that calls this
-    function repeatedly without also advancing ``observed_at`` between
-    calls: since ``observed_at`` carries real "last touched" semantics read
-    by other consumers (recency scoring in ``orion/substrate/dynamics.py``,
-    sustained-surprise pressure in ``orion/substrate/pressure.py``, reconcile
-    merge-max in ``orion/substrate/reconcile.py``), this function
-    deliberately never mutates it -- so reusing this fallback mode on every
-    scheduler tick would keep re-decaying from the same, ever-growing
-    elapsed-since-creation window on top of an already-shrunk ``current``,
-    collapsing activation to ``decay_floor`` within roughly one configured
-    half-life regardless of the half-life value. That failure mode is why
-    the scheduler always passes ``elapsed_seconds`` explicitly.
-
-    Real identity key, not node_id, mirroring the sibling in-memory tick loop
-    (``orion/substrate/dynamics.py::SubstrateDynamicsEngine.tick``) --
-    ``upsert_node``'s ``identity_key`` is the store's domain-dedup key (e.g.
-    ``concept|<scope>|<subject>|seed`` from ``orion/substrate/seed.py``), not
-    the same string as ``node_id``. Passing ``node_id`` as the identity key
-    would silently overwrite each node's real identity record on backends
-    where that property is a single-valued overwrite (e.g. FalkorDB),
-    breaking later identity-based lookups/dedup after the next cache
-    rehydrate. Reverse-mapped here from ``snapshot.node_identity_index``
-    (identity -> node_id) exactly as ``dynamics.py``'s ``identity_by_node_id``
-    does; unknown identity degrades to ``None`` (the safe "no identity index
-    entry" convention already used elsewhere, e.g. ``graphdb_store.py``).
-
-    Never raises -- a single malformed/missing-timestamp node is skipped
-    (counted in ``skipped``), not fatal to the rest of the pass or to the
-    caller.
-
-    Returns a summary dict: ``{"decayed": int, "skipped": int, "errors": int,
-    "total_concepts": int}``. ``decayed`` counts nodes successfully
-    re-upserted with a recomputed activation value.
-    """
-    summary: dict[str, Any] = {
-        "decayed": 0,
-        "skipped": 0,
-        "errors": 0,
-        "total_concepts": 0,
-    }
-    try:
-        snapshot = SUBSTRATE_SEMANTIC_STORE.snapshot()
-    except Exception as exc:
-        logger.warning("substrate_concept_decay_snapshot_failed error=%s", exc)
-        summary["errors"] += 1
-        return summary
-
-    concept_nodes = [n for n in snapshot.nodes.values() if getattr(n, "node_kind", None) == "concept"]
-    summary["total_concepts"] = len(concept_nodes)
-    if not concept_nodes:
-        return summary
-
-    identity_by_node_id = {node_id: identity for identity, node_id in snapshot.node_identity_index.items()}
-
-    now = datetime.now(timezone.utc)
-    for node in concept_nodes:
-        try:
-            activation_signal = node.signals.activation
-            observed_at = node.temporal.observed_at
-        except AttributeError:
-            summary["skipped"] += 1
-            continue
-        if activation_signal is None or observed_at is None:
-            summary["skipped"] += 1
-            continue
-
-        try:
-            if elapsed_seconds is not None:
-                node_elapsed_seconds = max(0.0, float(elapsed_seconds))
-            else:
-                if observed_at.tzinfo is None:
-                    observed_at = observed_at.replace(tzinfo=timezone.utc)
-                node_elapsed_seconds = max(0.0, (now - observed_at).total_seconds())
-
-            prev_activation = activation_signal.activation
-            new_activation = decay_activation(
-                current=prev_activation,
-                elapsed_seconds=node_elapsed_seconds,
-                half_life_seconds=activation_signal.decay_half_life_seconds,
-                floor=activation_signal.decay_floor,
-            )
-
-            updated_signal = activation_signal.model_copy(update={"activation": new_activation})
-            updated_signals = node.signals.model_copy(update={"activation": updated_signal})
-            updated_node = node.model_copy(update={"signals": updated_signals})
-
-            # skip_metadata_keys: updated_node's metadata is node.metadata,
-            # read moments earlier by SUBSTRATE_SEMANTIC_STORE.snapshot()
-            # above -- only signals.activation is actually recomputed here,
-            # but re-persisting the whole node re-writes reducer-owned
-            # metadata fields (prediction_error, contributing_turn_ids) from
-            # that stale read too. Same protection already proven for
-            # SubstrateDynamicsEngine.tick() and (2026-07-30)
-            # SubstrateGraphMaterializer.apply_record()'s merge branch and
-            # concept_induction's materialize_concept_profile_to_falkor() --
-            # see falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring.
-            SUBSTRATE_SEMANTIC_STORE.upsert_node(
-                identity_key=identity_by_node_id.get(node.node_id),
-                node=updated_node,
-                skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS,
-            )
-            summary["decayed"] += 1
-        except Exception as exc:
-            logger.warning("substrate_concept_decay_node_failed node_id=%s error=%s", getattr(node, "node_id", "?"), exc)
-            summary["errors"] += 1
-
-    return summary
+# Activation decay has exactly one owner: orion-substrate-runtime's
+# SubstrateDynamicsEngine.tick() (orion/substrate/dynamics.py, every 30 s).
+# The Hub's own decay scheduler (decay_concept_activations, every 120 s) was
+# removed 2026-10-06: two processes decaying the same Falkor nodes from their
+# own caches landed writes out of order (activation_decayed_at stepping back,
+# activation ticking up).
 
 
 SUBSTRATE_POLICY_STORE = build_substrate_policy_store_from_env()
@@ -542,6 +459,25 @@ SUBSTRATE_MUTATION_STORE = SubstrateMutationStore(
     postgres_url=_resolve_control_plane_postgres_url(),
 )
 SUBSTRATE_MUTATION_SURFACES: Dict[str, Dict[str, Any]] = {}
+# Review telemetry ids already turned into signals. The scheduler re-reads the
+# newest N rows every tick with no cursor; before 2026-10-16 that turned ~30
+# real reviews a day into ~65k signals. Bounded, oldest evicted first.
+_MUTATION_SEEN_TELEMETRY_IDS: "OrderedDict[str, None]" = OrderedDict()
+_MUTATION_SEEN_TELEMETRY_MAX = 5000
+
+
+def _unseen_review_telemetry(records: list) -> list:
+    return [record for record in records if record.telemetry_id not in _MUTATION_SEEN_TELEMETRY_IDS]
+
+
+def _mark_review_telemetry_seen(records: list) -> None:
+    """Called only after a cycle actually consumed ``records`` -- marking
+    before run_cycle would drop them for good if the cycle raised or lost the
+    leader lock."""
+    for record in records:
+        _MUTATION_SEEN_TELEMETRY_IDS[record.telemetry_id] = None
+    while len(_MUTATION_SEEN_TELEMETRY_IDS) > _MUTATION_SEEN_TELEMETRY_MAX:
+        _MUTATION_SEEN_TELEMETRY_IDS.popitem(last=False)
 SUBSTRATE_AUTONOMY_LOCAL_CYCLE_LOCK = threading.Lock()
 SUBSTRATE_REVIEW_LOCAL_CYCLE_LOCK = threading.Lock()
 
@@ -1084,8 +1020,27 @@ async def root():
 
 @router.get("/health")
 def health():
-    """Simple health check endpoint."""
-    return {"status": "ok", "service": settings.SERVICE_NAME}
+    """Health check. A bus listener stuck retrying reads as degraded (still HTTP 200)."""
+    listeners = subscription_health()
+    return {
+        "status": "ok" if listeners["ok"] else "degraded",
+        "service": settings.SERVICE_NAME,
+        "listeners_ok": listeners["ok"],
+        "listeners_down": listeners["down"],
+        "listeners": listeners["listeners"],
+        "retro_leisure_self_start": _retro_leisure_self_start_health(),
+    }
+
+
+def _retro_leisure_self_start_health() -> dict[str, Any] | None:
+    """The leisure timer's last tick (scripts/retro_leisure_self_start.py), or None before startup."""
+    try:
+        import scripts.main as hub_main
+
+        timer = getattr(hub_main, "retro_leisure_self_start", None)
+        return timer.snapshot() if timer is not None else None
+    except Exception:  # noqa: BLE001 -- health never fails on a status block
+        return None
 
 
 @router.get("/api/substrate/tier-outcomes/latest")
@@ -1435,64 +1390,42 @@ def api_vision_affect_ambient_toggle(req: AffectAmbientToggleRequest) -> Dict[st
 # recent affect snapshot") -----------------------------------------------
 
 
-@router.get("/api/vision/carbon/latest-frame")
-async def api_vision_carbon_latest_frame(
-    stream_id: str = Query(default="carbon"),
-) -> Dict[str, Any]:
-    """Metadata (sha256, frame_ts) for the most recent captured frame on
-    ``stream_id`` (default "carbon") -- powers the Vision panel's
-    "Carbon (live)" dropdown option. Backed by vision_frame_cache.py's
-    bus-subscriber cache -- confirmed live 2026-08-22 that no persisted
-    "latest frame for stream X" lookup exists anywhere else in this repo
-    (see that module's docstring).
+# Generic latest-frame routes (2026-10-15, Juniper: watch the walkway
+# camera from the Vision dropdown like carbon). The carbon routes below are
+# kept as aliases so nothing that already calls them breaks.
 
-    ``stream_id`` is a real query param, not hardcoded to "carbon" inside
-    this function -- review finding, 2026-08-22: VisionFrameCache already
-    supports an arbitrary allowlist (VISION_FRAME_CACHE_STREAM_IDS), but a
-    hardcoded route body would make any OTHER stream an operator adds to
-    that allowlist permanently unreachable through this route. The Vision
-    panel's own JS only ever requests "carbon" today -- this just avoids a
-    second hardcoded route+JS pair being needed the day that changes.
-    """
+
+def _live_frame_settings() -> tuple[str, int, float]:
+    frames_dir = str(getattr(settings, "HUB_VISION_FRAMES_DIR", "") or "").strip()
+    max_width = getattr(settings, "HUB_VISION_LIVE_MAX_WIDTH", 1280)
+    stale_after = getattr(settings, "HUB_VISION_LIVE_STALE_SEC", 10.0)
+    # Explicit None checks, not `x or DEFAULT`: 0 is a real value here
+    # (max width 0 = full size; stale 0 = anything older than now is stale).
+    max_width = 1280 if max_width is None else max(0, int(max_width))
+    stale_after = 10.0 if stale_after is None else max(0.0, float(stale_after))
+    return frames_dir or vision_live_frame.DEFAULT_FRAMES_DIR, max_width, stale_after
+
+
+async def _latest_frame_meta(stream_id: str) -> Dict[str, Any]:
     if vision_frame_cache.cache is None:
-        return {"available": False, "reason": "cache_not_started"}
+        return {"available": False, "stream_id": stream_id, "reason": "cache_not_started"}
+    if stream_id not in vision_frame_cache.cache.stream_ids:
+        return {"available": False, "stream_id": stream_id, "reason": "stream_not_cached"}
     latest = await vision_frame_cache.cache.get_latest(stream_id)
     if not latest:
-        return {"available": False, "reason": "no_frame_seen_yet"}
-    return {"available": True, **latest}
+        return {"available": False, "stream_id": stream_id, "reason": "no_frame_seen_yet"}
+    _, _, stale_after = _live_frame_settings()
+    return vision_live_frame.public_frame_meta(
+        stream_id, latest, now=time.time(), stale_after_sec=stale_after
+    )
 
 
-@router.get("/api/vision/carbon/latest-frame/image")
-async def api_vision_carbon_latest_frame_image(
-    stream_id: str = Query(default="carbon"),
-) -> Response:
-    """Proxies the actual JPEG bytes from orion-percept-store, server-side
-    -- the browser never talks to percept-store directly (no auth/CORS
-    surface to expose, and percept-store's port doesn't need to be
-    reachable from wherever Hub's frontend happens to be loaded from).
-
-    Uses aiohttp (already a dependency, already this file's own convention
-    for proxied fetches -- see _proxy_request above), not
-    asyncio.to_thread(requests.get, ...) -- review finding, 2026-08-22: the
-    thread-pool version tied up a shared executor slot for the whole fetch,
-    the same pool vision_affect_ambient's blocking capture calls (up to
-    ~195s worst case) also use.
-
-    Verifies the fetched bytes actually hash to the sha256 that was asked
-    for before serving them -- review finding, 2026-08-22: this used to
-    trust percept-store's response uncritically, unlike the orchestrator's
-    own percept fetch (services/orion-juniper-affective-state/app/main.py
-    _fetch_percept), which has done this chain-of-custody check since it
-    was first built. Corrupted or substituted content must not reach the
-    browser silently.
-    """
-    if vision_frame_cache.cache is None:
-        raise HTTPException(status_code=503, detail="vision_frame_cache_not_started")
-    latest = await vision_frame_cache.cache.get_latest(stream_id)
-    if not latest or not latest.get("sha256"):
-        raise HTTPException(status_code=404, detail="no_frame_seen_yet")
-    sha256 = latest["sha256"]
-
+async def _fetch_percept_frame(sha256: str) -> bytes:
+    """JPEG bytes from orion-percept-store by content address, re-hashed
+    before use (chain of custody, same as the orchestrator's _fetch_percept).
+    Uses aiohttp, not a thread-pool requests.get -- a thread-pool slot held
+    for the whole fetch competes with vision_affect_ambient's long blocking
+    captures (review finding, 2026-08-22)."""
     base = str(settings.PERCEPT_STORE_BASE_URL or "").strip().rstrip("/")
     if not base:
         raise HTTPException(status_code=503, detail="percept_store_base_url_not_configured")
@@ -1509,16 +1442,103 @@ async def api_vision_carbon_latest_frame_image(
         raise HTTPException(
             status_code=502, detail=f"percept_store_unavailable:{exc}"
         ) from exc
-
     fetched_sha256 = hashlib.sha256(data).hexdigest()
     if fetched_sha256 != sha256:
         logger.error(
-            f"[HUB] carbon_latest_frame_hash_mismatch expected={sha256[:12]} "
+            f"[HUB] latest_frame_hash_mismatch expected={sha256[:12]} "
             f"got={fetched_sha256[:12]}"
         )
         raise HTTPException(status_code=502, detail="percept_store_hash_mismatch")
+    return data
 
-    return Response(content=data, media_type="image/jpeg")
+
+async def _latest_frame_image(stream_id: str) -> Response:
+    """Latest frame for ``stream_id`` as a browser-sized JPEG.
+
+    Local file first (walkway: shared frames dir, read-only mount, path
+    confined to that dir), percept-store by sha256 second (carbon). Then
+    downscaled to HUB_VISION_LIVE_MAX_WIDTH off the event loop, and memoised
+    per stream so several tabs polling the same frame decode it once.
+    """
+    if vision_frame_cache.cache is None:
+        raise HTTPException(status_code=503, detail="vision_frame_cache_not_started")
+    if stream_id not in vision_frame_cache.cache.stream_ids:
+        raise HTTPException(status_code=404, detail="stream_not_cached")
+    latest = await vision_frame_cache.cache.get_latest(stream_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="no_frame_seen_yet")
+    frames_dir, max_width, _ = _live_frame_settings()
+    frame_id = vision_live_frame.frame_id_of(latest) or ""
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        # Bus-supplied text: only echoed when it is a plain frame name or a
+        # sha256, so CR/LF or non-latin-1 can't break the response.
+        "X-Orion-Frame-Id": vision_live_frame.safe_header_frame_id(frame_id),
+    }
+    cached = vision_live_frame.memo.get(stream_id, frame_id, max_width)
+    if cached is not None:
+        return Response(content=cached, media_type="image/jpeg", headers=headers)
+
+    data: Optional[bytes] = None
+    if latest.get("image_path"):
+        data = await asyncio.to_thread(
+            vision_live_frame.load_local_frame, latest["image_path"], frames_dir
+        )
+        # A pointer carrying BOTH addresses: the local copy must hash to the
+        # sha256 too, or it is dropped in favour of the verified store copy
+        # (keeps carbon's chain of custody -- review finding, 2026-10-15).
+        if (
+            data is not None
+            and latest.get("sha256")
+            and hashlib.sha256(data).hexdigest() != latest["sha256"]
+        ):
+            logger.warning(f"[HUB] latest_frame_local_hash_mismatch stream={stream_id}")
+            data = None
+    if data is None and latest.get("sha256"):
+        data = await _fetch_percept_frame(latest["sha256"])
+    if data is None:
+        # Pruned already, outside the frames dir, or not mounted into Hub.
+        raise HTTPException(status_code=404, detail="frame_not_readable")
+    try:
+        out = await asyncio.to_thread(vision_live_frame.downscale_jpeg, data, max_width)
+    except Exception as exc:
+        logger.warning(f"[HUB] latest_frame_decode_failed stream={stream_id} err={exc}")
+        raise HTTPException(status_code=404, detail="frame_not_decodable") from exc
+    vision_live_frame.memo.put(stream_id, frame_id, max_width, out)
+    return Response(content=out, media_type="image/jpeg", headers=headers)
+
+
+@router.get("/api/vision/frames/latest")
+async def api_vision_frames_latest(stream_id: str = Query(...)) -> Dict[str, Any]:
+    """Metadata for the newest frame Hub has seen on ``stream_id`` (must be
+    in VISION_FRAME_CACHE_STREAM_IDS): frame_id, age_sec, stale. Never the
+    host file path."""
+    return await _latest_frame_meta(stream_id)
+
+
+@router.get("/api/vision/frames/latest/image")
+async def api_vision_frames_latest_image(stream_id: str = Query(...)) -> Response:
+    return await _latest_frame_image(stream_id)
+
+
+@router.get("/api/vision/carbon/latest-frame")
+async def api_vision_carbon_latest_frame(
+    stream_id: Annotated[str, Query()] = "carbon",
+) -> Dict[str, Any]:
+    """Alias of /api/vision/frames/latest (kept for existing callers).
+    Backed by vision_frame_cache.py's bus-subscriber cache -- no persisted
+    "latest frame for stream X" lookup exists anywhere else in this repo."""
+    return await _latest_frame_meta(stream_id)
+
+
+@router.get("/api/vision/carbon/latest-frame/image")
+async def api_vision_carbon_latest_frame_image(
+    stream_id: Annotated[str, Query()] = "carbon",
+) -> Response:
+    """Alias of /api/vision/frames/latest/image (kept for existing callers).
+    The browser never talks to percept-store or the frames dir directly."""
+    return await _latest_frame_image(stream_id)
 
 
 class AutonomyGoalArchiveRequest(BaseModel):
@@ -1769,12 +1789,11 @@ def _situation_time_context(now_local: datetime) -> TimeContextV1:
 
 @router.get("/api/llm-routes")
 async def api_llm_routes():
-    from .llm_gateway_client import LlmGatewayClientError, fetch_routes
+    # GPU pool state, not the gateway's retiring GET /routes (stage 6.3). Never raises: an
+    # unreachable pool comes back as every route "unknown" with source=gpu_pool_unavailable.
+    from .llm_gateway_client import fetch_routes
 
-    try:
-        return await fetch_routes()
-    except LlmGatewayClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return await fetch_routes()
 
 
 @router.get("/api/fcc-model-labels")
@@ -1838,11 +1857,12 @@ def api_presence_set(payload: dict, x_orion_session_id: Optional[str] = Header(N
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="presence payload must be an object")
     session_key = str(x_orion_session_id or payload.get("browser_client_id") or "anonymous")
-    merged = _default_presence_context()
-    merged.update(payload or {})
-    companions = merged.get("companions")
-    if not isinstance(companions, list):
-        merged["companions"] = []
+    # Stored clean: bad enum values fall back to defaults and audience_mode is
+    # derived from the companions (orion/situational/presence.py).
+    merged = normalize_presence_context(
+        {**_default_presence_context(), **payload},
+        default_requestor=settings.ORION_PRESENCE_DEFAULT_REQUESTOR,
+    )
     merged["persist_to_memory"] = bool(merged.get("persist_to_memory", False) and settings.ORION_PRESENCE_PERSIST_ALLOWED)
     if presence_context_store:
         return presence_context_store.set(session_key, merged)
@@ -1880,7 +1900,6 @@ def api_situation_status():
             "location": "configured",
             "weather": settings.ORION_SITUATION_WEATHER_PROVIDER,
             "agenda": "stub",
-            "lab": "stub",
             "presence": "hub_manual",
         },
         "ttl_seconds": int(settings.ORION_SITUATION_TTL_SECONDS),
@@ -2306,7 +2325,15 @@ def api_attention_ack(attention_id: str, payload: AttentionAckRequest):
 
 
 @router.get("/api/chat/messages")
-def api_chat_messages(limit: int = 50, status: Optional[str] = None, session_id: Optional[str] = None):
+def api_chat_messages(
+    limit: int = 50,
+    status: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tag: Optional[str] = None,
+):
+    # The notification tray reads Orion's open (not yet dismissed) outreach
+    # here: status=open&tag=endogenous_outreach. Durable in notify_requests,
+    # so it survives a Hub restart, unlike /api/notifications.
     if not settings.NOTIFY_BASE_URL:
         return []
     headers = {}
@@ -2315,15 +2342,17 @@ def api_chat_messages(limit: int = 50, status: Optional[str] = None, session_id:
     try:
         resp = requests.get(
             f"{settings.NOTIFY_BASE_URL}/chat/messages",
-            params={"limit": limit, "status": status, "session_id": session_id},
+            params={"limit": limit, "status": status, "session_id": session_id, "tag": tag},
             headers=headers,
             timeout=10,
         )
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
+        # 502, not []: the tray treats an empty list as "nothing is open" and
+        # would hide live Orion messages while orion-notify is down.
         logger.warning("Failed to fetch chat messages: %s", exc)
-        return []
+        raise HTTPException(status_code=502, detail="Failed to fetch chat messages") from exc
 
 
 @router.get("/api/chat/turn/{turn_id}/substrate-effect")
@@ -2435,7 +2464,24 @@ async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
         raise HTTPException(status_code=422, detail="prompt required")
 
     session_id = (payload.session_id or "").strip() or None
-    transcript = await _recent_room_transcript(session_id, settings.HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS)
+    transcript_note: Optional[str] = None
+    hub_index: Optional[str] = None
+    mode = str(getattr(settings, "HUB_ROOM_CLAUDE_CONTEXT_MODE", "full") or "full").strip().lower()
+    if mode == "recent":
+        # Rollback path: the old 12-turn, 48 h window.
+        transcript = await _recent_room_transcript(session_id, settings.HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS)
+    else:
+        # The whole conversation back to a character cap, plus a names-and-counts
+        # index of what is open in Hub (scripts/room_claude_context.py).
+        from scripts import main as hub_main
+        from scripts.room_claude_context import build_room_claude_context
+
+        transcript, transcript_note, hub_index = await build_room_claude_context(
+            session_id,
+            max_chars=int(getattr(settings, "HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS", 160000)),
+            bus=getattr(hub_main, "bus", None),
+            claude_name=settings.HUB_ROOM_CLAUDE_PARTICIPANT_NAME,
+        )
 
     try:
         request = await room_claude_relay.invite(
@@ -2445,6 +2491,8 @@ async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
             room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
             transcript=transcript,
             connection_id=(payload.connection_id or "").strip() or None,
+            hub_index=hub_index,
+            transcript_note=transcript_note,
         )
     except Exception as exc:
         logger.exception("room_claude_invite_failed")
@@ -2456,11 +2504,16 @@ async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
         "correlation_id": request.correlation_id,
         "room_id": request.room_id,
         "transcript_turns": len(request.transcript),
+        "transcript_chars": sum(len(e.text) for e in request.transcript),
+        "transcript_note": request.transcript_note,
     }
 
 
 async def _recent_room_transcript(session_id: Optional[str], limit: int) -> list[dict]:
     """Recent conversation for Claude's FIRST turn of a session.
+
+    Used only when HUB_ROOM_CLAUDE_CONTEXT_MODE=recent (the rollback path);
+    the default is scripts/room_claude_context.py's whole-conversation window.
 
     Not the memory mechanism -- the companion holds the conversation on
     Claude's side via --resume and ignores this on later turns. This is seeding
@@ -3243,9 +3296,10 @@ async def handle_chat_request(
 
     # "agent" joined this branch 2026-09-02, same reasoning and same
     # widened condition as websocket_handler.py's "orion"/"agent" FCC
-    # branch: Agent mode used to fall through to should_use_context_exec_
-    # agent_lane() below, which called orion-context-exec directly (zero
-    # containers deployed on athena, always failed). Review finding: an
+    # branch: Agent mode used to fall through to a context-exec agent lane
+    # below, which called orion-context-exec directly (zero containers
+    # deployed on athena, always failed; the lane and the service were
+    # deleted 2026-10-10). Review finding: an
     # earlier version of this fix only widened the WebSocket handler's
     # condition, silently leaving this HTTP fallback path routing "agent"
     # through the plain cortex_client.chat() path below instead (a
@@ -3282,6 +3336,7 @@ async def handle_chat_request(
             history=effective_messages,
             latest_user_prompt=user_prompt,
             turns=context_turns,
+            keep_timestamps=True,
         )
 
         frames = await execute_unified_turn(
@@ -3294,7 +3349,8 @@ async def handle_chat_request(
             continuity_messages=continuity_messages,
             harness_rpc_bus=rpc_bus or bus,
             harness_step_relay=harness_step_relay,
-            utterance_origin="juniper",
+            # A relayed external social-room message is a third party, not Juniper.
+            utterance_origin=None if is_third_party_room(payload) else "juniper",
             client_meta=client_meta,
         )
         final_frame = frames[-1] if frames else {
@@ -3429,6 +3485,7 @@ async def handle_chat_request(
             source_label="hub_http",
             prompt=user_prompt,
             messages=continuity_messages,
+            utterance_origin="juniper",
         )
     except HubRequestValidationError as exc:
         return {"error": str(exc), "error_code": exc.code}
@@ -3539,47 +3596,6 @@ async def handle_chat_request(
         user_head=(user_prompt or "")[:80],
         no_write=no_write,
     )
-
-    if should_use_context_exec_agent_lane(req):
-        ctx_result = await run_hub_agent_via_context_exec(
-            req=req,
-            prompt=user_prompt,
-            correlation_id=corr_id,
-            route_debug=route_debug if isinstance(route_debug, dict) else {},
-        )
-        if ctx_result.get("error"):
-            return {
-                "error": ctx_result.get("error"),
-                "error_code": ctx_result.get("error_code"),
-                "mode": "agent",
-                "correlation_id": corr_id,
-                "routing_debug": ctx_result.get("routing_debug") or route_debug,
-                "chat_route": CHAT_ROUTE_CONTEXT_EXEC_AGENT,
-            }
-        text = str(ctx_result.get("llm_response") or "")
-        agent_trace = ctx_result.get("agent_trace")
-        raw_result = ctx_result.get("raw") if isinstance(ctx_result.get("raw"), dict) else {}
-        route_debug = ctx_result.get("routing_debug") or route_debug
-        result = {
-            "session_id": session_id,
-            "mode": "agent",
-            "use_recall": use_recall,
-            "text": text,
-            "llm_response": text,
-            "tokens": len(text.split()),
-            "raw": raw_result,
-            "agent_trace": agent_trace,
-            "correlation_id": corr_id,
-            "routing_debug": route_debug,
-            "no_write": no_write,
-            "context_exec_lane": True,
-            "context_exec_run": ctx_result.get("context_exec_run"),
-            "operator_summary": ctx_result.get("operator_summary"),
-            "chat_route": CHAT_ROUTE_CONTEXT_EXEC_AGENT,
-        }
-        if substrate_summary is not None:
-            result["substrate_effect_summary"] = substrate_summary
-        return result
 
     try:
         # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
@@ -4141,35 +4157,45 @@ def _serialize_slice(result) -> Dict[str, Any]:
     }
 
 
+# Contradictions are out of what the substrate graph represents, by choice (#3544):
+# nothing produces them and the durable store refuses the kind. Say so instead of
+# returning an empty slice that reads as "no contradictions".
+_CONTRADICTIONS_UNAVAILABLE: Dict[str, Any] = {
+    "available": False,
+    "reason": "the substrate graph does not represent contradictions (#3544); "
+    "falkor_codec.DURABLE_NODE_KINDS excludes the kind and nothing produces it",
+}
+
+
 def _graphdb_overview_payload(*, limit: int = 10) -> Dict[str, Any]:
     hotspot = SUBSTRATE_SEMANTIC_STORE.query_hotspot_region(limit_nodes=limit, limit_edges=max(20, limit * 2))
-    contradiction = SUBSTRATE_SEMANTIC_STORE.query_contradiction_region(limit_nodes=limit, limit_edges=max(20, limit * 2))
     concept = SUBSTRATE_SEMANTIC_STORE.query_concept_region(limit_nodes=limit, limit_edges=max(20, limit * 2))
 
     source_kind = hotspot.source_kind
-    degraded = bool(hotspot.degraded or contradiction.degraded or concept.degraded)
-    error = hotspot.error or contradiction.error or concept.error
+    degraded = bool(hotspot.degraded or concept.degraded)
+    error = hotspot.error or concept.error
 
     return {
         "source": {
             **_source_meta(kind=source_kind, degraded=degraded, limit=limit, error=error),
             "query_kind": "overview",
-            "semantic_backend": type(SUBSTRATE_SEMANTIC_STORE).__name__,
-            "truncated": bool(hotspot.truncated or contradiction.truncated or concept.truncated),
+            "semantic_backend": store_type_name(SUBSTRATE_SEMANTIC_STORE),
+            "truncated": bool(hotspot.truncated or concept.truncated),
         },
         "data": {
             "coherence": None,
             "identity_conflict": None,
             "goal_pressure": None,
             "concept_drift": None,
-            "contradiction_count": len(contradiction.slice.nodes),
+            # None, not 0: the substrate graph does not represent contradictions (#3544).
+            "contradiction_count": None,
             "top_hotspots": [node.model_dump(mode="json") for node in hotspot.slice.nodes[:limit]],
             "top_tensions": [node.model_dump(mode="json") for node in hotspot.slice.nodes if node.node_kind == "tension"][:limit],
             "top_stabilizers": [node.model_dump(mode="json") for node in concept.slice.nodes[:limit]],
             "metacog_brief": None,
             "regions": {
                 "hotspot": _serialize_slice(hotspot),
-                "contradiction": _serialize_slice(contradiction),
+                "contradiction": _CONTRADICTIONS_UNAVAILABLE,
                 "concept": _serialize_slice(concept),
             },
         },
@@ -4178,22 +4204,22 @@ def _graphdb_overview_payload(*, limit: int = 10) -> Dict[str, Any]:
 
 def _graphdb_hotspots_payload(*, limit: int = 20) -> Dict[str, Any]:
     hotspot = SUBSTRATE_SEMANTIC_STORE.query_hotspot_region(limit_nodes=limit, limit_edges=max(40, limit * 2))
-    contradiction = SUBSTRATE_SEMANTIC_STORE.query_contradiction_region(limit_nodes=limit, limit_edges=max(40, limit * 2))
     concept = SUBSTRATE_SEMANTIC_STORE.query_concept_region(limit_nodes=limit, limit_edges=max(40, limit * 2))
+    parts = [hotspot, concept]
 
-    degraded = bool(hotspot.degraded or contradiction.degraded or concept.degraded)
-    error = hotspot.error or contradiction.error or concept.error
+    degraded = any(r.degraded for r in parts)
+    error = next((r.error for r in parts if r.error), None)
 
     return {
         "source": {
             **_source_meta(kind=hotspot.source_kind, degraded=degraded, limit=limit, error=error),
             "query_kind": "hotspots",
-            "semantic_backend": type(SUBSTRATE_SEMANTIC_STORE).__name__,
-            "truncated": bool(hotspot.truncated or contradiction.truncated or concept.truncated),
+            "semantic_backend": store_type_name(SUBSTRATE_SEMANTIC_STORE),
+            "truncated": any(r.truncated for r in parts),
         },
         "data": {
             "active_regions": _serialize_slice(hotspot),
-            "contradiction_hotspots": _serialize_slice(contradiction),
+            "contradiction_hotspots": _CONTRADICTIONS_UNAVAILABLE,
             "pressure_hotspots": _serialize_slice(hotspot),
             "drift_hotspots": _serialize_slice(concept),
         },
@@ -4528,12 +4554,21 @@ def _sql_policy_comparison_payload(
 def _substrate_source_posture() -> Dict[str, Any]:
     control_kind = SUBSTRATE_REVIEW_QUEUE_STORE.source_kind()
     telemetry_kind = SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind()
-    semantic_kind_raw = getattr(SUBSTRATE_SEMANTIC_STORE, "source_kind", "graphdb")
-    semantic_kind = semantic_kind_raw() if callable(semantic_kind_raw) else semantic_kind_raw
+    semantic_store = resolve_ready_store(SUBSTRATE_SEMANTIC_STORE)
+    if semantic_store is None:
+        # Still loading: report it as such, never as a healthy empty graph.
+        warm = SUBSTRATE_SEMANTIC_STORE.warm_status()
+        semantic_kind = "warming" if warm["state"] != "failed" else "unavailable"
+        semantic_degraded = True
+        semantic_error = warm.get("error") or "substrate_store_warming"
+    else:
+        semantic_kind_raw = getattr(semantic_store, "source_kind", "graphdb")
+        semantic_kind = semantic_kind_raw() if callable(semantic_kind_raw) else semantic_kind_raw
+        semantic_degraded_raw = getattr(semantic_store, "degraded", False)
+        semantic_degraded = bool(semantic_degraded_raw() if callable(semantic_degraded_raw) else semantic_degraded_raw)
+        semantic_error = getattr(semantic_store, "last_error", lambda: None)()
     policy_kind = SUBSTRATE_POLICY_STORE.source_kind()
     control_degraded = bool(SUBSTRATE_REVIEW_QUEUE_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded())
-    semantic_degraded_raw = getattr(SUBSTRATE_SEMANTIC_STORE, "degraded", False)
-    semantic_degraded = bool(semantic_degraded_raw() if callable(semantic_degraded_raw) else semantic_degraded_raw)
     policy_degraded = bool(SUBSTRATE_POLICY_STORE.degraded())
     control_posture = "degraded" if control_degraded else ("postgres" if control_kind == "postgres" else "fallback")
     return {
@@ -4548,7 +4583,7 @@ def _substrate_source_posture() -> Dict[str, Any]:
             "kind": semantic_kind,
             "degraded": semantic_degraded,
             "posture": "degraded" if semantic_degraded else semantic_kind,
-            "error": getattr(SUBSTRATE_SEMANTIC_STORE, "last_error", lambda: None)(),
+            "error": semantic_error,
         },
         "policy": {
             "kind": policy_kind,
@@ -4676,9 +4711,8 @@ class _ManualCyclePatchApplier(PatchApplier):
         surfaces: dict[str, dict[str, Any]],
         allow_apply: bool,
         blocked_reason: str | None = None,
-        policy_store: SubstratePolicyProfileStore | None = None,
     ) -> None:
-        super().__init__(surfaces=surfaces, policy_store=policy_store)
+        super().__init__(surfaces=surfaces)
         self.allow_apply = bool(allow_apply)
         self.blocked_reason = blocked_reason
         self.attempted = 0
@@ -4708,11 +4742,13 @@ class _ScheduledCyclePatchApplier(PatchApplier):
         surfaces: dict[str, dict[str, Any]],
         allow_apply: bool,
         allowed_classes: set[str] | None = None,
-        policy_store: SubstratePolicyProfileStore | None = None,
     ) -> None:
-        super().__init__(surfaces=surfaces, policy_store=policy_store)
+        super().__init__(surfaces=surfaces)
         self.allow_apply = bool(allow_apply)
-        self.allowed_classes = set(allowed_classes or set())
+        # None = every class; an explicit set (even empty) = only those.
+        # Empty since 2026-11-03: every auto-promotable class is retired, so
+        # the unattended cycle applies nothing.
+        self.allowed_classes = None if allowed_classes is None else set(allowed_classes)
         self.attempted = 0
         self.blocked = 0
         self.completed = 0
@@ -4720,7 +4756,7 @@ class _ScheduledCyclePatchApplier(PatchApplier):
     def apply(self, *, proposal, decision):  # type: ignore[override]
         if decision.action == "auto_promote":
             self.attempted += 1
-        if self.allowed_classes and proposal.mutation_class not in self.allowed_classes:
+        if self.allowed_classes is not None and proposal.mutation_class not in self.allowed_classes:
             if decision.action == "auto_promote":
                 self.blocked += 1
             return None
@@ -4904,19 +4940,6 @@ def _mutation_signal_intake_report(
     return report
 
 
-def _self_revision_signals_from_latest_self_state(
-    *, min_error: float, max_age_sec: float, now: datetime | None = None
-) -> list["MutationSignalV1"]:
-    """Always [] now. 2026-07-22 (SelfStateV1 burn,
-    docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
-    spec.md): this signal source was orion.substrate.mutation_self_revision's
-    only self_state-derived input, and self_state has no producer anymore.
-    Kept as a function (not inlined at the call site) so the fail-open
-    contract stays visible and the call site doesn't need to change."""
-    del min_error, max_age_sec, now
-    return []
-
-
 def substrate_autonomy_runtime_supported() -> tuple[bool, str]:
     if not SUBSTRATE_MUTATION_STORE.postgres_url:
         return False, "postgres_url_unset"
@@ -4925,6 +4948,23 @@ def substrate_autonomy_runtime_supported() -> tuple[bool, str]:
     if SUBSTRATE_MUTATION_STORE.degraded():
         return False, "mutation_store_degraded"
     return True, "supported"
+
+
+def _mutation_arousal_level() -> str | None:
+    """R3 reader 6: Orion's arousal for the scheduled self-modification cycle.
+
+    Called by the worker at most once per cycle, at the first pressure that is otherwise ready
+    for a proposal (this cycle runs 60-90 s off the event loop, so the read is a blocking GET
+    at the decision point, not at tick start). None = unknown / flag off = today."""
+    from orion.regulation.arousal_read import read_arousal_sync
+
+    view = read_arousal_sync(
+        settings.ORION_BUS_URL,
+        enabled=_env_flag("SUBSTRATE_AUTONOMY_AROUSAL_ENABLED", default=True),
+        reader="mutation_pressure",
+        max_age_sec=float(settings.ORION_REGULATION_READER_MAX_AGE_SEC),
+    )
+    return view.level if view.known else None
 
 
 def execute_substrate_mutation_scheduled_cycle(
@@ -4986,7 +5026,6 @@ def execute_substrate_mutation_scheduled_cycle(
         proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", default=True)
         routing_proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True)
         cognitive_proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", default=False)
-        self_revision_enabled = _env_flag("SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED", default=False)
         apply_enabled_global = _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)
         routing_apply_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", default=False)
         apply_enabled = bool(apply_enabled_global and routing_apply_enabled)
@@ -5001,27 +5040,24 @@ def execute_substrate_mutation_scheduled_cycle(
         applier = _ScheduledCyclePatchApplier(
             surfaces=SUBSTRATE_MUTATION_SURFACES,
             allow_apply=apply_enabled,
-            # routing_threshold_patch is retired (RETIRED_MUTATION_CLASSES) and
-            # can never reach a real apply regardless of this allowlist --
-            # graph_consolidation_param_patch is the only class that currently
-            # can. Left pointed at the retired class, this scheduled/unattended
-            # cycle could never apply anything for real; the env flags below
-            # keep their historical "routing" names (a live Hub API response
-            # reads them by these keys -- renaming is a separate follow-up).
-            allowed_classes={"graph_consolidation_param_patch"},
-            policy_store=SUBSTRATE_POLICY_STORE,
+            # routing_threshold_patch, graph_consolidation_param_patch and
+            # prediction_expectation_patch (2026-11-03) are retired
+            # (RETIRED_MUTATION_CLASSES). No class may be applied by this
+            # unattended cycle: it still reads signals, proposes and trials
+            # for operator review, but applies nothing. The env flags keep
+            # their historical "routing" names (a live Hub API response reads
+            # them by these keys).
+            allowed_classes=set(),
         )
         corpus = ReplayCorpusRegistry(
             corpus_by_class={
                 "routing_threshold_patch": "replay-routing-v1",
                 "recall_weighting_patch": "replay-recall-v1",
-                "graph_consolidation_param_patch": "replay-consolidation-v1",
                 "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
             },
             baseline_metric_ref_by_class={
                 "routing_threshold_patch": "baseline-routing-v1",
                 "recall_weighting_patch": "baseline-recall-v1",
-                "graph_consolidation_param_patch": "baseline-consolidation-v1",
                 "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
             },
         )
@@ -5033,7 +5069,10 @@ def execute_substrate_mutation_scheduled_cycle(
                 routing_surface_reader=inspect_chat_reflective_lane_threshold,
                 surface_reliability_reader=SUBSTRATE_MUTATION_STORE.surface_reliability,
             ),
-            trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
+            trial_runner=SubstrateTrialRunner(
+                scorer=ClassSpecificScorer(),
+                corpus_registry=corpus,
+            ),
             decision_engine=DecisionEngine(),
             applier=applier,
             monitor=PostAdoptionMonitor(regression_threshold=routing_rollback_threshold),
@@ -5049,13 +5088,14 @@ def execute_substrate_mutation_scheduled_cycle(
             ),
             kill_switch_env="SUBSTRATE_AUTONOMY_ENABLED",
             trace_logger=traces.append,
+            arousal_level=_mutation_arousal_level,
         )
 
         # Narrow ramp scope: was routing-class only (zone "autonomy_graph"),
         # retired 2026-09-05 (RETIRED_MUTATION_CLASSES) -- that zone's BASE
         # signal is a permanent no-op now (_RETIRED_TELEMETRY_ZONES), so this
         # filter alone made the scheduled cycle apply nothing for real,
-        # regardless of allowed_classes below. "world_ontology" is
+        # regardless of allowed_classes (now set(), see above). "world_ontology" is
         # graph_consolidation's real zone (TARGET_SURFACE_BY_ZONE) and is
         # live in production today (confirmed: 141 operator_review/
         # world_ontology rows in the last 14 days, 2026-09-08) -- this is
@@ -5131,17 +5171,9 @@ def execute_substrate_mutation_scheduled_cycle(
                 "routing_rollback_delta_threshold": routing_rollback_threshold,
             }
         )
-        self_revision_signals: list[MutationSignalV1] = []
-        if self_revision_enabled and cognitive_proposals_enabled:
-            try:
-                self_revision_signals = _self_revision_signals_from_latest_self_state(
-                    min_error=_env_float("SUBSTRATE_AUTONOMY_SELF_REVISION_MIN_ERROR", default=0.3, minimum=0.0, maximum=1.0),
-                    max_age_sec=_env_float("SUBSTRATE_AUTONOMY_SELF_REVISION_MAX_AGE_SEC", default=300.0, minimum=30.0, maximum=3600.0),
-                    now=tick_now,
-                )
-            except Exception:
-                logger.exception("substrate_self_revision_signals_call_failed")
-                self_revision_signals = []
+
+        if telemetry_override is None:
+            telemetry = _unseen_review_telemetry(telemetry)
 
         _t_run = time.monotonic()
         result = worker.run_cycle(
@@ -5153,8 +5185,12 @@ def execute_substrate_mutation_scheduled_cycle(
             ),
             replay_telemetry=telemetry,
             now=tick_now,
-            extra_signals=self_revision_signals,
         )
+        if telemetry_override is None and not set(result.get("notes") or []) & {
+            "leader_lock_not_acquired",
+            "autonomy_kill_switch_disabled",
+        }:
+            _mark_review_telemetry_seen(telemetry)
         _phase_sec["run_cycle"] = time.monotonic() - _t_run
         _phase_sec["total"] = time.monotonic() - _t_cycle_start
         scheduler_summary = {
@@ -5181,6 +5217,8 @@ def execute_substrate_mutation_scheduled_cycle(
             "proposals_refused": len(
                 [event for event in traces if event.get("event") == "mutation_proposal_refused"]
             ),
+            # R3 reader 6: otherwise-ready pressures held while arousal read strained.
+            "proposals_held_arousal": int(result.get("proposals_held_arousal", 0)),
             "proposal_refusal_reasons": sorted(
                 {
                     note.split("reason=", 1)[1]
@@ -5195,8 +5233,6 @@ def execute_substrate_mutation_scheduled_cycle(
             "applies_executed": applier.completed,
             "routing_proposals_enabled": routing_proposals_enabled,
             "cognitive_proposals_enabled": cognitive_proposals_enabled,
-            "self_revision_enabled": self_revision_enabled,
-            "self_revision_signals": len(self_revision_signals),
             "routing_apply_enabled": routing_apply_enabled,
             "apply_enabled_global": apply_enabled_global,
             "routing_only_scope": not cognitive_proposals_enabled,
@@ -5274,19 +5310,16 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         surfaces=SUBSTRATE_MUTATION_SURFACES,
         allow_apply=apply_allowed,
         blocked_reason=";".join(apply_blockers) if apply_blockers else None,
-        policy_store=SUBSTRATE_POLICY_STORE,
     )
     corpus = ReplayCorpusRegistry(
         corpus_by_class={
             "routing_threshold_patch": "replay-routing-v1",
             "recall_weighting_patch": "replay-recall-v1",
-            "graph_consolidation_param_patch": "replay-consolidation-v1",
             "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
         },
         baseline_metric_ref_by_class={
             "routing_threshold_patch": "baseline-routing-v1",
             "recall_weighting_patch": "baseline-recall-v1",
-            "graph_consolidation_param_patch": "baseline-consolidation-v1",
             "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
         },
     )
@@ -5300,7 +5333,10 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
             routing_surface_reader=inspect_chat_reflective_lane_threshold,
             surface_reliability_reader=SUBSTRATE_MUTATION_STORE.surface_reliability,
         ),
-        trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
+        trial_runner=SubstrateTrialRunner(
+            scorer=ClassSpecificScorer(),
+            corpus_registry=corpus,
+        ),
         decision_engine=DecisionEngine(),
         applier=applier,
         monitor=PostAdoptionMonitor(),
@@ -5820,6 +5856,9 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             # at staging; see graph_consolidation.recent_activity below.
             # Plain English, not jargon: this string is the first line a
             # human reads on this page.
+            # 2026-10-16..2026-11-03 one surface (rung 6's
+            # prediction_expectation_patch) changed live behavior without
+            # approval; retired 2026-11-03, so none does now.
             "summary": "Orion can suggest changes to itself and try some out quietly, but nothing changes how it actually behaves without you approving it first.",
             "safe_next_action": "build_recall_v2_manual_canary",
             "highest_risk": "misconfigured autonomy apply gate on any future live-apply surface",
@@ -6201,6 +6240,20 @@ def execute_substrate_review_scheduled_cycle(
     def _emit(payload: Dict[str, Any]) -> Dict[str, Any]:
         _emit_substrate_review_scheduler_log(payload=payload)
         return payload
+
+    # execute_once marks the queue item reviewed (cycle_count, remaining_cycles)
+    # before it consolidates against the semantic store, so a tick while that
+    # store is still loading would spend a review cycle on a guaranteed failure.
+    if not _semantic_store_ready():
+        return _emit(
+            {
+                "event": "review_scheduler_tick",
+                "tick_id": tick_id,
+                "status": "skipped",
+                "reason": "substrate_store_not_ready",
+                "at": tick_now.isoformat(),
+            }
+        )
 
     # The operator endpoints run in FastAPI's threadpool, genuinely parallel with
     # this loop's asyncio.to_thread. GraphReviewQueue persists by full-table swap
@@ -6751,6 +6804,7 @@ def api_substrate_review_runtime_status(
 @router.post("/api/substrate/review-runtime/execute-once")
 def api_substrate_review_runtime_execute_once(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewExecuteRequest()
+    _require_semantic_store_ready()
     with _review_cycle_lock_or_conflict():
         return _execute_substrate_review_cycle(
             allow_followup=False,
@@ -6761,6 +6815,7 @@ def api_substrate_review_runtime_execute_once(request: SubstrateReviewExecuteReq
 @router.post("/api/substrate/review-runtime/execute-once-followup")
 def api_substrate_review_runtime_execute_once_followup(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewExecuteRequest()
+    _require_semantic_store_ready()
     with _review_cycle_lock_or_conflict():
         return _execute_substrate_review_cycle(
             allow_followup=True,

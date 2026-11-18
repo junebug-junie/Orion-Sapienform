@@ -37,7 +37,8 @@ def test_hold_ref_is_validated_with_the_pool_and_the_turn_runs_under_it(monkeypa
     args, kwargs = validate.await_args
     assert args[1] == ref() and kwargs["expected_holder"] == "durable-runs:run-one"
     gen = loop._generate.await_args.kwargs
-    assert gen["gpu_lease"] == ref() and gen["timeout_sec"] == 42
+    # The limit counts from receipt (durable-runs' timer is already running).
+    assert gen["gpu_lease"] == ref() and 41.0 < gen["timeout_sec"] <= 42
     # The role (agent-gpu2) is not a route: FCC names the hold's work-class route.
     assert gen["fcc_model_label"] == "llamacpp/agent"
     assert "resource_lease" not in gen
@@ -146,6 +147,11 @@ def _door_a_loop(monkeypatch):
     loop = _loop(_CortexBus(), kickoff_via_cortex=True)
     loop.outreach_enabled = True
     loop._outreach_provider = lambda: _Outreach()
+
+    async def _asked(run_id, line):  # door policy (2026-11-10): an investigate run Juniper asked for
+        return True, "asked_by_juniper"
+
+    loop._curiosity_door = _asked
     skips = []
     monkeypatch.setattr(loop, "_record_outreach_skip",
                         lambda outreach, reason, **kw: skips.append((reason, kw["run_id"])))
@@ -183,3 +189,48 @@ def test_door_a_malformed_ref_skips_and_still_releases(monkeypatch):
     env = BaseEnvelope(kind="durable.run.state.v1", source=ServiceRef(name="t"), payload=state)
     asyncio.run(loop._handle_run_state({"data": bus.codec.encode(env)}))
     assert skips == ["gpu_lease_malformed"] and released == ["run-one"]
+
+
+@pytest.mark.parametrize("why", ["daily_cap", "quiet_hours", "strained"])
+def test_door_a_refusal_releases_the_seat_at_once(monkeypatch, why):
+    """Hub refuses to compose (cap, quiet hours, strained): it tells durable-runs to release the
+    run's seat in the same call, on the exact path durable-runs serves (#3255).
+
+    A contract pin, not the regression test: Hub always made this call. The bug was durable-runs
+    answering it 400 (services/orion-durable-runs/tests/test_release_outreach_route.py)."""
+    loop, skips = _door_a_loop(monkeypatch)
+
+    class _Refusing:
+        def blocked_reason(self, **_kw):
+            return why
+
+    loop._outreach_provider = lambda: _Refusing()
+    loop.durable_runs_url = "http://durable-runs:8124/"
+    generate = AsyncMock()
+    monkeypatch.setattr(loop, "_generate", generate)
+    posted = []
+
+    class _Client:
+        def __init__(self, **_kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def post(self, url):
+            posted.append(url)
+
+            class _Response:
+                status_code, text = 200, ""
+            return _Response()
+
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    outcome = ci.TurnOutcome(run_id="run-one", continue_line=False, continue_note="", reach_out=True, reach_out_why="x")
+    result = asyncio.run(loop._maybe_reach_out(outcome=outcome, finding_text="f", run_id="run-one", gpu_lease=ref()))
+    assert result == why and skips == [(why, "run-one")]
+    generate.assert_not_awaited()
+    assert posted == ["http://durable-runs:8124/runs/run-one/release-outreach-lease"]

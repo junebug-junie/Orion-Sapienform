@@ -78,12 +78,25 @@ def test_naming_a_key_without_pinning_it_is_not_a_copy(gate) -> None:
         ("HARNESS_FCC_TIMEOUT_SEC=900", "900"),  # env-key-single-source: sample
         ("- HARNESS_FCC_TIMEOUT_SEC=${HARNESS_FCC_TIMEOUT_SEC:-1600}", "1600"),  # env-key-single-source: sample
         ('fcc_timeout_sec: float = Field(1600.0, alias="HARNESS_FCC_TIMEOUT_SEC")', "1600.0"),  # env-key-single-source: sample
+        ('x: float = Field(\n    default=1600.0, gt=0, alias="HARNESS_FCC_TIMEOUT_SEC"\n)', "1600.0"),  # env-key-single-source: sample
         ("up to `HARNESS_FCC_TIMEOUT_SEC=900s` can occupy", "900s"),  # env-key-single-source: sample
     ],
 )
 def test_the_four_shapes_a_value_gets_restated_in(gate, text, expected) -> None:
     found = [v for _, v in gate._literals(text, "HARNESS_FCC_TIMEOUT_SEC")]
     assert expected in found, found
+
+
+@pytest.mark.parametrize(
+    "path,key",
+    [
+        ("services/orion-hub/app/settings.py", "HUB_READING_SEARCH_MIN_SIMILARITY"),
+        ("services/orion-dream/app/settings.py", "DREAM_SEARCH_MIN_SIMILARITY"),
+    ],
+)
+def test_owned_settings_defaults_are_visible_to_the_gate(gate, path, key) -> None:
+    """A settings default the gate cannot see can drift from its owner silently."""
+    assert list(gate._literals((REPO_ROOT / path).read_text(), key)), f"{key}: no default seen in {path}"
 
 
 def test_a_sample_marker_line_is_not_counted_as_a_copy(gate) -> None:
@@ -140,3 +153,104 @@ def test_historical_records_are_not_rewritten_by_config_changes(gate) -> None:
     """PR reports and design specs state what was true when written."""
     assert "docs/superpowers/pr-reports/" in gate.EXCLUDED_PREFIXES
     assert "docs/superpowers/specs/" in gate.EXCLUDED_PREFIXES
+
+
+def test_gitignored_agent_scratch_is_not_scanned(gate) -> None:
+    """`.superpowers/` briefs are frozen agent scratch; the local `.env` stays scanned."""
+    assert ".superpowers/" in gate.EXCLUDED_PREFIXES
+    assert ".env" in gate.SCANNED_NAMES
+    assert ".superpowers/sdd/task-5-brief.md".startswith(gate.EXCLUDED_PREFIXES)
+
+
+# --- module-owned lines (body economy Patch B): the room's temperature lines live in thermal_gate.py ---
+
+THOUGHT_SETTINGS = REPO_ROOT / "services" / "orion-thought" / "app" / "settings.py"
+THOUGHT_ENV = REPO_ROOT / "services" / "orion-thought" / ".env_example"
+
+
+def test_the_owner_values_are_read_from_thermal_gate_not_hardcoded(gate) -> None:
+    values, failures = gate._owned_line_values()
+    assert failures == []
+    assert values[32.0].endswith("DEFAULT_HOT_C") and values[30.5].endswith("DEFAULT_HOT_REARM_C")
+    assert values[34.0].endswith("DEFAULT_CRITICAL_C") and values[33.0].endswith("DEFAULT_CRITICAL_REARM_C")
+
+
+def test_the_pre_patch_b_thought_settings_copy_is_refused(gate, monkeypatch) -> None:
+    """Re-inserts the exact Field lines Patch B deleted from orion-thought."""
+    original = THOUGHT_SETTINGS.read_text()
+    revived = original + (
+        '\nclass _Revived:\n'
+        '    thermal_hot_c: float = Field(32.0, alias="ORION_THERMAL_HOT_C")\n'  # env-key-single-source: sample
+        '    thermal_hot_rearm_c: float = Field(30.5, alias="ORION_THERMAL_HOT_REARM_C")\n'  # env-key-single-source: sample
+    )
+    monkeypatch.setattr(Path, "read_text", _patched_read_text(THOUGHT_SETTINGS, revived))
+    failures = gate._module_owned_failures()
+    assert any("orion-thought/app/settings.py" in f and "ORION_THERMAL_HOT_C" in f for f in failures), failures  # env-key-single-source: sample
+    assert gate.main() == 1
+
+
+def test_the_pre_patch_b_thought_env_example_copy_is_refused(gate, monkeypatch) -> None:
+    revived = THOUGHT_ENV.read_text() + "\nORION_THERMAL_HOT_C=32.0\n"  # env-key-single-source: sample
+    monkeypatch.setattr(Path, "read_text", _patched_read_text(THOUGHT_ENV, revived))
+    assert gate.main() == 1
+
+
+def test_a_new_thermal_env_key_with_an_owned_value_is_refused(gate, monkeypatch) -> None:
+    """Not just the retired names: any new key that restates a line."""
+    revived = THOUGHT_ENV.read_text() + "\nORION_CABINET_CRITICAL_C=34\n"  # env-key-single-source: sample
+    monkeypatch.setattr(Path, "read_text", _patched_read_text(THOUGHT_ENV, revived))
+    failures = gate._module_owned_failures()
+    assert any("ORION_CABINET_CRITICAL_C" in f for f in failures), failures
+
+
+@pytest.mark.parametrize("src,caught", [
+    ("HOT_C = 32.0", True),  # env-key-single-source: sample
+    ("CRITICAL_C: float = 34", True),  # env-key-single-source: sample
+    ("def f(*, hot_rearm_c: float = 30.5): ...", True),  # env-key-single-source: sample
+    ("class S:\n    room_hot_c: float = Field(default=32.0)", True),  # env-key-single-source: sample
+    ("thermal_state(temp_c=t, age_sec=a, hot_c=32.0, hot_rearm_c=30.5)", True),  # env-key-single-source: sample
+    ("cfg = {'hot_c': 32.0}", True),  # env-key-single-source: sample
+    ("HOT_C = -32.0 * -1", False),            # an expression, not a restated literal
+    ("thermal_state(temp_c=32.0, age_sec=1.0)", False),  # a reading, not a line
+    ("GPU_CEILING_REARM_C = 80.0", False),   # a chip ceiling, not a room line
+    ("x = 32.0", False),                      # a 32 that is not named as a temperature line
+    ("THERMAL_MIN_C = 50.0", False),          # thermal name, unowned value
+    ("from orion.autonomy.thermal_gate import DEFAULT_HOT_C as HOT_C", False),  # the right way
+])
+def test_python_copy_shapes(gate, src, caught) -> None:
+    values, _ = gate._owned_line_values()
+    assert bool([c for c in gate._py_line_copies(src) if c[2] in values]) is caught
+
+
+def _one_file_tree(rel: str, text: str):
+    return [(REPO_ROOT / rel, rel, text)]
+
+
+def test_prose_naming_a_retired_key_is_not_a_copy(gate) -> None:
+    """Docstrings and comments may still name the deleted key (history); only setting or reading it fails.
+    Exercises the retired-key check itself, not the numeric-copy scan."""
+    prose = '"""ORION_THERMAL_HOT_C was deleted in Patch B."""\n# ORION_THERMAL_HOT_REARM_C too\n'  # env-key-single-source: sample
+    assert gate._module_owned_failures(_one_file_tree("x/prose.py", prose)) == []
+    env_prose = "# ORION_THERMAL_HOT_C was deleted\n"  # env-key-single-source: sample
+    assert gate._module_owned_failures(_one_file_tree("x/.env_example", env_prose)) == []
+
+
+@pytest.mark.parametrize("rel,text", [
+    ("x/settings.py", 'v = os.getenv("ORION_THERMAL_HOT_C")\n'),  # env-key-single-source: sample
+    ("x/.env_example", "ORION_THERMAL_HOT_REARM_C=29.0\n"),  # env-key-single-source: sample
+    ("x/docker-compose.yml", '      - ORION_THERMAL_HOT_C=${ORION_THERMAL_HOT_C:-1}\n'),  # env-key-single-source: sample
+])
+def test_setting_or_reading_a_retired_key_is_refused(gate, rel, text) -> None:
+    failures = gate._module_owned_failures(_one_file_tree(rel, text))
+    assert any("was retired" in f for f in failures), failures
+
+
+@pytest.mark.parametrize("line,caught", [
+    ('      KEY_HOT_C: "${KEY_HOT_C:-32.0}"', True),  # env-key-single-source: sample
+    ("export ROOM_HOT_C=32.0", True),  # env-key-single-source: sample
+    ("      - CABINET_CRITICAL_C=${CABINET_CRITICAL_C:-34}", True),  # env-key-single-source: sample
+    ("HARDWARE_WATCH_GPU_CEILING_REARM_C=80", False),
+])
+def test_env_and_compose_shapes(gate, line, caught) -> None:
+    failures = gate._module_owned_failures(_one_file_tree("x/.env_example", line + "\n"))
+    assert bool(failures) is caught, failures

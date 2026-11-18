@@ -9,6 +9,12 @@ priority: high
 
 requires_gpu: true
 requires_memory: false
+# The judge grades the draft against this turn's own evidence (receipts, tool
+# results, situation notes). Recall appended "RELEVANT MEMORY" -- Orion's past
+# replies -- after the judge's instructions on 1,029 of 1,369 judge calls
+# (2026-11-03..11), which is neither evidence for this turn nor something the
+# prompt asks the judge to read. Off for this verb (2026-11-11).
+recall_enabled: false
 # Raised 300000 -> 480000 with FINALIZE_REFLECT_TIMEOUT_SEC (2026-09-15).
 # Cortex-exec uses this as the LLMGateway RPC wait; must not sit under the
 # harness outer wait or the governor times out while the model is still mid-gen.
@@ -25,3 +31,11 @@ steps:
     services: [LLMGatewayService]
     prompt_template: harness_finalize_reflect.j2
     requires_gpu: true
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 0
+  family: turn
+  lanes: [chat, agent]
+  deferrable_window_s: 0

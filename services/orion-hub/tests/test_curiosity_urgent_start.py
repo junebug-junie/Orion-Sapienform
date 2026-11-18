@@ -153,8 +153,7 @@ def test_urgent_dispatch_asks_for_urgent_priority_with_the_seed_and_urgent_promp
     assert request.brief.timeout_sec == 900.0
     assert request.brief.line == "investigate"
     assert request.brief.prompt == build_urgent_prompt(
-        _seed(), run_id=run_id, own_graph="orion_worldview",
-        hub_url="http://host.docker.internal:8080", graph_enabled=False,
+        _seed(), run_id=run_id, own_graph="orion_worldview", graph_enabled=False,
     )
     # The stance appraisal is the question itself.
     assert loop._mind_appraisal_by_run_id[run_id] == "Why is athena at 88C?"

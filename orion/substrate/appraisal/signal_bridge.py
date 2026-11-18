@@ -3,6 +3,10 @@
 The bridge owns the mapping from appraisal dimensions to canonical signal
 dimensions registered on the graph_cognition organ. It is pure: no I/O,
 no clock skew beyond `emitted_at`.
+
+The organ id ``graph_cognition`` is historical: this appraisal is its only live
+producer. The ``orion/graph_cognition`` package of the same name was deleted in
+PR #3522 and never emitted organ signals.
 """
 
 from __future__ import annotations

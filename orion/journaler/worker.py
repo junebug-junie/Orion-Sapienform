@@ -11,8 +11,6 @@ from uuid import UUID, uuid4, uuid5
 
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
-from orion.schemas.notify import NotificationRecord
-from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.world_pulse import CuriosityFollowupV1, WorldPulseRunResultV1
 
 from .schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalMode, JournalTriggerV1
@@ -31,6 +29,23 @@ def coerce_journal_title(*, raw_title: Any, fallback_summary: str, correlation_i
         return title
     seed = str(fallback_summary or "").strip() or "Journal Pass"
     return f"Journal Pass · {seed[:64]} · {str(correlation_id)[:8]}"
+
+
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def code_built_title(trigger: JournalTriggerV1, *, created_at: datetime) -> str:
+    """A title from the trigger kind and its date, for when the model gave none.
+
+    The compose prompt lets the model answer ``"title": null``, and it usually
+    does: 13 of 15 walkway entries from 2026-11-10 to 11-14 were stored with no
+    title (#3386). The date is the last one in ``source_ref`` (a walkway ref is
+    ``walkway_grade:walkway:2026-11-14``, the day the entry is about), else the
+    day the entry was written.
+    """
+    kind = str(trigger.trigger_kind or "journal").replace("_", " ").strip().capitalize()
+    dates = _ISO_DATE_RE.findall(str(trigger.source_ref or ""))
+    return f"{kind} · {dates[-1] if dates else created_at.date().isoformat()}"
 
 
 def stable_journal_entry_id_for_workflow_compose(
@@ -65,6 +80,9 @@ _TRIGGER_TO_MODE: dict[str, JournalMode] = {
     "town_episode": "digest",
     "walkway_forecast": "digest",
     "walkway_grade": "digest",
+    "walkway_day": "digest",
+    "walkway_week": "digest",
+    "walkway_month": "digest",
     "orion_day_letter": "daily",
 }
 
@@ -131,18 +149,6 @@ def build_scheduler_trigger(*, summary: str, prompt_seed: str | None = None, sou
         trigger_kind="daily_summary",
         source_kind="scheduler",
         source_ref=source_ref,
-        summary=summary,
-        prompt_seed=prompt_seed,
-    )
-
-
-def build_notify_summary_trigger(record: NotificationRecord) -> JournalTriggerV1:
-    prompt_seed = record.body_md or record.body_text
-    summary = (record.body_text or record.title or "").strip() or f"Notify summary: {record.event_kind}"
-    return JournalTriggerV1(
-        trigger_kind="notify_summary",
-        source_kind="notify",
-        source_ref=str(record.notification_id),
         summary=summary,
         prompt_seed=prompt_seed,
     )
@@ -358,27 +364,6 @@ def merge_world_pulse_curiosity_into_draft(
     """Append concrete gap-fill findings when compose omitted them from the body."""
     block, markers = world_pulse_curiosity_appendix(result)
     return append_unless_present(draft, block, markers)
-
-
-def build_metacog_trigger(trigger: MetacogTriggerV1) -> JournalTriggerV1:
-    prompt_seed = json.dumps(
-        {
-            "trigger_kind": trigger.trigger_kind,
-            "zen_state": trigger.zen_state,
-            "pressure": trigger.pressure,
-            "window_sec": trigger.window_sec,
-            "upstream": trigger.upstream,
-        },
-        sort_keys=True,
-        default=str,
-    )
-    return JournalTriggerV1(
-        trigger_kind="metacog_digest",
-        source_kind="metacog",
-        source_ref=trigger.timestamp,
-        summary=trigger.reason,
-        prompt_seed=prompt_seed,
-    )
 
 
 def build_compose_request(
@@ -763,7 +748,7 @@ def build_write_payload(
         created_at=ts,
         author=author,
         mode=draft.mode,
-        title=draft.title,
+        title=str(draft.title or "").strip() or code_built_title(trigger, created_at=ts),
         body=draft.body,
         source_kind=trigger.source_kind,
         source_ref=trigger.source_ref,

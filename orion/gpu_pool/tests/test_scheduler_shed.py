@@ -1,5 +1,6 @@
 """U4 shed (orion/gpu_pool/scheduler.py) and the shed board (orion/gpu_pool/shed.py).
-Plan: docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md."""
+Plan: docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md.
+D3 one-shot refusal: docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -11,7 +12,7 @@ from orion.gpu_pool.shed import SHED_REASONS, ShedBoard, ShedReasonSpec, ShedSig
 from orion.gpu_pool.tests.test_scheduler import CFG, T0, cards, grants, lease, live, of
 from orion.gpu_pool.tests.test_scheduler_urgent import CLEAR, hold, urgent, with_cap
 
-COOLING = {"background": "cooling_incident", "system": "cooling_incident"}
+COOLING = {"background": "cooling_incident", "system": "cooling_incident", "starved": "cooling_incident"}
 
 
 def run(leases, roles=None, crds=None, now=T0, shed=COOLING, cfg=CFG, guards=None):
@@ -22,11 +23,67 @@ def run(leases, roles=None, crds=None, now=T0, shed=COOLING, cfg=CFG, guards=Non
 
 @pytest.mark.parametrize("priority", ["background", "system"])
 def test_shed_priorities_get_no_new_grant_and_are_reported(priority):
-    q = lease("metacog", priority=priority, lease_id="q")
+    """A lease someone comes back for (retryable backlog class) waits, reported as Shed."""
+    q = lease("metacog", priority=priority, lease_id="q", retryable=True)
     d = run([q])
     assert grants(d) == {}
     assert of(Shed, d) == [Shed("q", "shed:cooling_incident")]
+    assert of(Unavailable, d) == []
     assert grants(run([q], shed=None)) == {"q": "metacog"}
+
+
+# --- D3: one-shot requests are refused at once ------------------------------------------------
+
+@pytest.mark.parametrize("priority", ["background", "system"])
+@pytest.mark.parametrize("work_class", ["fast", "metacog", "agent", "chat"])
+def test_one_shot_request_is_refused_at_once(work_class, priority):
+    """kind=request, no hold, not retryable: the caller's fallback runs now, not at its deadline.
+    metacog/agent are backlog classes, but a non-retryable backlog lease is a "wait" lease (rule 10)
+    -- that is every gateway call (orion-mind, memory annotation)."""
+    q = lease(work_class, priority=priority, lease_id="q", deadline_at=T0 + timedelta(seconds=600))
+    d = run([q])
+    assert of(Unavailable, d) == [Unavailable("q", "shed:cooling_incident")]
+    assert grants(d) == {} and of(Shed, d) == []
+
+
+def test_one_shot_refusal_names_the_winning_reason():
+    q = lease("fast", priority="background", lease_id="q")
+    assert of(Unavailable, run([q], shed={"background": "orion_x"})) == [Unavailable("q", "shed:orion_x")]
+
+
+def test_durable_hold_stays_queued_under_shed():
+    h = hold(lease_id="h")
+    d = run([h])
+    assert of(Shed, d) == [Shed("h", "shed:cooling_incident")]
+    assert of(Unavailable, d) == [] and grants(d) == {}
+
+
+def test_backlog_lease_stays_backlogged_under_shed():
+    b = lease("agent", "backlogged", priority="background", lease_id="b", retryable=True)
+    d = run([b])
+    # It is servable again, so it rejoins the queue in place -- and is held there, not refused.
+    assert of(Requeue, d) == [Requeue("b", "role_available")]
+    assert of(Shed, d) == [Shed("b", "shed:cooling_incident")]
+    assert of(Unavailable, d) == [] and grants(d) == {}
+    # Nothing can serve it: it simply stays backlogged (no decision at all).
+    roles = live(**{r: live()[r].__class__(r, False, 0) for r in CFG.classes["agent"].roles})
+    d = run([b], roles=roles)
+    assert of(Unavailable, d) == [] and of(Requeue, d) == [] and grants(d) == {}
+
+
+def test_granted_holds_child_is_still_granted_under_shed():
+    h = hold("granted", "agent", lease_id="h", granted_at=T0 - timedelta(seconds=60))
+    child = lease("agent", priority="background", lease_id="c", hold_lease_id="h")
+    d = run([h, child])
+    assert grants(d) == {"c": "agent"}
+    assert of(Unavailable, d) == [] and of(Shed, d) == []
+
+
+@pytest.mark.parametrize("priority", ["interactive", "urgent"])
+def test_one_shot_interactive_and_urgent_are_never_refused(priority):
+    q = lease("fast", priority=priority, lease_id="q")
+    d = run([q])
+    assert grants(d) == {"q": "fast"} and of(Unavailable, d) == [] and of(Shed, d) == []
 
 
 @pytest.mark.parametrize("priority", ["interactive", "urgent"])
@@ -54,8 +111,9 @@ def test_running_work_is_not_recalled_and_its_calls_still_run():
 
 
 def test_shed_lease_keeps_its_place_and_is_granted_first_when_cleared():
-    old = lease("metacog", priority="background", lease_id="old", age=100)
-    new = lease("metacog", priority="background", lease_id="new", age=1)
+    """Waiting leases (retryable backlog) keep their order; one-shots are refused instead (D3)."""
+    old = lease("metacog", priority="background", lease_id="old", age=100, retryable=True)
+    new = lease("metacog", priority="background", lease_id="new", age=1, retryable=True)
     full = [lease("metacog", "granted", "metacog", priority="interactive") for _ in range(3)] + \
            [lease("fast", "granted", "fast", priority="interactive") for _ in range(4)] + \
            [lease("agent", "granted", "agent", priority="interactive")] + \
@@ -76,7 +134,8 @@ def test_shed_owner_does_not_recall_a_borrower():
 def test_shed_demand_does_not_load_a_swap_seat():
     """Background agent work waiting past after_wait_sec would load agent-gpu2; shed, it does not."""
     busy = lease("agent", "granted", "agent", priority="interactive", lease_id="busy")
-    waiting = lease("agent", priority="background", lease_id="w", age=5000, queued_since=T0 - timedelta(seconds=5000))
+    waiting = lease("agent", priority="background", lease_id="w", age=5000, queued_since=T0 - timedelta(seconds=5000),
+                    retryable=True)   # a lease that waits under shed (a one-shot would be refused, D3)
     roles = live(**{"agent-gpu2": live()["agent-gpu2"].__class__("agent-gpu2", False, 0)})
     crds = cards(gpu2=CardLive("gpu2", swapped_in={"diffusion"}))
     assert not of(SwapLoad, run([busy, waiting], roles=roles, crds=crds, guards=CLEAR))
@@ -97,14 +156,17 @@ def test_deadline_still_applies_to_a_shed_lease():
 
 
 def test_retrying_shed_lease_is_requeued_but_not_granted():
-    q = lease("metacog", "retry_wait", priority="system", lease_id="q", not_before=T0 - timedelta(seconds=1))
+    """retry_wait is not refused in the tick it is Requeue'd: one transition per lease per tick (D3)."""
+    q = lease("metacog", "retry_wait", priority="system", lease_id="q", not_before=T0 - timedelta(seconds=1),
+              retryable=True)
     d = run([q])
     assert of(Requeue, d) == [Requeue("q", "retry_due")]
     assert grants(d) == {} and of(Shed, d) == [Shed("q", "shed:cooling_incident")]
+    assert of(Unavailable, d) == []
 
 
 def test_only_background_shed_leaves_system_alone():
-    bg = lease("metacog", priority="background", lease_id="bg")
+    bg = lease("metacog", priority="background", lease_id="bg", retryable=True)
     sys = lease("metacog", priority="system", lease_id="sys")
     d = run([bg, sys], shed={"background": "orion_x"})
     assert grants(d) == {"sys": "metacog"}
@@ -123,7 +185,11 @@ def test_board_blocks_background_and_system_for_cooling():
     assert b.set(sig())
     v = b.view(T0, enabled=True)
     assert v.blocked == COOLING and v.active_reason == "cooling_incident"
-    assert v.reasons[0]["sources"][0]["source_id"] == "inc1"
+    assert _row(v, "cooling_incident")["sources"][0]["source_id"] == "inc1"
+
+
+def _row(view, name):
+    return next(r for r in view.reasons if r["name"] == name)
 
 
 def test_board_kill_switch_blocks_nothing_but_still_shows_the_signal():
@@ -131,7 +197,31 @@ def test_board_kill_switch_blocks_nothing_but_still_shows_the_signal():
     b.set(sig())
     v = b.view(T0, enabled=False)
     assert v.blocked == {} and v.active_reason is None
-    assert v.reasons[0]["active"] and not v.reasons[0]["effective"]
+    assert _row(v, "cooling_incident")["active"] and not _row(v, "cooling_incident")["effective"]
+
+
+# --- thermal controller v2 (D2): the reflex reasons -----------------------------------------
+
+def test_cabinet_hot_blocks_background_and_system_cabinet_unknown_background_only():
+    b = ShedBoard()
+    b.set(sig(reason="cabinet_unknown", source="hw"))
+    assert b.view(T0, True).blocked == {"background": "cabinet_unknown"}
+    b.set(sig(reason="cabinet_hot", source="hw"))
+    assert b.view(T0, True).blocked == {"background": "cabinet_hot", "system": "cabinet_hot", "starved": "cabinet_hot"}
+
+
+def test_reflex_signal_lapses_after_valid_until_when_the_watcher_stops_sending():
+    """D2: re-sent per tick with valid_until = now + 3 ticks; a dead watcher's shed lapses (fail-open)."""
+    b = ShedBoard()
+    b.set(sig(reason="cabinet_hot", source="hw", valid=90))
+    assert b.view(T0 + timedelta(seconds=89), True).blocked
+    assert b.view(T0 + timedelta(seconds=90), True).blocked == {}
+
+
+def test_reflex_reasons_are_precedence_zero_and_never_shed_interactive():
+    for name in ("cabinet_hot", "cabinet_unknown"):
+        spec = SHED_REASONS[name]
+        assert spec.precedence == 0 and "interactive" not in spec.blocks and "urgent" not in spec.blocks
 
 
 def test_board_signal_lapses_at_valid_until():
@@ -175,3 +265,95 @@ def test_precedence_attributes_each_priority_to_the_winning_reason():
 def test_a_reason_may_never_shed_interactive_or_urgent(blocks):
     with pytest.raises(ValueError):
         ShedBoard({"bad": ShedReasonSpec("bad", 5, blocks, "x")})
+
+
+# --- shed_held_queue: what a snapshot reader may call "held by the shed" (2026-10-20) ----------
+
+def test_shed_held_queue_agrees_with_the_scheduler_on_queued_leases():
+    """Arousal (via sql-writer's history row) reads shed_held_queue; it must name exactly the queued
+    leases U4 holds back (Shed or the D3 one-shot Unavailable), never a lease U4 would grant."""
+    from orion.gpu_pool.shed import shed_held_queue
+
+    leases = [
+        lease("memory_distill", priority="system", kind="hold", retryable=True, lease_id="d"),
+        hold("queued", None, priority="background", lease_id="r"),
+        lease("metacog", priority="background", lease_id="m", retryable=True),
+        lease("metacog", priority="interactive", lease_id="i"),
+        lease("fast", priority="system", lease_id="f"),                       # one-shot: refused now
+        hold("granted", "agent", priority="background", lease_id="run",
+             granted_at=T0 - timedelta(seconds=60)),
+        lease("agent", priority="background", lease_id="c", hold_lease_id="run"),   # its own call
+    ]
+    shed = {"background": "cabinet_hot", "system": "cabinet_hot"}
+    d = run(leases, shed=shed)
+    by_scheduler = {x.lease_id for x in of(Shed, d)} | {
+        x.lease_id for x in of(Unavailable, d) if x.reason.startswith("shed:")}
+    held, reason = shed_held_queue([vars(l) for l in leases], shed)
+    queued_wc = {l.lease_id: l.work_class for l in leases}
+    expected: dict[str, int] = {}
+    for lid in by_scheduler:
+        expected[queued_wc[lid]] = expected.get(queued_wc[lid], 0) + 1
+    assert held == expected == {"memory_distill": 1, "agent": 1, "metacog": 1, "fast": 1}
+    assert reason == "cabinet_hot"
+    assert shed_held_queue([vars(l) for l in leases], {}) == ({}, None)
+    assert shed_held_queue(leases, {"background": "orion_self_shed", "system": "cabinet_hot"})[1] \
+        == "cabinet_hot+orion_self_shed"
+
+
+def test_shed_held_queue_reflex_filter_drops_orion_self_shed():
+    """The history row counts only heat-reflex holds: orion_self_shed fires below the reflex, where
+    arousal's cabinet input does not read hot, so its held leases stay load (review 2026-10-20)."""
+    from orion.gpu_pool.shed import REFLEX_REASONS, shed_held_queue
+
+    leases = [vars(lease("agent", priority="background", kind="hold", retryable=True, lease_id="r"))]
+    assert shed_held_queue(leases, {"background": "orion_self_shed"}, reasons=REFLEX_REASONS) == ({}, None)
+    assert shed_held_queue(leases, {"background": "cabinet_hot"}, reasons=REFLEX_REASONS) == ({"agent": 1}, "cabinet_hot")
+
+
+# --- deferrable_queued: Orion's own waiting self-work, hunger not strain (2026-10-23) ----------
+
+def _deferrable_fixture():
+    return [
+        hold("queued", None, priority="background", lease_id="r1"),
+        hold("queued", None, priority="background", lease_id="r2"),
+        lease("metacog", priority="background", lease_id="m", retryable=True),          # a request
+        lease("memory_distill", priority="system", kind="hold", retryable=True, lease_id="d"),  # system
+        lease("metacog", priority="interactive", lease_id="i"),
+        hold("granted", "agent", priority="background", lease_id="run", granted_at=T0 - timedelta(seconds=60)),
+        lease("agent", priority="background", kind="hold", lease_id="c", hold_lease_id="run"),  # a child
+    ]
+
+
+def test_deferrable_queued_is_structural_not_by_holder():
+    """Only queued background holds with no parent hold; the holder name never matters."""
+    from orion.gpu_pool.shed import deferrable_queued, is_deferrable_self_work
+
+    leases = _deferrable_fixture()
+    assert deferrable_queued(leases, {}) == {"agent": 2}
+    assert deferrable_queued([vars(l) for l in leases], None) == {"agent": 2}
+    assert [l.lease_id for l in leases if is_deferrable_self_work(l)] == ["r1", "r2"]
+    # A history-row dict (GpuLeaseRowV1 shape): any holder name, same answer either way.
+    row = dict(status="queued", priority="background", kind="hold", hold_lease_id=None, work_class="agent")
+    for holder in ("durable-runs:reading-x", "durable-runs:curiosity-compaction:y", "cortex-exec"):
+        assert is_deferrable_self_work({**row, "holder": holder})
+    assert not is_deferrable_self_work({**row, "kind": "request"})
+    assert not is_deferrable_self_work({**row, "priority": "system"})
+
+
+def test_deferrable_queued_never_counts_a_shed_held_lease():
+    """Each lease counts once: under a reflex shed every background hold is shed-held, not deferrable;
+    under Orion's own shed (not counted shed-held by the history row) they stay deferrable."""
+    from orion.gpu_pool.shed import REFLEX_REASONS, deferrable_queued, shed_held_queue
+
+    leases = _deferrable_fixture()
+    for blocked in ({"background": "cabinet_hot", "system": "cabinet_hot"},
+                    {"background": "cabinet_unknown"}, {"background": "orion_self_shed"}, {}):
+        held, _ = shed_held_queue(leases, blocked, reasons=REFLEX_REASONS)
+        dfr = deferrable_queued(leases, blocked, reasons=REFLEX_REASONS)
+        held_ids = {l.lease_id for l in leases if l.status == "queued" and l.hold_lease_id is None
+                    and blocked.get(l.priority) in REFLEX_REASONS}
+        dfr_ids = {l.lease_id for l in leases if l.lease_id in {"r1", "r2"}} - held_ids
+        assert not (held_ids & dfr_ids)
+        assert sum(held.values()) == len(held_ids) and sum(dfr.values()) == len(dfr_ids)
+    assert deferrable_queued(leases, {"background": "cabinet_hot"}, reasons=REFLEX_REASONS) == {}
+    assert deferrable_queued(leases, {"background": "orion_self_shed"}, reasons=REFLEX_REASONS) == {"agent": 2}

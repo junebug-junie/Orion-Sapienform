@@ -1,0 +1,421 @@
+"""orion/evals/leased_llm.py: an eval's calls go only to the gateway under an operator hold, a recall
+stops the eval, and the hold is released on every exit path (leased-evals design, Phase 1)."""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+from typing import Any
+
+import httpx
+import pytest
+
+import orion.gpu_pool.client as pool_client
+from orion.evals import leased_llm
+from orion.evals.leased_llm import (
+    LaneCallError, LaneRecalled, LaneUnavailable, operator_class, operator_lane, operator_lane_sync,
+)
+from orion.gpu_pool.client import Lease, LeaseUnavailable
+from orion.llm.resource_lease import GPU_LEASE_HEADER, decode_gpu_lease_header
+from orion.schemas.gpu_pool import GpuLeaseGrantV1
+
+GATEWAY = "http://gateway.test:8210"
+
+
+class FakePool:
+    """Stands in for ``orion.gpu_pool.client.gpu_lease``: records what was asked and how it ended."""
+
+    def __init__(self, refuse: str | None = None):
+        self.asked: dict[str, Any] = {}
+        self.exits: list[str | None] = []
+        self.lease: Lease | None = None
+        self.refuse = refuse
+
+    def __call__(self, bus: Any, **kw: Any):
+        self.asked = kw
+        pool = self
+
+        @contextlib.asynccontextmanager
+        async def cm():
+            if pool.refuse:
+                raise LeaseUnavailable(pool.refuse)
+            pool.lease = Lease("hold-1", GpuLeaseGrantV1(lease_id="hold-1", generation=2, role="chat", cards=["gpu0"],
+                                                          url="http://worker.invalid:8011", served_by="w"))
+            try:
+                yield pool.lease
+            except BaseException as exc:
+                pool.exits.append(pool.lease.release_outcome or "upstream_error")
+                raise
+            else:
+                pool.exits.append(pool.lease.release_outcome or "ok")
+
+        return cm()
+
+
+class Gateway:
+    def __init__(self, status: int = 200, body: Any = None):
+        self.requests: list[httpx.Request] = []
+        self.status = status
+        self.body = body if body is not None else {"choices": [{"message": {"content": "{}"}}]}
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(self.status, json=self.body)
+
+
+@pytest.fixture
+def pool(monkeypatch):
+    fake = FakePool()
+    monkeypatch.setattr(pool_client, "gpu_lease", fake)
+
+    async def no_bus(url):
+        return _Bus()
+    monkeypatch.setattr(leased_llm, "_connect_bus", no_bus)
+    return fake
+
+
+class _Bus:
+    async def close(self):
+        pass
+
+
+def _sync(gw: Gateway, **kw):
+    return operator_lane_sync("chat", holder="operator:test-eval", gateway=GATEWAY,
+                              http_transport=httpx.MockTransport(gw), **kw)
+
+
+def test_lane_names_map_to_operator_classes():
+    assert operator_class("chat") == "operator_chat" and operator_class("agent-gpu2") == "operator_agent_gpu2"
+    with pytest.raises(ValueError):
+        operator_class("gpu0")
+
+
+def test_hold_is_background_operator_class_and_every_call_goes_to_the_gateway_with_the_hold(pool):
+    gw = Gateway()
+    with _sync(gw) as lane:
+        lane.chat({"messages": [{"role": "user", "content": "hi"}], "model": "something-else"})
+        lane.messages({"messages": []})
+        assert lane.summary()["work_class"] == "operator_chat" and lane.summary()["calls"] == 2
+    assert pool.asked["work_class"] == "operator_chat"
+    assert (pool.asked["priority"], pool.asked["kind"], pool.asked["holder"]) == ("background", "hold",
+                                                                                  "operator:test-eval")
+    assert [str(r.url) for r in gw.requests] == [f"{GATEWAY}/v1/chat/completions", f"{GATEWAY}/v1/messages"]
+    for r in gw.requests:
+        assert json.loads(r.content)["model"] == "operator_chat"   # the route, never the worker's model
+        ref = decode_gpu_lease_header(r.headers[GPU_LEASE_HEADER])
+        assert (ref.lease_id, ref.generation, ref.role, ref.holder) == ("hold-1", 2, "chat", "operator:test-eval")
+    assert pool.exits == ["ok"]
+
+
+def test_a_recall_stops_the_eval_and_releases_the_hold_as_cancelled(pool):
+    gw = Gateway()
+    with pytest.raises(LaneRecalled):
+        with _sync(gw) as lane:
+            lane.chat({"messages": []})
+            pool.lease.recalled.set()   # the pool's heartbeat answered "recall"
+            lane.chat({"messages": []})
+    assert len(gw.requests) == 1        # no call after the recall
+    assert pool.exits == ["cancelled"]
+
+
+def test_a_gateway_refusal_for_a_gone_hold_is_a_recall_not_a_call_error(pool):
+    gw = Gateway(503, {"error": {"type": "gpu_pool_unavailable", "reason": "hold_not_granted:released"}})
+    with pytest.raises(LaneRecalled):
+        with _sync(gw) as lane:
+            lane.chat({"messages": []})
+    assert pool.exits == ["cancelled"]
+
+
+def test_an_ordinary_failure_is_a_call_error_and_the_eval_may_continue(pool):
+    gw = Gateway(500, {"error": {"type": "upstream_error"}})
+    with _sync(gw) as lane:
+        with pytest.raises(LaneCallError) as err:
+            lane.chat({"messages": []})
+        assert err.value.status == 500
+    assert pool.exits == ["ok"]
+
+
+def test_the_hold_is_released_when_the_eval_raises(pool):
+    with pytest.raises(KeyError):
+        with _sync(Gateway()):
+            raise KeyError("boom")
+    assert pool.exits == ["upstream_error"]
+
+
+def test_a_refused_hold_is_lane_unavailable_and_nothing_is_called(monkeypatch):
+    fake = FakePool(refuse="deadline")
+    monkeypatch.setattr(pool_client, "gpu_lease", fake)
+
+    async def no_bus(url):
+        return _Bus()
+    monkeypatch.setattr(leased_llm, "_connect_bus", no_bus)
+    gw = Gateway()
+    with pytest.raises(LaneUnavailable, match="deadline"):
+        with _sync(gw):
+            pass
+    assert gw.requests == []
+
+
+def test_holder_must_name_operator_work():
+    async def go():
+        async with operator_lane("chat", holder="orion-mind", bus=_Bus()):
+            pass
+    with pytest.raises(ValueError):
+        asyncio.run(go())
+
+
+def test_async_lane_releases_on_recall(pool):
+    async def go():
+        async with operator_lane("chat", holder="operator:t", bus=_Bus(), gateway=GATEWAY,
+                                 http_transport=httpx.MockTransport(Gateway())) as lane:
+            pool.lease.recalled.set()
+            pool.lease.lost.set()
+            lane.check()
+    with pytest.raises(LaneRecalled, match="lost"):
+        asyncio.run(go())
+    assert pool.exits == ["cancelled"]
+
+
+def test_no_bus_url_is_a_clear_refusal(monkeypatch):
+    monkeypatch.delenv("ORION_BUS_URL", raising=False)
+    with pytest.raises(LaneUnavailable, match="ORION_BUS_URL"):
+        asyncio.run(leased_llm._connect_bus(None))
+
+
+def test_the_helper_names_no_worker_address():
+    """The only URL in the helper is the gateway default: no circe address, no worker port."""
+    import inspect
+    import re
+
+    src = inspect.getsource(leased_llm)
+    urls = set(re.findall(r"https?://[\w.\-]+:\d+", src))
+    assert urls == {"http://127.0.0.1:8210"}, urls
+
+
+def test_operator_lanes_take_a_hold_only_for_a_lane_the_run_uses(pool):
+    from orion.evals.leased_llm import OperatorLanes
+
+    gw = Gateway()
+    with OperatorLanes(holder="operator:t", gateway=GATEWAY, http_transport=httpx.MockTransport(gw)) as lanes:
+        lanes.get("agent").chat({"messages": []})
+        lanes.get("agent").chat({"messages": []})
+        assert [s["work_class"] for s in lanes.summary()] == ["operator_agent"]
+    assert pool.asked["work_class"] == "operator_agent"
+    assert pool.exits == ["ok"]
+
+
+def test_ctrl_c_while_queued_withdraws_the_queued_hold(monkeypatch):
+    """Review finding: an interrupt during the queue wait must cancel the acquire (gpu_lease then
+    withdraws the queued lease), not leave it queued for hours."""
+    import threading
+
+    withdrawn = []
+
+    def queued_forever(bus, **kw):
+        @contextlib.asynccontextmanager
+        async def cm():
+            try:
+                await asyncio.sleep(3600)   # waiting in the pool's queue
+            except asyncio.CancelledError:
+                withdrawn.append(True)      # gpu_lease's _acquire withdraws here
+                raise
+            yield None
+        return cm()
+
+    monkeypatch.setattr(pool_client, "gpu_lease", queued_forever)
+
+    async def no_bus(url):
+        return _Bus()
+    monkeypatch.setattr(leased_llm, "_connect_bus", no_bus)
+
+    class InterruptingEvent(threading.Event):
+        def wait(self, timeout=None):
+            super().wait(0.2)
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(leased_llm, "_ready_event", InterruptingEvent)
+    with pytest.raises(KeyboardInterrupt):
+        with operator_lane_sync("chat", holder="operator:t", gateway=GATEWAY):
+            pass
+    assert withdrawn == [True]
+
+
+def test_ctrl_c_in_the_eval_body_releases_as_cancelled(pool):
+    with pytest.raises(KeyboardInterrupt):
+        with _sync(Gateway()):
+            raise KeyboardInterrupt
+    assert pool.exits == ["cancelled"]
+
+
+def test_operator_class_match_is_exact():
+    from orion.gpu_pool.value_order import is_operator_class
+
+    assert not is_operator_class("operators_x") and not is_operator_class("operator-ish")
+
+
+# -- worker reads, the httpx-shaped client, per-call gateway calls, the CLI (lane-door PR 1) ----------
+
+
+class Router:
+    """Answers both the gateway and the granted worker; records every request's URL."""
+
+    def __init__(self):
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.url.host == "worker.invalid":
+            return httpx.Response(200, json={"path": request.url.path})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "timings": {"cache_n": 3}})
+
+
+def test_worker_reads_go_to_the_granted_url_and_only_for_non_model_paths(pool):
+    router = Router()
+    with operator_lane_sync("chat", holder="operator:t", gateway=GATEWAY,
+                            http_transport=httpx.MockTransport(router)) as lane:
+        assert lane.worker_url == "http://worker.invalid:8011"
+        assert lane.worker_read("GET", "/slots").json() == {"path": "/slots"}
+        assert lane.worker_read("POST", "/tokenize", {"content": "x"}).status_code == 200
+        for method, path in (("POST", "/v1/chat/completions"), ("POST", "/completion"), ("GET", "/v1/messages"),
+                             ("POST", "/slots"), ("DELETE", "/props")):
+            with pytest.raises(ValueError):
+                lane.worker_read(method, path)
+    assert [str(r.url) for r in router.requests] == ["http://worker.invalid:8011/slots",
+                                                     "http://worker.invalid:8011/tokenize"]
+
+
+def test_lane_client_sends_model_calls_to_the_gateway_whatever_host_the_probe_names(pool):
+    router = Router()
+    with operator_lane_sync("chat", holder="operator:t", gateway=GATEWAY,
+                            http_transport=httpx.MockTransport(router)) as lane:
+        client = lane.http_client()
+        r = client.post("http://100.112.254.99:8011/v1/chat/completions", json={"messages": [], "id_slot": 1})
+        assert r.json()["timings"] == {"cache_n": 3}          # the raw reply, timings and all
+        client.get("http://anything:1/props")
+        client.post("/apply-template", json={"messages": []})
+        with pytest.raises(ValueError):
+            client.post("http://100.112.254.99:8011/completion", json={})
+        client.post("/v1/chat/completions?stream=false", json={})   # a query string never reaches the gateway
+    urls = [str(r.url) for r in router.requests]
+    assert urls.pop() == f"{GATEWAY}/v1/chat/completions"
+    assert urls == [f"{GATEWAY}/v1/chat/completions", "http://worker.invalid:8011/props",
+                    "http://worker.invalid:8011/apply-template"]
+    sent = json.loads(router.requests[0].content)
+    assert sent["model"] == "operator_chat" and sent["id_slot"] == 1   # body fields pass through
+    assert GPU_LEASE_HEADER in router.requests[0].headers
+
+
+def test_post_raw_turns_a_gone_hold_into_a_recall(pool):
+    gw = Gateway(503, {"error": {"type": "gpu_pool_unavailable", "reason": "hold_unknown"}})
+    with pytest.raises(LaneRecalled):
+        with _sync(gw) as lane:
+            lane.post_raw("/v1/chat/completions", {"messages": []})
+    with pytest.raises(ValueError):
+        with _sync(Gateway()) as lane:
+            lane.post_raw("/completion", {})
+
+
+def test_gateway_call_is_one_unheld_call_on_the_operator_route():
+    gw = Gateway()
+    r = leased_llm.gateway_call("fast", {"messages": [], "model": "x"}, holder="operator:t", gateway=GATEWAY,
+                                transport=httpx.MockTransport(gw))
+    assert r.status_code == 200
+    (req,) = gw.requests
+    assert str(req.url) == f"{GATEWAY}/v1/chat/completions"
+    assert json.loads(req.content)["model"] == "operator_fast"
+    assert GPU_LEASE_HEADER not in req.headers   # the gateway leases this one call itself
+    assert req.headers[leased_llm.OPERATOR_HOLDER_HEADER] == "operator:t"   # gpu_pool_events names the eval
+    with pytest.raises(ValueError):
+        leased_llm.gateway_call("fast", {}, holder="operator:t", path="/completion")
+    with pytest.raises(ValueError):
+        leased_llm.gateway_call("fast", {}, holder="orion-mind")
+
+
+def test_cli_chat_prints_the_reply_and_exits_by_outcome(pool, monkeypatch, capsys):
+    import io
+
+    monkeypatch.setattr(leased_llm, "gateway_url", lambda url=None: GATEWAY)
+    gw = Gateway(body={"choices": [{"message": {"content": "MARK"}}]})
+    real_sync = leased_llm.operator_lane_sync
+
+    def sync(lane, **kw):
+        return real_sync(lane, gateway=GATEWAY, http_transport=httpx.MockTransport(gw), **kw)
+
+    monkeypatch.setattr(leased_llm, "operator_lane_sync", sync)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"messages": []})))
+    assert leased_llm.main(["chat", "--lane", "fast", "--holder", "operator:t"]) == 0
+    assert "MARK" in capsys.readouterr().out
+    assert pool.asked["work_class"] == "operator_fast"
+
+    gw.status, gw.body = 503, {"error": {"reason": "hold_not_granted:released"}}
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert leased_llm.main(["chat", "--lane", "fast", "--holder", "operator:t"]) == leased_llm.EXIT_RECALLED
+
+
+def test_cli_hold_runs_the_command_under_the_hold_and_passes_its_status(pool):
+    import sys
+
+    code = leased_llm.main(["hold", "--lane", "chat", "--holder", "operator:t", "--",
+                            sys.executable, "-c", "raise SystemExit(7)"])
+    assert code == 7
+    assert pool.asked["kind"] == "hold" and pool.exits == ["ok"]
+
+
+def test_cli_hold_stops_the_command_on_recall(pool):
+    import sys
+    import threading
+    import time
+
+    def recall_soon():
+        for _ in range(100):
+            if pool.lease is not None:
+                time.sleep(0.3)
+                pool.lease.recalled.set()
+                return
+            time.sleep(0.05)
+
+    threading.Thread(target=recall_soon, daemon=True).start()
+    started = time.monotonic()
+    code = leased_llm._cli_hold(
+        type("A", (), {"lane": "chat", "holder": "operator:t", "queue_wait_sec": 10.0,
+                       "cmd": ["--", sys.executable, "-c", "import time; time.sleep(60)"]})(), poll_sec=0.1)
+    assert code == leased_llm.EXIT_RECALLED
+    assert time.monotonic() - started < 30
+    assert pool.exits == ["cancelled"]
+
+
+
+def test_cli_hold_reports_a_signal_death_as_128_plus_the_signal(pool):
+    import sys
+
+    code = leased_llm.main(["hold", "--lane", "chat", "--holder", "operator:t", "--",
+                            sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"])
+    assert code == 128 + 15
+
+
+def test_cli_hold_stops_the_command_before_releasing_on_ctrl_c(pool, monkeypatch):
+    """Review finding: Ctrl+C released the hold while the command ran on."""
+    import subprocess
+    import sys
+
+    procs = []
+    real_popen = subprocess.Popen
+
+    def popen(cmd, **kw):
+        procs.append(real_popen(cmd, **kw))
+        return procs[-1]
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    calls = {"n": 0}
+
+    def sleep(_s):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("time.sleep", sleep)
+    with pytest.raises(KeyboardInterrupt):
+        leased_llm._cli_hold(type("A", (), {"lane": "chat", "holder": "operator:t", "queue_wait_sec": 10.0,
+                                            "cmd": [sys.executable, "-c", "import time; time.sleep(60)"]})())
+    assert procs and procs[0].poll() is not None   # stopped, not orphaned
+    assert pool.exits == ["cancelled"]

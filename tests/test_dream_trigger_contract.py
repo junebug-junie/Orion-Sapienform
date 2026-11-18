@@ -34,7 +34,7 @@ def test_dream_trigger_channel_and_schema_are_registered() -> None:
     entry = _channel_entry("orion:dream:trigger")
     result_entry = _channel_entry("orion:dream:log")
 
-    assert entry["schema_id"] == "DreamTriggerPayload"
+    assert entry["schema_id"] == "DreamInternalTriggerV1"
     assert result_entry["schema_id"] == "DreamResultV1"
     assert "DreamTriggerPayload" in _REGISTRY
     assert "DreamInternalTriggerV1" in _REGISTRY

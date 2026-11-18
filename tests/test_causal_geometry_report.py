@@ -99,11 +99,9 @@ def _build(**overrides):
         window_start=window_start,
         window_end=window_end,
         min_samples=30,
-        # Must be >= cgr.DEFAULT_N_SURROGATES for _fixture_channels()'s
-        # noisy-but-real correlations to actually clear the family-wise BH
-        # bar -- see test_n_surrogates_floor_regression_* below for why a
-        # too-low n_surrogates silently zeroes out every edge regardless of
-        # correlation strength.
+        # n_surrogates sets how precisely the null spread is estimated; it no
+        # longer sets a p-value floor (see
+        # test_surrogate_count_no_longer_sets_a_pvalue_floor_that_starves_bh).
         n_surrogates=cgr.DEFAULT_N_SURROGATES,
         alpha=0.05,
         seed=1337,
@@ -117,7 +115,7 @@ def _default_build():
     """Cached zero-override `_build()` result, shared by every test below that
     doesn't need a custom fixture -- `build_snapshot()` at `cgr.DEFAULT_N_SURROGATES`
     takes a few real seconds (each of the 15 tested pairs draws that many
-    circular-shift surrogates), so re-running it per read-only test would make
+    time-shift surrogates), so re-running it per read-only test would make
     this file slow for no benefit. Safe to share: nothing below mutates the
     returned snapshot/pair_results, only reads them."""
     return _build()
@@ -190,7 +188,10 @@ def _perfectly_correlated_two_cluster_channel_buckets():
     """4 channels as two independent perfectly-correlated pairs (chan:a1/a2,
     chan:b1/b2) -> C(4,2) = 6 tested pairs, 2 of them real."""
     rng = np.random.default_rng(7)
-    n = 50
+    # 400, not 50: since 2026-11-10 a pair's p cannot go below 1/(n_eff+1),
+    # so 50 points (n_eff ~50) could never clear Bonferroni x10 + BH however
+    # perfect the correlation. That is the honest resolution of 50 points.
+    n = 400
     a1 = rng.normal(size=n)
     a2 = a1.copy()  # perfectly correlated with a1
     b1 = rng.normal(size=n)
@@ -204,28 +205,20 @@ def _perfectly_correlated_two_cluster_channel_buckets():
     return {cid: cgr.bucketize(pts, cgr.BUCKET_SECONDS) for cid, pts in channels.items()}
 
 
-def test_n_surrogates_floor_regression_old_default_starved_bh_new_default_does_not():
-    """Regression test for a live bug confirmed 2026-07-29: every causal-
-    geometry tick since the BH-FDR cutover (2026-07-28 03:44 UTC) reported
-    `insufficient_data=True` with 0 edges, including obvious real
-    correlations. Root cause: `compute_pairwise_results()`'s per-pair
-    Bonferroni step (`p = min(1.0, p_raw * n_comparisons)`,
-    `n_comparisons = 2 * len(LAG_GRID_SECONDS) = 10`) has its own floor,
-    because `circular_shift_pvalue`'s add-one smoothing means p_raw can never
-    go below `1/(n_surrogates+1)`. At the old `DEFAULT_N_SURROGATES=200` that
-    floor was `10/201 ~= 0.0497512` -- just under the old flat `alpha=0.05`,
-    but far too high to ever clear `_apply_fdr_correction()`'s rank-dependent
-    BH threshold `(i/m)*alpha` for a realistic family size m. Raising
-    `DEFAULT_N_SURROGATES` to 2000 drops that floor to `10/2001 ~= 0.005`,
-    giving BH real headroom while keeping the Bonferroni within-pair
-    selection-effect correction intact (verified live against production
-    data: the fix is `DEFAULT_N_SURROGATES`, not removing Bonferroni).
+def test_surrogate_count_no_longer_sets_a_pvalue_floor_that_starves_bh():
+    """Regression test for two live incidents of the same cliff (2026-07-29 at
+    200 surrogates, 2026-10-30 onward at 2000): the old add-one rank p could
+    never go below `1/(n_surrogates+1)`, so after the 10-way within-pair
+    Bonferroni its floor (10/201 ~= 0.0498, then 10/2001 ~= 0.005) sat above
+    BH's first-rank threshold `alpha/m`, and BH passed nothing.
 
-    This test builds two independent perfectly-correlated 2-channel clusters
-    (4 channels, 6 pairs total, m=6 tested, 2 of them real). At n_surrogates
-    =200 both real pairs hit the Bonferroni floor of 0.0497512 and neither
-    clears BH (even the most lenient rank, i=1, needs <= (1/6)*0.05 ~=
-    0.0083). At `cgr.DEFAULT_N_SURROGATES` both clear it.
+    Since 2026-11-10 p_raw extends past the surrogate rank floor with a GPD
+    tail fit (for pairs with n_eff >= 100), so the surrogate count no longer
+    sets the floor. Two independent perfectly-correlated clusters
+    (4 channels, m=6 pairs, 2 real) must now clear BH even at the old
+    n_surrogates=200 that used to reproduce the bug, with p far below the old
+    floor. The m=171 version of this cliff (the live family size) is pinned by
+    orion/substrate/tests/test_causal_geometry_pvalue_calibration.py.
     """
     channel_buckets = _perfectly_correlated_two_cluster_channel_buckets()
     real_pairs = ({"chan:a1", "chan:a2"}, {"chan:b1", "chan:b2"})
@@ -248,22 +241,16 @@ def test_n_surrogates_floor_regression_old_default_starved_bh_new_default_does_n
         )
         return {frozenset((r.channel_a, r.channel_b)): r for r in results}
 
-    by_pair_old = _run(200)
-    assert len(by_pair_old) == 6, "4 channels should produce C(4,2) = 6 pairs"
-    assert not any(by_pair_old[frozenset(p)].significant for p in real_pairs), (
-        "this reproduces the bug at the old n_surrogates=200 -- if this now fails, "
-        "the Bonferroni floor stopped starving BH some other way and this test's "
-        "premise needs re-checking, not deleting"
-    )
-
-    by_pair_new = _run(cgr.DEFAULT_N_SURROGATES)
-    for pair in real_pairs:
-        assert by_pair_new[frozenset(pair)].significant, (
-            "a perfectly-correlated pair must clear the family-wise BH bar at the "
-            "current DEFAULT_N_SURROGATES -- if this fails, the fix regressed"
-        )
-    for pair in noise_pairs:
-        assert not by_pair_new[frozenset(pair)].significant
+    for n_surrogates in (200, cgr.DEFAULT_N_SURROGATES):
+        by_pair = _run(n_surrogates)
+        assert len(by_pair) == 6, "4 channels should produce C(4,2) = 6 pairs"
+        old_floor = 10 / (n_surrogates + 1)
+        for pair in real_pairs:
+            result = by_pair[frozenset(pair)]
+            assert result.significant, f"perfect pair failed BH at n_surrogates={n_surrogates}"
+            assert result.p_value < old_floor / 100
+        for pair in noise_pairs:
+            assert not by_pair[frozenset(pair)].significant
 
 
 def test_insufficient_data_pair_never_fabricates_an_edge():
@@ -373,10 +360,11 @@ def test_capability_channel_index_disambiguates_same_edge_different_channels():
     assert index["reasoning_pressure"][0]["target_id"] == index["execution_pressure"][0]["target_id"]
 
 
-def test_circular_shift_pvalue_add_one_smoothing_never_zero():
-    x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+def test_time_shift_pvalue_never_zero_and_below_old_rank_floor():
     rng = np.random.default_rng(0)
-    p = cgr.circular_shift_pvalue(x, y, observed_r=1.0, n_surrogates=50, rng=rng)
+    x = rng.standard_normal(400)
+    y = x + 0.1 * rng.standard_normal(400)
+    p = cgr.time_shift_pvalue(x, y, observed_r=cgr._pearson(x, y))
     assert p > 0.0
-    assert p == pytest.approx(1.0 / 51.0)  # only the observed (unshifted-equivalent) config can match |r|=1 rarely
+    # The old add-one rank p could not go below 1/2001.
+    assert p < 1.0 / 2001.0

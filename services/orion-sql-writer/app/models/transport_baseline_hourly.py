@@ -28,6 +28,9 @@ class TransportBaselineHourlySQL(Base):
     windows_evaluated = Column(Integer, nullable=False)
     success_count = Column(Integer, nullable=False, default=0)
     timeout_count = Column(Integer, nullable=False, default=0)
+    # Added 2026-10-13 (boot-time ADD COLUMN in app/main.py lifespan): replies the
+    # replier marked degraded -- never in the latency readings. NULL on older rows.
+    degraded_count = Column(Integer, nullable=True, default=0)
     z_p50 = Column(Float, nullable=True)
     z_p90 = Column(Float, nullable=True)
     saturation_ratio_p50 = Column(Float, nullable=True)
@@ -36,6 +39,8 @@ class TransportBaselineHourlySQL(Base):
     floor_ms = Column(Float, nullable=True)
     calls_per_min_mean = Column(Float, nullable=False, default=0.0)
     conditions_opened = Column(JSON, nullable=True)
+    # Added 2026-10-13 (boot-time ADD COLUMN in app/main.py lifespan).
+    conditions_closed = Column(JSON, nullable=True)
     open_at_hour_end = Column(JSON, nullable=True)
     would_emit_by_condition = Column(JSON, nullable=True)
     excluded = Column(Boolean, nullable=False, default=False)

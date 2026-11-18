@@ -83,9 +83,12 @@ def test_gate_catches_the_edge_it_was_written_for() -> None:
 
 
 def test_gate_allows_a_live_channel_and_derived_confidence() -> None:
+    # capability:transport.pressure lost its only feeder 2026-11 (bus_synaptic
+    # retired, PE suite rebuild step 5), so the live-channel example uses a
+    # capability whose pressure is still written.
     edges = _edges() + [
         {
-            "source_id": "capability:transport",
+            "source_id": "capability:llm_inference",
             "target_id": "capability:orchestration",
             "edge_type": "capability_capability",
             "weight": 0.70,

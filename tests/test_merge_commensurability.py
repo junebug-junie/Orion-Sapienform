@@ -360,3 +360,25 @@ def test_a_stale_source_is_excluded_from_the_observed_merge() -> None:
     )["prediction_error"]
     assert winner_old == "node:slow"
     assert set(contrib_old) == {"node:slow", "node:fast"}
+def test_capability_value_resolving_to_a_node_does_not_overwrite_its_node_level_value():
+    """2026-10-07 (D3 rename): capability:transport catalog_drift_pressure is
+    0.85 x node:athena's and resolves to node:athena; the checker must report
+    athena's own reading, as the merge does."""
+    from datetime import datetime, timezone
+
+    from orion.field.commensurability import observe_source_to_channel
+    from orion.schemas.field_state import FieldStateV1
+    from orion.field.pressure import collect_field_channel_pressures
+
+    field = FieldStateV1(
+        tick_id="t",
+        generated_at=datetime(2026, 10, 7, tzinfo=timezone.utc),
+        node_vectors={"node:athena": {"catalog_drift_pressure": 0.02}},
+        capability_vectors={"capability:transport": {"catalog_drift_pressure": 0.017}},
+        capability_provenance={"capability:transport": {"catalog_drift_pressure": "node:athena"}},
+    )
+    winner, contributions = observe_source_to_channel(field)["catalog_drift_pressure"]
+    merged, _ = collect_field_channel_pressures(field)
+    assert contributions == {"node:athena": 0.02}
+    assert merged["catalog_drift_pressure"] == 0.02
+    assert winner == "node:athena"

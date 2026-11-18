@@ -54,9 +54,6 @@ _ORION_GRAPH_IRIS: Dict[str, str] = {
     "orion:metacog": "http://conjourney.net/graph/orion/metacog",
     "orion:chat:social": "http://conjourney.net/graph/orion/chat/social",
     "orion:default": "http://conjourney.net/graph/orion/default",
-    "orion:self": "http://conjourney.net/graph/orion/self",
-    "orion:self:induced": "http://conjourney.net/graph/orion/self/induced",
-    "orion:self:reflective": "http://conjourney.net/graph/orion/self/reflective",
     "orion:compressions": "http://conjourney.net/graph/orion/compressions",
 }
 

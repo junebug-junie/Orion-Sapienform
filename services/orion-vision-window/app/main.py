@@ -1,5 +1,6 @@
 import asyncio
 import time
+from datetime import datetime, timezone
 import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -12,9 +13,12 @@ from loguru import logger
 from pydantic import ValidationError
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.vision import (
+    VisionEventPayload,
     VisionSceneInventoryV1,
     VisionArtifactPayload,
     VisionWindowPayload,
@@ -24,14 +28,19 @@ from orion.schemas.vision import (
 
 from .projection import (
     build_window_payload,
+    is_caption_only,
     envelope_to_http_dict,
     identity_confidence_from_artifact,
     identity_hint_from_artifact,
+    identity_verdict_summary,
     stream_key_from_artifact,
 )
 from .crops import build_crop_observation
+from .caption_events import build_caption_event
+from .caption_gate import CaptionGate
+from .fixtures import FixtureTracker
 from .recovery_store import RecoveryStore
-from .presence import PresenceRegistry, write_snapshot_to_postgres
+from .presence import PresenceRegistry, write_snapshot_to_postgres, write_transitions_to_postgres
 from .scene_belief import SceneBeliefRegistry
 from .settings import Settings
 
@@ -40,6 +49,33 @@ settings = Settings()
 
 def _source_ref() -> ServiceRef:
     return ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
+
+
+def _person_boxes(items: List[Tuple[VisionArtifactPayload, float]]) -> List[Tuple[float, List[List[float]]]]:
+    """(artifact time, [person box, ...]) per artifact, for app/fixtures.py."""
+    out: List[Tuple[float, List[List[float]]]] = []
+    for art, ts in items:
+        objs = (art.outputs.objects or []) if art.outputs else []
+        boxes = [[float(v) for v in o.box_xyxy] for o in objs
+                 if str(o.label or "").strip().lower() == "person" and len(o.box_xyxy or []) == 4]
+        out.append((float(ts), boxes))
+    return out
+
+
+# Additive VisionCropV1 keys, dropped while None so a writer whose schema
+# predates them (extra="forbid") keeps accepting every crop it can store.
+_OPTIONAL_CROP_KEYS = ("face_embedding", "face_score", "face_thumb_ref",
+                       "embedding_model_id", "osnet_embedding", "osnet_model_id")
+
+
+def _crop_payload(obs: Any) -> Dict[str, Any]:
+    """The crop observation as JSON, with additive keys dropped where empty."""
+    data = obs.model_dump(mode="json")
+    for crop in data.get("crops") or []:
+        for k in _OPTIONAL_CROP_KEYS:
+            if crop.get(k) is None:
+                crop.pop(k, None)
+    return data
 
 
 def _corr_uuid(value: Optional[Union[str, UUID]]) -> UUID:
@@ -102,7 +138,11 @@ class WindowService:
         # detection buffer. Read-then-gate-by-age in _flush_and_publish;
         # never grows unbounded (one entry per stream_id, overwritten).
         self._identity_by_stream: Dict[str, Dict[str, Any]] = {}
+        self._last_sighting_at: Dict[str, float] = {}
+        self._match_at: Dict[Tuple[str, str], List[float]] = {}
         self._identity_lock = asyncio.Lock()
+        # Running count of identity_face verdicts by outcome (trace only).
+        self._identity_checks: Dict[str, int] = defaultdict(int)
 
         self._live_lock = asyncio.Lock()
         self._live_by_stream: Dict[str, VisionWindowPayload] = {}
@@ -122,9 +162,30 @@ class WindowService:
             enter_votes=settings.WINDOW_BELIEF_ENTER_VOTES,
             exit_votes=settings.WINDOW_BELIEF_EXIT_VOTES,
         )
+        self._fixtures = FixtureTracker(
+            streams=[x for x in str(settings.WINDOW_STATIONARY_STREAMS or "").split(",")],
+            min_sec=settings.VISION_STATIONARY_MIN_SEC,
+            iou=settings.VISION_STATIONARY_IOU,
+            max_gap_sec=settings.VISION_STATIONARY_MAX_GAP_SEC,
+        )
+        self._caption_gate = CaptionGate(
+            streams=settings.WINDOW_CAPTION_GATE_STREAMS,
+            labels=settings.WINDOW_CAPTION_GATE_LABELS,
+            min_score=settings.WINDOW_CAPTION_GATE_MIN_SCORE,
+            max_age_sec=settings.WINDOW_CAPTION_MAX_AGE_SEC,
+            stationary_min_sec=settings.VISION_STATIONARY_MIN_SEC,
+            stationary_iou=settings.VISION_STATIONARY_IOU,
+            stationary_max_gap_sec=settings.VISION_STATIONARY_MAX_GAP_SEC,
+            stationary_streams=settings.WINDOW_STATIONARY_STREAMS,
+        )
         self._presence_registry = PresenceRegistry(
             grace_sec=settings.WINDOW_PRESENCE_GRACE_SEC,
             write_min_interval_sec=settings.WINDOW_PRESENCE_WRITE_MIN_INTERVAL_SEC,
+            transitions_enabled=settings.WINDOW_PRESENCE_ENABLED and settings.VISION_PRESENCE_TRANSITIONS_ENABLED,
+            # A stream with no window for longer than a window is considered
+            # stale is dark: the service's own staleness contract, not a new knob.
+            unknown_after_sec=settings.STALE_AFTER_MS / 1000.0,
+            keepalive_sec=settings.VISION_PRESENCE_KEEPALIVE_SEC,
         )
         # Background presence writes, tracked so they cannot be GC'd mid-flight
         # (asyncio.create_task holds only a weak reference -- same reasoning
@@ -141,6 +202,10 @@ class WindowService:
         self._m_recovery_ok = 0
         self._m_recovery_fail = 0
         self._m_catchup_expired = 0
+        self._m_caption_gate_accepted = 0
+        self._m_caption_gate_rejected: Dict[str, int] = {}
+        self._m_caption_events_published = 0
+        self._m_caption_events_failed = 0
 
     def _recovery_url(self) -> str:
         return (settings.VISION_WINDOW_RECOVERY_REDIS_URL or settings.ORION_BUS_URL).strip()
@@ -216,6 +281,7 @@ class WindowService:
                     await t
                 except asyncio.CancelledError:
                     pass
+        await self._close_presence_transitions()
         await self.bus.close()
         self._bus_ready = False
         if self._recovery:
@@ -239,29 +305,34 @@ class WindowService:
         return False
 
     async def _consume(self) -> None:
-        async with self.bus.subscribe(settings.CHANNEL_WINDOW_INTAKE) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                try:
-                    if isinstance(env.payload, dict):
-                        payload = VisionArtifactPayload(**env.payload)
-                    else:
-                        payload = env.payload
-                except Exception as e:
-                    logger.warning(f"[WINDOW] Invalid artifact payload: {e}")
-                    continue
-                sk = stream_key_from_artifact(payload)
-                logger.debug(f"[WINDOW] ingest accepted stream={sk} artifact={payload.artifact_id}")
-                self._m_ingest += 1
-                async with self._buffer_lock:
-                    self._buffers[sk].append({"artifact": payload, "ts": time.time(), "env": env})
-                await self._publish_crop_observation(payload, env)
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WINDOW_INTAKE,
+            self._on_intake,
+            stop_event=self._shutdown_event,
+            name="vision-window.consume",
+        )
+
+    async def _on_intake(self, msg: dict) -> None:
+        data = msg.get("data")
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok:
+            return
+        env = decoded.envelope
+        try:
+            if isinstance(env.payload, dict):
+                payload = VisionArtifactPayload(**env.payload)
+            else:
+                payload = env.payload
+        except Exception as e:
+            logger.warning(f"[WINDOW] Invalid artifact payload: {e}")
+            return
+        sk = stream_key_from_artifact(payload)
+        logger.debug(f"[WINDOW] ingest accepted stream={sk} artifact={payload.artifact_id}")
+        self._m_ingest += 1
+        async with self._buffer_lock:
+            self._buffers[sk].append({"artifact": payload, "ts": time.time(), "env": env})
+        await self._publish_crop_observation(payload, env)
 
     async def _consume_identity(self) -> None:
         """Separate loop, separate channel from _consume() above --
@@ -281,61 +352,85 @@ class WindowService:
         sticky-confirmed-vs-flicker reasoning. A fresh "confirmed" reading
         is never subject to that hold-off and always overwrites.
         """
-        async with self.bus.subscribe(settings.CHANNEL_WINDOW_IDENTITY_INTAKE) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                try:
-                    if isinstance(env.payload, dict):
-                        payload = VisionArtifactPayload(**env.payload)
-                    else:
-                        payload = env.payload
-                except Exception as e:
-                    logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
-                    continue
-                hint = identity_hint_from_artifact(payload)
-                confidence = identity_confidence_from_artifact(payload)
-                if hint is None and confidence is None:
-                    # No usable signal at all (no face detected, or a
-                    # gallery-misconfig candidate) -- nothing to store.
-                    # Never clears a still-fresh prior reading either way;
-                    # the freshness gate in _flush_and_publish is what
-                    # decides whether an older reading is still usable, not
-                    # this arrival.
-                    continue
-                sk = stream_key_from_artifact(payload)
-                async with self._identity_lock:
-                    existing = self._identity_by_stream.get(sk)
-                    if _should_ignore_uncertain_reading(
-                        existing, confidence, now=time.time(), max_age_sec=settings.WINDOW_IDENTITY_MAX_AGE_SEC
-                    ):
-                        logger.debug(
-                            f"[WINDOW] identity_hint stream={sk} unsure_reading_ignored "
-                            f"still_fresh_confirmed=true"
-                        )
-                        continue
-                    self._identity_by_stream[sk] = {"hint": hint, "confidence": confidence, "ts": time.time()}
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WINDOW_IDENTITY_INTAKE,
+            self._on_identity,
+            stop_event=self._shutdown_event,
+            name="vision-window.consume_identity",
+        )
+
+    async def _on_identity(self, msg: dict) -> None:
+        data = msg.get("data")
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok:
+            return
+        env = decoded.envelope
+        try:
+            if isinstance(env.payload, dict):
+                payload = VisionArtifactPayload(**env.payload)
+            else:
+                payload = env.payload
+        except Exception as e:
+            logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
+            return
+        try:
+            verdict = identity_verdict_summary(payload)
+            self._identity_checks[verdict["outcome"]] += 1
+            logger.info(
+                f"[WINDOW] identity_check stream={stream_key_from_artifact(payload)} "
+                f"outcome={verdict['outcome']} faces={verdict['faces']} "
+                f"similarity={verdict['similarity']} detect_conf={verdict['detect_confidence']} "
+                f"corr={payload.correlation_id} totals={dict(self._identity_checks)}"
+            )
+        except Exception as e:  # the trace must never kill the identity loop
+            logger.warning(f"[WINDOW] identity_check trace failed: {e}")
+        hint = identity_hint_from_artifact(payload)
+        confidence = identity_confidence_from_artifact(payload)
+        try:
+            await self._maybe_publish_sighting(payload, hint)
+        except Exception as e:  # a sighting must never kill the identity loop
+            logger.warning(f"[WINDOW] identity sighting publish failed: {e}")
+        if hint is None and confidence is None:
+            # No usable signal at all (no face detected, or a
+            # gallery-misconfig candidate) -- nothing to store.
+            # Never clears a still-fresh prior reading either way;
+            # the freshness gate in _flush_and_publish is what
+            # decides whether an older reading is still usable, not
+            # this arrival.
+            return
+        sk = stream_key_from_artifact(payload)
+        async with self._identity_lock:
+            existing = self._identity_by_stream.get(sk)
+            if _should_ignore_uncertain_reading(
+                existing, confidence, now=time.time(), max_age_sec=settings.WINDOW_IDENTITY_MAX_AGE_SEC
+            ):
                 logger.debug(
-                    f"[WINDOW] identity_hint stream={sk} "
-                    f"subject={hint['subject'] if hint else None} confidence={confidence}"
+                    f"[WINDOW] identity_hint stream={sk} unsure_reading_ignored "
+                    f"still_fresh_confirmed=true"
                 )
+                return
+            self._identity_by_stream[sk] = {"hint": hint, "confidence": confidence, "ts": time.time()}
+        logger.debug(
+            f"[WINDOW] identity_hint stream={sk} "
+            f"subject={hint['subject'] if hint else None} confidence={confidence}"
+        )
 
     async def _consume_rpc(self) -> None:
-        async with self.bus.subscribe(settings.CHANNEL_WINDOW_REQUEST) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._shutdown_event.is_set():
-                    break
-                data = msg.get("data")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok:
-                    continue
-                env = decoded.envelope
-                asyncio.create_task(self._handle_rpc(env))
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WINDOW_REQUEST,
+            self._on_rpc,
+            stop_event=self._shutdown_event,
+            name="vision-window.consume_rpc",
+        )
+
+    def _on_rpc(self, msg: dict) -> None:
+        # Starts its own task and returns None so the stream is not held up.
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        asyncio.create_task(self._handle_rpc(decoded.envelope))
 
     async def _handle_rpc(self, env: BaseEnvelope) -> None:
         try:
@@ -385,7 +480,48 @@ class WindowService:
                         flush = True
                 if flush:
                     await self._drain_stream(sid)
+            if self._presence_registry.sweep_stale(now) or self._presence_registry.has_pending():
+                self._flush_presence_transitions()
             await asyncio.sleep(0.25)
+
+    async def _publish_caption_events(
+        self,
+        accepted: List[Dict[str, Any]],
+        stream_id: str,
+        correlation_id: UUID,
+        causality_chain: List[Any],
+    ) -> None:
+        """Each accepted caption -> one `camera_caption` vision_events row via
+        the scribe (app/caption_events.py). The council cannot carry it: its
+        transition gate skips windows whose labels did not change, and that
+        skipped the first accepted caption live (2026-10-16). Never raises:
+        a failed publish is counted, never a failed flush."""
+        if not settings.WINDOW_CAPTION_EVENTS_ENABLED:
+            return
+        for record in accepted:
+            try:
+                item = build_caption_event(record, stream_id=stream_id)
+                if item is None:
+                    continue
+                env = BaseEnvelope(
+                    kind="vision.event.bundle",
+                    source=_source_ref(),
+                    correlation_id=correlation_id,
+                    causality_chain=[*causality_chain],
+                    payload=VisionEventPayload(events=[item]).model_dump(mode="json"),
+                )
+                await self.bus.publish(settings.CHANNEL_CAPTION_EVENTS_PUB, env)
+                self._m_caption_events_published += 1
+                logger.info(
+                    f"[WINDOW] caption_event_published stream={stream_id} event_id={item.event_id} "
+                    f"artifact={record.get('artifact_id')} channel={settings.CHANNEL_CAPTION_EVENTS_PUB}"
+                )
+            except Exception as exc:  # noqa: BLE001 -- never fail the window flush
+                self._m_caption_events_failed += 1
+                logger.warning(
+                    f"[WINDOW] caption_event_publish_failed stream={stream_id} "
+                    f"artifact={record.get('artifact_id')} err={exc}"
+                )
 
     async def _drain_stream(self, stream_id: str) -> None:
         async with self._buffer_lock:
@@ -412,6 +548,27 @@ class WindowService:
         if not buffered:
             return
         items: List[Tuple[VisionArtifactPayload, float]] = [(b["artifact"], b["ts"]) for b in buffered]
+        # Detector-agreement gate (app/caption_gate.py): before the summary is
+        # built, so a rejected caption never reaches summary.captions.
+        accepted_captions: List[Dict[str, Any]] = []
+        items, caption_gate_stats, caption_rejections = self._caption_gate.apply(
+            stream_id, items, accepted_out=accepted_captions
+        )
+        if caption_gate_stats:
+            self._m_caption_gate_accepted += caption_gate_stats["accepted"]
+            for reason, n in caption_gate_stats["rejected"].items():
+                self._m_caption_gate_rejected[reason] = self._m_caption_gate_rejected.get(reason, 0) + n
+        for rej in caption_rejections:
+            logger.info(
+                f"[WINDOW] caption_rejected stream={stream_id} reason={rej['reason']} "
+                f"artifact={rej['artifact_id']} text={rej['text']!r}"
+            )
+        for acc in accepted_captions:
+            logger.info(
+                f"[WINDOW] caption_accepted stream={stream_id} artifact={acc['artifact_id']} "
+                f"labels={','.join(acc['labels']) or '-'} frame_ts={acc.get('frame_ts')} "
+                f"text={str(acc['text'])[:160]!r}"
+            )
         # Skip missing envelopes (direct test calls); production ingest always attaches env.
         envs: List[BaseEnvelope] = [b["env"] for b in buffered if b["env"] is not None]
         window_start = min(b["ts"] for b in buffered)
@@ -426,6 +583,15 @@ class WindowService:
             cursor=cursor,
             stale_after_ms=settings.STALE_AFTER_MS,
         )
+        if caption_gate_stats:
+            payload = payload.model_copy(
+                update={"summary": {**(payload.summary or {}), "caption_gate": caption_gate_stats}}
+            )
+        fixture_only = self._caption_gate.fixture_only_labels(stream_id)
+        if fixture_only:
+            summary = dict(payload.summary or {})
+            summary["evidence"] = {**(summary.get("evidence") or {}), "fixture_only_labels": fixture_only}
+            payload = payload.model_copy(update={"summary": summary})
         identity_hint: Optional[Dict[str, Any]] = None
         identity_confidence: Optional[str] = None
         if settings.WINDOW_BELIEF_ENABLED and settings.WINDOW_IDENTITY_ENABLED:
@@ -452,7 +618,11 @@ class WindowService:
                 stream_id, now=window_end
             )
 
-        if settings.WINDOW_BELIEF_ENABLED:
+        # A window holding only a late caption (no detection pass) is not a
+        # look at the scene: it must not vote "saw nobody" into the belief
+        # tracker or presence.
+        looked = any(not is_caption_only(a) for a, _ in items)
+        if settings.WINDOW_BELIEF_ENABLED and looked:
             summary = dict(payload.summary or {})
             evidence = dict(summary.get("evidence") or {})
             observed = frozenset(str(x).strip().lower() for x in evidence.get("hard_labels") or [] if str(x).strip())
@@ -478,9 +648,12 @@ class WindowService:
 
             payload = payload.model_copy(update={"summary": summary})
             if settings.WINDOW_PRESENCE_ENABLED:
+                # A person who has not moved for VISION_STATIONARY_MIN_SEC (a
+                # prop) does not make the stream present (app/fixtures.py).
+                self._fixtures.observe_window(stream_id, _person_boxes(items))
                 self._note_presence(
                     stream_id,
-                    result.believed_labels,
+                    self._fixtures.presence_labels(stream_id, result.believed_labels),
                     identity_hint=identity_hint,
                     identity_confidence=identity_confidence,
                 )
@@ -517,6 +690,8 @@ class WindowService:
         )
         await self.bus.publish(settings.CHANNEL_WINDOW_PUB, envelope)
         self._m_snapshots += 1
+        if accepted_captions:
+            await self._publish_caption_events(accepted_captions, stream_id, cid, causality_chain)
         await self._publish_scene_inventory(payload, stream_id, cid, causality_chain)
         logger.info(
             f"[WINDOW] flush snapshot_id={payload.window_id} stream={stream_id} "
@@ -576,11 +751,56 @@ class WindowService:
             self._m_inventory_failed += 1
             logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
 
+    async def _maybe_publish_sighting(self, payload: VisionArtifactPayload, hint: Optional[dict]) -> bool:
+        """One IdentitySightingV1 per home camera per sitting: on one "probable" match, or on
+        WINDOW_SIGHTING_MIN_MATCHES "possible"-or-better matches within the window. Rate-limited
+        per stream (WINDOW_SIGHTING_MIN_INTERVAL_SEC). True when published."""
+        state = (hint or {}).get("state")
+        if not settings.WINDOW_SIGHTING_ENABLED or not self.bus or state not in ("probable", "possible"):
+            return False
+        stream = stream_key_from_artifact(payload)
+        homes = {x.strip() for x in settings.WINDOW_SIGHTING_HOME_STREAMS.split(",") if x.strip()}
+        if stream not in homes:
+            return False
+        now = time.time()
+        # Keyed by (camera, person): matches for different gallery subjects never corroborate.
+        key = (stream, str((hint or {}).get("subject") or ""))
+        recent = [t for t in self._match_at.get(key, []) if now - t <= settings.WINDOW_SIGHTING_MATCH_WINDOW_SEC]
+        recent.append(now)
+        self._match_at[key] = recent[-20:]
+        # One "probable" is enough on its own; "possible" needs company (2026-10-10 loosening).
+        if state == "probable":
+            outcome = "probable"
+        elif len(recent) >= max(1, int(settings.WINDOW_SIGHTING_MIN_MATCHES)):
+            outcome = "corroborated"
+        else:
+            return False
+        last = self._last_sighting_at.get(stream)
+        if last is not None and now - last < settings.WINDOW_SIGHTING_MIN_INTERVAL_SEC:
+            return False
+        sim = hint.get("similarity")
+        frame_ts = (payload.inputs or {}).get("frame_ts") if isinstance(payload.inputs, dict) else None
+        seen_at = (datetime.fromtimestamp(float(frame_ts), tz=timezone.utc)
+                   if isinstance(frame_ts, (int, float)) else datetime.now(timezone.utc))
+        sighting = IdentitySightingV1(
+            subject=str(hint.get("subject") or ""), stream_id=stream,
+            seen_at=seen_at, similarity=float(sim) if isinstance(sim, (int, float)) else 0.0,
+            correlation_id=str(payload.correlation_id or ""), outcome=outcome,
+        )
+        await self.bus.publish(settings.CHANNEL_IDENTITY_SIGHTING_PUB, BaseEnvelope(
+            kind=IDENTITY_SIGHTING_KIND, source=_source_ref(), payload=sighting.model_dump(mode="json")))
+        self._last_sighting_at[stream] = now
+        logger.info(f"[WINDOW] identity_sighting stream={stream} outcome={outcome} "
+                    f"similarity={sighting.similarity:.3f} matches_in_window={len(recent)}")
+        return True
+
     async def _publish_crop_observation(self, artifact: VisionArtifactPayload, env: BaseEnvelope) -> None:
         """Per-artifact, not per-window: every tracked-label box the host
         zoned/embedded (walkway individuals, idea 1) goes to the individuals
-        reducer with its own frame time. Patio boxes are forwarded with no
-        vector; they are presence counts. Best effort, like the inventory:
+        reducer with its own frame time (patio boxes included, with vectors
+        and faces since 2026-10-15). Empty face keys are left out so a
+        not-yet-redeployed sql-writer (VisionCropV1 is extra="forbid") still
+        accepts face-less crops. Best effort, like the inventory:
         a failure here must never cost ingest."""
         if not settings.WINDOW_CROP_OBSERVATIONS_ENABLED or not self.bus:
             return
@@ -599,7 +819,7 @@ class WindowService:
                     source=_source_ref(),
                     correlation_id=cid,
                     causality_chain=[*(getattr(env, "causality_chain", None) or [])],
-                    payload=obs.model_dump(mode="json"),
+                    payload=_crop_payload(obs),
                 ),
             )
             self._m_crop_obs_published += 1
@@ -654,6 +874,7 @@ class WindowService:
         snapshot = self._presence_registry.record(
             stream_id, believed_labels, identity_hint=identity_hint, identity_confidence=identity_confidence
         )
+        self._flush_presence_transitions()
         if snapshot is None:
             return
         if not settings.POSTGRES_URI:
@@ -666,6 +887,47 @@ class WindowService:
                 postgres_uri=settings.POSTGRES_URI,
             )
         )
+        self._presence_write_tasks.add(task)
+        task.add_done_callback(self._presence_write_tasks.discard)
+
+    async def _close_presence_transitions(self) -> None:
+        """A graceful stop closes every company stretch: after this nothing is known. The
+        registry refuses later transitions (an in-flight RPC flush cannot write after it)."""
+        self._presence_registry.close(time.time())
+        pending = list(self._presence_write_tasks)
+        if pending:  # let the last real transitions land first (bounded)
+            await asyncio.wait(pending, timeout=5.0)
+        rows = self._presence_registry.drain_transitions()
+        if rows and settings.POSTGRES_URI:
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(write_transitions_to_postgres, rows, postgres_uri=settings.POSTGRES_URI),
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                logger.warning(f"[WINDOW] presence_transition_shutdown_write_failed error={exc}")
+
+    async def _write_transitions(self, rows: List[Dict[str, Any]]) -> None:
+        written = await asyncio.to_thread(write_transitions_to_postgres, rows, postgres_uri=settings.POSTGRES_URI)
+        if not written:
+            # Retried with the next flush or sweep; a lost closing row would otherwise merge
+            # two visits (the reducer also guards against that).
+            self._presence_registry.requeue(rows)
+
+    def _flush_presence_transitions(self) -> None:
+        """Fire-and-forget append of any queued presence transition rows.
+        Always drains (so the queue never grows when Postgres is unset); a
+        failed write is logged inside write_transitions_to_postgres and never
+        reaches the state machine or this flush."""
+        rows = self._presence_registry.drain_transitions()
+        if not rows or not settings.POSTGRES_URI:
+            return
+        for r in rows:
+            logger.info(
+                f"[WINDOW] presence_transition stream={r['presence_id']} "
+                f"{r['from_state'] or '-'}->{r['to_state']} confirmed={r['identity_confirmed']}"
+            )
+        task = asyncio.create_task(self._write_transitions(rows))
         self._presence_write_tasks.add(task)
         task.add_done_callback(self._presence_write_tasks.discard)
 
@@ -894,4 +1156,8 @@ async def api_metrics() -> Dict[str, Any]:
         "vision_window_cursor_expired_total": service._m_catchup_expired,
         "vision_window_crop_observations_published_total": service._m_crop_obs_published,
         "vision_window_crop_observations_failed_total": service._m_crop_obs_failed,
+        "vision_window_caption_gate_accepted_total": service._m_caption_gate_accepted,
+        "vision_window_caption_gate_rejected_total": dict(service._m_caption_gate_rejected),
+        "vision_window_caption_events_published_total": service._m_caption_events_published,
+        "vision_window_caption_events_failed_total": service._m_caption_events_failed,
     }

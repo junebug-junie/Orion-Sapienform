@@ -77,8 +77,9 @@ LINE_LABELS: dict[str, str] = {
 }
 LINES = tuple(LINE_LABELS)
 
-# Lifecycle workflows that ARE curiosity. `self_study.reflect` lands in the
-# same table and is not; a naive `SELECT *` would leak it into the strip.
+# Workflows that ARE curiosity. `reading.turn`,
+# `reverie.visual` and the rest land in the same tables and are not; `_group`
+# drops any run whose admission row names another workflow.
 CURIOSITY_WORKFLOWS = ("curiosity.investigate", "self_sense_eval")
 WORKFLOW_SELF_SENSE = "self_sense_eval"
 
@@ -150,9 +151,10 @@ EVENT_LEASE_RELEASED = "resource.lease_released"
 EVENT_LEASE_EXPIRED = "resource.lease_expired"
 # The GPU pool paused the run's hold for an urgent run; it kept its place in line (not a failure).
 EVENT_PREEMPTED = "run.preempted"
+# Body economy Patch D: a curiosity investigate run held by its binding bid (app/run_bids.py).
+EVENT_ECONOMY_HELD = "run.economy_held"
 EVENT_CHECKPOINT_RESUME_FAILED = "run.checkpoint_resume_failed"
 ANOMALY_EVENTS = (EVENT_CHECKPOINT_RESUME_FAILED,)
-WORKFLOW_REFLECT = "self_study.reflect"
 
 # What the strip's glyph says about a run, decided here so the page and the
 # tests read one rule.
@@ -443,30 +445,37 @@ def _group(rows: RunStoryRows) -> dict[str, dict[str, Any]]:
         s = slot(row.get("run_id"))
         if s is not None:
             s["self_sense"].append(row)
-    reflect_ids: set[str] = set()
+    # The admission table holds every durable workflow (reading.turn,
+    # reverie.visual, compactor.digest, ...), not only curiosity; live
+    # 2026-10-09 ~350 of 915 "runs" in the 90-day strip were other work shown
+    # as "World question". An admission row that NAMES a non-curiosity
+    # workflow drops the run entirely, its events with it. A row with no
+    # workflow is kept (older rows, and nothing else says what it was).
+    other_ids: set[str] = set()
     for row in rows.admission:
         request = _obj(row.get("request"))
-        if _text(request.get("workflow"), 60) == WORKFLOW_REFLECT:
-            reflect_ids.add(_text(row.get("run_id"), 64))
+        workflow = _text(request.get("workflow"), 60)
+        if workflow and workflow not in CURIOSITY_WORKFLOWS:
+            other_ids.add(_text(row.get("run_id"), 64))
             continue
         s = slot(row.get("run_id"))
         if s is not None:
             s["admission"] = row
     for row in rows.resource_events:
         rid = _text(row.get("run_id"), 64)
-        if rid in reflect_ids:
+        if rid in other_ids:
             continue
         s = slot(rid)
         if s is not None:
             s["events"].append(row)
     for row in rows.event_counts:
         rid = _text(row.get("run_id"), 64)
-        if rid in reflect_ids:
+        if rid in other_ids:
             continue
         s = slot(rid)
         if s is not None:
             s["event_counts"][_text(row.get("event"), 60)] = _as_int(row.get("n"), 0)
-    for rid in reflect_ids:
+    for rid in other_ids:
         slots.pop(rid, None)
     return slots
 
@@ -569,6 +578,16 @@ def _lifecycle_from_events(slot: dict[str, Any]) -> _Lifecycle:
         elif kind == EVENT_LEASE_EXPIRED:
             out.items.append(TimelineItem(at=at, kind="lifecycle", data={
                 "node": "", "status": "lease_expired", "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))
+        elif kind == EVENT_ECONOMY_HELD:
+            # One row per distinct reason: a held run re-bids every few minutes for up to 6 h.
+            reason = _text(detail.get("reason"), 60)
+            last = next((it for it in reversed(out.items) if it.kind == "lifecycle"), None)
+            if last is not None and last.data.get("status") == "economy_held" and last.data.get("reason") == reason:
+                continue
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": "", "status": "economy_held", "reason": reason,
+                "binding": _text(detail.get("binding_constraint"), 60), "why": _text(detail.get("why"), 500),
+                "next_node": "", "resumed_from": "", "error": ""}))
         elif kind == EVENT_PREEMPTED:
             out.items.append(TimelineItem(at=at, kind="lifecycle", data={
                 "node": "", "status": "preempted", "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))

@@ -95,3 +95,56 @@ async def test_handle_bus_message_malformed_payload_is_noop() -> None:
     await _handle_bus_message(bus, {"data": b"ignored"})
 
     assert goal_state.get_active_goal() is None
+
+
+@pytest.mark.asyncio
+async def test_listener_resubscribes_after_the_subscription_drops() -> None:
+    """Live 2026-10-20: one redis error ended a bare subscribe loop; the goal cache went stale."""
+    import asyncio
+    import contextlib
+
+    from orion.autonomy.goal_state_listener import run_goal_state_listener
+
+    goal_state.clear_active_goal()
+    stop = asyncio.Event()
+    envelope = BaseEnvelope(
+        kind="memory.field_goals.proposed.v1",
+        source=ServiceRef(name="orion-attention-runtime"),
+        correlation_id=str(uuid4()),
+        payload=_goal().model_dump(mode="json"),
+    )
+
+    class _PubSub:
+        def __init__(self, script):
+            self.script = list(script)
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            if not self.script:
+                stop.set()
+                return None
+            item = self.script.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    sessions = [_PubSub([ConnectionError("Connection reset by peer")]),
+                _PubSub([{"type": "message", "data": b"goal"}])]
+    calls = []
+
+    class _Bus:
+        codec = MagicMock()
+
+        def subscribe(self, *channels):
+            @contextlib.asynccontextmanager
+            async def _cm():
+                calls.append(channels)
+                yield sessions.pop(0)
+
+            return _cm()
+
+    _Bus.codec.decode.return_value = MagicMock(ok=True, envelope=envelope, error=None)
+    await asyncio.wait_for(run_goal_state_listener(_Bus(), stop, channel="orion:test:goals"), timeout=10)
+
+    assert calls == [("orion:test:goals",), ("orion:test:goals",)]
+    assert goal_state.get_active_goal() is not None
+    goal_state.clear_active_goal()

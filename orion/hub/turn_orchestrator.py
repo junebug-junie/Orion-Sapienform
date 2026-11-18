@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.cockpit.builders import extract_mind_quality_fields
-from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
+from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER, COCKPIT_WORKING_NOTES_MARKER
 from orion.hub.cockpit_emit import (
     begin_cockpit_timeline,
     emit_association_hop,
@@ -31,6 +33,7 @@ from orion.situational.context import build_situation_for_ctx, hub_settings_to_r
 from orion.harness.attachment_staging import prune_staging, stage_attachments
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.runner import build_harness_prompt
+from orion.harness.prefix import format_recent_turns
 from orion.schemas.harness_finalize import (
     HARNESS_RECENT_TURNS_MAX,
     HarnessAttachmentV1,
@@ -56,6 +59,10 @@ from orion.fcc.context_budget import (
 )
 
 logger = logging.getLogger("orion.hub.turn_orchestrator")
+
+# Per-message cap for the stance pass's copy of RECENT CONVERSATION: enough to
+# follow the thread, not every word of a long reply.
+STANCE_RECENT_TURN_MAX_CHARS = 400
 
 DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL = "MODEL_SONNET"
 
@@ -156,6 +163,7 @@ def _gather_role_teach_progress_lines(payload: Mapping[str, Any]) -> list[str]:
     if not isinstance(brief, Mapping):
         brief = {}
     peer_status = brief.get("status")
+    peer_reason = brief.get("refusal_reason")
     next_hop_n = brief.get("next_hop_n")
     if next_hop_n is not None:
         try:
@@ -179,6 +187,7 @@ def _gather_role_teach_progress_lines(payload: Mapping[str, Any]) -> list[str]:
             hop_note_texts=hop_texts,
             peer_brief_status=str(peer_status) if peer_status is not None else None,
             peer_brief_next_hop_n=next_hop_n,
+            peer_brief_reason=str(peer_reason) if peer_reason else None,
             queue_score=queue_score,
             queue_driver=queue_driver,
         )
@@ -303,6 +312,8 @@ async def _publish_unified_turn_chat_grammar(
         from scripts.grammar_publish import publish_hub_chat_grammar_trace
         from scripts.pre_turn_appraisal_wiring import repair_pressure_grammar_scalars
 
+        from orion.substrate.appraisal.contract import is_repair_signal
+
         repair_pressure_level, repair_pressure_confidence = repair_pressure_grammar_scalars(
             pre_turn_bundle=repair_bundle,
             substrate_summary=None,
@@ -314,7 +325,16 @@ async def _publish_unified_turn_chat_grammar(
             word_count=len((user_message or "").split()),
             repair_pressure_level=repair_pressure_level,
             repair_pressure_confidence=repair_pressure_confidence,
-            has_repair_signal=repair_bundle is not None,
+            # Real repair pressure only (the level at which the repair
+            # contract steers the reply), not "an appraisal ran" -- that
+            # was true for ~96% of turns and fed nearly every chat window
+            # into memory as a "repair". The sub-floor reading still
+            # travels on its own atom.
+            has_repair_signal=is_repair_signal(repair_pressure_level),
+            # A reading exists only if the paradigm measured one. A bundle whose
+            # repair_pressure failed (e.g. probe shed by heat) has no level (None):
+            # no atom, rather than a 0.0 "calm" reading.
+            has_repair_pressure_reading=repair_pressure_level is not None,
             stance_disposition=stance_disposition,
             stance_disposition_reasons=stance_disposition_reasons,
             stance_boundary_register=stance_boundary_register,
@@ -393,13 +413,43 @@ def _with_overflow_hint(text: str | None) -> str | None:
     return apply_context_overflow_hint(text, n_ctx=max_context_tokens())
 
 
-def _partial_draft_from_run(run: HarnessRunV1) -> str | None:
+# Urgent curiosity turns hand the draft to the incident report as Orion's words
+# (durable-runs `FINDING_TEXT_CAP`), so their frames carry the same length.
+_URGENT_PARTIAL_DRAFT_MAX_LEN = 8000
+# Seconds kept between the harness's reply budget and the caller's own deadline:
+# bus transit of the reply plus durable-runs' timer starting a moment before Hub's.
+_REPLY_TRANSIT_SLACK_SEC = 10.0
+
+
+def _held_turn_budgets(payload: dict[str, Any]) -> tuple[float | None, float | None]:
+    """(inference_timeout_sec, reply_budget_sec) for the harness request.
+
+    The caller (curiosity's held turns) may stamp a monotonic deadline at which it
+    stops waiting. Measured here, after stance/recall, so the harness learns how long
+    it really has; the motor's budget is never allowed past it."""
+    inference = payload.get("inference_timeout_sec")
+    deadline = payload.get("harness_reply_deadline_monotonic")
+    if deadline is None:
+        return inference, None
+    reply_budget = max(1.0, float(deadline) - time.monotonic() - _REPLY_TRANSIT_SLACK_SEC)
+    if inference is not None:
+        inference = min(float(inference), reply_budget)
+        # Optional: keep this much of what is really left for finalize/reply, measured
+        # here (after stance/recall), not when the caller stamped the request. Reading
+        # turns set it; curiosity's held turns reserve up front and do not.
+        reserve = float(payload.get("harness_finalize_reserve_sec") or 0.0)
+        if reserve > 0 and reply_budget - reserve > 0:
+            inference = min(inference, reply_budget - reserve)
+    return inference, reply_budget
+
+
+def _partial_draft_from_run(run: HarnessRunV1, max_len: int = _PARTIAL_DRAFT_MAX_LEN) -> str | None:
     draft = run.draft_text
     if not draft:
         return None
-    if len(draft) <= _PARTIAL_DRAFT_MAX_LEN:
+    if len(draft) <= max_len:
         return draft
-    return draft[:_PARTIAL_DRAFT_MAX_LEN]
+    return draft[:max_len]
 
 
 def _finalize_phase_error(run: HarnessRunV1) -> bool:
@@ -413,7 +463,9 @@ def _finalize_phase_error(run: HarnessRunV1) -> bool:
     return "orion_response_repair" in status or "orion_voice_finalize" in status
 
 
-def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str, Any]:
+def _harness_error_frame(
+    run: HarnessRunV1, *, correlation_id: str, partial_max_len: int = _PARTIAL_DRAFT_MAX_LEN
+) -> dict[str, Any]:
     base: dict[str, Any] = {
         "type": "turn_error",
         "correlation_id": correlation_id,
@@ -429,7 +481,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
             "partial",
             "failed",
         } else "substrate_appraisal"
-        partial = _partial_draft_from_run(run)
+        partial = _partial_draft_from_run(run, partial_max_len)
         if partial:
             base["partial_draft"] = _with_overflow_hint(partial) or partial
         return base
@@ -437,7 +489,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
         run.substrate_appraisal is not None and (run.reflection is None or not run.final_text)
     ):
         base["phase"] = "finalize"
-        partial = _partial_draft_from_run(run)
+        partial = _partial_draft_from_run(run, partial_max_len)
         if partial:
             base["partial_draft"] = _with_overflow_hint(partial) or partial
         if run.grounding_status:
@@ -449,7 +501,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
     base["phase"] = "harness"
     if run.step_count:
         base["partial"] = run.step_count
-    partial = _partial_draft_from_run(run)
+    partial = _partial_draft_from_run(run, partial_max_len)
     if partial:
         base["partial_draft"] = _with_overflow_hint(partial) or partial
     if run.grounding_status:
@@ -466,6 +518,7 @@ def _success_frames(
     correlation_id: str,
     fcc_model_label: str | None = None,
     mode_tag: str = "orion",
+    retain_fetch_text: bool = False,
 ) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
     if run.substrate_appraisal is not None:
@@ -492,6 +545,8 @@ def _success_frames(
         "llm_response": final_text,
         "finalize_ran": run.finalize_ran,
         "finalize_changed": run.finalize_changed,
+        "response_repair_ran": run.response_repair_ran,
+        "response_repair_reason": run.response_repair_reason,
         "harness_step_count": run.step_count,
         "harness_grounding_status": run.grounding_status,
         # The FCC leg's own duration. Distinct from any wall time Hub can
@@ -505,8 +560,12 @@ def _success_frames(
         # predates the field, so a consumer can tell "not reported" from
         # "reported, nothing fetched" -- world_pulse_read_pipeline.py gates
         # a Stage 1 `done` on this.
+        # The fetched text rides only on a reading turn's frame, whose
+        # consumer retains it (orion/world_pulse_read/fetch_text.py); a chat
+        # frame never carries page text to the browser.
         final_frame["harness_source_fetches"] = [
-            item.model_dump(mode="json") for item in run.source_fetches
+            item.model_dump(mode="json", exclude=None if retain_fetch_text else {"content_text"})
+            for item in run.source_fetches
         ]
     if fcc_model_label:
         # The identity that actually produced this response -- previously not
@@ -544,17 +603,25 @@ async def _run_pre_turn_appraisal(
     user_message: str,
     continuity_messages: list[dict[str, Any]] | None,
     settings: Any,
+    gpu_lease: GpuLeaseRefV1 | None = None,
 ) -> tuple[TurnAppraisalBundleV1 | None, dict[str, Any]]:
     """Run pre-turn appraisal and return (bundle, cockpit_texture).
 
+    ``gpu_lease`` is the turn's GPU pool hold (durable/background turns). It rides the request so
+    cortex-exec runs the probe on that seat, not on the small ``quick_turn`` lane (Juniper,
+    2026-11-12: world-pulse work never goes to the fast or metacog lane). None for Juniper's turns.
+
     Texture is honest Hub-boundary detail for Soft HUD progress hops — never
-    fabricated cognition. Keys: status, error, failed_paradigms, elapsed_ms,
-    skipped_reason.
+    fabricated cognition. Keys: status, error, failed_paradigms, failure_reasons,
+    elapsed_ms, skipped_reason. A failed paradigm (e.g. its probe shed by heat:
+    failure_reasons={"repair_pressure": "shed:cabinet_hot"}) makes the status
+    ``failed``: its level is unknown, never reported as ``ok``.
     """
     texture: dict[str, Any] = {
         "status": "skipped",
         "error": None,
         "failed_paradigms": [],
+        "failure_reasons": {},
         "elapsed_ms": None,
         "skipped_reason": None,
     }
@@ -585,6 +652,7 @@ async def _run_pre_turn_appraisal(
                 paradigms_requested=[p.strip() for p in paradigms.split(",") if p.strip()],
                 contract_before={"mode": "default"},
                 options=PreTurnAppraisalOptionsV1(timeout_ms=timeout_ms),
+                gpu_lease=gpu_lease,
             ),
             correlation_id=correlation_id,
         )
@@ -609,10 +677,20 @@ async def _run_pre_turn_appraisal(
         return None, texture
 
     failed = list(bundle.failed_paradigms or [])
+    reasons = dict(getattr(bundle, "failure_reasons", None) or {})
     texture["failed_paradigms"] = failed
+    texture["failure_reasons"] = reasons
     if failed:
         texture["status"] = "failed"
-        texture["error"] = f"failed_paradigms={','.join(failed)}"
+        texture["error"] = "failed_paradigms=" + ",".join(
+            f"{name}:{reasons[name]}" if reasons.get(name) else name for name in failed
+        )
+        logger.warning(
+            "pre_turn_appraisal_failed corr=%s failed=%s reasons=%s",
+            correlation_id,
+            failed,
+            reasons,
+        )
     else:
         texture["status"] = "ok"
 
@@ -645,6 +723,36 @@ def fetch_latest_outreach_provenance(
     )
 
     return _impl(session_id, max_age_hours=max_age_hours)
+
+
+async def _situation_with_game_sitting(
+    situation_prompt_fragment: str | None,
+    bus: Any,
+    *,
+    settings: Any,
+    correlation_id: str | None = None,
+) -> str | None:
+    """Append one line when someone is playing on the Retro service right now (game company design,
+    patch 1; services/orion-hub/scripts/retro_sitting.py). The line says only what the controller's
+    input shows: the game, how long, and who only when the game page was told. Not part of the cached
+    situation brief: a sitting changes by the minute. Fail-open: never raise into the turn.
+
+    Runtime evidence: the "Play:" line in the motor prompt's Situation block, and this log line.
+    """
+    if not bool(getattr(settings, "HUB_RETRO_SITTING_ENABLED", True)):
+        return situation_prompt_fragment
+    try:
+        from scripts.retro_sitting import open_sitting_line
+
+        line = await open_sitting_line(bus)
+        if not line:
+            return situation_prompt_fragment
+        logger.info("game_sitting_line corr=%s chars=%d", correlation_id, len(line))
+        block = f"Play: {line}"
+        return f"{situation_prompt_fragment}\n{block}" if situation_prompt_fragment else block
+    except Exception:
+        logger.warning("game_sitting_inject_failed corr=%s", correlation_id, exc_info=True)
+        return situation_prompt_fragment
 
 
 async def _situation_with_outreach_provenance(
@@ -832,8 +940,12 @@ async def _build_situation_prompt_fragment(
             situation_ctx["gpu_placement"] = gpu_placement
         elif _harness_owns_model_line(payload):
             situation_ctx["runtime_line_owner"] = "harness"
+        # This turn's wall-clock reading, persisted on the chat turn as
+        # spark_meta.conversation_phase (memory episode boundary, Fix 1).
+        # Filled on a cache hit too -- see _phase_stamp_from_cached_brief.
+        phase_stamp: dict[str, Any] = {}
         situation_brief, situation_fragment = await build_situation_for_ctx(
-            situation_ctx, situation_runtime_ns
+            situation_ctx, situation_runtime_ns, phase_stamp_out=phase_stamp
         )
         if not situation_brief and not situation_fragment:
             return {
@@ -867,6 +979,7 @@ async def _build_situation_prompt_fragment(
             "source_summary": source_summary,
             "perception_enabled": perception_enabled,
             "diagnostics": diagnostics,
+            "conversation_phase": dict(phase_stamp) if phase_stamp else None,
         }
     except Exception:
         logger.warning("unified_turn_situation_context_failed corr=%s", correlation_id, exc_info=True)
@@ -907,7 +1020,107 @@ async def _deliver_cockpit_frames(
         logger.warning("cockpit frame deliver failed", exc_info=True)
 
 
-async def execute_unified_turn(
+PRIME_TENDING_TIMEOUT_SEC = 1.0
+
+
+async def _read_prime_tending(settings: Any) -> tuple[list[Any], str | None]:
+    """The Prime block's personality ``tending`` lines (orion/prime/tending.py): one GET on durable-runs
+    ``/personality/frame``. (tendencies, skip reason). Fail-open and bounded: off, no URL, unreachable,
+    slow, non-200 or a stale/invalid frame -> no lines, never raises."""
+    if not bool(getattr(settings, "PRIME_PERSONALITY_LINE_ENABLED", False)):
+        return [], "disabled"
+    root = str(getattr(settings, "HUB_CURIOSITY_DURABLE_RUNS_URL", "") or "").strip().rstrip("/")
+    if not root:
+        return [], "no_url"
+    try:
+        import httpx
+
+        from orion.prime.tending import FRAME_PATH, tendencies_from_frame
+
+        async with httpx.AsyncClient(timeout=PRIME_TENDING_TIMEOUT_SEC) as client:
+            resp = await asyncio.wait_for(client.get(f"{root}{FRAME_PATH}"), timeout=PRIME_TENDING_TIMEOUT_SEC)
+        if resp.status_code != 200:
+            return [], f"http_{resp.status_code}"
+        tends, why = tendencies_from_frame(resp.json())
+        return tends, why
+    except Exception as exc:  # noqa: BLE001 -- the tending lines must never break the block
+        return [], f"fetch_failed:{type(exc).__name__}"
+
+
+async def _build_prime_block(bus: Any, *, settings: Any, correlation_id: str) -> Any:
+    """Prime's present for this turn (orion/prime/block.py, living Prime design Part 1), or None
+    when HUB_PRIME_BLOCK_ENABLED is off. Fail-open: an unreadable Prime renders a labelled absent
+    block; anything unexpected here returns None and the turn goes on without it."""
+    if not bool(getattr(settings, "HUB_PRIME_BLOCK_ENABLED", True)):
+        return None
+    try:
+        from orion.prime.block import fetch_prime_block
+
+        try:
+            redis = bus.redis
+        except Exception:  # noqa: BLE001 -- bus not connected: same as unreadable
+            from orion.prime.block import absent_block
+
+            block = absent_block("Hub's bus is not connected, so Prime's state could not be read")
+        else:
+            stale_min = float(getattr(settings, "HUB_PRIME_BLOCK_STALE_MIN", 10.0) or 10.0)
+
+            async def _tending() -> list[Any]:
+                tends, skip = await _read_prime_tending(settings)
+                if skip:
+                    logger.info("prime_block_tending_skipped corr=%s reason=%s", correlation_id, skip)
+                return tends
+
+            # Started first so the HTTP read runs alongside the two Redis GETs (worst case ~1 s, not ~2 s).
+            tending_task = asyncio.create_task(_tending())
+            block = await fetch_prime_block(redis, stale_after=timedelta(minutes=stale_min), tending=tending_task)
+        logger.info("prime_block corr=%s %s", correlation_id, block.log_fields())
+        return block
+    except Exception:  # noqa: BLE001 -- the Prime block must never break a turn
+        logger.warning("prime_block_failed corr=%s", correlation_id, exc_info=True)
+        return None
+
+
+def _log_prime_citations(prime_block: Any, final_text: Any, *, correlation_id: str) -> None:
+    """Count the reply's Prime refs against the block it was shown (orion/prime/block.py
+    check_prime_citations): one log line per turn, like temporal_self_day_citations. Never raises."""
+    if prime_block is None:
+        return
+    try:
+        from orion.prime.block import check_prime_citations
+
+        # A stale or absent block showed no refs: any Prime ref in the reply then is invented, and counted.
+        status = getattr(prime_block, "status", None)
+        shown = prime_block.refs if status == "ok" else ()
+        check = check_prime_citations(str(final_text or ""), shown)
+        logger.info("prime_block_citations corr=%s block=%s %s rejected_examples=%s", correlation_id,
+                    status, check.log_fields(), list(check.examples))
+    except Exception:  # noqa: BLE001
+        logger.warning("prime_block_citations_failed corr=%s", correlation_id, exc_info=True)
+
+
+def turn_workflow_label(
+    payload: dict[str, Any] | None, *, reading_only: bool = False, utterance_origin: str | None = None
+) -> str | None:
+    """What kind of turn this is, for harness_turn_trace.workflow (#3255).
+
+    "chat" when Juniper typed it, checked first: a chat turn's payload is the client's own frame,
+    so a ``source`` key in it is not Hub's label. Else the caller's own ``source`` tag when it set
+    one (every curiosity, outreach, consult and day-letter turn does), else "reading" for a reading
+    turn. None when nothing says (a relayed external-room turn, for one): unknown stays unknown
+    rather than being guessed.
+    """
+    if utterance_origin == "juniper":
+        return "chat"
+    source = str((payload or {}).get("source") or "").strip()
+    if source:
+        return source[:120]
+    if reading_only:
+        return "reading"
+    return None
+
+
+async def _execute_unified_turn_body(
     *,
     bus: Any,
     correlation_id: str,
@@ -930,6 +1143,8 @@ async def execute_unified_turn(
     client_meta: dict[str, Any] | None = None,
     urgent: bool = False,
     retrieval_query: str | None = None,
+    draft_preview: bool = False,
+    stance_view_message: str | None = None,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -956,6 +1171,18 @@ async def execute_unified_turn(
     self-initiated turn's standing question, a reading's source and claim).
     None keeps today's behavior: recall condenses the turn text itself. It
     rides StanceReactRequestV1.retrieval_query to cortex-exec's recall calls.
+
+    `stance_view_message` is the task as the stance pass should read it, when
+    that differs from what the motor gets. A reading turn passes its prompt
+    with the reader's JSON output contract cut out
+    (orion/world_pulse_read/reader_contract.py): with both contracts in view
+    the stance model wrote the reader's keys instead of its own. The motor
+    still gets `user_message` in full. None keeps today's behavior.
+
+    `draft_preview=True` (interactive chat only, via run_unified_turn) asks the
+    governor to publish the draft before the finalize judge (spec L8). The
+    draft reaches the client through the step relay; this function's returned
+    frames still carry only the final text, which is all that is persisted.
     """
     from scripts.settings import settings as hub_settings
 
@@ -1018,6 +1245,12 @@ async def execute_unified_turn(
         bus=bus,
         cockpit_sink=cockpit_sink,
     )
+    # The durable run's GPU pool hold ref rides the whole turn (pre-turn check + stance + harness).
+    turn_gpu_lease = (
+        GpuLeaseRefV1.model_validate(payload["gpu_lease"])
+        if payload.get("gpu_lease") is not None
+        else None
+    )
     repair_bundle, appraisal_texture = await _run_pre_turn_appraisal(
         bus=bus,
         correlation_id=correlation_id,
@@ -1025,6 +1258,7 @@ async def execute_unified_turn(
         user_message=user_message,
         continuity_messages=continuity_messages,
         settings=cfg,
+        gpu_lease=turn_gpu_lease,
     )
     appraisal_status = str(appraisal_texture.get("status") or "skipped")
     appraisal_error = appraisal_texture.get("error")
@@ -1047,6 +1281,7 @@ async def execute_unified_turn(
                     "phase": "done",
                     "status": appraisal_status,
                     "failed_paradigms": list(appraisal_texture.get("failed_paradigms") or []),
+                    "failure_reasons": dict(appraisal_texture.get("failure_reasons") or {}),
                     "elapsed_ms": appraisal_texture.get("elapsed_ms"),
                     "error": appraisal_error,
                     "skipped_reason": appraisal_texture.get("skipped_reason"),
@@ -1099,21 +1334,58 @@ async def execute_unified_turn(
     from scripts.harness_governor_client import HarnessGovernorClient
     from scripts.thought_client import ThoughtClient
 
-    # The durable run's GPU pool hold ref rides the whole turn (stance + harness).
-    turn_gpu_lease = (
-        GpuLeaseRefV1.model_validate(payload["gpu_lease"])
-        if payload.get("gpu_lease") is not None
-        else None
+    # Reuses build_turn_window (already the appraisal call above's normalizer)
+    # rather than passing continuity_messages through raw -- caps to the last
+    # HARNESS_RECENT_TURNS_MAX messages regardless of what the caller already
+    # capped, so HarnessRunRequestV1.recent_turns's own bound holds even if a
+    # future caller forgets to cap. No synthetic single-message fallback here
+    # (unlike _run_pre_turn_appraisal's turn_window above): an empty
+    # continuity_messages should render as a genuinely empty recent_turns, not
+    # a fabricated one-line "history".
+    #
+    # Real callers (services/orion-hub/scripts/api_routes.py's build_continuity_
+    # messages(history=user_messages, ...) and websocket_handler.py's history
+    # list) both include THIS turn's own message as the trailing entry --
+    # confirmed live review 2026-08-20: without stripping it here, recent_turns'
+    # last item duplicates user_message, so compile_harness_prefix would render
+    # the current question twice (once under RECENT CONVERSATION, once as
+    # "User message: ..."). _run_pre_turn_appraisal's turn_window above is left
+    # alone -- that RPC may legitimately want the current message included.
+    history_only = list(continuity_messages or [])
+    if history_only:
+        last = history_only[-1]
+        last_content = str(last.get("content") or "").strip() if isinstance(last, dict) else None
+        if last_content is not None and last_content == user_message.strip():
+            history_only = history_only[:-1]
+    recent_turns = build_turn_window(
+        history_only, max_turns=HARNESS_RECENT_TURNS_MAX, keep_timestamps=True
     )
+
     appraisal = (mind_appraisal_text or "").strip()
-    stance_user_message = appraisal or user_message
+    # stance_inputs["harness_user_message"] below also takes the stance view:
+    # every stance_inputs key is rendered into the stance prompt, and the full
+    # message is exactly what a stance view leaves out.
+    stance_view = (stance_view_message or "").strip()
+    stance_user_message = appraisal or stance_view or user_message
     stance_inputs: dict[str, Any] = {"user_message": stance_user_message}
     if utterance_origin in ("juniper", "orion"):
         stance_inputs["utterance_origin"] = utterance_origin
     if appraisal:
-        # Motor/harness still sees the full prompt; stance_inputs["user_message"]
-        # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
-        stance_inputs["harness_user_message"] = user_message
+        # The task the motor gets, as the stance may read it (the stance view when one
+        # was given). stance_inputs["user_message"] must match
+        # StanceReactRequestV1.user_message (Mind snapshot user_text).
+        stance_inputs["harness_user_message"] = stance_view or user_message
+    if recent_turns:
+        # The stance pass writes the imperative and tone the motor follows, so
+        # it must read the message against the thread too. Without this it saw
+        # only "That was on Sunday. Today is Monday :) It was eventful" and
+        # told the motor to "meet Juniper's Monday update" -- the motor had the
+        # history but followed the stance (live 2026-10-20, corr=98bde7cf).
+        stance_inputs["recent_conversation"] = format_recent_turns(
+            recent_turns,
+            now=datetime.now(timezone.utc),
+            max_content_chars=STANCE_RECENT_TURN_MAX_CHARS,
+        )
     # Not copied into stance_inputs: stance_react.j2 renders every stance_inputs
     # key into the stance LLM prompt as "additional context". This is recall's
     # search text, not something stance should read (PR #2423 review).
@@ -1324,6 +1596,8 @@ async def execute_unified_turn(
         reasons=list(thought.disposition_reasons),
     )
 
+    # The Prime read (two Redis GETs plus the tending GET, concurrent, each <= 1 s) runs alongside the situation build, not after it.
+    prime_task = asyncio.create_task(_build_prime_block(bus, settings=cfg, correlation_id=correlation_id))
     situation_bundle = await _build_situation_prompt_fragment(
         session_id=session_id,
         user_message=user_message,
@@ -1340,6 +1614,10 @@ async def execute_unified_turn(
         session_id,
         correlation_id=correlation_id,
     )
+    situation_prompt_fragment = await _situation_with_game_sitting(
+        situation_prompt_fragment, bus, settings=cfg, correlation_id=correlation_id
+    )
+    prime_block = await prime_task
     # Map builder statuses onto CockpitHopStatusV1 (no "empty" in the schema).
     situation_hop_status = str(situation_bundle.get("status") or "ok")
     if situation_hop_status == "empty":
@@ -1411,30 +1689,6 @@ async def execute_unified_turn(
                 correlation_id,
             )
 
-    # Reuses build_turn_window (already the appraisal call above's normalizer)
-    # rather than passing continuity_messages through raw -- caps to the last
-    # HARNESS_RECENT_TURNS_MAX messages regardless of what the caller already
-    # capped, so HarnessRunRequestV1.recent_turns's own bound holds even if a
-    # future caller forgets to cap. No synthetic single-message fallback here
-    # (unlike _run_pre_turn_appraisal's turn_window above): an empty
-    # continuity_messages should render as a genuinely empty recent_turns, not
-    # a fabricated one-line "history".
-    #
-    # Real callers (services/orion-hub/scripts/api_routes.py's build_continuity_
-    # messages(history=user_messages, ...) and websocket_handler.py's history
-    # list) both include THIS turn's own message as the trailing entry --
-    # confirmed live review 2026-08-20: without stripping it here, recent_turns'
-    # last item duplicates user_message, so compile_harness_prefix would render
-    # the current question twice (once under RECENT CONVERSATION, once as
-    # "User message: ..."). _run_pre_turn_appraisal's turn_window above is left
-    # alone -- that RPC may legitimately want the current message included.
-    history_only = list(continuity_messages or [])
-    if history_only:
-        last = history_only[-1]
-        last_content = str(last.get("content") or "").strip() if isinstance(last, dict) else None
-        if last_content is not None and last_content == user_message.strip():
-            history_only = history_only[:-1]
-    recent_turns = build_turn_window(history_only, max_turns=HARNESS_RECENT_TURNS_MAX)
 
     # "orion" or "agent" -- computed once, up near the top of this function
     # (alongside resolved_fcc_model_label; see that block's own comment) so
@@ -1481,9 +1735,25 @@ async def execute_unified_turn(
         enabled=bool(getattr(cfg, "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE", True)),
         progress_lines=progress_lines,
     )
+    inference_timeout_sec, reply_budget_sec = _held_turn_budgets(payload)
+    # Intention ledger D1 (shadow): the 5b judge sees Orion's open promises and the previous reply's
+    # offers, so it can mark one kept or accepted. Judge only, never the motor. Only a turn that gets
+    # this view can open promise acts (``_publish_promise_acts``), so this one test is the act-opening
+    # rule too: Juniper's own turn, sent from a Hub browser surface (``_promise_ledger_applies``).
+    promise_view = None
+    if _promise_ledger_applies(utterance_origin, payload, cfg):
+        from orion.hub.promise_ledger import promise_view_for_turn
+
+        promise_view = await promise_view_for_turn(session_id, correlation_id)
+        _promise_turn_mark("viewed", correlation_id)
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
-        inference_timeout_sec=payload.get("inference_timeout_sec"),
+        resume_key=payload.get("resume_key"),
+        # Only a curiosity run that took a focus (curiosity_investigation._generate). Honored on
+        # Orion's own turns only: a chat client's payload never reaches the system prompt.
+        curiosity_focus=payload.get("curiosity_focus") if utterance_origin == "orion" else None,
+        inference_timeout_sec=inference_timeout_sec,
+        reply_budget_sec=reply_budget_sec,
         reading_binding=reading_binding,
         reading_only=reading_only,
         correlation_id=correlation_id,
@@ -1508,7 +1778,13 @@ async def execute_unified_turn(
         # function -- also what stance_req.llm_route above was derived from.)
         fcc_model_label=resolved_fcc_model_label,
         mode=mode_tag,
+        utterance_origin=utterance_origin,
+        workflow=turn_workflow_label(payload, reading_only=reading_only, utterance_origin=utterance_origin),
         situation_prompt_fragment=situation_prompt_fragment,
+        prime_block=prime_block.text if prime_block is not None else None,
+        draft_preview=bool(draft_preview),
+        open_promises=list(promise_view.open_promises) if promise_view is not None else [],
+        pending_offers=promise_view.offer_quotes if promise_view is not None else [],
     )
     harness_bus = harness_rpc_bus or bus
     if harness_step_relay is not None and harness_step_queue is not None:
@@ -1532,6 +1808,7 @@ async def execute_unified_turn(
             attachments=list(harness_req.attachments or []),
             recent_turns=list(harness_req.recent_turns or []),
             situation_prompt_fragment=harness_req.situation_prompt_fragment,
+            prime_block=harness_req.prime_block,
         )
     except Exception:
         logger.warning(
@@ -1621,6 +1898,8 @@ async def execute_unified_turn(
         await publish_cockpit_frames(bus, [timeline_complete_frame(correlation_id)])
 
     if run is None:
+        # HarnessGovernorClient.run returns None on a timeout AND on an error/undecodable reply.
+        _log_promise_ledger_skip(promise_view, correlation_id, "no_run")
         await _publish_turn_timeout_grammar(bus=bus, correlation_id=correlation_id, settings=cfg)
         await _finish_cockpit(None, success=False)
         return [
@@ -1645,6 +1924,8 @@ async def execute_unified_turn(
     # _success_frames/_publish_unified_turn_chat_history so the final frame,
     # the persisted chat_history_log row, AND HarnessRunRequestV1.mode
     # (consumed by orion-harness-governor's own grammar trace) all agree.
+    if run.final_text:
+        _log_prime_citations(prime_block, run.final_text, correlation_id=correlation_id)
     if run.finalize_degraded_reason and run.final_text:
         await _publish_unified_turn_chat_history(
             bus=bus,
@@ -1657,6 +1938,8 @@ async def execute_unified_turn(
             source_label=str(payload.get("chat_history_source") or "hub_orion"),
             fcc_model_label=resolved_model_label,
             client_meta=client_meta,
+            conversation_phase=situation_bundle.get("conversation_phase"),
+            promise_view=promise_view,
         )
         degraded_frame = {
             "type": "turn_degraded",
@@ -1671,11 +1954,16 @@ async def execute_unified_turn(
                 correlation_id=correlation_id,
                 fcc_model_label=resolved_model_label,
                 mode_tag=mode_tag,
+                retain_fetch_text=reading_only,
             ),
         ]
     if not run.finalize_ran or not run.final_text:
+        _log_promise_ledger_skip(promise_view, correlation_id, "harness_error")
         await _finish_cockpit(run, success=False)
-        return [_harness_error_frame(run, correlation_id=correlation_id)]
+        return [_harness_error_frame(
+            run, correlation_id=correlation_id,
+            partial_max_len=_URGENT_PARTIAL_DRAFT_MAX_LEN if urgent else _PARTIAL_DRAFT_MAX_LEN,
+        )]
     await _publish_unified_turn_chat_history(
         bus=bus,
         correlation_id=correlation_id,
@@ -1687,6 +1975,8 @@ async def execute_unified_turn(
         source_label=str(payload.get("chat_history_source") or "hub_orion"),
         fcc_model_label=resolved_model_label,
         client_meta=client_meta,
+        conversation_phase=situation_bundle.get("conversation_phase"),
+        promise_view=promise_view,
     )
     await _finish_cockpit(run, success=True)
     return _success_frames(
@@ -1694,6 +1984,7 @@ async def execute_unified_turn(
         correlation_id=correlation_id,
         fcc_model_label=resolved_model_label,
         mode_tag=mode_tag,
+        retain_fetch_text=reading_only,
     )
 
 
@@ -1709,8 +2000,19 @@ async def _publish_unified_turn_chat_history(
     source_label: str = "hub_orion",
     fcc_model_label: str | None = None,
     client_meta: dict[str, Any] | None = None,
+    conversation_phase: dict[str, Any] | None = None,
+    promise_view: Any = None,
 ) -> None:
     """Orion capability: unified-turn persistence after successful handoff.
+
+    ``promise_view`` (intention ledger, shadow): the open promises and pending offers read before this
+    turn (``orion/hub/promise_ledger.py``), set only on Juniper's own turns. The promise acts are
+    published in a background task from that same view, so the final frame never waits on them.
+
+    ``conversation_phase`` (2026-10-02, memory episode boundary Fix 1): this
+    turn's wall-clock stamp from the situation build, persisted as
+    ``spark_meta.conversation_phase`` so orion-memory-consolidation's boundary
+    rule can read it. Before this, 0 of 3,586 window turns carried a phase.
 
     ``client_meta`` (2026-09-22): the reply stamp (`in_reply_to`,
     `in_reply_to_source`) computed by `websocket_handler` before the lane
@@ -1739,11 +2041,14 @@ async def _publish_unified_turn_chat_history(
     (services/orion-vector-host/app/tissue_feed.py) in-process, so no
     separate candidate event is needed anymore.
     """
-    if bus is None:
-        return
-    if payload.get("no_write") or payload.get("x_no_write"):
-        return
-    if not str(response_text or "").strip():
+    early = ("no_bus" if bus is None
+             else "no_write" if (payload.get("no_write") or payload.get("x_no_write"))
+             else "empty_reply" if not str(response_text or "").strip() else None)
+    if early is not None:
+        # The turn got a promise view (it logged ``promise_view``) but is not persisted, so no promise
+        # act can open: still one ``promise_ledger`` line (live 2026-11-17: a no_write eval turn,
+        # d449db8c, left a view line and no ledger line).
+        _log_promise_ledger_skip(promise_view, correlation_id, early)
         return
 
     from scripts.chat_history import (
@@ -1768,6 +2073,8 @@ async def _publish_unified_turn_chat_history(
         "harness_grounding_status": run.grounding_status,
         "chat_route": CHAT_ROUTE_UNIFIED_TURN_HARNESS,
     }
+    if isinstance(conversation_phase, dict) and conversation_phase.get("phase_change"):
+        spark_meta["conversation_phase"] = dict(conversation_phase)
 
     reasoning_trace: dict[str, Any] | None = None
     if run.reflection is not None:
@@ -1852,6 +2159,251 @@ async def _publish_unified_turn_chat_history(
         session,
         source_label,
     )
+    await _publish_reply_say_act(
+        bus,
+        correlation_id=correlation_id,
+        session_id=session,
+        source_label=source_label,
+        client_meta=client_meta,
+    )
+    if promise_view is not None:
+        task = asyncio.create_task(_publish_promise_acts(
+            bus,
+            correlation_id=correlation_id,
+            session_id=session,
+            source_label=source_label,
+            client_meta=client_meta,
+            reflection=run.reflection,
+            promise_view=promise_view,
+        ), name=f"promise-acts-{correlation_id}")
+        _PROMISE_ACT_TASKS.add(task)
+        task.add_done_callback(_PROMISE_ACT_TASKS.discard)
+        _promise_turn_mark("logged")  # the task logs this turn's one promise_ledger line
+
+
+async def _publish_reply_say_act(
+    bus: Any,
+    *,
+    correlation_id: str,
+    session_id: str | None,
+    source_label: str,
+    client_meta: Mapping[str, Any] | None,
+) -> bool:
+    """Act ledger (rung 2): Orion's chat reply to Juniper is a ``say`` act.
+
+    Opened once the reply is persisted. It expects Juniper to send another
+    chat turn within JUNIPER_REPLY_HORIZON_SEC; orion-sql-writer's resolver
+    closes it from chat_history_log (this turn's own row excluded by
+    correlation id). Only Juniper's own hub turns: other chat_history sources
+    and unsolicited rows are not replies to her. Best-effort, never raises.
+    Gated by HUB_ACT_LEDGER_ENABLED.
+    """
+    from scripts.settings import settings as hub_settings
+
+    if not bool(getattr(hub_settings, "HUB_ACT_LEDGER_ENABLED", True)):
+        return False
+    if bus is None or source_label != "hub_orion":
+        return False
+    if str((client_meta or {}).get("unsolicited") or "").lower() == "true" or (client_meta or {}).get("unsolicited") is True:
+        return False
+    try:
+        from orion.grammar.acts import (
+            JUNIPER_REPLY_BASIS,
+            JUNIPER_REPLY_HORIZON_SEC,
+            act_opened_event,
+            build_act,
+        )
+        from orion.grammar.publish import publish_grammar_event
+
+        act = build_act(
+            actor="hub.chat_reply",
+            verb="say",
+            key=str(correlation_id),
+            signal_id="juniper_replied",
+            horizon_sec=JUNIPER_REPLY_HORIZON_SEC,
+            basis=JUNIPER_REPLY_BASIS,
+            object_ref="juniper",
+            test_before=f"juniper_turn:{correlation_id}",
+        )
+        event = act_opened_event(
+            act,
+            source_service="orion-hub",
+            source_component="unified_turn.reply_act",
+            correlation_id=str(correlation_id),
+            session_id=session_id,
+        )
+        await publish_grammar_event(bus, event, source_name="orion-hub")
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the reply is already delivered; the act is a trace
+        logger.warning("reply_say_act_publish_failed corr=%s error=%s", correlation_id, exc)
+        return False
+
+
+def _promise_ledger_applies(utterance_origin: str | None, payload: Mapping[str, Any] | None, cfg: Any) -> bool:
+    """Whether this turn gets the pre-turn promise view, and so whether its reply can open promise acts.
+
+    Juniper's own turn (``utterance_origin == "juniper"``) sent from a Hub browser surface
+    (``is_browser_surface_turn``: the payload carries ``surface_context``, the rule the report's guard
+    counts by, ``JUNIPER_INGRESS_PREDICATE``), with both ledger flags on. Orion's own turns (curiosity,
+    session round-ups, Prime's ``intention.carry``) are ``utterance_origin="orion"``; ``/api/chat`` turns
+    (a coding session's note, an eval) carry no surface. Neither is a promise made to Juniper."""
+    from orion.regulation.juniper_turns import is_browser_surface_turn
+
+    return (utterance_origin == "juniper" and is_browser_surface_turn(payload)
+            and bool(getattr(cfg, "HUB_PROMISE_LEDGER_ENABLED", True))
+            and bool(getattr(cfg, "HUB_ACT_LEDGER_ENABLED", True)))
+
+
+def _log_promise_ledger_skip(promise_view: Any, correlation_id: str, reason: str) -> None:
+    """One ``promise_ledger ... outcome=skipped`` line for a turn that read the view and ends before the
+    ledger step (not persisted, harness timeout or error, interrupted). No view: no line."""
+    if promise_view is not None:
+        logger.info("promise_ledger corr=%s outcome=skipped reason=%s", correlation_id, reason)
+        _promise_turn_mark("logged")
+
+
+# Per-turn promise-ledger bookkeeping for ``execute_unified_turn``: whether the turn read the view and
+# whether its one ``promise_ledger`` line is already written (or handed to the background task).
+_PROMISE_TURN: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("promise_turn", default=None)
+
+
+def _promise_turn_mark(key: str, correlation_id: str | None = None) -> None:
+    state = _PROMISE_TURN.get()
+    if state is not None:
+        state[key] = True
+        if correlation_id is not None:
+            state["corr"] = correlation_id
+
+
+async def execute_unified_turn(**kwargs: Any) -> list[dict[str, Any]]:
+    """The unified turn (``_execute_unified_turn_body``, same keyword arguments) plus one promise-ledger guarantee: a
+    turn that read the promise view and ends by a raise or a cancel anywhere before its ledger line (the
+    browser left, Hub shut down, a request that fails validation) logs ``outcome=skipped
+    reason=interrupted``, so no viewed turn ends silent (Orion's PR #3598 third-round question 1)."""
+    state: dict[str, Any] = {"viewed": False, "logged": False, "corr": None}
+    token = _PROMISE_TURN.set(state)
+    try:
+        return await _execute_unified_turn_body(**kwargs)
+    except BaseException:
+        if state["viewed"] and not state["logged"]:
+            logger.info("promise_ledger corr=%s outcome=skipped reason=interrupted", state["corr"])
+        raise
+    finally:
+        _PROMISE_TURN.reset(token)
+
+
+# Background promise-act publishes (held so a task is not garbage-collected mid-flight).
+_PROMISE_ACT_TASKS: set[asyncio.Task] = set()
+
+
+async def _publish_promise_acts(
+    bus: Any,
+    *,
+    correlation_id: str,
+    session_id: str | None,
+    source_label: str,
+    client_meta: Mapping[str, Any] | None,
+    reflection: Any,
+    promise_view: Any = None,
+) -> dict[str, int] | None:
+    """Intention ledger D2 (shadow until #3531): the promise acts of the reply Juniper just got.
+
+    Only Juniper's own turns: the caller passes the pre-turn ``promise_view`` only when
+    ``_promise_ledger_applies`` (Juniper's turn from a Hub browser surface, the same rule as the judge's
+    view and the report's guard), and the reply act's guards
+    (hub_orion, not unsolicited) apply too. Opens one ``hub.promise``
+    act per firm promise in this reply and one per earlier offer this message accepted; closes each
+    promise the judge marked kept with a delivering quote (orion/hub/promise_ledger.py). Best-effort,
+    never raises. Runs as a background task, so the reply never waits on it. Gated by
+    HUB_PROMISE_LEDGER_ENABLED and HUB_ACT_LEDGER_ENABLED.
+    """
+    from scripts.settings import settings as hub_settings
+
+    if not (bool(getattr(hub_settings, "HUB_PROMISE_LEDGER_ENABLED", True))
+            and bool(getattr(hub_settings, "HUB_ACT_LEDGER_ENABLED", True))):
+        skip = "flag_off"
+    elif bus is None:
+        skip = "no_bus"
+    elif promise_view is None:
+        skip = "no_view"
+    elif source_label != "hub_orion":
+        skip = "not_hub_orion"
+    elif str((client_meta or {}).get("unsolicited") or "").lower() == "true" or (client_meta or {}).get("unsolicited") is True:
+        skip = "unsolicited"
+    elif reflection is None:
+        skip = "no_reflection"
+    else:
+        skip = None
+    if skip is not None:
+        # One line per skipped turn too (Orion's PR #3561 question 1): a turn the ledger skipped
+        # says why, so "skipped" and "never ran" are told apart.
+        logger.info("promise_ledger corr=%s outcome=skipped reason=%s", correlation_id, skip)
+        return None
+    try:
+        from orion.hub.promise_ledger import publish_promise_acts
+
+        # The offers the judge was shown come from the same pre-turn read: one read, so an accepted
+        # quote always maps to the ref the judge saw.
+        return await publish_promise_acts(bus, correlation_id=str(correlation_id), session_id=session_id,
+                                          reflection=reflection, prior_offers=list(promise_view.offers),
+                                          open_promises=[(p.id, p.quote) for p in promise_view.open_promises])
+    except Exception as exc:  # noqa: BLE001 -- a background trace; never fails the turn
+        logger.warning("promise_acts_failed corr=%s error=%s", correlation_id, exc)
+        logger.info("promise_ledger corr=%s outcome=failed reason=%s", correlation_id, type(exc).__name__)
+        return None
+
+
+# Draft-first display (spec L8). The relay queue item the governor's draft
+# preview becomes (services/orion-hub/scripts/harness_step_relay.py), and the
+# WebSocket frame type the browser renders as a provisional Orion message.
+# The frame carries the text under `draft_text`, never `llm_response`/`text`,
+# so a browser running older JS ignores it instead of rendering a second bubble.
+DRAFT_PREVIEW_ITEM_KIND = "draft_preview"
+DRAFT_PREVIEW_FRAME_TYPE = "draft_preview"
+
+
+def draft_preview_frame(item: Mapping[str, Any], *, correlation_id: str) -> dict[str, Any] | None:
+    text = item.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return {
+        "type": DRAFT_PREVIEW_FRAME_TYPE,
+        "correlation_id": correlation_id,
+        "draft_text": _with_overflow_hint(text) or text,
+    }
+
+
+def annotate_frames_after_draft(
+    frames: list[dict[str, Any]], *, shown_draft_text: str
+) -> dict[str, Any]:
+    """Tell the browser how the turn's outcome relates to the draft it shows.
+
+    Mutates the final / turn_error frames in place and returns a summary for
+    logging. `revised` is computed from the text actually shown versus the
+    text actually delivered, not from the governor's own flags, so it can only
+    claim a revision the person could see.
+    """
+    summary: dict[str, Any] = {"revised": False, "revised_reason": None, "outcome": "none"}
+    for frame in frames:
+        ftype = frame.get("type")
+        if ftype == "final":
+            final_text = str(frame.get("llm_response") or "")
+            revised = final_text.strip() != shown_draft_text.strip()
+            reason = None
+            if revised:
+                # A repair reason names the edit only when the repair ran; a skip reason
+                # (strain_only_not_repaired, #3618) never explains a changed text.
+                ran = frame.get("response_repair_ran") is not False
+                reason = str((ran and frame.get("response_repair_reason")) or "finalize_changed")
+            frame["replaces_draft"] = True
+            frame["revised"] = revised
+            frame["revised_reason"] = reason
+            summary = {"revised": revised, "revised_reason": reason, "outcome": "final"}
+        elif ftype in ("turn_error", "turn_deferred"):
+            frame["draft_shown"] = True
+            if summary["outcome"] == "none":
+                summary = {"revised": False, "revised_reason": None, "outcome": str(ftype)}
+    return summary
 
 
 async def run_unified_turn(
@@ -1869,10 +2421,28 @@ async def run_unified_turn(
     harness_step_relay: Any | None = None,
     client_meta: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Execute unified turn and emit WS frames."""
+    """Execute unified turn and emit WS frames.
+
+    With HUB_UNIFIED_DRAFT_FIRST_ENABLED (spec L8) the governor's pre-judge
+    draft is forwarded as a `draft_preview` frame the moment it arrives, and
+    the final frame is annotated (`replaces_draft`/`revised`/`revised_reason`)
+    so the browser swaps it in place. Logs `unified_turn_first_visible` and
+    `unified_turn_final_visible` (corr, elapsed_ms) as the before/after
+    measure, plus `unified_turn_revision` when the shown text changed.
+    """
+    from scripts.settings import settings as hub_settings
+
+    turn_started = time.monotonic()
+    draft_first = bool(getattr(hub_settings, "HUB_UNIFIED_DRAFT_FIRST_ENABLED", False)) and (
+        harness_step_relay is not None
+    )
+    shown_draft: dict[str, Any] = {}
     step_queue: asyncio.Queue | None = None
     drain_task: asyncio.Task | None = None
     cockpit_run_holder: dict[str, Any] = {}
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - turn_started) * 1000)
 
     async def _send_ws(frame: dict[str, Any]) -> None:
         outbound = frame
@@ -1894,11 +2464,26 @@ async def run_unified_turn(
                 )
 
     async def _emit_relay_frame(frame: dict[str, Any]) -> None:
+        if frame.get("kind") == DRAFT_PREVIEW_ITEM_KIND:
+            draft_frame = draft_preview_frame(frame, correlation_id=correlation_id) if draft_first else None
+            if draft_frame is None or shown_draft:
+                return
+            await _send_ws(draft_frame)
+            shown_draft["text"] = draft_frame["draft_text"]
+            shown_draft["elapsed_ms"] = _elapsed_ms()
+            logger.info(
+                "unified_turn_first_visible corr=%s kind=draft_preview elapsed_ms=%s chars=%s",
+                correlation_id,
+                shown_draft["elapsed_ms"],
+                len(shown_draft["text"]),
+            )
+            return
         if frame.get("kind") == "claude_step":
             step = frame.get("step")
             step_dict = step if isinstance(step, dict) else {}
             is_motor_boot = step_dict.get("_cockpit") == COCKPIT_MOTOR_BOOT_MARKER
-            if not is_motor_boot:
+            # Marker steps are cockpit records, not motor steps: never shown as a step in chat.
+            if not is_motor_boot and step_dict.get("_cockpit") != COCKPIT_WORKING_NOTES_MARKER:
                 await _send_ws(frame)
             try:
                 # Hub already recorded motor_boot pre-dispatch; ignore governor's
@@ -1945,6 +2530,8 @@ async def run_unified_turn(
             name=f"harness-steps-{correlation_id}",
         )
 
+    turn_exc: BaseException | None = None
+    frames: list[dict[str, Any]] = []
     try:
         frames = await execute_unified_turn(
             bus=bus,
@@ -1961,7 +2548,12 @@ async def run_unified_turn(
             cockpit_run_holder=cockpit_run_holder,
             utterance_origin="juniper",
             client_meta=client_meta,
+            draft_preview=draft_first,
         )
+    except Exception as exc:  # noqa: BLE001 -- re-raised below, after the drain flush
+        # Held until the step drain has flushed, so a draft still queued is
+        # sent before (not after) the error frame that settles it.
+        turn_exc = exc
     finally:
         if harness_step_relay is not None and step_queue is not None:
             drain_stop.set()
@@ -1995,8 +2587,48 @@ async def run_unified_turn(
             # arrived while RPC was returning still land in Soft HUD.
             harness_step_relay.unregister_queue(correlation_id, step_queue)
             harness_step_relay.forget(correlation_id)
+    if turn_exc is not None:
+        if shown_draft:
+            # Otherwise the browser's draft bubble would read "still being
+            # checked" forever: no final/turn_error ever names this turn.
+            with contextlib.suppress(Exception):
+                await _send_ws(
+                    {
+                        "type": "turn_error",
+                        "correlation_id": correlation_id,
+                        "phase": "hub",
+                        "error": "hub_turn_failed",
+                        "finalize_ran": False,
+                        "draft_shown": True,
+                    }
+                )
+        raise turn_exc
+    has_final = any(frame.get("type") == "final" for frame in frames)
+    if shown_draft:
+        draft_outcome = annotate_frames_after_draft(frames, shown_draft_text=str(shown_draft["text"]))
+        if draft_outcome["revised"]:
+            logger.info(
+                "unified_turn_revision corr=%s reason=%s draft_visible_ms=%s",
+                correlation_id,
+                draft_outcome["revised_reason"],
+                _elapsed_ms() - int(shown_draft["elapsed_ms"]),
+            )
+    elif has_final:
+        logger.info(
+            "unified_turn_first_visible corr=%s kind=final elapsed_ms=%s",
+            correlation_id,
+            _elapsed_ms(),
+        )
     for frame in frames:
         await _send_ws(frame)
+    if has_final:
+        logger.info(
+            "unified_turn_final_visible corr=%s elapsed_ms=%s draft_shown=%s revised=%s",
+            correlation_id,
+            _elapsed_ms(),
+            bool(shown_draft),
+            any(bool(frame.get("revised")) for frame in frames),
+        )
     try:
         run_dump = cockpit_run_holder.get("run")
         if isinstance(run_dump, dict) and any(frame.get("type") == "final" for frame in frames):

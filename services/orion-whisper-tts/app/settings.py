@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     # Identity
     service_name: str = Field("whisper-tts", env="SERVICE_NAME")
     service_version: str = Field("0.1.0", env="SERVICE_VERSION")
+    # Host this process runs on (root .env NODE_NAME, passed by docker-compose.yml).
+    node_name: str = Field("athena", env="NODE_NAME")
+    # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
+    # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+    heartbeat_interval_sec: float = Field(10.0, env="HEARTBEAT_INTERVAL_SEC")
 
     # Bus
     orion_bus_url: str = Field("redis://localhost:6379/0", env="ORION_BUS_URL")

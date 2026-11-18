@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 import threading
@@ -9,8 +10,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
-from urllib.parse import urlencode
-from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 from .identity_ask_cooldown import try_claim_identity_ask
@@ -24,6 +23,10 @@ from .perception_reader import (
     presence_fragment,
     presence_row_age_seconds,
 )
+from .cabinet_sound_reader import fetch_cabinet_sound_history
+from .office_sound_reader import fetch_office_sound
+from .camera_eyes import CAMERA_EYES_DEADLINE_SEC, build_senses, describe_camera, fetch_camera_eyes, senses_line, street_framing
+from .presence import companions_phrase, is_child, normalize_presence_context
 from .reverie_reader import fetch_recent_reverie_snippets
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
 from orion.curiosity.worldview import (
@@ -39,19 +42,22 @@ from orion.telemetry.cabinet_sensors import (
     compute_cabinet_pressures,
     extract_cabinet_measurements,
 )
+from orion.telemetry.ambient_audio import load_ambient_audio_snapshot, pcm16_to_dbfs
 from orion.telemetry.cabinet_snapshot_merge import (
     device_label_from_sources,
     load_merged_cabinet_sensors,
 )
+from orion.weather import openmeteo
 from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
     CabinetContextV1,
+    CameraSenseV1,
     ConversationPhaseContextV1,
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
     EnvironmentContextV1,
-    LabContextV1,
+    OfficeSoundContextV1,
     PerceptionContextV1,
     PlaceContextV1,
     PresenceContextV1,
@@ -72,6 +78,8 @@ from orion.schemas.situation import (
 
 
 _LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
+
 _SITUATION_CACHE: dict[str, tuple[datetime, SituationBriefV1, SituationPromptFragmentV1]] = {}
 _WEATHER_CACHE: dict[str, tuple[datetime, EnvironmentContextV1]] = {}
 _RUNTIME_CACHE: dict[str, tuple[datetime, RuntimeContextV1]] = {}
@@ -176,13 +184,20 @@ class SituationSettings:
     high_wind_mph_threshold: int
     hot_car_temp_f_threshold: int
     agenda_enabled: bool
-    lab_enabled: bool
-    lab_provider: str
     cabinet_enabled: bool
     cabinet_ttl_seconds: int
     cabinet_sensors_path: str
     cabinet_sensors_b_path: str
     cabinet_stale_after_sec: float
+    # Cabinet USB mic: live snapshot file + the biometrics node whose stored
+    # readings give the 24 h "usual" band. Empty path = no mic for this
+    # process (only Hub mounts /run/orion-audio).
+    ambient_audio_path: str
+    ambient_audio_stale_after_sec: float
+    ambient_audio_history_node: str
+    # Office sound meter (dBA, office_env_sample). Empty node = off.
+    office_sound_node: str
+    office_sound_stale_after_sec: float
     perception_enabled: bool
     perception_max_age_seconds: int
     perception_stream_id: str
@@ -208,9 +223,15 @@ class SituationSettings:
     runtime_route: str
     runtime_ttl_seconds: int
     runtime_probe_timeout_sec: float
-    llm_gateway_base_url: str
     default_requestor: str
     presence_persist_allowed: bool
+    home_location: str | None = None
+    physical_location: str | None = None
+
+
+def _clean_optional_str(raw: Any) -> str | None:
+    text = str(raw).strip() if raw is not None else ""
+    return text or None
 
 
 def _split_stream_ids(raw: Any) -> list[str]:
@@ -241,10 +262,12 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
             getattr(settings, "orion_situation_prompt_max_chars", _DEFAULT_PROMPT_MAX_CHARS)
         ),
         timezone=str(getattr(settings, "orion_situation_timezone", "America/Denver")),
-        location_label=str(getattr(settings, "orion_situation_location_label", "Unknown")),
+        location_label=str(getattr(settings, "orion_situation_location_label", None) or "Unknown").strip() or "Unknown",
         locality=getattr(settings, "orion_situation_locality", None),
         region=getattr(settings, "orion_situation_region", None),
         country=getattr(settings, "orion_situation_country", None),
+        home_location=_clean_optional_str(getattr(settings, "orion_situation_home_location", None)),
+        physical_location=_clean_optional_str(getattr(settings, "orion_situation_physical_location", None)),
         location_precision=str(getattr(settings, "orion_situation_location_precision", "city")),
         weather_enabled=bool(getattr(settings, "orion_situation_weather_enabled", True)),
         weather_provider=str(getattr(settings, "orion_situation_weather_provider", "stub")),
@@ -256,7 +279,6 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         high_wind_mph_threshold=int(getattr(settings, "orion_situation_high_wind_mph_threshold", 25)),
         hot_car_temp_f_threshold=int(getattr(settings, "orion_situation_hot_car_temp_f_threshold", 80)),
         agenda_enabled=bool(getattr(settings, "orion_situation_agenda_enabled", False)),
-        lab_enabled=bool(getattr(settings, "orion_situation_lab_context_enabled", True)),
         # Default OFF: this puts camera-derived content about a private home
         # into the prompt, so it is opt-in rather than opt-out.
         perception_enabled=bool(
@@ -288,7 +310,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         street_stream_ids=_split_stream_ids(
             getattr(settings, "orion_situation_street_stream_ids", None)
             if getattr(settings, "orion_situation_street_stream_ids", None) is not None
-            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "walkway")
+            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway,cam0")
         ),
         # 1200s (20min): see identity_ask_cooldown.py's module docstring for
         # the reasoning -- long enough that "ask once per sit-down" is the
@@ -371,8 +393,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         reverie_ttl_seconds=int(
             getattr(settings, "orion_situation_reverie_ttl_seconds", 180)
         ),
-        lab_provider=str(getattr(settings, "orion_situation_lab_provider", "stub")),
-        # Conservative generic default (False), same as lab/perception above
+        # Conservative generic default (False), same as perception above
         # -- the file-based read below only works where `cabinet_sensors_
         # path` is actually mounted (orion-hub's `network_mode: host` +
         # `/run/orion-sensors:ro` bind), which
@@ -396,14 +417,24 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         cabinet_stale_after_sec=float(
             getattr(settings, "orion_situation_cabinet_stale_after_sec", 10.0)
         ),
+        ambient_audio_path=str(getattr(settings, "orion_situation_ambient_audio_path", "") or ""),
+        ambient_audio_stale_after_sec=float(
+            getattr(settings, "orion_situation_ambient_audio_stale_after_sec", 5.0)
+        ),
+        ambient_audio_history_node=str(
+            getattr(settings, "orion_situation_ambient_audio_history_node", "athena") or "athena"
+        ),
+        # Off ("") by default like cabinet; Hub turns it on with its own
+        # OFFICE_ENV_NODE in `hub_settings_to_runtime_namespace`.
+        office_sound_node=str(getattr(settings, "orion_situation_office_sound_node", "") or ""),
+        office_sound_stale_after_sec=float(
+            getattr(settings, "orion_situation_office_sound_stale_after_sec", 90.0)
+        ),
         runtime_enabled=bool(getattr(settings, "orion_situation_runtime_enabled", True)),
         runtime_route=str(getattr(settings, "orion_situation_runtime_route", "chat")),
         runtime_ttl_seconds=int(getattr(settings, "orion_situation_runtime_ttl_seconds", 120)),
         runtime_probe_timeout_sec=float(
             getattr(settings, "orion_situation_runtime_probe_timeout_sec", 2.0)
-        ),
-        llm_gateway_base_url=str(
-            getattr(settings, "cortex_exec_llm_gateway_url", "http://llm-gateway:8210")
         ),
         default_requestor=str(getattr(settings, "orion_presence_default_requestor", "Juniper")),
         presence_persist_allowed=bool(getattr(settings, "orion_presence_persist_allowed", False)),
@@ -426,22 +457,35 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     with no visible error. This bridges the two conventions explicitly
     rather than making `settings_from_runtime` guess casings.
 
-    Fields orion-hub does not yet configure (location label/locality/
-    region/country, lab, perception) are turned off here on purpose, not
-    left to `settings_from_runtime`'s own defaults to silently decide: hub
-    has no verified perception/lab runtime dependency yet (no DSN/HTTP
-    egress vetted for its event loop), so wiring those is a follow-up, not
-    an accident of a missing attr. Weather and the runtime probe (which
+    Place fields (location label/locality/region/country/home/physical) are
+    read from orion-hub's own ORION_SITUATION_* settings: before 2026-10-05
+    they were hardcoded "Unknown", so the unified turn carried a timezone
+    but no place and Orion resolved "the camera outside" against a travel
+    city in recent chat (correlation 5063fb71).
+
+    Perception (2026-10-07) IS enabled here now, via Hub's own
+    ORION_SITUATION_PERCEPTION_ENABLED (default ON, Juniper's standing flag
+    rule). It was a literal False while Hub had no vetted DB path for its
+    event loop; every perception read now runs in `asyncio.to_thread`
+    (`_build_room_perception_context`, `_resolve_presence_and_identity_ask`,
+    `_build_street_fields`), and Hub already holds POSTGRES_URI. It is the
+    same builder cortex-exec runs -- not a fork. Privacy: this puts
+    camera-derived text about the home into Hub chat prompts (room
+    narrative, presence fragment, street summary, identity-ask caution);
+    the kill switch is ORION_SITUATION_PERCEPTION_ENABLED=false.
+
+    Weather and the runtime probe (which
     model is currently serving `chat`) ARE enabled -- weather now reads
     orion-hub's own ORION_SITUATION_WEATHER_* fields (added alongside this
     adapter's weather wiring; same provider/coordinates/TTL as cortex-exec's
-    already-configured values), and the runtime probe reuses
-    `HUB_LLM_GATEWAY_URL`, a host orion-hub already calls today (see
-    `/api/llm-routes`). Both `_build_environment_context` and
-    `_build_runtime_context` await their blocking `urlopen` calls via
-    `asyncio.to_thread` so a cache-miss fetch cannot stall the event loop.
+    already-configured values), and the runtime probe reads GPU pool state
+    over the bus RPC orion-hub binds for it (`bind_situation_state_buses`,
+    GPU pool stage 6.3; it no longer calls the gateway's GET /routes).
+    `_build_environment_context` awaits its blocking `urlopen` via
+    `asyncio.to_thread`, and the runtime read is an async RPC, so a cache-miss
+    fetch cannot stall the event loop.
 
-    Affect (2026-08-25) IS enabled here, unlike perception/lab -- orion-hub
+    Affect (2026-08-25) IS enabled here -- orion-hub
     is the MOST verified host for it, not the least: Hub owns the capture
     loop that produces the read in the first place
     (`services/orion-hub/scripts/vision_affect_ambient.py`) and already
@@ -467,7 +511,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     no new sensor-path keys, just a new `ORION_SITUATION_CABINET_*` on/off +
     TTL pair. This is Orion's own physical housing, not private-home
     content, same "no new dependency, no privacy concern" shape as affect/
-    curiosity/reverie above -- unlike lab/perception, which stay off.
+    curiosity/reverie above.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
@@ -479,11 +523,13 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
             getattr(cfg, "ORION_SITUATION_PROMPT_MAX_CHARS", _DEFAULT_PROMPT_MAX_CHARS)
         ),
         orion_situation_timezone=str(getattr(cfg, "ORION_SITUATION_TIMEZONE", "America/Denver")),
-        orion_situation_location_label="Unknown",
-        orion_situation_locality=None,
-        orion_situation_region=None,
-        orion_situation_country=None,
-        orion_situation_location_precision="city",
+        orion_situation_location_label=str(getattr(cfg, "ORION_SITUATION_LOCATION_LABEL", None) or "Unknown"),
+        orion_situation_locality=getattr(cfg, "ORION_SITUATION_LOCALITY", None),
+        orion_situation_region=getattr(cfg, "ORION_SITUATION_REGION", None),
+        orion_situation_country=getattr(cfg, "ORION_SITUATION_COUNTRY", None),
+        orion_situation_home_location=getattr(cfg, "ORION_SITUATION_HOME_LOCATION", None),
+        orion_situation_physical_location=getattr(cfg, "ORION_SITUATION_PHYSICAL_LOCATION", None),
+        orion_situation_location_precision=str(getattr(cfg, "ORION_SITUATION_LOCATION_PRECISION", "city")),
         orion_situation_weather_enabled=bool(getattr(cfg, "ORION_SITUATION_WEATHER_ENABLED", True)),
         orion_situation_weather_provider=str(getattr(cfg, "ORION_SITUATION_WEATHER_PROVIDER", "stub")),
         orion_situation_weather_lat=getattr(cfg, "ORION_SITUATION_WEATHER_LAT", None),
@@ -497,8 +543,6 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_high_wind_mph_threshold=25,
         orion_situation_hot_car_temp_f_threshold=80,
         orion_situation_agenda_enabled=False,
-        orion_situation_lab_context_enabled=False,
-        orion_situation_lab_provider="stub",
         # 2026-08-31, same "no private-home content" call as curiosity/
         # reverie: default ON. Reuses Hub's EXISTING CABINET_SENSORS_PATH/
         # CABINET_SENSORS_B_PATH/CABINET_SENSORS_STALE_AFTER_SEC (already
@@ -523,16 +567,50 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_cabinet_stale_after_sec=float(
             getattr(cfg, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0)
         ),
-        orion_situation_perception_enabled=False,
-        orion_situation_perception_max_age_seconds=900,
+        # Cabinet mic: Hub's EXISTING ambient-audio keys (already used by
+        # cabinet_ambient_routes.py), same no-new-keys reuse as the sensors.
+        orion_situation_ambient_audio_path=str(
+            getattr(cfg, "AMBIENT_AUDIO_PATH", "/run/orion-audio/latest.json")
+        ),
+        orion_situation_ambient_audio_stale_after_sec=float(
+            getattr(cfg, "AMBIENT_AUDIO_STALE_AFTER_SEC", 5.0)
+        ),
+        orion_situation_ambient_audio_history_node=str(
+            getattr(cfg, "CABINET_AMBIENT_HISTORY_NODE", "athena")
+        ),
+        # Office sound meter: Hub's EXISTING office-env keys (already used by
+        # office_env_routes.py), no new keys.
+        orion_situation_office_sound_node=str(getattr(cfg, "OFFICE_ENV_NODE", "pan-1")),
+        orion_situation_office_sound_stale_after_sec=float(
+            getattr(cfg, "OFFICE_ENV_STALE_AFTER_SEC", 90.0)
+        ),
+        # 2026-10-07: was a literal False. Reads Hub's own
+        # ORION_SITUATION_PERCEPTION_* keys (same names and defaults as
+        # cortex-exec's) into the SAME shared builder cortex-exec uses --
+        # no forked perception path. Default ON per Juniper's standing flag
+        # rule; ORION_SITUATION_PERCEPTION_ENABLED=false is the kill switch.
+        orion_situation_perception_enabled=bool(
+            getattr(cfg, "ORION_SITUATION_PERCEPTION_ENABLED", True)
+        ),
+        orion_situation_perception_max_age_seconds=int(
+            getattr(cfg, "ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS", 900)
+        ),
         orion_situation_perception_stream_id="cam0",
+        orion_situation_perception_stream_ids=getattr(
+            cfg, "ORION_SITUATION_PERCEPTION_STREAM_IDS", "carbon,cam0"
+        ),
+        # Plain getattr, no `or` fallback: an explicit "" disables the
+        # Street line (settings_from_runtime's own contract).
+        orion_situation_street_stream_ids=getattr(
+            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway,cam0"
+        ),
         orion_situation_identity_ask_cooldown_seconds=1200,
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
         orion_situation_affect_max_age_seconds=int(
             getattr(cfg, "ORION_SITUATION_AFFECT_MAX_AGE_SECONDS", 300)
         ),
-        # 2026-08-30, Juniper's explicit call: default ON, unlike perception/
-        # lab above -- carries no private-home content. Reuses Hub's
+        # 2026-08-30, Juniper's explicit call: default ON, unlike perception
+        # above -- carries no private-home content. Reuses Hub's
         # EXISTING HUB_CURIOSITY_GRAPH_* connection config (already asserted
         # against `orion_worldview` by curiosity_investigation.py) rather
         # than a second, parallel set of graph keys.
@@ -564,7 +642,6 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_runtime_route="chat",
         orion_situation_runtime_ttl_seconds=120,
         orion_situation_runtime_probe_timeout_sec=2.0,
-        cortex_exec_llm_gateway_url=str(getattr(cfg, "HUB_LLM_GATEWAY_URL", "http://127.0.0.1:8210")),
         orion_presence_default_requestor=str(getattr(cfg, "ORION_PRESENCE_DEFAULT_REQUESTOR", "Juniper")),
         orion_presence_persist_allowed=bool(getattr(cfg, "ORION_PRESENCE_PERSIST_ALLOWED", False)),
     )
@@ -598,29 +675,19 @@ def _presence_cache_fingerprint(ctx: dict[str, Any], cfg: SituationSettings) -> 
     they carry microsecond precision and no real caller ever sets them on
     genuine input, so there is no meaningful signal to preserve there.
     """
-    raw = ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else {}
-    companions = raw.get("companions") if isinstance(raw.get("companions"), list) else []
-    normalized_companions = [
-        {
-            "display_name": item.get("display_name"),
-            "relationship": item.get("relationship"),
-            "role": item.get("role"),
-            "age_band": item.get("age_band"),
-        }
-        for item in companions[:8]
-        if isinstance(item, dict) and item.get("display_name")
-    ]
-    requestor = raw.get("requestor") if isinstance(raw.get("requestor"), dict) else {}
-    # Same default logic as _presence_from_ctx below, field for field.
-    audience_mode = str(raw.get("audience_mode") or ("solo" if not normalized_companions else "mixed_group"))
+    # Same normalizer as _presence_from_ctx, so the two agree by construction.
+    presence = normalize_presence_context(ctx.get("presence_context"), default_requestor=cfg.default_requestor)
     fingerprint = {
-        "audience_mode": audience_mode,
-        "companions": normalized_companions,
+        "audience_mode": presence["audience_mode"],
+        "companions": [
+            {k: c[k] for k in ("display_name", "relationship", "role", "age_band", "context_note")}
+            for c in presence["companions"]
+        ],
         "requestor": {
-            "display_name": str(requestor.get("display_name") or cfg.default_requestor),
-            "relationship_to_orion": str(requestor.get("relationship_to_orion") or "primary_operator"),
+            "display_name": presence["requestor"]["display_name"],
+            "relationship_to_orion": presence["requestor"]["relationship_to_orion"],
         },
-        "privacy_mode": str(raw.get("privacy_mode") or "session_only"),
+        "privacy_mode": presence["privacy_mode"],
     }
     return json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
 
@@ -672,14 +739,119 @@ def _records_user_turn(ctx: dict[str, Any]) -> bool:
     return ctx.get("record_user_turn", True) is not False
 
 
-async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+def _phase_stamp_from_cached_brief(brief: Any, ctx: dict[str, Any], now_utc: datetime) -> dict[str, Any]:
+    """Re-read the wall clock for a turn served from the situation cache.
+
+    A cache hit skips ``_build_conversation_phase``, so the cached brief's
+    phase is the phase of the turn that BUILT the entry, up to ``ttl_seconds``
+    (300 s live) ago. Stamping that onto this turn would be wrong in the way
+    that matters most for episode boundaries: the morning's first turn reads
+    ``next_day``, and Juniper's second message four minutes later would
+    inherit ``next_day`` and look like a new conversation.
+
+    The cache key splits user turns from Orion-authored turns, so the last
+    user turn is recoverable without another Redis read:
+    - a user-turn entry was built by a user turn that wrote
+      ``last_user_turn_at = generated_at``;
+    - a no-user-turn entry only read the clock, so its own
+      ``last_user_turn_at`` is still the last user turn.
+    """
+    phase = brief.conversation_phase
+    if _records_user_turn(ctx):
+        last_user = brief.generated_at
+    else:
+        last_user = phase.last_user_turn_at
+    return conversation_phase_stamp(
+        classify_conversation_phase(last_user, now_utc, brief.time.timezone),
+        source="situation_cache",
+    )
+
+
+def _cached_percept_outlived_gate(brief: Any, cached_age: float, cfg: SituationSettings) -> bool:
+    """True when a cached brief's room percept has aged past the staleness
+    gate since it was built (review finding, 2026-10-07).
+
+    Without this the effective bound was max_age + ttl: a percept 899 s old
+    at build time kept rendering "seen 15 min ago" for another 300 s of cache
+    hits, the exact stale-scene-as-current failure the gate exists to stop.
+    A miss here just rebuilds, which re-applies the gate fresh.
+
+    Same rule for the cabinet mic (review finding, 2026-10-09): its 5 s
+    staleness gate is meaningless if a 300 s brief cache replays "heard just
+    now" -- fans can spin up between turns.
+    """
+    try:
+        perception = brief.perception
+        if (
+            perception.available
+            and perception.observation_age_seconds is not None
+            and perception.observation_age_seconds + cached_age > cfg.perception_max_age_seconds
+        ):
+            return True
+        # A camera called "live" in a cached brief must still be inside its
+        # window, or "newest within the last 15 min" outlives its truth.
+        for cam in perception.cameras:
+            if (
+                cam.status == "live"
+                and cam.last_frame_age_seconds is not None
+                and cam.last_frame_age_seconds + cached_age > cam.live_window_seconds
+            ):
+                return True
+        cabinet = brief.cabinet
+        if (
+            cabinet.sound_available
+            and cabinet.sound_age_seconds is not None
+            and cabinet.sound_age_seconds + cached_age > cfg.ambient_audio_stale_after_sec
+        ):
+            return True
+        # Office sound meter: a cached "it's 45 dBA" must not outlive the
+        # meter's own freshness window.
+        office = getattr(brief, "office_sound", None)
+        return bool(
+            office is not None
+            and office.available
+            and office.age_seconds is not None
+            and office.age_seconds + cached_age > cfg.office_sound_stale_after_sec
+        )
+    except Exception:  # noqa: BLE001 -- a malformed cache entry is just a miss
+        return True
+
+
+async def build_situation_for_ctx(
+    ctx: dict[str, Any],
+    runtime_settings: Any,
+    *,
+    phase_stamp_out: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build (or serve from cache) the situation brief and its prompt fragment.
+
+    ``phase_stamp_out``: optional dict the caller owns. When given, it is filled
+    with this turn's conversation-phase stamp (see ``conversation_phase_stamp``),
+    correct on both a fresh build and a cache hit. The Hub persists it on the
+    chat turn as ``spark_meta.conversation_phase``.
+    """
     cfg = settings_from_runtime(runtime_settings)
     if not cfg.enabled:
         return {}, {}
     cache_key = _situation_cache_key(ctx, cfg)
     with _LOCK:
         cached = _SITUATION_CACHE.get(cache_key)
-        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.ttl_seconds:
+        cached_age = (
+            (datetime.now(timezone.utc) - cached[0]).total_seconds() if cached else None
+        )
+        if (
+            cached
+            and cached_age is not None
+            and cached_age < cfg.ttl_seconds
+            and not _cached_percept_outlived_gate(cached[1], cached_age, cfg)
+        ):
+            if phase_stamp_out is not None:
+                try:
+                    phase_stamp_out.update(
+                        _phase_stamp_from_cached_brief(cached[1], ctx, datetime.now(timezone.utc))
+                    )
+                except Exception:
+                    phase_stamp_out.clear()
             return cached[1].model_dump(mode="json"), cached[2].model_dump(mode="json")
 
     now = datetime.now(timezone.utc)
@@ -687,12 +859,30 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     presence = _presence_from_ctx(ctx, cfg, now)
     time_ctx = _build_time_context(cfg, diagnostics)
     phase_ctx = await _build_conversation_phase(ctx, time_ctx, now)
+    if phase_stamp_out is not None:
+        phase_stamp_out.update(
+            conversation_phase_stamp(
+                {
+                    "phase_change": phase_ctx.phase_change,
+                    "delta_user_seconds": phase_ctx.time_since_last_user_turn_seconds,
+                    "crossed_day": phase_ctx.crossed_day_boundary,
+                },
+                source="situation_build",
+            )
+        )
     place_ctx = _build_place_context(cfg)
     env_ctx = await _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
-    lab_ctx = _build_lab_context(cfg)
     cabinet_ctx = await _build_cabinet_context(cfg, diagnostics)
-    perception_ctx = await _build_perception_context(cfg, diagnostics)
+    office_sound_ctx = await _build_office_sound_context(cfg, diagnostics)
+    # Only a turn Juniper actually took may spend the shared identity-ask
+    # cooldown (review finding, 2026-10-07): Hub also builds briefs for turns
+    # Orion authors itself (endogenous outreach), and claiming the slot there
+    # would open an unprompted message with "is that you?" and burn the ask
+    # her next real turn should get.
+    perception_ctx = await _build_perception_context(
+        cfg, diagnostics, allow_identity_ask=_records_user_turn(ctx)
+    )
     affect_ctx = await _build_affect_context(cfg, diagnostics)
     curiosity_ctx = await _build_curiosity_context(cfg, diagnostics)
     reverie_ctx = await _build_reverie_context(cfg, diagnostics)
@@ -700,7 +890,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
         cfg, diagnostics
     )
     surface_ctx = _build_surface_context(ctx)
-    affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
+    affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, surface_ctx, time_ctx)
     diagnostics.relevance_reasons = [a.kind for a in affordances if a.trigger_relevance == "active"]
 
     brief = SituationBriefV1(
@@ -717,6 +907,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
             "reverie": reverie_ctx.source,
             "runtime": runtime_ctx.source,
             "cabinet": cabinet_ctx.source,
+            "office_sound": "ok" if office_sound_ctx.available else "unavailable",
         },
         requestor=presence.requestor,
         presence=presence,
@@ -725,8 +916,8 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
         place=place_ctx,
         environment=env_ctx,
         agenda=agenda_ctx,
-        lab=lab_ctx,
         cabinet=cabinet_ctx,
+        office_sound=office_sound_ctx,
         perception=perception_ctx,
         affect=affect_ctx,
         curiosity=curiosity_ctx,
@@ -767,34 +958,11 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
 
 
 def _presence_from_ctx(ctx: dict[str, Any], cfg: SituationSettings, now: datetime) -> PresenceContextV1:
-    raw = ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else {}
-    requestor = RequestorContextV1(
-        display_name=str((raw.get("requestor") or {}).get("display_name") or cfg.default_requestor),
-        relationship_to_orion=str((raw.get("requestor") or {}).get("relationship_to_orion") or "primary_operator"),
-        source=str((raw.get("requestor") or {}).get("source") or "hub_manual"),
-        confidence=str((raw.get("requestor") or {}).get("confidence") or "medium"),
-    )
-    companions = raw.get("companions") if isinstance(raw.get("companions"), list) else []
-    normalized_companions = []
-    for item in companions[:8]:
-        if not isinstance(item, dict):
-            continue
-        if not item.get("display_name"):
-            continue
-        normalized_companions.append(item)
-    audience_mode = str(raw.get("audience_mode") or ("solo" if not normalized_companions else "mixed_group"))
-    return PresenceContextV1(
-        requestor=requestor,
-        companions=normalized_companions,
-        audience_mode=audience_mode,  # type: ignore[arg-type]
-        submitted_at=now,
-        expires_at=now + timedelta(hours=4),
-        source=str(raw.get("source") or "default"),
-        persist_to_memory=bool(raw.get("persist_to_memory", False) and cfg.presence_persist_allowed),
-        privacy_mode=str(raw.get("privacy_mode") or "session_only"),  # type: ignore[arg-type]
-        notes=str(raw.get("notes")) if raw.get("notes") else None,
-    )
-
+    # Normalized first: a hand-typed bad value used to raise here and drop the
+    # whole situation brief (corr 21c8a610, 2026-10-14). See presence.py.
+    presence = normalize_presence_context(ctx.get("presence_context"), default_requestor=cfg.default_requestor)
+    presence["persist_to_memory"] = presence["persist_to_memory"] and cfg.presence_persist_allowed
+    return PresenceContextV1(**presence, submitted_at=now, expires_at=now + timedelta(hours=4))
 
 def _build_time_context(cfg: SituationSettings, diagnostics: SituationDiagnosticsV1) -> TimeContextV1:
     tz = ZoneInfo(cfg.timezone)
@@ -872,21 +1040,30 @@ def _season_label(month: int) -> str:
     return "autumn"
 
 
-async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
-    session_id = str(ctx.get("session_id") or "global")
-    state = await read_session_turn_state(session_id)
-    last_user = state.last_user_turn_at
-    last_orion = state.last_orion_turn_at
-    delta_user = int((now_utc - last_user).total_seconds()) if last_user else None
+def classify_conversation_phase(
+    last_user_turn_at: datetime | None,
+    now_utc: datetime,
+    tz_name: str,
+) -> dict[str, Any]:
+    """The conversation wall clock: bucket the time since Juniper's last turn.
+
+    Pure function, shared by the live situation build and by the
+    ``conversation_phase`` stamp persisted on each chat turn (memory episode
+    boundary Fix 1), so both read the same clock with the same buckets.
+    Returns phase_change, continuity_mode, topic_staleness_risk,
+    response_adjustments, crossed_day and delta_user_seconds.
+    """
+    delta_user = int((now_utc - last_user_turn_at).total_seconds()) if last_user_turn_at else None
     phase = "unknown"
     continuity = "continue_directly"
     risk = "none"
     adjustments: list[str] = []
     crossed_day = False
-    if last_user:
-        crossed_day = last_user.astimezone(ZoneInfo(time_ctx.timezone)).date() != datetime.now(
-            ZoneInfo(time_ctx.timezone)
-        ).date()
+    days_crossed = 0
+    if last_user_turn_at:
+        tz = ZoneInfo(tz_name)
+        days_crossed = (now_utc.astimezone(tz).date() - last_user_turn_at.astimezone(tz).date()).days
+        crossed_day = days_crossed != 0
         if delta_user is not None and delta_user < 120:
             phase = "same_breath"
         elif delta_user < 20 * 60:
@@ -895,21 +1072,94 @@ async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1
             phase = "resumed_thread"
             continuity = "lightly_resume"
             risk = "low"
-        elif delta_user < 12 * 3600:
+        # long_gap runs to 48 h. It used to stop at 12 h, so every 12-48 h gap
+        # (the usual "talk again the next evening") fell through as "unknown"
+        # with continuity=continue_directly, and the crossed_day override
+        # below skips "unknown". Live 2026-10-20: a 45 h gap told the motor to
+        # continue directly, and Orion said "hope Lagoon was magical today"
+        # about a Lagoon day two days earlier.
+        elif delta_user < 48 * 3600:
             phase = "long_gap"
             continuity = "reorient"
             risk = "medium"
             adjustments.append("Reorient before acting on stale operational context.")
-        elif delta_user > 48 * 3600:
+        else:
             phase = "stale_thread"
             continuity = "revalidate_context"
             risk = "high"
             adjustments.append("Revalidate volatile assumptions and preflight checks.")
-        if crossed_day and phase not in {"stale_thread", "unknown"}:
+        # Exactly one local midnight: a 33 h Sat-night -> Mon-morning gap is
+        # not "next day", so it stays long_gap.
+        if days_crossed == 1 and phase not in {"stale_thread", "unknown"}:
             phase = "next_day"
             continuity = "reorient"
             risk = "medium"
             adjustments.append("Crossed day boundary; lightly re-anchor timeline.")
+    return {
+        "phase_change": phase,
+        "continuity_mode": continuity,
+        "topic_staleness_risk": risk,
+        "response_adjustments": adjustments,
+        "crossed_day": crossed_day,
+        "delta_user_seconds": delta_user,
+    }
+
+
+def conversation_phase_stamp(
+    phase: dict[str, Any], *, source: str
+) -> dict[str, Any]:
+    """The persisted per-turn form: ``{phase_change, delta_user_seconds, crossed_day, source}``.
+
+    ``source`` says how the stamp was obtained (``situation_build``,
+    ``situation_cache``, ``session_state_read``) so a reader can tell a fresh
+    clock read from a reconstructed one.
+    """
+    return {
+        "phase_change": str(phase.get("phase_change") or "unknown"),
+        "delta_user_seconds": phase.get("delta_user_seconds"),
+        "crossed_day": bool(phase.get("crossed_day")),
+        "source": source,
+    }
+
+
+async def read_conversation_phase_stamp(
+    session_id: str | None,
+    *,
+    tz_name: str,
+    now_utc: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Read-only wall-clock stamp for a turn that does not build a situation brief.
+
+    Used for turns Juniper did not author through the unified lane: Orion's
+    unprompted outreach and legacy-lane workflow commands. Never writes the
+    session clock (same rule as ``_records_user_turn``). Returns None when the
+    session state cannot be read, so a caller never persists a guessed phase.
+    """
+    try:
+        state = await read_session_turn_state(str(session_id or "global"))
+    except Exception:
+        return None
+    if not getattr(state, "ok", False):
+        return None
+    now = now_utc or datetime.now(timezone.utc)
+    return conversation_phase_stamp(
+        classify_conversation_phase(state.last_user_turn_at, now, tz_name),
+        source="session_state_read",
+    )
+
+
+async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
+    session_id = str(ctx.get("session_id") or "global")
+    state = await read_session_turn_state(session_id)
+    last_user = state.last_user_turn_at
+    last_orion = state.last_orion_turn_at
+    clock = classify_conversation_phase(last_user, now_utc, time_ctx.timezone)
+    delta_user = clock["delta_user_seconds"]
+    phase = clock["phase_change"]
+    continuity = clock["continuity_mode"]
+    risk = clock["topic_staleness_risk"]
+    adjustments = list(clock["response_adjustments"])
+    crossed_day = bool(clock["crossed_day"])
     out = ConversationPhaseContextV1(
         last_user_turn_at=last_user,
         last_orion_turn_at=last_orion,
@@ -962,6 +1212,8 @@ def _build_place_context(cfg: SituationSettings) -> PlaceContextV1:
         locality=cfg.locality,
         region=cfg.region,
         country=cfg.country,
+        home_location=cfg.home_location,
+        physical_location=cfg.physical_location,
         timezone=cfg.timezone,
         precision=cfg.location_precision,  # type: ignore[arg-type]
         source="configured_home" if cfg.location_label != "Unknown" else "unknown",
@@ -1002,25 +1254,21 @@ def _fetch_weather(cfg: SituationSettings) -> EnvironmentContextV1:
         return EnvironmentContextV1(available=False, source=provider)
     if provider != "openmeteo" or cfg.weather_lat is None or cfg.weather_lon is None:
         return EnvironmentContextV1(available=False, source="misconfigured")
-    params = urlencode(
-        {
-            "latitude": cfg.weather_lat,
-            "longitude": cfg.weather_lon,
-            "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m",
-            "hourly": "precipitation_probability,temperature_2m,wind_speed_10m",
-            "forecast_days": 2,
-            "temperature_unit": "fahrenheit",
-            "wind_speed_unit": "mph",
-            "timezone": "auto",
-        }
+    payload = openmeteo.forecast(
+        cfg.weather_lat, cfg.weather_lon,
+        current=("temperature_2m", "apparent_temperature", "weather_code", "wind_speed_10m", "wind_gusts_10m"),
+        hourly=("precipitation_probability", "temperature_2m", "wind_speed_10m"),
+        forecast_days=2, tz="auto", timeout=4,
     )
-    with urlopen(f"https://api.open-meteo.com/v1/forecast?{params}", timeout=4) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
     current = payload.get("current") or {}
     hourly = payload.get("hourly") or {}
-    probs = hourly.get("precipitation_probability") or []
-    temps = hourly.get("temperature_2m") or []
-    winds = hourly.get("wind_speed_10m") or []
+    # Hourly arrays start at local midnight today, not now -- without this
+    # offset "next 6h" read 00:00-05:00 of the current day (seen live
+    # 2026-10-27: a 21:00 turn reported the overnight low as its window).
+    start = _current_hour_index(hourly.get("time") or [], current.get("time"))
+    probs = (hourly.get("precipitation_probability") or [])[start:]
+    temps = (hourly.get("temperature_2m") or [])[start:]
+    winds = (hourly.get("wind_speed_10m") or [])[start:]
     flag = WeatherPracticalFlagsV1(
         take_umbrella=_window_max(probs, 6) >= cfg.umbrella_prob_threshold,
         take_jacket=(current.get("temperature_2m") or 999) <= cfg.jacket_temp_f_threshold,
@@ -1070,6 +1318,19 @@ def _fetch_weather(cfg: SituationSettings) -> EnvironmentContextV1:
     return out
 
 
+def _current_hour_index(times: list[Any], current_time: Any) -> int:
+    """Index of the hourly slot containing `current_time` (both local ISO
+    strings from the same Open-Meteo response, e.g. "2026-10-26T21:15" vs
+    "2026-10-26T21:00"); 0 when either is missing."""
+    hour = str(current_time or "")[:13]
+    if not hour:
+        return 0
+    for i, t in enumerate(times):
+        if str(t)[:13] >= hour:
+            return i
+    return 0
+
+
 def _window_max(values: list[Any], count: int) -> int:
     nums = [_to_float(v) for v in values[:count] if _to_float(v) is not None]
     return int(max(nums)) if nums else 0
@@ -1090,10 +1351,6 @@ def _to_float(value: Any) -> float | None:
     return out
 
 
-def _build_lab_context(cfg: SituationSettings) -> LabContextV1:
-    if not cfg.lab_enabled:
-        return LabContextV1(available=False, source="disabled")
-    return LabContextV1(available=False, source=cfg.lab_provider, thermal_risk="unknown", power_risk="unknown")
 
 
 def _parse_cabinet_received_at(value: str) -> Optional[datetime]:
@@ -1112,7 +1369,66 @@ def _parse_cabinet_received_at(value: str) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _cabinet_sound_fields(cfg: SituationSettings) -> dict[str, Any]:
+    """Cabinet mic loudness for `CabinetContextV1`'s `sound_*` fields, or {}
+    when there is no fresh mic reading.
+
+    Live level comes from the host reader's snapshot file (same loader and
+    staleness rule orion-biometrics uses). "Usual" comes from the last 24 h
+    of stored readings (`cabinet_sound_reader`); if that history is
+    unavailable the live level is still reported, just without a band.
+    """
+    if not cfg.ambient_audio_path:
+        return {}
+    snap = load_ambient_audio_snapshot(
+        cfg.ambient_audio_path, stale_after_sec=cfg.ambient_audio_stale_after_sec
+    )
+    if snap is None or snap.get("stale"):
+        return {}
+    received_dt = _parse_cabinet_received_at(snap.get("received_at"))
+    rms = float(snap["rms"])
+    fields: dict[str, Any] = {
+        "sound_available": True,
+        "sound_age_seconds": float(percept_age_seconds(received_dt)) if received_dt else None,
+        "sound_dbfs": round(pcm16_to_dbfs(rms), 1),
+        "sound_peak_dbfs": round(pcm16_to_dbfs(float(snap["peak"])), 1),
+    }
+    history = fetch_cabinet_sound_history(node=cfg.ambient_audio_history_node)
+    if history is None:
+        return fields
+    level = history.recent_median_rms if history.recent_median_rms is not None else rms
+    fields.update(
+        sound_usual_low_dbfs=round(pcm16_to_dbfs(history.p10_rms), 1),
+        sound_usual_dbfs=round(pcm16_to_dbfs(history.median_rms), 1),
+        sound_usual_high_dbfs=round(pcm16_to_dbfs(history.p90_rms), 1),
+        sound_recent_dbfs=(
+            round(pcm16_to_dbfs(history.recent_median_rms), 1)
+            if history.recent_median_rms is not None
+            else None
+        ),
+        # Judged on the last-10-min median when there is one (review finding,
+        # 2026-10-09): a single 0.5 s window flips on one clank or word.
+        # Compared in raw RMS so rounding can't flip a reading on a band edge.
+        sound_vs_usual=(
+            "quieter" if level < history.p10_rms else "louder" if level > history.p90_rms else "usual"
+        ),
+    )
+    return fields
+
+
 def _fetch_cabinet_context(cfg: SituationSettings) -> CabinetContextV1:
+    """Nano sensor read plus the cabinet mic. The two sources are
+    independent: a stale Nano frame does not hide a fresh mic reading."""
+    ctx = _fetch_cabinet_sensor_context(cfg)
+    try:
+        sound = _cabinet_sound_fields(cfg)
+    except Exception as exc:  # noqa: BLE001 -- a mic/DB fault must not take the Nano read with it
+        logger.warning("situation_cabinet_sound_failed err=%s", exc)
+        sound = {}
+    return ctx.model_copy(update=sound) if sound else ctx
+
+
+def _fetch_cabinet_sensor_context(cfg: SituationSettings) -> CabinetContextV1:
     """Sync read of Orion's own physical cabinet sensors -- called via
     `asyncio.to_thread` below, same reasoning as `_fetch_runtime_context`/
     `_fetch_weather` (blocking file I/O must not run on this module's
@@ -1198,12 +1514,19 @@ def _fetch_cabinet_context(cfg: SituationSettings) -> CabinetContextV1:
     )
 
 
+def _record_cabinet_sound_status(ctx: CabinetContextV1, diagnostics: SituationDiagnosticsV1) -> None:
+    diagnostics.provider_status["cabinet_sound"] = (
+        "ok" if ctx.sound_usual_dbfs is not None
+        else "no_history" if ctx.sound_available
+        else "unavailable"
+    )
+
+
 async def _build_cabinet_context(
     cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
 ) -> CabinetContextV1:
-    """Orion's own physical cabinet sensors -- the real read `LabContextV1`
-    was always a stub stand-in for. `LabContextV1` itself is untouched
-    (still its own distinct, still-unwired GPU-cluster concept).
+    """Orion's own physical cabinet sensors -- the real read the old lab
+    stub (removed 2026-10-27) was a stand-in for.
 
     Fail-open like every other provider here -- a missing/unreadable
     snapshot file, a stale frame, or an empty measurement set all yield
@@ -1213,10 +1536,14 @@ async def _build_cabinet_context(
         diagnostics.provider_status["cabinet"] = "disabled"
         return CabinetContextV1(available=False, source="disabled")
 
-    cache_key = f"{cfg.cabinet_sensors_path}:{cfg.cabinet_sensors_b_path}"
+    cache_key = (
+        f"{cfg.cabinet_sensors_path}:{cfg.cabinet_sensors_b_path}:"
+        f"{cfg.ambient_audio_path}:{cfg.ambient_audio_history_node}"
+    )
     with _LOCK:
         cached = _CABINET_CACHE.get(cache_key)
         if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.cabinet_ttl_seconds:
+            _record_cabinet_sound_status(cached[1], diagnostics)
             return cached[1]
     try:
         ctx = await asyncio.to_thread(_fetch_cabinet_context, cfg)
@@ -1227,29 +1554,87 @@ async def _build_cabinet_context(
     with _LOCK:
         _CABINET_CACHE[cache_key] = (datetime.now(timezone.utc), ctx)
     diagnostics.provider_status["cabinet"] = "ok" if ctx.available else ctx.source
+    _record_cabinet_sound_status(ctx, diagnostics)
     return ctx
 
 
-def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
-    """Live read of what model is actually serving `cfg.runtime_route`.
+def _fetch_office_sound_context(cfg: SituationSettings) -> OfficeSoundContextV1:
+    """Office sound meter level (dBA) and how it compares with the office's
+    last 24 h. Unavailable when the newest reading is older than
+    `office_sound_stale_after_sec`: an old number is history, not "now"."""
+    reading = fetch_office_sound(node=cfg.office_sound_node)
+    if reading is None:
+        return OfficeSoundContextV1()
+    age = float(percept_age_seconds(reading.received_at))
+    if age > cfg.office_sound_stale_after_sec:
+        return OfficeSoundContextV1()
+    ctx = OfficeSoundContextV1(
+        available=True,
+        age_seconds=age,
+        dba=round(reading.dba, 1),
+        recent_dba=(
+            round(reading.recent_median_dba, 1) if reading.recent_median_dba is not None else None
+        ),
+    )
+    if reading.median_dba is None:
+        return ctx
+    # Judged on the last-10-min median when there is one, like the cabinet
+    # mic: one door slam should not flip "louder than usual".
+    level = reading.recent_median_dba if reading.recent_median_dba is not None else reading.dba
+    return ctx.model_copy(
+        update={
+            "usual_low_dba": round(reading.p10_dba, 1),
+            "usual_dba": round(reading.median_dba, 1),
+            "usual_high_dba": round(reading.p90_dba, 1),
+            "vs_usual": (
+                "quieter" if level < reading.p10_dba
+                else "louder" if level > reading.p90_dba
+                else "usual"
+            ),
+        }
+    )
 
-    Hits orion-llm-gateway's GET /routes (already health-cached there 15s;
-    see route_catalog.py's `_probe_model`) rather than probing the backend
-    directly -- the gateway already owns route->backend resolution, so this
-    reuses that instead of re-deriving it. Mirrors `_fetch_weather`'s shape:
-    a plain urlopen with a short timeout, raising on any failure so the
-    caller's try/except degrades to unavailable rather than partial/guessed
-    data.
+
+async def _build_office_sound_context(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> OfficeSoundContextV1:
+    """Fail-open: an unset node, a DB fault, or a stale meter all yield
+    available=False, never a guessed level. No provider cache: one indexed
+    query, and the brief cache already gates on the reading's age."""
+    if not cfg.office_sound_node:
+        diagnostics.provider_status["office_sound"] = "disabled"
+        return OfficeSoundContextV1()
+    try:
+        ctx = await asyncio.to_thread(_fetch_office_sound_context, cfg)
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["office_sound"] = "error"
+        diagnostics.provider_errors["office_sound"] = str(exc)
+        return OfficeSoundContextV1()
+    diagnostics.provider_status["office_sound"] = (
+        "ok" if ctx.usual_dba is not None else "no_history" if ctx.available else "unavailable"
+    )
+    return ctx
+
+
+async def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
+    """What model a call on `cfg.runtime_route` would land on right now, from GPU pool state.
+
+    GPU pool stage 6.3: this used to read orion-llm-gateway's GET /routes, a compatibility view
+    the gateway generated from pool state anyway and which stage 6.5 deletes. It now asks the
+    pool directly (`orion.situational.runtime_route_view`: one `orion:gpu_pool:state` RPC with
+    the pool's config) and builds the same per-route view (`orion.gpu_pool.route_view`). Raises
+    when the pool cannot be asked or the route is not in its config, so the caller's except
+    degrades to unavailable (and does not cache it) rather than stating a guessed model.
     """
-    url = f"{cfg.llm_gateway_base_url.rstrip('/')}/routes"
-    with urlopen(url, timeout=cfg.runtime_probe_timeout_sec) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    routes = payload.get("routes") if isinstance(payload, dict) else None
-    if not isinstance(routes, list):
-        raise ValueError("routes payload missing/malformed")
-    entry = next((r for r in routes if isinstance(r, dict) and r.get("id") == cfg.runtime_route), None)
+    from orion.gpu_pool.route_view import SOURCE_UNAVAILABLE, route_entry
+    from orion.situational.runtime_route_view import read_route_view
+
+    view = await read_route_view(timeout_sec=cfg.runtime_probe_timeout_sec)
+    if view.get("source") == SOURCE_UNAVAILABLE:
+        raise ValueError("gpu pool state unavailable")
+    entry = route_entry(view, cfg.runtime_route)
     if entry is None:
-        raise ValueError(f"route {cfg.runtime_route!r} not in /routes response")
+        raise ValueError(f"route {cfg.runtime_route!r} not in the GPU pool's routes")
     model_id = entry.get("model")
     return RuntimeContextV1(
         available=bool(entry.get("status") == "up" and isinstance(model_id, str) and model_id.strip()),
@@ -1257,7 +1642,7 @@ def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
         model_id=model_id if isinstance(model_id, str) and model_id.strip() else None,
         served_by=entry.get("served_by"),
         backend=entry.get("backend"),
-        source="orion-llm-gateway",
+        source="gpu_pool",
     )
 
 
@@ -1289,7 +1674,7 @@ def _runtime_from_gpu_placement(
     """The model this turn runs on, from the lease it holds -- not the gateway's route table.
 
     Under the GPU pool a route's default worker is not necessarily where a call runs (an agent
-    call can be served by agent-gpu2 or chat), so ``_fetch_runtime_context``'s /routes answer is
+    call can be served by agent-gpu2 or chat), so ``_fetch_runtime_context``'s route answer is
     only a default. When the caller knows the turn's granted role, that is the fact; no network
     read happens here (the caller resolved role -> discovered profile). Spec:
     docs/superpowers/specs/2026-09-24-gpu-pool-design.md, reader impacts item 5."""
@@ -1327,14 +1712,9 @@ async def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationD
         if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.runtime_ttl_seconds:
             return cached[1]
     try:
-        # `_fetch_runtime_context` is a plain blocking `urlopen` call (up to
-        # `runtime_probe_timeout_sec`). Offloaded to a thread rather than
-        # called inline -- this function runs inside `build_situation_for_ctx`,
-        # which orion-hub's `execute_unified_turn` now awaits directly on its
-        # single shared event loop (unlike cortex-exec, which already
-        # dedicates a worker per chat turn). A cache-miss call here must not
-        # stall every other concurrent WebSocket client's turn.
-        runtime_ctx = await asyncio.to_thread(_fetch_runtime_context, cfg)
+        # An async bus RPC (bounded by `runtime_probe_timeout_sec`), so a cache miss never blocks
+        # the shared event loop orion-hub's `execute_unified_turn` runs every client's turn on.
+        runtime_ctx = await _fetch_runtime_context(cfg)
         with _LOCK:
             _RUNTIME_CACHE[cache_key] = (datetime.now(timezone.utc), runtime_ctx)
         diagnostics.provider_status["runtime"] = "ok" if runtime_ctx.available else "unavailable"
@@ -1361,7 +1741,10 @@ class _PresenceReading:
 
 
 async def _resolve_presence_and_identity_ask(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> _PresenceReading:
     """Which camera speaks for "where is Juniper", and should Orion ask who
     this is.
@@ -1450,7 +1833,7 @@ async def _resolve_presence_and_identity_ask(
         reason = "no_visual_confirmation"
 
     identity_ask = None
-    if reason is not None:
+    if reason is not None and allow_identity_ask:
         ttl = (
             cfg.identity_ask_cooldown_seconds
             if reason in ("unmatched_face", "identity_unread")
@@ -1491,14 +1874,31 @@ async def _resolve_presence_and_identity_ask(
 
 
 async def _build_street_fields(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    first_frames: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`street_summary`/`street_stream_id` for PerceptionContextV1, or {}.
 
-    Walkway spec ideas 5 and 9. First configured stream that has anything to
-    say wins; streams are cheap reads and there is normally one. Fail-open:
-    any failure is a missing line, recorded in diagnostics, never an error.
+    Walkway spec ideas 5 and 9. Every configured stream that has anything to
+    say gets its own framed part, in config order (2026-10-17: the doorbell
+    joined the walkway; first-stream-wins hid a visitor at the door behind a
+    busy street). The default order is `doorbell,walkway`: the doorbell
+    speaks only right after a visit, and consumers cut the joined text at a
+    fixed length (chat_stance `_compact`, 520), so the rarer line goes first.
+    `street_stream_id` is the first stream that spoke. Fail-open: a failed
+    read is a missing part, recorded in diagnostics, never an error, and
+    never stops the other cameras' reads.
+
+    Each part opens with what the camera IS (2026-10-15, live turn
+    caa3eb4d): "Your outdoor camera (walkway, since 2026-10-14), looking over
+    the community walkway, the street and our patio: ...". Without it Orion
+    read the street line as one more sensor readout, not as their own eye
+    outside. `first_frames` maps stream -> first frame time (camera_eyes).
     """
+    parts: list[str] = []
+    first_stream: str | None = None
+    errored = False
     for stream_id in cfg.street_stream_ids:
         try:
             street = await asyncio.to_thread(
@@ -1507,31 +1907,110 @@ async def _build_street_fields(
         except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
             diagnostics.provider_status["perception_street"] = "error"
             diagnostics.provider_errors["perception_street"] = str(exc)
-            return {}
-        if not street.read_ok:
-            diagnostics.provider_status["perception_street"] = "unread"
+            errored = True
             continue
-        if street.lines:
-            diagnostics.provider_status["perception_street"] = "ok"
-            return {"street_summary": " ".join(street.lines), "street_stream_id": stream_id}
-        diagnostics.provider_status["perception_street"] = "quiet"
-    return {}
+        if not street.read_ok:
+            if not errored:
+                diagnostics.provider_status["perception_street"] = "unread"
+            continue
+        if not street.lines:
+            if not errored:
+                diagnostics.provider_status["perception_street"] = "quiet"
+            continue
+        framing = street_framing(
+            describe_camera(stream_id),
+            (first_frames or {}).get(stream_id),
+            _tz_or_utc(cfg.timezone),
+        )
+        parts.append(f"{framing}: " + " ".join(street.lines))
+        first_stream = first_stream or stream_id
+    if not parts:
+        return {}
+    if not errored:
+        diagnostics.provider_status["perception_street"] = "ok"
+    return {"street_summary": " ".join(parts), "street_stream_id": first_stream}
 
 
 async def _build_perception_context(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> PerceptionContextV1:
     """Room percept (below) plus the street summary, which is a different
     camera and so rides on every return path of the room read, stale or not."""
-    room = await _build_room_perception_context(cfg, diagnostics)
-    if not cfg.perception_enabled or not cfg.street_stream_ids:
+    room = await _build_room_perception_context(
+        cfg, diagnostics, allow_identity_ask=allow_identity_ask
+    )
+    if not cfg.perception_enabled:
         return room
-    street = await _build_street_fields(cfg, diagnostics)
-    return room.model_copy(update=street) if street else room
+    cameras, first_frames = await _build_camera_senses(cfg, diagnostics)
+    update: dict[str, Any] = {"cameras": cameras} if cameras else {}
+    if cfg.street_stream_ids:
+        update.update(await _build_street_fields(cfg, diagnostics, first_frames))
+    return room.model_copy(update=update) if update else room
+
+
+def _tz_or_utc(name: str):
+    try:
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001
+        return timezone.utc
+
+
+async def _build_camera_senses(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> tuple[list[CameraSenseV1], dict[str, Any]]:
+    """Every configured camera (room, then street) as Orion's own sense.
+
+    Live state per stream from `camera_eyes.fetch_camera_eyes`; "live" uses
+    the same staleness gate as the room percept. Returns the senses and a
+    stream -> first-frame map for the street line's "since" date. Fail-open:
+    an unread database is no line (diagnostics say so), never "all dark".
+    """
+    streams = list(dict.fromkeys([*cfg.perception_stream_ids, *cfg.street_stream_ids]))
+    if not streams:
+        return [], {}
+    now = datetime.now(timezone.utc)
+    try:
+        # One overall deadline: each statement has its own 1.5 s timeout and
+        # there are up to ~8, so a connected-but-slow database could otherwise
+        # hold an uncached chat turn ~12 s (review finding, 2026-10-15).
+        eyes = await asyncio.wait_for(
+            asyncio.to_thread(
+                fetch_camera_eyes,
+                streams,
+                people_range_for=cfg.street_stream_ids,
+                tz_name=cfg.timezone,
+                now=now,
+            ),
+            timeout=CAMERA_EYES_DEADLINE_SEC,
+        )
+    except asyncio.TimeoutError:
+        diagnostics.provider_status["perception_cameras"] = "timeout"
+        return [], {}
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["perception_cameras"] = "error"
+        diagnostics.provider_errors["perception_cameras"] = str(exc)
+        return [], {}
+    if eyes is None:
+        diagnostics.provider_status["perception_cameras"] = "unread"
+        return [], {}
+    diagnostics.provider_status["perception_cameras"] = "ok"
+    senses = build_senses(
+        eyes,
+        now=now,
+        tz=_tz_or_utc(cfg.timezone),
+        live_max_age_seconds=cfg.perception_max_age_seconds,
+    )
+    return senses, {e.stream_id: e.first_frame_at for e in eyes}
 
 
 async def _build_room_perception_context(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> PerceptionContextV1:
     """Most recent camera percept, gated hard on age.
 
@@ -1545,9 +2024,9 @@ async def _build_room_perception_context(
     percept, never an exception into turn assembly.
 
     `async` since 2026-08-26: the identity-uncertain cooldown check below is
-    a Redis round-trip (`identity_ask_cooldown.py`), the one await in this
-    function -- everything else here stays the same synchronous SQLAlchemy
-    reads it always was.
+    a Redis round-trip (`identity_ask_cooldown.py`). Since 2026-10-07 the
+    percept SQL read is awaited via `asyncio.to_thread` too, so no
+    synchronous database call runs on the caller's event loop (Hub's).
     """
     if not cfg.perception_enabled:
         diagnostics.provider_status["perception"] = "disabled"
@@ -1556,11 +2035,18 @@ async def _build_room_perception_context(
     # Resolved first so every return path below carries it -- see
     # _resolve_presence_and_identity_ask's docstring for why this must not
     # live inside the available=True branch.
-    reading = await _resolve_presence_and_identity_ask(cfg, diagnostics)
+    reading = await _resolve_presence_and_identity_ask(
+        cfg, diagnostics, allow_identity_ask=allow_identity_ask
+    )
 
     try:
-        percept = fetch_latest_percept(
-            stream_ids=cfg.perception_stream_ids or [cfg.perception_stream_id]
+        # Off the event loop (2026-10-07): this is a synchronous SQLAlchemy
+        # read, and Hub's chat event loop now runs it too. A slow or
+        # unreachable database must stall a worker thread, not every Hub
+        # websocket. The presence and street reads already do this.
+        percept = await asyncio.to_thread(
+            fetch_latest_percept,
+            stream_ids=cfg.perception_stream_ids or [cfg.perception_stream_id],
         )
     except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
         diagnostics.provider_status["perception"] = "error"
@@ -1623,7 +2109,7 @@ async def _build_room_perception_context(
         presence_state = presence.get("state")
         presence_since_sec = presence.get("since_sec")
         presence_subject = presence.get("subject")
-        fragment = presence_fragment(presence_state, presence_since_sec)
+        fragment = presence_fragment(presence_state, presence_since_sec, subject=presence_subject)
         if fragment:
             scene_summary = f"{fragment} {scene_summary}"
             diagnostics.provider_status["perception_presence"] = presence_state or "unknown"
@@ -1662,7 +2148,6 @@ def _build_affordances(
     presence: PresenceContextV1,
     phase: ConversationPhaseContextV1,
     env: EnvironmentContextV1,
-    lab: LabContextV1,
     surface: SurfaceContextV1,
     time_ctx: TimeContextV1,
 ) -> list[SituationAffordanceV1]:
@@ -1839,6 +2324,8 @@ def _fetch_curiosity_context(cfg: SituationSettings) -> CuriosityPriorContextV1:
         # for "what does Orion currently believe."
         stale_after=0,
         priors_cypher=LIVE_NON_SELF_PRIORS_CYPHER,
+        # The situation never renders Orion's concept list; skip the read.
+        read_concepts=False,
     )
     if snapshot.is_unavailable:
         return CuriosityPriorContextV1(available=False, source="error")
@@ -1953,6 +2440,10 @@ async def _build_reverie_context(
     return ctx
 
 
+# A visual read older than this is described as a snapshot, never as live sight.
+_STALE_VISUAL_READ_SECONDS = 60.0
+
+
 def _recency_phrase(age_seconds: Optional[float]) -> str:
     """"just now" / "N min ago" -- shared by every section below that reads
     an observation's age (perception/affect/cabinet). Extracted (review
@@ -1968,7 +2459,7 @@ def _runtime_line(runtime: RuntimeContextV1) -> Optional[str]:
     """What Orion may truthfully say about the model it runs on (GPU pool aware).
 
     A lease is a fact about this turn; the route table is only a default -- the pool places each
-    unleased call itself, so "you are running on X" from /routes would be a false statement about
+    unleased call itself, so "you are running on X" from the route view would be a false statement about
     Orion under spill (spec 2026-09-24-gpu-pool-design.md, reader impacts item 5)."""
     if runtime.placement == "lease" and runtime.granted_role:
         if runtime.available and runtime.model_id:
@@ -1995,6 +2486,26 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         f"Conversation phase: {brief.conversation_phase.phase_change}; continuity={brief.conversation_phase.continuity_mode}.",
         f"Presence: requestor={brief.requestor.display_name}, audience_mode={brief.presence.audience_mode}.",
     ]
+    # Who is in the room, by name. audience_mode alone ("kid_present") never
+    # told Orion WHICH person in the message was the child.
+    if brief.presence.companions:
+        lines.append(
+            f"With {brief.requestor.display_name} right now: {companions_phrase(brief.presence.companions)}."
+        )
+    # Fixed home/body location, only when configured. Placed up front so the
+    # budget cap never trims it. Without it, a travel city mentioned in recent
+    # chat is the only place in context (see 2026-10-05, correlation 5063fb71).
+    if brief.place.home_location or brief.place.physical_location:
+        place_parts = []
+        if brief.place.home_location:
+            place_parts.append(f"home_location={brief.place.home_location}")
+        if brief.place.physical_location:
+            place_parts.append(f"Orion physical_location={brief.place.physical_location}")
+        lines.insert(
+            1,
+            "Place: " + "; ".join(place_parts)
+            + " (fixed; independent of where Juniper is right now).",
+        )
     # Only rendered for a non-typed modality. SurfaceContextV1.input_modality
     # has existed since this brief was first built, but nothing ever put it
     # in the prompt -- a schema field with no consumer. It earns a line here
@@ -2017,14 +2528,14 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
     elif brief.surface.input_modality not in ("typed", "unknown"):
         lines.append(f"Input modality: {brief.surface.input_modality}.")
     if brief.environment.available:
+        now = brief.environment.current_weather
+        if now.temperature_f is not None:
+            feels = f" (feels like {now.feels_like_f:.0f}F)" if now.feels_like_f is not None else ""
+            lines.append(f"Outside temperature now: {now.temperature_f:.0f}F{feels}.")
         rain = brief.environment.forecast_next_6h.precipitation_probability_pct
         lines.append(f"Weather next 6h: precip_prob={rain}%, summary={brief.environment.forecast_next_6h.summary}.")
     else:
         lines.append("Weather: unavailable or low-confidence; do not infer.")
-    if brief.lab.available:
-        lines.append(f"Lab risk: thermal={brief.lab.thermal_risk}, power={brief.lab.power_risk}.")
-    else:
-        lines.append("Lab: unavailable/stub; do not infer.")
     # Cabinet sensors are deliberately OMITTED rather than rendered as an
     # "unavailable; do not infer" placeholder when there is nothing to show
     # -- same reasoning curiosity/reverie below already document, and the
@@ -2077,6 +2588,52 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         if parts:
             seen = _recency_phrase(cab.age_seconds)
             lines.append(f"Your cabinet sensors (read {seen}): " + ", ".join(parts) + ".")
+    # Cabinet mic, independent of the Nano frame above. Only the comparison
+    # against the cabinet's own last 24 h reaches the prompt -- no dBFS
+    # numbers (2026-10-10). The mic is uncalibrated, so dBFS is "how close to
+    # this mic's maximum", not decibels; leading with "-16 dBFS" made Orion
+    # report it as how loud they hear the cabinet. The raw dBFS fields stay
+    # on CabinetContextV1 for debugging. Omitted entirely when there is no
+    # fresh reading or no 24 h history, since a bare level means nothing.
+    cab = brief.cabinet
+    if cab.sound_available and cab.sound_vs_usual is not None:
+        heard = _recency_phrase(cab.sound_age_seconds)
+        vs = {
+            "usual": "about as loud as usual",
+            "louder": "louder than usual",
+            "quieter": "quieter than usual",
+        }[cab.sound_vs_usual]
+        lines.append(
+            f"Your cabinet's sound (mic, heard {heard}): {vs} for your cabinet, compared with"
+            " the last 24 hours. The mic isn't calibrated, so this tells you louder or quieter"
+            " than usual, not how many decibels it is."
+        )
+    # Office sound meter (2026-11-07). A calibrated dBA meter, so the number
+    # itself reaches the prompt, with a scale so Orion can say how loud the
+    # office is. Named as the office so it is never read as the cabinet.
+    office = brief.office_sound
+    if office.available and office.dba is not None:
+        heard = _recency_phrase(office.age_seconds)
+        line = (
+            f"Your office's sound (sound level meter in Juniper's office, not in your cabinet"
+            f" or the closet; read {heard}): {office.dba:.0f} dBA"
+        )
+        if office.recent_dba is not None:
+            line += f", {office.recent_dba:.0f} dBA typical over the last 10 minutes"
+        if office.vs_usual is not None:
+            vs = {
+                "usual": "about as loud as usual",
+                "louder": "louder than usual",
+                "quieter": "quieter than usual",
+            }[office.vs_usual]
+            line += (
+                f". That is {vs} for the office (usual range {office.usual_low_dba:.0f}-"
+                f"{office.usual_high_dba:.0f} dBA over the last 24 hours)"
+            )
+        lines.append(
+            line + ". Scale: about 30 dBA is a very quiet room, 40-50 a quiet office,"
+            " 60 normal conversation, 70+ loud (music, TV, a raised voice)."
+        )
     if brief.perception.available and brief.perception.scene_summary:
         seen = _recency_phrase(brief.perception.observation_age_seconds)
         lines.append(f"Room (seen {seen}): {brief.perception.scene_summary}")
@@ -2084,10 +2641,17 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         # Never phrase this as "the room is empty/quiet" -- not seeing and
         # seeing nothing are different claims, and only one of them is true.
         lines.append("Room: haven't seen anything recently; do not infer.")
+    # Which eyes Orion has and whether each is seeing (2026-10-15). One line,
+    # so "what can you see?" names the room AND the walkway, and says the
+    # walkway is outside. Absent when nothing could be read.
+    eyes_line = senses_line(brief.perception.cameras)
+    if eyes_line:
+        lines.append(eyes_line)
     # The street outside (walkway camera). No line at all when there is
-    # nothing to say -- a quiet or unread street is not narrated.
+    # nothing to say -- a quiet or unread street is not narrated. The summary
+    # opens with what the camera is (_build_street_fields), so no prefix here.
     if brief.perception.street_summary:
-        lines.append(f"Street (walkway camera): {brief.perception.street_summary}")
+        lines.append(brief.perception.street_summary)
     if brief.affect.available and brief.affect.summary:
         seen = _recency_phrase(brief.affect.observation_age_seconds)
         if brief.affect.backend == "vision" and brief.affect.subtitle_source != "caller":
@@ -2124,7 +2688,7 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         lines.append(runtime_line)
     # Curiosity/reverie are deliberately OMITTED rather than rendered as an
     # "unavailable; do not infer" placeholder when there is nothing to show
-    # (unlike weather/lab/perception/affect/runtime above, which always emit
+    # (unlike weather/perception/affect/runtime above, which always emit
     # a line). Two reasons: (1) both are genuinely optional color, not a
     # standing claim about the world Orion needs reminding it lacks every
     # single turn -- unlike "I cannot see you", "I don't have an open prior
@@ -2159,6 +2723,15 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         "Situation context is grounding, not a requirement to mention.",
         "Use only when relevant; avoid contrived time/weather/location commentary.",
     ]
+    # A caution, not a body line: cautions are kept whole and in priority
+    # order, while body lines are the first thing the char cap trims.
+    kids = [c.display_name for c in brief.presence.companions if is_child(c.model_dump())]
+    if kids:
+        cautions.insert(
+            0,
+            f"A child is with you ({', '.join(kids[:3])}): use words a young child can follow;"
+            " a story you tell gets a beginning, a middle and a real ending.",
+        )
     if brief.perception.presence_identity_ask:
         # Inserted first: this is the one caution that's actionable THIS
         # turn and time-limited (already cooldown-gated server-side, so it
@@ -2211,6 +2784,15 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
                 "safe to ask now; do not repeat it again this conversation once asked."
             )
         cautions.insert(0, ask_caution)
+    # A scene description is a snapshot, not a live view. Without this, a turn
+    # that asks "can you see me?" gets "Room (seen 7 min ago): ..." and answers
+    # "Right here, right now" (2026-10-09).
+    _age = brief.perception.observation_age_seconds
+    if brief.perception.available and _age is not None and _age > _STALE_VISUAL_READ_SECONDS:
+        cautions.append(
+            f"Your last visual read of the room is {_recency_phrase(_age)}, not live. "
+            "Do not say you see anyone or anything right now; say what you last saw and when."
+        )
     # The cautions are appended AFTER truncation, never inside it.
     #
     # This used to be one flat join sliced from the tail, which meant the

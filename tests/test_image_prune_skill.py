@@ -250,7 +250,10 @@ def test_verb_yaml_exists_and_names_itself_consistently() -> None:
 
 
 def test_timeout_budgets_are_ordered_innermost_first() -> None:
-    """subprocess (600s) < verb step (660s) < maintenance route RPC (720s).
+    """subprocess (600s) < verb step (660s) < the caller's RPC (720s).
+
+    The caller is orion-hardware-watch's disk rule since 2026-11-06 (ladder retirement PR 4); it was
+    dispatch's prune_dangling_images route before.
 
     Hand-checked, not copied: if the verb step budget were below the subprocess
     budget, a real prune would be killed by the outer layer and the failure
@@ -266,12 +269,14 @@ def test_timeout_budgets_are_ordered_innermost_first() -> None:
             subprocess_sec = float(line.split("=", 1)[1].strip())
     assert subprocess_sec is not None
 
-    policy = yaml.safe_load(
-        (REPO_ROOT / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
-    route_sec = float(policy["proposal_kind_to_cortex"]["maintain"]["rpc_timeout_sec"])
+    import importlib.util
+
+    spec_ = importlib.util.spec_from_file_location(
+        "_hw_settings_for_prune_budget", REPO_ROOT / "services" / "orion-hardware-watch" / "app" / "settings.py")
+    assert spec_ and spec_.loader
+    mod = importlib.util.module_from_spec(spec_)
+    spec_.loader.exec_module(mod)
+    route_sec = float(mod.Settings.model_fields["image_prune_rpc_timeout_sec"].default)
 
     assert subprocess_sec < verb_step_sec < route_sec, (
         subprocess_sec,

@@ -133,7 +133,9 @@ def build_pending_card(
     )
 
 
-_VALID_VERDICTS = {"resolved", "dismissed", "decayed_unattended"}
+# "acted" (2026-10-01): Orion's own non-final verdict from the world-action settle path; never
+# terminal (orion/substrate/attention/verdicts.py TERMINAL_VERDICTS is unchanged).
+_VALID_VERDICTS = {"resolved", "dismissed", "decayed_unattended", "acted"}
 
 
 def build_loop_outcome(

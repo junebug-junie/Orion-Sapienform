@@ -96,9 +96,10 @@ def test_m3_card_reads_no_retired_bus_observer_fields() -> None:
     assert "b.reliability_pressure" in js
 
 
-def test_lattice_panel_renders_threshold_provenance() -> None:
+def test_lattice_panel_has_no_threshold_provenance() -> None:
+    # EWMA-derived transport thresholds were retired 2026-11 with
+    # node:substrate.bus_synaptic (their only derived channel); every row's
+    # thresholds are the static policy YAML values now.
     js = LATTICE_JS.read_text(encoding="utf-8")
-    assert "threshold_provenance" in js
-    assert 'data-testid="threshold-provenance"' in js
-    assert "_provenanceText(ch.threshold_provenance)" in js
-    assert "z_fast" in js and "unknown" in js  # cold-start z shows "unknown", never 0
+    assert "threshold_provenance" not in js
+    assert "_provenanceText" not in js

@@ -1,0 +1,22 @@
+name: Chat Response Feedback
+on:
+  pull_request:
+    paths:
+      - 'orion/schemas/chat_response_feedback.py'
+      - 'services/orion-hub/static/js/app.js'
+      - 'services/orion-hub/templates/index.html'
+      - 'services/orion-hub/tests/test_response_feedback_ui.py'
+      - 'tests/test_chat_response_feedback_schema.py'
+      - '.github/workflows/chat-response-feedback.yml'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pydantic==2.11.5 PyYAML
+      - run: python -m pytest tests/test_chat_response_feedback_schema.py services/orion-hub/tests/test_response_feedback_ui.py -q

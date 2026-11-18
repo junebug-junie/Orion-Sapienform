@@ -57,12 +57,27 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_LLM_INFERENCE_FIELD_DIGESTION",
     )
+    # vision_organ deltas (orion-vision-frame-router's own report on the eye, via
+    # substrate-runtime's vision_organ reducer) -> node:substrate.vision_organ
+    # vision_frame_staleness / vision_processing_failure_pressure ->
+    # capability:vision. Off in code; the operator template turns it on.
+    enable_vision_organ_field_digestion: bool = Field(
+        False,
+        alias="ENABLE_VISION_ORGAN_FIELD_DIGESTION",
+    )
     # rpc_delivery deltas (substrate-runtime's RPC delivery bridge: worst bus
     # hop's timeout ratio from every service's rpc-health snapshots) -> node
     # rpc_timeout_pressure -> capability:transport reliability_pressure.
     enable_rpc_delivery_field_digestion: bool = Field(
         False,
         alias="ENABLE_RPC_DELIVERY_FIELD_DIGESTION",
+    )
+    # storage_write deltas (orion-sql-writer's own write outcomes, via
+    # substrate-runtime's storage_write reducer) -> node:substrate.storage_write
+    # write_failure_pressure -> capability:storage reliability_pressure.
+    enable_storage_write_field_digestion: bool = Field(
+        False,
+        alias="ENABLE_STORAGE_WRITE_FIELD_DIGESTION",
     )
     enable_idle_tick: bool = Field(True, alias="FIELD_DIGESTER_IDLE_TICK_ENABLED")
     field_state_retention_hours: float = Field(72.0, alias="FIELD_STATE_RETENTION_HOURS")
@@ -92,6 +107,9 @@ class Settings(BaseSettings):
     # unbounded corpus growth from a sibling sink (INNER_FEATURES_CORPUS_PATH,
     # ~104MB/36.8k rows over 5 days) means anything new stays inert until an
     # operator opts in.
+    # Deployed ON via .env_example/docker-compose (2026-11, mood-arc retrain data).
+    # The code default stays empty so a bare test/process never writes to the
+    # host's /mnt/telemetry.
     field_channel_corpus_path: str = Field("", alias="FIELD_CHANNEL_CORPUS_PATH")
     # Same rotation/retention policy shape as orion-spark-introspector's
     # corpus_sink_max_bytes/corpus_sink_rotated_keep (services/orion-spark-
@@ -99,7 +117,7 @@ class Settings(BaseSettings):
     # independently, so there is no collision between the two services'
     # settings despite the identical field names/aliases/defaults.
     corpus_sink_max_bytes: int = Field(200_000_000, ge=1_000_000, alias="CORPUS_SINK_MAX_BYTES")
-    corpus_sink_rotated_keep: int = Field(5, ge=0, alias="CORPUS_SINK_ROTATED_KEEP")
+    corpus_sink_rotated_keep: int = Field(40, ge=0, alias="CORPUS_SINK_ROTATED_KEEP")
 
     # Causal Geometry v1 follow-up: the scheduled Phase A -> Phase B producer
     # (orion/substrate/causal_geometry_producer.py, run from

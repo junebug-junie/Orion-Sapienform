@@ -7,10 +7,11 @@ orion-gpu-lane-controller
 orion-juniper-affective-state
 orion-affectgpt-worker
 orion-diffusion-host
-orion-context-exec
 orion-llamacpp-neural-host
 orion-llamacpp-bonsai-host
 
+# Hecate worker: keep excluded from Athena pull/rebuild and bring-up sweeps.
+# Explicit Hecate launch also requires the vllm-worker Compose profile.
 orion-vllm-host
 orion-rag
 orion-ollama-host
@@ -30,7 +31,8 @@ orion-bus-tap
 # anyone running from a fresh worktree/clone. Committed for real 2026-07-24.
 orion-rdf-writer
 orion-rdf-store
-# orion-ai-town relocated athena -> atlas 2026-07-29 (host-wide CPU contention
+# orion-ai-town relocated athena -> atlas 2026-07-29, then atlas -> circe 2026-08-29 when
+# atlas was decommissioned (include_services_circe.txt). Original reason: host-wide CPU contention
 # from orion-heartbeat's tensor-network substrate; see
 # docs/superpowers/specs/2026-07-29-aitown-atlas-migration-runbook.md and
 # PR #1467). Excluded so athena's bring-up-all doesn't try to start a stale
@@ -50,3 +52,27 @@ orion-world-model
 # athena's bring-up-all should now be allowed to manage it like any other
 # athena-resident service. See PR #2276 and this file's include_services_
 # circe.txt counterpart, where it was removed from circe's allowlist.
+# orion-kev moved from athena to circe GPU 3 on 2026-10-15 (PR #2695). Excluded so
+# athena's post-merge rebuild and bring-up-all never recreate the old
+# orion-athena-kev from athena's leftover services/orion-kev/.env. circe's
+# post-merge rebuild uses include_services_circe.txt and ignores this file;
+# up_all_services*.sh does read it on every host, like the other circe services.
+orion-kev
+
+# pan-1 office sensor (Nano ESP32 + SHT40 on USB). Runs on pan-1 only, deployed by hand there
+# (README: services/orion-office-env). Keep it off athena's pull/rebuild and every bring-up
+# sweep. circe needs no entry: its positive allowlist (include_services_circe.txt) already
+# omits it. pan-1 has no rebuild hook.
+orion-office-env
+
+# orion-vision-edge: kept in the repo but not run (2026-11-04, Juniper: "dont use it").
+# The office camera (cam0) is captured by orion-vision-retina-office from the main
+# stream. A running edge would publish a second cam0 frame stream (640x480 substream)
+# on orion:vision:frames, so the rebuild and bring-up sweeps must not start it.
+orion-vision-edge
+
+# orion-lane-door (leased-evals Phase 2) runs on circe and hecate only, never athena. circe's post-pull
+# rebuild deploys it (include_services_circe.txt); hecate's runs with the deep engine
+# (services/orion-vllm-host/scripts/hecate-deep.sh). Excluded here so athena's rebuild and bring-up
+# sweeps never start a door in front of nothing.
+orion-lane-door

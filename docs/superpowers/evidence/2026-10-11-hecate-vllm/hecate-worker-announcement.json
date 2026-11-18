@@ -1,0 +1,29 @@
+{
+  "schema": "orion.envelope",
+  "schema_version": "2.0.0",
+  "id": "829e4269-d4a4-4c22-b731-2b86a55622cc",
+  "correlation_id": "75db82a7-ec3c-4d43-b2ca-1c1e9b2d5b64",
+  "kind": "llm.worker.announce.v1",
+  "causality_chain": [],
+  "source": {
+    "name": "orion-vllm-host",
+    "node": "hecate",
+    "version": "0.1.0",
+    "instance": null
+  },
+  "created_at": "2026-10-11T08:48:09.005141Z",
+  "ttl_ms": null,
+  "trace": {},
+  "reply_to": null,
+  "payload": {
+    "schema_version": "llm.worker.announce.v1",
+    "host": "hecate",
+    "role": "agent-deep",
+    "profile_name": "qwen3-4b-vllm-hecate",
+    "port": 8021,
+    "cuda_visible_devices": "0",
+    "service_name": "orion-vllm-host",
+    "started_at": null,
+    "announced_at": "2026-10-11T08:48:09.004957Z"
+  }
+}

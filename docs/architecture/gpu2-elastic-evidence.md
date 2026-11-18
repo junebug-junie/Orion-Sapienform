@@ -1,5 +1,8 @@
 # GPU2 elastic admission evidence — 2026-09-14
 
+> **SUPERSEDED by the GPU pool (2026-10-01, stage 6.6).** the mechanism this evidence was collected for (durable elastic admission of gpu2) was deleted in GPU pool stages 4.6-5.6. Kept for the incident evidence. Current design: `docs/superpowers/specs/2026-09-24-gpu-pool-design.md` and `docs/superpowers/specs/2026-09-30-gpu-pool-stage6-telemetry-reducers-lockdown.md`. Not deleted: it holds incident evidence.
+
+
 Evidence collected before code edits from main `75f5d9e17` (PR #2213), the
 #2038/#2205/#2209/#2210/#2211 reports and current service code. No production
 mutation, env sync, migration, restart or generation was performed.

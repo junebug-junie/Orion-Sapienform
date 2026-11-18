@@ -33,20 +33,17 @@ surface -- was closed on 2026-08-19. Those now derive from this module:
 
     services/orion-llm-gateway/app/route_catalog.py        CATALOG_ROUTE_IDS
     services/orion-hub/scripts/llm_gateway_client.py       VALID_ROUTE_IDS + backfill + ordering
-    scripts/smoke_llm_gateway_routes.py                    both the GET /routes catalog check
+    scripts/smoke_llm_gateway_routes.py                    both the pool route-view catalog check
                                                            and the RPC dispatch loop
 
 The Hub UI's picker (`services/orion-hub/static/js/app.js`) deliberately does NOT show every
-route. It now derives from `GET /routes` and filters on the route's own `priority` field rather
+route. It now derives from the Hub's `/api/llm-routes` (GPU pool state) and filters on the route's own `priority` field rather
 than on a hardcoded name list, so a background lane is visible to operators in the catalog while
 staying unpickable by a human who would only get a yielding lane's latency. That is a policy
 difference expressed as a property, not another list to drift.
 
-Two neighbouring vocabularies are NOT this axis and must not be folded in here:
+A neighbouring vocabulary is NOT this axis and must not be folded in here:
 
-    orion/schemas/context_exec.py:13   ALLOWED_CONTEXT_EXEC_LLM_PROFILES -- a narrower
-        investigation-profile allow-list that RAISES rather than degrading. Deliberately
-        separate; widening it is a schema decision, not a routing one.
     "brain"  -- MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE's vocabulary
         (services/orion-hub/scripts/memory_graph_suggest.py:47) is mode, not route.
         `normalize_llm_route("brain")` returns None BY DESIGN; never route that path
@@ -99,6 +96,39 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         "harness",
         "agent-burst",
         "chat-burst",
+        # Memory episode distiller (2026-10-02, spec 2026-09-30-memory-episode-redesign):
+        # agent class at system priority, its own name so pool telemetry can see it.
+        "memory_distill",
+        # Human-turn twin of metacog (2026-10-06, spec 2026-10-06-thermal-controller-redesign D4):
+        # same pool class, interactive priority, so a heat shed never holds a live Hub turn.
+        # System-only: see SYSTEM_LLM_ROUTES.
+        "metacog_turn",
+        # Fast-class twin for a live turn (2026-10-23): the pre-turn repair-pressure probe
+        # (cortex-exec REPAIR_PRESSURE_PROBE_ROUTE). Interactive, never shed by heat.
+        # System-only: see SYSTEM_LLM_ROUTES.
+        "quick_turn",
+        # Orion's own speech in AI Town (2026-10-23): fast class, interactive. System-only, but
+        # cortex-exec accepts it as a caller override: see CORTEX_OVERRIDE_SYSTEM_ROUTES.
+        "quick_embodied",
+        # Orion's sight (2026-10-23, body-economy design A0): vision-council at pool priority
+        # `perception`, never shed by heat. System-only: see SYSTEM_LLM_ROUTES.
+        "metacog_perception",
+        # hecate's 27B (2026-10-08): its own GPU node, agent-class work a caller asks for by name.
+        "agent-deep",
+        "deep.thinker.v1",
+        # Orion Prime (2026-10-30): the chat worker, for Prime's thoughts. Pool priority `system`
+        # since 2026-11-03 (Juniper's turn still goes first); `prime_starved` is the same call at
+        # pool priority `starved`, after a try that got no seat. System-only: see SYSTEM_LLM_ROUTES.
+        "prime",
+        "prime_starved",
+        # Orion's consent to a Claude tool call (2026-11-13): the chat worker at pool priority
+        # interactive (Juniper waits on Claude's reply). System-only: see SYSTEM_LLM_ROUTES.
+        "prime_consent",
+        # The finalize 5b judge of a durable run whose hold is not on a judge role (2026-11-12,
+        # orion/harness/finalize.py resolve_finalize_judge_placement): gpu1, or chat's card while
+        # lent, never the gpu2 seat. System-only, and cortex-exec accepts it as a caller override:
+        # see SYSTEM_LLM_ROUTES and CORTEX_OVERRIDE_SYSTEM_ROUTES.
+        "judge",
     }
 )
 
@@ -126,9 +156,20 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "metacog",
     "metacog_background",
     "agent",
+    "agent-deep",
+    "deep.thinker.v1",
     "harness",
     "agent-burst",
     "chat-burst",
+    "memory_distill",
+    "metacog_turn",
+    "quick_turn",
+    "quick_embodied",
+    "metacog_perception",
+    "prime",
+    "prime_starved",
+    "prime_consent",
+    "judge",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -159,6 +200,7 @@ if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
 # Default OFF: reverie.py's route override stays "metacog" until
 # ORION_REVERIE_METACOG_BACKGROUND_ENABLED is flipped on, so the unmitigated failure/timeout rate
 # under real load can be observed first.
+# `prime` left this set 2026-11-03 (pool priority system, now in SYSTEM_LLM_ROUTES).
 BACKGROUND_LLM_ROUTES: FrozenSet[str] = frozenset({"quick_background", "metacog_background"})
 
 if not BACKGROUND_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
@@ -180,7 +222,11 @@ if not BACKGROUND_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 # to route acceptance. `quick`/`quick_background` have no analogous pin today, so this starts
 # metacog-only, not a generic "background implies same profile as its sibling" rule -- a future
 # `_background` lane needing the same guarantee should add itself here explicitly.
-METACOG_LLM_ROUTES: FrozenSet[str] = frozenset({"metacog", "metacog_background"})
+# `metacog_turn` (2026-10-06) is the same worker at interactive pool priority: it must pin too.
+# `metacog_perception` (2026-10-23) is the same worker at perception priority: it must pin too.
+METACOG_LLM_ROUTES: FrozenSet[str] = frozenset(
+    {"metacog", "metacog_background", "metacog_turn", "metacog_perception"}
+)
 
 if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(
@@ -201,7 +247,68 @@ if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 # ordinary chooseable lane. `priority: "system"` is the route-table value that signals this; the
 # fail-safe/fail-open reasoning for keeping a *definitional* copy here, not just relying on the
 # route table, mirrors BACKGROUND_LLM_ROUTES above.
-SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset({"harness", "agent-burst", "chat-burst"})
+#
+# `metacog_turn` (2026-10-06, thermal redesign D4) are system-only for the same reason as
+# `harness`: they exist for an AUTOMATED caller that is carrying a live human turn (orion-mind on
+# a Hub turn sends `metacog_turn` straight to the gateway on the bus -- no normalize_llm_route on
+# that path; the gateway resolves routes from config/gpu_pool.yaml). A human picking one in the
+# Compute selector would get the same model as `metacog`/`quick`/`agent` while jumping the pool's
+# heat shed, so it is hidden from the picker (route_view reports priority "system") and refused as
+# an override by normalize_llm_route (orion-actions, cortex-exec `ctx["llm_route"]`, Hub's
+# POST /api/chat body) and so by fcc_model_for_route. A future caller that must reach one through
+# those override paths needs an explicit decision here, not a quiet removal from this set.
+SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
+    # `metacog_perception` (2026-10-23): vision-council's route. Jumps the heat shed like
+    # metacog_turn, so the same rule: never a human's Compute choice or override.
+    # `quick_turn` (2026-10-23): cortex-exec's pre-turn repair-pressure probe. Same rule.
+    # `prime` / `prime_starved` (2026-11-03): Orion Prime's thoughts at pool priority system / starved.
+    # orion-mind sends them straight to the gateway; a human picking one would jump Orion's own queue.
+    {
+        "harness",
+        "agent-burst",
+        "chat-burst",
+        "memory_distill",
+        "metacog_turn",
+        "quick_turn",
+        "quick_embodied",
+        "metacog_perception",
+        "prime",
+        "prime_starved",
+        # `prime_consent` (2026-11-13): orion-mind's consent call for a Claude tool. Interactive in the
+        # pool; a human picking it would jump every system call on the chat worker.
+        "prime_consent",
+        # `judge` (2026-11-12): harness finalize's 5b judge off a hold. A human picking it would
+        # get the agent model at system priority; never a Compute choice.
+        "judge",
+    }
+)
+
+#: Routes an `agent`-lane caller may name and keep. The gateway's lane routing
+#: (services/orion-llm-gateway/app/lane_routes.py) rewrites every agent-lane call without a
+#: hold to `agent`; a route here survives that. `judge` (2026-11-12): without this the 5b
+#: judge off a gpu2-seat hold was rewritten to `agent`, a class that still lists agent-gpu2.
+AGENT_LANE_ROUTES: FrozenSet[str] = frozenset({"agent", "judge", "deep.thinker.v1"})
+
+#: System-only routes cortex-exec still accepts as a caller-supplied `ctx["llm_route"]`.
+#: This is the explicit decision SYSTEM_LLM_ROUTES asks for: Hub (its picker and its raw
+#: POST /api/chat body) and orion-actions keep refusing these, so no human Compute choice
+#: reaches them; only a bus caller that names one does. `quick_embodied` (2026-10-23):
+#: orion-embodiment's town speech arrives at cortex-exec only as this override. `judge`
+#: (2026-11-12): harness finalize's 5b judge reaches cortex-exec only as ctx["llm_route"]
+#: (orion/harness/finalize.py build_finalize_reflect_context).
+CORTEX_OVERRIDE_SYSTEM_ROUTES: FrozenSet[str] = frozenset({"quick_embodied", "judge"})
+
+if not CORTEX_OVERRIDE_SYSTEM_ROUTES <= SYSTEM_LLM_ROUTES:
+    raise RuntimeError(
+        "CORTEX_OVERRIDE_SYSTEM_ROUTES must be system-only routes: "
+        f"{sorted(CORTEX_OVERRIDE_SYSTEM_ROUTES - SYSTEM_LLM_ROUTES)}"
+    )
+
+if not AGENT_LANE_ROUTES <= ACCEPTED_LLM_ROUTES:
+    raise RuntimeError(
+        "AGENT_LANE_ROUTES names routes that are not accepted: "
+        f"{sorted(AGENT_LANE_ROUTES - ACCEPTED_LLM_ROUTES)}"
+    )
 
 if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(
@@ -218,7 +325,7 @@ if SYSTEM_LLM_ROUTES & BACKGROUND_LLM_ROUTES:
     )
 
 
-def normalize_llm_route(raw: object) -> Optional[str]:
+def normalize_llm_route(raw: object, *, allow_system: FrozenSet[str] = frozenset()) -> Optional[str]:
     """Canonical route name for `raw`, or None if it is absent, unrecognised, or system-only.
 
     None is deliberately the same answer for "nothing was asked for" and "what was asked for is
@@ -242,7 +349,7 @@ def normalize_llm_route(raw: object) -> Optional[str]:
     if not route:
         return None
     route = LLM_ROUTE_ALIASES.get(route, route)
-    if route not in ACCEPTED_LLM_ROUTES or route in SYSTEM_LLM_ROUTES:
+    if route not in ACCEPTED_LLM_ROUTES or (route in SYSTEM_LLM_ROUTES and route not in allow_system):
         return None
     return route
 

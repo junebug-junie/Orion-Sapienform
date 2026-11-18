@@ -23,10 +23,11 @@ for key, value in {
     os.environ.setdefault(key, value)
 
 
-def _render_hub_index(monkeypatch: pytest.MonkeyPatch, *, proposal_review_enabled: bool) -> str:
-    monkeypatch.setenv("HUB_PROPOSAL_REVIEW_ENABLED", "true" if proposal_review_enabled else "false")
+def _render_hub_index(monkeypatch: pytest.MonkeyPatch) -> str:
+    # Fresh settings/main for this render; monkeypatch.delitem puts the
+    # originals back at teardown so the pop does not leak past this test.
     for mod in ("scripts.main", "scripts.settings", "app.settings"):
-        sys.modules.pop(mod, None)
+        monkeypatch.delitem(sys.modules, mod, raising=False)
     import app.settings as app_settings
 
     app_settings.get_settings.cache_clear()
@@ -36,8 +37,16 @@ def _render_hub_index(monkeypatch: pytest.MonkeyPatch, *, proposal_review_enable
 
 
 def test_hub_main_layout_is_fifty_fifty_and_scrollable_chat() -> None:
+    # Since the 2026-10-06 layout revamp the 50/50 split lives in CSS, not in a
+    # `md:w-1/2` class: the EKG drawer is half width while open and the chat card
+    # takes the rest (and all of it when the drawer collapses).
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
-    assert template.count("md:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0") >= 2
+    css = (HUB_ROOT / "static" / "css" / "style.css").read_text(encoding="utf-8")
+    column = "bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0"
+    assert f'class="hub-ekg-drawer {column}"' in template
+    assert f'class="hub-chat-card {column}"' in template
+    assert ".hub-ekg-drawer { width: 50%;" in css
+    assert ".hub-chat-card { flex: 1 1 0;" in css
     assert 'id="conversation" class="flex-1 min-h-0' in template
 
 
@@ -59,16 +68,18 @@ def test_orion_vision_panel_is_full_width() -> None:
     assert "lg:w-1/2" not in template.split("Orion's Vision")[1].split("</section>")[0]
 
 
-def test_orphan_messages_panel_removed_and_proposal_review_gated() -> None:
+def test_orphan_messages_panel_and_proposal_review_removed() -> None:
+    """Proposal review (Pending Decisions) read orion-context-exec's API; it was
+    deleted with that service 2026-10-10, placeholders and script included."""
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
     main_py = (HUB_ROOT / "scripts" / "main.py").read_text(encoding="utf-8")
     assert "messagesPanel" not in template
     assert "messagesToggle" not in template
-    assert "{{HUB_PROPOSAL_REVIEW_PANEL}}" in template
-    assert "{{HUB_PROPOSAL_REVIEW_SCRIPT}}" in template
+    assert "HUB_PROPOSAL_REVIEW" not in template
     assert "proposalReviewPanel" not in template
-    assert "HUB_PROPOSAL_REVIEW_ENABLED" in main_py
-    assert "Pending Decisions" in main_py
+    assert "HUB_PROPOSAL_REVIEW" not in main_py
+    assert "proposal_review" not in main_py
+    assert not (HUB_ROOT / "static" / "js" / "proposal-review-ui.js").exists()
 
 def test_service_logs_use_row_cards_only() -> None:
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
@@ -92,21 +103,15 @@ def test_substrate_lattice_coerces_non_array_join_fields() -> None:
     assert "def _coerce_str_list" in routes
 
 
-def test_hub_cfg_exposes_proposal_review_flag() -> None:
+def test_hub_cfg_drops_proposal_review_flag() -> None:
     main_py = (HUB_ROOT / "scripts" / "main.py").read_text(encoding="utf-8")
-    assert '"proposalReviewEnabled"' in main_py
+    assert '"proposalReviewEnabled"' not in main_py
     assert '"notifyEnabled"' not in main_py
 
 
-def test_render_hub_index_html_injects_proposal_review_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    rendered = _render_hub_index(monkeypatch, proposal_review_enabled=True)
-    assert 'id="proposalReviewPanel"' in rendered
-    assert "proposal-review-ui.js" in rendered
-    assert '"proposalReviewEnabled":true' in rendered.replace(" ", "")
-
-
-def test_render_hub_index_html_omits_proposal_review_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    rendered = _render_hub_index(monkeypatch, proposal_review_enabled=False)
+def test_render_hub_index_html_has_no_proposal_review_or_leftover_placeholders(monkeypatch: pytest.MonkeyPatch) -> None:
+    rendered = _render_hub_index(monkeypatch)
     assert 'id="proposalReviewPanel"' not in rendered
     assert "proposal-review-ui.js" not in rendered
-    assert '"proposalReviewEnabled":false' in rendered.replace(" ", "")
+    assert "proposalReviewEnabled" not in rendered
+    assert "{{HUB_PROPOSAL_REVIEW" not in rendered

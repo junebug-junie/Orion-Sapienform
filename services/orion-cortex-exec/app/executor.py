@@ -19,13 +19,19 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, get_args, get_origin
 from uuid import uuid4
 
-from jinja2 import Environment
+from orion.cognition.prompt_render import prompt_environment
 
 from pydantic import BaseModel, ValidationError
 
-from orion.llm.routes import LLM_ROUTE_ALIASES, METACOG_LLM_ROUTES, normalize_llm_route
+from orion.llm.routes import (
+    CORTEX_OVERRIDE_SYSTEM_ROUTES,
+    LLM_ROUTE_ALIASES,
+    normalize_llm_route,
+)
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
+from orion.core.bus.rpc_degraded import note_degraded
+from orion.schemas.llm_inference_projection import REFUSAL_CLASSES, REQUEST_INVALID_CLASSES
 from orion.core.contracts.recall import RecallQueryV1
 from orion.cognition.recall_query import (
     cap_retrieval_query,
@@ -33,6 +39,7 @@ from orion.cognition.recall_query import (
     retrieval_query_from_ctx,
 )
 
+from orion.schemas.stance_context_prepare import STANCE_PREPARE_REQUESTED_CTX_KEY
 from orion.schemas.agents.schemas import DeliberationRequest
 from orion.core.verbs import VerbResultV1
 from orion.schemas.collapse_mirror import (
@@ -79,7 +86,7 @@ from orion.schemas.platform import CoreEventV1
 
 from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
 from .settings import settings
-from .clients import ContextExecClient, LLMGatewayClient, RecallClient
+from .clients import LLMGatewayClient, RecallClient
 from .pageindex_client import JournalPageIndexClient
 from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
 
@@ -437,6 +444,9 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name == "github_compactor_digest_v1":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_github_compactor_digest"
 
+    if step.verb_name == "curiosity_compactor_digest_v1":
+        return 3000, requested, "curiosity_compactor_digest_budget"
+
     if step.verb_name == "chat_history_compactor_digest_v1":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_chat_history_compactor_digest"
 
@@ -459,31 +469,6 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     # siblings above, not a bespoke budget.
     if step.verb_name == "stance_react":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_stance_react"
-
-    # self_study.reflect (Layer 3 real reflection, PR #2080): same disease as the
-    # six verbs above -- strict JSON output, and the agent-route model (Qwen3-27B)
-    # is a reasoning model that emits substantial reasoning_content before its
-    # real answer. Live-confirmed 2026-09-04, corr=871934fd-4095-55b6-82b0-
-    # a8784eda8998: payload_max_tokens=512 (this function's own un-special-cased
-    # default), completion_tokens=512, finish_reason=length, reasoning_content
-    # alone ran 2417 chars ("We need answer user's request... Need produce
-    # STRICT JSON only...") -- the model spent its entire budget thinking and
-    # never wrote a single character of the actual answer. Same fix as its six
-    # siblings above, not a bespoke budget.
-    if step.verb_name == "self_study.reflect" and step.step_name == "draft_self_study_reflection":
-        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_self_study_reflect"
-
-    # Orion's Day (orion/schemas/orion_day.py): a LONG freeform note (plain markdown, not
-    # structured output) and a short list of carry-forward threads, both on the agent lane.
-    # Their own budgets: LLM_CHAT_GENERAL_MAX_TOKENS is tuned for chat replies and strict-JSON
-    # verbs, and the agent-lane model spends part of its budget on reasoning before the answer
-    # (the self_study.reflect incident above), so either would truncate the note mid-sentence.
-    if step.verb_name == "orion_day_note_v1":
-        return int(settings.llm_orion_day_note_max_tokens), requested, "settings.llm_orion_day_note_max_tokens"
-
-    if step.verb_name == "orion_day_carry_forward_v1":
-        return (int(settings.llm_orion_day_carry_forward_max_tokens), requested,
-                "settings.llm_orion_day_carry_forward_max_tokens")
 
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
@@ -995,23 +980,22 @@ def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
     # docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md):
     # before this, the guess was keyed only on phi bands and ignored trigger_kind
     # entirely, so its only reachable outputs were idle/turbulence/flow and
-    # "epiphany" was dead code no branch could produce. The two generative
-    # trigger kinds carry a far more direct claim about what the entry *is* than
-    # a phi-band coincidence does, so they win. Both target types already have
-    # real change_type mappings in DEFAULT_CHANGE_TYPE_BY_ENTRY_TYPE
+    # "epiphany" was dead code no branch could produce. The generative insight
+    # kind carries a far more direct claim about what the entry *is* than a
+    # phi-band coincidence does, so it wins. Its target type already has a
+    # real change_type mapping in DEFAULT_CHANGE_TYPE_BY_ENTRY_TYPE
     # (orion/schemas/collapse_mirror.py) -- no schema change needed.
     #
-    # Note "flow" was already reachable from the phi-band guess below by band
-    # coincidence; a trigger_kind=="flow" entry now lands there for a real
-    # reason instead.
+    # A trigger_kind=="flow" branch lived here until 2026-10-10, when its only
+    # producer (orion-equilibrium-service's flow gate) was retired -- its
+    # plateau was the field's idle rest state. type="flow" is still reachable
+    # from the phi-band guess below, as it always was.
     # Normalized on the comparison side: _metacog_trigger_kind returns the raw
     # string unstripped/uncased, so " Insight" from any future producer would
     # otherwise silently miss and fall through to the phi-band guess.
     normalized_kind = trigger_kind.strip().lower()
     if normalized_kind == "insight":
         typ = "epiphany"
-    elif normalized_kind == "flow":
-        typ = "flow"
     else:
         # crude but stable type guess (unchanged fallback for every other kind)
         typ = "idle"
@@ -1548,7 +1532,8 @@ def _enforce_daily_metacog_prompt_budget(
 
 
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
-    env = Environment(autoescape=False)
+    # Dicts and lists print as JSON (orion/cognition/prompt_render.py, issue #3289).
+    env = prompt_environment()
 
     # [FIX] Defensive coding: Prevent Jinja crash on missing globals
     render_ctx = _prompt_render_ctx(ctx)
@@ -1739,10 +1724,32 @@ def _json_sanitize(obj: Any, *, _seen: set[int] | None = None, _depth: int = 0, 
     return str(obj)
 
 
+#: The user turn added when a verb has its whole task in the system prompt and no user message
+#: (Qwen3.5's template refuses a request with no user turn; #3306).
+SYSTEM_TASK_TURN = "Carry out the task in the system message."
+#: The same turn for a hop that must answer with one JSON object. Measured 2026-11-17 on two real
+#: stance_react prompts that failed live as the one-character reply "{" (Strata agent lane,
+#: qwen3.8-flash-next): with SYSTEM_TASK_TURN the model put 0.15 and 0.07-0.12 of its probability on
+#: ending the turn right after "{"; with this wording 0.012-0.029 and 0.011-0.014.
+JSON_TASK_TURN = "Respond now with the JSON object the system message asks for."
+
+
+def _wants_json_output(ctx: Dict[str, Any]) -> bool:
+    """Does this hop ask the gateway for one JSON object? The same keys, read from the same places, that
+    call_step_services forwards into gateway_options: response_format / return_json from ctx, and
+    structured_output_schema / structured_output_method from ctx["options"] or ctx (the gateway turns
+    those into a response_format, structured_output.py apply_structured_output_to_payload)."""
+    if isinstance(ctx.get("response_format"), dict) or bool(ctx.get("return_json")):
+        return True
+    options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    return any(options.get(key) or ctx.get(key) for key in ("structured_output_schema", "structured_output_method"))
+
+
 def _build_hop_messages(
     *,
     prompt: str,
     ctx_messages: Any,
+    json_output: bool = False,
 ) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
 
@@ -1760,7 +1767,8 @@ def _build_hop_messages(
                     pass
 
     guardrail = "If no memory is provided, do not claim prior work; say you don't know."
-    prompt_content = str(prompt or "").strip()
+    task_prompt = str(prompt or "").strip()
+    prompt_content = task_prompt
     if guardrail.lower() not in prompt_content.lower():
         prompt_content = f"{prompt_content}\n\n{guardrail}".strip()
 
@@ -1771,9 +1779,15 @@ def _build_hop_messages(
         else:
             normalized = [sys_msg] + normalized
 
-    if not normalized:
-        content = prompt_content or " "
-        normalized = [{"role": "user", "content": content}]
+    if not any(isinstance(msg, dict) and msg.get("role") == "user" for msg in normalized):
+        if not task_prompt:
+            raise ValueError("LLM gateway hop has no task prompt or user message")
+        # Autonomous verbs can have a full task in the system prompt but no
+        # human message. Qwen3.5's chat template requires a user turn; this
+        # service-authored instruction asks it to execute that existing task.
+        # A JSON hop gets a turn that names the JSON answer: the generic one made
+        # stance_react end its reply after "{" (see JSON_TASK_TURN).
+        normalized.append({"role": "user", "content": JSON_TASK_TURN if json_output else SYSTEM_TASK_TURN})
 
     return normalized
 
@@ -1792,6 +1806,9 @@ def _append_memory_digest(prompt: str, memory_digest: str) -> str:
         "do not repeat past assistant replies quoted inside this block)\n"
         f"{digest}\n"
     )
+
+
+GATEWAY_FAILURE_MESSAGE_MAX_CHARS = 240
 
 
 def gateway_error_step_failure(result_payload: Any) -> Optional[str]:
@@ -1829,9 +1846,34 @@ def gateway_error_step_failure(result_payload: Any) -> Optional[str]:
             return None
     details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
     detail = details.get("stage") or details.get("reason")
+    named = error.strip()
     if isinstance(detail, str) and detail.strip():
-        return f"{error.strip()}:{detail.strip()}"
-    return error.strip()
+        named = f"{named}:{detail.strip()}"
+    # An upstream worker's own words for why it failed (gateway raw.details.message, already
+    # truncated there), e.g. ``upstream_http_5xx:http_500: No user query found in messages.``
+    # -- live 2026-10-02..06 that message existed only in the gateway's log.
+    message = details.get("message")
+    if isinstance(message, str) and message.strip():
+        named = f"{named}: {' '.join(message.split())[:GATEWAY_FAILURE_MESSAGE_MAX_CHARS]}"
+    return named
+
+
+def gateway_refusal(result_payload: Any) -> Optional[str]:
+    """``gateway_error_step_failure``'s name for the reply, but only when the gateway
+    *declined the work* (a refusal or an unusable request -- the inference contract's
+    REFUSAL_CLASSES / REQUEST_INVALID_CLASSES). Such a reply is not a round trip, so
+    this request's own reply is marked degraded (orion/core/bus/rpc_degraded.py).
+    A backend failure (upstream_timeout, upstream_http_5xx) is not: the wait was real.
+    Accepts a dict or a pydantic payload. Never raises."""
+    try:
+        payload = result_payload.model_dump(mode="json") if hasattr(result_payload, "model_dump") else result_payload
+        named = gateway_error_step_failure(payload)
+        if named is None:
+            return None
+        error = str((payload.get("raw") or {}).get("error") or "").strip()
+        return named if error in REFUSAL_CLASSES or error in REQUEST_INVALID_CLASSES else None
+    except Exception:
+        return None
 
 
 def _extract_llm_text(res: Any) -> str:
@@ -1997,7 +2039,7 @@ def _journal_pageindex_query(user_text: str) -> bool:
 # Accepted caller-supplied llm_route overrides. Historically missing "agent":
 # Hub's "Compute" selector (services/orion-hub/scripts/cortex_request_builder.py)
 # sends options.llm_route="agent" for ANY Hub Mode (not just Mode: Agent, which
-# is a separate context_exec_agent_bridge.py code path entirely) whenever an
+# is a separate FCC/harness code path entirely) whenever an
 # operator picks Compute: Agent -- but this allowlist silently rejected it,
 # falling through to the verb-based default mapping below (which never resolves
 # to "agent" for a normal chat_general turn), so the selection had no effect.
@@ -2079,13 +2121,13 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
         GpuLeaseRefV1.model_validate(ref_value)
         resolved = str(raw or "").strip().lower()
         attempted = LLM_ROUTE_ALIASES.get(resolved, resolved) or None
-        return normalize_llm_route(raw) or GPU_LEASE_ROUTE, attempted
+        return normalize_llm_route(raw, allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES) or GPU_LEASE_ROUTE, attempted
     # `attempted` keeps the alias-resolved spelling even when it is rejected, so a rejected
     # override stays visible in the llm_route_selected log line (see docstring).
     resolved = str(raw or "").strip().lower()
     resolved = LLM_ROUTE_ALIASES.get(resolved, resolved)
     attempted = resolved or None
-    accepted = normalize_llm_route(raw)
+    accepted = normalize_llm_route(raw, allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES)
     return accepted, attempted
 
 
@@ -2194,10 +2236,6 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     - metacog mode: METACOG lane
     """
     if verb_name in {"harness_finalize_reflect", "orion_response_repair"}:
-        return "agent"
-    # Orion's Day: the durable run always stamps llm_route="agent"; this default only keeps an
-    # unstamped caller off the quick lane, whose context a ~70k-token day digest overflows.
-    if verb_name in {"orion_day_note_v1", "orion_day_carry_forward_v1"}:
         return "agent"
     if verb_name == "stance_react":
         return "chat"
@@ -2942,7 +2980,9 @@ def _local_skill_payload_failure_reason(skill_payload: Dict[str, Any]) -> str | 
 # topology) must degrade to None, not create a phantom node_vectors entry in
 # field-digester (services/orion-field-digester/app/digestion/perturbation.py
 # creates whatever node_id it's handed, with no whitelist of its own).
-_KNOWN_FIELD_NODES = frozenset({"atlas", "athena", "circe", "prometheus"})
+# hecate added 2026-10-14 with its topology entry (on-demand agent-deep node).
+# atlas kept: circe's workers still carry "atlas-*" served_by labels.
+_KNOWN_FIELD_NODES = frozenset({"atlas", "athena", "circe", "hecate", "prometheus"})
 
 
 def _normalize_served_by_to_node(served_by: Any) -> str | None:
@@ -3088,7 +3128,6 @@ async def call_step_services(
     effective_timeout = step_timeout_sec
 
     llm_client = LLMGatewayClient(bus)
-    context_exec_client = ContextExecClient(bus)
 
     def _record_scoped_step(
         status: str,
@@ -3431,7 +3470,7 @@ async def call_step_services(
                 else:
                     request_object = ChatRequestPayload(
                         model=req_model,
-                        profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
+                        profile=ctx.get("profile_name"),
                         messages=messages_payload,
                         raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                         # metacog_background (2026-09-07, not plain metacog): the daily
@@ -3505,6 +3544,16 @@ async def call_step_services(
                         finish_reason=finish_reason,
                         raw_content=raw_content if metacog_budget_ok else "",
                     )
+                    if draft_mode == "fallback":
+                        # The canned template carries this entry. When the model was
+                        # never asked (prompt skipped) or the gateway refused, the reply
+                        # is degraded -- its speed is not the hop's (rpc_degraded.py).
+                        # A model that ran and produced unusable output took its real
+                        # time: that reply stays timed.
+                        refused = gateway_refusal(llm_res) if llm_res is not None else None
+                        skipped = draft_error in ("prompt_context_overflow", "prompt_budget_exceeded")
+                        if refused or skipped:
+                            note_degraded(f"metacog_draft_fallback:{refused or draft_error}")
                     _set_metacog_draft_telemetry(
                         base_entry,
                         mode=draft_mode,
@@ -3640,6 +3689,8 @@ async def call_step_services(
                         "error": str(e),
                         "fallback_reason": "llm_exception",
                     }
+                    # Not marked degraded: an exception here is a parsing/LLM failure
+                    # after real work, not a declined call (the plan step fails).
                     by_service = ctx.get("prior_step_results_by_service")
                     if not isinstance(by_service, dict):
                         by_service = {}
@@ -4223,7 +4274,9 @@ async def call_step_services(
                         bool(memory_digest),
                         len(memory_digest),
                     )
-                messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+                messages_payload = _build_hop_messages(
+                    prompt=prompt, ctx_messages=ctx.get("messages"), json_output=_wants_json_output(ctx),
+                )
                 memory_has_marker = bool(memory_digest) and memory_digest in prompt
                 raw_query = (ctx.get("raw_user_text") or _last_user_message(ctx) or "").strip()
                 query_terms = []
@@ -4423,10 +4476,7 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
-                    profile=(
-                        ctx.get("profile_name")
-                        or (settings.atlas_metacog_profile_name if llm_route in METACOG_LLM_ROUTES else None)
-                    ),
+                    profile=ctx.get("profile_name"),
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=llm_route,
@@ -4467,6 +4517,12 @@ async def call_step_services(
                         raw_payload.get("details"),
                     )
                     logs.append(f"fail <- {service}: {gateway_failure}")
+                    # A refusal is not an answer: the caller's RPC health must count
+                    # this request's reply degraded, not time it (rpc_degraded.py;
+                    # 2026-10-08 gpu_pool_unavailable). A backend failure stays timed.
+                    refusal = gateway_refusal(result_payload)
+                    if refusal is not None:
+                        note_degraded(f"llm_gateway:{refusal}")
                     merged_result[service] = result_payload
                     merged_result["error"] = {"message": gateway_failure, "service": service}
                     _record_scoped_step("fail", gateway_failure, merged_result, logs)
@@ -4812,6 +4868,14 @@ async def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: boo
         return None
     if not force_refresh and isinstance(ctx.get("chat_stance_inputs"), dict):
         return ctx.get("chat_stance_inputs")
+    if not force_refresh and ctx.get(STANCE_PREPARE_REQUESTED_CTX_KEY):
+        # Unified-turn latency L4: orion-thought built this context while
+        # orion-mind ran (app/stance_prepare.py). Waits for an in-flight
+        # prepare instead of building a second time.
+        from .stance_prepare import take_prepared_stance_context
+
+        if await take_prepared_stance_context(ctx):
+            return ctx.get("chat_stance_inputs")
 
     _inject_identity_context(ctx)
     stance_inputs = await build_chat_stance_inputs(ctx)
@@ -4825,6 +4889,45 @@ async def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: boo
     return stance_inputs
 
 
+# Verbs that run in mode=brain but never read the stance/identity context that
+# prepare_brain_reply_context builds. Shared by the router's pre-plan hook and the
+# step-time check so the two cannot drift (they did: the router skipped a verb the
+# step-time check then rebuilt anyway).
+#   introspect_spark / memory_graph_suggest: render only from context.metadata.
+#   harness_finalize_reflect / orion_response_repair: the harness finalize chain
+#     (orion/harness/finalize.py) runs these right after a stance_react for the same
+#     turn and reads back text only; the rebuild was a full duplicate stance build
+#     (~9 s, plus duplicate cortex_turn / chat_stance_belief_log rows).
+BRAIN_REPLY_CONTEXT_SKIP_VERBS = frozenset(
+    {
+        "introspect_spark",
+        "memory_graph_suggest",
+        "harness_finalize_reflect",
+        "orion_response_repair",
+    }
+)
+
+
+def brain_reply_context_skipped(
+    verb: Any, ctx: Dict[str, Any], options: Dict[str, Any] | None = None
+) -> bool:
+    """True when this verb must not run the brain reply-context build.
+
+    Reads the ``skip_brain_reply_context`` flag from ``ctx`` and from ``options``
+    (``options`` defaults to ``ctx["options"]``); callers such as
+    memory_graph_suggest set it in options only.
+    """
+    verb_name = str(verb or "").strip().lower()
+    if verb_name in BRAIN_REPLY_CONTEXT_SKIP_VERBS:
+        return True
+    if bool(ctx.get("skip_brain_reply_context")):
+        return True
+    opts = options if isinstance(options, dict) else ctx.get("options")
+    if isinstance(opts, dict) and bool(opts.get("skip_brain_reply_context")):
+        return True
+    return False
+
+
 def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, Any]) -> bool:
     mode = str(ctx.get("mode") or "").strip().lower()
     if mode != "brain":
@@ -4836,12 +4939,7 @@ def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, A
     # context.metadata (prompt/response/spark_meta). Full brain stance + unified
     # beliefs (GraphDB/recall/social) is wasted work and dominated latency after the
     # 2026-05-09 cognitive unification layer landed in build_chat_stance_inputs.
-    if verb_name in {"introspect_spark", "memory_graph_suggest"}:
-        return False
-    if bool(ctx.get("skip_brain_reply_context")):
-        return False
-    opts = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
-    if bool(opts.get("skip_brain_reply_context")):
+    if brain_reply_context_skipped(verb_name, ctx):
         return False
     if verb_name.startswith("skills.runtime."):
         return False

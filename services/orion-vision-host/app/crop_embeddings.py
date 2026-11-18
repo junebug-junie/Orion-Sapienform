@@ -22,17 +22,43 @@ handed, so a no-embed-zone box structurally cannot get one -- the host writes
 a small JPEG (``THUMB_MAX_SIDE`` px, quality ``THUMB_QUALITY``) named by the
 sha256 of its bytes under ``VISION_CROP_THUMB_DIR`` and returns
 ``thumb_ref="thumb:<sha256>"`` on the object. At most one thumbnail per
-stream per ``VISION_CROP_THUMB_MIN_INTERVAL_SEC`` (``ThumbRateLimiter``), and
-only on the router's triggered tier when the request says which tier it is.
-Retention: a background thread in ``ThumbStore`` (never the detect path)
-deletes thumbnails not written for ``VISION_CROP_THUMB_RETENTION_DAYS``
-(default 10, longer than an ask's 7-day life). The Hub serves them read-only
+stream AND label per ``VISION_CROP_THUMB_MIN_INTERVAL_SEC``
+(``ThumbRateLimiter``; per label since 2026-10-20 so a parked car cannot use
+up a passing person's slot), and only on the router's triggered tier when the
+request says which tier it is. Retention: thumbnails are kept forever by
+default (``VISION_CROP_THUMB_RETENTION_DAYS=0``, Juniper 2026-10-20). A
+positive value makes a background thread in ``ThumbStore`` (never the detect
+path) delete thumbnails not written for that many days. The Hub serves them read-only
 by hash (``/api/vision/crop-thumbs/<sha256>``).
 
-A box whose bottom-center is outside the patio can still contain patio
+A box whose bottom-center is outside a no-embed zone can still contain its
 pixels, so any box that INTERSECTS a no-embed zone
 (``orion.vision.zones.intersects_no_embed``) gets neither an embedding nor a
-thumbnail.
+thumbnail. Since 2026-10-15 no configured zone is no-embed (Juniper lifted the
+patio rule), so this is a generic mechanism nothing uses today.
+
+**Faces (2026-10-15).** When the request also sets ``want_crop_faces`` (the
+router's walkway policy; no other stream), each EMBEDDED crop whose label is
+in ``crop_face_labels`` (default ``person``) is handed to ``face_fn`` -- the
+identity_face profile's already-loaded MTCNN + InceptionResnetV1 -- which
+returns the most confident face's 512-d vector, its probability and the face
+crop, or None. The vector rides on the object (``face_embedding``) to the
+individuals reducer; the face crop becomes ``face_thumb_ref`` (own rate
+limiter, triggered tier only), which the ask card prefers. A stream with no
+zones on file (cam0, carbon) never reaches the embed list, so it can never
+get a face here. Juniper's enrolled gallery is not read or written by this
+path.
+
+**OSNet shadow vector (2026-10-16).** When ``osnet_fn`` is given (the
+``VISION_OSNET_SHADOW_ENABLED`` kill switch, app/osnet_shadow.py), every
+EMBEDDED crop whose label is in ``OSNET_LABELS`` (``person``: OSNet is a person
+re-identification model) also gets ``osnet_embedding`` (512-d, L2-normalized)
+and ``osnet_model_id``. Same crop pixels as the SigLIP vector. Shadow only:
+the individuals reducer does not read it. An OSNet failure costs the OSNet
+vector, never the SigLIP vector, the face or the detection. Every embedded
+crop also carries ``embedding_model_id``: the body model that ACTUALLY made
+its vector (SigLIP v1 today, because SigLIP2 does not load), not the one the
+profile asks for.
 """
 
 from __future__ import annotations
@@ -43,7 +69,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from loguru import logger
@@ -63,19 +89,28 @@ DEFAULT_MAX_CROPS_PER_FRAME = 8
 DEFAULT_MIN_SIDE_PX = 16
 
 EmbedFn = Callable[[List[Image.Image]], np.ndarray]
+# Crops in, per crop: (face vector, face detection probability, face crop) or None.
+FaceHit = Tuple[Sequence[float], float, Image.Image]
+FaceFn = Callable[[List[Image.Image]], List[Optional[FaceHit]]]
+DEFAULT_CROP_FACE_LABELS = ("person",)
+OSNET_LABELS = frozenset({"person"})
+OSNET_DIM = 512  # app/osnet_shadow.FEATURE_DIM; a vector of any other length is not OSNet
 # A crop in, "thumb:<sha256>" (or None) out.
 ThumbFn = Callable[[Image.Image], Optional[str]]
 
 THUMB_REF_PREFIX = "thumb:"
 THUMB_MAX_SIDE = 160
 THUMB_QUALITY = 70
-DEFAULT_THUMB_RETENTION_DAYS = 10.0
+DEFAULT_THUMB_RETENTION_DAYS = 0.0  # 0 = keep forever
+# A ``.tmp`` left by a crash mid-write is removed after this, even when photos are kept forever.
+STALE_TMP_SEC = 86400.0
 DEFAULT_THUMB_MIN_INTERVAL_SEC = 10.0
 
 
 class ThumbRateLimiter:
-    """At most one thumbnail per stream per ``min_interval_sec``. A parked car
-    embedded every frame must not write ~30k files a day."""
+    """At most one thumbnail per key per ``min_interval_sec``. A parked car
+    embedded every frame must not write ~30k files a day. The crop-thumbnail
+    caller keys by (stream, label), so each label has its own slot."""
 
     def __init__(self, min_interval_sec: float, clock: Callable[[], float] = time.monotonic) -> None:
         self.min_interval_sec = max(0.0, float(min_interval_sec))
@@ -83,14 +118,21 @@ class ThumbRateLimiter:
         self._last: Dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def take(self, stream_id: str) -> bool:
+    def take(self, key: str) -> bool:
         now = self._clock()
         with self._lock:
-            last = self._last.get(stream_id)
+            last = self._last.get(key)
             if last is not None and now - last < self.min_interval_sec:
                 return False
-            self._last[stream_id] = now
+            self._last[key] = now
             return True
+
+
+def thumb_slot_key(stream_id: str, label: Any) -> str:
+    """The crop-thumbnail limiter key: one slot per stream AND label. Live
+    2026-10-16..20 with one slot per stream: vehicles 32,799 crops -> 197
+    thumbs, people 973 -> 106, and a 27-sighting person had pictures on 4."""
+    return f"{stream_id}\x1f{_norm_label(label)}"
 
 
 def encode_thumb(crop: Image.Image, *, max_side: int = THUMB_MAX_SIDE, quality: int = THUMB_QUALITY) -> bytes:
@@ -102,7 +144,8 @@ def encode_thumb(crop: Image.Image, *, max_side: int = THUMB_MAX_SIDE, quality: 
 
 
 class ThumbStore:
-    """Content-addressed crop thumbnails on local disk, pruned by age.
+    """Content-addressed crop thumbnails on local disk, kept forever unless
+    ``retention_days`` > 0 (then pruned by age).
 
     ``put`` writes ``<root>/<sha256>.jpg`` atomically (temp file + rename) and
     returns ``thumb:<sha256>``. A second put of identical bytes just refreshes
@@ -164,18 +207,25 @@ class ThumbStore:
         now = self._clock() if now is None else now
         if not self.root.is_dir():
             return 0
+        keep_forever = self.retention_sec <= 0
         removed = 0
         for p in self.root.iterdir():
-            if not (p.name.endswith(".jpg") or p.name.endswith(".tmp")):
+            is_tmp = p.name.endswith(".tmp")
+            if not (p.name.endswith(".jpg") or is_tmp):
                 continue
+            if keep_forever and not is_tmp:
+                continue  # retention 0 = photos are never deleted by age
+            limit = STALE_TMP_SEC if keep_forever else self.retention_sec
             try:
-                if now - p.stat().st_mtime > self.retention_sec:
+                if now - p.stat().st_mtime > limit:
                     p.unlink()
                     removed += 1
             except FileNotFoundError:
                 continue
         if removed:
-            logger.info(f"[CROP] pruned {removed} crop thumbnail(s) older than {self.retention_sec / 86400:.0f}d")
+            logger.info(f"[CROP] pruned {removed} crop thumbnail file(s)"
+                        + (" (stale .tmp only; photos kept forever)" if keep_forever
+                           else f" older than {self.retention_sec / 86400:.0f}d"))
         return removed
 
 _ZONES_CACHE: Dict[str, Optional[Dict[str, List[Zone]]]] = {}
@@ -262,6 +312,11 @@ def attach_crop_embeddings(
     min_score: float,
     thumb_fn: Optional[ThumbFn] = None,
     thumb_limiter: Optional[ThumbRateLimiter] = None,
+    face_fn: Optional[FaceFn] = None,
+    face_thumb_limiter: Optional[ThumbRateLimiter] = None,
+    body_model_id: Optional[Any] = None,
+    osnet_fn: Optional[EmbedFn] = None,
+    osnet_model_id: Optional[str] = None,
 ) -> Dict[str, int]:
     """Mutates ``objects`` in place: sets ``zone`` on every tracked-label box and
     ``embedding``/``embedding_ref`` (and ``thumb_ref``, when ``thumb_fn`` is
@@ -270,7 +325,8 @@ def attach_crop_embeddings(
     Returns counters for the detect artifact (``crop_embeddings`` block) so a
     live check can see how many boxes were tracked, embedded, and withheld.
     """
-    stats = {"tracked": 0, "embedded": 0, "withheld_no_embed_zone": 0, "withheld_other": 0, "thumbs": 0}
+    stats = {"tracked": 0, "embedded": 0, "withheld_no_embed_zone": 0, "withheld_other": 0, "thumbs": 0,
+             "faces": 0, "face_thumbs": 0, "osnet": 0}
     labels = resolve_labels(request, params)
     stream_id = str(request.get("stream_id") or "").strip()
     width, height = image.width, image.height
@@ -338,6 +394,9 @@ def attach_crop_embeddings(
         raise ValueError(f"crop embedder returned shape {vecs.shape} for {len(to_embed)} crops")
     norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12
     vecs = vecs / norms
+    # A str, or a callable read now that the embedder has run (runner.py).
+    if callable(body_model_id):
+        body_model_id = body_model_id()
 
     # Thumbnails only on the router's triggered tier when the request names
     # its tier (a request with no tier -- e.g. a direct RPC -- is not gated).
@@ -348,16 +407,186 @@ def attach_crop_embeddings(
         obj = objects[i]
         obj["embedding"] = [float(x) for x in vecs[row].tolist()]
         obj["embedding_ref"] = _crop_ref(frame_key, obj["box_xyxy"], model_id, embed_profile)
+        obj["embedding_model_id"] = body_model_id
         stats["embedded"] += 1
         # Same crop the embedder saw -- the only pixels a thumbnail is ever
         # made from. A thumbnail failure costs the picture, not the vector.
         obj["thumb_ref"] = None
         if thumb_fn is not None and thumb_allowed and (
-                thumb_limiter is None or thumb_limiter.take(stream_id)):
+                thumb_limiter is None or thumb_limiter.take(thumb_slot_key(stream_id, obj.get("label")))):
             try:
                 obj["thumb_ref"] = thumb_fn(crops[row])
             except Exception as exc:
                 logger.warning(f"[CROP] thumbnail write failed: {exc}")
             if obj["thumb_ref"]:
                 stats["thumbs"] += 1
+
+    if osnet_fn is not None:
+        _attach_osnet(objects, to_embed, crops, osnet_fn=osnet_fn, model_id=osnet_model_id, stats=stats)
+
+    if face_fn is not None and request.get("want_crop_faces") is True:
+        _attach_faces(objects, to_embed, crops, request=request, params=params, face_fn=face_fn,
+                      thumb_fn=thumb_fn if thumb_allowed else None, thumb_limiter=face_thumb_limiter,
+                      stream_id=stream_id, stats=stats)
     return stats
+
+
+def _attach_osnet(
+    objects: List[Dict[str, Any]],
+    embedded: List[int],
+    crops: List[Image.Image],
+    *,
+    osnet_fn: EmbedFn,
+    model_id: Optional[str],
+    stats: Dict[str, int],
+) -> None:
+    """Shadow OSNet vector on embedded person crops, one batched pass. A failure
+    (or a malformed result) drops every OSNet vector of this frame and nothing else."""
+    rows = [row for row, i in enumerate(embedded) if _norm_label(objects[i].get("label")) in OSNET_LABELS]
+    for i in embedded:
+        objects[i]["osnet_embedding"] = None
+        objects[i]["osnet_model_id"] = None
+    if not rows:
+        return
+    try:
+        vecs = np.asarray(osnet_fn([crops[row] for row in rows]), dtype=np.float32)
+        if vecs.ndim != 2 or vecs.shape[0] != len(rows) or vecs.shape[1] != OSNET_DIM:
+            raise ValueError(f"osnet returned shape {vecs.shape} for {len(rows)} crops (want {OSNET_DIM}-d)")
+    except Exception as exc:
+        logger.warning(f"[CROP] OSNet shadow vector failed, SigLIP vectors kept: {exc}")
+        stats["osnet_error"] = 1
+        return
+    norms = np.linalg.norm(vecs, axis=1)
+    for row, vec, n in zip(rows, vecs, norms):
+        if not np.isfinite(n) or n <= 0:
+            continue
+        obj = objects[embedded[row]]
+        obj["osnet_embedding"] = [float(x) for x in (vec / n).tolist()]
+        obj["osnet_model_id"] = model_id
+        stats["osnet"] += 1
+
+
+def resolve_face_labels(request: Dict[str, Any], params: Dict[str, Any]) -> set[str]:
+    raw = request.get("crop_face_labels") or params.get("crop_face_labels") or list(DEFAULT_CROP_FACE_LABELS)
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    return {_norm_label(x) for x in raw if _norm_label(x)}
+
+
+def _attach_faces(
+    objects: List[Dict[str, Any]],
+    embedded: List[int],
+    crops: List[Image.Image],
+    *,
+    request: Dict[str, Any],
+    params: Dict[str, Any],
+    face_fn: FaceFn,
+    thumb_fn: Optional[ThumbFn],
+    thumb_limiter: Optional[ThumbRateLimiter],
+    stream_id: str,
+    stats: Dict[str, int],
+) -> None:
+    """Face vector + face thumbnail on embedded crops of a face label. A face
+    failure costs the face, never the crop vector or the detection."""
+    labels = resolve_face_labels(request, params)
+    rows = [row for row, i in enumerate(embedded) if _norm_label(objects[i].get("label")) in labels]
+    for i in embedded:
+        objects[i]["face_embedding"] = None
+        objects[i]["face_score"] = None
+        objects[i]["face_thumb_ref"] = None
+    if not rows:
+        return
+    try:
+        hits = face_fn([crops[row] for row in rows])
+    except Exception as exc:
+        logger.warning(f"[CROP] face embedding failed, crop vectors kept: {exc}")
+        stats["face_error"] = 1
+        return
+    if len(hits) != len(rows):
+        logger.warning(f"[CROP] face_fn returned {len(hits)} results for {len(rows)} crops; faces dropped")
+        stats["face_error"] = 1
+        return
+    for row, hit in zip(rows, hits):
+        if hit is None:
+            continue
+        vec, prob, face_img = hit
+        v = np.asarray(vec, dtype=np.float32).reshape(-1)
+        n = float(np.linalg.norm(v))
+        if v.size == 0 or n <= 0 or not np.isfinite(n):
+            continue
+        obj = objects[embedded[row]]
+        obj["face_embedding"] = [float(x) for x in (v / n).tolist()]
+        obj["face_score"] = round(float(prob), 4)
+        stats["faces"] += 1
+        if thumb_fn is not None and face_img is not None and (
+                thumb_limiter is None or thumb_limiter.take(stream_id)):
+            try:
+                obj["face_thumb_ref"] = thumb_fn(face_img)
+            except Exception as exc:
+                logger.warning(f"[CROP] face thumbnail write failed: {exc}")
+            if obj["face_thumb_ref"]:
+                stats["face_thumbs"] += 1
+
+
+def _face_crop_box(box: Sequence[float], width: int, height: int, pad: float = 0.25) -> tuple[int, int, int, int]:
+    """The face box grown by ``pad`` on each side (hair, chin), clipped."""
+    x1, y1, x2, y2 = (float(v) for v in box)
+    dx, dy = (x2 - x1) * pad, (y2 - y1) * pad
+    return (max(0, int(np.floor(x1 - dx))), max(0, int(np.floor(y1 - dy))),
+            min(width, int(np.ceil(x2 + dx))), min(height, int(np.ceil(y2 + dy))))
+
+
+def crop_faces(
+    crops: List[Image.Image],
+    *,
+    mtcnn: Any,
+    model: Any,
+    device: str,
+    min_prob: float,
+    min_side_px: float = 40.0,
+) -> List[Optional[FaceHit]]:
+    """Per crop, the most confident face (MTCNN) at or above ``min_prob`` and
+    at least ``min_side_px`` on its short side, embedded by InceptionResnetV1
+    in one batched forward pass. Same detect + extract split as
+    runner._run_identity_face. Returns (vector, probability, face crop) or
+    None per crop."""
+    import torch
+
+    picked: List[Optional[tuple]] = []
+    tensors = []
+    for crop in crops:
+        img = crop.convert("RGB")
+        boxes, probs = mtcnn.detect(img)
+        if boxes is None or probs is None or len(boxes) == 0:
+            picked.append(None)
+            continue
+        best = max(range(len(probs)), key=lambda j: (probs[j] if probs[j] is not None else -1.0))
+        prob = probs[best]
+        box = [float(v) for v in boxes[best]]
+        if prob is None or float(prob) < min_prob or min(box[2] - box[0], box[3] - box[1]) < min_side_px:
+            picked.append(None)
+            continue
+        face = mtcnn.extract(img, np.asarray([box], dtype=np.float32), None)
+        if face is None:
+            picked.append(None)
+            continue
+        if face.dim() == 3:
+            face = face.unsqueeze(0)
+        tensors.append(face[:1])
+        picked.append((float(prob), img.crop(_face_crop_box(box, img.width, img.height))))
+    if not tensors:
+        return [None for _ in crops]
+    batch = torch.cat(tensors, dim=0)
+    if device.startswith("cuda"):
+        batch = batch.to(device=device, dtype=next(model.parameters()).dtype)
+    with torch.inference_mode():
+        vecs = model(batch).detach().float().cpu().numpy()
+    out: List[Optional[FaceHit]] = []
+    k = 0
+    for item in picked:
+        if item is None:
+            out.append(None)
+            continue
+        out.append((vecs[k].tolist(), item[0], item[1]))
+        k += 1
+    return out

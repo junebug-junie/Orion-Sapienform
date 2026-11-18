@@ -144,7 +144,7 @@ class FieldChannelAnomalyScorer:
     def _fetch_live_enrichment_fields(self, now: datetime) -> dict[str, float]:
         """Best-effort, per-tick. Returns {} (never raises) on any failure --
         the caller falls back to build_windows()'s existing 0.0-fill for
-        whichever of the 6 live-enrichment channels stay absent, same as any
+        whichever of the 5 live-enrichment channels stay absent, same as any
         other genuinely-missing channel. Three review-caught refinements
         (2026-09-03) on top of the plain lazy-reuse design:
 
@@ -202,7 +202,7 @@ class FieldChannelAnomalyScorer:
             # resolve_live_enrichment()'s own docstring: a fully-empty
             # return can mean a real producer outage longer than the
             # lookback window, not a calm tick -- worth surfacing loudly,
-            # not silently 0.0-padding every one of the 6 channels forever.
+            # not silently 0.0-padding every one of the 5 channels forever.
             logger.warning(
                 "field_channel_anomaly_scorer_live_enrichment_empty now=%s lookback_hours=%.2f",
                 now.isoformat(),
@@ -210,7 +210,7 @@ class FieldChannelAnomalyScorer:
             )
         else:
             # DEBUG (not WARNING -- this is the normal-operation path, fires
-            # every tick): names exactly which of the 6 channels landed, so
+            # every tick): names exactly which of the 5 channels landed, so
             # a PARTIAL failure (e.g. attention_self_model's producer down
             # but action_warrant's still alive) is distinguishable from
             # either total success or the total-failure case logged above.

@@ -17,6 +17,33 @@ logger = logging.getLogger("sql-writer")
 _active_grammar_dbapi_conns: dict[int, Any] = {}
 _active_grammar_conn_lock = threading.Lock()
 
+# What the last persist call on THIS thread actually did, as {outcome_class: n_events}.
+# The persist functions swallow statement cancels and integrity conflicts and
+# return False/0 (callers depend on that), so the return value alone cannot tell
+# "already in the ledger" from "lost". The storage-write organ reads this via
+# take_last_grammar_outcome() from the same executor thread (run_in_executor does
+# not carry contextvars, a thread-local does).
+_outcome_tls = threading.local()
+
+
+def _set_outcome(counts: dict[str, int]) -> None:
+    _outcome_tls.value = {k: int(v) for k, v in counts.items() if int(v) > 0}
+
+
+def take_last_grammar_outcome() -> dict[str, int] | None:
+    value = getattr(_outcome_tls, "value", None)
+    _outcome_tls.value = None
+    return value
+
+
+def _integrity_class(exc: IntegrityError) -> str:
+    """23505 (unique violation) on the ledger is an idempotent duplicate; any other
+    integrity error is a real reject."""
+    pgcode = getattr(getattr(exc, "orig", None), "pgcode", None)
+    if pgcode == "23505" or "duplicate key" in str(exc).lower():
+        return "duplicate"
+    return "constraint"
+
 
 def cancel_active_grammar_persist(shard_id: int = 0) -> bool:
     """Cancel the in-flight Postgres query for the active grammar persist on a shard."""
@@ -90,6 +117,7 @@ def persist_grammar_trace_batch(events: list[GrammarEventV1], shard_id: int = 0)
                 sess.commit()
             except IntegrityError as exc:
                 sess.rollback()
+                _set_outcome({_integrity_class(exc): len(events)})
                 logger.warning(
                     "grammar_trace_batch_integrity_conflict trace_id=%s events=%s error=%s",
                     trace_id,
@@ -105,9 +133,11 @@ def persist_grammar_trace_batch(events: list[GrammarEventV1], shard_id: int = 0)
             )
         else:
             logger.info("grammar_trace_batch_deduped trace_id=%s events=%s", trace_id, len(events))
+        _set_outcome({"committed": applied, "duplicate": len(events) - applied})
         return applied
     except IntegrityError as exc:
         sess.rollback()
+        _set_outcome({_integrity_class(exc): len(events)})
         logger.warning(
             "grammar_trace_batch_integrity_conflict trace_id=%s error=%s",
             trace_id,
@@ -117,6 +147,7 @@ def persist_grammar_trace_batch(events: list[GrammarEventV1], shard_id: int = 0)
     except OperationalError as exc:
         _dispose_grammar_session(sess, shard_id)
         if "canceling statement" in str(exc).lower() or "query canceled" in str(exc).lower():
+            _set_outcome({"timeout": len(events)})
             logger.warning(
                 "grammar_trace_batch_canceled trace_id=%s error=%s",
                 trace_id,
@@ -148,6 +179,7 @@ def persist_grammar_event(event: GrammarEventV1, shard_id: int = 0) -> bool:
                 sess.commit()
             except IntegrityError as exc:
                 sess.rollback()
+                _set_outcome({_integrity_class(exc): 1})
                 logger.warning(
                     "grammar_event_integrity_conflict event_id=%s trace_id=%s kind=%s error=%s",
                     event.event_id,
@@ -164,9 +196,11 @@ def persist_grammar_event(event: GrammarEventV1, shard_id: int = 0) -> bool:
             )
         else:
             logger.info("grammar_event_deduped event_id=%s", event.event_id)
+        _set_outcome({"committed" if applied else "duplicate": 1})
         return applied
     except IntegrityError as exc:
         sess.rollback()
+        _set_outcome({_integrity_class(exc): 1})
         logger.warning(
             "grammar_event_integrity_conflict event_id=%s trace_id=%s error=%s",
             event.event_id,
@@ -177,6 +211,7 @@ def persist_grammar_event(event: GrammarEventV1, shard_id: int = 0) -> bool:
     except OperationalError as exc:
         _dispose_grammar_session(sess, shard_id)
         if "canceling statement" in str(exc).lower() or "query canceled" in str(exc).lower():
+            _set_outcome({"timeout": 1})
             logger.warning(
                 "grammar_event_canceled event_id=%s trace_id=%s error=%s",
                 event.event_id,

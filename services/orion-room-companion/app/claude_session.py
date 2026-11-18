@@ -1,6 +1,7 @@
 """Session-continuous `claude -p` invocation for one social room.
 
-Derived from `services/orion-self-study-enrichment/app/claude_runner.py`,
+Derived from the self-study enrichment service's `app/claude_runner.py` (service
+deleted 2026-10-30; the file is in git history),
 which is a *one-shot* evidence-in/prose-out call. The difference that
 justifies a separate module rather than a parameter on that one: a room
 participant has to remember the conversation.
@@ -13,8 +14,20 @@ room does NOT re-stuff the whole transcript on every turn -- the transcript
 in `RoomClaudeRequestV1` is context for the *first* turn of a session and a
 recovery path if the CLI session is ever lost, not the memory mechanism.
 
-Tools stay off (`--tools ""`). v1 Claude is a companion to think with, not
-an agent: no filesystem, no repo, no network fetch.
+Built-in tools stay off (`--tools ""`): no Bash, no Read, no web, no
+filesystem, no repo. Since Patch 1b (2026-11-13,
+docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md
+section 4) a room turn may also get ONE MCP server, `orion_room`
+(orion/claude_tools/mcp_server.py), from a per-turn `--mcp-config` with
+`--strict-mcp-config` and `--allowedTools mcp__orion_room`: Orion's read-only
+tools, each gated by Orion's consent. That server's only power is one bus
+request to the broker in orion-harness-governor.
+
+The one exception is a CONSULT room (``orion.consult.core.CONSULT_ROOM_PREFIX``): Claude
+gets ``Read,Grep,Glob`` on a read-only ``git archive`` export of the deployed code (no ``.git``), and the normal
+permission mode (``consult_argv``), so anything outside the working directory needs a
+permission nobody can grant in ``-p`` mode and is denied. Deny rules name the paths that
+hold secrets in this container (``/proc`` env, the config dir, ``/data``) on top of that.
 """
 
 from __future__ import annotations
@@ -26,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from orion.fcc.claude_spawn import claude_permission_argv, setting_sources_argv
+from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
 
 
 @dataclass(frozen=True)
@@ -42,7 +55,6 @@ class ClaudeTurnResult:
 
 
 def build_argv(
-    prompt: str,
     *,
     claude_bin: str,
     model: str,
@@ -51,24 +63,67 @@ def build_argv(
     session_id: str,
     resume: bool,
     append_system_prompt: str | None = None,
+    tools: str = "",
+    consult: bool = False,
+    mcp_config_path: Path | None = None,
 ) -> list[str]:
-    argv: list[str] = [claude_bin, "-p", prompt, "--output-format", "json", "--model", model]
+    # The prompt is NOT in argv: it goes over stdin (run_room_turn). Linux
+    # refuses any single argument over 131,072 bytes (MAX_ARG_STRLEN), and a
+    # whole-conversation prompt is up to ~160,000 characters. Verified live
+    # 2026-11-12 in this image (CLI 2.1.239): a 150,101-byte prompt piped to
+    # `claude -p` with no prompt argument was read whole -- Claude answered
+    # with the marker on its last line.
+    argv: list[str] = [claude_bin, "-p", "--output-format", "json", "--model", model]
     # --session-id mints a session; --resume continues one. Passing both is a
     # CLI error, so this is an either/or, never a belt-and-suspenders pair.
     if resume:
         argv.extend(["--resume", session_id])
     else:
         argv.extend(["--session-id", session_id])
-    argv.extend(["--tools", ""])  # companion, not agent -- see module docstring
+    # Companion: no built-in tools. Consult: read-only tools only -- see module docstring.
+    argv.extend(["--tools", tools if consult else ""])
+    # Orion's tools (room turns only, never a consult: the consult design promises "never Juniper's chat
+    # history"). Strict: no MCP server from any other config can load.
+    if mcp_config_path is not None and not consult:
+        extend_mcp_argv(argv, Path(mcp_config_path))
+        argv.append("--strict-mcp-config")
     if effort:
         argv.extend(["--effort", effort])
     if append_system_prompt:
         argv.extend(["--append-system-prompt", append_system_prompt])
     argv.extend(setting_sources_argv(setting_sources_env_key))
+    if consult:
+        argv.extend(consult_argv())
+        return argv
     perm = claude_permission_argv(auto_approve=True)
     if perm:
         argv.extend(perm)
     return argv
+
+
+# Paths in this container that hold or reveal the credential. The consult's own permission mode
+# already denies reads outside the working directory; these make the intent explicit and survive
+# a future mode change. ``//`` is Claude Code's absolute-path rule prefix.
+CONSULT_DENY_RULES = (
+    "Read(//proc/**)",
+    "Read(//root/**)",
+    "Read(//data/**)",
+    "Read(//etc/**)",
+    "Read(//app/**)",
+    "Read(**/.env)",
+    "Read(**/.env.*)",
+    "Read(**/.git/**)",
+)
+
+
+def consult_argv() -> list[str]:
+    """Permission argv for a consult turn: default mode (NOT bypass) plus explicit deny rules.
+
+    Default mode in ``-p`` cannot ask, so any tool use that would need a permission is denied.
+    Reads inside the working directory need none. Bypass mode is never used here: it would make
+    every path readable."""
+    settings = {"permissions": {"deny": list(CONSULT_DENY_RULES)}}
+    return ["--permission-mode", "default", "--settings", json.dumps(settings)]
 
 
 def _extract_text(parsed: dict[str, Any]) -> str:
@@ -128,9 +183,11 @@ def run_room_turn(
     append_system_prompt: str | None = None,
     env: dict[str, str] | None = None,
     cwd: str | Path | None = None,
+    tools: str = "",
+    consult: bool = False,
+    mcp_config_path: Path | None = None,
 ) -> ClaudeTurnResult:
     argv = build_argv(
-        prompt,
         claude_bin=claude_bin,
         model=model,
         effort=effort,
@@ -138,6 +195,9 @@ def run_room_turn(
         session_id=session_id,
         resume=resume,
         append_system_prompt=append_system_prompt,
+        tools=tools,
+        consult=consult,
+        mcp_config_path=mcp_config_path,
     )
     started = time.monotonic()
 
@@ -147,6 +207,7 @@ def run_room_turn(
     try:
         proc = subprocess.run(
             argv,
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=timeout_sec,

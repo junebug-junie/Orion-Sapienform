@@ -25,6 +25,8 @@ Both were checked against live data on 2026-09-08 and both are unusable:
   **one distinct value across all 1,382: exactly 1.0**. It is a pinned
   constant, not a signal -- keying on it means "fire every tick", which
   carries no information about whether Orion wants anything.
+  (That candidate was retired 2026-10-10; see
+  docs/superpowers/pr-reports/2026-10-10-retire-ontology-sparse-region-pr.md.)
 
 What is left is the mechanism that already produces the outcome a peer is for.
 `orion_worldview` is a FalkorDB graph Orion writes itself, in-turn, with real
@@ -32,9 +34,11 @@ Cypher; Hub holds `GRAPH.RO_QUERY` only. Its priors carry real verdicts -- as
 of 2026-09-08, 4 `refuted`, 4 `supported`, 3 `revised`. Orion's own kickoff
 prompt already names the state this trigger looks for, in Orion's own words:
 
-    "Inconclusive is a real answer: bump times_tested, leave confidence where
-    it was... Three of those and the claim is probably not answerable with
-    what you can reach."
+    "Inconclusive is a real answer: run the counting command, leave
+    confidence where it was... Three runs like that and the claim is
+    probably not answerable with what you can reach."
+
+(times_tested counts runs that tested a claim since 2026-11-16, #3395.)
 
 A claim Orion has tested repeatedly without resolving IS "not answerable with
 what I can reach". That is the one condition under which a second mind is the

@@ -78,6 +78,26 @@ Scheduler cursors (`ACTIONS_SCHEDULER_CURSOR_STORE_PATH`) and workflow schedules
 
 Cursor JSON keys match the scheduler store: `daily_pulse_v1`, `world_pulse`, `daily_metacog_v1`, `daily_journal`, `autonomy_goal_archive`. **Single writer:** assume one `orion-actions` replica (same as the workflow schedule store); multiple replicas would race on the same cursor file unless you add coordination or split paths in a follow-up.
 
+**Bounded nightly retries for Daily Pulse / Daily Metacog** (2026-10-01): before this, a failed scheduled run re-ran on every 45s tick until local midnight (230-280 runs a night for metacog, 2026-09-03 to 09-30). Retries now depend on the kind of failure (`app/daily_retry_gate.py`, `classify_daily_failure`, built from real error strings):
+
+- deterministic (prompt over limit, JSON parse/validation errors, truncated output): at most 3 tries per scheduled local date, 10 then 30 minutes apart, then give up for that date;
+- transient (timeouts, `gpu_pool_unavailable`, `gateway_capacity_rejected`, notify down): one retry an hour until the local date ends, so an outage at 20:15 does not cost the night;
+- unknown: hourly, capped at 6 tries.
+
+Giving up writes one audit row (`status=gave_up`, `reason` = the real error, `failure_class`) and sends one `severity=warning` notification (`event_kind=orion.daily.failed`, durable in `notify_requests`). A date that ends in transient failures is recorded the same way on the next date's first tick. The done-today cursor is still set only on success. The attempt state (counts per class, last failure time, gave_up) is persisted in `daily_attempts.json` next to the scheduler cursors, so a restart neither resets the counts nor reopens a date that gave up. Note: with `ACTIONS_DAILY_RUN_ON_STARTUP=true` and no completion recorded, a run is due immediately at startup, so those startup tries spend the same per-date budget before the scheduled hour. When a cortex-exec step fails, the error now names the step (`cortex_exec_missing_final_text step=... error=...`) instead of only `cortex_exec_missing_final_text`.
+
+**Walkway journal night: retry cap, open past midnight, landed record** (2026-11-15, #3384 #3385): before this, a failed walkway compose (day, grade, forecast, week, month) was retried on every 45s tick, each try a new graded act (59 failed `walkway_day` acts in 81 minutes on 2026-11-13), and a night still open at local midnight was dropped with nothing recorded (2026-11-12: no day or grade entry). Now (`app/walkway_forecast.py`):
+
+- each walkway job gets at most 4 tries a night, with waits of 1, 5 and 15 minutes after failures 1, 2 and 3 (`WALKWAY_ATTEMPT_POLICY`; the listed 30 minute wait only applies if the cap is raised). The count is kept in the same `daily_attempts.json` as the daily jobs (keys `walkway:<kind>`), so a restart does not reset it. A dispatch that did no work (self-monitor refusal, cooldown) opens no act and spends no try;
+- a night is named by the local date of its scheduled time and stays open up to 6 hours after it (`WALKWAY_NIGHT_MAX_OPEN`), so a night still running at local midnight finishes under its own date and reads its own day;
+- when a night closes (every job has an entry or gave up, or the 6 hours ran out) one record per job says whether its entry landed: an audit event on `orion:actions:audit` (`action_name=journal.walkway_night`, `status=landed|not_landed`, `night`, `trigger_kind`, `landed`, `reason`, `failed_attempts`, `event_id=walkway_night:<kind>:<stream>:<night>:<node>`). That channel has no durable reader, so the same record is also a `walkway_night_record` log line and a line in `walkway_night_records.jsonl` beside the cursors. `reason` is `landed`, `gave_up_after_N_attempts:<error>`, `no_job:<skip reasons>` (nothing honest to write) or `night_expired`.
+
+A failed read is still retried 3 ticks in a row and then given up, but not while a job that already failed has tries left (a database blip during a wait cannot drop it). With no `walkway_journal` cursor at all (first boot, lost file) a night already past its 6 hours is closed with no records; only the most recent missed night is ever closed this way.
+
+The `walkway_journal` cursor now means "this night is closed", not "this night fully succeeded"; the per-kind cursors (`walkway_day`, ...) still mean an entry was written. No env key changed. Read the last nights: `docker exec <orion-actions container> tail -n 20 /data/orion-actions/walkway_night_records.jsonl`.
+
+**Daily Metacog skills catalog** (2026-10-01): daily_metacog_v1 gets one line per read-only skill (`skill_id: purpose`, purpose <= 60 chars), sized from the prompt template and the recall profile's max digest (`orion/cognition/daily_metacog_budget.py`), because cortex-exec refuses that prompt over `CORTEX_DAILY_METACOG_PROMPT_MAX_CHARS`. Daily Pulse still gets the JSON catalog.
+
 **Code-level fallback defaults intentionally stay `/tmp`, not `/data/orion-actions`.** `settings.py`'s `actions_workflow_schedule_store_path` Field default, `workflow_schedule_store.py`'s `_resolve_path` blank-path fallback, and `scheduler_cursor_store.py`'s degenerate-path fallback all still resolve to `/tmp/orion-actions/...` when the env var is genuinely unset. This was tried the other way (defaulting the code-level fallback to `/data/orion-actions/...` to match `.env_example`) and reverted after it produced a real `FileNotFoundError` in a bare test run: `/data` only exists inside this container's bind mount, and a non-root process can't create a new top-level `/data` directory on a host that doesn't already have it. `/tmp` always exists and is always writable, so it's the correct last-resort default — it just means a genuinely-unset env var silently loses cursor durability again rather than crashing. The actual fix for the container-bounce bug is `.env_example` + the `docker-compose.yml` volume mount above; don't "fix" the code-level fallback to match it again without reading this note.
 
 **Startup catch-up jobs and bus consumer concurrency.** On every restart, eligible daily triggers (per the cursor logic above) fire immediately, each making an RPC-bound call (`orion:cortex:exec:request:background` / `orion:cortex:request`) with up to a 420s timeout. `ACTIONS_CONCURRENT_HANDLERS` (default `true`) controls whether the bus `Hunter` consumer runs these handlers concurrently or sequentially. With it `false` (or omitted at the `Hunter(...)` call site — the class default), the consumer directly awaits each handler to completion before reading the *next* message off **any** subscribed channel, including `orion:actions:manage:workflow.v1` — meaning a single long-running startup catch-up job can block a live user request (e.g. a chat-triggered workflow-schedule operation) for its entire duration. Confirmed live 2026-07-13: a chat message queued behind two startup catch-up jobs for ~4 minutes before being processed at all. Matches the `concurrent_handlers=True` pattern already established in `orion-recall`, `orion-llm-gateway`, `orion-cortex-exec`, `orion-spark-introspector`, and `orion-cortex-orch`.
@@ -97,6 +117,63 @@ Incremental trim after concept-induction publishes goals: enable `AUTONOMY_GOAL_
 
 Verify in logs: `autonomy_goal_archive_scheduler_result` or `autonomy_goal_archive_drain`.
 
+### Body economy shadow bid (Patch C3b, 2026-10-27)
+
+Each in-process journal compose asks the body economy "would you fund this?", then ignores the
+answer. The answer is only logged, next to what the compose really did. Nothing changes what the
+compose does.
+
+- Where: `_dispatch_journal`, after the journaling switch and the dedupe cooldown let the trigger
+  through (the point it would compose). A cooldown skip is not a want and does not bid.
+- Family `actions.journal`, Tier 1 (Tier 1 still bids; only Tier 0 never bids), verb `make`.
+  `want_id` = `act_emit.compose_correlation_id(dedupe_key, trigger correlation id)`, the journal
+  act's correlation id.
+- Real outcome: `ran` once the semaphore is acquired and the act opens. `ran` means the real
+  gates let it run, not that it produced: a compose that then fails still ran, and its act closes
+  at 0. `blocked:raised:<Exception>` if it was cancelled or raised before that (a funded shadow
+  decision is then released).
+- Log line: `physiology_shadow_bid family=actions.journal want_id=... shadow=... real=...`.
+  durable-runs writes the decision into `want_ledger`.
+- Durable `journal.compose` runs (world_pulse_digest) do not bid here; durable-runs admission
+  covers them. Daily metacog (`actions.daily_metacog`) is off live and has no shadow bid.
+- Switch: `ACTIONS_PHYSIOLOGY_SHADOW_BID_ENABLED` (default on). The bid is a background task; the
+  compose never waits on it. Code: `app/physiology_shadow.py`.
+
+### Self-monitor journal gate (2026-11-03, rung 6 E1)
+
+Every in-process journal compose passes `_dispatch_journal`. When the self-monitor (Redis
+`orion:self_monitor:latest`) holds its faculty `act.actions.journal.make.<trigger_kind>` (e.g.
+`walkway_grade`) `broken` or `unreliable`, the compose is skipped and audited `skipped` /
+`track_record_failing`; no act opens. One re-test probe per faculty per
+`SELF_MONITOR_PROBE_INTERVAL_SEC` (21600) runs, marked `self_monitor_probe` in its audit row. Probes
+are counted from `grammar_acts`, so keep `ACTIONS_ACT_EMIT_ENABLED` on. Unknown or stale state changes
+nothing. Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`. Retries of the same job are never refused
+(option A, 2026-11-03): a journal whose dedupe key (the act's `test_before = journal:<dedupe_key>`: one
+walkway night, one daily window, one trigger's content) already opened an act inside the probe window is
+admitted as `same_job_retry`, marked `self_monitor_same_job_retry` in its audit row, and spends no probe. So a
+held-broken walkway_grade still gets its whole night of retries once the night's first try (the probe) ran;
+only a new job's first try is refused.
+
+### Act ledger producers (2026-10-23, body economy A5)
+
+Two activities publish one act per attempt on `orion:grammar:event`, persisted to `grammar_acts`
+by orion-sql-writer (`app/act_emit.py`, flag `ACTIONS_ACT_EMIT_ENABLED`, default on):
+
+- `actions.daily_metacog` / `infer`: one `daily_metacog_v1` attempt. 1 when the report is
+  delivered, 0 on notify failure, exception or cancellation. The job itself is off live
+  (`ACTIONS_DAILY_METACOG_ENABLED=false`), so it emits nothing today. `daily_pulse_v1` is not an act.
+- `actions.journal` / `make`: one in-process journal compose (`_dispatch_journal`). 1 when the
+  draft came back and its `journal.entry.write.v1` was published, else 0.
+
+Ownership rule: the process that runs a journal's compose owns its act. Journals submitted as
+durable `journal.compose` runs (world_pulse_digest) are composed and counted by orion-durable-runs,
+and never pass through `_dispatch_journal`, so no journal is counted twice.
+
+The act opens after the dedupe gate and semaphore wait (the queue wait is not the act). Key = the
+job's dedupe key + the attempt envelope's correlation id: a redelivered trigger is the same act,
+a scheduler retry is a new one. The act's correlation id is the one the cortex GPU leases carry,
+so the ledger's cost fill can charge the attempt. Cost `seconds` = wall time.
+
 ### What Actions does **not** own
 
 - Workflow identity and workflow logic (`dream_cycle`, `journal_pass`, `self_review`, `concept_induction_pass`).
@@ -115,7 +192,7 @@ Verify in logs: `autonomy_goal_archive_scheduler_result` or `autonomy_goal_archi
 
 Examples:
 
-- `self_review` workflow executes through Orch and internally uses `self_concept_reflect`.
+- `self_review` workflow executes through Orch, which asks Hub for one curiosity self-inquiry turn (`orion:curiosity:self_inquiry:request`).
 - `journal_pass` workflow executes through Orch and journal compose/write boundaries.
 - Actions can schedule those workflows, but does not define them.
 
@@ -204,12 +281,12 @@ These are defined in workflow registry/runtime, not in Actions.
 - **Persisted meaning**: append-only journal write (`journal.entry.write.v1`).
 
 ### `self_review`
-- **Purpose**: bounded metacognitive reflection synthesis.
-- **Example phrases**: “Run a self review”, “do a metacognitive review”.
+- **Purpose**: ask for one curiosity self-inquiry turn now (since 2026-10-30; it used to run the retired self-study reflection loop).
+- **Example phrases**: “Run a self review”, “reflect on yourself”, “do a metacognitive review”.
 - **Schedulable**: yes.
 - **Notify**: yes.
-- **Typical result**: findings-oriented self-review summary.
-- **Persisted meaning**: may include graph/journal writebacks if underlying adapter emits them.
+- **Typical result**: “Self-inquiry turn requested” (the run itself takes ~20 minutes in Hub).
+- **Persisted meaning**: nothing from the workflow itself; the self-inquiry run writes its own journal, graph nodes and `self_concept_history` `self:definition`.
 
 ### `concept_induction_pass`
 - **Purpose**: bounded review of concept induction profiles.
@@ -445,8 +522,22 @@ Journal-entry notifications (email + in-app) are dispatched from exactly one pla
 post-persist consumer for `journal.entry.created.v1` (`_handle_journal_created`),
 after the SQL write is confirmed. It resolves policy from
 `orion.journaler.dispatch_registry.JOURNAL_DISPATCH_REGISTRY`, keyed on the journal
-entry's `trigger_kind` (`daily_summary`, `metacog_digest`, `world_pulse_digest`,
+entry's `trigger_kind` (`daily_summary`, `world_pulse_digest`,
 `notify_summary`, `autonomy_episode`, `collapse_response`, `town_episode`, `manual`).
+
+**Removed 2026-10-23: `metacog_digest`.** This service used to subscribe to
+`orion:equilibrium:metacog:trigger` and write one LLM journal per trigger (~140/day),
+which retold telemetry with no grounding and emailed it as "Journal Pass". The handler,
+`build_metacog_trigger`, and `ACTIONS_JOURNAL_METACOG_RECALL_PROFILE` are gone. The
+trigger itself still feeds cortex-orch and sql-writer. Old `metacog` rows stay in
+`journal_entries`. `daily_summary` still writes but no longer emails:
+it had only stayed out of the inbox because metacog won the shared daily slot.
+
+**Removed 2026-11-16: `notify_summary`.** It journaled each "Orion Daily Digest" email
+(`orion.digest.daily`); that email and its service, orion-notify-digest, are retired (integration
+patch 4: the daily organ roundup in the day letter carries the counts). The handler, its
+`orion:notify:persistence:request` subscription and `ACTIONS_JOURNAL_NOTIFY_RECALL_PROFILE` are gone; old
+`notify` rows stay in `journal_entries`.
 
 ### What this replaced
 

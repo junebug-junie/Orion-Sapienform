@@ -147,7 +147,7 @@ async def test_run_once_pool_refusal_is_a_resource_deferred_chain(tmp_path, monk
     monkeypatch.setattr(visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: ("old", 0, 0))
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
-    monkeypatch.setattr(visual_chain, "load_latest_memory_crystallization", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
     calls: list = []
     monkeypatch.setattr(client, "gpu_lease", _refusing(LeaseUnavailable("deadline", "l1"), calls))
 

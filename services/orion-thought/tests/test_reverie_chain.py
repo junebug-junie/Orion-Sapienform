@@ -27,20 +27,30 @@ def _broadcast(selected="ol-1", attended=("n-1",)):
     )
 
 
-def _thought(idx=0, salience=0.8):
+_DISTINCT = [
+    "the loop ol-1 keeps recurring and has not discharged",
+    "maybe the recurrence tracks the nightly backup window rather than load",
+    "if it is the backup, then the fix belongs in scheduling, not in alerting",
+    "what is still unclear is why the spike outlasts the backup by an hour",
+    "checking that would need the disk latency history beside the bus noise",
+]
+
+
+def _thought(idx=0, salience=0.8, next_focus="what drives the recurrence", interpretation=None):
     return SpontaneousThoughtV1(
         thought_id=f"th-{idx}", correlation_id="c",
         coalition=CoalitionSnapshotV1(
             attended_node_ids=["n-1"], selected_open_loop_id="ol-1",
             open_loop_ids=["ol-1"], generated_at=NOW,
         ),
-        interpretation="the loop ol-1 keeps recurring and has not discharged",
+        interpretation=interpretation or _DISTINCT[idx % len(_DISTINCT)],
         salience=salience, evidence_refs=["ol-1"],
+        next_focus=next_focus,
     )
 
 
 def _step_always(salience=0.8):
-    async def step(chain_id, index):
+    async def step(chain_id, index, continuity=None):
         return _thought(index, salience)
     return step
 
@@ -83,15 +93,137 @@ async def test_chain_terminates_at_max_steps():
 
 
 @pytest.mark.asyncio
-async def test_chain_terminates_on_pressure_discharge():
+async def test_chain_settles_when_step_has_no_next_focus():
     from app import chain
+
+    async def step(chain_id, index, continuity=None):
+        return _thought(index, next_focus=None if index == 1 else "the backup window")
+
     c = await chain.run_reverie_chain(
-        AsyncMock(), step_fn=_step_always(), refractory_store=chain.InMemoryRefractoryStore(),
-        broadcast_reader=_broadcast, pressure_reader=lambda: 0.10, max_steps=10,
-        publish=False, now_fn=lambda: NOW,
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, max_steps=4, publish=False, now_fn=lambda: NOW,
     )
-    assert c.terminal_reason == "pressure_discharged"
-    assert len(c.thought_ids) == 1  # discharged after the first step
+    assert c.terminal_reason == "settled"
+    assert len(c.thought_ids) == 2  # step 1 said there was nothing further
+
+
+@pytest.mark.asyncio
+async def test_chain_settles_when_step_repeats_previous_thought():
+    from app import chain
+
+    async def step(chain_id, index, continuity=None):
+        return _thought(index, interpretation="the loop ol-1 keeps recurring and has not discharged")
+
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, max_steps=4, publish=False, now_fn=lambda: NOW,
+    )
+    assert c.terminal_reason == "settled"
+    assert len(c.thought_ids) == 2  # second step restated the first
+
+
+@pytest.mark.asyncio
+async def test_each_step_sees_the_previous_thought_and_hint():
+    """Spec 2026-07-14 #2/#3: the old chain ran the same prompt N times."""
+    from app import chain
+
+    seen = []
+
+    async def step(chain_id, index, continuity=None):
+        seen.append(continuity)
+        return _thought(index, next_focus=f"focus-{index}")
+
+    await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, max_steps=3, publish=False, now_fn=lambda: NOW,
+    )
+    assert [c.index for c in seen] == [0, 1, 2]
+    assert seen[0].prior_thoughts == [] and seen[0].next_focus_hint is None
+    assert seen[1].prior_thoughts == [_DISTINCT[0]] and seen[1].next_focus_hint == "focus-0"
+    assert seen[2].prior_thoughts == [_DISTINCT[0], _DISTINCT[1]] and seen[2].next_focus_hint == "focus-1"
+    assert [c.is_final for c in seen] == [False, False, True]
+
+
+@pytest.mark.asyncio
+async def test_chain_settles_on_a_b_a_restatement():
+    from app import chain
+
+    texts = [_DISTINCT[0], _DISTINCT[1], _DISTINCT[0] + " still"]
+
+    async def step(chain_id, index, continuity=None):
+        return _thought(index, interpretation=texts[index])
+
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, max_steps=4, publish=False, now_fn=lambda: NOW,
+    )
+    assert c.terminal_reason == "settled"
+    assert len(c.thought_ids) == 3
+
+
+@pytest.mark.asyncio
+async def test_lift_mode_chain_is_not_cut_by_missing_next_focus():
+    """The concern-card (metacog) prompt never asks for next_focus, so its
+    absence must not settle the chain after step 0."""
+    from app import chain
+
+    async def step(chain_id, index, continuity=None):
+        return _thought(index, next_focus=None).model_copy(update={"llm_profile": "metacog"})
+
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, max_steps=3, publish=False, now_fn=lambda: NOW,
+    )
+    assert c.terminal_reason == "max_steps"
+    assert len(c.thought_ids) == 3
+
+
+def test_is_repeat_thought():
+    from app import chain
+
+    assert chain.is_repeat_thought("the bus is noisy again", "The bus is noisy again.")
+    assert not chain.is_repeat_thought(_DISTINCT[1], _DISTINCT[0])
+    assert not chain.is_repeat_thought("", "anything")
+
+
+@pytest.mark.asyncio
+async def test_calm_tick_starts_no_chain_and_no_unknown_refractory(caplog):
+    """Regression: a no-winner broadcast used to persist an "unknown" chain row
+    (terminal no_coalition) and arm an "unknown" refractory entry, ~190/day."""
+    import logging
+
+    from app import chain
+
+    steps = []
+
+    async def step(chain_id, index, continuity=None):
+        steps.append(index)
+        return _thought(index)
+
+    store = chain.InMemoryRefractoryStore()
+    persisted = []
+    calm = _broadcast(selected=None, attended=())
+    before = chain.CHAIN_SKIP_COUNTS["calm_no_winner"]
+    with caplog.at_level(logging.INFO, logger="orion-thought.chain"):
+        c = await chain.run_reverie_chain(
+            AsyncMock(), step_fn=step, refractory_store=store,
+            broadcast_reader=lambda: calm, publish=False, now_fn=lambda: NOW,
+            no_coalition_streak_loader=lambda k: persisted.append(k) or 0,
+        )
+    assert c is None
+    assert steps == []  # no LLM step ran
+    assert store._until == {}  # no "unknown" refractory entry
+    assert chain.CHAIN_SKIP_COUNTS["calm_no_winner"] == before + 1
+    assert "reverie_chain_skipped reason=calm_no_winner" in caplog.text
+
+
+def test_has_attention_winner():
+    from app import chain
+
+    assert chain.has_attention_winner(_broadcast())
+    assert chain.has_attention_winner(_broadcast(selected=None, attended=("n-1",)))
+    assert not chain.has_attention_winner(_broadcast(selected=None, attended=()))
+    assert not chain.has_attention_winner(None)
 
 
 @pytest.mark.asyncio
@@ -131,7 +263,7 @@ async def test_chain_suppresses_theme_after_completion():
 async def test_chain_step_none_terminates_without_raise():
     from app import chain
 
-    async def step_none(chain_id, index):
+    async def step_none(chain_id, index, continuity=None):
         return None
 
     c = await chain.run_reverie_chain(
@@ -171,7 +303,7 @@ def test_stuck_loop_pure_non_no_coalition_terminal_resets_streak():
 async def test_chain_below_streak_threshold_does_not_force_refractory():
     from app import chain
 
-    async def step_none(chain_id, index):
+    async def step_none(chain_id, index, continuity=None):
         return None
 
     store = chain.InMemoryRefractoryStore()
@@ -189,7 +321,7 @@ async def test_chain_below_streak_threshold_does_not_force_refractory():
 async def test_chain_at_streak_threshold_forces_refractory():
     from app import chain
 
-    async def step_none(chain_id, index):
+    async def step_none(chain_id, index, continuity=None):
         return None
 
     store = chain.InMemoryRefractoryStore()
@@ -210,7 +342,7 @@ async def test_chain_at_streak_threshold_forces_refractory():
 async def test_chain_streak_loader_failure_degrades_to_zero_not_raise():
     from app import chain
 
-    async def step_none(chain_id, index):
+    async def step_none(chain_id, index, continuity=None):
         return None
 
     def boom(theme_key):
@@ -230,7 +362,7 @@ async def test_chain_streak_loader_failure_degrades_to_zero_not_raise():
 async def test_chain_never_raises_on_step_error():
     from app import chain
 
-    async def step_boom(chain_id, index):
+    async def step_boom(chain_id, index, continuity=None):
         raise RuntimeError("narration exploded")
 
     c = await chain.run_reverie_chain(
@@ -292,7 +424,7 @@ async def test_resonance_tripwire_fires_on_runaway(monkeypatch):
     monkeypatch.setattr(settings, "reverie_resonance_window", 200)
 
     # Recent chains: one theme re-igniting every 60s (inside the 900s bound).
-    events = [("loop:ol-1", NOW + timedelta(seconds=60 * i)) for i in range(5)]
+    events = [("loop:ol-1", NOW + timedelta(seconds=60 * i), "settled") for i in range(5)]
     monkeypatch.setattr(chain, "load_recent_chain_theme_events", lambda n: events)
 
     persisted = []
@@ -313,7 +445,24 @@ async def test_resonance_tripwire_silent_when_damped(monkeypatch):
     monkeypatch.setattr(settings, "reverie_resonance_alert_enabled", True)
     monkeypatch.setattr(settings, "reverie_refractory_sec", 900.0)
     # Every recurrence waited out the refractory bound.
-    events = [("loop:ol-1", NOW + timedelta(seconds=1000 * i)) for i in range(5)]
+    events = [("loop:ol-1", NOW + timedelta(seconds=1000 * i), "settled") for i in range(5)]
+    monkeypatch.setattr(chain, "load_recent_chain_theme_events", lambda n: events)
+
+    bus = AsyncMock()
+    await chain._maybe_emit_resonance_alert(bus)
+    bus.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resonance_tripwire_ignores_fast_retries_after_no_coalition(monkeypatch):
+    """Live 2026-11-03: one theme paged for days because every quick refire
+    followed a no_coalition chain, which by design never arms the cooldown."""
+    from app import chain
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_resonance_alert_enabled", True)
+    monkeypatch.setattr(settings, "reverie_refractory_sec", 900.0)
+    events = [("loop:ol-1", NOW + timedelta(seconds=90 * i), "no_coalition") for i in range(5)]
     monkeypatch.setattr(chain, "load_recent_chain_theme_events", lambda n: events)
 
     bus = AsyncMock()
@@ -349,3 +498,67 @@ def test_chain_module_never_reads_a_dream():
             mods.append(node.module or "")
     for mod in mods:
         assert "dream" not in mod.lower(), f"chain must not read a dream ({mod!r})"
+
+
+# --- 2026-10-20: a GPU-pool refusal is not a hollow theme --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gpu_pool_refusal_at_step0_does_not_touch_no_coalition_streak():
+    """Hot cabinet: the pool sheds the narration call. That is not the theme failing to
+    ground, so no chain row, no refractory, and the streak loader is never consulted."""
+    from app import chain
+    from app.reverie import ReverieLlmUnavailable
+
+    async def step_shed(chain_id, index, continuity=None):
+        raise ReverieLlmUnavailable("gpu_pool_unavailable:shed:cabinet_hot")
+
+    looked_up: list[str] = []
+    store = chain.InMemoryRefractoryStore()
+    before = chain.CHAIN_SKIP_COUNTS["llm_unavailable"]
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step_shed, refractory_store=store,
+        broadcast_reader=_broadcast, publish=False, now_fn=lambda: NOW,
+        no_coalition_max_repeats=3,
+        no_coalition_streak_loader=lambda k: looked_up.append(k) or 2,  # one more would force
+    )
+    assert c is None
+    assert looked_up == []
+    assert store.is_suppressed("ol-1", NOW) is False
+    assert chain.CHAIN_SKIP_COUNTS["llm_unavailable"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_hollow_step0_still_counts_toward_streak():
+    """Control: a real hollow first step (step returns None) still counts and forces."""
+    from app import chain
+
+    async def step_none(chain_id, index, continuity=None):
+        return None
+
+    store = chain.InMemoryRefractoryStore()
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step_none, refractory_store=store,
+        broadcast_reader=_broadcast, publish=False, now_fn=lambda: NOW,
+        no_coalition_max_repeats=3, no_coalition_streak_loader=lambda k: 2,
+    )
+    assert c.terminal_reason == "no_coalition"
+    assert store.is_suppressed("ol-1", NOW) is True
+
+
+@pytest.mark.asyncio
+async def test_gpu_pool_refusal_mid_chain_ends_chain_as_before():
+    from app import chain
+    from app.reverie import ReverieLlmUnavailable
+
+    async def step(chain_id, index, continuity=None):
+        if index == 0:
+            return _thought(0)
+        raise ReverieLlmUnavailable("gpu_pool_unavailable:deadline")
+
+    c = await chain.run_reverie_chain(
+        AsyncMock(), step_fn=step, refractory_store=chain.InMemoryRefractoryStore(),
+        broadcast_reader=_broadcast, max_steps=3, publish=False, now_fn=lambda: NOW,
+    )
+    assert c.terminal_reason == "pressure_discharged"
+    assert c.thought_ids == ["th-0"]

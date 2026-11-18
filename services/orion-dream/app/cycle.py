@@ -16,15 +16,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
-from orion.schemas.dream_cycle import DreamCycleV1, SleepPressureV1
+from orion.regulation.arousal_view import ArousalView, UNKNOWN_DISABLED, arousal_view
+from orion.regulation.rest_drive import no_rest_reading, read_rest_drive
+from orion.schemas.dream_cycle import DreamCycleV1, DreamPressureObservationV1, SleepPressureV1
+from orion.schemas.drive_reading import DriveReadingV1
+from orion.schemas.telemetry.dream import DreamInternalTriggerV1
 
+from app import act_emit
 from app.recombine import Complete, control_pairs, dream_pairs, recombine
-from app.replay import build_candidates, compute_pressure, select_replay
+from app.replay import (
+    arc_candidates,
+    arc_replay_slots,
+    compute_pressure,
+    keyed_candidates,
+    prior_keys,
+    select_replay,
+    walkway_candidates,
+    walkway_replay_floor,
+    walkway_replay_slots,
+)
+from app.story import story_trigger
 from app.settings import settings
 
 logger = logging.getLogger("orion-dream.cycle")
@@ -32,7 +48,8 @@ logger = logging.getLogger("orion-dream.cycle")
 
 @dataclass
 class CycleDeps:
-    load_source_rows: Callable[[datetime, int], dict[str, list[dict[str, Any]]]]
+    # (since, limit, until=None) -> one row per thing per source in [since, until)
+    load_source_rows: Callable[..., dict[str, list[dict[str, Any]]]]
     load_idle_minutes: Callable[[], Optional[float]]
     # started_at of the last non-failed cycle -> the replay window start
     load_last_window_start: Callable[[], Optional[datetime]]
@@ -42,6 +59,49 @@ class CycleDeps:
     complete: Complete
     # (cycle_id, window since) -> staged delta id or None
     rem_compaction: Optional[Callable[[str, datetime], Awaitable[Optional[str]]]] = None
+    persist_pressure_observation: Optional[Callable[[DreamPressureObservationV1], bool]] = None
+    # A completed, saved sleep ends in a story dream: publishes the trigger
+    # app/story.py builds. Best effort: a failure never fails or undoes the sleep.
+    start_story: Optional[Callable[[DreamInternalTriggerV1], Awaitable[None]]] = None
+    compact_curiosity: Optional[Callable[[DreamCycleV1], Awaitable[None]]] = None
+    # The rest drive (Temporal Self rev 4, R2): this check's pressure as a
+    # DriveReadingV1 for readers outside the dream (Hub curiosity/outreach).
+    # Best effort: a publish failure never changes or fails a sleep decision.
+    publish_drive_reading: Optional[Callable[[DriveReadingV1], Awaitable[None]]] = None
+    # Arousal reader (Temporal Self rev 4, R3, reader 1): returns the raw Redis value of
+    # orion:regulation:latest. None (flag off) or any failure = arousal unknown = the idle
+    # query alone, exactly as before arousal existed.
+    read_arousal: Optional[Callable[[], Awaitable[object]]] = None
+    # Closed Temporal Self arcs (rev 4 patch 7): (since, until) -> temporal_self_arc rows.
+    # None (DREAM_REPLAY_ARC_CANDIDATES_ENABLED off) or any failure = no arc candidates,
+    # the sleep exactly as before. Read only once a sleep proceeds, after the pressure read:
+    # arcs are replay material, never pressure, has_candidates or the rest drive.
+    load_arc_rows: Optional[Callable[[datetime, datetime], list[dict[str, Any]]]] = None
+    # Graded walkway predictions (2026-10-15): (since, until) -> {"graded": rows,
+    # "calibration": rows}. None (DREAM_REPLAY_WALKWAY_ENABLED off) or any failure = no
+    # walkway candidates. Replay material only, read after the pressure read like arcs.
+    load_walkway_rows: Optional[Callable[[datetime, datetime], dict[str, list[dict[str, Any]]]]] = None
+    walkway_timezone: str = "America/Denver"
+    # Act ledger (body economy A5): publishes one dream cycle's act_opened/act_closed grammar
+    # event (app/act_emit.py). None (DREAM_ACT_EMIT_ENABLED off) = no act, and recombination
+    # calls keep their own per-call correlation ids, exactly as before.
+    publish_act: Optional[Callable[[Any], Awaitable[None]]] = None
+    # Body economy Patch D (app/physiology_bind.py): the dream's BINDING bid. Set (the process's
+    # DreamBinder) when ORION_PHYSIOLOGY_BID_DREAM_CYCLE=on: a sleep that clears every gate of the
+    # dream's own asks the market first and obeys it. None = the C3b shadow bid, exactly as before.
+    economy: Optional[Any] = None
+    # Set by run_cycle_once when arousal or the body economy held a sleep this check (e.g.
+    # "arousal_strained", "economy_price"), else None, so a manual run can say "held" instead of "not due".
+    hold_reason: Optional[str] = None
+    # One deps instance per loop/request. The real clock loaders append failures;
+    # each serialized check clears it before reading. Scheduling still sees None.
+    read_errors: list[str] = field(default_factory=list)
+
+
+# Rows are one per thing (cycle_store), ~72 metacog kinds per 48 h live (10-09).
+# A cap near that drops keys silently and makes old ones look new; replay's own
+# DREAM_REPLAY_MAX is what bounds a sleep.
+KEYS_PER_SOURCE = 5000
 
 
 def _utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -57,16 +117,25 @@ def window_start(now: datetime, last_start: Optional[datetime]) -> datetime:
     return max(floor, last) if last else floor
 
 
-def read_pressure(deps: CycleDeps, now: datetime, last_start: Optional[datetime]):
+def read_pressure(deps: CycleDeps, now: datetime, last_start: Optional[datetime], *, read_errors=None):
     """(SleepPressureV1, candidates). Blocking (sync DB); call via to_thread."""
     since = window_start(now, last_start)
-    candidates = build_candidates(deps.load_source_rows(since, settings.DREAM_CANDIDATES_PER_SOURCE))
-    total, counts = compute_pressure(candidates)
+    current_rows = deps.load_source_rows(since, KEYS_PER_SOURCE)
+    keyed = keyed_candidates(current_rows)
+    lookback = since - timedelta(hours=settings.DREAM_LOOKBACK_HOURS)
+    previous_rows = deps.load_source_rows(lookback, KEYS_PER_SOURCE, until=since)
+    seen = prior_keys(previous_rows)
+    if read_errors is not None:
+        read_errors.extend(f"current:{kind}" for kind in getattr(current_rows, "read_errors", ()))
+        read_errors.extend(f"prior:{kind}" for kind in getattr(previous_rows, "read_errors", ()))
+    total, counts, new_counts = compute_pressure(keyed, seen)
+    candidates = list(keyed.values())
     pressure = SleepPressureV1(
         since=since,
         computed_at=now,
         pressure=total,
         counts=counts,
+        new_counts=new_counts,
         idle_minutes=deps.load_idle_minutes(),
         threshold=settings.DREAM_SLEEP_PRESSURE_THRESHOLD,
         idle_required_minutes=settings.DREAM_IDLE_MINUTES,
@@ -74,91 +143,483 @@ def read_pressure(deps: CycleDeps, now: datetime, last_start: Optional[datetime]
     return pressure, candidates
 
 
+def overdue(now: datetime, last_start: Optional[datetime]) -> bool:
+    """The window has reached DREAM_LOOKBACK_HOURS, the furthest it reaches back.
+    Past this, unreplayed material starts falling out of view. Pressure counts
+    only NEW things, so a repetitive stretch can hold it under threshold
+    indefinitely; this is the backstop that still lets Orion sleep."""
+    last = _utc(last_start)
+    return last is None or now - last >= timedelta(hours=settings.DREAM_LOOKBACK_HOURS)
+
+
 def too_soon(now: datetime, last_end: Optional[datetime]) -> bool:
     last = _utc(last_end)
     return last is not None and now - last < timedelta(hours=settings.DREAM_MIN_INTERVAL_HOURS)
 
 
+# A dead or hung Redis must not hold up a sleep decision (the bus socket
+# timeout is 60 s). The publish never changes the decision either way.
+PUBLISH_TIMEOUT_SEC = 5.0
+# Same bound for the arousal read: a slow Redis reads as unknown, never as a hold.
+AROUSAL_READ_TIMEOUT_SEC = 2.0
+# The arc read has its own 2 s statement_timeout (cycle_store); this bounds a hung connect.
+ARC_READ_TIMEOUT_SEC = 5.0
+
+
+async def read_arc_candidates(deps: CycleDeps, since: datetime, until: datetime) -> list:
+    """Closed-arc replay candidates for [since, until). Never raises; any failure is []."""
+    if deps.load_arc_rows is None:
+        return []
+    try:
+        rows = await asyncio.wait_for(asyncio.to_thread(deps.load_arc_rows, since, until), timeout=ARC_READ_TIMEOUT_SEC)
+        return arc_candidates(rows, since, until)
+    except Exception:  # noqa: BLE001 -- no arcs is the pre-arc sleep, never a failed one
+        logger.warning("dream_arc_candidates_failed -- replaying without arcs", exc_info=True)
+        return []
+
+
+async def read_walkway_candidates(deps: CycleDeps, since: datetime, until: datetime) -> list:
+    """Graded walkway predictions for [since, until). Never raises; any failure is []."""
+    if deps.load_walkway_rows is None:
+        return []
+    try:
+        from zoneinfo import ZoneInfo
+
+        try:
+            tz = ZoneInfo(deps.walkway_timezone)
+        except Exception:  # noqa: BLE001
+            tz = timezone.utc
+        rows = await asyncio.wait_for(
+            asyncio.to_thread(deps.load_walkway_rows, since, until), timeout=ARC_READ_TIMEOUT_SEC
+        )
+        rows = rows or {}
+        return walkway_candidates(rows.get("graded") or [], rows.get("calibration") or [], since, until, tz=tz)
+    except Exception:  # noqa: BLE001 -- no walkway is the pre-walkway sleep, never a failed one
+        logger.warning("dream_walkway_candidates_failed -- replaying without the walkway", exc_info=True)
+        return []
+
+
+async def read_arousal_view(deps: CycleDeps, now: datetime) -> ArousalView:
+    """The arousal level this check may act on. Never raises; anything doubtful is unknown."""
+    if deps.read_arousal is None:
+        return UNKNOWN_DISABLED
+    try:
+        raw = await asyncio.wait_for(deps.read_arousal(), timeout=AROUSAL_READ_TIMEOUT_SEC)
+    except Exception:  # noqa: BLE001 -- unreadable is unknown, never a hold
+        logger.warning("dream_arousal_read_failed -- treating as unknown", exc_info=True)
+        return ArousalView(level="unknown", reason="read_failed")
+    return arousal_view(raw, now=now, max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC)
+
+
+def arousal_holds_sleep(view: ArousalView, now: datetime) -> bool:
+    """Spec R3: the dream sleeps only at `idle`. Veto only: `engaged` or `strained` holds a
+    sleep the idle query allowed; `idle` and `unknown` change nothing (arousal never
+    authorizes a sleep the dream's own Juniper-filtered idle query refused).
+
+    Bounded: a level that has held for DREAM_AROUSAL_MAX_HOLD_HOURS no longer holds. A
+    fault-jammed GPU queue reads as strained (S2 cannot tell a jam from load; the 10-09 jam
+    was ~20 h), and a mood must not cost Orion its sleep, the overdue backstop included."""
+    if view.level not in ("engaged", "strained"):
+        return False
+    since = view.since
+    if since is not None and now - since >= timedelta(hours=settings.DREAM_AROUSAL_MAX_HOLD_HOURS):
+        return False
+    return True
+
+
+async def _publish_drive(deps: CycleDeps, build: Callable[[], DriveReadingV1]) -> None:
+    """Build and publish one reading. Never raises: a bad reading or a dead
+    Redis is logged and the sleep loop carries on exactly as before."""
+    if deps.publish_drive_reading is None:
+        return
+    reading = None
+    try:
+        reading = build()
+        await asyncio.wait_for(deps.publish_drive_reading(reading), timeout=PUBLISH_TIMEOUT_SEC)
+    except Exception:
+        logger.warning(
+            "rest_drive_publish_failed source_ref=%s state=%s",
+            getattr(reading, "source_ref", None), getattr(reading, "state", None), exc_info=True,
+        )
+
+
+class CycleActTrace:
+    """One sleep's ``make`` act: opened once, closed once (app/act_emit.py). Never raises.
+
+    The close is sent whenever an open was attempted, even if the open publish failed or timed
+    out: the writer then builds the row from the close (close-before-open) and still grades it."""
+
+    def __init__(self, deps: CycleDeps, cycle_id: str) -> None:
+        self._publish = deps.publish_act
+        self.cycle_id = cycle_id
+        self.horizon = act_emit.horizon_sec(
+            hypotheses_per_cycle=settings.DREAM_HYPOTHESES_PER_CYCLE,
+            control_per_cycle=settings.DREAM_CONTROL_PER_CYCLE,
+            llm_timeout_sec=settings.DREAM_LLM_TIMEOUT_SEC,
+        )
+        self.opened_at: Optional[datetime] = None
+        self.closed = False
+
+    @property
+    def on(self) -> bool:
+        return self._publish is not None
+
+    async def _send(self, build: Callable[[], Any], what: str) -> None:
+        try:
+            await asyncio.wait_for(self._publish(build()), timeout=PUBLISH_TIMEOUT_SEC)
+        except Exception:  # noqa: BLE001 -- the act is a trace; never fail or hold a sleep
+            logger.warning("dream_cycle_act_%s_failed cycle_id=%s", what, self.cycle_id, exc_info=True)
+
+    async def open(self) -> None:
+        if not self.on:
+            return
+        self.opened_at = datetime.now(timezone.utc)
+        at = self.opened_at
+        await self._send(lambda: act_emit.opened_event(self.cycle_id, horizon=self.horizon, at=at), "open")
+
+    async def close(self, produced: bool, note: str) -> None:
+        # Once per cycle, even if called again (a close after the success close is ignored).
+        if not self.on or self.closed or self.opened_at is None:
+            return
+        self.closed = True
+        at = datetime.now(timezone.utc)
+        seconds = (at - self.opened_at).total_seconds()
+        await self._send(lambda: act_emit.closed_event(
+            self.cycle_id, horizon=self.horizon, produced=produced, note=note, seconds=seconds, at=at,
+        ), "close")
+
+    def bind_leases(self):
+        """While the cycle runs, its LLM calls carry the act's correlation id (the GPU cost join)."""
+        if not self.on:
+            return None
+        return act_emit.set_lease_correlation(act_emit.cycle_correlation_id(self.cycle_id))
+
+    def unbind_leases(self, token) -> None:
+        if token is not None:
+            act_emit.reset_lease_correlation(token)
+
+
+class _NoShadow:
+    """Stands in when the shadow could not be built: the sleep never depends on it."""
+
+    def settle(self, real: str, **_kw) -> None:
+        return None
+
+
+def _cycle_shadow(cycle_id: str):
+    """The sleep's shadow want (Tier 1, family dream.cycle), placed. want_id = the act's
+    correlation id. Never raises."""
+    try:
+        from app.physiology_shadow import ShadowBid
+
+        shadow = ShadowBid(family=act_emit.ACTOR, verb=act_emit.VERB, tier=1,
+                           want_id=act_emit.cycle_correlation_id(cycle_id), object_ref=f"dream_cycle:{cycle_id}",
+                           component="dream_cycle")
+        shadow.place()
+        return shadow
+    except Exception:  # noqa: BLE001 -- shadow only
+        logger.info("dream_cycle_shadow_bid_not_built cycle_id=%s", cycle_id)
+        return _NoShadow()
+
+
+def held_note_for(want, now: datetime, verdict: str) -> str:
+    """The cycle note's body-economy line: how the bid let this sleep go, and any hold before it."""
+    try:
+        from app.physiology_bind import held_note
+
+        return held_note(want, now) + ("" if verdict == "funded" else f" | body economy: {verdict}")
+    except Exception:  # noqa: BLE001 -- a note, never a failed sleep
+        return ""
+
+
+def drive_reading_for(
+    pressure: SleepPressureV1, *, now: datetime, check_id: str, last_start: Optional[datetime],
+    last_end: Optional[datetime], has_candidates: bool, source_errors,
+) -> DriveReadingV1:
+    """This check as a rest-drive reading, from the same gates run_cycle_once applies."""
+    return read_rest_drive(
+        pressure, now=now, source_ref=check_id, last_attempt_end=last_end,
+        min_interval_hours=settings.DREAM_MIN_INTERVAL_HOURS,
+        overdue=overdue(now, last_start), has_candidates=has_candidates,
+        source_errors=list(source_errors),
+    )
+
+
+async def _publish_after_sleep(deps: CycleDeps, cycle: DreamCycleV1, last_start: Optional[datetime]) -> None:
+    """A sleep just discharged the drive: publish the post-sleep reading now
+    rather than leaving the pre-sleep `due` up for another whole check.
+
+    Costs one extra pressure read (the two source reads plus the idle read)
+    per sleep, 1-4 a day. Its id is `dp-postsleep-*`: unlike a scheduled
+    check, it has no dream_pressure_observation row."""
+    if deps.publish_drive_reading is None:
+        return
+    now = datetime.now(timezone.utc)
+    check_id = f"dp-postsleep-{uuid4().hex}"
+    # A failed sleep does not close the window (the backlog stays); any sleep
+    # attempt restarts the refractory clock -- the same rule the floors in
+    # main.build_cycle_deps apply.
+    window = cycle.started_at if cycle.status != "failed" else last_start
+    errors: list[str] = []
+    deps.read_errors.clear()
+    try:
+        pressure, candidates = await asyncio.to_thread(read_pressure, deps, now, window, read_errors=errors)
+        errors.extend(deps.read_errors)
+    except Exception as exc:
+        reason = f"pressure_read_failed:{type(exc).__name__}"
+        await _publish_drive(deps, lambda: no_rest_reading(
+            now=now, source_ref=check_id, threshold=settings.DREAM_SLEEP_PRESSURE_THRESHOLD, reason=reason,
+        ))
+        return
+    await _publish_drive(deps, lambda: drive_reading_for(
+        pressure, now=now, check_id=check_id, last_start=window, last_end=cycle.ended_at,
+        has_candidates=bool(candidates), source_errors=errors,
+    ))
+
+
 async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: bool = False) -> Optional[DreamCycleV1]:
-    """Run one sleep if due (or forced). None when not due. Never raises."""
+    """Run one sleep if due (or forced). None when not due.
+
+    Read and gate failures never raise. An unexpected error after the sleep started (e.g. the
+    cycle cannot be persisted) or a cancellation closes the sleep's act at 0 and is re-raised."""
     started = datetime.now(timezone.utc)
+    check_id = f"dp-{uuid4().hex}"
+    deps.read_errors.clear()
+    deps.hold_reason = None
+    read_errors = []
     try:
         last_start = await asyncio.to_thread(deps.load_last_window_start)
         last_end = await asyncio.to_thread(deps.load_last_attempt_end)
-        pressure, candidates = await asyncio.to_thread(read_pressure, deps, started, last_start)
+        pressure, candidates = await asyncio.to_thread(read_pressure, deps, started, last_start, read_errors=read_errors)
+        read_errors.extend(deps.read_errors)
     except Exception as exc:
         logger.warning("dream_cycle pressure read failed err=%s", exc)
+        # Unknown, said explicitly, so readers drop back to their own behaviour
+        # now instead of trusting the last reading until it ages out.
+        reason = f"pressure_read_failed:{type(exc).__name__}"
+        await _publish_drive(deps, lambda: no_rest_reading(
+            now=started, source_ref=check_id, threshold=settings.DREAM_SLEEP_PRESSURE_THRESHOLD, reason=reason,
+        ))
         return None
 
+    # Published for every successful read, forced or not, before any gate.
+    await _publish_drive(deps, lambda: drive_reading_for(
+        pressure, now=started, check_id=check_id, last_start=last_start, last_end=last_end,
+        has_candidates=bool(candidates), source_errors=read_errors,
+    ))
+
+    if deps.persist_pressure_observation is not None:
+        # Observe every successful read, including refractory, busy and low-pressure
+        # checks. A recording failure must not authorize, suppress or fail a dream.
+        try:
+            observation = DreamPressureObservationV1(
+                check_id=check_id, observed_at=started, reading=pressure,
+                trigger=trigger, forced=force, last_window_start=_utc(last_start),
+                last_attempt_end=_utc(last_end), source_errors=read_errors,
+                min_interval_hours=settings.DREAM_MIN_INTERVAL_HOURS,
+                check_interval_sec=settings.DREAM_CYCLE_CHECK_INTERVAL_SEC,
+                lookback_hours=settings.DREAM_LOOKBACK_HOURS,
+            )
+            if not await asyncio.to_thread(deps.persist_pressure_observation, observation):
+                logger.warning("dream_pressure_history_failed check_id=%s observed_at=%s", observation.check_id, started)
+        except Exception:
+            logger.exception("dream_pressure_history_failed observed_at=%s", started)
+
+    backstop = False
     if not force:
         if too_soon(started, last_end):
             return None
-        if not pressure.should_sleep:
+        backstop = not pressure.should_sleep and pressure.is_idle and bool(candidates) \
+            and overdue(started, last_start)
+        if not pressure.should_sleep and not backstop:
             logger.info(
-                "dream_cycle not due pressure=%.2f/%.2f idle=%s/%s counts=%s",
+                "dream_cycle not due pressure=%.2f/%.2f idle=%s/%s new=%s counts=%s",
                 pressure.pressure, pressure.threshold, pressure.idle_minutes,
-                pressure.idle_required_minutes, pressure.counts,
+                pressure.idle_required_minutes, pressure.new_counts, pressure.counts,
             )
             return None
 
-    cycle_id = f"dc-{uuid4().hex[:12]}"
+    # The check would sleep (due, overdue backstop, or forced): that is the want.
+    # Binding (Patch D, deps.economy set, not forced): the want is the open one of this stretch since
+    # the last sleep attempt (app/physiology_bind.py), so every re-bid and the eventual act share one
+    # cycle id; its bid comes after the dream's own gates, just before the act opens (below).
+    # Shadow (Patch C3b): a SHADOW bid here, logged beside the real outcome and never obeyed
+    # (app/physiology_shadow.py). The cycle id is minted here instead of after the arousal gate
+    # so the bid carries the sleep act's correlation id; a held check simply never uses it.
+    want = deps.economy.current(started, last_end) if (deps.economy is not None and not force) else None
+    if want is not None:
+        cycle_id = want.cycle_id
+        shadow = _NoShadow()
+    else:
+        cycle_id = f"dc-{uuid4().hex[:12]}"
+        shadow = _cycle_shadow(cycle_id)
+    if not force:
+        # Read only when the dream would otherwise sleep: one Redis GET per would-be
+        # sleep, and the log names exactly the sleeps arousal held. Forced runs skip it.
+        try:
+            arousal = await read_arousal_view(deps, started)
+        except BaseException:  # a cancel mid-read: the want did not run
+            shadow.settle("blocked:cancelled")
+            raise
+        if arousal_holds_sleep(arousal, started):
+            deps.hold_reason = f"arousal_{arousal.level}"
+            shadow.settle(f"blocked:{deps.hold_reason}")
+            logger.info(
+                "dream_cycle held reason=arousal_%s since=%s pressure=%.2f/%.2f idle=%s/%s backstop=%s",
+                arousal.level, arousal.since, pressure.pressure, pressure.threshold,
+                pressure.idle_minutes, pressure.idle_required_minutes, backstop,
+            )
+            return None
+
     if not candidates:
+        # Nothing to replay: the cycle is recorded `empty` and opens no act (and never bids).
+        shadow.settle("blocked:nothing_to_replay")
+        if want is not None:
+            deps.economy.close()
         cycle = DreamCycleV1(
             cycle_id=cycle_id, trigger=trigger, status="empty",  # type: ignore[arg-type]
             started_at=started, ended_at=datetime.now(timezone.utc), pressure=pressure,
             note="nothing unprocessed since last sleep",
         )
         await asyncio.to_thread(deps.persist_cycle, cycle)
+        await _publish_after_sleep(deps, cycle, last_start)
         return cycle
 
-    replay = select_replay(candidates, settings.DREAM_REPLAY_MAX)
+    economy_note = ""
+    if want is not None:
+        # The binding bid: every gate of the dream's own has passed, the act would open now.
+        verdict = await deps.economy.bind(
+            want, started, last_window_start=last_start, lookback_hours=settings.DREAM_LOOKBACK_HOURS,
+            check_interval_sec=settings.DREAM_CYCLE_CHECK_INTERVAL_SEC, overdue=overdue(started, last_start),
+        )
+        if not verdict.admit:
+            reason = str(verdict.detail.get("reason") or verdict.why.split(":", 1)[-1])
+            deps.hold_reason = f"economy_{reason}"
+            logger.info(
+                "dream_cycle held reason=economy_%s cycle_id=%s retry_at=%s pressure=%.2f/%.2f why=%r",
+                reason, cycle_id, want.retry_at.isoformat() if want.retry_at else None,
+                pressure.pressure, pressure.threshold, str(verdict.detail.get("why") or "")[:300],
+            )
+            return None
+        economy_note = held_note_for(want, started, verdict.why)
+        deps.economy.close()
 
-    compaction_delta_id = None
-    if deps.rem_compaction is not None:
+    act = CycleActTrace(deps, cycle_id)
+    shadow.settle("ran")
+    lease_token = None
+    try:
+        # Inside the try: a cancel while the open is being published still closes the act at 0.
+        await act.open()
+        lease_token = act.bind_leases()
+        # Mixing rule: arcs join the pool as their own source_kind, capped at a third of the
+        # replay (replay.arc_replay_slots: 4 of 12), so the existing sources keep at least two
+        # thirds; ARC_WEIGHT_MAX (0.75) keeps a critical metacog ahead of every arc. Arcs never
+        # start a sleep on their own: with no existing candidate the cycle above is `empty`.
+        # Arcs above an existing item's weight do displace it, within that third. At most one
+        # arc per kind (replay.arc_candidates): the replay and the control pool below both
+        # draw from that one-per-kind list, so the two arms see the same arc mix.
+        arcs = await read_arc_candidates(deps, pressure.since, started)
+        arc_slots = arc_replay_slots(settings.DREAM_REPLAY_MAX)
+        # Graded walkway predictions: same rule as arcs, capped at a sixth of the replay,
+        # with one slot reserved for the best one when any exist (replay.walkway_replay_floor:
+        # by weight alone they never won a slot, 0 walkway replay rows through 11-03).
+        walkway = await read_walkway_candidates(deps, pressure.since, started)
+        walkway_slots = walkway_replay_slots(settings.DREAM_REPLAY_MAX)
+        replay = select_replay(
+            candidates + arcs + walkway, settings.DREAM_REPLAY_MAX,
+            source_caps={"arc": arc_slots, "walkway": walkway_slots},
+            source_floors={"walkway": walkway_replay_floor(settings.DREAM_REPLAY_MAX)},
+        )
+        # Control pool: the same top arcs replay could take, not all 20. Uniform sampling over
+        # 20 arcs + ~5-12 existing items would make most control fragments arcs while the dream
+        # arm is capped at a third: source mix would confound the dream-vs-control comparison.
+        # Same for walkway items.
+        pool = candidates + arcs[:arc_slots] + walkway[:walkway_slots]
+
+        compaction_delta_id = None
+        if deps.rem_compaction is not None:
+            try:
+                compaction_delta_id = await deps.rem_compaction(cycle_id, pressure.since)
+            except Exception as exc:
+                logger.warning("dream_cycle rem compaction failed err=%s", exc)
+
+        d_pairs = dream_pairs(
+            replay, settings.DREAM_HYPOTHESES_PER_CYCLE, window_minutes=settings.DREAM_PAIR_WINDOW_MINUTES,
+        )
+        c_pairs = control_pairs(
+            pool, settings.DREAM_CONTROL_PER_CYCLE, seed=cycle_id, exclude=d_pairs
+        )
+        rem = await recombine(
+            d_pairs + c_pairs, deps.complete, cycle_id=cycle_id,
+            ttl_hours=settings.DREAM_HYPOTHESIS_TTL_HOURS,
+        )
+
+        pairs = d_pairs + c_pairs
+        # Every LLM call failed: nothing was recombined, so this sleep must not
+        # close the window (the backlog stays for the next attempt, which the
+        # min-interval gate still spaces out).
+        failed = bool(pairs) and rem.failures == len(pairs)
+        cycle = DreamCycleV1(
+            cycle_id=cycle_id,
+            trigger=trigger,  # type: ignore[arg-type]
+            status="failed" if failed else "completed",
+            started_at=started,
+            ended_at=datetime.now(timezone.utc),
+            pressure=pressure,
+            replay=replay,
+            hypotheses=rem.hypotheses,
+            no_link_count=rem.no_link,
+            echo_count=rem.echo,
+            unparseable_count=rem.unparseable,
+            llm_failures=rem.failures,
+            compaction_delta_id=compaction_delta_id,
+            pair_answers=rem.answers,
+            note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}"
+            + (f" | arc candidates={len(arcs)}" if deps.load_arc_rows is not None else "")
+            + (f" | walkway candidates={len(walkway)}" if deps.load_walkway_rows is not None else "")
+            + (f" | overdue: {settings.DREAM_LOOKBACK_HOURS:g} h without crossing threshold" if backstop else "")
+            + economy_note,
+        )
+        persisted = await asyncio.to_thread(deps.persist_cycle, cycle)
+        if not persisted:
+            logger.warning("dream_cycle %s ran but was not persisted", cycle_id)
+        logger.info(
+            "dream_cycle %s id=%s pressure=%.2f replay=%d hypotheses=%d (dream=%d control=%d) "
+            "no_link=%d echo=%d unparseable=%d llm_failures=%d",
+            cycle.status, cycle_id, pressure.pressure, len(replay), len(rem.hypotheses),
+            sum(1 for h in rem.hypotheses if h.arm == "dream"),
+            sum(1 for h in rem.hypotheses if h.arm == "control"),
+            rem.no_link, rem.echo, rem.unparseable, rem.failures,
+        )
+    except BaseException as exc:  # noqa: BLE001 -- closed at 0, then re-raised unchanged
+        await act.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
+        if want is not None:
+            # A funded sleep that failed must not hold its metacog reservation until it expires.
+            await deps.economy.release_after_sleep(want)
+        raise
+    finally:
+        act.unbind_leases(lease_token)
+    await act.close(*act_emit.cycle_outcome(cycle, persisted=persisted))
+    if want is not None:
+        # The act closed: free the sleep's funded reservation now instead of at expiry.
+        await deps.economy.release_after_sleep(want)
+    # No story for an unsaved sleep: its audit would point at a cycle that doesn't exist.
+    if deps.start_story is not None and persisted:
+        story = story_trigger(
+            cycle, control_items=[item for p in c_pairs for item in (p.a, p.b)], overdue=backstop,
+        )
+        if story is not None:
+            try:
+                await deps.start_story(story)
+            except Exception:
+                logger.exception("dream_story_start_failed cycle_id=%s", cycle_id)
+    # After the story trigger, so its extra pressure read never delays the story.
+    await _publish_after_sleep(deps, cycle, last_start)
+    if persisted and cycle.status == "completed" and deps.compact_curiosity is not None:
         try:
-            compaction_delta_id = await deps.rem_compaction(cycle_id, pressure.since)
-        except Exception as exc:
-            logger.warning("dream_cycle rem compaction failed err=%s", exc)
-
-    d_pairs = dream_pairs(replay, settings.DREAM_HYPOTHESES_PER_CYCLE)
-    c_pairs = control_pairs(
-        candidates, settings.DREAM_CONTROL_PER_CYCLE, seed=cycle_id, exclude=d_pairs
-    )
-    rem = await recombine(
-        d_pairs + c_pairs, deps.complete, cycle_id=cycle_id,
-        ttl_hours=settings.DREAM_HYPOTHESIS_TTL_HOURS,
-    )
-
-    pairs = d_pairs + c_pairs
-    # Every LLM call failed: nothing was recombined, so this sleep must not
-    # close the window (the backlog stays for the next attempt, which the
-    # min-interval gate still spaces out).
-    failed = bool(pairs) and rem.failures == len(pairs)
-    cycle = DreamCycleV1(
-        cycle_id=cycle_id,
-        trigger=trigger,  # type: ignore[arg-type]
-        status="failed" if failed else "completed",
-        started_at=started,
-        ended_at=datetime.now(timezone.utc),
-        pressure=pressure,
-        replay=replay,
-        hypotheses=rem.hypotheses,
-        no_link_count=rem.no_link,
-        unparseable_count=rem.unparseable,
-        llm_failures=rem.failures,
-        compaction_delta_id=compaction_delta_id,
-        note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}",
-    )
-    if not await asyncio.to_thread(deps.persist_cycle, cycle):
-        logger.warning("dream_cycle %s ran but was not persisted", cycle_id)
-    logger.info(
-        "dream_cycle %s id=%s pressure=%.2f replay=%d hypotheses=%d (dream=%d control=%d) "
-        "no_link=%d unparseable=%d llm_failures=%d",
-        cycle.status, cycle_id, pressure.pressure, len(replay), len(rem.hypotheses),
-        sum(1 for h in rem.hypotheses if h.arm == "dream"),
-        sum(1 for h in rem.hypotheses if h.arm == "control"),
-        rem.no_link, rem.unparseable, rem.failures,
-    )
+            await deps.compact_curiosity(cycle)
+        except Exception:
+            logger.exception("curiosity_compaction_after_sleep_failed cycle_id=%s", cycle_id)
     return cycle
 
 

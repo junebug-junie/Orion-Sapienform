@@ -66,16 +66,8 @@ def test_outcome_from_followup_maps_fields():
     assert outcome.surprise == 0.0
 
 
-def test_outcome_from_followup_uses_real_surprise_source_when_available():
-    outcome = outcome_from_followup(
-        _followup("hardware_compute_gpu"), run_id="run-1", surprise_source=lambda: 0.1675
-    )
-    assert outcome.success is True
-    assert outcome.surprise == 0.1675
+def test_outcome_from_followup_has_no_surprise_source():
+    """Retired 2026-11-10: the ambient bus_synaptic stamp is gone."""
+    import inspect
 
-
-def test_outcome_from_followup_falls_back_to_zero_when_surprise_source_returns_none():
-    outcome = outcome_from_followup(
-        _followup("hardware_compute_gpu"), run_id="run-1", surprise_source=lambda: None
-    )
-    assert outcome.surprise == 0.0
+    assert "surprise_source" not in inspect.signature(outcome_from_followup).parameters

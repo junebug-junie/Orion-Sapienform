@@ -6,6 +6,7 @@ from typing import Any, Optional
 import yaml
 
 import orion
+from orion.cognition.verb_physiology import VerbPhysiologyV1, parse_verb_physiology
 from orion.schemas.cortex.schemas import ExecutionPlan
 from orion.schemas.cortex.types import ExecutionStep
 
@@ -20,6 +21,17 @@ def load_verb_yaml(verb_name: str) -> dict[str, Any]:
         raise FileNotFoundError(f"No verb YAML found for '{verb_name}' at {path}")
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+
+def load_verb_physiology(verb_name: str) -> Optional[VerbPhysiologyV1]:
+    """The verb's declared economics (body economy Patch C2), or None if it declares none.
+
+    Parsed and exposed only: no dispatch path reads this yet (Patch C3 makes cortex-orch bid
+    with it). Kept out of ``build_plan_for_verb`` on purpose, so plans and the Orch -> Exec
+    payload are byte-identical to before. Raises ``ValueError`` on an invalid block;
+    ``scripts/check_verb_physiology.py`` keeps every checked-in verb valid in CI.
+    """
+    return parse_verb_physiology(load_verb_yaml(verb_name))
 
 
 def _resolve_step_services(step: dict[str, Any], default_services: list[str]) -> list[str]:

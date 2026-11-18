@@ -215,6 +215,13 @@ inside it — Hub uses `127.0.0.1:6380`. Orion's sandbox is on `app-net` and use
 (`host.docker.internal:8080`) because that value is only ever rendered *into the
 prompt*, never used by Hub.
 
+The urgent prompt (`urgent_prompt.py`) does not use it. The harness blocks
+curl/wget inside the sandbox, so urgent run `a153451fe423` (2026-10-01) burned
+five Hub/pool fetches and then an external scraper while the cause sat in
+Postgres. Its sources are `psql` only: biometrics, the cabinet AC plug, and
+`gpu_pool_events` joined to the `durable_run_workflow` view (grant:
+`scripts/sql/2026-10-02_grant_orion_readonly_gpu_pool.sql`).
+
 ### How the credentials reach Orion
 
 `orion/harness/fcc_motor.py`'s `_build_subprocess_env` is `os.environ.copy()` —
@@ -325,7 +332,8 @@ and the CLI emits no stream-json line until a step completes — so one unbounde
 query dies with `fcc_stream_stalled` while the outer clock still reads generous.
 Showing only the outer number would actively encourage the step that trips the
 inner one. Two further walls are *not* stamped and remain undisclosed to the
-turn: the accumulated-context ceiling (`fcc_draft_length_ceiling_exceeded`) and
+turn: the live-context ceiling (`fcc_context_ceiling_exceeded`, formerly
+`fcc_draft_length_ceiling_exceeded`; rebased on every CLI compaction) and
 Hub's own outer `asyncio.wait_for`.
 
 **The `test -n` guard is load-bearing, not decoration.** Bash expands before it
@@ -579,6 +587,22 @@ Orion's own credentials live in `~/.fcc/.env` as `ORION_CURIOSITY_*` (seven
 keys) — never in this repo.
 
 ---
+
+### The street in the study material (2026-10-15)
+
+Besides Orion's own internals, the menu carries the walkway (street) camera,
+always labelled as the street, never the room, and never counted toward
+`has_material` (so it cannot make an empty menu look full):
+
+- up to 3 things the cameras could not name (`vision_unresolved`, last 3 days);
+- the newest 3 distinct walkway captions from the last 6 h
+  (`study_material.STREET_CAPTIONS_RECENT_SQL`, streams from Hub's
+  `HUB_CURIOSITY_STREET_STREAM_IDS`, default `walkway`; empty = off). Reducer
+  rows (`arrived_as_expected`, ...) are grades, not captions, and are skipped.
+
+Separately, `node:substrate.perception_walkway` (the street camera's own
+surprise reading) seeds endogenous curiosity like the room camera's node does;
+attention still does not read it (`orion/schemas/attention_candidate.py`).
 
 ## 15. Source material
 

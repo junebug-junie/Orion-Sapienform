@@ -5,6 +5,13 @@ from app.db import Base
 
 
 class SelfKnowledgeItemLogSQL(Base):
+    """History only since the Self Atlas retirement (2026-11).
+
+    The daily self-knowledge scan that wrote here and its bus route are gone. The model stays so ``create_all``
+    keeps the table and its rows readable (self-inquiry's ledger cites it).
+    Nothing in sql-writer routes to it now.
+    """
+
     __tablename__ = "self_knowledge_items"
 
     entry_id = Column(String, primary_key=True)

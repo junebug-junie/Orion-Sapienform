@@ -70,6 +70,8 @@ async def test_step_channel_routes_to_visual_steps_and_replies_under_request_cor
     assert reply.correlation_id == envelope.correlation_id
     parsed = ReverieVisualStepResultV1.model_validate(reply.payload)
     assert (parsed.correlation_id, parsed.status, parsed.attempt_id) == ("step-corr-1", "done", "attempt-1")
+    # A waking reply carries no dream-only `caption: null` (nor any other None field).
+    assert "caption" not in reply.payload and None not in reply.payload.values()
 
 
 @pytest.mark.asyncio

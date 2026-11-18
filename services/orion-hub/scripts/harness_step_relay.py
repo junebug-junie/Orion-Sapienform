@@ -9,11 +9,15 @@ from typing import Any, Dict, Optional, Set
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.hub.runtime_activity import get_runtime_activity
-from orion.schemas.harness_finalize import HarnessRunStepV1
+from orion.schemas.harness_finalize import HarnessRunDraftPreviewV1, HarnessRunStepV1
 
 logger = logging.getLogger("orion-hub.harness_step_relay")
 
 HARNESS_RUN_STEP_KIND = "harness.run.step.v1"
+HARNESS_RUN_DRAFT_PREVIEW_KIND = "harness.run.draft_preview.v1"
+# Queue item kind for a pre-judge draft (spec L8). run_unified_turn turns it
+# into the {"type": "draft_preview"} WebSocket frame.
+DRAFT_PREVIEW_ITEM_KIND = "draft_preview"
 
 
 class HarnessStepRelay:
@@ -24,10 +28,15 @@ class HarnessStepRelay:
         self,
         *,
         channel: str,
+        draft_preview_channel: str | None = None,
         last_seen_ttl_sec: float = 7200.0,
         last_seen_max_entries: int = 2000,
     ) -> None:
         self.channel = channel
+        # Same subscription, second channel: draft previews must reach the
+        # same per-correlation queue as steps so they are delivered in order
+        # before the turn's final frames (drain flush happens first).
+        self.draft_preview_channel = draft_preview_channel
         self._bus: Optional[OrionBusAsync] = None
         self._task: Optional[asyncio.Task] = None
         self._queues: Dict[str, Set[asyncio.Queue]] = defaultdict(set)
@@ -99,18 +108,33 @@ class HarnessStepRelay:
         # the life of the Hub process (live 2026-09-07: motor_hop went dark
         # after 08:14 while harness_dispatch kept firing).
         while True:
-            logger.info("Subscribing to harness FCC steps: %s", self.channel)
+            channels = [self.channel]
+            if self.draft_preview_channel:
+                channels.append(self.draft_preview_channel)
+            logger.info("Subscribing to harness FCC steps: %s", ", ".join(channels))
             try:
-                async with self._bus.subscribe(self.channel) as pubsub:
+                async with self._bus.subscribe(*channels) as pubsub:
                     async for msg in self._bus.iter_messages(pubsub):
                         decoded = self._bus.codec.decode(msg.get("data"))
                         if not decoded.ok:
                             continue
                         env = decoded.envelope
-                        if str(env.kind) != HARNESS_RUN_STEP_KIND:
-                            continue
                         payload = env.payload
                         if not isinstance(payload, dict):
+                            continue
+                        if str(env.kind) == HARNESS_RUN_DRAFT_PREVIEW_KIND:
+                            try:
+                                preview = HarnessRunDraftPreviewV1.model_validate(payload)
+                            except Exception:
+                                logger.debug(
+                                    "harness draft preview skipped invalid payload corr=%s",
+                                    payload.get("correlation_id"),
+                                    exc_info=True,
+                                )
+                                continue
+                            self._dispatch_draft_preview(preview)
+                            continue
+                        if str(env.kind) != HARNESS_RUN_STEP_KIND:
                             continue
                         try:
                             step_event = HarnessRunStepV1.model_validate(payload)
@@ -132,6 +156,25 @@ class HarnessStepRelay:
                     exc_info=True,
                 )
                 await asyncio.sleep(1.0)
+
+    def _dispatch_draft_preview(self, preview: HarnessRunDraftPreviewV1) -> None:
+        """Queue a pre-judge draft for its turn. Dropped when no turn listens:
+        a draft is display-only and must never surface outside its own turn."""
+        cid = str(preview.correlation_id)
+        queues = self._queues.get(cid)
+        if not queues:
+            logger.info("harness_draft_preview relay drop: no queue for corr=%s", cid)
+            return
+        item = {
+            "kind": DRAFT_PREVIEW_ITEM_KIND,
+            "correlation_id": cid,
+            "text": preview.text,
+        }
+        for queue in list(queues):
+            try:
+                queue.put_nowait(item)
+            except asyncio.QueueFull:
+                logger.warning("harness_draft_preview relay queue full corr=%s; dropping", cid)
 
     async def _dispatch_step(self, step_event: HarnessRunStepV1) -> None:
         cid = str(step_event.correlation_id)

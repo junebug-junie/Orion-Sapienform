@@ -124,13 +124,12 @@ class Settings(BaseSettings):
     # Default OFF, same reasoning as affective_state above -- pure shadow
     # write, flip on deliberately once the live stream has had a sanity pass.
     COCREATION_SIGNALS_DEV_ECONOMICS_ENABLED: bool = Field(default=False)
-    # Default OFF like its two transcript-scanning neighbours, but for a
-    # different reason: this one is NOT a shadow write -- orion-hub consumes it
-    # from day one (orion/bus/channels.yaml). Off by default because it reads
-    # Juniper's transcript tree and the operator should turn that on knowingly,
-    # not because the signal is unproven. rate_limit_events.py has been correct
-    # since it shipped; what was missing was a consumer, not confidence.
-    COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED: bool = Field(default=False)
+    # ON since 2026-11-11 (Juniper approved consults on her Claude Code
+    # subscription): orion-hub's consult loop (scripts/consult_loop.py) reads
+    # it, and its budget gate fails closed without a fresh weekly reading. It
+    # reads only rate-limit events and timestamps from the transcript tree,
+    # never message text (orion/schemas/claude_limit.py).
+    COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED: bool = Field(default=True)
 
     # ── Producer intervals, one per real cadence (see spec's "Producer
     # scheduling" section) ──────────────────────────────────────────────
@@ -156,7 +155,7 @@ class Settings(BaseSettings):
     # expires; a weekly window's answer moves on a day scale, and re-reading
     # 460MB every five minutes for it would be ~165GB/day of pure waste.
     COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS: str = Field(
-        default="session_limit:5:300,weekly_limit:168:3600"
+        default="session_limit:5:300,weekly_limit:168:900"
     )
 
     # Real, acknowledged gap (code review 2026-07-30): unlike git_delta/

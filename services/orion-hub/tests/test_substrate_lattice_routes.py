@@ -168,11 +168,7 @@ def test_load_transport_proof_chain_empty_buses_yields_empty_bus_summary(monkeyp
         None,  # M3 receipts
         None,  # M4 field
         None,  # M5 attention
-        None,  # L7 proposals
-        None,  # L8 policy
-        None,  # L9 dispatch
-        None,  # L10 feedback
-        None,  # L11 consolidation
+        None,  # (L7-L11 retired: never queried)
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
         result = substrate_lattice_routes._load_transport_proof_chain()
@@ -181,7 +177,7 @@ def test_load_transport_proof_chain_empty_buses_yields_empty_bus_summary(monkeyp
     m3 = result["transport"]["m3"]
     assert m3["status"] in ("fresh", "stale", "missing")
     assert m3["values"]["buses"] == {}
-    assert result["transport"]["l11"]["values"].get("motifs", []) == []
+    assert result["transport"]["l11"]["status"] == "retired"
 
 
 # ── /transport/gates ─────────────────────────────────────────────
@@ -189,13 +185,14 @@ def test_load_transport_proof_chain_empty_buses_yields_empty_bus_summary(monkeyp
 
 def _sample_proof_chain_for_gates(
     bus_age_sec: float = 5.0,
-    contract_pressure: float = 1.0,
+    catalog_drift_pressure: float = 1.0,
     stream_backlog_pressure: float = 0.0,
     dispatch_mode: str = "dry_run",
     receipts: list | None = None,
     source_trace_id: str = "bus.transport:abc",
     freshness_threshold_sec: int = 60,
     capability_transport_bucket: str | None = "dominant_targets",
+    reliability_pressure: float = 0.0,
 ) -> dict:
     from datetime import datetime, timedelta, timezone
 
@@ -225,9 +222,7 @@ def _sample_proof_chain_for_gates(
                             "source_trace_id": source_trace_id,
                             "observed_at": ts,
                             "redis_ping_ok": True,
-                            "contract_pressure": contract_pressure,
-                            "catalog_drift_pressure": 0.0,
-                            "observer_failure_pressure": 0.0,
+                            "catalog_drift_pressure": catalog_drift_pressure,
                             "reliability_pressure": 0.0,
                         }
                     } if source_trace_id else {},
@@ -243,7 +238,7 @@ def _sample_proof_chain_for_gates(
             "m4": {
                 # m3_status (fresh/stale) reused here rather than an independent
                 # calculation -- both lanes share the same bus_age_sec test knob,
-                # and _compute_gates' contract gate now genuinely depends on M4's
+                # and _compute_gates' pressure gate genuinely depends on M4's
                 # freshness (it's where the value is read from), not M3's, so this
                 # must actually vary with bus_age_sec, not be hardcoded "fresh".
                 "status": m3_status,
@@ -251,13 +246,22 @@ def _sample_proof_chain_for_gates(
                 "timestamp": ts,
                 "age_sec": bus_age_sec,
                 # capability:transport's real field vector -- what _compute_gates
-                # actually reads post 2026-07-27. pressure/contract_pressure mirror
+                # actually reads post 2026-07-27. pressure/catalog_drift_pressure mirror
                 # the same test knobs used for M3 above so both code paths can be
                 # exercised from one fixture without a parameter per code path.
                 "values": {
                     "field_vector": {
+                        # capability:transport.pressure lost its only source
+                        # (node:substrate.bus_synaptic) 2026-11; the digester now
+                        # drops it. Kept here as a lingering value every reader
+                        # must ignore.
                         "pressure": stream_backlog_pressure,
-                        "contract_pressure": contract_pressure,
+                        # capability:transport.catalog_drift_pressure (was
+                        # contract_pressure until 2026-10-07, D3) is
+                        # 0.85 x node:athena catalog_drift_pressure (topology).
+                        "catalog_drift_pressure": 0.85 * catalog_drift_pressure,
+                        # capability:transport.reliability_pressure (RPC delivery)
+                        "reliability_pressure": reliability_pressure,
                     },
                     "has_transport_vector": True,
                 },
@@ -308,20 +312,8 @@ def _sample_proof_chain_for_gates(
                 "age_sec": bus_age_sec,
                 "values": {"dispatch_mode": dispatch_mode, "dispatch_count": 0, "blocked_count": 0},
             },
-            "l10": {
-                "status": "fresh",
-                "source_table": "substrate_feedback_frames",
-                "timestamp": ts,
-                "age_sec": bus_age_sec,
-                "values": {"outcome_status": "dry_run_only", "feedback_kind": None},
-            },
-            "l11": {
-                "status": "fresh",
-                "source_table": "substrate_consolidation_frames",
-                "timestamp": ts,
-                "age_sec": bus_age_sec,
-                "values": {"frame_id": "cons:1", "motifs": []},
-            },
+            "l10": substrate_lattice_routes._retired_layer("substrate_feedback_frames", note="x"),
+            "l11": substrate_lattice_routes._retired_layer("substrate_consolidation_frames", note="x"),
         },
         "freshness_threshold_sec": freshness_threshold_sec,
         "verdict": "Transport lane live and fresh through all layers.",
@@ -348,16 +340,6 @@ def test_gates_freshness_blocked_when_stale(client) -> None:
     assert resp.status_code == 200
     gates = {g["gate_id"]: g for g in resp.json()["gates"]}
     assert gates["freshness"]["state"] == "blocked"
-
-
-def test_gates_contract_watch_when_high(client) -> None:
-    chain = _sample_proof_chain_for_gates(contract_pressure=1.0)
-    with patch.object(
-        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
-    ):
-        resp = client.get("/api/substrate-lattice/transport/gates")
-    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
-    assert gates["contract"]["state"] == "watch"
 
 
 def test_gates_pressure_quiet_when_zero(client) -> None:
@@ -408,19 +390,8 @@ def test_gates_404_when_no_chain(client) -> None:
     assert resp.status_code == 404
 
 
-def test_gates_contract_pass_when_below_threshold(client) -> None:
-    chain = _sample_proof_chain_for_gates(contract_pressure=0.3)
-    with patch.object(
-        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
-    ):
-        resp = client.get("/api/substrate-lattice/transport/gates")
-    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
-    # 0.3 is between 0.0 and watch_at=0.50 → "pass"
-    assert gates["contract"]["state"] == "pass"
-
-
 def test_gates_pressure_watch_when_nonzero(client) -> None:
-    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.5)
+    chain = _sample_proof_chain_for_gates(reliability_pressure=0.5)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ):
@@ -430,30 +401,96 @@ def test_gates_pressure_watch_when_nonzero(client) -> None:
 
 
 def test_gates_pressure_reads_m4_field_vector_not_m3_top_level(client) -> None:
-    """Regression test, 2026-07-27: the pressure/contract gates used to read
-    m3.values.stream_backlog_pressure/contract_pressure, keys that don't exist
-    on the real TransportBusProjectionV1 schema (only nested under
-    buses[bus_id][...]) -- always silently defaulting to 0.0/"quiet"/"pass"
-    regardless of real bus state. Proves the fix by setting M3's top-level
-    keys to values that would trip the OLD (buggy) thresholds if read, while
-    M4's field_vector (what the code now actually reads) says otherwise."""
-    chain = _sample_proof_chain_for_gates(
-        stream_backlog_pressure=0.9, contract_pressure=0.9,
-    )
-    # Poison M3's top-level values -- if the code regresses to reading these,
-    # both gates would report "watch"/high; with the fix, M4 alone decides.
-    chain["transport"]["m3"]["values"]["stream_backlog_pressure"] = 0.9
-    chain["transport"]["m3"]["values"]["contract_pressure"] = 0.9
-    chain["transport"]["m4"]["values"]["field_vector"]["pressure"] = 0.0
-    chain["transport"]["m4"]["values"]["field_vector"]["contract_pressure"] = 0.0
+    """Regression test, 2026-07-27: the pressure gate used to read
+    m3.values.stream_backlog_pressure, a key that doesn't exist on the real
+    TransportBusProjectionV1 schema -- always silently defaulting to 0.0.
+    Poison M3's top level; M4's field_vector alone must decide."""
+    chain = _sample_proof_chain_for_gates()
+    chain["transport"]["m3"]["values"]["reliability_pressure"] = 0.9
+    chain["transport"]["m4"]["values"]["field_vector"]["reliability_pressure"] = 0.0
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ):
         resp = client.get("/api/substrate-lattice/transport/gates")
     gates = {g["gate_id"]: g for g in resp.json()["gates"]}
     assert gates["pressure"]["state"] == "quiet"
-    assert gates["contract"]["state"] == "quiet"
-    assert "bus_synaptic_pressure=0.00" in gates["pressure"]["reason"]
+    assert (
+        "transport_reliability_pressure=0.00 [M4 capability:transport.reliability_pressure]"
+        in gates["pressure"]["reason"]
+    )
+
+
+def test_gates_pressure_ignores_retired_bus_synaptic_half(client) -> None:
+    """2026-11 (PE suite rebuild step 5): the bus_synaptic half is gone. A
+    lingering capability:transport.pressure value never makes the gate watch."""
+    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.9)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "quiet"
+    assert "bus_synaptic" not in gates["pressure"]["reason"]
+
+
+def test_gates_have_no_contract_gate(client) -> None:
+    """2026-10-07: the contract gate read M4 contract_pressure (catalog drift
+    under another name) against a deleted policy row's threshold. Deleted."""
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=1.0)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gate_ids = {g["gate_id"] for g in resp.json()["gates"]}
+    assert "contract" not in gate_ids
+    assert {"freshness", "evidence", "lineage", "pressure", "attention", "action_ceiling"} <= gate_ids
+
+
+def test_pressure_gate_unknown_when_policy_row_has_no_m4_source(client, monkeypatch) -> None:
+    """The policy row is the only place the reading's address lives: a missing
+    `source` reads unknown, never a guessed key."""
+    chain = _sample_proof_chain_for_gates(reliability_pressure=0.9)
+    real_load = substrate_lattice_routes._load_yaml
+
+    def _load(name):
+        doc = real_load(name)
+        if name == "transport_lattice_policy.v1.yaml":
+            doc = {**doc, "channels": {k: dict(v) for k, v in doc["channels"].items()}}
+            doc["channels"]["transport_reliability_pressure"].pop("source")
+        return doc
+
+    monkeypatch.setattr(substrate_lattice_routes, "_load_yaml", _load)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "unknown"
+    assert "no M4 source" in gates["pressure"]["reason"]
+
+
+def test_channel_value_unmeasured_when_row_has_no_source() -> None:
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=0.7)
+    value, source = substrate_lattice_routes._channel_value(
+        chain, "catalog_drift_pressure", {"watch_at": 0.5}
+    )
+    assert value is None
+    assert "no valid source" in source
+
+
+def test_gates_pressure_unmeasured_transport_channel_reads_unknown_not_quiet(client) -> None:
+    """2026-10-07: the digester drops a capability channel nothing measured
+    this tick. A missing key must read "unknown", never the quiet 0.0 the old
+    `or 0.0` default produced."""
+    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.0, catalog_drift_pressure=0.0)
+    chain["transport"]["m4"]["values"]["field_vector"].pop("reliability_pressure")
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "unknown"
+    assert "reliability_pressure unmeasured" in gates["pressure"]["reason"]
 
 
 # ── _load_transport_proof_chain internals ────────────────────────
@@ -490,11 +527,7 @@ def test_load_transport_proof_chain_with_projection_returns_full_structure(monke
         None,  # M3 receipts (all())
         None,  # M4 field
         None,  # M5 attention
-        None,  # L7 proposals
-        None,  # L8 policy
-        None,  # L9 dispatch
-        None,  # L10 feedback
-        None,  # L11 consolidation
+        None,  # (L7-L11 retired: never queried)
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
         result = substrate_lattice_routes._load_transport_proof_chain()
@@ -513,7 +546,7 @@ def test_load_transport_proof_chain_with_projection_returns_full_structure(monke
 
 
 def test_simulate_returns_comparison_when_thresholds_change(client) -> None:
-    chain = _sample_proof_chain_for_gates(contract_pressure=1.0, stream_backlog_pressure=0.0)
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=1.0, stream_backlog_pressure=0.0)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ):
@@ -522,7 +555,7 @@ def test_simulate_returns_comparison_when_thresholds_change(client) -> None:
             json={
                 "lane_id": "transport",
                 "thresholds": {
-                    "contract_pressure_watch_at": 1.1,  # above 1.0 → suppresses channel
+                    "catalog_drift_pressure_watch_at": 1.1,  # above 1.0 → suppresses channel
                 },
             },
         )
@@ -531,17 +564,17 @@ def test_simulate_returns_comparison_when_thresholds_change(client) -> None:
     assert "current" in body
     assert "simulated" in body
     assert "changed" in body
-    # With all pressures at 0.0 except contract_pressure=1.0, current should promote
+    # With all pressures at 0.0 except catalog_drift_pressure=1.0, current should promote
     assert body["current"]["bucket"] == "capability_targets"
-    # With watch_at raised to 1.1, contract channel no longer promotes → suppressed
+    # With watch_at raised to 1.1, catalog drift no longer promotes → suppressed
     assert body["simulated"]["bucket"] == "suppressed_targets"
     assert body["changed"] is True
 
 
-def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None:
-    # contract_pressure=1.0, raise watch_at to 1.1 → no channels promote → suppressed
+def test_simulate_catalog_drift_suppressed_when_threshold_above_value(client) -> None:
+    # catalog_drift_pressure=1.0, raise watch_at to 1.1 → no channels promote → suppressed
     chain = _sample_proof_chain_for_gates(
-        contract_pressure=1.0,
+        catalog_drift_pressure=1.0,
         stream_backlog_pressure=0.0,
     )
     with patch.object(
@@ -552,10 +585,8 @@ def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None
             json={
                 "lane_id": "transport",
                 "thresholds": {
-                    "contract_pressure_watch_at": 1.1,
-                    "bus_synaptic_pressure_watch_at": 1.1,
                     "catalog_drift_pressure_watch_at": 1.1,
-                    "observer_failure_pressure_watch_at": 1.1,
+                    "transport_reliability_pressure_watch_at": 1.1,
                 },
             },
         )
@@ -569,7 +600,7 @@ def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None
 def test_simulate_no_change_when_same_thresholds(client) -> None:
     # Use current policy defaults — changed should be False
     chain = _sample_proof_chain_for_gates(
-        contract_pressure=0.3,  # below default watch_at=0.50 → no channels promote
+        catalog_drift_pressure=0.3,  # below default watch_at=0.50 → no channels promote
         stream_backlog_pressure=0.1,  # below default watch_at=0.25 → no channels promote
     )
     with patch.object(
@@ -603,7 +634,7 @@ def test_simulate_404_when_no_chain(client) -> None:
 
 def test_simulate_no_db_writes(client) -> None:
     """Simulate endpoint must not access the DB engine beyond loading the proof chain."""
-    chain = _sample_proof_chain_for_gates(contract_pressure=1.0)
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=1.0)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ), patch.object(substrate_lattice_routes, "_engine") as mock_engine:
@@ -642,7 +673,7 @@ def test_policy_ceilings_are_all_ranked() -> None:
 
 
 def test_latest_lattice_channels_come_from_policy_yaml(client) -> None:
-    chain = _sample_proof_chain_for_gates(contract_pressure=0.6, stream_backlog_pressure=0.3)
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=0.6, stream_backlog_pressure=0.3)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ):
@@ -654,17 +685,21 @@ def test_latest_lattice_channels_come_from_policy_yaml(client) -> None:
     for ch_id, ch_def in policy.items():
         assert rows[ch_id]["watch_at"] == ch_def["watch_at"]
         assert rows[ch_id]["action_ceiling"] == ch_def["action_ceiling"]
-    # bus_synaptic_pressure is read from M4 (the fixture's `pressure` knob),
-    # the other channels from M3's per-bus rows.
-    assert rows["bus_synaptic_pressure"]["value"] == 0.3
-    assert rows["bus_synaptic_pressure"]["state"] == "watch"
-    assert rows["contract_pressure"]["value"] == 0.6
-    assert rows["contract_pressure"]["state"] == "watch"
-    assert rows["catalog_drift_pressure"]["state"] == "quiet"
+    # bus_synaptic_pressure row retired 2026-11 (PE suite rebuild step 5).
+    assert "bus_synaptic_pressure" not in rows
+    assert rows["catalog_drift_pressure"]["value"] == 0.6
+    assert rows["catalog_drift_pressure"]["state"] == "watch"
+    # observer_failure_pressure retired 2026-10-07 (#2534 decision 4); the
+    # reliability row reads M4 capability:transport.reliability_pressure.
+    assert "observer_failure_pressure" not in rows
+    assert rows["transport_reliability_pressure"]["value"] == 0.0
+    assert rows["transport_reliability_pressure"]["state"] == "quiet"
+    assert rows["transport_reliability_pressure"]["value_source"] == "M4 capability:transport.reliability_pressure"
+    assert "contract_pressure" not in rows
 
 
 def test_lattice_channel_unmeasured_when_m4_stale_not_calm() -> None:
-    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.9)
+    chain = _sample_proof_chain_for_gates(reliability_pressure=0.9)
     chain["transport"]["m4"]["status"] = "stale"
     rows = {
         r["channel_id"]: r
@@ -672,38 +707,38 @@ def test_lattice_channel_unmeasured_when_m4_stale_not_calm() -> None:
             chain, substrate_lattice_routes._policy_channels()
         )
     }
-    assert rows["bus_synaptic_pressure"]["value"] is None
-    assert rows["bus_synaptic_pressure"]["state"] == "unmeasured"
+    assert rows["transport_reliability_pressure"]["value"] is None
+    assert rows["transport_reliability_pressure"]["state"] == "unmeasured"
 
 
 def test_channel_value_takes_max_across_buses() -> None:
-    chain = _sample_proof_chain_for_gates(contract_pressure=0.2)
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=0.2)
     fresh = chain["transport"]["m3"]["values"]["buses"]["bus:athena"]["observed_at"]
     chain["transport"]["m3"]["values"]["buses"]["bus:circe"] = {
-        "contract_pressure": 0.7, "observed_at": fresh,
+        "catalog_drift_pressure": 0.7, "observed_at": fresh,
     }
-    value, source = substrate_lattice_routes._channel_value(chain, "contract_pressure")
+    value, source = substrate_lattice_routes._channel_value(chain, "catalog_drift_pressure")
     assert value == 0.7
-    assert source == "M3 max(buses[*].contract_pressure), fresh buses only"
+    assert source == "M3 max(buses[*].catalog_drift_pressure), fresh buses only"
 
 
 def test_channel_value_ignores_stale_bus_rows() -> None:
     """A bus that stopped reporting (or a phantom row like bus:rpc_timeout,
     live 2026-09-25 with observed_at 4h behind bus:athena) must not keep its
     last high value in the max."""
-    chain = _sample_proof_chain_for_gates(contract_pressure=0.1)
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=0.1)
     chain["transport"]["m3"]["values"]["buses"]["bus:rpc_timeout"] = {
-        "contract_pressure": 0.95, "observed_at": "2026-01-01T00:00:00+00:00",
+        "catalog_drift_pressure": 0.95, "observed_at": "2026-01-01T00:00:00+00:00",
     }
-    chain["transport"]["m3"]["values"]["buses"]["bus:no_ts"] = {"contract_pressure": 0.9}
-    value, _ = substrate_lattice_routes._channel_value(chain, "contract_pressure")
+    chain["transport"]["m3"]["values"]["buses"]["bus:no_ts"] = {"catalog_drift_pressure": 0.9}
+    value, _ = substrate_lattice_routes._channel_value(chain, "catalog_drift_pressure")
     assert value == 0.1
 
 
 def test_channel_value_unmeasured_when_every_bus_row_stale() -> None:
-    chain = _sample_proof_chain_for_gates(contract_pressure=0.8)
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=0.8)
     chain["transport"]["m3"]["values"]["buses"]["bus:athena"]["observed_at"] = "2026-01-01T00:00:00+00:00"
-    value, _ = substrate_lattice_routes._channel_value(chain, "contract_pressure")
+    value, _ = substrate_lattice_routes._channel_value(chain, "catalog_drift_pressure")
     assert value is None
 
 
@@ -722,8 +757,8 @@ def test_latest_survives_malformed_policy(client) -> None:
 
 
 def test_simulate_salience_is_strongest_promoted_reading(client) -> None:
-    # contract 0.6 (>= 0.50) and bus_synaptic 0.3 (>= 0.25) both promote.
-    chain = _sample_proof_chain_for_gates(contract_pressure=0.6, stream_backlog_pressure=0.3)
+    # catalog drift 0.6 (>= 0.50) and reliability 0.3 (>= 0.25) both promote.
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=0.6, reliability_pressure=0.3)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ):
@@ -733,13 +768,13 @@ def test_simulate_salience_is_strongest_promoted_reading(client) -> None:
         )
     body = resp.json()
     assert body["current"]["salience"] == 0.6
-    assert set(body["current"]["promoted_channels"]) == {"contract_pressure", "bus_synaptic_pressure"}
-    # read_only (bus_synaptic) outranks summarize (contract)
-    assert body["current"]["action_ceiling"] == "read_only"
+    assert set(body["current"]["promoted_channels"]) == {"catalog_drift_pressure", "transport_reliability_pressure"}
+    # summarize (reliability) outranks watch (catalog drift)
+    assert body["current"]["action_ceiling"] == "summarize"
 
 
 def test_simulate_unmeasured_channel_never_promotes(client) -> None:
-    chain = _sample_proof_chain_for_gates(contract_pressure=0.0, stream_backlog_pressure=0.9)
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=0.0, reliability_pressure=0.9)
     chain["transport"]["m4"]["status"] = "missing"
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
@@ -750,12 +785,12 @@ def test_simulate_unmeasured_channel_never_promotes(client) -> None:
         )
     body = resp.json()
     assert body["current"]["bucket"] == "suppressed_targets"
-    assert "bus_synaptic_pressure" in body["current"]["unmeasured_channels"]
-    assert body["channel_values"]["bus_synaptic_pressure"] is None
+    assert "transport_reliability_pressure" in body["current"]["unmeasured_channels"]
+    assert body["channel_values"]["transport_reliability_pressure"] is None
 
 
 def test_simulate_reports_retired_channel_threshold_as_ignored(client) -> None:
-    chain = _sample_proof_chain_for_gates(contract_pressure=1.0)
+    chain = _sample_proof_chain_for_gates(catalog_drift_pressure=1.0)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
     ):
@@ -789,7 +824,7 @@ def test_draft_patch_returns_diff_text(client) -> None:
         "/api/substrate-lattice/transport/draft-policy-patch",
         json={
             "lane_id": "transport",
-            "thresholds": {"contract_pressure_watch_at": 0.75},
+            "thresholds": {"catalog_drift_pressure_watch_at": 0.75},
         },
     )
     assert resp.status_code == 200
@@ -806,7 +841,7 @@ def test_draft_patch_diff_contains_changed_value(client) -> None:
         "/api/substrate-lattice/transport/draft-policy-patch",
         json={
             "lane_id": "transport",
-            "thresholds": {"contract_pressure_watch_at": 0.75},
+            "thresholds": {"catalog_drift_pressure_watch_at": 0.75},
         },
     )
     assert resp.status_code == 200
@@ -843,7 +878,7 @@ def test_draft_patch_does_not_write_files(client) -> None:
     before_mtime = policy_path.stat().st_mtime if policy_path.exists() else None
     resp = client.post(
         "/api/substrate-lattice/transport/draft-policy-patch",
-        json={"lane_id": "transport", "thresholds": {"contract_pressure_watch_at": 0.99}},
+        json={"lane_id": "transport", "thresholds": {"catalog_drift_pressure_watch_at": 0.99}},
     )
     assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
     after_mtime = policy_path.stat().st_mtime if policy_path.exists() else None
@@ -906,8 +941,10 @@ def test_load_chain_stale_status_when_age_above_threshold(monkeypatch) -> None:
     assert result["transport"]["m3"]["age_sec"] > 60
 
 
-def test_load_chain_missing_layer_when_no_row(monkeypatch) -> None:
-    """L11 status is 'missing' when consolidation frames table has no rows."""
+def test_retired_rungs_read_retired_and_never_query_their_tables(monkeypatch) -> None:
+    """L10 feedback and L11 consolidation retired 2026-11-04; L7 proposals, L8 policy and L9 dispatch
+    retired 2026-11-07. Each is shown 'retired' (not stale or missing), and the chain loader never
+    reads their frame tables (dropped by the follow-up migrations)."""
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
     import json as _json
     from datetime import datetime, timedelta, timezone
@@ -917,13 +954,43 @@ def test_load_chain_missing_layer_when_no_row(monkeypatch) -> None:
     fake = _make_engine_sequence(
         {"projection_json": _json.dumps(proj), "updated_at": fresh_ts},
         None, None, None, None, None, None, None,
-        None,  # L11 returns None
+        None,
     )
-    with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
+    tables: list[str] = []
+    real = substrate_lattice_routes._first_json_with_ts
+
+    def spy(engine, table, *a, **kw):
+        tables.append(table)
+        return real(engine, table, *a, **kw)
+
+    with patch.object(substrate_lattice_routes, "_engine", return_value=fake), \
+            patch.object(substrate_lattice_routes, "_first_json_with_ts", side_effect=spy):
         result = substrate_lattice_routes._load_transport_proof_chain(freshness_threshold_sec=60)
     assert result is not None
-    assert result["transport"]["l11"]["status"] == "missing"
-    assert result["transport"]["l11"]["values"] == {}
+    assert "substrate_attention_frames" in tables, "spy saw no queries: this check would be vacuous"
+    retired = (
+        ("l7", "substrate_proposal_frames", "2026-11-07"),
+        ("l8", "substrate_policy_decision_frames", "2026-11-07"),
+        ("l9", "substrate_execution_dispatch_frames", "2026-11-07"),
+        ("l10", "substrate_feedback_frames", "2026-11-04"),
+        ("l11", "substrate_consolidation_frames", "2026-11-04"),
+    )
+    for key, table, on in retired:
+        assert table not in tables
+        layer = result["transport"][key]
+        assert layer["status"] == "retired" and layer["source_table"] == table
+        assert layer["values"]["retired_on"] == on and layer["values"]["note"]
+
+
+def test_action_ceiling_reads_retired_not_dry_run_once_dispatch_retired(client) -> None:
+    chain = _sample_proof_chain_for_gates()
+    chain["transport"]["l9"] = substrate_lattice_routes._retired_layer(
+        "substrate_execution_dispatch_frames", note="x", retired_on="2026-11-07")
+    with patch.object(substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gate = {g["gate_id"]: g for g in resp.json()["gates"]}["action_ceiling"]
+    assert gate["state"] == "retired"
+    assert "2026-11-07" in gate["reason"]
 
 
 # ── New V1.1 tests: M5 capability:transport detection ────────────
@@ -1047,33 +1114,9 @@ def test_m5_capability_transport_not_found(monkeypatch) -> None:
 # ── New V1.1 tests: additional gate assertions ────────────────────
 
 
-def test_gates_contract_not_quiet_when_contract_pressure_1(client) -> None:
-    """contract gate is 'watch' (not 'quiet') when contract_pressure=1.0."""
-    chain = _sample_proof_chain_for_gates(contract_pressure=1.0)
-    with patch.object(
-        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
-    ):
-        resp = client.get("/api/substrate-lattice/transport/gates")
-    assert resp.status_code == 200
-    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
-    assert gates["contract"]["state"] != "quiet", "contract gate must not be quiet when pressure=1.0"
-    assert gates["contract"]["state"] == "watch"
-
-
-def test_gates_contract_unknown_when_m3_stale(client) -> None:
-    """contract gate is 'unknown' when M3 projection is stale."""
-    chain = _sample_proof_chain_for_gates(bus_age_sec=3600.0, freshness_threshold_sec=60)
-    with patch.object(
-        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
-    ):
-        resp = client.get("/api/substrate-lattice/transport/gates")
-    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
-    assert gates["contract"]["state"] == "unknown"
-
-
 def test_gates_pressure_unknown_when_m4_stale(client) -> None:
     """Regression test, 2026-07-27 (review-caught gap): the pressure gate must
-    go 'unknown' when M4 is stale/missing, exactly like the contract gate --
+    go 'unknown' when M4 is stale/missing (as the since-deleted contract gate did) --
     reading from a stale/missing field vector as if it were a real 'quiet' or
     'watch' reading is the same failure class this whole patch exists to fix.
     Poisons the pressure value high (0.9) to prove it's the staleness check
@@ -1203,71 +1246,18 @@ def test_transport_latest_layer_has_source_metadata(client) -> None:
     assert "status" in m3
 
 
-# --- EWMA-derived thresholds (transport lane) -------------------------------
+# --- EWMA-derived thresholds retired 2026-11 (PE suite rebuild step 5) ----
 
-def _warm_fake_redis(monkeypatch):
-    from orion.field import transport_thresholds as tt
-
-    class FakeRedis:
-        store: dict = {}
-
-        def hget(self, key, field):
-            return self.store.get((key, field))
-
-        def hset(self, key, field, value):
-            self.store[(key, field)] = value
-
-    FakeRedis.store = {}
-    tt.clear_state_cache()
-    monkeypatch.setattr(tt, "_client", lambda url: FakeRedis())
-    monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "true")
-    monkeypatch.setenv("TRANSPORT_THRESHOLDS_MIN_SAMPLES", "50")
-    monkeypatch.setenv("ORION_BUS_URL", "redis://fake:6379/0")
-    import time as _t
-
-    now = _t.time()
-    for i in range(300):
-        tt.record_sample(
-            "bus_synaptic_pressure", 0.04 + 0.01 * ((i * 7) % 5), "redis://fake:6379/0",
-            now_ts=now - (300 - i) * 30.0,
-        )
-    return tt
-
-
-def test_effective_channels_derived_never_above_static_and_has_provenance(monkeypatch):
-    _warm_fake_redis(monkeypatch)
-    static = substrate_lattice_routes._policy_channels()
-    eff = substrate_lattice_routes._effective_channels(static)
-    bs = eff["bus_synaptic_pressure"]
-    assert bs["watch_at"] < static["bus_synaptic_pressure"]["watch_at"]
-    assert bs["threshold_provenance"]["watch_at"]["source"] == "derived"
-    assert bs["threshold_provenance"]["watch_at"]["n_samples"] >= 300
-    for ch_id, ch in eff.items():
-        for rung in ("watch_at", "summarize_at", "propose_at"):
-            if static[ch_id].get(rung) is None:
-                assert ch[rung] is None
-            else:
-                assert ch[rung] <= static[ch_id][rung]
-    # unwired channels are untouched
-    assert eff["contract_pressure"]["watch_at"] == static["contract_pressure"]["watch_at"]
-
-
-def test_effective_channels_flag_off_is_pure_static(monkeypatch):
-    _warm_fake_redis(monkeypatch)
-    monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "false")
-    static = substrate_lattice_routes._policy_channels()
-    eff = substrate_lattice_routes._effective_channels(static)
-    for ch_id, ch in eff.items():
-        for rung in ("watch_at", "summarize_at", "propose_at"):
-            assert ch[rung] == static[ch_id].get(rung)
-
-
-def test_lattice_rows_report_provenance(monkeypatch):
-    _warm_fake_redis(monkeypatch)
+def test_transport_policy_has_no_bus_synaptic_row_and_rows_are_static():
+    """bus_synaptic_pressure (capability:transport.pressure) was retired with
+    node:substrate.bus_synaptic; its EWMA-derived thresholds went with it, so
+    every row's thresholds are the static policy values and carry no
+    threshold_provenance."""
+    channels = substrate_lattice_routes._policy_channels()
+    assert "bus_synaptic_pressure" not in channels
+    assert not hasattr(substrate_lattice_routes, "_effective_channels")
     chain = {"transport": {}, "freshness_threshold_sec": 60}
-    rows = substrate_lattice_routes._lattice_channel_rows(
-        chain, substrate_lattice_routes._effective_channels(substrate_lattice_routes._policy_channels())
-    )
-    bs = next(r for r in rows if r["channel_id"] == "bus_synaptic_pressure")
-    assert bs["threshold_provenance"]["watch_at"]["source"] == "derived"
-    assert bs["watch_at"] == bs["threshold_provenance"]["watch_at"]["value"]
+    rows = substrate_lattice_routes._lattice_channel_rows(chain, channels)
+    for row in rows:
+        assert "threshold_provenance" not in row
+        assert row["watch_at"] == channels[row["channel_id"]].get("watch_at")

@@ -191,6 +191,11 @@ def test_curiosity_receipt_wait_restart_grant_dispatch_and_completion(monkeypatc
                 expected_stages.append("orion_response_repair")
             assert [row["stage"] for row in adapter.stages] == expected_stages
             for row in adapter.stages:
+                if placement == "gpu2" and row["stage"] == "harness_finalize_reflect":
+                    # 2026-11-12: the judge never runs on the gpu2 seat; it leaves the hold for
+                    # one plain acquire on class judge (gpu1, in the idle background hold's gap).
+                    assert row["hold_lease_id"] is None
+                    continue
                 assert (row["hold_lease_id"], row["hold_generation"]) == (hold["lease_id"], 1)
                 assert row["hold_holder"] == f"durable-runs:{study.run_id}"
                 assert "lease_id" not in row  # no durable-runs token rode this turn
@@ -199,6 +204,13 @@ def test_curiosity_receipt_wait_restart_grant_dispatch_and_completion(monkeypatc
             agent_calls = [g for g in adapter.pool_grants if g["work_class"] == "agent"]
             assert agent_calls and all(g["pool_verb"] == "attach" and g["pool_status"] == "granted"
                                        for g in agent_calls)
+            judge_calls = [g for g in adapter.pool_grants if g["work_class"] == "judge"]
+            if placement == "gpu2":
+                assert judge_calls and all(g["pool_verb"] == "acquire" and g["pool_status"] == "granted"
+                                           for g in judge_calls)
+                assert {r["role"] for r in gpu.leases(work_class="judge")} == {"agent"}
+            else:
+                assert not judge_calls
             children = gpu.leases(hold_lease_id=hold["lease_id"])
             assert children and {c["role"] for c in children} == {expected_role}
             assert not gpu.leases(kind="request", work_class="agent", hold_lease_id=None)

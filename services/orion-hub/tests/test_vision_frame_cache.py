@@ -71,10 +71,14 @@ def _cache(stream_ids={"carbon"}) -> vision_frame_cache.VisionFrameCache:
     return c
 
 
-def _frame_envelope(*, stream_id: str, sha256: str | None, frame_ts: float = 123.0) -> FakeDecoded:
+def _frame_envelope(
+    *, stream_id: str, sha256: str | None, frame_ts: float = 123.0, image_path: str | None = None
+) -> FakeDecoded:
     payload = {"stream_id": stream_id, "frame_ts": frame_ts, "width": 640, "height": 480}
     if sha256:
         payload["sha256"] = sha256
+    if image_path:
+        payload["image_path"] = image_path
     return FakeDecoded(ok=True, envelope=FakeEnvelope(kind="vision.frame.pointer", payload=payload))
 
 
@@ -104,15 +108,21 @@ async def test_ignores_a_stream_not_on_the_allowlist():
 
 
 @pytest.mark.asyncio
-async def test_ignores_a_frame_pointer_with_no_sha256():
-    """A pointer using image_path addressing (shared-filesystem node) has
-    nothing this cache can serve back out over HTTP to a browser."""
-    cache = _cache()
-    cache._bus.set_next_decoded(_frame_envelope(stream_id="carbon", sha256=None))
+async def test_caches_an_image_path_only_pointer():
+    """The walkway retina (athena, shared filesystem) publishes only a local
+    image_path, no sha256 -- Hub serves it from its read-only frames mount
+    (2026-10-15). Before this, these pointers were dropped and walkway could
+    never be shown."""
+    cache = _cache(stream_ids={"walkway"})
+    path = "/mnt/telemetry/vision/frames/walkway_walkway_1_ab.jpg"
+    cache._bus.set_next_decoded(_frame_envelope(stream_id="walkway", sha256=None, image_path=path))
 
     await cache._handle_message({"data": b"x"})
 
-    assert await cache.get_latest("carbon") is None
+    latest = await cache.get_latest("walkway")
+    assert latest is not None
+    assert latest["image_path"] == path
+    assert latest["sha256"] is None
 
 
 @pytest.mark.asyncio
@@ -154,7 +164,7 @@ async def test_a_later_frame_overwrites_the_earlier_one():
 def test_frame_pointer_records_a_real_cached_at_timestamp():
     before = time.time()
     pointer = vision_frame_cache.FramePointer(
-        sha256="a" * 64, frame_ts=1.0, width=1, height=1, cached_at=time.time()
+        sha256="a" * 64, image_path=None, frame_ts=1.0, width=1, height=1, cached_at=time.time()
     )
     after = time.time()
     assert before <= pointer.cached_at <= after

@@ -124,7 +124,7 @@ async def test_context_overflow_re_leases_once_with_a_bigger_min_ctx(fake_pool, 
     # fast (4096/slot) overflowed; the first fast-class role with ctx >= 4097 is agent (131072).
     assert result["text"] == "hello" and result["url"] == "http://pool-agent:8015"
     assert fake_pool.calls[0]["min_ctx_tokens"] == 10
-    assert fake_pool.calls[1]["min_ctx_tokens"] == 4096 + 1  # the overflowed role's ctx_per_slot + 1
+    assert fake_pool.calls[1]["min_ctx_tokens"] == 32768 + 1  # the overflowed role's ctx_per_slot + 1
     assert fake_pool.releases == ["ok", "ok"]  # an overflow is not the GPU's failure
 
 
@@ -243,15 +243,15 @@ def _by_id(payload):
 
 
 def test_routes_compat_view_statuses_from_pool_state():
-    state = _state([_role("chat"), _role("agent"), _role("agent-gpu2", "unloaded"), _role("metacog", "down"),
+    state = _state([_role("chat"), _role("agent"), _role("agent-gpu2", "unloaded"),
                     _role("fast", vision=True)])
     routes = _by_id(pool_placement.build_routes_compat(state))
     assert set(routes) == set(pool_placement.pool_routes())
     chat = routes["chat"]
     assert chat["status"] == "up" and chat["upstream"] == "http://100.112.254.99:8011"
-    assert (chat["n_ctx"], chat["model"], chat["served_by"], chat["backend"]) == (8192, "chat.gguf", "circe-worker-chat", "llamacpp")
+    assert (chat["n_ctx"], chat["model"], chat["served_by"], chat["backend"]) == (8192, "chat.gguf", "circe-worker-chat", "strata")
     assert chat["latency_ms"] is None and chat["reserved_free_slots"] is None
-    # metacog's own role is down: the first up role of its class that it may use (fast)
+    # Metacog and quick share the fast role.
     assert routes["metacog"]["status"] == "up" and routes["metacog"]["upstream"].endswith(":8013")
     assert routes["quick"]["vision"] is True
     # burst compat: chat-burst closed while gpu0 is not lent; agent-burst follows agent-gpu2 only
@@ -298,6 +298,45 @@ def test_get_routes_endpoint_uses_pool_state(monkeypatch):
     payload = TestClient(gateway.app).get("/routes").json()
     assert payload["default_route"] == settings.llm_route_default
     assert _by_id(payload)["quick"]["status"] == "up"
+
+
+def test_get_routes_is_counted_and_logged_per_caller(monkeypatch, caplog):
+    """Stage 6.3: every read left on the retiring view is visible, so 6.5's 24 h zero-read window
+    is measurable from the counter and from the log line (which survives a restart)."""
+    from app import routes_compat_reads
+
+    async def state():
+        return None
+
+    monkeypatch.setattr(pool_placement, "fetch_pool_state", state)
+    routes_compat_reads.reset()
+    client = TestClient(gateway.app)
+    before = client.get("/debug/routes-compat-reads").json()
+    assert before["reads_total"] == 0 and before["last_read_at"] is None and before["by_caller"] == {}
+    with caplog.at_level("WARNING", logger="orion-llm-gateway.routes_compat_reads"):
+        client.get("/routes", headers={"user-agent": "Python/3.12 aiohttp/3.9"})
+        client.get("/routes", headers={"user-agent": "python-httpx/0.27"})
+        client.get("/routes", headers={"user-agent": "python-httpx/0.27"})
+    after = client.get("/debug/routes-compat-reads").json()
+    assert after["reads_total"] == 3 and after["last_read_at"]
+    by_agent = {k.split(" ", 1)[1]: v["reads"] for k, v in after["by_caller"].items()}
+    assert by_agent == {"Python/3.12 aiohttp/3.9": 1, "python-httpx/0.27": 2}
+    lines = [r.getMessage() for r in caplog.records if "routes_compat_read" in r.getMessage()]
+    assert len(lines) == 3 and "python-httpx/0.27" in lines[-1] and "total_since_boot=3" in lines[-1]
+    # Reading the counter is not itself a /routes read.
+    assert client.get("/debug/routes-compat-reads").json()["reads_total"] == 3
+
+
+def test_routes_compat_caller_table_is_bounded():
+    from app import routes_compat_reads
+
+    routes_compat_reads.reset()
+    for i in range(routes_compat_reads._MAX_CALLERS + 10):
+        routes_compat_reads.record("10.0.0.1", f"agent-{i}")
+    snap = routes_compat_reads.snapshot()
+    assert snap["reads_total"] == routes_compat_reads._MAX_CALLERS + 10
+    assert len(snap["by_caller"]) == routes_compat_reads._MAX_CALLERS + 1
+    assert snap["by_caller"]["other"]["reads"] == 10
 
 
 @pytest.mark.asyncio
@@ -350,3 +389,103 @@ async def test_fetch_pool_state_failure_is_none(monkeypatch):
         assert await pool_placement.fetch_pool_state() is None
     finally:
         pool_placement.reset_pool_state_cache()
+
+
+# ── a caller's own seat wait (2026-11-03, Orion Prime) ────────────────────────────────────
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (None, None), (600, 600.0), ("30", 30.0), (5000, pool_placement.CALLER_POOL_WAIT_MAX_SEC),
+    (0, None), (-1, None), ("x", None), (True, None), (float("nan"), None),
+])
+def test_caller_pool_wait_option_is_parsed_and_capped(raw, expected):
+    options = {} if raw is None else {pool_placement.CALLER_POOL_WAIT_OPTION: raw}
+    assert pool_placement.caller_pool_wait_sec(options) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_callers_seat_wait_is_its_own_pool_deadline_on_top_of_its_budget(fake_pool, monkeypatch):
+    """Prime asks for 600 s of seat wait and 60 s of generation: the pool lease waits 600 s (not the
+    system priority's 300 s, not the 60 s budget), and the upstream still gets at most 60 s."""
+    seen = {}
+
+    def run(body, plan):
+        seen["read"] = body.options["gateway_read_timeout_sec"]
+        return _ok(body, plan)
+
+    monkeypatch.setattr(gateway, "run_llm_chat", run)
+    await gateway._dispatch_chat(_body("prime", gateway_read_timeout_sec=60, gateway_pool_wait_sec=600),
+                                 correlation_id="c")
+    call = fake_pool.calls[0]
+    assert call["priority"] == "system" and call["work_class"] == "chat"
+    assert 599.0 < call["deadline_sec"] <= 600.0
+    assert 59.0 < seen["read"] <= 60.0
+
+
+@pytest.mark.asyncio
+async def test_time_spent_queued_does_not_eat_the_generation_budget(fake_pool, monkeypatch):
+    """The live failure (10-30..11-03): a call queued for most of its 60 s had nothing left to
+    generate with. With a seat wait, a call granted late still gets its whole budget."""
+    import asyncio
+
+    seen = {}
+
+    def run(body, plan):
+        seen["read"] = body.options["gateway_read_timeout_sec"]
+        return _ok(body, plan)
+
+    monkeypatch.setattr(gateway, "run_llm_chat", run)
+    fake_pool.max_wait_sec = 5.0
+    fake_pool.busy["chat"] = fake_pool.slots["chat"]          # the seat is taken ...
+
+    def free():
+        fake_pool.busy["chat"] -= 1                             # ... until 0.6 s in
+
+    asyncio.get_running_loop().call_later(0.6, free)
+    await gateway._dispatch_chat(_body("prime_starved", gateway_read_timeout_sec=1, gateway_pool_wait_sec=3),
+                                 correlation_id="c")
+    assert fake_pool.calls[0]["priority"] == "starved"
+    assert seen["read"] > 0.95   # without the seat wait it would be ~0.4 s
+
+
+@pytest.mark.asyncio
+async def test_without_a_seat_wait_the_old_single_budget_rule_holds(fake_pool, monkeypatch):
+    import asyncio
+
+    seen = {}
+
+    def run(body, plan):
+        seen["read"] = body.options["gateway_read_timeout_sec"]
+        return _ok(body, plan)
+
+    monkeypatch.setattr(gateway, "run_llm_chat", run)
+    fake_pool.max_wait_sec = 5.0
+    fake_pool.busy["chat"] = fake_pool.slots["chat"]
+
+    def free():
+        fake_pool.busy["chat"] -= 1
+
+    asyncio.get_running_loop().call_later(0.6, free)
+    await gateway._dispatch_chat(_body("prime", gateway_read_timeout_sec=1), correlation_id="c")
+    assert seen["read"] < 0.5
+
+
+def test_deep_route_gets_long_budget_without_changing_circe(monkeypatch):
+    from app.llm_backend import resolve_caller_budget_sec, _resolve_http_read_timeout_sec
+    monkeypatch.setattr(settings, "read_timeout_sec", 60)
+    assert resolve_caller_budget_sec(_body("deep.thinker.v1")) == 1800
+    assert _resolve_http_read_timeout_sec(_body("deep.thinker.v1")) == 1800
+    assert resolve_caller_budget_sec(_body("deep.thinker.v1", gateway_read_timeout_sec=8)) == 8
+    assert resolve_caller_budget_sec(_body("deep.thinker.v1", gateway_read_timeout_sec=9999)) == 1800
+    assert resolve_caller_budget_sec(_body("quick")) == 60
+    assert resolve_caller_budget_sec(_body("quick", gateway_read_timeout_sec=9999)) == 900
+
+
+def test_deep_grant_refuses_rollback_or_incomplete_hardware():
+    from types import SimpleNamespace
+    good = dict(model_file="deep.thinker.v1", profile_name="deep.thinker.v1", ctx_per_slot=262144,
+                cards=["hecate-gpu0", "hecate-gpu1"])
+    assert pool_placement.deep_grant_ready(SimpleNamespace(**good))
+    for field, value in (("model_file", "qwen3-4b-instruct"), ("ctx_per_slot", 131072),
+                         ("profile_name", "other"), ("cards", ["hecate-gpu0"])):
+        assert not pool_placement.deep_grant_ready(SimpleNamespace(**{**good, field: value}))

@@ -280,7 +280,7 @@ Each phase: schema + producer + consumer + test + trace evidence.
 
 - Finalize step contract in harness runner — **mandatory** before WS publish
 - Finalize molecule log + test: imperative mismatch → text changes
-- Eval: Denver/Ogden-style fixture must tool before finalize or refuse honestly
+- Eval: Denver/[home city]-style fixture must tool before finalize or refuse honestly
 
 ### Phase D — Refusal + repair (companion v1 Phase 4–5)
 

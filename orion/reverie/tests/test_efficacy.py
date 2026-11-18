@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from orion.reverie.efficacy import (
-    action_usefulness_rate,
     pressure_discharge_rate,
     recall_delta,
 )
@@ -19,14 +18,6 @@ def test_pressure_discharge_rate_none_on_empty():
 
 def test_pressure_discharge_rate_aligns_on_shorter():
     assert pressure_discharge_rate([0.9, 0.8], [0.1]) == 1.0
-
-
-def test_action_usefulness_rate_case_insensitive():
-    assert action_usefulness_rate(["Useful", "neutral", "HELPED"]) == 2 / 3
-
-
-def test_action_usefulness_rate_none_on_empty():
-    assert action_usefulness_rate([]) is None
 
 
 def test_recall_delta_reports_wins_as_negative():

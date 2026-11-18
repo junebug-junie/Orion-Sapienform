@@ -258,3 +258,12 @@ def test_aggregate_borda_single_target_universe_gets_zero_points() -> None:
     result = aggregate_borda({"magnitude": {"a": 0.7}})
     assert result.totals == {"a": 0.0}
     assert result.winner == "a"
+
+
+def test_magnitude_scorer_never_ranks_an_alarm_as_a_surprise_size():
+    """#3307: cabinet / strain / street values mean "it fired", not a prediction-error magnitude."""
+    from orion.attention.field_attention.candidate_society_of_mind import magnitude_scorer
+    from orion.substrate.prediction_error_freshness import ALARM_NODE_IDS
+
+    scores = magnitude_scorer({**{a: 1.0 for a in ALARM_NODE_IDS}, "node:substrate.biometrics": 0.4})
+    assert scores == {"node:substrate.biometrics": 0.4}

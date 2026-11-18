@@ -1,0 +1,20 @@
+{"depth_target": 8000, "tag": "chain4", "want": "3553", "got": "3553", "ok": true, "finish": "stop", "prompt_tokens": 8871, "gen": 311, "tg": 47.43487497697114, "reasoning_chars": 577, "wall": 18.76}
+{"depth_target": 8000, "tag": "decoy", "want": "1392", "got": "1392", "ok": true, "finish": "stop", "prompt_tokens": 8871, "gen": 341, "tg": 47.57691472943498, "reasoning_chars": 865, "wall": 8.2}
+{"depth_target": 8000, "tag": "arith", "want": "2656", "got": "2656", "ok": true, "finish": "stop", "prompt_tokens": 8878, "gen": 354, "tg": 47.52426194349998, "reasoning_chars": 451, "wall": 8.51}
+{"depth_target": 8000, "tag": "date", "want": "Saturday", "got": "Saturday", "ok": true, "finish": "stop", "prompt_tokens": 8869, "gen": 160, "tg": 47.4693889614862, "reasoning_chars": 488, "wall": 4.41}
+{"depth_target": 8000, "tag": "who", "want": "Mirela Cask", "got": "Mirela Cask", "ok": true, "finish": "stop", "prompt_tokens": 8870, "gen": 265, "tg": 47.55590565989134, "reasoning_chars": 715, "wall": 6.59}
+{"depth_target": 24000, "tag": "chain4", "want": "5493", "got": "5493", "ok": true, "finish": "stop", "prompt_tokens": 25583, "gen": 280, "tg": 41.637260662235406, "reasoning_chars": 512, "wall": 46.57}
+{"depth_target": 24000, "tag": "decoy", "want": "2000", "got": "2000", "ok": true, "finish": "stop", "prompt_tokens": 25583, "gen": 318, "tg": 41.70565333945191, "reasoning_chars": 753, "wall": 8.88}
+{"depth_target": 24000, "tag": "arith", "want": "1616", "got": "1616", "ok": true, "finish": "stop", "prompt_tokens": 25590, "gen": 734, "tg": 41.742549268167124, "reasoning_chars": 1049, "wall": 18.86}
+{"depth_target": 24000, "tag": "date", "want": "Thursday", "got": "Thursday", "ok": true, "finish": "stop", "prompt_tokens": 25581, "gen": 228, "tg": 41.73755462425445, "reasoning_chars": 681, "wall": 6.71}
+{"depth_target": 24000, "tag": "who", "want": "Ilse Marr", "got": "Ilse Marr", "ok": true, "finish": "stop", "prompt_tokens": 25582, "gen": 317, "tg": 41.72793255920976, "reasoning_chars": 899, "wall": 8.85}
+{"depth_target": 40000, "tag": "chain4", "want": "2290", "got": "2290", "ok": true, "finish": "stop", "prompt_tokens": 39591, "gen": 326, "tg": 37.78685308180854, "reasoning_chars": 912, "wall": 77.19}
+{"depth_target": 40000, "tag": "decoy", "want": "8944", "got": "8944", "ok": true, "finish": "stop", "prompt_tokens": 39591, "gen": 345, "tg": 37.80237227468522, "reasoning_chars": 764, "wall": 10.63}
+{"depth_target": 40000, "tag": "arith", "want": "2701", "got": "2701", "ok": true, "finish": "stop", "prompt_tokens": 39598, "gen": 518, "tg": 37.81383655821239, "reasoning_chars": 695, "wall": 15.19}
+{"depth_target": 40000, "tag": "date", "want": "Sunday", "got": "Sunday", "ok": true, "finish": "stop", "prompt_tokens": 39589, "gen": 424, "tg": 37.788006247617034, "reasoning_chars": 1365, "wall": 12.67}
+{"depth_target": 40000, "tag": "who", "want": "Petra Lume", "got": "Petra Lume", "ok": true, "finish": "stop", "prompt_tokens": 39590, "gen": 279, "tg": 37.76502249803669, "reasoning_chars": 815, "wall": 8.85}
+{"depth_target": 50000, "tag": "chain4", "want": "4671", "got": "4671", "ok": true, "finish": "stop", "prompt_tokens": 48721, "gen": 271, "tg": 34.265516123702064, "reasoning_chars": 445, "wall": 97.6}
+{"depth_target": 50000, "tag": "decoy", "want": "4749", "got": "4749", "ok": true, "finish": "stop", "prompt_tokens": 48721, "gen": 358, "tg": 35.55657190026869, "reasoning_chars": 890, "wall": 11.66}
+{"depth_target": 50000, "tag": "arith", "want": "2388", "got": "2388", "ok": true, "finish": "stop", "prompt_tokens": 48728, "gen": 485, "tg": 35.37544936505088, "reasoning_chars": 643, "wall": 15.33}
+{"depth_target": 50000, "tag": "date", "want": "Tuesday", "got": "Monday", "ok": false, "finish": "stop", "prompt_tokens": 48719, "gen": 180, "tg": 35.53862760938402, "reasoning_chars": 569, "wall": 6.66}
+{"depth_target": 50000, "tag": "who", "want": "Oswin Hale", "got": "Oswin Hale", "ok": true, "finish": "stop", "prompt_tokens": 48720, "gen": 227, "tg": 35.5077147580432, "reasoning_chars": 537, "wall": 7.97}

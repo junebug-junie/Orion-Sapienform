@@ -101,18 +101,18 @@ def test_top_node_substrate_target_prefers_confident_over_higher_salience_but_th
 
 def test_top_node_substrate_target_boundary_at_min_confidence():
     just_under = _target(
-        "node:substrate.chat", 0.9, confidence=MIN_CONFIDENCE_FOR_GOAL_PROVENANCE - 0.01
+        "node:substrate.biometrics", 0.9, confidence=MIN_CONFIDENCE_FOR_GOAL_PROVENANCE - 0.01
     )
     frame_under = _frame([just_under])
     assert top_node_substrate_target(frame_under) is None
 
     exactly_at = _target(
-        "node:substrate.chat", 0.9, confidence=MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
+        "node:substrate.biometrics", 0.9, confidence=MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
     )
     frame_at = _frame([exactly_at])
     winner = top_node_substrate_target(frame_at)
     assert winner is not None
-    assert winner.target_id == "node:substrate.chat"
+    assert winner.target_id == "node:substrate.biometrics"
 
 
 def test_dominance_streak_resets_on_target_change():

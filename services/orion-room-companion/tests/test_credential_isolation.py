@@ -131,7 +131,8 @@ def test_compose_has_no_credentials_file_mount():
         ("/var/run/docker.sock", "docker socket is container escape"),
         ("/.ssh", "SSH keys must not be reachable from a room turn"),
         ("/.config/gh", "gh token must not be reachable from a room turn"),
-        ("/repo", "no repo mount -- a room conversation has no business reading this codebase"),
+        ("/mnt/scripts/Orion-Sapienform", "no primary-checkout mount -- it holds untracked .env secrets"),
+        ("${ORION_HOST_REPO_ROOT", "no primary-checkout mount -- it holds untracked .env secrets"),
     ],
 )
 def test_compose_does_not_mount_high_value_targets(forbidden: str, why: str):
@@ -278,3 +279,14 @@ def test_settings_helper_does_not_leak_a_real_dotenv_token(tmp_path, monkeypatch
     (tmp_path / ".env").write_text("ROOM_COMPANION_CLAUDE_OAUTH_TOKEN=sk-ant-oat01-should-never-leak\n")
     monkeypatch.chdir(tmp_path)
     assert _settings().ROOM_COMPANION_CLAUDE_OAUTH_TOKEN is None
+
+
+def test_only_code_mount_is_the_consult_export_read_only():
+    """Consult rooms read code (2026-11-11). The only code mount allowed is the `git archive` export
+    (scripts/export_consult_source.py), read-only. Never the FCC sandbox: its .git remote URL carries
+    a credential and Orion writes into it (review finding, 2026-11-11)."""
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    volumes = compose["services"]["room-companion"]["volumes"]
+    code = [v for v in volumes if "consult" in v or "orion-fcc" in v]
+    assert code == ["${ORION_CONSULT_SOURCE_DIR:-/mnt/scripts/orion-consult-src}:/consult-src:ro"]
+    assert not any("orion-fcc" in v for v in volumes)

@@ -5,6 +5,8 @@ import pytest
 from orion.schemas.pre_turn_appraisal import PreTurnAppraisalRequestV1, TurnWindowMessageV1
 from orion.substrate.appraisal.paradigms.repair_pressure_v2 import (
     RepairPressureV2Paradigm,
+    RepairProbeUnavailable,
+    probe_failure_reason,
     build_repair_probe_prompt,
     reduce_repair_level,
 )
@@ -185,9 +187,9 @@ async def test_paradigm_fail_closed_on_missing_weights_file() -> None:
         session_id="s1",
         turn_window=[TurnWindowMessageV1(role="user", content="be specific")],
     )
-    slice_ = await paradigm.run(req)
-    assert slice_.level == 0.0
-    assert "weights_file_missing" in slice_.notes
+    with pytest.raises(RepairProbeUnavailable) as exc:
+        await paradigm.run(req)
+    assert exc.value.reason == "weights_file_missing"
 
 
 @pytest.mark.asyncio
@@ -198,9 +200,55 @@ async def test_paradigm_fail_closed_on_empty_llm() -> None:
         session_id="s1",
         turn_window=[TurnWindowMessageV1(role="user", content="be specific")],
     )
-    slice_ = await paradigm.run(req)
-    assert slice_.level == 0.0
-    assert "no_repair_evidence" in slice_.notes
+    # Empty reply = no measurement. It used to come back as level=0.0 ("calm"); now it fails.
+    with pytest.raises(RepairProbeUnavailable) as exc:
+        await paradigm.run(req)
+    assert exc.value.reason == "llm_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_shed_probe_fails_with_the_pool_reason_not_a_calm_zero() -> None:
+    """Regression (2026-10-20..21): the 34 C heat reflex refused the probe on 19/19 of Juniper's
+    turns, and each came back as level=0.0 notes=["no_repair_evidence"], read as calm. The
+    gateway's refusal shape (llm-gateway _pool_unavailable_result) must surface as a failure."""
+    shed_reply = {
+        "text": "",
+        "llm_uncertainty": {"available": False},
+        "raw": {
+            "error": "gpu_pool_unavailable",
+            "details": {"reason": "shed:cabinet_hot", "route": "quick", "work_class": "fast",
+                        "retry_after_sec": 30.0, "local": True},
+        },
+    }
+    paradigm = RepairPressureV2Paradigm(llm_caller=lambda _prompt: shed_reply)
+    req = PreTurnAppraisalRequestV1(
+        correlation_id="c-shed",
+        session_id="s1",
+        turn_window=[TurnWindowMessageV1(role="user", content="you did it again")],
+    )
+    with pytest.raises(RepairProbeUnavailable) as exc:
+        await paradigm.run(req)
+    assert exc.value.reason == "shed:cabinet_hot"
+
+
+@pytest.mark.asyncio
+async def test_unparseable_probe_answer_fails_instead_of_reading_calm() -> None:
+    paradigm = RepairPressureV2Paradigm(
+        llm_caller=lambda _prompt: {"text": "I'd be happy to help!", "llm_uncertainty": {"available": False}}
+    )
+    req = PreTurnAppraisalRequestV1(
+        correlation_id="c-garbled",
+        session_id="s1",
+        turn_window=[TurnWindowMessageV1(role="user", content="be specific")],
+    )
+    with pytest.raises(RepairProbeUnavailable) as exc:
+        await paradigm.run(req)
+    assert exc.value.reason == "probe_unparseable"
+
+
+def test_probe_failure_reason_falls_back_to_the_error_code() -> None:
+    assert probe_failure_reason({"text": "", "raw": {"error": "gpu_pool_unavailable"}}) == "gpu_pool_unavailable"
+    assert probe_failure_reason({"text": "specificity_demand: NO", "raw": {}}) is None
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,26 @@
 """Endogenous outreach — Orion opens a conversation Juniper did not start.
 
+DOOR POLICY (2026-11-10, ``scripts/outreach_door_policy.py``). Juniper: no plumbing. The tick no
+longer reads open non-self worldview priors (the investigate line's claims) or substrate curiosity
+candidates (prediction-error / open-loop / repair-pressure telemetry, the investigate line's
+seeds), and its recent turns leave out Orion's own unsolicited messages (she already got them).
+What is left to speak from: the daydream, the tension trigger, the personality cue and the real
+conversation. A daydream already used in a sent tick is not a fresh topic (``daydream_id``, same
+7-day ledger as below). Every composed tick message must end with a ``Why Juniper:`` line; without
+it nothing is sent (``no_why_juniper``). Sections below that describe the prior / curiosity lanes
+are history: those producers were removed, and the context fields stay only as the shared shape.
+
+CHOICE POINT (2026-11-13, personality spec rev 4, ``scripts/outreach_choice.py``). At the compose
+point the same compose call shows Orion up to HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS topics (the
+daydream; reads waiting to be told, people Juniper named seen in a new way, and chat threads that went
+quiet after Orion's question -- the last three from ``topic_sources``, see
+``scripts/outreach_world_topics.py``) plus "say nothing". Orion answers
+``Pick: <n>``; ``Pick: 0`` / PASS is ``orion_declined`` and nothing is sent. Each readable pick
+publishes one ``PersonalityChoiceV1``. A subject sent or declined in the last 7 days is not shown
+again unless its version changed. With the choice point on, the personality cue is not read: it was
+free material with no id, and it carried the "graph first" habit into 3 sends on 2026-11-11..12.
+Every gate before the compose point is unchanged.
+
 REAL TRIGGER (2026-08-16, replacing the coin-flip stub this module ran on
 since 2026-08-14). ``_should_roll()`` now asks
 ``scripts.tension_outreach_trigger.current_run()``: has the SAME target
@@ -29,7 +50,7 @@ open priors that were already said are not a fresh topic: prior-solo fire
 records ``content_already_used``; tension with only used IDs still records
 ``tension_without_content``. Daydream has no durable ID yet and still counts.
 Curiosity ``offer_message`` is a separate door — Door-A skips quiet hours /
-daily cap / cooldown (2026-09-22) and does not consume the endogenous cap;
+cooldown (2026-09-22); since 2026-11-10 every door counts on the one daily cap;
 background tick still owns those schedule gates.
 here. Deterministic Hub gate; not an LLM novelty scorer.
 
@@ -230,8 +251,7 @@ Delivery (all three already existed before this module; none are new rails):
      bubble back -- rail 3 is what a returning browser actually sees. Giving
      the UI a real restore path is a separate piece of work.
   3. ``HubNotificationEvent`` on ``NOTIFY_IN_APP_CHANNEL`` so the outreach is
-     visible even with no browser open — same pattern as
-     ``bus_synaptic_trigger_notifier``.
+     visible even with no browser open.
 
 Single-process assumption: rail 1 is in-process. Hub runs one uvicorn worker
 (``Dockerfile`` CMD has no ``--workers``); if that ever changes, rail 1 must
@@ -262,10 +282,11 @@ Safety posture — this must never disturb a real turn:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import UUID, uuid4
@@ -275,6 +296,35 @@ from orion.cognition.cortex_payload_extract import looks_like_error_text
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
 from orion.situational.perception_reader import fetch_presence, presence_fragment
+from orion.regulation.arousal_view import AROUSAL_STRAINED_REASON
+from scripts.arousal_reader import ArousalReader
+# Patch D decision-row reasons (scripts/outreach_bind.py): the body economy held this want; or a
+# second check raced on a want another check is already composing.
+from scripts.outreach_bind import DUPLICATE_REASON as DUPLICATE_ECONOMY_REASON
+from scripts.outreach_bind import HELD_REASON as ECONOMY_HELD_REASON
+from scripts.outreach_bind import TICK_KEY
+from scripts.outreach_door_policy import (
+    ALREADY_TOLD_LOOKBACK_DAYS,
+    ALREADY_TOLD_REASON,
+    NO_WHY_JUNIPER_REASON,
+    WHY_JUNIPER_INSTRUCTION,
+    daydream_content_id,
+    split_why_juniper,
+)
+from scripts.outreach_choice import ORION_DECLINED_REASON
+from scripts.rest_drive_reader import RestDriveReader
+from scripts.strain_report import (
+    STRAIN_REPORT_INTENT_REASON,
+    STRAIN_REPORT_SOURCE,
+    StrainReportHistory,
+    build_strain_report_prompt,
+    episode_key,
+    fetch_open_strain_arc,
+    render_record,
+    strain_report_block,
+    strain_report_facts,
+)
+from scripts.personality_cue_reader import cue_status, read_personality_cue
 from scripts.outreach_vocabulary import (
     find_ungrounded_signal_mentions,
     grounded_signal_names,
@@ -288,17 +338,10 @@ OUTREACH_EVENT_KIND = "hub.endogenous_outreach.v1"
 
 # Bounds on what gets stuffed into the generation prompt. These are prompt-size
 # guards, not cognition policy.
-_MAX_CURIOSITY_SUMMARIES = 3
-_MAX_CURIOSITY_SUMMARY_CHARS = 160
 _MAX_RECENT_TURNS = 3
 _MAX_TURN_CHARS = 400
-# Curiosity candidates are regenerated on a substrate cadence, not per-turn;
-# 120s (curiosity_hint's agent-lane window) is far too tight for an outreach
-# that fires every few minutes at most, so widen it here.
-_CURIOSITY_MAX_AGE_SEC = 3600.0
-# Open worldview priors that can make it into one outreach prompt. Small on
-# purpose: this is "something to talk about", not a dump of the whole atlas.
-_MAX_OPEN_PRIOR_PREVIEWS = 3
+# `_gather_context(daydream=...)` default: the fire gate did not peek, so read it here.
+_NOT_PEEKED = object()
 
 # --- Reverie daydream (the visual chain's generated-image caption) ---
 # `reverie_visual_chain` gets one row roughly every 600s from orion-thought's
@@ -409,8 +452,8 @@ _DAYDREAM_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours|you're)\b", re.IGN
 def _source_ref() -> ServiceRef:
     """Producer identity from hub settings, with an import-safe fallback.
 
-    Mirrors ``bus_synaptic_trigger_notifier._source_ref()`` — hub settings need
-    the full operator env, so bare test processes fall back to defaults.
+    Hub settings need the full operator env, so bare test processes fall back
+    to defaults.
     """
     try:
         from scripts.settings import settings
@@ -436,6 +479,33 @@ class OutreachGateInputs:
     min_cooldown_sec: float
     sent_today: int
     daily_cap: int
+    # Seconds since Juniper's last saved message (chat_history_log, any session), or None when
+    # unknown. Read from Postgres, not Hub memory, so a Hub restart cannot make her look absent
+    # (2026-10-09: outreach fired 15 s after a restart, mid-conversation).
+    seconds_since_juniper_spoke: Optional[float] = None
+    recent_chat_sec: float = 0.0
+    # The rest drive (scripts/rest_drive_reader.py): the longer cooldown kept
+    # while Orion is tired, or None when not `due`, unknown, or switched off --
+    # None is exactly the behaviour before the drive existed. The cap, quiet
+    # hours, recent_chat and turn_in_flight never read it.
+    rest_drive_cooldown_sec: Optional[float] = None
+    # Arousal (scripts/arousal_reader.py, Temporal Self R3 reader 7): a fresh "engaged" /
+    # "idle" / "strained", or None when unknown or the flag is off -- None is exactly the
+    # behaviour before arousal existed. Only `strained` acts: it refuses a background
+    # outreach after every other gate has passed. Quiet hours, turn-in-flight, recent_chat,
+    # the cap and Door-A never read it.
+    arousal_level: Optional[str] = None
+
+
+REST_DRIVE_BLOCK_REASON = "rest_drive_cooldown"
+# Body economy Patch D (scripts/outreach_bind.py): the binding verdict of the tick's want, copied into
+# every decision row the tick records after its compose point (``result_json.economy``). A ContextVar,
+# not instance state: it belongs to the one maybe_outreach call (its task), never to a concurrent door.
+_TICK_ECONOMY: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = contextvars.ContextVar(
+    "endogenous_outreach_tick_economy", default=None)
+# Body economy shadow bids: a strain-held tick re-bids at most once per this many seconds (or per
+# the outreach cooldown, if longer). See EndogenousOutreach._strain_shadow_bid_due.
+STRAIN_SHADOW_BID_MIN_WINDOW_SEC = 600.0
 
 
 def in_quiet_hours(local_hour: int, start_hour: int, end_hour: int) -> bool:
@@ -455,32 +525,62 @@ def in_quiet_hours(local_hour: int, start_hour: int, end_hour: int) -> bool:
 
 
 def outreach_block_reason(
-    inp: OutreachGateInputs, *, skip_schedule_gates: bool = False
+    inp: OutreachGateInputs, *, skip_schedule_gates: bool = False, skip_rate_gates: bool = False
 ) -> Optional[str]:
     """First reason this tick must not reach out, or None if it may.
 
     Order is deliberate: cheapest/most-absolute first, so the status endpoint
     reports the most informative single reason rather than an arbitrary one.
 
-    ``skip_schedule_gates`` (Door-A): ignore quiet hours, daily cap, and
-    cooldown. Still blocks on disabled / turn_in_flight.
+    ``skip_schedule_gates`` (Door-A): ignore quiet hours, recent chat, cooldown,
+    rest drive and arousal. Still blocks on disabled / turn_in_flight / daily cap.
+
+    ``skip_rate_gates`` (reading findings, office visits): ignore the per-door
+    pacing gates -- cooldown, rest-drive cooldown. The gates that protect
+    Juniper's moment stay: disabled, turn_in_flight, recent_chat, quiet hours,
+    and arousal ``strained``.
+
+    The daily cap holds for every door (one attention budget, 2026-11-10): it is
+    ``orion.physiology.attention_pacing.JUNIPER_DAILY_CAP``, the same line the
+    body prices on attention:juniper.
     """
     if not inp.enabled:
         return "disabled"
     if inp.turn_in_flight:
         return "turn_in_flight"
+    if (
+        inp.recent_chat_sec > 0
+        and inp.seconds_since_juniper_spoke is not None
+        and inp.seconds_since_juniper_spoke < inp.recent_chat_sec
+        and not skip_schedule_gates
+    ):
+        return "recent_chat"
     if in_quiet_hours(inp.local_hour, inp.quiet_start_hour, inp.quiet_end_hour):
         if not skip_schedule_gates:
             return "quiet_hours"
+    # One attention budget (2026-11-10): the daily cap holds for EVERY door. Neither skip flag skips it.
     if inp.daily_cap >= 0 and inp.sent_today >= inp.daily_cap:
-        if not skip_schedule_gates:
-            return "daily_cap"
+        return "daily_cap"
     if (
         inp.seconds_since_last_outreach is not None
         and inp.seconds_since_last_outreach < inp.min_cooldown_sec
     ):
-        if not skip_schedule_gates:
+        if not (skip_schedule_gates or skip_rate_gates):
             return "cooldown"
+    # After `cooldown`, so it names only the stretch tiredness added. A
+    # schedule gate: Door-A (a finished curiosity run with something to say)
+    # skips it like the plain cooldown.
+    if (
+        inp.rest_drive_cooldown_sec is not None
+        and inp.seconds_since_last_outreach is not None
+        and inp.seconds_since_last_outreach < inp.rest_drive_cooldown_sec
+        and not (skip_schedule_gates or skip_rate_gates)
+    ):
+        return REST_DRIVE_BLOCK_REASON
+    # Last, so it names only what arousal held. A schedule gate: Door-A (a finished
+    # curiosity run with something to say) skips it like the cooldown.
+    if inp.arousal_level == "strained" and not skip_schedule_gates:
+        return AROUSAL_STRAINED_REASON
     return None
 
 
@@ -514,10 +614,13 @@ class OutreachContext:
     # own a reason to interrupt Juniper, so this is deliberately NOT part of
     # `is_empty()`.
     daydream: Optional[Tuple[float, str]] = None
+    # Stable id of the daydream caption (``outreach_door_policy.daydream_content_id``), for the
+    # "already said" ledger (door policy, 2026-11-10). "" when there is no daydream.
+    daydream_id: str = ""
     # Live open :Prior claim previews from Orion's worldview graph (same
     # graph curiosity_investigation reads). Talkable content: a prior alone
     # is enough to build a prompt and enough to fire outreach. See
-    # `_fetch_open_priors` and `has_talkable_content`.
+    # `has_talkable_content`. The tick no longer fills it (door policy, 2026-11-10).
     open_prior_previews: List[str] = field(default_factory=list)
     # Parallel to open_prior_previews / curiosity_summaries — durable IDs for
     # the decision-log ledger (novelty / cluster measurement). Same length
@@ -526,13 +629,29 @@ class OutreachContext:
     # NOT FrontierInvocationSignalV1.signal_id (reminted every curiosity tick).
     open_prior_ids: List[str] = field(default_factory=list)
     curiosity_content_ids: List[str] = field(default_factory=list)
+    # Orion's running situation (orion:situation:latest, the situation.update graph): where
+    # Juniper is and which away-facts have ended. Enrichment only (not in is_empty()); it is
+    # what stops a two-day-old "I'm in Chicago" turn from reading as tonight.
+    situation: Optional[Dict[str, Any]] = None
+    # Why the situation block is or isn't there ("ok", "no_key", "bus_not_connected", "error:...").
+    situation_status: Optional[str] = None
+    # Orion's personality read-back (orion.personality.cue, spec rev 2): what Orion keeps coming
+    # back to, in Orion's own words -- a record, not an instruction. "" when skipped. Enrichment
+    # only (not in is_empty()): it is never on its own a reason to speak.
+    personality_cue: str = ""
+    # Which graph nodes the rendered cue named, and why it was skipped (for grounding_summary).
+    personality_cue_ids: List[str] = field(default_factory=list)
+    personality_cue_skip: Optional[str] = None
 
     def is_empty(self) -> bool:
+        # The daydream counts (door policy, 2026-11-10): with the prior and curiosity lanes gone
+        # it is the tick's own material, and `has_talkable_content` already treated it as a topic.
         return (
             not self.curiosity_summaries
             and not self.recent_turns
             and self.tension_reason is None
             and not self.open_prior_previews
+            and self.daydream is None
         )
 
 
@@ -605,8 +724,12 @@ def apply_content_novelty(
     *,
     used_prior_ids: set,
     used_curiosity_ids: set,
+    used_daydream_ids: Optional[set] = None,
 ) -> OutreachContext:
-    """Return a copy of ``ctx`` with already-said prior/curiosity rows removed."""
+    """Return a copy of ``ctx`` with already-said prior/curiosity rows removed.
+
+    A daydream whose id is in ``used_daydream_ids`` is removed too (door policy, 2026-11-10): a
+    sent tick already spoke from that picture."""
     prior_ids, prior_previews = filter_novel_pairs(
         list(ctx.open_prior_ids),
         list(ctx.open_prior_previews),
@@ -617,165 +740,21 @@ def apply_content_novelty(
         list(ctx.curiosity_summaries),
         used=used_curiosity_ids,
     )
-    return OutreachContext(
+    # dataclasses.replace, not a field-by-field rebuild: the rebuild silently dropped every field
+    # it did not list. Live 2026-10-09: it dropped `situation`, so every non-forced outreach went
+    # out without the "Where Juniper is right now" block (5/5 that day).
+    daydream_used = bool(ctx.daydream_id) and ctx.daydream_id in (used_daydream_ids or set())
+    return replace(
+        ctx,
+        daydream=None if daydream_used else ctx.daydream,
+        daydream_id="" if daydream_used else ctx.daydream_id,
         curiosity_summaries=curiosity_summaries,
         curiosity_content_ids=curiosity_ids,
         recent_turns=list(ctx.recent_turns),
-        presence=ctx.presence,
-        tension_reason=ctx.tension_reason,
-        embodied_presence=ctx.embodied_presence,
-        daydream=ctx.daydream,
         open_prior_previews=prior_previews,
         open_prior_ids=prior_ids,
     )
 
-
-def _curiosity_content_id(candidate: Dict[str, Any]) -> str:
-    """Stable identity for a curiosity candidate across reminted signal_ids.
-
-    ``FrontierInvocationSignalV1.signal_id`` defaults to a fresh UUID every
-    construct; the endogenous curiosity tick rewrites ``candidates_json``
-    ~every 60s. Using that UUID as a ledger key would make repeat/novelty
-    measurement structurally impossible. Prefer source note + focal refs;
-    fall back to a short hash of the evidence summary.
-    """
-    import hashlib
-
-    notes = candidate.get("notes") or []
-    source = ""
-    if isinstance(notes, list):
-        for note in notes:
-            text = str(note or "").strip()
-            if text.startswith("source:"):
-                source = text
-                break
-    refs = [
-        str(r).strip()
-        for r in (candidate.get("focal_node_refs") or [])
-        if str(r).strip()
-    ]
-    refs = sorted(refs)[:8]
-    if source or refs:
-        return f"curiosity:{source}|{','.join(refs)}"
-    summary = str(candidate.get("evidence_summary") or "").strip()
-    if not summary:
-        return ""
-    digest = hashlib.sha256(summary.encode("utf-8")).hexdigest()[:16]
-    return f"curiosity:summary:{digest}"
-
-
-def _fetch_curiosity_content() -> Tuple[List[str], List[str]]:
-    """Strongest fresh curiosity content as (content_ids, summaries), or ([], []).
-
-    Parallel lists, same order/length. Content ids are stable across reminted
-    ``signal_id`` values (see ``_curiosity_content_id``); may be ``""`` only
-    when a candidate has neither refs/source nor a summary.
-    """
-    from scripts.curiosity_hint import _fetch_fresh_candidates
-
-    candidates = _fetch_fresh_candidates(max_age_sec=_CURIOSITY_MAX_AGE_SEC)
-    ranked = sorted(
-        candidates,
-        key=lambda c: float(c.get("signal_strength") or 0.0),
-        reverse=True,
-    )
-    content_ids: List[str] = []
-    summaries: List[str] = []
-    for candidate in ranked:
-        summary = str(candidate.get("evidence_summary") or "").strip()
-        if not summary or summary in summaries:
-            continue
-        if len(summary) > _MAX_CURIOSITY_SUMMARY_CHARS:
-            summary = summary[: _MAX_CURIOSITY_SUMMARY_CHARS - 1] + "…"
-        content_ids.append(_curiosity_content_id(candidate))
-        summaries.append(summary)
-        if len(summaries) >= _MAX_CURIOSITY_SUMMARIES:
-            break
-    return content_ids, summaries
-
-
-def _fetch_curiosity_summaries() -> List[str]:
-    """Strongest fresh endogenous-curiosity evidence summaries, or []."""
-    return _fetch_curiosity_content()[1]
-
-
-def _fetch_open_priors() -> Tuple[List[str], List[str]]:
-    """Live open worldview priors as (prior_ids, previews), or ([], []).
-
-    Same graph + credential gate curiosity_investigation uses
-    (`HUB_CURIOSITY_GRAPH_*`). Fail-open: missing creds, unavailable graph,
-    or any read error degrades to empty so a broken worldview half cannot
-    invent a fire reason and cannot crash the outreach tick.
-
-    Thin read on purpose: one `LIVE_NON_SELF_PRIORS_CYPHER` query, not the full
-    `read_snapshot` (which also pulls concepts/settled/recent runs). Quiet
-    ticks peek this path every ~10s; keep it one RO query. All still-open
-    non-self priors count (including well-tested ones) -- outreach wants
-    "something to talk about", not the investigation queue's retire-soon
-    sample, and not self-inquiry claims (line=self).
-
-    Parallel lists, same order/length. ``prior_id`` may be ``""`` when a
-    built prior somehow lacks one — preview still reaches the prompt.
-    """
-    empty: Tuple[List[str], List[str]] = ([], [])
-    try:
-        from app.settings import get_settings
-        from orion.curiosity.worldview import (
-            LIVE_NON_SELF_PRIORS_CYPHER,
-            WorldviewReader,
-            build_prior,
-            collapse_duplicate_priors,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("endogenous_outreach_prior_import_failed err=%s", exc)
-        return empty
-
-    try:
-        cfg = get_settings()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("endogenous_outreach_prior_settings_failed err=%s", exc)
-        return empty
-
-    host = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_HOST", "") or "").strip()
-    user = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_ORION_USER", "") or "").strip()
-    password = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_ORION_PASSWORD", "") or "").strip()
-    if not (host and user and password):
-        return empty
-
-    try:
-        reader = WorldviewReader(
-            host=host,
-            port=int(getattr(cfg, "HUB_CURIOSITY_GRAPH_PORT", 6380) or 6380),
-            graph_name=str(
-                getattr(cfg, "HUB_CURIOSITY_GRAPH_OWN", "orion_worldview") or "orion_worldview"
-            ),
-        )
-        rows = reader.query(LIVE_NON_SELF_PRIORS_CYPHER)
-        built = [p for p in (build_prior(r) for r in rows) if p is not None]
-        live_priors, _dupes = collapse_duplicate_priors(built)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("endogenous_outreach_prior_read_failed err=%s", exc)
-        return empty
-
-    prior_ids: List[str] = []
-    previews: List[str] = []
-    for prior in live_priors:
-        try:
-            preview = str(prior.preview() or "").strip()
-        except Exception:  # noqa: BLE001
-            continue
-        if not preview or preview in previews:
-            continue
-        prior_ids.append(str(getattr(prior, "prior_id", "") or "").strip())
-        previews.append(preview)
-        if len(previews) >= _MAX_OPEN_PRIOR_PREVIEWS:
-            break
-    return prior_ids, previews
-
-
-def _fetch_open_prior_previews() -> List[str]:
-    """Live open worldview :Prior claim previews, or []."""
-    return _fetch_open_priors()[1]
 
 def _fetch_embodied_presence() -> Optional[Dict[str, Any]]:
     """Current `substrate_embodied_presence` snapshot for the configured
@@ -884,9 +863,8 @@ def _clean_daydream(raw: Any) -> str:
         for match in _DAYDREAM_SENTENCE_END_RE.finditer(head):
             if match.start() + 1 >= _MIN_DAYDREAM_CHARS:
                 cut = match.start()
-        # Hard cap on the fallback, matching `_fetch_curiosity_summaries`'s
-        # own `[: _MAX - 1] + "\u2026"` form -- `_MAX_DAYDREAM_CHARS` means
-        # the same thing in both places rather than being a soft cap here.
+        # Hard cap on the fallback, in the `[: _MAX - 1] + "\u2026"` form the
+        # other prompt lanes use -- `_MAX_DAYDREAM_CHARS` is a hard cap here.
         if cut >= 0:
             text = head[: cut + 1]
         else:
@@ -994,12 +972,151 @@ def _daydream_age_phrase(age_sec: float) -> str:
     return f"about {hours} hour{'' if hours == 1 else 's'} ago"
 
 
+def _age_phrase(seconds: float) -> str:
+    """How long ago, in words the prompt can lean on ("2 days ago", never a bare timestamp)."""
+    s = max(0.0, float(seconds))
+    if s < 600:
+        return "just now"
+    if s < 5400:
+        return f"{int(round(s / 60))} minutes ago"
+    if s < 129600:
+        hours = int(round(s / 3600))
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = int(round(s / 86400))
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
+# Sources of a message Juniper typed in Hub. Rows with other sources (NULL: dream-cycle and
+# Collapse Mirror automation; collapse_mirror_reply) have a prompt but are not her talking now.
+_JUNIPER_CHAT_SOURCES = ("hub_orion", "hub_ws", "hub_http")
+_JUNIPER_SOURCE_SQL = "source IN ('hub_orion', 'hub_ws', 'hub_http')"
+
+
+def _seconds_since_juniper_spoke() -> Optional[float]:
+    """Seconds since Juniper's newest saved message, any session (she is one person). None if
+    unreadable. chat_history_log.created_at is naive UTC."""
+    from scripts.pg_engine import get_engine
+    from sqlalchemy import text
+
+    engine = get_engine()
+    if engine is None:
+        return None
+    with engine.connect() as conn:
+        value = conn.execute(text(
+            "SELECT EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - max(created_at))) "
+            "FROM chat_history_log WHERE COALESCE(prompt, '') <> '' AND " + _JUNIPER_SOURCE_SQL
+        )).scalar()
+    return None if value is None else float(value)
+
+
+def _juniper_spoke_since(epoch: float) -> bool:
+    """True when a message from Juniper was saved after ``epoch`` (unix seconds)."""
+    from scripts.pg_engine import get_engine
+    from sqlalchemy import text
+
+    engine = get_engine()
+    if engine is None:
+        return False
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT 1 FROM chat_history_log WHERE COALESCE(prompt, '') <> '' AND " + _JUNIPER_SOURCE_SQL +
+            " AND created_at > (to_timestamp(:t) AT TIME ZONE 'UTC') LIMIT 1"
+        ), {"t": float(epoch)}).first()
+    return row is not None
+
+
+async def _read_situation(bus: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+    """(the situation graph's projection or None, why). ``why`` is "ok", "no_bus",
+    "bus_not_connected", "no_key", or "error:<Type>: <message>" -- recorded on every outreach
+    decision, because on 2026-10-09 five outreaches went out without the block and nothing said
+    why. Never raises."""
+    if bus is None:
+        return None, "no_bus"
+    try:
+        redis = bus.redis           # OrionBusAsync.redis raises RuntimeError when not connected
+    except RuntimeError:
+        return None, "bus_not_connected"
+    except AttributeError:
+        return None, "no_bus"
+    try:
+        from orion.schemas.situation_state import SITUATION_STATE_REDIS_KEY, SituationStateV1
+
+        raw = await redis.get(SITUATION_STATE_REDIS_KEY)
+        if not raw:
+            return None, "no_key"
+        return SituationStateV1.model_validate_json(raw).model_dump(mode="json"), "ok"
+    except Exception as exc:  # noqa: BLE001 - enrichment only; the reason is the record
+        return None, f"error:{type(exc).__name__}: {str(exc)[:200]}"
+
+
+_LAPSED_WHEREABOUTS_SHOWN_SEC = 7 * 86400
+
+
+def _parse_situation_dt(value: Any) -> Optional[datetime]:
+    try:
+        d = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def situation_lines(situation: Optional[Dict[str, Any]], now: datetime, tz: Any) -> List[str]:
+    """Prompt lines for where Juniper is now, from the running situation. Empty when absent."""
+    if not situation:
+        return []
+    juniper = situation.get("juniper") or {}
+    lines = ["Where Juniper is right now, from your running situation:"]
+    here = juniper.get("whereabouts")
+    until = _parse_situation_dt(here.get("valid_until")) if here else None
+    if here and until is not None and until > now and here.get("until_source") == "sighting":
+        # A home camera matched her face: evidence, not something she said.
+        seen = _parse_situation_dt(here.get("valid_from"))
+        when = _age_phrase((now - seen).total_seconds()) if seen is not None else "recently"
+        lines.append(f"- {here['gist']} (seen {when})")
+    elif here and until is not None and until > now:
+        lines.append(f"- {here['gist']} (holds until {until.astimezone(tz):%a %b %d, %H:%M})")
+    else:
+        # An end date already passed means the projection has not caught up (the graph writes
+        # only on change); never present it as current.
+        lines.append("- Nothing on record says she is away from home right now.")
+        if here and until is not None:
+            lines.append(f"- No longer true (ended {_age_phrase((now - until).total_seconds())}): {here['gist']}")
+    for fact in juniper.get("doing") or []:
+        # Her own stated plans with an end date -- shown even when a camera sighting outranks
+        # one, so a conflict ("said Denver till Fri", "seen at home") is visible, not hidden.
+        if fact.get("until_source") != "juniper_words":
+            continue
+        end = _parse_situation_dt(fact.get("valid_until"))
+        if end is not None and end > now:
+            lines.append(f"- She said: {fact['gist']} (until {end.astimezone(tz):%a %b %d, %H:%M})")
+    for fact in juniper.get("recent") or []:
+        # What Juniper herself said lately (the 4:30am flight home sat only here on 10-09).
+        if fact.get("voice") != "juniper_said":
+            continue
+        said = _parse_situation_dt(fact.get("valid_from"))
+        if said is not None:
+            lines.append(f"- She said {_age_phrase((now - said).total_seconds())}: {fact['gist']}")
+    for gone in situation.get("lapsed") or []:
+        if gone.get("slot") != "whereabouts":
+            continue
+        ended = _parse_situation_dt(gone.get("lapsed_at"))
+        if ended is not None and (now - ended).total_seconds() <= _LAPSED_WHEREABOUTS_SHOWN_SEC:
+            lines.append(f"- No longer true (ended {_age_phrase((now - ended).total_seconds())}): {gone['gist']}")
+    lines.append("Trust this over anything older in the conversation history below.")
+    return lines
+
+
 def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
     """Last few (role, text) pairs from ``chat_history_log``, oldest first.
 
     Rows store a prompt/response pair per row, and Hub writes prompt-only and
     response-only rows separately, so both sides are unpacked and empty halves
     dropped. Scoped to ``session_id`` when one is known, else global recency.
+
+    Only real conversation (door policy, 2026-11-10): Orion's own unsolicited messages
+    (``client_meta.unsolicited``, every outreach door) are left out. Juniper already got them, and
+    the tick re-reading them is how one finding reached her three times on 2026-11-09 (15:05,
+    16:03, 16:53 UTC). See ``scripts/outreach_door_policy.py``.
     """
     from scripts.pg_engine import get_engine
 
@@ -1018,8 +1135,11 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
             rows = conn.execute(
                 text(
                     """
-                    SELECT prompt, response FROM chat_history_log
+                    SELECT prompt, response,
+                           EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - created_at)) AS age_sec
+                    FROM chat_history_log
                     WHERE session_id = :sid
+                      AND coalesce(client_meta->>'unsolicited', '') <> 'true'
                     ORDER BY created_at DESC LIMIT :lim
                     """
                 ),
@@ -1029,7 +1149,10 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
             rows = conn.execute(
                 text(
                     """
-                    SELECT prompt, response FROM chat_history_log
+                    SELECT prompt, response,
+                           EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - created_at)) AS age_sec
+                    FROM chat_history_log
+                    WHERE coalesce(client_meta->>'unsolicited', '') <> 'true'
                     ORDER BY created_at DESC LIMIT :lim
                     """
                 ),
@@ -1038,13 +1161,17 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
 
     turns: List[Tuple[str, str]] = []
     for row in reversed(list(rows)):  # oldest first
+        # Dated (2026-10-09): undated two-day-old turns ("still in Chicago for another night")
+        # read as tonight and Orion wrote to her as if she were still there.
+        age = row.get("age_sec")
+        when = f"({_age_phrase(float(age))}) " if age is not None else ""
         for role, raw in (("Juniper", row.get("prompt")), ("Orion", row.get("response"))):
             body = str(raw or "").strip()
             if not body:
                 continue
             if len(body) > _MAX_TURN_CHARS:
                 body = body[: _MAX_TURN_CHARS - 1] + "…"
-            turns.append((role, body))
+            turns.append((role, when + body))
     return turns
 
 
@@ -1073,11 +1200,14 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
     return {
         "daydream": ctx.daydream is not None,
         "daydream_age_sec": daydream_age,
+        "daydream_id": ctx.daydream_id or None,
         "curiosity_summaries": len(ctx.curiosity_summaries),
         "curiosity_content_ids": list(ctx.curiosity_content_ids),
         "recent_turns": len(ctx.recent_turns),
         "tension": ctx.tension_reason is not None,
         "chat_presence": ctx.presence is not None,
+        "situation": ctx.situation is not None,
+        "situation_status": ctx.situation_status,
         # Reports the RENDERED fragment, not the fetched row. `presence_fragment`
         # returns None for any state that is not present/recent (an empty room is
         # the default expectation most of the time), so `fetch_presence` handing
@@ -1094,6 +1224,10 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
         ),
         "priors_count": len(ctx.open_prior_previews),
         "prior_ids": list(ctx.open_prior_ids),
+        # Personality read-back: node ids only (durable), never the cue text.
+        "personality_cue": bool((ctx.personality_cue or "").strip()),
+        "personality_cue_ids": list(ctx.personality_cue_ids),
+        "personality_cue_skip": ctx.personality_cue_skip,
     }
 
 
@@ -1112,6 +1246,8 @@ def summarize_outreach_lanes(lanes: Dict[str, Any]) -> str:
         parts.append(f"curiosity signals ({curiosity})")
     if lanes.get("tension"):
         parts.append("tension trigger")
+    if lanes.get("strain_report"):
+        parts.append("strain report")
     if lanes.get("daydream"):
         age = lanes.get("daydream_age_sec")
         if age is not None:
@@ -1157,14 +1293,21 @@ def _recent_turns_include_juniper(turns: Sequence[Tuple[str, str]]) -> bool:
     return False
 
 
-def build_outreach_prompt(ctx: OutreachContext) -> str:
+def build_outreach_prompt(
+    ctx: OutreachContext, tz: Any = timezone.utc, topics: Optional[Sequence[Any]] = None
+) -> str:
     """Render the generation prompt from real context.
 
     Returns a prompt only when there is something concrete to speak from — a
     contextless "say something" prompt produces filler, which AGENTS.md §0A
     bans. Callers treat "" as "skip this tick".
+
+    ``topics`` (the choice point, ``scripts/outreach_choice.py``): the numbered topics Orion picks
+    from. The daydream is then one of the topics, not a separate block, the personality cue is not
+    rendered, and the reply must start with ``Pick: <n>`` (``Pick: 0`` says nothing).
     """
-    if ctx.is_empty():
+    topics = list(topics or [])
+    if ctx.is_empty() and not topics:
         return ""
 
     lines: List[str] = [
@@ -1223,9 +1366,13 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
                     f"{ctx.tension_reason.sustained_load_pressure:.2f}). This may "
                     f"or may not be the same thing as the change above."
                 )
+        lines.append(
+            "That is why you are speaking now, not what to talk about: it is your own system's "
+            "telemetry, and Juniper does not want reports about your plumbing. Do not report it."
+        )
         lines.append("")
 
-    if ctx.open_prior_previews:
+    if ctx.open_prior_previews and not topics:
         lines.append(
             "Open claims you are still holding -- your own worldview priors, "
             "not fresh telemetry. These are things you have been working on:"
@@ -1233,7 +1380,7 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
         lines.extend(f"- {p}" for p in ctx.open_prior_previews)
         lines.append("")
 
-    if ctx.curiosity_summaries:
+    if ctx.curiosity_summaries and not topics:
         lines.append("Live signals from your own substrate right now:")
         lines.extend(f"- {s}" for s in ctx.curiosity_summaries)
         lines.append("")
@@ -1259,7 +1406,7 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
             lines.append(f"What your camera currently shows: {fragment}")
             lines.append("")
 
-    if ctx.daydream:
+    if ctx.daydream and not topics:
         # Named as Orion's own, explicitly, on purpose: without that framing a
         # bare image description reads like something Juniper sent, and the
         # generated outreach thanks her for a picture she never shared.
@@ -1274,6 +1421,17 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
             "That is yours, not something Juniper showed you. You may draw on it "
             "if it connects to anything above; do not just describe it back."
         )
+        lines.append("")
+
+    now_utc = datetime.now(timezone.utc)
+    sit_lines = situation_lines(ctx.situation, now_utc, tz)
+    if sit_lines:
+        lines.extend(sit_lines)
+        lines.append("")
+
+    cue_text = (ctx.personality_cue or "").strip()
+    if cue_text and not topics:
+        lines.append(cue_text)
         lines.append("")
 
     if ctx.recent_turns:
@@ -1323,7 +1481,7 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
         "is fabrication -- there is no real reading behind it."
     )
     talkable = bool(
-        ctx.open_prior_previews or ctx.curiosity_summaries or ctx.daydream
+        ctx.open_prior_previews or ctx.curiosity_summaries or ctx.daydream or topics
     )
     if not talkable:
         lines.append(
@@ -1332,15 +1490,41 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
         )
     lines.append("")
 
-    if talkable:
+    if topics:
+        from scripts.outreach_choice import choice_block
+
+        lines.extend(choice_block(topics))
+        lines.append("")
+        lines.extend(
+            [
+                "If you write a message, it must do both of these:",
+                "",
+                "1. Say what you have been thinking about the one topic you picked -- one clear "
+                "thread, not a recap of the list and not a vibe nearby.",
+                "2. Say why you are bringing that thread to her now -- why share it with Juniper, "
+                "not only that you noticed it.",
+                "",
+                "Say it plainly. State the observation and the reason as facts, not as a metaphor, "
+                "a mood-image, or a poetic parallel to something in the conversation history above.",
+                "",
+                "She has not asked you anything. Say the thing itself rather than announcing that "
+                "you have something to say. Two or three sentences at most.",
+                "Do not greet, do not summarize this prompt, do not offer help, and do not ask "
+                "what they need.",
+                "If none of these genuinely warrants interrupting her, reply with exactly: Pick: 0",
+                "",
+                WHY_JUNIPER_INSTRUCTION,
+            ]
+        )
+    elif talkable:
         lines.extend(
             [
                 "Write the message to Juniper. It must do both of these:",
                 "",
-                "1. Synthesize what you have been thinking from the open claims, "
-                "curiosity signals, and (if present) daydream above into one "
-                "clear thread — the aggregate of that material, not a vibe "
-                "nearby and not a bullet-by-bullet recap.",
+                "1. Synthesize what you have been thinking from the material "
+                "above (your daydream, and any open claims or signals listed) "
+                "into one clear thread — the aggregate of that material, not a "
+                "vibe nearby and not a bullet-by-bullet recap.",
                 "2. Say why you are bringing that thread to her now — why share "
                 "it with Juniper, not only that you noticed it.",
                 "",
@@ -1358,6 +1542,8 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
                 "and do not ask what they need.",
                 "If nothing above genuinely warrants interrupting them, reply "
                 "with exactly: PASS",
+                "",
+                WHY_JUNIPER_INSTRUCTION,
             ]
         )
     else:
@@ -1370,6 +1556,8 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
                 "actually on your mind.",
                 "If nothing above genuinely warrants interrupting them, reply "
                 "with exactly: PASS",
+                "",
+                WHY_JUNIPER_INSTRUCTION,
             ]
         )
     return "\n".join(lines)
@@ -1387,10 +1575,48 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
 # top-level import, not a re-export shim.
 
 
+_PASS_LINE_STRIP = ".!\"'`*_# "
+
+
+# A finished sentence, then PASS as the reply's last word ("... for. PASS").
+_TRAILING_PASS = re.compile(r"[.!?][\"'`*_)]*[ \t]+[*_`]*PASS[.!\"'`*_]*\s*$")
+
+
+def _is_pass_line(line: str) -> bool:
+    return str(line or "").strip().strip(_PASS_LINE_STRIP).upper() == "PASS"
+
+
+def pass_shape(text: str) -> Optional[str]:
+    """How Orion declined, or None when the reply is a message.
+
+    ``"bare"``: the whole reply is the word PASS (what every outreach prompt asks for).
+    ``"after_reasoning"``: Orion reasoned first and put PASS on a line of its own. A line that
+    holds only PASS is a decision, never a sentence meant for Juniper, so the reply is a decline
+    wherever that line sits -- also when it comes first and more text follows (never seen live
+    through 2026-10-29; such a reply is dropped, and the row keeps the shape).
+    ``"trailing"``: the reply ends with a full sentence and then PASS as its own last word on the
+    same line ("Not worth interrupting for. PASS"; 2 live sends through 2026-10-28). Before 2026-10-29 only the bare form counted: 38 replies in 30 days
+    (35 reading findings, 3 endogenous ticks) reasoned, ended on a PASS line, and were delivered
+    to Juniper as chat messages with the reasoning in them.
+
+    Structural, not a word list: PASS inside a sentence ("I'll pass along the note", "PASS is the
+    honest answer here") is still a message.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return None
+    if _is_pass_line(body):
+        return "bare"
+    if any(_is_pass_line(line) for line in body.splitlines()):
+        return "after_reasoning"
+    if _TRAILING_PASS.search(body):
+        return "trailing"
+    return None
+
+
 def is_pass_response(text: str) -> bool:
-    """True when Orion declined to reach out this tick."""
-    stripped = str(text or "").strip().strip(".!\"'` ")
-    return stripped.upper() == "PASS"
+    """True when Orion declined to reach out this tick (see ``pass_shape``)."""
+    return pass_shape(text) is not None
 
 
 # --------------------------------------------------------------------------
@@ -1400,6 +1626,10 @@ def is_pass_response(text: str) -> bool:
 
 class EndogenousOutreach:
     """Randomized-trigger outreach loop. Best-effort at every step."""
+
+    # orion.notify.client.NotifyClient, set by main.py after construction. When
+    # set, outreach goes through orion-notify so it is durable until dismissed.
+    notify_client: Any = None
 
     def __init__(
         self,
@@ -1416,8 +1646,56 @@ class EndogenousOutreach:
         timezone_name: str = "UTC",
         trigger_evaluator: Optional[Callable[[], Any]] = None,
         agent_lane_timeout_sec: float = 210.0,
+        recent_chat_sec: float = 900.0,
+        rest_drive_reader: Optional[RestDriveReader] = None,
+        arousal_reader: Optional[ArousalReader] = None,
+        # Personality read-back (scripts/personality_cue_reader.py): GET
+        # {durable_runs_url}/personality/frame next to the situation read. Off here so bare
+        # constructions in tests never touch the network; settings ship it off since personality rev 3 R0
+        # (HUB_PERSONALITY_CUE_ENABLED, base URL HUB_CURIOSITY_DURABLE_RUNS_URL).
+        personality_cue_enabled: bool = False,
+        durable_runs_url: str = "",
+        # Strain report door (scripts/strain_report.py, strain loop part 3). Off here so bare
+        # constructions in tests keep the old behaviour; settings ship it on
+        # (ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED). The day for once-per-day is
+        # ``strain_report_timezone`` (settings: ORION_SITUATION_TIMEZONE), else this loop's zone.
+        strain_report_enabled: bool = False,
+        strain_report_min_episode_sec: float = 3600.0,
+        strain_report_timezone: Optional[str] = None,
+        # The choice point (scripts/outreach_choice.py, personality spec rev 4): the compose call
+        # shows Orion up to ``choice_max_options`` topics plus "say nothing" and Orion picks. Off
+        # here so bare constructions in tests keep the one-topic prompt; settings ship it on
+        # (HUB_ENDOGENOUS_OUTREACH_CHOICE_ENABLED, HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS).
+        choice_enabled: bool = False,
+        choice_max_options: int = 4,
     ) -> None:
         self.enabled = enabled
+        self.choice_enabled = bool(choice_enabled)
+        self.choice_max_options = int(choice_max_options)
+        # Other doors' pending material offered as tick topics (main.py appends the readings
+        # door's ``outreach_topics``). Each returns a list of ``outreach_choice.OutreachTopic``.
+        self.topic_sources: List[Callable[[], Any]] = []
+        # Subjects a composer is working on right now (this tick's shown topics, or a read the
+        # readings door is composing). One composer per subject; asyncio makes check-and-add atomic.
+        self._claimed_subjects: set = set()
+        # What this tick claimed; released when the tick ends (maybe_outreach's finally).
+        self._tick_claims: set = set()
+        self.strain_report_enabled = bool(strain_report_enabled)
+        self.strain_report_min_episode_sec = max(0.0, float(strain_report_min_episode_sec))
+        self._strain_tz_name = str(strain_report_timezone or "").strip() or None
+        # Rebuilt from the decision log on first use (restart-safe), then kept current in memory:
+        # this process is the only writer of strain_report rows.
+        self._strain_history: Optional[StrainReportHistory] = None
+        self._strain_last: Optional[str] = None
+        self.personality_cue_enabled = bool(personality_cue_enabled)
+        self.durable_runs_url = str(durable_runs_url or "")
+        # Orion's arousal: while it reads `strained`, background outreach is refused.
+        self.arousal_reader = arousal_reader
+        # Orion's rest drive: while it reads `due`, the cooldown is multiplied.
+        self.rest_drive_reader = rest_drive_reader
+        self.recent_chat_sec = max(0.0, float(recent_chat_sec))
+        self._last_spoke_ago: Optional[float] = None
+        self._last_spoke_read_at: Optional[float] = None
         self.tick_interval_sec = max(5.0, float(tick_interval_sec))
         self.min_cooldown_sec = max(0.0, float(min_cooldown_sec))
         self.daily_cap = int(daily_cap)
@@ -1445,6 +1723,15 @@ class EndogenousOutreach:
             )
             self.timezone_name = "UTC"
             self._tz = ZoneInfo("UTC")
+        self._strain_tz = self._tz
+        if self._strain_tz_name:
+            try:
+                self._strain_tz = ZoneInfo(self._strain_tz_name)
+            except (ZoneInfoNotFoundError, ValueError, KeyError):
+                logger.error(
+                    "endogenous_outreach_bad_strain_report_timezone name=%r using %s",
+                    self._strain_tz_name, self.timezone_name,
+                )
         # Defaults to the real tension trigger, imported lazily to match this
         # file's existing convention for cross-Hub-module dependencies
         # (curiosity_hint, hub_presence below) -- keeps a hard Postgres
@@ -1456,6 +1743,17 @@ class EndogenousOutreach:
             trigger_evaluator = current_run
         self._trigger_evaluator = trigger_evaluator
         self._last_tension_reason: Optional[Any] = None
+        # When the last strain-held shadow bid was placed (self._monotonic()). See
+        # `_strain_shadow_bid_due`: one strain-held bid per window, not one per tick.
+        self._strain_shadow_bid_at: Optional[float] = None
+        self._monotonic: Callable[[], float] = time.monotonic  # tests replace this one clock only
+        # Body economy Patch D (scripts/outreach_bind.py): ``on`` -> every Hub door that composes a
+        # message obeys its binding bid; ``shadow`` -> the C3b shadow bid at the tick's compose point.
+        # Read once (an unknown value logs one warning); a change needs a restart, as every flag here.
+        from scripts.outreach_bind import OutreachBinder, bind_mode
+
+        self.economy_mode = bind_mode()
+        self._binder = OutreachBinder()
 
         self._bus: Any = None
         self._harness_rpc_bus: Any = None
@@ -1470,6 +1768,8 @@ class EndogenousOutreach:
         self._connections: Dict[str, Dict[str, Any]] = {}
 
         self._last_outreach_at: Optional[float] = None
+        # finding_keys this process delivered (door policy, 2026-11-10); the decision log is the authority.
+        self._told_keys: set = set()
         self._sent_today = 0
         self._counter_day: Optional[date] = None
         # A fresh process has no idea how many outreaches today already
@@ -1652,6 +1952,11 @@ class EndogenousOutreach:
 
     def _gate_inputs(self, now: Optional[float] = None) -> OutreachGateInputs:
         ts = float(now if now is not None else time.time())
+        # Last DB read of "seconds since Juniper spoke", aged to now, so status() and
+        # blocked_reason() report recent_chat too (review finding).
+        spoke_ago = None
+        if self._last_spoke_ago is not None and self._last_spoke_read_at is not None:
+            spoke_ago = self._last_spoke_ago + max(0.0, ts - self._last_spoke_read_at)
         local = datetime.fromtimestamp(ts, tz=self._tz)
         self._roll_daily_counter(local.date())
         return OutreachGateInputs(
@@ -1666,7 +1971,25 @@ class EndogenousOutreach:
             min_cooldown_sec=self.min_cooldown_sec,
             sent_today=self._sent_today,
             daily_cap=self.daily_cap,
+            seconds_since_juniper_spoke=spoke_ago,
+            recent_chat_sec=self.recent_chat_sec,
+            rest_drive_cooldown_sec=(
+                None
+                if self.rest_drive_reader is None
+                else self.rest_drive_reader.cooldown_sec(
+                    self.min_cooldown_sec, datetime.fromtimestamp(ts, tz=timezone.utc)
+                )
+            ),
+            arousal_level=(
+                None
+                if self.arousal_reader is None
+                else self.arousal_reader.level(datetime.fromtimestamp(ts, tz=timezone.utc))
+            ),
         )
+
+    def _strain_gate_inputs(self) -> OutreachGateInputs:
+        """The gate as the strain report sees it: no daily cap (it does not spend the cap)."""
+        return replace(self._gate_inputs(), daily_cap=-1)
 
     def status(self) -> Dict[str, Any]:
         """Operator-visible runtime state (backs the debug endpoint)."""
@@ -1696,7 +2019,21 @@ class EndogenousOutreach:
             "sent_today_recovered": self._sent_today_recovered,
             "sent_today_recovery_failures": self._recovery_failures,
             "seconds_since_last_outreach": inputs.seconds_since_last_outreach,
+            "rest_drive": (
+                None if self.rest_drive_reader is None else self.rest_drive_reader.view().as_dict()
+            ),
+            "rest_drive_cooldown_sec": inputs.rest_drive_cooldown_sec,
+            "arousal": (
+                None if self.arousal_reader is None else self.arousal_reader.view().as_dict()
+            ),
             "block_reason": outreach_block_reason(inputs),
+            "strain_report": {
+                "enabled": self.strain_report_enabled,
+                "min_episode_sec": self.strain_report_min_episode_sec,
+                "history_recovered": self._strain_history is not None,
+                "last": self._strain_last,
+            },
+            "economy": {"mode": self.economy_mode, **self._binder.status()},
             "last_result": dict(self._last_result),
         }
 
@@ -1818,10 +2155,291 @@ class EndogenousOutreach:
                 {"outreach": False, "reason": "already_sending"}, forced=force, tension_reason=None
             )
         async with self._send_lock:
-            return await self._outreach_once(force=force)
+            # Body economy Patch C3b: a SHADOW bid, logged beside this tick's real outcome and
+            # never obeyed (scripts/physiology_shadow.py). Placed only where the tick would
+            # compose (or where strain alone holds it); settled here with the real outcome.
+            from scripts.physiology_shadow import ShadowBid, real_from_result
 
-    async def _outreach_once(self, *, force: bool) -> Dict[str, Any]:
+            shadow = ShadowBid(family="hub.outreach", verb="say", tier=2, object_ref="juniper",
+                               component="endogenous_outreach")
+            token = _TICK_ECONOMY.set(None)
+            sent = False
+            try:
+                result = await self._outreach_once(force=force, shadow=shadow)
+                sent = bool(result.get("outreach"))
+            except BaseException:
+                shadow.settle("blocked:error")
+                raise
+            finally:
+                self.release_subjects(self._tick_claims)
+                self._tick_claims = set()
+                economy = _TICK_ECONOMY.get()
+                _TICK_ECONOMY.reset(token)
+                # Patch D: the want THIS attempt was admitted on is spent (sent or not); a held one stays
+                # open for its next check. Nothing else is closed (a duplicate, a forced send, shadow mode).
+                if economy and economy.get("admit") and economy.get("want_id"):
+                    await self._binder.close(TICK_KEY, sent=sent, want_id=str(economy["want_id"]))
+            shadow.settle(real_from_result(result), act_correlation_id=result.get("correlation_id"))
+            return result
+
+    def claim_subjects(self, subjects: Iterable[str]) -> set:
+        """Claim the subjects no other composer holds; returns the ones claimed. Never awaits, so
+        check-and-claim is atomic on the event loop."""
+        got = {str(x) for x in subjects if str(x or "") and str(x) not in self._claimed_subjects}
+        self._claimed_subjects.update(got)
+        return got
+
+    def release_subjects(self, subjects: Iterable[str]) -> None:
+        for x in list(subjects or ()):
+            self._claimed_subjects.discard(str(x))
+
+    async def _choice_topics(self, ctx: OutreachContext, said: Dict[str, set]) -> List[Any]:
+        """The topics this tick may show (``outreach_choice``): the daydream, then each topic
+        source's material, minus subjects already decided (``said``) and subjects another composer
+        holds; freshest first, at most ``choice_max_options``. Claims what it returns. Never raises."""
+        from scripts.outreach_choice import OutreachTopic, clip, filter_unsaid, rank_topics
+
+        topics: List[Any] = []
+        if ctx.daydream and ctx.daydream_id:
+            age_sec, caption = ctx.daydream
+            topics.append(OutreachTopic(
+                subject=ctx.daydream_id,
+                kind="daydream",
+                observed_at=datetime.fromtimestamp(time.time() - float(age_sec), tz=timezone.utc),
+                option_text=clip(f"A daydream: {caption}", 400),
+                prompt_text=(
+                    f"A daydream, {_daydream_age_phrase(age_sec)}. Your reverie diffusions generate an "
+                    f"image from whatever you are thinking about, then look at what came out. It is "
+                    f"yours, not something Juniper showed you; do not just describe it back: {caption}"
+                ),
+            ))
+        for source in list(self.topic_sources):
+            try:
+                found = await asyncio.wait_for(source(), timeout=30.0)
+                # Duck-typed, not isinstance: a reloaded module would make a second OutreachTopic class.
+                topics.extend(t for t in (found or []) if str(getattr(t, "subject", "") or ""))
+            except Exception as exc:  # noqa: BLE001 -- one source failing must not end the tick
+                logger.warning("endogenous_outreach_topic_source_failed source=%s err=%s",
+                               getattr(source, "__qualname__", source), exc)
+        topics, dropped = filter_unsaid(topics, said)
+        if dropped:
+            logger.info("endogenous_outreach_topics_already_said subjects=%s", ",".join(dropped))
+        topics = [t for t in topics if t.subject not in self._claimed_subjects]
+        ranked = rank_topics(topics, self.choice_max_options) if topics else []
+        self._tick_claims |= self.claim_subjects(t.subject for t in ranked)
+        return [t for t in ranked if t.subject in self._tick_claims]
+
+    def _choice_situation(self, *, force: bool, tension_reason: Any, topics: Sequence[Any]) -> Dict[str, Any]:
+        """What Orion saw around the pick (flat, small): why the tick fired, the moment, the options."""
+        from scripts.outreach_choice import evidence_line
+
+        inp = self._gate_inputs()
+        spoke = inp.seconds_since_juniper_spoke
+        return {
+            "trigger": "forced" if force else ("tension" if tension_reason is not None else "daydream"),
+            "options_shown": len(topics),
+            "option_kinds": ",".join(sorted({str(t.kind) for t in topics})),
+            "arousal": inp.arousal_level,
+            "local_hour": inp.local_hour,
+            "sent_today": inp.sent_today,
+            "juniper_spoke_min_ago": None if spoke is None else int(round(float(spoke) / 60.0)),
+            # The rows the shown person / chat-thread topics stand on ("<rank>=<ref> ...").
+            "evidence": evidence_line(topics),
+        }
+
+    async def _settle_pick(
+        self, text: str, topics: Sequence[Any], *, decision_key: str, correlation_id: str, force: bool,
+        tension_reason: Any, care_promoted: bool = False,
+    ) -> Tuple[str, Any, Dict[str, Any], Optional[Dict[str, Any]]]:
+        """Read Orion's pick, publish the choice, and return ``(body, chosen_topic, row_fields,
+        early)``. ``early`` is the decision-row result when nothing goes further this tick
+        (declined, no pick, invalid pick, a pick with no message); None to continue to the
+        message checks. One ``PersonalityChoiceV1`` per readable pick, whatever happens after."""
+        from scripts.outreach_choice import (
+            INVALID_PICK_REASON,
+            NO_PICK_REASON,
+            Pick,
+            build_choice,
+            choice_record,
+            parse_pick,
+        )
+
+        pick = parse_pick(text, len(topics), is_pass=is_pass_response)
+        if pick.kind == "chosen":
+            # "Pick: 2 ... PASS" with a Why Juniper line after it: the line hides a trailing PASS.
+            stripped, _why = split_why_juniper(pick.body)
+            if stripped and is_pass_response(stripped):
+                pick = Pick("declined", None, pick.body, "pass")
+        try:
+            choice = build_choice(
+                decision_key=decision_key, topics=topics, pick=pick, occurred_at=datetime.now(timezone.utc),
+                situation=self._choice_situation(force=force, tension_reason=tension_reason, topics=topics),
+                act_id=decision_key, correlation_id=correlation_id, care_promoted=care_promoted,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the tick never raises; the row still records the pick
+            logger.warning("endogenous_outreach_choice_build_failed corr=%s err=%s", correlation_id, exc)
+            choice = None
+        published = await self._publish_choice(choice) if choice is not None else False
+        fields: Dict[str, Any] = {
+            "choice": {**choice_record(topics, pick, choice.choice_id if choice else None), "published": published},
+        }
+        chosen = topics[pick.index] if pick.kind == "chosen" and pick.index is not None else None
+        logger.info("endogenous_outreach_pick corr=%s pick=%s shape=%s chosen=%s options=%d", correlation_id,
+                    pick.kind, pick.shape, chosen.subject if chosen else None, len(topics))
+        if pick.kind == "declined":
+            # Orion's decline is a decision about every shown read too: the readings door counts these
+            # finding ids as told (it treats its own orion_passed the same way) and does not send them.
+            declined_ids = [f for t in topics for f in (getattr(t, "finding_ids", ()) or ())]
+            for t in topics:
+                if getattr(t, "on_declined", None) is not None:
+                    try:
+                        t.on_declined()
+                    except Exception as exc:  # noqa: BLE001 -- the decision row is the authority
+                        logger.warning("endogenous_outreach_topic_on_declined_failed subject=%s err=%s",
+                                       t.subject, exc)
+            early = {"outreach": False, "reason": ORION_DECLINED_REASON, "pass_shape": pick.shape}
+            if declined_ids:
+                early["finding_ids"] = declined_ids
+            return pick.body, None, fields, early
+        if pick.kind == "missing":
+            return pick.body, None, fields, {"outreach": False, "reason": NO_PICK_REASON}
+        if pick.kind == "invalid":
+            return pick.body, None, fields, {"outreach": False, "reason": INVALID_PICK_REASON}
+        if not pick.body.strip():
+            return pick.body, chosen, fields, {"outreach": False, "reason": "empty_generation"}
+        return pick.body.strip(), chosen, fields, None
+
+    async def _publish_choice(self, choice: Any) -> bool:
+        """Publish one ``PersonalityChoiceV1`` on ``orion:personality:choice``. Best-effort; never raises."""
+        from orion.schemas.personality import PERSONALITY_CHOICE_CHANNEL, PERSONALITY_CHOICE_KIND
+
+        if self._bus is None:
+            logger.warning("endogenous_outreach_choice_not_published choice_id=%s reason=no_bus", choice.choice_id)
+            return False
+        try:
+            from uuid import NAMESPACE_URL, uuid5
+
+            try:
+                corr = UUID(str(choice.act_id))
+            except (TypeError, ValueError):
+                corr = uuid5(NAMESPACE_URL, choice.choice_id)
+            env = BaseEnvelope(kind=PERSONALITY_CHOICE_KIND, source=_source_ref(), correlation_id=corr,
+                               payload=choice.model_dump(mode="json"))
+            await self._bus.publish(PERSONALITY_CHOICE_CHANNEL, env)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("endogenous_outreach_choice_publish_failed choice_id=%s err=%s", choice.choice_id, exc)
+            return False
+        logger.info(
+            "endogenous_outreach_choice_published choice_id=%s chosen=%s declined_all=%s options=%d",
+            choice.choice_id, choice.chosen.key if choice.chosen else None, choice.declined_all,
+            len(choice.alternatives) + (1 if choice.chosen else 0),
+        )
+        return True
+
+    @property
+    def economy_binding(self) -> bool:
+        """True when Hub outreach obeys its body-economy bid (``ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on``)."""
+        return self.economy_mode == "on"
+
+    def _day_end(self) -> Optional[datetime]:
+        """End of Juniper's waking day (the quiet hours' start), the bound of a pace hold. Never raises."""
+        try:
+            from orion.physiology.attention_pacing import waking_end
+
+            tz = str(getattr(self._tz, "key", "") or "UTC")
+            return waking_end(datetime.now(timezone.utc), tz=tz, start_hour=self.quiet_end_hour,
+                              end_hour=self.quiet_start_hour)
+        except Exception:  # noqa: BLE001 -- no day bound: the family window applies
+            return None
+
+    async def economy_admit(self, *, door: str, key: str, cap_counted: bool = True,
+                            forced: bool = False, window_s: Optional[float] = None) -> Tuple[bool, Dict[str, Any]]:
+        """Patch D for a door that composes its own message (reading / self / office findings).
+
+        Call after the door's own gates pass and BEFORE composing. Returns ``(admit, economy)``:
+        ``admit`` False means the body economy holds this want -- record ``economy_held`` and keep it
+        pending (the door retries on its next tick; the hold ends by the 1 h window at the latest).
+        ``economy`` goes into the door's decision rows (``result_json.economy``); ``{}`` in shadow mode.
+        After an admitted attempt ends, call ``economy_done``. Never raises."""
+        if not self.economy_binding:
+            return True, {}
+        full = f"{door}:{key}"
+        try:
+            v = await self._binder.bind(full, door=door, cap_counted=cap_counted, forced=forced, window_s=window_s,
+                                        day_end=None if window_s is not None else self._day_end())
+            return v.admit, self._binder.record(full, v)
+        except Exception:  # noqa: BLE001 -- never hold a message because this code failed
+            logger.warning("outreach_economy_admit_failed door=%s key=%s", door, key, exc_info=True)
+            return True, {"mode": "on", "verdict": "no_answer:admit_failed", "admit": True}
+
+    async def economy_done(self, *, door: str, key: str, sent: bool) -> None:
+        """The door's attempt on an admitted want ended (sent or not). Never raises."""
+        if not self.economy_binding:
+            return
+        try:
+            await self._binder.close(f"{door}:{key}", sent=sent)
+        except Exception:  # noqa: BLE001
+            logger.info("outreach_economy_done_failed door=%s key=%s", door, key)
+
+    def _strain_shadow_bid_due(self) -> bool:
+        """True at most once per ``max(min_cooldown_sec, STRAIN_SHADOW_BID_MIN_WINDOW_SEC)``.
+
+        A strain-held tick is one candidate want ("say something to Juniper"), held by strain.
+        The tick repeats every ``tick_interval_sec`` (10 s live), so bidding on every tick put
+        ~360 hub.outreach rows an hour into want_ledger while real sends were a few a day. That
+        swelled Tier 2's funded-want count, which the exploration floor divides by, and filled the
+        shadow-vs-real table with copies of one decision. A real send cannot happen more than once
+        per cooldown, so the held want is re-bid once per cooldown window.
+
+        Marks a bid ATTEMPT (also when the shadow is off or ``place()`` fails). The window is one
+        held want per cooldown, not one per strain episode: it is not reset when strain clears.
+        It lives in memory, so a Hub restart bids on its first strain-held tick (one row per
+        restart, not the old flood). A forced (debug) call bids without using up the window.
+        """
+        now = self._monotonic()
+        window = max(self.min_cooldown_sec, STRAIN_SHADOW_BID_MIN_WINDOW_SEC)
+        if self._strain_shadow_bid_at is not None and now - self._strain_shadow_bid_at < window:
+            return False
+        self._strain_shadow_bid_at = now
+        return True
+
+    async def _spoke_ago(self) -> Optional[float]:
+        self._last_spoke_read_at = time.time()
+        try:
+            return await asyncio.to_thread(_seconds_since_juniper_spoke)
+        except Exception as exc:  # noqa: BLE001 - unknown, so this gate does not block
+            logger.warning("endogenous_outreach_last_spoke_read_failed err=%s", exc)
+            return None
+
+    async def _outreach_once(self, *, force: bool, shadow: Any = None) -> Dict[str, Any]:
+        compose_started_at = time.time()
+        if self.rest_drive_reader is not None:
+            await self.rest_drive_reader.refresh(self._bus)
+        if self.arousal_reader is not None:
+            await self.arousal_reader.refresh(self._bus)
+        # Cheap gates first: the DB read for recent_chat only happens when nothing else blocks.
         blocked = outreach_block_reason(self._gate_inputs())
+        if not blocked:
+            self._last_spoke_ago = await self._spoke_ago()
+            blocked = outreach_block_reason(self._gate_inputs())
+        if blocked == AROUSAL_STRAINED_REASON and shadow is not None and (force or self._strain_shadow_bid_due()):
+            # Strain alone holds this tick: the gate the economy is meant to replace. Bid, and
+            # record the real outcome as the strain hold whatever the strain report door does
+            # (that door's message is a report about strain, not this want). Once per window:
+            # a strain hold repeats on every 10 s tick, but it is one held want, not 360 an hour.
+            shadow.place()
+            shadow.real = f"blocked:{AROUSAL_STRAINED_REASON}"
+        if blocked == "daily_cap" and self.strain_report_enabled:
+            # The strain report does not spend the daily cap (attention_pacing.CAP_EXEMPT_SOURCES), so a
+            # full cap must not silence it either (review finding, 2026-11-10): judge its gate cap-free.
+            if outreach_block_reason(self._strain_gate_inputs()) == AROUSAL_STRAINED_REASON:
+                self._last_tension_reason = None
+                return await self._strain_report_once(force=force, compose_started_at=compose_started_at)
+        if blocked == AROUSAL_STRAINED_REASON and self.strain_report_enabled:
+            # Strain is the only gate holding (it is checked last), so every other gate passed.
+            # The strain report door may pass this one refusal, once per long episode.
+            self._last_tension_reason = None
+            return await self._strain_report_once(force=force, compose_started_at=compose_started_at)
         if blocked:
             # Same staleness reasoning as the `force` branch below: this
             # tick never reached `_should_roll()`, so whatever reason the
@@ -1842,10 +2460,12 @@ class EndogenousOutreach:
         # immune to that -- it belongs to this call's own stack frame, not
         # the shared instance.
         tension_reason: Optional[Any] = None
-        peeked_prior_ids: Optional[List[str]] = None
-        peeked_priors: Optional[List[str]] = None
+        peeked_daydream: Any = _NOT_PEEKED
         used_prior_ids: set = set()
         used_curiosity_ids: set = set()
+        used_daydream_ids: set = set()
+        # Subjects the tick already decided about (choice point): {subject: {versions}}.
+        said: Dict[str, set] = {}
         if force:
             # A forced (debug-endpoint) call skips the trigger check
             # entirely -- it must not carry over whatever reason the LAST
@@ -1858,7 +2478,7 @@ class EndogenousOutreach:
             )
 
             try:
-                used_prior_ids, used_curiosity_ids = await asyncio.to_thread(
+                used_prior_ids, used_curiosity_ids, used_daydream_ids = await asyncio.to_thread(
                     fetch_recently_used_outreach_content_ids,
                     lookback_days=CONTENT_NOVELTY_LOOKBACK_DAYS,
                 )
@@ -1866,55 +2486,59 @@ class EndogenousOutreach:
                 logger.warning(
                     "endogenous_outreach_used_ids_failed err=%s", exc
                 )
-                used_prior_ids, used_curiosity_ids = set(), set()
+                used_prior_ids, used_curiosity_ids, used_daydream_ids = set(), set(), set()
+            if self.choice_enabled:
+                from scripts.endogenous_outreach_decisions import fetch_said_outreach_subjects
+                from scripts.outreach_choice import SUBJECT_LOOKBACK_DAYS
+
+                try:
+                    said = await asyncio.to_thread(fetch_said_outreach_subjects,
+                                                   lookback_days=SUBJECT_LOOKBACK_DAYS)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("endogenous_outreach_said_subjects_failed err=%s", exc)
+                    said = {}
+                # A daydream Orion picked or declined at the choice point is used, like a sent one.
+                used_daydream_ids = set(used_daydream_ids) | {k for k in said if k.startswith("daydream:")}
 
             fired = await self._should_roll()
             tension_reason = self._last_tension_reason
             if not fired:
-                # No body-spark. Still fire if Orion has *novel* talkable
-                # content: an open worldview prior not already used recently.
+                # No body-spark. Still fire if Orion has a *novel* daydream: the tick's own
+                # material once the investigate-line lanes left it (door policy, 2026-11-10).
+                # One cheap read; gather reuses it.
                 try:
-                    peeked_prior_ids, peeked_priors = await asyncio.to_thread(
-                        _fetch_open_priors
-                    )
+                    peeked_daydream = await asyncio.to_thread(_fetch_current_daydream)
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "endogenous_outreach_prior_peek_failed err=%s", exc
-                    )
-                    peeked_prior_ids, peeked_priors = [], []
-                raw_prior_count = len(peeked_priors or [])
-                peeked_prior_ids, peeked_priors = filter_novel_pairs(
-                    list(peeked_prior_ids or []),
-                    list(peeked_priors or []),
-                    used=used_prior_ids,
-                )
-                if raw_prior_count == 0:
-                    # Nothing open at all -- stay on the cheap exit.
+                    logger.warning("endogenous_outreach_daydream_peek_failed err=%s", exc)
+                    peeked_daydream = None
+                if peeked_daydream is None:
                     return self._record(
                         {"outreach": False, "reason": "no_tension_trigger"},
                         forced=force,
                         tension_reason=tension_reason,
                     )
-                # Used sticky priors alone must not strand novel curiosity:
-                # fall through with empty prior lists (not None -- None would
-                # re-fetch the used priors in gather) and let gather +
-                # apply_content_novelty decide.
-                if not peeked_priors:
-                    peeked_prior_ids, peeked_priors = [], []
+                if daydream_content_id(peeked_daydream[1]) in used_daydream_ids:
+                    return self._record(
+                        {"outreach": False, "reason": "content_already_used",
+                         "daydream_id": daydream_content_id(peeked_daydream[1])},
+                        forced=force,
+                        tension_reason=tension_reason,
+                    )
 
         session_id = self._active_session_id()
-        ctx = await self._gather_context(
-            session_id,
-            open_prior_previews=peeked_priors,
-            open_prior_ids=peeked_prior_ids,
-        )
+        ctx = await self._gather_context(session_id, daydream=peeked_daydream)
         if not force:
             ctx = apply_content_novelty(
                 ctx,
                 used_prior_ids=used_prior_ids,
                 used_curiosity_ids=used_curiosity_ids,
+                used_daydream_ids=used_daydream_ids,
             )
-        if not force and not has_talkable_content(ctx):
+        topics: List[Any] = []
+        if self.choice_enabled:
+            topics = await self._choice_topics(ctx, said)
+        talkable = bool(topics) if self.choice_enabled else has_talkable_content(ctx)
+        if not force and not talkable:
             # No novel topic. Distinguish spark-without-topic from
             # prior-solo with only already-said content.
             reason = (
@@ -1928,14 +2552,14 @@ class EndogenousOutreach:
                 tension_reason=tension_reason,
                 grounding=grounding_summary(ctx),
             )
-        prompt = build_outreach_prompt(ctx)
+        prompt = build_outreach_prompt(ctx, self._tz, topics=topics)
         if not prompt:
             # No `grounding` on this row on purpose: the key means "lanes that
-            # reached the prompt", and there is no prompt. `is_empty()`
-            # deliberately ignores `daydream`/`embodied_presence`, so a
-            # populated daydream CAN land here -- recording it would assert a
-            # lane reached a prompt that was never built. `reason` already
-            # separates this row from a gated one.
+            # reached the prompt", and there is no prompt. `is_empty()` ignores
+            # `embodied_presence` (and, since 2026-11-10, counts the daydream),
+            # so a populated camera lane CAN land here -- recording it would
+            # assert a lane reached a prompt that was never built. `reason`
+            # already separates this row from a gated one.
             return self._record(
                 {"outreach": False, "reason": "no_grounding_context"},
                 forced=force,
@@ -1947,9 +2571,51 @@ class EndogenousOutreach:
         # live-wired producer of decision rows that never builds an
         # `OutreachContext` -- would inherit whatever the last cycle left.
         grounding = grounding_summary(ctx)
+        if topics:
+            grounding["choice_topics"] = [t.subject for t in topics]
 
-        correlation_id = str(uuid4())
+        # The compose point. The want's id IS this compose's correlation id, so the decision joins
+        # the outreach act (grammar_acts.correlation_id).
+        # What this compose would talk about, for the market's care term (personality rev 4): the shown
+        # topics' option texts. None with no topics (the choice point off): care 0, as before.
+        from scripts.outreach_choice import outreach_object_text
+
+        bid_object_text = outreach_object_text(topics)
+        if self.economy_binding:
+            # Patch D: obey the binding bid (scripts/outreach_bind.py). Held -> no compose this tick;
+            # the want re-bids at the market's relief time and composes by its window's end at the latest.
+            # Checked here, not before the content reads: a tick with nothing to say records why
+            # (no_tension_trigger, content_already_used), never ``economy_held``. Inside a hold this
+            # re-uses the last answer without a bid (outreach_bind ``waiting:``).
+            try:
+                verdict = await self._binder.bind(TICK_KEY, door=TICK_KEY, cap_counted=True, forced=force,
+                                                  day_end=self._day_end(), object_text=bid_object_text)
+            except Exception:  # noqa: BLE001 -- never hold a message because this code failed
+                logger.warning("outreach_economy_bind_failed", exc_info=True)
+                from orion.physiology.binding import BindVerdict
+
+                verdict = BindVerdict(True, "no_answer:bind_failed")
+            economy = self._binder.record(TICK_KEY, verdict)
+            _TICK_ECONOMY.set(economy)
+            if not verdict.admit:
+                return self._record(
+                    {"outreach": False,
+                     "reason": DUPLICATE_ECONOMY_REASON if verdict.why == "duplicate" else ECONOMY_HELD_REASON},
+                    forced=force, tension_reason=tension_reason, grounding=grounding)
+            # A forced verdict owns no want (record() leaves want_id out): a fresh id, never a held want's.
+            correlation_id = str(economy.get("want_id") or uuid4())
+        elif shadow is not None:
+            correlation_id = shadow.want_id
+            shadow.object_text = bid_object_text
+            shadow.place()
+        else:
+            correlation_id = str(uuid4())
+        decision_key = correlation_id  # this compose's want id: the choice id (outreach:<key>)
         retrieval_query = outreach_retrieval_query(ctx)
+        if topics:
+            from orion.cognition.recall_query import cap_retrieval_query
+
+            retrieval_query = cap_retrieval_query("; ".join(t.option_text for t in topics)) or retrieval_query
         raw_text, gen_debug = await self._generate(
             prompt, session_id, correlation_id,
             **({"retrieval_query": retrieval_query} if retrieval_query else {}),
@@ -1973,9 +2639,50 @@ class EndogenousOutreach:
                 tension_reason=tension_reason,
                 grounding=grounding,
             )
-        if is_pass_response(text):
+        # The choice point: which topic Orion picked, or none. Fields every later row of this
+        # tick carries (the subject ledger reads ``choice`` back; the readings door reads
+        # ``finding_ids``). Empty when no topics were shown (the one-topic prompt).
+        choice_fields: Dict[str, Any] = {}
+        chosen_topic: Any = None
+        if topics:
+            economy_now = _TICK_ECONOMY.get() or {}
+            text, chosen_topic, choice_fields, early = await self._settle_pick(
+                text, topics, decision_key=decision_key, correlation_id=correlation_id, force=force,
+                tension_reason=tension_reason,
+                care_promoted=bool(isinstance(economy_now, dict) and economy_now.get("care_promoted")))
+            if early is not None:
+                return self._record({**choice_fields, **early, "generation": gen_debug}, forced=force,
+                                    tension_reason=tension_reason, grounding=grounding)
+        elif is_pass_response(text):
             return self._record(
-                {"outreach": False, "reason": "orion_passed", "generation": gen_debug},
+                {"outreach": False, "reason": "orion_passed", "pass_shape": pass_shape(text),
+                 "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
+                grounding=grounding,
+            )
+        # Door policy (2026-11-10): the composer says why this is for Juniper on its last line.
+        # Missing or empty -> not sent. Checked here, before the vocabulary guard reads the body.
+        text, why_juniper = split_why_juniper(text)
+        if text and is_pass_response(text):
+            # "... PASS" then a Why Juniper line: the line hid the trailing PASS (review finding).
+            return self._record(
+                {**choice_fields, "outreach": False,
+                 "reason": ORION_DECLINED_REASON if topics else "orion_passed",
+                 "pass_shape": pass_shape(text), "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
+                grounding=grounding,
+            )
+        # The chosen read's finding ids go on the rows the readings door counts as told (sent,
+        # no_why_juniper) and on no other row: a tick compose failure is not that door's failure.
+        told_fields: Dict[str, Any] = {}
+        if chosen_topic is not None and getattr(chosen_topic, "finding_ids", None):
+            told_fields = {"finding_ids": list(chosen_topic.finding_ids), "seed_id": chosen_topic.seed_id}
+        if not why_juniper or not text:
+            return self._record(
+                {**choice_fields, **told_fields, "outreach": False, "reason": NO_WHY_JUNIPER_REASON,
+                 "generation": gen_debug},
                 forced=force,
                 tension_reason=tension_reason,
                 grounding=grounding,
@@ -1994,11 +2701,13 @@ class EndogenousOutreach:
             text,
             tension_reason,
             correlation_id,
-            context_texts=list(ctx.open_prior_previews) + list(ctx.curiosity_summaries),
+            context_texts=list(ctx.open_prior_previews) + list(ctx.curiosity_summaries)
+            + ([chosen_topic.option_text] if chosen_topic is not None else []),
         )
         if offending_terms:
             return self._record(
                 {
+                    **choice_fields,
                     "outreach": False,
                     "reason": "named_ungrounded_signal",
                     "generation": gen_debug,
@@ -2013,7 +2722,21 @@ class EndogenousOutreach:
         # by timeout_sec (default 60s), and Juniper can easily start typing
         # inside that window -- a gate checked only at the top of the tick would
         # let outreach talk straight over a turn that began mid-generation.
+        # Re-read arousal too: the reading cached at the top of the tick is as old as the compose,
+        # and a compose past 360 s (agent lane 210 s + chat fallback) read it as stale -> unknown,
+        # so strain that began mid-compose could not hold the send (live 10-12/10-13, 4 times).
+        if self.arousal_reader is not None:
+            await self.arousal_reader.refresh(self._bus)
         blocked_now = outreach_block_reason(self._gate_inputs())
+        if not blocked_now:
+            # Composing can take minutes (agent lane, then a chat-lane fallback). If Juniper
+            # spoke meanwhile, this message answers a conversation that has moved on: drop it.
+            # Live 2026-10-09: composed 01:58:20, she wrote 01:58:27-01:59:56, sent 02:04:07.
+            try:
+                if await asyncio.to_thread(_juniper_spoke_since, compose_started_at):
+                    blocked_now = "juniper_spoke"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("endogenous_outreach_spoke_since_read_failed err=%s", exc)
         if blocked_now:
             logger.info(
                 "endogenous_outreach_dropped_after_generation corr=%s reason=%s chars=%d",
@@ -2023,6 +2746,7 @@ class EndogenousOutreach:
             )
             return self._record(
                 {
+                    **choice_fields,
                     "outreach": False,
                     "reason": f"{blocked_now}_after_generation",
                     "generation": gen_debug,
@@ -2043,16 +2767,27 @@ class EndogenousOutreach:
             correlation_id=correlation_id,
             decision_id=decision_id,
         )
+        # A picked topic's stored record text (a read's article summary) rides under Orion's words,
+        # as the readings door delivers it; the checks above read only Orion's own words.
+        appendix = str(getattr(chosen_topic, "appendix", "") or "").strip()
+        delivered = f"{text}\n\n{appendix}" if appendix else text
         await self._deliver(
-            text=text,
+            text=delivered,
             session_id=session_id,
             correlation_id=correlation_id,
             model=gen_debug.get("fcc_model_label"),
             provenance=provenance,
         )
+        if chosen_topic is not None and chosen_topic.on_sent is not None:
+            try:
+                chosen_topic.on_sent()
+            except Exception as exc:  # noqa: BLE001 -- the decision row is the authority
+                logger.warning("endogenous_outreach_topic_on_sent_failed subject=%s err=%s",
+                               chosen_topic.subject, exc)
 
         self._last_outreach_at = time.time()
-        self._sent_today += 1
+        if not force:   # a forced (operator) send is not Orion spending Juniper's attention budget
+            self._sent_today += 1
         logger.info(
             "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d",
             correlation_id,
@@ -2062,23 +2797,237 @@ class EndogenousOutreach:
         )
         return self._record(
             {
+                **choice_fields,
+                **told_fields,
                 "outreach": True,
                 "reason": "sent",
                 "correlation_id": correlation_id,
                 "session_id": session_id,
-                "chars": len(text),
+                "chars": len(delivered),
                 "generation": gen_debug,
                 "decision_id": decision_id,
                 "provenance": provenance,
+                "why_juniper": why_juniper,
             },
             forced=force,
             tension_reason=tension_reason,
             grounding=grounding,
         )
 
+    # -- the strain report door (strain loop part 3) -------------------------
+
+    async def _recover_strain_history(self) -> Optional[StrainReportHistory]:
+        """Rebuild what this door already did from the decision log, once. Retried until it
+        succeeds; None (unknown) keeps the door shut."""
+        if self._strain_history is not None:
+            return self._strain_history
+        from scripts.endogenous_outreach_decisions import fetch_strain_report_history
+
+        try:
+            rows = await asyncio.to_thread(fetch_strain_report_history)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("strain_report_history_read_failed err=%s", exc)
+            rows = None
+        if rows is None:
+            return None
+        self._strain_history = StrainReportHistory.from_rows(rows, self._strain_tz)
+        logger.info(
+            "strain_report_history_recovered rows=%d reported=%d days=%s",
+            len(rows), len(self._strain_history.reported_episodes),
+            ",".join(sorted(self._strain_history.report_dates)) or "-",
+        )
+        return self._strain_history
+
+    def _strain_record(
+        self,
+        result: Dict[str, Any],
+        *,
+        forced: bool,
+        episode: Optional[str],
+        composed: bool,
+        grounding: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """One decision row for this door. Composed outcomes also update the in-memory history
+        with the same rule a restart applies to the rows (StrainReportHistory.note)."""
+        result.setdefault("door", STRAIN_REPORT_SOURCE)
+        if episode:
+            result.setdefault("strain_episode_since", episode)
+        if composed:
+            result["source"] = STRAIN_REPORT_SOURCE
+            result["strain_composed"] = True
+            if episode and self._strain_history is not None:
+                self._strain_history.note(
+                    episode=episode, reason=str(result.get("reason") or ""),
+                    at=datetime.now(timezone.utc), tz=self._strain_tz,
+                )
+        self._strain_last = str(result.get("strain_report") or result.get("reason") or "")
+        return self._record(result, forced=forced, grounding=grounding)
+
+    async def _strain_report_once(self, *, force: bool, compose_started_at: float) -> Dict[str, Any]:
+        """Orion tells Juniper about a long strain episode. Runs only when ``arousal_strained``
+        is the one gate holding. Every non-sending outcome keeps ``reason=arousal_strained`` and
+        names why in ``strain_report``, so the existing refusal counts do not change meaning."""
+        now = datetime.now(timezone.utc)
+        reader = self.arousal_reader
+        view = None if reader is None else reader.view(now)
+        state = None if reader is None else reader.state(now)
+
+        def held(sub: str, episode: Optional[str] = None) -> Dict[str, Any]:
+            return self._strain_record(
+                {"outreach": False, "reason": AROUSAL_STRAINED_REASON, "strain_report": sub},
+                forced=force, episode=episode, composed=False,
+            )
+
+        history = await self._recover_strain_history()
+        if history is None:
+            return held("history_unknown")
+        since = None if view is None else view.since
+        episode = None if since is None else episode_key(since)
+        sub = strain_report_block(
+            level=None if view is None else view.level,
+            since=since,
+            now=now,
+            min_episode_sec=self.strain_report_min_episode_sec,
+            history=history,
+            tz=self._strain_tz,
+        )
+        if sub:
+            return held(sub, episode)
+        # Qualifies. Now the DB read for recent_chat, then the whole gate again: strain must
+        # still be the ONLY thing holding.
+        self._last_spoke_ago = await self._spoke_ago()
+        blocked = outreach_block_reason(self._strain_gate_inputs())
+        if blocked != AROUSAL_STRAINED_REASON:
+            if blocked is None:
+                # The reading aged out between the two gate reads: nothing is held any more.
+                return self._strain_record(
+                    {"outreach": False, "reason": "strain_ended", "strain_report": "strain_ended"},
+                    forced=force, episode=episode, composed=False,
+                )
+            return self._strain_record(
+                {"outreach": False, "reason": blocked, "strain_report": "gated"},
+                forced=force, episode=episode, composed=False,
+            )
+
+        arc, arc_status = await fetch_open_strain_arc(self.durable_runs_url)
+        facts = strain_report_facts(state, arc)
+        if facts is None or episode_key(facts.episode_since) != episode:
+            return held("no_grounding", episode)
+        record_text = render_record(facts, now, self._strain_tz)
+        prompt = build_strain_report_prompt(facts, record_text, now, self._strain_tz)
+        grounding = {"strain_report": facts.as_dict(), "strain_arc_status": arc_status}
+        logger.info(
+            "strain_report_composing episode=%s arc=%s causes_now=%s",
+            episode, facts.arc_id or "-", ",".join(facts.causes_now) or "-",
+        )
+
+        session_id = self._active_session_id()
+        correlation_id = str(uuid4())
+        raw_text, gen_debug = await self._generate(prompt, session_id, correlation_id)
+        correlation_id = str(gen_debug.get("correlation_id") or correlation_id)
+        text = str(raw_text or "").strip()
+        base = {"outreach": False, "generation": gen_debug, "correlation_id": correlation_id}
+        if not text:
+            return self._strain_record(
+                {**base, "reason": "empty_generation"},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+        if is_pass_response(text):
+            return self._strain_record(
+                {**base, "reason": "orion_passed", "pass_shape": pass_shape(text)},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+        offending = self._named_ungrounded_terms(text, None, correlation_id, context_texts=[record_text])
+        if offending:
+            return self._strain_record(
+                {**base, "reason": "named_ungrounded_signal", "offending_terms": offending},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+
+        # Re-gate before delivery, same as the background tick: compose can take minutes.
+        if reader is not None:
+            await reader.refresh(self._bus)
+        blocked_now = outreach_block_reason(self._strain_gate_inputs())
+        if blocked_now == AROUSAL_STRAINED_REASON:
+            now_view = None if reader is None else reader.view()
+            if now_view is None or now_view.since is None or episode_key(now_view.since) != episode:
+                blocked_now = "strain_episode_changed"
+            else:
+                blocked_now = None
+                try:
+                    if await asyncio.to_thread(_juniper_spoke_since, compose_started_at):
+                        blocked_now = "juniper_spoke"
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("strain_report_spoke_since_read_failed err=%s", exc)
+        elif blocked_now is None:
+            blocked_now = "strain_ended"
+        if blocked_now:
+            logger.info("strain_report_dropped_after_generation corr=%s reason=%s", correlation_id, blocked_now)
+            return self._strain_record(
+                {**base, "reason": f"{blocked_now}_after_generation"},
+                forced=force, episode=episode, composed=True, grounding=grounding,
+            )
+
+        # Intent row first, synchronously: if it does not land, do not send. A delivered report
+        # whose fire-and-forget `sent` row is later lost would otherwise be re-sent on restart.
+        from scripts.endogenous_outreach_decisions import record_decision_now
+
+        intent = {
+            **base, "reason": STRAIN_REPORT_INTENT_REASON, "door": STRAIN_REPORT_SOURCE,
+            "source": STRAIN_REPORT_SOURCE, "strain_composed": True, "strain_episode_since": episode,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not await asyncio.to_thread(record_decision_now, intent):
+            return self._strain_record(
+                {**base, "reason": "intent_write_failed"},
+                forced=force, episode=episode, composed=False, grounding=grounding,
+            )
+        if self._strain_history is not None:
+            self._strain_history.note(
+                episode=episode, reason=STRAIN_REPORT_INTENT_REASON,
+                at=datetime.now(timezone.utc), tz=self._strain_tz,
+            )
+        delivered = f"{text}\n\n{record_text}"
+        decision_id = str(uuid4())
+        provenance = build_outreach_provenance(
+            prompt_text=prompt, lanes=grounding, correlation_id=correlation_id, decision_id=decision_id,
+        )
+        await self._deliver(
+            text=delivered,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            model=gen_debug.get("fcc_model_label"),
+            source_tag=STRAIN_REPORT_SOURCE,
+            provenance=provenance,
+        )
+        self._last_outreach_at = time.time()
+        # Not counted on the daily cap (attention_pacing.CAP_EXEMPT_SOURCES): the strain report exists to
+        # speak when strain holds everything else.
+        logger.info(
+            "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s episode=%s arc=%s",
+            correlation_id, session_id, len(delivered), self._sent_today,
+            STRAIN_REPORT_SOURCE, episode, facts.arc_id or "-",
+        )
+        return self._strain_record(
+            {
+                **base,
+                "outreach": True,
+                "reason": "sent",
+                "session_id": session_id,
+                "chars": len(delivered),
+                "decision_id": decision_id,
+                "provenance": provenance,
+                "strain_arc_id": facts.arc_id,
+            },
+            forced=force, episode=episode, composed=True, grounding=grounding,
+        )
+
     # -- delivery on behalf of another loop --------------------------------
 
-    def blocked_reason(self, *, skip_schedule_gates: bool = False) -> Optional[str]:
+    def blocked_reason(
+        self, *, skip_schedule_gates: bool = False, skip_rate_gates: bool = False,
+        cap_exempt: bool = False,
+    ) -> Optional[str]:
         """The gate that would stop an outreach right now, or None.
 
         Public so a caller can decide whether composing a message is worth a
@@ -2091,8 +3040,38 @@ class EndogenousOutreach:
         a pre-check does not refuse composition for quiet hours / daily cap /
         cooldown that delivery will also skip.
         """
+        inputs = self._gate_inputs()
         return outreach_block_reason(
-            self._gate_inputs(), skip_schedule_gates=skip_schedule_gates
+            replace(inputs, daily_cap=-1) if cap_exempt else inputs,
+            skip_schedule_gates=skip_schedule_gates,
+            skip_rate_gates=skip_rate_gates,
+        )
+
+    async def refresh_human_gates(self) -> None:
+        """Re-read the gates that protect Juniper's moment (recent_chat, arousal).
+
+        The background tick refreshes "seconds since Juniper spoke" only when its own
+        cap and cooldown pass, so a caller that skips those (``skip_rate_gates``) would
+        otherwise check recent_chat against a stale reading."""
+        if self.arousal_reader is not None:
+            await self.arousal_reader.refresh(self._bus)
+        if self.recent_chat_sec > 0:
+            self._last_spoke_ago = await self._spoke_ago()
+
+    async def compose(
+        self, prompt: str, correlation_id: str, retrieval_query: Optional[str] = None,
+        lane: str = "agent_first",
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Orion writes a message through this module's real unified turn (``_generate``),
+        for a caller that brings its own prompt (reading findings). ("", debug) on failure.
+
+        ``lane="chat"``: one attempt on the chat lane with the full ``timeout_sec``, no
+        agent-lane first try (2026-11-07, office visits: the agent lane timed out at 210 s
+        and the message reached Juniper 5 minutes into her visit). Default unchanged."""
+        return await self._generate(
+            prompt, self._active_session_id(), correlation_id,
+            **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+            lane=lane,
         )
 
     def record_blocked(
@@ -2136,6 +3115,23 @@ class EndogenousOutreach:
         finally:
             self._last_result = previous
 
+    async def already_told(self, finding_key: str) -> bool:
+        """True when a ``sent`` decision row already names ``finding_key`` (door policy,
+        2026-11-10: a finding Juniper already got is not sent again). Unknown (log off, DB
+        error) reads as False: a broken ledger must not invent silence. Never raises."""
+        from scripts.endogenous_outreach_decisions import finding_already_told
+
+        if str(finding_key) in self._told_keys:
+            return True
+        try:
+            told = await asyncio.to_thread(
+                finding_already_told, str(finding_key), lookback_days=ALREADY_TOLD_LOOKBACK_DAYS
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("endogenous_outreach_already_told_failed key=%s err=%s", finding_key, exc)
+            return False
+        return bool(told)
+
     async def offer_message(
         self,
         *,
@@ -2145,20 +3141,48 @@ class EndogenousOutreach:
         model: Optional[str] = None,
         meta: Optional[Dict[str, Any]] = None,
         skip_schedule_gates: bool = False,
+        skip_rate_gates: bool = False,
+        provenance: Optional[Dict[str, Any]] = None,
+        record_appendix: Optional[str] = None,
+        require_why_juniper: bool = False,
+        finding_key: Optional[str] = None,
+        cap_exempt: bool = False,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Deliver a message ANOTHER loop composed, through this module's gates.
+
+        ``session_id`` (2026-11-13, intentions Prime takes on): deliver into this chat thread instead of the
+        newest connected socket's session (``_active_session_id``). The carry turn of a promise answers in the
+        thread where the promise was made. Every gate below still applies. None: unchanged behavior.
+
+        Door policy (2026-11-10, ``scripts/outreach_door_policy.py``):
+        ``require_why_juniper`` (curiosity, readings): the text must end with a
+        ``Why Juniper:`` line; it is stripped, recorded as ``why_juniper``, and a
+        missing/empty one is recorded as ``no_why_juniper`` and not sent. Office
+        visits, Juniper-triggered sends and the strain report leave it False.
+        ``finding_key``: the source finding's stable id (e.g. ``curiosity_run:<id>``);
+        a ``sent`` row already naming it is recorded as ``already_told`` and not sent.
+        ``cap_exempt`` (a send Juniper asked for: ``meta.door_policy='asked_by_juniper'``): the
+        daily cap does not hold it and it does not count (attention_pacing.CAP_EXEMPT_DOOR_POLICIES).
+
+        ``skip_rate_gates`` (reading findings, office visits): see ``outreach_block_reason``.
+        Every send here counts on ``_sent_today`` (one attention budget, 2026-11-10). ``provenance`` (an
+        ``outreach_provenance.v1`` capsule) rides on the delivered message so a
+        follow-up turn can say where it came from. ``record_appendix`` is stored
+        record text (not generated) delivered after Orion's message, e.g. the
+        summary of an article Orion read: the PASS / ungrounded-signal checks read
+        only Orion's own words, so a source quoting an internal-signal name cannot
+        get Orion's message refused.
 
         The curiosity loop (`scripts/curiosity_investigation.py`) uses this when
         Orion, inside an investigation turn, decides a finding is worth saying
         unprompted.
 
-        Schedule gates (quiet hours, daily cap, cooldown) protect the
-        *background* endogenous tick. Door-A passes ``skip_schedule_gates=True``
-        (2026-09-22): a finished curiosity run that asked to share is not
-        held for the clock or the background budget. ``turn_in_flight`` and
-        ``disabled`` still apply. Door-A sends also do **not** increment
-        ``_sent_today``, so they cannot starve the endogenous tick's cap
-        (and ``count_sent_on`` excludes ``source=curiosity_outreach``).
+        Schedule gates (quiet hours, cooldown) protect the *background* endogenous
+        tick. Door-A passes ``skip_schedule_gates=True`` (2026-09-22): a finished
+        curiosity run that asked to share is not held for the clock.
+        ``turn_in_flight``, ``disabled`` and (since 2026-11-10, one attention
+        budget) the daily cap still apply, and its send counts on ``_sent_today``.
 
         The closed-vocabulary grounding guard (2026-09-08 -- see module
         docstring's "CLOSED-VOCABULARY GROUNDING GUARD" section) is ALSO not
@@ -2181,6 +3205,8 @@ class EndogenousOutreach:
         reason; before this, only the `sent` row did.
         """
         extra: Dict[str, Any] = {**dict(meta or {}), "correlation_id": correlation_id}
+        if finding_key:
+            extra["finding_key"] = str(finding_key)
         body = str(text or "").strip()
         if not body:
             return self._record(
@@ -2191,7 +3217,28 @@ class EndogenousOutreach:
             # Orion wrote the message and concluded it was not worth sending.
             # A real answer, and the composition prompt says so explicitly.
             return self._record(
-                {**extra, "outreach": False, "reason": "orion_passed", "source": tag},
+                {**extra, "outreach": False, "reason": "orion_passed", "source": tag,
+                 "pass_shape": pass_shape(body)},
+                forced=False,
+            )
+        if require_why_juniper:
+            body, why_juniper = split_why_juniper(body)
+            if body and is_pass_response(body):
+                # "... PASS" then a Why Juniper line: the line hid the trailing PASS (review finding).
+                return self._record(
+                    {**extra, "outreach": False, "reason": "orion_passed", "source": tag,
+                     "pass_shape": pass_shape(body)},
+                    forced=False,
+                )
+            if not why_juniper or not body:
+                return self._record(
+                    {**extra, "outreach": False, "reason": NO_WHY_JUNIPER_REASON, "source": tag},
+                    forced=False,
+                )
+            extra["why_juniper"] = why_juniper
+        if finding_key and await self.already_told(finding_key):
+            return self._record(
+                {**extra, "outreach": False, "reason": ALREADY_TOLD_REASON, "source": tag},
                 forced=False,
             )
         if self._send_lock.locked():
@@ -2199,13 +3246,17 @@ class EndogenousOutreach:
                 {**extra, "outreach": False, "reason": "already_sending", "source": tag},
                 forced=False,
             )
-        # Recover the endogenous tick's shared count even on Door-A so a
-        # concurrent organic tick sees a true reading. Door-A itself does not
-        # consume the counter when skip_schedule_gates is set.
+        # Recover the shared count on every door: the daily cap holds for every
+        # door, and every send here counts on it (one attention budget, 2026-11-10).
         await self._recover_sent_today()
+        if skip_rate_gates and not skip_schedule_gates:
+            await self.refresh_human_gates()
         async with self._send_lock:
+            inputs = self._gate_inputs()
             blocked = outreach_block_reason(
-                self._gate_inputs(), skip_schedule_gates=skip_schedule_gates
+                replace(inputs, daily_cap=-1) if cap_exempt else inputs,
+                skip_schedule_gates=skip_schedule_gates,
+                skip_rate_gates=skip_rate_gates,
             )
             if blocked:
                 return self._record(
@@ -2236,22 +3287,30 @@ class EndogenousOutreach:
                     forced=False,
                     tension_reason=tension_reason,
                 )
-            session_id = self._active_session_id()
+            session_id = str(session_id) if session_id else self._active_session_id()
+            appendix = str(record_appendix or "").strip()
+            delivered = f"{body}\n\n{appendix}" if appendix else body
             await self._deliver(
-                text=body,
+                text=delivered,
                 session_id=session_id,
                 correlation_id=correlation_id,
                 model=model,
                 source_tag=tag,
+                provenance=provenance,
             )
             self._last_outreach_at = time.time()
-            if not skip_schedule_gates:
+            if finding_key:
+                # Process-local mirror: the sent row is written on a daemon thread and may lag.
+                self._told_keys.add(str(finding_key))
+            # One attention budget (2026-11-10): every door's send counts on the daily cap, except a
+            # send Juniper asked for.
+            if not cap_exempt:
                 self._sent_today += 1
             logger.info(
                 "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s door_a=%s",
                 correlation_id,
                 session_id,
-                len(body),
+                len(delivered),
                 self._sent_today,
                 tag,
                 skip_schedule_gates,
@@ -2264,7 +3323,7 @@ class EndogenousOutreach:
                     "source": tag,
                     "correlation_id": correlation_id,
                     "session_id": session_id,
-                    "chars": len(body),
+                    "chars": len(delivered),
                 },
                 forced=False,
             )
@@ -2280,6 +3339,9 @@ class EndogenousOutreach:
         result["at"] = datetime.now(timezone.utc).isoformat()
         if grounding is not None:
             result["grounding"] = dict(grounding)
+        economy = _TICK_ECONOMY.get()
+        if economy and "economy" not in result:
+            result["economy"] = dict(economy)
         self._last_result = result
         # Durable trail for every decision cycle, not just the ones that
         # ship -- see endogenous_outreach_decisions.py's own module
@@ -2306,15 +3368,15 @@ class EndogenousOutreach:
     async def _gather_context(
         self,
         session_id: Optional[str],
-        open_prior_previews: Optional[List[str]] = None,
-        open_prior_ids: Optional[List[str]] = None,
+        daydream: Any = _NOT_PEEKED,
     ) -> OutreachContext:
         """Read grounding signals off the main loop; failures degrade to empty.
 
-        ``open_prior_previews`` / ``open_prior_ids``: when the fire gate already
-        peeked priors (no-tension path), pass both lists so this tick does not
-        hit the worldview graph twice. ``None`` for previews means "fetch here"
-        (tension path / force path). Ids without a matching peek are cleared.
+        ``daydream``: when the fire gate already peeked it (no-tension path), pass it so this tick
+        does not read ``reverie_visual_chain`` twice. Left out means "fetch here".
+
+        Door policy (2026-11-10): no worldview-prior or substrate-curiosity read here any more --
+        both are the investigate line's material, which does not reach Juniper unasked.
         """
 
         async def _safe(fn, *args):
@@ -2325,41 +3387,31 @@ class EndogenousOutreach:
                 return None
 
         # Concurrent, not sequential (review finding, 2026-08-25): independent
-        # DB/graph reads, each already dispatched via asyncio.to_thread inside
-        # `_safe` -- awaiting them one after another made this tick's wall
-        # time the SUM of all round trips instead of the slowest one.
-        if open_prior_previews is None:
-            curiosity, turns, embodied_presence, daydream, priors = await asyncio.gather(
-                _safe(_fetch_curiosity_content),
+        # DB reads, each already dispatched via asyncio.to_thread inside `_safe`.
+        if daydream is _NOT_PEEKED:
+            turns, embodied_presence, daydream = await asyncio.gather(
                 _safe(_fetch_recent_turns, session_id),
                 _safe(_fetch_embodied_presence),
                 _safe(_fetch_current_daydream),
-                _safe(_fetch_open_priors),
             )
-            if isinstance(priors, tuple) and len(priors) == 2:
-                prior_ids, prior_list = list(priors[0] or []), list(priors[1] or [])
-            else:
-                prior_ids, prior_list = [], []
         else:
-            curiosity, turns, embodied_presence, daydream = await asyncio.gather(
-                _safe(_fetch_curiosity_content),
+            turns, embodied_presence = await asyncio.gather(
                 _safe(_fetch_recent_turns, session_id),
                 _safe(_fetch_embodied_presence),
-                _safe(_fetch_current_daydream),
             )
-            prior_list = list(open_prior_previews)
-            prior_ids = list(open_prior_ids or [])
-            # Peeked previews without ids must not invent a length mismatch —
-            # pad/truncate ids to the preview list length with empty strings.
-            if len(prior_ids) < len(prior_list):
-                prior_ids = prior_ids + [""] * (len(prior_list) - len(prior_ids))
-            elif len(prior_ids) > len(prior_list):
-                prior_ids = prior_ids[: len(prior_list)]
 
-        if isinstance(curiosity, tuple) and len(curiosity) == 2:
-            curiosity_ids, summaries = list(curiosity[0] or []), list(curiosity[1] or [])
-        else:
-            curiosity_ids, summaries = [], list(curiosity or []) if curiosity else []
+        # Concurrent: both are bounded and never raise. With the choice point on, the personality
+        # cue is not read: it rode into the prompt as free material with no subject in the ledger,
+        # and that is how the tick sent the same "graph first" habit 3 times on 2026-11-11..12.
+        # Rev 3 retires the cue; Orion's tendencies come back through Prime's tending line.
+        (situation, situation_status), personality = await asyncio.gather(
+            _read_situation(self._bus),
+            read_personality_cue(self.durable_runs_url,
+                                 enabled=self.personality_cue_enabled and not self.choice_enabled),
+        )
+        if situation_status != "ok":
+            logger.warning("endogenous_outreach_situation_unavailable status=%s", situation_status)
+        logger.info("endogenous_outreach_personality_cue %s", cue_status(personality))
 
         presence = None
         try:
@@ -2370,22 +3422,26 @@ class EndogenousOutreach:
             logger.warning("endogenous_outreach_presence_failed err=%s", exc)
 
         return OutreachContext(
-            curiosity_summaries=summaries,
-            curiosity_content_ids=curiosity_ids,
+            curiosity_summaries=[],
+            curiosity_content_ids=[],
             recent_turns=list(turns or []),
             presence=presence,
+            situation=situation,
+            situation_status=situation_status,
+            personality_cue=personality.text,
+            personality_cue_ids=list(personality.disposition_ids),
+            personality_cue_skip=personality.skip_reason,
             # Set by _should_roll() just before this is called; None on a
             # forced (force=True) debug trigger, which never calls it.
             tension_reason=self._last_tension_reason,
             embodied_presence=embodied_presence,
             daydream=daydream,
-            open_prior_previews=prior_list,
-            open_prior_ids=prior_ids,
+            daydream_id=daydream_content_id(daydream[1]) if daydream else "",
         )
 
     async def _generate(
         self, prompt: str, session_id: str, correlation_id: str,
-        retrieval_query: Optional[str] = None,
+        retrieval_query: Optional[str] = None, lane: str = "agent_first",
     ) -> Tuple[str, Dict[str, Any]]:
         """Real unified-turn generation -- see module docstring's "THROUGH THE
         REAL UNIFIED TURN, NOT A LOOKALIKE" section. Returns ("", debug) on
@@ -2439,6 +3495,19 @@ class EndogenousOutreach:
             return "", {"error": "no_bus"}
 
         from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
+
+        if lane == "chat":
+            text, debug = await self._attempt_unified_turn(
+                prompt=prompt,
+                session_id=session_id,
+                correlation_id=correlation_id,
+                fcc_model_label=None,
+                timeout_sec=self.timeout_sec,
+                retrieval_query=retrieval_query,
+            )
+            debug["lane"] = "chat"
+            debug["correlation_id"] = correlation_id
+            return text, debug
 
         text, debug = await self._attempt_unified_turn(
             prompt=prompt,
@@ -2678,6 +3747,50 @@ class EndogenousOutreach:
             notification_title=notification_title,
             notification_type=notification_type,
         )
+        # Act ledger (rung 2): an unsolicited message is a say/ask act that expects
+        # Juniper to answer; orion-sql-writer closes it from chat_history_log.
+        # Solicited deliveries (collapse-mirror replies, the debug route) are replies
+        # to Juniper, not outreach, and must not train the outreach belief.
+        if not unsolicited:
+            return
+        from scripts.act_emit import publish_outreach_act
+
+        await publish_outreach_act(
+            self._bus,
+            text=text,
+            message_id=message_id,
+            correlation_id=correlation_id,
+            session_id=session_id,
+            source_tag=source_tag,
+        )
+
+    async def record_in_thread(self, *, text: str, session_id: str, correlation_id: str, source_tag: str,
+                               meta: Optional[Dict[str, Any]] = None) -> bool:
+        """Write one message of Orion's into ONE chat thread's history and nothing else: no socket push, no
+        notification, no outreach act, and it does not count on the daily cap. For a reply that must be in the
+        thread when Juniper opens it even though the live send was held (intentions Prime takes on: the carry
+        turn's reply when quiet hours, the cap or the economy held the ping). False when nothing would be
+        published (no bus, or PUBLISH_CHAT_HISTORY_LOG off). True means PUBLISHED, not stored: publish_chat_history
+        logs and swallows a failed publish, so the caller checks for the chat_history_log row itself."""
+        from scripts.chat_history import build_chat_history_envelope, publish_chat_history
+
+        if not self._bus or not getattr(self._bus, "enabled", False):
+            return False
+        try:
+            from scripts.chat_history import settings as _history_settings
+
+            if not getattr(_history_settings, "PUBLISH_CHAT_HISTORY_LOG", True):
+                return False
+        except ImportError:
+            pass
+        client_meta: Dict[str, Any] = {"unsolicited": True, "source": str(source_tag), "delivered_live": False,
+                                       **dict(meta or {})}
+        env = build_chat_history_envelope(
+            content=text, role="assistant", session_id=session_id, correlation_id=correlation_id, speaker="Orion",
+            tags=[OUTREACH_TAG, source_tag], message_id=str(uuid4()), client_meta=client_meta,
+        )
+        await publish_chat_history(self._bus, [env])
+        return True
 
     def _push_to_sockets(
         self,
@@ -2779,23 +3892,39 @@ class EndogenousOutreach:
         notification_title: Optional[str] = None,
         notification_type: Optional[str] = None,
     ) -> None:
+        resolved_type = notification_type or OUTREACH_TAG
+        notify_tags = list(tags) if tags is not None else [OUTREACH_TAG]
+        title = notification_title or "Orion reached out"
+        if resolved_type == OUTREACH_TAG:
+            # Durable path: orion-notify writes a notify_requests row keyed by
+            # this message_id (the same id as the chat_message row) and
+            # publishes the live in-app event itself. The row stays open until
+            # Juniper dismisses it in the tray, across Hub restarts.
+            if await self._persist_outreach_via_notify(
+                text=text,
+                session_id=session_id,
+                correlation_id=correlation_id,
+                message_id=message_id,
+                tags=notify_tags,
+                title=title,
+            ):
+                return
         if not self._bus:
             return
         try:
-            notify_tags = list(tags) if tags is not None else [OUTREACH_TAG]
             notification = HubNotificationEvent(
                 notification_id=uuid4(),
                 created_at=datetime.now(timezone.utc),
                 severity="info",
                 event_kind=OUTREACH_EVENT_KIND,
                 source_service="orion-hub",
-                title=notification_title or "Orion reached out",
+                title=title,
                 body_text=text,
                 tags=notify_tags,
                 correlation_id=correlation_id,
                 session_id=session_id,
                 message_id=UUID(message_id),
-                notification_type=notification_type or OUTREACH_TAG,
+                notification_type=resolved_type,
             )
             env = BaseEnvelope(
                 kind="notify.in_app.v1",
@@ -2806,3 +3935,62 @@ class EndogenousOutreach:
             await self._bus.publish(self.notify_channel, env)
         except Exception as exc:  # noqa: BLE001
             logger.warning("endogenous_outreach_notify_failed corr=%s err=%s", correlation_id, exc)
+
+    async def _persist_outreach_via_notify(
+        self,
+        *,
+        text: str,
+        session_id: str,
+        correlation_id: str,
+        message_id: str,
+        tags: List[str],
+        title: str,
+    ) -> bool:
+        """Send one outreach message through orion-notify's /chat/message.
+
+        Returns True only when orion-notify accepted it. Then orion-notify owns
+        both the durable row and the live in-app event, so the caller must not
+        publish a second in-app event. Returns False when no client is wired or
+        the call failed; the caller then falls back to the old direct publish,
+        so the live tray still gets the message (just not durably).
+        """
+        client = self.notify_client
+        if client is None:
+            return False
+        durable_tags = list(tags)
+        if OUTREACH_TAG not in durable_tags:
+            # The tray asks orion-notify for open rows by this tag.
+            durable_tags.append(OUTREACH_TAG)
+        preview = text if len(text) <= 280 else text[:279] + "\u2026"
+        try:
+            accepted = await asyncio.to_thread(
+                client.chat_message,
+                session_id=session_id,
+                preview_text=preview,
+                full_text=text,
+                title=title,
+                severity="info",
+                require_read_receipt=True,
+                tags=durable_tags,
+                source_service="orion-hub",
+                correlation_id=correlation_id,
+                message_id=UUID(message_id),
+                notification_type=OUTREACH_TAG,
+            )
+        except Exception as exc:  # noqa: BLE001 -- NotifyClient never raises; a fake or a bug might
+            logger.warning("endogenous_outreach_durable_notify_failed corr=%s err=%s", correlation_id, exc)
+            return False
+        if not getattr(accepted, "ok", False):
+            logger.warning(
+                "endogenous_outreach_durable_notify_failed corr=%s detail=%s -- falling back to direct in-app publish",
+                correlation_id,
+                getattr(accepted, "detail", None),
+            )
+            return False
+        logger.info(
+            "endogenous_outreach_durable_notify_ok corr=%s message_id=%s notification_id=%s",
+            correlation_id,
+            message_id,
+            getattr(accepted, "notification_id", None),
+        )
+        return True

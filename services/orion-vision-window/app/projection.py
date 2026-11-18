@@ -29,6 +29,14 @@ def _skip_edge_artifact(art: VisionArtifactPayload) -> bool:
     return art.task_type == "edge_detection"
 
 
+def is_caption_only(art: VisionArtifactPayload) -> bool:
+    """A caption with no detection pass behind it -- the walkway's Qwen
+    caption artifact (vision-frame-router caption_dispatch, 2026-10-15). It is
+    not a look at the scene: it must not count as a frame, nor as "looked and
+    saw nobody"."""
+    return art.task_type == "caption_frame" and art.outputs.objects is None
+
+
 def stream_key_from_artifact(art: VisionArtifactPayload) -> str:
     """Best-effort stream / source key from artifact inputs (§15 open: heuristic)."""
     inp = art.inputs or {}
@@ -125,6 +133,44 @@ def identity_confidence_from_artifact(art: VisionArtifactPayload) -> Optional[st
     return "uncertain" if has_real_unsure_face else None
 
 
+def identity_verdict_summary(art: VisionArtifactPayload) -> Dict[str, Any]:
+    """What one identity_face check actually said, for the trace.
+
+    The two helpers above deliberately return None for "no face" and for a
+    weak match, so a check that found nothing used to leave no trace at all
+    (2026-10-08: a 13-minute office session produced 26 checks and no way to
+    tell "never saw a face" from "saw a face, did not match"). This keeps
+    the distinction: ``outcome`` is always one of ``no_face`` |
+    ``not_enrolled`` | ``unsure`` | ``possible`` | ``probable``, with the
+    best similarity and detector confidence. Numbers only -- no embeddings,
+    no pixels.
+
+    A match outcome comes from ``identity_hint_from_artifact`` itself, so
+    this label can never disagree with what presence/council act on.
+    """
+
+    def _num(v: Any) -> Optional[float]:
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    identities = getattr(art.outputs, "identities", None)
+    candidates = identities.get("candidates") if isinstance(identities, dict) else None
+    candidates = [c for c in (candidates or []) if isinstance(c, dict)]
+    if not candidates:
+        return {"outcome": "no_face", "faces": 0, "similarity": None, "detect_confidence": None}
+    if all(c.get("reason") == "not_enrolled" for c in candidates):
+        return {"outcome": "not_enrolled", "faces": len(candidates), "similarity": None, "detect_confidence": None}
+    hint = identity_hint_from_artifact(art)
+    if hint is not None:
+        outcome, sim = hint["state"], _num(hint.get("similarity"))
+        pool = [c for c in candidates if c.get("state") == outcome and _num(c.get("similarity")) == sim]
+    else:
+        outcome, pool = "unsure", candidates
+        sim = max((s for s in (_num(c.get("similarity")) for c in candidates) if s is not None), default=None)
+        pool = [c for c in candidates if _num(c.get("similarity")) == sim]
+    detect = _num(pool[0].get("detect_confidence")) if pool else None
+    return {"outcome": outcome, "faces": len(candidates), "similarity": sim, "detect_confidence": detect}
+
+
 def artifact_uris_from_artifact(art: VisionArtifactPayload) -> List[str]:
     """Lightweight URI/path pointers only; no frame bytes (spec §3, §9)."""
     out: List[str] = []
@@ -159,6 +205,10 @@ def _caption_soft_tokens(text: str) -> List[str]:
 
 def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[str, Any]:
     hard_counts: Dict[str, int] = {}
+    # Best detector score per hard label in this window (the detector's own
+    # match score, orion-vision-host app/gdino.py). The council reads it as
+    # the confidence of a row that names the label (#3387).
+    label_scores: Dict[str, float] = {}
     soft_labels: List[str] = []
     edge_person_hits = 0
     host_person_hits = 0
@@ -177,11 +227,13 @@ def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
                 continue
             label = obj.label.lower()
             hard_counts[label] = hard_counts.get(label, 0) + 1
+            label_scores[label] = max(label_scores.get(label, 0.0), float(obj.score))
             if label == "person":
                 host_person_hits += 1
     hard_labels = sorted(hard_counts.keys())
     return {
         "hard_labels": hard_labels,
+        "label_scores": {label: round(label_scores[label], 4) for label in hard_labels},
         "soft_labels": sorted(set(soft_labels)),
         "edge_person_hits": edge_person_hits,
         "host_person_hits": host_person_hits,
@@ -289,7 +341,9 @@ def summarize_items(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
         # How many are believed to be THERE (per-frame max).
         "object_counts": counts,
         "top_labels": top_labels,
-        "item_count": len(items),
+        # Detection passes only: a caption-only artifact is not a frame
+        # looked at (scene inventory reads this as frame_count).
+        "item_count": sum(1 for art, _ts in items if not is_caption_only(art)),
         "captions": captions,
         # How many detections FIRED across the whole window. Frame-rate
         # dependent by definition, which is fine under this name.

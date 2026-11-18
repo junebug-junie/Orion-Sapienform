@@ -51,3 +51,11 @@ plan:
     requires_memory: false
 
 safety_rules: []
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 0
+  family: turn
+  lanes: [chat, fast]
+  deferrable_window_s: 0

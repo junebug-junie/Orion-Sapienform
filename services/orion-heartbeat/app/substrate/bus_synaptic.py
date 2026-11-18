@@ -60,13 +60,11 @@ BUS_SYNAPTIC_ZSCORE_SATURATION = 3.0
 # orion/substrate/prediction_error.py::bus_synaptic_prediction_error. This
 # query deliberately still does NOT subtract the calm floor -- see the module
 # docstring above for why raw ambient hum is the right reading for reheat.
-# Mirrors orion-substrate-runtime's SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC /
-# _MIN_EDGE_COUNT defaults. Note the two services deliberately read DIFFERENT
-# EDGE SETS from the same graph -- substrate-runtime aggregates PUBLISHES
-# gap_zscore *plus* CAUSALLY_FOLLOWED_BY latency_zscore, this module only
+# Recency window and cold-start floor. These mirrored orion-substrate-runtime's
+# SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC / _MIN_EDGE_COUNT defaults until that
+# reader (node:substrate.bus_synaptic) was retired 2026-11 (PE suite rebuild
+# step 5); they are this module's own values now. This module reads only
 # PUBLISHES gap, because reheat wants publish-cadence ambient hum specifically.
-# Only the recency window and cold-start floor are synced; the populations are
-# not, and are not meant to be.
 _STALE_CUTOFF_SEC = 3600.0
 _MIN_EDGE_COUNT = 5
 

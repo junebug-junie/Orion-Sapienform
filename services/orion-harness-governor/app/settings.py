@@ -96,14 +96,19 @@ class HarnessGovernorSettings(BaseSettings):
         "orion:harness:run:cancel",
         alias="CHANNEL_HARNESS_RUN_CANCEL",
     )
+    # Draft-first display (spec L8): the grounded draft, published before the
+    # finalize judge when the Hub asks (HarnessRunRequestV1.draft_preview).
+    channel_harness_run_draft_preview: str = Field(
+        "orion:harness:run:draft_preview",
+        alias="CHANNEL_HARNESS_RUN_DRAFT_PREVIEW",
+    )
 
     # orion-llm-gateway base URL, read directly from the environment by
-    # orion.harness.fcc_motor.probe_current_served_model (the pre-turn
-    # "what is this route's default backend" GET /routes read, used only when the
-    # turn holds no GPU pool lease; a held turn reads the pool's own state); mirrored here
-    # so operators see the effective value. Same default as the identical
-    # setting in orion-cortex-exec/.env_example -- both reach the same
-    # gateway on the shared app-net bridge network.
+    # orion.harness.fcc_motor.run_fcc_turn: a turn holding a GPU pool lease sends
+    # its Anthropic-compatible calls straight to the gateway (ANTHROPIC_BASE_URL)
+    # so the lease header is honoured. Mirrored here so operators see the
+    # effective value. (GPU pool stage 6.3 removed its other use, the pre-turn
+    # GET /routes read: the runner now reads pool state over the bus.)
     harness_llm_gateway_url: str = Field(
         "http://llm-gateway:8210", alias="HARNESS_LLM_GATEWAY_URL"
     )
@@ -138,6 +143,9 @@ class HarnessGovernorSettings(BaseSettings):
     response_repair_timeout_sec: float = Field(540.0, alias="RESPONSE_REPAIR_TIMEOUT_SEC")
     substrate_finalize_timeout_sec: float = Field(5.0, alias="SUBSTRATE_FINALIZE_TIMEOUT_SEC")
     finalize_quick_gate_epsilon: float = Field(0.08, alias="FINALIZE_QUICK_GATE_EPSILON")
+    # Intention ledger D0; read at call time by orion/harness/promise_gate.py, mirrored
+    # here so operators see the effective flag.
+    orion_promise_ledger_enabled: bool = Field(True, alias="ORION_PROMISE_LEDGER_ENABLED")
 
     harness_fcc_mcp_enabled: bool = Field(False, alias="HARNESS_FCC_MCP_ENABLED")
     harness_aitown_enabled: bool = Field(False, alias="HARNESS_AITOWN_ENABLED")
@@ -152,7 +160,7 @@ class HarnessGovernorSettings(BaseSettings):
         False, alias="HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"
     )
     # orion-introspect MCP; read at spawn time by orion/introspect/binding.py.
-    harness_fcc_introspect_enabled: bool = Field(False, alias="HARNESS_FCC_INTROSPECT_ENABLED")
+    harness_fcc_introspect_enabled: bool = Field(True, alias="HARNESS_FCC_INTROSPECT_ENABLED")
     # Opt-in CLAUDE_CONFIG_DIR override for the FCC claude subprocess, read
     # directly from the environment by
     # orion.fcc.context_budget.orion_fcc_claude_config_dir; mirrored here so
@@ -170,6 +178,86 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_setting_sources: str = Field(
         "user,local", alias="HARNESS_FCC_SETTING_SOURCES"
     )
+    # Orion's repo sub-agent via --agents (#3650), read directly from the
+    # environment by orion.fcc.claude_spawn.fcc_agents_argv; mirrored here so
+    # operators see the effective value.
+    harness_fcc_repo_agent_enabled: bool = Field(
+        True, alias="HARNESS_FCC_REPO_AGENT_ENABLED"
+    )
+    # Auto-memory off for Hub chat-reply turns only, read directly from the
+    # environment by orion.harness.fcc_motor.chat_auto_memory_disabled;
+    # mirrored here so operators see the effective value.
+    harness_fcc_chat_disable_auto_memory: bool = Field(
+        True, alias="HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY"
+    )
+    # Repeat-failing-call breaker threshold, read directly from the environment
+    # by orion.harness.fcc_motor.repeat_failure_threshold; mirrored here so
+    # operators see the effective value. 0 disables.
+    # str, not int: an empty value means "default" to the motor and must not
+    # fail settings validation at boot.
+    harness_fcc_repeat_failure_threshold: str = Field(
+        "3", alias="HARNESS_FCC_REPEAT_FAILURE_THRESHOLD"
+    )
+    # Reading-only turns only (seed c31227dc, 2026-10-14), read by
+    # orion.harness.fcc_motor.reading_refetch_limit / reading_tool_window_fraction:
+    # successful WebFetches of one URL before a repeat is blocked, and the share
+    # of the turn budget after which new tool calls are blocked. 0 disables each.
+    harness_fcc_reading_refetch_limit: str = Field("1", alias="HARNESS_FCC_READING_REFETCH_LIMIT")
+    harness_fcc_reading_tool_window_fraction: str = Field(
+        "0.5", alias="HARNESS_FCC_READING_TOOL_WINDOW_FRACTION"
+    )
+
+    # Warm Claude Code pool for Hub chat replies (spec L5; orion/harness/fcc_warm_pool.py).
+    # Chat-reply turns borrow a long-lived claude process instead of spawning one,
+    # skipping ~3.4 s of MCP server start-up. Any pool failure falls back to the
+    # per-turn spawn. false = every turn spawns, as before.
+    # Restart drain. On SIGTERM the worker stops taking new requests, then waits this long for
+    # turns already running to finish before cancelling the rest (the resume registry
+    # handles those). Live 2026-10-16: a redeploy killed a 229-step run at once. 0 = cancel
+    # at once, as before. Chat turns are short; the agent lane runs curiosity for ~40 min.
+    harness_shutdown_drain_sec_chat: float = Field(90.0, ge=0, le=3600, alias="HARNESS_SHUTDOWN_DRAIN_SEC_CHAT")
+    harness_shutdown_drain_sec_agent: float = Field(900.0, ge=0, le=3600, alias="HARNESS_SHUTDOWN_DRAIN_SEC_AGENT")
+    # Docker's wait before SIGKILL (compose `stop_grace_period`). Read here only to check it outlasts the drain.
+    harness_stop_grace_sec: float = Field(1000.0, ge=0, alias="HARNESS_STOP_GRACE_SEC")
+    harness_fcc_chat_warm_pool_enabled: bool = Field(True, alias="HARNESS_FCC_CHAT_WARM_POOL_ENABLED")
+    # Processes kept warm. 1 = observed chat concurrency (220 chat turns over 30
+    # days, never two at once). Each one keeps its own MCP servers running.
+    harness_fcc_chat_warm_pool_size: int = Field(1, ge=1, le=8, alias="HARNESS_FCC_CHAT_WARM_POOL_SIZE")
+    # Recycle a process after this many turns or this many seconds (bounds memory growth).
+    harness_fcc_chat_warm_pool_max_turns: int = Field(50, ge=1, alias="HARNESS_FCC_CHAT_WARM_POOL_MAX_TURNS")
+    harness_fcc_chat_warm_pool_max_age_sec: float = Field(
+        3600.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_MAX_AGE_SEC"
+    )
+    # Model label warmed at governor start (a ~/.fcc/.env key or "<backend>/<route>").
+    # The first chat turn asking for another model/window retargets the slot.
+    harness_fcc_chat_warm_pool_model_label: str = Field(
+        "MODEL_SONNET", alias="HARNESS_FCC_CHAT_WARM_POOL_MODEL_LABEL"
+    )
+    # Container-local relay port (bound to 127.0.0.1, never published).
+    harness_fcc_chat_warm_pool_relay_port: int = Field(
+        7157, ge=1, le=65535, alias="HARNESS_FCC_CHAT_WARM_POOL_RELAY_PORT"
+    )
+    # How long a fresh process may take to start its MCP servers.
+    harness_fcc_chat_warm_pool_spawn_timeout_sec: float = Field(
+        90.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_SPAWN_TIMEOUT_SEC"
+    )
+    # Per-turn /clear handshake budget; on overrun the turn spawns instead.
+    harness_fcc_chat_warm_pool_clear_timeout_sec: float = Field(
+        5.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_CLEAR_TIMEOUT_SEC"
+    )
+
+    # Claude's read-only tools in Hub chat, gated by Orion's consent (Patch 1b of
+    # docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md; app/claude_tools_listener.py).
+    # The broker checks Orion's grant ($ORION_DIG_HOME/self/claude_grants.jsonl), asks Orion over
+    # orion:prime:consent:request when the grant is "ask", runs a fixed reader, caps, redacts and audits.
+    # false: every call is refused ("switched off"); it never grants on Orion's behalf. Shipped ON.
+    claude_tools_enabled: bool = Field(True, alias="CLAUDE_TOOLS_ENABLED")
+    channel_claude_tool_request: str = Field("orion:claude:tool:request", alias="CHANNEL_CLAUDE_TOOL_REQUEST")
+    # No answer from Orion within this many seconds is a no (Claude's MCP call times out at 60 s).
+    claude_tools_consent_deadline_sec: float = Field(40.0, gt=0.0, le=55.0, alias="CLAUDE_TOOLS_CONSENT_DEADLINE_SEC")
+    # Per Claude turn (one room request): tool calls, and of those, asks to Orion.
+    claude_tools_max_calls_per_turn: int = Field(6, ge=0, le=50, alias="CLAUDE_TOOLS_MAX_CALLS_PER_TURN")
+    claude_tools_max_asks_per_turn: int = Field(3, ge=0, le=20, alias="CLAUDE_TOOLS_MAX_ASKS_PER_TURN")
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id
     # after a finalized relational turn. Default-off, fail-open (never breaks a turn).

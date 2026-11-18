@@ -22,6 +22,12 @@ os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 from orion.schemas.cortex.contracts import CortexChatResult, CortexClientResult
 from scripts.api_routes import handle_chat_request
 
+import pytest
+
+
+# See conftest.pre_turn_appraisal_off: these tests assume pre-turn appraisal is off.
+pytestmark = pytest.mark.usefixtures("pre_turn_appraisal_off")
+
 
 class _Store:
     def __init__(self):

@@ -1,0 +1,47 @@
+name: orion-bus-mirror-tests
+
+# The bus mirror's own test folder (SQLite retention, resubscribe, synaptic graph,
+# 5-minute traffic rollup) plus the rollup's bus catalog test. No DB, bus or LLM.
+#
+# Added 2026-11-13 with the traffic rollup (causal geometry redesign Patch 1):
+# until then no workflow ran services/orion-bus-mirror/tests.
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-bus-mirror/**"
+      - "orion/schemas/bus_traffic.py"
+      - "orion/bus/census.py"
+      - "orion/bus/channels.yaml"
+      - "orion/core/bus/**"
+      - "tests/test_bus_traffic_rollup_bus_catalog.py"
+      - ".github/workflows/orion-bus-mirror-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-bus-mirror/**"
+      - "orion/schemas/bus_traffic.py"
+      - "orion/bus/census.py"
+      - "orion/bus/channels.yaml"
+      - "orion/core/bus/**"
+      - ".github/workflows/orion-bus-mirror-tests.yml"
+
+jobs:
+  unit:
+    name: Bus mirror — retention, graph, traffic rollup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-bus-mirror/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Bus mirror tests
+        working-directory: services/orion-bus-mirror
+        run: PYTHONPATH=${{ github.workspace }}:. python -m pytest -q -p no:cacheprovider tests
+      - name: Rollup bus catalog + schema registry
+        run: PYTHONPATH=. python -m pytest -q -p no:cacheprovider tests/test_bus_traffic_rollup_bus_catalog.py

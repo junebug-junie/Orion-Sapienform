@@ -386,6 +386,11 @@ async def chat_message(
     notify_payload = _chat_message_to_notification(payload)
 
     bus: OrionBusAsync | None = request.app.state.bus
+    if bus is None:
+        # Without a bus this endpoint can neither persist nor deliver. Saying
+        # 200 here made a caller (Hub outreach) skip its own fallback, so the
+        # message reached neither the tray nor the store.
+        raise HTTPException(status_code=503, detail="Notify bus unavailable; message not persisted")
 
     if settings.NOTIFY_IN_APP_ENABLED and bus:
         # Presence check is skipped for statelessness speed/simplicity
@@ -565,10 +570,14 @@ async def list_chat_messages(
     limit: int = Query(default=50, ge=1, le=200),
     status: Optional[str] = None,
     session_id: Optional[str] = None,
+    tag: Optional[str] = None,
     x_orion_notify_token: Optional[str] = Header(default=None, alias="X-Orion-Notify-Token"),
 ) -> List[ChatMessageState]:
     _check_token(x_orion_notify_token)
-    return await _proxy_get("/chat/messages", params={"limit": limit, "status": status, "session_id": session_id})
+    return await _proxy_get(
+        "/chat/messages",
+        params={"limit": limit, "status": status, "session_id": session_id, "tag": tag},
+    )
 
 
 @app.get("/notifications")
@@ -630,10 +639,9 @@ async def _init_bus() -> OrionBusAsync | None:
 # receiving.
 #
 # Safe to change, with one correction to an earlier claim in this file: it is
-# NOT true that "nothing filters on the stored column" -- services/
-# orion-notify-digest/app/digest.py:124,135 filter `status == "throttled"` and
-# `== "deduped"`. Neither value was ever written and neither is written here, so
-# those counters are unaffected, but the justification was wrong as stated. What
+# NOT true that "nothing filters on the stored column" -- the retired
+# orion-notify-digest filtered `status == "throttled"` / `"deduped"`, and the daily
+# organ roundup (orion/dig/organs.py) counts requests by status. What
 # IS true is the part that matters for paging: the attention view derives its own
 # status from `attention_acked_at` (api_notify.py::_attention_to_schema), so
 # `/attention?status=pending` -- which health_monitor._has_open_alert depends on
@@ -694,7 +702,9 @@ async def _publish_in_app_event(
         attention_id = _parse_attention_id(payload.context)
         message_id = _parse_message_id(payload.context)
         agent_trace = _parse_agent_trace(payload.context)
-        notification_type = _resolve_notification_type(payload.event_kind)
+        notification_type = _context_notification_type(payload.context) or _resolve_notification_type(
+            payload.event_kind
+        )
         silent = bool(payload.context.get("silent")) if payload.context else None
         event = HubNotificationEvent(
             notification_id=UUID(notification_id),
@@ -790,6 +800,8 @@ def _chat_message_to_notification(payload: ChatMessageNotification) -> Notificat
         context["agent_trace"] = payload.agent_trace.model_dump(mode="json")
     if payload.workflow:
         context["workflow"] = dict(payload.workflow)
+    if payload.notification_type:
+        context["notification_type"] = str(payload.notification_type)
     return NotificationRequest(
         source_service=payload.source_service,
         event_kind=CHAT_MESSAGE_EVENT_KIND,
@@ -881,6 +893,17 @@ def _parse_agent_trace(context: Dict[str, Any] | None) -> Optional[AgentTraceSum
     except Exception:
         logger.warning("Failed to parse agent_trace from notification context", exc_info=True)
         return None
+
+def _context_notification_type(context: Dict[str, Any] | None) -> Optional[str]:
+    """Caller-chosen Hub notification type (ChatMessageNotification.notification_type).
+
+    Lets Hub keep Orion's outreach recognisable in its tray while the message
+    still goes through the durable chat-message path here.
+    """
+    raw = context.get("notification_type") if isinstance(context, dict) else None
+    value = str(raw).strip() if raw is not None else ""
+    return value or None
+
 
 def _resolve_notification_type(event_kind: str) -> Optional[str]:
     if event_kind == CHAT_MESSAGE_EVENT_KIND: return "chat_message"

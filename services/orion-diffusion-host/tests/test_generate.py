@@ -399,6 +399,8 @@ def test_generate_rejects_out_of_bounds_dimensions(monkeypatch):
 def test_ready_and_health_report_loaded_when_pipe_present(monkeypatch):
     fake = FakePipe()
     monkeypatch.setattr(main_mod, "_pipe", fake)
+    # /ready also needs room on the card (tests/test_health.py); here the card is free.
+    monkeypatch.setattr(main_mod, "_gpu_available_gb", lambda: 30.5)
     client = TestClient(main_mod.app)
 
     ready = client.get("/ready")

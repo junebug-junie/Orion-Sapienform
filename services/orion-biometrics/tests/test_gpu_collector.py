@@ -115,8 +115,8 @@ def test_real_script_carries_gpu_temperature_into_measurements(monkeypatch, tmp_
     fake.write_text(
         "#!/bin/bash\n"
         "case \"$*\" in\n"
-        "  *query-gpu*) echo '0, GPU-aaa, Tesla V100-PCIE-32GB, 0, 27888, 32768, 36.91, 39'\n"
-        "               echo '3, GPU-ddd, Tesla V100-PCIE-32GB, 100, 15384, 32768, 210.68, 71' ;;\n"
+        "  *query-gpu*) echo '0, GPU-aaa, Tesla V100-PCIE-32GB, 0, 27888, 32768, 36.91, 39, 250.00'\n"
+        "               echo '3, GPU-ddd, Tesla V100-PCIE-32GB, 100, 15384, 32768, 210.68, 71, 150.00' ;;\n"
         "  *) : ;;\n"
         "esac\n", encoding="utf-8")
     fake.chmod(0o755)
@@ -128,5 +128,7 @@ def test_real_script_carries_gpu_temperature_into_measurements(monkeypatch, tmp_
 
     result = collect_gpu_stats()
     assert [g["temperature_gpu_c"].strip() for g in result["gpus"]] == ["39", "71"]
+    # The enforced limit rides along by header name (orion-gpu-power-limits readback, 2026-10-29).
+    assert [g["power_limit_watts"].strip() for g in result["gpus"]] == ["250.00", "150.00"]
     m = extract_measurements({"gpu": result})
     assert m["gpu0_temp_c"] == 39.0 and m["gpu3_temp_c"] == 71.0 and m["gpu_temp_c_max"] == 71.0

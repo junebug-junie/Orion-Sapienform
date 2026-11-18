@@ -1,5 +1,11 @@
 # 🛰 Orion Vision Edge (Athena)
 
+> **Not used since 2026-11-04.** The office camera (cam0) is captured by
+> `orion-vision-retina-office` (services/orion-vision-retina) from its 2560x1920
+> main stream. This service is kept but not run: it is in
+> `mesh-utilities/common/exclude_services.txt`, and a running edge would publish a
+> second cam0 frame stream. The frame router no longer asks it for `/still`.
+
 `orion-vision-edge` is Athena’s always-on **perception node**.
 It captures frames, runs lightweight detectors (YOLO, motion, etc.), and publishes typed artifacts via the **Titanium Bus**.
 
@@ -65,37 +71,29 @@ Activity is published on every frame where YOLO/motion yields trigger labels, in
 | `YOLO_IOU_THRES` | `0.45` | NMS IOU Threshold |
 | `YOLO_IMG_SIZE` | `640` | Inference size |
 | `YOLO_PERSON_RETRY_THRESHOLD` | `0.15` | Second pass threshold if no person found |
+| `YOLO_DEVICE` | `0` | Container-relative torch device; the container sees one card, so always `0` |
+| `VISION_EDGE_GPU_DEVICE_ID` | (required) | Host GPU pinned by compose `device_ids`, as a PCI bus id. athena: the Tesla P4 `00000000:86:00.0` (since 2026-10-15; shared with whisper-tts) |
 
 ### Debug & Storage
 
 | Env var | Default | Notes |
 |---|---|---|
 | `FRAME_STORAGE_DIR` | `/mnt/frames` | Shared volume path for frames |
+| `FRAME_RETENTION_SECONDS` | `60` | Prune age for this service's own `frame_*`/`still_*` files only; retina files in the shared dir are left to their own writer (`app/frame_prune.py`) |
 | `EDGE_DEBUG_SAVE_FRAMES` | `False` | Save annotated debug frames |
 | `EDGE_DEBUG_DIR` | `/mnt/debug` | Path for debug frames |
 
 ### Camera identity (credentials never published)
 
-`SOURCE` (from `REOLINK_URL` / `WALKWAY_RTSP_URL`) may carry the camera password and
+`SOURCE` (from `REOLINK_URL`) may carry the camera password and
 is used only to open the stream. Every published `camera_id` is the camera name
 (`STREAM_ID`), `/health` reports a redacted `source`, and capture logs redact it too.
 Until 2026-09-24 `camera_id` was the raw URL, which leaked the password into
 `substrate_perception_embedding_baseline.stream_id`.
 
-### Walkway instance
-
-A second capture instance for the outdoor walkway camera (`docker-compose.yml`
-service `vision-edge-walkway`, profile `walkway`, `STREAM_ID=walkway`, host port
-`WALKWAY_EDGE_PORT`, default 7101). Set `WALKWAY_RTSP_URL` in the local service
-`.env` (empty in `.env_example`; an empty value is refused at boot), then:
-
-```bash
-scripts/safe_docker_build.sh orion-vision-edge --profile walkway up -d --build vision-edge-walkway
-```
-
-Each instance only detects frames whose `stream_id` matches its own
-(`app/stream_filter.py`). Router policy: `config/vision_frame_router.yaml`
-`streams.walkway`; zones: `config/vision_zones.yaml`.
+The walkway camera is NOT captured here: it runs on its own
+`orion-vision-retina` instance (`orion-vision-retina-walkway`), the canonical
+capture service. The edge stays the room camera's cheap first pass.
 
 ---
 

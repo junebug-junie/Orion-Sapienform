@@ -69,7 +69,7 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience]
+              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience, settled]
           - relationships:
               to: ref('dim_reverie_outcomes')
               field: outcome_key
@@ -97,7 +97,7 @@ models:
           - not_null
           - unique
           - accepted_values:
-              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience, generation_failed, run_deadline_exceeded, thermal_refused]
+              values: [pressure_discharged, max_steps, no_coalition, refractory, low_salience, settled, generation_failed, run_deadline_exceeded, thermal_refused, resource_deferred]
       - name: outcome_label
         description: Human-readable terminal-reason label.
         tests:

@@ -5,6 +5,8 @@ Both were found live on 2026-08-14, three weeks after the 2026-07-24 renames.
 """
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.graph.lattice import load_lattice
 from app.tensor.channels import (
     RETIRED_LATTICE_NODES,
@@ -46,11 +48,11 @@ def test_retired_names_are_pruned_from_a_lattice_node() -> None:
 
 
 def test_retired_names_are_pruned_from_an_OFF_LATTICE_node() -> None:
-    """node:substrate.chat (an off-lattice pseudo-node) is not in the lattice, so _ensure_node_vector never
+    """node:substrate.execution (an off-lattice pseudo-node) is not in the lattice, so _ensure_node_vector never
     runs for it. This is the gap the old pruning had."""
-    state = _state({"node:substrate.chat": {"bus_health": 1.0, "transport_pressure": 0.5}})
+    state = _state({"node:substrate.execution": {"bus_health": 1.0, "transport_pressure": 0.5}})
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    assert out.node_vectors["node:substrate.chat"] == {}
+    assert out.node_vectors["node:substrate.execution"] == {}
 
 
 def test_single_observer_channels_are_pruned_from_an_off_lattice_node(monkeypatch) -> None:
@@ -62,11 +64,11 @@ def test_single_observer_channels_are_pruned_from_an_off_lattice_node(monkeypatc
     """
     monkeypatch.setitem(SINGLE_OBSERVER_NODE_CHANNELS, "synthetic_health", "node:athena")
     state = _state({
-        "node:substrate.chat": {"synthetic_health": 0.5},
+        "node:substrate.execution": {"synthetic_health": 0.5},
         "node:athena": {"synthetic_health": 1.0},
     })
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    assert out.node_vectors["node:substrate.chat"] == {}
+    assert out.node_vectors["node:substrate.execution"] == {}
     # The declared owner keeps it.
     assert out.node_vectors["node:athena"]["synthetic_health"] == 1.0
 
@@ -91,12 +93,12 @@ def test_pruning_also_drops_the_orphaned_write_timestamp() -> None:
     """A stamp for a channel that no longer exists is a dangling fact -- and
     the staleness rule reads these."""
     state = _state(
-        {"node:substrate.chat": {"delivery_confidence": 0.5, "execution_load": 0.2672}},
-        {"node:substrate.chat": {"delivery_confidence": NOW - timedelta(seconds=774),
+        {"node:substrate.execution": {"delivery_confidence": 0.5, "execution_load": 0.2672}},
+        {"node:substrate.execution": {"delivery_confidence": NOW - timedelta(seconds=774),
                               "execution_load": NOW - timedelta(seconds=900)}},
     )
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    assert out.node_vector_updated_at["node:substrate.chat"] == {}
+    assert out.node_vector_updated_at["node:substrate.execution"] == {}
 
 
 def test_undeclared_but_not_retired_keys_still_survive() -> None:
@@ -116,7 +118,13 @@ def test_retired_set_and_live_channels_do_not_overlap() -> None:
     from app.tensor.channels import RETIRED_CAPABILITY_CHANNELS
 
     live = set(NODE_CHANNELS) | set(CAPABILITY_CHANNELS)
-    assert not (set(RETIRED_NODE_CHANNELS) & live)
+    assert not (set(RETIRED_NODE_CHANNELS) & set(NODE_CHANNELS))
+    # A node-level retirement may share its name with a still-live capability
+    # channel only when listed here on purpose: node pruning never touches
+    # capability vectors. None today: node-level contract_pressure retired
+    # 2026-10-07 and the capability-level one was renamed catalog_drift_pressure
+    # the same day (D3), so contract_pressure is retired at both levels.
+    assert not (set(RETIRED_NODE_CHANNELS) & set(CAPABILITY_CHANNELS))
     assert not (set(RETIRED_CAPABILITY_CHANNELS) & set(CAPABILITY_CHANNELS))
     # Every replacement named in the map must itself be a real channel; None
     # means "retired with no successor" and is allowed.
@@ -175,3 +183,91 @@ def test_retired_channels_are_pruned_from_tension_baselines() -> None:
     for store in (out.tension_baseline_mu, out.tension_baseline_var, out.tension_baseline_n):
         assert retired_key not in store
         assert live_key in store
+
+
+def test_contract_pressure_pruned_at_both_levels_after_d3_rename() -> None:
+    """2026-10-07: node-level contract_pressure is retired (0.0 on every live
+    tick) and capability:transport.contract_pressure was renamed
+    catalog_drift_pressure (D3). A persisted pre-rename row must not keep the
+    old capability key next to the new one -- a generic consumer iterating the
+    vector would read the same catalog drift twice under two names."""
+    state = FieldStateV1(
+        generated_at=NOW,
+        tick_id="t",
+        node_vectors={"node:athena": {"cpu_pressure": 0.4, "contract_pressure": 0.0}},
+        node_vector_updated_at={"node:athena": {"contract_pressure": NOW.isoformat()}},
+        capability_vectors={"capability:transport": {"pressure": 0.02, "contract_pressure": 0.0109}},
+        capability_provenance={"capability:transport": {"contract_pressure": "node:athena"}},
+    )
+    out = reconcile_field_state_with_lattice(state, lattice=_lattice())
+    assert "contract_pressure" not in out.node_vectors["node:athena"]
+    assert "contract_pressure" not in out.node_vector_updated_at.get("node:athena", {})
+    for cap_id, vec in out.capability_vectors.items():
+        assert "contract_pressure" not in vec, cap_id
+        assert "contract_pressure" not in out.capability_provenance.get(cap_id, {}), cap_id
+    assert "catalog_drift_pressure" in out.capability_vectors["capability:transport"]
+
+
+def test_d3_rename_first_tick_after_deploy_writes_the_same_value_under_the_new_name() -> None:
+    """The transition tick: a stored pre-rename row (contract_pressure = 0.85 x
+    athena drift) goes through a real digestion tick. The new key carries the
+    same value the old key carried, and the old key is gone."""
+    from app.tensor.update_rules import run_digestion_tick
+
+    lattice = _lattice()
+    drift = 0.0128
+    state = FieldStateV1(
+        generated_at=NOW,
+        tick_id="t-pre",
+        node_vectors={"node:athena": {"catalog_drift_pressure": drift}},
+        node_vector_updated_at={"node:athena": {"catalog_drift_pressure": NOW.isoformat()}},
+        capability_vectors={"capability:transport": {"contract_pressure": 0.85 * drift}},
+        capability_provenance={"capability:transport": {"contract_pressure": "node:athena"}},
+    )
+    class _NoHistoryStore:
+        def load_recent_field_json(self, *, window_seconds: float) -> list:
+            return []
+
+    out = run_digestion_tick(
+        reconcile_field_state_with_lattice(state, lattice=lattice),
+        perturbations=[],
+        decay_rate=1.0,
+        diffusion_rate=1.0,
+        staleness_threshold_sec=90.0,
+        store=_NoHistoryStore(),
+        significance_window_seconds=60.0,
+        significance_check_interval_sec=1e9,
+    )
+    cap = out.capability_vectors["capability:transport"]
+    assert "contract_pressure" not in cap
+    assert cap["catalog_drift_pressure"] == pytest.approx(0.85 * drift)
+    assert out.capability_provenance["capability:transport"]["catalog_drift_pressure"] == "node:athena"
+
+
+def test_retired_lattice_node_deltas_produce_no_perturbations() -> None:
+    """A delta naming a retired host must not resurrect it between reconcile passes.
+
+    Live 2026-10-16: atlas's stale pressure kept emitting active_node_pressure
+    deltas, and the substrate's retired-host prune receipt carries an atlas
+    `suppress` delta whose `before` still lists `availability`."""
+    from app.ingest.state_deltas import delta_to_perturbations
+    from app.tensor.channels import RETIRED_LATTICE_NODES
+    from orion.schemas.state_delta import StateDeltaV1
+
+    assert "node:atlas" in RETIRED_LATTICE_NODES
+    for operation, after, before in (
+        ("reinforce", {"node_id": "atlas", "pressure_score": 0.9, "active_pressures": ["strain", "availability"]}, None),
+        ("suppress", None, {"node_id": "atlas", "pressure_score": 0.9, "active_pressures": ["availability"]}),
+    ):
+        delta = StateDeltaV1(
+            delta_id=f"d_{operation}",
+            target_projection="proj_active_pressure",
+            target_kind="active_node_pressure",
+            target_id="atlas",
+            operation=operation,
+            before=before,
+            after=after,
+            caused_by_event_ids=[],
+            reducer_id="test",
+        )
+        assert delta_to_perturbations(delta) == []

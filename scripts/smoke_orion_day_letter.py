@@ -3,7 +3,7 @@
 
 Opens one asyncpg connection with ``default_transaction_read_only=on`` (the server refuses
 any write), runs orion/orion_day/gather.py for the letter date, builds the budgeted model
-view, renders both verb prompts, and prints section counts, source status, condensation
+view, renders the letter turn's user message (orion/orion_day/letter_turn.py), and prints section counts, source status, condensation
 counts, prompt sizes and brief/request sizes. Writes nothing, calls no model.
 
 Usage:
@@ -28,14 +28,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from jinja2 import Environment  # noqa: E402
 
 from orion.orion_day.brief import OrionDayEmptyError, brief_from_material, build_orion_day_request  # noqa: E402
 from orion.orion_day.budget import material_refs  # noqa: E402
 from orion.orion_day.gather import gather_orion_day  # noqa: E402
 from orion.orion_day.window import yesterday_letter_date  # noqa: E402
 
-PROMPTS = ROOT / "orion" / "cognition" / "prompts"
 
 
 def _dsn(arg: str | None) -> str:
@@ -52,9 +50,6 @@ def _dsn(arg: str | None) -> str:
                     return line.split("=", 1)[1].strip()
     raise SystemExit("no DSN: pass --dsn or set ORION_DAY_SMOKE_DSN / DATABASE_URL")
 
-
-def render(template: str, metadata: dict) -> str:
-    return Environment(autoescape=False).from_string((PROMPTS / template).read_text()).render(metadata=metadata)
 
 
 async def main() -> int:
@@ -111,14 +106,11 @@ async def main() -> int:
     unknown = [r for r in view.included_refs if r not in material_refs(material)]
     print(f"  included_refs={len(view.included_refs)} unresolved_refs={len(unknown)}")
 
-    note_prompt = render("orion_day_note_v1.j2", {"orion_day_input": {
-        "letter_date": str(letter_date), "timezone": brief.timezone, "digest_md": view.digest_md}})
-    cf_prompt = render("orion_day_carry_forward_v1.j2", {"orion_day_input": {
-        "letter_date": str(letter_date), "timezone": brief.timezone, "digest_md": view.digest_md,
-        "note_md": "(note placeholder, ~12k chars in production)"}})
-    print("\n== prompts")
-    print(f"  note_prompt_chars={len(note_prompt)} (~{int(len(note_prompt) / view.chars_per_token)} tokens)")
-    print(f"  carry_forward_prompt_chars={len(cf_prompt)} (+ the note)")
+    from orion.orion_day.letter_turn import build_letter_prompt
+
+    letter_prompt = build_letter_prompt(brief)
+    print("\n== letter turn user message (the unified turn adds its own harness prefix)")
+    print(f"  letter_prompt_chars={len(letter_prompt)} (~{int(len(letter_prompt) / view.chars_per_token)} tokens)")
 
     request = build_orion_day_request(brief)
     print("\n== durable request")

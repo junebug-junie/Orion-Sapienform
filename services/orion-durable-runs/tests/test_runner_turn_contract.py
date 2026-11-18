@@ -74,24 +74,17 @@ def test_admitted_turn_on_the_wire_carries_the_hold_and_no_route_label():
     assert "fcc_model_label" not in envelope.payload
 
 
-def test_reflect_llm_call_sends_the_hold_ref_in_options_and_keeps_its_route():
-    """Stage 4.4 hazard: the reflect call carried neither lease. Under a hold it must carry the ref
-    (cortex-exec forwards options.gpu_lease, the gateway attaches), with llm_route unchanged."""
-    from orion.core.bus.bus_schemas import BaseEnvelope as Env
-    from orion.schemas.cortex.contracts import CortexClientRequest
+def test_turn_rpc_requires_a_listener_and_a_lost_one_is_a_failed_turn():
+    """2026-10-31: a turn published before the restarted Hub subscribed was never heard, and the
+    run held its GPU lane on a 2.5 h RPC timeout. The turn RPC asks the bus to fail fast instead;
+    the failure is an ordinary failed turn (the node raises, the hold is released and retried)."""
+    from orion.core.bus.async_service import RpcNoListener
 
-    codec = OrionCodec()
-    reply = Env(kind="cortex.orch.result", source=ServiceRef(name="cortex-orch"),
-                payload={"ok": True, "final_text": '{"findings": [{"kind": "k"}]}'})
-    bus = SimpleNamespace(codec=codec, rpc_request=AsyncMock(return_value={"data": codec.encode(reply)}))
-    settings = Settings(_env_file=None, DURABLE_RUNS_GRAPH_HOST="", POSTGRES_URI="postgresql://unused",
-                        ORION_BUS_ENABLED=False)
-    runner = DurableRunner(settings, bus=bus, checkpointer=None)
-    for ref in (HOLD, None):
-        asyncio.run(runner._call_reflect_llm({"snapshot_id": "s"}, "agent", **({"gpu_lease": ref} if ref else {})))
-        sent = CortexClientRequest.model_validate(bus.rpc_request.await_args.args[1].payload)
-        assert sent.options["llm_route"] == "agent"
-        if ref:
-            assert sent.options["gpu_lease"] == HOLD.model_dump(mode="json")
-        else:
-            assert "gpu_lease" not in sent.options
+    request = turn_request()
+    runner, bus = runner_for(request)
+    asyncio.run(runner._run_turn(request))
+    assert bus.rpc_request.await_args.kwargs["require_listener"] is True
+
+    bus.rpc_request = AsyncMock(side_effect=RpcNoListener("no listener on orion:curiosity:turn:request"))
+    result = asyncio.run(runner._run_turn(request))
+    assert not result.ok and result.error == "rpc:RpcNoListener"

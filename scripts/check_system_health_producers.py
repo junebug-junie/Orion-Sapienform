@@ -44,7 +44,12 @@ INTERVAL_KWARG = "heartbeat_interval_sec"
 # renamed dirs, or a checkout path containing a SKIP_PARTS component -- every file
 # is skipped and a naive gate prints OK. This repo has been burned by an inert
 # gate before, so the floor is asserted rather than assumed.
-MIN_EXPECTED_SITES = 8
+# Lowered 8 -> 6 on 2026-10-20 (feat/heartbeat-five-services): gpu-cluster-power,
+# orion-rag, whisper-tts and vision-frame-router dropped their hand-rolled
+# SystemHealthV1(...) loops for the shared HeartbeatOnly chassis, whose single
+# construction site (orion/core/bus/bus_service_chassis.py) this gate still checks.
+# 6 sites remain today; the floor tracks them so a scan that misses code still fails.
+MIN_EXPECTED_SITES = 6
 SEARCH_ROOTS = ("services", "orion")
 SKIP_PARTS = {".git", "__pycache__", "node_modules", ".venv", ".worktrees", "tests", "evals"}
 # Matched against the path RELATIVE to the repo root, never the absolute path: a

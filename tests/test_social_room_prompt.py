@@ -245,8 +245,10 @@ def test_social_room_prompt_renders_thread_routing_and_handoff_grounding() -> No
     assert "alternate candidates:" in rendered
     assert "target=Oríon" in rendered
     assert "target peer: Another Peer" in rendered
-    assert "OPEN COMMITMENTS:" in rendered
-    assert "Give a brief room summary before switching topics." in rendered
+    # The word-list promise detector was retired 2026-11-12: a stray legacy
+    # `social_open_commitments` key must not reach the prompt.
+    assert "OPEN COMMITMENTS:" not in rendered
+    assert "Give a brief room summary before switching topics." not in rendered
 
 
 def test_social_room_prompt_renders_repair_grounding_compactly() -> None:

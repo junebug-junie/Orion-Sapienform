@@ -998,4 +998,9 @@ async def graphiti_sync(
         project_card=False, project_chroma=False, project_graphiti=True,
     )
     await update_crystallization(pool, updated)
-    return {"crystallization_id": crystallization_id, "graphiti": proj.graphiti, "canonical_mutated": False}
+    return {
+        "crystallization_id": crystallization_id,
+        "graphiti": proj.graphiti,
+        "errors": proj.errors,
+        "canonical_mutated": False,
+    }

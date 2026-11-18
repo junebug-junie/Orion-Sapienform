@@ -14,6 +14,21 @@ def _token_set(text: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]{3,}", _normalize_text(text))}
 
 
+# Intake stamps every crystallization with a one-off `memory_window:<id>` scope, so two
+# windows never share a scope string. It identifies the source window, not a topic, and
+# must not count when asking whether two memories live in the same scope.
+WINDOW_SCOPE_PREFIX = "memory_window:"
+
+
+def _topic_scope(scope: list[str]) -> set[str]:
+    return {s for s in scope if not str(s).startswith(WINDOW_SCOPE_PREFIX)}
+
+
+def scopes_overlap(a: list[str], b: list[str]) -> bool:
+    ta, tb = _topic_scope(a), _topic_scope(b)
+    return not ta or not tb or bool(ta & tb)
+
+
 def _jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
@@ -43,8 +58,7 @@ def detect_duplicates(
             continue
         other_tokens = _token_set(f"{other.subject} {other.summary}")
         score = _jaccard(cand_tokens, other_tokens)
-        scope_overlap = bool(set(candidate.scope) & set(other.scope)) or (not candidate.scope or not other.scope)
-        if score >= threshold and scope_overlap and candidate.kind == other.kind:
+        if score >= threshold and scopes_overlap(candidate.scope, other.scope) and candidate.kind == other.kind:
             result.duplicates.append(other.crystallization_id)
             result.suggested_links.append(
                 CrystallizationLinkV1(
@@ -75,7 +89,7 @@ def detect_contradictions(
             continue
         if other.status not in ("active", "proposed"):
             continue
-        if not (set(candidate.scope) & set(other.scope) or not candidate.scope or not other.scope):
+        if not scopes_overlap(candidate.scope, other.scope):
             continue
         other_norm = _normalize_text(other.summary)
         overlap = _jaccard(_token_set(cand_norm), _token_set(other_norm))

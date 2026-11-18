@@ -422,7 +422,9 @@ def test_room_summary_request_routes_to_summary_and_preserves_target_metadata() 
     assert hub_payload["external_room"]["target_participant_name"] == "Another Peer"
 
 
-def test_due_summary_commitment_can_prefer_room_summary_route() -> None:
+def test_legacy_active_commitments_no_longer_steer_routing() -> None:
+    # The word-list promise detector was retired 2026-11-12. A not-yet-rebuilt
+    # social-memory may still send `active_commitments`; the bridge must ignore it.
     bus = _FakeBus()
     hub = _FakeHubClient(reply_text="Quick summary: we’re still pacing the handoff.")
     callsyne = _FakeCallSyneClient()
@@ -486,9 +488,10 @@ def test_due_summary_commitment_can_prefer_room_summary_route() -> None:
 
     assert result["status"] == "ok"
     hub_payload, _ = hub.calls[0]
-    assert hub_payload["social_thread_routing"]["routing_decision"] == "summarize_room"
-    assert "commitment_influenced_routing" in hub_payload["social_thread_routing"]["reasons"]
-    assert hub_payload["social_open_commitments"][0]["commitment_type"] == "summarize_room"
+    assert hub_payload["social_thread_routing"]["routing_decision"] != "summarize_room"
+    assert "commitment_influenced_routing" not in hub_payload["social_thread_routing"]["reasons"]
+    assert "commitment_summary" not in hub_payload["social_thread_routing"]["metadata"]
+    assert "social_open_commitments" not in hub_payload
 
 
 def test_open_question_targeted_to_another_peer_is_not_answered_by_orion() -> None:
@@ -947,7 +950,7 @@ def test_dry_run_skips_outbound_post() -> None:
     assert callsyne.posts == []
 
 
-def test_peer_correction_triggers_compact_repair_and_suppresses_open_commitments() -> None:
+def test_peer_correction_triggers_compact_repair() -> None:
     bus = _FakeBus()
     hub = _FakeHubClient(reply_text="Got it — that was for Cadence. I’ll step back.")
     callsyne = _FakeCallSyneClient()
@@ -1001,37 +1004,17 @@ def test_peer_correction_triggers_compact_repair_and_suppresses_open_commitments
     assert hub_payload["social_repair_signal"]["repair_type"] in {"peer_correction", "audience_mismatch"}
     assert hub_payload["social_repair_decision"]["decision"] == "yield"
     assert hub_payload["social_thread_routing"]["routing_decision"] == "wait"
-    assert hub_payload["social_open_commitments"] is None
+    assert "social_open_commitments" not in hub_payload
     repair_decisions = _published_payloads(bus, "orion:social:repair:decision")
     assert repair_decisions[0]["decision"] == "yield"
 
 
-def test_contradiction_with_recent_commitment_triggers_repair() -> None:
+def test_contradiction_cue_asks_for_clarification() -> None:
     bus = _FakeBus()
     hub = _FakeHubClient(reply_text="You’re right — quick correction: I said I’d summarize first.")
     callsyne = _FakeCallSyneClient()
     social_memory = _FakeSocialMemoryClient(
-        {
-            "room": {
-                "active_commitments": [
-                    {
-                        "commitment_id": "commitment-2",
-                        "platform": "callsyne",
-                        "room_id": "room-alpha",
-                        "thread_key": "callsyne:room-alpha:thread:thread-1",
-                        "commitment_type": "summarize_room",
-                        "audience_scope": "summary",
-                        "summary": "Give a brief room summary before switching topics.",
-                        "state": "open",
-                        "created_at": "2026-03-22T10:00:00+00:00",
-                        "expires_at": "2099-03-22T10:20:00+00:00",
-                        "due_state": "due_soon",
-                        "resolution_reason": "",
-                        "metadata": {},
-                    }
-                ]
-            }
-        }
+        {"room": {}}
     )
     svc = SocialRoomBridgeService(
         settings=_settings(SOCIAL_BRIDGE_AUTONOMY_MODE="responsive"),
@@ -1054,8 +1037,9 @@ def test_contradiction_with_recent_commitment_triggers_repair() -> None:
     assert result["status"] == "ok"
     hub_payload, _ = hub.calls[0]
     assert hub_payload["social_repair_signal"]["repair_type"] == "commitment_contradiction"
-    assert hub_payload["social_repair_decision"]["decision"] == "repair"
-    assert hub_payload["social_open_commitments"][0]["commitment_type"] == "summarize_room"
+    assert hub_payload["social_repair_signal"]["trigger"] == "peer_message"
+    assert hub_payload["social_repair_decision"]["decision"] == "clarify"
+    assert "social_open_commitments" not in hub_payload
 
 
 def test_scope_correction_stays_narrow_and_private_boundary_is_preserved() -> None:

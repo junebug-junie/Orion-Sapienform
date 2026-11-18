@@ -54,6 +54,7 @@ class SelfSenseRunState(TypedDict, total=False):
     brief: dict[str, Any]  # CuriosityRunBriefV1.model_dump(), self_sense_eval shape
     attempt: int
     hold_takebacks: int   # times the pool took the hold back mid-node (never an attempt)
+    listener_waits: int   # RPCs published to nobody this run waited out (listener_wait; never an attempt)
     # ask_questions
     answers: dict[str, dict[str, Any]]  # question_key -> {"text": str, "debug": dict}
     # publish
@@ -72,6 +73,9 @@ class SelfSenseRunState(TypedDict, total=False):
     requested_at: str
     retry_node: str | None
     tail_attempts: dict[str, int]
+    # The last question turn issued (admitted graph): {"question_key", "turn_correlation_id",
+    # "timeout_sec"} -- checkpointed with the outcome, so a hung or failed turn is traceable.
+    last_turn: dict[str, Any] | None
 
 
 def _gpu_lease(state: dict[str, Any]) -> GpuLeaseRefV1 | None:
@@ -79,6 +83,24 @@ def _gpu_lease(state: dict[str, Any]) -> GpuLeaseRefV1 | None:
     if not lease:
         return None
     return GpuLeaseRefV1.model_validate({key: lease[key] for key in ("lease_id", "generation", "role", "holder")})
+
+
+def no_answers_error(answers: dict[str, Any] | None) -> str | None:
+    """None when at least one answer has text; otherwise a bounded reason naming the turns'
+    own errors (deduplicated, in question order).
+
+    Every question empty means nothing was measured: the run is a failure, not a "completed"
+    run of "none"-source rows. Live 2026-10-02..06: four self-sense runs on the gpu2 worker
+    "completed" with 16/16 blank answers while every LLM call behind them 500'd."""
+    answers = answers or {}
+    if not answers or any(str((a or {}).get("text") or "").strip() for a in answers.values()):
+        return None
+    errors: list[str] = []
+    for answer in answers.values():
+        err = str((answer or {}).get("error") or "empty_generation")
+        if err not in errors:
+            errors.append(err)
+    return f"self_sense_no_answers: {'; '.join(errors)}"[:500]
 
 
 class SelfSenseAskFailed(RuntimeError):
@@ -99,68 +121,113 @@ def _brief_questions(brief: dict[str, Any]) -> list[tuple[str, str]]:
     return [(str(k), str(q)) for k, q in raw]
 
 
+# Hub is told a turn limit this much shorter than the node's own timer, so a slow turn comes back
+# as Hub's timeout result (an empty answer, recorded) before the durable timer cancels it.
+TURN_REPLY_GRACE_SEC = 30.0
+
+
+def next_unanswered(state: dict[str, Any]) -> tuple[str, str] | None:
+    """The first brief question with no recorded answer, or None when every one has one."""
+    answers = state.get("answers") or {}
+    for question_key, question in _brief_questions(state["brief"]):
+        if question_key not in answers:
+            return question_key, question
+    return None
+
+
+def question_share_sec(brief: dict[str, Any]) -> float:
+    """One question's slice of the brief's budget (``timeout_sec`` split across the questions).
+
+    Live 2026-10-23 (run 20261023T180730Z-0842e5): the node timer AND every question's turn limit
+    were the whole 8840 s budget, so one hung question held agent-gpu2 for 8840 s and the run
+    failed with every answer lost."""
+    total = float(brief.get("timeout_sec") or 600.0)
+    return max(1.0, total / max(1, len(_brief_questions(brief))))
+
+
+def question_turn_id(state: dict[str, Any], question_key: str) -> str:
+    """The turn id the admitted graph issues for ``question_key`` from THIS checkpointed state: a
+    uuid5 over the run, the question, and every counter that changes when the turn is replayed
+    (failed attempt, restart fence, a fresh hold, a pool take-back). Derivable from the checkpoint
+    alone, so a restarted worker can cancel the turn its predecessor left running in Hub
+    (``AdmissionRuntime._cancel_harness``); still a real UUID for ``is_uuid``, still fresh per
+    replay for Hub's ``(run_id, correlation_id)`` result cache."""
+    parts = (state.get("run_id"), question_key, int(state.get("attempt") or 0), int(state.get("turn_fence") or 0),
+             int(state.get("hold_seq") or 0), int(state.get("hold_takebacks") or 0))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "orion:self_sense_eval:" + ":".join(map(str, parts))))
+
+
+async def ask_one(deps: Deps, state: dict[str, Any], question_key: str, question: str, *,
+                  correlation_id: str, timeout_sec: float, attempt: int) -> dict[str, Any]:
+    """Ask one question under the run's hold; the recorded answer (never raises on a failed or
+    empty turn -- that is an answer with ``error``). Raises ``SelfSenseAskFailed`` on transport."""
+    brief = state["brief"]
+    request = CuriosityTurnRequestV1(
+        run_id=state["run_id"],
+        correlation_id=correlation_id,
+        prompt=question,
+        fcc_model_label=brief.get("fcc_model_label"),
+        timeout_sec=timeout_sec,
+        source_tag=SELF_SENSE_EVAL_TAG,
+        attempt=attempt,
+        # The run's pool hold (stage 4.5): each question's calls attach to it. Its role is
+        # never a route, so no assigned_lane.
+        gpu_lease=_gpu_lease(state),
+        session_id=SELF_SENSE_SESSION_ID,
+    )
+    # Stamp the in-flight id on the same state dict execute() holds, so a timeout/cancel can
+    # address this uuid4 (not the lease-derived curiosity id). Cleared when the turn returns.
+    inflight = state.setdefault("_inflight_turn_correlation_ids", [])
+    if isinstance(inflight, list):
+        inflight.append(correlation_id)
+    try:
+        result, meta = await timed_turn(deps.run_turn, request)
+    except Exception as exc:  # noqa: BLE001 -- transport failure, resumable
+        raise SelfSenseAskFailed(f"{type(exc).__name__}: {exc}") from exc
+    finally:
+        if isinstance(inflight, list) and correlation_id in inflight:
+            inflight.remove(correlation_id)
+    if not result.ok:
+        logger.info(
+            "self_sense_eval_question_failed run=%s question=%s error=%s",
+            state["run_id"], question_key, result.error,
+        )
+    # Runner-measured timing per question (same keys curiosity's `harness_turn_meta` carries),
+    # so each answer's harness row is joinable and timed without Hub's help.
+    answer = {
+        "text": result.text or "", "debug": dict(result.debug or {}), "correlation_id": correlation_id,
+        **{k: meta[k] for k in HARNESS_META_DETAIL_KEYS if meta.get(k) is not None},
+    }
+    if not result.ok or not (result.text or "").strip():
+        # Why this answer is empty, kept on state (and in finish_detail's turns) instead of
+        # only in a log line.
+        answer["error"] = str(result.error or "empty_generation")[:300]
+    return answer
+
+
 def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[dict[str, Any]]]]:
     async def ask_questions(state: SelfSenseRunState) -> dict[str, Any]:
         brief = state["brief"]
-        questions = _brief_questions(brief)
         attempt = int(state.get("attempt") or 0) + 1
         answers: dict[str, dict[str, Any]] = dict(state.get("answers") or {})
-        for question_key, question in questions:
+        for question_key, question in _brief_questions(brief):
             if question_key in answers:
                 continue  # already answered on a prior attempt (resume)
-            # A fresh uuid4 per question, not a composite of the run's own
-            # correlation_id -- two reasons, both review findings
-            # (2026-09-21): (1) Hub's _turn_result_for cache/inflight key is
-            # keyed on (run_id, correlation_id); reusing a derived, merely
-            # question-scoped string still works for uniqueness, but a real
-            # uuid4 is also what (2) orion.evals.self_sense_runner.is_uuid()
-            # needs to recognise this as a genuine turn correlation id rather
-            # than fall back to a synthetic derived one -- the same
-            # "correlation_id IS the envelope's correlation_id" contract
-            # every other self-sense-eval producer (Hub's in-process loop,
-            # the host script) already gives it.
-            correlation_id = str(uuid.uuid4())
-            request = CuriosityTurnRequestV1(
-                run_id=state["run_id"],
-                correlation_id=correlation_id,
-                prompt=question,
-                fcc_model_label=brief.get("fcc_model_label"),
-                timeout_sec=float(brief.get("timeout_sec") or 600.0),
-                source_tag=SELF_SENSE_EVAL_TAG,
-                attempt=attempt,
-                # The run's pool hold (stage 4.5): each question's calls attach to it. Its role is
-                # never a route, so no assigned_lane.
-                gpu_lease=_gpu_lease(state),
-                session_id=SELF_SENSE_SESSION_ID,
-            )
-            # Stamp the in-flight id on the same state dict execute() holds,
-            # so a timeout/cancel can address this uuid4 (not the lease-derived
-            # curiosity id). Cleared when the turn returns.
-            inflight = state.setdefault("_inflight_turn_correlation_ids", [])
-            if isinstance(inflight, list):
-                inflight.append(correlation_id)
-            try:
-                result, meta = await timed_turn(deps.run_turn, request)
-            except Exception as exc:  # noqa: BLE001 -- transport failure, resumable
-                raise SelfSenseAskFailed(f"{type(exc).__name__}: {exc}") from exc
-            finally:
-                if isinstance(inflight, list) and correlation_id in inflight:
-                    inflight.remove(correlation_id)
-            if not result.ok:
-                logger.info(
-                    "self_sense_eval_question_failed run=%s question=%s error=%s",
-                    state["run_id"], question_key, result.error,
-                )
-            # Runner-measured timing per question (same keys curiosity's
-            # `harness_turn_meta` carries), so each answer's harness row is
-            # joinable and timed without Hub's help.
-            answers[question_key] = {
-                "text": result.text or "", "debug": dict(result.debug or {}), "correlation_id": correlation_id,
-                **{k: meta[k] for k in HARNESS_META_DETAIL_KEYS if meta.get(k) is not None},
-            }
+            # A fresh uuid4 per question, not a composite of the run's own correlation_id --
+            # Hub's _turn_result_for cache keys on (run_id, correlation_id), and
+            # orion.evals.self_sense_runner.is_uuid() must recognise it as a genuine turn
+            # correlation id (review findings, 2026-09-21).
+            answers[question_key] = await ask_one(
+                deps, state, question_key, question, correlation_id=str(uuid.uuid4()),
+                timeout_sec=float(brief.get("timeout_sec") or 600.0), attempt=attempt)
         return {"answers": answers, "attempt": attempt}
 
     async def publish(state: SelfSenseRunState) -> dict[str, Any]:
+        no_answers = no_answers_error(state.get("answers"))
+        if no_answers is not None:
+            # Never publish non-measurements as a completed eval; finish reports the run failed.
+            return {"published": 0, "failed": 0, "empty": len(state.get("answers") or {}),
+                    "last_error": no_answers}
         brief = state["brief"]
         questions = _brief_questions(brief)
         answers = state.get("answers") or {}
@@ -192,12 +259,15 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
                     correlation_id=correlation_id,
                     self_definition_version=self_definition_version,
                     lived_answers=lived_answers,
+                    motor_steps=(answer.get("debug") or {}).get("harness_step_count"),
                 )
             )
         published, failed = await deps.publish_rows(rows)
         return {"published": published, "failed": failed, "empty": empty}
 
     async def finish(state: SelfSenseRunState) -> dict[str, Any]:
+        if no_answers_error(state.get("answers")) is not None:
+            return {"status": "failed"}
         return {"status": "completed"}
 
     return {"ask_questions": ask_questions, "publish": publish, "finish": finish}
@@ -212,9 +282,19 @@ def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
         "published": int(state.get("published") or 0),
         "failed": int(state.get("failed") or 0),
         "empty": int(state.get("empty") or 0),
-        "attempts": int(state.get("attempt") or 0),
+        "attempts": _attempts(state),
+        **({"error": str(state["last_error"])[:500]} if state.get("last_error") else {}),
         "turns": _turns_detail(state),
     }
+
+
+def _attempts(state: dict[str, Any]) -> int:
+    """Most attempts any question took. The admitted graph counts attempts per question (``attempt``
+    resets when an answer lands; each answer records its own ``attempts``); the plain graph's
+    ``attempt`` is its pass count."""
+    answers = state.get("answers") if isinstance(state.get("answers"), dict) else {}
+    per_question = [int(a.get("attempts") or 0) for a in answers.values() if isinstance(a, dict)]
+    return max([*per_question, int(state.get("attempt") or 0)])
 
 
 def _turns_detail(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -238,6 +318,8 @@ def _turns_detail(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for k in HARNESS_META_DETAIL_KEYS:
             if answer.get(k) is not None:
                 entry[k] = answer[k]
+        if answer.get("error"):
+            entry["error"] = str(answer["error"])[:300]
         if entry:
             out[str(key)] = entry
     return out

@@ -57,6 +57,7 @@ import logging
 from typing import Any
 from uuid import uuid4
 
+from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 
@@ -127,6 +128,76 @@ def _balanced_json_spans(text: str, open_ch: str, close_ch: str) -> list[str]:
 
 # rpc-health hop key suffix for this probe's RPC ("<channel>#current_turn_probe").
 PROBE_HEALTH_LABEL = "current_turn_probe"
+
+
+# The verbs cortex-orch already classifies as interactive chat
+# (services/orion-cortex-orch/app/execution_lanes.py::resolve_execution_lane,
+# reason="verb_chat"): the legacy Hub -> cortex-gateway -> orch chat path.
+_CHAT_ENTRY_VERBS = frozenset({"chat_general"}) | FAST_SINGLE_PASS_CHAT_VERBS
+# Reason stamped into ctx["current_turn_llm_read"]["skipped"] when the probe is
+# not run because the turn carries no human message. Distinct from every
+# failure path (ok=False with no "skipped" key) and from a real read (ok=True).
+SKIPPED_NOT_HUMAN_TURN = "not_human_turn"
+
+
+def human_chat_turn_reason(ctx: dict[str, Any]) -> tuple[bool, str]:
+    """Whether this turn carries a real human message, and the evidence used.
+
+    Reuses signals the callers already set rather than a new flag:
+
+    - ``stance_inputs["utterance_origin"]`` -- set by the Hub's unified turn
+      (orion/hub/turn_orchestrator.py). Only the two human entry points pass
+      "juniper" (websocket chat and HTTP /api/chat); curiosity passes "orion";
+      endogenous outreach and autonomous reading pass nothing. Collapse-mirror
+      replies also pass nothing: Juniper wrote the entry, but it is a form
+      submission framed into a prompt, not a chat message, so it is skipped on
+      purpose. Rides to cortex-exec inside the stance_react request context
+      (services/orion-thought/app/bus_listener.py::build_stance_react_context).
+    - ``ctx["verb"]`` (the plan verb, set by router.py) for the legacy chat path,
+      which predates utterance_origin: a chat entry verb is a human turn unless
+      Orion's own dispatch machinery sent it (``policy_dispatch_only``, set by
+      orion-actions' scheduler, cortex-orch workflows, durable runs, the
+      journaler and the capability bridge).
+
+    Everything else (journal.compose, log_orion_metacognition, render_scene,
+    harness_finalize_reflect, reverie, ...) is treated as not-a-chat-turn.
+    Known consequence: legacy-lane turns whose plan verb is rewritten away from
+    a chat verb (Hub auto-route depth 1/2, single-verb override) and the
+    harness finalize leg of a Juniper turn also skip; their frames carry
+    debug.turn_read_skipped so they are not mistaken for probe failures.
+    """
+    stance_inputs = ctx.get("stance_inputs") if isinstance(ctx.get("stance_inputs"), dict) else {}
+    origin = str(stance_inputs.get("utterance_origin") or "").strip().lower()
+    if origin == "juniper":
+        return True, "utterance_origin_juniper"
+    if origin == "orion":
+        return False, "utterance_origin_orion"
+    verb = str(ctx.get("verb") or "").strip().lower()
+    if verb == "stance_react":
+        return False, "unified_turn_without_human_origin"
+    if verb not in _CHAT_ENTRY_VERBS:
+        return False, f"non_chat_verb:{verb or 'none'}"
+    opts = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    if bool(opts.get("policy_dispatch_only") or ctx.get("policy_dispatch_only")):
+        return False, "policy_dispatch"
+    return True, "chat_entry_verb"
+
+
+def mark_current_turn_llm_skipped(ctx: dict[str, Any], reason: str) -> None:
+    """Leave the probe's ctx keys in the explicit skipped state.
+
+    ok stays False, so orion.substrate.attention.policy.direct_answer_cause
+    fails closed exactly as it does for any missing read (never "found nothing",
+    never "wants a direct answer"); the "skipped" key is what tells it apart
+    from a timeout or malformed reply.
+    """
+    ctx["current_turn_llm_signals"] = []
+    ctx["current_turn_llm_read"] = {
+        "ok": False,
+        "wants_direct_answer": None,
+        "skipped": SKIPPED_NOT_HUMAN_TURN,
+        "skip_reason": reason,
+    }
 
 
 def _source() -> ServiceRef:
@@ -361,6 +432,11 @@ async def _llm_call(bus: OrionBusAsync, *, prompt: str) -> str:
             "purpose": "current_turn_signal_probe",
             "skip_spark_candidate_publish": True,
             "chat_template_kwargs": {"enable_thinking": False},
+            # Tell the gateway how long this caller actually waits. Without it
+            # the gateway assumed its default budget (700 s live) for a probe the
+            # caller abandons after a few seconds, and admission queued it as if
+            # someone were still listening (2026-10-06, turn-latency L3).
+            "gateway_read_timeout_sec": float(settings.current_turn_signal_probe_timeout_sec),
         },
     )
     env = BaseEnvelope(

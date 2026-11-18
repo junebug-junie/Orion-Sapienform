@@ -1,0 +1,172 @@
+{
+    "pulled_at": "2026-10-13",
+    "window_start": "2026-10-05",
+    "failed_no_read_evidence": [
+        {
+            "url": "https://www.npr.org/2026/10/04/nx-s1-5985905/politics-chat-midterm-polls-senate-races-trump-in-texas",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/c5ev3ypmzly8o?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/cmwyve191dlko?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/03/nx-s1-5987701/california-voters-to-decide-on-controversial-one-time-tax-on-billionaires",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/06/g-s1-146626/up-first-newsletter-election-day-skydance-christa-pike-russia-plague-scare",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/cwj3413e5m1lo?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/cq203mymlvkeo?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/06/nx-s1-5986321/kennedy-center-trump-naming-washington",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.nasa.gov/news-release/nasa-to-stream-spacex-crew-12-return-splashdown-live/",
+            "last_error": "no_read_evidence:thin_fetch"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/06/g-s1-146626/up-first-newsletter-election-day-skydance-christa-pike-russia-plague-scare",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/c6ly038jg0d4o?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/cqgm0vrl3xp7o?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/06/nx-s1-5986321/kennedy-center-trump-naming-washington",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/07/nx-s1-5960380/musk-film-alex-gibney",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/c81dldewl5gwo?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/cqlydk7796wdo?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/08/nx-s1-5993809/2026-house-map-democrats-flip-republicans-tossup-triage",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/09/nx-s1-5986150/lawler-new-york-congress-trump",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/c59vzk9yypn3o?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/cmwy47lzd1vyo?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.nasa.gov/news-release/nasas-spacex-crew-12-splashes-down-sets-briefing-to-discuss-mission/",
+            "last_error": "no_read_evidence:thin_fetch"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/09/nx-s1-5996586/trumps-affordable-suit",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/cj5ynwnye009o?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/cm1dwgr666wno?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/09/nx-s1-5986150/lawler-new-york-congress-trump",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/11/g-s1-145063/justice-department-civil-rights-transformed",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/c9vgregzk6gro?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/c84g179n2393o?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/09/nx-s1-5996912/trump-says-u-s-to-get-diesel-from-russia-relaxing-pressure-on-moscow-to-ease-prices-before-midterms",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/11/g-s1-145063/justice-department-civil-rights-transformed",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/c680zyx8gkkjo?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/c962y4ld1d7do?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/12/nx-s1-5996646/republican-strategist-on-how-trumps-personal-grievances-could-affect-the-gop",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/12/nx-s1-5998948/new-white-house-press-secretary-a-devoted-fan-of-trump-and-maga",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/cmn06w5x9g25o?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.bbc.co.uk/news/articles/c9y7lgg2vdggo?at_medium=RSS&at_campaign=rss",
+            "last_error": "no_read_evidence"
+        },
+        {
+            "url": "https://www.npr.org/2026/10/12/nx-s1-5998040/democratic-senator-talks-trumps-russian-diesel-deal",
+            "last_error": "no_read_evidence"
+        }
+    ],
+    "done_reads": [
+        "https://ar5iv.labs.arxiv.org/html/2609.10712",
+        "https://arxiv.org/pdf/2509.07526.pdf",
+        "https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c",
+        "https://governor.utah.gov/uncategorized/news-release-gov-spencer-j-cox-and-lt-gov-deidre-m-henderson-public-schedule-oct-5-oct-9-2026/",
+        "https://huggingface.co/datasets/nvidia/Nemotron-Math-Proofs-v3-RL",
+        "https://nvidianews.nvidia.com/news/rubin-platform-ai-supercomputer",
+        "https://www.apollo.com/institutional/insights-news/insights/2026/06/growing-compute-shortage",
+        "https://www.coreweave.com/gpu-cpu-compute",
+        "https://www.digitaltrends.com/computing/gpu/",
+        "https://www.erininthemorning.com/p/new-round-of-anti-trans-attack-ads",
+        "https://www.facebook.com/schwabnetwork/videos/additional-gpus-for-amazon-amzn-a-reported-hugging-face-acquisition-ai-agents-an/1386928116105211/",
+        "https://www.mdpi.com/1424-8220/24/15/4830",
+        "https://www.nasa.gov/maxpower",
+        "https://www.tomshardware.com/tech-industry/artificial-intelligence/nvidia-no-longer-reports-sales-of-graphics-solutions-as-a-separate-segment-posts-eye-watering-usd81-6-billion-q1-profit-thanks-to-ai-boom",
+        "https://www.who.int/news/item/30-07-2025-paying-tribute-to-david-nabarro",
+        "https://www.youtube.com/watch?v=IllDS-TeQoA"
+    ]
+}

@@ -221,7 +221,9 @@ class RpcDeliveryWindow:
         )
         overflow = latency.get(OVERFLOW_HOP_KEY)
         if isinstance(overflow, Mapping) and (
-            _as_count(overflow.get("success_count")) or _as_count(overflow.get("timeout_count"))
+            _as_count(overflow.get("success_count"))
+            or _as_count(overflow.get("timeout_count"))
+            or _as_count(overflow.get("degraded_count"))
         ):
             # Past MAX_DISTINCT_HOPS a producer folds new hop keys into
             # "_overflow"; bus traffic in there cannot be attributed to a hop,
@@ -231,7 +233,10 @@ class RpcDeliveryWindow:
         for hop, stats in latency.items():
             if not isinstance(stats, Mapping) or not counted_hop(hop, self.config.exclude_labels):
                 continue
-            s = _as_count(stats.get("success_count"))
+            # A degraded reply (RpcChannelLatencyV1.degraded_count, 2026-10-13) was
+            # delivered -- the bus round trip worked, the replier refused or fell
+            # back -- so for *delivery* it counts with the successes. Absent = 0.
+            s = _as_count(stats.get("success_count")) + _as_count(stats.get("degraded_count"))
             t = _as_count(stats.get("timeout_count"))
             if s or t:
                 hops[hop] = (s, t)

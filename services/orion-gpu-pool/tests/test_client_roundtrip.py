@@ -82,7 +82,7 @@ def test_granted_lease_carries_the_discovered_model_and_releases_ok():
         rt, _ = await pool(bus)
         turn = str(uuid.uuid4())
         async with gpu_lease(bus, work_class="metacog", holder="t", turn_correlation_id=turn) as lease:
-            assert lease.grant.role == "metacog" and lease.grant.model_file == "Qwen_Qwen3-8B-Q5_K_M.gguf"
+            assert lease.grant.role == "fast" and lease.grant.model_file == "Qwen3.5-9B-UD-Q5_K_XL.gguf"
             lease_id = lease.lease_id
         assert (await rt.store.lease(lease_id))["status"] == "released"
         assert (await rt.store.lease(lease_id))["turn_correlation_id"] == turn

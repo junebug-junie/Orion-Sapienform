@@ -11,7 +11,7 @@ As of 2026-08-16 it has a live consumer:
 `FieldTensionCompetition` once per digestion tick, persists the gate's
 baselines onto `FieldStateV1`, and writes the resulting `deviation_pressure`
 scalar (see `competition.deviation_pressure`) into
-`orion.proposals.scoring.PRESSURE_DIMENSIONS` -- from there a real proposal
+`orion.field.pressure_dimensions.PRESSURE_DIMENSIONS` -- from there a real proposal
 can score on it and dispatch a real, bounded, mutating action. See
 `docs/superpowers/specs/2026-08-14-field-deviation-tension-sensing-design.md`
 (the sensing layer) and

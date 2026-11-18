@@ -20,14 +20,14 @@ def _field_with_transport_drift() -> FieldStateV1:
         topology_version="v1",
         node_vectors={
             "node:athena": {
-                "contract_pressure": 1.0,
+                "catalog_drift_pressure": 1.0,
                 "stream_backlog_pressure": 0.0,
                 "stream_backlog_health": 1.0,
             }
         },
         capability_vectors={
             "capability:transport": {
-                "contract_pressure": 1.0,
+                "catalog_drift_pressure": 1.0,
                 "pressure": 0.0,
                 "confidence": 1.0,
             }

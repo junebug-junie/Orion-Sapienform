@@ -310,3 +310,54 @@ def test_gpu_temperature_without_a_usable_index_still_counts_in_the_max():
                                                  {"gpu_index": "1", "temperature_gpu_c": "60"}]}})
     assert out["gpu_temp_c_max"] == 80.0
     assert out["gpu1_temp_c"] == 60.0
+
+
+# Real BMC sensor names, captured live 2026-10-09 (subset). Board heat must pick the
+# chipset/VR parts only -- never the CPU, DIMM, GPU, PSU, BMC, or ambient readings, which
+# are often hotter (athena's BMC chip sits at 73 C, a GPU at 77 C).
+ATHENA_ILO_THERMAL = {
+    "01-Inlet Ambient": 29.0,
+    "02-CPU 1": 40.0,
+    "04-P1 DIMM 1-6": 38.0,
+    "16-VR P1": 43.0,
+    "17-VR P2": 44.0,
+    "18-VR P1 Mem 1": 36.0,
+    "22-Chipset": 45.0,
+    "23-BMC": 73.0,
+    "42.1-GPU 7-GPU ASIC": 77.0,
+    "57-P/S 2": 59.0,
+    "97-CPU 2 PkgTmp": 61.0,
+}
+CIRCE_BMC_THERMAL = {
+    "CPU0_TEMP": 53.0,
+    "CPU1_DTS": 60.0,
+    "DIMMG0_TEMP": 46.0,
+    "GPU2_PROC": 72.0,
+    "INLET_AIR_TEMP": 32.0,
+    "PCH_TEMP": 41.0,
+    "PSU2_HOTSPOT": 51.0,
+    "VR_DIMMG0_TEMP": 50.0,
+    "VR_VCCIN_P0_TEMP": 49.0,
+}
+
+
+@pytest.mark.parametrize(
+    "thermal, expected",
+    [(ATHENA_ILO_THERMAL, 45.0), (CIRCE_BMC_THERMAL, 50.0)],
+    ids=["hpe-ilo", "ami-bmc"],
+)
+def test_board_temp_is_hottest_chipset_or_vr_sensor(thermal, expected):
+    m = extract_measurements({"ilo": {"ilo_thermal_c": thermal}})
+    assert m["board_temp_c_max"] == expected
+
+
+def test_board_temp_absent_without_board_sensors():
+    # No BMC at all, and a BMC that reports only non-board sensors: absent, never 0.0.
+    assert "board_temp_c_max" not in extract_measurements(CIRCE_SAMPLE)
+    only_cpu = {"ilo": {"ilo_thermal_c": {"02-CPU 1": 40.0, "23-BMC": 73.0}}}
+    assert "board_temp_c_max" not in extract_measurements(only_cpu)
+
+
+def test_board_temp_ignores_zero_and_non_numeric_readings():
+    sample = {"ilo": {"ilo_thermal_c": {"22-Chipset": 0.0, "16-VR P1": "n/a", "17-VR P2": 44.0}}}
+    assert extract_measurements(sample)["board_temp_c_max"] == 44.0

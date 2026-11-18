@@ -284,6 +284,21 @@ def _bulk_insert_derived(session: Any, events: list[GrammarEventV1]) -> None:
         )
 
 
+# Act ledger (rung 2). orion-sql-writer sets this from SQL_WRITER_ACT_LEDGER_ENABLED
+# at startup; when False, act events are still appended to grammar_events but
+# not materialised into grammar_acts or graded into L10.
+_ACT_LEDGER_ENABLED = True
+
+
+def configure_act_ledger(enabled: bool) -> None:
+    global _ACT_LEDGER_ENABLED
+    _ACT_LEDGER_ENABLED = bool(enabled)
+
+
+def act_ledger_enabled() -> bool:
+    return _ACT_LEDGER_ENABLED
+
+
 def apply_grammar_event(session: Any, event: GrammarEventV1) -> bool:
     """Append one grammar event. Returns False if event_id already exists (dedupe)."""
     return apply_grammar_trace_batch(session, [event]) == 1
@@ -307,6 +322,13 @@ def apply_grammar_trace_batch(session: Any, events: list[GrammarEventV1]) -> int
     inserted_ids = _bulk_insert_events(session, events)
     if inserted_ids:
         inserted = {event_id for event_id in inserted_ids}
-        _bulk_insert_derived(session, [event for event in events if event.event_id in inserted])
+        fresh = [event for event in events if event.event_id in inserted]
+        _bulk_insert_derived(session, fresh)
+        # Only freshly inserted act events: a replayed batch must not close or
+        # grade an act twice (close_act also refuses a second close).
+        if _ACT_LEDGER_ENABLED and any(e.event_kind in ("act_opened", "act_closed") for e in fresh):
+            from orion.grammar.act_ledger import apply_act_events
+
+            apply_act_events(session, fresh)
 
     return len(inserted_ids)

@@ -23,7 +23,7 @@ _MAX_TAIL = 120
 _DEFAULT_RANGE_MAX = 240
 
 
-#: Static, small (6 entries, BrainRegionV1.dimension's whole Literal set) --
+#: Static, small (5 entries, BrainRegionV1.dimension's whole Literal set) --
 #: no reason to hit orion.metrics.lineage.build_graph() (which resolves ~630
 #: nodes across the whole repo) on every page load for this. lru_cache(1)
 #: builds it once, lazily, on first request -- not at import time, since a
@@ -220,7 +220,7 @@ def _window_sync() -> dict[str, Any]:
 
 @router.get("/region-provenance")
 async def region_provenance() -> dict[str, Any]:
-    """Which service backs each of the 6 BrainRegionV1.dimension values --
+    """Which service backs each of the 5 BrainRegionV1.dimension values --
     for the region detail panel's "what produced this" affordance. Static
     (see _region_provenance()'s own comment), so no worker-thread/DB dance
     needed here unlike every other route in this file."""

@@ -104,13 +104,18 @@ def placement_from_route_default(route: str | None, model: str | None) -> Servin
     return ServingPlacement(source="route_default", route=route, model=_model_name(model))
 
 
-async def fetch_pool_state(bus: Any, *, source: str, timeout_sec: float = 2.0) -> dict[str, Any] | None:
-    """One ``orion:gpu_pool:state:request`` RPC without leases. Fails open to None."""
+async def fetch_pool_state(bus: Any, *, source: str, timeout_sec: float = 2.0,
+                           include_config: bool = False) -> dict[str, Any] | None:
+    """One ``orion:gpu_pool:state:request`` RPC without leases. Fails open to None.
+
+    ``include_config``: also return the pool's parsed ``config/gpu_pool.yaml`` (about 5 KB), which
+    ``orion.gpu_pool.route_view`` needs to map a route to the role it lands on."""
     reply_channel = f"{GPU_POOL_STATE_REPLY_PREFIX}{uuid.uuid4().hex}"
     env = BaseEnvelope(
         kind=GPU_POOL_STATE_REQUEST_KIND, source=ServiceRef(name=source), correlation_id=uuid.uuid4(),
         reply_to=reply_channel,
-        payload=GpuPoolStateRequestV1(include_leases=False).model_dump(mode="json", exclude_defaults=True),
+        payload=GpuPoolStateRequestV1(include_leases=False, include_config=include_config).model_dump(
+            mode="json", exclude_defaults=True),
     )
     try:
         raw = await bus.rpc_request(GPU_POOL_STATE_REQUEST_CHANNEL, env, reply_channel=reply_channel,

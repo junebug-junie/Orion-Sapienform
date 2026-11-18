@@ -3,7 +3,8 @@
 from typing import Any, TypedDict
 
 from app.admitted_graph import (
-    HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued, resource_nodes, taken_back,
+    HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, listener_wait, replay_if_requeued, resource_nodes,
+    taken_back,
 )
 from app.graph import turn_correlation_id
 from orion.schemas.reading_turn import (
@@ -11,6 +12,22 @@ from orion.schemas.reading_turn import (
     ReadingTurnRequestV1,
     ReadingTurnResultV1,
 )
+
+
+# A reading turn whose Hub listener vanished WHILE the turn ran ("while awaiting its reply") is
+# re-sent after the same listener wait, at most this many times per run; past it the run fails as
+# before. Safe for this workflow only: the Hub turn is read-only (payload ``no_write``, no chat
+# history; reading_only motor: WebFetch/WebSearch, no Bash, no MCP) and nothing lands until Hub
+# consumes the run's result later (reading_durable_turn). A duplicate costs compute plus its own
+# trace rows (stance decision, grammar, cockpit) under a fresh turn correlation id -- the re-send
+# runs under a new hold, so turn_correlation_id differs and a stray old reply cannot be taken.
+# Known cost: the bus calls a listener gone after two zero counts ~5 s apart, and a live Hub only
+# resubscribing (backoff up to 60 s) is still running the first turn. Its re-send (>= 60 s later,
+# 10 s for urgent) can then run beside that original, which is outside GPU admission once the
+# hold is handed back. The failure path before this did the same, later, via the seed queue.
+# The cap bounds a request that itself kills Hub. Live 2026-11-03: 3 readings failed this way
+# during Hub redeploys at 18:12 and 18:26 UTC.
+IN_FLIGHT_RESENDS = 2
 
 
 class ReadingState(TypedDict, total=False):
@@ -22,6 +39,8 @@ class ReadingState(TypedDict, total=False):
     requested_at: str
     attempt: int
     hold_takebacks: int   # times the pool took the hold back mid-node (never an attempt)
+    listener_waits: int   # RPCs published to nobody this run waited out (listener_wait; never an attempt)
+    listener_in_flight_resends: int   # turns whose Hub vanished mid-reply, re-sent (IN_FLIGHT_RESENDS cap)
     lease: dict | None
     hold: dict | None
     hold_seq: int
@@ -88,6 +107,14 @@ def build_reading_graph(run_turn, admission, checkpointer: Any):
             return await taken_back(admission, dict(state), exc.release_reason,
                                     f"{type(exc).__name__}: {exc}", {"status": "waiting_resource"})
         except Exception as exc:
+            # Hub restarting in a deploy: the request reached nobody (bounded by
+            # DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES, live 2026-10-31) or Hub vanished mid-turn
+            # (IN_FLIGHT_RESENDS, live 2026-11-03), so wait it out and replay. No attempt.
+            parked = await listener_wait(admission, dict(state), exc, waiting={"status": "waiting_resource"},
+                                         in_flight_resends=IN_FLIGHT_RESENDS,
+                                         extra={"harness_turn_meta": {"turn_correlation_id": turn_correlation_id(state)}})
+            if parked is not None:
+                return parked
             # Reading's existing queue owns bounded actual-work retries. Waiting
             # and recalls never spend those attempts; do not nest another retry loop.
             released = await admission.release(dict(state), "attempt_failed")

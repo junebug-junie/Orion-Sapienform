@@ -22,7 +22,7 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateProvenanceV1,
     SubstrateSignalBundleV1,
 )
-from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1, is_unscored_event
 from orion.substrate.adapters._common import make_temporal
 
 logger = logging.getLogger("orion.substrate.relational.adapters.curiosity_ctx")
@@ -41,6 +41,27 @@ def _make_prov() -> SubstrateProvenanceV1:
         producer="curiosity_adapter",
         tier_rank=_TIER_RANK,
     )
+
+
+def _known(item: dict[str, Any]) -> dict[str, Any]:
+    """Drop keys this build's model does not know before validating.
+
+    The model is extra="forbid". Stored candidate rows come from
+    substrate-runtime, which can be newer than this process (e.g. the
+    2026-10-10 neighborhood fields). Without this, one additive producer field
+    made every curiosity signal vanish from chat with only a debug log.
+    """
+    unknown = set(item) - set(FrontierInvocationSignalV1.model_fields)
+    if not unknown:
+        return item
+    key = tuple(sorted(unknown))
+    if key not in _LOGGED_UNKNOWN:  # once per field set, not once per chat turn
+        _LOGGED_UNKNOWN.add(key)
+        logger.info("curiosity_adapter_dropped_unknown_fields fields=%s", list(key))
+    return {k: v for k, v in item.items() if k not in unknown}
+
+
+_LOGGED_UNKNOWN: set[tuple[str, ...]] = set()
 
 
 def _coerce(raw: Any) -> list[FrontierInvocationSignalV1] | None:
@@ -83,10 +104,11 @@ def _coerce(raw: Any) -> list[FrontierInvocationSignalV1] | None:
                 if isinstance(item, FrontierInvocationSignalV1):
                     signals.append(item)
                 elif isinstance(item, str) and item.strip():
-                    sig = FrontierInvocationSignalV1.model_validate_json(item)
-                    signals.append(sig)
+                    parsed_item = json.loads(item)
+                    if isinstance(parsed_item, dict):
+                        signals.append(FrontierInvocationSignalV1.model_validate(_known(parsed_item)))
                 elif isinstance(item, dict):
-                    sig = FrontierInvocationSignalV1.model_validate(item)
+                    sig = FrontierInvocationSignalV1.model_validate(_known(item))
                     signals.append(sig)
             except Exception as exc:
                 logger.debug("curiosity_adapter_coerce_item_failed error=%s", exc)
@@ -109,6 +131,9 @@ def map_curiosity_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
     raw_signals = ctx.get("curiosity_signals")
 
     signals = _coerce(raw_signals)
+    # An unscored event seed (an accepted reading link) is not an unresolved gap
+    # and has no strength or confidence to rank or average: leave it out.
+    signals = [s for s in signals or [] if not is_unscored_event(s.notes)]
     if not signals:
         return None
 

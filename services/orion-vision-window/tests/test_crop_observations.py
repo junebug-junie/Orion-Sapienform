@@ -59,6 +59,26 @@ def test_tracked_boxes_become_crops_patio_without_vector() -> None:
     VisionCropObservationV1.model_validate(obs.model_dump(mode="json"))
 
 
+def test_face_fields_ride_along_to_the_reducer() -> None:
+    face = [0.0] * 511 + [1.0]
+    objs = [VisionObject(label="person", score=0.9, box_xyxy=[1, 2, 3, 4], zone="patio", embedding_ref="crop:y",
+                         embedding=VEC, face_embedding=face, face_score=0.99, face_thumb_ref="thumb:" + "cd" * 32)]
+    obs = build_crop_observation(_artifact(objs))
+    crop = obs.crops[0]
+    assert crop.face_embedding == face and crop.face_score == 0.99 and crop.face_thumb_ref == "thumb:" + "cd" * 32
+    VisionCropObservationV1.model_validate(obs.model_dump(mode="json"))
+
+
+def test_published_payload_omits_empty_face_keys_for_old_writers() -> None:
+    from app.main import _crop_payload
+
+    obs = build_crop_observation(_artifact(_objs()))
+    data = _crop_payload(obs)
+    assert all("face_embedding" not in c and "face_thumb_ref" not in c for c in data["crops"])
+    # A pre-face VisionCropV1 (extra=forbid) would accept this; the current one round-trips it.
+    VisionCropObservationV1.model_validate(data)
+
+
 def test_untracked_artifact_publishes_nothing() -> None:
     art = _artifact([VisionObject(label="person", score=0.9, box_xyxy=[1, 2, 3, 4])], inputs={"stream_id": "cam0"})
     assert build_crop_observation(art) is None
@@ -105,3 +125,42 @@ def test_projection_never_uses_rtsp_camera_id_as_camera_or_stream_key() -> None:
     assert "rtsp://" not in stream_key_from_artifact(art)
     art2 = _artifact(_objs(), inputs={"camera_id": "cam0", "stream_id": "cam0"})
     assert camera_id_from_artifact(art2) == "cam0"
+
+
+def test_osnet_shadow_fields_ride_along_and_are_omitted_while_empty() -> None:
+    from app.main import _crop_payload
+
+    osnet = [0.0] * 511 + [1.0]
+    objs = [VisionObject(label="person", score=0.9, box_xyxy=[1, 2, 3, 4], zone="walkway", embedding_ref="crop:z",
+                         embedding=VEC, embedding_model_id="google/siglip-so400m-patch14-384",
+                         osnet_embedding=osnet, osnet_model_id="osnet_ain_x1_0:ms_d_c:34c24e98b6b7"),
+            VisionObject(label="dog", score=0.9, box_xyxy=[5, 6, 7, 8], zone="walkway", embedding_ref="crop:d",
+                         embedding=VEC)]
+    obs = build_crop_observation(_artifact(objs))
+    person, dog = obs.crops
+    assert person.osnet_embedding == osnet and person.osnet_model_id.startswith("osnet_ain_x1_0")
+    assert person.embedding_model_id == "google/siglip-so400m-patch14-384"
+    data = _crop_payload(obs)
+    assert "osnet_embedding" in data["crops"][0]
+    # A crop without them sends no key at all, so a writer that predates them still accepts it.
+    assert not {"osnet_embedding", "osnet_model_id", "embedding_model_id"} & set(data["crops"][1])
+    VisionCropObservationV1.model_validate(data)
+    # Proof against the pre-change contract: VisionCropV1 as it was before the OSNet fields.
+    from typing import List, Optional
+
+    from pydantic import BaseModel, ConfigDict
+
+    class OldCrop(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        label: str
+        score: float
+        box_xyxy: List[float]
+        zone: Optional[str] = None
+        embedding_ref: Optional[str] = None
+        embedding: Optional[List[float]] = None
+        thumb_ref: Optional[str] = None
+        face_embedding: Optional[List[float]] = None
+        face_score: Optional[float] = None
+        face_thumb_ref: Optional[str] = None
+
+    OldCrop.model_validate(data["crops"][1])

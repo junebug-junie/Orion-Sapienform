@@ -13,6 +13,10 @@ from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 from .service import MeshGuardianService
 from .settings import settings
 
+# Without this the stdlib loggers below fall back to WARNING-only output, so
+# every logger.info in this service (heartbeat start, stability cycle) was
+# silently dropped.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("orion.mesh.guardian.main")
 
 guardian = MeshGuardianService(settings)

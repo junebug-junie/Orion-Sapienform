@@ -41,7 +41,7 @@ def test_unknown_role_in_class_rejected():
 
 
 def test_duplicate_port_rejected():
-    bad(lambda d: d["roles"]["fast"].update(port=8012))
+    bad(lambda d: d["roles"]["fast"].update(port=8011))
 
 
 def test_owner_must_list_the_role():

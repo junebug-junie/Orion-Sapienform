@@ -215,7 +215,7 @@ def test_rejects_duplicate_index():
 
 
 def test_rejects_actuator_on_another_host():
-    _bad(lambda d: d["actuators"].update(atlas={"host": "atlas"}), "is not the pool host")
+    _bad(lambda d: d["actuators"].update(atlas={"host": "atlas"}), "is not a known host")
 
 
 def test_rejects_a_bridge_verb():
@@ -356,7 +356,7 @@ def _gpu4(data: dict, *, list_fast2_in_metacog: bool) -> dict:
                                 "launch": {**launch, "service": "atlas-vision4", "compose_profile": "vision4",
                                            "timeout_sec": 600, "cuda_env": "ATLAS_VISION4_CUDA_VISIBLE_DEVICES"},
                                 "swap": {"evicts": ["fast2"], "guards": ["thermal"]}}
-    data["classes"]["fast"] = {"roles": ["fast", "metacog", "fast2", "agent", "agent-gpu2", "chat"],
+    data["classes"]["fast"] = {"roles": ["fast", "fast2", "agent", "agent-gpu2", "chat"],
                                "on_unavailable": "wait"}
     data["classes"]["vision"] = {"roles": ["vision4"], "on_unavailable": "backlog"}
     if list_fast2_in_metacog:

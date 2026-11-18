@@ -91,9 +91,8 @@ def test_run_checks_healthy_when_not_degraded():
     ):
         checks = hm.run_checks(_store(), _settings())
 
-    assert len(checks) == 1
+    assert [c.key for c in checks] == ["substrate_grammar_degraded", "substrate_listeners_down"]
     check = checks[0]
-    assert check.key == "substrate_grammar_degraded"
     assert check.healthy is True
     assert check.message == ""
 

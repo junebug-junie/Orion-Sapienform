@@ -37,18 +37,38 @@ class _NestedCtx:
         return False
 
 
+class _EmptyQuery:
+    def filter(self, *_args):
+        return self
+
+    def first(self):
+        return None
+
+
 class _CapturingSession:
     """Fake session standing in for both `_ensure_chat_history_from_message`'s
     own `session_factory()` session and `upsert_chat_history_row`'s target."""
 
     def __init__(self) -> None:
         self.executed: list[Any] = []
+        self.locks: list[tuple[str, Any]] = []
         self.committed = False
         self.rolled_back = False
         self.closed = False
 
-    def execute(self, stmt):
+    def execute(self, stmt, params=None):
+        # `_lock_chat_history_row` runs a raw `pg_advisory_xact_lock` text()
+        # with bind params before the upsert. Record it apart from the upsert so
+        # `executed[0]` stays the INSERT these tests inspect.
+        if params is not None:
+            self.locks.append((str(stmt), params))
+            return None
         self.executed.append(stmt)
+
+    def query(self, *_cols):
+        # `_resolve_chat_history_model_cls`'s fallback lookup for an existing
+        # aitown row. No such row exists in these tests.
+        return _EmptyQuery()
 
     def begin_nested(self):
         return _NestedCtx()
@@ -100,6 +120,8 @@ class TestResponseIdentityFromMessage:
         )
         sess = fake_session_factory[0]
         assert sess.committed is True
+        # The row lock is taken on the same id before the upsert.
+        assert [p for _s, p in sess.locks] == [{"row_id": "corr-1"}]
         values = _compiled_values(sess.executed[0])
         assert values["response"] == "hello there"
         assert values["response_identity"] == "claude-sonnet-5"

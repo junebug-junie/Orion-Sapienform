@@ -54,7 +54,7 @@ def test_run_recall_step_populates_active_turn_exclusion(monkeypatch):
 
     ctx = {
         "verb": "chat_general",
-        "messages": [{"role": "user", "content": "Teddy loves Addy"}],
+        "messages": [{"role": "user", "content": "Pip loves Wren"}],
         "trace_id": "trace-1",
         "request_id": "req-1",
     }
@@ -71,7 +71,7 @@ def test_run_recall_step_populates_active_turn_exclusion(monkeypatch):
     assert step.status == "success"
     req = _FakeRecallClient.captured
     assert req.exclude is not None
-    assert req.exclude.get("active_turn_text") == "Teddy loves Addy"
+    assert req.exclude.get("active_turn_text") == "Pip loves Wren"
     assert "corr-1" in req.exclude.get("active_turn_ids")
     assert "trace-1" in req.exclude.get("active_turn_ids")
     assert debug.get("drop_counts") == {"transcript_novelty": 1}

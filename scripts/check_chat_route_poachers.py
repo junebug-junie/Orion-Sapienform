@@ -108,9 +108,6 @@ ALLOW: dict[str, str] = {
     "orion/curiosity/supervisor.py:<module>": (
         "long-context batch (6000 tokens, 180 s); needs durable admission (follow-up)"
     ),
-    "services/orion-context-exec/**:*": (
-        "CONTEXT_EXEC_DEFAULT_LLM_PROFILE=chat: long-context investigations; needs durable admission"
-    ),
     # ---- multimodal: only the chat worker serves vision --------------------
     "services/orion-juniper-affective-state/**:*": (
         "AFFECT_VISION_LLM_ROUTE=chat: multimodal worker requirement (vision lives on circe-worker-1)"

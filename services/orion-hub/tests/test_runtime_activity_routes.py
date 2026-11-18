@@ -190,3 +190,19 @@ async def test_start_with_poll_disabled_only_backfills(activity: RuntimeActivity
     await feeds.start()
     assert feeds._task is None
     await feeds.stop()
+
+
+def test_pool_lanes_label_each_role_with_its_own_node():
+    """Multi-host pool (2026-10-08): hecate's agent-deep is not a circe worker."""
+    state = {
+        "host": "circe",
+        "cards": [{"card": "gpu1"}, {"card": "hecate-gpu0", "host": "hecate"}],
+        "roles": [
+            {"role": "agent", "cards": ["gpu1"], "url": "http://c:8015", "slots": 1, "status": "confirmed"},
+            {"role": "agent-deep", "cards": ["hecate-gpu0"], "url": "http://h:8021", "slots": 1,
+             "status": "confirmed"},
+        ],
+    }
+    by = {lane["upstream"]: lane for lane in pool_lanes(state, [], now_ts=0.0)["lanes"]}
+    assert by["http://c:8015"]["routes"][0]["served_by"] == "circe-worker-agent"
+    assert by["http://h:8021"]["routes"][0]["served_by"] == "hecate-worker-agent-deep"

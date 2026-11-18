@@ -1,0 +1,363 @@
+{
+  "start": "2026-10-09T07:00:00+00:00",
+  "end": "2026-10-12T01:00:00+00:00",
+  "input_counts": {
+    "turn": 11,
+    "heat": 7723,
+    "gpu_state": 40288,
+    "decision": 69,
+    "live_level": 6
+  },
+  "decision_counts": {
+    "curiosity": 26,
+    "self_inquiry": 27,
+    "outreach": 12,
+    "dream": 4
+  },
+  "replay": {
+    "level_minutes_per_day": {
+      "2026-10-09": {
+        "engaged": 0.0,
+        "idle": 0.0,
+        "strained": 1020.0,
+        "unknown": 0.0
+      },
+      "2026-10-10": {
+        "engaged": 59.0,
+        "idle": 1071.0,
+        "strained": 310.0,
+        "unknown": 0.0
+      },
+      "2026-10-11": {
+        "engaged": 181.5,
+        "idle": 1238.5,
+        "strained": 20.0,
+        "unknown": 0.0
+      },
+      "2026-10-12": {
+        "engaged": 2.0,
+        "idle": 58.0,
+        "strained": 0.0,
+        "unknown": 0.0
+      }
+    },
+    "strained_spans": [
+      {
+        "from": "2026-10-09T07:00:00+00:00",
+        "to": "2026-10-10T02:52:00+00:00",
+        "minutes": 1192.0,
+        "reasons": {
+          "gpu_queue_sustained": 593,
+          "strain_clearing": 5
+        }
+      },
+      {
+        "from": "2026-10-10T03:52:00+00:00",
+        "to": "2026-10-10T04:16:00+00:00",
+        "minutes": 24.0,
+        "reasons": {
+          "strain_clearing": 6,
+          "gpu_queue_sustained": 3,
+          "strain_holding": 3
+        }
+      },
+      {
+        "from": "2026-10-10T04:46:00+00:00",
+        "to": "2026-10-10T05:12:00+00:00",
+        "minutes": 26.0,
+        "reasons": {
+          "gpu_queue_sustained": 7,
+          "strain_clearing": 5,
+          "strain_holding": 1
+        }
+      },
+      {
+        "from": "2026-10-10T06:18:00+00:00",
+        "to": "2026-10-10T06:32:00+00:00",
+        "minutes": 14.0,
+        "reasons": {
+          "strain_clearing": 5,
+          "gpu_queue_sustained": 2
+        }
+      },
+      {
+        "from": "2026-10-10T09:56:00+00:00",
+        "to": "2026-10-10T10:10:00+00:00",
+        "minutes": 14.0,
+        "reasons": {
+          "strain_clearing": 5,
+          "gpu_queue_sustained": 2
+        }
+      },
+      {
+        "from": "2026-10-10T10:28:00+00:00",
+        "to": "2026-10-10T11:28:00+00:00",
+        "minutes": 60.0,
+        "reasons": {
+          "gpu_queue_sustained": 14,
+          "strain_holding": 8,
+          "strain_clearing": 8
+        }
+      },
+      {
+        "from": "2026-10-11T06:16:00+00:00",
+        "to": "2026-10-11T06:36:00+00:00",
+        "minutes": 20.0,
+        "reasons": {
+          "gpu_queue_sustained": 5,
+          "strain_clearing": 5
+        }
+      }
+    ],
+    "readers": {
+      "per_day": {
+        "2026-10-09": {
+          "dream": {
+            "decisions": 0,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 5,
+            "held": 5
+          },
+          "self_inquiry": {
+            "decisions": 6,
+            "held": 6
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 4
+          }
+        },
+        "2026-10-10": {
+          "dream": {
+            "decisions": 2,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 1
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          }
+        },
+        "2026-10-11": {
+          "dream": {
+            "decisions": 2,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          }
+        }
+      },
+      "totals": {
+        "dream": {
+          "decisions": 4,
+          "held": 0
+        },
+        "curiosity": {
+          "decisions": 19,
+          "held": 5
+        },
+        "self_inquiry": {
+          "decisions": 20,
+          "held": 7
+        },
+        "outreach": {
+          "decisions": 12,
+          "held": 4
+        }
+      },
+      "held_reasons": {
+        "curiosity": {
+          "arousal_strained": 5
+        },
+        "self_inquiry": {
+          "arousal_strained": 7
+        },
+        "outreach": {
+          "arousal_strained": 4
+        }
+      },
+      "examples": {
+        "curiosity": [
+          {
+            "at": "2026-10-09T07:11:43.673975+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 30.0
+          },
+          {
+            "at": "2026-10-09T07:41:44.672184+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 30.0
+          },
+          {
+            "at": "2026-10-09T08:11:53.596472+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 30.1
+          },
+          {
+            "at": "2026-10-09T08:41:54.765472+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 30.0
+          },
+          {
+            "at": "2026-10-09T09:11:56.085867+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 30.0
+          }
+        ],
+        "self_inquiry": [
+          {
+            "at": "2026-10-09T08:01:52.631942+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 120.2
+          },
+          {
+            "at": "2026-10-09T10:02:02.592812+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 120.2
+          },
+          {
+            "at": "2026-10-09T12:02:06.534004+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 120.1
+          },
+          {
+            "at": "2026-10-09T14:02:07.082471+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 120.0
+          },
+          {
+            "at": "2026-10-09T16:02:09.077061+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 120.0
+          }
+        ],
+        "outreach": [
+          {
+            "at": "2026-10-09T14:04:52.880476+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": null
+          },
+          {
+            "at": "2026-10-09T15:00:32.522753+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 55.7
+          },
+          {
+            "at": "2026-10-09T15:50:31.347398+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 50.0
+          },
+          {
+            "at": "2026-10-09T16:41:34.523922+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 51.1
+          }
+        ]
+      }
+    }
+  },
+  "live": {
+    "from": "2026-10-10T23:00:59.337907+00:00",
+    "transitions": [
+      {
+        "at": "2026-10-10T23:00:59.337907+00:00",
+        "level": "engaged"
+      },
+      {
+        "at": "2026-10-11T01:07:23.402565+00:00",
+        "level": "idle"
+      },
+      {
+        "at": "2026-10-11T06:17:23.444340+00:00",
+        "level": "strained"
+      },
+      {
+        "at": "2026-10-11T06:37:23.454597+00:00",
+        "level": "idle"
+      },
+      {
+        "at": "2026-10-11T22:03:26.381685+00:00",
+        "level": "engaged"
+      },
+      {
+        "at": "2026-10-12T00:02:23.042486+00:00",
+        "level": "idle"
+      }
+    ],
+    "readers": {
+      "per_day": {
+        "2026-10-11": {
+          "dream": {
+            "decisions": 2,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          }
+        }
+      },
+      "totals": {
+        "dream": {
+          "decisions": 2,
+          "held": 0
+        },
+        "curiosity": {
+          "decisions": 7,
+          "held": 0
+        },
+        "self_inquiry": {
+          "decisions": 7,
+          "held": 0
+        },
+        "outreach": {
+          "decisions": 4,
+          "held": 0
+        }
+      },
+      "held_reasons": {},
+      "examples": {}
+    }
+  }
+}

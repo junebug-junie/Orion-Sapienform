@@ -59,7 +59,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 KNOWN_AFFECTED_FILES: tuple[str, ...] = (
     "orion/mood_arc/fit_encoder.py",
     "scripts/agent_board_lib.py",
-    "scripts/backfill_phi_corpus.py",
     "scripts/backfill_recall_falkor_chat_tags_snapshot.py",
     "scripts/bus_core_health_watchdog.py",
     "scripts/causal_geometry_report.py",
@@ -73,7 +72,6 @@ KNOWN_AFFECTED_FILES: tuple[str, ...] = (
     "scripts/check_single_consumer_channels.py",
     "scripts/check_substrate_projection_schema_drift.py",
     "scripts/concept_relation_digest.py",
-    "scripts/context_exec_rlm_eval.py",
     "scripts/diagnose_cortex_bus_stack.py",
     "scripts/diag.py",
     "scripts/disk_threshold_watchdog.py",
@@ -81,8 +79,6 @@ KNOWN_AFFECTED_FILES: tuple[str, ...] = (
     "scripts/fit_phi_encoder.py",
     "scripts/run_agent_flow_live_matrix.py",
     "scripts/seed_substrate_atlas_demo.py",
-    "scripts/self_study_enrichment_hook.py",
-    "scripts/self_study_harness.py",
     "scripts/smoke_substrate_motivation_golden_path.py",
     "scripts/trace_hub_skill_runner_e2e.py",
 )

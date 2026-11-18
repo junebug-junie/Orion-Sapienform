@@ -27,6 +27,7 @@ def test_mind_enrichment_defaults_off(monkeypatch):
         "ORION_THOUGHT_MIND_MAX_RESPONSE_BYTES",
         "ORION_THOUGHT_MIND_COLORING_MAX_ITEMS",
         "ORION_MIND_BASE_URL",
+        "CHANNEL_MIND_ARTIFACT",
     ):
         monkeypatch.delenv(key, raising=False)
     s = _reload_settings(monkeypatch)
@@ -37,7 +38,7 @@ def test_mind_enrichment_defaults_off(monkeypatch):
     assert s.settings.mind_router_profile == "default"
     assert s.settings.mind_max_response_bytes == 2_000_000
     assert s.settings.mind_coloring_max_items == 3
-    assert s.settings.mind_base_url == "http://orion-mind:6611"
+    assert s.settings.mind_base_url == "http://mind:6611"
     assert s.settings.channel_mind_artifact == "orion:mind:artifact"
     assert s.MIND_LLM_TIMEOUT_SEC_ASSUMED == 60.0
     assert s.MIND_ENRICHMENT_MIN_VIABLE_WALL_MS == 180000

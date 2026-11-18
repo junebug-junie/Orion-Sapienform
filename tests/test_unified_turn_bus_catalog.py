@@ -24,6 +24,8 @@ UNIFIED_TURN_CHANNELS: dict[str, str] = {
     "orion:harness:run:result:*": "HarnessRunV1",
     "orion:harness:run:artifact": "HarnessRunV1",
     "orion:harness:run:step": "HarnessRunStepV1",
+    # Draft-first display (spec L8): pre-judge draft, governor -> Hub.
+    "orion:harness:run:draft_preview": "HarnessRunDraftPreviewV1",
     "orion:substrate:finalize_appraisal:request": "HarnessDraftMoleculeV1",
     "orion:substrate:finalize_appraisal:result:*": "SubstrateFinalizeAppraisalV1",
     "orion:harness:verdict:artifact": "HarnessVerdictMoleculeV1",

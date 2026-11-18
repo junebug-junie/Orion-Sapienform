@@ -1,13 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 685,
+  "metric_count": 749,
   "_last_change": {
-    "change_count": 3,
-    "high_severity_count": 3,
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:request (all_producers: \u2026ay', 'orion-hub', 'orion\u2026 -> \u2026ay', 'orion-durable-runs', 'orion-hub', 'orion\u2026)",
-      "high   routing_changed metric://bus_channel/orion-cortex-orch/orion:cortex:result* (declared_consumers: ['orion-cortex-gateway', 'orion-hub'] -> ['orion-cortex-gateway', 'orion-durable-runs', 'orion-hub'])",
-      "high   routing_changed metric://bus_channel/orion-durable-runs/orion:durable:run:state (declared_consumers: ['orion-hub', 'orion-sql-writer'] -> ['orion-actions', 'orion-hub', 'orion-sql-writer'])"
+      "high   routing_changed metric://bus_channel/orion-agent-council/orion:exec:request:LLMGatewayService (all_producers: \u2026nd', 'orion-vision-counc\u2026 -> \u2026nd', 'orion-recall', 'orion-vision-counc\u2026)",
+      "high   routing_changed metric://bus_channel/orion-llm-gateway/orion:exec:result:LLMGatewayService:* (declared_consumers: \u2026nsolidation'] -> \u2026nsolidation', 'orion-recall'])"
     ]
   },
   "definitions": {
@@ -43,13 +42,6 @@
       "registry_source": "orion/schemas/brain_frame.py"
     },
     "metric://brain_region/orion-substrate-runtime/node_kind": {
-      "declared_consumers": [
-        "orion-hub"
-      ],
-      "notes": "Self tab / Self-Observability EKG region dimension",
-      "registry_source": "orion/schemas/brain_frame.py"
-    },
-    "metric://brain_region/orion-substrate-runtime/self_state": {
       "declared_consumers": [
         "orion-hub"
       ],
@@ -150,6 +142,7 @@
       "declared_consumers": [
         "*",
         "orion-cortex-orch",
+        "orion-hardware-watch",
         "orion-harness-governor",
         "orion-hub",
         "orion-thought"
@@ -316,7 +309,7 @@
       "all_producers": [
         "orion-actions",
         "orion-cortex-orch",
-        "orion-execution-dispatch-runtime",
+        "orion-hardware-watch",
         "orion-harness-governor"
       ],
       "declared_consumers": [
@@ -331,6 +324,7 @@
         "orion-actions",
         "orion-cortex-exec",
         "orion-cortex-gateway",
+        "orion-dream",
         "orion-durable-runs",
         "orion-hub",
         "orion-memory-consolidation"
@@ -339,6 +333,37 @@
         "orion-cortex-orch"
       ],
       "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:grammar:event": {
+      "schema_id": "GrammarEventV1",
+      "all_producers": [
+        "orion-actions",
+        "orion-biometrics",
+        "orion-bus",
+        "orion-cortex-exec",
+        "orion-cortex-orch",
+        "orion-dream",
+        "orion-durable-runs",
+        "orion-embodiment",
+        "orion-gpu-pool",
+        "orion-harness-governor",
+        "orion-heartbeat",
+        "orion-hub",
+        "orion-llm-gateway",
+        "orion-mind",
+        "orion-sql-writer",
+        "orion-substrate-runtime",
+        "orion-thought",
+        "orion-topic-foundry",
+        "orion-vision-frame-router"
+      ],
+      "declared_consumers": [
+        "orion-equilibrium-service",
+        "orion-heartbeat",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-actions/orion:hub:collapse_mirror:chat_reply": {
@@ -357,7 +382,9 @@
       "all_producers": [
         "orion-actions",
         "orion-cortex-exec",
-        "orion-cortex-orch"
+        "orion-cortex-orch",
+        "orion-dream",
+        "orion-durable-runs"
       ],
       "declared_consumers": [
         "orion-sql-writer"
@@ -407,27 +434,18 @@
         "orion-agent-council",
         "orion-cortex-exec",
         "orion-dream",
+        "orion-durable-runs",
         "orion-hub",
         "orion-juniper-affective-state",
         "orion-memory-consolidation",
         "orion-mind",
+        "orion-recall",
         "orion-vision-council"
       ],
       "declared_consumers": [
         "orion-llm-gateway"
       ],
       "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-attention-runtime/orion:debug:attention:streak_tick": {
-      "schema_id": "DominanceStreakTickV1",
-      "all_producers": [
-        "orion-attention-runtime"
-      ],
-      "declared_consumers": [
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-attention-runtime/orion:memory:goals:proposed": {
@@ -516,27 +534,6 @@
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-biometrics/orion:grammar:event": {
-      "schema_id": "GrammarEventV1",
-      "all_producers": [
-        "orion-biometrics",
-        "orion-bus",
-        "orion-cortex-exec",
-        "orion-cortex-orch",
-        "orion-gpu-pool",
-        "orion-harness-governor",
-        "orion-hub",
-        "orion-llm-gateway",
-        "orion-substrate-runtime"
-      ],
-      "declared_consumers": [
-        "orion-equilibrium-service",
-        "orion-heartbeat",
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-biometrics/orion:power:intent:settled": {
       "schema_id": "PowerIntentSettledV1",
       "all_producers": [
@@ -560,12 +557,35 @@
       "notes": "kind=telemetry stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-bus-mirror/orion:bus:traffic:rollup": {
+      "schema_id": "BusTrafficRollupV1",
+      "all_producers": [
+        "orion-bus-mirror"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-closet-env/orion:closet:env:sample": {
+      "schema_id": "ClosetEnvSampleV1",
+      "all_producers": [
+        "orion-closet-env"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-cocreation-signals/orion:substrate:claude_limit": {
       "schema_id": "ClaudeLimitObservationV1",
       "all_producers": [
         "orion-cocreation-signals"
       ],
       "declared_consumers": [
+        "orion-durable-runs",
         "orion-hub"
       ],
       "notes": "kind=event stability=experimental",
@@ -659,65 +679,6 @@
         "orion-vector-writer"
       ],
       "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-context-exec/orion:context_exec:event": {
-      "schema_id": "GenericPayloadV1",
-      "all_producers": [
-        "orion-context-exec"
-      ],
-      "declared_consumers": [
-        "*"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-context-exec/orion:exec:request:RecallService": {
-      "schema_id": "RecallQueryV1",
-      "all_producers": [
-        "orion-context-exec",
-        "orion-cortex-exec",
-        "orion-cortex-orch",
-        "orion-hub",
-        "orion-spark-concept-induction"
-      ],
-      "declared_consumers": [
-        "orion-recall"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService": {
-      "schema_id": "ContextExecRunV1",
-      "all_producers": [
-        "orion-context-exec"
-      ],
-      "declared_consumers": [
-        "orion-cortex-exec"
-      ],
-      "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService:*": {
-      "schema_id": "ContextExecRunV1",
-      "all_producers": [
-        "orion-context-exec"
-      ],
-      "declared_consumers": [
-        "orion-cortex-exec"
-      ],
-      "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-context-exec/orion:self_experiments:context_exec:reply:*": {
-      "schema_id": "ContextExecRunV1",
-      "all_producers": [
-        "orion-context-exec"
-      ],
-      "declared_consumers": [
-        "orion-self-experiments"
-      ],
-      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-cortex-exec/orion:agent-council:intake": {
@@ -825,6 +786,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-cortex-exec/orion:cortex:exec:stance_prepare_result:*": {
+      "schema_id": "StanceContextPrepareResultV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-thought"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-cortex-exec/orion:cortex:pre_turn_appraisal:result:*": {
       "schema_id": "TurnAppraisalBundleV1",
       "all_producers": [
@@ -839,7 +811,8 @@
     "metric://bus_channel/orion-cortex-exec/orion:dream:log": {
       "schema_id": "DreamResultV1",
       "all_producers": [
-        "orion-cortex-exec"
+        "orion-cortex-exec",
+        "orion-dream"
       ],
       "declared_consumers": [
         "orion-dream",
@@ -906,18 +879,6 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-cortex-exec/orion:exec:request:ContextExecService": {
-      "schema_id": "ContextExecRequestV1",
-      "all_producers": [
-        "orion-cortex-exec",
-        "orion-self-experiments"
-      ],
-      "declared_consumers": [
-        "orion-context-exec"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-cortex-exec/orion:exec:request:MetaTagsService": {
       "schema_id": "MetaTagsRequestV1",
       "all_producers": [
@@ -925,6 +886,20 @@
       ],
       "declared_consumers": [
         "orion-meta-tags"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:exec:request:RecallService": {
+      "schema_id": "RecallQueryV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-cortex-orch",
+        "orion-hub",
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "orion-recall"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -950,6 +925,20 @@
       ],
       "declared_consumers": [
         "orion-vision-host"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:gpu_pool:state:request": {
+      "schema_id": "GpuPoolStateRequestV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-harness-governor",
+        "orion-hub",
+        "orion-llm-gateway"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -991,29 +980,6 @@
         "orion-substrate-runtime"
       ],
       "notes": "kind=telemetry stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-cortex-exec/orion:self_concept:history:write": {
-      "schema_id": "SelfConceptHistoryV1",
-      "all_producers": [
-        "orion-cortex-exec",
-        "orion-hub"
-      ],
-      "declared_consumers": [
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-cortex-exec/orion:self_study:items:write": {
-      "schema_id": "SelfKnowledgeItemLogV1",
-      "all_producers": [
-        "orion-cortex-exec"
-      ],
-      "declared_consumers": [
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-cortex-exec/orion:spark:introspect:candidate": {
@@ -1145,10 +1111,22 @@
       ],
       "declared_consumers": [
         "orion-cortex-gateway",
+        "orion-dream",
         "orion-durable-runs",
         "orion-hub"
       ],
       "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:curiosity:self_inquiry:request": {
+      "schema_id": "CuriositySelfInquiryRequestV1",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-cortex-orch/orion:durable:run:request": {
@@ -1209,6 +1187,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-dream/orion:dream:carry:step:reply:*": {
+      "schema_id": "DreamCarryStepResultV1",
+      "all_producers": [
+        "orion-dream"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-dream/orion:dream:compaction-delta": {
       "schema_id": "MemoryCompactionDeltaV1",
       "all_producers": [
@@ -1218,7 +1207,7 @@
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-dream/orion:dream:trigger": {
-      "schema_id": "DreamTriggerPayload",
+      "schema_id": "DreamInternalTriggerV1",
       "all_producers": [
         "orion-dream"
       ],
@@ -1228,6 +1217,46 @@
       "notes": "kind=event stability=stable",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-dream/orion:introspect:result:*": {
+      "schema_id": "IntrospectResultV1",
+      "all_producers": [
+        "orion-dream",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-harness-governor",
+        "orion-mind"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-dream/orion:vector:semantic:upsert": {
+      "schema_id": "VectorUpsertV1",
+      "all_producers": [
+        "orion-dream",
+        "orion-hub",
+        "orion-recall",
+        "orion-vector-host"
+      ],
+      "declared_consumers": [
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:autonomy:action:outcome": {
+      "schema_id": "ActionOutcomeEmitV1",
+      "all_producers": [
+        "orion-durable-runs",
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:curiosity:turn:request": {
       "schema_id": "CuriosityTurnRequestV1",
       "all_producers": [
@@ -1235,6 +1264,17 @@
       ],
       "declared_consumers": [
         "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:dream:carry:step:request": {
+      "schema_id": "DreamCarryStepRequestV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-dream"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1268,6 +1308,7 @@
       ],
       "declared_consumers": [
         "orion-actions",
+        "orion-durable-runs",
         "orion-hub",
         "orion-sql-writer"
       ],
@@ -1289,6 +1330,17 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:gpu_pool:shed:request": {
+      "schema_id": "GpuPoolShedReasonRequestV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:harness:run:cancel": {
       "schema_id": "HarnessRunCancelV1",
       "all_producers": [
@@ -1297,6 +1349,40 @@
       ],
       "declared_consumers": [
         "orion-harness-governor"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:physiology:state": {
+      "schema_id": "PhysiologyStateV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:physiology:want:decision": {
+      "schema_id": "WantDecisionV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:reading:lifecycle": {
+      "schema_id": "ReadingLifecycleV1",
+      "all_producers": [
+        "orion-durable-runs",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "*"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1323,6 +1409,26 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:self_concept:history:write": {
+      "schema_id": "SelfConceptHistoryV1",
+      "all_producers": [
+        "orion-durable-runs",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:situation:state": {
+      "schema_id": "SituationStateV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-embodiment/orion:chat:history:turn": {
       "schema_id": "ChatHistoryTurnV1",
       "all_producers": [
@@ -1330,6 +1436,7 @@
         "orion-hub"
       ],
       "declared_consumers": [
+        "orion-durable-runs",
         "orion-spark-concept-induction",
         "orion-sql-writer",
         "orion-vector-host"
@@ -1467,8 +1574,29 @@
         "orion-equilibrium-service"
       ],
       "declared_consumers": [
-        "orion-actions",
         "orion-cortex-orch",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-equilibrium-service/orion:equilibrium:self_signal:hour": {
+      "schema_id": "SelfSignalHourV1",
+      "all_producers": [
+        "orion-equilibrium-service"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-equilibrium-service/orion:equilibrium:self_signal:outcome_association": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "all_producers": [
+        "orion-equilibrium-service"
+      ],
+      "declared_consumers": [
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
@@ -1530,30 +1658,6 @@
       "notes": "kind=telemetry stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:autonomy:action:outcome": {
-      "schema_id": "ActionOutcomeEmitV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime",
-        "orion-spark-concept-induction"
-      ],
-      "declared_consumers": [
-        "*",
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-feedback-runtime/orion:feedback:frame": {
-      "schema_id": "FeedbackFrameV1",
-      "all_producers": [
-        "orion-feedback-runtime"
-      ],
-      "declared_consumers": [
-        "orion-spark-concept-induction"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-field-digester/orion:causal_geometry:snapshot": {
       "schema_id": "CausalGeometrySnapshotV1",
       "all_producers": [
@@ -1572,20 +1676,10 @@
       ],
       "declared_consumers": [
         "orion-equilibrium-service",
+        "orion-sql-writer",
         "orion-substrate-runtime"
       ],
       "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-git-hooks/orion:self_study:enrichment:requested": {
-      "schema_id": "SelfStudyEnrichmentRequestV1",
-      "all_producers": [
-        "orion-git-hooks"
-      ],
-      "declared_consumers": [
-        "orion-self-study-enrichment"
-      ],
-      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-gpu-lane-controller/orion:gpu_pool:actuate:result": {
@@ -1594,7 +1688,8 @@
         "orion-gpu-lane-controller"
       ],
       "declared_consumers": [
-        "orion-gpu-pool"
+        "orion-gpu-pool",
+        "orion-mesh-guardian"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1602,7 +1697,8 @@
     "metric://bus_channel/orion-gpu-pool/orion:gpu_pool:actuate:request": {
       "schema_id": "GpuActuateV1",
       "all_producers": [
-        "orion-gpu-pool"
+        "orion-gpu-pool",
+        "orion-mesh-guardian"
       ],
       "declared_consumers": [
         "orion-gpu-lane-controller"
@@ -1630,6 +1726,7 @@
         "orion-durable-runs",
         "orion-hub",
         "orion-llm-gateway",
+        "orion-mesh-guardian",
         "orion-sql-writer",
         "orion-thought",
         "orion-world-model"
@@ -1652,13 +1749,25 @@
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-gpu-pool/orion:gpu_pool:shed:reply:*": {
+      "schema_id": "GpuPoolShedResultV1",
+      "all_producers": [
+        "orion-gpu-pool"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state": {
       "schema_id": "GpuPoolStateV1",
       "all_producers": [
         "orion-gpu-pool"
       ],
       "declared_consumers": [
-        "orion-hub"
+        "orion-hub",
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1669,6 +1778,7 @@
         "orion-gpu-pool"
       ],
       "declared_consumers": [
+        "orion-cortex-exec",
         "orion-harness-governor",
         "orion-hub",
         "orion-llm-gateway"
@@ -1729,17 +1839,37 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-harness-governor/orion:gpu_pool:state:request": {
-      "schema_id": "GpuPoolStateRequestV1",
+    "metric://bus_channel/orion-hardware-watch/orion:hardware:watch:reflex_shed": {
+      "schema_id": "HardwareWatchReflexShedV1",
       "all_producers": [
-        "orion-harness-governor",
-        "orion-hub",
-        "orion-llm-gateway"
+        "orion-hardware-watch"
       ],
       "declared_consumers": [
         "orion-gpu-pool"
       ],
-      "notes": "kind=request stability=experimental",
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:claude:tool:audit": {
+      "schema_id": "ClaudeToolCallV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:claude:tool:result:*": {
+      "schema_id": "ClaudeToolResultV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-room-companion"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-harness-governor/orion:harness:run:artifact": {
@@ -1749,6 +1879,17 @@
       ],
       "declared_consumers": [
         "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:harness:run:draft_preview": {
+      "schema_id": "HarnessRunDraftPreviewV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1785,6 +1926,95 @@
         "orion-substrate-runtime"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:curiosity:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:dream:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-dream"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:node_history:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:orion_day:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:power_attribution:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:queue_curiosity_focus:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor",
+        "orion-mind"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:record_correction:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:prime:consent:request": {
+      "schema_id": "PrimeConsentRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-mind"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-harness-governor/orion:reading:tool:request": {
@@ -1849,6 +2079,9 @@
       "all_producers": [
         "orion-hub"
       ],
+      "declared_consumers": [
+        "orion-memory-consolidation"
+      ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
@@ -1908,6 +2141,7 @@
       ],
       "declared_consumers": [
         "orion-hub",
+        "orion-mind",
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
@@ -1952,8 +2186,7 @@
         "orion-hub"
       ],
       "declared_consumers": [
-        "orion-curiosity-peer",
-        "orion-sql-writer"
+        "orion-curiosity-peer"
       ],
       "notes": "kind=event stability=None",
       "registry_source": "orion/bus/channels.yaml"
@@ -1967,6 +2200,28 @@
         "orion-curiosity-peer"
       ],
       "notes": "kind=event stability=None",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:curiosity:replica:focus_refusal:result:*": {
+      "schema_id": "CuriosityFocusRefusalResultV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-mind"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:curiosity:replica:plan:request": {
+      "schema_id": "CuriosityOfferPlanRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-mind"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-hub/orion:curiosity:turn:reply:*": {
@@ -2166,13 +2421,25 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-hub/orion:reading:lifecycle": {
-      "schema_id": "ReadingLifecycleV1",
+    "metric://bus_channel/orion-hub/orion:personality:choice": {
+      "schema_id": "PersonalityChoiceV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-mind"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:personality:naming": {
+      "schema_id": "DispositionNamingV1",
       "all_producers": [
         "orion-hub"
       ],
       "declared_consumers": [
-        "*"
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -2277,18 +2544,6 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-hub/orion:vector:semantic:upsert": {
-      "schema_id": "VectorUpsertV1",
-      "all_producers": [
-        "orion-hub",
-        "orion-vector-host"
-      ],
-      "declared_consumers": [
-        "orion-vector-writer"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment": {
       "schema_id": "JuniperMultimodalAffectV1",
       "all_producers": [
@@ -2326,7 +2581,8 @@
     "metric://bus_channel/orion-llamacpp-host/orion:llm:worker:announce": {
       "schema_id": "LlmWorkerAnnounceV1",
       "all_producers": [
-        "orion-llamacpp-host"
+        "orion-llamacpp-host",
+        "orion-vllm-host"
       ],
       "declared_consumers": [
         "orion-gpu-pool"
@@ -2365,10 +2621,23 @@
       "declared_consumers": [
         "orion-cortex-exec",
         "orion-dream",
+        "orion-durable-runs",
         "orion-hub",
-        "orion-memory-consolidation"
+        "orion-memory-consolidation",
+        "orion-recall"
       ],
       "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-llm-gateway/orion:llm:call:usage": {
+      "schema_id": "LlmCallUsageV1",
+      "all_producers": [
+        "orion-llm-gateway"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-llm-gateway/orion:llm:reply*": {
@@ -2416,6 +2685,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-memory-consolidation/orion:memory:episode:closed": {
+      "schema_id": "MemoryEpisodeClosedV1",
+      "all_producers": [
+        "orion-memory-consolidation"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-memory-consolidation/orion:signals:memory_consolidation": {
       "schema_id": "OrionSignalV1",
       "all_producers": [
@@ -2449,6 +2729,39 @@
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-mind/orion:curiosity:replica:focus_refusal:request": {
+      "schema_id": "CuriosityFocusRefusalRequestV1",
+      "all_producers": [
+        "orion-mind"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-mind/orion:curiosity:replica:plan:result:*": {
+      "schema_id": "CuriosityOfferPlanResultV1",
+      "all_producers": [
+        "orion-mind"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-mind/orion:prime:consent:result:*": {
+      "schema_id": "PrimeConsentAnswerV1",
+      "all_producers": [
+        "orion-mind"
+      ],
+      "declared_consumers": [
+        "orion-harness-governor"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-notify/orion:notify:config:preference": {
@@ -2495,6 +2808,50 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-office-env/orion:office:env:sample": {
+      "schema_id": "OfficeEnvSampleV1",
+      "all_producers": [
+        "orion-office-env"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-prediction/orion:prediction:forecast": {
+      "schema_id": "PredictionForecastV1",
+      "all_producers": [
+        "orion-prediction"
+      ],
+      "declared_consumers": [
+        "orion-hardware-watch"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-prediction/orion:prediction:surprise": {
+      "schema_id": "PredictionSurpriseV1",
+      "all_producers": [
+        "orion-prediction"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-prediction/orion:prediction:turn_surprise": {
+      "schema_id": "PredictionTurnSurpriseV1",
+      "all_producers": [
+        "orion-prediction"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-recall/orion:exec:result:RecallService:*": {
       "schema_id": "RecallReplyV1",
       "all_producers": [
@@ -2517,6 +2874,17 @@
         "orion-sql-writer"
       ],
       "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-room-companion/orion:claude:tool:request": {
+      "schema_id": "ClaudeToolRequestV1",
+      "all_producers": [
+        "orion-room-companion"
+      ],
+      "declared_consumers": [
+        "orion-harness-governor"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-room-companion/orion:room:claude:utterance": {
@@ -2664,32 +3032,6 @@
     },
     "metric://bus_channel/orion-social-memory/orion:social:closure-signal": {
       "schema_id": "SocialClosureSignalV1",
-      "all_producers": [
-        "orion-social-memory"
-      ],
-      "declared_consumers": [
-        "*",
-        "orion-hub",
-        "orion-social-room-bridge"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-social-memory/orion:social:commitment": {
-      "schema_id": "SocialCommitmentV1",
-      "all_producers": [
-        "orion-social-memory"
-      ],
-      "declared_consumers": [
-        "*",
-        "orion-hub",
-        "orion-social-room-bridge"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-social-memory/orion:social:commitment:resolution": {
-      "schema_id": "SocialCommitmentResolutionV1",
       "all_producers": [
         "orion-social-memory"
       ],
@@ -3050,6 +3392,18 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-sql-writer/orion:vision:street:events": {
+      "schema_id": "StreetEventV1",
+      "all_producers": [
+        "orion-sql-writer",
+        "orion-vision-retina"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-state-service/orion:exec:result:StateService:*": {
       "schema_id": "StateLatestReply",
       "all_producers": [
@@ -3134,6 +3488,50 @@
       "notes": "kind=telemetry stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare": {
+      "schema_id": "StanceContextPrepareRequestV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare:background": {
+      "schema_id": "StanceContextPrepareRequestV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare:chat": {
+      "schema_id": "StanceContextPrepareRequestV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare:spark": {
+      "schema_id": "StanceContextPrepareRequestV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-thought/orion:dream:compaction-request": {
       "schema_id": "CompactionRequestV1",
       "all_producers": [
@@ -3145,7 +3543,8 @@
     "metric://bus_channel/orion-thought/orion:exec:request:VisionHostService:circe-vl": {
       "schema_id": "VisionTaskRequestPayload",
       "all_producers": [
-        "orion-thought"
+        "orion-thought",
+        "orion-vision-frame-router"
       ],
       "declared_consumers": [
         "orion-vision-host"
@@ -3285,7 +3684,9 @@
     "metric://bus_channel/orion-vision-council/orion:vision:events": {
       "schema_id": "VisionEventPayload",
       "all_producers": [
-        "orion-vision-council"
+        "orion-vision-council",
+        "orion-vision-retina",
+        "orion-vision-window"
       ],
       "declared_consumers": [
         "orion-vision-scribe"
@@ -3503,6 +3904,17 @@
       ],
       "declared_consumers": [
         "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-window/orion:vision:identity:sighting": {
+      "schema_id": "IdentitySightingV1",
+      "all_producers": [
+        "orion-vision-window"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -3904,11 +4316,13 @@
     },
     "metric://field_channel/orion-field-digester/availability": {
       "meaning": "How available/reachable a compute node currently is.",
+      "polarity": "higher_is_better",
       "notes": "category=sensor_trust_liveness level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/available_capacity": {
-      "meaning": "How much spare operating capacity a capability has right now.",
+      "meaning": "How much spare operating capacity a capability has right now. Derived as 1 - pressure unless an edge writes it directly; absent when pressure is unmeasured (never a fabricated 1.0).",
+      "polarity": "higher_is_better",
       "notes": "category=synthesized_rollup level=capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
@@ -3963,8 +4377,8 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/catalog_drift_pressure": {
-      "meaning": "Drift/staleness in the bus event \"catalog\" (schema registry) relative to what's actually flowing.",
-      "notes": "category=infra_transport level=node",
+      "meaning": "Share of bus channels seen live that are missing from the declared catalog (orion/bus/channels.yaml): the bus observer's census, undeclared_active_count / catalog_size, on node:athena (falls back to the observer's own configured-stream check when the census did not run). capability:transport carries 0.85 x the node:athena reading (it was named contract_pressure until 2026-10-07). Not a payload/schema check: OrionBusAsync.publish() validates every payload before sending.",
+      "notes": "category=infra_transport level=node,capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/compliance_deficit": {
@@ -3973,7 +4387,8 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/confidence": {
-      "meaning": "How confident the system is that a given capability is currently reliable/available.",
+      "meaning": "How confident the system is that a given capability is currently reliable/available. Derived as 1 - 0.5 * pressure unless an edge writes it directly; absent when pressure is unmeasured (never a fabricated 1.0).",
+      "polarity": "higher_is_better",
       "notes": "category=synthesized_rollup level=capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
@@ -3982,13 +4397,9 @@
       "notes": "category=task_execution level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-field-digester/contract_pressure": {
-      "meaning": "Pressure from bus/schema \"contract\" mismatches (precise real-world condition not otherwise documented in code).",
-      "notes": "category=infra_transport level=node,capability",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
     "metric://field_channel/orion-field-digester/conversation_load": {
       "meaning": "How much active conversational load (turn volume/complexity) is occurring.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "social_pressure"
       ],
@@ -3997,6 +4408,7 @@
     },
     "metric://field_channel/orion-field-digester/cortex_exec_step_load": {
       "meaning": "Renamed from execution_load 2026-07-24 for scope honesty (the sibling of harness_step_load, cortex-exec-scoped instead of harness-governor-scoped) and lane-gated to exclude the harness_motor lane (whose cortex_exec_started_step_count is structurally always 0, since that counter only increments for orion-cortex-exec-sourced exec_step_started events) -- previously that always-0 harness_motor-lane reading stomped the real cortex-exec-lane value via mode=\"replace\" on the shared node key. cortex-exec-only proxy for how much active execution work (agent runs, tool calls) is in flight on a node.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "execution_pressure"
       ],
@@ -4005,6 +4417,7 @@
     },
     "metric://field_channel/orion-field-digester/cpu_pressure": {
       "meaning": "How loaded a node's CPU currently is.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "resource_pressure"
       ],
@@ -4021,6 +4434,7 @@
     },
     "metric://field_channel/orion-field-digester/disk_pressure": {
       "meaning": "Node disk I/O pressure.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "resource_pressure"
       ],
@@ -4029,6 +4443,7 @@
     },
     "metric://field_channel/orion-field-digester/egress_confidence_deficit": {
       "meaning": "1 - confidence that an execution's output actually reached its destination.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "introspection_pressure"
       ],
@@ -4036,7 +4451,8 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/execution_friction": {
-      "meaning": "How much resistance (retries/backoff) execution is encountering on a node.",
+      "meaning": "How much resistance (retries/backoff) execution is encountering on a node. Failed steps over started steps; deliberate GPU-pool sheds (gpu_pool_unavailable:shed:*) are excluded from the failed count since 2026-10-20.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "reliability_pressure"
       ],
@@ -4045,6 +4461,7 @@
     },
     "metric://field_channel/orion-field-digester/execution_pressure": {
       "meaning": "Capability-level execution-load pressure.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "execution_pressure"
       ],
@@ -4057,7 +4474,8 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/failure_pressure": {
-      "meaning": "Recent execution failure rate/severity on a node.",
+      "meaning": "Recent execution failure rate/severity on a node. A step the GPU pool shed on purpose (gpu_pool_unavailable:shed:*, e.g. cabinet_hot) is not a failure and does not raise it (since 2026-10-20); pool deadline/outage refusals and every other error still do.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "reliability_pressure"
       ],
@@ -4074,11 +4492,13 @@
     },
     "metric://field_channel/orion-field-digester/field_coherence_warning": {
       "meaning": "Per-node incoherence score -- fires when two reducers that should agree about a node's state disagree.",
+      "polarity": "higher_is_worse",
       "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/gpu_pressure": {
       "meaning": "How loaded a node's GPU currently is.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "resource_pressure"
       ],
@@ -4097,20 +4517,11 @@
     },
     "metric://field_channel/orion-field-digester/memory_pressure": {
       "meaning": "Node RAM pressure.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "resource_pressure"
       ],
       "notes": "category=physical_substrate level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error": {
-      "meaning": "Fraction of live bus-synaptic edges currently anomalous (|z| >= 3.0) -- mesh-wide transport health, not a single-organ fault signal.",
-      "notes": "category=infra_transport level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-field-digester/observer_failure_pressure": {
-      "meaning": "Pressure from failures of the bus \"observer\" role (monitoring/subscriber-side failures).",
-      "notes": "category=infra_transport level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/power_pressure": {
@@ -4123,11 +4534,13 @@
     },
     "metric://field_channel/orion-field-digester/prediction_error": {
       "meaning": "How much a recent prediction (from the prediction/surprise subsystem) missed reality.",
+      "polarity": "higher_is_worse",
       "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/pressure": {
-      "meaning": "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision).",
+      "meaning": "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision). Absent (key and provenance dropped) on a tick when no edge source measured it, or when no edge feeds it at all (capability:transport since 2026-11), never written as a calm 0.0.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "resource_pressure"
       ],
@@ -4136,6 +4549,7 @@
     },
     "metric://field_channel/orion-field-digester/reasoning_load": {
       "meaning": "How much active LLM-reasoning work a node is doing. Real magnitude since 2026-07-24: cortex-exec-sourced runs use reasoning_char_count (chars); harness-motor-sourced runs use reasoning_output_tokens (real provider-computed tokens from the FCC CLI's own result-event usage object, confirmed live). Falls back to a 0.35/0.05 presence-only flag only when neither magnitude is set.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "reasoning_pressure"
       ],
@@ -4144,6 +4558,7 @@
     },
     "metric://field_channel/orion-field-digester/reasoning_pressure": {
       "meaning": "Capability-level reasoning-load pressure.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "reasoning_pressure"
       ],
@@ -4151,7 +4566,8 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/reliability_pressure": {
-      "meaning": "Capability-level pressure representing risk to reliability (from execution friction, failures, or observer failures).",
+      "meaning": "Capability-level pressure representing risk to reliability (from execution friction, failures, RPC timeouts, storage write failures, inference failures, vision processing failures). Max over the sources that measured it this tick; where an edge feeds it, absent when none did (e.g. every input expired), never a calm 0.0. capability:transport has one source since 2026-10-07 (RPC timeouts; the bus observer's own failure channel was retired), so it is absent whenever the RPC delivery bridge stops reporting. Capabilities with no reliability edge (graph, memory) still carry reconcile's seeded 0.0, which is not a measurement.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "reliability_pressure"
       ],
@@ -4160,6 +4576,7 @@
     },
     "metric://field_channel/orion-field-digester/repair_pressure": {
       "meaning": "How much conversational \"repair\" (corrections, re-explaining) is happening in chat.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "social_pressure"
       ],
@@ -4173,6 +4590,7 @@
     },
     "metric://field_channel/orion-field-digester/stability": {
       "meaning": "How STEADY a node's recent overall strain has been (low volatility/spike-rate), not how loaded it is right now. Opposite polarity from every other physical_substrate channel above -- higher = calmer. See orion.field.pressure.HIGHER_IS_BETTER_CHANNELS.",
+      "polarity": "higher_is_better",
       "feeds_dimensions": [
         "coherence"
       ],
@@ -4181,6 +4599,7 @@
     },
     "metric://field_channel/orion-field-digester/staleness": {
       "meaning": "Whether a node's most recent biometrics sample is too old to trust.",
+      "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "continuity_pressure"
       ],
@@ -4194,6 +4613,7 @@
     },
     "metric://field_channel/orion-field-digester/thermal_pressure": {
       "meaning": "Node thermal/temperature pressure.",
+      "polarity": "higher_is_worse",
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
@@ -4205,6 +4625,235 @@
     "metric://field_channel/orion-field-digester/turn_incompletion": {
       "meaning": "Did Hub fail to get a usable result back from the harness-governor RPC for this turn at all -- the one unified-turn failure mode where no governor-side grammar event exists. A distinct, worse severity than compliance_deficit's worst rank.",
       "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/vision_frame_staleness": {
+      "meaning": "Can Orion see at all, on node:substrate.vision_organ: staleness of the freshest camera stream the vision frame router reports (0.0 while any camera's newest frame is under 15 s old, ramping to 1.0 at 60 s). A configured camera that has sent nothing since the router started is aged from that start, never read as calm. 1.0 when no camera delivers or the router stops reporting for 180 s (written on a clock). Per-camera status lives on the vision organ projection. Dropped (unmeasured) when no reading has arrived for 300 s.",
+      "value_kind": "level",
+      "rest": "0.0 = at least one camera delivered a frame in the last 15 s.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "per_tick",
+      "absent_means": "dropped (unmeasured) after 300 s without a reading; 1.0 (not absent) when the router itself is silent for 180 s.",
+      "notes": "category=sensor_trust_liveness level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/vision_processing_failure_pressure": {
+      "meaning": "Share of the frames the vision frame router handed to the vision host over the last 10 minutes that came back without a usable answer (timeout, invalid reply, ok=false), failures / max(attempts, 10), counted once 2+ failures are in the span; the worse of the pooled share and the worst single camera's. Absent when nothing was dispatched; dropped (unmeasured) when no reading has arrived for 300 s.",
+      "value_kind": "level",
+      "rest": "0.0 = every frame dispatched in the last 10 minutes came back usable, or fewer than 2 failed.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "event_gated",
+      "absent_means": "absent when nothing was dispatched; dropped (unmeasured) after 300 s without a reading.",
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/write_failure_pressure": {
+      "meaning": "Storage writes that did not land, on node:substrate.storage_write: orion-sql-writer's own count of incoming writes that did not reach their Postgres table (schema/validation reject, constraint violation, serialization error, database unavailable or timed out, grammar queue shed), as the worst table family's failed / max(attempted, 10) over the last 10 minutes of writer windows, counted only once a family has 2+ failures. Idempotent duplicates are not failures; unrouted kinds are not counted. 0.0 means every counted write in the span landed; dropped (unmeasured) when no writer window has been reduced for 180 s.",
+      "notes": "category=infra_transport level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:prediction.body.prediction_error": {
+      "meaning": "How much the cabinet's temperature is surprising Orion's own forecast: the last 30 minutes of scored 5- and 15-minute forecast outcomes (athena.cabinet_temp_c), each as excess surprise (-ln p minus its calm point 0.95), summed and divided by the calm spread (a z-score), 3 sigma = 1.0. 0 = the temperature did what the forecast expected.",
+      "value_kind": "surprise_excess",
+      "rest": "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 56-58% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py).",
+      "rest_range": [
+        0.0,
+        0.55
+      ],
+      "sparsity": "per_tick",
+      "absent_means": "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value (current for up to 1800 s, longer than its 30 min window), then every reader treats it as stale, never as calm.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:prediction.chat_turn.prediction_error": {
+      "meaning": "How much Orion's recent chat turns surprised Orion's own bets about them (will the reply ask a question; will it take more steps than usual), over the last 30 minutes: summed excess surprise in nats over what the recalibrated bets expected, divided by its calm spread (a z-score), 3 sigma = 1.0. 0 = the turns went the way the bets leaned.",
+      "value_kind": "surprise_excess",
+      "rest": "0.0 = the turns went no more surprisingly than calibrated bets expect (z <= 0). Reachable by theory (a turn that goes the likely way reads z < 0) and live: 85% of 294 settled chat turns rest at exactly 0.0, 79% of node writes (replay 2026-10-24..11-13, backlog turns skipped as live, services/orion-prediction/evals/run_turn_surprise_replay_eval.py).",
+      "rest_range": [
+        0.0,
+        0.55
+      ],
+      "sparsity": "event_gated",
+      "absent_means": "written once per settled chat turn whose used bets carry information. No chat turn (or PREDICTION_TURN_SURPRISE_EVENTS_ENABLED / SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED off, or orion-prediction down) writes nothing: the node keeps its last value, current for up to 1800 s, then every reader treats it as stale, never as calm. Live replay: fresh 27% of the time.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=social_conversational level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:prediction.room.prediction_error": {
+      "meaning": "How much the office's temperature is surprising Orion's own forecast: the last 30 minutes of scored 5- and 15-minute forecast outcomes (office.temp_c), each as excess surprise (-ln p minus its calm point 0.95), summed and divided by the calm spread (a z-score), 3 sigma = 1.0. 0 = the temperature did what the forecast expected.",
+      "value_kind": "surprise_excess",
+      "rest": "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 56-58% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py).",
+      "rest_range": [
+        0.0,
+        0.55
+      ],
+      "sparsity": "per_tick",
+      "absent_means": "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value (current for up to 1800 s, longer than its 30 min window), then every reader treats it as stale, never as calm.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error": {
+      "meaning": "How much the machines' pressure readings moved since the last sample: mean absolute change across the machines' own pressure hints, 0.30 of change = 1.0 (a fixed scale, not versus its own history). Room sensors (athena's cabinet_* hints: proximity, vibration, ambient audio, climate, EM, UV) are not in it since definition v3 (2026-11-12).",
+      "value_kind": "level",
+      "rest": "about 0.02-0.03 (sensor jitter); 0.0 = nothing moved at all.",
+      "rest_range": [
+        0.0,
+        0.03
+      ],
+      "sparsity": "per_tick",
+      "absent_means": "carried forward in node_vectors between biometrics samples; dropped from the self-model after 1800 s.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.field_attention.selectors:select_node_targets",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates",
+        "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
+        "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error": {
+      "meaning": "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): cabinet is warming -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node only; not in FieldStateV1 node_vectors.",
+      "value_kind": "trigger",
+      "rest": "0.0 = not elevated, or elevated but not rising >= 0.5 C in 15 min. Mostly zero by design (97% live).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "when the thermal reading is 'unknown' (older than the 300 s grace) the tick writes nothing and the node keeps its last value (worker.py:1434).",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error": {
+      "meaning": "How much more execution pressure changed this batch than it usually does: z-score of the mean change in 4 execution pressure hints versus its own running average, negatives clipped, 3 sigma = 1.0.",
+      "value_kind": "level",
+      "rest": "0.0 = change at or below its usual (negative z clipped), or no baseline yet. Mostly zero by design (72% live).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "only written when a batch carried execution events; between batches the last value is carried forward in node_vectors, and the self-model drops the domain after 1800 s.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.field_attention.selectors:select_node_targets",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates",
+        "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
+        "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
+      ],
+      "notes": "category=self_monitoring level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error": {
+      "meaning": "How surprising the room camera's latest frame is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. One reading per tick (~30 s), from a frame that arrived since the previous reading.",
+      "value_kind": "level",
+      "rest": "0.0 = the frame is at or below this stream's usual surprise. Reachable: 61% of live readings 2026-10-14..21 were exact 0.0 (replay of stored per-frame baselines). A 0.0 placeholder written while the input is missing (embeddings stale, baseline warming, or no scored frame in the window) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history and the self-model omits it.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason; substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start before the first embedding arrives.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "notes": "category=self_monitoring level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error": {
+      "meaning": "How surprising the walkway (outdoor) camera's latest frame is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. One reading per tick (~30 s), from a frame that arrived since the previous reading. Kept apart from node:substrate.perception so the street does not overwrite the room cameras.",
+      "value_kind": "level",
+      "rest": "0.0 = the frame is at or below the walkway stream's usual surprise (63% of live readings 2026-10-15..21). A 0.0 placeholder written while the input is missing (embeddings stale, baseline warming, or no scored frame in the window) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason (embedding_staleness 1.0 when stale); substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "notes": "category=self_monitoring level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error": {
+      "meaning": "NEWS, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors.",
+      "value_kind": "trigger",
+      "rest": "0.0 = no strain news this tick (not strained, or strained with no event due). The strain level is not the value: a 54 h strain reads 0.0 between its news events.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "only written as 1.0 at a strain news event, then carried unwritten for attention's 300 s orienting window; every other tick with a known regulation reading writes 0.0. An unknown, stale or missing regulation reading writes nothing and the node keeps its last value.",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error": {
+      "meaning": "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body.",
+      "value_kind": "trigger",
+      "rest": "0.0 = the street listener is up, a street camera delivered a frame recently, and no event passed the gate in the last 90 s. Written as a real 0.0 every tick, never decayed to it.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "written every tick while measurable; the tick writes nothing while the street listener is not subscribed or no street camera (walkway, doorbell) delivered a frame within 600 s, so the reading ages and attention reads it absent after 180 s.",
+      "declared_consumers": [
+        "orion.substrate.attention_broadcast:world_first_signals"
+      ],
+      "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://inner_state/orion-attention-runtime/field_attention_frame.v1": {
@@ -4239,6 +4888,755 @@
       "notes": "scalar field on BiometricsClusterV1",
       "registry_source": "orion/inner_state_registry.py"
     },
+    "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1": {
+      "schema_id": "AttentionSalienceTraceV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs",
+        "services.orion-thought.app.reverie:build_reverie_context"
+      ],
+      "notes": "cadence=event_gated composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience": {
+      "schema_id": "AttentionSalienceTraceV1",
+      "value_kind": "bucket",
+      "rest": "none: this is a RANK among the loops scored together, not a magnitude. Steps of 1/(2(n-1)); every loop tied -> 0.5. Calm and crisis can read the same.",
+      "sparsity": "event_gated",
+      "absent_means": "no row when no loop was scored (one row per scored loop).",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs",
+        "services.orion-thought.app.reverie:build_reverie_context"
+      ],
+      "prompt_sites": [
+        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1"
+      ],
+      "notes": "scalar field on AttentionSalienceTraceV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1": {
+      "schema_id": "DriveReadingV1",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1#level": {
+      "schema_id": "DriveReadingV1",
+      "value_kind": "level",
+      "rest": "0.0 = nothing new since the last sleep began; reached live at the first check after every sleep (2026-10-10 01:32 UTC). Rises in steps of one new thing's replay weight; due at >= threshold (3.0).",
+      "sparsity": "per_tick",
+      "absent_means": "Redis key expired (TTL 1800 s) or state no_reading: UNKNOWN, and every reader behaves as before the drive existed. Never read as rested or tired.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-dream/drive_reading.rest.v1"
+      ],
+      "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1#rest_level": {
+      "schema_id": "DriveReadingV1",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-dream/drive_reading.rest.v1"
+      ],
+      "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1#threshold": {
+      "schema_id": "DriveReadingV1",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-dream/drive_reading.rest.v1"
+      ],
+      "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.state.v1": {
+      "schema_id": "PhysiologyStateV1",
+      "value_kind": "bucket",
+      "rest": "Each constraint at rest: heat below the 31 C soft line; lane slot-seconds well under slots x 3600 (0 when no lease ran); attention:juniper 0 sends today; claude state clear with 0 limit events. Energy (month-to-date USD) only grows within a month and resets at the local month start: its rest is the month start, not 0.",
+      "sparsity": "per_tick",
+      "absent_means": "A constraint whose source failed, went stale or was never observed has level=None and a no_reading reason (e.g. claude:no_observation while orion-cocreation-signals' COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED is false). Never 0. Redis orion:physiology:latest expired (TTL 360 s): the whole body is unknown.",
+      "declared_consumers": [
+        "services.orion-durable-runs.app.temporal_self_graph:_binding_step -> app.body_binding:plan_constraint -> orion.temporal_self.arcs:_fold_binding (felt state, body economy Organ 5: one `binding` arc per constraint episode whose price.bind_state binds; read by the chat stance cue, the Day letter and recent arcs)"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.want.decision.v1": {
+      "schema_id": "WantDecisionV1",
+      "value_kind": "bucket",
+      "rest": "With every price at 0 a want's net is family_weight x value_rank >= 0, so a want with any hunger is funded (reason net_positive). intensity rests at 0 right after the family's act closes (the discharge resets it).",
+      "sparsity": "event_gated",
+      "absent_means": "No bid was made (Patch C1 wires no producer: rows come only from explicit POST /physiology/bid calls). A decision with reason physiology_unavailable means the body state or act history was unread: unknown, never a fund.",
+      "notes": "cadence=event_gated composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.want.decision.v1#charge": {
+      "schema_id": "WantDecisionV1",
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/physiology.want.decision.v1"
+      ],
+      "notes": "scalar field on WantDecisionV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.want.decision.v1#family_weight": {
+      "schema_id": "WantDecisionV1",
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/physiology.want.decision.v1"
+      ],
+      "notes": "scalar field on WantDecisionV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.want.decision.v1#intensity": {
+      "schema_id": "WantDecisionV1",
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/physiology.want.decision.v1"
+      ],
+      "notes": "scalar field on WantDecisionV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.want.decision.v1#net": {
+      "schema_id": "WantDecisionV1",
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/physiology.want.decision.v1"
+      ],
+      "notes": "scalar field on WantDecisionV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.want.decision.v1#retry_after_sec": {
+      "schema_id": "WantDecisionV1",
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/physiology.want.decision.v1"
+      ],
+      "notes": "scalar field on WantDecisionV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.want.decision.v1#state_age_sec": {
+      "schema_id": "WantDecisionV1",
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/physiology.want.decision.v1"
+      ],
+      "notes": "scalar field on WantDecisionV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/physiology.want.decision.v1#value_rank": {
+      "schema_id": "WantDecisionV1",
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/physiology.want.decision.v1"
+      ],
+      "notes": "scalar field on WantDecisionV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/regulation.state.v1": {
+      "schema_id": "RegulationStateV1",
+      "value_kind": "bucket",
+      "rest": "idle = Juniper quiet >= DREAM_IDLE_MINUTES (45) and no fresh strain input. The common state: 770 of 1080 min on 2026-10-10 in the shipped-reducer replay over saved history (docs/superpowers/evidence/2026-10-10-temporal-self-regulation-core/).",
+      "sparsity": "per_tick",
+      "absent_means": "Redis orion:regulation:latest expired (TTL 360 s, three ticks) or arousal_level unknown (a stale input, or ORION_REGULATION_AROUSAL_ENABLED=false): arousal unavailable, and every reader keeps its pre-arousal behaviour. Never read as idle.",
+      "declared_consumers": [
+        "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per episode from the arousal_transition rows; read by the chat stance cue, the Day letter and the reverie arc block)",
+        "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal (no self-modification proposal while strained)",
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (engaged doubles the cooldown; strain no longer holds it since 2026-11-07, its durable-runs bid decides)",
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._strain_report_once -> scripts.strain_report (strain loop part 3: a strained episode >= 60 min may pass the strained refusal with ONE grounded report, once per episode and once per local day; reads since, reasons, cabinet_temp_c, gpu_queue_depth)",
+        "services.orion-substrate-runtime.app.worker:BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news (strained -> rare budgeted news events on node:substrate.strain for attention; the level itself never competes)",
+        "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)",
+        "services.orion-thought.app.painting_self_start:arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec; moved from orion-proposal-runtime 2026-11-05, ladder retirement PR 2)"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier_skill": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_hi": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "calm = at or above stated_mean - slack (record.py _slack). Wilson upper bound of calibrated_share; not printed. The cue re-checks it with no slack, only once the window's own candidate is no longer miscalibrated (hysteresis lag).",
+      "sparsity": "per_tick",
+      "absent_means": "None = no stated graded bet: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_lo": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "calm = at or below stated_mean + slack (record.py _slack). Wilson lower bound of calibrated_share; not printed. The cue re-checks it with no slack, only once the window's own candidate is no longer miscalibrated (hysteresis lag).",
+      "sparsity": "per_tick",
+      "absent_means": "None = no stated graded bet: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_share": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "calm = stated_mean inside [calibrated_lo - slack, calibrated_hi + slack] (record.py _slack); not judged when the confidence is pooled. Not one value: the share that came true over the same bets as stated_mean. Printed by the cue for a miscalibrated faculty only.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet stated a confidence: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "0.0 = no try failed to start (24 of 40 live, 2026-11-03). Wilson lower bound of the failed-to-execute share; not printed, it decides whether a broken line prints the counts (only when > 0.5).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "None = no attempt in the window: no broken count line.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: the decay-weighted share of graded bets that came true (0-1). For a success faculty 1.0 is the good end; for event and interval faculties the judged number is calibrated_share, not this. Printed by the cue and E2 only for an unreliable faculty.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet in the window: nothing is printed (the cue skips the sentence, E2 prints '?'). Never read as 0 or 1.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: Wilson upper bound of reliability. The cue does not print it; it decides whether an unreliable line prints (only when < 0.5). Saturates at 1.0 on a small or all-success window (11 of 39 live, 2026-11-03).",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet: no unreliable line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: Wilson lower bound of reliability. Not printed: its only reader, the E3 self-finding outreach, was retired 2026-11-10.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: the mean confidence Orion stated before the outcome, over the graded bets that stated one (interval bets: the stated coverage, 0.8). Printed by the cue next to calibrated_share for a miscalibrated faculty.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet stated a confidence: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#weight_graded": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.state.v1": {
+      "schema_id": "SelfMonitorStateV1",
+      "value_kind": "bucket",
+      "rest": "reliable or unknown for every faculty: no faculty fails to execute, works less than half the time, or states a confidence its outcomes contradict. Not the live state: patch 1's report (7 days to 2026-11-03) read 1 broken, 1 unreliable and 8 miscalibrated of 46 faculties, so the bucket can and does leave rest.",
+      "sparsity": "per_tick",
+      "absent_means": "Redis orion:self_monitor:latest expired (TTL 3 h, three hourly evaluations), the organ is off (SELF_MONITOR_ENABLED=false) or durable-runs is down: track record unknown, and every reader behaves as if the organ did not exist (orion.self_monitor.view: unknown changes nothing). A faculty missing from a fresh state is untracked, never reliable.",
+      "declared_consumers": [
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_faculty (one `faculty` arc per stretch a faculty is broken / unreliable / miscalibrated, from the self_monitor node's faculty_status_changed rows; read by the Day letter and recent arcs)"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.state.v1#window_days": {
+      "schema_id": "SelfMonitorStateV1",
+      "declared_consumers": [
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_faculty (one `faculty` arc per stretch a faculty is broken / unreliable / miscalibrated, from the self_monitor node's faculty_status_changed rows; read by the Day letter and recent arcs)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.state.v1"
+      ],
+      "notes": "scalar field on SelfMonitorStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1": {
+      "schema_id": "EquilibriumSnapshotV1",
+      "declared_consumers": [
+        "orion.signals.adapters.equilibrium:EquilibriumAdapter"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1#distress_score": {
+      "schema_id": "EquilibriumSnapshotV1",
+      "value_kind": "level",
+      "rest": "0.0 = every tracked service heartbeating within grace. Mean partial downtime across services, so one dead service among N reads 1/N (live median 0.025, 2026-10-07).",
+      "sparsity": "per_tick",
+      "absent_means": "a service silent past state_retention_sec is purged and stops counting -- a long outage can read calmer.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.signals.adapters.equilibrium:EquilibriumAdapter"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1"
+      ],
+      "notes": "scalar field on EquilibriumSnapshotV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1#grace_multiplier": {
+      "schema_id": "EquilibriumSnapshotV1",
+      "declared_consumers": [
+        "orion.signals.adapters.equilibrium:EquilibriumAdapter"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1"
+      ],
+      "notes": "scalar field on EquilibriumSnapshotV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1#zen_score": {
+      "schema_id": "EquilibriumSnapshotV1",
+      "value_kind": "level",
+      "rest": "1.0; zen = 1 - distress exactly (not independent).",
+      "sparsity": "per_tick",
+      "absent_means": "same purge rule as distress_score.",
+      "polarity": "higher_is_better",
+      "declared_consumers": [
+        "orion.signals.adapters.equilibrium:EquilibriumAdapter"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1"
+      ],
+      "notes": "scalar field on EquilibriumSnapshotV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "notes": "cadence=event_gated composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_high": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_low": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_z": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#min_history_hours": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_high": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "value_kind": "level",
+      "rest": "share of high hours whose next hour had >= 1 outcome event (0-1); no designed rest -- compare with rate_normal.",
+      "sparsity": "event_gated",
+      "absent_means": "None = no high hour with an exposed next hour yet.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_normal": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "value_kind": "level",
+      "rest": "share of normal hours whose next hour had >= 1 outcome event (0-1): the base rate the high hours are compared against.",
+      "sparsity": "event_gated",
+      "absent_means": "None = no normal hour with an exposed next hour yet.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ratio": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "value_kind": "level",
+      "rest": "1.0 = the next hour's outcome is as likely after a high hour as after a normal one (no association). Only shown when the 95% interval [ci_low, ci_high] excludes 1 and both sides have >= min_hours hours.",
+      "rest_range": [
+        1.0,
+        1.0
+      ],
+      "sparsity": "event_gated",
+      "absent_means": "None = no normal-hour events to divide by (the clause then says 'more often' with both rates), or no hours at all. Never treated as 1.",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#se_inflation": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "notes": "cadence=per_tick composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#baseline_ms": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#calls_per_min_mean": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "value_kind": "level",
+      "rest": "the hop's best recent typical latency, in ms -- its own scale per hop, no universal rest value. Moves up only slowly and never while saturation is open/paused; a stated regime_shift re-seeds it. Built from real round trips only: replies the replier marked degraded (row degraded_count) never enter it, and a pool where they outnumber real calls may not move it down (since 2026-10-13; before then a burst of fast GPU-pool refusals dragged it ~10x low).",
+      "sparsity": "event_gated",
+      "absent_means": "None until the hop's first evaluation; otherwise carried unchanged through hours with no evaluation.",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms_start": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#saturation_ratio_p50": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "value_kind": "level",
+      "rest": "1.0 = the hop runs at its best recent speed (calm hops read ~1.0-1.2 by construction, floor follows level). >= 2.0 with >= 250 ms excess opens saturation. Never 0.",
+      "sparsity": "event_gated",
+      "absent_means": "None = no evaluated window this hour (no traffic, or fewer than min_calls pooled). Not calm: an open latency episode is paused, not closed, until an evaluated calm window or 24 h without one (closed went_silent).",
+      "polarity": "higher_is_worse",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p50": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "value_kind": "level",
+      "rest": "0.0 = this hour's windows sit at the guarded baseline; spike needs z >= 3 sustained and >= 250 ms excess.",
+      "sparsity": "event_gated",
+      "absent_means": "None = no evaluated window this hour (see saturation_ratio_p50).",
+      "polarity": "higher_is_worse",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p90": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#mean_signed_deviation": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "value_kind": "level",
+      "rest": "0.0 = reconstruction errors cancel (the 'mixed' direction); positive = channels above what the encoder expects (elevated), negative = below (depressed). 0.0 is also the fallback when attribution_ok is false.",
+      "sparsity": "per_tick",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_error_p95": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_loss": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "value_kind": "level",
+      "rest": "mean squared reconstruction error of the latest 30-row (~60s) window of 37 field channels under the active mood-arc encoder. Calm = near the encoder's held-out median (v4: p50 0.0016, p95 0.0048); never exactly 0. The telemetry_anomaly trigger flags > p95 x EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER (3.0, uncalibrated).",
+      "sparsity": "per_tick",
+      "absent_means": "no row for a minute = scorer not loaded, inside its startup grace, or the buffer has under 30 rows -- not calm.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold_multiplier": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
     "metric://inner_state/orion-field-digester/field_channel_corpus.v1": {
       "schema_id": "FieldChannelCorpusRowV1",
       "notes": "cadence=per_tick composition=no_cognition_consumer",
@@ -4251,8 +5649,16 @@
     },
     "metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score": {
       "schema_id": "FieldStateV1",
+      "value_kind": "level",
+      "rest": "0.0 = every queue at or below its recent normal depth and nothing waited past its expected wait. Scale is 0-10, not 0-1; below 0.5 it is never shown.",
+      "sparsity": "per_tick",
+      "absent_means": "schema default 0.0 -- a row from before the producer ran reads the same as calm.",
+      "polarity": "higher_is_worse",
       "declared_consumers": [
         "orion.hub.turn_orchestrator:_maybe_splice_role_teach_disclosure (hire role-teach queue contention disclosure; Task 8 wires FieldState score into curiosity progress_lines)"
+      ],
+      "prompt_sites": [
+        "orion.curiosity.queue_contention_disclosure:format_queue_contention_progress"
       ],
       "upstream": [
         "metric://inner_state/orion-field-digester/field_state.v1"
@@ -4286,6 +5692,11 @@
     },
     "metric://inner_state/orion-field-digester/field_state.v1#sustained_load_pressure": {
       "schema_id": "FieldStateV1",
+      "value_kind": "level",
+      "rest": "0.0 = no (channel, node) is loaded AND steady this window; otherwise the highest such level, continuous in (0, 1] -- not two-valued.",
+      "sparsity": "designed_sparse",
+      "absent_means": "carried forward unchanged between 30 s recomputes and on a failed window read (no decay).",
+      "polarity": "higher_is_worse",
       "upstream": [
         "metric://inner_state/orion-field-digester/field_state.v1"
       ],
@@ -4304,37 +5715,43 @@
       "notes": "cadence=chat_turn_gated composition=no_cognition_consumer",
       "registry_source": "orion/inner_state_registry.py"
     },
-    "metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime, orion-feedback-runtime, orion-consolidation-runtime/l7_l11_ladder": {
-      "notes": "cadence=multi_service composition=no_cognition_consumer",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1": {
-      "schema_id": "SelfStateV1",
-      "notes": "cadence=per_tick composition=no_cognition_consumer",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_confidence": {
-      "schema_id": "SelfStateV1",
-      "upstream": [
-        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
+    "metric://inner_state/orion-hub/repair_pressure_appraisal.v1": {
+      "schema_id": "RepairPressureAppraisalV1",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.service:EquilibriumService"
       ],
-      "notes": "scalar field on SelfStateV1",
+      "notes": "cadence=chat_turn_gated composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"
     },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_intensity": {
-      "schema_id": "SelfStateV1",
-      "upstream": [
-        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
+    "metric://inner_state/orion-hub/repair_pressure_appraisal.v1#confidence": {
+      "schema_id": "RepairPressureAppraisalV1",
+      "value_kind": "level",
+      "rest": "0.65 at rest on the text-fallback path (a constant, not a measured confidence); min of the active kinds' confidences once any kind fires.",
+      "sparsity": "event_gated",
+      "absent_means": "no row on a turn the appraisal did not run.",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.service:EquilibriumService"
       ],
-      "notes": "scalar field on SelfStateV1",
+      "upstream": [
+        "metric://inner_state/orion-hub/repair_pressure_appraisal.v1"
+      ],
+      "notes": "scalar field on RepairPressureAppraisalV1",
       "registry_source": "orion/inner_state_registry.py"
     },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_surprise": {
-      "schema_id": "SelfStateV1",
-      "upstream": [
-        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
+    "metric://inner_state/orion-hub/repair_pressure_appraisal.v1#level": {
+      "schema_id": "RepairPressureAppraisalV1",
+      "value_kind": "level",
+      "rest": "0.087 = the classifier's confident all-NO floor (every repair kind answered NO); never exactly 0 on the classifier path. 0.45 is the contract's mid.",
+      "sparsity": "event_gated",
+      "absent_means": "no row on a turn the appraisal did not run.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.service:EquilibriumService"
       ],
-      "notes": "scalar field on SelfStateV1",
+      "upstream": [
+        "metric://inner_state/orion-hub/repair_pressure_appraisal.v1"
+      ],
+      "notes": "scalar field on RepairPressureAppraisalV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1": {
@@ -4393,9 +5810,17 @@
     },
     "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score": {
       "schema_id": "AttentionBroadcastProjectionV1",
+      "value_kind": "bucket",
+      "rest": "0.3 = no settled coalition (flickering). 0.6 = transitioning, 0.9 = held > 3 ticks. Three tiers, not a measured stability; the schema default 1.0 is never produced.",
+      "sparsity": "per_tick",
+      "absent_means": "dwell history is in-process, so it resets to 0.3 on a substrate-runtime restart.",
+      "polarity": "higher_is_better",
       "declared_consumers": [
         "services.orion-thought.app.broadcast_reader:read_latest_broadcast",
         "services.orion-thought.app.chain:run_reverie_chain"
+      ],
+      "prompt_sites": [
+        "services.orion-thought.app.reverie:build_reverie_context"
       ],
       "upstream": [
         "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1"
@@ -4419,7 +5844,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
@@ -4428,7 +5852,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#broadcast_lane_age_sec": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4439,8 +5862,12 @@
     },
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#confidence": {
       "schema_id": "AttentionSelfModelV1",
+      "value_kind": "bucket",
+      "rest": "0.3 = no settled coalition. In practice a 3-tier dwell bucket (0.9/0.6/0.3) named 'confidence'; continuous only on the rare field-salience-only branch.",
+      "sparsity": "per_tick",
+      "absent_means": "schema allows None; never None in 5,933 live rows (3 days to 2026-10-10).",
+      "polarity": "higher_is_better",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4452,7 +5879,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#field_overall_salience": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4464,7 +5890,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_bulk_penetration_depth": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4476,7 +5901,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_mean_ratio": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4488,7 +5912,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_organ_distinctness": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4499,8 +5922,11 @@
     },
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear": {
       "schema_id": "AttentionSelfModelV1",
+      "value_kind": "level",
+      "rest": "about 2-3 (far end of the heartbeat profile twice the near end); 'smeared' at >= 0.5. Bounded at SMEAR_DEAD_RATIO=10 since PR #2571 (orion-heartbeat proprioception.py:46,123): healthy readings sit at 0.94-5.5, so a value near 10 is the edge of 'alive'.",
+      "sparsity": "per_tick",
+      "absent_means": "None when the near end is dead: below the 1e-6 floor or far/near > 10 (near end carries < 1/10 of the far end's entanglement). Before #2571 this read 1e4-1.5e6.",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4512,7 +5938,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_std_ratio": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4523,8 +5948,12 @@
     },
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#prediction_error_confidence": {
       "schema_id": "AttentionSelfModelV1",
+      "value_kind": "level",
+      "rest": "about 0.97-0.99: near-ceiling because most domain prediction errors rest at or near 0. 1 - mean error, so only a broad surprise moves it.",
+      "sparsity": "per_tick",
+      "absent_means": "None when no active domain has a fresh reading (each drops after 1800 s, orion/substrate/prediction_error_freshness.py:26).",
+      "polarity": "higher_is_better",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4536,7 +5965,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_bias_max": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4547,14 +5975,51 @@
     },
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_effort_used": {
       "schema_id": "AttentionSelfModelV1",
+      "value_kind": "binary",
+      "rest": "0.0 = no goal or no open loops, so attention ran bottom-up. When top-down fires it almost always spends the full budget (1.0).",
+      "sparsity": "per_tick",
+      "absent_means": "None when the broadcast lane is stale.",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
         "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
       ],
       "notes": "scalar field on AttentionSelfModelV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1": {
+      "schema_id": "FrontierInvocationSignalV1",
+      "declared_consumers": [
+        "orion.autonomy.policy_act:curiosity_strength_from_signals"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1#confidence": {
+      "schema_id": "FrontierInvocationSignalV1",
+      "declared_consumers": [
+        "orion.autonomy.policy_act:curiosity_strength_from_signals"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1"
+      ],
+      "notes": "scalar field on FrontierInvocationSignalV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1#signal_strength": {
+      "schema_id": "FrontierInvocationSignalV1",
+      "value_kind": "level",
+      "rest": "none: a candidate exists only above its source's floor (prediction_error >= 0.55, repair_pressure >= 0.6, open loop >= 0.5). Meaning differs by source: a decayed node prediction error, a repair appraisal level, loop novelty, or a fixed 0.65/0.45 coverage-gap bucket.",
+      "sparsity": "designed_sparse",
+      "absent_means": "no candidate (not a 0.0) when nothing clears its floor. Exception: a seed noted strength:unscored_event (source:reading_link_accepted, an accepted reading link, orion/substrate/link_accepted_seeds.py) is an event with no score and carries exactly 0.0; it is not a level.",
+      "declared_consumers": [
+        "orion.autonomy.policy_act:curiosity_strength_from_signals"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1"
+      ],
+      "notes": "scalar field on FrontierInvocationSignalV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion.autonomy.reducer/autonomy_state_v2": {
@@ -5170,266 +6635,7 @@
       "notes": "organ=equilibrium class=hybrid",
       "registry_source": "orion/signals/registry.py"
     },
-    "metric://organ_signal/graph_cognition/coherence_state#assistant_accountability_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#coherence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#coherence_gap": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#confidence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#explicit_repair_command": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#goal_pressure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#level": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#operational_block": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#repetition_failure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#specificity_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#tension": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#trust_rupture": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#assistant_accountability_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#coherence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#coherence_gap": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#confidence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#explicit_repair_command": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#goal_pressure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#level": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#operational_block": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#repetition_failure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#specificity_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#tension": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#trust_rupture": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#assistant_accountability_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#coherence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#coherence_gap": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#confidence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#explicit_repair_command": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#goal_pressure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#level": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#operational_block": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#repetition_failure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#specificity_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#tension": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#trust_rupture": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
     "metric://organ_signal/graph_cognition/repair_pressure#assistant_accountability_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/repair_pressure#coherence": {
       "upstream_organs": [
         "social_memory"
       ],
@@ -5451,13 +6657,6 @@
       "registry_source": "orion/signals/registry.py"
     },
     "metric://organ_signal/graph_cognition/repair_pressure#explicit_repair_command": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/repair_pressure#goal_pressure": {
       "upstream_organs": [
         "social_memory"
       ],
@@ -5486,13 +6685,6 @@
       "registry_source": "orion/signals/registry.py"
     },
     "metric://organ_signal/graph_cognition/repair_pressure#specificity_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/repair_pressure#tension": {
       "upstream_organs": [
         "social_memory"
       ],

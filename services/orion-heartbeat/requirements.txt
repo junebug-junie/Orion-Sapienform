@@ -9,3 +9,5 @@ scipy>=1.11
 quimb==1.14.0
 # orion.substrate's package __init__ imports graphdb_store, which imports requests.
 requests==2.32.3
+# orion/core/bus/catalog_loader.py (routing.catalog_grammar_producers) reads channels.yaml.
+PyYAML>=6.0

@@ -10,6 +10,10 @@ from scripts import api_routes
 from scripts.substrate_effect_cache import substrate_effect_cache
 
 
+# See conftest.pre_turn_appraisal_off: these tests assume pre-turn appraisal is off.
+pytestmark = pytest.mark.usefixtures("pre_turn_appraisal_off")
+
+
 class _FakeCortex:
     last_req = None
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import http.cookiejar
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -69,8 +71,21 @@ def fetch_ilo_snapshot(
     session.headers.update(
         {"Accept-Encoding": "identity", "Connection": "close", "OData-Version": "4.0"}
     )
+    # Basic auth goes on every request, so a BMC session cookie buys nothing -- and replaying
+    # one breaks hecate's Inspur/AMI BMC: it sets QSESSIONID on the first 200, then answers the
+    # next request carrying it with 401 "Invalid Authentication" (confirmed live 2026-10-09).
+    session.cookies.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
+
+    def get(path: str):
+        # Slash convention differs by firmware: athena's iLO and circe's AMI want the
+        # trailing slash, hecate's older AMI 404s on it Try the slashed form, retry once slashless on 404.
+        resp = session.get(f"{base}{path}/", timeout=timeout_sec)
+        if resp.status_code == 404:
+            resp = session.get(f"{base}{path}", timeout=timeout_sec)
+        return resp
+
     try:
-        chassis_resp = session.get(f"{base}/redfish/v1/Chassis/", timeout=timeout_sec)
+        chassis_resp = get("/redfish/v1/Chassis")
         chassis_resp.raise_for_status()
         members = chassis_resp.json().get("Members") or []
         if not members:
@@ -81,7 +96,7 @@ def fetch_ilo_snapshot(
         fan_pct: Dict[str, float] = {}
         power_watts: Optional[float] = None
 
-        thermal_resp = session.get(f"{base}{chassis_path}/Thermal/", timeout=timeout_sec)
+        thermal_resp = get(f"{chassis_path}/Thermal")
         if thermal_resp.ok:
             data = thermal_resp.json()
             for t in data.get("Temperatures") or []:
@@ -124,13 +139,21 @@ def fetch_ilo_snapshot(
                         fan_pct[name] = max(0.0, min(100.0, pct))
                 # Any other/unknown unit: skip rather than mislabel.
 
-        power_resp = session.get(f"{base}{chassis_path}/Power/", timeout=timeout_sec)
+        power_resp = get(f"{chassis_path}/Power")
         if power_resp.ok:
             controls = power_resp.json().get("PowerControl") or []
-            if controls:
-                watts = controls[0].get("PowerConsumedWatts")
-                if watts is not None:
-                    power_watts = float(watts)
+            # DMTF says array; hecate's older Inspur firmware returns a bare object.
+            control = controls if isinstance(controls, dict) else (controls[0] if controls else {})
+            watts = control.get("PowerConsumedWatts") if isinstance(control, dict) else None
+            if watts is not None:
+                power_watts = float(watts)
+
+        if not (thermal_resp.ok or power_resp.ok):
+            # Both sensor reads refused: a real fault, not "no reading yet" -- say so.
+            return IloSnapshot(
+                fetched_at=time.time(),
+                error=f"thermal_http_{thermal_resp.status_code},power_http_{power_resp.status_code}",
+            )
 
         return IloSnapshot(
             fetched_at=time.time(),
@@ -230,3 +253,37 @@ class IloPoller:
         if snap.error:
             result["ilo_error"] = snap.error
         return result
+
+
+def parse_proxy_bmcs(raw: str) -> Dict[str, Dict[str, str]]:
+    """`'{"hecate": {"host": "https://192.168.1.75", "username": "u", "password": "p"}}'`
+    -> `{"hecate": {...}}`. Empty/garbage -> {}.
+
+    BMCs this node polls ON BEHALF OF another node, same idea as PDU_PROXY_OUTLETS. The
+    single ILO_HOST slot is this node's own BMC; a second machine's BMC needs its own entry.
+    An entry missing host/username/password is dropped (a half-configured poller would only
+    ever report `not_configured`). Raises nothing -- bad input disables proxying, never the
+    collector.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("ilo_proxy_nodes_unparseable")  # never log raw: it holds a password
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("ilo_proxy_nodes_not_an_object type=%s", type(parsed).__name__)
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for node, cfg in parsed.items():
+        node = str(node).strip().lower()
+        if not node or not isinstance(cfg, dict):
+            continue
+        host, user, pw = (str(cfg.get(k) or "").strip() for k in ("host", "username", "password"))
+        if host and user and pw:
+            out[node] = {"host": host, "username": user, "password": pw}
+        else:
+            logger.warning("ilo_proxy_incomplete node=%s", node)
+    return out

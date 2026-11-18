@@ -1,0 +1,287 @@
+{
+  "captured_at": "2026-10-13",
+  "window": "24h ending at query time (2026-10-13)",
+  "sources": {
+    "fs": "substrate_field_state.field_json -> 'node_vectors' -> <node> -> <channel>, generated_at > now()-24h, rows where the key is present (carried-forward values included)",
+    "hist": "substrate_node_prediction_error_history.value, observed_at > now()-24h (one row per write)"
+  },
+  "query": "min, percentile_cont(0.05/0.5/0.95), max, count(distinct), avg((v=0)::int) grouped per series; read-only psql on orion-athena-sql-db/conjourney",
+  "seven_day_checks": {
+    "vision_organ (fs, since channel first appeared 2026-10-10 22:35 UTC)": {
+      "rows": 123397,
+      "max_vision_frame_staleness": 0.0,
+      "max_vision_processing_failure_pressure": 0.0,
+      "frac_exact_zero": 1.0
+    },
+    "hist:node:substrate.cabinet": {
+      "rows": 13371,
+      "max": 1.0,
+      "frac_exact_zero": 0.9843
+    }
+  },
+  "series": {
+    "fs:node:substrate.biometrics.prediction_error": {
+      "rows": 41048,
+      "min": 0.0,
+      "p05": 0.0003,
+      "p50": 0.0176,
+      "p95": 0.0755,
+      "max": 0.2375,
+      "distinct": 920,
+      "frac_exact_zero": 0.0053
+    },
+    "fs:node:substrate.bus_synaptic.prediction_error": {
+      "rows": 41048,
+      "min": 0.0,
+      "p05": 0.0099,
+      "p50": 0.0299,
+      "p95": 0.0725,
+      "max": 0.1818,
+      "distinct": 640,
+      "frac_exact_zero": 0.0018
+    },
+    "fs:node:substrate.chat.prediction_error": {
+      "rows": 41048,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.726,
+      "max": 1.0,
+      "distinct": 16,
+      "frac_exact_zero": 0.89
+    },
+    "fs:node:substrate.codebase.prediction_error": {
+      "rows": 41048,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.1175,
+      "max": 1.0,
+      "distinct": 10,
+      "frac_exact_zero": 0.9152
+    },
+    "fs:node:substrate.execution.prediction_error": {
+      "rows": 41048,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.3965,
+      "max": 1.0,
+      "distinct": 187,
+      "frac_exact_zero": 0.9
+    },
+    "fs:node:substrate.perception.prediction_error": {
+      "rows": 41048,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.3574,
+      "max": 1.0,
+      "distinct": 882,
+      "frac_exact_zero": 0.6144
+    },
+    "fs:node:substrate.route.prediction_error": {
+      "rows": 41048,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.5,
+      "max": 0.5,
+      "distinct": 3,
+      "frac_exact_zero": 0.6756
+    },
+    "fs:node:substrate.vision_organ.vision_frame_staleness": {
+      "rows": 41048,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "distinct": 1,
+      "frac_exact_zero": 1.0
+    },
+    "fs:node:substrate.vision_organ.vision_processing_failure_pressure": {
+      "rows": 41048,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "distinct": 1,
+      "frac_exact_zero": 1.0
+    },
+    "hist:node:substrate.biometrics": {
+      "rows": 1974,
+      "min": 1.4e-05,
+      "p05": 0.00034995,
+      "p50": 0.018565,
+      "p95": 0.0793302,
+      "max": 0.209864,
+      "distinct": 1913,
+      "frac_exact_zero": 0.0
+    },
+    "hist:node:substrate.bus_synaptic": {
+      "rows": 1975,
+      "min": 0.0,
+      "p05": 0.009868,
+      "p50": 0.02994,
+      "p95": 0.070539,
+      "max": 0.181818,
+      "distinct": 893,
+      "frac_exact_zero": 0.002
+    },
+    "hist:node:substrate.cabinet": {
+      "rows": 1975,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "distinct": 1,
+      "frac_exact_zero": 1.0
+    },
+    "hist:node:substrate.chat": {
+      "rows": 59,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.7806043,
+      "max": 1.0,
+      "distinct": 16,
+      "frac_exact_zero": 0.7119
+    },
+    "hist:node:substrate.codebase": {
+      "rows": 99,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.494687,
+      "max": 1.0,
+      "distinct": 10,
+      "frac_exact_zero": 0.8889
+    },
+    "hist:node:substrate.execution": {
+      "rows": 388,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.8174875,
+      "max": 1.0,
+      "distinct": 74,
+      "frac_exact_zero": 0.7732
+    },
+    "hist:node:substrate.harness_closure": {
+      "rows": 10,
+      "min": 0.65,
+      "p05": 0.65,
+      "p50": 0.65,
+      "p95": 0.65,
+      "max": 0.65,
+      "distinct": 1,
+      "frac_exact_zero": 0.0
+    },
+    "hist:node:substrate.perception": {
+      "rows": 1975,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.3583512,
+      "max": 1.0,
+      "distinct": 731,
+      "frac_exact_zero": 0.6192
+    },
+    "hist:node:substrate.route": {
+      "rows": 91,
+      "min": 0.0,
+      "p05": 0.0,
+      "p50": 0.0,
+      "p95": 0.5,
+      "max": 0.5,
+      "distinct": 3,
+      "frac_exact_zero": 0.7582
+    }
+  },
+  "rest_range_chosen": {
+    "vision_frame_staleness": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "primary_series": "fs:node:substrate.vision_organ.vision_frame_staleness"
+    },
+    "vision_processing_failure_pressure": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "primary_series": "fs:node:substrate.vision_organ.vision_processing_failure_pressure"
+    },
+    "node:substrate.bus_synaptic/prediction_error": {
+      "rest_range": [
+        0.0,
+        0.03
+      ],
+      "primary_series": "fs:node:substrate.bus_synaptic.prediction_error"
+    },
+    "node:substrate.harness_closure/prediction_error": {
+      "rest_range": null,
+      "primary_series": "hist:node:substrate.harness_closure"
+    },
+    "node:substrate.cabinet/prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "primary_series": "hist:node:substrate.cabinet"
+    },
+    "node:substrate.perception/prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "primary_series": "fs:node:substrate.perception.prediction_error"
+    },
+    "node:substrate.execution/prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "primary_series": "fs:node:substrate.execution.prediction_error"
+    },
+    "node:substrate.chat/prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "primary_series": "fs:node:substrate.chat.prediction_error"
+    },
+    "node:substrate.codebase/prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "primary_series": "fs:node:substrate.codebase.prediction_error"
+    },
+    "node:substrate.route/prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "primary_series": "fs:node:substrate.route.prediction_error"
+    },
+    "node:substrate.biometrics/prediction_error": {
+      "rest_range": [
+        0.0,
+        0.03
+      ],
+      "primary_series": "fs:node:substrate.biometrics.prediction_error"
+    }
+  },
+  "contradictions": [
+    "bus_synaptic: prose rest 'about 0.01-0.03' but live median 0.0299 and p95 0.0725 -- about half of calm-looking readings sit at or above the prose top. Band kept at 0.03, not widened.",
+    "biometrics: prose rest 'about 0.02-0.03' but live median 0.0176 (below the prose floor). Band [0.0, 0.03] covers it since 0.0 is also designed calm.",
+    "route/execution/chat/codebase/cabinet: prose cites zero shares (87%/72%/69%/91%/97%) from 3d of history to 2026-10-10; 24h live field-state shares are 68%/90%/89%/92%/100%. Route is notably lower (carried-forward 0.5 reading for ~32% of ticks).",
+    "vision_frame_staleness and vision_processing_failure_pressure: exactly 0.0 on every one of 123,397 rows since the channels appeared (2026-10-10). Consistent with rest, but a field pinned at zero cannot be told from a stuck writer by this data alone -- UNVERIFIED that either channel can move.",
+    "cabinet: 100% zero in 24h (prose says 97%); 98.4% over 7d with max 1.0, so the trigger has fired recently."
+  ]
+}

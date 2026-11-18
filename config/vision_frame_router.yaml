@@ -38,7 +38,10 @@ defaults:
       want_embeddings: true
 
 global:
-  max_inflight_total: 2
+  # 3, was 2 (2026-10-10): cam0 face checks went from every 30s to every 5s, and an identity job
+  # counts toward this cap. At 2, cam0's detection + its identity job filled both slots and
+  # carbon/walkway frames dropped with global_inflight_limit about half the time cam0 saw a person.
+  max_inflight_total: 3
   # When true, frames at global inflight cap skip with reason global_inflight_limit.
   # When false, same drop behavior but reason global_inflight_backpressure (no queue in MVP).
   drop_when_busy: true
@@ -47,27 +50,79 @@ global:
 streams:
   cam0:
     enabled: true
-    # Opt-in identity_face secondary dispatch (2026-08-26, docs/superpowers/
-    # specs/2026-08-21-...-design.md section 4/6.1) -- deliberately NOT in
-    # defaults.triggered above. This fully overrides defaults.triggered
-    # (resolve_stream_policy's shallow merge replaces the whole `triggered`
-    # key, not a per-field merge), so it repeats defaults.triggered's other
-    # fields rather than silently losing them. cam0 is the interior room
-    # camera; carbon (Juniper's laptop webcam) and every other camera stay
-    # opted out by default -- see policy.py's decide_identity docstring for
-    # why a global default would be wrong here.
-    triggered:
+    # The office camera (interior Reolink, the room where Juniper works). Since
+    # 2026-11-04 it is captured by orion-vision-retina-office from the 2560x1920
+    # main stream at 2 fps, no longer by orion-vision-edge's 640x480 substream
+    # (Juniper: "it should do most of the things the walkway cam does").
+    # Walkway parity: person/dog crops get body + face vectors in both tiers
+    # (individuals, naming asks, person learning), and captions come from the
+    # Qwen lane (caption_dispatch below) instead of the host's BLIP. Both tiers
+    # are spelled out in full: resolve_stream_policy's shallow merge replaces
+    # the whole `baseline`/`triggered` key, and `request` wholesale.
+    baseline:
       task_type: retina_fast
-      trigger_labels: [person]
-      trigger_ttl_seconds: 8
-      min_seconds_between_tasks_per_camera: 2
+      # 2 fps from the retina: every 5th frame, at most one task per 5 s --
+      # the same GPU budget the edge's 15 fps feed had (every 10th, 5 s).
+      every_n_frames: 5
+      min_seconds_between_tasks_per_camera: 5
       max_inflight_per_camera: 1
       request:
-        want_caption: true
+        want_caption: false
         want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog]
+    # Opt-in identity_face secondary dispatch (2026-08-26, docs/superpowers/
+    # specs/2026-08-21-...-design.md section 4/6.1) -- deliberately NOT in
+    # defaults.triggered above; see policy.py's decide_identity docstring for
+    # why a global default would be wrong here. carbon stays opted out.
+    triggered:
+      task_type: retina_fast
+      trigger_labels: [person, dog]
+      trigger_ttl_seconds: 8
+      # 5, not the walkway's 2 (2026-11-04 review): Juniper is in view for
+      # hours, and each task now also embeds crops and faces on the shared
+      # GPU. One task per 5 s still catches every arrival (TTL 8 s).
+      min_seconds_between_tasks_per_camera: 5
+      max_inflight_per_camera: 1
+      request:
+        want_caption: false
+        want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog]
       identity_dispatch:
         enabled: true
-        min_seconds_between_dispatch: 30
+        # 5s, was 30s (2026-10-10, Juniper: "we need to loosen that"): at 30s a 45-second wave
+        # at the camera got exactly one face check. identity_face inference is 0.06-0.14 s on
+        # cuda:0, so ~9 checks per short visit is cheap.
+        min_seconds_between_dispatch: 5
+        # No still_url (2026-11-04): the frame itself is the 2560x1920 main stream now. The
+        # 2026-10-11 still from orion-vision-edge existed only because the edge fed the
+        # 640x480 substream (Juniper's face at the desk was ~25 px there).
+    # Activity captions from the Qwen lane (same mechanism as the walkway).
+    # Asked only when the detector saw a person or dog, cropped to the boxes so
+    # the VLM sees the person, not the furniture. Juniper sits still for hours:
+    # the same-scene skip below turns a seated person into one caption per
+    # same_scene_ttl_sec instead of one every 8 s.
+    caption_dispatch:
+      enabled: true
+      tiers: [triggered]
+      labels: [person, dog]
+      min_score: 0.25
+      min_seconds_between_dispatch: 8
+      same_scene_iou: 0.5
+      same_scene_ttl_sec: 300
+      max_inflight: 1
+      # Equal to orion-vision-window's WINDOW_CAPTION_MAX_AGE_SEC.
+      timeout_sec: 20
+      crop_to_detections: true
+      crop_pad: 0.5
+      # Describe, never an existence question: Qwen2-VL-2B answers "no" to
+      # "is there a person" even when one is plainly visible (walkway,
+      # 2026-10-16). Asking what the person is doing names the activity.
+      prompt: >-
+        In one short sentence, describe what the person in this image is doing.
 
   carbon:
     enabled: true
@@ -92,7 +147,7 @@ streams:
     # field), so every sibling field is repeated here on purpose -- same
     # reason cam0's block below repeats them.
     #
-    # min_seconds_between_dispatch is 60 here, not cam0's 30: carbon is a
+    # min_seconds_between_dispatch is 60 here, not cam0's 5: carbon is a
     # webcam pointed at one seated person for hours, so a face that matched
     # once is overwhelmingly likely to still match; cam0 is a room camera
     # where a genuinely new person can walk in.
@@ -115,21 +170,27 @@ streams:
     # docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md
     # Patch 0 + idea 1 + idea 8). Adapted from porch_eye (below), which never
     # had a camera and whose `trigger_labels: []` meant it never reached the
-    # captioned tier. Captured by the second orion-vision-edge instance
-    # (STREAM_ID=walkway).
+    # captioned tier. Captured at full resolution by its own
+    # orion-vision-retina instance (orion-vision-retina-walkway, stream_id=walkway).
     #
     # - retina_fast on both tiers so detection, the whole-frame embedding
     #   (perception prediction error) and crop embeddings all run; captions
     #   only on the triggered tier.
     # - want_crop_embeddings: the host zones every box in crop_embedding_labels
-    #   (config/vision_zones.yaml) and embeds its crop unless the zone is the
-    #   patio. Feeds orion-vision-window -> orion:vision:crops:sql-write ->
+    #   (config/vision_zones.yaml) and embeds its crop (patio included since
+    #   2026-10-15). Feeds orion-vision-window -> orion:vision:crops:sql-write ->
     #   the individuals reducer.
-    # - trigger_labels [person, dog]: people and dogs get captions. The
+    # - want_crop_faces (2026-10-15, Juniper): each embedded person crop also
+    #   gets a face vector + face thumbnail (identity_face's facenet models),
+    #   so the reducer can tell people apart by face. Not Juniper's identity
+    #   check: nothing here touches the enrolled gallery.
+    # - trigger_labels [person, dog]: people and dogs raise the triggered
+    #   tier (faster cadence, captions -- see caption_dispatch). The
     #   triggered tier is ALSO selected while Redis key
     #   orion:vision:expect:walkway exists (expectation steering, idea 8; see
     #   services/orion-vision-frame-router/app/expectation.py).
-    # - No identity_dispatch: faces are never computed on this camera.
+    # - No identity_dispatch: Juniper's whole-frame identity check stays on
+    #   cam0/carbon; walkway faces come only from want_crop_faces above.
     #
     # Both tiers are spelled out in full: resolve_stream_policy's shallow merge
     # replaces the whole `baseline`/`triggered` key, and the triggered tier
@@ -143,6 +204,7 @@ streams:
         want_caption: false
         want_embeddings: true
         want_crop_embeddings: true
+        want_crop_faces: true
         crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
         prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
     triggered:
@@ -152,11 +214,140 @@ streams:
       min_seconds_between_tasks_per_camera: 2
       max_inflight_per_camera: 1
       request:
-        want_caption: true
+        # false (2026-10-15): walkway captions come from caption_dispatch
+        # below (Qwen2-VL), not the athena host's BLIP, which invented "a
+        # camera placed on a wooden bench in a garden" for dark empty frames.
+        want_caption: false
         want_embeddings: true
         want_crop_embeddings: true
+        want_crop_faces: true
         crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
         prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    # Tiled full-resolution detection (2026-10-15, Juniper). Far-sidewalk
+    # people are ~50 px tall in the 2560x1920 frame and ~21 px after the
+    # detector's own downscale, so most were missed. When enabled, at most
+    # one walkway task per min_seconds_between carries
+    # request.detect_tiles: true and the athena host runs GroundingDINO on
+    # overlapping full-resolution tiles as well as the whole frame (tile
+    # geometry: config/vision_profiles.yaml retina_detect_open_vocab
+    # tile_*). Both tiers: in daylight the patio skeleton keeps this stream
+    # on the triggered tier most of the time. Spaced out because a tiled
+    # task costs ~2.6 extra detector passes on the same P4 that serves cam0
+    # (already ~100% busy: walkway ~5.4 s + cam0 ~2.3 s per ~8 s cycle).
+    # 20 s = about one walkway task in three, while a far-sidewalk walker
+    # stays in view for ~30 s or more. Side effect: a person only the
+    # tiles can see appears in detections on tiled frames and not on the
+    # frames between (the 8 s trigger TTL lapses in between).
+    tiled_detect:
+      enabled: true
+      tiers: [baseline, triggered]
+      min_seconds_between: 20
+    # Walkway captions from the Qwen2-VL lane (2026-10-15, Juniper). After a
+    # triggered-tier detect reply that found at least one of `labels` at
+    # >= min_score, the router sends the same frame to
+    # CHANNEL_CAPTION_INTAKE (orion-vision-host docker-compose.circe-qwen.yml)
+    # with this prompt, cropped to the detector's boxes (2026-10-16). The
+    # detections ride along (meta.source_objects) and orion-vision-window
+    # drops any walkway caption whose detections are all stationary props or
+    # absent (WINDOW_CAPTION_GATE_*). Own lane cap and clock: never takes an
+    # athena host slot, never holds up detection. A busy/slow/down lane is
+    # just no caption.
+    caption_dispatch:
+      enabled: true
+      tiers: [triggered]
+      labels: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+      min_score: 0.25
+      # Qwen2-VL-2B on the T10 takes ~2-4 s per frame; one caption per 8 s
+      # while someone is on the walkway keeps the lane mostly free for
+      # orion-thought's dream re-observation.
+      min_seconds_between_dispatch: 8
+      # Same scene, no new caption: when every gate box matches (same label,
+      # IoU >= same_scene_iou) a box from the last captioned frame within
+      # same_scene_ttl_sec, skip. The patio skeleton reads as `person` all
+      # night; without this it costs a VLM call every 8 s.
+      same_scene_iou: 0.5
+      same_scene_ttl_sec: 300
+      max_inflight: 1
+      # Equal to orion-vision-window's WINDOW_CAPTION_MAX_AGE_SEC, so a reply
+      # the router counts as timed out is also one the window drops as stale.
+      timeout_sec: 20
+      # Crop to the detector's boxes before asking (host app/caption_crop.py).
+      # The frame is 2560x1920; the VLM reads it at ~1 MP, where a person or
+      # car down the street is a few pixels. crop_pad = margin around the
+      # boxes' union, as a fraction of its larger side.
+      crop_to_detections: true
+      crop_pad: 0.5
+      # 2026-10-16 (live, clean frames): the 10-15 prompt -- "Are there any
+      # people, animals or vehicles in this image? If there are none, reply
+      # with only: nothing notable. ..." -- got "nothing notable" on 24 of 24
+      # walkway tasks (10-15: 44 of 50), including frames where the detector
+      # saw a person, a car or the mail truck. Qwen2-VL-2B answers "no" to an
+      # existence question even on a 448 px crop of a plainly visible car,
+      # and describes the same crop correctly when asked to describe it. The
+      # 10-15 eval tested empty frames only. So: no existence question and
+      # no null answer. The router only asks when the detector found a gate
+      # label; orion-vision-window's detector-agreement gate still decides
+      # whether the caption becomes narrative.
+      prompt: >-
+        In one short sentence, describe what is happening in this image.
+
+  doorbell:
+    enabled: true
+    # Ring battery doorbell at the front door (2026-10-17). Captured by its own
+    # orion-vision-retina instance (orion-vision-retina-doorbell,
+    # stream_id=doorbell, RETINA_SOURCE_TYPE=ring): no continuous stream, only
+    # a ~15 s live-view burst at 2 frames/s after each Ring motion/ding event.
+    # Same treatment as the walkway (detection, frame + crop embeddings, crop
+    # faces, Qwen captions on the triggered tier), with changes for a sparse
+    # stream:
+    # - every_n_frames: 1 and shorter spacing, so a 30-frame burst still gets
+    #   several tasks; the walkway's 5 could skip most of a short burst.
+    # - No tiled_detect: its tile band is walkway geometry (far sidewalk), and
+    #   a doorbell sees people up close.
+    # - No identity_dispatch: same as the walkway, Juniper's whole-frame
+    #   identity check stays on cam0/carbon.
+    baseline:
+      task_type: retina_fast
+      every_n_frames: 1
+      min_seconds_between_tasks_per_camera: 2
+      max_inflight_per_camera: 1
+      request:
+        want_caption: false
+        want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
+        prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    triggered:
+      task_type: retina_fast
+      trigger_labels: [person, dog]
+      trigger_ttl_seconds: 8
+      min_seconds_between_tasks_per_camera: 1
+      max_inflight_per_camera: 1
+      request:
+        want_caption: false
+        want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
+        prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    tiled_detect:
+      enabled: false
+    caption_dispatch:
+      enabled: true
+      tiers: [triggered]
+      labels: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+      min_score: 0.25
+      # A burst lasts ~15 s: one caption per 5 s gives about three per event.
+      min_seconds_between_dispatch: 5
+      same_scene_iou: 0.5
+      same_scene_ttl_sec: 300
+      max_inflight: 1
+      timeout_sec: 20
+      crop_to_detections: true
+      crop_pad: 0.5
+      prompt: >-
+        In one short sentence, describe what is happening in this image.
 
 cameras:
   mock-cam-01:

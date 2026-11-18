@@ -12,7 +12,33 @@ from orion.gpu_pool.scheduler import (
 )
 
 T0 = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
-CFG = load_pool_config()
+def _legacy_two_worker_fixture():
+    """Retain the scheduler's generic two-resident cases after GPU3 consolidation."""
+    cfg = load_pool_config()
+    roles = dict(cfg.roles)
+    roles["metacog"] = roles["fast"].model_copy(update={"owner": ["metacog", "fast"], "port": 8012})
+    roles["fast"] = roles["fast"].model_copy(update={"owner": ["metacog", "fast"]})
+    classes = dict(cfg.classes)
+    classes["metacog"] = classes["metacog"].model_copy(
+        update={"roles": ["metacog", *classes["metacog"].roles]})
+    classes["fast"] = classes["fast"].model_copy(
+        update={"roles": ["fast", "metacog", *classes["fast"].roles[1:]]})
+    classes["operator_metacog"] = classes["operator_metacog"].model_copy(update={"roles": ["metacog"]})
+    return cfg.model_copy(update={"roles": roles, "classes": classes})
+
+
+CFG = _legacy_two_worker_fixture()
+
+
+def cold(cfg, seat="agent-gpu2"):
+    """``cfg`` with ``seat``'s warm standby off: load on demand, unload when idle, drain at
+    max_hold_sec -- the behaviour these older tests pin (test_warm_standby.py pins warm)."""
+    spec = cfg.roles[seat]
+    roles = {**cfg.roles, seat: spec.model_copy(update={"swap": spec.swap.model_copy(update={"standby": "off"})})}
+    return cfg.model_copy(update={"roles": roles})
+
+
+COLD = cold(CFG)
 
 
 def live(**overrides):
@@ -20,6 +46,7 @@ def live(**overrides):
         "chat": RoleLive("chat", True, 1, 65536, True),
         "agent": RoleLive("agent", True, 1, 131072, False),
         "agent-gpu2": RoleLive("agent-gpu2", True, 1, 131072, False),
+        "agent-deep": RoleLive("agent-deep", True, 1, 131072, False),
         "metacog": RoleLive("metacog", True, 4, 4096, False),
         "fast": RoleLive("fast", True, 4, 4096, False),
         "world": RoleLive("world", True, 2),
@@ -46,8 +73,8 @@ def lease(work_class, status="queued", role=None, priority="system", age=0, **kw
                      status=status, role=role, created_at=T0 - timedelta(seconds=age), **kw)
 
 
-def run(leases, roles=None, crds=None, now=T0):
-    return schedule(CFG, roles or live(), crds or cards(), leases, now)
+def run(leases, roles=None, crds=None, now=T0, cfg=CFG):
+    return schedule(cfg, roles or live(), crds or cards(), leases, now)
 
 
 def grants(decisions):
@@ -232,7 +259,7 @@ def test_cooldown_blocks_reload():
 def test_idle_seat_unloads():
     idle = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"},
                                last_active_at=T0 - timedelta(seconds=CFG.defaults.swap_idle_unload_sec)))
-    assert [(u.role, u.reason) for u in of(SwapUnload, run([], crds=idle))] == [("agent-gpu2", "idle")]
+    assert [(u.role, u.reason) for u in of(SwapUnload, run([], crds=idle, cfg=COLD))] == [("agent-gpu2", "idle")]
 
 
 def _launchable_experiment():
@@ -379,10 +406,12 @@ def test_unknown_contexts_never_count_as_too_big():
 
 
 def test_a_down_roles_last_seen_context_only_stops_a_false_too_big():
-    """agent (131072) is restarting and agent-gpu2 is an unloaded swap seat; chat (65536, lent) is
-    the only live role of the agent class. A 100k lease must wait for agent -- not be refused as
-    bigger than the class -- and the remembered size must not trigger a swap load on its own."""
-    down = live(agent=RoleLive("agent", False, 0, None), **{"agent-gpu2": RoleLive("agent-gpu2", False, 0, None)})
+    """agent (131072) is restarting, agent-gpu2 is an unloaded swap seat and agent-deep (hecate) is
+    down; chat (65536, lent) is the only live role of the agent class. A 100k lease must wait for
+    agent -- not be refused as bigger than the class -- and the remembered size must not trigger a
+    swap load on its own."""
+    down = live(agent=RoleLive("agent", False, 0, None), **{"agent-gpu2": RoleLive("agent-gpu2", False, 0, None),
+                                                          "agent-deep": RoleLive("agent-deep", False, 0, None)})
     big = lease("agent", lease_id="a", min_ctx_tokens=100_000)
     refused = schedule(CFG, down, cards(), [big], T0)
     assert [u.reason for u in of(Unavailable, refused)] == ["min_ctx_exceeds_class:65536"]

@@ -16,11 +16,6 @@ novelty_score={{ appr.get('novelty_score', 'null') }}
 shift_kind={{ appr.get('shift_kind', '?') }}
 confidence={{ appr.get('confidence', '?') }}
 
-{% if metadata.spark_meta.self_state_v1 %}
-=== ORGANISM CONDITION (SelfStateV1 snapshot) ===
-{{ metadata.spark_meta.self_state_v1 }}
-{% endif %}
-
 === ANALYSIS TASK ===
 1. Analyze why the turn changed relative to the baseline (reference shift_kind and novelty_score).
 2. Assess the "subjective experience" of this turn.

@@ -12,7 +12,7 @@ from app.ingest.state_deltas import Perturbation, delta_to_perturbations
 def _make_node_biometrics_delta(
     *,
     operation: str = "update",
-    node_id: str = "atlas",
+    node_id: str = "athena",
     pressure_hints: dict | None = None,
     availability_status: str = "online",
     expected_online: bool | None = True,
@@ -48,7 +48,7 @@ def test_node_biometrics_delta_produces_memory_thermal_disk_pressure() -> None:
     assert channels["memory_pressure"] == 0.61
     assert channels["thermal_pressure"] == 0.33
     assert channels["disk_pressure"] == 0.12
-    assert all(p.node_id == "node:atlas" for p in perturbations)
+    assert all(p.node_id == "node:athena" for p in perturbations)
 
 
 def test_node_biometrics_delta_still_produces_gpu_and_cpu_pressure() -> None:
@@ -142,7 +142,7 @@ def test_memory_thermal_disk_perturbations_do_not_saturate_across_repeated_delta
         edges=[],
     )
     apply_perturbations(state, perturbations)
-    node_vec = state.node_vectors["node:atlas"]
+    node_vec = state.node_vectors["node:athena"]
     assert node_vec["memory_pressure"] == 0.3
     assert node_vec["thermal_pressure"] == 0.3
     assert node_vec["disk_pressure"] == 0.3
@@ -158,7 +158,7 @@ def test_old_add_mode_would_have_saturated_gpu_and_cpu_pressure() -> None:
     # ceiling in 16.60%/12.98% of ~134k live corpus rows, vs. 0.01%/0.00%
     # for the already-mode="replace" cortex_exec_step_load/execution_friction).
     old_style_perturbations = [
-        Perturbation(node_id="node:atlas", channel="gpu_pressure", intensity=0.4, label=f"delta_{i}")
+        Perturbation(node_id="node:athena", channel="gpu_pressure", intensity=0.4, label=f"delta_{i}")
         for i in range(18)
     ]
     state = FieldStateV1(
@@ -171,7 +171,7 @@ def test_old_add_mode_would_have_saturated_gpu_and_cpu_pressure() -> None:
     apply_perturbations(state, old_style_perturbations)
     # 18 additions of 0.4 would sum to 7.2 -- clamped to the ceiling,
     # nowhere near the real 0.4 intensity.
-    assert state.node_vectors["node:atlas"]["gpu_pressure"] == 1.0
+    assert state.node_vectors["node:athena"]["gpu_pressure"] == 1.0
 
 
 def test_node_biometrics_delta_produces_power_disk_capacity_fan_pressure() -> None:
@@ -187,7 +187,7 @@ def test_node_biometrics_delta_produces_power_disk_capacity_fan_pressure() -> No
     assert channels["power_pressure"] == 0.55
     assert channels["disk_capacity_pressure"] == 0.87
     assert channels["fan_pressure"] == 0.29
-    assert all(p.node_id == "node:atlas" for p in perturbations)
+    assert all(p.node_id == "node:athena" for p in perturbations)
 
 
 def test_power_disk_capacity_fan_perturbations_use_replace_mode() -> None:
@@ -222,7 +222,7 @@ def test_power_disk_capacity_fan_perturbations_do_not_saturate_across_repeated_d
         edges=[],
     )
     apply_perturbations(state, perturbations)
-    node_vec = state.node_vectors["node:atlas"]
+    node_vec = state.node_vectors["node:athena"]
     assert node_vec["power_pressure"] == 0.3
     assert node_vec["disk_capacity_pressure"] == 0.3
     assert node_vec["fan_pressure"] == 0.3
@@ -245,7 +245,7 @@ def test_node_biometrics_delta_produces_stability() -> None:
     perturbations = delta_to_perturbations(delta)
     channels = {p.channel: p.intensity for p in perturbations}
     assert channels["stability"] == 0.91
-    assert all(p.node_id == "node:atlas" for p in perturbations)
+    assert all(p.node_id == "node:athena" for p in perturbations)
 
 
 def test_stability_perturbation_uses_replace_mode() -> None:
@@ -274,7 +274,7 @@ def test_stability_perturbation_does_not_saturate_across_repeated_deltas() -> No
         edges=[],
     )
     apply_perturbations(state, perturbations)
-    assert state.node_vectors["node:atlas"]["stability"] == 0.7
+    assert state.node_vectors["node:athena"]["stability"] == 0.7
 
 
 def test_node_biometrics_delta_missing_stability_hint_produces_no_perturbation() -> None:
@@ -300,7 +300,7 @@ def test_gpu_and_cpu_perturbations_do_not_saturate_across_repeated_deltas() -> N
         edges=[],
     )
     apply_perturbations(state, perturbations)
-    node_vec = state.node_vectors["node:atlas"]
+    node_vec = state.node_vectors["node:athena"]
     assert node_vec["gpu_pressure"] == 0.4
     assert node_vec["cpu_pressure"] == 0.4
 
@@ -344,7 +344,7 @@ def test_node_biometrics_delta_produces_cabinet_sensor_perturbations() -> None:
     channels = {p.channel: p.intensity for p in perturbations}
     for key in CABINET_HINT_KEYS:
         assert channels[key] == pressure_hints[key]
-    assert all(p.node_id == "node:atlas" for p in perturbations)
+    assert all(p.node_id == "node:athena" for p in perturbations)
 
 
 def test_cabinet_sensor_perturbations_use_replace_mode() -> None:
@@ -395,7 +395,7 @@ def test_cabinet_ambient_audio_perturbations_use_replace_mode_and_do_not_saturat
         edges=[],
     )
     apply_perturbations(state, perturbations)
-    node_vec = state.node_vectors["node:atlas"]
+    node_vec = state.node_vectors["node:athena"]
     assert node_vec["cabinet_ambient_audio_activity"] == 0.63
     assert node_vec["cabinet_ambient_audio_staleness"] == 1.0
 
@@ -416,6 +416,6 @@ def test_cabinet_sensor_perturbations_do_not_saturate_across_repeated_deltas() -
         edges=[],
     )
     apply_perturbations(state, perturbations)
-    node_vec = state.node_vectors["node:atlas"]
+    node_vec = state.node_vectors["node:athena"]
     assert node_vec["cabinet_climate_activity"] == 0.3
     assert node_vec["cabinet_em_activity"] == 0.3

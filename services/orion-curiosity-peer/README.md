@@ -1,66 +1,73 @@
 # orion-curiosity-peer
 
-Read-only contractor peer for Orion curiosity / self-inquiry runs.
+Read-only contractor peer for Orion curiosity / self-inquiry runs. **Claude
+is the only peer.**
 
-Consumes `HelpRequestV1` on `orion:curiosity:help:request`, runs a
-Cursor Agent CLI investigation (`agent -p --mode ask`, Claude room
-fallback when Cursor desktop auth is dry), and publishes `PeerBriefV1`
-via `persist_peer_brief`. Bus publish always runs (sql-writer /
-Postgres consumers). Worldview `:PeerBrief` MERGE runs only when
-`ORION_CURIOSITY_GRAPH_HOST` + port + user + password are set; otherwise
-the worker logs `curiosity_peer_persist_graph_unconfigured` and continues
-bus-only. Orion alone still writes `:Prior` / `:Finding` / `:SelfDefinition`.
+Consumes `HelpRequestV1` on `orion:curiosity:help:request`, asks Claude once
+through `orion-room-companion` (one `RoomClaudeRequestV1` on
+`orion:room:claude:request`, one matching utterance back), and publishes
+`PeerBriefV1` (`peer=claude_room`) via `persist_peer_brief`. Bus publish
+always runs (sql-writer / Postgres consumers). Worldview `:PeerBrief` MERGE
+runs only when `ORION_CURIOSITY_GRAPH_HOST` + port + user + password are set;
+otherwise the worker logs `curiosity_peer_persist_graph_unconfigured` and
+continues bus-only. Orion alone still writes `:Prior` / `:Finding` /
+`:SelfDefinition`.
 
 Design: `docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md`
 
-**Status:** Patch 1 worker armed (Tasks 12–13). Kill switches may be
-armed in local `.env_example` on this host; leave `CURIOSITY_PEER_ENABLED`
-false until you intend processing.
+## Cursor retired (2026-11-17, #3397)
 
-## Contested Cursor budget
+This service used to run the Cursor Agent CLI first and try Claude only when
+Cursor failed for lack of tokens. Juniper no longer uses Cursor. From
+2026-11-05 Cursor failed every hire, and from 2026-11-14 the Claude fallback
+was refused too, so Orion got no brief at all. The Cursor path is gone: no
+CLI call, no Cursor model or budget keys, no Cursor error classifier, no
+Cursor host mounts. Old rows with `peer=cursor_auto` stay readable (the
+schema still accepts the value).
 
-Hires fail closed until a meter reading exists (`budget_unobserved`).
-Until a first-party Cursor usage API lands, set one of:
+The separate grading-side Cursor caller (`orion/curiosity/supervisor.py`,
+`hire_cursor_review`) is not part of this service and is not changed here.
 
-- `CURIOSITY_PEER_CURSOR_BUDGET_STATE=clear` — operator asserts pool headroom
-- `CURIOSITY_PEER_CURSOR_BUDGET_FILE=/path` — JSON
-  `{"state":"clear","observed_at":"<iso>"}` or plain text `clear`
+## Order of a hire
 
-File wins over STATE. `limited` / `unknown` / garbage / missing all refuse.
-`decide_cursor_budget` still requires observed `clear` with a staleness value.
+1. Claude budget gate (fail-closed, below). Refused → `refused_budget` brief.
+2. Episode commitment, when `CURIOSITY_PEER_EPISODES_ENABLED=true`.
+3. Exactly one Claude request. Reply → `ok` / `empty` brief; error or
+   timeout → `failed` brief.
 
-## Claude fallback budget
+## Claude budget
 
-When Cursor fails for lack of tokens, the peer may try Claude once. That
-spend is Claude quota Orion shares with Juniper, so it is gated on the
-**Claude** meter (`orion.dev_economics.rate_limit_events.observe`), which
-fails closed on anything short of a fresh, observed `clear`.
+Claude quota is shared with Juniper, so every hire is gated on the Claude
+meter (`orion.dev_economics.rate_limit_events.observe`), which fails closed on
+anything short of a fresh, observed `clear`. The meter reads Claude Code
+transcripts under `CURIOSITY_PEER_CLAUDE_PROJECTS_PATH`; compose mounts that
+host directory read-only at the same path inside the container (absolute
+symlinks in the tree must still resolve). Only an in-memory limit state is
+computed; transcript text never leaves the container.
 
-Until 2026-09-25 this gate read the **Cursor** meter by accident. A local
-variable shadowed the Claude reader, so a clear Cursor reading was enough to
-spend Claude. That is fixed. The meter reads Claude Code transcripts on disk,
-and this container does not mount them, so in production the Claude fallback
-now refuses with `claude_budget_unobserved`. That is the intended fail-closed
-behaviour, not a new outage.
+Before this mount existed the container could not see the meter, and every
+hire was refused `claude_budget_unobserved` (live 2026-11-14..16).
 
-Re-enabling the fallback is a separate decision. Either give this container a
-readable Claude meter (for example by consuming the observation the
-`orion-cocreation-signals` Claude-limit publisher emits, which is currently
-off: `COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED=false`), or accept that it stays
-off. D2 in `docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md`
-has the full account.
+### What a refusal says
+
+`refusal_reason` is a plain sentence, then a code block:
+
+```text
+Claude helper refused: this service cannot see Claude's usage meter, so it
+refuses rather than spend blind. [claude_budget_unobserved]
+```
+
+Codes: `claude_budget_*` (meter), `claude_failed` (Claude was asked and the
+request failed or timed out), `claude_unwired` (no bus in this process).
+Orion reads the plain part in the kickoff "COULD NOT HIRE" section
+(`format_soft_nudge`) and, for `refused_budget`, in the role-teach progress
+line.
 
 ## Why this is a separate service
 
-Cursor desktop CLI auth (`agent login` → `~/.config/cursor/auth.json`)
-lives here via a host bind mount, **not** in `orion-hub`. Hub runs as
-root with `/var/run/docker.sock`, SSH keys, and FCC Bash — a Cursor
-credential there is one Orion can read and spend. Same credential-
-isolation pattern as `orion-room-companion` for Claude. There is no
-`CURSOR_API_KEY` / `cursor-sdk` path.
-
-This separation is defense in depth, not a hard wall while Hub holds the
-docker socket (`docker inspect` can still read this container's env).
+Hub runs as root with `/var/run/docker.sock`, SSH keys, and FCC Bash. This
+worker holds no Claude credential itself (room-companion does) and mounts only
+the read-only transcript tree it needs for the meter.
 
 ## Kill switches
 
@@ -74,36 +81,30 @@ Two flags, both required for a live hire:
 Turning only one on is a deliberate no-op. Typo alias
 `CURIOUSITY_PEER_ENABLED` is accepted by Settings.
 
-Disable either flag and behavior returns to today's curiosity path; unused
-PeerBrief rows/nodes are additive.
-
 ## Read-only policy
 
-Cursor Agent jobs must stay investigation-only: CLI argv requires
-`-p` / `--print`, `--mode ask`, `--workspace`, and `--trust`. Forbidden:
-`--force`, `--yolo`, `--approve-mcps`, `--mode plan`. Enforced in
-`app/policy.py` + tests (argv assertions; no live agent).
+The sealed prompt (`app/brief_prompt.py`) tells Claude to use only read-only
+tools and return a JSON PeerBrief. Claude's reply is marked
+`[conversation-only; peer could not look at the repo]` and its
+`evidence_pointers` are dropped (`_map_claude_result`).
 
 Self-inquiry mode: peer may point at evidence; never draft `:SelfDefinition`.
 
 ## Bus
 
-- Consumes: `orion:curiosity:help:request`
+- Consumes: `orion:curiosity:help:request`, `orion:curiosity:peer:brief:consumed`
 - Produces: `orion:curiosity:peer:brief` (via `persist_peer_brief`)
-- Claude fallback transport (Task 13): `orion:room:claude:request` /
-  `orion:room:claude:utterance`
+- Claude transport: `orion:room:claude:request` / `orion:room:claude:utterance`
 
 ## Run
 
 ```bash
-# From a worktree — never the shared checkout:
+# Build from a worktree; deploy (`up`) only from the clean primary main checkout:
+scripts/safe_docker_build.sh orion-curiosity-peer build
 scripts/safe_docker_build.sh orion-curiosity-peer up -d --build
 ```
 
-Authenticate on the host first: `agent login` (or `cursor-agent login`).
-Compose mounts `${HOME}/.local/share/cursor-agent` and
-`${HOME}/.config/cursor` into the container. Set
-`CURIOSITY_PEER_AGENT_BIN` to the versioned binary under `/opt/cursor-agent`.
+`orion-room-companion` must be running for a hire to get an answer.
 
 ## Ask commitments and later decisions
 

@@ -44,9 +44,11 @@ def test_orion_substrate_still_imports_requests_at_package_import() -> None:
     assert re.search(r"^import requests", (ROOT / "orion/substrate/graphdb_store.py").read_text(), re.M)
 
 
-def test_the_scan_finds_the_incident_services() -> None:
+def test_the_scan_finds_services_that_import_orion_substrate() -> None:
     found = _services_using_orion_substrate()
-    assert {"orion-feedback-runtime", "orion-policy-runtime"} <= set(found)
+    # Both incident services retired (orion-feedback-runtime 2026-11-04, orion-policy-runtime
+    # 2026-11-07), so the scan is pinned on live importers instead: it must still see them.
+    assert {"orion-field-digester", "orion-sql-writer", "orion-hub"} <= set(found)
 
 
 def test_every_orion_substrate_service_declares_requests() -> None:

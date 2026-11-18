@@ -76,9 +76,26 @@ class PostgresStore:
         return self._all(f"SELECT {', '.join(INCIDENT_COLUMNS)} FROM hardware_watch_incident "
                          "WHERE status = 'open' ORDER BY opened_at")
 
-    def snoozed_until(self, rule: str, subject: str) -> datetime | None:
-        rows = self._all("SELECT max(snooze_until) AS s FROM hardware_watch_incident "
-                         "WHERE rule = %s AND subject = %s AND status = 'resolved'", (rule, subject))
+    def snoozed_until(self, rule: str, subject: str, open_reasons: tuple[str, ...] | None = None) -> datetime | None:
+        """D9: an operator resolve snoozes only the reason(s) it resolved (the resolved row's own
+        open_reason), so resolving low_power never silences device_offline (C11). No new column."""
+        if open_reasons is None:
+            rows = self._all("SELECT max(snooze_until) AS s FROM hardware_watch_incident "
+                             "WHERE rule = %s AND subject = %s AND status = 'resolved'", (rule, subject))
+        else:
+            rows = self._all("SELECT max(snooze_until) AS s FROM hardware_watch_incident WHERE rule = %s "
+                             "AND subject = %s AND open_reason = ANY(%s) AND status = 'resolved'",
+                             (rule, subject, list(open_reasons)))
+        return rows[0]["s"] if rows else None
+
+    def last_side_effect_at(self, column: str, rule: str, subject: str) -> datetime | None:
+        """D6: newest ``alert_sent_at`` / ``urgent_requested_at`` for rule+subject across ALL incidents
+        (the sliding dedupe window is a query, not a column). A drill (open_reason simulated) never
+        suppresses a real alert."""
+        if column not in ("alert_sent_at", "urgent_requested_at"):
+            raise ValueError(f"bad column {column!r}")
+        rows = self._all(f"SELECT max({column}) AS s FROM hardware_watch_incident WHERE rule = %s AND subject = %s "
+                         "AND open_reason <> 'simulated'", (rule, subject))
         return rows[0]["s"] if rows else None
 
     def insert_incident(self, row: dict) -> bool:
@@ -143,9 +160,17 @@ class MemoryStore:
         return sorted((dict(r) for r in self.incidents.values() if r["status"] == "open"),
                       key=lambda r: r["opened_at"])
 
-    def snoozed_until(self, rule: str, subject: str) -> datetime | None:
+    def snoozed_until(self, rule: str, subject: str, open_reasons: tuple[str, ...] | None = None) -> datetime | None:
         vals = [r.get("snooze_until") for r in self.incidents.values()
-                if r["rule"] == rule and r["subject"] == subject and r["status"] == "resolved" and r.get("snooze_until")]
+                if r["rule"] == rule and r["subject"] == subject and r["status"] == "resolved" and r.get("snooze_until")
+                and (open_reasons is None or r["open_reason"] in open_reasons)]
+        return max(vals) if vals else None
+
+    def last_side_effect_at(self, column: str, rule: str, subject: str) -> datetime | None:
+        if column not in ("alert_sent_at", "urgent_requested_at"):
+            raise ValueError(f"bad column {column!r}")
+        vals = [r.get(column) for r in self.incidents.values()
+                if r["rule"] == rule and r["subject"] == subject and r.get(column) and r["open_reason"] != "simulated"]
         return max(vals) if vals else None
 
     def insert_incident(self, row: dict) -> bool:

@@ -61,7 +61,9 @@ def main() -> int:
     profile_max = _max_profile_ctx_size()
     errors: list[str] = []
 
-    active_profile_name = str(os.environ.get("ATLAS_CHAT_PROFILE_NAME") or "").strip()
+    # The chat lane runs Strata since 2026-10-30; ATLAS_CHAT_PROFILE_NAME is now its llama.cpp rollback.
+    active_profile_name = str(os.environ.get("ATLAS_CHAT_STRATA_PROFILE_NAME")
+                              or os.environ.get("ATLAS_CHAT_PROFILE_NAME") or "").strip()
     active_ctx = _active_profile_ctx_size(active_profile_name) if active_profile_name else None
     if active_ctx is not None and motor_ctx != active_ctx:
         errors.append(

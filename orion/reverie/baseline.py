@@ -4,21 +4,32 @@ from pathlib import Path
 from hashlib import sha256
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Callable, Optional
 from orion.schemas.reverie_visual import VisualBaselineEligibilityV1, VisualActivityV1
+
+# Spec R3 reader 4 (Temporal Self rev 4): while Orion's arousal reads `strained` (cabinet hot
+# or GPU queue backed up), a due baseline image is deferred by `retry_sec`, exactly like a
+# retry. Same spelling as orion.regulation.arousal_view.AROUSAL_STRAINED_REASON.
+AROUSAL_STRAINED_REASON = "arousal_strained"
+# Default seconds between baseline retries (and between arousal deferrals of one need).
+DEFAULT_RETRY_SEC = 600.0
+# Checkpoint key for the current run of arousal deferrals (2026-10-20): {"reason", "since",
+# "last_at"} -- when the first deferral of this need happened and the latest one. Cleared when an
+# attempt is issued or a new painting lands. orion-thought's painting-gap alert reads it to name
+# the real cause ("deferred since ...") instead of guessing a GPU fault.
+DEFERRAL_KEY = "deferral"
 
 class VisualBaselinePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     enabled: bool = False
     policy_id: str = "visual_baseline.v1"
     interval_sec: float = Field(default=5400, gt=0)
-    retry_sec: float = Field(default=600, gt=0)
+    retry_sec: float = Field(default=DEFAULT_RETRY_SEC, gt=0)
     freshness_sec: float = Field(default=60, gt=0)
-    timeout_sec: float = Field(default=2, gt=0, le=10)
     target_id: str = "host:circe_gpu"
-    thought_url: str = "http://orion-athena-thought:7155"
 
 def load_baseline_policy() -> VisualBaselinePolicy:
-    path = Path(__file__).resolve().parents[2] / "config/proposals/visual_baseline.v1.yaml"
+    path = Path(__file__).resolve().parents[2] / "config/reverie/visual_baseline.v1.yaml"
     return VisualBaselinePolicy.model_validate(yaml.safe_load(path.read_text()) if path.exists() else {})
 
 def validate_eligibility(value, *, now=None, policy=None, target_id=None, template=None, proposal_kind=None):
@@ -50,8 +61,14 @@ def validate_eligibility(value, *, now=None, policy=None, target_id=None, templa
         return "visual_baseline_invalid"
     return None
 
-def schedule(activity: VisualActivityV1, checkpoint: dict, *, now: datetime, policy: VisualBaselinePolicy):
-    """Pure checkpoint reducer. One pending need and bounded retries across restarts."""
+def schedule(activity: VisualActivityV1, checkpoint: dict, *, now: datetime, policy: VisualBaselinePolicy,
+             arousal_level: Optional[Callable[[], Optional[str]]] = None):
+    """Pure checkpoint reducer. One pending need and bounded retries across restarts.
+
+    ``arousal_level`` (R3 reader 4) is called only once every other check has passed, i.e. at
+    the moment a baseline would be issued. ``"strained"`` defers it by ``retry_sec`` with reason
+    ``arousal_strained``; any other value (None = unknown, flag off, Redis down) changes
+    nothing. It can only withhold an eligibility this function would have issued."""
     state = dict(checkpoint)
     if not policy.enabled:
         return None, state, "visual_baseline_disabled"
@@ -63,7 +80,7 @@ def schedule(activity: VisualActivityV1, checkpoint: dict, *, now: datetime, pol
            if activity.last_success_at else datetime.fromisoformat(state["activation_at"]))
     success = activity.last_success_chain_id
     if state.get("last_success_chain_id") != success:
-        for key in ("need_id", "next_attempt_not_before", "last_attempt_id"):
+        for key in ("need_id", "next_attempt_not_before", "last_attempt_id", DEFERRAL_KEY):
             state.pop(key, None)
     state["last_success_chain_id"] = success
     if due > now:
@@ -80,5 +97,12 @@ def schedule(activity: VisualActivityV1, checkpoint: dict, *, now: datetime, pol
     if reason:
         return None, state, reason
     state["next_attempt_not_before"] = (now + timedelta(seconds=policy.retry_sec)).isoformat()
+    if arousal_level is not None and arousal_level() == "strained":
+        prior = state.get(DEFERRAL_KEY)
+        since = (prior.get("since") if isinstance(prior, dict) and prior.get("reason") == AROUSAL_STRAINED_REASON
+                 else None) or now.isoformat()
+        state[DEFERRAL_KEY] = {"reason": AROUSAL_STRAINED_REASON, "since": since, "last_at": now.isoformat()}
+        return None, state, AROUSAL_STRAINED_REASON
+    state.pop(DEFERRAL_KEY, None)
     state["last_attempt_id"] = f"{eligibility.need_id}:{now.isoformat()}"
     return eligibility, state, "visual_baseline_due"

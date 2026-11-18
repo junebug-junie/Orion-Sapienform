@@ -41,14 +41,44 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     not renamed here to keep this diff reviewable against its own history --
     the asserted numbers below are current, that's what matters.
     - stream_backlog_pressure/stream_backlog_health/delivery_confidence retired
-    2026-09-25 (fix/bus-observer-scope): 51 -> 48 entries, 50 -> 47 names."""
+    2026-09-25 (fix/bus-observer-scope): 51 -> 48 entries, 50 -> 47 names.
+    + write_failure_pressure added 2026-10-02 (orion-sql-writer reporting its own
+    write outcomes, orion/substrate/storage_write_loop/) and vision_frame_staleness /
+    vision_processing_failure_pressure added 2026-10-02 (the vision frame router
+    reporting on the eye, orion/substrate/vision_organ_loop/): 49 -> 52 entries,
+    48 -> 51 names.
+    - capability-level contract_pressure renamed to catalog_drift_pressure
+    2026-10-07 (decision D3): its entry folds into the existing
+    catalog_drift_pressure entry (now level [node, capability]): 52 -> 51
+    entries, 51 -> 50 names.
+    - observer_failure_pressure retired 2026-10-07 (#2534 decision 4, 0.0 on
+    123,099 of 123,099 ticks): 51 -> 50 entries, 50 -> 49 names.
+    + 8 node-qualified prediction_error entries added 2026-10-10 (rest
+    semantics, R6: harness_closure, cabinet, perception, execution, chat,
+    codebase, route, biometrics): 50 -> 58 entries, names unchanged at 49.
+    - (main read 61 entries by 2026-11-11 while this still said 58.)
+    - node:substrate.bus_synaptic and node:substrate.route node-qualified
+    prediction_error entries removed 2026-11 with the nodes (PE suite rebuild
+    step 5); harness_closure removed 2026-11-11 (#3184): 61 -> 58 entries."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 49
+    # + node:prediction.room / node:prediction.body (forecast surprise, 2026-11-11): 58 -> 60.
+    # - node:substrate.codebase prediction_error entry removed with the node (PE suite
+    #   rebuild, 2026-11-13, #3314): 60 -> 59. (node:substrate.chat was swapped 1:1 for
+    #   node:prediction.chat_turn the same day, no count change.)
+    assert len(entries) == 59
+    assert not any(e.node == "node:substrate.codebase" for e in entries)
+    assert not any(e.node == "node:substrate.harness_closure" for e in entries)
     names = {e.channel for e in entries}
-    for retired in ("stream_backlog_pressure", "stream_backlog_health", "delivery_confidence"):
+    for retired in (
+        "stream_backlog_pressure",
+        "stream_backlog_health",
+        "delivery_confidence",
+        "contract_pressure",
+        "observer_failure_pressure",
+    ):
         assert retired not in names
-    assert len(names) == 48, "a node-qualified entry must not introduce a new distinct channel name"
+    assert len(names) == 49, "a node-qualified entry must not introduce a new distinct channel name"
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names
@@ -58,11 +88,15 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     assert "cabinet_ambient_audio_staleness" in names
     assert "stability" in names
     assert "inference_failure_pressure" in names
+    assert "vision_frame_staleness" in names
+    assert "vision_processing_failure_pressure" in names
     assert "rpc_timeout_pressure" in names
-    # contract_pressure is the only node+capability overlap since
-    # stream_backlog_pressure was retired (2026-09-25).
-    overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
-    assert {e.channel for e in overlap} == {"contract_pressure"}
+    assert "write_failure_pressure" in names
+    # stream_backlog_pressure was retired 2026-09-25 and node-level
+    # contract_pressure 2026-10-07; the capability-level contract_pressure was
+    # renamed catalog_drift_pressure (D3), the only node+capability overlap.
+    overlap = [e.channel for e in entries if set(e.level) == {"node", "capability"}]
+    assert overlap == ["catalog_drift_pressure"]
 
 
 def test_glossary_path_candidates_prefers_orion_repo_root_env_var(monkeypatch):
@@ -92,13 +126,13 @@ def test_load_glossary_categories_cover_all_seven_semantic_groups():
 
 
 def test_resolve_channel_entry_prefers_node_qualified_over_bare():
-    """The whole point of version 2: bus_synaptic's qualified entry must
-    describe the fraction, not the generic bare "recent prediction missed
-    reality" meaning."""
-    bus = resolve_channel_entry("prediction_error", "node:substrate.bus_synaptic")
+    """The whole point of version 2: a node's qualified entry must describe
+    that node, not the generic bare "recent prediction missed reality"
+    meaning. (Pinned on bus_synaptic until its 2026-11 retirement.)"""
+    bus = resolve_channel_entry("prediction_error", "node:substrate.execution")
     bare = resolve_channel_entry("prediction_error")
     assert bus is not None and bare is not None
-    assert bus.node == "node:substrate.bus_synaptic"
+    assert bus.node == "node:substrate.execution"
     assert bare.node is None
     assert bus.meaning != bare.meaning
     assert bus.trend_source
@@ -112,11 +146,15 @@ def test_resolve_channel_entry_falls_back_to_bare_entry():
     assert entry.node is None
 
     # A node given, but no qualified entry exists for it -- falls back to
-    # bare, does not raise or return None. node:substrate.vision is
-    # deliberately still unqualified as of this patch (see that entry's own
-    # comment in the glossary YAML) -- this is the real, current case for
-    # it, not a placeholder.
-    for node in ("node:substrate.chat", "node:substrate.vision"):
+    # bare, does not raise or return None. node:substrate.vision is retired
+    # and node:substrate.vision_organ deliberately has no prediction_error
+    # entry (it carries no such channel) -- real, current cases.
+    for node in (
+        "node:substrate.vision_organ",
+        "node:substrate.vision",
+        "node:substrate.bus_synaptic",  # retired 2026-11
+        "node:substrate.route",  # retired 2026-11
+    ):
         entry = resolve_channel_entry("prediction_error", node)
         assert entry is not None
         assert entry.node is None

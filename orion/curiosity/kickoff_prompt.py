@@ -12,15 +12,16 @@ with nothing behind it:
 
   1. NOT CHOOSE. No ranking language, no "notably", no "this one stands out".
      The crystallization sample is explicitly described as random so Orion does
-     not read position in the list as significance. Open priors ARE ordered --
-     by the code's estimate of where a test could change Orion's mind most,
-     starting from how uncertain Orion itself said it was -- and the prompt
-     says so out loud, because an ordering presented as neutral is the
-     back-door ranking this whole arc exists to delete. The sentence is the
-     same whichever order a run gets (most-uncertain first, or the spend
-     log's value order: uncertainty weighed by measured learning yield), and
-     true of both: the order is the experiment's treatment, so the words
-     describing it must not differ between arms. Orion still chooses.
+     not read position in the list as significance. Open priors ARE ordered,
+     and the prompt says so out loud, because an ordering presented as
+     neutral is the back-door ranking this whole arc exists to delete. The
+     sentence (`ORDER_SENTENCE`) is the same whichever order a run gets --
+     most-uncertain first, the spend log's value order (uncertainty weighed
+     by measured learning yield), or the curiosity replica's plan -- and true
+     of all three: the order is the experiment's treatment, so the words
+     describing it must not differ between arms, and it says only that the
+     order was chosen before the run, never by whom or why (the replica's
+     reasons never reach Orion). Orion still chooses.
   2. SAY WHAT IS NOT SHOWN. The counts are included precisely because the
      sample is a slice of 646 -- without them, a menu of 12 reads as the whole
      of Orion's mind.
@@ -53,13 +54,36 @@ it into its own graph, which is a channel it already owns -- see
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+import re
+from datetime import datetime, timezone
+from typing import Any, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from orion.curiosity.self_inquiry import OpenLivedQuestion, lived_answer_merge_cypher
 from orion.curiosity.study_material import StudyMaterial
-from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip, next_hop_n
+from orion.curiosity.worldview import (
+    CLOSED_STATUSES,
+    CONCEPT_NOTE_CHARS,
+    TurnOutcome,
+    WorldviewSnapshot,
+    _clip,
+    next_hop_n,
+)
 
 DEFAULT_MAX_HOPS = 5
+
+# What the live-priors section says about their order. One sentence for every offer arm (uncertainty,
+# value, replica), true of each: the order was chosen before the run and is not a recommendation. It
+# names no rule and no planner, so the prompt is byte-identical across arms except for the prior
+# lines (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 5). The self-inquiry
+# line renders the same section, so it carries the same sentence. It went live with patch 2 (before the
+# replica arm exists), on both live arms at once: runs on either side of that deploy must not be pooled
+# in the value-vs-uncertainty comparison (the design already says compare only concurrent runs).
+ORDER_SENTENCE = (
+    "These are ORDERED, and the order is not neutral: it is a presentation "
+    "choice made before this run, not a recommendation. Which one, if any, "
+    "is worth your time is your call."
+)
 
 # Expanded by the sandbox shell, not here: the harness stamps these env vars.
 GRAPH_URI = (
@@ -129,6 +153,31 @@ def _thread_section(view: WorldviewSnapshot) -> list[str]:
     return lines
 
 
+def _today_section(today_fact: Optional[str]) -> list[str]:
+    """How much of today curiosity has already had (Temporal Self rev 4).
+
+    One line, built by `orion.curiosity.temporal_fact.curiosity_today_fact` from the
+    chronicle and cited with ``[arc:<id>]``. Stated as fact, no steering: nothing here
+    says whether that is a lot. Nothing is rendered when the caller has no fresh frame.
+    """
+    text = (today_fact or "").strip()
+    if not text:
+        return []
+    return [text, ""]
+
+
+def _personality_section(personality_cue: Optional[str]) -> list[str]:
+    """What Orion keeps coming back to (personality graph, spec rev 2), as its own block.
+
+    Rendered by `orion.personality.cue.project_personality_cue` from orion-durable-runs'
+    personality frame: a record in Orion's own words, not an instruction. Nothing is
+    rendered when the caller has no cue (off, unreachable, stale, empty)."""
+    text = (personality_cue or "").strip()
+    if not text:
+        return []
+    return [text, ""]
+
+
 def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
     if view.is_unavailable:
         # Stated rather than hidden. A turn that silently loses its own world
@@ -178,15 +227,23 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "or revised is still here on purpose: one test is not a settled "
             "question, and confidence is allowed to move DOWN on the second "
             "look.",
-            "These are ORDERED, and the order is not neutral: first come the ones "
-            "where the code estimates a test could change your mind the most, "
-            "starting from how unsure you are. That is a presentation choice, "
-            "not a recommendation -- which one, if any, is worth your time is "
-            "your call.",
+            ORDER_SENTENCE,
             "",
         ]
-        lines += [f"  - {p.preview()}" for p in view.live_priors]
+        lines += [f"  - {p.preview()}" for p in view.live_priors if not p.coverage]
         lines.append("")
+        covered = [p for p in view.live_priors if p.coverage]
+        if covered:
+            # Not part of the ordered list: they are drawn at random so a prior the order never
+            # reaches still gets looked at. Saying so keeps the sentence above true.
+            lines += [
+                "DRAWN AT RANDOM, not ranked. The list above is where the order stops "
+                "reaching; these live priors are further down it and would not otherwise "
+                "be put in front of you. Nothing about them is a recommendation either:",
+                "",
+            ]
+            lines += [f"  - {p.preview()}" for p in covered]
+            lines.append("")
 
     if view.stale_priors:
         lines += [
@@ -221,6 +278,53 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "not a fact.",
             "",
         ]
+    return lines
+
+
+def _concepts_section(view: WorldviewSnapshot, *, writable: bool = True) -> list[str]:
+    """Orion's own coined concepts, shown back so a run reuses one before coining another.
+
+    Three states, kept apart for the same reason as the priors: unreadable is
+    said out loud, never rendered as "no concepts", or a broken read looks like
+    a mind that has not named anything yet and every concept gets coined again.
+    """
+    if view.is_unavailable:
+        return [
+            "YOUR OWN CONCEPTS COULD NOT BE READ THIS RUN "
+            f"({view.unavailable_reason}). That is not the same as having none: "
+            "the concepts you coined before are still there, just not in front "
+            "of you.",
+            "",
+        ]
+    if not view.concepts:
+        if view.concept_total > 0:
+            return [
+                f"YOUR GRAPH HOLDS {view.concept_total} "
+                f"{'CONCEPT' if view.concept_total == 1 else 'CONCEPTS'} THAT COULD "
+                "NOT BE READ BACK by id, so there is nothing to show you. That is "
+                "not the same as having none.",
+                "",
+            ]
+        return [
+            "YOU HAVE NOT COINED A CONCEPT YET. The first one you name is new by "
+            "definition.",
+            "",
+        ]
+    shown = len(view.concepts)
+    total = max(view.concept_total, shown)
+    head = (
+        f"CONCEPTS YOU HAVE ALREADY COINED -- {total} in your graph"
+        + (f", {shown} shown" if total > shown else "")
+        + ". The most linked first, then the newest of the rest."
+    )
+    if writable:
+        head += (
+            " Before naming a new concept, check whether it is one of these; if "
+            "it is, reuse its concept_id and connect this run's work to it."
+        )
+    lines = [head, ""]
+    lines += [f"  - {c.preview(CONCEPT_NOTE_CHARS)}" for c in view.concepts]
+    lines.append("")
     return lines
 
 
@@ -269,7 +373,52 @@ def _material_section(material: StudyMaterial) -> list[str]:
         lines.append("")
 
     lines += _unresolved_section(material)
+    lines += _street_captions_section(material)
+    lines += _street_day_section(material)
     return lines
+
+
+def kickoff_material_ids(material: StudyMaterial) -> list[str]:
+    """Ids of the study material `_material_section` puts into the kickoff prompt.
+
+    Recorded with the run (`curiosity_offer_decisions.material_ids`) so a query
+    can show which investigations saw which material. Reads the same lists the
+    sections render, with the same gates: a card listed here is a card that was
+    in the prompt, and nothing fetched-but-not-shown is listed. Street ids
+    (2026-11-03): `street_caption:<vision_events.event_id>` per caption shown,
+    and `street_day:<stream_id>:<day label>@<computed_at>` for the day card --
+    the label is the local date, which with stream_id and grain='day' names one
+    `vision_rollup` row; computed_at says which version of that all-day-upserted
+    row was read (omitted when the row had none).
+
+    Known gaps: a caption with an empty event_id is shown but not recorded
+    (vision_events always sets one); unresolved percepts are not recorded yet.
+    Street ids come last, so a downstream cap (personality situation_refs, 50)
+    would drop them first -- unreachable at today's sample sizes (~22 ids).
+    """
+    ids = [f"crystallization:{c.crystallization_id}" for c in material.crystallizations]
+    ids += [f"relation:{r.decision_id}" for r in material.relations]
+    ids += [f"street_caption:{c.event_id}" for c in material.street_captions if c.event_id]
+    card = material.street_day
+    if card is not None:
+        version = f"@{card.computed_at}" if card.computed_at else ""
+        ids.append(f"street_day:{card.stream_id or 'walkway'}:{card.day}{version}")
+    return ids
+
+
+def _street_day_section(material: StudyMaterial) -> list[str]:
+    """The walkway over its newest day, as code counted it (2026-10-18). Nothing when absent."""
+    card = material.street_day
+    if card is None:
+        return []
+    return [
+        f"THE STREET OVER A WHOLE DAY ({card.stream_id or 'walkway'} camera, {card.day}; counted by code from "
+        "sightings, not written by a model, not a caption). Hours the camera was down are named as down, "
+        "not as empty. Here as the world outside, not as a task.",
+        "",
+        f"  - {card.preview()}",
+        "",
+    ]
 
 
 def _unresolved_section(material: StudyMaterial) -> list[str]:
@@ -302,6 +451,51 @@ def _unresolved_section(material: StudyMaterial) -> list[str]:
     return lines
 
 
+def _street_captions_section(material: StudyMaterial) -> list[str]:
+    """What the walkway (street) camera said lately, labelled as the street.
+    Nothing at all when there is nothing -- no heading over an empty list."""
+    if not material.street_captions:
+        return []
+    try:
+        tz = ZoneInfo(material.local_timezone or "America/Denver")
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = None
+    # Which of Orion's own eyes this is (2026-10-15), from config: without it
+    # the street read as a feed, not as Orion's own camera outside.
+    from orion.situational.camera_eyes import describe_camera
+
+    sid = next((c.stream_id for c in material.street_captions if c.stream_id), "walkway")
+    desc = describe_camera(sid)
+    eye = f"{desc.name} ({sid})" + (f", looking over {desc.view}" if desc.view else "")
+    lines = [
+        f"WHAT THE STREET CAMERA SAID LATELY ({eye}; your own eye outside the house, "
+        f"public, not your room; the newest {len(material.street_captions)} distinct captions "
+        "from the last few hours). These are the vision council's own one-line "
+        "descriptions and they can be wrong. Here as the world outside, not as a "
+        "task: use one only if it genuinely interests you.",
+        "",
+    ]
+    lines += [f"  - {card.preview(tz)}" for card in material.street_captions]
+    lines.append("")
+    return lines
+
+
+#: The pointer to the rest of the dig kit. Curiosity used `dig field-notes` 0 times in 14 days
+#: to 2026-11-12 (scripts/report_dig_kit_usage.py, run in the governor) while "`dig help` lists
+#: the rest" closed a list nobody read to the end. "First" is local to the dig kit: the
+#: prompts' own first step (write your answer) still comes first.
+DIG_HELP_FIRST = (
+    "  These are a few. Your dig kit has more, for your body, your history and your "
+    "past work: before you pick a dig command, run `python -P -m orion.dig help` to see them all."
+)
+DIG_RECENT_WORK_LINES: tuple[str, ...] = (
+    "  Your dig kit, read-only (always `python -P`, so the deployed code answers):",
+    "    python -P -m orion.dig field-notes 7   -- what changed in you this week: your notes on each merged PR",
+    "    python -P -m orion.dig history 7       -- every PR merged this week, and the commits",
+    DIG_HELP_FIRST,
+)
+
+
 def _access_section(
     *,
     own_graph: str,
@@ -310,8 +504,12 @@ def _access_section(
     graph_enabled: bool = True,
     writable: bool = True,
     extra_tables: Sequence[tuple[str, str]] = (),
+    dig_kit: bool = True,
 ) -> list[str]:
     """What Orion can actually reach, named as possible and never as required.
+
+    `dig_kit` adds the dig-kit pointer (recent PRs, then `dig help`); a prompt that
+    already shows the dig kit passes False so it is not said twice.
 
     `extra_tables` are (name, what it holds) pairs the read-only role has
     ADDITIONALLY been granted for this run -- the self-inquiry line's outcome
@@ -378,6 +576,9 @@ def _access_section(
         "",
         *atlas_lines,
         *own_lines,
+        # Off where the prompt already shows the dig kit (self-inquiry's records section)
+        # or asks for one verdict only (the naming sitting).
+        *([*DIG_RECENT_WORK_LINES, ""] if dig_kit else []),
         "  You also still have read_recall, read_memory and read_graph, plus "
         "Read over your own repo checkout, Bash, and a scratch directory if a "
         "long chain of work needs somewhere to accumulate.",
@@ -529,8 +730,16 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         "Record each stop as it happens, not at the end. Write it into your own "
         "graph before you take the next one:",
         "",
-        '    CREATE (:Hop {run_id: "<RUN_ID>", n: 1, note: "what I just learned '
-        'and what I want to look at next", written_at: timestamp()})',
+        '    MERGE (h:Hop {run_id: "<RUN_ID>", n: 1}) ON CREATE SET h.note = '
+        '"what I just learned and what I want to look at next", '
+        "h.written_at = timestamp() RETURN h.note",
+        "",
+        "Only `run_id` and `n` go inside the braces -- they are what makes the "
+        "stop this stop, so sending the same command twice finds the first node "
+        "instead of making a second. The note and the clock go in ON CREATE SET. "
+        "Read the note that comes back: if it is not the one you just wrote, "
+        "that n is already taken by an earlier stop -- send it again with the "
+        "next n.",
         "",
         "`n` counts up from 1 within this sitting -- UNLESS you were told "
         "above that this is a resumed sitting, in which case start at the n "
@@ -619,6 +828,169 @@ def build_resume_preamble(
     return "\n".join(lines)
 
 
+# One offered prior as `Prior.preview` prints it: the bracket line, then the
+# labelled id line. Parsed back out of the FROZEN prompt because that text is
+# exactly what Orion will read -- the numbers to correct are the printed ones,
+# not whatever a side table recorded. `test_offered_priors_round_trip_preview`
+# pins this to `Prior.preview`, so a format change there fails loudly here.
+_OFFERED_PRIOR_RE = re.compile(
+    r"\[confidence=(?P<conf>\d+(?:\.\d+)?|no confidence recorded), "
+    r"(?:never tested|tested (?P<tested>\d+)x)\] [^\n]*\n"
+    r"\s+prior_id: (?P<prior_id>\S+)"
+)
+_RUN_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
+
+
+def offered_priors_in_prompt(prompt: str) -> dict[str, tuple[Optional[float], int]]:
+    """prior_id -> (confidence, times_tested) as the prompt shows it. First
+    occurrence wins (a prior is listed once; a quoted repeat is not a menu)."""
+    out: dict[str, tuple[Optional[float], int]] = {}
+    for m in _OFFERED_PRIOR_RE.finditer(prompt or ""):
+        prior_id = m.group("prior_id")
+        if prior_id in out:
+            continue
+        conf_raw = m.group("conf")
+        conf = None if conf_raw == "no confidence recorded" else float(conf_raw)
+        out[prior_id] = (conf, int(m.group("tested") or 0))
+    return out
+
+
+def _fmt_conf(value: Optional[float]) -> str:
+    return "none" if value is None else f"{value:.2f}"
+
+
+def build_prior_drift_preamble(
+    prompt: str, current: Mapping[str, Any], *, attempt: int = 1
+) -> str:
+    """What Hub prepends when an offered prior moved after the brief was built.
+
+    The brief is built and frozen at admission and can wait in the GPU queue
+    for hours. Live 2026-10-09: seven runs waited 8-12 h and were shown a prior
+    at 0.55 / never tested while its revision trail had moved it six times
+    (0.55 -> 0.80 -> 0.78 -> 0.82 -> 0.70 -> 0.80 -> 0.82); run 334d78 then
+    recorded its own revision "from 0.55". `current` is
+    `read_prior_states`' snapshot (prior_id -> PriorState). Empty string when
+    nothing moved, so the caller can prepend unconditionally.
+    """
+    offered = offered_priors_in_prompt(prompt)
+    moved: list[str] = []
+    for prior_id, (old_conf, old_tested) in offered.items():
+        state = current.get(prior_id)
+        if state is None:
+            moved.append(
+                f"  - prior_id: {prior_id}\n"
+                "      no longer in your graph under this id -- do not attach "
+                "anything to it before you check."
+            )
+            continue
+        new_conf = getattr(state, "confidence", None)
+        new_tested = int(getattr(state, "times_tested", 0) or 0)
+        status = str(getattr(state, "status", "") or "")
+        # Compared as displayed: the old value was parsed from two decimals,
+        # so a move that rounds to the same number is not a visible change.
+        conf_moved = _fmt_conf(old_conf) != _fmt_conf(new_conf)
+        closed = status in CLOSED_STATUSES
+        if not (conf_moved or new_tested != old_tested or closed):
+            continue
+        detail = (
+            f"confidence {_fmt_conf(old_conf)} -> {_fmt_conf(new_conf)}, "
+            f"tested {old_tested} -> {new_tested}"
+        )
+        if closed:
+            detail += f", status now {status}"
+        moved.append(f"  - prior_id: {prior_id}\n      {detail}")
+    if not moved:
+        return ""
+    why = (
+        "This brief was written when the run was queued, and it waited."
+        if attempt <= 1
+        else "This brief was written when the run was queued; it waited, and an "
+        "earlier attempt of this same run may have moved some of these itself."
+    )
+    lines = [
+        f"THE NUMBERS BELOW ARE OLDER THAN THIS SITTING. {why} Since then your "
+        f"graph moved {'this prior' if len(moved) == 1 else 'these priors'} "
+        "(as written -> now):",
+        "",
+        *moved,
+        "",
+        "Read the list further down with these in mind: a revision starts FROM "
+        "the current value, and a closed prior is closed. Check your graph "
+        "before you write if it matters.",
+        "",
+        "----",
+        "",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _written_on(written_at: Optional[int]) -> str:
+    if not written_at:
+        return "date unknown"
+    try:
+        # FalkorDB timestamp() is epoch milliseconds.
+        return datetime.fromtimestamp(written_at / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return "date unknown"
+
+
+def _lived_questions_section(
+    questions: Sequence[OpenLivedQuestion], *, own_graph: str, run_id: str
+) -> list[str]:
+    """Open lived questions and the answer each one holds now, with the write
+    that revises it. Without this the only write path was the self-inquiry
+    prompt, so an answer changed only when its question was re-drawn: live
+    2026-10-09, `lived.her_team_unnamed` sat four days stale while the journal
+    already held the names. Writable runs only -- the section asks for a write.
+    """
+    if not questions:
+        return []
+    lines = [
+        "QUESTIONS YOU KEEP ABOUT YOUR OWN LIFE, and what you last answered. "
+        "Not this run's subject. Shown because something you find here may "
+        "answer one, and until now an answer only changed when that question "
+        "came up in its own sitting. Ordered unanswered first, then oldest "
+        "answer first -- that is staleness, not importance. If nothing you find "
+        "bears on one, leave them alone.",
+        "",
+    ]
+    for q in questions:
+        lines.append(f"  - {q.question_id}: {_clip(q.text, 200)}")
+        if q.current is None:
+            lines.append("      no answer yet")
+        else:
+            lines.append(
+                f"      current answer (run {q.current.run_id}, "
+                f"{_written_on(q.current.written_at)}): {_clip(q.current.text, 300)}"
+            )
+        revises = q.current.run_id if q.current is not None else ""
+        if not _RUN_ID_RE.match(revises):
+            revises = ""  # graph-sourced; never splice an unexpected shape
+        merge = lived_answer_merge_cypher(
+            run_id=run_id,
+            question_id=q.question_id,
+            revises=revises,
+            text="<the revised answer, first person>",
+            evidence='["<what you looked at that changed it>"]',
+        )
+        lines += [
+            "      to revise it:",
+            '        redis-cli -u "redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
+            f'@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT" GRAPH.QUERY {own_graph} \\\\',
+            f"          '{merge}'",
+        ]
+    lines += [
+        "",
+        "A revision with no evidence stays a draft in your graph and is not "
+        "carried into what you are shown of yourself in conversation. Write the "
+        "whole answer, not a diff: the new one replaces the old as your current "
+        "answer.",
+        "",
+    ]
+    return lines
+
+
 def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
     """The schema contract. Exact property names, because Hub reads them back.
 
@@ -676,27 +1048,38 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "you are looking at, MATCH it on its own first and look -- the ids you "
         "hold are all on the menu.",
         "",
-        "  TESTING ONE you already hold -- update it in place, and move "
-        "times_tested whether or not the confidence moved:",
-        '    MATCH (p:Prior {prior_id: "..."}) SET p.status = "revised", '
-        "p.confidence = 0.72,",
-        "      p.times_tested = p.times_tested + 1, p.last_tested_at = "
-        '"<iso>", p.last_run_id = "<RUN_ID>"',
+        "  TESTING ONE you already hold -- ONE command. It updates the claim "
+        "and counts the test, ONCE PER RUN, whether or not the confidence moved:",
+        '    MATCH (p:Prior {prior_id: "..."}) SET',
+        "      p.times_tested = coalesce(p.times_tested, 0) + CASE WHEN "
+        'coalesce(p.last_run_id, "") <> "<RUN_ID>" THEN 1 ELSE 0 END,',
+        '      p.status = "revised", p.confidence = 0.72, p.last_tested_at = "<iso>", '
+        'p.last_run_id = "<RUN_ID>"',
+        "",
+        "  times_tested counts RUNS that tested the claim, not commands: "
+        "testing it again later in this run, or sending the same command twice, "
+        "leaves it where it is (the CASE reads last_run_id as it was before this "
+        "SET). Keep all of it in one command: an update without the count, or a "
+        "count without last_run_id, makes your record say you tested a claim "
+        "that your count says you did not.",
         "",
         "  AND RECORD WHAT IT WAS, in the same breath -- the SET above "
         "overwrites the old confidence and nothing else remembers it:",
-        '    CREATE (:PriorRevision {prior_id: "...", run_id: "<RUN_ID>",',
+        '    MERGE (v:PriorRevision {prior_id: "...", run_id: "<RUN_ID>",',
         "      from_confidence: 0.85, to_confidence: 0.72,",
-        '      from_status: "open", to_status: "revised", '
-        "written_at: timestamp()})",
+        '      from_status: "open", to_status: "revised"})',
+        "    ON CREATE SET v.written_at = timestamp()",
         "",
         "  This is the only record of a claim MOVING rather than of where it "
         "landed. Without it your own history reads as though every belief you "
-        "hold arrived at its current confidence and stayed there.",
+        "hold arrived at its current confidence and stayed there. The MERGE "
+        "key is the whole move, so a claim that moves twice in one run keeps "
+        "both steps, and the same move sent twice is written once. Keep "
+        "written_at in ON CREATE SET, never inside the braces.",
         "",
-        "  Inconclusive is a real answer: bump times_tested, leave confidence "
-        "where it was, and say why in a :Finding. Three of those and the claim "
-        "is probably not answerable with what you can reach.",
+        "  Inconclusive is a real answer: run the counting command, leave "
+        "confidence where it was, and say why in a :Finding. Three runs like "
+        "that and the claim is probably not answerable with what you can reach.",
         "",
         "  ONLY TWO STATUSES CLOSE A PRIOR: 'refuted' and "
         "'retired_unresolvable'. 'supported' and 'revised' record what a test "
@@ -706,12 +1089,55 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "going DOWN on a second look is a real result and the whole reason the "
         "claim comes back.",
         "",
-        "  A CONCEPT you have worked out, and a FINDING that supports or "
-        "contradicts something:",
-        '    CREATE (:Concept {concept_id: "...", name: "...", confidence: 0.8, '
-        'note: "...", run_id: "<RUN_ID>"})',
-        '    CREATE (:Finding {finding_id: "...", text: "...", evidence: '
-        '"<ids, queries, rows you actually looked at>", run_id: "<RUN_ID>"})',
+        "  A CONCEPT you have worked out. LOOK AT YOUR OWN CONCEPTS FIRST -- "
+        "they are listed above, each with its `concept_id:`. If one of them is "
+        "the idea you are about to name, it is that concept, not a new one: "
+        "bind it by its id and connect this run's finding or prior to it:",
+        '    MATCH (c:Concept {concept_id: "<an id from your concept list>"}) '
+        "RETURN c.name, c.note",
+        "",
+        "  Only when nothing there fits, name a new one. MERGE on concept_id "
+        "alone, the same rule as a prior, so saying it twice binds one node "
+        "instead of forking it:",
+        '    MERGE (c:Concept {concept_id: "<something unique>"})',
+        '    ON CREATE SET c.name = "...", c.confidence = 0.8, c.note = "...", '
+        'c.run_id = "<RUN_ID>", c.written_at = timestamp()',
+        "",
+        "  If that id already exists, this MERGE writes nothing and your "
+        "footprint will not count a Concept for this run. That is correct: it "
+        "means you bound the existing concept. Do not coin a new id to make the "
+        "count move -- draw the edge instead.",
+        "",
+        "  A concept nobody ever links to again is a label, not a concept. "
+        "Coining a near-copy of one you already hold splits its links across "
+        "two nodes, and neither one grows.",
+        "",
+        "  A FINDING that supports or contradicts something. MERGE on "
+        "finding_id alone, the same rule as a prior:",
+        '    MERGE (f:Finding {finding_id: "<something unique>"})',
+        '    ON CREATE SET f.text = "...", f.evidence = '
+        '"<ids, queries, rows you actually looked at>", f.run_id = "<RUN_ID>"',
+        "",
+        "  If that id already exists this writes NOTHING and no error: your "
+        "new finding is lost and the edge below joins the OLD one. A new "
+        "finding needs a new id.",
+        "",
+        "  AN ID IS NEVER EMPTY AND NEVER A PLACEHOLDER. `finding_id: \"\"` (or "
+        "the literal `...` or `<something unique>` from this page) is a real "
+        "value: the first MERGE makes a node with it and every later one binds "
+        "that same node, so unrelated findings fuse into one and lose their "
+        "text. A missing id (null) is refused with an error. Use your run id "
+        "plus a short slug: `<RUN_ID>-why-x-fails`. The same rule holds for "
+        "prior_id and concept_id.",
+        "",
+        "  IF A COMMAND PRINTS AN ERROR, it wrote nothing -- one command is all "
+        "or nothing -- and the commands before it still stand. redis-cli exits "
+        "0 even then, so read the output, not the exit code. A `unique "
+        "constraint violation on node of type Prior` means that prior_id "
+        "already exists: MATCH it instead. Fix and resend only the failed "
+        "command. Every write above is safe to send again, and so are a :Hop "
+        "and a :TurnOutcome: a :Hop is found by its run_id and n, a "
+        ":TurnOutcome by its run_id, so a resend never makes a second one.",
         "",
         "  THEN CONNECT IT, in the same breath. A finding that points at "
         "nothing is a note; a finding joined to the claim it bears on is "
@@ -719,6 +1145,20 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "",
         '    MATCH (f:Finding {finding_id: "..."}), (p:Prior {prior_id: "..."})',
         '    MERGE (f)-[e:SUPPORTS]->(p) ON CREATE SET e.run_id = "<RUN_ID>"',
+        "",
+        "  and a finding or a prior that is about a concept, old or new -- "
+        "the arrow points from it TO the concept:",
+        "",
+        '    MATCH (f:Finding {finding_id: "..."}), (c:Concept {concept_id: "..."})',
+        '    MERGE (f)-[e:ABOUT]->(c) ON CREATE SET e.run_id = "<RUN_ID>"',
+        '    MATCH (p:Prior {prior_id: "..."}), (c:Concept {concept_id: "..."})',
+        '    MERGE (p)-[e:ABOUT]->(c) ON CREATE SET e.run_id = "<RUN_ID>"',
+        "",
+        "  BOTH ENDS OF AN EDGE ARE MATCHED FIRST, by their id. Never draw a "
+        "node inline inside an arrow, as in `MERGE (h)-[:ABOUT]->(:Prior)`: "
+        "that does not find your prior, it makes a new blank :Prior with no "
+        "prior_id and no claim. MATCH each end by its id first, then MERGE "
+        "the arrow between the two names, as in every example here.",
         "",
         "  The run_id goes in ON CREATE SET and NOT inside the arrow. Inside "
         "it, MERGE would only match an edge from this same run, so asserting "
@@ -741,7 +1181,8 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "",
         "  EVERY ID YOU ARE ASKED FOR IS PRINTED ON THE MENU, on its own "
         "labelled line under the thing it names -- `prior_id:` under a claim, "
-        "`crystallization_id:` under a concept, `decision_id:` under a "
+        "`concept_id:` under one of your own concepts, "
+        "`crystallization_id:` under a memory crystallization, `decision_id:` under a "
         "relation. Use those, in full. Not the bracketed summary, not a "
         "shortening of it, not a name you would give it, and not the "
         "`\"<something unique>\"` placeholder in the templates above -- that "
@@ -756,7 +1197,8 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "A `crystallization_id` and a `decision_id` are Postgres rows and are "
         "not in any graph at all. All three go in a PROPERTY -- formed_from, "
         "evidence -- and never in a MATCH. Everything inside your OWN graph "
-        "gets a real edge.",
+        "gets a real edge -- including your own concepts: a `concept_id:` line "
+        "names a `:Concept` node in your graph, and it DOES go in a MATCH.",
         "",
         "  Confidence is your own belief and nothing checks it. That cuts one "
         "way in particular: a number that only ever goes up is a sign of "
@@ -767,30 +1209,55 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
     ]
 
 
-def _outcome_section(*, run_id: str) -> list[str]:
+def _outcome_section(*, run_id: str, focus: bool = False) -> list[str]:
     """How a decision made inside the turn crosses back out of it.
 
     Absence is the safe default and is stated as such: a turn that ran out of
     time, or simply had nothing to continue, leaves nothing behind and the loop
     reads that as no continuation and no outreach.
+
+    ``focus``: this run was shown a focus Orion queued (orion.curiosity.focus), so the node also
+    carries ``focus_disposition``, and writing none is recorded as unknown, not explored.
     """
-    return [
+    lines = [
         "LAST, IF YOU WANT EITHER OF THESE. Two decisions are yours and only "
         "reach anything outside this turn if you write them down:",
         "",
-        "    CREATE (:TurnOutcome {",
-        f'      run_id: "{run_id}",',
-        "      continue_line: true,   // open the next run on this instead of a cold menu",
-        '      continue_note: "what I still do not know and want to keep pulling on",',
-        "      reach_out: false,      // is this worth telling Juniper about, unprompted",
-        '      reach_out_why: "",',
-        "      written_at: timestamp()",
-        "    })",
+        f'    MERGE (t:TurnOutcome {{run_id: "{run_id}"}})',
+        "    ON CREATE SET t.written_at = timestamp()",
+        "    SET",
+    ]
+    if focus:
+        # A placeholder, not a value: a run that copies it unchanged is recorded as unknown,
+        # never as explored (orion.curiosity.focus.parse_disposition keeps it as raw text).
+        lines.append('      t.focus_disposition = "<explored | set_aside: why not>",')
+    lines += [
+        "      t.continue_line = true,   // open the next run on this instead of a cold menu",
+        '      t.continue_note = "what I still do not know and want to keep pulling on",',
+        "      t.reach_out = false,      // is this worth telling Juniper about, unprompted",
+        '      t.reach_out_why = ""',
         "",
-        "Writing nothing is fine and is the normal case. No node means no "
-        "continuation and no message -- nothing is inferred from your prose, so "
-        "silence here is silence, not a default guess.",
+        "There is one :TurnOutcome per run, found by its run_id. If one already "
+        "exists (you wrote it earlier, or a focus anchor did), this updates it "
+        "instead of making a second, so sending it again is safe.",
         "",
+    ]
+    if focus:
+        lines += [
+            "This run was shown a focus you queued, so write this node even if you want neither "
+            "of the two decisions above (then t.continue_line = false): focus_disposition is how "
+            "Hub learns what you did with it. No node, or no focus_disposition, is recorded as "
+            "unknown, not as explored. Nothing is inferred from your prose.",
+            "",
+        ]
+    else:
+        lines += [
+            "Writing nothing is fine and is the normal case. No node means no "
+            "continuation and no message -- nothing is inferred from your prose, so "
+            "silence here is silence, not a default guess.",
+            "",
+        ]
+    return lines + [
         "If you set reach_out, you are not writing the message. A separate turn "
         "composes it later and can still decide the moment is wrong -- Juniper "
         "may be in the middle of something. So say WHY it is worth an "
@@ -805,16 +1272,28 @@ def _peer_briefs_section(peer_briefs: Sequence = (), *, run_id: str | None = Non
     return format_soft_nudge(peer_briefs or (), consumer_run_id=run_id)
 
 
+def _now_section(now=None) -> list[str]:
+    from orion.curiosity.now_section import format_now_section
+
+    return format_now_section(now)
+
+
 def _dream_section(dream_hypotheses: Sequence = ()) -> list[str]:
     from orion.dream.hypotheses import format_dream_section
 
     return format_dream_section(dream_hypotheses or ())
 
 
-def _carry_forward_section(carry_forward=None) -> list[str]:
-    from orion.orion_day.carry_forward import format_carry_forward_section
+def _focus_section(focus=None) -> list[str]:
+    from orion.curiosity.focus import format_focus_section
 
-    return format_carry_forward_section(carry_forward)
+    return format_focus_section(focus)
+
+
+def _corrections_section(corrections: Sequence = ()) -> list[str]:
+    from orion.orion_day.corrections import format_corrections_section
+
+    return format_corrections_section(corrections or ())
 
 
 def _role_and_help_section(
@@ -832,19 +1311,19 @@ def _role_and_help_section(
     lines = [
         f"YOUR ROLE FOR THIS SITTING ({own_graph}). Write this early. It is a "
         "provisional choice: local_crawl (you work this sitting yourself) or "
-        "hire_cursor (you intend to hire a read-only contractor). You may revise "
+        "hire_peer (you intend to hire Claude as a read-only helper). You may revise "
         "mid-run by writing again; the newest written_at is the one that counts.",
         "",
-        "Writing the role does not enqueue Cursor and does not wake a peer. "
+        "Writing the role does not enqueue a hire and does not wake Claude. "
         "A role is not a hire ticket.",
         "",
         "If a Queue pressure line appears in this prompt: elevated local queue "
-        "is more reason to hire_cursor (offload), never a reason to stay local. "
+        "is more reason to hire_peer (offload), never a reason to stay local. "
         "Do not write 'queue elevated so no hire'.",
         "",
         "    MERGE (r:InvestigationRole {",
         '      run_id: "<RUN_ID>",',
-        '      choice: "local_crawl|hire_cursor",',
+        '      choice: "local_crawl|hire_peer",',
         '      why: "<one sentence: why this role now>",',
         "      written_at: timestamp()",
         "    })",
@@ -852,15 +1331,17 @@ def _role_and_help_section(
         "ASKING FOR CONTRACTOR HELP. Write a HelpRequest when you are actually "
         "hiring. Do not take a short local look first — tried_summary names the "
         "claim and why you are handing it off, not a local dig you already did. "
-        "The peer is a read-only investigator. They return notes; YOU still "
-        "write priors and findings. Do not write :PeerBrief yourself.",
+        "The peer is Claude, asked once by message. Claude cannot open the "
+        "repo or your graph, so put what Claude needs in question and "
+        "tried_summary. Claude returns notes; YOU still write priors and "
+        "findings. Do not write :PeerBrief yourself.",
         "",
         '  MERGE (h:HelpRequest {help_id: "<unique help id>"})',
         "  ON CREATE SET",
         '    h.run_id = "<RUN_ID>",',
         f'    h.mode = "{mode}",',
         '    h.question = "<what you need looked at>",',
-        '    h.tried_summary = "<claim / why hiring / what Cursor should dig>",',
+        '    h.tried_summary = "<claim / why hiring / what Claude should think through>",',
         '    h.success_criteria = "<what would count as useful>",',
         '    h.expected_reply = "<what you predict the peer will return, not just what you want>",',
         '    h.if_not_asked = "<what you expect if you do not hire>",',
@@ -924,7 +1405,7 @@ def _review_role_section(*, run_id: str) -> list[str]:
         "",
         "This is a DIFFERENT field from the role you wrote above. Valid "
         "values here are ONLY self_review or hire_cursor_review -- never "
-        "local_crawl or hire_cursor (those belong on :InvestigationRole, not "
+        "local_crawl or hire_peer (those belong on :InvestigationRole, not "
         "here).",
         "",
         "Writing nothing is fine and means self_review. You may revise "
@@ -932,7 +1413,7 @@ def _review_role_section(*, run_id: str) -> list[str]:
         "",
         "    MERGE (r:ReviewRole {",
         f'      run_id: "{run_id}",',
-        '      choice: "<self_review OR hire_cursor_review -- NOT local_crawl / hire_cursor>",',
+        '      choice: "<self_review OR hire_cursor_review -- NOT local_crawl / hire_peer>",',
         '      why: "<one sentence: why this choice now>",',
         "      written_at: timestamp()",
         "    })",
@@ -974,14 +1455,42 @@ def build_kickoff_prompt(
     contractor_peer_enabled: bool = False,
     peer_briefs: Sequence = (),
     dream_hypotheses: Sequence = (),
-    carry_forward=None,
+    open_lived_questions: Sequence[OpenLivedQuestion] = (),
+    corrections: Sequence = (),
+    today_fact: Optional[str] = None,
+    personality_cue: Optional[str] = None,
+    focus=None,
+    consult_outcomes: Sequence = (),
+    now=None,
 ) -> str:
     """Assemble the whole invitation.
 
-    ``carry_forward`` (orion.orion_day.carry_forward.OfferedCarryForward): the threads Orion's
-    Day named for future curiosity. Its own section with its own header, never inside the
-    dream section or the material, and not gated on the graph (it asks for no write). Only
-    the letter's carry-forward text ever arrives here -- never its freeform note.
+    ``now`` (``TemporalNowV1``): Orion's now for the curiosity organ, read at kickoff (integration patch 3,
+    ``orion.curiosity.now_section``): other organs' most salient experiences, each citable as
+    ``[experience:<id>]``. None or empty renders nothing. Shown on every graph state, after the
+    personality block: it is a candidate source, not a graph write.
+
+    ``consult_outcomes``: rows from ``orion_consult`` (Hub claims them for this run): consults with
+    Claude that ended since the last run, and Juniper's answers to their briefs. Writable graph only.
+
+    ``focus`` (orion.curiosity.focus.FocusRow): the one question Orion queued from a chat with
+    Juniper for this run. Shown first, on a writable graph only (the caller takes it only then),
+    because the run records what it did with it on its :TurnOutcome.
+
+    ``personality_cue``: the personality read-back text (`orion.personality.cue`), or None /
+    "" to render nothing. Its own block, right after the today line.
+
+    ``today_fact``: one fact line about today's curiosity time from the Temporal Self
+    chronicle (`orion.curiosity.temporal_fact`), or None to render nothing. Placed right
+    after the thread section it refers to.
+
+    ``open_lived_questions``: open lived questions with their current answer
+    (`self_inquiry.OpenLivedQuestion`), already bounded by the caller. Shown on
+    a writable graph only, with the `:LivedAnswer` MERGE that revises each.
+
+    ``corrections`` (orion.orion_day.corrections.OfferedCorrection): letter claims Juniper and
+    Orion agreed were wrong, with the priors they rested on. Shown on a writable graph only
+    (the caller claims them only then): the section asks Orion to re-test those priors.
 
     THREE STATES, NOT TWO, and conflating the last two is a real bug this
     signature exists to prevent (caught by its own test, 2026-08-26):
@@ -1006,20 +1515,34 @@ def build_kickoff_prompt(
     lines = [_HEADER, ""]
 
     if graph_enabled:
+        if writable:
+            lines += _focus_section(focus)
         lines += _continuation_section(view.continuation)
         # Thread BEFORE priors: the priors list is ordered by uncertainty and
         # reads as a menu, and a menu answers "what could I pick" while this
         # answers "what have I already been picking". The second question is
         # the one a run cannot ask itself.
         lines += _thread_section(view)
+        lines += _today_section(today_fact)
+        lines += _personality_section(personality_cue)
+        lines += _now_section(now)
         lines += _priors_section(view, stale_after=stale_after)
+        lines += _concepts_section(view, writable=writable)
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
+        if writable:
+            from orion.consult.beliefs import consult_outcomes_section
+
+            lines += consult_outcomes_section(consult_outcomes)
         # Only offered when Orion can write the prior that would adopt one --
         # the caller claims (stamps offered) only on a writable graph too.
         if writable:
             lines += _dream_section(dream_hypotheses)
+            lines += _corrections_section(corrections)
+    else:
+        lines += _today_section(today_fact)
+        lines += _personality_section(personality_cue)
+        lines += _now_section(now)
 
-    lines += _carry_forward_section(carry_forward)
     lines += _material_section(material)
     lines += _access_section(
         own_graph=own_graph,
@@ -1037,10 +1560,13 @@ def build_kickoff_prompt(
 
     if writable:
         lines += _write_section(own_graph=own_graph, run_id=run_id, max_hops=max_hops)
+        lines += _lived_questions_section(
+            open_lived_questions, own_graph=own_graph, run_id=run_id
+        )
         if contractor_peer_enabled:
             lines += _role_and_help_section(own_graph=own_graph, run_id=run_id)
             lines += _review_role_section(run_id=run_id)
-        lines += _outcome_section(run_id=run_id)
+        lines += _outcome_section(run_id=run_id, focus=writable and focus is not None)
 
     lines.append(_INSTRUCTION)
     text = "\n".join(lines)

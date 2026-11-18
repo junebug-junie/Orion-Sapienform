@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1
+
 import json
 import logging
 import math
@@ -23,6 +25,7 @@ from .store import (
     SubstrateGraphStore,
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
+    preserve_skipped_keys,
 )
 
 logger = logging.getLogger("orion.substrate.graphdb_store")
@@ -215,14 +218,7 @@ LIMIT 1
         if skip_metadata_keys:
             existing = self.get_node_by_id(node.node_id)
             if existing is not None:
-                merged_metadata = dict(node.metadata or {})
-                existing_metadata = existing.metadata or {}
-                for key in skip_metadata_keys:
-                    if key in existing_metadata:
-                        merged_metadata[key] = existing_metadata[key]
-                    else:
-                        merged_metadata.pop(key, None)
-                node = node.model_copy(update={"metadata": merged_metadata})
+                node = preserve_skipped_keys(node, existing, skip_metadata_keys)
         node_iri = self._node_iri(node.node_id)
         payload_json = json.dumps(node.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
         metadata_json = json.dumps(node.metadata or {}, ensure_ascii=False, sort_keys=True)
@@ -283,6 +279,7 @@ INSERT {{
       orion:sourceNodeId {self._lit(edge.source.node_id)} ;
       orion:targetNodeId {self._lit(edge.target.node_id)} ;
       orion:predicate {self._lit(edge.predicate)} ;
+      orion:edgeRole {self._lit(edge.edge_role)} ;
       orion:confidence {self._typed_float(edge.confidence)} ;
       orion:salience {self._typed_float(edge.salience)} ;
       orion:observedAt {self._typed_datetime(edge.temporal.observed_at.isoformat())} ;
@@ -346,6 +343,10 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             return self._cache.snapshot()
 
     # ---- primary query layer (GraphDB-first) ----
+    def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
+        from .neighborhood_backends import read_sparql_neighborhood
+        return read_sparql_neighborhood(self, request)
+
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         node_ids = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]
         edges_limit = max(1, int(max_edges))
@@ -393,9 +394,6 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             fallback = self._cache.query_hotspot_region(min_salience=threshold, limit_nodes=nodes_limit, limit_edges=edges_limit)
             return self._degraded(query_kind="hotspot_region", fallback=fallback, error=str(exc))
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
-        return self._query_node_kind_region(query_kind="contradiction_region", node_kind="contradiction", limit_nodes=limit_nodes, limit_edges=limit_edges)
-
     def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
         return self._query_node_kind_region(query_kind="concept_region", node_kind="concept", limit_nodes=limit_nodes, limit_edges=limit_edges)
 
@@ -435,9 +433,6 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
     def read_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
         return self.query_hotspot_region(min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges).slice
 
-    def read_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
-        return self.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges).slice
-
     def read_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
         return self.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges).slice
 
@@ -462,10 +457,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
                 details={"node_kind": node_kind},
             )
         except GraphDBSubstrateStoreError as exc:
-            if node_kind == "concept":
-                fallback = self._cache.query_concept_region(limit_nodes=nodes_limit, limit_edges=edges_limit)
-            else:
-                fallback = self._cache.query_contradiction_region(limit_nodes=nodes_limit, limit_edges=edges_limit)
+            fallback = self._cache.query_concept_region(limit_nodes=nodes_limit, limit_edges=edges_limit)
             return self._degraded(query_kind=query_kind, fallback=fallback, error=str(exc))
 
     def _query_nodes(

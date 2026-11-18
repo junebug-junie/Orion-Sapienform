@@ -1,5 +1,9 @@
 services:
   actions:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-actions/Dockerfile

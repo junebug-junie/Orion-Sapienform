@@ -2,7 +2,9 @@ name: orion_response_repair
 label: Orion Response Repair
 description: >
   Conditional post-reflection repair for unified turns. Invoked only when 5b
-  marks the motor draft misaligned, uncertain, or strain_unresolved. Makes the
+  marks the motor draft misaligned or uncertain, or names an unsupported claim
+  in it. Open strain alone (strain_unresolved on an aligned draft) never
+  triggers it (#3618). Makes the
   smallest necessary correction — never a style polish pass.
 
 category: Generative
@@ -25,3 +27,11 @@ steps:
     services: [LLMGatewayService]
     prompt_template: orion_response_repair.j2
     requires_gpu: true
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 0
+  family: turn
+  lanes: [chat, agent]
+  deferrable_window_s: 0

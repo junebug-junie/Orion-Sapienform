@@ -18,7 +18,6 @@ Invocation signals are deterministic and substrate-native, derived from:
 
 - graph cognition outputs (contradictions, drift, pressure, identity conflict)
 - dynamic substrate state (activation/pressure/hypothesis markers)
-- structural patterns (ontology sparsity)
 - operator-approved request mode
 
 Signals remain bounded and include focal refs, task candidates, zone, strength, and confidence.
@@ -28,12 +27,16 @@ Signals remain bounded and include focal refs, task candidates, zone, strength, 
 Task selection is rule-bound by signal type:
 
 - contradiction hotspot → `contradiction_discovery`
-- ontology sparsity → `ontology_expand`
 - concept instability → `relation_discovery`
 - evidence-gap cluster → `evidence_gap_scan`
 - unresolved pressure → `autonomy_hypothesis`
 
 Region selection is bounded (top-k nodes/edges) and zone-safe.
+
+Retired 2026-10-10: the ontology-sparsity signal (`ontology_sparse_region` → `ontology_expand`).
+Nothing in Orion creates `ontology_branch` nodes, so it fired on every concept-dense slice at a
+constant 1.0 and won every decision with a task nothing executes. See
+`docs/superpowers/pr-reports/2026-10-10-retire-ontology-sparse-region-pr.md`.
 
 ## Zone-aware safety at invocation time
 

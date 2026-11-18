@@ -12,8 +12,10 @@ class ChatTurnStateV1(BaseModel):
     node_id: str
     observed_at: datetime
     word_count: int = 0
-    repair_pressure_level: float = 0.0
-    repair_pressure_confidence: float = 0.0
+    # None = no repair-pressure reading on this turn (appraisal skipped/failed, probe shed by
+    # heat). 0.0 is a measured calm turn. Older persisted rows hold 0.0 for both cases.
+    repair_pressure_level: float | None = None
+    repair_pressure_confidence: float | None = None
     has_repair_signal: bool = False
     stance_disposition: str = "unknown"
     stance_disposition_reasons: list[str] = Field(default_factory=list)
@@ -30,6 +32,9 @@ class ChatSessionProjectionV1(BaseModel):
     turns: dict[str, ChatTurnStateV1] = Field(default_factory=dict)
     total_turn_count: int = 0
     sessions: list[str] = Field(default_factory=list)
+    # DEAD since 2026-11-13: chat_prediction_error was retired (PE suite rebuild step 6) and
+    # nothing reads or writes these three fields now. Kept only because the model is
+    # extra="forbid" and persisted projections still carry them.
     # EWMA baseline of chat_prediction_error's raw per-tick mean pressure-hint
     # delta (orion/substrate/prediction_error.py), same shape and same reason as
     # ExecutionTrajectoryProjectionV1's identically-named fields: lets that

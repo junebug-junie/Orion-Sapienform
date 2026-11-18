@@ -54,14 +54,6 @@ class Settings(BaseSettings):
         "orion:social:room-ritual",
         alias="SOCIAL_MEMORY_ROOM_RITUAL_CHANNEL",
     )
-    social_memory_commitment_channel: str = Field(
-        "orion:social:commitment",
-        alias="SOCIAL_MEMORY_COMMITMENT_CHANNEL",
-    )
-    social_memory_commitment_resolution_channel: str = Field(
-        "orion:social:commitment:resolution",
-        alias="SOCIAL_MEMORY_COMMITMENT_RESOLUTION_CHANNEL",
-    )
     social_memory_claim_channel: str = Field(
         "orion:social:claim",
         alias="SOCIAL_MEMORY_CLAIM_CHANNEL",
@@ -114,8 +106,6 @@ class Settings(BaseSettings):
     social_memory_topic_max: int = Field(6, alias="SOCIAL_MEMORY_TOPIC_MAX")
     social_memory_room_participant_max: int = Field(8, alias="SOCIAL_MEMORY_ROOM_PARTICIPANT_MAX")
     social_memory_open_thread_ttl_hours: int = Field(6, alias="SOCIAL_MEMORY_OPEN_THREAD_TTL_HOURS")
-    social_memory_commitment_ttl_minutes: int = Field(90, alias="SOCIAL_MEMORY_COMMITMENT_TTL_MINUTES")
-    social_memory_commitment_max_open: int = Field(3, alias="SOCIAL_MEMORY_COMMITMENT_MAX_OPEN")
     social_memory_style_adaptation_enabled: bool = Field(True, alias="SOCIAL_MEMORY_STYLE_ADAPTATION_ENABLED")
     social_memory_style_confidence_floor: float = Field(0.35, alias="SOCIAL_MEMORY_STYLE_CONFIDENCE_FLOOR")
     social_memory_ingest_token: str = Field("", alias="SOCIAL_MEMORY_INGEST_TOKEN")

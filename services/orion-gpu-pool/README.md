@@ -24,6 +24,15 @@ Design: `docs/superpowers/specs/2026-09-24-gpu-pool-design.md`.
 a service:** add a role (`kind: service` needs `slots` and `vram_gb`) and a class that uses it.
 `python scripts/check_gpu_pool_config.py` checks the YAML against the llama.cpp compose files.
 
+## More than one GPU node
+
+`host` is the pool's home node; `hosts:` lists the others by name and address. A card on another
+node says `host: <name>`. The pool reaches a role at its card's node address, labels grants
+`<node>-worker-<role>`, and sends each card's `host` in `gpu_pool.state` (Hub labels biometrics
+cards per node, since `index` repeats across nodes). A role's cards must all sit on one node; an
+actuator may live on any listed node but only launches cards on its own. First use: hecate's
+`agent-deep` (see `services/orion-llamacpp-host/README.md`).
+
 ## Discovery: what is actually loaded
 
 Each llama.cpp worker announces `{role, llm_profiles profile, host port}` on
@@ -38,6 +47,14 @@ with the server's own `GET /props`: the loaded file must equal the profile's `hf
 | silent | port answers but no fresh announcement | no |
 | down | no answer | no |
 | unloaded / evicted | a swap seat not loaded / a resident pushed off by a swap | no |
+
+A `kind: service` role is probed on its `health` path (up = answers below 500), except a
+launch-managed one: that is probed on its `launch.ready` path and must answer 2xx with
+`{"ready": true}` or `{"status": "ok"}` -- the lane controller's own readiness contract
+(`orion.gpu_pool.config.ready_body_ok`, `RoleSpec.discovery_path`). Today that is diffusion only
+(`/ready`, which also says no when the card has no room). Incident 2026-10-16 -> 10-20: diffusion's
+`/health` said 200 for 4 days beside the agent-gpu2 seat, so a faulted gpu2 looked "both sides up"
+and `fault_cleared:discovery` never fired.
 
 ## Bus (everything except the llama.cpp edge)
 
@@ -161,7 +178,7 @@ Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic
 - **Nothing calls durable-runs `/capacity` any more** (gate:
   `orion/gpu_pool/tests/test_stage5_4_no_capacity_callers.py`). Deleted in 5.6.
 - **`visual_baseline` swap guard deleted**, with `GPU_POOL_VISUAL_ACTIVITY_URL` and the image's
-  copy of `config/proposals/visual_baseline.v1.yaml`. The 27B load is guarded by `thermal` only; an
+  copy of `config/reverie/visual_baseline.v1.yaml`. The 27B load is guarded by `thermal` only; an
   overdue image baseline reclaims gpu2 through the queue (a diffusion hold, owner reclaim).
 - Eval: `run_pool_day_eval.py` now fails on any second where a world and a diffusion lease are
   granted together (`world_diffusion_grant_overlap_sec`), or if `serialize_with` never came up.
@@ -182,6 +199,28 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   whose run holds the only slot would otherwise queue behind itself forever.
 - **Gaps are shared** (Juniper, 2026-09-25): while no call of the run is in flight, a lease of
   **strictly higher** priority may use the slot. Equal/lower priority and other holds may not.
+- **Holds per role** (stage 7.3, `docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md`):
+  `roles.<r>.max_holds` (default 1) holds at once, one slot each (urgent holds count toward it and may
+  stack past it, bounded by slots). The scheduler clamps it
+  to the slots discovery reads from `/props`, and `reserve_one_off_slots` (default 0) keeps that many
+  slots for one-off calls (never the first hold). `GET /health` → `holds` shows configured, slots,
+  the limit in force and why it is lower; a clamp is also logged once (`gpu_pool_max_holds_clamped`).
+  Live: `agent-gpu2: max_holds: 2` (Bonsai, 2 × 131072). Rollback: delete that line.
+- **Gap pinning** (7.3): a one-off call in a gap is charged to ONE idle hold, rebuilt every tick
+  (the lowest-priority idle run, then one with no call waiting, then the most recently granted). Only that run waits
+  one call; another idle run's next call gets its own slot at once. With two runs on two slots,
+  one-off calls have no free slot: they wait for a run's gap (the shortest of the running calls).
+- **Two holds on a swap seat**: an owner reclaim or `max_hold_sec` drain recalls both holds in the
+  same tick (two take-backs, each with the 600 s grace); the seat unloads once both have left.
+- **Background hold cap** (H6, #3391): a background-priority hold that has been granted for
+  `defaults.background_max_hold_sec` (code default 9000 s, 2.5 h) without a break is recalled with
+  reason `background_max_hold`, on any role and for any work class, then gets the normal 600 s grace.
+  A hold nobody retries is released. A retryable hold (every durable run) is re-queued in its old
+  place, so it may be granted again at once when nothing of higher priority waits. Operator holds
+  are exempt. If a drain recalls the hold in the same tick, the drain's reason and grace apply
+  (up to 3600 s for `draining_background`). Check after deploy, expect no row:
+  `select holder, role, held_ms/1000, reason from gpu_pool_events where event in ('released','aborted')
+  and priority = 'background' and held_ms > 12700000 and generated_at > '<deploy time>'`.
 - **Recall**: a hold borrowing another class's role is recalled as soon as that owner has demand
   there; a swap seat with `max_hold_sec` (agent-gpu2: 9000 s, ~2.5 h since stage 5.1) drains after being loaded that long.
   A recalled hold gets `hold_clawback_grace_sec` (600 s) to finish its current node, then is
@@ -221,7 +260,7 @@ durable-runs replays the interrupted node when it is granted again.
   recall before the abort and cancels the call about a second after it.
 - Urgent only pauses holds on roles its own class may use, and only urgent leases the cap has room
   for are owed a pause or count as a waiting owner.
-- Urgent holds may stack past "one hold per role" (bounded by slots and the cap below).
+- Urgent holds may stack past a role's `max_holds` (bounded by slots and the cap below).
 - `queued` and `recall` replies carry `reason`, so a caller can tell a pause from any other recall.
 
 Defaults (`config/gpu_pool.yaml`):
@@ -249,6 +288,51 @@ urgent work: it validates pool events against the priority list.
 
 Nothing sends urgent work yet (Plan 3 adds the trigger). A live pause smoke is **UNVERIFIED**: it
 would pause a real background run, so it waits for Juniper's approval.
+
+## The background queue by value (attention patch 3b)
+
+When two of Orion's own discretionary jobs wait for the same kind of seat, the pool serves the one the
+body-economy market valued higher, not the one that came first. Spec:
+`docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md`, section 1 (decided
+2026-11-10).
+
+- Durable runs put their market decision on the hold request: `want_id`, `want_net`, `want_family`
+  (`GpuLeaseRequestV1`, stored on `gpu_pool_leases`). Reading's stage 1 gets a value-only bid; stage 2
+  carries stage 1's net.
+- Only the `background` class is reordered. Urgent, interactive, perception, starved and system work
+  keep arrival order, and a granted lease is never taken back.
+- The rule (`orion/gpu_pool/value_order.py`): a waiting lease scores `net + aging x hours waited`. A
+  later lease goes first only when it scores at least `GPU_POOL_VALUE_MARGIN` (0.10) higher. Two leases
+  of the same family keep arrival order. A lease with no net (upkeep, one-shot callers) keeps its place:
+  nothing that came after it may jump it. Aging (`GPU_POOL_VALUE_AGING_PER_H`, 0.10/h) closes a 0.3 gap
+  in 3 h, so nothing waits forever.
+- The grant pass and the queue position a caller sees use the same order.
+- Each grant the value order decided emits one `pool_queue_reordered` event (`gpu_pool_events`): both
+  lease ids, both nets and families, the margin and aging.
+- Off switch: `GPU_POOL_VALUE_ORDER_ENABLED=false` restores arrival order exactly.
+- Version skew: the client omits the new fields when unset, and re-asks without them if a pool older
+  than 3b refuses them, so no hold is ever refused for carrying a net.
+- Replay D (`evals/value_queue_replay.py`) replays the same `pick` over 14 days of real holds.
+
+## Orion's learned shed (`orion_self_shed`, attend-to-act loop A1)
+
+One more named reason on the U4 shed lever, below the reflex: `orion_self_shed`, precedence 1,
+blocks NEW `background` grants only (never system, interactive, urgent; running work finishes;
+nothing recalled). Set by the cooling world act (`shed_background_gpu`; orion-durable-runs
+`app/cooling_act.py`, decided by the want market since 2026-11-05; execution dispatch before) over
+`orion:gpu_pool:shed:request` (`GpuPoolShedReasonRequestV1`, set/clear/status; the schema refuses
+`cooling_incident`). Code: `orion/gpu_pool/orion_shed.py`; ledger `public.gpu_pool_orion_shed`
+(`app/orion_shed_store.py`, migration `services/orion-sql-db/manual_migration_gpu_pool_orion_shed_v1.sql`).
+
+- Caps, enforced here: `GPU_POOL_ORION_SHED_MAX_TTL_SEC` (900), `..._MAX_SEC_PER_DAY` (3600, rolling
+  24 h, survives a restart), `..._MIN_GAP_SEC` (900, end of one to start of the next), one at a time.
+- Refused: `disabled` (`GPU_POOL_ORION_SHED_ENABLED=false`, the default), `lever_disabled`
+  (`GPU_POOL_SHED_ENABLED=false`), `reflex_active`, `already_active`, `min_gap`, `daily_cap`,
+  `ledger_unavailable` (fail closed).
+- Terminal: `expired` (TTL), `cancelled` (clear verb, or the kill switch at boot),
+  `preempted_by_reflex` (a cooling incident OPENED -- the AC is no longer healthy).
+- Manipulation check on the record: `drained_at`, `grants_withheld`, `delayed_grant_sec`.
+- `/health` and the pool state carry `shed.orion_self_shed` (caps, 24 h use, the active record).
 
 ## Swap actuation (stage 4.3; config-armed since 5.7)
 
@@ -282,9 +366,111 @@ Loads are blocked -- reported as `swap_requested {actuated: false, reason}` -- b
 `guard:visual_baseline` was deleted in stage 5.4: a reverie-visual run's diffusion hold reclaims gpu2
 through the queue (owner reclaim) instead. Guards are read every
 `GPU_POOL_GUARD_REFRESH_SEC` outside the lease lock; a guard never read blocks.
+A blocked swap (load or unload, including an unload held back by `cooldown` after a refused or
+failed action) is reported **once per episode** -- same seat, action and reason -- not once per
+tick. A new reason, or the block clearing and recurring, is a new episode and is reported again.
+`swap_started`/`swapped`/`swap_failed` are never deduplicated (stage 6.1).
 
 The Hub GPU-pool panel shows each card's `swap_state` (fault in red), the action in flight or last
 finished, cooldown/residency, which guard blocks, and every hold with the calls running in it.
+
+### Warm standby (`swap.standby: warm`, 2026-10-14)
+
+Juniper: "gpu2 should not sit idle while agent work exists". `agent-gpu2` ships `standby: warm`
+in `config/gpu_pool.yaml`. The pool then keeps the 27B loaded on gpu2 whenever diffusion is not
+using it:
+
+- **Loads with no demand** (`swap_started reason=standby`). This happens once diffusion has had no
+  lease, none waiting, and none held for `standby_after_idle_sec` (900 s). That wait is the
+  hysteresis: a burst of paintings does not flap the seat. The diffusion clock is in memory and
+  starts at pool boot, so a restart waits the full 900 s first.
+- **Is never unloaded for idleness, and never drained on the `max_hold_sec` clock.** A diffusion
+  lease still drains it and unloads it (`owner_reclaim`), exactly as before. After that unload,
+  `min_residency` (600 s) still applies, and the 900 s quiet wait starts again.
+- **Can be blocked.** The thermal guard, `cooldown` and `min_residency` block a warm load. So does
+  any active shed (`swap_requested reason=shed:<name>`). The pool waits
+  `standby_retry_after_fail_sec` (3600 s, `reason=standby_backoff`) after any failed load of the seat,
+  instead of the 600 s swap cooldown.
+- **Costs paintings a drain.** A diffusion lease now always waits for the warm seat to drain
+  (its holds are recalled with the hold grace; a running agent turn finishes first) and unload,
+  where before an idle seat was usually already gone. Paintings more often than every ~15 min
+  will cycle the 27B each time; the 900 s quiet window is the only bound.
+- **Spreads reading over two cards.** With the seat warm, durable-run holds land on gpu1 (one) and
+  gpu2 (two, `max_holds: 2`) with no `after_wait_sec` wait.
+
+Rollback: set `standby: off` and redeploy the pool. `standby` is not in the launch digest, so the
+pool and the controller need no lockstep. But the circe controller re-reads this YAML with its own
+parser on every request. Rebuild circe's `gpu-lane-controller` from this code when circe pulls it:
+an older parser refuses the new keys.
+
+### When the controller can't act (controller health)
+
+The lane controller on circe reads `config/gpu_pool.yaml` from its bind-mounted checkout but runs the
+code baked into its image. When the checkout moves ahead of the image (2026-10-09: stage 7.3's
+`max_holds`), the controller refuses every request `config_unloadable:ValidationError` and the seat
+loads nothing -- 136 refusals over 26 h went unnoticed. Now (`orion/gpu_pool/controller_health.py`):
+
+- Two refusals in a row whose reason a retry cannot fix (`config_unloadable`, `fence_state_unreadable`,
+  `launch_digest_mismatch` and the other config disagreements, `invalid_request`) mark the seat
+  **degraded**. Retryable refusals (`busy`, `deadline_passed`, `upstream_not_idle:*`,
+  `stale_generation`) neither trip nor clear it. The two must be >= 60 s apart (a boot reconcile and
+  the first load can both hit one mid-`git pull` read). At the 600 s cooldown that is ~10 min.
+- A succeeded `status` clears only "can't read config"/"rejects requests" (the controller's status path
+  skips the digest/profile/launch checks); a config mismatch clears only when a load/unload is admitted.
+- Memory only: a pool restart forgets it (a still-broken controller re-alerts ~10 min later).
+- `/health` -> `degraded: [seat]` and `actuation.controller.<seat>` (reason, refusals, first/last seen,
+  plain advice: "rebuild the controller on circe"). The state payload carries the same on the seat's
+  card under `actuation.controller_degraded` (not persisted); the Hub GPU pool panel shows it as
+  **CONTROLLER BROKEN** on the card.
+- One Hub Pending Attention card (orion-notify `/attention/request`, severity error; unacked 60 min ->
+  email) when the seat turns degraded, one ack-free info card when it recovers.
+  `GPU_POOL_CONTROLLER_ALERT_ENABLED=false` drops the cards only.
+
+### When a card is stuck in fault (card-fault alert)
+
+A faulted card gets no grants on any of its roles (on gpu2: no paintings, no agent-gpu2 seat).
+Incident 2026-10-16 -> 10-20: gpu2 sat faulted 4 days with a healthy controller, so the controller
+alert above never fired, and the mesh guardian (which probes controllers) said "ok" every hour.
+Now the pool itself raises a **critical** card (orion-notify emails critical at once) when a card
+has been in fault for `GPU_POOL_FAULT_ALERT_AFTER_SEC` (1800), again every
+`GPU_POOL_FAULT_REALERT_SEC` (21600) while it stays faulted, and an info card when it clears. An
+undelivered card is retried ~10 min later. Memory only: a pool restart restarts the clock.
+`GPU_POOL_FAULT_ALERT_ENABLED=false` drops the cards. Log: `gpu_pool_card_fault_alert card=...`.
+
+**Perception priority and its load alert (2026-10-23, body-economy design Patch A0).** Priority
+order is `urgent > interactive > perception > system > background`. `perception` is Orion's sight
+(vision-council on route `metacog_perception`): below Juniper's turn, above Orion's own work, and
+never shed by heat (`orion/gpu_pool/shed.py` can only block system/background). On
+`metacog_background` the 34 C reflex refused vision-council 25,430 times in the 7 days to 10-23.
+Because it is exempt, its own load is watched: a warning card when the last hour's held GPU
+slot-seconds pass `GPU_POOL_PERCEPTION_ALERT_HELD_SEC_PER_HOUR` (3360 = 2x the 14-day p90), again
+every `GPU_POOL_PERCEPTION_REALERT_SEC` while high, info when back under. Memory only. Log:
+`gpu_pool_perception_load state=...`. A config without `perception` in `priorities:` still loads
+(the validator inserts it below `interactive`), which is how the code shipped ahead of the YAML.
+
+**Starved priority (2026-11-03, Orion Prime reliability).** Order is now
+`urgent > interactive > perception > starved > system > background`. `starved` is Orion's own work whose previous
+try lost its whole seat wait to the queue; today only Orion Prime's `prime_starved` route uses it (Prime's normal
+route `prime` is `system`). It goes ahead of other system work by priority instead of by arrival, never ahead of
+Juniper's turn or Orion's senses, and every shed reason that blocks `system` blocks `starved` too (the 34 C reflex
+`cabinet_hot` included; pinned in `orion/gpu_pool/tests/test_starved_priority.py`). A config without `starved` in
+`priorities:` still loads (the validator inserts it just above `system`). An OLD image reading a NEW YAML does
+not load it (the `prime_starved` route names an unknown priority): rebuild the pool, the gateway, the lane
+controller (circe) and mesh-guardian together with this change.
+- The pool keeps retrying at the cooldown: the first retry the rebuilt controller accepts clears it.
+- Fix: rebuild the controller on circe (`services/orion-gpu-lane-controller`); confirm with
+  `python3 scripts/gpu_pool_actuator_probe.py`.
+- Replay: `python services/orion-gpu-pool/evals/run_controller_stale_eval.py`.
+
+**Judge class (2026-11-12, finalize 5b judge off the gpu2 seat).** A hold's calls run on the hold's role, so
+the 5b judge (`harness_finalize_reflect`) of a durable run held on `agent-gpu2` ran on that seat's model
+(22 of 90 judge calls 11-11..12). `orion/harness/finalize.py` (`resolve_finalize_judge_placement`) now sends
+the judge of a hold on any role outside `classes.judge.roles` (`agent`, `chat`) off the hold for that one
+call, on route `judge` (class `judge`, priority `system`): gpu1, then chat's card only while lent. `judge`
+co-owns `agent` (like `memory_distill`), so queued agent holds do not block it (rule 5). The gateway's lane
+routing keeps it (`orion.llm.routes.AGENT_LANE_ROUTES`; it rewrites every other agent-lane call without a hold to
+`agent`). Every other call of the run stays on the hold. Rebuild the pool and the gateway (both bake this YAML) before cortex-exec and
+the harness governor. Rollback: revert the commit (class, route, owner entry and the finalize rule).
 
 ## Deploy (athena)
 
@@ -297,12 +483,12 @@ finished, cooldown/residency, which guard blocks, and every hold with the calls 
 #    GPU_POOL_LEASE_RETENTION_HOURS (default 7 days, the reach of backfill replay and the Hub
 #    walker). Dead letters are kept. Historical traffic lives in gpu_pool_events (sql-writer).
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v1.sql
-# 1b. stage 4.3 (additive, lock_timeout 5s, index CONCURRENTLY; a 4.3 pool refuses to boot
-#     without it). If the index build fails it leaves an INVALID index: DROP INDEX
-#     gpu_pool_leases_hold_idx; and re-run.
+# 1b/1c. stage 4.3 and 5.7 (additive). Still the recommended order -- but no longer a boot
+#     precondition: the pool adds these columns itself (see "Boot schema self-heal" below). Run
+#     1b anyway for its index (gpu_pool_leases_hold_idx, CONCURRENTLY), which boot never builds.
+#     If the index build fails it leaves an INVALID index: DROP INDEX gpu_pool_leases_hold_idx;
+#     and re-run.
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql
-# 1c. stage 5.7 (additive, lock_timeout 5s; a 5.7 pool refuses to boot without it): the persisted
-#     emergency stop.
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v3_actuation_pause.sql
 # 2. equilibrium must exclude the queue-wait hop BEFORE the pool publishes rpc_health:
 #    EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS=log_orion_metacognition,gpu_pool_wait
@@ -310,6 +496,33 @@ psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v3_actua
 scripts/safe_docker_build.sh orion-gpu-pool up -d --build
 curl -s localhost:8127/health && curl -s localhost:8127/v1/pool | jq '.roles[] | {role, status, profile_name}'
 ```
+
+### Boot schema self-heal (since 2026-09-30)
+
+Every LLM call leases through this pool, so a pool that will not boot is a total LLM outage. That
+happened twice (2026-09-26 v2 `hold_lease_id`, 2026-09-30 v3 `actuation_paused_at`): the image was
+deployed before its additive migration and `check_schema` refused to start. Now, after taking the
+leader lock (single writer), the pool runs the missing `ALTER TABLE .. ADD COLUMN IF NOT EXISTS`
+statements itself -- `BOOT_ADDITIVE_COLUMNS` in `app/store.py`, one `ALTER TABLE` per table (atomic),
+stopping at the first lock failure, under `SET LOCAL lock_timeout` (3 s at boot, 300 ms on retries:
+a waiting ALTER queues the pool's own writes behind it) and `statement_timeout` 15 s.
+
+- **Lock not granted in time** (a `pg_dump`, a long transaction): the pool does **not** exit. It
+  serves **degraded**: the missing columns are held in memory for this process (holds, attach
+  idempotency, swap state and the emergency stop all still work), it logs
+  `gpu_pool_schema_degraded` at CRITICAL, retries in the background (5 s, 10 s, 30 s, 60 s, then
+  every 120 s), and on success writes the held values through (`gpu_pool_schema_recovered`). Until
+  then those values would not survive a restart. `/health` carries it:
+  `curl -s localhost:8127/health | jq .schema` -> `state` (`ok`/`degraded`), `missing`,
+  `in_memory`, `last_error`, `attempts`, `degraded_since`. Operator fix: run the migration named in
+  the log (the pool's own retry then finds nothing to do).
+- **Never applied at boot:** tables (v1), indexes, type changes, drops, or a missing column not in
+  the boot list. Those raise `SchemaNotHealable` and the pool refuses to boot, loudly, as before.
+- **Drift gate:** `tests/test_schema_drift_gate.py` fails if the boot list and the
+  `manual_migration_gpu_pool_v*.sql` `ADD COLUMN`s differ in either direction or in type/default,
+  if a column the store writes is created by neither v1 nor the boot list, or if a boot entry is not
+  additive (NOT NULL without a constant default, etc.). A new additive migration therefore needs
+  its boot entry in the same patch.
 
 circe's llama.cpp workers start announcing after they are recreated with the new compose
 (`LLM_ROLE`, `LLM_ANNOUNCE_PORT`); until then their roles read `silent`, which is correct.
@@ -330,3 +543,23 @@ times it took the lock and its worst wait / hold since the previous call (then r
 hold over 250 ms is also logged as `gpu_pool_slow_lock op=... phases={...}`, with time per phase
 (probe, live_leases, schedule, resume, start_thread, bus_publish, publish_state). On 2026-09-25 the
 phases were all database commits, stalled behind Postgres I/O from the substrate reconcile sweeps.
+
+### vLLM discovery (staged Hecate integration)
+
+An LLM role can set `backend: vllm`. Discovery checks `/health`, `/v1/models`
+and the Orion host middleware's `/orion/server-info`; all must succeed.
+It confirms the profile's served alias and loaded path, announcement host,
+public port and CUDA indices, and the engine's tensor-parallel size against
+all role cards. Pipeline/data parallelism beyond one is refused. Slot count
+and context size come from the initialized engine, never the desired profile.
+Vision remains unknown. A stale or mismatched declaration receives no grants.
+
+The existing `LlmWorkerAnnounceV1`, `DiscoveredRoleV1` and `GpuLeaseGrantV1`
+wire shapes remain unchanged. For vLLM only, `model_file` means the exact
+served-model ID; `model_path` remains the actual loaded engine path. Registry
+entries and bus kinds are unchanged; the announcement channel now also names
+the vLLM host as a producer. Default llama.cpp role serialization omits
+`backend`, preserving existing config snapshots and actuator digests.
+
+Existing readers reject unknown role fields: rebuild readers of pool config
+before **activating** a vLLM role. See the [Hecate runbook](../../docs/runbooks/hecate-glm53-vllm.md).

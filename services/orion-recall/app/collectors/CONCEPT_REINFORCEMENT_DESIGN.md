@@ -108,6 +108,15 @@ than reinforced with a falsy identity_key, since Falkor's codec writes `identity
 unconditionally on every upsert -- passing a missing one would durably clobber the node's
 real identity, not leave it alone.
 
+**Update 2026-10-06:** in recall the "in-process cache" those two reads used is gone. It was
+a complete copy of the graph built once at boot (17-25s after PR #2500) and never refreshed,
+so reinforcement read activation values frozen at boot. Recall's store is now
+`FalkorDirectConceptStore` (`orion/substrate/falkor_direct.py`): `get_node_by_id()` and
+`get_identity_key_by_node_id()` are single-node `GRAPH.RO_QUERY` lookups against FalkorDB
+(~5ms each live; since the review follow-up the live path reads both in one query via
+`get_node_and_identity_key()`, ~4ms without the node_id index, ~1ms with it), so the activation bump starts from the current durable value. The write is
+unchanged (one `MERGE ... SET`, reducer-owned metadata keys skipped).
+
 ## Acceptance checks
 
 1. A concept matched in a live turn has a measurably higher `activation` immediately after,

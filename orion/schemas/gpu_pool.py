@@ -23,6 +23,10 @@ LLM_WORKER_ANNOUNCE_CHANNEL = "orion:llm:worker:announce"
 GPU_POOL_LEASE_REPLY_PREFIX = "orion:gpu_pool:reply:"
 GPU_POOL_STATE_REPLY_PREFIX = "orion:gpu_pool:state:reply:"
 GPU_POOL_CONTROL_REPLY_PREFIX = "orion:gpu_pool:control:reply:"
+# Orion's learned shed action (attend-to-act loop A1): set/clear/status of the lower-precedence
+# ``orion_self_shed`` reason on the U4 shed lever. Never ``cooling_incident`` (the reflex's).
+GPU_POOL_SHED_REQUEST_CHANNEL = "orion:gpu_pool:shed:request"
+GPU_POOL_SHED_REPLY_PREFIX = "orion:gpu_pool:shed:reply:"
 
 GPU_LEASE_REQUEST_KIND = "gpu_pool.lease.request.v1"
 GPU_LEASE_REPLY_KIND = "gpu_pool.lease.reply.v1"
@@ -34,9 +38,11 @@ GPU_POOL_CONTROL_REPLY_KIND = "gpu_pool.control.reply.v1"
 GPU_ACTUATE_KIND = "gpu_pool.actuate.v1"
 GPU_ACTUATE_RESULT_KIND = "gpu_pool.actuate.result.v1"
 GPU_LEASE_REF_KIND = "gpu_pool.lease.ref.v1"
+GPU_POOL_SHED_REQUEST_KIND = "gpu_pool.shed.request.v1"
+GPU_POOL_SHED_RESULT_KIND = "gpu_pool.shed.result.v1"
 LLM_WORKER_ANNOUNCE_KIND = "llm.worker.announce.v1"
 
-Priority = Literal["urgent", "interactive", "system", "background"]
+Priority = Literal["urgent", "interactive", "perception", "starved", "system", "background"]
 LeaseKind = Literal["request", "hold"]
 # Recall/abort/queued reason for a hold paused for urgent work: aborted after
 # urgent_preempt_grace_sec and re-queued in place (orion/gpu_pool/scheduler.py U1/U2).
@@ -93,6 +99,12 @@ class GpuLeaseRequestV1(BaseModel):
     # granted (a stale generation means the hold was re-granted and the caller must not attach).
     hold_lease_id: str | None = Field(None, min_length=1, max_length=128)
     hold_generation: int | None = Field(None, ge=1)
+    # Attention patch 3b (docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md,
+    # section 1): the body-economy decision this lease serves. The pool reads them only to order the
+    # background class by value (orion/gpu_pool/value_order.py); unset = no bid (upkeep keeps its place).
+    want_id: str | None = Field(None, min_length=1, max_length=200)
+    want_net: float | None = Field(None, allow_inf_nan=False)
+    want_family: str | None = Field(None, min_length=1, max_length=120)
 
     @model_validator(mode="after")
     def _stage4_verb_shapes(self):
@@ -120,7 +132,7 @@ class GpuLeaseGrantV1(BaseModel):
     cards: list[str]
     url: str
     profile_name: str | None = None
-    model_file: str | None = None
+    model_file: str | None = None  # llama.cpp basename; vLLM exact /v1/models served id
     ctx_per_slot: int | None = None
     served_by: str
 
@@ -147,6 +159,8 @@ class GpuPoolEventV1(BaseModel):
         "swap_requested", "swap_started", "swapped", "swap_failed", "actuate_refused", "lent", "unlent", "discovery_mismatch", "discovery_confirmed",
         # stage 5.7: the emergency stop (control verbs pause_actuation / resume_actuation)
         "actuation_paused", "actuation_resumed",
+        # attention patch 3b: a later background want was served before an earlier one, by value
+        "pool_queue_reordered",
     ]
     lease_id: str | None = None
     holder: str | None = None
@@ -172,8 +186,8 @@ class DiscoveredRoleV1(BaseModel):
     url: str
     status: Literal["confirmed", "mismatch", "silent", "down", "unloaded", "evicted", "static"]
     profile_name: str | None = None
-    model_file: str | None = None
-    model_path: str | None = None   # as llama.cpp /props reports it (durable-runs compares full paths)
+    model_file: str | None = None  # llama.cpp basename; vLLM exact /v1/models served id
+    model_path: str | None = None   # as /props or vLLM /orion/server-info reports it (durable-runs compares full paths)
     slots: int = 0
     ctx_per_slot: int | None = None
     vision: bool | None = None
@@ -190,6 +204,9 @@ class GpuCardStateV1(BaseModel):
     # The card's CUDA/nvidia-smi index on the pool host (config ``cards.<c>.index``); None when the
     # YAML leaves it unset. Stage 5.5: Hub's biometrics GPU labels join nvidia-smi cards on this.
     index: int | None = None
+    # The node this card is in (config ``cards.<c>.host``, else the pool ``host``). None from a pool
+    # that predates multi-host: read the state's ``host`` then. ``index`` is unique per node only.
+    host: str | None = None
     lendable: bool = False
     lent: bool = False
     swapped_in: list[str] = Field(default_factory=list)
@@ -293,6 +310,57 @@ class GpuPoolControlReplyV1(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
+# The only reason this RPC may touch. The reflex's ``cooling_incident`` is set and cleared by
+# orion-hardware-watch incident events only; the pool refuses any attempt to name it here.
+ORION_SELF_SHED_REASON = "orion_self_shed"
+OrionShedState = Literal["active", "expired", "cancelled", "preempted_by_reflex", "refused"]
+ORION_SHED_TERMINAL_STATES: tuple[str, ...] = ("expired", "cancelled", "preempted_by_reflex", "refused")
+
+
+class GpuPoolShedReasonRequestV1(BaseModel):
+    """Orion's learned shed action -> the pool (attend-to-act loop A1, amended 2026-09-29).
+
+    ``set`` starts one ``orion_self_shed`` for ``ttl_sec`` (capped by the pool); ``clear`` ends it
+    early (settles ``cancelled``); ``status`` reads one shed (by ``shed_id`` or ``dispatch_id``).
+    ``reason`` is a Literal on purpose: a request naming ``cooling_incident`` fails validation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["set", "clear", "status"]
+    reason: Literal["orion_self_shed"] = ORION_SELF_SHED_REASON
+    dispatch_id: str = Field(..., min_length=1, max_length=256)
+    shed_id: str | None = Field(None, max_length=128)
+    ttl_sec: float | None = Field(None, gt=0, le=3600)
+    actor: str = Field("orion", max_length=64)
+    # The decision context, kept on the shed record so one row joins the whole chain.
+    correlation: dict[str, Any] = Field(default_factory=dict)
+
+
+class GpuPoolShedResultV1(BaseModel):
+    """One ``orion_self_shed`` record as the pool holds it. ``refusal`` is set only for
+    ``state=refused`` (``disabled`` | ``lever_disabled`` | ``reflex_active`` | ``already_active``
+    | ``min_gap`` | ``daily_cap`` | ``ledger_unavailable`` | ``not_found``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["gpu_pool.shed.result.v1"] = GPU_POOL_SHED_RESULT_KIND
+    ok: bool
+    shed_id: str | None = None
+    dispatch_id: str | None = None
+    reason: Literal["orion_self_shed"] = ORION_SELF_SHED_REASON
+    state: OrionShedState
+    refusal: str | None = None
+    ttl_sec: float | None = None
+    started_at: datetime | None = None
+    valid_until: datetime | None = None
+    ended_at: datetime | None = None
+    drained_at: datetime | None = None
+    grants_withheld: int = 0
+    delayed_grant_sec: float = 0.0
+    background_live_at_start: int = 0
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
 class GpuLeaseRefV1(BaseModel):
     """A pool lease a caller carries on each LLM call made under it (stage 4: a durable run's
     hold). The gateway turns it into ``attach`` instead of taking a lease of its own -- a call
@@ -365,7 +433,7 @@ class GpuActuateResultV1(BaseModel):
 
 
 class LlmWorkerAnnounceV1(BaseModel):
-    """A llama.cpp worker saying which role and ``llm_profiles.yaml`` profile it serves."""
+    """An LLM worker saying which role and ``llm_profiles.yaml`` profile it serves."""
 
     model_config = ConfigDict(extra="forbid")
 

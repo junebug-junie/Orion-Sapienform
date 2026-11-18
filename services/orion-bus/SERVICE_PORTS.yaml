@@ -12,7 +12,8 @@ ports:
       # 2026-09-25 (XLEN is not backlog); bus_stream_lag_observed dropped as a
       # deferred role: the live bus has one active consumer group, lag=0.
       - bus_configured_stream_uncataloged
-      - bus_schema_validation_failed
+      # bus_schema_validation_failed retired 2026-10-07 (schema sample behind
+      # contract_pressure; read 0 on every live tick).
       - bus_delivery_anomaly_observed
     downstream_layers: [1, 2, 3, 4, 5, 6, 10, 11]
     evidence_refs:

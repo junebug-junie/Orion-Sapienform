@@ -103,6 +103,28 @@ def test_resolve_needs_ten_minutes_of_good_live_watts():
     assert cooling_verdict(pts, at(1210)).resolve
 
 
+def cycling(t: float) -> float:
+    """Thermostat cycle seen live 2026-10-03: ~750 W compressor for 2 min, ~105 W idle for 2 min."""
+    return 750.0 if int(t) % 240 < 120 else 105.0
+
+
+def test_thermostat_cycling_ac_resolves():
+    """The incident that shed every lane for 4 h: the AC cycled, never holding 500 W for 10 min."""
+    pts = series(0, 900, watts=cycling)
+    v = cooling_verdict(pts, at(900))
+    assert v.open_reason is None and v.resolve
+
+
+def test_dip_past_low_sec_stops_counting_as_working():
+    """300 W is neither 'low' (<150) nor 'good' (>=500): it cannot open low_power, so cooling_ok_sec
+    alone shows whether the dip still counts. The 180 s cutoff after the last >=500 W reading."""
+    base = series(0, 100, watts=850.0)
+    inside = cooling_verdict(base + series(105, 100 + 175, watts=300.0), at(100 + 175))
+    outside = cooling_verdict(base + series(105, 100 + 190, watts=300.0), at(100 + 190))
+    assert inside.open_reason is None and inside.detail["cooling_ok_sec"] > 0
+    assert outside.open_reason is None and outside.detail["cooling_ok_sec"] == 0 and not outside.resolve
+
+
 def test_resolve_refused_while_newest_live_is_too_old():
     pts = series(0, 1200, watts=varying)
     assert not cooling_verdict(pts, at(1200 + 130)).resolve

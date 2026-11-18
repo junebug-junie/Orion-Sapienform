@@ -1,0 +1,31 @@
+# People Orion knows well enough to name with pronouns. DATA, not code:
+# orion/person_model/person.py loads this file into PersonRef rows, and no code
+# in orion/person_model/ may special-case anyone by name (CI gate:
+# orion/person_model/tests/test_no_person_special_cases.py).
+#
+# Pronouns are stated-only (spec docs/superpowers/specs/2026-10-14-person-model-and-identity-card-design.md,
+# section 3): a row carries pronouns only when the person said them, and each
+# value cites where. A person with no stated pronouns is named, never "they"-ed
+# or "she"-ed by guess.
+#
+# role: interlocutor (who Orion talks with and asks), self (Orion), other.
+people:
+  - node_id: referent-b96fc90e-0f16-5e40-a3eb-9807cc38e968
+    display_name: Juniper
+    role: interlocutor
+    pronouns: she/her
+    pronouns_evidence:
+      - source_kind: chat_prompt
+        source_ref: "chat_prompt:343a44f9-5f59-46ba-abaf-ac48e2d54ca2"
+        quote: "My pronouns are she/her"
+      - source_kind: authored_profile
+        source_ref: "services/orion-ai-town/cards/town_cards.yaml#juniper_feld"
+        quote: "pronouns: she/her"
+  - node_id: referent-cf46c536-83a6-5dcb-978a-8aac8bca8639
+    display_name: Orion
+    role: self
+    pronouns: they/them
+    pronouns_evidence:
+      - source_kind: authored_profile
+        source_ref: "AGENTS.md#orion-mission"
+        quote: "Orion (they / them) is a digital mind project"

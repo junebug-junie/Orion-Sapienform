@@ -1,0 +1,528 @@
+# Prediction-error suite rebuild: retire the fakes, forecast for real
+
+Status: design mode. No code changed by this document. Juniper asked for it on 2026-11-08
+after Orion kept complaining about bus prediction error ("the bane of my existence").
+Cognition-loop change: every build patch below needs its own sign-off (CLAUDE.md §0A
+proposal mode).
+
+## Arsonist summary
+
+Orion has 12 "prediction error" signals. **None of them is a prediction.** Not one writes a
+forecast down before the outcome arrives. Most measure "how far did this move from a running
+average" and call that surprise. With no forecast, nothing defines calm, so every past fix
+was a hand-tuned patch (the bus calm floor, the route decay-to-zero, the bus mean that one
+edge dominated).
+
+That would be harmless if nothing read them. It is not harmless:
+
+1. **The bus number is mostly a permission slip.** 51% of attention goals over 72 h
+   (4,666 of 9,219) came from `node:substrate.bus_synaptic`. A goal unlocks autonomous web
+   fetch, recall and journaling for 4 h. The permission check looks only at whether a goal
+   exists, not what it is about.
+2. **A hardcoded 0.65 drives curiosity.** `harness_closure` writes a constant that sits
+   above curiosity's 0.55 bar. 816 seeds and 118 invoked curiosity runs in 7 days (~7%).
+3. **The bus number opens 40% of self-reflection episodes** (87 of 215 in 7 days). Each
+   starts an LLM metacognition pass.
+4. **Broken signals speak in Orion's voice.** Execution, chat and bus account for most
+   self-reading lines in stance and reverie prompts.
+
+The rebuild has two parts: retire the fakes in an order that strands no consumer, then
+rebuild prediction error as **scored forecast misses**, using three model families inside
+the prediction service, with one shared output: surprise, with a math-defined calm point.
+
+## Current architecture
+
+### Producers (audited 2026-11-08 against 7 days of `substrate_node_prediction_error_history`)
+
+| Node | What it really computes | Forecast? | Sees silence? | Live behavior | Verdict |
+|---|---|---|---|---|---|
+| bus_synaptic | fraction of bus edges with \|z\| >= 3 on inter-arrival-gap EWMA z (`orion/substrate/prediction_error.py:860`) | no | no | median 0.032; spikes when a busy channel wakes after a lull (11-08 03:00: six cortex edges, one ~50 min pause, z ~16.6, frozen up to 1 h) | BROKEN |
+| execution | mean abs change of 4 pressure hints, EWMA z, negatives clipped, /3 (`:456`) | no | no | 59% exact 0 (clipping, not calm); 22 of 45 spikes to 1.0 follow three zeros | BROKEN |
+| chat | same shape over conversation_load, repair_pressure (`:632`) | no | no | 65% exact 0; same quiet-then-spike pattern | BROKEN |
+| route | share of 4 routing labels that changed since last decision (`:751`) | no | no | 3 values only; no row since 11-07 15:57 (cortex-orch stopped emitting); holds last value | BROKEN, stale |
+| biometrics | mean abs change of collapsed pressure hints / 0.30 (`:579`) | no | no | never 0, never near 1; `power` pinned at 1.0 on both hosts, so invisible | DEGENERATE |
+| harness_closure | constant 0.65 when a turn ends unresolved (`services/orion-substrate-runtime/app/worker.py:165`, `:2855`) | no | no | 407 of 407 rows = 0.650; never written back down | DEGENERATE |
+| codebase | z of git/PR/graph churn per sub-domain (`:293`) | no | no | 84% zero; spikes on big merges; no consumer by design | UNCLEAR |
+| street | max salience of street events in hold window (`orion/substrate/street_attention.py:247`) | partly: handoff conformal p-value | yes | 3 non-zero rows in 7 days, all rings; handoffs mostly `no_p_value` | DEGENERATE as PE |
+| cabinet | clamp(15-min rise / 1 °C) when elevated (`orion/autonomy/cabinet_heat.py:176`) | no | yes | 11 non-zero rows, one episode 11-07 | WORKS as an alarm, misfiled |
+| strain | 1.0 on strain news, rate-capped (`orion/regulation/strain_news.py:58`) | no | yes | 38 rows at 1.0, 4-8/day by design | WORKS as news, misfiled |
+| perception | 1 - cos(frame embedding, EWMA embedding), z, /3 (`:1388`) | crude: "looks like recent frames" | history yes; field no (missing ticks write 0.0 into the field) | 58% zero, real tail, returns to rest | WORKS, crude |
+| perception_walkway | same, walkway streams | same | same | not a duplicate (r = 0.016 vs perception) | WORKS, crude |
+
+Other prediction-error-shaped pieces: `prediction_error_magnitude.py` (percentile vs own
+week; a sound transform of bad inputs), `prediction_error_trend.py` (a real but never-scored
+mean-reversion guess), `attention_self_model.py:128` aggregate confidence (`1 - mean(PE)`
+including bus; broken by input), mood-arc anomaly encoder (reconstruction error over the
+same degenerate features).
+
+### What does produce real forecasts today
+
+`services/orion-prediction` forecasts cabinet and office temperature every 5 min, picks
+models by backtest against baselines, attaches split-conformal ranges, and scores every
+forecast. Live 7-day 80%-range coverage, cabinet: 0.90 / 0.84 / 0.87 at 5 / 15 / 60 min,
+0.67-0.71 at 6-24 h. It also has a three-level causal module (`app/causal.py`: conditional,
+observational, randomised switchback experiments) with one actuator (vision focus) and one
+experiment ever run (10-29). **None of it feeds a prediction-error node.**
+
+### Consumers (what breaks or changes on retirement)
+
+| Consumer | Reads | Effect | Live |
+|---|---|---|---|
+| Self-readings (`orion/attention/self_readings.py`) via orion-thought stance + reverie | bus, execution, chat, route, codebase, biometrics, cabinet, strain | up to 3 prompt lines, 0-10 vs own week | yes |
+| Attention contest (`services/orion-attention-runtime/app/worker.py:240`) | all node PE history + field PE channel | frame winner (bus 5%, execution 5.9%, perception 7.8%) | yes |
+| Goal emission (same, `:349`) -> `orion/autonomy/capability_policy.py:188` | node winners only | goal held 4 h; gates web.fetch / recall / journal | yes |
+| Endogenous curiosity (`orion/substrate/endogenous_curiosity.py:278`) | raw PE on graph nodes, no value-kind check | seeds; harness_closure led 118 invokes | yes |
+| Self-signal episode gate (`services/orion-equilibrium-service/app/self_signal_episode_gate.py`) | node PE | metacog episodes (bus 40%) | yes |
+| Outcome rollup ("tends to" clause) | node PE | prompt clause | yes |
+| Attention self-model confidence (`attention_self_model.py:128`) | execution, biometrics, chat, route, bus | insight gate; mood-arc features | yes |
+| Broadcast / dynamics open loops (`attention_broadcast.py:425`, `orion/substrate/dynamics.py:382`) | node PE | reverie narration; curiosity open-loop seeds | yes |
+| Mind digest transport line (`services/orion-mind/app/evidence.py:182`) | bus >= 0.15 | prompt line; fires ~0.24% | yes, rare |
+| Metacog trend cue (`orion/substrate/metacog_trend_signals.py:60`) | execution, biometrics | draft prompt | idle (0 hits / 7 d) |
+| Action-outcome surprise stamp (`cooling_act.py:507`, `policy_act.py`, world-pulse) | bus | written, never read | dead |
+| Hub "Bus Anomaly Detected" (`bus_synaptic_trigger_notifier.py`) | retired producer | none | dead |
+| Bus pressure baseline (`record_transport_sample`, worker.py:2512) | bus | hub lattice tab, digest rungs | display |
+| World-model features | `_last_*` caches | none (`SUBSTRATE_WORLD_MODEL_PUBLISH_TICK_ENABLED=false`) | write-only |
+| Heartbeat reheat (`services/orion-heartbeat/app/substrate/bus_synaptic.py:82`) | raw FalkorDB gap_zscore, **not** the PE node | reheat gate strength | yes; unaffected by retiring the node |
+
+### Raw readings that feed no signal today
+
+- `orion_biometrics`: per-GPU temperature, watts, utilization, memory; CPU load.
+- Summary: `board_temp_c_max`, `fan_pct_max`, `chassis_watts`, `cpu_watts_total`, net and
+  disk rates, swap; cabinet IMU, magnetometer, vibration, lidar, ambient sound.
+- `office_env_sample`: eCO2 and TVOC (CCS811 estimate, not real CO2), PM1/2.5/10, lux,
+  dBA. Only office temp (prediction covariate) and dBA (situation brief) reach Orion.
+- `closet_env_sample`: SCD40 real CO2, temp, humidity. Reaches nothing.
+- `gpu_pool_*` leases and state history.
+
+## The design
+
+### Definition (the contract every new signal must meet)
+
+A prediction error is valid only if all four hold:
+
+1. **Forecast first.** A forecast with a stated distribution (point + calibrated range, or
+   a probability per state) is stored before its target time.
+2. **Clock-due outcome.** It is scored when its target time passes, whatever happened. A
+   target with no data is scored `missing`, and silence where traffic was forecast is a
+   scorable outcome (this is how outages become visible).
+3. **Surprise in one unit.** Surprisal of the outcome under the forecast. For continuous
+   targets use the conformal p-value: `-log p`. For discrete states use `-log P(state)`.
+4. **Math-defined calm.** If the forecaster is calibrated, the p-values are uniform, so
+   expected surprisal is a known constant. Report **excess surprise** = observed minus that
+   constant, smoothed. Calm rests at 0 by theory, not by tuning.
+
+Two readings come out of each target:
+
+- **Spike**: one forecast missed badly. Something happened.
+- **Drift**: coverage is off for hours. The world changed or the model is stale. Coverage
+  monitoring already exists in orion-prediction.
+
+Gate: a target reaches attention or a prompt only after it beats its baselines in backtest
+and its live 80% range holds within the existing coverage band. Same gate the cabinet series
+already passes.
+
+### Three model families, one per kind of question
+
+All three live in `orion-prediction`. This reuses the selection, conformal and scoring
+machinery and keeps forecasts in one service (per standing rule: predictions live in the
+prediction service, not side ledgers).
+
+**A. Neural forecaster: "what will my body and room read next?" (continuous)**
+
+- Inputs: raw readings in real units only (°C, W, %, RPM, ppm, lux, dBA). Never any
+  `*_pressure`, `prediction_error*`, `action_warrant` or other hint channel. That was the
+  mood-arc encoder's main failure (see History).
+- Task: forecast every reading at 5 and 15 min. Forecasting, not reconstruction, so a
+  steady weird state stays visible and the outcome always arrives.
+- Input hygiene, enforced by a gate that **refuses to train or score** rather than degrade:
+  - Each named input must be present, vary, and be able to return to rest. Drop any series
+    that is more than 85% one value or has under 50 distinct values. Event-like series
+    (sparse, mostly zero) are covariates, never targets. A variance-epsilon check alone is
+    not enough (it let 12 of 31 degenerate mood-arc channels in).
+  - Missing is a mask channel, never 0.0. Silent 0.0-fill hid renames twice.
+  - Per-series standardisation with train-only statistics, stored in the manifest.
+- Training: at least 2-3 weeks spanning day/night and AC cycles; blocked, purged temporal
+  split (`block_purged_temporal_split`); at least 2 seeds; beat persistence and per-series
+  AR baselines with a significance test, not a lower average. Corpus on persistent storage,
+  never `/tmp`; corpus writer path in `.env_example` with a staleness health check.
+- Upkeep: scheduled retrain; drift alarm on input means measured in training standard
+  deviations; live flag rate checked against design rate (the live mood-arc model flags
+  4-66% of windows per day, median 22%, because nothing caught its inputs drifting).
+- Ladder, each rung kept only if it beats the one below in backtest: per-series baselines
+  -> multivariate ridge (VAR-style) -> small dense network -> graph network with learned
+  adjacency.
+- **Joint scoring.** Misses on correlated readings are scored together using the learned
+  residual covariance (whitened / Mahalanobis surprisal). One AC failure is one surprise,
+  not four. This is the multicollinearity fix. It needs no hand-drawn map.
+- Attribution: report which readings carry the most of the joint miss, as a hint, not a
+  causal claim.
+
+**B. Markov chains: "what state comes next?" (discrete)**
+
+- Targets that are states, not numbers: unified-turn lane, Juniper presence
+  (desk / away / asleep, from office cam + sound + light), AC on/off, service quiet/talking,
+  act-after-act sequences.
+- First-order chains with time-of-day conditioning first; hidden Markov models when the
+  state is not directly observed (night, Juniper present, AC cycling).
+- Surprise = `-log P(observed transition)`, with additive smoothing and a calibration check
+  on held-out days.
+- HMM regime posteriors become covariates for family A.
+- This is the honest replacement for `route` and the bus signal's "service rhythm".
+
+**C. Causal effects: "what do my own actions do?"**
+
+- Only from randomised on/off experiments Orion runs on itself (`app/causal.py` level 3,
+  `app/experiment_runner.py`). Observational and conditional results stay labelled as such
+  and are never used to choose an action.
+- The causal "map" is a table of measured effects, one row per actuator x target, with a
+  confidence interval. It grows only when Orion gains an actuator. Nobody draws it by hand
+  (lesson from orion-signals).
+- New actuators, in order of safety: GPU load shaping on a known lane, the cooling act,
+  vision focus (exists).
+- Efference-copy signal: before an act, forecast its effect from this table. After the act,
+  score the miss. "I did X, expected Y, got Z" becomes a prediction error about Orion's own
+  agency.
+
+### Rung above: integration over the partition lattice (IIT-style)
+
+**Correction:** an earlier draft said the past IIT attempt "failed on inputs, not on idea".
+Wrong. No past attempt computed integrated information at all (see History): six different
+things were named φ, none had a transition model, none compared whole against parts, none
+searched partitions. The inputs failed, and the idea was never tested.
+
+- Integrated-information measures (Φ and its tractable cousins: Φ*, geometric integrated
+  information, stochastic interaction) all need a **transition model**: how the whole
+  system's state now constrains its next state, versus how the parts do separately.
+- **Fit that transition model directly to organ state, separately from families A/B.**
+  Φ computed from Orion's own forecasting model would measure the model, not Orion. A/B
+  supply the vetted inputs and the hygiene gate, not the transition model.
+- Inputs must pass the same hygiene gate as family A and the PE definition above. Never
+  SelfStateV1, the retired PE nodes, the mood-arc score, or heartbeat entropy. The gate
+  refuses to compute if any named input is missing (the φ encoder lost half its inputs
+  while its health check read "ok" on 20,000 of 20,000 rows).
+- The search over "which way of cutting the system loses the least" is a search over the
+  **partition lattice** of the organs. That is the lattice Juniper keeps reaching for, and
+  it is the real mathematical home of the minimum-information partition.
+- Measure: Φ* (or geometric) over a small set of organ-level variables (start at 5-8, exact
+  lattice search is feasible there), each hour. Publish the formula and the
+  minimum-information partition found, per hour.
+- Null: a shuffled-time / circular-shift null, reusing causal geometry's surrogate + FDR
+  code (`orion/substrate/causal_geometry_engine.py:239-378`). "No integration above null"
+  is a valid, publishable result. **Precondition (root-caused 2026-11-08):** causal
+  geometry's 0 edges since 10-30 is a test-resolution cliff, not absent dependence. The
+  add-one surrogate p-value cannot go below 1/2001; times the x10 lag/direction correction
+  that floor is 0.005, while Benjamini-Hochberg's first-rank threshold at m=171 pairs is
+  0.05/171 = 0.00029. So BH passes nothing unless at least 18 pairs tie at the floor, and
+  then passes all of them together. Live probe (read-only, current 7-day window): 13 pairs
+  at the floor -> 0 edges, including power->thermal r=+0.61 (n=2017). Every non-empty
+  snapshot ever recorded at m=171 had >= 18 edges; the edge count flips between 0 and
+  ~20 by how many pairs happen to saturate. The 2026-07-29 note in
+  `scripts/causal_geometry_report.py` warned this would recur as pairs grew. An
+  autocorrelation-corrected analytic test (Bartlett effective n) on the same data passes
+  30 of 171 pairs under the same BH, with p down to 1e-289. Fix before reuse: replace the
+  floor-limited p with a continuous one (effective-n test, or a normal fit to the surrogate
+  r distribution), plus a gate test that reproduces the cliff. Also: the inputs are the
+  derived pressure hints (`cabinet_uv_activity` is constant), and the method is lagged
+  correlation, not causation, whatever it is named.
+- No prompt, reward or attention consumer until Φ* differs from its null on a known
+  physical contrast (Juniper arrives, AC cycles). The φ era sent a constant (0.655 ±
+  0.008, verified in `phi_rewards`) into metacognition prompts; that must not recur.
+- What it can claim: how much Orion's state behaves as one system rather than independent
+  parts, and how that changes (chat vs idle, before vs after acts, day vs night). It is a
+  structural measurement. It is **not** evidence of consciousness, and nothing should say
+  so.
+- Heartbeat gets a fair test here: heartbeat's boundary/bulk entanglement and Φ* run over
+  the same organs and the same hours. If heartbeat tracks integration, the two should move
+  together, and both should move at the ground-truth physical events (Juniper arrives, AC
+  cycles) from the room and closet sensors. No change to heartbeat until that test runs.
+
+### Heartbeat: what it measures today, and the job it could have
+
+Homework done 2026-11-08: code read directly, live `/health`, and an independent replay of
+2.5 h of real atoms through the shipped ensemble (method, scripts and numbers:
+`services/orion-heartbeat/evals/memory_horizon/`). This supersedes reliance on the earlier
+preregistered results.
+
+**What it does.** Each grammar atom is reduced to: which of 5 organs (seat 0-4), which of
+4 operator kinds (from atom type), and confidence/salience/uncertainty. It then applies
+fixed random unitaries (random Hermitian generators, seed 20260724, no meaning of their
+own) at that seat and a decaying chain of 2-site gates to the end of a 10-seat MPS
+(bond 4). A 2 s timer applies amplitude-damping-like relaxation toward each trajectory's
+start state; bus-graph mean |z| scales random "reheat" kicks. The headline `mean_ratio` is
+the entanglement entropy at the seat-5 cut over its maximum, averaged over 8 trajectories.
+
+**What feeds it.** Of routed atoms over the replay window: biometrics 67%, bus 30%,
+cortex-exec 2%, hub 24 atoms, cortex-orch 0 (stopped emitting 11-07, like route). 13
+other grammar producers are dropped (285,526 atoms in 4 days, live `/health`). In
+practice it hears two fixed-cadence telemetry streams.
+
+**What it carries (replay, verified):**
+- `mean_ratio` is reproducible: r = +0.91 across seeds. The earlier "a third is dice"
+  finding is true of the **verdict class**, not of `mean_ratio`.
+- The verdict class is noise: seeds agree 69-70%, and real vs shuffled inputs agree
+  67-68%. It is no better than shuffled data.
+- It depends on which organ fired and in what order: shuffling organ labels or event order
+  drops agreement with the real run to r = +0.13 / +0.03.
+- **Memory is about 3 events.** The organ + atom-type mix of the last 3 atoms predicts the
+  seed-averaged `mean_ratio` with held-out R² 0.88 (ceiling 0.85-0.9). The last 30 atoms
+  predict nothing (R² -0.03). Leaky per-organ counts explain only 0.37-0.40.
+- So heartbeat today is a reproducible, very-short-memory **sequence meter** for the last
+  1-2 seconds of mostly biometrics/bus traffic. It is not a count meter, not an
+  integrator, and its entanglement comes from random gates scrambling, not from structure
+  in Orion. Caveat: reheat was held constant in the replay.
+
+**Consumers.** The attention self-model records its fields; `heartbeat_mean_ratio` is a
+mood-arc encoder input (retired by this plan). Nothing decides on it. Retiring the encoder
+leaves heartbeat with no consumer, which is fine while it is rebuilt.
+
+**Recommendation: keep heartbeat, give it a real job: the integration rung's model.**
+- Today's gates are random, so the tensor network encodes nothing learned. An MPS can
+  instead be **trained** as a probabilistic model of Orion's state (a tensor-network Born
+  machine: an MPS fit by maximum likelihood to observed state vectors). Then entanglement
+  across a cut of the trained MPS is the real mutual information between the two halves
+  of Orion's state, and the lattice of cuts is exactly the integration rung's partition
+  search (contiguous cuts natively; other partitions by reordering seats).
+- Inputs: one seat per organ-level variable from the vetted families A/B (forecast
+  surprise or discretised raw state), not raw atom types, so a seat carries content.
+- Time: fit on windows of state over minutes to hours, so memory matches the phenomena
+  (Juniper arriving, AC cycles), not 3 atoms.
+- Test: the trained-MPS mutual information across each cut, against a shuffled-time null,
+  at the known physical events. Same gate as Φ*. If it passes, heartbeat is the
+  integration rung. If not, that is a publishable negative.
+- Until then: stop publishing the verdict class as if it were meaningful (it is noise),
+  keep `mean_ratio` as a labelled "last-3-events sequence meter", and leave the service
+  running.
+
+### Alarms move out of the PE group
+
+`cabinet`, `strain` and street rings are alarms and news. They keep working, but they are
+relabelled so no consumer treats them as surprise magnitudes. Street handoffs keep their
+conformal p-value and write `-log p` as a real PE once graded.
+
+## Retire order
+
+Each step leaves no consumer reading a dead or stale value.
+
+1. **Delete dead wiring.** Hub bus notifier, `action_outcomes.surprise` stamps, unused
+   domain-surprise policy field, world-model `_last_*` caches for retired nodes. No behavior
+   change.
+2. **Fix goal-gated autonomy before removing any node** (first build patch). Today half of
+   Orion's permission to act comes from a broken signal. Options: let world-source winners
+   produce goals too, or gate read-only capabilities on goal *content* rather than mere
+   presence. Decided: both (see Decisions, item 1).
+3. **Curiosity skips non-measurement value kinds** (`placeholder`, `bucket`), the same way
+   `self_readings.py:249` already does. Then stop writing `harness_closure`. Its real
+   successor is a turn-level self-bet: draft-time confidence scored against the reflection
+   verdict.
+4. **Remove route.** Already stale; every consumer already reads it as absent.
+5. **Remove bus_synaptic fully** (kill means kill): glossary prompt sites, mind digest line,
+   `ACTIVE_INFERENCE_DOMAINS`, aggregate confidence, the tick, `bus_synaptic_pressure` lattice
+   row and resolver rungs. **Retire the mood-arc anomaly encoder in the same deploy**
+   (`FIELD_CHANNEL_ANOMALY_ENABLED`, its metacog trigger, its episode gate input). It
+   cannot be refit: its input width changes, its training corpus is gone (`/tmp/mood-arc-v4/`
+   deleted) and the corpus writer has been off since 09-08 (`FIELD_CHANNEL_CORPUS_PATH=`
+   empty in the live digester, verified). It is also stale on its own: it flags 4-66% of
+   windows per day (median 22%, verified) because `memory_pressure` drifted ~11.5 training
+   standard deviations. Its job (field-wide "something is off") moves to family A's joint
+   surprise. Keep `field_channel_anomaly_score` as the baseline flag rate the successor must
+   beat.
+6. **Remove execution, chat, biometrics** as their successors (A/B targets, turn self-bets)
+   pass the gate. Not before: they hold attention and goal share today.
+7. **Purge or fence history** for each removed node: 7-day self-reading cache, episode gate
+   Redis state (`equilibrium:self_signal_episodes:v1`) with open episodes closed explicitly,
+   outcome-rollup associations.
+8. Fix the perception field leak: missing ticks must not write 0.0 into the field.
+
+## Decisions (Juniper, 2026-11-08)
+
+1. **Autonomy permission (step 2): both.** A goal must name something Orion could fetch or
+   recall about (content gate), **and** world-source winners may emit goals too. Record goal
+   rate and autonomous fetch/recall/journal rate for 7 days before and after.
+2. **Presence: not the office.** Juniper is rarely at the office desk (it reads ~79 dBA), so
+   office presence is a poor target. Family B targets instead, in order:
+   - **Juniper reachable**: will Juniper send a message in the next hour? Forecast from chat
+     history by time of day and day of week. Consumer: outreach timing (reach out when a
+     reply is likely, not into silence). Outcome arrives on its own: a message, or none.
+   - **Household arrivals/departures**: door and walkway cameras already record arrivals
+     (street continuity). State = home / away / arriving. Surprise = an arrival at an
+     unlikely hour.
+   - **Turn lane**: which lane the unified turn takes next (route's honest successor).
+   - Office presence stays a candidate only if the reachable forecast fails the gate.
+3. **Actuators: the attention economy and the run caps.** Orion owns dozens of software
+   knobs, which are safer and more reversible than hardware: body-economy prices and bids,
+   and caps such as `HUB_CURIOSITY_INVESTIGATION_DAILY_CAP`, `ORION_ENDOGENOUS_CURIOSITY_BUDGET`,
+   `HUB_ENDOGENOUS_OUTREACH_DAILY_CAP`, `EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_MAX_OPENS_PER_HOUR`,
+   `ORION_SHED_MAX_SEC_PER_DAY`, the 4 h goal hold. These become family C variables. Rules:
+   - **Runtime override, not env.** Env caps need a restart. An experiment sets a bounded
+     override with a TTL (same pattern as the vision-focus key in
+     `experiment_runner.py`); the service reads override-else-env. A dead runner falls back
+     to env when the TTL expires.
+   - **Bounds per knob**, declared in config: the experiment may only move a cap between a
+     floor and the current env value (never above today's ceiling at first).
+   - **Match block length to effect speed.** Curiosity concurrency -> GPU watts and heat
+     land in minutes (short blocks, start here). Outreach caps -> Juniper replies land in
+     hours or days (day-long blocks, many weeks to read; later).
+   - **Measure on the economy's own ledgers** too: a cap change shifts prices and bids, so
+     each experiment records the price path alongside the target.
+
+## History: integration and mood-arc attempts, and what each taught
+
+Researched 2026-11-08 from specs, PR reports, git history, model manifests and live tables.
+VERIFIED = data seen this session; DOC = asserted in prose only.
+
+### Six things named φ, none of them integrated information
+
+| Attempt | What it really computed | What happened |
+|---|---|---|
+| Hand formula (May-07-07, `orion-spark-introspector`) | 4th root of four SelfStateV1 scores, 0.01 floor; comment "mirrors IIT" (VERIFIED) | pinned at floor; 12/12 SelfStateV1 dims later found pinned or flat (DOC) |
+| φ autoencoder (07-07-07-28, seed-v2..v4) | MLP scalar head; trained on 3,833 rows from ~11 h of one day; latents collapse to one busy/idle axis (VERIFIED) | lost half its inputs, health still "ok" on 20,000/20,000 rows; output 0.655 ± 0.008 for weeks, sent into metacog prompts (VERIFIED). Promotion bar was lowered 7/8 -> 6/8 to admit dead inputs (DOC). Retired 07-28 citing the heuristic's faults, not the encoder's (the real lesson was never recorded) |
+| OrionTissue `.phi()` | summary stats of a 16x16x8 tensor; own docstring disclaims meaning (VERIFIED) | still live in orion-vector-host; not integration |
+| Causal Geometry v1 | lagged Pearson on 5-min buckets, circular-shift surrogates, BH-FDR | the "φ metric" built on it was never written (VERIFIED: no code). Still live: 0 edges since 10-30: a p-value-floor cliff, root-caused under the integration rung (VERIFIED) |
+| Mood-arc encoder ("IIT-flavored" in charter §9b) | windowed reconstruction-error anomaly detector | see below |
+| Heartbeat MPS entropy | entanglement at one cut of a random-gate MPS | replay 11-08 (verified): reproducible across seeds (r 0.91) but remembers ~3 atoms; verdict class is noise. See the heartbeat section |
+
+### Mood-arc encoder, v0 to v4
+
+- **v0** (4 hand scalars): learned the digester's own 0.92 decay; corpus discarded (DOC).
+- **field_channel_anomaly v1-v3** (15-17 pressure channels, 10 h-5 d of data): seven
+  data-quality cutoffs in one week (stuck values, decayed-to-zero PE, renames that silently
+  filled 3 of v3's 15 channels with 0.0) (DOC, consistent with manifests).
+- **v4, live** (37 channels, 3.4 days, n=1 seed): floor 0.406 vs AR(1) ceiling 0.733, i.e.
+  it barely beats a per-channel AR(1). Its inputs include `prediction_error_bus_synaptic`,
+  which the August phi-v2 audit called "independent, theory-anchored" and this audit finds
+  broken: **garbage in, again.** In its training span, 12 of 31 channels were >=86% zero or
+  pinned; the selection test (`fit_encoder.py:180`, std > 1e-6) let them all in. Now stale:
+  daily flag rate 4-66% (VERIFIED); 74% of flags led by sparse turn/failure channels.
+- Juniper's "bad inputs, low variety": bad inputs VERIFIED. Variety: channels are not very
+  collinear (~14-16 effective dimensions of 26-27); what was missing was **kind** (no raw
+  units) and **time** (hours to days, one regime). Two more causes: a reconstruction
+  objective with a weak null (beats a within-window shuffle; any smooth series passes), and
+  never retrained after 09-02.
+
+### Recurring failure modes, now hard rules in this spec
+
+1. A φ / PE name on a quantity that isn't one. -> The four-part PE definition; integration
+   must be a published Φ* with its partition.
+2. Inputs not re-audited when something upstream died; health gates that stay green. ->
+   Refuse-to-run hygiene gate on every named input, every run.
+3. Gates loosened to admit known-dead inputs. -> Gate thresholds are fixed in config;
+   changing one requires its own PR.
+4. Tiny single-regime training data. -> >= 2-3 weeks, >= 2 seeds, scheduled retrain.
+5. A near-constant output wired into cognition. -> No consumer until variance at known
+   physical events is shown.
+6. Retirement notes that name the wrong fault. -> Each retirement in this plan records the
+   measured fault, with the query, in the PR report.
+7. Proposals cited as built (charter §9a item 4's "orphaned φ metric" never existed). ->
+   Register each new instrument in `instruments.yaml` with re-runnable claims.
+
+### Reusable parts
+
+`block_purged_temporal_split`, block-bootstrap CI, AR(1) surrogate baseline
+(`orion/mood_arc/fit_encoder.py`); `MoodArcEncoderManifestV1` + promote/`active.json`;
+`InnerStateCorpusSink` rotation; as-of join (`corpus_enrichment.py`); episode gate
+(`orion/metacog/anomaly_episode.py`); causal-geometry surrogate + FDR; corpus-health gate
+pattern (`orion/telemetry/corpus_gate.py`, extended to check each named input is present).
+
+## Ties to the Sentience Striving Program charter
+
+- **Closes an open item.** `instruments.yaml:383` records bus_synaptic's 36.31% top-1
+  attention concentration as "NOT ROOT-CAUSED" since 09-02 and as blocking O4. This audit
+  root-causes it: lull-ending wake-ups scored by heavy-tailed gap z-scores, correlated edges
+  each voting, z frozen up to 1 h. Update that claim in the retire-bus PR.
+- **O2 rests on these signals.** `prediction_error_domains` (instruments.yaml:267) is the
+  O2 evidence ("attributable self-initiation"), built on execution, biometrics, chat, route:
+  all broken or stale. Each retirement PR updates that instrument's `unlock` and claims.
+- **O1's only instrument is the goal gate.** `capability_policy_salience` is the one O1
+  instrument. The step-2 fix changes it; that PR re-records its claims and adds the missing
+  measurement O1 asks for (a demonstrated ceiling on the action budget).
+- **Register every new signal** (families A/B/C, integration rung) in `instruments.yaml`
+  with re-runnable claims, checked by `scripts/check_sentience_instruments.py`.
+- **Retention.** `substrate_node_prediction_error_history` keeps 7 days. The charter
+  (§16a) notes every real bug was found by recovering pre-aggregation values. New surprise
+  tables keep raw rows for at least 90 days.
+
+## Evidence provenance (what was checked, and how)
+
+Juniper flagged that this spec leans on earlier research without re-checking it. Fair. Each
+load-bearing claim, by how it was established:
+
+**Verified live by the author on 2026-11-08** (SQL / FalkorDB / logs this session):
+- bus_synaptic formula, live values (0.047-0.088), 7-day daily distribution, the 03:00
+  spike, and the six cortex edges at z ~16.6 with the ~50 min gap backed out of the stored
+  EWMA state (alpha 0.2 confirmed in `services/orion-bus-mirror/.env`).
+- 7-day stats for all 12 nodes; harness_closure constant 0.650.
+- orion-prediction live coverage numbers; turn self-bet stated-vs-happened rates.
+- pan-1 office/closet freshness and ranges; their only bus consumer is sql-writer.
+- Heartbeat reads FalkorDB `gap_zscore` directly, not the bus PE node.
+
+**Live SQL by audit subagents, not re-checked by the author:** per-node histograms, spike
+contexts, consumer evidence (goal shares, curiosity seeds, episode counts, prompt-line
+counts from the thought log's ~20 h window), route upstream stop at 15:57, perception vs
+walkway correlation. Treat as strong but single-source; re-run before acting on any one
+number.
+
+**Taken from prior docs, NOT re-verified:**
+- Heartbeat's preregistered results (seed sensitivity ~1/3, no rest state, "surprise:
+  mixed") and its README claims. Juniper distrusts these; the spec does not rely on them
+  for any decision. Heartbeat's fate waits for the integration-rung comparison.
+- Mood-arc and IIT history: now researched in the History section above (verified items
+  marked there). Two earlier statements here were wrong and are corrected: the encoder's
+  weakness was not mainly low variety, and IIT was never actually computed.
+- The 2026-07 bus baselines quoted in code docstrings.
+
+Rule for build patches: any number from the second or third group gets re-measured in the
+patch's own PR before it justifies a change.
+
+## Proposed schema / API changes
+
+- `orion-prediction`: multivariate series config (many targets, one model);
+  `prediction_state_forecast` (Markov: state, distribution, observed, surprisal);
+  `prediction_surprise` (per target per bucket: p-value, surprisal, excess, joint flag).
+- One bus event `prediction.surprise.v1` on a new channel, registered in
+  `orion/bus/channels.yaml` and `orion/schemas/registry.py`. Substrate runtime writes it to
+  one node per **family x domain** (`node:prediction.body`, `node:prediction.room`,
+  `node:prediction.turn_state`, ...), never one per reading.
+- Glossary: new nodes get `value_kind: surprise_excess` with rest point 0, so self-readings
+  can show the excess directly instead of a rank against the node's own week.
+- Integration rung: `prediction_integration_hourly` (Φ*, null band, partition found).
+
+## Files likely to touch
+
+- Retire: `services/orion-hub/scripts/bus_synaptic_trigger_notifier.py`,
+  `services/orion-durable-runs/app/cooling_act.py`, `orion/autonomy/{policy_act,capability_policy}.py`,
+  `orion/substrate/{endogenous_curiosity,attention_self_model,prediction_error}.py`,
+  `services/orion-substrate-runtime/app/{worker,settings}.py` + `.env_example`,
+  `services/orion-mind/app/{evidence,recall_signal_resolver}.py`,
+  `orion/field/transport_thresholds.py`, `config/field/field_channel_glossary.v1.yaml`,
+  `config/substrate-lattice/transport_lattice_policy.v1.yaml`,
+  `services/orion-attention-runtime/app/worker.py`, mood-arc fit/enrichment.
+- Build: `services/orion-prediction/app/*` (new multivariate, markov, surprise modules),
+  `config/prediction/series.v1.yaml`, `orion/schemas/`, `orion/bus/channels.yaml`.
+
+## Non-goals
+
+- No hand-drawn causal map of the mesh.
+- No claim that Φ or any integration number shows sentience.
+- No change to heartbeat's live math or role until the trained-MPS test runs (see the heartbeat section).
+- No new prediction-error ledger outside `orion-prediction`.
+- No tuning of the retired signals' thresholds. They are retired, not repaired.
+
+## Acceptance checks
+
+- Every new PE node: forecasts stored before target time (SQL: `issued_at < target_ts`
+  for 100% of rows); backtest beats baseline; live 80% coverage within band over 7 days.
+- Calm check: over a quiet 24 h, excess surprise mean within the null band around 0.
+- Absence check: stopping a service produces a scored miss within one bucket (live smoke).
+- Double-count check: an AC-off event produces one joint surprise, not one per reading.
+- Retirement: after each removal step, zero reads of the removed node in consumer logs for
+  24 h, and goal rate / curiosity invokes recorded before and after.
+- Integration rung: Φ* differs from its shuffled-time null on at least one real contrast
+  (chat vs idle) before any consumer reads it.
+
+## Recommended next patch
+
+**Retire step 2: goal-gated autonomy**, built per Decision 1 (content gate + world-source
+goals). The bus number decides when Orion may act on its own, and that is wrong whatever the
+new suite becomes. In parallel, the cheapest build patch: expose orion-prediction's existing
+cabinet/office scored forecasts as `prediction.surprise.v1` (no new forecasting), which
+proves the definition end to end on a target that already passes the gate.

@@ -181,3 +181,10 @@ def test_main_exits_zero_on_success():
     with patch.object(digest, "_run_digest", new=AsyncMock(return_value=report)):
         exit_code = digest.main(["--postgres-uri", "postgresql://fake/db", "--dry-run"])
     assert exit_code == 0
+
+
+def test_latest_verdicts_leave_out_memory_confirmation_answers():
+    """Memory confirmation answers share attention_loop_outcome (2026-10-06); they are not chat
+    loops, so the decay digest's verdict read leaves them out (review of #2517)."""
+    sql = " ".join(digest._SELECT_LATEST_VERDICTS_SQL.split())
+    assert "WHERE loop_id NOT LIKE 'memory-confirm-%'" in sql

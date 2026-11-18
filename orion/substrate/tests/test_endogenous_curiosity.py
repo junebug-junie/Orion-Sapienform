@@ -13,7 +13,32 @@ from orion.substrate.endogenous_curiosity import (
 )
 from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator
 
+import orion.attention.self_readings as self_readings
+import pytest
+
 _NOW = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+
+_REAL_SEMANTICS = self_readings.node_prediction_error_semantics
+# Synthetic ids for the value-kind tests; every other fake id ("node:hot") reads
+# as a level so the budget/decay tests keep testing budget/decay.
+_FAKE_KINDS = {
+    "node:fake.placeholder": "placeholder",
+    "node:fake.bucket": "bucket",
+    "node:fake.unknown": None,
+    "node:fake.trigger": "trigger",
+}
+
+
+@pytest.fixture(autouse=True)
+def _fake_ids_are_levels(monkeypatch):
+    def semantics(node_id: str):
+        if node_id in _FAKE_KINDS:
+            return _FAKE_KINDS[node_id], None
+        if node_id.startswith("node:substrate."):
+            return _REAL_SEMANTICS(node_id)
+        return "level", "higher_is_worse"
+
+    monkeypatch.setattr(self_readings, "node_prediction_error_semantics", semantics)
 
 
 def _node(node_id: str, prediction_error: float, *, observed_at: datetime | None = None) -> SimpleNamespace:
@@ -190,6 +215,30 @@ def test_attention_open_loops_seed_candidates() -> None:
     assert "source:attention_open_loop" in candidates[0].notes
 
 
+def test_world_only_attention_loop_seeds_no_concept_expand() -> None:
+    """A world-first external loop ("world:chat") names no graph node, so a
+    concept_expand over it would match nothing."""
+    world = SimpleNamespace(
+        id="open-loop-w", description="Juniper is talking", already_known=False,
+        novelty=0.9, confidence=0.9, source_refs=["world:chat"],
+    )
+    frame = SimpleNamespace(open_loops=[world], deferred_items=[])
+    assert endogenous_curiosity_candidates(attention_frame=frame, config=_enabled()) == []
+
+
+def test_reading_attention_loop_seeds_concept_expand() -> None:
+    reading = SimpleNamespace(
+        id="open-loop-reading", description="Orion is reading", already_known=False,
+        novelty=0.9, confidence=0.9,
+        source_refs=["sub-concept-wp-read-a", "sub-concept-wp-read-b"],
+    )
+    frame = SimpleNamespace(open_loops=[reading], deferred_items=[])
+    candidates = endogenous_curiosity_candidates(attention_frame=frame, config=_enabled())
+    assert len(candidates) == 1
+    assert candidates[0].task_type_candidate == "concept_expand"
+    assert candidates[0].focal_node_refs == reading.source_refs
+
+
 def test_candidates_never_target_strict_or_autonomy_zones() -> None:
     nodes = [_node(f"node:{i}", 0.9) for i in range(5)]
     appraisal = SimpleNamespace(dimensions={"level": 0.9}, causal_molecule_ids=[], summary="s", confidence=0.9)
@@ -238,3 +287,161 @@ def test_world_coverage_gap_passes_through_as_curiosity_seed() -> None:
     assert candidates[0].signal_type == "curiosity_candidate"
     assert "hardware_compute_gpu" in candidates[0].focal_node_refs[0]
     assert "world_coverage_gap" in candidates[0].notes
+
+
+# --- Repair-pressure replay fix (2026-10-10) -------------------------------
+# Live bug: the worker took the all-time max repair_pressure_level across every
+# chat-projection turn, so one 0.913 HIGH turn was replayed as a candidate on
+# every tick for days. These tests build real ChatTurnStateV1 rows.
+
+from orion.schemas.chat_projection import ChatTurnStateV1  # noqa: E402
+from orion.substrate.endogenous_curiosity import repair_appraisal_from_chat_turns  # noqa: E402
+
+_LIVE_SPIKE = 0.9129342275597288
+_LIVE_REST = 0.087
+
+
+def _turn(level: float, observed_at: datetime, *, turn_id: str = "t") -> ChatTurnStateV1:
+    return ChatTurnStateV1(
+        trace_id=f"node:{turn_id}",
+        turn_id=turn_id,
+        session_id="s",
+        node_id="node",
+        observed_at=observed_at,
+        repair_pressure_level=level,
+        repair_pressure_confidence=0.65,
+        has_repair_signal=level >= 0.6,
+        evidence_event_ids=[f"ev-{turn_id}"],
+        last_updated_at=observed_at,
+    )
+
+
+def _repair_seeds(turns, *, now=_NOW):
+    appraisal = repair_appraisal_from_chat_turns(turns, now=now)
+    return [
+        s
+        for s in endogenous_curiosity_candidates(repair_appraisal=appraisal, config=_enabled(), now=now)
+        if "source:repair_pressure" in s.notes
+    ]
+
+
+def test_fresh_repair_spike_still_produces_candidate() -> None:
+    seeds = _repair_seeds([_turn(_LIVE_SPIKE, _NOW - timedelta(seconds=60))])
+    assert len(seeds) == 1
+    assert seeds[0].focal_node_refs == ["ev-t"]
+    assert 0.6 < seeds[0].signal_strength < _LIVE_SPIKE
+
+
+def test_old_repair_spike_decays_below_min_and_stops_emitting() -> None:
+    # 0.913 * (1 - age/1800) < 0.6 once age > ~617s.
+    assert _repair_seeds([_turn(_LIVE_SPIKE, _NOW - timedelta(seconds=700))]) == []
+    assert repair_appraisal_from_chat_turns(
+        [_turn(_LIVE_SPIKE, _NOW - timedelta(seconds=_PREDICTION_ERROR_DECAY_HORIZON_SECONDS + 1))],
+        now=_NOW,
+    ) is None
+
+
+def test_live_shape_old_spike_plus_calm_turns_emits_no_repair_candidate() -> None:
+    """Regression: the exact live shape -- a 0.913 spike four days old followed
+    by many calm 0.087 turns. Old code returned level=0.913 forever."""
+    spike_at = _NOW - timedelta(days=4)
+    turns = [_turn(_LIVE_SPIKE, spike_at, turn_id="spike")]
+    turns += [
+        _turn(_LIVE_REST, spike_at + timedelta(hours=h), turn_id=f"calm{h}")
+        for h in range(1, 96)
+    ]
+    turns.append(_turn(_LIVE_REST, _NOW - timedelta(minutes=5), turn_id="calm_now"))
+    appraisal = repair_appraisal_from_chat_turns(turns, now=_NOW)
+    # The surviving reading is a recent calm turn, not the replayed spike.
+    assert appraisal is not None
+    assert appraisal.dimensions["level"] < _LIVE_REST + 1e-9
+    assert appraisal.causal_molecule_ids == ["ev-calm_now"]
+    assert _repair_seeds(turns) == []
+
+
+def test_turn_without_timestamp_is_not_treated_as_fresh() -> None:
+    stale = SimpleNamespace(repair_pressure_level=_LIVE_SPIKE, observed_at=None)
+    assert repair_appraisal_from_chat_turns([stale], now=_NOW) is None
+
+
+def test_recent_spike_beats_older_bigger_spike() -> None:
+    turns = [
+        _turn(0.99, _NOW - timedelta(seconds=1500), turn_id="old"),
+        _turn(0.8, _NOW - timedelta(seconds=10), turn_id="new"),
+    ]
+    appraisal = repair_appraisal_from_chat_turns(turns, now=_NOW)
+    assert appraisal.causal_molecule_ids == ["ev-new"]
+
+
+def test_future_dated_turn_is_treated_as_age_zero_and_naive_is_utc() -> None:
+    future = _turn(0.8, _NOW + timedelta(seconds=120), turn_id="future")
+    assert repair_appraisal_from_chat_turns([future], now=_NOW).dimensions["level"] == 0.8
+    naive = _turn(0.8, (_NOW - timedelta(seconds=900)).replace(tzinfo=None), turn_id="naive")
+    level = repair_appraisal_from_chat_turns([naive], now=_NOW.replace(tzinfo=None)).dimensions["level"]
+    assert abs(level - 0.4) < 1e-9
+
+
+def test_non_measurement_value_kinds_never_seed_curiosity() -> None:
+    """Retire step 3: placeholder, bucket, and unknown value kinds are skipped
+    even far above min_error; a real measurement kind at the same value seeds."""
+    nodes = [
+        _node("node:fake.placeholder", 0.95),
+        _node("node:fake.bucket", 0.95),
+        _node("node:fake.unknown", 0.95),
+        _node("node:fake.trigger", 0.9),
+    ]
+    seeds = endogenous_curiosity_candidates(nodes=nodes, config=_enabled(budget=8))
+    assert [s.focal_node_refs for s in seeds] == [["node:fake.trigger"]]
+
+
+def test_lingering_harness_closure_node_never_seeds_curiosity() -> None:
+    """The retired harness_closure node (no glossary entry, no producer) may still
+    sit in the graph at its last 0.65 until it is deleted. Read against the REAL
+    glossary it is not a measurement, so it never seeds -- even fresh."""
+    seeds = endogenous_curiosity_candidates(
+        nodes=[
+            _node("node:substrate.harness_closure", 0.65, observed_at=_NOW),
+            _node("node:substrate.execution", 0.8, observed_at=_NOW),
+        ],
+        config=_enabled(budget=8),
+        now=_NOW,
+    )
+    assert [s.focal_node_refs for s in seeds] == [["node:substrate.execution"]]
+
+
+def test_unreadable_glossary_fails_closed_for_prediction_error_only(monkeypatch) -> None:
+    """Glossary unreadable -> value_kind None -> no prediction-error seeds; other
+    seed sources still run. Exercises the real exception path in
+    world_first.node_prediction_error_semantics."""
+    import orion.attention.world_first as world_first
+    import orion.field.channel_glossary as channel_glossary
+
+    def _boom(*_a, **_k):
+        raise OSError("glossary unreadable")
+
+    monkeypatch.setattr(self_readings, "node_prediction_error_semantics", _REAL_SEMANTICS)
+    monkeypatch.setattr(channel_glossary, "resolve_channel_entry", _boom)
+    monkeypatch.setattr(world_first, "_SEMANTICS_CACHE", {})
+    appraisal = SimpleNamespace(
+        dimensions={"level": 0.9}, causal_molecule_ids=[], summary="x", confidence=0.7
+    )
+    seeds = endogenous_curiosity_candidates(
+        nodes=[_node("node:substrate.execution", 0.9)], repair_appraisal=appraisal, config=_enabled()
+    )
+    assert [n for s in seeds for n in s.notes if n.startswith("source:")] == [
+        "source:repair_pressure"
+    ]
+
+
+def test_forecast_surprise_nodes_seed_curiosity_as_a_measurement() -> None:
+    """node:prediction.* (value_kind surprise_excess, 2026-11-11) is a real measurement: above
+    min_error it seeds, like any level; below it does not."""
+    seeds = endogenous_curiosity_candidates(
+        nodes=[
+            _node("node:prediction.room", 0.9, observed_at=_NOW),
+            _node("node:prediction.body", 0.2, observed_at=_NOW),
+        ],
+        config=_enabled(budget=8),
+        now=_NOW,
+    )
+    assert [s.focal_node_refs for s in seeds] == [["node:prediction.room"]]

@@ -26,6 +26,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from orion.schemas.field_state import FieldStateV1
+from orion.prediction.alarm_nodes import is_alarm_node
+
+# The field channel named "prediction_error" carries alarm firings too (the field digester copies each
+# node's pressure hint, alarms included). An alarm's value means "it fired", not a surprise size, so it
+# never competes for the merged prediction_error channel (#3307; PE suite rebuild, "Alarms move out of
+# the PE group"). Shared with commensurability.observe_source_to_channel so the mirror cannot drift.
+PREDICTION_ERROR_CHANNEL = "prediction_error"
+
+
+def skips_merge(source_id: str, channel: str) -> bool:
+    """True when this node's value on this channel must not enter the cross-node merge."""
+    return channel == PREDICTION_ERROR_CHANNEL and is_alarm_node(source_id)
 
 PRESSURE_CHANNELS = frozenset({
     "cortex_exec_step_load",
@@ -219,6 +231,10 @@ def _stale_node_channels(
     for node_id, vector in field.node_vectors.items():
         stamps = field.node_vector_updated_at.get(node_id, {})
         for channel in vector:
+            if skips_merge(node_id, channel):
+                # An alarm never competes for this channel, so its fresh write must not arm the
+                # exclusion of stale real sources either: that would empty the channel (#3307 review).
+                continue
             stamp = stamps.get(channel)
             if stamp is None:
                 # No timestamp is not evidence of staleness. Untimestamped
@@ -236,7 +252,32 @@ def collect_field_channel_pressures(
     *,
     staleness_threshold_sec: float | None = MERGE_STALENESS_THRESHOLD_SEC,
 ) -> tuple[dict[str, float], dict[str, str]]:
-    """Merge node_vectors + capability_vectors into one channel-name-keyed
+    """See `collect_field_channel_pressures_with_holders()`: the same merge,
+    without the per-channel holder record. The single implementation lives
+    there so the two can never disagree about a value or a winner."""
+    out, provenance, _holders = collect_field_channel_pressures_with_holders(
+        field, staleness_threshold_sec=staleness_threshold_sec
+    )
+    return out, provenance
+
+
+def collect_field_channel_pressures_with_holders(
+    field: FieldStateV1,
+    *,
+    staleness_threshold_sec: float | None = MERGE_STALENESS_THRESHOLD_SEC,
+) -> tuple[dict[str, float], dict[str, str], dict[str, tuple[str, str]]]:
+    """The merge, plus `holders[channel] = (level, vector_id)`: which vector
+    ("node" + node_id, or "capability" + capability_id) held the winning value.
+
+    Provenance alone cannot say that: a capability winner's provenance
+    resolves to the node that fed it (e.g. node:athena), which may also carry
+    a node-level channel of the same name (catalog_drift_pressure,
+    reliability_pressure). Its first consumer, the feedback credit guard
+    (credit_integrity.before_winner_went_unmeasured, 2026-10-07), retired with
+    the feedback rung on 2026-11-04; the holders are still returned for callers
+    that need to ask "is the vector that won this before still measuring it".
+
+    Merge node_vectors + capability_vectors into one channel-name-keyed
     pressure dict, plus a parallel provenance dict recording which source_id
     "won" the merge for each channel this tick.
 
@@ -274,18 +315,21 @@ def collect_field_channel_pressures(
     )
     out: dict[str, float] = {}
     provenance: dict[str, str] = {}
+    holders: dict[str, tuple[str, str]] = {}
     for source_id, vector in field.node_vectors.items():
         for channel, value in vector.items():
-            if (source_id, channel) in stale_pairs:
+            if (source_id, channel) in stale_pairs or skips_merge(source_id, channel):
                 continue
             v = clamp01(float(value))
             if channel in HIGHER_IS_BETTER_CHANNELS:
                 if v <= out.get(channel, 1.0):
                     out[channel] = v
                     provenance[channel] = source_id
+                    holders[channel] = ("node", source_id)
             elif (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
                 out[channel] = v
                 provenance[channel] = source_id
+                holders[channel] = ("node", source_id)
     for capability_id, vector in field.capability_vectors.items():
         for channel, value in vector.items():
             v = clamp01(float(value))
@@ -296,9 +340,11 @@ def collect_field_channel_pressures(
                 if v <= out.get(channel, 1.0):
                     out[channel] = v
                     provenance[channel] = resolved_provenance
+                    holders[channel] = ("capability", capability_id)
             elif (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
                 out[channel] = v
                 provenance[channel] = resolved_provenance
+                holders[channel] = ("capability", capability_id)
     # recent_perturbation_count (context_channel, not scored into any
     # dimension): 2026-07-22 correction -- this block was accidentally
     # dropped from the "moved verbatim" copy of this function (confirmed via
@@ -333,7 +379,7 @@ def collect_field_channel_pressures(
         out["recent_perturbation_count"] = clamp01(
             max(0.0, field.recent_perturbation_zscore) / RECENT_PERTURBATION_ZSCORE_SATURATION
         )
-    return out, provenance
+    return out, provenance, holders
 
 
 @dataclass(frozen=True)
@@ -556,8 +602,8 @@ def winning_write_time(
 
     Moved from services/orion-hub/scripts/field_channel_glossary_routes.py
     (R2 of the phase-5 roadmap) into this shared module so a second consumer
-    -- orion/field/credit_integrity.py's R5 rebuild -- does not need its own
-    copy: two implementations of "which write proves this value" is exactly
+    (orion/field/credit_integrity.py, retired with the feedback rung 2026-11-04)
+    would not need its own copy: two implementations of "which write proves this value" is exactly
     the kind of definition drift the rest of this arc exists to catch.
 
     The merged value is one source's reading (R1's provenance dict names

@@ -189,14 +189,46 @@ async def mark_attention_escalated(attention_id: str):
         remove_session()
 
 
+def _not_dismissed_clauses(db):
+    """A message is "open" until Juniper dismisses it.
+
+    Dismissal arrives as a `dismissed` row in notify_receipts (the receipt
+    path Hub uses); the request row's own message_dismissed_at column is
+    honoured too. Seen/opened receipts do NOT close a message -- Hub sends
+    `seen` automatically when one arrives, so "unread" cannot mean "still
+    waiting for Juniper".
+    """
+    return [
+        NotificationRequestDB.message_dismissed_at.is_(None),
+        ~db.query(NotificationReceiptDB)
+        .filter(
+            NotificationReceiptDB.message_id == NotificationRequestDB.message_id,
+            NotificationReceiptDB.receipt_type == "dismissed",
+        )
+        .exists(),
+    ]
+
+
 @router.get("/chat/messages")
-async def list_chat_messages(limit: int = 50, status: Optional[str] = None, session_id: Optional[str] = None):
+async def list_chat_messages(
+    limit: int = 50,
+    status: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tag: Optional[str] = None,
+):
     db = get_session()
     try:
         query = db.query(NotificationRequestDB).filter(NotificationRequestDB.message_id.isnot(None))
 
         if session_id:
             query = query.filter(NotificationRequestDB.message_session_id == session_id)
+
+        if tag:
+            # tags is a JSONB array; @> keeps rows whose array holds this tag.
+            query = query.filter(NotificationRequestDB.tags.contains([tag]))
+
+        if status == "open":
+            query = query.filter(*_not_dismissed_clauses(db))
 
         if status == "unread":
             query = query.filter(

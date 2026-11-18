@@ -35,7 +35,6 @@ def _worker():
         brain_frame_sample_edges=60,
         brain_frame_firing_threshold=0.5,
         brain_frame_starving_threshold=0.1,
-        brain_frame_self_state_cadence_sec=30.0,
         brain_frame_spotlight_cadence_sec=30.0,
         brain_frame_retention_hours=24,
     )
@@ -54,7 +53,6 @@ def test_brain_frame_tick_assembles_and_persists(monkeypatch):
     )
     monkeypatch.setattr(w, "_get_substrate_graph_store", lambda **k: graph_store)
     monkeypatch.setattr(w, "_brain_frame_lane_health", lambda: {"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}})
-    monkeypatch.setattr(w, "_brain_frame_self_state", lambda: None)
     w._store.load_attention_broadcast.return_value = None
 
     frame = w._brain_frame_tick()
@@ -114,7 +112,6 @@ def test_brain_frame_tick_has_no_phantom_or_mislabeled_lanes(monkeypatch):
         nodes={"t1": _node("t1", "tension", 0.9, 0.9)}, edges=[]
     )
     monkeypatch.setattr(w, "_get_substrate_graph_store", lambda **k: graph_store)
-    monkeypatch.setattr(w, "_brain_frame_self_state", lambda: None)
     w._store.load_attention_broadcast.return_value = None
 
     frame = w._brain_frame_tick()
@@ -180,3 +177,30 @@ def test_route_grammar_lane_remaps_to_friendly_key(monkeypatch):
     # Raw cursor-name key must NOT leak through.
     assert "route_grammar_consumer" not in lag
     assert "route_grammar_consumer" not in backlog
+
+
+def test_brain_frame_leaves_out_memory_referents_and_assertions(monkeypatch):
+    # Shared assertion core (memory Stage 2 PR A): fenced memory nodes and
+    # Assertions are not brain regions or samples (orion/substrate/eligibility.py).
+    from datetime import datetime, timezone
+
+    from orion.core.schemas.cognitive_substrate import EntityNodeV1, SubstrateProvenanceV1, SubstrateTemporalWindowV1
+
+    ours = EntityNodeV1(
+        node_id="referent-hecate", label="hecate", anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 10, 6, tzinfo=timezone.utc)),
+        provenance=SubstrateProvenanceV1(authority="user_asserted", source_kind="episode_memory_referent",
+                                         source_channel="t", producer="memory.referents"),
+    )
+    w = _worker()
+    graph_store = MagicMock()
+    graph_store.snapshot.return_value = SimpleNamespace(
+        nodes={"t1": _node("t1", "tension", 0.9, 0.9), "referent-hecate": ours}, edges=[]
+    )
+    monkeypatch.setattr(w, "_get_substrate_graph_store", lambda **k: graph_store)
+    monkeypatch.setattr(w, "_brain_frame_lane_health", lambda: {"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}})
+    w._store.load_attention_broadcast.return_value = None
+
+    frame = w._brain_frame_tick()
+    sampled = {n.node_id for n in frame.nodes}
+    assert "t1" in sampled and "referent-hecate" not in sampled

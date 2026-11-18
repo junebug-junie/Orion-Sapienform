@@ -164,6 +164,9 @@ keyword list, not a formal proof.
 
 ## 2026-07-22 note (SelfStateV1 burn)
 
+2026-10-07: the `self_state.v1` entry and `orion/schemas/self_state.py` were
+removed outright; the note below is historical.
+
 `SelfStateV1`'s own entry in this registry should be read in light of the
 burn: the coefficients were traced to an uncalibrated, undocumented commit,
 and the signal itself was independently confirmed empirically dead (12/12

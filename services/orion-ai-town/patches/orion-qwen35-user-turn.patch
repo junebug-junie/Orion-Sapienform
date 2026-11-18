@@ -1,0 +1,16 @@
+diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
+--- a/convex/agent/conversation.ts
++++ b/convex/agent/conversation.ts
+@@ -225,8 +225,12 @@ export async function startConversationMessage(
+     messages: [
+       {
+         role: 'system',
+         content: prompt.join('\n'),
+       },
++      {
++        role: 'user',
++        content: `Greet ${otherPlayer.name} now.`,
++      },
+     ],
+     max_tokens: 120,
+     stop: stopWords(otherPlayer.name, player.name),

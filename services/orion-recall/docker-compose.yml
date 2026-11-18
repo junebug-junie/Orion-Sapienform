@@ -1,5 +1,9 @@
 services:
   recall:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-recall/Dockerfile
@@ -46,9 +50,25 @@ services:
       - RECALL_SKIP_SHIFT_NOVELTY_FLOOR=${RECALL_SKIP_SHIFT_NOVELTY_FLOOR:-0.35}
       - RECALL_CONTINUITY_SQL_MINUTES=${RECALL_CONTINUITY_SQL_MINUTES:-120}
       - RECALL_CONTINUITY_RENDER_BUDGET=${RECALL_CONTINUITY_RENDER_BUDGET:-1200}
-      - RECALL_ACTIVE_PACKET_ENABLED=${RECALL_ACTIVE_PACKET_ENABLED:-true}
       - ACTIVATION_RECALL_FLOOR=${ACTIVATION_RECALL_FLOOR:-0.08}
       - RECALL_CONCEPT_REGION_ENABLED=${RECALL_CONCEPT_REGION_ENABLED:-true}
+      # Lived-memory recall (app/lived_memory.py, issue #3533).
+      - RECALL_LIVED_MEMORY_ENABLED=${RECALL_LIVED_MEMORY_ENABLED:-true}
+      - RECALL_LIVED_MEMORY_CHROMA_URL=${RECALL_LIVED_MEMORY_CHROMA_URL:-http://orion-athena-vector-db:8000}
+      - RECALL_LIVED_MEMORY_EMBED_URL=${RECALL_LIVED_MEMORY_EMBED_URL:-http://orion-athena-vector-host:8320/embedding}
+      - RECALL_LIVED_MEMORY_RERANK_URL=${RECALL_LIVED_MEMORY_RERANK_URL:-http://orion-athena-vector-host:8320/rerank}
+      - RECALL_LIVED_MEMORY_COLLECTION=${RECALL_LIVED_MEMORY_COLLECTION:-orion_lived_memory}
+      - RECALL_LIVED_MEMORY_MIN_FIT=${RECALL_LIVED_MEMORY_MIN_FIT:-0.004}
+      - RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS=${RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS:-5}
+      - RECALL_LIVED_MEMORY_MAX_LINES=${RECALL_LIVED_MEMORY_MAX_LINES:-4}
+      - RECALL_LIVED_MEMORY_TIMEOUT_SEC=${RECALL_LIVED_MEMORY_TIMEOUT_SEC:-5.5}
+      - RECALL_LIVED_MEMORY_REWRITE_ENABLED=${RECALL_LIVED_MEMORY_REWRITE_ENABLED:-true}
+      - RECALL_LIVED_MEMORY_REWRITE_ROUTE=${RECALL_LIVED_MEMORY_REWRITE_ROUTE:-quick_turn}
+      - RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC=${RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC:-2.5}
+      - RECALL_LIVED_MEMORY_LINK_TOP_K=${RECALL_LIVED_MEMORY_LINK_TOP_K:-2}
+      - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE:-orion:exec:request:LLMGatewayService}
+      - RECALL_LIVED_MEMORY_INDEX_INTERVAL_SEC=${RECALL_LIVED_MEMORY_INDEX_INTERVAL_SEC:-300}
+      - RECALL_LIVED_MEMORY_INDEX_BATCH=${RECALL_LIVED_MEMORY_INDEX_BATCH:-25}
       # SUBSTRATE_STORE_BACKEND/FALKORDB_URI/FALKORDB_SUBSTRATE_GRAPH are read directly
       # from the process environment by orion/substrate/graphdb_store.py's
       # build_substrate_store_from_env() (no matching pydantic Settings field in this
@@ -77,19 +97,6 @@ services:
       - RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT=${RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT:-false}
       - RECALL_BUS_SYNAPTIC_ANOMALY_MAX_AGE_SEC=${RECALL_BUS_SYNAPTIC_ANOMALY_MAX_AGE_SEC:-86400}
       - RECALL_BELIEF_RENDER_BUDGET=${RECALL_BELIEF_RENDER_BUDGET:-128}
-      # No compose-level default on these two: they are NEVER_SYNC_KEYS-protected in
-      # scripts/sync_local_env_from_example.py (must be set by hand in .env) and their
-      # real default lives in .env_example (currently true / a real adapter URL) --
-      # duplicating that value here as a ":-" fallback would drift from .env_example
-      # over time and silently reintroduce the exact "flag on, dependency empty"
-      # footgun this key pair already caused once.
-      - RECALL_GRAPHITI_IN_CHAT=${RECALL_GRAPHITI_IN_CHAT}
-      - RECALL_GRAPHITI_ADAPTER_URL=${RECALL_GRAPHITI_ADAPTER_URL}
-      - RECALL_GRAPHITI_FALKORDB_URI=${RECALL_GRAPHITI_FALKORDB_URI:-}
-      - RECALL_GRAPHITI_TIMEOUT_SEC=${RECALL_GRAPHITI_TIMEOUT_SEC:-10.0}
-      # Same 2026-07-14 gap: missing from live .env, no compose default -> was
-      # silently resolving to an empty collection name instead of the real default.
-      - RECALL_CRYSTALLIZATION_VECTOR_COLLECTION=${RECALL_CRYSTALLIZATION_VECTOR_COLLECTION:-orion_memory_crystallizations}
 
       - RECALL_ENABLE_SQL_CHAT=${RECALL_ENABLE_SQL_CHAT}
       - RECALL_ENABLE_SQL_MIRRORS=${RECALL_ENABLE_SQL_MIRRORS}
@@ -100,9 +107,6 @@ services:
       - RECALL_ENABLE_CARDS=${RECALL_ENABLE_CARDS:-true}
       - RECALL_CARDS_TIMEOUT_SEC=${RECALL_CARDS_TIMEOUT_SEC:-8.0}
       - RECALL_CARDS_MAX_NEIGHBORS=${RECALL_CARDS_MAX_NEIGHBORS:-6}
-      # NOT cards-specific despite the name -- still consumed by
-      # collectors/active_packet.py's crystallization active-packet rail.
-      - RECALL_CARDS_EMBEDDING_URL=${RECALL_CARDS_EMBEDDING_URL:-}
       # Orphaned by the 2026-07-21 memory-cards substrate spec (cards scoring
       # is now structured full-text, not embedding cosine); left in place,
       # safe to remove in a follow-up.

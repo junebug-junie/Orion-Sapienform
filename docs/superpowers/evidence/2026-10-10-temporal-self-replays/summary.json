@@ -1,0 +1,473 @@
+{
+  "r3a": {
+    "start": "2026-09-26T01:00:00+00:00",
+    "end": "2026-10-10T01:00:00+00:00",
+    "totals": {
+      "strict_seconds": {
+        "engaged": 5395.0,
+        "idle": 59620.0,
+        "strained": 19370.0,
+        "unknown": 1125215.0
+      },
+      "provisional_seconds": {
+        "engaged": 60750.0,
+        "idle": 1056790.0,
+        "strained": 86745.0,
+        "unknown": 5315.0
+      },
+      "all_chat_provisional_seconds": {
+        "engaged": 198930.0,
+        "idle": 918610.0,
+        "strained": 86745.0,
+        "unknown": 5315.0
+      }
+    },
+    "summary": {
+      "per_day_seconds": {
+        "2026-09-26": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 82800.0
+          },
+          "provisional_seconds": {
+            "engaged": 9600.0,
+            "idle": 73200.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 22710.0,
+            "idle": 60090.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-09-27": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 0,
+            "idle": 86400.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 10800.0,
+            "idle": 75600.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-09-28": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 8660.0,
+            "idle": 77740.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 22455.0,
+            "idle": 63945.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-09-29": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 3295.0,
+            "idle": 83070.0,
+            "strained": 0,
+            "unknown": 35.0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 14095.0,
+            "idle": 72270.0,
+            "strained": 0,
+            "unknown": 35.0
+          }
+        },
+        "2026-09-30": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 0,
+            "idle": 86400.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 10800.0,
+            "idle": 75600.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-10-01": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 0,
+            "idle": 86400.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 10800.0,
+            "idle": 75600.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-10-02": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 5660.0,
+            "idle": 80740.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 16460.0,
+            "idle": 69940.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-10-03": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 0,
+            "idle": 79615.0,
+            "strained": 1505.0,
+            "unknown": 5280.0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 10800.0,
+            "idle": 68815.0,
+            "strained": 1505.0,
+            "unknown": 5280.0
+          }
+        },
+        "2026-10-04": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 2945.0,
+            "idle": 83455.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 13745.0,
+            "idle": 72655.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-10-05": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 7845.0,
+            "idle": 78555.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 18645.0,
+            "idle": 67755.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-10-06": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 11110.0,
+            "idle": 75290.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 21910.0,
+            "idle": 64490.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-10-07": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 0,
+            "unknown": 86400.0
+          },
+          "provisional_seconds": {
+            "engaged": 3355.0,
+            "idle": 83045.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 14155.0,
+            "idle": 72245.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        },
+        "2026-10-08": {
+          "strict_seconds": {
+            "engaged": 0,
+            "idle": 0,
+            "strained": 18770.0,
+            "unknown": 67630.0
+          },
+          "provisional_seconds": {
+            "engaged": 2880.0,
+            "idle": 63550.0,
+            "strained": 19970.0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 2880.0,
+            "idle": 63550.0,
+            "strained": 19970.0,
+            "unknown": 0
+          }
+        },
+        "2026-10-09": {
+          "strict_seconds": {
+            "engaged": 2700.0,
+            "idle": 58720.0,
+            "strained": 600.0,
+            "unknown": 24380.0
+          },
+          "provisional_seconds": {
+            "engaged": 2700.0,
+            "idle": 18430.0,
+            "strained": 65270.0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 5975.0,
+            "idle": 15155.0,
+            "strained": 65270.0,
+            "unknown": 0
+          }
+        },
+        "2026-10-10": {
+          "strict_seconds": {
+            "engaged": 2695.0,
+            "idle": 900.0,
+            "strained": 0,
+            "unknown": 5.0
+          },
+          "provisional_seconds": {
+            "engaged": 2700.0,
+            "idle": 900.0,
+            "strained": 0,
+            "unknown": 0
+          },
+          "all_chat_provisional_seconds": {
+            "engaged": 2700.0,
+            "idle": 900.0,
+            "strained": 0,
+            "unknown": 0
+          }
+        }
+      },
+      "hour_label_counts": {
+        "strict_seconds": {
+          "unknown": 313,
+          "strained": 5,
+          "idle": 16,
+          "engaged": 2
+        },
+        "provisional_seconds": {
+          "idle": 294,
+          "engaged": 18,
+          "unknown": 1,
+          "strained": 23
+        },
+        "all_chat_provisional_seconds": {
+          "idle": 254,
+          "engaged": 58,
+          "unknown": 1,
+          "strained": 23
+        }
+      },
+      "acceptance_bar": {
+        "strict_seconds": {
+          "known_hours": 23.440277777777776,
+          "unknown_hours": 312.5597222222222,
+          "share_of_known": {
+            "engaged": 0.06393316347692125,
+            "idle": 0.7065236712685904,
+            "strained": 0.22954316525448837
+          },
+          "passes": true,
+          "result": "PASS"
+        },
+        "provisional_seconds": {
+          "known_hours": 334.5236111111111,
+          "unknown_hours": 1.476388888888889,
+          "share_of_known": {
+            "engaged": 0.050444869777502836,
+            "idle": 0.8775248383895838,
+            "strained": 0.0720302918329133
+          },
+          "passes": true,
+          "result": "PASS"
+        },
+        "all_chat_provisional_seconds": {
+          "known_hours": 334.5236111111111,
+          "unknown_hours": 1.476388888888889,
+          "share_of_known": {
+            "engaged": 0.16518515135536854,
+            "idle": 0.7627845568117182,
+            "strained": 0.0720302918329133
+          },
+          "passes": true,
+          "result": "PASS"
+        }
+      }
+    },
+    "strict_strain_exits_per_day": {
+      "2026-10-09": 1
+    },
+    "provisional_strain_exits_per_day": {
+      "2026-10-03": 1,
+      "2026-10-08": 2,
+      "2026-10-09": 1
+    },
+    "input_counts": {
+      "chat": 107,
+      "heat": 38663,
+      "gpu_event": 411,
+      "outreach": 56,
+      "focus": 380,
+      "gpu_state": 11339
+    },
+    "gpu_state_nonzero_backlog_snapshots": 0,
+    "assumptions": [
+      "UTC; five-second grid (transitions may lag by <5s); one-hour warmup.",
+      "Chat query success is evidence of freshness; age of the last turn is not sensor age.",
+      "Strict GPU state is unknown without snapshots <=15s old.",
+      "Provisional GPU starts clear at warmup and assumes complete ordered lease transitions.",
+      "Heat uses the current pure cabinet verdict; historical AC-low fallback is unavailable.",
+      "Outreach and focus annotate hours, never change labels; focus spans may include downtime.",
+      "All-chat comparison includes every chat row, isolating the old idle-query contamination."
+    ]
+  },
+  "r2a_saved_history": {
+    "by_formula": {
+      "legacy": {
+        "cycles": 52,
+        "statuses": {
+          "completed": 52
+        },
+        "min_pressure": 12.9,
+        "max_pressure": 128.968,
+        "below_threshold_at_cycle": 0,
+        "comparable_automatic_cycles": 51,
+        "comparable_automatic_below_threshold": 0,
+        "timer_aligned_cycles": 45,
+        "median_gap_hours": 6.0013457472222225
+      },
+      "novelty": {
+        "cycles": 2,
+        "statuses": {
+          "completed": 2
+        },
+        "min_pressure": 3.324,
+        "max_pressure": 13.262,
+        "below_threshold_at_cycle": 0,
+        "comparable_automatic_cycles": 2,
+        "comparable_automatic_below_threshold": 0,
+        "timer_aligned_cycles": 1,
+        "median_gap_hours": 12.28154933861111
+      }
+    },
+    "check_history": {
+      "samples": 114,
+      "valid_samples": 114,
+      "source_failed_samples": 0,
+      "cadence_gaps": 0,
+      "zero_samples": 74,
+      "idle_timer_clear_below_threshold": 45,
+      "observed_fall_and_rise": false,
+      "upward_threshold_crossings": [
+        {
+          "at": "2026-10-10T00:41:56.098651Z",
+          "before": 2.324,
+          "after": 3.324,
+          "threshold": 3.0
+        }
+      ],
+      "upward_threshold_crossing_count": 1,
+      "examples": [
+        {
+          "kind": "fall_after_cycle",
+          "at": "2026-10-10T01:12:04.121599Z",
+          "before": 3.324,
+          "after": 0.0
+        }
+      ]
+    },
+    "verdict": "UNVERIFIED: available history has not established pressure falling and rising between dreams"
+  },
+  "input_sha256": {
+    "focus.jsonl": "c615c7b3ded4e4f279c9707b8955d00558cfaab5a43613610739a85fb757aa5f",
+    "dream.jsonl": "d853f5fbb4ff52090cae4829dc479fd71d47dda5a3b365a3b41c9dd9d38a3eb4",
+    "arousal.jsonl": "74c56aa03694131a5e8b7bbc73a2a589a27192d52ffc4626328dddeac4b87159"
+  }
+}

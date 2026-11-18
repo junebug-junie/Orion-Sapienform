@@ -218,3 +218,37 @@ def test_app_js_wires_turn_trace_panel_alongside_execution_steps() -> None:
     assert "mountTurnTracePanel" in app_js
     assert "appendExecutionStepsPanel(root, meta);\n    appendTurnTracePanel(root, meta);" in app_js
     assert "appendExecutionStepsPanel(div, meta);\n      appendTurnTracePanel(div, meta);" in app_js
+
+
+def _stance_trace(day_citations):
+    return {
+        "correlation_id": "corr-1",
+        "route_signal_inferred": "unified_turn_harness",
+        "sources": {"thought_decision": {
+            "disposition": "proceed", "disposition_reasons": [], "imperative": "Stay with Juniper.",
+            "tone": "warm", "strain_refs": [], "day_citations": day_citations,
+            "stance_harness_slice": {"task_mode": "reflective_dialogue", "conversation_frame": "reflective",
+                                     "answer_strategy": "companion"},
+        }},
+        "gaps": [],
+    }
+
+
+def test_renders_unverified_day_citations_label() -> None:
+    """Temporal Self patch 4: an uncited sentence about the day shows as UNVERIFIED in the trace."""
+    html = _node_build_turn_trace_panel({"correlationId": "corr-1", "trace": _stance_trace({
+        "shown": 4, "cited_valid": ["arc:571bce17764b0a9e"], "rejected_unknown": ["arc:deadbeefdeadbeef"],
+        "uncited_day_sentences": 1, "uncited_examples": ["Bus synaptic prediction error held me all morning."],
+        "label": "UNVERIFIED", "action": "stripped"})})
+    assert ">UNVERIFIED<" in html
+    assert "4 arcs shown · 1 cited · 1 unknown removed · 1 uncited day sentence" in html
+    assert "removed (not shown) arc:deadbeefdeadbeef" in html
+    assert "UNVERIFIED: Bus synaptic prediction error held me all morning." in html
+
+
+def test_renders_verified_day_citations_and_omits_block_when_absent() -> None:
+    html = _node_build_turn_trace_panel({"correlationId": "corr-1", "trace": _stance_trace({
+        "shown": 2, "cited_valid": ["arc:571bce17764b0a9e"], "rejected_unknown": [], "uncited_day_sentences": 0,
+        "uncited_examples": [], "label": "verified", "action": "kept"})})
+    assert ">verified<" in html and "cited arc:571bce17764b0a9e" in html and "UNVERIFIED" not in html
+    assert "day cue:" not in _node_build_turn_trace_panel({"correlationId": "corr-1", "trace": _stance_trace(None)})

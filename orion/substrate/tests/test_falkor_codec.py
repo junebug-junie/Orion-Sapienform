@@ -137,6 +137,9 @@ def test_encode_concept_node_properties_are_native_scalars_without_payload_json(
         # "no vision reading yet" stays distinguishable from a measured 0.0.
         "perception_staleness": None,
         "perception_yield": None,
+        # Camera surprise nodes' embedding clock and missing-input marker.
+        "embedding_staleness": None,
+        "prediction_error_missing_reason": None,
         # topic-foundry's HDBSCAN cluster id -- absent metadata encodes as
         # None, matching subject_ref/provenance_model_name's convention for
         # optional scalar fields (see TOPIC_FOUNDRY_METADATA_KEYS).
@@ -161,7 +164,7 @@ def test_encode_node_properties_rejects_non_concept():
         temporal=_temporal(),
         provenance=_provenance(),
     )
-    with pytest.raises(ValueError, match="concept, evidence, entity nodes only"):
+    with pytest.raises(ValueError, match="concept, evidence, entity, assertion nodes only"):
         encode_node_properties(drive, identity_key="drive:curiosity")
 
 
@@ -532,7 +535,7 @@ def test_entity_is_a_durable_node_kind():
     from orion.substrate.falkor_codec import DURABLE_NODE_KINDS
 
     assert "entity" in DURABLE_NODE_KINDS
-    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity"}
+    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity", "assertion"}
 
 
 def test_encode_entity_writes_its_own_columns():

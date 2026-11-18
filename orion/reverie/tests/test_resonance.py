@@ -88,3 +88,21 @@ def test_sample_ats_capped():
     alert = detect_resonance(events, refractory_sec=REFRACTORY)
     assert alert is not None
     assert len(alert.sample_ats) <= MAX_RESONANCE_SAMPLES
+
+
+def test_gap_after_unarmed_chain_is_not_a_violation():
+    # A chain that never armed the cooldown (no_coalition) cannot be breached.
+    events = [ThemeEvent("loop:ol-1", NOW + timedelta(seconds=60 * i), armed=False) for i in range(6)]
+    assert detect_resonance(events, refractory_sec=REFRACTORY) is None
+
+
+def test_only_gaps_after_armed_chains_count():
+    # armed, unarmed, armed, unarmed, armed -- 60 s apart. Gaps after the 3
+    # armed chains that have a successor: indices 0 and 2 -> 2 violations.
+    events = [
+        ThemeEvent("loop:ol-1", NOW + timedelta(seconds=60 * i), armed=(i % 2 == 0)) for i in range(5)
+    ]
+    alert = detect_resonance(events, refractory_sec=REFRACTORY)
+    assert alert is not None
+    assert alert.violation_count == 2
+    assert alert.occurrences == 5

@@ -60,16 +60,16 @@ class _FakeBus:
 
 _VALID_ANNOTATION = {
     "worth_saving": True,
-    "title": "Lives in Ogden",
-    "summary": "Juniper lives in Ogden, UT",
+    "title": "Lives in Millbrook",
+    "summary": "Juniper lives in Millbrook, UT",
     "confidence": "certain",
     "priority": "high_recall",
     "time_horizon": {"kind": "current"},
     "types": ["fact", "anchor"],
     "anchor_class": "place",
     "tags": ["location"],
-    "anchors": ["Ogden"],
-    "still_true": ["Lives in Ogden, UT"],
+    "anchors": ["Millbrook"],
+    "still_true": ["Lives in Millbrook, UT"],
     "project": None,
 }
 
@@ -137,7 +137,7 @@ def test_stage1_extracts_and_inserts(monkeypatch) -> None:
     monkeypatch.setattr(mod.mc_dal, "card_exists_by_fingerprint", exists_mock)
     monkeypatch.setattr(mod.mc_dal, "fetch_card_id_by_fingerprint", fetch_id_mock)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     assert insert_mock.await_args is not None
@@ -145,7 +145,7 @@ def test_stage1_extracts_and_inserts(monkeypatch) -> None:
     assert pool_arg is not None
     assert card_arg.provenance == "auto_extractor"
     assert card_arg.status == "pending_review"
-    assert "Ogden" in (card_arg.summary or "")
+    assert "Millbrook" in (card_arg.summary or "")
     assert insert_mock.await_args.kwargs.get("actor") == "auto_extractor"
     assert (card_arg.subschema or {}).get("auto_extractor_fingerprint")
 
@@ -175,7 +175,7 @@ def test_stage1_dedupes_via_fingerprint(monkeypatch) -> None:
     monkeypatch.setattr(mod.mc_dal, "fetch_card_id_by_fingerprint", fetch_id_mock)
     monkeypatch.setattr(mod.mc_dal, "record_reconfirmation", reconfirm_mock)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_not_called()
     reconfirm_mock.assert_awaited_once()
@@ -202,7 +202,7 @@ def test_stage1_noop_when_pool_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(mod.mc_dal, "insert_card", insert_mock)
     monkeypatch.setattr(mod.mc_dal, "card_exists_by_fingerprint", exists_mock)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_not_called()
     exists_mock.assert_not_called()
@@ -286,14 +286,14 @@ def test_llm_annotation_success_creates_card_with_llm_fields(monkeypatch) -> Non
     fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     card_arg = insert_mock.await_args.args[1]
     assert card_arg.confidence == "certain"
     assert card_arg.priority == "high_recall"
-    assert card_arg.title == "Lives in Ogden"
-    assert card_arg.summary == "Juniper lives in Ogden, UT"
+    assert card_arg.title == "Lives in Millbrook"
+    assert card_arg.summary == "Juniper lives in Millbrook, UT"
     assert card_arg.provenance == "auto_extractor"
     assert card_arg.status == "pending_review"
     assert (card_arg.subschema or {}).get("auto_extractor_mode") == "llm_annotation"
@@ -308,13 +308,13 @@ def test_fallback_to_regex_on_llm_rpc_failure(monkeypatch) -> None:
     fake_bus = _FakeBus("", raise_on_rpc=RuntimeError("bus unavailable"))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     card_arg = insert_mock.await_args.args[1]
     assert card_arg.provenance == "auto_extractor"
     assert card_arg.status == "pending_review"
-    assert "Ogden" in (card_arg.summary or "")
+    assert "Millbrook" in (card_arg.summary or "")
 
 
 def test_fallback_to_regex_on_bad_json(monkeypatch) -> None:
@@ -324,11 +324,11 @@ def test_fallback_to_regex_on_bad_json(monkeypatch) -> None:
     fake_bus = _FakeBus("not valid json {{{")
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     card_arg = insert_mock.await_args.args[1]
-    assert "Ogden" in (card_arg.summary or "")
+    assert "Millbrook" in (card_arg.summary or "")
 
 
 def test_fallback_to_regex_on_timeout(monkeypatch) -> None:
@@ -345,11 +345,11 @@ def test_fallback_to_regex_on_timeout(monkeypatch) -> None:
     fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     card_arg = insert_mock.await_args.args[1]
-    assert "Ogden" in (card_arg.summary or "")
+    assert "Millbrook" in (card_arg.summary or "")
 
 
 def test_fallback_to_regex_on_prompt_build_failure(monkeypatch) -> None:
@@ -367,11 +367,11 @@ def test_fallback_to_regex_on_prompt_build_failure(monkeypatch) -> None:
     fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     card_arg = insert_mock.await_args.args[1]
-    assert "Ogden" in (card_arg.summary or "")
+    assert "Millbrook" in (card_arg.summary or "")
 
 
 def test_sensitivity_and_visibility_scope_never_influenced_by_llm_response(monkeypatch) -> None:
@@ -390,7 +390,7 @@ def test_sensitivity_and_visibility_scope_never_influenced_by_llm_response(monke
     fake_bus = _FakeBus(json.dumps(poisoned))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     card_arg = insert_mock.await_args.args[1]
@@ -447,11 +447,11 @@ def test_fallback_to_regex_when_llm_response_fails_anchor_class_validation(monke
     fake_bus = _FakeBus(json.dumps(bad))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     card_arg = insert_mock.await_args.args[1]
-    assert "Ogden" in (card_arg.summary or "")
+    assert "Millbrook" in (card_arg.summary or "")
 
 
 def test_annotation_prompt_path_resolution_survives_shallow_docker_layout(monkeypatch) -> None:
@@ -535,7 +535,7 @@ def test_dedup_hit_records_reconfirmation_instead_of_silent_skip(monkeypatch) ->
     fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    env = _turn_env(prompt="I live in Ogden, UT")
+    env = _turn_env(prompt="I live in Millbrook, UT")
     env.payload["session_id"] = "session-xyz"
     asyncio.run(mod.handle_memory_history_turn(env))
 
@@ -561,7 +561,7 @@ def test_dedup_hit_on_regex_fallback_path_also_records_reconfirmation(monkeypatc
     fake_bus = _FakeBus("", raise_on_rpc=RuntimeError("bus unavailable"))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    env = _turn_env(prompt="I live in Ogden, UT")
+    env = _turn_env(prompt="I live in Millbrook, UT")
     env.payload["session_id"] = "session-regex"
     asyncio.run(mod.handle_memory_history_turn(env))
 
@@ -586,7 +586,7 @@ def test_reconfirmation_record_failure_does_not_crash_turn_handling(monkeypatch)
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
     # Must not raise.
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
     insert_mock.assert_not_called()
 
 
@@ -601,7 +601,7 @@ def test_new_card_creation_stashes_session_id_in_subschema(monkeypatch) -> None:
     fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    env = _turn_env(prompt="I live in Ogden, UT")
+    env = _turn_env(prompt="I live in Millbrook, UT")
     env.payload["session_id"] = "session-creation"
     asyncio.run(mod.handle_memory_history_turn(env))
 
@@ -638,7 +638,7 @@ def test_annotate_via_llm_fetches_and_forwards_topic_labels(monkeypatch) -> None
     fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     sent_prompt = fake_bus.last_env.payload["messages"][0]["content"]
@@ -656,7 +656,7 @@ def test_annotate_via_llm_proceeds_with_no_hint_when_topic_foundry_unavailable(m
     fake_bus = _FakeBus(json.dumps(_VALID_ANNOTATION))
     monkeypatch.setattr(mod, "_get_annotation_bus", lambda: fake_bus)
 
-    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Ogden, UT")))
+    asyncio.run(mod.handle_memory_history_turn(_turn_env(prompt="I live in Millbrook, UT")))
 
     insert_mock.assert_awaited_once()
     sent_prompt = fake_bus.last_env.payload["messages"][0]["content"]

@@ -1,0 +1,41 @@
+{
+ "_about": "Live concern d8db9d7b1bba4cf7 (redis orion:prime:state) and the rows its promise adapter reads, captured read-only 2026-11-13 from harness_turn_trace and chat_history_log (correlation a129b72f-e698-425a-a435-3388cd7cd759). promised_at is naive UTC as Postgres stores it. prompt/response are trimmed excerpts (the eval checks the quote, session, time and route, not the exchange text).",
+ "concern": {
+  "concern_id": "d8db9d7b1bba4cf7",
+  "text": "a thread I opened in a chat with Juniper (1 promise, harness_turn_trace:a129b72f-e698-425a-a435-3388cd7cd759#promises_made[0]): Juniper: \"howdy, just saying hi on my way to play Zelda, a Link from the Past! We just...\" / me: \"Howdy — you arrive like a fairy with a bomb bag: SNES emulator in the r...",
+  "arc_id": null,
+  "event_ref": "turn:a129b72f-e698-425a-a435-3388cd7cd759",
+  "opened_at": "2026-11-12T07:08:57.967726Z",
+  "last_evidence_at": "2026-11-13T07:46:20.216376Z",
+  "act_opened_at": null,
+  "graded": null
+ },
+ "letter_concern": {
+  "concern_id": "f1e01e2a2cf54886",
+  "text": "a thread from my letter for 2026-11-12: My hire channel has returned nothing since 2026-10-18",
+  "arc_id": null,
+  "event_ref": "orion_day_letter:2026-11-12#thread1",
+  "opened_at": "2026-11-13T07:36:10.992258Z",
+  "last_evidence_at": "2026-11-13T07:46:20.216376Z",
+  "act_opened_at": "2026-11-13T07:36:13.743422Z",
+  "graded": null
+ },
+ "row": {
+  "promised_at": "2026-11-12T07:08:40.440369",
+  "promises_made": [
+   {
+    "offer": false,
+    "quote": "While you're off in Hyrule I'll take a lazy browse through the last 24 hours"
+   }
+  ],
+  "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
+  "prompt": "(excerpt) ... If you are bored, have a look at all the PRs over the last 24 hours!!!!! no pressure to do it.",
+  "response": "(excerpt) As for the PR offer with five exclamation marks: accepted, lightly. While you're off in Hyrule I'll take a lazy browse through the last 24 hours — no deep dive unless something bites."
+ },
+ "expect": {
+  "quote": "While you're off in Hyrule I'll take a lazy browse through the last 24 hours",
+  "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
+  "horizon_at": "2026-11-15T07:08:40.440369+00:00",
+  "quote_ref": "harness_turn_trace:a129b72f-e698-425a-a435-3388cd7cd759#promises_made[0]"
+ }
+}

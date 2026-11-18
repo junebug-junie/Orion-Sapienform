@@ -1,0 +1,64 @@
+name: Rest drive
+
+# Temporal Self rev 4, R2: orion-dream publishes its sleep pressure as a
+# DriveReadingV1 (Redis orion:drive:rest:latest); Hub curiosity and outreach
+# stretch their cooldowns only while it reads `due`, and behave exactly as
+# before when it is unknown.
+
+on:
+  pull_request:
+    paths:
+      - "orion/regulation/**"
+      - "orion/schemas/drive_reading.py"
+      - "orion/schemas/dream_cycle.py"
+      - "orion/schemas/registry.py"
+      - "orion/inner_state_registry.py"
+      - "services/orion-hub/app/settings.py"
+      - "services/orion-hub/scripts/main.py"
+      - "services/orion-dream/app/**"
+      - "services/orion-dream/tests/test_rest_drive_producer.py"
+      - "services/orion-hub/scripts/rest_drive_reader.py"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "services/orion-hub/scripts/endogenous_outreach.py"
+      - "services/orion-hub/tests/test_rest_drive_readers.py"
+      - "scripts/analysis/measure_rest_drive_easing.py"
+      - "scripts/analysis/measure_dream_pressure_crossings.py"
+      - "scripts/analysis/tests/test_measure_rest_drive_easing.py"
+      - "tests/test_rest_drive.py"
+      - ".github/workflows/rest-drive.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rest-drive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ORION_BUS_URL: redis://100.92.216.81:6379/0
+      ORION_BUS_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install -r services/orion-hub/tests/requirements-reading.txt \
+            "markdown-it-py>=3.0,<5" "Pillow>=10.4,<13" "httpx>=0.27,<1"
+          python -m pip install -r services/orion-sql-writer/requirements.txt pytest pytest-asyncio
+      # Separate invocations: the root, dream and Hub test trees each own an
+      # `app`/`scripts` import root and collide when collected together.
+      - name: Pure drive + reader rule
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider tests/test_rest_drive.py
+      - name: Producer (orion-dream)
+        run: python -m pytest -q -p no:cacheprovider services/orion-dream/tests/test_rest_drive_producer.py services/orion-dream/tests/test_dream_cycle_v2.py
+      - name: Readers (Hub curiosity + outreach)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider services/orion-hub/tests/test_rest_drive_readers.py
+      - name: Eval harness
+        run: python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_measure_rest_drive_easing.py

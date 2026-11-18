@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
+import time
 import traceback
 from dataclasses import dataclass
 from uuid import uuid4
@@ -16,11 +18,35 @@ except Exception:  # pragma: no cover - fallback when loguru is unavailable
     logger = logging.getLogger("orion.bus")
 
 from .async_service import OrionBusAsync
+from .resilience import subscription_health
 from .bus_schemas import BaseEnvelope, ErrorInfo, ServiceRef
+from .rpc_degraded import (
+    DEGRADED_TRACE_KEY,
+    begin_collecting,
+    current_degraded_reason,
+    end_collecting,
+    mark_degraded,
+    strip_degraded,
+)
 from orion.schemas.telemetry.system_health import SystemHealthV1
 
 
 Handler = Callable[[BaseEnvelope], Awaitable[BaseEnvelope | None]]
+
+
+def intake_log_each_enabled() -> bool:
+    """Whether Hunter writes one log line per received message.
+
+    Off unless the service explicitly opts into debug with ``LOG_LEVEL=DEBUG``.
+    A plain ``logger.debug`` is not enough: this module logs through loguru,
+    whose default stderr sink is DEBUG, and most services only configure stdlib
+    ``logging`` -- so the "DEBUG" line printed anyway (orion-sql-writer: ~19k
+    lines/hour into the shared journald cap). Deciding here, from the service's
+    own LOG_LEVEL, makes the quiet default independent of each service's
+    logging setup. The first-after-subscribe line and the per-minute summary
+    still log at INFO regardless.
+    """
+    return (os.getenv("LOG_LEVEL") or "").strip().upper() == "DEBUG"
 
 # Optional, synchronous, no-arg callable a chassis owner can supply to fold extra
 # free-form data into every SystemHealthV1.details payload the heartbeat publishes.
@@ -48,6 +74,21 @@ class ChassisConfig:
     # system channels (stable defaults)
     health_channel: str = "orion:system:health"
     error_channel: str = "orion:system:error"
+
+
+def _listener_heartbeat_status() -> tuple[str, Dict[str, Any] | None]:
+    """("degraded", summary) while any run_subscription listener in this process is
+    not subscribed; ("ok", summary) when all are; ("ok", None) for a process with none.
+    Never raises: a heartbeat must not die over its own diagnostics."""
+    try:
+        health = subscription_health()
+    except Exception as exc:
+        logger.warning(f"heartbeat listener health failed: {exc}")
+        return "ok", None
+    if not health["listeners"]:
+        return "ok", None
+    summary = {"ok": health["ok"], "down": health["down"], "count": len(health["listeners"])}
+    return ("ok" if health["ok"] else "degraded"), summary
 
 
 class BaseChassis:
@@ -159,13 +200,18 @@ class BaseChassis:
                         )
                     except Exception as details_exc:
                         logger.warning(f"heartbeat_details provider failed: {details_exc}")
+                # Process alive is not the same as listening: a bus listener that died
+                # left this heartbeat "ok" while chat lost reflection (2026-10-20).
+                status, listener_details = _listener_heartbeat_status()
+                if listener_details is not None:
+                    details["listeners"] = listener_details
                 v1_payload = SystemHealthV1(
                     service=self.cfg.service_name,
                     node=node,
                     version=self.cfg.service_version,
                     instance=self.cfg.instance_id,
                     boot_id=self.boot_id,
-                    status="ok",
+                    status=status,
                     last_seen_ts=now,
                     heartbeat_interval_sec=float(self.cfg.heartbeat_interval_sec or 10.0),
                     details=details,
@@ -254,6 +300,25 @@ class BaseChassis:
             backoff_sec = min(backoff_sec * 2.0, 30.0)
 
 
+def _stamp_degraded_reply(out: Any, *, request: BaseEnvelope, noted: Optional[str]) -> Any:
+    """Stamp a Rabbit reply with the reason noted while handling ``request``. A marker
+    the reply merely inherited from the request's trace is dropped first, so it can
+    neither read as this reply's verdict nor mask the reason noted here (first cause
+    wins in ``mark_degraded``). Never raises; returns ``out`` unchanged on any problem."""
+    try:
+        trace = getattr(out, "trace", None)
+        if not isinstance(trace, dict) or not hasattr(out, "model_copy"):
+            return out
+        inherited = (request.trace or {}).get(DEGRADED_TRACE_KEY)
+        if inherited is not None and trace.get(DEGRADED_TRACE_KEY) == inherited:
+            out = out.model_copy(update={"trace": strip_degraded(trace)})
+        if noted:
+            return mark_degraded(out, noted)
+    except Exception as exc:  # noqa: BLE001 -- a stamp bug must never drop a reply
+        logger.warning(f"rabbit_degraded_stamp_failed err={type(exc).__name__}: {exc}")
+    return out
+
+
 class Rabbit(BaseChassis):
     """
     RPC / synchronous pattern.
@@ -280,7 +345,22 @@ class Rabbit(BaseChassis):
             f"Rabbit request received channel={channel} kind={env.kind} "
             f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
         )
-        out = await self.handler(env)
+        # Degraded-reply collector (orion/core/bus/rpc_degraded.py): anything the
+        # handler runs may note_degraded(reason); the reply is stamped below so the
+        # caller's rpc_request() counts it as degraded, never as a fast success.
+        # The handler never sees a degraded marker on the *request* (a caller that
+        # copied one from an earlier reply): copying it into this reply would
+        # read as this reply's own verdict, or mask a real one.
+        if (env.trace or {}).get(DEGRADED_TRACE_KEY) is not None:
+            env = env.model_copy(update={"trace": strip_degraded(env.trace)})
+        token = begin_collecting()
+        try:
+            out = await self.handler(env)
+            noted = current_degraded_reason()
+        finally:
+            end_collecting(token)
+        if out is not None:
+            out = _stamp_degraded_reply(out, request=env, noted=noted)
         if out is not None and env.reply_to:
             payload_obj = getattr(out, "payload", None)
             payload_keys = []
@@ -355,6 +435,7 @@ class Rabbit(BaseChassis):
                     await self.bus.connect()
                 async with self.bus.subscribe(self.request_channel) as pubsub:
                     backoff_sec = 1.0
+                    transport_failed = False
                     try:
                         async for msg in self.bus.iter_messages(pubsub):
                             if self._stop.is_set():
@@ -398,8 +479,13 @@ class Rabbit(BaseChassis):
                                 await self._handle_decoded_envelope(channel=str(channel), env=env)
                             except Exception as e:
                                 await self._publish_error(e, when="rabbit.handle", env=env)
+                    except Exception:
+                        # Transport failure (e.g. iter_messages found the socket dead): resubscribe,
+                        # but let in-flight handlers finish -- they publish on the command connection.
+                        transport_failed = True
+                        raise
                     finally:
-                        if self._inflight_tasks:
+                        if self._inflight_tasks and not transport_failed:
                             for task in list(self._inflight_tasks):
                                 if not task.done():
                                     task.cancel()
@@ -437,8 +523,9 @@ class Hunter(BaseChassis):
         patterns: Union[List[str], str, None] = None,
         pattern: Optional[str] = None,
         concurrent_handlers: bool = False,
+        heartbeat_details: Optional[HeartbeatDetailsProvider] = None,
     ):
-        super().__init__(cfg)
+        super().__init__(cfg, heartbeat_details=heartbeat_details)
         
         self.patterns: List[str] = []
         if patterns is not None:
@@ -466,6 +553,47 @@ class Hunter(BaseChassis):
         self.handler = handler
         self.concurrent_handlers = bool(concurrent_handlers)
         self._inflight_tasks: set[asyncio.Task] = set()
+        # Per-message intake is DEBUG. INFO gets the first message after each
+        # (re)subscribe plus one rolled-up count line per interval. A per-message
+        # INFO line here wrote ~200k lines/hour from orion-signal-gateway alone.
+        self._intake_counts: Dict[str, int] = {}
+        self._intake_window_start = time.monotonic()
+        self._intake_log_each = intake_log_each_enabled()
+
+    INTAKE_SUMMARY_INTERVAL_SEC = 60.0
+
+    def _log_intake(
+        self,
+        *,
+        channel: Any,
+        pattern: Any,
+        env: BaseEnvelope,
+        trace_id: Any,
+        first_after_subscribe: bool,
+    ) -> None:
+        line = (
+            f"Hunter intake channel={channel} pattern={pattern} kind={env.kind} "
+            f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
+        )
+        if first_after_subscribe:
+            logger.info(f"{line} first_after_subscribe=true")
+        elif self._intake_log_each:
+            logger.debug(line)
+        key = f"{channel}:{env.kind}"
+        self._intake_counts[key] = self._intake_counts.get(key, 0) + 1
+        now = time.monotonic()
+        elapsed = now - self._intake_window_start
+        if elapsed >= self.INTAKE_SUMMARY_INTERVAL_SEC:
+            total = sum(self._intake_counts.values())
+            by_kind = ", ".join(
+                f"{k}={v}" for k, v in sorted(self._intake_counts.items(), key=lambda kv: -kv[1])
+            )
+            logger.info(
+                f"Hunter intake summary window_sec={elapsed:.0f} total={total} "
+                f"patterns={self.patterns} by_channel_kind=[{by_kind}]"
+            )
+            self._intake_counts = {}
+            self._intake_window_start = now
 
     async def _run(self) -> None:
         uses_glob = any(any(ch in pattern for ch in "*?[") for pattern in self.patterns)
@@ -482,6 +610,8 @@ class Hunter(BaseChassis):
                     await self.bus.connect()
                 async with self.bus.subscribe(*self.patterns, patterns=uses_glob) as pubsub:
                     backoff_sec = 1.0
+                    first_after_subscribe = True
+                    transport_failed = False
                     try:
                         async for msg in self.bus.iter_messages(pubsub):
                             if self._stop.is_set():
@@ -513,10 +643,14 @@ class Hunter(BaseChassis):
 
                             env = decoded.envelope
                             trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
-                            logger.info(
-                                f"Hunter intake channel={channel} pattern={pattern} kind={env.kind} "
-                                f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
+                            self._log_intake(
+                                channel=channel,
+                                pattern=pattern,
+                                env=env,
+                                trace_id=trace_id,
+                                first_after_subscribe=first_after_subscribe,
                             )
+                            first_after_subscribe = False
                             if self.concurrent_handlers:
                                 async def _run_handler(envelope: BaseEnvelope) -> None:
                                     try:
@@ -533,8 +667,13 @@ class Hunter(BaseChassis):
                                 await self.handler(env)
                             except Exception as e:
                                 await self._publish_error(e, when="hunter.handle", env=env)
+                    except Exception:
+                        # Transport failure (e.g. iter_messages found the socket dead): resubscribe,
+                        # but let in-flight handlers finish -- they publish on the command connection.
+                        transport_failed = True
+                        raise
                     finally:
-                        if self._inflight_tasks:
+                        if self._inflight_tasks and not transport_failed:
                             for task in list(self._inflight_tasks):
                                 if not task.done():
                                     task.cancel()

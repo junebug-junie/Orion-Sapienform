@@ -1,0 +1,64 @@
+name: Claude tools (Orion's consent)
+# Claude's read-only tools in Hub chat, gated by Orion's consent (Patch 1b of
+# docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md): the broker's gate paths,
+# the allowlist, redaction, the MCP server, the consent frame and act, the governor wiring, Hub's
+# audit/grants endpoints, the sql-writer audit table and `dig claude-grants`.
+on:
+  pull_request:
+    paths:
+      - 'orion/claude_tools/**'
+      - 'orion/schemas/claude_tools.py'
+      - 'orion/prime/consent.py'
+      - 'orion/prime/block.py'
+      - 'orion/dig/**'
+      - 'orion/core/redact.py'
+      - 'orion/fcc/claude_spawn.py'
+      - 'services/orion-room-companion/**'
+      - 'services/orion-harness-governor/app/claude_tools_listener.py'
+      - 'services/orion-harness-governor/app/main.py'
+      - 'services/orion-harness-governor/tests/test_claude_tools_listener.py'
+      - 'services/orion-mind/app/prime_consent.py'
+      - 'services/orion-mind/tests/test_prime_consent_responder.py'
+      - 'services/orion-hub/scripts/claude_tools_routes.py'
+      - 'services/orion-hub/scripts/room_claude_context.py'
+      - 'services/orion-hub/tests/test_room_claude_tools_routes.py'
+      - 'services/orion-sql-writer/app/models/claude_tool_call_log.py'
+      - 'services/orion-sql-db/manual_migration_claude_tool_call_log_v1.sql'
+      - '.github/workflows/claude-tools-tests.yml'
+permissions:
+  contents: read
+jobs:
+  claude-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-room-companion/requirements.txt
+          python -m pip install -r services/orion-harness-governor/requirements.txt
+          python -m pip install -r services/orion-sql-writer/requirements.txt
+          python -m pip install "pytest>=8.2,<10" "pytest-asyncio>=0.23,<1" httpx
+      - name: Broker, allowlist, redaction, MCP server, consent frame
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
+            orion/claude_tools/tests orion/prime/tests/test_prime_consent.py orion/dig/tests/test_claude_grants_cmd.py
+      - name: Companion (argv, per-turn MCP config, footer)
+        working-directory: services/orion-room-companion
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest tests -q -p no:cacheprovider
+      - name: Governor broker wiring
+        working-directory: services/orion-harness-governor
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest tests/test_claude_tools_listener.py -q -p no:cacheprovider
+      - name: orion-mind consent responder
+        working-directory: services/orion-mind
+        run: |
+          python -m pip install -r requirements.txt
+          PYTHONPATH=${{ github.workspace }}/services/orion-mind:${{ github.workspace }} \
+            python -m pytest tests/test_prime_consent_responder.py -q -p no:cacheprovider
+      - name: sql-writer audit table
+        run: |
+          PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -p no:cacheprovider \
+            services/orion-sql-writer/tests/test_claude_tool_call_log.py

@@ -8,6 +8,12 @@ LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC and a queued acquire is withdrawn if the c
 
 A request carrying ``X-Orion-Gpu-Lease`` (stage 4: FCC under a durable run's hold) attaches to that
 hold instead of acquiring; its overflow is returned as is, since the child cannot leave the hold's role.
+
+Every call is counted into the gateway's inference report (grammar_emit, gpu-pool stage 6.2) exactly
+once, in the per-role clocks only (not the node counts behind inference_failure_pressure), with the
+same two clocks as the bus path: acquire -> grant (wait) and grant -> reply or stream
+end (model), per granted role, plus llama.cpp's own ``timings.predicted_per_second`` when the body (or
+a stream's last chunk) carries it.
 """
 from __future__ import annotations
 
@@ -15,6 +21,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from typing import Any, AsyncIterator, Callable, Dict, Optional
 
 import httpx
@@ -22,15 +29,24 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
 from orion.gpu_pool.client import Lease, LeaseUnavailable
+from orion.gpu_pool.value_order import is_operator_class
+from orion.llm.call_usage import STREAM_HEAD_BYTES
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 
+from . import call_usage_emit, grammar_emit, lane_door
 from .ctx_overflow import is_context_overflow
+from .fast_thinking import GPU3_WORK_CLASSES, with_gpu3_route_defaults
 from .pool_placement import (
     POOL_RECALLED,
     POOL_UNAVAILABLE,
     LeaseStreamingResponse,
     PoolLease,
+    busy_at_grant,
+    granted_backend,
+    granted_model,
+    deep_grant_ready,
     class_max_ctx,
+    pool_node,
     mark_revoked,
     passthrough_wait_sec,
     route_spec,
@@ -38,8 +54,29 @@ from .pool_placement import (
     stream_cleanup,
     wait_lease_revoked,
 )
+from .settings import settings
+from .vision import count_images, replace_images_with_note, resolve_vision_capability
 
 logger = logging.getLogger("orion-llm-gateway.passthrough")
+
+
+# An eval's one-off call on an operator route (orion/evals/leased_llm.gateway_call) names its holder here,
+# so gpu_pool_events records which eval ran (``operator:<eval>``), not the passthrough's default holder.
+# Honoured only for operator classes and only in the ``operator:<name>`` shape: Orion's own routes keep
+# their holders.
+OPERATOR_HOLDER_HEADER = "x-orion-operator-holder"
+_OPERATOR_HOLDER_RE = re.compile(r"operator:[A-Za-z0-9_.:-]{1,64}")
+
+
+def holder_for(request: Request, route_key: str, default: str) -> str:
+    raw = (request.headers.get(OPERATOR_HOLDER_HEADER) or "").strip()
+    if not raw or not _OPERATOR_HOLDER_RE.fullmatch(raw):
+        return default
+    try:
+        work_class = route_spec(route_key).work_class
+    except Exception:  # noqa: BLE001 -- an unknown route is refused later, with its own error
+        return default
+    return raw if is_operator_class(work_class) else default
 
 
 class _UpstreamStatus(Exception):
@@ -95,7 +132,65 @@ class _Revoked(Exception):
 
 
 class _ClientGone(Exception):
-    """The HTTP client disconnected while its acquire was still queued."""
+    """The HTTP client disconnected before its response was handed off."""
+
+
+# How much of a stream's end is kept to read llama.cpp's final ``timings``/``usage`` chunk.
+_STREAM_TAIL_BYTES = 4096
+
+
+class _CallReport:
+    """One passthrough call's entry in the inference report and the per-call token ledger:
+    recorded once, whatever the exit."""
+
+    def __init__(self, *, path: str = "http_openai", route: Optional[str] = None,
+                 correlation_id: Optional[str] = None, holder: Optional[str] = None,
+                 model: Optional[str] = None, stream: bool = False) -> None:
+        self.clock = grammar_emit.CallClock(pool_node=pool_node())
+        self.served_by: Optional[str] = None
+        self._done = False
+        self._meta = dict(path=path, route=route, correlation_id=correlation_id, holder=holder,
+                          model=model, stream=stream)
+
+    def granted(self, lease: Lease) -> None:
+        self.clock.granted(getattr(lease.grant, "role", None), busy=busy_at_grant(lease))
+        self.served_by = getattr(lease.grant, "served_by", None)
+
+    def finish(self, outcome: str, *, body: Any = None, head: Any = None) -> None:
+        """``body``: the parsed reply, or a stream's tail. ``head``: a stream's first bytes (an
+        Anthropic stream's prompt counts are in ``message_start``, its first event)."""
+        if self._done:
+            return
+        self._done = True
+        self.clock.close()
+        call_usage_emit.record_call(
+            outcome=outcome, clock=self.clock, served_by=self.served_by,
+            payloads=tuple(p for p in (head, body) if p is not None), **self._meta,
+        )
+        if not settings.llm_gateway_grammar_enabled:
+            return
+        try:
+            grammar_emit.get_recorder().record_outcome(
+                outcome,
+                served_by=self.served_by,
+                timing=self.clock,
+                timings=grammar_emit.timings_from(body) if body is not None else None,
+                http=True,
+            )
+        except Exception:  # noqa: BLE001 -- telemetry must never break a reply
+            logger.warning("passthrough_grammar_record_failed", exc_info=True)
+
+
+def _exception_outcome(exc: BaseException) -> str:
+    if isinstance(exc, asyncio.CancelledError):
+        return grammar_emit.CLIENT_GONE
+    if isinstance(exc, httpx.TimeoutException):
+        return "upstream_timeout"
+    if isinstance(exc, httpx.ConnectError):
+        return "upstream_connect"
+    if isinstance(exc, httpx.HTTPError):
+        return "upstream_error"
+    return "gateway_exception"
 
 
 async def _race(awaitable, watch: "asyncio.Future[str]"):
@@ -106,6 +201,8 @@ async def _race(awaitable, watch: "asyncio.Future[str]"):
         await asyncio.wait({task, watch}, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError:
         task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
         raise
     if task.done():
         return task.result()
@@ -113,6 +210,44 @@ async def _race(awaitable, watch: "asyncio.Future[str]"):
     with contextlib.suppress(BaseException):
         await task
     raise _Revoked(watch.result())
+
+
+async def _race_response(awaitable, watch: "asyncio.Future[str]", request: Request):
+    """Also observe disconnects while awaiting a reply or initial stream headers.
+
+    Stop this receive-side watcher before LeaseStreamingResponse takes ownership;
+    two concurrent ASGI receive consumers could steal each other's disconnect.
+    """
+    async def disconnected():
+        while not await request.is_disconnected():
+            await asyncio.sleep(_DISCONNECT_POLL_SEC)
+
+    task = asyncio.ensure_future(_race(awaitable, watch))
+    gone = asyncio.create_task(disconnected())
+    try:
+        await asyncio.wait({task, gone}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            return task.result()
+        gone.result()  # do not misclassify a receive failure as client cancellation
+        raise _ClientGone()
+    finally:
+        gone.cancel()
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        with contextlib.suppress(BaseException):
+            await gone
+
+
+async def _withdraw(task: "asyncio.Future[Lease]", handle: PoolLease) -> None:
+    """Cancel a queued acquire. If the grant landed first (the client left in the same instant),
+    release it: otherwise the pool lease and the gateway's role occupancy count stay held."""
+    task.cancel()  # gpu_lease withdraws the queued request on cancellation
+    with contextlib.suppress(BaseException):
+        await task
+    if task.done() and not task.cancelled() and task.exception() is None:
+        await handle.release()
 
 
 async def _acquire(handle: PoolLease, request: Request) -> Lease:
@@ -124,18 +259,37 @@ async def _acquire(handle: PoolLease, request: Request) -> Lease:
             if done:
                 return task.result()
             if await request.is_disconnected():
-                task.cancel()  # gpu_lease withdraws the queued request on cancellation
-                with contextlib.suppress(BaseException):
-                    await task
+                await _withdraw(task, handle)
                 raise _ClientGone()
     except asyncio.CancelledError:
-        task.cancel()
+        await asyncio.shield(_withdraw(task, handle))
         raise
 
 
 def _recalled_body(reason: str, route_key: str) -> Dict[str, Any]:
     return error_body(POOL_RECALLED, f"GPU pool took the lease for route '{route_key}' back ({reason}); "
                       "the upstream call was stopped", reason=f"lease_{reason}", route=route_key)
+
+
+# Backends whose workers answer /props (llama.cpp and Strata). vLLM has no /props: probing it would
+# read as blind and strip images it may accept, so it is left as it was.
+BLIND_CHECK_BACKENDS = frozenset({"llamacpp", "strata"})
+
+
+async def _images_for_lane(body: Dict[str, Any], lease: Lease, route_key: str,
+                           correlation_id: Optional[str], anthropic: bool) -> Dict[str, Any]:
+    """Images reach a lane only if it can see them (vision.py, "Images on a blind lane")."""
+    capability = await asyncio.to_thread(resolve_vision_capability, lease.grant.url)
+    if capability.vision:
+        return body
+    if capability.source == "props-unreachable":
+        reason = "could not confirm this lane can see images: its /props did not answer"
+    else:
+        reason = f"this model cannot see images: {capability.detail or capability.source}"
+    body, n = replace_images_with_note(body, anthropic=anthropic, reason=reason)
+    logger.warning("passthrough_images_blind_lane route=%s served_by=%s images=%s reason=%s corr=%s",
+                   route_key, lease.grant.served_by, n, reason, correlation_id or "-")
+    return body
 
 
 async def proxy_on_pool(
@@ -163,6 +317,8 @@ async def proxy_on_pool(
     forwardable_request_headers, forwardable_response_headers, httpx_timeout = _http_helpers()
     headers = forwardable_request_headers(request)
     timeout = httpx_timeout()
+    if spec.work_class in {"agent-deep", "operator_agent_deep"}:
+        timeout.read = 1800.0  # long prefill; Circe keeps its existing timeout
     min_ctx = int(min_ctx_tokens)
     overflow_response: Optional[Response] = None
     clamped = False
@@ -170,17 +326,26 @@ async def proxy_on_pool(
     # rule 3), minutes on a 27B: the 60s passthrough budget would turn interleave into a mid-turn
     # 503. It gets the class's bus wait budget instead (LLM_GATEWAY_POOL_[BACKGROUND_]WAIT_SEC).
     wait_s = wait_budget_sec(spec.priority or "system") if hold is not None else passthrough_wait_sec()
+    report = _CallReport(
+        path="http_anthropic" if anthropic else "http_openai", route=route_key,
+        correlation_id=correlation_id, holder=holder,
+        model=str(forward_body.get("model") or "") or None, stream=stream,
+    )
     for _ in range(3):
         handle = PoolLease(route=route_key, spec=spec, holder=holder, turn_correlation_id=correlation_id,
                            min_ctx_tokens=min_ctx, deadline_sec=wait_s, hold=hold)
+        report.clock.waiting()
         try:
             lease = await _acquire(handle, request)
         except _ClientGone:
+            report.finish(grammar_emit.CLIENT_GONE)
             logger.info("passthrough_client_gone_while_queued route=%s holder=%s corr=%s",
                         route_key, holder, correlation_id or "-")
             return Response(status_code=CLIENT_CLOSED_STATUS)
         except LeaseUnavailable as exc:
+            report.clock.not_granted()
             if overflow_response is not None:
+                report.finish("context_overflow")
                 return overflow_response
             max_ctx = class_max_ctx(exc.reason)
             if max_ctx is not None and not clamped and max_ctx < min_ctx:
@@ -188,25 +353,59 @@ async def proxy_on_pool(
                                route_key, min_ctx, max_ctx, correlation_id or "-")
                 clamped, min_ctx = True, max_ctx
                 continue
-            logger.warning("passthrough_gpu_pool_unavailable route=%s class=%s holder=%s reason=%s corr=%s",
-                           route_key, spec.work_class, holder, exc.reason, correlation_id or "-")
+            (logger.debug if getattr(exc, "local", False) else logger.warning)(
+                "passthrough_gpu_pool_unavailable route=%s class=%s holder=%s reason=%s corr=%s",
+                route_key, spec.work_class, holder, exc.reason, correlation_id or "-")
+            report.finish(POOL_UNAVAILABLE)
+            retry_after = getattr(exc, "retry_after_sec", None)
+            extra = {"retry_after_sec": round(float(retry_after), 1)} if retry_after is not None else {}
+            if getattr(exc, "local", False):
+                extra["local"] = True
             return JSONResponse(error_body(
                 POOL_UNAVAILABLE, f"GPU pool could not place route '{route_key}': {exc.reason}",
-                reason=exc.reason, route=route_key, work_class=spec.work_class,
-            ), status_code=503)
+                reason=exc.reason, route=route_key, work_class=spec.work_class, **extra,
+            ), status_code=503,
+                headers={"Retry-After": str(max(1, int(round(float(retry_after)))))} if retry_after is not None else None)
+
+        except BaseException as exc:
+            report.finish(_exception_outcome(exc))
+            raise
+        report.granted(lease)
 
         may_release = overflow_response is None and not clamped and hold is None
         upstream_url = f"{lease.grant.url.rstrip('/')}{path}"
+        # The lane door in front of the server: THIS lease's id (a child's own id under a hold).
+        upstream_headers = {**headers, **lane_door.headers(lease.lease_id)}
         if on_dispatch is not None:
             on_dispatch(upstream_url, lease.grant.served_by, stream)
         watch = asyncio.ensure_future(wait_lease_revoked(lease))
         stream_owns_lease = False
         try:
+            if route_key == "deep.thinker.v1" and not deep_grant_ready(lease.grant):
+                report.finish(POOL_UNAVAILABLE)
+                await handle.release()
+                return JSONResponse(error_body(POOL_UNAVAILABLE, "Verified deep worker is unavailable", reason="deep_thinker_not_ready"), status_code=503)
+            dispatch_body = dict(forward_body)
+            grant_backend = granted_backend(lease.grant)
+            if spec.work_class in GPU3_WORK_CLASSES and grant_backend == "llamacpp" and not anthropic:
+                dispatch_body = with_gpu3_route_defaults(dispatch_body, spec.work_class)
+            if grant_backend in BLIND_CHECK_BACKENDS and count_images(dispatch_body, anthropic=anthropic):
+                dispatch_body = await _images_for_lane(dispatch_body, lease, route_key, correlation_id, anthropic)
+            if grant_backend == "vllm":
+                if anthropic and not deep_grant_ready(lease.grant):
+                    report.finish("unsupported_backend_protocol")
+                    await handle.release()
+                    return JSONResponse(error_body(
+                        "unsupported_backend_protocol",
+                        "This vLLM route supports /v1/chat/completions; Anthropic Messages is not enabled",
+                    ), status_code=400)
+                dispatch_body["model"] = granted_model(lease.grant)
             if stream:
                 client = httpx.AsyncClient(timeout=timeout)
                 try:
-                    upstream_request = client.build_request("POST", upstream_url, headers=headers, json=forward_body)
-                    upstream = await _race(client.send(upstream_request, stream=True), watch)
+                    upstream_request = client.build_request("POST", upstream_url, headers=upstream_headers,
+                                                          json=dispatch_body)
+                    upstream = await _race_response(client.send(upstream_request, stream=True), watch, request)
                 except BaseException:
                     await client.aclose()
                     raise
@@ -216,9 +415,11 @@ async def proxy_on_pool(
                     finally:
                         await upstream.aclose()
                         await client.aclose()
+                    report.clock.replied()
                     response = _plain_response(content, upstream)
                     failure = _UpstreamStatus(f"http_{upstream.status_code}")
-                    if is_context_overflow(upstream.status_code, _json_or_none(content)):
+                    overflowed = is_context_overflow(upstream.status_code, _json_or_none(content))
+                    if overflowed:
                         # Too big for the slot is not the GPU's failure: keep it out of the error counts.
                         _mark_overflow(lease)
                     if may_release and lease.release_detail == "context_overflow":
@@ -227,13 +428,26 @@ async def proxy_on_pool(
                         await handle.release(failure)
                         continue
                     await handle.release(failure)
+                    report.finish(grammar_emit.classify_http_outcome(upstream.status_code, context_overflow=overflowed))
                     return response
 
                 close_stream = stream_cleanup(upstream, client, handle)
                 stream_watch = watch
+                stream_status = upstream.status_code
+                # What the stream's end looked like, for the inference report (read at close).
+                tail = bytearray()
+                head = bytearray()
+                ended: Dict[str, Any] = {"completed": False, "outcome": None}
 
                 async def close(error: Optional[BaseException] = None) -> None:
                     stream_watch.cancel()
+                    if error is not None and ended["outcome"] is None:
+                        ended["outcome"] = _exception_outcome(error)
+                    outcome = ended["outcome"] or (
+                        grammar_emit.classify_http_outcome(stream_status) if ended["completed"]
+                        else grammar_emit.CLIENT_GONE  # the client left before the stream ended
+                    )
+                    report.finish(outcome, body=bytes(tail), head=bytes(head))
                     await close_stream(error)
 
                 async def _body() -> AsyncIterator[bytes]:
@@ -244,9 +458,16 @@ async def proxy_on_pool(
                             try:
                                 chunk = await _race(iterator.__anext__(), stream_watch)
                             except StopAsyncIteration:
+                                ended["completed"] = True
                                 break
+                            if len(head) < STREAM_HEAD_BYTES:
+                                head.extend(chunk[:STREAM_HEAD_BYTES - len(head)])
+                            tail.extend(chunk)
+                            if len(tail) > _STREAM_TAIL_BYTES:
+                                del tail[:-_STREAM_TAIL_BYTES]
                             yield chunk
                     except _Revoked as exc:
+                        ended["outcome"] = POOL_RECALLED
                         mark_revoked(lease, exc.reason)
                         logger.warning("passthrough_lease_revoked_mid_stream route=%s lease_id=%s reason=%s corr=%s",
                                        route_key, lease.lease_id, exc.reason, correlation_id or "-")
@@ -257,21 +478,25 @@ async def proxy_on_pool(
                     finally:
                         await close()
 
-                stream_owns_lease = True
-                return LeaseStreamingResponse(
+                streaming = LeaseStreamingResponse(
                     _body(),
                     cleanup=close,
                     status_code=upstream.status_code,
                     headers=forwardable_response_headers(upstream.headers),
                     media_type=upstream.headers.get("content-type") or "text/event-stream",
                 )
+                stream_owns_lease = True
+                return streaming
 
             async with httpx.AsyncClient(timeout=timeout) as client:
-                upstream = await _race(client.post(upstream_url, headers=headers, json=forward_body), watch)
+                upstream = await _race_response(client.post(upstream_url, headers=upstream_headers, json=dispatch_body),
+                                                watch, request)
+            report.clock.replied()
             response = _plain_response(upstream.content, upstream)
             if upstream.status_code >= 400:
                 failure = _UpstreamStatus(f"http_{upstream.status_code}")
-                if is_context_overflow(upstream.status_code, _json_or_none(upstream.content)):
+                overflowed = is_context_overflow(upstream.status_code, _json_or_none(upstream.content))
+                if overflowed:
                     # Too big for the slot is not the GPU's failure: keep it out of the error counts.
                     _mark_overflow(lease)
                 if may_release and lease.release_detail == "context_overflow":
@@ -280,29 +505,45 @@ async def proxy_on_pool(
                     await handle.release(failure)
                     continue
                 await handle.release(failure)
+                report.finish(grammar_emit.classify_http_outcome(upstream.status_code, context_overflow=overflowed))
                 return response
             await handle.release()
+            body = _json_or_none(upstream.content)
+            report.finish(grammar_emit.classify_http_outcome(upstream.status_code),
+                          body=body if isinstance(body, dict) else upstream.content)
             return response
+        except _ClientGone:
+            report.finish(grammar_emit.CLIENT_GONE)
+            lease.release_outcome, lease.release_detail = "cancelled", "http_client_disconnected"
+            await handle.release(asyncio.CancelledError())
+            logger.info("passthrough_client_gone_after_grant route=%s lease_id=%s corr=%s",
+                        route_key, lease.lease_id, correlation_id or "-")
+            return Response(status_code=CLIENT_CLOSED_STATUS)
         except _Revoked as exc:
+            report.finish(POOL_RECALLED)
             mark_revoked(lease, exc.reason)
             await handle.release()
             logger.warning("passthrough_lease_revoked route=%s lease_id=%s reason=%s corr=%s",
                            route_key, lease.lease_id, exc.reason, correlation_id or "-")
             return JSONResponse(_recalled_body(exc.reason, route_key), status_code=503)
         except httpx.TimeoutException as exc:
+            report.finish(_exception_outcome(exc))
             await handle.release(exc)
             logger.error("passthrough_timeout route=%s upstream=%s corr=%s", route_key, upstream_url, correlation_id)
             return JSONResponse(error_body("timeout", "Upstream request timed out"), status_code=504)
         except httpx.HTTPError as exc:
+            report.finish(_exception_outcome(exc))
             await handle.release(exc)
             logger.error("passthrough_upstream_error route=%s upstream=%s corr=%s error=%s",
                          route_key, upstream_url, correlation_id, exc)
             return JSONResponse(error_body("upstream_error", f"Upstream request failed: {exc}"), status_code=502)
         except BaseException as exc:
             if not stream_owns_lease:
+                report.finish(_exception_outcome(exc))
                 await handle.release(exc)
             raise
         finally:
             if not stream_owns_lease:
                 watch.cancel()
+    report.finish("context_overflow" if overflow_response is not None else POOL_UNAVAILABLE)
     return overflow_response or JSONResponse(error_body(POOL_UNAVAILABLE, "overflow retry exhausted"), status_code=503)

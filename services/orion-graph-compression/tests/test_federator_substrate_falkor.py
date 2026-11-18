@@ -71,3 +71,35 @@ def test_fetch_skips_rows_with_missing_fields():
     )
     triples = FalkorSubstrateFederator(client=client).fetch()
     assert triples == [(_to_iri("concept-3"), "REFINES", _to_iri("concept-4"))]
+
+
+class _RoleClient(_FakeClient):
+    """First call: the edge scan. Second call: the batched assertion-state lookup."""
+
+    def __init__(self, rows, assertions):
+        super().__init__(rows)
+        self._assertions = assertions
+
+    def graph_query(self, cypher, params=None):
+        self.calls.append((cypher, params))
+        return self._assertions if "a.node_kind = 'assertion'" in cypher else self._rows
+
+
+def test_only_walkable_edges_reach_compression():
+    """#2515 review: legacy edges unchanged, an accepted projection kept, a rejected or stale
+    projection dropped (structure/provenance roles are dropped in the Cypher itself)."""
+    rows = [
+        {"s": "c1", "p": "SUPPORTS", "o": "c2"},
+        {"s": "c1", "p": "co_occurs_with", "o": "c3", "edge_role": "semantic_projection",
+         "assertion_id": "as-ok", "assertion_revision": 1},
+        {"s": "c2", "p": "co_occurs_with", "o": "c3", "edge_role": "semantic_projection",
+         "assertion_id": "as-no", "assertion_revision": 1},
+        {"s": "c2", "p": "co_occurs_with", "o": "c4", "edge_role": "semantic_projection",
+         "assertion_id": "as-ok", "assertion_revision": 0},
+    ]
+    assertions = [{"node_id": "as-ok", "promotion_state": "provisional", "assertion_revision": 1},
+                  {"node_id": "as-no", "promotion_state": "rejected", "assertion_revision": 1}]
+    client = _RoleClient(rows, assertions)
+    triples = FalkorSubstrateFederator(client=client).fetch()
+    assert triples == [(_to_iri("c1"), "SUPPORTS", _to_iri("c2")), (_to_iri("c1"), "co_occurs_with", _to_iri("c3"))]
+    assert "legacy_unreviewed" in client.calls[0][0]

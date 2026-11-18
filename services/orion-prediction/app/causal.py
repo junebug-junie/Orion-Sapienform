@@ -1,0 +1,428 @@
+"""Cause and effect, in three levels. Every result carries ``claim_kind`` so no caller can mistake
+one level for another.
+
+1. ``conditional`` -- ``scenario()``. Regression with ARMA errors (SARIMAX): target ~ covariate
+   rolling means + daily Fourier terms. Supply a covariate path; get the forecast under it and
+   under "covariate held at its last-hour mean". This is correlation. It does not separate the
+   covariate from anything that moves with it (time of day, the AC, the 34 C reflex).
+
+2. ``observational_effect`` -- ``intervention_effect()``. Interrupted time series: fit a forecaster
+   on the days before a logged action, forecast the action window as the counterfactual, and take
+   mean(actual - counterfactual). The interval and p-value come from *placebo* runs of the same
+   procedure at earlier start times with no action, so they reflect how big this method's error is
+   on this series, not a model assumption. Still confounded by anything else that changed at the
+   same time.
+
+3. ``experimental_effect`` -- ``design_switchback()`` + ``analyze_switchback()``. Randomised ON/OFF
+   blocks. The analysis removes the time-of-day profile (variance reduction only; randomisation
+   is what makes it unbiased), drops a burn-in at each block start (heat carry-over), and reports
+   the ON-OFF difference with a Welch interval and a permutation p-value. This is the only level
+   that can answer "doing X raises the temperature by Y".
+"""
+from __future__ import annotations
+
+import math
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Sequence
+
+import numpy as np
+import pandas as pd
+
+from app.frame import floor_ts, train_ready
+from app.models import Forecaster
+
+ROLL_WINDOWS_MIN = (0, 30, 120)
+MIN_PLACEBOS = 8
+MIN_BLOCKS_PER_ARM = 4
+
+
+class CausalError(ValueError):
+    pass
+
+
+# --------------------------------------------------------------------------------------------
+# 1. conditional scenario
+# --------------------------------------------------------------------------------------------
+
+def _rolling(values: pd.Series, grain_min: int) -> pd.DataFrame:
+    cols = {}
+    for w in ROLL_WINDOWS_MIN:
+        k = max(1, w // grain_min)
+        cols[f"ma{w}"] = values if w == 0 else values.rolling(k, min_periods=1).mean()
+    return pd.DataFrame(cols)
+
+
+def _fourier(index: pd.DatetimeIndex, period_min: float, order: int) -> pd.DataFrame:
+    t = (index.asi8 // 60_000_000_000).astype(float)  # minutes since epoch
+    cols = {}
+    for k in range(1, order + 1):
+        cols[f"sin{k}"] = np.sin(2 * np.pi * k * t / period_min)
+        cols[f"cos{k}"] = np.cos(2 * np.pi * k * t / period_min)
+    return pd.DataFrame(cols, index=index)
+
+
+@dataclass
+class ScenarioResult:
+    claim_kind: str
+    covariate: str
+    target_ts: list[datetime]
+    under_scenario: list[float]
+    under_hold: list[float]
+    delta: list[float]
+    lo80: list[float]
+    hi80: list[float]
+    long_run_effect_per_unit: float
+    hold_value: float
+    n_train: int
+    note: str
+
+
+def scenario(target: pd.Series, covariate: pd.Series, covariate_name: str, future_path: Sequence[float],
+             grain_min: int, daily_order: int = 4) -> ScenarioResult:
+    """``target``/``covariate``: aligned regular series ending at the forecast origin."""
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+    h = len(future_path)
+    if h < 1:
+        raise CausalError("future_path is empty")
+    if not np.all(np.isfinite(np.asarray(future_path, dtype=float))):
+        raise CausalError("future_path must be finite numbers")
+    # Keep the grid regular: dropping rows would make the rolling means span gaps.
+    df = pd.DataFrame({"y": target, "x": covariate})
+    if len(df) < 2 * 1440 // grain_min:
+        raise CausalError(f"need >= 2 days of target and {covariate_name}; have {len(df)} buckets")
+    x_gap = float(df["x"].isna().mean())
+    if x_gap > 0.10:
+        raise CausalError(f"{covariate_name} is {x_gap:.0%} gaps over the window")
+    recent = df["x"].iloc[-max(1, 60 // grain_min):]
+    if recent.isna().all():
+        raise CausalError(f"{covariate_name} has no reading in the last hour; nothing to hold it at")
+    hold = float(recent.mean())
+    df["x"] = df["x"].interpolate(method="linear", limit_direction="both")
+    y, filled = train_ready(df["y"])
+    if filled > 0.10:
+        raise CausalError(f"target is {filled:.0%} gaps over the window")
+    freq = pd.Timedelta(minutes=grain_min)
+    fut_idx = pd.date_range(df.index[-1] + freq, periods=h, freq=freq)
+
+    def design(x_future: Sequence[float]) -> tuple[pd.DataFrame, pd.DataFrame]:
+        x_all = pd.concat([df["x"], pd.Series(list(x_future), index=fut_idx, dtype=float)])
+        ex = pd.concat([_rolling(x_all, grain_min), _fourier(x_all.index, 1440.0, daily_order)], axis=1)
+        return ex.iloc[:len(df)], ex.iloc[len(df):]
+
+    ex_train, ex_future = design(future_path)
+    _, ex_hold = design([hold] * h)
+    fit = SARIMAX(y, exog=ex_train.to_numpy(), order=(2, 0, 1), trend="c",
+                  enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
+    fc = fit.get_forecast(h, exog=ex_future.to_numpy())
+    base = fit.get_forecast(h, exog=ex_hold.to_numpy()).predicted_mean
+    ci = np.asarray(fc.conf_int(alpha=0.2))
+    mean = np.asarray(fc.predicted_mean)
+    beta = np.asarray(fit.params[1:1 + len(ROLL_WINDOWS_MIN)])  # after the constant
+    return ScenarioResult(
+        claim_kind="conditional", covariate=covariate_name,
+        target_ts=[t.to_pydatetime() for t in fut_idx], under_scenario=mean.tolist(),
+        under_hold=np.asarray(base).tolist(), delta=(mean - np.asarray(base)).tolist(),
+        lo80=ci[:, 0].tolist(), hi80=ci[:, 1].tolist(), long_run_effect_per_unit=float(beta.sum()),
+        hold_value=hold, n_train=len(df),
+        note=("conditional forecast from correlation: a sustained +1 unit of the covariate goes with "
+              "long_run_effect_per_unit of the target. Not a causal effect."),
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# 2. interrupted time series with placebo calibration
+# --------------------------------------------------------------------------------------------
+
+@dataclass
+class EffectEstimate:
+    claim_kind: str
+    effect: float | None
+    ci_lo: float | None
+    ci_hi: float | None
+    p_value: float | None
+    n: int
+    details: dict
+
+
+def _window_effect(series: pd.Series, model: Forecaster, start: pd.Timestamp, end: pd.Timestamp,
+                   pre_steps: int) -> float | None:
+    idx = series.index
+    i0 = idx.searchsorted(start)
+    i1 = idx.searchsorted(end)
+    if i0 - pre_steps < 0 or i1 <= i0 or i1 > len(series):
+        return None
+    pre = series.iloc[i0 - pre_steps:i0]
+    y, filled = train_ready(pre)
+    if filled > 0.10:
+        return None
+    actual = series.iloc[i0:i1].to_numpy(dtype=float)
+    if np.isfinite(actual).mean() < 0.8:
+        return None
+    try:
+        cf = model.forecast(y, i1 - i0, pre.index)
+    except Exception:  # noqa: BLE001 -- a placebo that cannot fit is skipped, the count shows it
+        return None
+    return float(np.nanmean(actual - cf))
+
+
+def _overlaps(a0, a1, spans) -> bool:
+    return any(a0 < b1 and b0 < a1 for b0, b1 in spans)
+
+
+def intervention_effect(series: pd.Series, model: Forecaster, start: datetime, end: datetime,
+                        grain_min: int, pre_days: float = 3.0, lag_min: int = 30, n_placebo: int = 20,
+                        busy: Sequence[tuple[datetime, datetime]] = (), seed: int = 0) -> EffectEstimate:
+    """Effect of an action over [start, end + lag) against a pre-period counterfactual.
+
+    ``busy``: other logged interventions (already extended by their lag); neither a placebo window
+    nor its pre-period may overlap them.
+    """
+    s0 = pd.Timestamp(floor_ts(start, grain_min))
+    s1 = pd.Timestamp(floor_ts(end + timedelta(minutes=lag_min), grain_min))
+    if s1 <= s0:
+        raise CausalError("intervention window is empty")
+    pre_steps = int(pre_days * 1440 // grain_min)
+    effect = _window_effect(series, model, s0, s1, pre_steps)
+    if effect is None:
+        return EffectEstimate("observational_effect", None, None, None, None, 0,
+                              {"reason": "not enough clean data before or during the action"})
+    dur = s1 - s0
+    rng = np.random.default_rng(seed)
+    first_ok = series.index[0] + pd.Timedelta(minutes=pre_days * 1440)
+    latest = s0 - dur
+    spans = [(pd.Timestamp(a), pd.Timestamp(b)) for a, b in busy] + [(s0, s1)]
+    placebos: list[float] = []
+    if latest > first_ok:
+        span_steps = int((latest - first_ok) / pd.Timedelta(minutes=grain_min))
+        pre = pd.Timedelta(minutes=pre_steps * grain_min)
+        # Distinct start offsets, without replacement: a repeated placebo is not new evidence.
+        for k in rng.permutation(span_steps + 1):
+            if len(placebos) >= n_placebo:
+                break
+            p0 = first_ok + pd.Timedelta(minutes=grain_min * int(k))
+            p1 = p0 + dur
+            # Neither the placebo window nor its pre-period may contain a logged action.
+            if _overlaps(p0 - pre, p1, spans):
+                continue
+            pe = _window_effect(series, model, p0, p1, pre_steps)
+            if pe is not None:
+                placebos.append(pe)
+    details = {"window_start": s0.isoformat(), "window_end": s1.isoformat(), "pre_days": pre_days,
+               "model": model.name, "placebo_effects": placebos}
+    if len(placebos) < MIN_PLACEBOS:
+        details["reason"] = f"only {len(placebos)} placebo windows (need {MIN_PLACEBOS}); interval unknown"
+        return EffectEstimate("observational_effect", effect, None, None, None, len(placebos), details)
+    pl = np.asarray(placebos)
+    # The placebo distribution is this method's error with no action: effect - error = truth.
+    lo, hi = effect - np.quantile(pl, 0.975), effect - np.quantile(pl, 0.025)
+    p = (1 + int(np.sum(np.abs(pl) >= abs(effect)))) / (1 + len(pl))
+    return EffectEstimate("observational_effect", effect, float(lo), float(hi), float(p), len(pl), details)
+
+
+# --------------------------------------------------------------------------------------------
+# 3. switchback experiments
+# --------------------------------------------------------------------------------------------
+
+def design_switchback(start_at: datetime, block_min: int, n_blocks: int, seed: int | None = None) -> dict:
+    if n_blocks < 2 * MIN_BLOCKS_PER_ARM or n_blocks % 2:
+        raise CausalError(f"n_blocks must be even and >= {2 * MIN_BLOCKS_PER_ARM}")
+    if block_min < 5:
+        raise CausalError("block_min must be >= 5")
+    seed = int(seed if seed is not None else uuid.uuid4().int % (2 ** 31))
+    arms = np.array(["on"] * (n_blocks // 2) + ["off"] * (n_blocks // 2))
+    np.random.default_rng(seed).shuffle(arms)
+    start = start_at.astimezone(timezone.utc)
+    blocks = [{"index": i, "arm": str(a), "start": (start + timedelta(minutes=i * block_min)).isoformat(),
+               "end": (start + timedelta(minutes=(i + 1) * block_min)).isoformat()}
+              for i, a in enumerate(arms)]
+    return {"seed": seed, "block_min": block_min, "n_blocks": n_blocks, "blocks": blocks}
+
+
+def time_of_day_profile(history: pd.Series, grain_min: int) -> pd.Series:
+    """Mean value per time-of-day bucket (minute of day) from history before the experiment."""
+    tod = (history.index.hour * 60 + history.index.minute) // grain_min * grain_min
+    return history.groupby(tod).mean()
+
+
+def analyze_switchback(series: pd.Series, blocks: Sequence[dict], burn_in_min: int, grain_min: int,
+                       profile: pd.Series | None = None, n_perm: int = 10000, seed: int = 0) -> EffectEstimate:
+    from scipy import stats
+
+    adj = series
+    if profile is not None and len(profile):
+        tod = (series.index.hour * 60 + series.index.minute) // grain_min * grain_min
+        adj = series - profile.reindex(tod).to_numpy()
+    means = {"on": [], "off": []}
+    per_block = []
+    for b in blocks:
+        b0 = pd.Timestamp(b["start"]) + pd.Timedelta(minutes=burn_in_min)
+        b1 = pd.Timestamp(b["end"])
+        vals = adj[(adj.index >= b0) & (adj.index < b1)].dropna()
+        if len(vals) == 0:
+            per_block.append({**b, "mean": None})
+            continue
+        m = float(vals.mean())
+        means[b["arm"]].append(m)
+        per_block.append({**b, "mean": m})
+    on, off = np.asarray(means["on"]), np.asarray(means["off"])
+    details = {"burn_in_min": burn_in_min, "blocks": per_block, "profile_adjusted": profile is not None}
+    if len(on) < MIN_BLOCKS_PER_ARM or len(off) < MIN_BLOCKS_PER_ARM:
+        details["reason"] = f"need >= {MIN_BLOCKS_PER_ARM} measured blocks per arm; have on={len(on)} off={len(off)}"
+        return EffectEstimate("experimental_effect", None, None, None, None, len(on) + len(off), details)
+    diff = float(on.mean() - off.mean())
+    va, vb = on.var(ddof=1) / len(on), off.var(ddof=1) / len(off)
+    se = math.sqrt(va + vb)
+    dof = (va + vb) ** 2 / ((va ** 2) / (len(on) - 1) + (vb ** 2) / (len(off) - 1)) if se > 0 else len(on) + len(off) - 2
+    t = float(stats.t.ppf(0.975, dof))
+    pooled = np.concatenate([on, off])
+    rng = np.random.default_rng(seed)
+    hits = 0
+    for _ in range(n_perm):
+        perm = rng.permutation(pooled)
+        hits += abs(perm[:len(on)].mean() - perm[len(on):].mean()) >= abs(diff) - 1e-12
+    details.update({"se": se, "dof": dof, "n_on": len(on), "n_off": len(off)})
+    return EffectEstimate("experimental_effect", diff, diff - t * se, diff + t * se,
+                          (hits + 1) / (n_perm + 1), len(on) + len(off), details)
+
+
+# --------------------------------------------------------------------------------------------
+# 3b. event-start switchbacks, one experiment per night, analysed pooled (Family C Experiment 1)
+# --------------------------------------------------------------------------------------------
+
+def max_off_run(arms: Sequence[str]) -> int:
+    run = longest = 0
+    for a in arms:
+        run = run + 1 if a == "off" else 0
+        longest = max(longest, run)
+    return longest
+
+
+def draw_arm_sequence(n: int, max_off: int, rng: np.random.Generator, max_tries: int = 10_000) -> list[str]:
+    """A balanced on/off sequence of length ``n`` (n/2 each, n even) with no run of more than ``max_off`` OFF
+    in a row (the play floor: never more than 2 holds in a row). Rejection sampling on shuffles, so every
+    allowed sequence is equally likely; the analysis's restricted permutation redraws with this function."""
+    if n < 2 or n % 2:
+        raise CausalError("n must be even and >= 2")
+    if max_off < 1:
+        raise CausalError("max_off must be >= 1")
+    arms = np.array(["on"] * (n // 2) + ["off"] * (n // 2))
+    for _ in range(max_tries):
+        rng.shuffle(arms)
+        if max_off_run(arms) <= max_off:
+            return [str(a) for a in arms]
+    raise CausalError(f"no balanced sequence of {n} with at most {max_off} OFF in a row")
+
+
+def _cell(values: list, arms: list, arm: str) -> list[float]:
+    return [v for v, a in zip(values, arms) if a == arm and v is not None]
+
+
+def _stratified_diff(values: dict, arms: dict) -> tuple[float | None, float, int, int]:
+    """Weighted mean of per-stratum (ON mean - OFF mean), weight n_on*n_off/(n_on+n_off). A stratum with one
+    arm only carries no contrast (weight 0). Returns (estimate, sum of weights, n_on, n_off)."""
+    num = den = 0.0
+    n_on = n_off = 0
+    for s, vals in values.items():
+        on, off = _cell(vals, arms[s], "on"), _cell(vals, arms[s], "off")
+        n_on += len(on)
+        n_off += len(off)
+        if on and off:
+            w = len(on) * len(off) / (len(on) + len(off))
+            num += w * (float(np.mean(on)) - float(np.mean(off)))
+            den += w
+    return (num / den if den > 0 else None), den, n_on, n_off
+
+
+def redraws(strata: Sequence[str], redraw, n_perm: int, seed: int = 0) -> dict:
+    """``n_perm`` redrawn arm sequences per stratum, drawn once and shared by every outcome of one run (the
+    same randomisation distribution for each target, and one draw instead of one per target)."""
+    rng = np.random.default_rng(seed)
+    rows = [{s: redraw(s, rng) for s in strata} for _ in range(n_perm)]
+    # stratum -> bool matrix (n_perm x sequence length): True = ON. Vectorised permutation test below.
+    return {"n": n_perm, "on": {s: np.array([[a == "on" for a in r[s]] for r in rows], dtype=bool) for s in strata}}
+
+
+def _perm_estimates(values: dict, seqs: dict, on: dict, n: int) -> np.ndarray:
+    """The stratified estimate under each redrawn assignment, vectorised over draws (NaN: no contrast)."""
+    num = np.zeros(n)
+    den = np.zeros(n)
+    for s, vals in values.items():
+        v = np.array([np.nan if x is None else x for x in vals], dtype=float)
+        ok = np.isfinite(v)
+        if not ok.any():
+            continue
+        m = on[s][:, np.asarray(seqs[s])][:, ok]      # n x measured blocks, True = ON
+        x = v[ok]
+        n_on = m.sum(1)
+        n_off = (~m).sum(1)
+        s_on = m.astype(float) @ x
+        s_off = (~m).astype(float) @ x
+        both = (n_on > 0) & (n_off > 0)
+        w = np.where(both, n_on * n_off / np.maximum(n_on + n_off, 1), 0.0)
+        d = np.where(both, s_on / np.maximum(n_on, 1) - s_off / np.maximum(n_off, 1), 0.0)
+        num += w * d
+        den += w
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(den > 0, num / den, np.nan)
+
+
+def analyze_stratified_switchback(blocks: Sequence[dict], redraw, n_perm: int = 2000,
+                                  seed: int = 0, perms: dict | None = None) -> EffectEstimate:
+    """ON-minus-OFF over event-start blocks from several nights, each night its own randomised experiment.
+
+    ``blocks``: {stratum, seq, arm, value}. ``seq`` is the block's position in its night's arm sequence (a
+    refused decision takes no arm). ``value`` None: not measured (kept in place for the permutation).
+    ``redraw(stratum, rng) -> list[str]``: a fresh arm sequence from that night's own design (balanced, at
+    most 2 OFF in a row); arms are reassigned by ``seq``.
+
+    Estimate: stratum-weighted mean of per-night differences (night = fixed effect, so time-of-year and
+    night-level drift cancel). SE: pooled within-cell residual variance (night x arm) over the sum of weights,
+    t interval on N - cells dof. p: the restricted permutation (the design's own arm draw redrawn, at most 2 OFF
+    in a row), CONDITIONAL on each night's number of blocks and their positions. Approximate, not exact: how many
+    decisions a night holds depends on its arms (ON ~95 min, OFF ~40 min). The synthetic eval
+    (evals/run_town_hold_synthetic_eval.py) checks null calibration with that dependence simulated."""
+    from scipy import stats
+
+    by: dict = {}
+    for b in blocks:
+        by.setdefault(b["stratum"], []).append(b)
+    values, arms, seqs = {}, {}, {}
+    for s, bs in by.items():
+        bs = sorted(bs, key=lambda b: int(b["seq"]))
+        values[s] = [None if b.get("value") is None or not math.isfinite(float(b["value"])) else float(b["value"])
+                     for b in bs]
+        arms[s] = [str(b["arm"]) for b in bs]
+        seqs[s] = [int(b["seq"]) for b in bs]
+    est, wsum, n_on, n_off = _stratified_diff(values, arms)
+    details: dict = {"estimator": "stratified_switchback", "n_on": n_on, "n_off": n_off, "strata": len(by),
+                     "strata_with_contrast": sum(1 for s in by if _cell(values[s], arms[s], "on")
+                                                 and _cell(values[s], arms[s], "off"))}
+    if n_on < MIN_BLOCKS_PER_ARM or n_off < MIN_BLOCKS_PER_ARM or est is None:
+        details["reason"] = (f"need >= {MIN_BLOCKS_PER_ARM} measured blocks per arm and a night with both arms; "
+                             f"have on={n_on} off={n_off}")
+        return EffectEstimate("experimental_effect", None, None, None, None, n_on + n_off, details)
+    ss, cells = 0.0, 0
+    for s in values:
+        for arm in ("on", "off"):
+            v = _cell(values[s], arms[s], arm)
+            if v:
+                cells += 1
+                m = float(np.mean(v))
+                ss += sum((x - m) ** 2 for x in v)
+    dof = n_on + n_off - cells
+    if dof < 1:
+        details["reason"] = "no residual degrees of freedom (one block per night x arm cell)"
+        return EffectEstimate("experimental_effect", est, None, None, None, n_on + n_off, details)
+    se = math.sqrt((ss / dof) / wsum)
+    t = float(stats.t.ppf(0.975, dof))
+    draws = perms if perms is not None else redraws(list(values), redraw, n_perm, seed)
+    e = _perm_estimates(values, seqs, draws["on"], int(draws["n"]))
+    e = e[np.isfinite(e)]
+    done = int(len(e))
+    hits = int(np.sum(np.abs(e) >= abs(est) - 1e-12))
+    details.update({"se": se, "dof": dof, "n_perm": done})
+    p = (hits + 1) / (done + 1) if done else None
+    return EffectEstimate("experimental_effect", est, est - t * se, est + t * se, p, n_on + n_off, details)

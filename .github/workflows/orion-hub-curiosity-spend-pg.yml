@@ -1,0 +1,75 @@
+# Workflow: the curiosity spend log's history read against a real Postgres. Self-inquiry runs write
+# decision + outcome rows (arm self_inquiry); the value model's history must never read them. The hub
+# full-suite job has no database, so this test skips there; here it must not skip. The test applies the
+# spend migrations itself into a throwaway schema.
+
+name: orion-hub-curiosity-spend-pg
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-hub/scripts/curiosity_offer_decisions.py"
+      - "services/orion-hub/tests/test_curiosity_self_inquiry_outcomes_pg.py"
+      - "services/orion-sql-db/manual_migration_curiosity_spend_v1.sql"
+      - "services/orion-sql-db/manual_migration_curiosity_replica_plan_v1.sql"
+      - ".github/workflows/orion-hub-curiosity-spend-pg.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-hub/scripts/curiosity_offer_decisions.py"
+      - "services/orion-hub/tests/test_curiosity_self_inquiry_outcomes_pg.py"
+      - "services/orion-sql-db/manual_migration_curiosity_spend_v1.sql"
+      - "services/orion-sql-db/manual_migration_curiosity_replica_plan_v1.sql"
+      - ".github/workflows/orion-hub-curiosity-spend-pg.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  curiosity-spend-pg:
+    name: Hub curiosity spend log — Postgres (must not skip)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # packages: read lets GITHUB_TOKEN pull the private GHCR postgres copy.
+    permissions:
+      contents: read
+      packages: read
+    services:
+      postgres:
+        image: ghcr.io/junebug-junie/postgres:16  # private GHCR copy of postgres:16 (Docker Hub rate-limits shared runners)
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: conjourney
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        # Same install as orion-hub-full-suite (faster-whisper has no build for this runner).
+        run: |
+          python -m pip install --upgrade pip
+          grep -v '^faster-whisper' services/orion-hub/requirements.txt > /tmp/hub-requirements.txt
+          python -m pip install -r /tmp/hub-requirements.txt -r requirements-dev.txt \
+            "fakeredis[lua]>=2.23,<3" "mcp>=1,<2" "pytest-timeout>=2.3,<3"
+      - name: Run curiosity spend Postgres tests (must not skip)
+        working-directory: services/orion-hub
+        env:
+          ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/conjourney
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-hub
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:cacheprovider --timeout=180 tests/test_curiosity_self_inquiry_outcomes_pg.py | tee /tmp/spend_pg.out
+          if grep -q "SKIPPED" /tmp/spend_pg.out; then echo "curiosity spend Postgres tests skipped" >&2; exit 1; fi

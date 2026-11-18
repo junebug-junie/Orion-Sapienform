@@ -93,48 +93,16 @@ def test_query_is_typed_recency_filtered_and_clamped_per_edge() -> None:
     assert "avg(" in q
 
 
-def test_stale_cutoff_matches_substrate_runtimes_own_default() -> None:
-    """Heartbeat and orion-substrate-runtime read the same graph over the same
-    recency window (they deliberately read different EDGE SETS -- see the
-    constant's own comment -- but a divergent *window* would make the two
-    readings disagree for a reason no operator could diagnose).
-
-    Review finding, 2026-07-30: the first version of this test asserted
-    `_STALE_CUTOFF_SEC == 3600.0`, comparing heartbeat's constant against a
-    literal in the same file. That is tautological -- it can never detect the
-    drift it claims to guard, because it never reads substrate-runtime at all.
-    It now parses that service's real default, so changing
-    SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC without updating heartbeat fails
-    here (CLAUDE.md §4: deterministic gate, not a comment cross-reference).
-
-    substrate-runtime's setting is operator-tunable and heartbeat's is a
-    compile-time constant; this asserts the DEFAULTS agree. A deployment that
-    overrides the env key still diverges, which is called out in the PR report
-    as a known, accepted asymmetry rather than silently tolerated here.
-    """
-    import re
-    from pathlib import Path
-
+def test_stale_cutoff_and_edge_floor_stay_pinned() -> None:
+    """Until 2026-11 these mirrored orion-substrate-runtime's
+    SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC / _MIN_EDGE_COUNT defaults, parsed
+    from that service's settings. That reader (node:substrate.bus_synaptic) was
+    retired in PE suite rebuild step 5, so heartbeat's reheat read is the only
+    one left and these are its own values."""
     from app.substrate.bus_synaptic import _MIN_EDGE_COUNT, _STALE_CUTOFF_SEC
 
-    settings_src = (
-        Path(__file__).resolve().parents[2]
-        / "orion-substrate-runtime"
-        / "app"
-        / "settings.py"
-    ).read_text(encoding="utf-8")
-
-    age = re.search(
-        r"bus_synaptic_max_edge_age_sec:\s*float\s*=\s*Field\(\s*([0-9.]+)", settings_src
-    )
-    count = re.search(
-        r"bus_synaptic_min_edge_count:\s*int\s*=\s*Field\(\s*([0-9]+)", settings_src
-    )
-    assert age is not None, "could not parse substrate-runtime's max_edge_age default"
-    assert count is not None, "could not parse substrate-runtime's min_edge_count default"
-
-    assert _STALE_CUTOFF_SEC == float(age.group(1))
-    assert _MIN_EDGE_COUNT == int(count.group(1))
+    assert _STALE_CUTOFF_SEC == 3600.0
+    assert _MIN_EDGE_COUNT == 5
 
 
 def test_built_query_is_valid_cypher_against_a_live_falkordb() -> None:

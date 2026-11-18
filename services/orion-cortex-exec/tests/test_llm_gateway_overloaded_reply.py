@@ -61,6 +61,63 @@ OVERLOADED_REPLY = {
 }
 
 
+# services/orion-llm-gateway/app/llm_backend.py::_upstream_failure_result -- the shape a worker
+# HTTP 500 now arrives as. Live 2026-10-02..06 the gpu2 worker answered 44/44 agent calls with
+# this 500 and the old reply (text "[Error: llamacpp failed: ...]", raw={}) passed as a success.
+UPSTREAM_500_REPLY = {
+    "text": "",
+    "content": "",
+    "spark_meta": {},
+    "raw": {
+        "error": "upstream_http_5xx",
+        "details": {
+            "reason": "http_500",
+            "status_code": 500,
+            "message": "No user query found in messages.",
+            "backend": "llamacpp",
+            "route": "agent",
+            "served_by": "circe-worker-agent-gpu2",
+            "url": "http://circe:8016/v1/chat/completions",
+        },
+    },
+    "route": "agent",
+    "served_by": "circe-worker-agent-gpu2",
+}
+
+# What that same 500 looked like before the gateway fix: must stay a non-failure here (text
+# wins), which is exactly why the gateway now replies with empty content.
+OLD_UPSTREAM_500_REPLY = {
+    "content": "[Error: llamacpp failed: Server error '500 Internal Server Error' for url "
+               "'http://circe:8016/v1/chat/completions']",
+    "raw": {},
+}
+
+
+def test_upstream_500_reply_is_named_with_the_workers_message() -> None:
+    assert gateway_error_step_failure(UPSTREAM_500_REPLY) == (
+        "upstream_http_5xx:http_500: No user query found in messages."
+    )
+
+
+def test_upstream_message_is_truncated_in_the_step_error() -> None:
+    reply = {"content": "", "raw": {"error": "upstream_http_5xx",
+                                    "details": {"reason": "http_500", "message": "x" * 5000}}}
+    out = gateway_error_step_failure(reply)
+    assert out is not None and len(out) < 300
+
+
+def test_old_error_text_shape_was_not_a_failure() -> None:
+    assert gateway_error_step_failure(OLD_UPSTREAM_500_REPLY) is None
+
+
+def test_agent_step_fails_by_name_on_upstream_500_reply() -> None:
+    result = _run_step(ChatResponsePayload.model_validate(UPSTREAM_500_REPLY))
+
+    assert result.status == "fail"
+    assert result.error == "upstream_http_5xx:http_500: No user query found in messages."
+    assert result.result["error"]["message"] == result.error
+
+
 def test_capacity_rejected_reply_is_named_with_its_reason() -> None:
     assert (
         gateway_error_step_failure(CAPACITY_REJECTED_REPLY)
@@ -154,3 +211,31 @@ def test_stance_step_with_real_content_still_succeeds() -> None:
 
     assert result.status == "success"
     assert result.error is None
+
+
+def test_a_refused_gateway_reply_marks_the_exec_reply_degraded() -> None:
+    """2026-10-13: the refusal fails the step AND marks this request's reply degraded,
+    so cortex-orch's rpc_request() counts it instead of timing ~0.3 s as the background
+    lane's speed (live 2026-10-08: 263/263 journal.compose were gpu_pool_unavailable)."""
+    from orion.core.bus.rpc_degraded import begin_collecting, current_degraded_reason, end_collecting
+
+    def _run(reply):
+        async def _inner():
+            token = begin_collecting()
+            try:
+                with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=reply)):
+                    await call_step_services(
+                        bus=MagicMock(), source=ServiceRef(name="test"), step=_stance_step(),
+                        ctx=_ctx(), correlation_id=str(uuid4()),
+                    )
+                return current_degraded_reason()
+            finally:
+                end_collecting(token)
+        return asyncio.run(_inner())
+
+    pool_refusal = {"text": "", "content": "", "raw": {"error": "gpu_pool_unavailable", "details": {"reason": "deadline"}}}
+    assert _run(ChatResponsePayload.model_validate(pool_refusal)) == "llm_gateway:gpu_pool_unavailable:deadline"
+    assert _run(ChatResponsePayload(content='{"disposition":"proceed"}')) is None
+    # A backend failure fails the step too, but the backend was asked and the wait was
+    # real: not degraded (review finding -- it is the slowness the baseline must see).
+    assert _run(ChatResponsePayload.model_validate(UPSTREAM_500_REPLY)) is None

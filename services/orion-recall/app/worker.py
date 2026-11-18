@@ -6,7 +6,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
 try:
@@ -19,6 +19,7 @@ from orion.core.schemas.substrate_mutation import MutationPressureEvidenceV1
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.contracts.recall import (
     MemoryBundleV1,
+    MemoryItemV1,
     RecallDecisionV1,
     RecallQueryV1,
 )
@@ -26,8 +27,7 @@ from orion.memory.crystallization.repository import count_eligible_active
 
 try:
     from .fusion import fuse_candidates, pcr_fuse_belief_candidates, render_continuity_bundle
-    from .pcr_collectors import apply_collector_plan, collectors_for_intent
-    from .collectors.active_packet import fetch_active_packet_fragments
+    from .pcr_collectors import apply_chat_memory_exclusions, apply_collector_plan, collectors_for_intent
     from .collectors.concept_region import fetch_concept_region_fragment_and_reinforce
     from .substrate_store import get_substrate_store
     from .profiles import get_profile
@@ -61,8 +61,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
     try:
         # Container/package-safe absolute imports
         from app.fusion import fuse_candidates, pcr_fuse_belief_candidates, render_continuity_bundle  # type: ignore
-        from app.pcr_collectors import apply_collector_plan, collectors_for_intent  # type: ignore
-        from app.collectors.active_packet import fetch_active_packet_fragments  # type: ignore
+        from app.pcr_collectors import apply_chat_memory_exclusions, apply_collector_plan, collectors_for_intent  # type: ignore
         from app.collectors.concept_region import fetch_concept_region_fragment_and_reinforce  # type: ignore
         from app.substrate_store import get_substrate_store  # type: ignore
         from app.profiles import get_profile  # type: ignore
@@ -106,6 +105,135 @@ _recall_pg_pool: Any = None
 def set_recall_pg_pool(pool: Any) -> None:
     global _recall_pg_pool
     _recall_pg_pool = pool
+
+
+# Lived-memory reader (app/lived_memory.py, issue #3533). Set by main.py's lifespan when
+# RECALL_LIVED_MEMORY_ENABLED and the Postgres pool are up; None = no lived memories.
+_lived_memory: Any = None
+
+
+def set_lived_memory(reader: Any) -> None:
+    global _lived_memory
+    _lived_memory = reader
+
+
+LIVED_TIMEOUT_GRACE_SEC = 0.5
+# Below this the reader cannot do anything but the exact-word fallback anyway.
+LIVED_MIN_BUDGET_SEC = 0.5
+# Render-side reserve: the continuity bundle still has to be fused after lived recall returns.
+LIVED_RENDER_RESERVE_SEC = 0.3
+
+
+def _start_lived_recall(
+    query_text: str,
+    *,
+    session_id: str | None = None,
+    exclude_ids: Sequence[str] = (),
+    budget_s: float | None = None,
+) -> "asyncio.Task | None":
+    """Start lived-memory recall in the background (issue #3533) so its rewrite + embed + rerank
+    overlap the rest of the recall fetch instead of adding to it.
+
+    The reader gets an explicit budget: RECALL_LIVED_MEMORY_TIMEOUT_SEC, or less when the
+    caller's own deadline is tighter (``budget_s``). Inside it, the reader degrades to exact words
+    before it runs out (#3573). The outer wait here is only a backstop, LIVED_TIMEOUT_GRACE_SEC
+    later; ``_add_lived_memories`` falls back to exact words if even that fires."""
+    reader = _lived_memory
+    if reader is None:
+        return None
+    budget = float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC)
+    if budget_s is not None:
+        budget = max(LIVED_MIN_BUDGET_SEC, min(budget, budget_s))
+    return asyncio.ensure_future(
+        asyncio.wait_for(
+            reader.recall(query_text, session_id=session_id, exclude_ids=list(exclude_ids or []),
+                          timeout_sec=budget),
+            timeout=budget + LIVED_TIMEOUT_GRACE_SEC,
+        )
+    )
+
+
+async def _add_lived_memories(
+    bundle: MemoryBundleV1,
+    *,
+    lived_task: "asyncio.Future | None",
+    remaining_s: float | None,
+    corr_id: str,
+    query_text: str = "",
+) -> Tuple[Dict[str, Any], int, bool]:
+    """Append the lived memories that fit this turn to the continuity bundle.
+
+    Returns (debug, injected_count, timed_out). The debug carries ids, fits, timings and the
+    rewritten searches (Orion's own query text: the recall trace the Recall rev 2 spec asks for),
+    never memory text. If the reader failed or ran out of time, its exact-word fallback runs
+    (#3573) and the block says it ran degraded. Every injected id also lands in bundle.items, so recall_telemetry's
+    selected_ids is the read log (step 3 of issue #3533's arc reads it).
+    """
+    if lived_task is None:
+        return {"skipped": "disabled"}, 0, False
+    budget = float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC) + LIVED_TIMEOUT_GRACE_SEC
+    if remaining_s is not None:
+        budget = min(budget, max(0.0, remaining_s))
+    try:
+        if budget <= 0 and not lived_task.done():
+            raise asyncio.TimeoutError
+        lived = await asyncio.wait_for(asyncio.shield(lived_task), timeout=max(budget, 0.001))
+    except asyncio.TimeoutError:
+        lived_task.cancel()
+        logger.warning("lived_memory_timeout corr_id=%s budget_s=%.2f", corr_id, budget)
+        # Never skip (#3573): exact words from the in-memory snapshot, labelled degraded.
+        lived = await _lived_fallback(query_text, reason="timeout", corr_id=corr_id)
+        if lived is None:
+            return {"skipped": "timeout"}, 0, True
+        timed_out = True
+        outer = "timeout"
+    except Exception as exc:  # noqa: BLE001 -- never fail the chat recall over it
+        logger.warning("lived_memory_failed corr_id=%s error=%s", corr_id, type(exc).__name__)
+        lived = await _lived_fallback(query_text, reason=f"error:{type(exc).__name__}", corr_id=corr_id)
+        if lived is None:
+            return {"skipped": f"error:{type(exc).__name__}"}, 0, False
+        timed_out = False
+        outer = f"error:{type(exc).__name__}"
+    else:
+        timed_out = False
+        outer = ""
+    debug = dict(lived.debug)
+    if outer:
+        debug["outer"] = outer  # the full recall failed; what follows is its fallback
+    debug["injected"] = [
+        {"id": c.rec.doc_id, "fit": round(c.fit, 4), "score": round(c.score, 4), "link": c.link}
+        for c in lived.chosen
+    ]
+    rendered = lived.rendered  # a degraded search that found nothing still says so (#3573)
+    if rendered:
+        bundle.rendered = (bundle.rendered + "\n\n" + rendered).strip() if bundle.rendered else rendered
+    if lived.lines:
+        from .lived_memory import items_for
+
+        bundle.items = list(bundle.items) + [MemoryItemV1(**kw) for kw in items_for(lived.chosen)]
+    logger.info(
+        "lived_memory_injected corr_id=%s count=%s backend=%s rewrite=%s ids=%s fits=%s total_ms=%s",
+        corr_id,
+        len(lived.lines),
+        lived.backend or "none",
+        (lived.debug.get("rewrite") or {}).get("outcome"),
+        [c.rec.doc_id for c in lived.chosen],
+        [round(c.fit, 3) for c in lived.chosen],
+        (lived.debug.get("timings_ms") or {}).get("total"),
+    )
+    return debug, len(lived.lines), timed_out
+
+
+async def _lived_fallback(query_text: str, *, reason: str, corr_id: str) -> Any:
+    """The reader's exact-word fallback after the full lived recall failed or ran out of time."""
+    reader = _lived_memory
+    if reader is None or not hasattr(reader, "degraded_now") or not str(query_text or "").strip():
+        return None
+    try:
+        return await reader.degraded_now(query_text, reason=reason)
+    except Exception as exc:  # noqa: BLE001 -- the fallback must never fail the recall either
+        logger.warning("lived_memory_fallback_failed corr_id=%s error=%s", corr_id, type(exc).__name__)
+        return None
 
 
 RECALL_REQUEST_KIND = "recall.query.v1"
@@ -982,11 +1110,52 @@ async def _compute_entity_relatedness_boost_map(
                 for turn_id, matched_names in matches.items()
                 if matched_names
             }
+            # Which names each injected turn matched, so belief fusion can
+            # show the part of the turn that mentions them (not its opening).
+            for f in injected:
+                f["meta"]["entity_terms"] = list(matches.get(f["uri"]) or [])
 
         return boost_map, injected
     except Exception as exc:
         logger.debug(f"entity relatedness boost: skipped: {exc}")
         return {}, []
+
+
+async def _entity_boost_within_deadline(
+    *,
+    query_text: str,
+    candidates: List[Dict[str, Any]],
+    remaining_s: float | None,
+    corr_id: str | None,
+) -> Tuple[Dict[str, float], List[Dict[str, Any]], bool]:
+    """Run _compute_entity_relatedness_boost_map bounded by what is left of
+    the recall deadline. Returns (boost_map, injected, deadline_hit). Shared
+    by the default fusion path and the PCR purposeful (belief) path so both
+    apply the same deadline rule."""
+    if remaining_s is not None and remaining_s <= 0:
+        return {}, [], True
+    try:
+        boost_map, injected = await asyncio.wait_for(
+            _compute_entity_relatedness_boost_map(
+                query_text=query_text,
+                candidates=candidates,
+                query_entities=_boost_query_entities(query_text),
+            ),
+            timeout=remaining_s,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("recall_deadline_hit corr_id=%s stage=entity_boost", corr_id)
+        return {}, [], True
+    return boost_map, injected, False
+
+
+def _pcr_plan_allows_chat_entity_injection(pcr_backend_plan: Dict[str, bool], profile: Dict[str, Any]) -> bool:
+    """Purposeful recall may pull entity-matched older chat turns only when
+    the intent's collector plan includes chat-turn content ("rdf_chat" --
+    relational/semantic/open_loop). procedural/contradiction deliberately
+    exclude chat history, and apply_collector_plan already turned
+    enable_falkor_chat off for them; both checks must agree."""
+    return bool(pcr_backend_plan.get("rdf_chat")) and bool(profile.get("enable_falkor_chat", True))
 
 
 def _rdf_enabled(profile: Dict[str, Any]) -> bool:
@@ -1543,7 +1712,7 @@ def _backend_units(
         # Swap, not additive: this replaces the RDF chatturn fetch below,
         # not a merge -- running both would double up the same turns in
         # fusion's candidate list (see settings.py's RECALL_FALKOR_IN_CHAT
-        # comment for why this differs from RECALL_GRAPHITI_IN_CHAT's
+        # comment for why this differs from the retired RECALL_GRAPHITI_IN_CHAT's
         # additive pattern). Recency-only (no query filter), so a feed.
 
         async def _falkor_chat():
@@ -1618,6 +1787,7 @@ def _backend_units(
                     since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
                     exclude_text=exclusion.get("active_turn_text"),
                     exclude_ids=exclusion.get("active_turn_ids"),
+                    include_aitown=bool(profile.get("sql_chat_include_aitown", True)),
                 )
                 counts["sql_chat_pairs"] = len(chat_pairs)
                 for item in chat_pairs:
@@ -1802,6 +1972,10 @@ _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS = (
     "candidates_kept integer",
     "deadline_hit boolean",
     "timings_ms jsonb",
+    # Lived-memory recall status + trace (#3628). Also in
+    # services/orion-sql-db/manual_migration_recall_telemetry_lived_status_v1.sql.
+    "lived_status text",
+    "lived_trace jsonb",
 )
 
 
@@ -1866,6 +2040,19 @@ def _ensure_telemetry_schema(cur: Any) -> None:
     # that follows is bounded the same way.
 
 
+def _lived_columns(decision: RecallDecisionV1, json_wrap: Any) -> Dict[str, Any]:
+    """recall_telemetry.lived_status / lived_trace (#3628) from the decision's lived-memory debug.
+    Both NULL when lived recall did not run on this call (not a chat-turn continuity call)."""
+    lived = (decision.recall_debug or {}).get("lived_memory")
+    if not isinstance(lived, dict) or not lived:
+        return {"lived_status": None, "lived_trace": None}
+    from .lived_memory import status_of, trace_of
+
+    served = int((decision.backend_counts or {}).get("lived_memory") or 0)
+    status = str(lived.get("status") or status_of(lived, served))
+    return {"lived_status": status, "lived_trace": json_wrap(trace_of(lived))}
+
+
 def _persist_decision(decision: RecallDecisionV1) -> None:
     """
     Durable log to Postgres if available. Best-effort, blocking (psycopg2):
@@ -1905,6 +2092,7 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
                 "candidates_kept": decision.candidates_kept,
                 "deadline_hit": decision.deadline_hit,
                 "timings_ms": Json(dict(decision.timings_ms or {})),
+                **_lived_columns(decision, Json),
             }
             base_cols = [
                 "id", "corr_id", "session_id", "node_id", "verb", "profile", "query",
@@ -2034,7 +2222,7 @@ async def _run_pcr_collectors(
     """Run the purposeful-recall PCR collectors under the recall deadline.
 
     Returns (candidates, backend_counts, elapsed_ms_per_collector,
-    deadline_hit). Both collectors run concurrently and share whatever is left
+    deadline_hit). The collectors run concurrently and share whatever is left
     of the overall recall deadline (``remaining_s``; None = no deadline). A
     collector still running at the deadline is cancelled and its result
     dropped; the recall never fails because of it. concept_region's work runs
@@ -2045,7 +2233,9 @@ async def _run_pcr_collectors(
     Before 2026-09-30 this block ran after the deadline-bounded fetch, with
     no deadline and no timing: a cold get_substrate_store() (first-call
     Falkor hydration, measured 6.25s live) made the first belief recall after
-    a restart take 9.5s with ~9.3s missing from timings_ms.
+    a restart take 9.5s with ~9.3s missing from timings_ms. Since 2026-10-06
+    recall never hydrates: concept_region issues bounded direct Falkor reads
+    (see app/substrate_store.py).
     """
     units: List[Tuple[str, Any]] = []
     # Set when the recall stops waiting for concept_region (deadline or
@@ -2054,19 +2244,11 @@ async def _run_pcr_collectors(
     # reinforced as if they had been surfaced.
     cr_abandoned = threading.Event()
     on_cancel: Dict[str, threading.Event] = {"concept_region": cr_abandoned}
-    if pcr_backend_plan.get("active_packet") and settings.RECALL_ACTIVE_PACKET_ENABLED:
-        units.append(
-            (
-                "active_packet",
-                lambda: fetch_active_packet_fragments(q, pool=_recall_pg_pool, settings=settings),
-            )
-        )
     if pcr_backend_plan.get("concept_region") and settings.RECALL_CONCEPT_REGION_ENABLED:
-        # Both get_substrate_store() (first-call hydration: FalkorDB issues
-        # several synchronous GRAPH.QUERY network calls with no client-side
-        # timeout, see FalkorSubstrateStore.__init__) and
-        # fetch_concept_region_fragment_and_reinforce's store reads/write are
-        # blocking -- both must run inside the offloaded thread. The inner
+        # fetch_concept_region_fragment_and_reinforce's Falkor reads/write
+        # are blocking network calls (bounded by the socket timeouts in
+        # app/substrate_store.py) -- they must run inside the offloaded
+        # thread, and so does get_substrate_store() for symmetry. The inner
         # lambda defers both calls into the thread (an argument expression
         # would be evaluated on the event loop). The collector also writes a
         # small activation bump for whatever it matched (see
@@ -2194,6 +2376,10 @@ async def process_recall(
         pcr_backend_plan = collectors_for_intent(retrieval_intent)
         profile = apply_collector_plan(profile, pcr_backend_plan)
         profile_name = str(profile.get("profile") or profile_name)
+    if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"}:
+        # Both PCR phases build the Juniper chat prompt's DURABLE MEMORY
+        # (issue #3461): bus anomalies and AI Town chatter never reach it.
+        profile = apply_chat_memory_exclusions(profile)
     intake = _intake_query(q, profile_name=profile_name)
     query_targeting = intake["query_targeting"]
     query_fragment = str(intake["search_text"] or "")
@@ -2228,6 +2414,24 @@ async def process_recall(
             entities=bounded_entities,
         )
     timings_ms["intake"] = int((time.perf_counter() - recall_started) * 1000)
+    lived_task = None
+    if (
+        settings.RECALL_PCR_ENABLED
+        and recall_phase == "continuity"
+        and bool(settings.RECALL_LIVED_MEMORY_ENABLED)
+        and not context_only
+    ):
+        lived_budget_ms = _recall_deadline_budget_ms(q)
+        lived_task = _start_lived_recall(
+            str(q.fragment or query_fragment or ""),
+            session_id=q.session_id,
+            exclude_ids=list(_parse_exclusion(q).get("active_turn_ids") or []),
+            budget_s=(
+                lived_budget_ms / 1000.0 - (time.perf_counter() - recall_started) - LIVED_RENDER_RESERVE_SEC
+                if lived_budget_ms > 0
+                else None
+            ),
+        )
     ignored_session_id = q.session_id
     effective_session_id: str | None = None
     exclusion = _parse_exclusion(q)
@@ -2581,6 +2785,7 @@ async def process_recall(
             suppressed,
         )
 
+    lived_debug: Dict[str, Any] = {}
     pcr_started = time.perf_counter()
     if settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
         pcr_cands, pcr_counts, pcr_elapsed, pcr_deadline_hit = await _run_pcr_collectors(
@@ -2612,38 +2817,82 @@ async def process_recall(
             latency_ms=latency_ms,
             session_id=effective_session_id,
         )
+        if lived_task is not None:
+            # Started at intake (overlaps the fetch); once per chat turn: the continuity phase
+            # runs on every turn the skip gate lets through, and phase 3 merges this digest.
+            lived_started = time.perf_counter()
+            lived_debug, lived_count, lived_timed_out = await _add_lived_memories(
+                bundle,
+                lived_task=lived_task,
+                remaining_s=_remaining_s(),
+                corr_id=corr_id,
+                query_text=str(q.fragment or query_fragment or ""),
+            )
+            timings_ms["lived_memory_wait"] = int((time.perf_counter() - lived_started) * 1000)
+            backend_counts_total["lived_memory"] = lived_count
+            # Persisted columns (recall_telemetry.backend_counts / timings_ms): which backend
+            # served the lived lines (#3573) and what the rewrite cost (#3534).
+            if lived_debug.get("backend") == "degraded":
+                backend_counts_total["lived_memory_degraded"] = 1
+            lived_timings = lived_debug.get("timings_ms") or {}
+            for key in ("rewrite", "rerank", "total"):
+                if key in lived_timings:
+                    timings_ms[f"lived_memory_{key}"] = int(lived_timings[key])
+            if lived_timed_out:
+                lived_debug["timed_out"] = True
+            # Why it injected what it did (#3628); persisted as recall_telemetry.lived_status.
+            from .lived_memory import status_of
+
+            lived_debug["status"] = status_of(lived_debug, lived_count)
     elif settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
         belief_budget = q.belief_digest_max_tokens or settings.RECALL_BELIEF_RENDER_BUDGET
         profile["render_budget_tokens"] = belief_budget
+        # 2026-10-14 (corr 21c8a610): "Tell Pip and I a story..." got only
+        # unrelated active_packet lines because this branch never ran the
+        # entity injection the default branch below runs -- falkor_chat's
+        # own fetch is recency-windowed, so the older turn naming the child as
+        # Juniper's son never entered the pool. Same helper, same deadline,
+        # gated on the intent's plan including chat-turn content.
+        belief_boost_map: Dict[str, float] = {}
+        if not context_only and _pcr_plan_allows_chat_entity_injection(pcr_backend_plan, profile):
+            entity_boost_started = time.time()
+            belief_boost_map, belief_injected, boost_deadline_hit = await _entity_boost_within_deadline(
+                query_text=query_fragment,
+                candidates=candidates,
+                remaining_s=_remaining_s(),
+                corr_id=corr_id,
+            )
+            if boost_deadline_hit:
+                deadline_hit = True
+            if belief_injected:
+                candidates = candidates + belief_injected
+                backend_counts_total["falkor_chat_entity_injected"] = len(belief_injected)
+            timing_breakdown_ms["entity_relatedness_boost"] = int((time.time() - entity_boost_started) * 1000)
+            timings_ms["boost"] = timing_breakdown_ms["entity_relatedness_boost"]
+            fuse_started = time.time()
         bundle, ranking_debug = pcr_fuse_belief_candidates(
             candidates=candidates,
             profile=profile,
             retrieval_intent=str(retrieval_intent),
             query_text=query_fragment,
             latency_ms=latency_ms,
+            entity_boost_map=belief_boost_map,
         )
     else:
         entity_boost_started = time.time()
         entity_boost_map: Dict[str, float] = {}
         entity_injected_candidates: List[Dict[str, Any]] = []
-        boost_remaining = _remaining_s()
         if context_only:
             pass  # the boost injects entity-matched turns: retrieval, not a feed
-        elif boost_remaining is not None and boost_remaining <= 0:
-            deadline_hit = True
         else:
-            try:
-                entity_boost_map, entity_injected_candidates = await asyncio.wait_for(
-                    _compute_entity_relatedness_boost_map(
-                        query_text=query_fragment,
-                        candidates=candidates,
-                        query_entities=_boost_query_entities(query_fragment),
-                    ),
-                    timeout=boost_remaining,
-                )
-            except asyncio.TimeoutError:
+            entity_boost_map, entity_injected_candidates, boost_deadline_hit = await _entity_boost_within_deadline(
+                query_text=query_fragment,
+                candidates=candidates,
+                remaining_s=_remaining_s(),
+                corr_id=corr_id,
+            )
+            if boost_deadline_hit:
                 deadline_hit = True
-                logger.warning("recall_deadline_hit corr_id=%s stage=entity_boost", corr_id)
         if entity_injected_candidates:
             # Live evidence (6 real queries, 3 profiles) showed the boost
             # alone never fires: falkor_chat's own fetch is recency-windowed
@@ -2699,7 +2948,6 @@ async def process_recall(
     if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"}:
         continuity_count = sum(1 for i in bundle.items if recall_phase == "continuity")
         belief_count = sum(1 for i in bundle.items if recall_phase == "purposeful")
-        active_refs = [i.id for i in bundle.items if str(i.source) == "active_packet"]
         pcr_debug = {
             "enabled": settings.RECALL_PCR_ENABLED,
             "phase": recall_phase,
@@ -2709,7 +2957,6 @@ async def process_recall(
             "backend_plan": list(pcr_backend_plan.keys()) if pcr_backend_plan else [],
             "continuity_item_count": continuity_count if recall_phase == "continuity" else 0,
             "belief_item_count": belief_count if recall_phase == "purposeful" else len(bundle.items),
-            "active_packet_refs": active_refs,
             "render_budget": {
                 "continuity": settings.RECALL_CONTINUITY_RENDER_BUDGET if recall_phase == "continuity" else 0,
                 "belief": (
@@ -2762,11 +3009,13 @@ async def process_recall(
                 "selected_summary": _bounded_selected_summary(list(bundle.items)),
                 **({"eligible_belief_count": eligible_belief_count} if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"} else {}),
                 **({"pcr": pcr_debug} if pcr_debug else {}),
+                **({"lived_memory": lived_debug} if lived_debug else {}),
             }
             if diagnostic
             else (
                 {
                     "latency_breakdown_ms": timing_breakdown_ms,
+                    **({"lived_memory": lived_debug} if lived_debug else {}),
                     **({"eligible_belief_count": eligible_belief_count} if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"} else {}),
                     **({"pcr": pcr_debug} if pcr_debug else {}),
                 }
@@ -2781,11 +3030,16 @@ async def process_recall(
     # there, so that branch never fired; fixing the regex must not start
     # running this inline diagnostic (extra Postgres + RDF round trips before
     # the reply) on every anchor-bearing query (code review, PR #2416).
+    # Lived memories are matched by meaning, not keywords: the keyword-based pressure heuristics
+    # and the empty-bundle shadow trigger judge only what the other backends returned.
+    core_bundle = bundle.model_copy(
+        update={"items": [i for i in bundle.items if str(i.source or "") != "lived_memory"]}
+    )
     should_shadow_compare = bool(
         not context_only
         and (
-            not bundle.items
-            or any(str(item.source or "") == "vector" for item in bundle.items[:2])
+            not core_bundle.items
+            or any(str(item.source or "") == "vector" for item in core_bundle.items[:2])
         )
     )
     shadow_started = time.perf_counter()
@@ -2817,7 +3071,7 @@ async def process_recall(
     pressure_events = _build_recall_pressure_events(
         q=q,
         decision=decision,
-        bundle=bundle,
+        bundle=core_bundle,
         compare_summary=compare_summary,
         anchor_plan=anchor_plan_summary,
         selected_evidence_cards=selected_cards,
@@ -2859,6 +3113,8 @@ async def process_recall(
         backend_counts=decision.backend_counts or {},
         items=list(bundle.items),
     )
+    if lived_task is not None and not lived_task.done():
+        lived_task.cancel()  # a path that never rendered continuity must not leave it running
     return bundle, decision
 
 

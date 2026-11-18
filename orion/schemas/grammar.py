@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 GrammarEventKind = Literal[
     "trace_started",
@@ -16,7 +16,71 @@ GrammarEventKind = Literal[
     "compaction_emitted",
     "projection_emitted",
     "annotation_emitted",
+    # Doing on one track (rung 2, docs/superpowers/specs/2026-10-14-orion-
+    # thinking-architecture-design.md section 3.2): an efference copy of an act.
+    # Opened before the act runs (with what it expects), closed by act_id when
+    # its outcome is known. Persisted to grammar_acts by orion-sql-writer.
+    "act_opened",
+    "act_closed",
 ]
+
+# Closed, versioned verb vocabulary (design section 3.2). The same at every
+# level. Producers as of rung 2: make (orion-thought paintings; orion-durable-runs journal
+# compose), infer / ask / sense (orion-durable-runs curiosity, self-inquiry, self-sense eval,
+# body economy A5), say (hub chat
+# reply, outreach), ask (outreach), look (reading), play (hub retro leisure
+# session, 2026-10-22: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
+# section E), infer / ask / predict (orion-mind Orion Prime: a thought, a question for
+# curiosity, and a held concern graded on whether a question about it settled;
+# orion/prime/acts.py, tests in orion/prime/tests). The others are reserved by the
+# design and have no producer yet; a new producer must ship with a test.
+ActVerb = Literal[
+    "sense",
+    "look",
+    "recall",
+    "infer",
+    "predict",
+    "say",
+    "ask",
+    "wait",
+    "make",
+    "maintain",
+    "regulate",
+    "play",
+]
+
+ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]
+
+# What an act can be checked against. Each is a BINARY "did this happen by the
+# horizon" event, so a horizon that passes with no evidence is a real 0, not a
+# guess (that is what lets the writer close expired acts honestly).
+#   juniper_replied   -- Juniper sent Orion a chat turn after the act, before
+#                        the horizon, by when her turn STARTED. Resolved by
+#                        orion-sql-writer from the hub ingress hop
+#                        (cockpit_turn_sighting; chat_history_log created_at
+#                        fallback); producers never self-report it.
+#   artifact_produced -- the act produced its artifact (an image stored, a
+#                        reading with real content) before the horizon.
+#                        Reported by the producer on close.
+#   juniper_answered  -- Juniper answered the camera ask the act opened (a name,
+#                        yes/no, same/different) before it expired; dismissed,
+#                        "don't know" or unanswered at expiry is 0. Resolved by
+#                        orion-sql-writer from the orion_ask row
+#                        (orion/grammar/camera_ask_acts.py ask_grade, attention
+#                        patch 4a); producers never self-report it.
+#   promise_kept      -- a promise Orion made Juniper was kept by the horizon
+#                        (72 h): a later judged reply quotes the delivering text
+#                        (intention ledger D2,
+#                        docs/superpowers/specs/2026-11-11-intention-ledger-design.md).
+#                        Opened and producer-closed by orion-hub
+#                        (orion/grammar/promise_acts.py); a horizon with no keep is
+#                        a 0, or void (not graded) when Juniper wrote no chat turn
+#                        inside it. SHADOW until #3531: no grader, track record or
+#                        learner reads these acts (promise_acts.SHADOW_ACT_SIGNALS).
+ActSignal = Literal["juniper_replied", "artifact_produced", "juniper_answered", "promise_kept"]
+
+# Who supplied an act's outcome.
+ActOutcomeSource = Literal["producer", "resolver", "expired"]
 
 AtomType = Literal[
     "raw_span",
@@ -173,6 +237,164 @@ class GrammarProjectionV1(BaseModel):
     projected_atom_id: str | None = None
 
 
+class ActExpectV1(BaseModel):
+    """What an act expects, written BEFORE it runs (the efference copy).
+
+    A producer declares only what it genuinely knows: which signal the act is
+    about, which way it should move, and by when. The magnitude
+    (``predicted``) is NOT hand-written: orion-sql-writer stamps the current
+    EffectPosterior mean for (verb, actor, signal) when it persists the open,
+    exactly as ExpectedEffectV1 does for dispatches. ``basis`` says, in words,
+    where the horizon and direction came from, and must not be empty.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    signal_id: ActSignal
+    direction: Literal["increase", "decrease", "no_change"] = "increase"
+    horizon_sec: float = Field(gt=0.0)
+    basis: str = Field(min_length=1)
+    # Writer-stamped. A producer leaves these unset.
+    predicted: float | None = None
+    predicted_n: int | None = Field(default=None, ge=0)
+    cold_start: bool | None = None
+
+
+class ActCostV1(BaseModel):
+    """Currency the act spent. None means not measured, never zero."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seconds: float | None = Field(default=None, ge=0.0)
+    gpu_seconds: float | None = Field(default=None, ge=0.0)
+    tokens: int | None = Field(default=None, ge=0)
+    watts: float | None = Field(default=None, ge=0.0)
+
+
+class ActCostV2(BaseModel):
+    """ActCostV1 plus the body economy's per-constraint currencies (body economy Patch A2,
+    docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, Organ 3 "ActCostV2").
+
+    Additive and optional: every V1 field, same meaning. None means not measured, never zero.
+
+    * ``seconds``: wall time from act_opened to act_closed. The act ledger fills it on a PRODUCER
+      close when the producer left it unset and the open time is known. A resolver or expired
+      close is stamped at the horizon (or at Juniper's reply), so its wall time is not what the
+      act spent: left None.
+    * ``gpu_slot_s_by_lane``: GPU pool slot-seconds held, per lane (pool role). Filled on close
+      from ``gpu_pool_events`` leases whose ``turn_correlation_id`` is the act's correlation_id.
+    * ``wh_by_host``: watt-hours of the WHOLE MACHINE above rest, per host: the host's chassis watts
+      (at the wall) above its rest, split over the act's GPU pool leases by each card's above-idle
+      share of the host's load (cards + CPU), then by lease share (orion/energy/act_energy.py,
+      orion/grammar/act_energy_fill.py). A host with no chassis meter or no rest falls back to GPU
+      above idle and ``basis["wh"]`` says so for that host. CPU above rest is in the split but not
+      charged to an act (an act does not name its containers). An act with no GPU lease, or a card
+      with no reading, leaves it None.
+    * ``wh_gpu_by_host``: the GPU-above-idle part alone (the act's card watts above each card's idle
+      floor, by lease share). ``wh_by_host - wh_gpu_by_host`` is the overhead (fans, PSU loss,
+      memory) the act caused; it can read below 0 on a short act, because the chassis meter and the
+      cards are not read at the same instant.
+    * ``usd``: dollars for ``wh_by_host`` at the house tariff's marginal $/kWh. None without Wh or
+      without a recent rate.
+    * ``heat_c_by_host``: cabinet degC the act adds, per host: the fitted heat sensitivity
+      (config/physiology/heat_sensitivity.yaml) x ``wh_gpu_by_host`` / 100. The fit's regressor is
+      compute watts, so the GPU part is its input. A host with no usable fit is absent.
+    * ``basis``: per field, in words, how it was measured (cards, samples, share, rate, fit), or
+      why it was not.
+    * ``juniper_msgs``: messages that reached Juniper. Not measured yet.
+    * ``claude_limit_events``: Claude limit events the act triggered. Not measured yet.
+
+    CONSUMER-FIRST: ``ActV1.cost`` accepts V1 or V2, but V1 and ActV1 are extra="forbid", so a
+    reader running older code rejects a V2 payload outright. Producers keep sending V1 (or no cost)
+    until every reader of ``orion:grammar:event`` (sql-writer, and substrate-runtime reading
+    ``grammar_events``) runs code that knows V2. The writer-side fill below never crosses the bus:
+    it lands only in ``grammar_acts.cost_json``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    seconds: float | None = Field(default=None, ge=0.0)
+    gpu_seconds: float | None = Field(default=None, ge=0.0)
+    tokens: int | None = Field(default=None, ge=0)
+    watts: float | None = Field(default=None, ge=0.0)
+    gpu_slot_s_by_lane: dict[str, float] | None = None
+    wh_by_host: dict[str, float] | None = None
+    wh_gpu_by_host: dict[str, float] | None = None
+    juniper_msgs: int | None = Field(default=None, ge=0)
+    claude_limit_events: int | None = Field(default=None, ge=0)
+    usd: float | None = Field(default=None, ge=0.0)
+    heat_c_by_host: dict[str, float] | None = None
+    basis: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def _non_negative_maps(self) -> "ActCostV2":
+        for name in ("gpu_slot_s_by_lane", "wh_by_host", "wh_gpu_by_host", "heat_c_by_host"):
+            for key, value in (getattr(self, name) or {}).items():
+                if value < 0:
+                    raise ValueError(f"{name}[{key!r}] must be >= 0, got {value!r}")
+        return self
+
+    @classmethod
+    def from_any(cls, cost: "ActCostV1 | ActCostV2 | None") -> "ActCostV2 | None":
+        if cost is None:
+            return None
+        if isinstance(cost, cls):
+            return cost
+        return cls(**cost.model_dump())
+
+
+class ActOutcomeV1(BaseModel):
+    """What actually happened, on the expectation's own scale."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: float
+    observed_at: datetime
+    source: ActOutcomeSource = "producer"
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _binary_value(self) -> "ActOutcomeV1":
+        # Every ActSignal is a binary event (see ActSignal above).
+        if self.value not in (0.0, 1.0):
+            raise ValueError(f"act outcome value must be 0 or 1, got {self.value!r}")
+        return self
+
+
+class ActV1(BaseModel):
+    """One act, as a TOTE unit (Test -> Operate -> Test -> Exit).
+
+    act_opened carries identity, verb, test_before and expect.
+    act_closed carries the same act_id plus outcome (and cost if measured).
+    ``error`` (outcome - predicted) is computed by the writer at close; a
+    producer never fills it, because it never sees ``predicted``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["grammar_act.v1"] = "grammar_act.v1"
+    act_id: str = Field(min_length=1)
+    parent_act_id: str | None = None
+    level: ActLevel
+    actor: str = Field(min_length=1)
+    verb: ActVerb
+    object_ref: str | None = None
+    test_before: str | None = None
+    expect: ActExpectV1 | None = None
+    # V1 or V2 (consumer-first: see ActCostV2). A dict with only V1 keys parses as V1.
+    cost: ActCostV1 | ActCostV2 | None = None
+    outcome: ActOutcomeV1 | None = None
+    error: float | None = None
+    goal_ref: str | None = None
+    workspace_ref: str | None = None
+
+    @model_validator(mode="after")
+    def _expect_required_above_metabolic(self) -> "ActV1":
+        if self.level != "metabolic" and self.expect is None:
+            raise ValueError(f"{self.level} act {self.act_id!r} must carry an expect")
+        return self
+
+
 class GrammarEventV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -194,7 +416,17 @@ class GrammarEventV1(BaseModel):
     temporal_hop: TemporalHopV1 | None = None
     compaction: GrammarCompactionV1 | None = None
     projection: GrammarProjectionV1 | None = None
+    act: ActV1 | None = None
     provenance: GrammarProvenanceV1
+
+    @model_validator(mode="after")
+    def _act_events_carry_an_act(self) -> "GrammarEventV1":
+        if self.event_kind in ("act_opened", "act_closed"):
+            if self.act is None:
+                raise ValueError(f"{self.event_kind} requires act")
+            if self.event_kind == "act_closed" and self.act.outcome is None:
+                raise ValueError("act_closed requires act.outcome")
+        return self
 
 
 class GrammarTraceV1(BaseModel):

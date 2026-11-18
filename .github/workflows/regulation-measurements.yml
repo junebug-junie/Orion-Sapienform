@@ -1,0 +1,25 @@
+name: Read-only regulation measurements
+on:
+  pull_request:
+    paths:
+      - 'services/orion-attention-runtime/evals/replay_focus_runs.py'
+      - 'services/orion-attention-runtime/evals/test_focus_run_replay.py'
+      - 'scripts/analysis/measure_dream_pressure_crossings.py'
+      - 'scripts/analysis/measure_arousal_replay.py'
+      - 'scripts/analysis/tests/test_regulation_measurements.py'
+      - '.github/workflows/regulation-measurements.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pydantic==2.10.3
+      - run: >-
+          python -m pytest -q scripts/analysis/tests/test_regulation_measurements.py
+          services/orion-attention-runtime/evals/test_focus_run_replay.py

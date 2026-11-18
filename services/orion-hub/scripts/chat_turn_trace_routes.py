@@ -144,6 +144,7 @@ def _load_thought_decision(correlation_id: str) -> dict[str, Any] | None:
                                imperative, tone, strain_refs, stance_harness_slice,
                                disposition, disposition_reasons, boundary_register,
                                repair_pressure_level, trust_rupture_score,
+                               day_citations,
                                llm_profile, producer, model_id
                         FROM thought_decision
                         WHERE correlation_id = :correlation_id

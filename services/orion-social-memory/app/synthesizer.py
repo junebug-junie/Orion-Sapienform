@@ -27,7 +27,6 @@ from orion.schemas.social_claim import (
     SocialConsensusStateV1,
     SocialDivergenceSignalV1,
 )
-from orion.schemas.social_commitment import SocialCommitmentResolutionV1, SocialCommitmentV1
 from orion.schemas.social_deliberation import (
     SocialBridgeSummaryV1,
     SocialClarifyingQuestionV1,
@@ -105,28 +104,7 @@ _ROOM_SUMMARY_HINTS = ("summary", "summarize", "summarizing", "recap", "catch us
 _REVIVE_HINTS = ("back to", "return to", "revive", "pick this back up", "again")
 _HANDOFF_TO_ORION_HINTS = ("oríon,", "orion,", "what do you think", "over to you", "your take")
 _YIELD_HINTS = ("curious what", "someone else", "anyone else", "let them", "your turn")
-_COMMITMENT_WEAK_HINTS = ("maybe", "might", "could", "if needed", "probably", "perhaps")
-_COMMITMENT_SUMMARY_HINTS = ("i'll summarize", "i will summarize", "let me summarize", "i'll recap", "i will recap", "quick summary in a sec")
-_COMMITMENT_RETURN_HINTS = (
-    "i'll come back",
-    "i will come back",
-    "i'll return to",
-    "i will return to",
-    "come back to",
-    "return to",
-    "back to that in a sec",
-)
-_COMMITMENT_ANSWER_HINTS = (
-    "let me answer",
-    "i'll answer",
-    "i will answer",
-    "answer the",
-    "i'll respond after",
-    "i will respond after",
-)
-_COMMITMENT_YIELD_HINTS = ("i'm yielding", "i am yielding", "i'll yield", "i will yield", "i'll let", "i will let")
 _SUMMARY_DELIVERY_HINTS = ("summary:", "quick summary", "short summary", "brief recap", "here's where we are")
-_REENTRY_HINTS = ("back with you", "picking this back up", "coming back to", "returning to")
 _CLAIM_ASSERTIVE_HINTS = (
     " is ",
     " are ",
@@ -1042,7 +1020,6 @@ def synthesize_social_memory_hygiene(
     thread_key: str | None,
     claim_tracking: ClaimTrackingResult,
     calibration: CalibrationSynthesisResult,
-    commitment_resolutions: list[SocialCommitmentResolutionV1],
     artifact_dialogue_active: bool = False,
     shared_artifact_statuses: list[str] | None = None,
 ) -> MemoryHygieneResult:
@@ -1301,22 +1278,6 @@ def synthesize_social_memory_hygiene(
                 rationale="Older handoff/closure cues should expire when the room moves to a different active thread.",
                 scope_thread_key=existing_room.current_thread_key,
             )
-
-    for resolution in commitment_resolutions:
-        if resolution.state != "expired":
-            continue
-        _record(
-            artifact_kind="commitment",
-            freshness_state="expired",
-            decay_level="strong",
-            decision="expire",
-            confidence=0.74,
-            evidence_count=1,
-            last_updated_at=resolution.resolved_at,
-            reasons=["commitment_ttl_elapsed"],
-            rationale="Expired conversational commitments should be cleared rather than treated as still pending or silently completed.",
-            scope_thread_key=resolution.thread_key,
-        )
 
     if not freshness and not decisions and calibration.ignored_reasons:
         ignored.extend(calibration.ignored_reasons)
@@ -1826,15 +1787,12 @@ def _thread_locally_resolved(
     turn: SocialRoomTurnStoredV1,
     room: SocialRoomContinuityV1 | None,
     claim_tracking: ClaimTrackingResult,
-    active_commitments: list[SocialCommitmentV1] | None,
 ) -> bool:
     response = sanitize_text(turn.response).lower()
     prompt = sanitize_text(turn.prompt).lower()
     if "?" in prompt:
         return False
     if any(hint in response for hint in _LEAVE_OPEN_HINTS):
-        return False
-    if active_commitments:
         return False
     contested = any(item.consensus_state in {"contested"} for item in claim_tracking.consensus_states)
     if contested:
@@ -1850,7 +1808,6 @@ def build_floor_result(
     turn: SocialRoomTurnStoredV1,
     room: SocialRoomContinuityV1 | None,
     claim_tracking: ClaimTrackingResult,
-    active_commitments: list[SocialCommitmentV1] | None,
     artifact_dialogue_active: bool,
 ) -> FloorResult:
     prompt = sanitize_text(turn.prompt)
@@ -1881,7 +1838,7 @@ def build_floor_result(
             rationale = "the clarifying question should stay open rather than Orion trying to manage the next move"
             reasons = ["clarifying_question_present", "leave_space_for_answer"]
     elif room and room.bridge_summary is not None:
-        if (target_id or target_name) and audience_scope == "peer" and not active_commitments:
+        if (target_id or target_name) and audience_scope == "peer":
             decision_kind = "yield_to_peer"
             rationale = "after a brief bridge, the floor should go back to the peer most tied to the open edge"
             reasons = ["bridge_summary_present", "target_peer_available", "peer_reply_preferred"]
@@ -1897,7 +1854,6 @@ def build_floor_result(
         turn=turn,
         room=room,
         claim_tracking=claim_tracking,
-        active_commitments=active_commitments,
     ):
         decision_kind = "close_thread"
         rationale = "the local thread looks aligned enough to close without forcing more turns"
@@ -2264,309 +2220,6 @@ def _parse_iso(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
-
-
-def _commitment_due_state(expires_at: datetime, *, now: datetime) -> str:
-    remaining = (expires_at - now).total_seconds()
-    if remaining <= 0:
-        return "stale"
-    if remaining <= 20 * 60:
-        return "due_soon"
-    return "fresh"
-
-
-def _commitment_thread_key(
-    turn: SocialRoomTurnStoredV1,
-    *,
-    platform: str,
-    room_id: str,
-    topics: list[str],
-) -> str | None:
-    return _thread_key(turn, platform=platform, room_id=room_id, topics=topics)
-
-
-def _commitment_summary(
-    *,
-    commitment_type: str,
-    turn: SocialRoomTurnStoredV1,
-    thread_summary: str,
-    scope: str | None = None,
-) -> str:
-    if commitment_type == "summarize_room":
-        return f"Give a brief room summary before switching topics in {thread_summary or 'the current room thread'}."[:180]
-    if commitment_type == "return_to_thread":
-        return f"Come back to {thread_summary or 'the current thread'} after the local detour."[:180]
-    if commitment_type == "answer_pending_question":
-        return f"Answer the pending question in {thread_summary or 'the active thread'}."[:180]
-    if commitment_type == "yield_then_reenter":
-        return f"Yield for now, then re-enter {thread_summary or 'the thread'} when locally invited."[:180]
-    if commitment_type == "respect_memory_scope":
-        return f"Keep the carry-forward scope narrow ({scope or 'room-local'}) for this continuity cue."[:180]
-    return sanitize_text(turn.response)[:180]
-
-
-def _response_is_weak_commitment(text: str) -> bool:
-    lowered = text.lower().replace("’", "'")
-    return any(hint in lowered for hint in _COMMITMENT_WEAK_HINTS)
-
-
-def extract_commitments(
-    turn: SocialRoomTurnStoredV1,
-    *,
-    platform: str,
-    room_id: str,
-    topics: list[str],
-    thread_summary: str,
-    ttl_minutes: int,
-    artifact_confirmation: SocialArtifactConfirmationV1 | None = None,
-) -> list[SocialCommitmentV1]:
-    response = sanitize_text(turn.response)
-    lowered = response.lower().replace("’", "'")
-    if not response or _SEALED_RE.search(lowered) or _response_is_weak_commitment(lowered):
-        return []
-
-    created_at = _parse_iso(turn.created_at) or datetime.now(timezone.utc)
-    expires_at = created_at + timedelta(minutes=max(ttl_minutes, 15))
-    target_id, target_name = _thread_target(turn)
-    thread_key = _commitment_thread_key(turn, platform=platform, room_id=room_id, topics=topics)
-    audience_scope = _audience_scope(turn)
-    candidates: list[tuple[str, str, str | None]] = []
-
-    if any(hint in lowered for hint in _COMMITMENT_SUMMARY_HINTS):
-        candidates.append(("summarize_room", "summary promised in Orion's response", None))
-    if any(hint in lowered for hint in _COMMITMENT_RETURN_HINTS):
-        candidates.append(("return_to_thread", "thread return promised in Orion's response", None))
-    if any(hint in lowered for hint in _COMMITMENT_ANSWER_HINTS):
-        candidates.append(("answer_pending_question", "follow-up answer promised in Orion's response", None))
-    if any(hint in lowered for hint in _COMMITMENT_YIELD_HINTS):
-        candidates.append(("yield_then_reenter", "yield / re-entry promised in Orion's response", None))
-    if (
-        artifact_confirmation is not None
-        and artifact_confirmation.decision_state == "accepted"
-        and artifact_confirmation.confirmed_scope in {"peer_local", "room_local"}
-    ):
-        candidates.append(
-            (
-                "respect_memory_scope",
-                "explicit scoped carry-forward promise",
-                artifact_confirmation.confirmed_scope,
-            )
-        )
-
-    commitments: list[SocialCommitmentV1] = []
-    for commitment_type, rationale, scope in candidates[:2]:
-        summary = _commitment_summary(
-            commitment_type=commitment_type,
-            turn=turn,
-            thread_summary=thread_summary,
-            scope=scope,
-        )
-        commitments.append(
-            SocialCommitmentV1(
-                platform=platform,
-                room_id=room_id,
-                thread_key=thread_key,
-                commitment_type=commitment_type,  # type: ignore[arg-type]
-                audience_scope=("summary" if commitment_type == "summarize_room" else audience_scope),  # type: ignore[arg-type]
-                target_participant_id=target_id,
-                target_participant_name=target_name,
-                summary=summary,
-                source_turn_id=turn.turn_id,
-                source_correlation_id=turn.correlation_id,
-                created_at=created_at.isoformat(),
-                expires_at=expires_at.isoformat(),
-                due_state=_commitment_due_state(expires_at, now=created_at),  # type: ignore[arg-type]
-                metadata={"source": "social-memory", "rationale": rationale, "scope": scope or ""},
-            )
-        )
-    return commitments
-
-
-def _commitment_relevance(
-    commitment: SocialCommitmentV1,
-    *,
-    turn: SocialRoomTurnStoredV1,
-    current_thread_key: str | None,
-) -> float:
-    prompt = _message_text(turn).lower()
-    score = 0.0
-    if current_thread_key and commitment.thread_key and current_thread_key == commitment.thread_key:
-        score += 0.45
-    if commitment.target_participant_id and commitment.target_participant_id == (_thread_target(turn)[0] or ""):
-        score += 0.3
-    if commitment.commitment_type == "summarize_room" and any(hint in prompt for hint in _ROOM_SUMMARY_HINTS):
-        score += 0.5
-    if commitment.commitment_type == "return_to_thread" and any(hint in prompt for hint in _REVIVE_HINTS):
-        score += 0.45
-    if commitment.commitment_type == "answer_pending_question" and "?" in prompt:
-        score += 0.35
-    if commitment.commitment_type == "yield_then_reenter" and any(hint in prompt for hint in ("back", "return", "re-enter", "oríon")):
-        score += 0.25
-    if commitment.commitment_type == "respect_memory_scope":
-        score += 0.18
-    if commitment.due_state == "due_soon":
-        score += 0.12
-    if commitment.due_state == "stale":
-        score -= 0.1
-    return score
-
-
-def _resolve_commitment(
-    commitment: SocialCommitmentV1,
-    *,
-    state: str,
-    reason: str,
-    resolved_at: datetime,
-) -> SocialCommitmentResolutionV1:
-    return SocialCommitmentResolutionV1(
-        commitment_id=commitment.commitment_id,
-        platform=commitment.platform,
-        room_id=commitment.room_id,
-        thread_key=commitment.thread_key,
-        commitment_type=commitment.commitment_type,
-        state=state,  # type: ignore[arg-type]
-        summary=commitment.summary,
-        resolution_reason=reason,
-        resolved_at=resolved_at.isoformat(),
-        metadata=dict(commitment.metadata or {}),
-    )
-
-
-def _fulfills_commitment(
-    commitment: SocialCommitmentV1,
-    *,
-    turn: SocialRoomTurnStoredV1,
-    current_thread_key: str | None,
-) -> bool:
-    response = sanitize_text(turn.response).lower().replace("’", "'")
-    if not response:
-        return False
-    if commitment.commitment_type == "summarize_room":
-        return any(hint in response for hint in _SUMMARY_DELIVERY_HINTS)
-    if commitment.commitment_type in {"return_to_thread", "answer_pending_question"}:
-        if current_thread_key and commitment.thread_key and current_thread_key == commitment.thread_key:
-            return not any(hint in response for hint in _COMMITMENT_RETURN_HINTS + _COMMITMENT_ANSWER_HINTS)
-        return False
-    if commitment.commitment_type == "yield_then_reenter":
-        return any(hint in response for hint in _REENTRY_HINTS)
-    if commitment.commitment_type == "respect_memory_scope":
-        return False
-    return False
-
-
-def update_commitments(
-    existing_commitments: list[SocialCommitmentV1] | None,
-    turn: SocialRoomTurnStoredV1,
-    *,
-    platform: str,
-    room_id: str,
-    topics: list[str],
-    thread_summary: str,
-    artifact_dialogue_active: bool,
-    artifact_confirmation: SocialArtifactConfirmationV1 | None,
-    ttl_minutes: int,
-    max_open: int,
-) -> tuple[list[SocialCommitmentV1], list[SocialCommitmentV1], list[SocialCommitmentResolutionV1]]:
-    now = _parse_iso(turn.created_at) or datetime.now(timezone.utc)
-    current_thread_key = _commitment_thread_key(turn, platform=platform, room_id=room_id, topics=topics)
-    open_commitments: list[SocialCommitmentV1] = []
-    resolutions: list[SocialCommitmentResolutionV1] = []
-
-    for existing in list(existing_commitments or []):
-        if existing.state != "open":
-            continue
-        expires_at = _parse_iso(existing.expires_at) or now
-        if expires_at <= now:
-            resolutions.append(
-                _resolve_commitment(
-                    existing,
-                    state="expired",
-                    reason="commitment ttl elapsed before local follow-through",
-                    resolved_at=now,
-                )
-            )
-            continue
-        if _fulfills_commitment(existing, turn=turn, current_thread_key=current_thread_key):
-            resolutions.append(
-                _resolve_commitment(
-                    existing,
-                    state="fulfilled",
-                    reason="Orion locally followed through on the conversational commitment",
-                    resolved_at=now,
-                )
-            )
-            continue
-        refreshed = existing.model_copy(update={"due_state": _commitment_due_state(expires_at, now=now)})
-        open_commitments.append(refreshed)
-
-    if artifact_dialogue_active and artifact_confirmation is None:
-        open_commitments = [
-            item
-            for item in open_commitments
-            if item.commitment_type != "respect_memory_scope"
-        ]
-
-    created_commitments = extract_commitments(
-        turn,
-        platform=platform,
-        room_id=room_id,
-        topics=topics,
-        thread_summary=thread_summary,
-        ttl_minutes=ttl_minutes,
-        artifact_confirmation=artifact_confirmation,
-    )
-
-    for created in created_commitments:
-        still_open: list[SocialCommitmentV1] = []
-        for existing in open_commitments:
-            same_lane = (
-                existing.commitment_type == created.commitment_type
-                or (
-                    existing.thread_key
-                    and created.thread_key
-                    and existing.thread_key == created.thread_key
-                    and existing.commitment_type == "yield_then_reenter"
-                )
-            )
-            if same_lane:
-                resolutions.append(
-                    _resolve_commitment(
-                        existing,
-                        state="superseded",
-                        reason="a newer local conversational commitment replaced the earlier one",
-                        resolved_at=now,
-                    )
-                )
-                continue
-            still_open.append(existing)
-        open_commitments = still_open
-        open_commitments.insert(0, created)
-
-    for existing in list(open_commitments):
-        if (
-            existing.commitment_type == "yield_then_reenter"
-            and _thread_target(turn)[0] not in {None, existing.target_participant_id}
-            and _message_text(turn)
-        ):
-            open_commitments.remove(existing)
-            resolutions.append(
-                _resolve_commitment(
-                    existing,
-                    state="dropped",
-                    reason="room context moved to a different local exchange before re-entry",
-                    resolved_at=now,
-                )
-            )
-
-    open_commitments = sorted(
-        open_commitments,
-        key=lambda item: (
-            0 if item.due_state == "due_soon" else 1 if item.due_state == "fresh" else 2,
-            _commitment_relevance(item, turn=turn, current_thread_key=current_thread_key) * -1,
-            item.created_at,
-        ),
-    )[:max(max_open, 1)]
-    return open_commitments, created_commitments, resolutions
 
 
 def trust_tier(evidence_count: int) -> str:
@@ -2984,7 +2637,6 @@ def build_social_context_window(
 
     divergence_present = bool(room and room.claim_divergence_signals)
     fresh_divergence_present = any(_freshness_for("divergence", timestamp=item.updated_at) in {"fresh", "aging"} for item in (room.claim_divergence_signals if room else []))
-    active_commitments = [item for item in (room.active_commitments if room else []) if item.state == "open"] if room else []
     episode_snapshot = build_social_episode_snapshot(platform=platform, room_id=room_id, participant=participant, room=room)
     reentry_anchor = build_social_reentry_anchor(
         platform=platform,
@@ -3050,7 +2702,7 @@ def build_social_context_window(
     if episode_snapshot is not None:
         episode_decision = "include"
         if live_local_thread:
-            episode_decision = "exclude" if active_commitments or fresh_divergence_present or live_room_intervention else "soften"
+            episode_decision = "exclude" if fresh_divergence_present or live_room_intervention else "soften"
         _candidate(
             candidate_kind="episode_snapshot",
             summary=episode_snapshot.summary,
@@ -3068,7 +2720,7 @@ def build_social_context_window(
     if reentry_anchor is not None:
         anchor_decision = "include"
         if live_local_thread:
-            anchor_decision = "exclude" if active_commitments or divergence_present or live_room_intervention else "soften"
+            anchor_decision = "exclude" if divergence_present or live_room_intervention else "soften"
         _candidate(
             candidate_kind="reentry_anchor",
             summary=reentry_anchor.anchor_text,
@@ -3076,26 +2728,11 @@ def build_social_context_window(
             priority_band="low",
             freshness_band=reentry_anchor.freshness_band,
             inclusion_decision=anchor_decision,
-            rationale="Re-entry anchors are resumptive guidance only and should yield to live thread, commitment, and freshness signals.",
+            rationale="Re-entry anchors are resumptive guidance only and should yield to live thread and freshness signals.",
             reasons=["resumption_style", f"reentry_style={reentry_anchor.reentry_style}"],
             reference_key=reentry_anchor.anchor_id,
             scope_participant_id=reentry_anchor.participant_id,
             scope_thread_key=reentry_anchor.thread_key or thread_key,
-        )
-
-    for commitment in active_commitments[:2]:
-        _candidate(
-            candidate_kind="commitment",
-            summary=commitment.summary,
-            relevance_score=0.89 if commitment.due_state in {"fresh", "due_soon"} else 0.74,
-            priority_band="critical" if commitment.due_state in {"fresh", "due_soon"} else "high",
-            freshness_band="fresh" if commitment.due_state == "fresh" else "aging" if commitment.due_state == "due_soon" else "stale",
-            inclusion_decision="include",
-            rationale="Unresolved conversational commitments should stay in-window ahead of older ambient style or ritual hints.",
-            reasons=["open_commitment", f"due_state={commitment.due_state}"],
-            reference_key=commitment.commitment_id,
-            scope_thread_key=commitment.thread_key or thread_key,
-            metadata={"source": "social-memory", "commitment_type": commitment.commitment_type},
         )
 
     for divergence in (room.claim_divergence_signals if room else [])[:2]:
@@ -3176,7 +2813,7 @@ def build_social_context_window(
 
     if peer_style is not None:
         freshness_band = _freshness_for("peer_style", scope_participant_id=participant_id, timestamp=peer_style.last_updated_at)
-        decision = "include" if freshness_band == "fresh" and not active_commitments and not divergence_present and not (room and room.current_thread_summary) else "soften" if freshness_band in {"aging", "stale"} or active_commitments or divergence_present or (room and room.current_thread_summary) else "exclude"
+        decision = "include" if freshness_band == "fresh" and not divergence_present and not (room and room.current_thread_summary) else "soften" if freshness_band in {"aging", "stale"} or divergence_present or (room and room.current_thread_summary) else "exclude"
         _candidate(
             candidate_kind="style",
             summary=peer_style.style_hints_summary,
@@ -3184,7 +2821,7 @@ def build_social_context_window(
             priority_band="medium" if decision == "include" else "low",
             freshness_band=freshness_band,
             inclusion_decision=decision,
-            rationale="Peer style matters, but it should yield to active commitments and fresher thread-critical state.",
+            rationale="Peer style matters, but it should yield to fresher thread-critical state.",
             reasons=["peer_style_hint", f"freshness={freshness_band}"],
             reference_key=peer_style.peer_style_key,
             scope_participant_id=peer_style.participant_id,
@@ -3193,7 +2830,7 @@ def build_social_context_window(
 
     if room_ritual is not None:
         freshness_band = _freshness_for("room_ritual", timestamp=room_ritual.last_updated_at)
-        decision = "exclude" if active_commitments or divergence_present or (room and room.current_thread_summary) else "soften" if freshness_band in {"stale", "refresh_needed", "aging"} else "include"
+        decision = "exclude" if divergence_present or (room and room.current_thread_summary) else "soften" if freshness_band in {"stale", "refresh_needed", "aging"} else "include"
         if freshness_band == "expired":
             decision = "exclude"
         _candidate(
@@ -3203,7 +2840,7 @@ def build_social_context_window(
             priority_band="low",
             freshness_band=freshness_band,
             inclusion_decision=decision,
-            rationale="Old ritual hints are background context and should give way to live commitments or fresher local thread state.",
+            rationale="Old ritual hints are background context and should give way to fresher local thread state.",
             reasons=["room_ritual_hint", f"freshness={freshness_band}"],
             reference_key=room_ritual.ritual_key,
             scope_thread_key=thread_key,
@@ -3503,7 +3140,6 @@ def update_room_continuity(
     artifact_revision: SocialArtifactRevisionV1 | None = None,
     artifact_confirmation: SocialArtifactConfirmationV1 | None = None,
     thread_ttl_hours: int = 6,
-    active_commitments: list[SocialCommitmentV1] | None = None,
 ) -> SocialRoomContinuityV1:
     topics = extract_topics(turn, limit=topic_limit)
     open_threads = []
@@ -3592,7 +3228,6 @@ def update_room_continuity(
         current_thread_key=primary_thread.thread_key if primary_thread else (existing.current_thread_key if existing else None),
         current_thread_summary=primary_thread.thread_summary if primary_thread else (existing.current_thread_summary if existing else ""),
         handoff_signal=handoff_signal if handoff_signal is not None else (existing.handoff_signal if existing else None),
-        active_commitments=list(active_commitments or []),
     )
 
 

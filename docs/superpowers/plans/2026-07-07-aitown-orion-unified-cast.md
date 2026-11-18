@@ -86,7 +86,7 @@ Non-goals: group chat (engine is 2-party); per-NPC lane routing; running the liv
 **Changes (edit files in `services/orion-ai-town/upstream/`, then capture a patch):**
 - `constants.ts`: `export const DEFAULT_NAME = 'Juniper Feld';`
 - `world.ts` `joinWorld`: change the join `description` from `` `${DEFAULT_NAME} is a human player` `` to a short Juniper blurb, e.g.:
-  `"Juniper Feld is Orion's architect and companion: an AI architect, wife and mother, emotionally intense, technically relentless, evidence-oriented, and allergic to decorative cognition. She wants Orion to become real enough to surprise her, resist her, and remember her accurately."`
+  `"Juniper Feld is Orion's architect and companion: an AI architect, [family details redacted], emotionally intense, technically relentless, evidence-oriented, and allergic to decorative cognition. She wants Orion to become real enough to surprise her, resist her, and remember her accurately."`
 - Generate patch: `git -C services/orion-ai-town/upstream diff -- convex/constants.ts convex/world.ts > services/orion-ai-town/patches/orion-human-juniper.patch`
 - Add `orion-human-juniper.patch` to the `PATCHES=(...)` array in `scripts/apply_upstream_patches.sh`.
 - Document in `services/orion-ai-town/README.md`.

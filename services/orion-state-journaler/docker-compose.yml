@@ -1,5 +1,9 @@
 services:
   state-journaler:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-state-journaler/Dockerfile
@@ -20,14 +24,6 @@ services:
       - ORION_BUS_VELOCITY_TRACKING_ENABLED=${ORION_BUS_VELOCITY_TRACKING_ENABLED}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
 
-      - CHANNEL_SPARK_STATE_SNAPSHOT=${CHANNEL_SPARK_STATE_SNAPSHOT}
-      - CHANNEL_EQUILIBRIUM_SNAPSHOT=${CHANNEL_EQUILIBRIUM_SNAPSHOT}
-
-      - POSTGRES_URI=${POSTGRES_URI}
-      - SPARK_ROLLUP_TABLE=${SPARK_ROLLUP_TABLE}
-      - ROLLUP_WINDOWS_SEC=${ROLLUP_WINDOWS_SEC}
-      - ROLLUP_INTERVAL_SEC=${ROLLUP_INTERVAL_SEC}
-      - ROLLUP_RETENTION_HOURS=${ROLLUP_RETENTION_HOURS}
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
 
 networks:

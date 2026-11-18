@@ -115,6 +115,30 @@ Key convention:
   two -- `collect_disk_capacity()` is intentionally a separate function/key, not an extension of
   `_collect_disk()`.
 
+### Vector DB footprint (`details.vector_db`)
+
+The Chroma persist dir (`orion-athena-vector-db`, host `/mnt/graphdb/chroma`) is measured
+by a background poller (`app/vector_db_footprint.py`, every `VECTOR_DB_POLL_INTERVAL_SEC`)
+and the cached result rides the heartbeat:
+
+| key | meaning |
+| --- | --- |
+| `dir_bytes` / `sqlite_bytes` | on-disk size of the whole dir / of `chroma.sqlite3` |
+| `alert_bytes` / `over_alert` | growth alarm (`VECTOR_DB_ALERT_BYTES`, default 4 GiB); crossing it logs `vector_db_over_alert` once |
+| `collection_counts` | rows per collection, from Chroma's `/api/v1/collections/{id}/count` |
+| `unpoliced_collections` | live collections missing from `orion/memory/vector_collection_policy.py` (also logged) |
+| `error` | `not_present` on nodes without the dir; `collection_counts_failed: ...` if the API is down (size still reported) |
+
+Measure-only. Per the policy table no collection is pruned: none is both derived with a
+rebuild path and outside recall (see each entry's `reason`). Before the first poll the
+block carries `error: not_sampled_yet`. Nothing consumes `details.vector_db` yet beyond the
+WARNING log -- no reducer, UI or pager reads it.
+
+Chroma 0.4.24 never prunes its write-ahead log (`embeddings_queue` table in
+`chroma.sqlite3`; 79 MB of a 206 MB dir on 2026-10-13, measured with sqlite `dbstat`
+on a copy of the file). The fix for that is a Chroma upgrade (>=0.5.6 prunes it), not
+deleting rows.
+
 ### iLO/BMC hardware telemetry (`details.ilo_*`)
 
 Real out-of-band hardware telemetry (thermal, fan, power) pulled from the node's iLO/BMC
@@ -154,6 +178,13 @@ Key convention:
   anywhere. Uses standard DMTF RedFish (`/redfish/v1/Chassis/` -> first chassis's `/Thermal/` and
   `/Power/`), confirmed live against athena's HPE iLO; unverified so far against Circe's Gigabyte
   BMC.
+- **Polling another node's BMC (`ILO_PROXY_NODES`).** `ILO_HOST` is one slot for this node's own
+  BMC. To read a different machine's BMC (athena polling hecate's AMI MegaRAC at
+  `https://192.168.1.75`), set `ILO_PROXY_NODES` in the polling node's local `.env` as one-line
+  JSON: `{"hecate":{"host":"https://192.168.1.75","username":"<ro-user>","password":"<pw>"}}`.
+  The BMC's watts fill that node's `chassis_watts` only where the node has no report of its own
+  and the PDU proxy has none (PDU wins). Thermal/fan readings are not forwarded into the
+  cluster; read them from `GET /health` -> `ilo_proxy.<node>.detail`. Use a read-only BMC account.
 - Cross-node: because this same `services/orion-biometrics` codebase runs independently on
   athena/atlas/circe (each with its own `NODE_NAME`), redeploying this patch on each node gives
   real disk-capacity visibility per node with no new SSH/credential surface -- the bus already
@@ -250,6 +281,15 @@ wrote last would win at random.
 Likewise `cpu_watts_total` and `gpu_watts_total` are *contained within* `chassis_watts`, not
 additional to it — see the containment block in `orion/telemetry/biometrics_pipeline.py`.
 
+**Per card and per container (2026-10-29, act energy cost).** From the same nvidia-smi row as
+`gpu{N}_temp_c`: `gpu{N}_watts`, `gpu{N}_mem_used_mb`, `gpu{N}_mem_total_mb` (each absent when its
+column is not a number; none are fleet-summed, they are already inside `gpu_watts_total`). From
+cgroup v2 `cpu.stat` under the host `/sys` mount: `cpu_busy_cores`, `cpu_idle_watts` (this node's
+`CPU_IDLE_WATTS_BY_NODE` floor), `container_cpu_watts.<name>` = (cpu_watts_total - idle) x the
+container's share of busy cores, `container_cpu_watts_small` (containers under 0.05 cores) and
+`cpu_watts_host_other` (non-container work). The split sums to the watts above idle. Theory: the
+linear utilisation power model, fitted by `scripts/analysis/fit_cpu_idle_watts.py`.
+
 **Multi-PSU machines span outlets.** A node's PDU draw is the SUM of its outlets, and the
 outlet→node map is physical cabling that SNMP cannot report (the device's outlet names are
 generic and not editable on this firmware). It lives in `PDU_OUTLETS`, per node, and **re-cabling
@@ -323,6 +363,8 @@ Env: `CABINET_SENSORS_PATH` (default `/run/orion-sensors/latest.json`),
 ## Cabinet ambient audio (Athena USB mic, levels-only)
 
 Continuous CMTECK (or configured ALSA) noise levels — RMS/peak only, no Whisper.
+The same host reader also feeds Hub's live-listen ring (`/run/orion-audio/live/`, tmpfs,
+~8s); biometrics never reads it. See Hub README **Cabinet ambient audio**.
 Design: `docs/superpowers/specs/2026-08-24-athena-ambient-audio-levels-design.md`.
 
 ```text

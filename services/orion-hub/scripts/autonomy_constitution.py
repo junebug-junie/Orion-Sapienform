@@ -79,42 +79,47 @@ def _base_surfaces() -> list[AutonomyPolicySurfaceV1]:
             production_write_allowed=False,
         ),
         AutonomyPolicySurfaceV1(
+            surface="prediction_expectation_patch",
+            category="prediction_error",
+            propose="none",
+            trial="none",
+            apply="forbidden",
+            rollback="none",
+            human_required=True,
+            # Retired 2026-11-03: the rung 6 expectation tuner proposed 16
+            # times, adopted once (execution alpha 0.2 -> 0.05, settled) and
+            # rejected 15; its input reading was mostly zeros.
+            # Successor is the self-monitor organ (design PR #2827). Kept for
+            # historical proposal rows.
+            status="retired",
+            required_gates=[],
+            forbidden=["any_apply"],
+            description="Self-tuned prediction-error expectation (alpha, min_variance) -- retired 2026-11-03.",
+            rationale="16 proposals, 1 adoption (execution alpha 0.2 -> 0.05, settled), 15 rejected; the raw reading it learned from was mostly zeros. Execution/chat/street-handoff surprise use their calibrated constants again. Successor: self-monitor organ (PR #2827).",
+            risk_tier="low",
+            live_apply_allowed=False,
+            autonomous_apply_allowed=False,
+            production_write_allowed=False,
+        ),
+        AutonomyPolicySurfaceV1(
             surface="graph_consolidation_param_patch",
             category="graph_consolidation",
-            propose="auto_scheduled",
-            trial="auto_replay",
-            apply="staged_no_activate",
-            rollback="discard_staged_profile",
+            propose="none",
+            trial="none",
+            apply="forbidden",
+            rollback="none",
             human_required=True,
-            # Live since 2026-09-08 (prior-cycle wiring, PR #2162) / 2026-09-09
-            # (real trial evaluator, PR #2168). The scheduled loop generates
-            # real proposals and runs a real trial against real telemetry,
-            # but PatchApplier.apply() only ever stages a profile in
-            # SubstratePolicyProfileStore (activate_now=False) -- an operator
-            # still has to call activate() before it changes live graph
-            # review behavior. "staged_no_activate" is deliberate, not a
-            # placeholder: this store is documented as manual/
-            # operator-controlled, and the loop was built to respect that.
-            status="staged_review_only",
-            # Matches routing_threshold_patch's own gate list above --
-            # api_routes.py's scheduled cycle computes
-            # apply_enabled = SUBSTRATE_AUTONOMY_APPLY_ENABLED and
-            # SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED, and staging is
-            # refused (PatchApplier.apply() returns None) whenever that's
-            # False. APPLY_ENABLED, not PROPOSALS_ENABLED, is the one that
-            # actually gates whether this surface can stage anything.
-            required_gates=[
-                "SUBSTRATE_AUTONOMY_ENABLED",
-                "SUBSTRATE_AUTONOMY_APPLY_ENABLED",
-                "SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED",
-            ],
-            forbidden=["autonomous_profile_activation"],
-            description="Graph consolidation cadence/query-limit tuning: real proposals, real trial evidence, staged-only apply.",
-            rationale="SubstratePolicyProfileStore is manual/operator-controlled by design; the mutation loop stages candidates for review rather than bypassing that gate.",
+            # Retired 2026-10-16 (rung 6 rebuild): 0 adoptions in 6 weeks, its
+            # evidence was "a review ran". Kept for historical proposal rows.
+            status="retired",
+            required_gates=[],
+            forbidden=["any_apply"],
+            description="Graph consolidation param tuning -- retired 2026-10-16.",
+            rationale="Evidence was normal operation, patch was a constant, trial could never conclude. Replaced as rung 6 by prediction_expectation_patch (itself retired 2026-11-03).",
             risk_tier="medium",
             live_apply_allowed=False,
             autonomous_apply_allowed=False,
-            production_write_allowed=True,
+            production_write_allowed=False,
         ),
         AutonomyPolicySurfaceV1(
             surface="recall_strategy_profile",
@@ -303,8 +308,8 @@ def load_autonomy_constitution() -> AutonomyConstitutionV1:
         loaded_at=datetime.now(timezone.utc).isoformat(),
         surfaces=_base_surfaces(),
         safety_invariants=[
-            "routing_threshold_patch is retired (2026-09-05, parked 2026-09-03); no surface currently has live apply enabled",
-            "graph_consolidation_param_patch may stage a real policy profile from a real trial, but never activates it -- an operator must call SubstratePolicyProfileStore.activate() before it changes live graph review behavior",
+            "routing_threshold_patch (2026-09-05), graph_consolidation_param_patch (2026-10-16) and prediction_expectation_patch (2026-11-03) are retired",
+            "no substrate mutation surface is applied without operator approval",
             "recall production default remains v1 unless explicit external operator process changes it",
             "recall autonomous production promotion is forbidden",
             "recall_weighting_patch live apply is forbidden",

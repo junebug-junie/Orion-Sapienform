@@ -1,0 +1,22 @@
+{
+  "id": "probe_shed",
+  "class": "unavailable",
+  "turn_window": [
+    {
+      "role": "user",
+      "content": "you did it again"
+    }
+  ],
+  "mock_reply": {
+    "text": "",
+    "raw": {
+      "error": "gpu_pool_unavailable",
+      "details": {
+        "reason": "shed:cabinet_hot"
+      }
+    }
+  },
+  "expect": {
+    "unavailable_reason": "shed:cabinet_hot"
+  }
+}

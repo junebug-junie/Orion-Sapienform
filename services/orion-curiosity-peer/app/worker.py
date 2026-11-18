@@ -1,31 +1,29 @@
-"""HelpRequest consumer — budget → Cursor → Claude-once → persist PeerBrief."""
+"""HelpRequest consumer — Claude budget → Claude once → persist PeerBrief."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import os
-import shutil
-import subprocess
 import uuid
 from typing import Any, Callable, Optional, Union
 
-from app.claude_fallback import DEFAULT_TIMEOUT_SEC, run_claude_fallback
-from app.cursor_errors import TokenUnavailable, classify_cursor_failure
-from app.cursor_invoker import build_sealed_prompt, parse_peer_brief_body, run_cursor_job
+from app.brief_prompt import parse_peer_brief_body
+from app.claude_peer import (
+    DEFAULT_TIMEOUT_SEC,
+    claude_reason,
+    describe_claude_refusal,
+    run_claude_peer,
+)
 from app.settings import Settings
 from orion.autonomy.ask_claude_trigger import _budget_refusal
+from orion.core.bus.resilience import run_subscription
 from orion.curiosity.peer_brief_persist import persist_peer_brief
 from orion.curiosity.peer_briefs import peer_brief_consume_cypher
 from orion.curiosity.agency_episode import commit_ask, offer_or_complete_cypher
-from orion.dev_economics.cursor_limit_events import (
-    CursorLimitObservation,
-    decide_cursor_budget,
-    observe_cursor_limit,
-)
 from orion.dev_economics.rate_limit_events import LimitObservation, observe
 from orion.schemas.curiosity_peer import (
+    clip,
     PEER_BRIEF_CONSUMED_KIND,
     HelpRequestV1,
     PeerBriefConsumedV1,
@@ -36,9 +34,7 @@ from orion.schemas.room_claude import RoomClaudeRequestV1, RoomClaudeUtteranceV1
 logger = logging.getLogger("orion-curiosity-peer.worker")
 
 HelpInput = Union[HelpRequestV1, str, bytes, dict[str, Any]]
-CursorFn = Callable[..., PeerBriefV1]
 ClaudeFn = Callable[..., Union[str, PeerBriefV1]]
-ObserveFn = Callable[[], CursorLimitObservation]
 ObserveClaudeFn = Callable[[], Any]
 PersistFn = Callable[[PeerBriefV1], Any]
 
@@ -77,8 +73,8 @@ def _new_brief_id() -> str:
 def _failed_brief(
     help_req: HelpRequestV1,
     *,
-    peer: str,
     reason: str,
+    peer: str = "claude_room",
     summary: str = "",
 ) -> PeerBriefV1:
     return PeerBriefV1(
@@ -97,7 +93,7 @@ def _refused_budget_brief(
     help_req: HelpRequestV1,
     reason: str,
     *,
-    peer: str = "cursor_auto",
+    peer: str = "claude_room",
 ) -> PeerBriefV1:
     return PeerBriefV1(
         brief_id=_new_brief_id(),
@@ -121,72 +117,8 @@ def context_pack_from_help(help_req: HelpRequestV1) -> str:
     )
 
 
-def _resolve_agent_bin(agent_bin: str) -> str:
-    """Return an absolute path to the Cursor Agent CLI, or raise TokenUnavailable."""
-    raw = (agent_bin or "").strip()
-    if not raw:
-        raise TokenUnavailable("CURIOSITY_PEER_AGENT_BIN missing")
-    if os.path.isfile(raw) and os.access(raw, os.X_OK):
-        return raw
-    which = shutil.which(raw)
-    if which and os.path.isfile(which):
-        return which
-    raise TokenUnavailable(f"cursor agent binary not found: {raw}")
-
-
-def _preflight_agent_auth(agent_bin: str) -> None:
-    """Best-effort ``agent status``; map missing desktop login → TokenUnavailable."""
-    try:
-        proc = subprocess.run(
-            [agent_bin, "status"],
-            capture_output=True,
-            text=True,
-            timeout=30.0,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise TokenUnavailable(f"cursor agent binary not found: {agent_bin}") from exc
-    except subprocess.TimeoutExpired:
-        # Status hung — do not block the hire; the real job will fail loudly.
-        return
-    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
-    if proc.returncode != 0:
-        err = RuntimeError(f"cursor agent status exited {proc.returncode}: {combined[:1000]}")
-        if classify_cursor_failure(err) == "token_unavailable":
-            raise TokenUnavailable(str(err)) from err
-        # Non-auth status failures are soft: proceed to the real ask job.
-        return
-    if combined and classify_cursor_failure(RuntimeError(combined)) == "token_unavailable":
-        raise TokenUnavailable(combined[:1000])
-
-
-def _default_cursor(
-    help_req: HelpRequestV1,
-    *,
-    settings: Settings,
-    context_pack: str,
-) -> PeerBriefV1:
-    agent_bin = _resolve_agent_bin(settings.CURIOSITY_PEER_AGENT_BIN)
-    _preflight_agent_auth(agent_bin)
-    sealed = build_sealed_prompt(help_req, context_pack=context_pack)
-    try:
-        return run_cursor_job(
-            help_req,
-            sealed,
-            agent_bin=agent_bin,
-            cwd=settings.CURIOSITY_PEER_REPO_ROOT,
-            model=settings.CURIOSITY_PEER_MODEL,
-        )
-    except TokenUnavailable:
-        raise
-    except Exception as exc:
-        if classify_cursor_failure(exc) == "token_unavailable":
-            raise TokenUnavailable(str(exc)) from exc
-        raise
-
-
 def _map_claude_result(help_req: HelpRequestV1, result: Union[str, PeerBriefV1]) -> PeerBriefV1:
-    """Map Claude room output; strip evidence claims (room has --tools \"\")."""
+    """Map Claude room output; strip evidence claims (room tools read Orion state only, never the repo or graph)."""
     if isinstance(result, PeerBriefV1):
         brief = result
         if brief.peer != "claude_room":
@@ -335,7 +267,7 @@ def _default_persist(
     )
 
 
-def make_bus_claude_fallback(
+def make_bus_claude_peer(
     *,
     settings: Settings,
     bus: Any,
@@ -415,7 +347,7 @@ def make_bus_claude_fallback(
                 _wait(), loop, timeout=float(timeout_sec) + 5.0
             )
 
-        return run_claude_fallback(
+        return run_claude_peer(
             help_req,
             context_pack=context_pack,
             publish_request=publish_request,
@@ -430,9 +362,7 @@ def handle_help_request(
     raw: HelpInput,
     *,
     settings: Optional[Settings] = None,
-    cursor: Optional[CursorFn] = None,
     claude: Optional[ClaudeFn] = None,
-    observe_limit: Optional[ObserveFn] = None,
     observe_claude_limit: Optional[ObserveClaudeFn] = None,
     persist: Optional[PersistFn] = None,
     context_pack: str = "",
@@ -440,9 +370,10 @@ def handle_help_request(
     loop: Optional[asyncio.AbstractEventLoop] = None,
     begin_episode: Optional[Callable[[HelpRequestV1], bool]] = None,
 ) -> PeerBriefV1 | None:
-    """Process one HelpRequest: budget gate → Cursor → Claude once → persist.
+    """Process one HelpRequest: Claude budget gate → episode → Claude once → persist.
 
-    Inject `cursor` / `claude` / `observe_limit` / `persist` in tests.
+    Claude is the only peer. Inject `claude` / `observe_claude_limit` /
+    `persist` in tests.
     """
     help_req = parse_help_request(raw)
     settings = settings or Settings()
@@ -459,28 +390,30 @@ def handle_help_request(
         else:
             _default_persist(brief, settings=settings, bus=bus, loop=loop)
 
-    def _observe_default() -> CursorLimitObservation:
-        return observe_cursor_limit(
-            state=(settings.CURIOSITY_PEER_CURSOR_BUDGET_STATE or None),
-            file_path=(settings.CURIOSITY_PEER_CURSOR_BUDGET_FILE or None),
-        )
+    # Claude meter, fail-closed. It reads Claude Code transcripts under
+    # CURIOSITY_PEER_CLAUDE_PROJECTS_PATH (compose mounts the host tree
+    # read-only) and refuses (`budget_unobserved`) wherever it cannot see them.
+    def _observe_claude_default() -> Any:
+        return observe(root=settings.CURIOSITY_PEER_CLAUDE_PROJECTS_PATH)
 
-    # NOT named `observe`: that name is the module-level Claude meter
-    # (`rate_limit_events.observe`), which the Claude fallback gate below
-    # must read. A local `observe` shadowed it for the whole function, so
-    # production's Claude gate read the Cursor meter (2026-09-25, D2 in
-    # docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md).
-    cursor_observe = observe_limit or _observe_default
-    observation = cursor_observe()
-    refusal = decide_cursor_budget(observation)
-    if refusal is not None:
-        brief = _refused_budget_brief(help_req, refusal, peer="cursor_auto")
+    claude_observe = observe_claude_limit or _observe_claude_default
+    claude_limit = claude_observe()
+    claude_refusal = _budget_refusal(claude_limit)
+    if claude_refusal is not None:
+        brief = _refused_budget_brief(
+            help_req,
+            claude_reason(
+                describe_claude_refusal(claude_refusal),
+                f"claude_{claude_refusal}",
+            ),
+        )
         logger.warning(
-            "curiosity_peer_budget_refused help_id=%s reason=%s observed=%s state=%s",
+            "curiosity_peer_claude_budget_refused help_id=%s reason=%s "
+            "observed=%s state=%s",
             help_req.help_id,
-            refusal,
-            getattr(observation, "observed", None),
-            getattr(observation, "state", None),
+            claude_refusal,
+            getattr(claude_limit, "observed", None),
+            getattr(claude_limit, "state", None),
         )
         _persist(brief)
         return brief
@@ -495,70 +428,19 @@ def handle_help_request(
             logger.info("curiosity_peer_duplicate_commit help_id=%s", help_req.help_id)
             return None
 
-    cursor_fn = cursor or (
-        lambda h, **_k: _default_cursor(h, settings=settings, context_pack=context_pack)
-    )
-    claude_fn = claude  # may stay None until token failure
-
-    cursor_error: Optional[BaseException] = None
-    try:
-        brief = cursor_fn(help_req, context_pack=context_pack)
-        _persist(brief)
-        return brief
-    except Exception as cursor_exc:
-        cursor_error = cursor_exc
-        kind = classify_cursor_failure(cursor_exc)
-        logger.warning(
-            "curiosity_peer_cursor_failed help_id=%s kind=%s err=%s",
-            help_req.help_id,
-            kind,
-            cursor_exc,
-        )
-        if kind != "token_unavailable":
-            brief = _failed_brief(
-                help_req,
-                peer="cursor_auto",
-                reason=f"cursor_other: {cursor_exc}",
-            )
-            _persist(brief)
-            return brief
-
-    # Token / unavailable → Claude meter (fail-closed) then exactly one attempt.
-    # The default is the real Claude meter. It reads Claude Code transcripts
-    # on disk, and fails closed (`claude_budget_unobserved`) wherever it
-    # cannot see them.
-    assert cursor_error is not None
-    claude_observe = observe_claude_limit or observe
-    claude_limit = claude_observe()
-    claude_refusal = _budget_refusal(claude_limit)
-    if claude_refusal is not None:
-        brief = _refused_budget_brief(
-            help_req, f"claude_{claude_refusal}", peer="claude_room"
-        )
-        logger.warning(
-            "curiosity_peer_claude_budget_refused help_id=%s reason=%s "
-            "observed=%s state=%s",
-            help_req.help_id,
-            claude_refusal,
-            getattr(claude_limit, "observed", None),
-            getattr(claude_limit, "state", None),
-        )
-        _persist(brief)
-        return brief
-
+    claude_fn = claude
     if claude_fn is None:
         if bus is None:
             brief = _failed_brief(
                 help_req,
-                peer="claude_room",
-                reason=(
-                    f"cursor_token_unavailable: {cursor_error}; "
-                    "claude_unwired (no bus / no claude callable)"
+                reason=claude_reason(
+                    "Claude helper not wired in this process (no bus / no claude callable).",
+                    "claude_unwired",
                 ),
             )
             _persist(brief)
             return brief
-        claude_fn = make_bus_claude_fallback(
+        claude_fn = make_bus_claude_peer(
             settings=settings, bus=bus, loop=loop
         )
 
@@ -575,10 +457,10 @@ def handle_help_request(
         )
         brief = _failed_brief(
             help_req,
-            peer="claude_room",
-            reason=(
-                f"cursor_token_unavailable: {cursor_error}; "
-                f"claude_failed: {claude_exc}"
+            reason=claude_reason(
+                "Claude helper was tried and failed: "
+                f"{clip(str(claude_exc), 200).rstrip('.')}.",
+                "claude_failed",
             ),
         )
         _persist(brief)
@@ -655,49 +537,56 @@ async def run_help_consumer(settings: Settings, bus: Any, stop: Any) -> None:
     """Subscribe to help requests and run the peer transport order."""
     channel = settings.CHANNEL_HELP_REQUEST
     loop = asyncio.get_running_loop()
-    async with bus.subscribe(channel) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            if stop.is_set():
-                break
-            try:
-                data = msg.get("data")
-                if isinstance(data, bytes):
-                    data = data.decode("utf-8")
-                logger.info(
-                    "curiosity_peer_help_seen channel=%s bytes=%s",
-                    channel,
-                    len(data) if isinstance(data, str) else 0,
-                )
-                # Sync peer path (Cursor Agent CLI + optional Claude wait) off
-                # the consumer loop; pass ``loop`` so bus I/O uses
-                # run_coroutine_threadsafe instead of asyncio.run.
-                await asyncio.to_thread(
-                    handle_help_request,
-                    data,
-                    settings=settings,
-                    bus=bus,
-                    loop=loop,
-                )
-            except Exception:
-                logger.exception("curiosity_peer_handle_failed")
+
+    async def _handle(msg: dict) -> None:
+        try:
+            data = msg.get("data")
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
+            logger.info(
+                "curiosity_peer_help_seen channel=%s bytes=%s",
+                channel,
+                len(data) if isinstance(data, str) else 0,
+            )
+            # Sync peer path (Claude request + utterance wait) off
+            # the consumer loop; pass ``loop`` so bus I/O uses
+            # run_coroutine_threadsafe instead of asyncio.run.
+            await asyncio.to_thread(
+                handle_help_request,
+                data,
+                settings=settings,
+                bus=bus,
+                loop=loop,
+            )
+        except Exception:
+            logger.exception("curiosity_peer_handle_failed")
+
+    await run_subscription(
+        bus, channel, _handle, stop_event=stop, name="curiosity-peer-help-request"
+    )
 
 
 async def run_consumed_consumer(settings: Settings, bus: Any, stop: Any) -> None:
     """Hub soft-nudge → consumed event → MERGE PeerBrief.consumed=true."""
-    channel = settings.CHANNEL_PEER_BRIEF_CONSUMED
-    async with bus.subscribe(channel) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            if stop.is_set():
-                break
-            try:
-                data = msg.get("data")
-                if isinstance(data, bytes):
-                    data = data.decode("utf-8")
-                await asyncio.to_thread(
-                    apply_peer_brief_consumed, data, settings=settings
-                )
-            except Exception:
-                logger.exception("curiosity_peer_consume_failed")
+
+    async def _handle(msg: dict) -> None:
+        try:
+            data = msg.get("data")
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
+            await asyncio.to_thread(
+                apply_peer_brief_consumed, data, settings=settings
+            )
+        except Exception:
+            logger.exception("curiosity_peer_consume_failed")
+
+    await run_subscription(
+        bus,
+        settings.CHANNEL_PEER_BRIEF_CONSUMED,
+        _handle,
+        stop_event=stop,
+        name="curiosity-peer-brief-consumed",
+    )
 
 
 async def run_consumer(settings: Settings, bus: Any, stop: Any) -> None:
@@ -715,7 +604,7 @@ __all__ = [
     "context_pack_from_help",
     "handle_help_request",
     "handle_help_request_raw",
-    "make_bus_claude_fallback",
+    "make_bus_claude_peer",
     "parse_help_request",
     "run_consumer",
     "run_consumed_consumer",

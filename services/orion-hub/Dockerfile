@@ -51,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && git config --global --add safe.directory '*' \
     && git config --global user.name "Orion FCC" \
-    && git config --global user.email "orion-fcc@orion-sapienform.local"
+    && git config --global user.email "353038244+orion-sapienform@users.noreply.github.com"
 
 # Upgrade pip
 RUN pip3 install --no-cache-dir --upgrade pip
@@ -73,6 +73,10 @@ COPY orion /app/orion
 # tick dies and the loop retries the same miss. Same COPY the field digester
 # already uses; do not rely on the /repo mount.
 COPY config/field /app/config/field
+# The organ registry: the day letter's gather reads the daily organ roundup (orion/dig/organs.py), which
+# enumerates organs from it (orion/integration/organs.py: parents[2]/config/integration, /app here).
+# Same COPY orion-durable-runs uses.
+COPY config/integration/organs.yaml /app/config/integration/organs.yaml
 
 # Vendor autonomy-gate pure helpers for Hub Drives Analytics (avoids relying solely
 # on the repo volume mount for ORION_REPO_ROOT=/repo).

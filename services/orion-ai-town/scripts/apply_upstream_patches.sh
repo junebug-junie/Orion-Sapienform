@@ -20,6 +20,11 @@ PATCHES=(
   "orion-resync-agent-descriptions.patch"
   "orion-npc-no-self-repeat.patch"
   "orion-mechanical-leave.patch"
+  "orion-live-turn-roles.patch"
+  "orion-qwen35-user-turn.patch"
+  "orion-walkover-meet.patch"
+  "orion-sim-core-hooks.patch"
+  "orion-town-correlation-id.patch"
 )
 
 if [[ ! -d "${UPSTREAM}/.git" ]]; then
@@ -34,6 +39,22 @@ for name in "${PATCHES[@]}"; do
     echo "Skipping ${name} (not present)"
     continue
   fi
+  # The committed human-join patch holds a token in place of Juniper's join
+  # description (personal details stay out of the public repo). Render it from
+  # the cards -- town_cards.local.yaml first, the redacted example second.
+  if [[ "${name}" == "orion-human-juniper.patch" ]]; then
+    if [[ ! -f "${ROOT}/cards/town_cards.local.yaml" ]]; then
+      echo "note: cards/town_cards.local.yaml missing -- rendering the redacted example card;" \
+        "an upstream already patched with the real card will not match" >&2
+    fi
+    RENDERED="$(mktemp)"
+    trap 'rm -f "${RENDERED:-}"' EXIT
+    if ! python3 "${ROOT}/scripts/generate_descriptions.py" --render-human-patch > "${RENDERED}"; then
+      echo "${name}: rendering from the cards failed (needs python3 + PyYAML)" >&2
+      exit 1
+    fi
+    PATCH="${RENDERED}"
+  fi
   # Check "already applied" (reverse) FIRST: additive patches (pure insertions)
   # always pass a forward --check even when already present, so a forward-first
   # order would double-apply them and duplicate the inserted code.
@@ -47,3 +68,23 @@ for name in "${PATCHES[@]}"; do
     exit 1
   fi
 done
+
+# Overlay: whole new files (convex/sim/ -- the simulation core and its Convex
+# functions) copied over upstream/ after the patches. pre_rebuild.sh deletes
+# them on reset like patch-created files. Copying is idempotent.
+if [[ -d "${ROOT}/overlay" ]]; then
+  cp -R "${ROOT}/overlay/." "${UPSTREAM}/"
+  echo "Copied overlay/"
+  # The committed seed renders the redacted example; re-render it from the
+  # cards actually in use (town_cards.local.yaml first).
+  SEED="${UPSTREAM}/convex/sim/seed.ts"
+  if ! python3 "${ROOT}/scripts/generate_descriptions.py" --render-sim-seed > "${SEED}.tmp"; then
+    # Do not leave the copied example seed behind: a later push would seed
+    # the live world from the redacted example instead of the real cards.
+    rm -f "${SEED}.tmp" "${SEED}"
+    echo "sim seed: rendering from the cards failed (needs python3 + PyYAML); removed convex/sim/seed.ts" >&2
+    exit 1
+  fi
+  mv "${SEED}.tmp" "${SEED}"
+  echo "Rendered convex/sim/seed.ts from the cards"
+fi

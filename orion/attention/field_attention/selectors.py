@@ -40,13 +40,14 @@ ObservationMode = Literal["watch", "inspect", "summarize", "ignore"]
 # same "fake signal winning real budget slots" disease this whole patch
 # exists to stop, already killed once at the source. Adding it back here
 # would silently resurrect a signal that was correctly retired elsewhere,
-# not fill a real gap. `bus_synaptic` is its real successor and is included.
+# not fill a real gap. Its successor `bus_synaptic` and `route` were retired
+# 2026-11 (PE suite rebuild step 5) and left this map; the field digester
+# prunes both node ids (RETIRED_PSEUDO_NODES), so neither can come back as a
+# host novelty target through select_host_targets either.
+# node:substrate.chat left 2026-11-13 (retire step 6; pruned by the digester too).
 PREDICTION_ERROR_NATIVE_TARGETS: dict[str, str] = {
     "node:substrate.biometrics": "node_biometrics",
     "node:substrate.execution": "execution_trajectory",
-    "node:substrate.chat": "chat_session",
-    "node:substrate.route": "route_arbitration",
-    "node:substrate.bus_synaptic": "bus_synaptic",
 }
 
 # Same discipline as scripts/analysis/measure_precision_weighted_salience_probe.py's
@@ -128,6 +129,28 @@ def _current_pressure_proxy(vector: dict[str, float]) -> float:
     return max(values) if values else 0.0
 
 
+def _measurement_change_free_novelty(
+    current: dict[str, float], previous: dict[str, float]
+) -> float | None:
+    """#2534 decision 2 (approved 2026-10-07): novelty that does not count a
+    channel going dark or coming back as a change.
+
+    A channel absent from a vector is unmeasured (decay.py
+    expire_unrefreshed_channels for nodes, diffusion.apply_diffusion for
+    capabilities). When the set of measured channels differs between the two
+    ticks, both proxies are taken over the channels measured in BOTH, so the
+    vision router dying (pressure 0.85 -> key gone) is not news, while a real
+    move on a channel measured in both still is. None when the sets are equal:
+    the caller keeps the ordinary diff, which is then the same number.
+    """
+    if set(current) == set(previous):
+        return None
+    common = set(current) & set(previous)
+    now = _current_pressure_proxy({k: current[k] for k in common})
+    before = _current_pressure_proxy({k: previous[k] for k in common})
+    return clamp01(abs(now - before))
+
+
 def _novelty_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
@@ -135,6 +158,7 @@ def _novelty_targets(
     *,
     vectors: dict[str, dict[str, float]],
     target_kind: str,
+    previous_vectors: dict[str, dict[str, float]] | None = None,
 ) -> list[FieldAttentionTargetV1]:
     """Shared implementation for host and capability targets: Candidate B's
     `novelty_scorer()` (Global Workspace/Society-of-Mind, Baars 1988 /
@@ -183,6 +207,25 @@ def _novelty_targets(
         return []
     current_pressure = {tid: _current_pressure_proxy(vectors[tid]) for tid in target_ids}
     novelty_scores = novelty_scorer(target_ids, current_pressure, previous_frame)
+    # previous_vectors: the previous frame's own field tick (caller checks the
+    # tick id matches). Only targets that had a real prior entry are adjusted;
+    # a first appearance stays "real news" as documented above.
+    adjusted_reason: dict[str, str] = {}
+    if previous_vectors is not None and previous_frame is not None:
+        for tid in target_ids:
+            prev = previous_vectors.get(tid)
+            if prev is None or not target_had_real_prior_entry(tid, previous_frame):
+                continue
+            adjusted = _measurement_change_free_novelty(vectors[tid], prev)
+            if adjusted is not None:
+                novelty_scores[tid] = adjusted
+                # Recorded on the frame so the live path is checkable from
+                # stored rows (review finding, 2026-10-07).
+                adjusted_reason[tid] = (
+                    "novelty_common_channels_only "
+                    f"went_dark={sorted(set(prev) - set(vectors[tid]))} "
+                    f"came_back={sorted(set(vectors[tid]) - set(prev))}"
+                )
 
     targets: list[FieldAttentionTargetV1] = []
     for target_id in target_ids:
@@ -204,7 +247,8 @@ def _novelty_targets(
                     f"(novelty={novelty:.4f}); magnitude/dwell scorers not applied "
                     "(no real data for this target universe / near-always-empty "
                     "coalition, respectively -- see selector docstring)"
-                ],
+                ]
+                + ([adjusted_reason[target_id]] if target_id in adjusted_reason else []),
                 evidence_refs=[f"field:{field.tick_id}"],
                 suggested_observation_mode=observation_mode_for(novelty, policy),
             )
@@ -339,6 +383,7 @@ def select_host_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
     previous_frame: FieldAttentionFrameV1 | None,
+    previous_field: FieldStateV1 | None = None,
 ) -> list[FieldAttentionTargetV1]:
     """Physical host nodes (`node:athena`/`circe`/`prometheus`,
     or any `field.node_vectors` key not in `PREDICTION_ERROR_
@@ -352,7 +397,12 @@ def select_host_targets(
         tid: v for tid, v in field.node_vectors.items() if tid not in PREDICTION_ERROR_NATIVE_TARGETS
     }
     return _novelty_targets(
-        field, policy, previous_frame, vectors=host_vectors, target_kind="node"
+        field,
+        policy,
+        previous_frame,
+        vectors=host_vectors,
+        target_kind="node",
+        previous_vectors=None if previous_field is None else previous_field.node_vectors,
     )
 
 
@@ -360,6 +410,7 @@ def select_capability_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
     previous_frame: FieldAttentionFrameV1 | None,
+    previous_field: FieldStateV1 | None = None,
 ) -> list[FieldAttentionTargetV1]:
     """2026-07-30: was killed outright (always `[]`) when Candidate A's
     live-wiring shipped -- no capability target had a real prediction-error
@@ -371,7 +422,12 @@ def select_capability_targets(
     `_novelty_targets()`'s own docstring for the full scoring contract.
     """
     return _novelty_targets(
-        field, policy, previous_frame, vectors=dict(field.capability_vectors), target_kind="capability"
+        field,
+        policy,
+        previous_frame,
+        vectors=dict(field.capability_vectors),
+        target_kind="capability",
+        previous_vectors=None if previous_field is None else previous_field.capability_vectors,
     )
 
 
@@ -427,4 +483,110 @@ def select_system_targets(
             evidence_refs=[f"field:{field.tick_id}"],
             suggested_observation_mode=observation_mode_for(salience, policy),
         )
+    ]
+
+
+# ---------------------------------------------------------------------------
+# World-first selection (spec 2026-10-07 self-calibration, section A).
+# ---------------------------------------------------------------------------
+
+WORLD_FIRST_ATTENDED_REASON = "world-first: attended"
+WORLD_FIRST_OBSERVED_REASON = (
+    "world-first: body signal with no calibrated unusualness against its own "
+    "history -- observed (kept for next tick's novelty diff), not attended"
+)
+
+
+def field_target_source_kind(target: FieldAttentionTargetV1) -> str | None:
+    """``internal``/``external`` from the step-1 marker in ``evidence_refs``,
+    or None for a frame built before world-first (or with it off)."""
+    from orion.attention.world_first import SOURCE_KIND_REF_PREFIX
+
+    for ref in target.evidence_refs:
+        if ref.startswith(SOURCE_KIND_REF_PREFIX):
+            return ref[len(SOURCE_KIND_REF_PREFIX):]
+    return None
+
+
+def world_first_targets(
+    field: FieldStateV1,
+    policy: FieldAttentionPolicyV1,
+    candidates: list,
+) -> tuple[list[FieldAttentionTargetV1], list[FieldAttentionTargetV1]]:
+    """Rank ``AttentionCandidateV1``s world-first; return (attended, observed).
+
+    Replaces ``select_node_targets``' hardcoded five-node list and its
+    ``normalize_across_targets`` min-max, the line that guaranteed a winner
+    at 1.0 on every frame. ``salience_score`` is the candidate's
+    bad-direction percentile against its OWN 7-day history, so 0.95 means
+    "higher than 95% of this source's last week", comparable across sources.
+    An empty ``attended`` list is a valid, explicit no-winner frame.
+
+    Every target carries ``source_kind:<internal|external>`` in
+    ``evidence_refs`` (no schema change: FieldAttentionTargetV1 is
+    extra="forbid") and its band/percentile/reason in ``reasons``.
+    """
+    from orion.attention.world_first import (
+        SOURCE_KIND_REF_PREFIX,
+        WORLD_CHAT_SOURCE_ID,
+        rank_candidates,
+        yield_reading_to_chat,
+    )
+
+    ranking = yield_reading_to_chat(rank_candidates(candidates))
+    attended: list[FieldAttentionTargetV1] = []
+    observed: list[FieldAttentionTargetV1] = []
+    for verdict in (*ranking.eligible, *ranking.ineligible):
+        cand = verdict.candidate
+        mag = cand.unusualness
+        # Faded by event age for event-written sources (verdict.salience).
+        salience = clamp01(verdict.salience) if verdict.eligible else 0.0
+        value = float(mag.value)
+        is_chat = cand.source_id == WORLD_CHAT_SOURCE_ID
+        target = FieldAttentionTargetV1(
+            target_id=cand.source_id,
+            # chat is not a field node; "channel" also keeps it out of
+            # proposals' bindable kinds (orion/proposals/builder.py).
+            target_kind="channel" if is_chat else "node",
+            salience_score=salience,
+            pressure_score=0.0 if is_chat else clamp01(abs(value)),
+            novelty_score=0.0,
+            urgency_score=salience,
+            confidence_score=0.0 if mag.band == "insufficient_history" else 1.0,
+            dominant_channels={} if is_chat else {"prediction_error": value},
+            reasons=[
+                f"{WORLD_FIRST_ATTENDED_REASON if verdict.eligible else 'world-first: not attended'}"
+                f" -- {verdict.reason}; {cand.label}; value {value:.4f}, "
+                f"percentile {mag.percentile_now if mag.percentile_now is not None else 'n/a'} "
+                f"of own 7d (n={mag.n_readings_7d}), band {verdict.band}, trend {mag.trend}"
+            ],
+            evidence_refs=[
+                f"{SOURCE_KIND_REF_PREFIX}{cand.source_kind}",
+                *cand.evidence_refs,
+                f"field:{field.tick_id}",
+            ],
+            suggested_observation_mode=observation_mode_for(salience, policy),
+        )
+        (attended if verdict.eligible else observed).append(target)
+    return attended, observed
+
+
+def mark_observed_not_attended(
+    targets: list[FieldAttentionTargetV1],
+) -> list[FieldAttentionTargetV1]:
+    """Host/capability/system targets under world-first: still computed (the
+    novelty diff needs a prior entry), recorded as internal and suppressed --
+    novelty against the previous tick is not unusualness against their own
+    history, so they cannot interrupt."""
+    from orion.attention.world_first import SOURCE_KIND_REF_PREFIX
+
+    return [
+        t.model_copy(
+            update={
+                "reasons": [*t.reasons, WORLD_FIRST_OBSERVED_REASON],
+                "evidence_refs": [f"{SOURCE_KIND_REF_PREFIX}internal", *t.evidence_refs],
+                "suggested_observation_mode": "ignore",
+            }
+        )
+        for t in targets
     ]

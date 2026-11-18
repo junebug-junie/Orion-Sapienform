@@ -1,0 +1,1071 @@
+"""One pure adapter per source kind: a row dict in, a ``TemporalSelfEventV1`` (or None) out.
+
+The patch-3 driver reads rows; this module only shapes them. Each adapter states its
+occurrence-time column and its cast (see ``day.py``), its subject ref, and why a row is
+dropped. Nothing here copies model prose: labels are the row's own short label or "".
+
+Source drift found live on 2026-10-10 (recorded in the PR report):
+
+* ``reverie_visual_attempt.outcome`` adds ``abandoned`` (31 rows in 30 days, the only
+  deferral word in the last 7) to the spec's ``deferred_thermal`` / ``deferred_resource`` /
+  ``failed``. Any non-``produced`` outcome is a constraint, kept in the source's own word.
+* Reverie thoughts link to chains by ``thought_json.chain_id``, not ``correlation_id``.
+  Reverie attention rows carry the *thought's* ``correlation_id``, so the chain adapter
+  carries those ids in ``related_refs`` for rule 8.
+* Curiosity attention rows carry a uuid5 ``correlation_id`` that matches no ``run_id``
+  (0 of 41 over 3 days), so they bind to curiosity arcs by time, labelled co-occurrence.
+* ``vision_events.entities`` is non-empty on 74 of 1,806 room rows in 7 days; rows with no
+  entities carry no percept and are not emitted.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from datetime import datetime
+from typing import Any, Callable, Iterable, Mapping
+
+from orion.regulation.arousal import strain_causes
+from orion.retro.sitting import SITTING_SUBJECT_PREFIX, who_words
+from orion.schemas.temporal_self import LABEL_MAX, TemporalSelfEventV1
+from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
+from orion.vision.motion_story_gate import gate_passed, tally_from_counts
+
+Row = Mapping[str, Any]
+
+# Same predicate as services/orion-cortex-exec/app/admission_cue.py:85-97 (WAIT_THRESHOLD_MS).
+GPU_WAIT_THRESHOLD_MS = 500.0
+METACOG_SEVERITIES = frozenset({"degraded", "critical"})
+ROOM_STREAMS = frozenset({"cam0"})
+
+
+def clip(text: Any, limit: int = LABEL_MAX) -> str:
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _json(value: Any) -> Any:
+    if isinstance(value, (str, bytes)):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
+
+
+def _event(
+    *,
+    kind: str,
+    table: str,
+    ref: Any,
+    at: datetime | str | None,
+    tz_name: str,
+    ended: datetime | str | None = None,
+    **fields: Any,
+) -> TemporalSelfEventV1 | None:
+    occurred = as_utc(at)
+    if occurred is None or ref in (None, ""):
+        return None
+    end = as_utc(ended)
+    if end is not None and end < occurred:
+        end = occurred
+    return TemporalSelfEventV1(
+        event_id=f"{kind}:{ref}",
+        day_id=day_id_for(occurred, tz_name),
+        occurred_at=occurred,
+        ended_at=end,
+        source_kind=kind,  # type: ignore[arg-type]
+        source_table=table,
+        source_ref=str(ref),
+        **fields,
+    )
+
+
+def _speaker(row: Row) -> str:
+    """Who wrote the row, from flags only (the driver selects booleans, never the text).
+
+    Juniper's turn has a non-empty prompt (the same rule as
+    scripts/analysis/measure_arousal_replay.py). Orion's outreach has no prompt and
+    ``client_meta.unsolicited`` true. Live 10-09: all four rows on the session that looked
+    like a conversation were unsolicited outreach with no reply.
+    """
+    has_prompt = row.get("has_prompt")
+    if has_prompt is None:
+        has_prompt = bool(str(row.get("prompt") or "").strip())
+    meta = _json(row.get("client_meta")) or {}
+    unsolicited = row.get("unsolicited")
+    if unsolicited is None:
+        unsolicited = bool(meta.get("unsolicited")) if isinstance(meta, dict) else False
+    if has_prompt:
+        return "juniper"
+    return "orion_outreach" if unsolicited else "orion"
+
+
+def chat_turn(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """chat_history_log. Time: created_at (naive UTC). No text copied.
+
+    Subject: session_id, for Juniper's turns only. Orion's own rows (outreach, journal
+    replies with no prompt) carry the session in ``related_refs`` and no subject, so they
+    bind by time as context and never open or extend a conversation (danger mode 9: Orion's
+    outreach must not read as Juniper speaking)."""
+    session = row.get("session_id") or None
+    speaker = _speaker(row)
+    return _event(
+        kind="chat_turn", table="chat_history_log", ref=row.get("id"), at=row.get("created_at"),
+        tz_name=tz_name, correlation_id=row.get("correlation_id") or None,
+        subject_ref=session if speaker == "juniper" else None,
+        related_refs=[str(session)] if session else [],
+        privacy_class="juniper_chat", payload={"source": row.get("source"), "speaker": speaker},
+    )
+
+
+def curiosity_run(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """curiosity_offer_decisions joined to curiosity_run_outcomes on run_id.
+
+    Emitted only once ``completed_at`` exists, so the arc is born with its interval.
+    Time: turn_started_at, else decided_at. Subject: run_id. related_refs: offered prior ids.
+    """
+    if row.get("completed_at") is None:
+        return None
+    offered = _json(row.get("offered")) or []
+    priors = sorted({str(o.get("prior_id")) for o in offered if isinstance(o, dict) and o.get("prior_id")})
+    return _event(
+        kind="curiosity_run", table="curiosity_run_outcomes", ref=row.get("run_id"),
+        at=row.get("turn_started_at") or row.get("decided_at"), ended=row.get("completed_at"),
+        tz_name=tz_name, subject_ref=str(row.get("run_id")), related_refs=priors,
+        payload={k: row.get(k) for k in ("turn_ok", "n_tested", "n_moved", "n_formed", "arm")},
+    )
+
+
+def reverie_chain(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """substrate_reverie_chain plus its thoughts (``row['thoughts']``: thought_id, created_at,
+    correlation_id; linked by thought_json.chain_id). Emitted only once ``terminal_reason`` is
+    set. A chain with no thoughts has no content and is not an arc. Time: first thought .. max(last thought, chain created_at)."""
+    if not row.get("terminal_reason"):
+        return None  # still running: emitting now would freeze a partial chain into a closed arc
+    thoughts = sorted(
+        (t for t in (row.get("thoughts") or []) if t.get("thought_id") and t.get("created_at")),
+        key=lambda t: (as_utc(t["created_at"]), str(t["thought_id"])),
+    )
+    if not thoughts:
+        return None
+    first = as_utc(thoughts[0]["created_at"])
+    last = max(as_utc(thoughts[-1]["created_at"]), as_utc(row.get("created_at")) or first)
+    return _event(
+        kind="reverie_chain", table="substrate_reverie_chain", ref=row.get("chain_id"), at=first,
+        ended=last, tz_name=tz_name, subject_ref=str(row.get("chain_id")),
+        related_refs=sorted({str(t["correlation_id"]) for t in thoughts if t.get("correlation_id")}),
+        label=clip(row.get("theme_key")),
+        payload={"terminal_reason": row.get("terminal_reason"),
+                 "thought_ids": [str(t["thought_id"]) for t in thoughts]},
+    )
+
+
+def visual_run(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """reverie_visual_chain (created_at is stamped at the END of the run) joined to the
+    attempt whose result_json.chain_id matches (``row['attempt_started_at']``,
+    ``row['thermal_state']``). Time: attempt start, else a point at created_at."""
+    end = row.get("created_at")
+    return _event(
+        kind="visual_run", table="reverie_visual_chain", ref=row.get("chain_id"),
+        at=row.get("attempt_started_at") or end, ended=end, tz_name=tz_name,
+        subject_ref=str(row.get("chain_id")), label=clip(row.get("theme_key")),
+        payload={"terminal_reason": row.get("terminal_reason"),
+                 "thermal_state": row.get("thermal_state")},
+    )
+
+
+def visual_deferral(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """reverie_visual_attempt with any outcome other than ``produced``. Time: started_at."""
+    outcome = row.get("outcome")
+    if not outcome or outcome == "produced":
+        return None
+    result = _json(row.get("result_json")) or {}
+    detail = result.get("detail") if isinstance(result.get("detail"), dict) else {}
+    return _event(
+        kind="visual_deferral", table="reverie_visual_attempt", ref=row.get("attempt_id"),
+        at=row.get("started_at"), tz_name=tz_name, verdict=str(outcome),
+        payload={"reason": result.get("reason"), "thermal_state": detail.get("state"),
+                 "refused": result.get("refused")},
+    )
+
+
+def gpu_wait(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """gpu_pool_events: Orion's own background lease that waited >= 500 ms or was never
+    served -- the admission cue's deferral predicate, exactly. Time: generated_at."""
+    if str(row.get("holder") or "").startswith("http:") or row.get("priority") != "background":
+        return None
+    event = row.get("event")
+    waited = row.get("waited_ms")
+    if not (event == "unavailable" or (event == "granted" and waited is not None and waited >= GPU_WAIT_THRESHOLD_MS)):
+        return None
+    return _event(
+        kind="gpu_wait", table="gpu_pool_events", ref=row.get("event_id"), at=row.get("generated_at"),
+        tz_name=tz_name, verdict=str(event), correlation_id=row.get("turn_correlation_id") or None,
+        payload={"waited_ms": waited, "holder": row.get("holder"), "work_class": row.get("work_class")},
+    )
+
+
+def dream_cycle(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """dream_cycle, completed only. Time: started_at .. ended_at. Subject: cycle_id."""
+    if row.get("status") != "completed" or row.get("ended_at") is None:
+        return None
+    pressure = (_json(row.get("cycle_json")) or {}).get("pressure") or {}
+    return _event(
+        kind="dream_cycle", table="dream_cycle", ref=row.get("cycle_id"), at=row.get("started_at"),
+        ended=row.get("ended_at"), tz_name=tz_name, subject_ref=str(row.get("cycle_id")),
+        label=clip(row.get("trigger")),
+        payload={"pressure": row.get("pressure"), "replay_count": row.get("replay_count"),
+                 "hypothesis_count": row.get("hypothesis_count"),
+                 "covered_since": pressure.get("since") if isinstance(pressure, dict) else None},
+    )
+
+
+def dream_hypothesis(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """dream_hypothesis. Time: created_at. Attaches to its sleep arc by cycle_id, never by
+    time. ``claim``/``why`` are model prose and are not copied."""
+    return _event(
+        kind="dream_hypothesis", table="dream_hypothesis", ref=row.get("hypothesis_id"),
+        at=row.get("created_at"), tz_name=tz_name, related_refs=[str(row.get("cycle_id"))],
+        payload={"arm": row.get("arm"),
+                 "expires_at": _iso(row.get("expires_at")), "offered_at": _iso(row.get("offered_at")),
+                 "offered_run_id": row.get("offered_run_id")},
+    )
+
+
+def expectation_verdict(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """substrate_reverie_thought once scored. Time: expectation_scored_at. Attaches to its
+    reverie arc by chain id (``row['chain_id']`` = thought_json.chain_id)."""
+    if row.get("expectation_scored_at") is None or not row.get("expectation_verdict"):
+        return None
+    chain = row.get("chain_id")
+    return _event(
+        kind="expectation_verdict", table="substrate_reverie_thought", ref=row.get("thought_id"),
+        at=row.get("expectation_scored_at"), tz_name=tz_name, verdict=str(row["expectation_verdict"]),
+        related_refs=[str(chain)] if chain else [],
+        correlation_id=row.get("correlation_id") or None,
+        payload={"committed_at": _iso(row.get("created_at"))},
+    )
+
+
+# Act rows only (2026-11-07, ladder retirement PR 6): the act ledger's ``act:<verb>`` rows and the
+# cooling world act's ``self_regulate`` rows. The retired dispatch ladder's own kinds (summarize,
+# maintain, inspect) are dropped here too, not only in the live SQL
+# (services/orion-durable-runs/app/temporal_self_sources.py), so the pure replay over stored
+# fixtures and the live chronicle read the same events.
+def is_act_outcome_kind(dispatch_kind: object) -> bool:
+    kind = str(dispatch_kind or "")
+    return kind.startswith("act:") or kind == "self_regulate"
+
+
+def action_outcome(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """substrate_action_outcomes. Time: observed_at, else created_at. Verdict: claim_upheld.
+    Act rows only (``is_act_outcome_kind``)."""
+    if not is_act_outcome_kind(row.get("dispatch_kind")):
+        return None
+    upheld = row.get("claim_upheld")
+    word = "null" if upheld is None else ("true" if upheld else "false")
+    return _event(
+        kind="action_outcome", table="substrate_action_outcomes", ref=row.get("id"),
+        at=row.get("observed_at") or row.get("created_at"), tz_name=tz_name,
+        verdict=f"claim_upheld={word}",
+        payload={"dispatch_kind": row.get("dispatch_kind"), "target_id": row.get("target_id"),
+                 "prediction_error": row.get("prediction_error"),
+                 # Orion's now (integration patch 1): the row's own surprisal, for temporal_self_event
+                 # .surprise_nats and the prediction organ's salience. Absent on rows read before it.
+                 **({"surprise_nats": _finite(row.get("surprise_nats"))} if "surprise_nats" in row else {})},
+    )
+
+
+def metacog_observation(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """orion_metacog (degraded / critical only) left-joined to metacog_trigger on
+    correlation_id. Time: the trigger's naive-UTC ``trigger_timestamp`` when joined, else the
+    TEXT ``timestamp`` of the metacog row. ``summary``/``mantra`` are LLM prose: not copied."""
+    if row.get("severity") not in METACOG_SEVERITIES:
+        return None
+    return _event(
+        kind="metacog_observation", table="orion_metacog", ref=row.get("id"),
+        at=row.get("trigger_timestamp") or row.get("timestamp"), tz_name=tz_name,
+        verdict=str(row["severity"]), correlation_id=row.get("correlation_id") or None,
+        payload={"trigger_kind": row.get("trigger_kind")},
+    )
+
+
+def consolidation_window_close(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """memory_consolidation_windows once closed. Time: closed_at. Binds to the conversation
+    arc whose turns it holds, by correlation id. Context only, never closes the arc: windows
+    close when the *next* turn arrives, so treating them as authority would split a live
+    conversation."""
+    if row.get("closed_at") is None:
+        return None
+    turns = _json(row.get("turn_correlation_ids")) or []
+    return _event(
+        kind="consolidation_window_close", table="memory_consolidation_windows",
+        ref=row.get("memory_window_id"), at=row.get("closed_at"), tz_name=tz_name,
+        related_refs=sorted({str(t) for t in turns if t}),
+        payload={"close_reason": row.get("close_reason"), "source_platform": row.get("source_platform")},
+    )
+
+
+def attention_row(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """substrate_attention_schema. Time: generated_at. Never a subject (attended_id is a text
+    hash); folds into per-arc lane counts and reason words. Labels are not copied."""
+    return _event(
+        kind="attention_row", table="substrate_attention_schema", ref=row.get("entry_id"),
+        at=row.get("generated_at"), tz_name=tz_name, correlation_id=row.get("correlation_id") or None,
+        payload={"process": row.get("process"), "reason": row.get("attention_reason")},
+    )
+
+
+def attention_loop_raised(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """attention_salience_trace, scope='chat', and only when its correlation_id resolves to a
+    real chat turn (``row['chat_turn']``: the driver's EXISTS against chat_history_log).
+
+    Live 10-09: one chat-scope loop got 381 traces, each with a distinct correlation_id,
+    across all 24 hours, and only 6 resolved to a chat turn. The rest are the scorer
+    re-emitting on its own cadence; counting them would make concern dwell measure the
+    scorer, not Juniper raising the loop. Subject: loop_id. The label is cut from
+    Juniper's turn text, so it is marked juniper_chat (outward boundary only)."""
+    if row.get("scope") != "chat" or not row.get("loop_id") or not row.get("chat_turn"):
+        return None
+    return _event(
+        kind="attention_loop_raised", table="attention_salience_trace", ref=row.get("trace_id"),
+        at=row.get("created_at"), tz_name=tz_name, subject_ref=str(row["loop_id"]),
+        correlation_id=row.get("correlation_id") or None, label=clip(row.get("description")),
+        privacy_class="juniper_chat",
+    )
+
+
+def attention_loop_verdict(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """attention_loop_outcome. Time: created_at (for decayed_unattended, when the digest ran,
+    not when silence began). Subject: loop_id. Verdict: the row's own word."""
+    if not row.get("loop_id"):
+        return None
+    return _event(
+        kind="attention_loop_verdict", table="attention_loop_outcome", ref=row.get("outcome_id"),
+        at=row.get("created_at"), tz_name=tz_name, subject_ref=str(row["loop_id"]),
+        verdict=str(row.get("verdict") or ""), payload={"actor": row.get("actor")},
+    )
+
+
+def field_dominance_run(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """field_dominance_run (seam S2, live since 10-09). Time: started_at .. ended_at.
+    Subject: target_id."""
+    return _event(
+        kind="field_dominance_run", table="field_dominance_run", ref=row.get("run_id"),
+        at=row.get("started_at"), ended=row.get("ended_at"), tz_name=tz_name,
+        subject_ref=str(row.get("target_id")), label=clip(row.get("target_id")),
+        payload={"tick_count": row.get("tick_count"), "min_streak_at_run": row.get("min_streak_at_run"),
+                 "target_kind": row.get("target_kind"), "left_censored": bool(row.get("left_censored"))},
+    )
+
+
+def vision_percept(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """vision_events from a room stream (or NULL stream_id), with entities. Time: created_at
+    (write time; no observation time exists). event_type and entities only, never narrative."""
+    stream = row.get("stream_id")
+    if stream is not None and stream not in ROOM_STREAMS:
+        return None
+    entities = sorted({clip(e, 64) for e in (_json(row.get("entities")) or []) if e})
+    if not entities:
+        return None
+    return _event(
+        kind="vision_percept", table="vision_events", ref=row.get("event_id"), at=row.get("created_at"),
+        tz_name=tz_name, payload={"event_type": row.get("event_type"), "entities": entities},
+    )
+
+
+def memory_episode(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """episode_memory. Time: occurred_at, the moment the memory is about. Available at created_at
+    (``payload.available_at``): the row is distilled hours later, and the reducer folds it then (#3400).
+    episode_id and purpose only; statement is prose."""
+    return _event(
+        kind="memory_episode", table="episode_memory", ref=row.get("memory_id"),
+        at=row.get("occurred_at"), tz_name=tz_name, related_refs=[str(row.get("episode_id"))],
+        payload={"purpose": row.get("purpose"), **_available_payload(row.get("created_at"))},
+    )
+
+
+PRESENCE_STATES = frozenset({"present", "recent", "absent", "unknown"})
+
+
+def presence_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """vision_presence_transition (seam S1), room streams only (a walkway camera seeing a
+    passer-by is not company). Time: occurred_at (the state machine's own state_since; for
+    ``unknown``, the last observation). Subject: presence_id. Verdict: to_state.
+
+    The label is the enrolled identity label and is copied ONLY when ``identity_confirmed``: an
+    unconfirmed guess never reaches the chronology. ``from_state`` NULL marks the producer's first
+    row after a restart."""
+    stream = row.get("presence_id")
+    to_state = row.get("to_state")
+    if stream not in ROOM_STREAMS or to_state not in PRESENCE_STATES:
+        return None
+    confirmed = bool(row.get("identity_confirmed")) and bool(str(row.get("label") or "").strip())
+    return _event(
+        kind="presence_transition", table="vision_presence_transition", ref=row.get("transition_id"),
+        at=row.get("occurred_at"), tz_name=tz_name, subject_ref=str(stream),
+        label=clip(row.get("label")) if confirmed else "", verdict=str(to_state),
+        payload={"from_state": row.get("from_state"), "to_state": to_state, "identity_confirmed": confirmed},
+    )
+
+
+AROUSAL_LEVELS = frozenset({"engaged", "idle", "strained", "unknown"})
+AROUSAL_EVENT_PREFIX = "arousal_transition:"
+
+
+def arousal_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """temporal_self_event rows the regulation step wrote itself (``source_table='regulation'``,
+    ``services/orion-durable-runs/app/regulation_store.py``): one per level change, plus one per
+    strain cause that joins an episode already strained. Time: occurred_at. Subject:
+    ``orion:arousal``. Verdict: the new level.
+
+    The event keeps the row's OWN ``event_id``. The chronicle stores every event it folds in that
+    same table: a new id would make each fold insert a copy that the next read folds again.
+
+    ``since`` is the reading's episode start (when the level was entered); ``causes`` are the
+    strain causes in the reading (``orion.regulation.arousal.STRAIN_CAUSES``)."""
+    event_id = str(row.get("event_id") or "")
+    payload = _json(row.get("payload_json")) or {}
+    if not event_id.startswith(AROUSAL_EVENT_PREFIX) or not isinstance(payload, dict):
+        return None
+    to_level = payload.get("to")
+    reading = payload.get("reading") if isinstance(payload.get("reading"), dict) else {}
+    if to_level not in AROUSAL_LEVELS:
+        return None
+    return _event(
+        kind="arousal_transition", table="regulation", ref=event_id[len(AROUSAL_EVENT_PREFIX):],
+        at=row.get("occurred_at"), tz_name=tz_name, subject_ref="orion:arousal", label=str(to_level),
+        verdict=str(to_level),
+        payload={
+            "from": payload.get("from"), "to": to_level, "since": _iso(reading.get("since")),
+            "causes": strain_causes(reading.get("reasons") or []),
+            "cabinet_temp_c": reading.get("cabinet_temp_c"), "gpu_queue_depth": reading.get("gpu_queue_depth"),
+            # The previous reading was too old to carry (an outage): what happened in the gap is unseen.
+            "gap": "prev_dropped:gap" in (reading.get("reasons") or []),
+        },
+    )
+
+
+BODY_BINDING_EVENT_PREFIX = "body_binding:"
+BODY_BINDING_ROWS = frozenset({"onset", "change", "keepalive", "release"})
+BODY_BOUND_STATES = frozenset({"binding", "exogenous_bind", "stuck_at_ceiling"})
+BODY_SUBJECT_PREFIX = "orion:body:"
+
+
+def _num(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def body_binding(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """temporal_self_event rows the physiology node wrote itself (``source_kind='body_binding'``,
+    ``source_table='physiology'``, ``services/orion-durable-runs/app/body_binding.py``): one per
+    onset, bound-state change, keepalive and release of one body-economy constraint whose price
+    binds. Time: occurred_at (when the row was written). Subject: ``orion:body:<constraint>``.
+    Verdict: the row kind.
+
+    The event keeps the row's OWN ``event_id``. The chronicle stores every event it folds in that
+    same table: a new id would make each fold insert a copy that the next read folds again."""
+    event_id = str(row.get("event_id") or "")
+    payload = _json(row.get("payload_json")) or {}
+    if not event_id.startswith(BODY_BINDING_EVENT_PREFIX) or not isinstance(payload, dict):
+        return None
+    kind, constraint = payload.get("row"), payload.get("constraint")
+    if kind not in BODY_BINDING_ROWS or not isinstance(constraint, str) or not constraint:
+        return None
+    state = payload.get("bind_state")
+    if kind != "release" and state not in BODY_BOUND_STATES:
+        return None
+    began = _iso(payload.get("began_at"))
+    if began is None:
+        return None
+    return _event(
+        kind="body_binding", table="physiology", ref=event_id[len(BODY_BINDING_EVENT_PREFIX):],
+        at=row.get("occurred_at"), tz_name=tz_name, subject_ref=f"{BODY_SUBJECT_PREFIX}{constraint}",
+        label=constraint[:LABEL_MAX], verdict=str(kind),
+        payload={
+            "row": kind, "constraint": constraint, "bind_state": state, "began_at": began,
+            "slack_since": _iso(payload.get("slack_since")),
+            "unit": payload.get("unit") if isinstance(payload.get("unit"), str) else None,
+            "level": _num(payload.get("level")), "line": _num(payload.get("line")),
+            "price": _num(payload.get("price")), "ceiling": _num(payload.get("ceiling")),
+            "self_spent": bool(payload.get("self_spent")), "after_gap": bool(payload.get("after_gap")),
+            "why": str(payload.get("why") or "")[:LABEL_MAX],
+        },
+    )
+
+
+FACULTY_STATUSES = frozenset({"reliable", "unreliable", "broken", "miscalibrated", "unknown"})
+FACULTY_EVENT_PREFIX = "faculty_status_changed:"
+
+
+def faculty_status_changed(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """temporal_self_event rows the self_monitor node wrote itself (``source_table='self_monitor'``,
+    ``orion/self_monitor/host.py`` ``event_row``): one per held faculty status change, plus a keepalive
+    every 12 h while a notable status holds and one row when a notable faculty leaves the window.
+    Time: occurred_at. Subject: ``faculty:<name>``. Verdict: the new status.
+
+    Keeps the row's OWN ``event_id`` (the chronicle stores folded events in that same table, see
+    ``arousal_transition``). ``since`` is when the held status began."""
+    event_id = str(row.get("event_id") or "")
+    payload = _json(row.get("payload_json")) or {}
+    if not event_id.startswith(FACULTY_EVENT_PREFIX) or not isinstance(payload, dict):
+        return None
+    faculty = str(payload.get("faculty") or "").strip()
+    to_status = payload.get("to")
+    if not faculty or to_status not in FACULTY_STATUSES:
+        return None
+    return _event(
+        kind="faculty_status_changed", table="self_monitor", ref=event_id[len(FACULTY_EVENT_PREFIX):],
+        at=row.get("occurred_at"), tz_name=tz_name, subject_ref=f"faculty:{faculty}", label=clip(faculty),
+        verdict=str(to_status),
+        payload={
+            "faculty": faculty, "from": payload.get("from"), "to": to_status, "since": _iso(payload.get("since")),
+            "keepalive": bool(payload.get("keepalive")), "dropped": bool(payload.get("dropped")),
+            "reasons": [clip(r, 120) for r in (payload.get("reasons") or [])][:4],
+        },
+    )
+
+
+def retro_play_label(row: Row) -> str:
+    """A short, deterministic phrase for one session, from the row's own fields: the game, who played
+    (``solo`` only for a leisure session with a recorded human share of 0, ``together`` when a human
+    drove more than half of the frames, else ``with a human``) and the prediction count. The full summary stays on the row and the memory card;
+    the stance cue has room for this phrase only (STANCE_CUE_MAX_CHARS)."""
+    title = str(row.get("game_title") or row.get("game_id") or "a game")
+    if row.get("kind") == "human_play":
+        # A person's sitting (orion-hub scripts/retro_sitting.py): the subject of the sentence is the
+        # person, so nothing credits Orion. "Juniper" only when the game page was told so; never a guess.
+        # It does not say "Orion did not play": a short handoff to Orion can sit inside a sitting.
+        from orion.temporal_self.stance_cue import span_words
+
+        seconds = retro_play_seconds(row)
+        span = f" for {span_words(seconds)}" if seconds is not None else ""
+        return clip(f"{who_words(row.get('player_stated'))} played {title}{span}")
+    if row.get("played_together"):
+        who = "together"
+    elif row.get("kind") == "leisure" and not row.get("human_may_be_in_control") \
+            and row.get("control_basis") in ("leisure_sponsor", "frames") and row.get("human_share") in (0, 0.0):
+        who = "solo"
+    else:
+        who = "with a human"
+    decisions = row.get("decisions")
+    if decisions:
+        met = int(row.get("predictions_met") or 0)
+        unknown = int(row.get("predictions_unknown") or 0)
+        done = f", {met} of {int(decisions)} predictions met" + (f", {unknown} unknown" if unknown else "")
+    elif decisions == 0:
+        done = ", no planner decisions"
+    else:
+        done = ""
+    return clip(f"{title} {who}{done}")
+
+
+def retro_sitting_ref(session_id: Any) -> str:
+    """``retro_sitting:<sitting id>`` for a human_play row (its key is ``sitting:<sitting id>``)."""
+    text = str(session_id)
+    return SITTING_SUBJECT_PREFIX + (text.split(":", 1)[1] if text.startswith("sitting:") else text)
+
+
+def retro_play_seconds(row: Row) -> float | None:
+    """How long one session lasted: the row's ``duration_sec``, else ended_at - started_at. None when
+    neither can be read. For a human_play sitting this is first to last button change."""
+    value = row.get("duration_sec")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+        return float(value)
+    start, end = row.get("started_at"), row.get("ended_at")
+    if isinstance(start, datetime) and isinstance(end, datetime):
+        return max(0.0, (as_utc(end) - as_utc(start)).total_seconds())
+    return None
+
+
+def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """retro_play_sessions (orion-hub scripts/retro_memory_export.py, and scripts/retro_sitting.py for
+    kind ``human_play``): one finished Retro session.
+    Time: started_at to ended_at. Available when WRITTEN (``payload.available_at`` = created_at): a
+    sitting's row is written 5 minutes after its last button press, when the gap is noticed, so a
+    read by ended_at alone could pass it by. Subject:
+    ``retro_session:<session_id>``. Label: ``retro_play_label`` ("The Legend of Zelda solo, 14 of 31
+    predictions met"). A row with no summary is dropped: Hub writes one for every exported session,
+    so a row without it was not written by the exporter."""
+    session_id = row.get("session_id")
+    if not session_id or not str(row.get("summary") or "").strip():
+        return None
+    return _event(
+        kind="retro_play", table="retro_play_sessions", ref=session_id, at=row.get("started_at"),
+        ended=row.get("ended_at"), tz_name=tz_name,
+        # The Retro session (a co-play row key is per handoff): the same ref the memory card anchors.
+        # A person's own sitting gets its own subject, so no reader words it as Orion's play
+        # (stance_cue._play_clause, recent_arcs: "Played ..." is said only of a retro_session).
+        subject_ref=(retro_sitting_ref(session_id) if row.get("kind") == "human_play"
+                     else f"retro_session:{row.get('retro_session_id') or session_id}"),
+        label=retro_play_label(row),
+        payload={
+            "game_id": row.get("game_id"), "kind": row.get("kind"), "lineage_id": row.get("lineage_id"),
+            "played_together": bool(row.get("played_together")), "human_share": row.get("human_share"),
+            "decisions": row.get("decisions"), "predictions_met": row.get("predictions_met"),
+            "rooms_new": row.get("rooms_new"), "deaths": row.get("deaths"),
+            "memory_card_id": str(row["memory_card_id"]) if row.get("memory_card_id") else None,
+            # The salience magnitude of this kind (orion/temporal_self/now.py ``sitting_minutes``).
+            "duration_sec": retro_play_seconds(row), "player_stated": row.get("player_stated"),
+            **_available_payload(row.get("created_at")),
+        },
+    )
+
+
+# --------------------------------------------------------------------------- the street
+# Episodes from the street (walkway follow-ups spec PR #2763, item 1). Only events something
+# already marked notable become episodes: a published motion story that passed Juniper's
+# spot-check gate, a doorbell ring, and a graded handoff that passed the street attention gate.
+# Every frame, every parked car and every unpublished glimpse stays out.
+
+# orion/substrate/street_attention.py GATE_P_VALUE / RING_KIND / HANDOFF_KINDS, restated (importing
+# that module pulls the whole orion.substrate package); test_street_arcs.py fails if they disagree.
+STREET_GATE_P_VALUE = 0.05
+STREET_RING_KIND = "doorbell_ring"
+STREET_HANDOFF_KINDS = frozenset({"handoff_met", "handoff_late", "handoff_missed"})
+# Moving cars are traffic, not events, and Juniper's spot checks were on people, dogs and strollers.
+STREET_STORY_KINDS = frozenset({"person", "dog", "bicycle", "stroller"})
+STREET_CAMERA_WORDS = {"walkway": "walkway camera", "doorbell": "doorbell camera"}
+_STORY_MOTION = {
+    "walking": "walked", "running": "ran", "riding": "rode by", "pushed": "was pushed",
+    "walked": "was walked", "creeping": "crept", "standing": "stood", "driving": "drove by",
+}
+_HANDOFF_WORDS = {"handoff_met": "arrived when predicted", "handoff_late": "arrived late",
+                  "handoff_missed": "never arrived"}
+
+
+def _camera_words(streams: Iterable[Any]) -> str:
+    names = [STREET_CAMERA_WORDS.get(str(x), f"{x} camera") for x in streams if x]
+    return " and ".join(dict.fromkeys(names)) or "street camera"
+
+
+def _story_gate(row: Row) -> bool:
+    """Juniper's spot-check gate (orion/vision/motion_story_gate.py) for this story's rules version.
+    The driver passes the verdict counts of the newest rules version with published clean stories
+    (the walkway rollups' rule); a story on any other version is never vouched for."""
+    version = row.get("gate_rules_version")
+    if version is None or row.get("rules_version") != version:
+        return False
+    counts = _json(row.get("gate_counts")) or {}
+    return gate_passed(tally_from_counts(counts if isinstance(counts, dict) else {}, 0, int(version)))
+
+
+def story_name(row: Row) -> tuple[str | None, str | None]:
+    """(name, where it came from) for a story: ``("Robin", "juniper")``, ``("Robin", "recognizer")`` or
+    ``(None, None)``.
+
+    ``name_label`` is the strict naming rule at write time (orion/vision/story_naming.py): the camera
+    matched the story's crops to a cluster Juniper named. That match is the recognizer's guess, even when
+    the cluster's own name was typed by her. A name counts as Juniper's only when she vouched for THIS
+    story, the same rule the Hub card uses (motion_story_routes.story_display):
+
+    * her latest name / "someone else" answer on this story wins (``story_answers``, oldest first): a
+      name -> that name; "someone else" -> who she said it really is, or no name;
+    * else her spot-check verdict on this story is "right" (``story_verdict``), which vouches for the
+      name it was written with;
+    * else the written name is the recognizer's guess.
+
+    Both are read as of the chronicle's read (like the spot-check gate): an answer Juniper gives after
+    the story was folded changes a re-fold's label, not the stored arc.
+    """
+    direct = [a for a in (row.get("story_answers") or [])
+              if isinstance(a, Mapping) and a.get("action") in ("name", "someone_else")]
+    if direct:
+        name = str(direct[-1].get("name") or "").strip()
+        return (name, "juniper") if name else (None, None)
+    written = str(row.get("name_label") or "").strip()
+    if not written:
+        return None, None
+    return written, ("juniper" if row.get("story_verdict") == "right" else "recognizer")
+
+
+NAME_SOURCE_WORDS = {"juniper": "named by Juniper", "recognizer": "a guess"}
+
+
+def street_story_label(row: Row) -> str:
+    """"Outside (walkway camera): a person walked left to right, away from the house, with a stroller".
+    Built from the story's own fields, never its sentence: the sentence says "moving alongside another
+    person" (older rows: "together with 1 other person"), a bare track count. The label carries NO people count. The honest range
+    (orion/vision/walkway_rollup.py, PR #2781) exists only once the hour's rollup closes, a median ~3 h
+    after the hour, long after the chronicle reads the story; adding it would give the same arc a
+    different label live and on a re-fold. "How many" is the rollups' job (the Day letter line).
+
+    A name always says where it came from (``story_name``): "Robin (named by Juniper)" or "Robin (a
+    guess)", the same "(a guess)" a handoff's person guess carries."""
+    kind = str(row.get("kind") or "")
+    name, source = story_name(row)
+    who = f"{name} ({NAME_SOURCE_WORDS[source]})" if name and source else f"a {kind}"
+    motion = _STORY_MOTION.get(str(row.get("speed_class") or ""), "passed")
+    where = [w for w, on in (("left to right", row.get("dir_lateral") == 1),
+                             ("right to left", row.get("dir_lateral") == -1),
+                             ("toward the house", row.get("dir_depth") == 1),
+                             ("away from the house", row.get("dir_depth") == -1)) if on]
+    companions = sorted({str(c) for c in (row.get("companion_kinds") or []) if c})
+    text = f"Outside ({_camera_words([row.get('stream_id')])}): {who} {motion}"
+    if where:
+        text += " " + ", ".join(where)
+    others = [c for c in companions if c != "person"]
+    if others:
+        text += ", with " + " and ".join(f"a {c}" for c in others)
+    if "person" in companions:
+        text += ", with other people"
+    return clip(text)
+
+
+# --------------------------------------------------------------------------- one visit
+# One visit to the door used to spend up to 3 of the daily street slots (walkway story, doorbell
+# story, ring: live 10-24 20:47-20:48). The reducer (arcs._fold_street) folds a street event into an
+# existing street arc of the same day when they are the same visit, by one of two rules:
+#
+# 1. Linked: the handoff loop (orion-sql-writer vision_handoff, PR #2828) said two stories are one
+#    passage (status paired / met / early / late), or a graded handoff names a story. The link rides
+#    in ``related_refs`` as ``street:story:<id>`` / ``street:ring:<event_id>``, the subject refs the
+#    adapters give those events.
+# 2. A ring and a story within ``ReducerConfig.street_visit_gap_sec`` of each other.
+#
+# Two stories with no link never merge by time alone: two passers-by a minute apart stay two arcs.
+
+VISIT_REF_PREFIX = "street:"
+
+
+def _street_visit_refs(story_ids: Iterable[Any] = (), ring_ids: Iterable[Any] = ()) -> list[str]:
+    return sorted({f"street:story:{x}" for x in story_ids if x} | {f"street:ring:{x}" for x in ring_ids if x})
+
+
+def _split_street_label(label: str) -> tuple[list[str], str]:
+    """"Outside (walkway camera and doorbell camera): body" -> (cameras, body). A label this module did
+    not build comes back as ([], label)."""
+    head, sep, body = label.partition("): ")
+    if not sep or not head.startswith("Outside ("):
+        return [], label
+    return [c for c in head[len("Outside ("):].split(" and ") if c], body
+
+
+def merge_street_labels(earlier: str, later: str) -> str:
+    """One visit's label from two labels: "Outside (walkway camera and doorbell camera): a person walked
+    toward the house; someone rang the doorbell". The reducer passes the part that starts first as
+    ``earlier``; a part that starts inside the visit is appended."""
+    cams_a, body_a = _split_street_label(earlier)
+    cams_b, body_b = _split_street_label(later)
+    cams = list(dict.fromkeys(cams_a + cams_b)) or ["street camera"]
+    return clip(f"Outside ({' and '.join(cams)}): {body_a}; {body_b}")
+
+
+def _available_payload(created_at: Any) -> dict:
+    """``available_at``: when the row was written. The reducer orders a street event by the later of
+    its end and this (``arcs.event_available_at``), so a story written after the chronicle's read lag is
+    read in the window it was written in, instead of being stored late and never folded."""
+    t = as_utc(created_at) if created_at not in (None, "") else None
+    return {"available_at": t.isoformat()} if t is not None else {}
+
+
+def _street_story(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
+    stream = row.get("stream_id")
+    if (not row.get("published") or not row.get("clean") or stream is None or stream in ROOM_STREAMS
+            or row.get("kind") not in STREET_STORY_KINDS or not _story_gate(row)):
+        return None
+    ref = row.get("story_id")
+    name, source = story_name(row)
+    together = sorted({str(x) for x in (row.get("together_story_ids") or []) if x})
+    visit = _street_visit_refs(row.get("visit_story_ids") or (), row.get("visit_event_ids") or ())
+    return _event(
+        kind="street_event", table="vision_motion_story", ref=ref, at=row.get("started_at"),
+        ended=row.get("ended_at"), tz_name=tz_name, subject_ref=f"street:story:{ref}",
+        related_refs=together + [v for v in visit if v != f"street:story:{ref}"],
+        label=street_story_label(row),
+        payload={"outside_world": True, "origin": "motion_story", "stream_ids": [str(stream)],
+                 "subject_kind": row.get("kind"), "named": bool(name), "name_source": source,
+                 "individual_id": row.get("individual_id") if name else None,
+                 "gate": f"spot_check rules_version={row.get('rules_version')}",
+                 **_available_payload(row.get("created_at"))},
+    )
+
+
+def _street_ring(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
+    stream = row.get("stream_id") or "doorbell"
+    if row.get("event_type") != STREET_RING_KIND or stream in ROOM_STREAMS:
+        return None
+    return _event(
+        kind="street_event", table="vision_events", ref=row.get("event_id"), at=row.get("created_at"),
+        tz_name=tz_name, subject_ref=f"street:ring:{row.get('event_id')}",
+        label=clip(f"Outside ({_camera_words([stream])}): someone rang the doorbell"),
+        payload={"outside_world": True, "origin": "doorbell_ring", "stream_ids": [str(stream)],
+                 "subject_kind": "person", "named": False,
+                 "gate": "doorbell_ring always passes"},
+    )
+
+
+def _street_handoff(row: Row, tz_name: str) -> TemporalSelfEventV1 | None:
+    """A ``StreetEventV1`` from sql-writer's outbox, kept only when it passes the street attention
+    gate's event clauses: a graded handoff with ``p_value < 0.05``. Rings arrive as vision_events
+    (``_street_ring``), never from here. The gate's camera-up and hourly-cap clauses are runtime
+    state no row records; the daily episode cap (``ReducerConfig.street_arcs_per_day``) is this
+    path's habituation."""
+    ev = _json(row.get("event")) or {}
+    if not isinstance(ev, dict) or ev.get("kind") not in STREET_HANDOFF_KINDS:
+        return None
+    p = ev.get("p_value")
+    if isinstance(p, bool) or not isinstance(p, (int, float)) or not p < STREET_GATE_P_VALUE:
+        return None
+    streams = [str(x) for x in (ev.get("stream_ids") or []) if x]
+    if not streams or any(x in ROOM_STREAMS for x in streams):
+        return None
+    try:
+        if as_utc(ev.get("occurred_at")) is None:
+            return None
+    except (TypeError, ValueError):
+        return None  # one malformed outbox row is dropped, never fails the whole window read
+    guess = str(ev.get("person_guess") or "").strip()
+    who = f"{guess} (a guess)" if guess else "someone"
+    ref = row.get("event_id") or ev.get("event_id")
+    refs = sorted({str(x) for x in (ev.get("evidence_refs") or []) if x})
+    # The handoff's own stories ("story:<id>") are the same visit (rule 1 above).
+    visit = _street_visit_refs(x.split(":", 1)[1] for x in refs if x.startswith("story:"))
+    return _event(
+        kind="street_event", table="vision_handoff_street_outbox", ref=ref, at=ev.get("occurred_at"),
+        tz_name=tz_name, subject_ref=f"street:handoff:{row.get('handoff_id') or ref}",
+        related_refs=refs + visit,
+        label=clip(f"Outside ({_camera_words(streams)}): {who} crossing between cameras "
+                   f"{_HANDOFF_WORDS[ev['kind']]} (p {float(p):.2g})"),
+        verdict=str(ev["kind"]),
+        payload={"outside_world": True, "origin": "street_event", "stream_ids": streams,
+                 "subject_kind": ev.get("subject_kind"), "named": False,
+                 "p_value": float(p), "gate": f"p_value < {STREET_GATE_P_VALUE}",
+                 **_available_payload(row.get("created_at"))},
+    )
+
+
+_STREET_ORIGINS = {"motion_story": _street_story, "doorbell_ring": _street_ring, "street_event": _street_handoff}
+
+
+def street_event(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One notable outside event, from one of three driver reads (``row['origin']``):
+
+    * ``motion_story``: vision_motion_story, published and clean, on a non-room stream, kind person /
+      dog / bicycle / stroller, and its rules version passed Juniper's spot-check gate. Time:
+      started_at .. ended_at (available at ended_at). Subject: ``street:story:<story_id>``.
+    * ``doorbell_ring``: vision_events with event_type doorbell_ring. Time: created_at.
+    * ``street_event``: vision_handoff_street_outbox, a graded handoff with p < 0.05. Time: the
+      event's occurred_at.
+
+    Every event carries ``payload.outside_world = True`` and a label that starts "Outside (<camera>)":
+    the street is never room company (``presence_transition`` and ``vision_percept`` stay room-only)."""
+    fn = _STREET_ORIGINS.get(str(row.get("origin") or ""))
+    return fn(row, tz_name) if fn else None
+
+
+# --------------------------------------------------------------------------- the office
+# Office sessions (office camera design PR #3127 step B): orion-sql-writer's vision_office_session
+# holds one row per visit to a room camera: span, who (probably), activity timeline. The final row
+# labels the office company arc ("Juniper (probably) in the office: sitting at a desk, opening a box;
+# reaching into a cabinet"). The label is the writer's own deterministic template (no model prose).
+
+# Words for the place a room stream looks at. Restated from orion-sql-writer
+# app/vision_office_sessions.py PLACE_WORDS; services/orion-sql-writer/tests fail if they disagree.
+ROOM_PLACE_WORDS = {"cam0": "the office"}
+
+
+def office_session(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """vision_office_session, FINAL rows only (``status = 'closed'``), room streams only. Time:
+    started_at .. ended_at, available at closed_at (``payload.available_at``: a row is final
+    VISION_OFFICE_SESSIONS_SETTLE_SEC after the visit ended, long after the company arc closed).
+    Subject: the stream (the company arc's own subject). Label: the row's label.
+
+    Payload: ``who`` (the who text), ``activities`` (the label after "in <place>: "), ``place``,
+    ``unknown_people``, ``ask_id`` -- what the reducer needs to relabel the arc, nothing else."""
+    stream = row.get("stream_id")
+    label = clip(row.get("label"))
+    if stream not in ROOM_STREAMS or row.get("status") != "closed" or not label or row.get("closed_at") is None:
+        return None
+    place = ROOM_PLACE_WORDS.get(str(stream), "")
+    head = f"in {place}: " if place else ""
+    activities = label.split(head, 1)[1] if head and head in label else ""
+    try:
+        unknown = int(row.get("unknown_people") or 0)
+    except (TypeError, ValueError):
+        unknown = 0
+    return _event(
+        kind="office_session", table="vision_office_session", ref=row.get("session_id"),
+        at=row.get("started_at"), ended=row.get("ended_at"), tz_name=tz_name, subject_ref=str(stream),
+        label=label,
+        payload={"who": clip(row.get("who_text")), "activities": activities, "place": place,
+                 "unknown_people": unknown, "ask_id": row.get("ask_id"),
+                 **_available_payload(row.get("closed_at"))},
+    )
+
+
+def _iso(value: Any) -> str | None:
+    dt = as_utc(value)
+    return dt.isoformat() if dt else None
+
+
+# --- Orion's now, patch 1 (docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md A1)
+# Three organs that were not Temporal Self sources become experiences. None of them folds into an arc;
+# they are read back through GET /temporal-self/now.
+
+
+def _finite(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def reading_turn(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One finished reading: a CLOSED ``hub.world_pulse_read`` act (grammar_acts). Time: opened_at ..
+    closed_at (available at closed_at). Subject: none (a reading is not a process arc). Label: the
+    act's own outcome note and the seed's title or the url. ``surprise_nats``: the act close's own.
+
+    The spec named ``reading_durable_turn`` as the source; live (2026-11-15) that table is the stage
+    request queue (two stages and retries per reading, 702 rows / 106 consumed in 7 days) and holds no
+    finished state. The act close is the one row per finished reading."""
+    if row.get("closed_at") is None:
+        return None
+    title = clip(row.get("seed_title") or "", 120)
+    what = title or clip(row.get("object_ref") or "", 160)
+    note = clip(row.get("outcome_note") or "", 80)
+    seed = row.get("correlation_id") or None
+    return _event(
+        kind="reading_turn", table="grammar_acts", ref=row.get("act_id"), at=row.get("opened_at"),
+        ended=row.get("closed_at"), tz_name=tz_name, correlation_id=seed,
+        related_refs=[f"act:{row.get('act_id')}"] + ([str(row["object_ref"])[:300]] if row.get("object_ref") else []),
+        label=clip(f"{note}: {what}" if note and what else (note or what)),
+        verdict=note or None,
+        payload={"url": row.get("object_ref"), "outcome_value": _finite(row.get("outcome_value")),
+                 "surprise_nats": _finite(row.get("surprise_nats"))},
+    )
+
+
+# Jeffreys (Krichevsky-Trofimov, add-1/2) smoothing for a Monte Carlo exceedance probability (n_paths paths): a forecast of 0 out of 40
+# paths is not certainty, so an observed exceedance it "ruled out" reads a large but finite surprisal.
+def _smoothed(p: float, n: int) -> float:
+    n = max(int(n or 0), 0)
+    return (p * n + 0.5) / (n + 1) if n else min(max(p, 1e-6), 1 - 1e-6)
+
+
+def exceedance_surprisal(probability: Any, n_paths: Any, hit: Any) -> float | None:
+    """-ln P(what happened) under the forecast: -ln p if the threshold was crossed, -ln(1-p) if not."""
+    p = _finite(probability)
+    if p is None or hit is None:
+        return None
+    ps = _smoothed(min(max(p, 0.0), 1.0), int(n_paths or 0))
+    return -math.log(ps if bool(hit) else 1.0 - ps)
+
+
+def prediction_surprise(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One SCORED exceedance forecast (orion-prediction ``prediction_exceedance``). Time: scored_at, when
+    Orion learned the outcome. ``surprise_nats``: -ln P(observed) under the forecast (Jeffreys-smoothed
+    over its n_paths). ``related_refs``: joint-surprise rows scored for a target inside the same window
+    (``row['joint_ids']``, a time match, not a causal link)."""
+    if row.get("scored_at") is None or row.get("hit_raw") is None:
+        return None
+    hit = bool(row.get("hit_raw"))
+    surprise = exceedance_surprisal(row.get("probability"), row.get("n_paths"), hit)
+    series, name = row.get("series_id"), row.get("name")
+    p = _finite(row.get("probability"))
+    label = (f"{series} {name} > {row.get('threshold')}: forecast {0 if p is None else p:.0%}, "
+             f"{'crossed' if hit else 'not crossed'} (max {row.get('max_raw')})")
+    return _event(
+        kind="prediction_surprise", table="prediction_exceedance", ref=row.get("exceedance_id"),
+        at=row.get("scored_at"), tz_name=tz_name, subject_ref=None,
+        related_refs=[f"prediction_joint_surprise:{j}" for j in (row.get("joint_ids") or [])][:8],
+        label=clip(label), verdict="crossed" if hit else "not_crossed",
+        payload={"series_id": series, "name": name, "probability": p, "n_paths": row.get("n_paths"),
+                 "max_raw": _finite(row.get("max_raw")), "threshold": _finite(row.get("threshold")),
+                 "window_start": _iso(row.get("window_start")), "window_end": _iso(row.get("window_end")),
+                 "surprise_nats": surprise},
+    )
+
+
+def prime_thought(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One Prime thought: a CLOSED ``prime``/``infer`` act (grammar_acts). Time: opened_at .. closed_at.
+    Label: the act's own outcome note (what woke Prime, what changed, the move). ``surprise_nats``: the
+    act close's own. related_refs: the act and its thought ref (object_ref ``prime_thought:<id>``)."""
+    if row.get("closed_at") is None:
+        return None
+    return _event(
+        kind="prime_thought", table="grammar_acts", ref=row.get("act_id"), at=row.get("opened_at"),
+        ended=row.get("closed_at"), tz_name=tz_name, correlation_id=row.get("correlation_id") or None,
+        related_refs=[f"act:{row.get('act_id')}"] + ([str(row["object_ref"])] if row.get("object_ref") else []),
+        label=clip(row.get("outcome_note") or ""),
+        payload={"outcome_value": _finite(row.get("outcome_value")), "surprise_nats": _finite(row.get("surprise_nats"))},
+    )
+
+
+def experiment_result(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One finished randomised experiment run: orion-prediction's pooled result row
+    (``prediction_effect_estimate``, ``details.estimator = family_c_pooled_run``). Time: created_at, when the run
+    was analysed. Label: the run's own summary ("I held my AI Town sessions at random ... GPU3 +x W, tier-1 calls
+    +y s slower"). ``effect_z``: |estimate| / SE of the primary outcome, the salience magnitude (a clear effect is
+    more notable than a null; z does not drift with age). related_refs: the run's night experiments."""
+    details = row.get("details") or {}
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except ValueError:
+            return None
+    if details.get("estimator") != "family_c_pooled_run":
+        return None
+    z = _finite(details.get("effect_z"))
+    targets = details.get("targets") or {}
+    lane = targets.get("lane.fast.tier1_hold_s") or {}
+    return _event(
+        kind="experiment_result", table="prediction_effect_estimate", ref=row.get("estimate_id"),
+        at=row.get("created_at"), tz_name=tz_name, subject_ref=None,
+        related_refs=[f"prediction_experiment:{e}" for e in (details.get("experiment_ids") or [])][:8],
+        label=clip(details.get("summary") or f"{row.get('action')}: {row.get('series_id')} {row.get('effect')}"),
+        verdict=(details.get("manipulation") or {}).get("verdict"),
+        payload={"action": row.get("action"), "series_id": row.get("series_id"),
+                 "effect": _finite(row.get("effect")), "ci_lo": _finite(row.get("ci_lo")),
+                 "ci_hi": _finite(row.get("ci_hi")), "p_value": _finite(row.get("p_value")),
+                 "effect_z": None if z is None else abs(z), "nights": len(details.get("nights") or []),
+                 "tier1_hold_s": _finite(lane.get("estimate")), "run_id": details.get("run_id")},
+    )
+
+
+ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
+    "chat_turn": chat_turn,
+    "curiosity_run": curiosity_run,
+    "reverie_chain": reverie_chain,
+    "visual_run": visual_run,
+    "visual_deferral": visual_deferral,
+    "gpu_wait": gpu_wait,
+    "dream_cycle": dream_cycle,
+    "dream_hypothesis": dream_hypothesis,
+    "expectation_verdict": expectation_verdict,
+    "action_outcome": action_outcome,
+    "metacog_observation": metacog_observation,
+    "consolidation_window_close": consolidation_window_close,
+    "attention_row": attention_row,
+    "attention_loop_raised": attention_loop_raised,
+    "attention_loop_verdict": attention_loop_verdict,
+    "field_dominance_run": field_dominance_run,
+    "vision_percept": vision_percept,
+    "memory_episode": memory_episode,
+    "presence_transition": presence_transition,
+    "arousal_transition": arousal_transition,
+    "retro_play": retro_play,
+    "street_event": street_event,
+    "body_binding": body_binding,
+    "faculty_status_changed": faculty_status_changed,
+    "office_session": office_session,
+    "reading_turn": reading_turn,
+    "prediction_surprise": prediction_surprise,
+    "prime_thought": prime_thought,
+    "experiment_result": experiment_result,
+}
+
+
+# Orion's now: kinds that are experiences only (no arc folds them), and the tables their events name.
+# A row of these tables is never arc evidence (orion-sql-writer act_downstream_use ARC_SOURCE_TABLES).
+EXPERIENCE_ONLY_KINDS = frozenset({"reading_turn", "prediction_surprise", "prime_thought", "experiment_result"})
+EXPERIENCE_ONLY_TABLES = frozenset({"grammar_acts", "prediction_exceedance", "prediction_effect_estimate"})
+
+
+def adapt(kind: str, rows: Iterable[Row], tz_name: str = DEFAULT_TZ) -> list[TemporalSelfEventV1]:
+    out = [ADAPTERS[kind](r, tz_name) for r in rows]
+    return [e for e in out if e is not None]

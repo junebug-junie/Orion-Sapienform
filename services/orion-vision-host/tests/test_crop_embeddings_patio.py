@@ -1,9 +1,11 @@
-"""The patio rule: a box in a no-embed zone never reaches the embedder.
+"""The generic no-embed rule: a box in an ``embed: false`` zone never reaches the embedder.
 
-docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md idea 1
-privacy boundary + acceptance check 6. The embedder is mocked; what is under
-test is which pixels are handed to it and which objects come back with a
-vector.
+docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md idea 1.
+The real patio stopped being a no-embed zone on 2026-10-15 (Juniper lifted the
+limit; see test_repo_zones_config_fingerprints_the_patio). These tests keep
+the mechanism honest with a synthetic no-embed zone named "patio". The
+embedder is mocked; what is under test is which pixels are handed to it and
+which objects come back with a vector.
 """
 
 from __future__ import annotations
@@ -135,11 +137,28 @@ def test_batched_single_forward_pass_for_multiple_walkway_boxes() -> None:
     assert stats["embedded"] == 2
 
 
-def test_repo_zones_config_marks_patio_no_embed() -> None:
+def test_repo_zones_config_fingerprints_the_patio() -> None:
+    # 2026-10-15: patio boxes are embedded like anywhere else; the zone stays
+    # for dwell/attention and its head count (presence: true).
     zones = load_zones_fail_closed(Path(__file__).resolve().parents[3] / "config" / "vision_zones.yaml")
     assert zones is not None
     patio = [z for z in zones["walkway"] if z.name == "patio"]
-    assert patio and patio[0].embed is False
+    assert patio and patio[0].embed is True and patio[0].counts_presence
+    assert all(z.embed for zs in zones.values() for z in zs)
+
+
+def test_real_patio_box_is_embedded_with_repo_zones() -> None:
+    from orion.vision.zones import load_zones
+
+    zones = load_zones(Path(__file__).resolve().parents[3] / "config" / "vision_zones.yaml")
+    # The skeleton-prop box seen live 2026-10-15 on the 2560x1920 walkway frame: in the patio.
+    objs = [{"label": "person", "score": 0.37, "box_xyxy": [2060.0, 877.0, 2274.0, 1227.0]}]
+    spy = _SpyEmbedder()
+    stats = attach_crop_embeddings(
+        objs, Image.new("RGB", (2560, 1920)), request={"want_crop_embeddings": True, "stream_id": "walkway"},
+        params={}, embed_fn=spy, zones_by_stream=zones, model_id="m", embed_profile="embed_image", min_score=0.35)
+    assert objs[0]["zone"] == "patio"
+    assert objs[0]["embedding"] is not None and stats["embedded"] == 1 and stats["withheld_no_embed_zone"] == 0
 
 
 def test_artifact_payload_carries_crop_fields_and_patio_stays_vectorless() -> None:

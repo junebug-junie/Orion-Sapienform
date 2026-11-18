@@ -32,6 +32,35 @@ It then **fuses** candidates into a prompt-ready `MemoryBundleV1` with per-sourc
 
 - `POST /recall` — runs recall for a query and returns `MemoryBundleV1`
 - `GET /health` / `GET /ready` — liveness/readiness
+- `POST /lived/know` — `{"words", "turn_id"?, "max_hits"?}`. A deliberate lived-memory lookup:
+  the same retriever a chat turn uses, on Orion's own words (no 5-word floor, no rewrite). Hits are
+  `strong` (cleared the bar) or `weak` (below it, but share a word with the search), each re-checked
+  by the serving gate. Returns `status` (below, plus `busy` when another lookup is running and
+  `unverified` when matches were found but the re-check failed) and `degraded` reasons. Called by
+  `python -P -m orion.dig know <words>` (`orion/dig/know.py`, issue #3535). One lookup runs at a
+  time. Each lookup writes one `recall_telemetry` row off the reply path: verb `dig.know`,
+  `corr_id` = the turn id, `selected_ids` = the **strong** hits only (those count toward read
+  demand), weak ids in `lived_trace.weak_ids`. A call with no turn id gets `corr_id` `adhoc:<uuid>`
+  and profile `lived_memory.know.adhoc`, so operator runs can be left out of read demand. Reached at `RECALL_SERVICE_URL` from Hub (host
+  network) and at `http://orion-athena-recall:8260` from the harness governor (`app-net`);
+  `ORION_DIG_RECALL_URL` overrides both.
+
+**Lived-recall status per call** (`recall_telemetry.lived_status`, issue #3628;
+migration `services/orion-sql-db/manual_migration_recall_telemetry_lived_status_v1.sql`):
+`ok` (served by the full search) · `below_bar` (searched, nothing cleared the bar) ·
+`skipped_short` (too few content words) · `degraded` (exact words only; `backend_counts.lived_memory`
+says whether it served) · `timeout` / `error` (nothing served) · `off`. NULL = lived recall did not
+run on that call. `lived_trace` (jsonb) holds the rewritten queries, every candidate id that reached
+the rerank, the injected ids and the backend: ids and Orion's own search text only.
+
+Count the calls that could produce a false "no memory" on Hub turns:
+
+```sql
+SELECT lived_status, count(DISTINCT corr_id) AS turns
+FROM recall_telemetry
+WHERE verb = 'stance_react' AND created_at > now() - interval '14 days' AND lived_status IS NOT NULL
+GROUP BY 1 ORDER BY 2 DESC;
+```
 - `POST /debug/recall/compare` — Recall V1 vs shadow Recall V2 comparison (read-only)
 - `GET /debug/recall/eval-suite` — run built-in Recall V1/V2 evaluation corpus
 - `POST /debug/recall/eval-case` — run a single ad-hoc evaluation case
@@ -62,7 +91,7 @@ When cortex-exec logs `RPC timeout waiting on orion:exec:result:RecallService:..
 
 Provenance: `.env_example` → `docker-compose.yml` → `services/orion-recall/app/settings.py`
 
-**Gotcha: `docker exec ... env` does not prove what this service actually reads.** This service's `Dockerfile` does `COPY services/orion-recall /app` at build time, baking `.env` directly into the image; `settings.py`'s pydantic-settings `Config` also declares `env_file=".env"`, so it reads that baked-in file directly, not just docker-compose's `environment:` list. `docker exec orion-<node>-recall env` only shows the OS-level environment docker-compose actually injected -- if a key exists in `.env`/`.env_example` but is missing from `docker-compose.yml`'s `environment:` block, `docker exec ... env` will show nothing for it even though the app is reading a real value from the baked-in file. This bit real verification once (`RECALL_GRAPHITI_IN_CHAT`, 2026-07-13) -- the correct way to check what this service actually sees is to ask its own `Settings` object directly:
+**Gotcha: `docker exec ... env` does not prove what this service actually reads.** This service's `Dockerfile` does `COPY services/orion-recall /app` at build time, baking `.env` directly into the image; `settings.py`'s pydantic-settings `Config` also declares `env_file=".env"`, so it reads that baked-in file directly, not just docker-compose's `environment:` list. `docker exec orion-<node>-recall env` only shows the OS-level environment docker-compose actually injected -- if a key exists in `.env`/`.env_example` but is missing from `docker-compose.yml`'s `environment:` block, `docker exec ... env` will show nothing for it even though the app is reading a real value from the baked-in file. This bit real verification once (`RECALL_GRAPHITI_IN_CHAT`, 2026-07-13; key retired #3461) -- the correct way to check what this service actually sees is to ask its own `Settings` object directly:
 
 ```bash
 docker exec orion-<node>-recall python -c "from app.settings import settings; print(settings.<KEY>)"
@@ -100,7 +129,7 @@ Chatturn-only read path standing in for RDF's chat-turn fetch. **Live as of 2026
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
-| `RECALL_FALKOR_IN_CHAT` | `true` (code-level pydantic default stays `False` -- a safe fallback for any environment that hasn't set this key at all) | When `true`, `app/storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments` **swaps in** for the RDF chatturn fetch in `_query_backends` -- not additive like `RECALL_GRAPHITI_IN_CHAT` (that merges an extra rail; this replaces one, since the point of this migration is retiring RDF). Independent of `RECALL_ENABLE_RDF`. Only covers chatturn fragments (prompt/response text). |
+| `RECALL_FALKOR_IN_CHAT` | `true` (code-level pydantic default stays `False` -- a safe fallback for any environment that hasn't set this key at all) | When `true`, `app/storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments` **swaps in** for the RDF chatturn fetch in `_query_backends` -- not additive like the retired (#3461) `RECALL_GRAPHITI_IN_CHAT` (that merged an extra rail; this replaces one, since the point of this migration is retiring RDF). Independent of `RECALL_ENABLE_RDF`. Only covers chatturn fragments (prompt/response text). |
 | `RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT` | `true` (code-level pydantic default stays `False` -- a safe fallback for any environment that hasn't set this key at all) | The last live Fuseki read path in this service -- `storage/rdf_adapter.py`'s generic `fetch_rdf_fragments` (confirmed live 2026-07-22 via direct Fuseki container log read, not dead code). When `true`, `app/storage/falkor_neighborhood_adapter.py::fetch_falkor_neighborhood_fragments` **swaps in**: keyword-matches real `:Entity` nodes and walks `MENTIONS_ENTITY` to `:ChatTurn`s, rather than a blind SPARQL `?s ?p ?o` scan. Three disclosed, not-fully-closed scope differences from the RDF version -- see the module's own docstring: (1) entity-name matches only, not any triple; (2) `chat.history`-sourced turns only, not social-room/enrichment content; (3) `CONTAINS` is not word-bounded, so short keywords can still false-positive inside an unrelated entity name (live example: "nico" matched only "unicode"). A stopword filter closes the larger live-confirmed instance of (3) (generic words like "and" matching dozens of unrelated entities) but not all of it. Flipped live 2026-07-23 after a direct live test against a running container confirmed real, non-empty, sensible matches. |
 | `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Same shared instance as the substrate collector above -- not a new dependency. |
 | `FALKORDB_RECALL_GRAPH` | `orion_recall` | Read directly from the environment by `app/recall_falkor_store.py` (same "no pydantic field, must be listed in docker-compose's `environment:`" constraint as `FALKORDB_SUBSTRATE_GRAPH` above -- this service has no `env_file:` directive). |
@@ -188,8 +217,8 @@ Design: `docs/superpowers/specs/2026-09-29-recall-retrieval-query-architecture-d
 - **Feeds vs retrievers.** Query-independent context feeds (bus anomalies, recent Falkor chat, SQL chat pairs/messages, SQL timeline recent + related) run **once** per recall. Query-dependent retrievers (Falkor neighborhood, RDF, cards on the first sub-query, graph compression, anchor rail) run per sub-query. All of it runs concurrently, at most `RECALL_FETCH_CONCURRENCY` units at a time (default 4, anchor rail included), which also caps the fetch stage's Postgres connections per recall. Sync adapters (RDF, anchor RDF, v2 shadow) run in threads; a thread still running when the deadline fires keeps its connection until it finishes.
 - **Deadline.** One budget for the fetch: 80% of the caller's `deadline_ms`, else `RECALL_DEADLINE_MS_DEFAULT`. On expiry, pending backends are cancelled, completed ones are kept, and the decision says `deadline_hit=true`. The entity boost and v2 shadow compare only use what is left of the budget. The shadow compare only runs when the bundle is empty or vector-topped (main's effective triggers).
 - **`mode=context_only`.** Feeds only: no retrievers, no expansion, no boost (for verbs with no user text, e.g. reverie).
-- **Telemetry.** `recall.decision.v1` and `recall_telemetry` carry `query_chars`, `retrieval_query_source`, `sub_query_count`, `candidates_fetched`, `candidates_kept`, `deadline_hit`, `timings_ms` (`intake`, `feeds`, `retrievers`, `fetch`, `windowing`, `suppression`, `pcr_collectors` with `pcr_active_packet`/`pcr_concept_region`, `boost`, `fusion`, `eligible_count`, `shadow_compare`, `total`; feeds/retrievers are the slowest unit in each group since units overlap, and the top-level stages add up to roughly `total`). `latency_ms` is now end-to-end.
-- **PCR collectors under the deadline.** For purposeful (belief) recall, `active_packet` and `concept_region` run concurrently inside what is left of the recall deadline; one still running at the deadline is dropped, `deadline_hit` is set, and the rest of the recall is kept. The substrate store is warmed in the background at startup (when `RECALL_PCR_ENABLED` and `RECALL_CONCEPT_REGION_ENABLED` are on) so the first belief recall after a restart does not pay the cold Falkor hydration (6.25s measured live 2026-09-30); look for `recall_substrate_store_warmed elapsed_ms=` in the boot log.
+- **Telemetry.** `recall.decision.v1` and `recall_telemetry` carry `query_chars`, `retrieval_query_source`, `sub_query_count`, `candidates_fetched`, `candidates_kept`, `deadline_hit`, `timings_ms` (`intake`, `feeds`, `retrievers`, `fetch`, `windowing`, `suppression`, `pcr_collectors` with `pcr_concept_region`, `boost`, `fusion`, `eligible_count`, `shadow_compare`, `total`; feeds/retrievers are the slowest unit in each group since units overlap, and the top-level stages add up to roughly `total`). `latency_ms` is now end-to-end.
+- **PCR collectors under the deadline.** For purposeful (belief) recall, `concept_region` runs inside what is left of the recall deadline (the `active_packet` collector was retired, see §16); still running at the deadline, it is dropped, `deadline_hit` is set, and the rest of the recall is kept. There is no substrate warm-up any more: since 2026-10-06 `concept_region` reads FalkorDB directly with bounded queries and never loads the substrate graph (see §15).
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
@@ -216,7 +245,6 @@ Eval: `python services/orion-recall/evals/run_recall_bounded_retrieval_eval.py` 
 | `RECALL_ENABLE_CARDS` | `true` | When `true` and `RECALL_PG_DSN` is set, recall scores `memory_cards` rows as `source=cards`. |
 | `RECALL_CARDS_TIMEOUT_SEC` | `2.5` | Per-query cards rail budget (embedding + Postgres). |
 | `RECALL_CARDS_MAX_NEIGHBORS` | `6` | 1-hop graph neighbor fan-out cap. |
-| `RECALL_CARDS_EMBEDDING_URL` | derived | Defaults to `RECALL_VECTOR_EMBEDDING_URL` or `http://orion-athena-vector-host:8320/embedding`. |
 | `RECALL_CARDS_EMBED_TIMEOUT_SEC` | `5.0` | HTTP timeout per embed call to vector-host. |
 | `RECALL_CARDS_MIN_SIMILARITY` | `0.32` | Minimum cosine similarity vs query embedding. |
 | `RECALL_CARDS_EMBED_CONCURRENCY` | `4` | Parallel embed requests when warming card caches. |
@@ -451,10 +479,6 @@ If you see `rdf_chat` counts high but your desired quote didn’t appear in the 
 Vector is *always* 0 -- vector retrieval was removed from orion-recall in
 May 2026 (`RECALL_ENABLE_VECTOR` defaults `false`, `app/source_policy.py`
 always returns `allowed=False`). This is expected, not a bug to chase.
-
-### D) Verify what real chat turns actually recalled (crystallizations)
-
-`app/collectors/active_packet.py::fetch_active_packet_fragments()` (real `chat_general` PCR calls, not the Hub API route) logs every non-empty retrieval to `memory_crystallization_retrieval_events` — same table Hub's `/api/memory/active-packet` route writes to. Query by `session_id` to see exactly which `crystallization_ids` a given turn actually pulled in, and the fusion `trace` (rails, hit counts) that produced them. Empty-result retrievals are not logged (no empty-shell rows).
 
 ---
 
@@ -856,18 +880,42 @@ Note this only affects *scoring* (a continuous, soft decay) — it does not give
 
 ### Compose env-var defaults hardened (fixed 2026-07-14)
 
-`docker-compose.yml`'s `environment:` list (added by the compose-parity PR, #1021) crash-looped this service in production: `RECALL_SKIP_MAX_NOVELTY`, `RECALL_SKIP_SHIFT_NOVELTY_FLOOR`, `RECALL_CONTINUITY_SQL_MINUTES`, `RECALL_CONTINUITY_RENDER_BUDGET`, `RECALL_BELIEF_RENDER_BUDGET`, and `RECALL_CRYSTALLIZATION_VECTOR_COLLECTION` were missing from live `.env` and had no `${VAR:-default}` fallback, so compose substituted empty strings and pydantic Settings validation failed on every boot (`float_parsing`/`int_parsing` errors). Fixed live by syncing the missing keys into `.env` (`python scripts/sync_local_env_from_example.py --all-keys orion-recall`) and, in this changeset, adding compose-level `:-default` fallbacks matching `.env_example` so a missing `.env` key can't crash the service again — see `services/orion-recall/tests/test_docker_compose_numeric_defaults.py`. `RECALL_GRAPHITI_IN_CHAT`/`RECALL_GRAPHITI_ADAPTER_URL` remain deliberately unguarded (see the comment above them in `docker-compose.yml`) — they're `NEVER_SYNC_KEYS`-protected and a duplicated default here would drift from `.env_example` over time.
+`docker-compose.yml`'s `environment:` list (added by the compose-parity PR, #1021) crash-looped this service in production: `RECALL_SKIP_MAX_NOVELTY`, `RECALL_SKIP_SHIFT_NOVELTY_FLOOR`, `RECALL_CONTINUITY_SQL_MINUTES`, `RECALL_CONTINUITY_RENDER_BUDGET`, `RECALL_BELIEF_RENDER_BUDGET`, and `RECALL_CRYSTALLIZATION_VECTOR_COLLECTION` were missing from live `.env` and had no `${VAR:-default}` fallback, so compose substituted empty strings and pydantic Settings validation failed on every boot (`float_parsing`/`int_parsing` errors). Fixed live by syncing the missing keys into `.env` (`python scripts/sync_local_env_from_example.py --all-keys orion-recall`) and, in this changeset, adding compose-level `:-default` fallbacks matching `.env_example` so a missing `.env` key can't crash the service again — see `services/orion-recall/tests/test_docker_compose_numeric_defaults.py`. `RECALL_GRAPHITI_IN_CHAT`/`RECALL_GRAPHITI_ADAPTER_URL` were left unguarded at the time (`NEVER_SYNC_KEYS`-protected); both were retired with the `active_packet` collector in #3461.
 
 ## 15) Concept-region collector (substrate concept graph in belief-lane recall)
 
-`app/collectors/concept_region.py::fetch_concept_region_fragment()` is a PCR collector
-alongside `active_packet`, wired into `process_recall`'s purposeful phase in `app/worker.py`.
+`app/collectors/concept_region.py::fetch_concept_region_fragment()` is the PCR collector
+wired into `process_recall`'s purposeful phase in `app/worker.py`.
 It matches the current turn's text against concept labels already materialized in the
 shared substrate graph (golden Orion/Juniper/Claude/relationship concepts seeded by `orion-hub`,
 plus organically-grown topic-foundry concepts) and, on a match, returns a bounded
 neighborhood fragment scoped to that turn. Matching is deliberately dumb — case-insensitive
 label substring match, no embedding/LLM call — and it never does a store read at all if the
 turn text matches nothing.
+
+**How it reads FalkorDB (since 2026-10-06): bounded direct queries, never the whole graph.**
+With `SUBSTRATE_STORE_BACKEND=falkor`, `app/substrate_store.py` hands the collector a
+`FalkorDirectConceptStore` (`orion/substrate/falkor_direct.py`), not a `FalkorSubstrateStore`.
+Each turn runs one light `GRAPH.RO_QUERY` that ranks the top 500 concepts by salience and
+confidence and returns only their labels; the labels are matched in Python. No match = done
+(~11ms median live). On a match, two more bounded reads fetch the matched concepts' full rows and
+the edges among the top 500 most salient edges touching the top 500 concepts that touch a
+matched concept (~140ms median live, most of it FalkorDB walking ~32k edges to rank them).
+Reinforcement reads each matched concept once (node and identity key in one query) and
+writes it with one `MERGE ... SET`; if the recall gives up mid-loop (deadline), no further
+node is written. With the reinforcement included, a matched turn measured ~100ms median,
+175ms max on a copy of the production graph (2026-10-06 follow-up PR).
+**Hung FalkorDB:** each socket read is capped at 1.5s, and after 3 consecutive timeouts a
+circuit breaker skips concept_region for 60s (`recall_concept_region_breaker_open` /
+`recall_concept_region_breaker_skip` log lines, counters in `app.substrate_store.breaker_stats()`).
+No fallback: a skipped turn just has no concept fragments.
+**Index:** every substrate store bootstraps `CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)`
+(idempotent, bounded, never blocks startup; `orion/substrate/falkor_store.py::ensure_substrate_indexes`).
+The selection is identical to the old cache read: 152/152 real recall queries produced the
+same fragments in the same order (`scripts/compare_concept_region_direct_vs_cache.py`).
+Before this, recall built a complete in-process copy of the graph (17-25s since PR #2500)
+and never refreshed it, so concept_region also read a graph frozen at boot. The handle has
+no `snapshot()`; `routed`/`graphdb`/`sparql` backends are refused (they would load a graph).
 
 **Reinforcement-on-recall, live since PR #1173:** the actual live call site in `app/worker.py`
 uses `fetch_concept_region_fragment_and_reinforce()`, not the plain read-only function above
@@ -886,7 +934,7 @@ don't) is in `app/collectors/CONCEPT_REINFORCEMENT_DESIGN.md`.
 | Var | Default | Meaning |
 |---|---|---|
 | `RECALL_CONCEPT_REGION_ENABLED` | `true` | Master on/off switch for this collector. |
-| `SUBSTRATE_STORE_BACKEND` | `falkor` | Which substrate store backend `app/substrate_store.py::get_substrate_store()` builds (shared with `orion-cortex-exec`/`orion-hub`, same `FalkorDB` instance/graph). |
+| `SUBSTRATE_STORE_BACKEND` | `falkor` | `falkor` = direct bounded reads (above); `in_memory`/unset = empty in-memory store; anything else is refused. Same `FalkorDB` instance/graph as `orion-cortex-exec`/`orion-hub`. |
 | `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Bridge-network Docker DNS — this service runs in bridge mode, **not** Hub's host-mode `127.0.0.1:6380` convention. |
 | `FALKORDB_SUBSTRATE_GRAPH` | `orion_substrate` | Graph name inside FalkorDB. |
 
@@ -897,6 +945,7 @@ substrate store failed to construct (bad `FALKORDB_URI`, FalkorDB unreachable), 
 degrades to `[]` silently — check Hub's own Concept Atlas tab or `orion-hub` logs for
 `recall_substrate_store_init_failed` first.
 
+**Historical (superseded 2026-10-06 — recall no longer holds a `FalkorSubstrateStore` cache).**
 **Formerly a known limitation, fixed by PR #1159:** `FalkorSubstrateStore` used to hydrate its
 snapshot once at process start and never refresh — concepts added by `orion-hub`'s
 topic-foundry scheduler after this service's first `concept_region` call were invisible here
@@ -939,3 +988,114 @@ that hash pattern again, that's this same failure mode recurring, not a new bug 
 `git log` for the responsible commit before assuming the running container is also affected
 (a running container built from an earlier good image is not automatically broken by a bad
 commit landing on `main` afterward, but the next rebuild would be).
+
+## 16) What the Juniper chat prompt's DURABLE MEMORY may carry (issue #3461)
+
+The two PCR phases (`recall_phase=continuity` and `purposeful`) are called only by
+`orion-cortex-exec`'s `pcr_chat_memory.py` and build the chat prompt's DURABLE MEMORY.
+Four sources were cut from that path on 2026-11-15, because live prompts showed only noise:
+
+| Cut | Where | How |
+|---|---|---|
+| AI Town NPC chatter | `sql_chat.fetch_chat_history_pairs` unions `aitown_chat_history_log` | `apply_chat_memory_exclusions()` sets `sql_chat_include_aitown=False`; the query scans `chat_history_log` only. |
+| Bus hop-latency z-scores | `bus_synaptic_anomaly` feed | `apply_chat_memory_exclusions()` sets `enable_bus_synaptic_anomaly=False`; the fetch never runs. |
+| `active_packet` "durable beliefs" | `app/collectors/active_packet.py` | Collector deleted, removed from every intent plan and belief profile, with its settings (`RECALL_ACTIVE_PACKET_ENABLED`, `RECALL_GRAPHITI_*`, `RECALL_CRYSTALLIZATION_VECTOR_COLLECTION`, `RECALL_CARDS_EMBEDDING_URL`). Crystallizations stay in Postgres; Hub's `/api/memory/active-packet` route is unchanged. |
+| Topic-foundry concepts | `concept_region` collector | Nodes with id prefix `sub-concept-topicfoundry-` and edges touching them are dropped before render and before reinforcement. |
+
+Other recall profiles (`reflect.v1`, `social.room.v1`, journals) still get the AI Town union
+and the bus anomaly feed. The exclusions apply only when `RECALL_PCR_ENABLED` is true, which
+is the only mode in which cortex-exec sends the continuity/purposeful phases. An empty continuity or belief digest now renders as an empty
+string, not a bare header.
+
+## 17) Lived-memory recall (issues #3533, #3534, #3573, "Recall rev 2" steps 1-2)
+
+Code: `app/lived_memory.py` (reader + index loop), `orion/memory/lived_memory.py` (which rows may be
+served, and how a row becomes one document). Spec: the "Recall rev 2" section of
+`docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md`.
+
+What it does: on the PCR continuity phase (once per chat turn the skip gate lets through), it
+finds the few lived memories that fit the turn and appends them to DURABLE MEMORY:
+
+```
+[Lived memories that fit this turn -- kind, record id, date]
+- (episode_memory/happened · episode_memory:<uuid> · 2026-11-11) Juniper told me ...
+```
+
+Stores: `episode_memory` (active, not rejected, not expired, not superseded by a live
+correction), `memory_crystallizations` kind `stance` (active), `person_fact` (not removed, person
+active). Chroma is only an index: every hit is re-gated against the live snapshot, and the chosen
+ids are re-read from Postgres right before they are served.
+
+Pipeline: content-word floor (`RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS`) -> meaning candidates
+(vector-host `/embedding`, Chroma `RECALL_LIVED_MEMORY_COLLECTION`) + exact-word candidates (BM25,
+names weighted) -> local cross-encoder (vector-host `/rerank`) -> bar
+(`RECALL_LIVED_MEMORY_MIN_FIT`, sigmoid of the reranker logit; uncalibrated, tuned by replay) ->
+rank by `logit + 1.0*recency(30 d half-life) + 0.5*importance + 0.5*is_correction` (logit units)
+-> at most `RECALL_LIVED_MEMORY_MAX_LINES`. Zero lines is a valid answer. It starts at intake and
+runs while the other backends fetch.
+
+Replay 2026-11-17 (11 real referring messages, Juniper's last 150 messages; reranker
+bge-reranker-v2-m3 on the P4, bar 0.004, floor 5 content words): 9/11 targets injected (the
+2026-11-14 el Coco miss included), 3 of 23 small-talk messages inject anything, 1.9 lines per
+message on average, lived-memory time p50 1.4 s / p90 2.5 s (overlapped with the fetch). Before:
+0 of 11 (no chat reader of these stores existed).
+
+Read log: every injected doc id is a `lived_memory` item in the bundle, so it lands in
+`recall_telemetry.selected_ids`; the log line `lived_memory_injected corr_id=... ids=... fits=...`
+carries the same ids, and `recall_debug.lived_memory` carries ids, fits and timings (never text).
+
+Index: `index_loop` re-embeds new or changed records every
+`RECALL_LIVED_MEMORY_INDEX_INTERVAL_SEC` (batch `RECALL_LIVED_MEMORY_INDEX_BATCH`) through
+`orion/introspect/semantic_index.py` (vector-host embeds, upsert on `orion:vector:semantic:upsert`,
+orion-vector-writer stores). First backlog / rebuild: `scripts/backfill_lived_memory_index.py`
+(CLAUDE.md s14 protocol, read-only on Postgres).
+
+Eval: `evals/run_lived_memory_replay_eval.py` replays real Juniper messages from a host-side
+bank (`~/.orion/evals/lived_memory_recall_bank.json`, mode 600, ids only) and prints hit rate,
+small-talk injection and latency per bar; `evals/test_lived_memory_replay_eval.py` runs the same
+scoring on made-up fixtures in CI.
+
+### 17a) Step 2: query rewrite and link-following (issue #3534)
+
+Code: `app/lived_rewrite.py`, `app/lived_links.py`, wired in `app/lived_memory.py`.
+
+- **Query rewrite.** Before searching, a small local model (LLM gateway route
+  `RECALL_LIVED_MEMORY_REWRITE_ROUTE`, default `quick_turn`: the fast class at interactive
+  priority; never metacog, never an outside API) reads the message plus the last 3 turns of the
+  same `session_id` from `chat_history_log` (6 h window) and writes up to 3 short searches, or
+  `NONE` for small talk. Each search runs through the same meaning + exact-word retrievers; all
+  lists merge by reciprocal-rank fusion. The reranker scores each memory against the message
+  followed by the searches. Past `RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC`, or on any error, the
+  raw message is searched alone. A message under the content-word floor is neither searched nor
+  rewritten (a rewrite bypass was tried: small talk injecting rose to 35%, no hit gained).
+  Messages over 1,500 characters skip the rewrite.
+- **Link-following.** Memories that share a referent (`episode_memory_referent`) with the top 5
+  candidates, or whose referent's name (name-class `referent_alias` only, 4+ characters, not a
+  function word) appears in the message or a search, join the rerank: two-hop personalized
+  PageRank, hubs on more than 30 memories left out, at most `RECALL_LIVED_MEMORY_LINK_TOP_K`.
+  A neighbour reaches the prompt only through the rerank and the bar. The graph reloads in the
+  background every 10 minutes.
+
+### 17b) Degraded mode (issue #3573)
+
+Recall never silently skips. When the reranker is down, errors or runs past the deadline, the
+exact-word hits are ranked by BM25 alone (at most 3 lines, each sharing 2+ content words or a
+name with the turn) under a header that says the search ran degraded. When the embedder is down
+or hangs, the exact-word candidates are still reranked, and the block still says degraded. A
+degraded search that finds nothing puts a one-line note in the prompt ("not proof there is no
+memory"), except for small talk the rewrite answered NONE. If the whole lived recall misses the
+worker's deadline, the worker runs the same exact-word fallback from the in-memory snapshot.
+The reranker gets the candidates in chunks of 8 (`RERANK_CHUNK`), best-retrieved first, with the
+message's own meaning and exact-word hits taking turns (issue #3662). If the deadline or an error
+stops it after at least one chunk, the scored chunks are kept and served (`rerank_partial` in the
+trace, status `ok`). If nothing in the scored chunks clears the bar, the unscored exact-word hits
+are served degraded (reason `rerank_partial`), so a part-search never reads as "below the bar".
+Cause found 2026-11-17: 5 of 7 degraded chat turns overlapped orion-whisper-tts synthesis on the
+same Tesla P4; the other 2 lost 1.8-2.6 s to the query rewrite first.
+Telemetry: `recall_telemetry.backend_counts.lived_memory_degraded = 1`, and
+`recall_telemetry.timings_ms.lived_memory_{rewrite,rerank,total}`; `recall_debug.lived_memory`
+carries `backend`, `degraded` reasons and the rewritten searches.
+
+Kill switches: `RECALL_LIVED_MEMORY_ENABLED=false` (all lived recall),
+`RECALL_LIVED_MEMORY_REWRITE_ENABLED=false` (rewrite only), `RECALL_LIVED_MEMORY_LINK_TOP_K=0`
+(links only). Restart orion-recall after changing any of them.

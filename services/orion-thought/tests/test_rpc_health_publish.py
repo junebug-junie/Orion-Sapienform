@@ -255,6 +255,7 @@ async def test_lifespan_starts_and_stops_publisher(monkeypatch) -> None:
         "run_reasoning_worker",
         "run_visual_chain_worker",
         "run_visual_chain_watchdog",
+        "run_visual_painting_gap_watchdog",
         "warm_pool",
     ):
         monkeypatch.setattr(main_module, name, _noop)

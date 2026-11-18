@@ -18,6 +18,7 @@ from orion.core.schemas.cognitive_substrate import (
 )
 from orion.substrate.adapters._common import make_temporal
 from orion.substrate.relational.adapters import concept_induction_ctx as module
+from orion.substrate.relational.registry import ProducerUnavailableError
 from orion.substrate.store import InMemorySubstrateGraphStore
 
 
@@ -154,33 +155,41 @@ def test_store_with_only_out_of_scope_anchors_degrades_to_none():
     assert record is None
 
 
-def test_store_construction_failure_degrades_to_none(monkeypatch):
+def test_store_construction_failure_raises_producer_unavailable(monkeypatch):
     def _boom():
         raise ConnectionError("falkor unreachable")
 
     monkeypatch.setattr(module, "build_substrate_store_from_env", _boom)
 
-    record = module.map_concept_induction_ctx_to_substrate({})
+    # Raises so the layer marks the producer degraded and retries; None
+    # would count as a fresh pull (2026-10-06, turn-latency L6).
+    with pytest.raises(ProducerUnavailableError):
+        module.map_concept_induction_ctx_to_substrate({})
 
-    assert record is None
 
-
-def test_store_query_failure_degrades_to_none():
+def test_store_query_failure_raises_producer_unavailable():
     class _BoomStore:
+        def snapshot(self):  # fallback refresh succeeds; the query is what fails
+            return None
+
         def query_concept_region(self, *, limit_nodes=64, limit_edges=64):
             raise RuntimeError("falkor connection dropped mid-query")
 
     module._STORE = _BoomStore()
 
-    record = module.map_concept_induction_ctx_to_substrate({})
+    # Raises so the layer marks the producer degraded and retries; None
+    # would count as a fresh pull (2026-10-06, turn-latency L6).
+    with pytest.raises(ProducerUnavailableError):
+        module.map_concept_induction_ctx_to_substrate({})
 
-    assert record is None
 
-
-def test_degraded_query_result_degrades_to_none():
+def test_degraded_query_result_raises_producer_unavailable():
     from orion.substrate.store import SubstrateNeighborhoodSliceV1, SubstrateQueryResultV1
 
     class _DegradedStore:
+        def snapshot(self):  # fallback refresh succeeds; the query is what fails
+            return None
+
         def query_concept_region(self, *, limit_nodes=64, limit_edges=64):
             return SubstrateQueryResultV1(
                 query_kind="concept_region",
@@ -192,9 +201,10 @@ def test_degraded_query_result_degrades_to_none():
 
     module._STORE = _DegradedStore()
 
-    record = module.map_concept_induction_ctx_to_substrate({})
-
-    assert record is None
+    # Raises so the layer marks the producer degraded and retries; None
+    # would count as a fresh pull (2026-10-06, turn-latency L6).
+    with pytest.raises(ProducerUnavailableError):
+        module.map_concept_induction_ctx_to_substrate({})
 
 
 def test_none_ctx_does_not_raise():

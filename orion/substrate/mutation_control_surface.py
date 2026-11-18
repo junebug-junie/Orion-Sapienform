@@ -69,6 +69,10 @@ class ControlSurfaceWriteError(RuntimeError):
     """
 
 
+class ControlSurfaceReadError(RuntimeError):
+    """A configured durable backend failed a read (distinct from "no row")."""
+
+
 def _decode_json(raw: Any) -> Any:
     if raw is None:
         return None
@@ -163,6 +167,16 @@ class RuntimeControlSurfaceStore:
         return self._last_error is not None
 
     def get(self, key: str) -> dict[str, Any] | None:
+        """Fail-open read: a backend error reads as "no row". Callers that
+        must tell the two apart (e.g. an apply that records a rollback value) use read()."""
+        try:
+            return self.read(key)
+        except ControlSurfaceReadError:
+            return None
+
+    def read(self, key: str) -> dict[str, Any] | None:
+        """Strict read: None means "no row"; a backend failure raises
+        ControlSurfaceReadError instead of masquerading as "never set"."""
         if self._source_kind == "postgres" and self.postgres_url:
             try:
                 from sqlalchemy import text
@@ -177,7 +191,7 @@ class RuntimeControlSurfaceStore:
                 return json.loads(row[0])
             except Exception as exc:
                 self._last_error = str(exc)
-                return None
+                raise ControlSurfaceReadError(f"control surface read failed for {key!r}: {exc}") from exc
         if self._source_kind == "sqlite" and self.sql_db_path:
             try:
                 with sqlite3.connect(self.sql_db_path) as conn:
@@ -190,7 +204,7 @@ class RuntimeControlSurfaceStore:
                 return json.loads(row[0])
             except Exception as exc:
                 self._last_error = str(exc)
-                return None
+                raise ControlSurfaceReadError(f"control surface read failed for {key!r}: {exc}") from exc
         return self._memory.get(key)
 
     def upsert(self, *, key: str, value: dict[str, Any]) -> None:

@@ -1,0 +1,114 @@
+# Core memory pages, Phase 1a (docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md):
+# Orion's page:juniper. The deterministic cite check, the Juniper-facts eval scorer, the RELATIONSHIP
+# render in the harness prefix, the grounding capsule in orion-cortex-exec, the felt-state lane, and the
+# nightly fold tick in orion-durable-runs. No DB, bus or LLM (fakes only).
+
+name: core-memory-pages-tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/memory/pages/**"
+      - "orion/harness/prefix.py"
+      - "orion/harness/tests/test_core_page_relationship_block.py"
+      - "orion/schemas/thought.py"
+      - "orion/schemas/self_concept_history.py"
+      - "orion/substrate/felt_state_reader.py"
+      - "orion/schemas/context_provenance.py"
+      - "orion/substrate/tests/test_felt_state_core_page_lane.py"
+      - "orion/substrate/tests/test_felt_state_self_definition_lane.py"
+      - "orion/cognition/personality/**"
+      - "services/orion-cortex-exec/app/grounding_capsule.py"
+      - "services/orion-cortex-exec/tests/test_core_page_grounding.py"
+      - "services/orion-durable-runs/app/core_page_fold.py"
+      - "services/orion-durable-runs/app/settings.py"
+      - "services/orion-durable-runs/tests/test_core_page_fold.py"
+      - "services/orion-durable-runs/tests/test_core_page_fold_postgres.py"
+      - "services/orion-equilibrium-service/app/chat_turn_metacog_gate.py"
+      - "services/orion-equilibrium-service/tests/test_metacog_gate_core_pages.py"
+      - ".github/workflows/core-memory-pages-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/memory/pages/**"
+      - "orion/harness/prefix.py"
+      - "orion/harness/tests/test_core_page_relationship_block.py"
+      - "orion/schemas/thought.py"
+      - "orion/schemas/self_concept_history.py"
+      - "orion/substrate/felt_state_reader.py"
+      - "orion/schemas/context_provenance.py"
+      - "orion/substrate/tests/test_felt_state_core_page_lane.py"
+      - "orion/substrate/tests/test_felt_state_self_definition_lane.py"
+      - "orion/cognition/personality/**"
+      - "services/orion-cortex-exec/app/grounding_capsule.py"
+      - "services/orion-cortex-exec/tests/test_core_page_grounding.py"
+      - "services/orion-durable-runs/app/core_page_fold.py"
+      - "services/orion-durable-runs/app/settings.py"
+      - "services/orion-durable-runs/tests/test_core_page_fold.py"
+      - "services/orion-durable-runs/tests/test_core_page_fold_postgres.py"
+      - "services/orion-equilibrium-service/app/chat_turn_metacog_gate.py"
+      - "services/orion-equilibrium-service/tests/test_metacog_gate_core_pages.py"
+      - ".github/workflows/core-memory-pages-tests.yml"
+
+jobs:
+  unit:
+    name: page:juniper fold, check, render
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-durable-runs/requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install "loguru>=0.7" "python-dotenv==1.0.1" "asyncpg==0.29.0" "pyaml==25.7.0"
+      - name: Page fold check, eval scorer, RELATIONSHIP render, felt-state lane
+        run: |
+          python -m pytest -q -p no:cacheprovider orion/memory/pages/tests \
+            orion/harness/tests/test_core_page_relationship_block.py \
+            orion/substrate/tests/test_felt_state_core_page_lane.py \
+            orion/substrate/tests/test_felt_state_self_definition_lane.py
+      - name: orion-durable-runs nightly fold tick
+        working-directory: services/orion-durable-runs
+        run: python -m pytest -q -p no:cacheprovider tests/test_core_page_fold.py
+
+  cortex-exec:
+    name: page:juniper on the grounding capsule (orion-cortex-exec)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-cortex-exec/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Grounding capsule carries the page; flag off and read failure fall back
+        working-directory: services/orion-cortex-exec
+        run: PYTHONPATH=${{ github.workspace }}/services/orion-cortex-exec:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_core_page_grounding.py tests/test_grounding_capsule_assembly.py
+
+  equilibrium:
+    name: metacog upstream keeps only the page version (orion-equilibrium-service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-equilibrium-service/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Metacog upstream names the page version, never copies its text
+        working-directory: services/orion-equilibrium-service
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_metacog_gate_core_pages.py

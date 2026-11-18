@@ -401,7 +401,7 @@ metric-quality-gate discipline — real data, not a schema read):
   canonical store) — DECLINED. Live rows show `summary` and `subject`
   holding VERBATIM personal chat content, not an abstraction the schema
   name implies. One real sample named a family member's medical history
-  (DVT, hospitalization) by name. No safe column or `kind` filter exists on
+  (health details) by name. No safe column or `kind` filter exists on
   this table as it stands — `kind='semantic'` rows are equally raw. Wiring
   this in would put a real, unconsenting third party's health information
   into a diffusion prompt and the Hub UI. Not built.
@@ -431,7 +431,7 @@ narration sentence.
   covers a sibling, free-form LLM-narrated "Curiosity" reflection
   (`source_ref` prefix `curiosity:`) — live-checked and confirmed to quote
   sensitive personal content when reflecting on memory-gating patterns (a
-  real sample referenced "wife Amanda, hospital" while discussing which
+  real sample referenced "[spouse name] + [health detail]" while discussing which
   crystallizations get kept vs. rejected). The allowlist deliberately
   excludes it; a blacklist keyed on `curiosity:` would have been one
   future-producer away from silently admitting the next unreviewed

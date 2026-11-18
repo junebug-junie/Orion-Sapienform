@@ -4,7 +4,6 @@
   const SECTION_LABELS = {
     context_window: 'Context window',
     claims: 'Claims / consensus / divergence',
-    commitments: 'Commitments',
     routing: 'Routing',
     repair: 'Repair',
     deliberation: 'Deliberation',
@@ -140,7 +139,6 @@
     const gifInterpretation = debug.social_gif_interpretation && typeof debug.social_gif_interpretation === 'object' ? debug.social_gif_interpretation : {};
     const liveContext = getSection(live, 'context_window');
     const liveClaims = getSection(live, 'claims');
-    const liveCommitments = getSection(live, 'commitments');
     const liveFreshness = getSection(live, 'freshness');
     const liveSafety = getSection(live, 'safety');
     const liveResumptive = getSection(live, 'resumptive');
@@ -158,7 +156,6 @@
       { label: 'Epistemic', value: epistemic, tone: 'amber' },
       { label: 'Context', value: formatCountLabel(countStateItems(liveContext, 'selected_state'), 'selected', 'selected'), tone: 'emerald' },
       { label: 'Claims', value: formatCountLabel(countStateItems(liveClaims, 'selected_state'), 'active', 'active'), tone: 'violet' },
-      { label: 'Commitments', value: formatCountLabel(countStateItems(liveCommitments, 'selected_state'), 'open', 'open'), tone: 'fuchsia' },
       { label: 'Freshness', value: formatCountLabel(countStateItems(liveFreshness, 'excluded_state'), 're-ground', 're-ground'), tone: 'orange' },
       { label: 'Safety', value: safetyOmissions ? `${safetyOmissions} omitted` : 'bounded', tone: safetyOmissions ? 'rose' : 'gray' },
     ];

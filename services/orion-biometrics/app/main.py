@@ -26,12 +26,14 @@ from app.ambient_audio_snapshot import load_ambient_audio_snapshot
 from app.ambient_spike_detector import AmbientSpikeDetector, AmbientSpikeDetectorConfig
 from app.cabinet_snapshot import load_cabinet_sensors_snapshot
 from app.metrics import collect_biometrics, collect_disk_capacity
-from app.ilo import IloPoller
+from app.vector_db_footprint import VectorDbFootprintPoller
+from app.ilo import IloPoller, parse_proxy_bmcs
 from app.pdu import PduPoller, parse_outlets, parse_proxy_outlets
 from orion.telemetry.biometrics_pipeline import (
     BiometricsPipeline,
     PipelineConfig,
     aggregate_fleet_measurements,
+    board_temp_c_max,
 )
 from app.settings import settings
 
@@ -187,6 +189,17 @@ _ilo_poller = IloPoller(
     timeout_sec=settings.ILO_REQUEST_TIMEOUT_SEC,
 )
 
+# Chroma footprint (size on disk + rows per collection). Slow background poll; the
+# heartbeat only reads its cache. Nodes without the Chroma dir report not_present.
+_vector_db_poller = VectorDbFootprintPoller(
+    enabled=settings.VECTOR_DB_FOOTPRINT_ENABLED,
+    data_path=settings.VECTOR_DB_DATA_PATH,
+    base_url=settings.VECTOR_DB_URL,
+    alert_bytes=settings.VECTOR_DB_ALERT_BYTES,
+    interval_sec=settings.VECTOR_DB_POLL_INTERVAL_SEC,
+    timeout_sec=settings.VECTOR_DB_REQUEST_TIMEOUT_SEC,
+)
+
 # Per-outlet power from the rack PDU. This is what gives circe a chassis figure at all: it
 # has no reachable BMC, so `_ilo_poller` is permanently `not_configured` there and every fleet
 # total has carried `measurements_missing: {"chassis_watts": ["circe"]}`. Configured per node
@@ -218,6 +231,19 @@ _pdu_proxy_pollers: Dict[str, PduPoller] = {
 }
 
 
+# BMCs polled on another node's behalf (hecate's, from athena). Same shape as the PDU proxy.
+_ilo_proxy_pollers: Dict[str, IloPoller] = {
+    node: IloPoller(
+        cfg["host"],
+        cfg["username"],
+        cfg["password"],
+        interval_sec=settings.ILO_POLL_INTERVAL_SEC,
+        timeout_sec=settings.ILO_REQUEST_TIMEOUT_SEC,
+    )
+    for node, cfg in parse_proxy_bmcs(settings.ILO_PROXY_NODES).items()
+}
+
+
 def _proxy_measurements() -> Dict[str, Dict[str, float]]:
     """Per-node measurements this hub read on another node's behalf.
 
@@ -231,6 +257,18 @@ def _proxy_measurements() -> Dict[str, Dict[str, float]]:
         watts = detail.get("pdu_watts")
         if isinstance(watts, (int, float)) and not isinstance(watts, bool) and watts >= 0.0:
             out[node] = {"chassis_watts": float(watts), "pdu_watts": float(watts)}
+    for node, poller in _ilo_proxy_pollers.items():
+        detail = poller.details()
+        values = out.setdefault(node, {})
+        # BMC watts fill only a gap: the PDU reading (wall power) wins when both exist.
+        watts = detail.get("ilo_power_watts")
+        if isinstance(watts, (int, float)) and not isinstance(watts, bool) and watts >= 0.0:
+            values.setdefault("chassis_watts", float(watts))
+        board_temp = board_temp_c_max(detail.get("ilo_thermal_c"))
+        if board_temp is not None:
+            values["board_temp_c_max"] = board_temp
+        if not values:
+            del out[node]
     return out
 
 
@@ -265,6 +303,7 @@ def _heartbeat_details() -> Dict[str, Any]:
     return {
         **collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS),
         **_ilo_poller.details(),
+        **_vector_db_poller.details(),
     }
 
 
@@ -321,6 +360,9 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
         pipeline_input["ilo"] = _ilo_poller.details()
         pipeline_input["pdu"] = _pdu_poller.details()
         pipeline_input["disk_capacity"] = collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS)
+        # Per-container CPU (act energy cost, 2026-10-29). Same extra="ignore" trap as ilo/pdu:
+        # merged after validation, so it feeds measurements but never the published sample.
+        pipeline_input["containers"] = sample_data.get("containers")
         summary, induction = _pipeline.update(pipeline_input)
 
         raw_payload = BiometricsPayload(
@@ -639,9 +681,12 @@ async def lifespan(app: FastAPI):
     hunter_stop = asyncio.Event()
 
     await _ilo_poller.start_background()
+    await _vector_db_poller.start_background()
     await _pdu_poller.start_background()
     for _proxy in _pdu_proxy_pollers.values():
         await _proxy.start_background()
+    for _bmc in _ilo_proxy_pollers.values():
+        await _bmc.start_background()
 
     if settings.BIOMETRICS_MODE in {"agent", "both"}:
         metrics_worker = BiometricsWorker(chassis_cfg(), interval_sec=settings.TELEMETRY_INTERVAL)
@@ -683,9 +728,12 @@ async def lifespan(app: FastAPI):
             except Exception:
                 hunter_task.cancel()
         await _ilo_poller.stop()
+        await _vector_db_poller.stop()
         await _pdu_poller.stop()
         for _proxy in _pdu_proxy_pollers.values():
             await _proxy.stop()
+        for _bmc in _ilo_proxy_pollers.values():
+            await _bmc.stop()
 
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, lifespan=lifespan)
@@ -753,6 +801,12 @@ def _power_telemetry_health() -> Dict[str, Any]:
 
     return {
         "ilo": _state(_ilo_poller.enabled, ilo_detail, "ilo"),
+        # Per proxied node; carries the BMC's thermal/fan readings too, which the cluster
+        # fill (chassis_watts only) does not forward.
+        "ilo_proxy": {
+            node: {**_state(p.enabled, p.details(), "ilo"), "detail": p.details()}
+            for node, p in _ilo_proxy_pollers.items()
+        },
         "pdu": {
             **_state(_pdu_poller.enabled, pdu_detail, "pdu"),
             # Echoed so a misconfigured outlet map is visible without shelling into the host --

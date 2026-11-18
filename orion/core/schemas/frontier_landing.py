@@ -38,7 +38,12 @@ class FrontierLandingRequestV1(BaseModel):
     landing_context: Dict[str, Any] = Field(default_factory=dict)
     current_substrate_node_refs: List[str] = Field(default_factory=list, max_length=128)
     current_substrate_edge_refs: List[str] = Field(default_factory=list, max_length=256)
-    graph_cognition_brief_refs: List[str] = Field(default_factory=list, max_length=32)
+    graph_cognition_brief_refs: List[str] = Field(
+        default_factory=list,
+        description="RETIRED 2026-11-16 (#3393, PR #3522): always empty. It named the GraphCognitionReportV1 / "
+        "MetacogPerceptionBriefV1 inputs; the package that built them is deleted. Empty means retired, not quiet. "
+        "Kept only so stored rows still validate.",
+        max_length=32)
     requested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

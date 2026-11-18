@@ -38,38 +38,9 @@ if (
 
 from datetime import datetime, timezone
 
-from orion.core.schemas.substrate_mutation import MutationSignalV1
 from orion.substrate.mutation_queue import SubstrateMutationStore
 from orion.substrate import mutation_control_surface
 from scripts import api_routes
-
-
-def _continuity_pressure_signals(strength: float) -> list[MutationSignalV1]:
-    """A literal stand-in for what orion.substrate.mutation_self_revision's
-    prediction_error_mutation_signals() used to produce for a continuity_pressure
-    self-model dimension (module deleted 2026-07-22, SelfStateV1 burn --
-    api_routes._self_revision_signals_from_latest_self_state now always returns
-    [] since self_state has no producer). These tests exist to cover the
-    scheduler's double-gating/kill-lever behavior around whatever this signal
-    source returns, independent of what used to produce it."""
-    return [
-        MutationSignalV1(
-            event_kind="self_model_drift:continuity_pressure",
-            anchor_scope="orion",
-            subject_ref="entity:orion",
-            target_surface="cognitive_identity_continuity_adjustment",
-            target_zone="concept_graph",
-            strength=strength,
-            evidence_refs=["self_state:ss-revision-scheduler", "self_dimension:continuity_pressure"],
-            source_ref="self_state:ss-revision-scheduler",
-            metadata={
-                "source_kind": "self_model_prediction_error",
-                "self_dimension_id": "continuity_pressure",
-                "prediction_error": round(strength, 6),
-                "trajectory": 0.0,
-            },
-        )
-    ]
 
 
 @pytest.fixture
@@ -90,6 +61,8 @@ def scheduler_fixture(monkeypatch):
     monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", SubstrateMutationStore())
     monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_SURFACES", {"routing": {"chat_reflective_lane_threshold": 0.5}})
     monkeypatch.setattr(api_routes, "substrate_autonomy_runtime_supported", lambda: (True, "supported"))
+    # R3 reader 6 reads Redis at the decision point; tests never touch the live bus.
+    monkeypatch.setattr(api_routes, "_mutation_arousal_level", lambda: None)
     return {
         "routing_telemetry": [
             {
@@ -481,101 +454,101 @@ def test_scheduler_recall_strategy_proposals_are_operator_gated_no_apply(monkeyp
     assert all(proposal.rollout_state in {"pending_review", "trialed", "proposed", "queued", "rejected"} for proposal in recall_proposals)
 
 
-def test_scheduler_self_revision_disabled_by_default_signal_never_enters_cycle(monkeypatch, scheduler_fixture) -> None:
-    # SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED is unset -> defaults false.
-    monkeypatch.setattr(
-        api_routes,
-        "_self_revision_signals_from_latest_self_state",
-        lambda **kwargs: _continuity_pressure_signals(0.9),
-    )
-    payload = api_routes.execute_substrate_mutation_scheduled_cycle(
-        telemetry_override=[],
-        class_metrics_override={},
-    )
-    assert payload["summary"]["self_revision_signals"] == 0
-    assert payload["summary"]["self_revision_enabled"] is False
-    cognitive_proposals = [
-        proposal for proposal in api_routes.SUBSTRATE_MUTATION_STORE._proposals.values() if proposal.lane == "cognitive"
-    ]
-    assert cognitive_proposals == []
-
-
-def test_scheduler_self_revision_signals_flow_into_cognitive_proposal_when_double_gated(monkeypatch, scheduler_fixture) -> None:
+def test_scheduler_self_revision_lane_is_retired(monkeypatch, scheduler_fixture) -> None:
+    """2026-10-07: the self-revision lane's only input read SelfStateV1, which
+    has had no producer since 2026-07-22 (the stub returned [] every cycle).
+    The lane, its flag and its two tuning keys are gone; a stale
+    SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED=true left in an operator .env
+    must not resurrect anything. The real guards are the hasattr and
+    summary-key checks; the final proposal check is a belt-and-braces
+    tripwire in case something re-feeds that mutation class."""
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "true")
-    monkeypatch.setattr(
-        api_routes,
-        "_self_revision_signals_from_latest_self_state",
-        lambda **kwargs: _continuity_pressure_signals(0.7),
-    )
-    api_routes.execute_substrate_mutation_scheduled_cycle(
-        telemetry_override=[],
-        class_metrics_override={},
-    )
-    payload = api_routes.execute_substrate_mutation_scheduled_cycle(
-        telemetry_override=[],
-        class_metrics_override={},
-    )
-    assert payload["summary"]["self_revision_signals"] >= 1
-    cognitive_proposals = [
-        proposal
-        for proposal in api_routes.SUBSTRATE_MUTATION_STORE._proposals.values()
-        if proposal.mutation_class == "cognitive_identity_continuity_adjustment"
-    ]
-    assert cognitive_proposals
-    # cognitive lane never auto-applies, regardless of source.
-    assert payload["summary"]["applies_executed"] == 0
-
-
-def test_scheduler_self_revision_requires_cognitive_lane_double_gate(monkeypatch, scheduler_fixture) -> None:
-    monkeypatch.setenv("SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED", "true")
-    # SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED left at fixture default (false).
-    monkeypatch.setattr(
-        api_routes,
-        "_self_revision_signals_from_latest_self_state",
-        lambda **kwargs: _continuity_pressure_signals(0.9),
-    )
-    payload = api_routes.execute_substrate_mutation_scheduled_cycle(
-        telemetry_override=[],
-        class_metrics_override={},
-    )
-    assert payload["summary"]["self_revision_signals"] == 0
-    assert payload["summary"]["self_revision_enabled"] is True
-
-
-def test_scheduler_self_revision_respects_routing_proposals_kill_lever(monkeypatch, scheduler_fixture) -> None:
-    # Operator disables routing proposals -> worker budget max_signals=0. Self-
-    # revision signals must not bypass that kill lever even when double-gated on.
-    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", "false")
-    monkeypatch.setenv("SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED", "true")
-    monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "true")
-    monkeypatch.setattr(
-        api_routes,
-        "_self_revision_signals_from_latest_self_state",
-        lambda **kwargs: _continuity_pressure_signals(0.9),
-    )
-    payload = api_routes.execute_substrate_mutation_scheduled_cycle(
-        telemetry_override=[],
-        class_metrics_override={},
-    )
-    assert payload["summary"]["signals_processed"] == 0
-    cognitive_proposals = [
-        proposal for proposal in api_routes.SUBSTRATE_MUTATION_STORE._proposals.values() if proposal.lane == "cognitive"
-    ]
-    assert cognitive_proposals == []
-
-
-def test_scheduler_self_revision_fails_open_on_exception(monkeypatch, scheduler_fixture) -> None:
-    monkeypatch.setenv("SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED", "true")
-    monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "true")
-
-    def _boom(**kwargs):
-        raise RuntimeError("self_state_load_boom")
-
-    monkeypatch.setattr(api_routes, "_self_revision_signals_from_latest_self_state", _boom)
     payload = api_routes.execute_substrate_mutation_scheduled_cycle(
         telemetry_override=[],
         class_metrics_override={},
     )
     assert payload["status"] == "completed"
-    assert payload["summary"]["self_revision_signals"] == 0
+    assert "self_revision_signals" not in payload["summary"]
+    assert "self_revision_enabled" not in payload["summary"]
+    assert not hasattr(api_routes, "_self_revision_signals_from_latest_self_state")
+    assert not [
+        proposal
+        for proposal in api_routes.SUBSTRATE_MUTATION_STORE._proposals.values()
+        if proposal.mutation_class == "cognitive_identity_continuity_adjustment"
+    ]
+
+
+def _field_topology_carrier():
+    from orion.core.schemas.substrate_mutation import MutationPatchV1, MutationProposalV1
+
+    return MutationProposalV1(
+        lane="operational",
+        mutation_class="field_topology_weight_patch",
+        risk_tier="low",
+        target_surface="field_topology",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        evidence_refs=["telemetry:placeholder"],
+        source_signal_ids=["signal:placeholder"],
+        source_pressure_id="pressure-carrier-test",
+        patch=MutationPatchV1(
+            mutation_class="field_topology_weight_patch",
+            target_surface="field_topology",
+            target_ref="field_topology",
+            patch={"edge_weight_delta": 0.1},
+            rollback_payload={"edge_weight_delta": 0.0},
+        ),
+    )
+
+
+def test_scheduled_cycle_has_no_expectation_tuner_and_applies_nothing(monkeypatch, scheduler_fixture) -> None:
+    """Rung 6's expectation tuner is retired (2026-11-03): no producer, no
+    summary field, and the unattended cycle applies nothing even with every
+    apply gate on."""
+    assert not hasattr(api_routes, "_prediction_expectation_tuner")
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "true")
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", "true")
+
+    payload = api_routes.execute_substrate_mutation_scheduled_cycle(telemetry_override=[])
+
+    assert payload["status"] == "completed", payload
+    assert "prediction_expectation_proposals" not in payload["summary"]
+    assert "prediction_expectation_tuner" not in payload["summary"].get("phase_sec", {})
+    assert payload["summary"]["adoptions_completed"] == 0
+
+
+def test_scheduled_applier_with_no_allowed_classes_applies_nothing() -> None:
+    """An explicit empty allow-set means "apply nothing", not "apply all".
+
+    Before 2026-11-03 an empty set was read as "no filter" -- harmless while
+    the scheduled cycle always passed one class, but the moment its last
+    class retired an empty set would have opened apply to every class."""
+    from orion.core.schemas.substrate_mutation import MutationDecisionV1
+
+    proposal = _field_topology_carrier()
+    decision = MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote", reason="test")
+
+    closed = api_routes._ScheduledCyclePatchApplier(surfaces={}, allow_apply=True, allowed_classes=set())
+    assert closed.apply(proposal=proposal, decision=decision) is None
+    assert closed.blocked == 1 and closed.completed == 0
+    assert closed.surfaces == {}
+
+    unfiltered = api_routes._ScheduledCyclePatchApplier(surfaces={}, allow_apply=True, allowed_classes=None)
+    assert unfiltered.apply(proposal=proposal, decision=decision) is not None
+    assert unfiltered.completed == 1
+
+
+def test_review_telemetry_is_turned_into_signals_once(monkeypatch) -> None:
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(api_routes, "_MUTATION_SEEN_TELEMETRY_IDS", OrderedDict())
+    rows = [SimpleNamespace(telemetry_id="a"), SimpleNamespace(telemetry_id="b")]
+    fresh = api_routes._unseen_review_telemetry(rows)
+    assert [r.telemetry_id for r in fresh] == ["a", "b"]
+    # Not consumed yet (cycle raised / lost the lock): still unseen.
+    assert [r.telemetry_id for r in api_routes._unseen_review_telemetry(rows)] == ["a", "b"]
+    api_routes._mark_review_telemetry_seen(fresh)
+    rows.append(SimpleNamespace(telemetry_id="c"))
+    assert [r.telemetry_id for r in api_routes._unseen_review_telemetry(rows)] == ["c"]

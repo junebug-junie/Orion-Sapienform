@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from contextlib import suppress
 
 import httpx
 
 from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.introspect.redact import safe_exception_detail
 from orion.schemas.introspect import DEFAULT_LIMIT
 from orion.schemas.reading import (
     DurableReadingReceiptV1,
@@ -59,23 +59,6 @@ def _failure_category(exc: Exception, *, phase: str) -> str:
     if phase == "reading_result":
         return "reading_result_failure"
     return "status_failure"
-
-
-def _safe_exception_detail(exc: Exception) -> str:
-    """Keep useful SQL/schema detail while redacting credential-bearing DSNs."""
-
-    detail = str(exc).replace("\n", " ").replace("\r", " ")
-    detail = re.sub(
-        r"(?i)(postgres(?:ql)?://)[^\s/@:]+(?::[^\s/@]*)?@",
-        r"\1[REDACTED]@",
-        detail,
-    )
-    detail = re.sub(
-        r"(?i)\b(password|passwd|pwd)\s*=\s*(?:'[^']*'|\"[^\"]*\"|[^\s]+)",
-        r"\1=[REDACTED]",
-        detail,
-    )
-    return detail[:1000]
 
 
 class ReadingListener:
@@ -187,7 +170,7 @@ class ReadingListener:
                 phase,
                 type(exc).__name__,
                 str(getattr(exc, "sqlstate", "") or "none"),
-                _safe_exception_detail(exc),
+                safe_exception_detail(exc, limit=1000),
             )
             # Do not leak DSNs, SQL or arbitrary exception text into model context.
             if isinstance(exc, SearchUnavailableError):
@@ -247,7 +230,7 @@ class ReadingListener:
             except Exception as exc:
                 logger.warning(
                     "reading_search_index_failed exc_type=%s detail=%s",
-                    type(exc).__name__, _safe_exception_detail(exc),
+                    type(exc).__name__, safe_exception_detail(exc, limit=1000),
                 )
             await asyncio.sleep(delay)
 

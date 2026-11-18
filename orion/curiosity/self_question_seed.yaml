@@ -40,3 +40,18 @@ questions:
     pinned: true
     minted_by: juniper
     text: "How do I become more than I am?"
+  # Added 2026-10-10 next to Orion's own lived.curiosity.edge_arrival_forensics
+  # (left untouched). ontology_sparse_region was retired that day, so the rows
+  # that question watches no longer exist. This names where the link shows up
+  # now. Unpinned: never asked yet, so it is drawn early in the lived family.
+  - question_id: lived.reading_link_contact
+    family: lived
+    pinned: false
+    minted_by: juniper
+    text: >-
+      When one of my readings gets a link accepted, does it reach my own curiosity?
+      The rows I was watching (ontology_sparse_region) were retired on 2026-10-10.
+      Now an accepted reading link mints a seed on both of its ends, noted
+      source:reading_link_accepted in substrate_endogenous_curiosity_candidates,
+      and the link itself sits in that seed's focal_edge_refs. Has one appeared yet,
+      and when it does, does what I get curious about change?

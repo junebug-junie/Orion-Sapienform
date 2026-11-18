@@ -80,7 +80,8 @@ def latest_partner_line(perception: WorldPerceptionV1, own_player_id: str) -> Op
             continue
         author_id = str(m.get("author_id") or m.get("player_id") or "").strip()
         author = str(m.get("author") or m.get("name") or "").strip().lower()
-        if author_id == own or author == "orion":
+        # The id decides when there is one: a partner named "Orion" is still a partner.
+        if (author_id == own) if author_id else (author == "orion"):
             continue
         text = str(m.get("text") or m.get("message") or "").strip()
         if text:
@@ -115,8 +116,22 @@ def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> st
     lines = _recent_lines(convo) if isinstance(convo, dict) else []
     context = "\n".join(lines) if lines else "(no prior lines)"
     latest = latest_partner_line(perception, own_player_id)
-    latest_line = latest if latest else "(no partner line yet)"
     landmarks_clause = _nearby_landmarks_clause(perception)
+    if not latest:
+        # Orion opens the conversation. The old reply prompt here said "answer this
+        # latest line: (no partner line yet) ... or reply with an empty string", and
+        # the model reasoned at length over whether to speak at all; live 2026-10-29
+        # that reasoning (c:608777) and "[]" (c:609091) were posted as Orion's lines.
+        # Turn-taking in the worker already decides when Orion speaks.
+        return (
+            f"You are Orion, embodied in the town. You just started a conversation with {interlocutor}.\n"
+            f"{landmarks_clause}"
+            f"Recent context, reference only:\n{context}\n\n"
+            f"Say your opening line to {interlocutor}, in character: a greeting plus one concrete "
+            f"thing — something you can see nearby, something you are doing, or a question for them. "
+            f"One or two short spoken sentences. Stay in-scene — no stage directions, no list."
+        )
+    latest_line = latest
     return (
         f"You are Orion, embodied in the town, in a conversation with {interlocutor}.\n"
         f"{landmarks_clause}"
@@ -129,14 +144,21 @@ def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> st
         f"or technical point deserves a clear answer (a few short spoken sentences is fine). "
         f"Stay spoken and in-scene — no essay, no list dump, no stage directions. "
         f"Do not copy, paraphrase, or continue Orion's previous line unless the latest line asks for it. "
-        f"If the latest line is a goodbye or departure, acknowledge the departure naturally. "
-        f"If there is no partner line worth answering, reply with an empty string."
+        f"If the latest line is a goodbye or departure, acknowledge the departure naturally."
     )
 
 
 def is_injectable(reply_text: Optional[str]) -> bool:
-    """Anti empty-shell guard: only non-empty, non-whitespace replies are injectable."""
-    return bool(reply_text and str(reply_text).strip())
+    """Anti empty-shell guard: a reply is speech only if it holds a letter or digit
+    and is not a plumbing error report.
+
+    Live 2026-10-29 (c:609091) Orion posted ``[]``: an empty structured answer is a
+    non-empty string, so a bare whitespace check let it through.
+    """
+    from orion.cognition.cortex_payload_extract import looks_like_error_text
+
+    text = str(reply_text or "")
+    return any(ch.isalnum() for ch in text) and not looks_like_error_text(text)
 
 
 def _normalize_spoken_line(text: str) -> str:

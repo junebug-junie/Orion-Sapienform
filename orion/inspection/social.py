@@ -379,26 +379,6 @@ def build_social_inspection_snapshot(
     if section:
         sections.append(section)
 
-    commitment_items: list[str] = []
-    for commitment in (room.get("active_commitments") or [])[:3]:
-        if not isinstance(commitment, dict):
-            continue
-        summary = _safe(commitment.get("summary"))
-        if summary and str(commitment.get("state") or "") == "open":
-            _append_unique(commitment_items, summary)
-    section = _make_section(
-        section_kind="commitments",
-        included=commitment_items,
-        selected=commitment_items[:6],
-        softened=[],
-        excluded=[],
-        why="Open commitments stay visible because they create concrete obligations for the next turn.",
-        traces=[],
-        metadata={"source_surface": source_surface},
-    )
-    if section:
-        sections.append(section)
-
     routing_items: list[str] = []
     routing_traces: list[SocialInspectionDecisionTraceV1] = []
     routing_summary = _safe(routing.get("thread_summary") or room.get("current_thread_summary"))

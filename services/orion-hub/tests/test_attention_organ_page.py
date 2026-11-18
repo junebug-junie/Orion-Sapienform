@@ -201,32 +201,51 @@ def test_build_domain_rows_marks_active_inference_membership() -> None:
 
 
 def test_build_domain_rows_flags_ceiling_and_floor_pins() -> None:
-    """Both directions have real incident history on these exact nodes
-    (bus_synaptic frozen at 1.0, PR #1449; route decayed toward 0.0 by a
-    generic staleness loop) -- neither may render as an ordinary value."""
+    """Both directions have real incident history (bus_synaptic frozen at 1.0,
+    PR #1449; route decayed toward 0.0 by a generic staleness loop -- both
+    nodes since retired) -- neither may render as an ordinary value."""
     rows = build_domain_rows(
         [
-            {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
-            {"node_id": "node:substrate.route", "prediction_error": 0.0},
-            {"node_id": "node:substrate.biometrics", "prediction_error": 0.1},
+            {"node_id": "node:substrate.execution", "prediction_error": 1.0},
+            {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
         ],
         now=NOW,
     )
     by_domain = {r["domain"]: r for r in rows}
 
-    assert by_domain["bus_synaptic"]["at_ceiling"] is True
-    assert by_domain["bus_synaptic"]["at_floor"] is False
-    assert by_domain["route"]["at_floor"] is True
+    assert by_domain["execution"]["at_ceiling"] is True
+    assert by_domain["execution"]["at_floor"] is False
+    assert by_domain["biometrics"]["at_floor"] is True
     assert by_domain["biometrics"]["at_ceiling"] is False
-    assert by_domain["biometrics"]["at_floor"] is False
+
+
+def test_build_domain_rows_drops_retired_pe_nodes() -> None:
+    """bus_synaptic and route were retired 2026-11 (PE suite rebuild step 5), chat
+    and codebase 2026-11-13. A lingering graph node is not listed, as known or
+    unknown domain. Alarms (cabinet, strain, street) are not PE domains either."""
+    rows = build_domain_rows(
+        [
+            {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
+            {"node_id": "node:substrate.route", "prediction_error": 0.2},
+            {"node_id": "node:substrate.chat", "prediction_error": 0.1},
+            {"node_id": "node:substrate.codebase", "prediction_error": 0.1},
+            {"node_id": "node:substrate.cabinet", "prediction_error": 0.7},
+            {"node_id": "node:substrate.strain", "prediction_error": 1.0},
+            {"node_id": "node:substrate.street", "prediction_error": 1.0},
+            {"node_id": "node:substrate.execution", "prediction_error": 0.1},
+        ],
+        now=NOW,
+    )
+    domains = {r["domain"] for r in rows}
+    assert domains == {"execution", "biometrics"}  # biometrics listed as missing
 
 
 def test_build_domain_rows_distinguishes_missing_node_from_zero_reading() -> None:
-    rows = build_domain_rows([{"node_id": "node:substrate.chat", "prediction_error": 0.0}], now=NOW)
+    rows = build_domain_rows([{"node_id": "node:substrate.biometrics", "prediction_error": 0.0}], now=NOW)
     by_domain = {r["domain"]: r for r in rows}
 
-    assert by_domain["chat"]["present"] is True
-    assert by_domain["chat"]["prediction_error"] == 0.0
+    assert by_domain["biometrics"]["present"] is True
+    assert by_domain["biometrics"]["prediction_error"] == 0.0
     # A known domain whose node does not exist at all is a louder failure than
     # one reading zero, and must not be rendered as "0.0".
     assert by_domain["execution"]["present"] is False
@@ -267,16 +286,18 @@ def test_build_domain_rows_tolerates_unparsable_values_and_timestamps() -> None:
 def test_reconcile_confidence_matches_the_reducers_own_formula() -> None:
     """`1 - mean(prediction_error over ACTIVE_INFERENCE_DOMAINS)` is exactly
     what `_unconditional_prediction_error_confidence()` computes; verified
-    live 2026-07-30 that the five live domain values reproduce the persisted
-    0.5768 exactly. If this ever stops reconciling, the panel is showing two
-    numbers that no longer describe the same thing."""
+    live 2026-07-30 that the then-five live domain values reproduce the
+    persisted value exactly (two domains since 2026-11-13). If this ever stops
+    reconciling, the panel is showing two numbers that no longer describe the
+    same thing."""
     domain_rows = build_domain_rows(
         [
-            {"node_id": "node:substrate.execution", "prediction_error": 1.0},
+            {"node_id": "node:substrate.execution", "prediction_error": 0.4},
+            {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
+            # Retired 2026-11: never averaged in.
+            {"node_id": "node:substrate.chat", "prediction_error": 0.9},
             {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
-            {"node_id": "node:substrate.biometrics", "prediction_error": 0.102157},
-            {"node_id": "node:substrate.chat", "prediction_error": 0.013468},
-            {"node_id": "node:substrate.route", "prediction_error": 0.00025},
+            {"node_id": "node:substrate.route", "prediction_error": 1.0},
             # Excluded domains must not be averaged in, or the check would
             # disagree with the reducer for a reason that isn't a real defect.
             {"node_id": "node:substrate.transport", "prediction_error": 0.556078},
@@ -284,10 +305,10 @@ def test_reconcile_confidence_matches_the_reducers_own_formula() -> None:
         ],
         now=NOW,
     )
-    out = reconcile_confidence(domain_rows, 0.5768, row_age_sec=1.0)
+    out = reconcile_confidence(domain_rows, 0.8, row_age_sec=1.0)
 
-    assert out["domains_used"] == 5
-    assert out["recomputed"] == 0.5768
+    assert out["domains_used"] == 2
+    assert out["recomputed"] == 0.8
     assert out["delta"] == 0.0
     assert out["verdict"] == "exact"
 
@@ -296,10 +317,8 @@ def test_reconcile_confidence_flags_structural_divergence() -> None:
     domain_rows = build_domain_rows(
         [
             {"node_id": "node:substrate.execution", "prediction_error": 1.0},
-            {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
             {"node_id": "node:substrate.biometrics", "prediction_error": 1.0},
             {"node_id": "node:substrate.chat", "prediction_error": 1.0},
-            {"node_id": "node:substrate.route", "prediction_error": 1.0},
         ],
         now=NOW,
     )
@@ -325,18 +344,15 @@ def test_reconcile_confidence_does_not_cry_divergence_on_ordinary_sampling_skew(
     rows = build_domain_rows(
         [
             # One domain has fully flipped since the row was written; the other
-            # four are unchanged. Aggregate moves by 1/5 = 0.2 -- entirely
-            # explicable by timing, not by a source mismatch.
+            # is unchanged. Aggregate moves by 1/2 (two live domains since
+            # 2026-11-13) -- entirely explicable by timing, not a source mismatch.
             {"node_id": "node:substrate.execution", "prediction_error": 1.0},
-            {"node_id": "node:substrate.bus_synaptic", "prediction_error": 0.0},
             {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
-            {"node_id": "node:substrate.chat", "prediction_error": 0.0},
-            {"node_id": "node:substrate.route", "prediction_error": 0.0},
         ],
         now=NOW,
     )
     out = reconcile_confidence(rows, 1.0, row_age_sec=14.0)
-    assert out["delta"] == -0.2
+    assert out["delta"] == -0.5
     assert out["verdict"] == "within_drift"
 
 
@@ -642,7 +658,7 @@ _GOOD_HEALTH = {"ok": True, "payload": {"config": {"high_ratio": 0.6, "low_ratio
 _GOOD_ROW = {
     "generated_at": datetime.now(timezone.utc),
     "self_model_json": {
-        "prediction_error_confidence": 0.5768,
+        "prediction_error_confidence": 0.6281,
         "heartbeat_verdict": "redundant",
         "heartbeat_mean_ratio": 0.81,
         "heartbeat_basis": "orion-heartbeat /h1 ensemble mean_ratio (tick_count=90)",
@@ -650,10 +666,7 @@ _GOOD_ROW = {
 }
 _GOOD_DOMAINS = [
     {"node_id": "node:substrate.execution", "prediction_error": 1.0},
-    {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
     {"node_id": "node:substrate.biometrics", "prediction_error": 0.102157},
-    {"node_id": "node:substrate.chat", "prediction_error": 0.013468},
-    {"node_id": "node:substrate.route", "prediction_error": 0.00025},
 ]
 
 

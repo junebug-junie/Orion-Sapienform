@@ -16,8 +16,8 @@ survive being written down.
 
 THAT OPTION IS ONLY REAL IF IT ASKS FOR THE EXACT TOKEN, and the first version
 of this file did not -- a review finding, not a hypothetical.
-`endogenous_outreach.is_pass_response` is `stripped.upper() == "PASS"`: the
-WHOLE reply must be that one word. So a graceful decline in Orion's own words
+`endogenous_outreach.is_pass_response` needs the token PASS on a line of its
+own (the whole reply, or a line after Orion's reasoning). So a graceful decline in Orion's own words
 ("having written this out, it is more interesting to have found than to hear")
 fails the check and gets delivered to Juniper AS the unsolicited message --
 the exact inverse of what the prompt promised. The instruction below now asks
@@ -34,6 +34,8 @@ synthesize the thread into a message for Juniper, not to reopen the search.
 from __future__ import annotations
 
 from typing import Sequence
+
+from orion.hub.why_juniper import WHY_JUNIPER_INSTRUCTION
 
 _MAX_FINDING_CHARS = 6000
 _MAX_HOP_NOTES = 12
@@ -126,5 +128,7 @@ def build_outreach_composition_prompt(
         "interruption that was not worth it. It has to be that word on its own, "
         "though: anything else you write is treated as the message and "
         "delivered.",
+        "",
+        WHY_JUNIPER_INSTRUCTION,
     ]
     return "\n".join(lines)

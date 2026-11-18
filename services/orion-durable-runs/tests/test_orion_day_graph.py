@@ -1,7 +1,8 @@
-"""orion_day.letter admitted graph: wait for the pool's hold (never an attempt), write the note,
-write the carry-forward (hold released right after), persist once, journal the NOTE only.
+"""orion_day.letter admitted graph (living Prime #3224 Part 3): wait for the pool's hold (never an
+attempt), write the letter as ONE unified turn (hold released right after its checkpoint), persist
+once, journal the NOTE only, hand Prime the threads.
 
-Resume per node, idempotent persist, and note/carry-forward separation are the contract.
+Resume per node, idempotent persist, and letter/threads separation are the contract.
 """
 
 from __future__ import annotations
@@ -22,44 +23,56 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parents[1])]
 
 from app.admitted_graph import GRANTED, WAITING, AdmissionDeps, HoldLost
+from app.harness_step import harness_step_correlation_id
 from app.orion_day_graph import (
-    MIN_NOTE_CHARS, OrionDayDeps, build_orion_day_graph, finish_detail, slim_brief,
+    LETTER_STEP_KEY, MIN_NOTE_CHARS, OrionDayDeps, build_orion_day_graph, finish_detail, slim_brief,
 )
+from orion.orion_day.letter_turn import MAX_THREADS, NO_THREADS_MD, THREADS_HEADING
+from orion.schemas.durable_run import CuriosityTurnRequestV1, CuriosityTurnResultV1
 from orion.schemas.orion_day import (
-    ORION_DAY_CARRY_FORWARD_VERB, ORION_DAY_NOTE_VERB, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1,
-    orion_day_journal_entry_id,
+    ORION_DAY_LETTER_SESSION_ID, ORION_DAY_LETTER_SOURCE_TAG, MissedLetterV1, OrionDayLetterSourcesV1,
+    OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1, orion_day_journal_entry_id,
 )
 
 REF = {"lease_id": "hold-od", "generation": 1, "role": "agent", "holder": "durable-runs:orion-day-2026-09-29-1"}
 RUN = "orion-day-2026-09-29-1"
 CFG = {"configurable": {"thread_id": RUN}}
-NOTE = "Yesterday I spent most of my attention on the hop written_at prior. " * 20
-CARRY = "- [curiosity:ab61e4ccd47b] Test whether written_at is ever populated on hop nodes."
+NOTE = ("Yesterday I spent most of my attention on the hop written_at prior. " * 20).strip()
+THREAD = "[curiosity:ab61e4ccd47b] Test whether written_at is ever populated on hop nodes."
+CARRY = f"- {THREAD}"
+LETTER = f"{NOTE}\n\n{THREADS_HEADING}\n\n{CARRY}\n"
+DIGEST = "# My day: 2026-09-29\n\n### [curiosity:ab61e4ccd47b] Curiosity\nfound x"
+PRIME_ACT = "act:prime:make:2026-09-29"
 
 
 class Crash(BaseException):
     """A process death mid-node: escapes every except Exception, leaves the checkpoint behind."""
 
 
-def make_brief() -> OrionDayRunBriefV1:
+def make_brief(**extra) -> OrionDayRunBriefV1:
     start = datetime(2026, 9, 29, 6, tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     material = OrionDayMaterialV1(letter_date=date(2026, 9, 29), window_start=start, window_end=end,
                                   gathered_at=end + timedelta(hours=8))
-    view = OrionDayLlmViewV1(digest_md="# My day: 2026-09-29\n\n### [curiosity:ab61e4ccd47b] Curiosity\nfound x",
-                             approx_tokens=20, budget_tokens=70000, chars_per_token=3.5,
-                             included_refs=["curiosity:ab61e4ccd47b"])
+    view = OrionDayLlmViewV1(digest_md=DIGEST, approx_tokens=20, budget_tokens=70000, chars_per_token=3.5,
+                             included_refs=["curiosity:ab61e4ccd47b"], source_chars={"curiosity": 40},
+                             source_shares={"curiosity": 1.0})
     return OrionDayRunBriefV1(letter_date=date(2026, 9, 29), window_start=start, window_end=end,
-                              material=material, llm_view=view, timeout_sec=900.0)
+                              material=material, llm_view=view, timeout_sec=900.0, prime_act_id=PRIME_ACT,
+                              missed_letters=[MissedLetterV1(letter_date=date(2026, 9, 28),
+                                                             reason="the make bid was never funded")], **extra)
 
 
 class World:
+    """One hold: ``granted`` toggles it. ``replies`` is consumed one per turn: a str is the turn's text,
+    an Exception (or BaseException) is raised from the turn RPC, ``("fail", error)`` is a refusal."""
+
     def __init__(self, *, max_attempts=3):
         self.now = datetime(2026, 9, 30, 14, tzinfo=timezone.utc)
         self.granted = False
         self.brief = make_brief()
-        self.calls: list[tuple[str, dict, dict]] = []
-        self.replies: dict[str, list] = {ORION_DAY_NOTE_VERB: [], ORION_DAY_CARRY_FORWARD_VERB: []}
+        self.turns: list[CuriosityTurnRequestV1] = []
+        self.replies: list = []
         self.releases: list[str] = []
         self.registers = 0
         self.execute_lost: list[bool] = []
@@ -70,12 +83,15 @@ class World:
         self.max_attempts = max_attempts
 
     # --- deps -------------------------------------------------------------------------------
-    async def call_verb_text(self, verb, metadata, llm_route, *, gpu_lease, timeout_sec, user_text):
-        self.calls.append((verb, metadata, {"route": llm_route, "lease": gpu_lease, "timeout": timeout_sec}))
-        reply = self.replies[verb].pop(0) if self.replies[verb] else (NOTE if verb == ORION_DAY_NOTE_VERB else CARRY)
+    async def run_turn(self, req: CuriosityTurnRequestV1) -> CuriosityTurnResultV1:
+        self.turns.append(req)
+        reply = self.replies.pop(0) if self.replies else LETTER
         if isinstance(reply, BaseException):
             raise reply
-        return reply
+        if isinstance(reply, tuple):
+            return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, ok=False, error=reply[1])
+        return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, text=reply,
+                                     ok=bool(reply), debug={"harness_step_count": 3, "elapsed_sec": 400.0})
 
     async def persist_letter(self, row):
         self.hold_at_persist = self.granted
@@ -123,7 +139,7 @@ class World:
 
     def graph(self, saver):
         return build_orion_day_graph(
-            OrionDayDeps(call_verb_text=self.call_verb_text, persist_letter=self.persist_letter,
+            OrionDayDeps(run_turn=self.run_turn, persist_letter=self.persist_letter,
                          publish_journal=self.publish_journal, load_brief=self.load_brief),
             AdmissionDeps(self.register, self.lease, self.execute, self.release, self.event,
                           now=lambda: self.now, max_attempts=self.max_attempts,
@@ -156,77 +172,140 @@ async def drive(graph, world, first=True, grant_after=0):
         payload = Command(resume=True)
 
 
-def test_waits_without_spending_attempts_then_writes_note_carry_forward_and_letter():
+def test_waits_without_spending_attempts_then_writes_one_letter_turn_and_persists_it():
     async def scenario():
         world, saver = World(), InMemorySaver()
         snap = await drive(world.graph(saver), world, grant_after=3)
         values = snap.values
         assert values["status"] == "completed"
-        assert values["llm_attempts"] == {"write_note": 1, "write_carry_forward": 1}  # waiting never counted
-        assert values["note_md"] == NOTE.strip() and values["carry_forward_md"] == CARRY
-        assert [c[0] for c in world.calls] == [ORION_DAY_NOTE_VERB, ORION_DAY_CARRY_FORWARD_VERB]
-        for _, _, extra in world.calls:
-            assert extra["route"] == "agent" and extra["timeout"] == 870.0
-            assert extra["lease"].lease_id == "hold-od"  # attached to the run's hold
-        # Hold handed back as soon as the carry-forward text was checkpointed, before persist.
+        (turn,) = world.turns   # ONE unified turn; waiting never counted
+        assert values["steps"][LETTER_STEP_KEY]["attempts"] == 1
+        assert values["note_md"] == NOTE and values["carry_forward_md"] == CARRY and values["threads"] == [THREAD]
+        # Hold handed back as soon as the letter was checkpointed, before persist.
         assert world.releases[0] == "completed" and world.hold_at_persist is False
         row = world.rows[date(2026, 9, 29)]
-        assert row["run_id"] == RUN and row["note_md"] == NOTE.strip() and row["carry_forward_md"] == CARRY
+        assert row["run_id"] == RUN and row["note_md"] == NOTE and row["carry_forward_md"] == CARRY
         assert row["journal_entry_id"] == orion_day_journal_entry_id("2026-09-29")
-        assert row["carry_forward_expires_at"] == world.now + timedelta(hours=48)
+        assert row["carry_forward_expires_at"] is None   # the curiosity offer is retired
+        sources = OrionDayLetterSourcesV1.model_validate(row["sources"])
+        assert sources.turn_correlation_id == turn.correlation_id
+        assert sources.prime_act_id == PRIME_ACT
+        assert [m.letter_date for m in sources.missed_letters] == [date(2026, 9, 28)]
+        assert sources.input_shares == {"curiosity": 1.0}
         detail = finish_detail(values)
         assert detail["persisted"] is True and detail["persist_outcome"] == "written"
-        assert "note_md" not in detail and "carry_forward_md" not in detail  # bounded: no texts
+        assert detail["turn_correlation_id"] == turn.correlation_id and detail["prime_act_id"] == PRIME_ACT
+        assert detail["threads"] == [THREAD] and detail["harness_step_count"] == 3
+        assert "note_md" not in detail and "carry_forward_md" not in detail  # bounded: no letter text
     asyncio.run(scenario())
 
 
-def test_note_and_carry_forward_stay_separate():
+def test_the_turn_request_is_the_letter_turn():
     async def scenario():
         world, saver = World(), InMemorySaver()
         await drive(world.graph(saver), world)
-        (_, note_meta, _), (_, cf_meta, _) = world.calls
-        assert set(note_meta["orion_day_input"]) == {"letter_date", "timezone", "digest_md"}
-        assert "note_md" not in note_meta["orion_day_input"]
-        assert cf_meta["orion_day_input"]["note_md"] == NOTE.strip()
-        assert note_meta["orion_day_input"]["digest_md"] == cf_meta["orion_day_input"]["digest_md"]
-        # Journal: the NOTE only, under the stable id and the new trigger kind.
+        (turn,) = world.turns
+        assert turn.session_id == ORION_DAY_LETTER_SESSION_ID and turn.source_tag == ORION_DAY_LETTER_SOURCE_TAG
+        assert turn.require_lookup is False
+        assert turn.retrieval_query == "my day 2026-09-29"
+        assert DIGEST in turn.prompt and THREADS_HEADING in turn.prompt
+        assert "2026-09-28: the make bid was never funded" in turn.prompt   # the missed day, told once
+        assert turn.timeout_sec == 900.0 - 30.0   # the turn limit sits under the node timer
+        assert turn.gpu_lease is not None and turn.gpu_lease.lease_id == "hold-od"   # attached to the run's hold
+        assert turn.run_id == RUN and turn.attempt == 1
+        # The turn's id is the one the letter row carries: the letter is findable in cockpit_turn_sighting.
+        (row,) = world.rows.values()
+        assert row["sources"]["turn_correlation_id"] == turn.correlation_id
+    asyncio.run(scenario())
+
+
+def test_journal_carries_the_letter_only():
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        await drive(world.graph(saver), world)
         (entry,) = world.journals
-        assert entry.body == NOTE.strip() and CARRY not in entry.body
+        assert entry.body == NOTE and THREAD not in entry.body and THREADS_HEADING not in entry.body
         assert entry.entry_id == orion_day_journal_entry_id("2026-09-29")
         assert entry.trigger_kind == "orion_day_letter" and entry.source_kind == "orion_day"
         assert entry.mode == "daily"
     asyncio.run(scenario())
 
 
-def test_checkpoint_holds_only_the_slim_brief():
+def test_checkpoint_holds_only_the_slim_brief_and_the_full_letter_step():
     async def scenario():
         world, saver = World(), InMemorySaver()
         snap = await drive(world.graph(saver), world)
         brief = snap.values["brief"]
         assert "material" not in brief and "llm_view" not in brief
         assert brief["letter_date"] == "2026-09-29" and brief["timeout_sec"] == 900.0
+        assert brief["prime_act_id"] == PRIME_ACT
+        step = snap.values["steps"][LETTER_STEP_KEY]
+        assert step["text"] == LETTER and step["turn_correlation_id"] == world.turns[0].correlation_id
+        assert snap.values["harness_turn_meta"]["turn_correlation_id"] == step["turn_correlation_id"]
     asyncio.run(scenario())
 
 
-def test_restart_after_the_note_resumes_at_carry_forward_without_regenerating_the_note():
+def test_a_letter_with_no_threads_keeps_its_letter_and_hands_prime_none():
     async def scenario():
         world, saver = World(), InMemorySaver()
-        world.replies[ORION_DAY_CARRY_FORWARD_VERB] = [Crash()]
+        world.replies = [NOTE]
+        snap = await drive(world.graph(saver), world)
+        assert snap.values["status"] == "completed" and len(world.turns) == 1
+        assert snap.values["carry_forward_md"] == NO_THREADS_MD and snap.values["threads"] == []
+        assert finish_detail(snap.values)["threads"] == []
+    asyncio.run(scenario())
+
+
+def test_finish_detail_hands_prime_at_most_max_threads():
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        bullets = "\n".join(f"- thread number {i} still open" for i in range(MAX_THREADS + 3))
+        world.replies = [f"{NOTE}\n\n{THREADS_HEADING}\n{bullets}\n"]
+        snap = await drive(world.graph(saver), world)
+        assert len(snap.values["threads"]) == MAX_THREADS + 3   # the stored list keeps every one
+        detail = finish_detail(snap.values)
+        assert detail["threads"] == [f"thread number {i} still open" for i in range(MAX_THREADS)]
+        assert detail["threads_total"] == MAX_THREADS + 3
+    asyncio.run(scenario())
+
+
+def test_restart_after_the_letter_checkpoint_never_reruns_the_turn():
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+
+        async def crash_on_persist(row):
+            raise Crash()
+
+        real = world.persist_letter
+        world.persist_letter = crash_on_persist
         with pytest.raises(Crash):
             await drive(world.graph(saver), world)
-        # A new driver process: fresh graph object on the same saver, recovery as AdmissionRuntime._recover
-        # does for a WORK_NODES node (drop the lease, back to resource_request).
+        world.persist_letter = real
+        graph = world.graph(saver)   # a new process
+        snap = await graph.aget_state(CFG)
+        assert snap.next == ("persist",) and snap.values["note_md"] == NOTE
+        snap = await drive(graph, world, first=False)
+        assert snap.values["status"] == "completed" and snap.values["persisted"] is True
+        assert len(world.turns) == 1   # the letter was never regenerated
+    asyncio.run(scenario())
+
+
+def test_a_crash_inside_the_turn_replays_it_after_recovery():
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        world.replies = [Crash()]
+        with pytest.raises(Crash):
+            await drive(world.graph(saver), world)
         graph = world.graph(saver)
         snap = await graph.aget_state(CFG)
-        assert snap.next == ("write_carry_forward",) and snap.values["note_md"] == NOTE.strip()
+        assert snap.next == ("write_letter",) and not snap.values.get("note_md")
+        # Recovery as AdmissionRuntime._recover does for a WORK_NODES node: fence, back to resource_request.
         await graph.aupdate_state(CFG, {"lease": None, "turn_fence": 1, "status": "waiting_resource"},
                                   as_node="resource_request")
         world.granted = True
         snap = await drive(graph, world, first=False)
-        assert snap.values["status"] == "completed"
-        assert [c[0] for c in world.calls] == [ORION_DAY_NOTE_VERB, ORION_DAY_CARRY_FORWARD_VERB,
-                                                ORION_DAY_CARRY_FORWARD_VERB]
-        assert snap.values["llm_attempts"]["write_note"] == 1
+        assert snap.values["status"] == "completed" and len(world.turns) == 2
+        assert world.turns[0].correlation_id != world.turns[1].correlation_id   # fresh turn id after the fence
     asyncio.run(scenario())
 
 
@@ -247,7 +326,7 @@ def test_restart_during_persist_is_idempotent():
         snap = await drive(graph, world, first=False)
         assert snap.values["status"] == "completed" and snap.values["persisted"] is True
         assert len(world.rows) == 1 and len(world.journals) == 1
-        assert len(world.calls) == 2  # neither LLM call repeated
+        assert len(world.turns) == 1  # the turn was not repeated
     asyncio.run(scenario())
 
 
@@ -261,8 +340,6 @@ def test_a_second_run_for_the_same_day_is_a_no_op():
         assert snap.values["status"] == "completed"
         assert snap.values["persisted"] is False and snap.values["persist_outcome"] == "already_written"
         assert snap.values["existing_run_id"] == "orion-day-2026-09-29-0"
-        # It (re)publishes the STORED row's journal entry -- identical id, body and timestamp -- so a
-        # first run that wrote the row but never got its journal out is healed, and nothing differs.
         (entry,) = world.journals
         assert entry.body == world.rows[date(2026, 9, 29)]["note_md"] and entry.created_at == first_at
         assert entry.entry_id == orion_day_journal_entry_id("2026-09-29")
@@ -276,7 +353,7 @@ def test_persist_failure_backs_off_and_retries():
         snap = await drive(world.graph(saver), world)
         assert snap.values["status"] == "completed" and snap.values["persisted"] is True
         assert snap.values["tail_attempts"] == {"persist": 1, "journal": 1}
-        assert snap.values["journal_published"] is True
+        assert snap.values["journal_published"] is True and len(world.turns) == 1
     asyncio.run(scenario())
 
 
@@ -313,90 +390,73 @@ def test_persist_gives_up_after_the_attempt_budget():
     asyncio.run(scenario())
 
 
-def test_a_lost_hold_replays_the_node_and_is_not_an_attempt():
+def test_a_hold_take_back_replays_the_turn_without_spending_an_attempt():
     async def scenario():
         world, saver = World(max_attempts=1), InMemorySaver()
-        world.execute_lost = [True, False, False]  # note loses its hold once
+        world.execute_lost = [True, False]  # the letter loses its hold once
         snap = await drive(world.graph(saver), world)
         assert snap.values["status"] == "completed"
         assert snap.values["hold_takebacks"] == 1
-        assert snap.values["llm_attempts"] == {"write_note": 1, "write_carry_forward": 1}
+        assert snap.values["steps"][LETTER_STEP_KEY]["attempts"] == 1
         assert world.registers == 2  # queued again for the hold
     asyncio.run(scenario())
 
 
-def test_empty_or_short_completion_is_an_attempt_never_a_success():
+def test_a_too_short_letter_is_a_retried_attempt_never_a_success():
     async def scenario():
         world, saver = World(max_attempts=3), InMemorySaver()
-        world.replies[ORION_DAY_NOTE_VERB] = ["", "too short", NOTE]
+        world.replies = [f"Too short.\n\n{THREADS_HEADING}\n{CARRY}", LETTER]
         snap = await drive(world.graph(saver), world)
-        assert snap.values["status"] == "completed"
-        assert snap.values["llm_attempts"]["write_note"] == 3
+        assert snap.values["status"] == "completed" and len(world.turns) == 2
+        assert snap.values["steps"][LETTER_STEP_KEY]["attempts"] == 2
         assert len(snap.values["note_md"]) >= MIN_NOTE_CHARS
+        assert world.turns[0].correlation_id != world.turns[1].correlation_id   # a fresh turn, not a cached one
+        assert world.turns[1].attempt == 2
     asyncio.run(scenario())
 
 
 def test_a_failed_attempt_waits_out_a_backoff_before_the_next_one():
     async def scenario():
         world, saver = World(max_attempts=3), InMemorySaver()
-        world.replies[ORION_DAY_NOTE_VERB] = [RuntimeError("cortex restarting")]
+        world.replies = [("fail", "harness_timeout")]
         graph = world.graph(saver)
         world.granted = True
         await graph.ainvoke(initial(), CFG)
         snap = await graph.aget_state(CFG)
-        assert snap.next == ("retry_wait",)  # parked, not straight back into another call
+        assert snap.next == ("retry_wait",)  # parked, not straight back into another turn
         assert datetime.fromisoformat(snap.values["retry_at"]) == world.now + timedelta(seconds=30)
-        assert len(world.calls) == 1
-        # AdmissionRuntime._drive only resumes a parked retry_wait once now >= retry_at (the same
-        # gate as curiosity's retry_wait); drive() advances the clock to retry_at the same way.
+        assert len(world.turns) == 1 and "harness_timeout" in snap.values["last_error"]
         snap = await drive(graph, world, first=False)
-        assert snap.values["status"] == "completed" and snap.values["llm_attempts"]["write_note"] == 2
+        assert snap.values["status"] == "completed" and snap.values["steps"][LETTER_STEP_KEY]["attempts"] == 2
     asyncio.run(scenario())
 
 
-def test_carry_forward_without_a_list_item_is_an_attempt():
+def test_refusals_and_empty_replies_fail_the_run_past_the_budget_with_no_letter():
     async def scenario():
         world, saver = World(max_attempts=3), InMemorySaver()
-        world.replies[ORION_DAY_CARRY_FORWARD_VERB] = ["A paragraph with no list at all, just prose about threads.", CARRY]
+        world.replies = [("fail", "refused"), "", RuntimeError("rpc timeout")]
         snap = await drive(world.graph(saver), world)
-        assert snap.values["status"] == "completed"
-        assert snap.values["llm_attempts"]["write_carry_forward"] == 2
-        assert snap.values["carry_forward_refs"] == {"valid": 1, "unknown": 0}
+        assert snap.values["status"] == "failed" and "rpc timeout" in snap.values["last_error"]
+        assert len(world.turns) == 3 and snap.values["attempt"] == 3
+        assert world.rows == {} and world.journals == []
+        assert not snap.values.get("note_md") and LETTER_STEP_KEY not in (snap.values.get("steps") or {})
+        # The failed turn's identity stays on the state for the failed-run detail and cancel.
+        assert snap.values["harness_turn_meta"]["turn_correlation_id"] == world.turns[-1].correlation_id
     asyncio.run(scenario())
 
 
-def test_a_release_error_after_the_carry_forward_keeps_the_text():
+def test_a_release_error_after_the_letter_keeps_the_letter():
     async def scenario():
         world, saver = World(), InMemorySaver()
         real = world.release
 
         async def flaky_release(state, reason, keep_requeued=False):
-            if reason == "completed" and state.get("carry_forward_md") and not state.get("letter_written"):
+            if reason == "completed" and state.get("note_md") and not state.get("letter_written"):
                 world.release = real
                 raise RuntimeError("store down")
             return await real(state, reason, keep_requeued)
 
         world.release = flaky_release
         snap = await drive(world.graph(saver), world)
-        assert snap.values["status"] == "completed"
-        assert [c[0] for c in world.calls].count(ORION_DAY_CARRY_FORWARD_VERB) == 1
-    asyncio.run(scenario())
-
-
-def test_rpc_timeout_sits_under_the_node_budget():
-    async def scenario():
-        world, saver = World(), InMemorySaver()
-        await drive(world.graph(saver), world)
-        assert all(extra["timeout"] == 900.0 - 30.0 for _, _, extra in world.calls)
-    asyncio.run(scenario())
-
-
-def test_repeated_transport_failure_fails_the_run_without_a_letter():
-    async def scenario():
-        world, saver = World(max_attempts=2), InMemorySaver()
-        world.replies[ORION_DAY_NOTE_VERB] = [RuntimeError("rpc timeout"), RuntimeError("rpc timeout")]
-        snap = await drive(world.graph(saver), world)
-        assert snap.values["status"] == "failed" and "rpc timeout" in snap.values["last_error"]
-        assert world.rows == {} and world.journals == []
-        assert "carry_forward_md" not in snap.values or not snap.values["carry_forward_md"]
+        assert snap.values["status"] == "completed" and len(world.turns) == 1
     asyncio.run(scenario())

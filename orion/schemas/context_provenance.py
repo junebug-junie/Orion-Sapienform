@@ -68,6 +68,20 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "during a self-inquiry curiosity run); hydrated by the felt-state reader.",
         ),
         _entry("juniper_relationship_summary", "static_identity_config", "Relationship summary lines."),
+        _entry(
+            "orion_core_page_juniper",
+            "memory_recall",
+            "Latest page:juniper row from self_concept_history: Orion's own page 'who Juniper is to "
+            "me', folded nightly from cited person_fact / episode_memory records "
+            "(orion/memory/pages/juniper.py); hydrated by the felt-state reader.",
+        ),
+        _entry(
+            "orion_core_page_anchor",
+            "static_identity_config",
+            "Latest page:anchor row from self_concept_history: fixed lines Juniper wrote by hand "
+            "(produced_by juniper_anchor), shown first in RELATIONSHIP; the nightly fold never "
+            "writes it (orion/memory/pages/anchor.py); hydrated by the felt-state reader.",
+        ),
         _entry("response_policy_summary", "static_identity_config", "Response policy summary lines."),
         _entry("identity_kernel_source", "static_identity_config", "Which identity kernel file was loaded."),
         _entry("personality_file", "static_identity_config", "Declared personality file for this turn."),
@@ -79,7 +93,8 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("pcr_memory", "memory_recall", "PCR (persistent chat recall) memory payload."),
         _entry("memory_digest", "memory_recall", "Compact digest of recalled memory."),
         _entry("continuity_digest", "memory_recall", "Digest of continuity-relevant recalled memory."),
-        # --- derived summary: deterministic reduction of other context, not itself live ---
+        # --- derived summary: deterministic reduction of other context or of persisted past
+        # records (recent_arcs, recent_attention), not itself live ---
         _entry("belief_digest", "derived_summary", "Reduction of the unified relational belief graph."),
         _entry("situation_brief", "derived_summary", "Situation summary derived from ctx."),
         _entry("presence_context", "derived_summary", "Presence/availability framing derived from ctx."),
@@ -95,6 +110,28 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("trigger_kind", "derived_summary", "Classified kind of turn trigger."),
         _entry("context_summary", "derived_summary", "General context summary derived for the turn."),
         _entry("episode_summary", "derived_summary", "Summary of the current episode."),
+        _entry(
+            "metacog_event_evidence",
+            "derived_summary",
+            "Fixed-template rendering (no LLM) of the metacog trigger's own evidence mapping: "
+            "severity, magnitude, evidence lines, touched nodes (executor.py "
+            "_metacog_event_evidence_cue over orion/metacog map_metacog_trigger).",
+        ),
+        _entry(
+            "trigger_upstream_json",
+            "derived_summary",
+            "JSON-rendered trigger.upstream: the per-trigger-kind evidence the metacog gate "
+            "already built (fired conditions, recon loss, relational evidence). May be trimmed "
+            "to '{}' when the draft prompt is over budget.",
+        ),
+        _entry(
+            "recent_attention",
+            "derived_summary",
+            "Orion's last few narrated moments of attention: a fixed-template reduction (no LLM) of "
+            "persisted substrate_attention_schema rows, age-labelled ('about 2 hours ago'); a record of "
+            "recent past attention, not this tick (app/recent_attention_reader.py, "
+            "orion/substrate/recent_attention_cue.py).",
+        ),
         _entry("chat_stance_brief", "derived_summary", "Parsed task_mode/conversation_frame stance brief."),
         _entry("prior_chat_stance_brief", "derived_summary", "Previous turn's stance brief."),
         _entry("prior_stance", "derived_summary", "Previous turn's full stance."),
@@ -119,11 +156,77 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("turn_effect_explanations_json", "live_runtime_projection", "JSON-rendered turn-effect explanations."),
         _entry("metacog_biometrics_cue", "live_runtime_projection", "Compact live biometrics cue for metacog prompts."),
         _entry("metacog_biometrics_cue_enrich", "live_runtime_projection", "Enriched live biometrics cue."),
-        _entry("self_state", "live_runtime_projection", "Live self-state projection (SelfStateV1)."),
         _entry("execution_trajectory_projection", "live_runtime_projection", "Live execution-trajectory projection."),
         _entry("transport_bus_projection", "live_runtime_projection", "Live transport-bus projection."),
         _entry("active_node_pressure_projection", "live_runtime_projection", "Live substrate pressure-field projection."),
         _entry("attention_broadcast", "live_runtime_projection", "Live substrate attention-broadcast projection."),
+        _entry(
+            "temporal_self_cue",
+            "live_runtime_projection",
+            "Where Orion is in its own day: one paragraph rendered by a fixed template (no LLM) from "
+            "orion-durable-runs' current Temporal Self frame (GET /temporal-self/frame, at most "
+            "TEMPORAL_SELF_CUE_MAX_AGE_SEC old), every clause citing [arc:<id>]. Set by orion-thought "
+            "for the unified turn's stance_react only (app/temporal_self_cue.py).",
+        ),
+        _entry(
+            "self_readings",
+            "live_runtime_projection",
+            "Body signals that are high or unusual for themselves right now: a fixed template (no "
+            "LLM) over substrate_node_prediction_error_history, each line scored 0-10 against the "
+            "signal's own 7 days and citing [pe:<node>@<observed_at>] ([alarm:...] for an alarm). Set by orion-thought for "
+            "stance_react and reverie (app/self_readings_cue.py, orion/attention/self_readings.py).",
+        ),
+        _entry(
+            "self_track_record",
+            "derived_summary",
+            "What Orion is failing at or misjudging right now: a fixed template (no LLM, "
+            "orion/self_monitor/cue.py) over the self-monitor state orion-durable-runs publishes to "
+            "Redis orion:self_monitor:latest -- held broken / unreliable / miscalibrated faculties "
+            "only, numbers from each faculty's settled bets over 7 days, <= 300 chars; absent or "
+            "stale state renders nothing. Set by orion-thought for stance_react and reverie "
+            "(app/self_track_record_cue.py).",
+        ),
+        _entry(
+            "recent_arcs",
+            "derived_summary",
+            "Orion's last few CLOSED arcs of today, most recent first, local time: one line each "
+            "rendered by a fixed template (no LLM) from orion-durable-runs' current Temporal Self "
+            "frame, each citing [arc:<id>]. Set by orion-thought for reverie_narrate only "
+            "(app/reverie.py build_recent_arcs_text; orion/temporal_self/recent_arcs.py).",
+        ),
+        _entry(
+            "orion_now",
+            "derived_summary",
+            "Orion's now for reverie (integration patch 3): the few most salient experiences OTHER "
+            "organs recorded since reverie last looked, one line each from orion-durable-runs' GET "
+            "/temporal-self/now (labels code-written from temporal_self_event rows, no LLM), each citing "
+            "[experience:<id>]. Cites are checked against the shown row (POST /temporal-self/now/use). "
+            "Set by orion-thought for reverie_narrate only (app/reverie.py build_reverie_day_cue).",
+        ),
+        _entry(
+            "personality_cue",
+            "derived_summary",
+            "What Orion keeps coming back to: a fixed template (no LLM, orion/personality/cue.py) "
+            "over orion-durable-runs' personality graph frame (GET /personality/frame), each line an "
+            "excerpt of Orion's own words with the lanes and counts behind it. A record, not an "
+            "instruction. Set by orion-thought for stance_react and reverie "
+            "(app/personality_cue.py) and by Hub for curiosity kickoff and outreach.",
+        ),
+        _entry(
+            "admission",
+            "live_runtime_projection",
+            "Whether Orion's background LLM work was made to wait: windowed read of gpu_pool_events "
+            "(n waits / of requests / longest wait over the last window), TTL-cached; key absent "
+            "means unknown, not calm (app/admission_cue.py).",
+        ),
+        _entry(
+            "recent_trend_signals",
+            "live_runtime_projection",
+            "Latest per-node prediction error and each node's most notable biometrics-induction "
+            "channel, read from already-persisted signal tables (app/metacog_trend_reader.py, "
+            "orion/substrate/metacog_trend_signals.py).",
+        ),
+        _entry("recent_trend_signals_json", "live_runtime_projection", "JSON-rendered recent_trend_signals."),
         _entry("curiosity_signals", "live_runtime_projection", "Live curiosity/drive signals."),
         _entry("metacog_substrate_cue", "live_runtime_projection", "Compact live substrate cue for metacog prompts."),
         _entry("substrate_eventfulness_score", "live_runtime_projection", "Live substrate eventfulness score."),
@@ -170,6 +273,10 @@ PLUMBING_KEYS: frozenset[str] = frozenset(
         "metacog_enrich_prompt_chars",
         "metacog_enrich_section_sizes",
         "metacog_entry_id",
+        # template switch only: labels Mind's numbers as Orion's own estimates (stance_react.j2)
+        "self_readings_label_estimates",
+        # which inference node served the last LLM call (gateway meta.served_by), routing only:
+        "llm_serving_node",
         # memoization for context_provenance_for_ctx itself, not turn content:
         "_context_provenance_cache",
     }

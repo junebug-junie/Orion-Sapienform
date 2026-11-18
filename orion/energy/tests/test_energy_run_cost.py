@@ -145,8 +145,8 @@ def test_no_cycle_usage_is_a_gap() -> None:
 
 def test_mid_cycle_hole_before_run_is_no_cycle_usage() -> None:
     led = _ledger(
-        _iv(T - timedelta(hours=4), 50.0),
-        _iv(T - timedelta(hours=2), 100.0),
+        _iv(T - timedelta(hours=6), 50.0),
+        _iv(T - timedelta(hours=1), 100.0),  # 4 h hole: longer than MAX_BRIDGED_GAP
     )
     est = estimate_run_cost(_settled(), ledger=led, usage_point_id="UP123", computed_at=NOW)
     assert est.estimated_run_cost_usd is None and est.run_cost_gap == "no_cycle_usage"

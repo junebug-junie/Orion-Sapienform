@@ -70,6 +70,45 @@ class SalienceFeaturesV1(BaseModel):
     evidence_breadth: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+PredictionErrorTrendV1 = Literal["rising", "settling", "flat", "insufficient_history"]
+PredictionErrorBandV1 = Literal["quiet", "usual", "high", "unusual", "insufficient_history"]
+
+
+class PredictionErrorMagnitudeV1(BaseModel):
+    """How big a substrate node's prediction error is, against its own history.
+
+    Produced by ``orion.substrate.prediction_error_magnitude`` from the
+    ``substrate_node_prediction_error_history`` table (one row per real
+    ``observed_at`` advance of a ``node:substrate.*`` node) and attached to
+    substrate-broadcast loops as ``OpenLoopV1.magnitude``. Spec:
+    docs/superpowers/specs/2026-10-02-reverie-prediction-error-magnitude-proposal.md.
+
+    Percentiles, not z-scores: chat/execution/route are 75-93% exact zeros,
+    where mean/SD describe a reading that almost never happens.
+    ``percentile_now`` is the share of 7-day readings STRICTLY below
+    ``value``, so an all-zero history with a current 0 reads 0.0 (rest), not
+    0.5. Range/percentile fields are None when there is nothing to compute
+    them from; ``band``/``trend`` say ``insufficient_history`` instead of
+    guessing.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_version: Literal["prediction_error.magnitude.v1"] = "prediction_error.magnitude.v1"
+    value: float
+    age_sec: float = Field(ge=0.0)
+    p50_7d: float | None = None
+    p90_7d: float | None = None
+    p50_24h: float | None = None
+    p90_24h: float | None = None
+    percentile_now: float | None = Field(default=None, ge=0.0, le=1.0)
+    n_readings_7d: int = Field(default=0, ge=0)
+    median_1h: float | None = None
+    median_prior_24h: float | None = None
+    trend: PredictionErrorTrendV1 = "insufficient_history"
+    band: PredictionErrorBandV1 = "insufficient_history"
+
+
 class OpenLoopV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -147,6 +186,12 @@ class OpenLoopV1(BaseModel):
     # gain·applied_bias. Both default 0.0 -> pure bottom-up when the feature is off.
     top_down_bias: float = Field(default=0.0, ge=0.0, le=1.0)
     combined_salience: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Prediction-error size/range/direction for substrate-broadcast loops
+    # (additive, 2026-10-02). None unless substrate-runtime runs with
+    # SUBSTRATE_PE_HISTORY_ENABLED=true. CONSUMER-FIRST: this model is
+    # extra="forbid", so every service that validates the broadcast must be
+    # rebuilt with this field before the producer flag is turned on.
+    magnitude: PredictionErrorMagnitudeV1 | None = None
 
     # Fields removed from this model over time -- stripped from the raw
     # payload BEFORE strict extra="forbid" validation runs, so a historical

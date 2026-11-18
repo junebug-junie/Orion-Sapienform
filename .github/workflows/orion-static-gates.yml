@@ -63,13 +63,40 @@ jobs:
       - name: Install minimal deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pydantic pydantic-settings PyYAML pytest
+          # jinja2, httpx, python-dotenv: the now ablation fixtures' drift test renders with the merged renderers.
+          python -m pip install pydantic pydantic-settings PyYAML pytest jinja2 httpx python-dotenv
+
+      # Public repo: no tracked file may name people close to Juniper, her home
+      # place, or her contact details (hashed denylist, config/privacy/).
+      - name: No personal terms in tracked files
+        run: python -m pytest tests/test_no_personal_terms.py -q -p no:cacheprovider
+
+      # Orion's organ names stay out of recall/memory until battle-tested (design PR #2888).
+      - name: Organ names ledger read only by body atlas + dig
+        run: python -m pytest tests/test_organ_names_partition.py -q -p no:cacheprovider
 
       - name: Env sync preserves overrides and reaches admission templates
         run: python -m pytest tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py -q
 
+      - name: Host rebuild allowlists only name services that can start from defaults
+        run: python -m pytest tests/scripts/test_host_allowlist_buildable.py -q -p no:cacheprovider
+
+      # Code defaults and compose ${KEY:-x} fallbacks must equal .env_example, so a
+      # key missing from a live .env cannot silently change behaviour (2026-10-09:
+      # hub curiosity cap 3 in code vs 7 live; gpu-pool shed lever off in code).
+      - name: Settings defaults match .env_example
+        run: |
+          python -m pytest tests/test_check_settings_defaults.py -q
+          python scripts/check_settings_defaults.py orion-hub --example-drift
+          python scripts/check_settings_defaults.py orion-gpu-pool --example-drift
+
       - name: Bus schema lookup and kind registry agree
         run: python -m pytest tests/test_agent_trace_schema_registry.py -q
+
+      # json-file logs die with the container on recreate (10-08 reading
+      # failure). Every compose service must log to journald instead.
+      - name: Every compose service logs to journald
+        run: python -m pytest tests/test_compose_logging_journald.py -q -p no:cacheprovider
 
       # Pure logic of the substrate ladder liveness gate, including the replay
       # of the 2026-09-20 FieldStateV1 extra_forbidden incident. The live check
@@ -77,8 +104,21 @@ jobs:
       # from host cron, not here.
       # Includes discovery of every cross-service forbid schema: fails when a
       # strict schema some service validates has no found or declared writer.
+      # Also the merged-SQL-migration-applied section the same watch runs: replays
+      # PR #2424 (missing table) and PR #2400 (missing column) red over the real
+      # services/orion-sql-db corpus, and the data-only reset as verify-manually.
       - name: Substrate ladder liveness logic replays the 09-20 incident red
-        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py -q
+        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_vision_detection_rate_watch.py tests/scripts/test_schema_skew_discovery.py tests/test_sql_migration_drift_gate.py -q
+
+      # Deploy-time migration gate (scripts/safe_docker_build.sh refuses `up` while a
+      # migration REQUIRED-BY the service is unapplied; PRs #2594/#2605 shipped
+      # orion-durable-runs ahead of its migration twice). The gate only knows what
+      # migrations declare, so every newly added manual_migration_*.sql must declare
+      # REQUIRED-BY <services> or REQUIRED-BY none <reason>.
+      - name: New SQL migrations declare which services need them
+        run: |
+          python scripts/check_migration_required_by.py --base origin/main
+          python -m pytest tests/test_deploy_migration_gate.py -q
 
       # Host-cron watchdogs: an escalation failure (unusable dedupe state,
       # orion-notify refused) must exit 4 and still card, never exit 0/1 with
@@ -95,6 +135,17 @@ jobs:
       - name: Grammar event producer catalog matches emitting code
         run: python -m pytest tests/test_grammar_event_producer_catalog.py -q -p no:cacheprovider
 
+      # Public repo: per-item human-review sets (they quote Juniper's memories and
+      # chats) must never be tracked under docs/superpowers/evals/ (2026-10-14).
+      - name: No private review artifacts tracked
+        run: python -m pytest tests/test_no_private_eval_artifacts.py -q -p no:cacheprovider
+
+      # Service containers come from GHCR only: Docker Hub (2026-10-09) and ECR
+      # Public (2026-10-15, "Data limit exceeded") both throttle anonymous pulls
+      # per shared runner IP and failed jobs before any test ran.
+      - name: CI service images pulled from GHCR with credentials
+        run: python -m pytest tests/test_ci_service_image_sources.py -q -p no:cacheprovider
+
       # Field topology: every capability->capability edge must read a channel
       # some edge actually writes, and there is one topology file, not two.
       # The transport->orchestration edge read a never-written channel for
@@ -102,16 +153,38 @@ jobs:
       - name: Field topology has no dead cap-cap edges
         run: python -m pytest tests/test_field_topology_edges.py -q -p no:cacheprovider
 
+      # Transport lattice policy rows are labels; each `source:` must name a
+      # reading that exists (a topology-written capability channel or a live
+      # TransportBusStateV1 field). The hub used to keep its own name mapping.
+      - name: Transport lattice policy sources resolve
+        run: python -m pytest tests/test_transport_lattice_policy_sources.py -q -p no:cacheprovider
+
       # A service importing orion.substrate must declare requests (package __init__
       # imports graphdb_store -> requests). 2026-09-25: feedback/policy runtimes
       # crash-looped on exactly this after #2343.
       - name: Services using orion.substrate declare requests
         run: python -m pytest tests/test_substrate_services_declare_requests.py -q -p no:cacheprovider
 
+      # The attention salience floor default must match across the module
+      # constant, settings.py, compose fallback and .env_example. It drifted
+      # (0.05 in .env_example, 0.2 in code) from 2026-09-05 to 2026-10-10.
+      - name: Attention broadcast salience floor default has one value
+        run: python -m pytest tests/test_attention_broadcast_min_salience_parity.py -q -p no:cacheprovider
+
       # Each gate is its own step so a failure names itself in the UI rather
       # than surfacing as one opaque red block.
       - name: Metric lineage gate (consumer existence, orphan ratchet)
         run: python scripts/check_metric_lineage.py --gate
+
+      # R6 closed with a gate (2026-10-10): a metric that reaches an Orion
+      # prompt must declare value_kind/rest/sparsity on its registry entry, so
+      # nothing (Orion included) reads "calm" as "dead". Also pins the
+      # 2026-10-07 prompt inventory so a marker can't be dropped silently.
+      # Tests include a mutation-checked replay of each failure mode.
+      - name: Metric prompt semantics (rest/value-kind/sparsity for prompt-reaching metrics)
+        run: |
+          python scripts/check_metric_lineage.py --prompt-semantics
+          python -m pytest tests/test_metric_prompt_semantics.py tests/test_metric_rest_range.py -q -p no:cacheprovider
 
       # R4 definition-change alert. Red means a metric's meaning, schema,
       # producers or consumers changed without config/metrics/
@@ -124,6 +197,53 @@ jobs:
 
       - name: Inner-state registry completeness
         run: python scripts/check_inner_state_registry.py
+
+      # Body economy "no unregistered veto" (Patch A1 of the 2026-10-23 body-economy
+      # design): every module that reads regulation/arousal/thermal/price state must be
+      # registered in config/physiology/contract.yaml, so the strained-veto pile cannot
+      # grow back while Phase 1 retires it. AST scan, no live data.
+      - name: Body economy contract (no unregistered veto)
+        run: |
+          python scripts/check_body_economy_contract.py
+          python -m pytest tests/test_check_body_economy_contract.py -q -p no:cacheprovider
+
+      # Body economy "every verb declares its physiology" (Patch C2): every
+      # orion/cognition/verbs/*.yaml carries a valid physiology block (tier, family, pool
+      # lanes, deferrable window) so Patch C3's cortex-orch bid site has no untiered verb.
+      # test_family_lanes.py: every lane a family (config/physiology/families.yaml) or verb names is a
+      # config/gpu_pool.yaml ROLE, the only lanes the body reads. Here, not in the path-filtered
+      # body-economy job, because the 2026-11-13 break came from a gpu_pool.yaml-only change
+      # (c91a21fd8 retired the metacog seat; dream.cycle bids went no_acceptable_lane).
+      - name: Body economy verb physiology (every verb declares tier/family/lanes)
+        run: |
+          python scripts/check_verb_physiology.py
+          python -m pytest tests/test_check_verb_physiology.py orion/physiology/tests/test_family_lanes.py -q -p no:cacheprovider
+
+      # The integration gate (CLAUDE.md "Integration gate"; integration design 2026-11-15 Part A.6): every
+      # family, DurableWorkflowV1 value, intention adapter and TemporalSourceKind belongs to an organ in
+      # config/integration/organs.yaml or is exempt with a reason; every organ reads the now or says why
+      # not; channels added since the merge base with origin/main are registered (fetch-depth 0 above).
+      - name: Integration gate (every producer of Orion experience registered or exempt with a reason)
+        run: |
+          python scripts/check_integration_seam.py --require-base
+          python -m pytest tests/test_check_integration_seam.py tests/test_report_integration_coverage.py -q -p no:cacheprovider
+          # Integration patch 3 follow-on: the weekly now ablation eval's harness (offline lane: fixtures + stub).
+          python -m pytest orion/integration/evals -q -p no:cacheprovider
+          python -m orion.integration.evals.run_now_ablation_eval --offline
+
+      # Alarms (cabinet / strain / street) ride the node prediction_error field but mean "it fired", not a
+      # surprise size (#3307). Every file that reads node prediction_error skips them (is_alarm_node) or is
+      # registered with a class and a reason in config/substrate/prediction_error_readers.yaml.
+      - name: Prediction-error readers account for alarms
+        run: |
+          python scripts/check_pe_alarm_readers.py
+          python -m pytest tests/test_check_pe_alarm_readers.py -q -p no:cacheprovider
+
+      # One owner per tuned env key, and no copy at all of a module-owned line (body economy
+      # Patch B: the room's 32/30.5/34/33 C lines live only in orion/autonomy/thermal_gate.py).
+      # Repo-wide on purpose: a new copy can land in any service, so a path filter would miss it.
+      - name: Env key / thermal line single owner
+        run: python scripts/check_env_key_single_source.py
 
       - name: scripts/ must not shadow a stdlib module
         run: python scripts/check_scripts_dir_no_stdlib_shadow.py
@@ -209,6 +329,17 @@ jobs:
       - name: No non-Hub caller defaults onto the reserved chat LLM route
         run: python scripts/check_chat_route_poachers.py
 
+      # GPU pool stage 6.6 port gate (CI layer): only the pool's granted URL may reach a circe
+      # llama.cpp worker, the diffusion host or the lane-controller actuator. Any circe
+      # address:worker-port literal outside the pool / gateway / actuator / worker services must
+      # be allow-listed with a reason; stale allow entries and stale zones fail too. The runtime
+      # layer is the circe firewall (docs/runbooks/2026-10-01-circe-llm-port-firewall.md).
+      - name: No direct circe LLM worker address outside the GPU pool (port gate)
+        run: python scripts/check_circe_worker_refs.py
+
+      - name: Port gate, dead env key tool and circe firewall script tests
+        run: python -m pytest tests/test_check_circe_worker_refs.py tests/test_report_dead_env_keys.py tests/test_circe_llm_port_gate.py -q -p no:cacheprovider
+
       # Hub frontend unit tests. These are plain `node:test` files with no DOM,
       # no network and no service dependencies -- as static as anything else in
       # this workflow. There are 13 of them and, until now, NOTHING ran any of
@@ -234,3 +365,6 @@ jobs:
           fi
           echo "$files" | sed 's/^/  /'
           node --test $files
+
+      - name: Cabinet sonification source provenance parity
+        run: python -m pytest services/orion-hub/tests/test_cabinet_sonification_provenance.py -q -p no:cacheprovider

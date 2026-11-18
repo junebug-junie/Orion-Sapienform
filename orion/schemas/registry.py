@@ -54,7 +54,6 @@ from orion.schemas.actions.mesh_ops import (
 from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryIndexV1, JournalEntryWriteV1, JournalTriggerV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
 from orion.schemas.self_sense import SelfSenseEvalV1
-from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.collapse_mirror_chat_reply import CollapseMirrorChatReplyRequestV1
@@ -87,8 +86,14 @@ from orion.schemas.execution_projection import (
     ExecutionRunStateV1,
     ExecutionTrajectoryProjectionV1,
 )
-from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.grammar import ActV1, GrammarEventV1
 from orion.schemas.system_one_appraisal import SystemOneAppraisalFrameV1
+from orion.schemas.stance_context_prepare import (
+    STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+    STANCE_CONTEXT_PREPARE_RESULT_KIND,
+    StanceContextPrepareRequestV1,
+    StanceContextPrepareResultV1,
+)
 from orion.schemas.graph_write_intent import GraphWriteIntentV1
 from orion.schemas.memory_consolidation import (
     ChatHistorySparkMetaPatchV1,
@@ -97,38 +102,59 @@ from orion.schemas.memory_consolidation import (
     MemoryTurnPersistedV1,
 )
 from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCrystallizationV1
-from orion.schemas.context_exec import (
-    BeliefProvenanceReportV1,
-    ContextExecBudgetV1,
-    ContextExecFindingV1,
-    ContextExecOperatorSummaryV1,
-    ContextExecPermissionV1,
-    ContextExecRequestV1,
-    ContextExecRunV1,
-    ContextExecSafetySummaryV1,
-    ContextExecVerbStepV1,
-    EvidenceBundle,
-    InvestigationReportV2,
-    InvestigationSectionV2,
-    MemoryCorrectionProposalV1,
-    PatchProposalV1,
-    ProposalEnvelopeV1,
-    RepoImpactAnalysisReportV1,
-    SourceResult,
-    TraceAutopsyReportV1,
+from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpisodeClosedV1
+from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
+from orion.schemas.drive_reading import DriveReadingV1
+from orion.schemas.regulation import REGULATION_STATE_KIND, RegulationStateV1
+from orion.schemas.self_monitor import (
+    FACULTY_RECORD_KIND,
+    SELF_MONITOR_STATE_KIND,
+    SETTLED_BET_KIND,
+    FacultyRecordV1,
+    SelfMonitorStateV1,
+    SelfTrackRecordCueV1,
+    SettledBetV1,
 )
-from orion.schemas.proposal_ledger import (
-    ProposalExecutionEligibilityV1,
-    ProposalExecutionReceiptV1,
-    ProposalLedgerRecordV1,
-    ProposalReviewDecisionV1,
-    ProposalTriageDecisionV1,
+from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PhysiologyStateV1
+from orion.schemas.physiology_want import WANT_DECISION_KIND, WANT_KIND, WantDecisionV1, WantV1
+from orion.schemas.physiology_run_cap import RUN_CAP_OVERRIDE_KIND, RunCapOverrideV1
+from orion.schemas.llm_call_usage import LLM_CALL_USAGE_KIND, LlmCallUsageV1
+from orion.schemas.physiology_report import PHYSIOLOGY_REPORT_KIND, PhysiologyReportV1
+from orion.schemas.curiosity_replica import (
+    FOCUS_REFUSAL_REQUEST_KIND as CURIOSITY_REPLICA_FOCUS_REFUSAL_REQUEST_KIND,
+    FOCUS_REFUSAL_RESULT_KIND as CURIOSITY_REPLICA_FOCUS_REFUSAL_RESULT_KIND,
+    PLAN_REQUEST_KIND as CURIOSITY_REPLICA_PLAN_REQUEST_KIND,
+    PLAN_RESULT_KIND as CURIOSITY_REPLICA_PLAN_RESULT_KIND,
+    REPLIES_VIEW_KIND as CURIOSITY_REPLICA_REPLIES_VIEW_KIND,
+    CuriosityFocusRefusalRequestV1,
+    CuriosityFocusRefusalResultV1,
+    CuriosityOfferPlanAnswerV1,
+    CuriosityOfferPlanRequestV1,
+    CuriosityOfferPlanResultV1,
+    CuriosityReplicaRepliesViewV1,
 )
+from orion.physiology.prime_charge import PrimeChargeRefusalV1
+from orion.prime.state import PrimeConcernsViewV1
+from orion.schemas.personality import (
+    PERSONALITY_CHOICE_KIND,
+    ChoiceOptionV1,
+    ChoiceStyleV1,
+    DispositionV1,
+    PersonalityChoiceV1,
+    PersonalityCueV1,
+    PersonalityFrameV1,
+    PERSONALITY_NAMING_KIND,
+    DispositionNamingPacketV1,
+    DispositionNamingV1,
+    NamingEvidenceV1,
+    NamingNeighborV1,
+    NamingPriorVerdictV1,
+)
+from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
+from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.self_experiments import (
     SelfExperimentCreateRequestV1,
     SelfExperimentCreateResponseV1,
-    SelfExperimentDispatchRequestV1,
-    SelfExperimentDispatchResponseV1,
     SelfExperimentListResponseV1,
     SelfExperimentRecordV1,
     SelfExperimentSpecV1,
@@ -144,10 +170,21 @@ from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceipt
 from orion.schemas.state_delta import StateDeltaV1
 from orion.schemas.substrate_telemetry import SubstrateTierOutcomesPayloadV1
 from orion.schemas.transport_projection import TransportBusProjectionV1, TransportBusStateV1
+from orion.schemas.storage_write_projection import (
+    StorageWriteFamilyStateV1,
+    StorageWriteProjectionV1,
+    StorageWriteWindowCountV1,
+)
 from orion.schemas.llm_inference_projection import (
     LlmInferenceNodeStateV1,
     LlmInferenceProjectionV1,
+    LlmInferenceRoleStateV1,
     LlmInferenceWindowCountV1,
+)
+from orion.schemas.vision_organ_projection import (
+    VisionOrganProjectionV1,
+    VisionOrganStreamStateV1,
+    VisionOrganWindowCountV1,
 )
 from orion.schemas.agents.bound_capability import (
     BoundCapabilityExecutionFailureV1,
@@ -177,6 +214,15 @@ from orion.schemas.social_chat import (
     TownContinuityReadV1,
     TownContinuityTurnV1,
 )
+from orion.schemas.claude_tools import (
+    ClaudeToolBindingV1,
+    ClaudeToolCallV1,
+    ClaudeToolRequestV1,
+    ClaudeToolResultV1,
+    PrimeConsentAnswerV1,
+    PrimeConsentPastAnswerV1,
+    PrimeConsentRequestV1,
+)
 from orion.schemas.room_claude import (
     ExternalRoomResponderV1,
     RoomClaudeRequestV1,
@@ -191,7 +237,6 @@ from orion.schemas.social_bridge import (
     ExternalRoomPostResultV1,
     ExternalRoomTurnSkippedV1,
 )
-from orion.schemas.social_commitment import SocialCommitmentResolutionV1, SocialCommitmentV1
 from orion.schemas.social_calibration import SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1
 from orion.schemas.social_context import SocialContextCandidateV1, SocialContextSelectionDecisionV1, SocialContextWindowV1
 from orion.schemas.social_inspection import (
@@ -355,6 +400,7 @@ from orion.core.schemas.cognitive_substrate import (
     StateSnapshotNodeV1,
     HypothesisNodeV1,
     OntologyBranchNodeV1,
+    AssertionNodeV1,
     SubstrateEdgeV1,
     SubstrateGraphRecordV1,
 )
@@ -440,6 +486,8 @@ from orion.schemas.telemetry.biometrics import (
 )
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
+from orion.schemas.telemetry.office_env import OfficeEnvSampleV1
+from orion.schemas.telemetry.closet_env import ClosetEnvSampleV1
 from orion.schemas.energy import (
     EnergyBillActualV1,
     EnergyBillForecastV1,
@@ -450,8 +498,15 @@ from orion.schemas.energy import (
     EnergyStakesSnapshotV1,
     EnergyUsageIntervalV1,
 )
+from orion.schemas.dream_carry import (
+    DreamCarryBriefV1,
+    DreamCarryHopV1,
+    DreamCarryStepRequestV1,
+    DreamCarryStepResultV1,
+)
 from orion.schemas.telemetry.dream import (
     DreamInternalTriggerV1,
+    DreamSleepDigestV1,
     DreamRequest,
     DreamResultV1,
     DreamTriggerPayload,
@@ -464,29 +519,6 @@ from orion.schemas.self_study_analysis import (
     SelfStudyAnalysisResultV1,
 )
 from orion.schemas.self_study import (
-    SelfConceptEvidenceRefV1,
-    SelfConceptInduceResultV1,
-    SelfConceptRefV1,
-    SelfConceptReflectResultV1,
-    SelfStudyHarnessResultV1,
-    SelfStudyHarnessScenarioResultV1,
-    SelfStudyHarnessSoakResultV1,
-    SelfStudyHarnessSummaryV1,
-    SelfInducedConceptV1,
-    SelfKnowledgeItemV1,
-    SelfKnowledgeSectionCountsV1,
-    SelfStudyRetrievalBackendStatusV1,
-    SelfStudyRetrievalCountsV1,
-    SelfStudyRetrievalGroupV1,
-    SelfStudyRetrievedRecordV1,
-    SelfStudyConsumerContextV1,
-    SelfStudyConsumerPolicyDecisionV1,
-    SelfStudyRetrieveFiltersV1,
-    SelfStudyRetrieveRequestV1,
-    SelfStudyRetrieveResultV1,
-    SelfReflectiveFindingV1,
-    SelfRepoInspectResultV1,
-    SelfSnapshotV1,
     SelfWritebackStatusV1,
 )
 from orion.schemas.telemetry.inner_state import InnerFeatureV1, InnerStateFeaturesV1
@@ -499,6 +531,7 @@ from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.signals.models import OrionSignalV1
 from orion.schemas.telemetry.system_health import (
+    ContainerRestartsV1,
     EquilibriumSnapshotV1,
     EquilibriumServiceTransitionV1,
     SystemHealthV1,
@@ -523,9 +556,16 @@ from orion.schemas.world_model import (
     WorldModelTrajectoryStepV1,
 )
 from orion.schemas.ask import OrionAskAnsweredV1, OrionAskV1
+from orion.schemas.person_model import (
+    EntityMergeLogEntryV1,
+    PersonLinkageDecisionV1,
+    PersonMentionV1,
+    PersonRefV1,
+)
 from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionSceneInventoryV1,
+    StreetEventV1,
     VisionCropV1,
     VisionCropObservationV1,
     PerceptExpectationV1,
@@ -593,6 +633,7 @@ from orion.schemas.harness_finalize import (
     HarnessPostTurnClosureV1,
     HarnessRepairOverlayV1,
     HarnessRunCancelV1,
+    HarnessRunDraftPreviewV1,
     HarnessRunRequestV1,
     HarnessRunStepV1,
     HarnessRunV1,
@@ -601,7 +642,7 @@ from orion.schemas.harness_finalize import (
     SubstrateFinalizeAppraisalV1,
 )
 from orion.schemas.compaction import MemoryCompactionDeltaV1
-from orion.schemas.dream_cycle import DreamCycleV1
+from orion.schemas.dream_cycle import DreamCycleV1, DreamPressureObservationV1
 from orion.schemas.reverie import (
     CompactionRequestV1,
     ResonanceAlertV1,
@@ -616,9 +657,12 @@ from orion.schemas.reverie_visual import (
 )
 from orion.schemas.thought import (
     CoalitionSnapshotV1,
+    CorePageV1,
     GroundingCapsuleV1,
     HubAssociationBundleV1,
     StanceHarnessSliceV1,
+    TurnSelfPredictionV1,
+    TurnSelfPredictionV2,
     StanceReactRequestV1,
     ThoughtDecisionRecordV1,
     ThoughtEventV1,
@@ -627,17 +671,33 @@ from orion.schemas.attention_frame import (
     AttentionBroadcastProjectionV1,
     AttentionFrameV1,
     AttentionSignalV1,
+    PredictionErrorMagnitudeV1,
     SalienceFeaturesV1,
     VoluntaryOverrideV1,
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
+from orion.schemas.attention_candidate import AttentionCandidateV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 # Additive expectation and run-completion fields retain these registrations;
 # deploy peer consumers before Hub producers (docs/peer-ask-episodes.md).
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, PeerBriefV1
 from orion.schemas.curiosity_supervisor import READING_KIND, HopReadingV1
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
-from orion.schemas.hardware_watch import HARDWARE_WATCH_INCIDENT_KIND, HardwareWatchIncidentV1
+from orion.schemas.curiosity_self_inquiry_request import SELF_INQUIRY_REQUEST_KIND, CuriositySelfInquiryRequestV1
+from orion.schemas.hardware_watch import (
+    HARDWARE_WATCH_INCIDENT_KIND,
+    HARDWARE_WATCH_REFLEX_SHED_KIND,
+    HardwareWatchIncidentV1,
+    HardwareWatchReflexShedV1,
+)
+from orion.schemas.prediction import (
+    PREDICTION_FORECAST_KIND,
+    PREDICTION_SURPRISE_KIND,
+    PREDICTION_TURN_SURPRISE_KIND,
+    PredictionForecastV1,
+    PredictionSurpriseV1,
+    PredictionTurnSurpriseV1,
+)
 from orion.schemas.compactor_digest_run import CompactorDigestResultV1, CompactorDigestRunBriefV1
 from orion.schemas.durable_run import (
     CuriosityTurnRequestV1,
@@ -654,6 +714,8 @@ from orion.schemas.gpu_pool import (
     GpuLeaseRequestV1,
     GpuPoolControlReplyV1,
     GpuPoolControlV1,
+    GpuPoolShedReasonRequestV1,
+    GpuPoolShedResultV1,
     GpuPoolEventV1,
     GpuPoolStateRequestV1,
     GpuPoolStateV1,
@@ -669,11 +731,11 @@ from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
     CabinetContextV1,
+    CameraSenseV1,
     ConversationPhaseContextV1,
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
     EnvironmentContextV1,
-    LabContextV1,
     PerceptionContextV1,
     PlaceContextV1,
     PresenceCompanionV1,
@@ -694,25 +756,43 @@ from orion.schemas.situation import (
     WeatherPracticalFlagsV1,
 )
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
-from orion.schemas.field_goal import DominanceStreakTickV1, FieldGoalProvenanceV1
+from orion.schemas.field_goal import FieldGoalProvenanceV1
+from orion.schemas.field_dominance_run import FieldDominanceRunV1
+from orion.schemas.temporal_self import (
+    ArcAttentionSummaryV1,
+    ArcBindingV1,
+    ArcBodySummaryV1,
+    ArcSummaryV1,
+    DayCitationCheckV1,
+    ExpectationRefV1,
+    ExperienceCitesV1,
+    ExperienceUseRateV1,
+    ExperienceUseResultV1,
+    ExperienceUseRowV1,
+    HungerJuniperV1,
+    HungerSurpriseV1,
+    OpenThreadV1,
+    OrganUseV1,
+    TemporalHungerInputsV1,
+    TemporalNowItemV1,
+    TemporalNowV1,
+    TemporalSelfArcV1,
+    TemporalSelfDayBlockV1,
+    TemporalSelfDayV1,
+    TemporalSelfEventV1,
+    TemporalSelfFrameV1,
+    TemporalSelfStanceCueV1,
+    TemporalSelfStateV1,
+)
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
+from orion.schemas.self_reading import SelfReadingsBlockV1, SelfReadingV1
+from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcomeAssociationV1
 from orion.schemas.causal_geometry import (
     CausalGeometryDivergenceEntryV1,
     CausalGeometryEdgeV1,
     CausalGeometrySnapshotV1,
 )
-from orion.schemas.execution_dispatch_frame import (
-    ExecutionDispatchCandidateV1,
-    ExecutionDispatchFrameV1,
-)
-from orion.schemas.consolidation_frame import (
-    ConsolidationFrameV1,
-    ExpectationV1,
-    MotifObservationV1,
-    SchemaCandidateV1,
-    SparseTensorSliceV1,
-)
-from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
+from orion.schemas.bus_traffic import BusTrafficHopV1, BusTrafficRollupV1
 from orion.schemas.brain_frame import (
     BrainEdgeSampleV1,
     BrainNodeSampleV1,
@@ -720,9 +800,6 @@ from orion.schemas.brain_frame import (
     BrainSpotlightV1,
     SubstrateBrainFrameV1,
 )
-from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
-from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 from orion.schemas.evidence_index import (
     EvidenceQueryResultItemV1,
     EvidenceQueryV1,
@@ -755,21 +832,42 @@ from orion.schemas.workflow_execution import (
 )
 from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
 from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
+from orion.schemas.harness_step_run import HarnessEchoSmokeBriefV1
+from orion.schemas.consult_turn_run import ConsultOrionTurnBriefV1
+from orion.schemas.session_roundup_run import SessionRoundupBriefV1
+from orion.schemas.intention import (
+    IntentionCarryBriefV1, IntentionDeliverResultV1, IntentionDeliverV1, IntentionOrderResultV1, IntentionOrderV1,
+    IntentionSourceV1,
+)
+from orion.schemas.pr_field_note_run import PrFieldNoteBriefV1
+from orion.schemas.reminiscence_run import ReminiscenceRunBriefV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
 from orion.schemas.orion_day import (
-    OrionDayLetterV1, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1,
+    MissedLetterV1, OrionDayLetterOrderResultV1, OrionDayLetterOrderV1, OrionDayLetterStatusV1,
+    OrionDayLetterV1, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1, OrganRoundupV1,
 )
 from orion.schemas.reading import (
     ReadingRequestedV1, ReadingToolBindingV1, ReadingToolRequestV1, ReadingToolResultV1, ReadingLifecycleV1
 )
 from orion.schemas.introspect import (
-    IntrospectItemV1, IntrospectResultV1, IntrospectToolBindingV1, ReadingResultArguments,
+    CuriosityArguments, DreamsArguments, IntrospectItemV1, OrionDayArguments, IntrospectRequestV1, IntrospectResultV1, IntrospectToolBindingV1,
+    NodeHistoryArguments, PowerAttributionArguments, QueueCuriosityFocusArguments, ReadingResultArguments,
+    RecordCorrectionArguments,
+)
+from orion.schemas.reading_resonance import (
+    ReadingResonanceRunBriefV1, ReadingResonanceResultV1,
+    ReadingResonanceCheckV1,
+    ReadingResonanceJudgmentV1,
+    ResonanceCandidateV1,
+    ResonancePacketV1,
 )
 from orion.schemas.world_pulse_read import (
+    WorldPulseReadClaimReceiptV1,
     WorldPulseReadConceptCandidateV1,
     WorldPulseReadHandoffV1,
     WorldPulseReadPriorCandidateV1,
     WorldPulseReadPriorTestV1,
+    WorldPulseReadRelationshipClaimV1,
     WorldPulseReadSeedV1,
     WorldPulseReadStage2ResultV1,
 )
@@ -805,7 +903,6 @@ from orion.schemas.embodiment import (
     OrionTownPersonaV1,
     WorldPerceptionV1,
 )
-from orion.schemas.self_study_enrichment import SelfStudyEnrichmentRequestV1
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -836,7 +933,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MindRunArtifactV1": MindRunArtifactV1,
     "SubstrateTierOutcomesPayloadV1": SubstrateTierOutcomesPayloadV1,
     "GrammarEventV1": GrammarEventV1,
+    "ActV1": ActV1,
     "SystemOneAppraisalFrameV1": SystemOneAppraisalFrameV1,
+    "StanceContextPrepareRequestV1": StanceContextPrepareRequestV1,
+    "StanceContextPrepareResultV1": StanceContextPrepareResultV1,
     "OrganEmissionV1": OrganEmissionV1,
     "ReductionReceiptV1": ReductionReceiptV1,
     "StateDeltaV1": StateDeltaV1,
@@ -849,6 +949,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TransportBusProjectionV1": TransportBusProjectionV1,
     "LlmInferenceNodeStateV1": LlmInferenceNodeStateV1,
     "LlmInferenceProjectionV1": LlmInferenceProjectionV1,
+    "StorageWriteFamilyStateV1": StorageWriteFamilyStateV1,
+    "StorageWriteWindowCountV1": StorageWriteWindowCountV1,
+    "StorageWriteProjectionV1": StorageWriteProjectionV1,
+    "VisionOrganProjectionV1": VisionOrganProjectionV1,
+    "VisionOrganStreamStateV1": VisionOrganStreamStateV1,
+    "VisionOrganWindowCountV1": VisionOrganWindowCountV1,
+    "LlmInferenceRoleStateV1": LlmInferenceRoleStateV1,
     "LlmInferenceWindowCountV1": LlmInferenceWindowCountV1,
     "CodebaseDeltaV1": CodebaseDeltaV1,
     "JuniperAffectiveStateV1": JuniperAffectiveStateV1,
@@ -878,6 +985,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacognitiveTraceV1": MetacognitiveTraceV1,
     "MetacogTriggerV1": MetacogTriggerV1,
     "TransportBaselineHourlyV1": TransportBaselineHourlyV1,
+    "SelfSignalHourV1": SelfSignalHourV1,
+    "SelfSignalOutcomeAssociationV1": SelfSignalOutcomeAssociationV1,
     "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
     "MetacogEntryV1": MetacogEntryV1,
     "RepairPressureAppraisalV1": RepairPressureAppraisalV1,
@@ -896,6 +1005,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SparkStateSnapshotV1": SparkStateSnapshotV1,
     "SparkTelemetryPayload": SparkTelemetryPayload,
     "SystemHealthV1": SystemHealthV1,
+    "ContainerRestartsV1": ContainerRestartsV1,
     "RpcHealthSnapshotV1": RpcHealthSnapshotV1,
     "RpcChannelLatencyV1": RpcChannelLatencyV1,
     "BusConsumerReadinessV1": BusConsumerReadinessV1,
@@ -906,33 +1016,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RdfWriteResult": RdfWriteResult,
     "RdfBuildRequest": RdfBuildRequest,
     "SparkConceptProfileGraphMaterializationV1": SparkConceptProfileGraphMaterializationV1,
-    "SelfKnowledgeItemV1": SelfKnowledgeItemV1,
-    "SelfKnowledgeSectionCountsV1": SelfKnowledgeSectionCountsV1,
-    "SelfSnapshotV1": SelfSnapshotV1,
     "SelfWritebackStatusV1": SelfWritebackStatusV1,
-    "SelfRepoInspectResultV1": SelfRepoInspectResultV1,
-    "SelfConceptEvidenceRefV1": SelfConceptEvidenceRefV1,
-    "SelfInducedConceptV1": SelfInducedConceptV1,
-    "SelfConceptInduceResultV1": SelfConceptInduceResultV1,
-    "SelfConceptRefV1": SelfConceptRefV1,
-    "SelfReflectiveFindingV1": SelfReflectiveFindingV1,
-    "SelfConceptReflectResultV1": SelfConceptReflectResultV1,
     "AnalysisMetricV1": AnalysisMetricV1,
     "AnalysisFindingV1": AnalysisFindingV1,
     "SelfStudyAnalysisResultV1": SelfStudyAnalysisResultV1,
-    "SelfStudyRetrieveFiltersV1": SelfStudyRetrieveFiltersV1,
-    "SelfStudyRetrieveRequestV1": SelfStudyRetrieveRequestV1,
-    "SelfStudyRetrievedRecordV1": SelfStudyRetrievedRecordV1,
-    "SelfStudyRetrievalGroupV1": SelfStudyRetrievalGroupV1,
-    "SelfStudyRetrievalCountsV1": SelfStudyRetrievalCountsV1,
-    "SelfStudyRetrievalBackendStatusV1": SelfStudyRetrievalBackendStatusV1,
-    "SelfStudyRetrieveResultV1": SelfStudyRetrieveResultV1,
-    "SelfStudyConsumerPolicyDecisionV1": SelfStudyConsumerPolicyDecisionV1,
-    "SelfStudyConsumerContextV1": SelfStudyConsumerContextV1,
-    "SelfStudyHarnessScenarioResultV1": SelfStudyHarnessScenarioResultV1,
-    "SelfStudyHarnessSoakResultV1": SelfStudyHarnessSoakResultV1,
-    "SelfStudyHarnessSummaryV1": SelfStudyHarnessSummaryV1,
-    "SelfStudyHarnessResultV1": SelfStudyHarnessResultV1,
     "VisionFramePointerPayload": VisionFramePointerPayload,
     "AffectGptAssessRequestPayload": AffectGptAssessRequestPayload,
     "AffectGptAssessResultPayload": AffectGptAssessResultPayload,
@@ -945,18 +1032,17 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionEdgeArtifact": VisionEdgeArtifact,
     "VisionEdgeActivityPayload": VisionEdgeActivityPayload,
     "VisionSceneInventoryV1": VisionSceneInventoryV1,
+    "StreetEventV1": StreetEventV1,
     "VisionCropV1": VisionCropV1,
     "VisionCropObservationV1": VisionCropObservationV1,
     "PerceptExpectationV1": PerceptExpectationV1,
     "VisionUnresolvedV1": VisionUnresolvedV1,
     "OrionAskV1": OrionAskV1,
+    "PersonRefV1": PersonRefV1,
+    "PersonMentionV1": PersonMentionV1,
+    "PersonLinkageDecisionV1": PersonLinkageDecisionV1,
+    "EntityMergeLogEntryV1": EntityMergeLogEntryV1,
     "OrionAskAnsweredV1": OrionAskAnsweredV1,
-    # Pre-existing gap surfaced by test_registry_and_schema_registry_agree:
-    # registered in SCHEMA_REGISTRY, carried on a real channel
-    # (orion/bus/channels.yaml:2790) and published by
-    # scripts/self_study_enrichment_hook.py, but absent here -- so any
-    # consumer calling resolve() on it raised "Unknown schema_id".
-    "SelfStudyEnrichmentRequestV1": SelfStudyEnrichmentRequestV1,
     "VisionEdgeHealth": VisionEdgeHealth,
     "VisionEdgeError": VisionEdgeError,
     "VisionEventPayload": VisionEventPayload,
@@ -990,12 +1076,29 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionFrameV1": AttentionFrameV1,
     "AttentionSignalV1": AttentionSignalV1,
     "SalienceFeaturesV1": SalienceFeaturesV1,
+    "PredictionErrorMagnitudeV1": PredictionErrorMagnitudeV1,
+    "AttentionCandidateV1": AttentionCandidateV1,
     "AttentionBroadcastProjectionV1": AttentionBroadcastProjectionV1,
     "VoluntaryOverrideV1": VoluntaryOverrideV1,
     "AttentionSelfModelV1": AttentionSelfModelV1,
     "AttentionSchemaV1": AttentionSchemaV1,
     "DurableRunRequestV1": DurableRunRequestV1,
     "JournalComposeRunBriefV1": JournalComposeRunBriefV1,
+    "HarnessEchoSmokeBriefV1": HarnessEchoSmokeBriefV1,
+    "ConsultOrionTurnBriefV1": ConsultOrionTurnBriefV1,
+    # Session threads (orion/schemas/session_roundup_run.py): the hourly round-up run's brief (nested in
+    # DurableRunRequestV1; Hub's round-up loop is the only producer).
+    "SessionRoundupBriefV1": SessionRoundupBriefV1,
+    # Intentions Prime takes on (orion/schemas/intention.py): the carry run's brief (nested in DurableRunRequestV1),
+    # Prime's order and delivery calls to Hub and Hub's answers (HTTP, not bus kinds), and an adapter's output.
+    "IntentionCarryBriefV1": IntentionCarryBriefV1,
+    "IntentionOrderV1": IntentionOrderV1,
+    "IntentionOrderResultV1": IntentionOrderResultV1,
+    "IntentionDeliverV1": IntentionDeliverV1,
+    "IntentionDeliverResultV1": IntentionDeliverResultV1,
+    "IntentionSourceV1": IntentionSourceV1,
+    "PrFieldNoteBriefV1": PrFieldNoteBriefV1,
+    "ReminiscenceRunBriefV1": ReminiscenceRunBriefV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,
     "CompactorDigestRunBriefV1": CompactorDigestRunBriefV1,
     "CompactorDigestResultV1": CompactorDigestResultV1,
@@ -1007,6 +1110,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolStateRequestV1": GpuPoolStateRequestV1,
     "GpuPoolControlV1": GpuPoolControlV1,
     "GpuPoolControlReplyV1": GpuPoolControlReplyV1,
+    "GpuPoolShedReasonRequestV1": GpuPoolShedReasonRequestV1,
+    "GpuPoolShedResultV1": GpuPoolShedResultV1,
     "GpuActuateV1": GpuActuateV1,
     "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
@@ -1020,11 +1125,22 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # DurableRunRequestV1 (brief) and the orion_day_letter row, not bus kinds.
     "OrionDayRunBriefV1": OrionDayRunBriefV1,
     "OrionDayMaterialV1": OrionDayMaterialV1,
+    "OrganRoundupV1": OrganRoundupV1,
     "OrionDayLlmViewV1": OrionDayLlmViewV1,
     "OrionDayLetterV1": OrionDayLetterV1,
+    # Living Prime Part 3: Prime's order to Hub and Hub's answers (HTTP, not bus kinds).
+    "MissedLetterV1": MissedLetterV1,
+    "OrionDayLetterOrderV1": OrionDayLetterOrderV1,
+    "OrionDayLetterOrderResultV1": OrionDayLetterOrderResultV1,
+    "OrionDayLetterStatusV1": OrionDayLetterStatusV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "CuriosityUrgentRequestV1": CuriosityUrgentRequestV1,
+    "CuriositySelfInquiryRequestV1": CuriositySelfInquiryRequestV1,
     "HardwareWatchIncidentV1": HardwareWatchIncidentV1,
+    "HardwareWatchReflexShedV1": HardwareWatchReflexShedV1,
+    "PredictionForecastV1": PredictionForecastV1,
+    "PredictionSurpriseV1": PredictionSurpriseV1,
+    "PredictionTurnSurpriseV1": PredictionTurnSurpriseV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,
     "PeerBriefConsumedV1": PeerBriefConsumedV1,
@@ -1045,8 +1161,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WeatherPracticalFlagsV1": WeatherPracticalFlagsV1,
     "EnvironmentContextV1": EnvironmentContextV1,
     "AgendaContextV1": AgendaContextV1,
-    "LabContextV1": LabContextV1,
     "CabinetContextV1": CabinetContextV1,
+    "CameraSenseV1": CameraSenseV1,
     "SurfaceContextV1": SurfaceContextV1,
     "SituationAffordanceV1": SituationAffordanceV1,
     "SituationPolicyV1": SituationPolicyV1,
@@ -1075,9 +1191,16 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RoomClaudeRequestV1": RoomClaudeRequestV1,
     "RoomClaudeUtteranceV1": RoomClaudeUtteranceV1,
     "RoomTranscriptEntryV1": RoomTranscriptEntryV1,
+    # Claude's read-only tools in Hub chat, gated by Orion's consent (2026-11-13, Patch 1b of
+    # docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md).
+    "ClaudeToolBindingV1": ClaudeToolBindingV1,
+    "ClaudeToolRequestV1": ClaudeToolRequestV1,
+    "ClaudeToolResultV1": ClaudeToolResultV1,
+    "ClaudeToolCallV1": ClaudeToolCallV1,
+    "PrimeConsentRequestV1": PrimeConsentRequestV1,
+    "PrimeConsentAnswerV1": PrimeConsentAnswerV1,
+    "PrimeConsentPastAnswerV1": PrimeConsentPastAnswerV1,
     "ExternalRoomResponderV1": ExternalRoomResponderV1,
-    "SocialCommitmentV1": SocialCommitmentV1,
-    "SocialCommitmentResolutionV1": SocialCommitmentResolutionV1,
     "SocialBridgeSummaryV1": SocialBridgeSummaryV1,
     "SocialClarifyingQuestionV1": SocialClarifyingQuestionV1,
     "SocialDeliberationDecisionV1": SocialDeliberationDecisionV1,
@@ -1224,6 +1347,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "StateSnapshotNodeV1": StateSnapshotNodeV1,
     "HypothesisNodeV1": HypothesisNodeV1,
     "OntologyBranchNodeV1": OntologyBranchNodeV1,
+    "AssertionNodeV1": AssertionNodeV1,
     "SubstrateEdgeV1": SubstrateEdgeV1,
     "SubstrateGraphRecordV1": SubstrateGraphRecordV1,
     "FrontierContextRefsV1": FrontierContextRefsV1,
@@ -1294,6 +1418,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BiometricsClusterV1": BiometricsClusterV1,
     "CabinetAmbientSpikeV1": CabinetAmbientSpikeV1,
     "HomeCoolingSampleV1": HomeCoolingSampleV1,
+    "OfficeEnvSampleV1": OfficeEnvSampleV1,
+    "ClosetEnvSampleV1": ClosetEnvSampleV1,
     "EnergyUsageIntervalV1": EnergyUsageIntervalV1,
     "EnergyCostAccruedV1": EnergyCostAccruedV1,
     "EnergyRunCostEstimatedV1": EnergyRunCostEstimatedV1,
@@ -1305,6 +1431,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DreamRequest": DreamRequest,
     "DreamTriggerPayload": DreamTriggerPayload,
     "DreamInternalTriggerV1": DreamInternalTriggerV1,
+    "DreamSleepDigestV1": DreamSleepDigestV1,
+    "DreamCarryBriefV1": DreamCarryBriefV1,
+    "DreamCarryHopV1": DreamCarryHopV1,
+    "DreamCarryStepRequestV1": DreamCarryStepRequestV1,
+    "DreamCarryStepResultV1": DreamCarryStepResultV1,
     "DreamResultV1": DreamResultV1,
     "MetaTagsRequestV1": MetaTagsRequestV1,
     "MetaTagsResultV1": MetaTagsResultV1,
@@ -1340,7 +1471,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JournalEntryWriteV1": JournalEntryWriteV1,
     "SelfConceptHistoryV1": SelfConceptHistoryV1,
     "SelfSenseEvalV1": SelfSenseEvalV1,
-    "SelfKnowledgeItemLogV1": SelfKnowledgeItemLogV1,
     "ChatStanceBeliefLogV1": ChatStanceBeliefLogV1,
     "DailyMetacogV1": DailyMetacogV1,
     "MeshNodeStatusV1": MeshNodeStatusV1,
@@ -1376,26 +1506,46 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "FieldAttentionTargetV1": FieldAttentionTargetV1,
     "FieldAttentionFrameV1": FieldAttentionFrameV1,
     "FieldGoalProvenanceV1": FieldGoalProvenanceV1,
-    "DominanceStreakTickV1": DominanceStreakTickV1,
-    "SelfStateDimensionV1": SelfStateDimensionV1,
-    "SelfStateV1": SelfStateV1,
-    "PolicyDecisionV1": PolicyDecisionV1,
-    "PolicyDecisionFrameV1": PolicyDecisionFrameV1,
-    "ProposalCandidateV1": ProposalCandidateV1,
-    "ProposalFrameV1": ProposalFrameV1,
-    "ExecutionDispatchCandidateV1": ExecutionDispatchCandidateV1,
-    "ExecutionDispatchFrameV1": ExecutionDispatchFrameV1,
-    "ConsolidationFrameV1": ConsolidationFrameV1,
-    "MotifObservationV1": MotifObservationV1,
-    "ExpectationV1": ExpectationV1,
-    "SparseTensorSliceV1": SparseTensorSliceV1,
-    "SchemaCandidateV1": SchemaCandidateV1,
-    "FeedbackFrameV1": FeedbackFrameV1,
-    "OutcomeObservationV1": OutcomeObservationV1,
+    "FieldDominanceRunV1": FieldDominanceRunV1,
+    # Temporal Self (PR #2369 rev 4, patch 2): stored models, not bus payloads in v1.
+    "TemporalSelfEventV1": TemporalSelfEventV1,
+    "TemporalSelfArcV1": TemporalSelfArcV1,
+    "TemporalSelfFrameV1": TemporalSelfFrameV1,
+    "TemporalSelfDayV1": TemporalSelfDayV1,
+    "TemporalSelfStateV1": TemporalSelfStateV1,
+    "ArcSummaryV1": ArcSummaryV1,
+    "ArcAttentionSummaryV1": ArcAttentionSummaryV1,
+    "ArcBodySummaryV1": ArcBodySummaryV1,
+    "ArcBindingV1": ArcBindingV1,
+    "OpenThreadV1": OpenThreadV1,
+    "ExpectationRefV1": ExpectationRefV1,
+    # Patch 4 (Orion uses its own day): the two readers' rendered views and the citation gate's
+    # result (carried on ThoughtEventV1.day_citations and orion_day_letter.sources.arc_citations).
+    "TemporalSelfStanceCueV1": TemporalSelfStanceCueV1,
+    # Self-calibration section C: body signals against their own 7 days (stance_react, reverie).
+    "SelfReadingV1": SelfReadingV1,
+    "SelfReadingsBlockV1": SelfReadingsBlockV1,
+    "TemporalSelfDayBlockV1": TemporalSelfDayBlockV1,
+    "DayCitationCheckV1": DayCitationCheckV1,
+    # Orion's now (integration design 2026-11-15, Part A patch 1): HTTP payloads of orion-durable-runs
+    # GET /temporal-self/now, POST /temporal-self/now/use and GET /temporal-self/integration. No bus channel.
+    "TemporalNowV1": TemporalNowV1,
+    "TemporalNowItemV1": TemporalNowItemV1,
+    "ExperienceCitesV1": ExperienceCitesV1,
+    "ExperienceUseRowV1": ExperienceUseRowV1,
+    "ExperienceUseResultV1": ExperienceUseResultV1,
+    "ExperienceUseRateV1": ExperienceUseRateV1,
+    # Prime hunger (integration design Part B, patch 5): GET /temporal-self/hunger on orion-durable-runs. No bus channel.
+    "TemporalHungerInputsV1": TemporalHungerInputsV1,
+    "HungerSurpriseV1": HungerSurpriseV1,
+    "HungerJuniperV1": HungerJuniperV1,
+    "OrganUseV1": OrganUseV1,
     "SubstrateBrainFrameV1": SubstrateBrainFrameV1,
     "CausalGeometryEdgeV1": CausalGeometryEdgeV1,
     "CausalGeometryDivergenceEntryV1": CausalGeometryDivergenceEntryV1,
     "CausalGeometrySnapshotV1": CausalGeometrySnapshotV1,
+    "BusTrafficHopV1": BusTrafficHopV1,
+    "BusTrafficRollupV1": BusTrafficRollupV1,
     "BrainRegionV1": BrainRegionV1,
     "BrainSpotlightV1": BrainSpotlightV1,
     "BrainNodeSampleV1": BrainNodeSampleV1,
@@ -1438,12 +1588,28 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "IntrospectItemV1": IntrospectItemV1,
     "IntrospectResultV1": IntrospectResultV1,
     "ReadingResultArguments": ReadingResultArguments,
+    "IntrospectRequestV1": IntrospectRequestV1,
+    "DreamsArguments": DreamsArguments,
+    "CuriosityArguments": CuriosityArguments,
+    "OrionDayArguments": OrionDayArguments,
+    "RecordCorrectionArguments": RecordCorrectionArguments,
+    "NodeHistoryArguments": NodeHistoryArguments,
+    "PowerAttributionArguments": PowerAttributionArguments,
+    "QueueCuriosityFocusArguments": QueueCuriosityFocusArguments,
     "WorldPulseReadSeedV1": WorldPulseReadSeedV1,
     "WorldPulseReadHandoffV1": WorldPulseReadHandoffV1,
     "WorldPulseReadStage2ResultV1": WorldPulseReadStage2ResultV1,
+    "ResonanceCandidateV1": ResonanceCandidateV1,
+    "ResonancePacketV1": ResonancePacketV1,
+    "ReadingResonanceJudgmentV1": ReadingResonanceJudgmentV1,
+    "ReadingResonanceRunBriefV1": ReadingResonanceRunBriefV1,
+    "ReadingResonanceResultV1": ReadingResonanceResultV1,
+    "ReadingResonanceCheckV1": ReadingResonanceCheckV1,
     "WorldPulseReadConceptCandidateV1": WorldPulseReadConceptCandidateV1,
     "WorldPulseReadPriorCandidateV1": WorldPulseReadPriorCandidateV1,
     "WorldPulseReadPriorTestV1": WorldPulseReadPriorTestV1,
+    "WorldPulseReadRelationshipClaimV1": WorldPulseReadRelationshipClaimV1,
+    "WorldPulseReadClaimReceiptV1": WorldPulseReadClaimReceiptV1,
     "WorldContextCapsuleV1": WorldContextCapsuleV1,
     "WorldPulseRunV1": WorldPulseRunV1,
     "WorldPulseRunResultV1": WorldPulseRunResultV1,
@@ -1459,48 +1625,88 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ChatHistorySparkMetaPatchV1": ChatHistorySparkMetaPatchV1,
     "MemoryConsolidationWindowV1": MemoryConsolidationWindowV1,
     "MemoryGraphSuggestDraftRecordV1": MemoryGraphSuggestDraftRecordV1,
-    "ContextExecRequestV1": ContextExecRequestV1,
-    "ContextExecRunV1": ContextExecRunV1,
-    "ContextExecOperatorSummaryV1": ContextExecOperatorSummaryV1,
-    "ContextExecSafetySummaryV1": ContextExecSafetySummaryV1,
+    # Memory episode redesign Stage 1 (2026-10-02). Registered in BOTH this
+    # dict and SCHEMA_REGISTRY below.
+    "MemoryEpisodeClosedV1": MemoryEpisodeClosedV1,
+    "SituationStateV1": SituationStateV1,
+    # Rest drive (Temporal Self rev 4, 2026-10-10). Redis-only (orion:drive:rest:latest),
+    # not a bus payload: no bus subscriber exists, and an unconsumed channel is an orphan.
+    "DriveReadingV1": DriveReadingV1,
+    # Regulation state (Temporal Self rev 4 R3, 2026-10-10). Redis orion:regulation:latest and
+    # GET /regulation/state only; no bus channel until a bus consumer exists. Also in SCHEMA_REGISTRY.
+    "RegulationStateV1": RegulationStateV1,
+    "SettledBetV1": SettledBetV1,
+    "FacultyRecordV1": FacultyRecordV1,
+    "SelfMonitorStateV1": SelfMonitorStateV1,
+    # Self-monitor stance/reverie cue (spec step 3): local to orion-thought, rides in plan context.
+    "SelfTrackRecordCueV1": SelfTrackRecordCueV1,
+    # Body economy Patch A3 (2026-10-23): Organ 1 Body. Bus orion:physiology:state (durable-runs ->
+    # sql-writer physiology_state) and Redis orion:physiology:latest. Also in SCHEMA_REGISTRY.
+    "PhysiologyStateV1": PhysiologyStateV1,
+    # Body economy Patch C1 (2026-10-27): Organ 3 Appetite + Organ 4 Choice, SHADOW. WantV1 is the
+    # POST /physiology/bid body (no channel); WantDecisionV1 rides orion:physiology:want:decision
+    # (durable-runs -> sql-writer want_ledger). Both also in SCHEMA_REGISTRY.
+    "WantV1": WantV1,
+    "WantDecisionV1": WantDecisionV1,
+    # Family C Experiment 1 (2026-11-16): a run-cap override on one family's start gate. Redis only
+    # (orion:physiology:run_cap:<family>, always with a TTL); no channel. Also in SCHEMA_REGISTRY.
+    "RunCapOverrideV1": RunCapOverrideV1,
+    # Body-economy report (2026-10-29): GET /physiology/report on durable-runs (HTTP only, no
+    # channel). Readers: Hub #body-economy page, skills.physiology.state.v1. Also in SCHEMA_REGISTRY.
+    "PhysiologyReportV1": PhysiologyReportV1,
+    # Per-call token ledger (2026-10-29): one LLM call's tokens + correlation id. Bus
+    # orion:llm:call:usage (llm-gateway, harness-governor -> sql-writer llm_call_usage).
+    "LlmCallUsageV1": LlmCallUsageV1,
+    # Personality choice (spec rev 4, 2026-11-13): bus orion:personality:choice, producers at each
+    # choice point -> orion-durable-runs (personality_choice). Also in SCHEMA_REGISTRY; ChoiceOptionV1 is nested.
+    "PersonalityChoiceV1": PersonalityChoiceV1,
+    "ChoiceOptionV1": ChoiceOptionV1,
+    # Personality graph loop (rev 2): the frame crosses HTTP (durable-runs -> thought, hub), so it
+    # is also in SCHEMA_REGISTRY; the nested node/style models and the local cue live here only.
+    "PersonalityFrameV1": PersonalityFrameV1,
+    # Curiosity replica contracts (2026-11-04 design, patch 2). Also in SCHEMA_REGISTRY below.
+    "CuriosityOfferPlanRequestV1": CuriosityOfferPlanRequestV1,
+    "CuriosityOfferPlanResultV1": CuriosityOfferPlanResultV1,
+    "CuriosityOfferPlanAnswerV1": CuriosityOfferPlanAnswerV1,
+    "PrimeConcernsViewV1": PrimeConcernsViewV1,
+    # Curiosity replica patch 4 (answers to Prime). Also in SCHEMA_REGISTRY below.
+    "CuriosityFocusRefusalRequestV1": CuriosityFocusRefusalRequestV1,
+    "CuriosityFocusRefusalResultV1": CuriosityFocusRefusalResultV1,
+    "CuriosityReplicaRepliesViewV1": CuriosityReplicaRepliesViewV1,
+    "PrimeChargeRefusalV1": PrimeChargeRefusalV1,
+    "DispositionV1": DispositionV1,
+    "ChoiceStyleV1": ChoiceStyleV1,
+    "PersonalityCueV1": PersonalityCueV1,
+    # Self-naming (PR #2742): the answer crosses the bus (Hub -> sql-writer), the packet crosses
+    # HTTP (durable-runs -> Hub); both are also in SCHEMA_REGISTRY. Nested models live here only.
+    "DispositionNamingV1": DispositionNamingV1,
+    "DispositionNamingPacketV1": DispositionNamingPacketV1,
+    "NamingEvidenceV1": NamingEvidenceV1,
+    "NamingNeighborV1": NamingNeighborV1,
+    "NamingPriorVerdictV1": NamingPriorVerdictV1,
+    "IdentitySightingV1": IdentitySightingV1,
     "ContextExecPermissionV1": ContextExecPermissionV1,
-    "ContextExecBudgetV1": ContextExecBudgetV1,
-    "ContextExecFindingV1": ContextExecFindingV1,
-    "ContextExecVerbStepV1": ContextExecVerbStepV1,
-    "BeliefProvenanceReportV1": BeliefProvenanceReportV1,
-    "TraceAutopsyReportV1": TraceAutopsyReportV1,
-    "RepoImpactAnalysisReportV1": RepoImpactAnalysisReportV1,
-    "InvestigationReportV2": InvestigationReportV2,
-    "InvestigationSectionV2": InvestigationSectionV2,
-    "EvidenceBundle": EvidenceBundle,
-    "SourceResult": SourceResult,
-    "PatchProposalV1": PatchProposalV1,
-    "MemoryCorrectionProposalV1": MemoryCorrectionProposalV1,
-    "ProposalEnvelopeV1": ProposalEnvelopeV1,
-    "ProposalLedgerRecordV1": ProposalLedgerRecordV1,
-    "ProposalTriageDecisionV1": ProposalTriageDecisionV1,
-    "ProposalReviewDecisionV1": ProposalReviewDecisionV1,
-    "ProposalExecutionEligibilityV1": ProposalExecutionEligibilityV1,
-    "ProposalExecutionReceiptV1": ProposalExecutionReceiptV1,
     "SelfExperimentSpecV1": SelfExperimentSpecV1,
     "SelfExperimentCreateRequestV1": SelfExperimentCreateRequestV1,
     "SelfExperimentCreateResponseV1": SelfExperimentCreateResponseV1,
     "SelfExperimentRecordV1": SelfExperimentRecordV1,
-    "SelfExperimentDispatchRequestV1": SelfExperimentDispatchRequestV1,
-    "SelfExperimentDispatchResponseV1": SelfExperimentDispatchResponseV1,
     "SelfExperimentListResponseV1": SelfExperimentListResponseV1,
     "CoalitionSnapshotV1": CoalitionSnapshotV1,
     "StanceHarnessSliceV1": StanceHarnessSliceV1,
+    "TurnSelfPredictionV1": TurnSelfPredictionV1,
+    "TurnSelfPredictionV2": TurnSelfPredictionV2,
     "HubAssociationBundleV1": HubAssociationBundleV1,
     "ThoughtEventV1": ThoughtEventV1,
     "ThoughtDecisionRecordV1": ThoughtDecisionRecordV1,
     "GroundingCapsuleV1": GroundingCapsuleV1,
+    "CorePageV1": CorePageV1,
     "SpontaneousThoughtV1": SpontaneousThoughtV1,
     "ReverieChainV1": ReverieChainV1,
     "ReverieRefractoryEntry": ReverieRefractoryEntry,
     "CompactionRequestV1": CompactionRequestV1,
     "MemoryCompactionDeltaV1": MemoryCompactionDeltaV1,
     "DreamCycleV1": DreamCycleV1,
+    "DreamPressureObservationV1": DreamPressureObservationV1,
     "ResonanceAlertV1": ResonanceAlertV1,
     "VisualActivityV1": VisualActivityV1,
     "ReverieVisualContextV1": ReverieVisualContextV1,
@@ -1523,6 +1729,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "HarnessRunRequestV1": HarnessRunRequestV1,
     "HarnessRunCancelV1": HarnessRunCancelV1,
     "HarnessRunStepV1": HarnessRunStepV1,
+    "HarnessRunDraftPreviewV1": HarnessRunDraftPreviewV1,
     "CockpitHopV1": CockpitHopV1,
     "HarnessRunV1": HarnessRunV1,
     "EmbodimentIntentV1": EmbodimentIntentV1,
@@ -1558,6 +1765,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "HomeCoolingSampleV1": SchemaRegistration(
         model=HomeCoolingSampleV1,
         kind="home.cooling.sample.v1",
+    ),
+    "OfficeEnvSampleV1": SchemaRegistration(
+        model=OfficeEnvSampleV1,
+        kind="office.env.sample.v1",
+    ),
+    "ClosetEnvSampleV1": SchemaRegistration(
+        model=ClosetEnvSampleV1,
+        kind="closet.env.sample.v1",
     ),
     "EnergyUsageIntervalV1": SchemaRegistration(
         model=EnergyUsageIntervalV1,
@@ -1622,6 +1837,13 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=RoomClaudeUtteranceV1,
         kind="room.claude.utterance.v1",
     ),
+    # Claude's tools gated by Orion's consent (Patch 1b). ClaudeToolBindingV1 and
+    # PrimeConsentPastAnswerV1 are nested models: `_REGISTRY` only.
+    "ClaudeToolRequestV1": SchemaRegistration(model=ClaudeToolRequestV1, kind="claude.tool.request.v1"),
+    "ClaudeToolResultV1": SchemaRegistration(model=ClaudeToolResultV1, kind="claude.tool.result.v1"),
+    "ClaudeToolCallV1": SchemaRegistration(model=ClaudeToolCallV1, kind="claude.tool.call.v1"),
+    "PrimeConsentRequestV1": SchemaRegistration(model=PrimeConsentRequestV1, kind="prime.consent.request.v1"),
+    "PrimeConsentAnswerV1": SchemaRegistration(model=PrimeConsentAnswerV1, kind="prime.consent.answer.v1"),
     "SubstrateReadQueryV1": SchemaRegistration(
         model=SubstrateReadQueryV1,
         kind="substrate_read.query.v1",
@@ -1662,6 +1884,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=VisionSceneInventoryV1,
         kind="vision.scene.inventory.v1",
     ),
+    "StreetEventV1": SchemaRegistration(
+        model=StreetEventV1,
+        kind="vision.street.event.v1",
+    ),
     # Walkway camera (docs/superpowers/specs/2026-09-22-walkway-camera-busy-
     # world-design.md). PerceptExpectationV1/VisionCropV1 are persisted/nested
     # shapes with no bus kind, so they live in _REGISTRY only.
@@ -1675,6 +1901,12 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     ),
     "OrionAskV1": SchemaRegistration(model=OrionAskV1, kind="orion.ask.v1"),
     "OrionAskAnsweredV1": SchemaRegistration(model=OrionAskAnsweredV1, kind="orion.ask.answered.v1"),
+    # Person model P1/P2 (docs/superpowers/specs/2026-10-14-person-model-and-identity-card-design.md).
+    # Not on the bus yet: P2 is a dry run that writes files only.
+    "PersonRefV1": SchemaRegistration(model=PersonRefV1, kind="person.ref.v1"),
+    "PersonMentionV1": SchemaRegistration(model=PersonMentionV1, kind="person.mention.v1"),
+    "PersonLinkageDecisionV1": SchemaRegistration(model=PersonLinkageDecisionV1, kind="person.linkage.decision.v1"),
+    "EntityMergeLogEntryV1": SchemaRegistration(model=EntityMergeLogEntryV1, kind="person.entity_merge_log.v1"),
     "CoalitionSnapshotV1": SchemaRegistration(
         model=CoalitionSnapshotV1,
         kind="coalition.snapshot.v1",
@@ -1682,6 +1914,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "StanceHarnessSliceV1": SchemaRegistration(
         model=StanceHarnessSliceV1,
         kind="stance.harness.slice.v1",
+    ),
+    "TurnSelfPredictionV1": SchemaRegistration(
+        model=TurnSelfPredictionV1,
+        kind="turn.self_prediction.v1",
+    ),
+    "TurnSelfPredictionV2": SchemaRegistration(
+        model=TurnSelfPredictionV2,
+        kind="turn.self_prediction.v2",
     ),
     "HubAssociationBundleV1": SchemaRegistration(
         model=HubAssociationBundleV1,
@@ -1790,6 +2030,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=HarnessRunStepV1,
         kind="harness.run.step.v1",
     ),
+    "HarnessRunDraftPreviewV1": SchemaRegistration(
+        model=HarnessRunDraftPreviewV1,
+        kind="harness.run.draft_preview.v1",
+    ),
     "CockpitHopV1": SchemaRegistration(
         model=CockpitHopV1,
         kind="cockpit.hop.v1",
@@ -1834,6 +2078,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=CausalGeometrySnapshotV1,
         kind="causal.geometry.snapshot.v1",
     ),
+    "BusTrafficRollupV1": SchemaRegistration(
+        model=BusTrafficRollupV1,
+        kind="bus.traffic.rollup.v1",
+    ),
     "GraphWriteIntentV1": SchemaRegistration(
         model=GraphWriteIntentV1,
         kind="graph.write_intent.v1",
@@ -1841,6 +2089,12 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "AttentionBroadcastProjectionV1": SchemaRegistration(
         model=AttentionBroadcastProjectionV1,
         kind="attention.broadcast.projection.v1",
+    ),
+    # World-first attention seam (spec 2026-10-07 self-calibration, section A).
+    # Not on the bus: persisted inside attention frames' debug/reasons.
+    "AttentionCandidateV1": SchemaRegistration(
+        model=AttentionCandidateV1,
+        kind="attention.candidate.v1",
     ),
     "EquilibriumServiceTransitionV1": SchemaRegistration(
         model=EquilibriumServiceTransitionV1,
@@ -1879,10 +2133,17 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "TransportBaselineHourlyV1": SchemaRegistration(
         model=TransportBaselineHourlyV1, kind="transport_baseline.hourly.v1"
     ),
+    # Self-signal -> outcome association (2026-10-14, spec 2026-10-07 section E). In BOTH maps.
+    "SelfSignalHourV1": SchemaRegistration(model=SelfSignalHourV1, kind="self_signal.hour.v1"),
+    "SelfSignalOutcomeAssociationV1": SchemaRegistration(
+        model=SelfSignalOutcomeAssociationV1, kind="self_signal.outcome_association.v1"
+    ),
     "GpuPoolStateV1": SchemaRegistration(model=GpuPoolStateV1, kind="gpu_pool.state.v1"),
     "GpuPoolStateRequestV1": SchemaRegistration(model=GpuPoolStateRequestV1, kind="gpu_pool.state.request.v1"),
     "GpuPoolControlV1": SchemaRegistration(model=GpuPoolControlV1, kind="gpu_pool.control.v1"),
     "GpuPoolControlReplyV1": SchemaRegistration(model=GpuPoolControlReplyV1, kind="gpu_pool.control.reply.v1"),
+    "GpuPoolShedReasonRequestV1": SchemaRegistration(model=GpuPoolShedReasonRequestV1, kind="gpu_pool.shed.request.v1"),
+    "GpuPoolShedResultV1": SchemaRegistration(model=GpuPoolShedResultV1, kind="gpu_pool.shed.result.v1"),
     # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
     "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),
@@ -1891,10 +2152,17 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ReadingTurnRequestV1": SchemaRegistration(model=ReadingTurnRequestV1, kind="reading.turn.request.v1"),
     "ReadingTurnResultV1": SchemaRegistration(model=ReadingTurnResultV1, kind="reading.turn.result.v1"),
     "ReverieVisualStepRequestV1": SchemaRegistration(model=ReverieVisualStepRequestV1, kind="reverie.visual.step.request.v1"),
+    "DreamCarryStepRequestV1": SchemaRegistration(model=DreamCarryStepRequestV1, kind="dream.carry.step.request.v1"),
+    "DreamCarryStepResultV1": SchemaRegistration(model=DreamCarryStepResultV1, kind="dream.carry.step.result.v1"),
     "ReverieVisualStepResultV1": SchemaRegistration(model=ReverieVisualStepResultV1, kind="reverie.visual.step.result.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "CuriosityUrgentRequestV1": SchemaRegistration(model=CuriosityUrgentRequestV1, kind=URGENT_REQUEST_KIND),
+    "CuriositySelfInquiryRequestV1": SchemaRegistration(model=CuriositySelfInquiryRequestV1, kind=SELF_INQUIRY_REQUEST_KIND),
     "HardwareWatchIncidentV1": SchemaRegistration(model=HardwareWatchIncidentV1, kind=HARDWARE_WATCH_INCIDENT_KIND),
+    "HardwareWatchReflexShedV1": SchemaRegistration(model=HardwareWatchReflexShedV1, kind=HARDWARE_WATCH_REFLEX_SHED_KIND),
+    "PredictionForecastV1": SchemaRegistration(model=PredictionForecastV1, kind=PREDICTION_FORECAST_KIND),
+    "PredictionSurpriseV1": SchemaRegistration(model=PredictionSurpriseV1, kind=PREDICTION_SURPRISE_KIND),
+    "PredictionTurnSurpriseV1": SchemaRegistration(model=PredictionTurnSurpriseV1, kind=PREDICTION_TURN_SURPRISE_KIND),
     "HelpRequestV1": SchemaRegistration(
         model=HelpRequestV1,
         kind="curiosity.help.request.v1",
@@ -1908,10 +2176,6 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         kind="curiosity.peer.brief.consumed.v1",
     ),
     "HopReadingV1": SchemaRegistration(model=HopReadingV1, kind=READING_KIND),
-    "SelfStudyEnrichmentRequestV1": SchemaRegistration(
-        model=SelfStudyEnrichmentRequestV1,
-        kind="self_study.enrichment.request.v1",
-    ),
     # orion-world-model (2026-08-20, scaffold patch -- see module docstring in
     # orion/schemas/world_model.py). Only the request/prediction pair carries
     # a message kind; WorldModelFeatureGroupV1/WorldModelTrajectoryStepV1 are
@@ -1928,6 +2192,124 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "SystemOneAppraisalFrameV1": SchemaRegistration(
         model=SystemOneAppraisalFrameV1,
         kind="system_one.appraisal.frame.v1",
+    ),
+    # Unified-turn latency L4 (2026-10-06): stance context built while
+    # orion-mind runs. Also in `_REGISTRY`.
+    "StanceContextPrepareRequestV1": SchemaRegistration(
+        model=StanceContextPrepareRequestV1,
+        kind=STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+    ),
+    "StanceContextPrepareResultV1": SchemaRegistration(
+        model=StanceContextPrepareResultV1,
+        kind=STANCE_CONTEXT_PREPARE_RESULT_KIND,
+    ),
+    # Memory episode redesign Stage 1 (2026-10-02). Also in `_REGISTRY`.
+    "MemoryEpisodeClosedV1": SchemaRegistration(
+        model=MemoryEpisodeClosedV1,
+        kind=MEMORY_EPISODE_CLOSED_KIND,
+    ),
+    "SituationStateV1": SchemaRegistration(
+        model=SituationStateV1,
+        kind=SITUATION_STATE_KIND,
+    ),
+    "IdentitySightingV1": SchemaRegistration(
+        model=IdentitySightingV1,
+        kind=IDENTITY_SIGHTING_KIND,
+    ),
+    "RegulationStateV1": SchemaRegistration(
+        model=RegulationStateV1,
+        kind=REGULATION_STATE_KIND,
+    ),
+    "SettledBetV1": SchemaRegistration(
+        model=SettledBetV1,
+        kind=SETTLED_BET_KIND,
+    ),
+    "FacultyRecordV1": SchemaRegistration(
+        model=FacultyRecordV1,
+        kind=FACULTY_RECORD_KIND,
+    ),
+    "SelfMonitorStateV1": SchemaRegistration(
+        model=SelfMonitorStateV1,
+        kind=SELF_MONITOR_STATE_KIND,
+    ),
+    "PhysiologyStateV1": SchemaRegistration(
+        model=PhysiologyStateV1,
+        kind=PHYSIOLOGY_STATE_KIND,
+    ),
+    "WantV1": SchemaRegistration(
+        model=WantV1,
+        kind=WANT_KIND,
+    ),
+    "WantDecisionV1": SchemaRegistration(
+        model=WantDecisionV1,
+        kind=WANT_DECISION_KIND,
+    ),
+    "RunCapOverrideV1": SchemaRegistration(
+        model=RunCapOverrideV1,
+        kind=RUN_CAP_OVERRIDE_KIND,
+    ),
+    "PhysiologyReportV1": SchemaRegistration(
+        model=PhysiologyReportV1,
+        kind=PHYSIOLOGY_REPORT_KIND,
+    ),
+    "LlmCallUsageV1": SchemaRegistration(
+        model=LlmCallUsageV1,
+        kind=LLM_CALL_USAGE_KIND,
+    ),
+    # Personality choice (spec rev 4): bus orion:personality:choice. Also in `_REGISTRY`; the nested
+    # ChoiceOptionV1 lives in `_REGISTRY` alone.
+    "PersonalityChoiceV1": SchemaRegistration(
+        model=PersonalityChoiceV1,
+        kind=PERSONALITY_CHOICE_KIND,
+    ),
+    "PersonalityFrameV1": SchemaRegistration(
+        model=PersonalityFrameV1,
+        kind="personality.frame.v1",
+    ),
+    # Curiosity replica (2026-11-04 design, patch 2): the plan RPC, the model's answer, and Prime's
+    # published concerns view (Redis orion:prime:concerns). Also in `_REGISTRY` above.
+    "CuriosityOfferPlanRequestV1": SchemaRegistration(
+        model=CuriosityOfferPlanRequestV1,
+        kind=CURIOSITY_REPLICA_PLAN_REQUEST_KIND,
+    ),
+    "CuriosityOfferPlanResultV1": SchemaRegistration(
+        model=CuriosityOfferPlanResultV1,
+        kind=CURIOSITY_REPLICA_PLAN_RESULT_KIND,
+    ),
+    "CuriosityOfferPlanAnswerV1": SchemaRegistration(
+        model=CuriosityOfferPlanAnswerV1,
+        kind="curiosity.replica.plan.answer.v1",
+    ),
+    "PrimeConcernsViewV1": SchemaRegistration(
+        model=PrimeConcernsViewV1,
+        kind="prime.concerns.view.v1",
+    ),
+    # Curiosity replica patch 4: the focus refusal RPC (orion-mind -> Hub), the replica's replies view (Redis
+    # orion:curiosity:replica:replies, read by Prime) and the refusal written next to a regulate signal (Redis
+    # orion:prime:regulate:<family> field refusal, read by the market). Also in `_REGISTRY` above.
+    "CuriosityFocusRefusalRequestV1": SchemaRegistration(
+        model=CuriosityFocusRefusalRequestV1,
+        kind=CURIOSITY_REPLICA_FOCUS_REFUSAL_REQUEST_KIND,
+    ),
+    "CuriosityFocusRefusalResultV1": SchemaRegistration(
+        model=CuriosityFocusRefusalResultV1,
+        kind=CURIOSITY_REPLICA_FOCUS_REFUSAL_RESULT_KIND,
+    ),
+    "CuriosityReplicaRepliesViewV1": SchemaRegistration(
+        model=CuriosityReplicaRepliesViewV1,
+        kind=CURIOSITY_REPLICA_REPLIES_VIEW_KIND,
+    ),
+    "PrimeChargeRefusalV1": SchemaRegistration(
+        model=PrimeChargeRefusalV1,
+        kind="prime.regulation.refusal.v1",
+    ),
+    "DispositionNamingV1": SchemaRegistration(
+        model=DispositionNamingV1,
+        kind=PERSONALITY_NAMING_KIND,
+    ),
+    "DispositionNamingPacketV1": SchemaRegistration(
+        model=DispositionNamingPacketV1,
+        kind="personality.naming.packet.v1",
     ),
 }
 

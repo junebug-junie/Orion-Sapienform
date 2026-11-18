@@ -1,5 +1,15 @@
 # orion/mood_arc — felt-state-trajectory autoencoder
 
+> **2026-11 status (PE suite rebuild step 5).** Kept, not retired: Juniper wants
+> to retrain it once the new prediction-error signals exist. Until then the
+> live scorer still runs and `field_channel_anomaly_score` keeps filling, but
+> equilibrium's metacog trigger is OFF
+> (`EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE=false`). v4 flags
+> ~25-28% of windows (drifted inputs) and its `prediction_error_bus_synaptic`
+> input now reads the 0.0 fill (node retired), so v4 scores are not trusted.
+> The corpus writer is back on (`FIELD_CHANNEL_CORPUS_PATH`, field-digester) so a
+> retrain has fresh rows without bus_synaptic or route.
+
 Offline research pipeline testing whether Orion has recurring **trajectory**
 structure in its felt-state substrate — not just a single-tick `phi` value,
 but a pattern across a *window* of ticks. It is a windowed autoencoder
@@ -378,7 +388,7 @@ still-open, deliberately deferred second half). What it actually took to get the
 recording in full, since two of the three problems found were genuine methodology gaps, not
 mistakes specific to this one retrain.
 
-**What's new in `v4` vs `v3`'s 15 channels:** `action_warrant` (`substrate_proposal_frames`),
+**What's new in `v4` vs `v3`'s 15 channels:** `action_warrant` (`substrate_proposal_frames` until 2026-11-07; since then the field digester writes it into the corpus row itself, so `enrich-corpus` no longer joins it; **gap:** a raw corpus row written before that date has no `action_warrant` unless it was already enriched, and once the ladder-drop migration removes `substrate_proposal_frames` the only way to add it to such a row is to recompute `orion.field.action_warrant.action_warrant(state)` from the matching `substrate_field_state` row),
 `heartbeat_mean_ratio` + per-domain `prediction_error_{execution,chat,biometrics,bus_synaptic}`
 (`substrate_attention_self_model`) — joined onto the existing `field_channel_corpus.v1` corpus by
 `orion/mood_arc/corpus_enrichment.py` (new module) via `fit_encoder.py enrich-corpus` (new

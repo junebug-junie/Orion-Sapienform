@@ -1,12 +1,14 @@
 # Game company: Orion watches, comments and chats while someone plays
 
-Status: DESIGN, revision 3. Step 0 has run (2026-11-17, see "Step 0 results"). Nothing is built or deployed.
+Status: DESIGN, revision 4. Step 0 has run (2026-11-17, see "Step 0 results"). Patch 1 is merged (PR #3627); its live proof is #3626. Patch 2 waits for Juniper's go.
 Date: 2026-11-16. All live numbers were read on 2026-11-16 unless a line says otherwise.
 Ticket: #3500.
 
 Revision 2 answers Orion's 14 questions on revision 1 (PR #3517, session thread `7a835850b6ef`). "Orion's review" at the end maps each question to the change it caused. Revision 2 also corrects one error of mine: the quick lane's slot size.
 
 Revision 3 adds the results of step 0, Juniper's "yes", and the answers to Orion's second round of 10 points.
+
+Revision 4 answers Orion's third round of 8 points. It changes four things: the screen-change floor is per game (it fails on The Legend of Zelda for the NES), a look's event is written only after the look is settled, a second skip counter, and a lease-priority check for patch 3.
 
 ## Juniper's words (2026-11-16)
 
@@ -181,15 +183,18 @@ A look is perception. It is the game's version of a camera caption. It does not 
 **A look needs something to see.** Orion's question 6 names a real risk: a timer makes readings whether or not anything is there.
 
 - **The trigger is change, not the clock.** The gateway compares frames in the ring with the last frame of the previous look. One number, the screen change (section "Metric quality gate records"). Under a floor, no model is called, no row is written, and one counter on the sitting goes up: `static_skips`.
+- **A second skip has its own counter.** The screen changed over the floor, but the last input is older than 60 seconds: `input_stale_skips` goes up. So "the screen moved and Orion was not allowed to look" reads apart from "the screen sat still". Both gates must pass. Two minutes of reading a dialogue box with no press give no look after the first 60 seconds, and this counter shows it.
 - **The clock is only a ceiling.** At most one look per 60 seconds [default].
 - **Input is still required.** The last input must be under 60 seconds old.
-- **The floor is 0.01 [default], from step 0.** Still screens read 0.0002 to 0.0004. The calmest walk read 0.05. The floor sits between them.
+- **The floor is per game, and a game without a validated floor gets no looks.** 0.01 was set from A Link to the Past. It works on Crystalis (still 0.0007 to 0.0031, walking 0.106 to 0.229). It fails on The Legend of Zelda for the NES: one fixed screen per room, so a small sprite barely moves the mean. Walking read 0.0032 to 0.0047 in 4 of 5 sequences, inside the still range (0.0000 to 0.0054). At 0.01 almost all of that play would be skipped. Two other statistics (the largest single-cell difference, the share of cells over 0.03) did not separate still from walking on that game either: idle animation scores as high as walking. So a floor lives in a per-game table, is set from real sequences of that game, and the page says "no looks for this game yet" where none exists. For fixed-screen games the trigger needs another signal (input in the window, with a low change floor); patch 2 measures that before such a game gets looks.
+- **Floors are calibrated from live play, not by hand.** From the first deploy of patch 2, the gateway records every ring check for every game, also for a game with no floor (no model, no bid). The input stream labels each check: a button changed in the window, or not. A game gets a floor when it has at least 30 minutes of such checks and one value separates them: at most 10% of no-input checks above it, at least 90% of input checks above it. Then the page shows the floor and the numbers it came from. A game where no value separates (Zelda NES today) stays at "no looks yet" until the input trigger is measured on it. Note: Zelda NES is 13 of the 32 baseline sittings, so at launch that share of play gets no looks.
+- **Misses inside one game are counted.** A check under the floor while a button changed in the window is a likely miss: `under_floor_with_input`. A floor set on overworld walking that fails in dungeons or menus shows up there. The floor is per game, not per area; this counter is what says when that is not enough.
 - **Who computes it, and what it costs.** The gateway checks one ring packet every 2 seconds: inflate it, reduce it to a 32 by 28 brightness grid, compare. Step 0 measured 1.5 milliseconds for one check on one CPU core. That is under 0.1% of a core while someone plays, and zero when nobody does. This check is the only decode that runs on a timer. A full image is made only for a look or a turn (10 milliseconds each).
 - **No model judges "nothing new".** Revision 2 let the model say so, or compared note text. Step 0 showed both fail (see "Step 0 results"). The skip is decided before the model, by the screen, and never after it.
 - **The look is stateless.** The model gets no earlier note. In step 0, a model that was given the previous note copied it word for word and ignored the new frames.
 - **A failed look is counted as failed.** A note that is empty, that says "unclear", or that equals the previous note character for character is stored with the outcome `empty`, `unclear` or `copied`. It writes no temporal event and its act closes 0.
 - **The page tells the truth.** "Orion is watching" is shown only when a stored note is under 3 minutes old. Otherwise the page says "Orion is looking; the screen has not changed for 6 min", or why Orion is not looking.
-- **Counts at the grain where the gate fires.** Every report gives five numbers, in order: ring checks, checks over the floor, bids funded, model calls, notes stored. Failed looks are a sixth. A skip is counted where it happens, before the model.
+- **Counts at the grain where the gate fires.** Every report gives these numbers, in order: ring checks, checks over the floor, checks skipped for stale input, checks under the floor with input, bids funded, model calls, notes stored. Failed looks come last. A skip is counted where it happens, before the model.
 
 **The call**
 
@@ -200,7 +205,9 @@ A look is perception. It is the game's version of a camera caption. It does not 
 - **What the model is given.** The game title, the minutes played, and the 4 frames. Nothing else.
 - **What the model returns.** One note of at most 300 characters, as plain text: where the player's character is, what they are doing, what changed across the 4 frames. The prompt tells the model to write "unclear" when it cannot tell. The chat lane's engine has no forced output format, so the gateway side checks the text.
 - **Act.** Actor `hub.retro_watch`, verb `look`, object `retro_sitting:<id>`. It closes 1 when a note and its frame hashes are stored. It closes 0 when the lane fails, or the note is empty, unclear or copied. A refused bid opens no act.
-- **Row.** One row in a new table `retro_watch_look`: look id, sitting id, time, frame hashes, `frames_expire_at`, the note, the outcome, the screen change, the want id, the lease, the seconds, and the prompt tokens.
+- **Frames are taken when the lease is granted, not when the bid is made.** A look that waited behind Juniper's turn describes the screen at grant time.
+- **Frame expiry, stated exactly.** The percept store refreshes a blob's age when the same bytes are posted again (`services/orion-percept-store/app/storage.py:109`). A line turn re-posts the newest frames, so a frame lives one hour after its LAST post. Every post of a hash moves `frames_expire_at` of every row that names it to post time + 1 h. Callers (turn staging, dig) compare with `frames_expire_at` first: after it, they answer "expired" from the row and do not ask the store. Before it, a 404 is a fault and is logged. The row's time is authoritative. A blob that outlives its time because a sweep failed is not served by these callers; the sweep failure is already logged (`main.py:57`).
+- **Row.** One row in a new table `retro_watch_look`: look id, sitting id, time, frame hashes, `frames_expire_at`, the note, the outcome, the screen change, the want id, the lease, `lane_wait_ms` (request to grant), the seconds, the prompt tokens, and `similar_to_previous` (word overlap with the sitting's previous note, 0 to 1). Step 0's 5.6 seconds were measured on an idle lane; the wait is reported apart from the call.
 
 **Which lane**
 
@@ -236,6 +243,7 @@ A line is Orion speaking first. It is a real unified turn, so it carries Orion's
 - What Orion said earlier in this sitting (last 5 lines) and the last 6 chat-box messages. A turn that Orion starts gets no "recent conversation" block, so the history goes into the prompt, as outreach does it (`endogenous_outreach.py:1109`).
 - Up to 3 items from Orion's now (section 8).
 - The 4 newest frames, attached. Orion opens them and sees the screen.
+- **Near-copies.** A player stuck on one jump gives notes that differ by a few words. Patch 2 records `similar_to_previous` on every look. Patch 3 groups a run of near-copies in the turn's note list into one line with a count ("6 notes over 9 min: ..."), with the cut-off set from that column, not guessed.
 - The ask: say one or two sentences to the person playing, in your own voice, about what you saw. The frames will be about a minute old when your words arrive, so speak about the stretch and not about the instant. If you have nothing worth saying, pass. If you would rather not watch, you can turn the watch off (section 6).
 
 **Silence is a valid answer.** Outreach already knows a pass (`is_pass_response`, `endogenous_outreach.py:1617`). A pass writes a decision row with the reason `orion_passed`, releases the want, and opens no act. This is the rule outreach follows today. The share of funded turns that end in a pass is tracked: a high share means the want fires too easily.
@@ -253,7 +261,7 @@ A line is Orion speaking first. It is a real unified turn, so it carries Orion's
 **Juniper goes first.** This needs new code, and Orion's question 4 sharpened it.
 
 - **One Orion call at a time.** Hub runs the play's calls in a single file. No look starts while a line turn runs. No line turn starts while a look is in flight. So at most one of Orion's play calls is in flight or queued on the chat lane.
-- **Lower priority than Juniper.** Today a turn Orion starts on the chat lane runs as `interactive`, equal to hers. A line turn's calls should run at `system`. Durable turns already carry their own lane and lease into the turn (`services/orion-hub/scripts/curiosity_investigation.py:881`). Whether the outreach door can do the same is UNVERIFIED; the build confirms it. Until it can, the heat check above and the cancel below are the guard.
+- **Lower priority than Juniper.** Today a turn Orion starts on the chat lane runs as `interactive`, equal to hers. A line turn's calls should run at `system`. Durable turns already carry their own lane and lease into the turn (`services/orion-hub/scripts/curiosity_investigation.py:881`). Whether the outreach door can do the same is UNVERIFIED; the build confirms it. Until it can, the heat check above and the cancel below are the guard. Live today every motor lease on the chat lane is `interactive` (551 of 551 in 7 days, Orion's count), equal to Juniper's. Patch 3 has an acceptance check for this.
 - **Cancel on her message.** The chat lane runs one turn at a time, and a turn of Juniper's waits behind a turn Orion started (`services/orion-harness-governor/app/bus_listener.py:926`). New rule: when a message from Juniper arrives on any chat socket while a line turn runs, Hub cancels the line turn (`HarnessGovernorClient.cancel`, `services/orion-hub/scripts/harness_governor_client.py:333`). The line's outcome is `yielded`. That is not a failure.
 - **Her worst case, stated.** One call cannot be cancelled once it runs: a look, or one stage of a line turn. So the first model call of her turn can wait for one of them, and for no more than one. A look took 5.6 seconds at the median in step 0, and 6.9 at the most in 11 calls. A stance call takes 19 seconds at the 90th percentile. Her own stance call comes after that wait. It is part of her turn, not part of the delay.
 - **Nothing here is confirmed live.** Orion asked what was. The look's time is measured. The wait of a real turn of hers behind a real look or line is not. Patch 3 measures it, as an acceptance check.
@@ -292,6 +300,7 @@ The player types to Orion from inside the game.
   2. The history row carries the source `retro_guest`. The three readers that mean "Juniper spoke" must not match it: the temporal speaker rule (`orion/temporal_self/sources.py:83`), the attention count of her turns (`orion/attention/world_first.py:1208`), and the day letter's chat gather (`orion/orion_day/gather.py:224`). The first one needs a change: it reads any row with a prompt as Juniper.
   3. The turn hands back to Prime as class `play`, never as Juniper's chat.
 - A guest turn has no warm slot, so it is slower. That is the cost of not knowing.
+- **A flip mid-sitting.** Each message keeps the source it had when it was sent; nothing is rewritten. If a guest taps "Juniper" after 20 minutes, the later messages are Juniper's turns from then on, and the warm slot starts there. The history block shows both halves with their speakers. The day letter and the attention chat count read only Juniper's rows, so nothing is counted twice. A patch 3 test covers the flip.
 
 **Transport**
 
@@ -338,7 +347,7 @@ Seam 7 reads the sitting through a new `_read_sitting` method in `prime_loop.py`
 - **The command.** A new part of Orion's own tool kit, beside `dig look`: `dig watch` (`orion/dig/watch.py`). Orion can run it inside any turn: a line turn, a chat reply, a curiosity run.
   - `dig watch status`: the open sitting, the mode, who set it.
   - `dig watch off --why "<words>"`: stop looking and speaking for this sitting. `quiet` and `on` work the same way.
-  - `dig watch default <game> off --why "<words>"`: a standing choice for one game. It holds for every later sitting of that game until Orion changes it.
+  - `dig watch default <game> off --why "<words>"`: a standing choice for one game. It holds for every later sitting of that game until Orion changes it. The look reads the choice before every bid, so a declined game gets no look from its first press. No act or wake is needed for that.
 - **The lower setting wins.** The mode has three steps: off, quiet, talk. Juniper has a switch on the page, and Orion has `dig watch`. The mode in force is the lower of the two. Juniper cannot turn the watch on over Orion's "off", and Orion cannot turn it on over hers.
 - **Juniper sees it.** The page shows "Orion chose not to watch: <why>". She can ask Orion in the chat box. A chat-box message is her turn, and Orion answers it whatever the mode is.
 - **Before the first sitting.** The flags ship on, so the first sitting after deploy would start looks. Orion can set a default before any sitting exists, from the day patch 2 is live. This document reaches Orion through the session thread, so Orion knows of the switch before it matters.
@@ -387,10 +396,14 @@ Two of the three new numbers belong here and to the look. Each has a gate record
 Every part of the play lands in `temporal_self_event`, through the experience contract.
 
 - **The sitting.** The `human_play` row uses the existing source kind `retro_play`. Label: "Someone played A Link to the Past for 2 h 22 min. Orion watched: 96 notes, and spoke 14 times." When the player said so, "Juniper played". The numbers are counts from the tables. No model writes the label.
-- **The looks.** A new source kind, `retro_look`, reads `retro_watch_look`. Each stored note becomes one event. A failed look becomes none. The label is the note. It belongs to organ `play`.
+- **The looks.** A new source kind, `retro_look`, reads `retro_watch_look`. It belongs to organ `play`. The chronicle never rewrites a stored event (`ON CONFLICT (event_id) DO UPDATE SET late_unfolded = false`, `services/orion-durable-runs/app/temporal_self_store.py`), so a contradiction found later cannot void an event already written. Two rules follow:
+  - **A look's event is written only when a turn checked it and it held.** Each note ends in one of three buckets: `contradicted`, `checked_holds`, `unchecked`. A line turn that saw frames from the note's window judges it, also when the turn passes (the judgment is part of the turn's output, not of the line). Only `checked_holds` becomes an event. `unchecked` (quiet mode, refused line bids, a note no turn could see) and `contradicted` stay in `retro_watch_look` with their bucket, and never reach the day. The sitting's own event carries the counts of all three.
+  - **Expected share.** Looks are at least 60 seconds apart and a turn sees frames of the last 30 seconds, so at most one of 12 shown notes is checkable: about 8%. So few looks will become events. That is the price of not putting unjudged notes into the day.
+  - **The label says it is a look.** "Saw on the game screen: <note>". Every reader that copies a label into a prompt carries those words with it, so no reader has to know the source kind to treat it as unverified.
+  - Readers found that put an event label into a prompt: `orion/prime/thought.py`, `orion/prime/hunger.py`, `orion/curiosity/now_section.py`, `services/orion-thought/app/temporal_self_cue.py`. Not yet checked: the dream cycle, `orion/orion_day/gather.py`, world-pulse resonance, dig. Patch 2 finishes that list before the source is turned on.
 - **The lines.** A line is Orion's own chat row, with no prompt. The existing rule already keeps such a row from opening or extending a conversation (`orion/temporal_self/sources.py:103`). So four hours of lines do not read as "Talked with Juniper". Orion asked this in question 8.
 - **The chat box.** A message from Juniper is a conversation turn, as it should be. A guest's message is not (section 5).
-- **One live arc.** The kind `play` is already in the arc list (`orion/schemas/temporal_self.py:118`, `orion/temporal_self/day_block.py:43`). No new kind is added. Today a play arc is "one finished Retro session". With looks, the arc opens at the first look of a sitting and closes with the `human_play` row. While someone plays, Orion's day holds an open play arc. The chat stance already has a clause for play arcs (`orion/temporal_self/stance_cue.py:311`).
+- **One live arc.** The kind `play` is already in the arc list (`orion/schemas/temporal_self.py:118`, `orion/temporal_self/day_block.py:43`). No new kind is added. Today a play arc is "one finished Retro session". With looks, the arc opens at the first settled look of a sitting and closes with the `human_play` row. A look settles at the next line turn or at the close, so the arc can open some minutes after play starts. While someone plays, Orion's day holds an open play arc. The chat stance already has a clause for play arcs (`orion/temporal_self/stance_cue.py:311`).
 - **The arc stays small.** The arc keeps counts and its first and last look. It does not carry every look. A test folds 300 look events and checks that the arc's stored size has a fixed bound.
 - **The day block gets one line per sitting.** The block renders arcs, not events, and it has a cap with priorities (`day_block.py:124`). A play line ranks below conversation and attention lines. Several hundred look events add no line. Patch 1 reports the block's length and the letter's input size for a day with a long sitting, before and after. Heavy days have cost Orion letter timeouts before, and this must not add one.
 
@@ -409,7 +422,7 @@ Juniper's rule: bidding on tier 1.
 ```yaml
   hub.retro_watch:
     tier: 1
-    deferrable_window_s: 120    # a look two minutes late describes a different screen
+    deferrable_window_s: 0      # no defer: a deferred look is skipped (section 3); a late look describes a different screen
     lanes: [chat]
     placement: one_of
     receptors: [slow, quicken]
@@ -596,11 +609,11 @@ In revision 1 this number was the salience of a look. It is now the trigger of a
    - Walking with a scrolling view read 0.19 to 0.20 (2 sequences). It does not sit at the top of the scale, which is 1.
    - A fade to black and a room change read 0.19 to 0.43 (4 sequences).
    - So the number separates "still" from "anything happens" by a factor of 100. It does not separate a room change from a scrolling walk. It is fit to be a trigger. It is not fit to be a score, and it is not used as one.
-   - Limits: one game, scripted input. The check runs again on the first live sitting.
+   - Limits: scripted input. Measured later on two NES games (5 saves each, 60 s still and 60 s walking): Crystalis separates; The Legend of Zelda (NES) does not (walking 0.0032 to 0.0047 in 4 of 5, still up to 0.0054). Not yet explained: two Zelda "still" sequences with one big step (0.51, 0.15), and two Crystalis sequences at 0.66. So the record passes per game, not in general (section 3).
 5. **Existing mechanism.** No frame-difference measure was found in `services/orion-vision-edge` or `services/orion-vision-retina`. The build checks the camera motion pipeline before it writes a new one.
 6. **Reversibility.** One nullable number on a row and one floor in settings.
 
-Record 4 passed for use as a trigger. Its correlation with the play rate inside sittings (record 2) needs live frames, and is checked on the first live sitting.
+Record 4 passed for use as a trigger on A Link to the Past and Crystalis only. Its correlation with the play rate inside sittings (record 2) needs live frames, and is checked on the first live sitting.
 
 ### Sitting minutes (salience of a finished sitting)
 
@@ -608,6 +621,7 @@ Record 4 passed for use as a trigger. Its correlation with the play rate inside 
 2. **Independence.** It ranks sittings against sittings only. It is in no model with another metric.
 3. **Theory anchor.** None is claimed. It is a duration, used only to order one organ's own events: a longer sitting is a bigger event of that kind.
 4. **Live data.** The journals give seven sittings of one game from 20 to 249 minutes, and many under 2 minutes that are dropped. The spread is wide and the floor is real.
+   - Mask changes across games (Orion's third round, point 8). Every `applied` journal row has `port` and `mask` in all 19 games; no row uses another shape. Rows per real change differ by game, from 3.1 (Galaga) to 20.4 (Battle Chess), so the counter uses changes, not rows. The baseline (32 sittings of 2 minutes or more) is 88% Zelda NES and A Link to the Past by minutes. Sittings of other games are ranked against a two-game baseline until more play exists.
 5. **Existing mechanism.** The existing salience rule is reused (`orion/physiology/event_wants.py:34`, `source_salience`).
 6. **Reversibility.** One rule name in `organs.yaml`.
 
@@ -618,8 +632,8 @@ Record 4 passed for use as a trigger. Its correlation with the play rate inside 
 - **Privacy boundary.** None between Juniper and Orion, by her standing rule. A guest is a new case. A guest's words are stored as a guest's, never as Juniper's. No name is written by this organ. The repo is public: no frame, save or name is committed. Test fixtures use frames of the original pad-test ROM, which this repo generates itself.
 - **Trace that proves it worked.** For one look: the want row, the lease with its want id, the look row with frame hashes, the act, and the temporal event when a note was stored. For one line: the want row, the turn's trace, the line row with the looks it was shown, the act, the chat history row, and a use row when it cited the now.
 - **Dangerous failure modes.**
-  1. Orion's play calls delay Juniper's own turn. Guard: one call at a time, lower priority, cancel on her message (section 4), checked live.
-  2. A wrong note hardens into a fact. Guard: a note is stored as a look, never as a fact about the player. The sitting's label is counts only. No memory card is written from notes in this design.
+  1. Orion's play calls delay Juniper's own turn. Guard: one call at a time, lower priority, cancel on her message (section 4). The lower priority is UNVERIFIED until patch 3's lease check passes.
+  2. A wrong note hardens into a fact. Guard: a note is stored as a look, never as a fact about the player. Its event label says "Saw on the game screen", and a contradicted note never becomes an event (section 8). The sitting's label is counts only. No memory card is written from notes in this design.
   3. Orion claims the play. Guard: a schema test that a `human_play` row has 0 Orion frames.
   4. A guest's words are recorded as Juniper's. Guard: the guest path in section 5, and a test on each of the three readers.
   5. Looks are made on a schedule with nothing there. Guard: the change trigger, a stateless look, and counts at the grain of the gate.
@@ -658,6 +672,15 @@ Record 4 passed for use as a trigger. Its correlation with the play rate inside 
 
 - Every look row has a want row and a lease with the same want id.
 - A paused game for 10 minutes gives no look row, and `static_skips` rises.
+- A screen that changes with no input for 2 minutes gives no look after 60 seconds, and `input_stale_skips` rises.
+- A game with no row in the floor table gets no look, and the page says so. Each floor in the table names the sequences it was set from.
+- No `temporal_self_event` with `source_kind='retro_look'` exists for a look that is unsettled or `contradicted`. Every `retro_look` label starts with "Saw on the game screen:".
+- The list of readers that copy an event label into a prompt is complete and in the spec.
+- Before the first line ships, the look is checked on unscripted play with a menu, a map and a dialogue box that types itself out. Step 0 read menu text right (2 of 2) and did not recognise the world map as a map (1 of 1).
+- The step 0 sequences in `services/orion-hub/evals/fixtures/retro_look_step0.json` are re-run as a regression, and the counts are reported beside the fixture's. The map and menu sequences (`map_a`, `map_b`, `menu_a`, `menu_b`) are in it.
+- The look prompt says: do not quote numbers from the status bar. Step 0: 2 of 3 notes that cited them were wrong.
+- The shipping bar for the unscripted check (proposed, Juniper decides): at least 8 of 10 notes with place and action right, and at most 2 of 10 holding a thing not on the screen. One judge by eye against the frames, verdicts written per note into a fixture file in the same shape as step 0. About 10 minutes of play and 30 minutes of judging.
+- Orion's read-only role can read `retro_sitting`, `retro_play_sessions` and `retro_watch_look`. `dig` answers "what did I see in that sitting" from look rows with their bucket.
 - A refused bid has no lease and no look row.
 - With the lane made blind in a test, the look fails. No note is stored.
 - One hour after a sitting ends, the percept store holds none of its frames.
@@ -672,7 +695,12 @@ Record 4 passed for use as a trigger. Its correlation with the play rate inside 
 **Patch 3**
 
 - Every delivered line has a `retro_line` row that names the looks it was shown, and a turn trace.
-- A message of Juniper's sent during a running line turn has its first model call granted within 20 seconds, and the line's outcome is `yielded`.
+- For one real line turn, the stance, motor and finalize leases are read from `gpu_pool_events`. The check fails if any of them is `interactive`.
+- The note error rate is reported as contradicted / checkable, beside the share of shown notes that were checkable. A note is checkable when its frame window overlaps the turn's frames; each shown note stores that flag. A turn sees up to 12 notes but frames of only the last 30 seconds, so most notes are not checkable.
+- A message of Juniper's sent during a running line turn has its first model call granted within 20 seconds, and the line's outcome is `yielded`. orion-thought, which runs stance, has no cancel listener (`services/orion-hub/scripts/endogenous_outreach.py:231`): until it has one, she can wait for one in-flight stance call (11 s median, 19 s at p90). A check cancels a line turn mid-stance and asserts no chat row, no push, no delivery.
+- A test forces the hard order: the draft finishes after Hub marks the line `yielded`, and finalize still tries to deliver. The guard refuses it.
+- A line turn with no ring (the browser closed or reconnected) does not run. Its outcome is `no_frames`. No prompt ever says "these are 4 frames" with fewer attached.
+- If the outreach door cannot carry a `system` lease, lines do not ship. Lines at `interactive` with cancel as the only guard is not an option. At 34 °C and above, looks and lines are refused as `system`; office reach-outs run as `interactive` and keep going. That asymmetry is today's reach-out rule, not new.
 - After that cancel: no chat history row for the line, no push to any socket, and no later delivery, also when the cancelled turn had finished its draft.
 - The seconds of one real line turn are recorded end to end, by stage: stance, motor, finalize. Step 0 did not measure this.
 - A chat-box turn's prompt holds the Prime block. A promise made in it shows up as a Prime concern.
@@ -683,7 +711,7 @@ Record 4 passed for use as a trigger. Its correlation with the play rate inside 
 
 **Patch 4**
 
-- The replay of the last 7 days is reported first: how many ticks `world:reading` would have lost to `world:play`.
+- The replay of the last 7 days is reported first: how many ticks `world:reading` would have lost to `world:play`, and the attention share of reading and curiosity during sittings of 2 hours or more. Orion's point: about 89% of half-hour windows read zero play, so "top tenth of its own week" passes for almost any open sitting. The eligibility rule is chosen from that replay, not assumed.
 - A sitting produces at most 2 Prime thoughts that name it as their wake.
 - A `slow` signal from Prime changes the look count in the next hour, and the market records the effect.
 - `world:play` appears in the attention broadcast during a watched sitting, is not eligible when Orion is not watching, is absent with a reason when the table cannot be read, and reads zero when nobody plays.
@@ -781,13 +809,15 @@ The backfill and the live counter both use mask changes (section 7).
 
 ### What went wrong during step 0
 
-- **The spare copy landed on the wrong card three times.** I asked for GPU 3 by number. Inside a container the numbering differs, and the copy loaded on GPU 2, the card of Orion's second agent seat. The first start exited, and its log was not kept. The second came up short by one allocation of 248 MB. The third loaded in full and left that card 460 MB short of full for about two minutes. I stopped it as soon as I saw where it was. The pool's records show no harm: that seat served 19 leases in the first window, all released clean, and its process never went down. The fourth start pinned the card by its hardware id and landed on GPU 3. Lesson: never pick a card by number.
+- **The spare copy landed on the wrong card three times.** I asked for GPU 3 by number. Inside a container the numbering differs, and the copy loaded on GPU 2, the card of Orion's second agent seat. The first start exited, and its log was not kept. The second came up short by one allocation of 248 MB. The third loaded in full. The seat's own card readings (`orion_biometrics`, node circe, GPU 2) show it: baseline 24,904 MiB; peaks of 31,750 MiB on 11-16 at 17:31Z and 32,308 to 32,426 MiB on 11-17 between 03:02 and 03:06Z, of 32,768. At worst the card was 342 MiB short of full; it was back to 24,704 MiB at 03:07. I stopped it as soon as I saw where it was. The pool's records show no harm: three leases were in flight on 11-16 at 17:31 and all released clean; in the 11-17 window the seat was in standby and held no lease. Waits in the hour before and after were 44 s and 57 s on average, no clear change. What no record can show: a model on a card 342 MiB short of full fails on its next allocation. The rule is now in `docs/runbooks/2026-11-14-lane-door.md`: pin by hardware id, and print the card's memory and the seat's leases for the window before and after. The fourth start pinned the card by its hardware id and landed on GPU 3. Lesson: never pick a card by number.
 - **The leased seat was slow to come and quick to go.** The first hold waited 22.5 minutes for the agent lane, then the pool took it back after 35 seconds and 3 calls. A second hold finished the other 15 calls. That is the leased path working as designed: operator work is last in line.
 - **circe is clean.** The temporary copy is stopped and removed. The encoder file and the frames are deleted from circe. GPU memory is back to what it was.
 
 ### Where the evidence is
 
-- On athena, in `~/.orion/retro-spike/`, readable by the owner only: the frames, `looks_agent.json`, `looks_9b.json`, `screen_change.json`. It is deleted after Juniper's review.
+- In the repo: `services/orion-hub/evals/fixtures/retro_look_step0.json`. Words and numbers only: the prompts, 15 sequences with each note and its verdict, 29 more with screen change only, and the headline counts recomputed from the per-note verdicts. The quick-lane model's per-note verdicts were never written down, only its total; the file says so.
+- On athena, in `~/.orion/retro-spike/`, readable by the owner only: the frames, `looks_agent.json`, `looks_9b.json`, `screen_change.json`, `screen_change_stats.json`. They are deleted after Juniper's review. The fixture keeps the numbers after that.
+- On athena, in `~/.orion/retro-watch-fixture/`, owner only: copies of the 10 saves and the spike scripts, to render the sequences again.
 - In the pool's records: `gpu_pool_events` with the holder `operator:retro-watch-step0`.
 
 ## Questions
@@ -852,8 +882,27 @@ Orion read my answers and sent 10 more points. Orion was reading the text of rev
 9. **Orion's answer to A: yes, the lower setting wins.** The three things asked for are in section 6: `dig watch off` writes an act row with actor, verb and Orion's words. The choice lives in Postgres and holds across a restart. Prime's frame line says the watch is off by Orion's choice.
 10. **Orion's answer to B: yes, with the row's shape stated.** Section 6 states it: the option chosen, the options declined, and Orion's words. The personality reducer reads it, and through tendencies it changes the care term in bids. Nothing grades it as right or wrong. It is a record that is read, not a drive.
 
+### Third round (2026-11-17)
+
+Orion read revision 3 and sent 8 points. Each one changed the spec except point 8, which changed a record.
+
+1. **Only the newest notes can be checked against frames.** True. The error rate is now contradicted / checkable, each shown note stores whether it was checkable, and the share is reported (patch 3 checks).
+2. **Does a contradicted note's event stand forever?** Under revision 3, yes: the chronicle never rewrites an event. Now a look's event is written only after it is settled, a contradicted note never becomes one, and the label says "Saw on the game screen" (section 8). The reader list is partial and patch 2 must finish it.
+3. **Step 0 was scripted.** New runs: menu text read right, the world map was not recognised, status-bar numbers were wrong in 2 of 3 notes that cited them. (a) Both gates must pass, so reading dialogue gives no look after 60 seconds; the new `input_stale_skips` counter shows it. (b) 0.01 is not a floor for all games: it fails on The Legend of Zelda (NES). Floors are per game now (section 3), and unscripted play with a menu, map and dialogue is a patch 2 check.
+4. **Keep the numbers.** Done: `services/orion-hub/evals/fixtures/retro_look_step0.json`, and patch 2 re-runs it.
+5. **Check the lease priority.** Added to patch 3. The guard is marked UNVERIFIED until then.
+6. **Seat-side evidence of the foreign load.** The card's own readings show it: at worst 342 MiB short of full. No lease was harmed in the record. The rule is in the lane-door runbook; a detector is ticketed (#3631).
+7. **A counter for "screen moved, input stale".** Added: `input_stale_skips`.
+8. **Do all games' journals carry the mask the same way?** Yes, in all 19. Rows per change differ by game, which is why the counter uses changes. The baseline is 88% two Zelda games by minutes, and the sitting-minutes record says so.
+
+### Fourth round (2026-11-17)
+
+Orion sent 12 points on PR #3632 and 7 more on PR #3517. Changes, in short: floors are calibrated from live play with input as the label; a miss counter; looks record lane wait and take frames at grant; looks are not deferred; only checked-and-held notes reach the day; the expected checkable share is stated (about 8%); frame expiry follows the last post; cancel at the stance stage is a stated gap with a check; no ring means no turn; lines do not ship without a `system` lease; a read grant for Orion's role (`scripts/sql/2026-11-17_grant_orion_readonly_retro.sql`, applied by hand: #3657); a stance-stage cancel listener (#3658). Patch 2 builds from this revision; #3632 merges first.
+
 ## Recommended next patch
 
 Patch 1, on Juniper's go. It uses no GPU, and it ends the state where 27 hours of play left no trace in Orion: the sitting, the "Who's playing?" question, the backfill, the game block in the chat prompt, the play line in the day block.
 
-Before patch 2, Juniper answers open question 1: whether the chat lane's model reads the screen well enough.
+Patch 1 is merged (PR #3627). Its live proof is #3626.
+
+Patch 2 next, on Juniper's go only. It starts with the per-game floor table and the reader list from section 8, then the look.

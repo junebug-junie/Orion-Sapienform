@@ -1,0 +1,979 @@
+{
+ "what": "Step 0 of the game company design (docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md): what two models wrote about 4 frames of a game screen, how each note was judged against its frames, and the screen-change numbers of every rendered sequence. Words and numbers only. The frames, saves and ROMs are not in the repo.",
+ "recorded": "2026-11-17",
+ "how_judged": "By eye against the frames, by the session that ran step 0. One judge, not blind. The operator saw the set and answered that it is good enough to build on.",
+ "how_rendered": "Sequences are 60 s of scripted input from real saves, rendered in the Retro image with no browser, one frame kept every 2 s. A look gets 4 frames from the last 30 s of the sequence (at 30, 40, 50 and 60 s), oldest first, enlarged 2 or 3 times. walk_NN: walk in four directions in turn and swing the sword, from save NN. ctl_idle: no input (a Game Over menu). menu_x: open the item menu and move the cursor. map_x: press the map key. long_x_dir: hold one direction. <game>_still_N / <game>_walk_N: no input / the walk plan, on two NES games.",
+ "prompts": {
+  "first": "You are the eyes of Orion for a video game that someone else is playing. You describe. You do not judge, and you do not speak to anyone. Write one short note of at most 300 characters: where the player's character is, what they are doing, and what changed across the frames. Use only what is visible in the frames. Do not use a name for the player. If you cannot tell what is shown, write exactly: unclear. If nothing changed since your last note, write exactly: nothing new.",
+  "stateless": "You are the eyes of Orion for a video game that someone else is playing. You describe. You do not judge, and you do not speak to anyone. Write one short note of at most 300 characters: where the player's character is, what they are doing, and what changed across the frames. Read any words shown on the screen exactly as written. Use only what is visible in the frames. Do not use a name for the player. If you cannot tell what is shown, write exactly: unclear."
+ },
+ "headline": {
+  "chat_lane_model_first_prompt_2x": {
+   "notes": 10,
+   "place_and_action_right": 9,
+   "notes_with_a_wrong_detail": 4,
+   "seconds_median": 5.6,
+   "prompt_tokens": 1086
+  },
+  "quick_lane_model_first_prompt": {
+   "notes": 10,
+   "place_and_action_right": "about 5",
+   "notes_with_a_thing_not_on_screen": 9,
+   "per_note_verdicts": "not written down; only this total was recorded"
+  },
+  "chat_lane_model_stateless_prompt_2x": {
+   "notes": 9,
+   "text_screens_read_exactly": "3 of 3",
+   "world_map_recognised": "0 of 1",
+   "notes_that_cite_status_bar_numbers": 3,
+   "of_those_with_a_wrong_number": 2,
+   "walk_sequences_place_and_action_right": "4 of 4"
+  },
+  "not_tested": [
+   "a dialogue box that types itself out",
+   "any game other than A Link to the Past for the notes",
+   "unscripted play"
+  ]
+ },
+ "sequences": [
+  {
+   "sequence": "ctl_idle",
+   "game_id": "a-link-to-the-past",
+   "save_frame": null,
+   "frames_show": "A still \"GAME OVER\" menu with three options. Nothing moves.",
+   "screen_change": {
+    "window_mean": 0.0002,
+    "window_largest_cell": 0.099,
+    "window_share_of_cells_over_0.03": 0.0033,
+    "step_median_mean": 0.0002
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "nothing new",
+     "seconds": 4.45,
+     "prompt_tokens": 1086,
+     "completion_tokens": 3
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "nothing new",
+     "seconds": 4.29,
+     "prompt_tokens": 1084,
+     "completion_tokens": 3,
+     "test": "repeat_static"
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The screen displays a \"GAME OVER\" menu with options to save and continue, save and quit, or continue without saving. A small character sprite stands next to the top option. The HUD shows 1.5 hearts remaining, a full green meter, and a bomb selected. Across the frames, the menu remains open with no selection made.",
+     "seconds": 5.96,
+     "prompt_tokens": 2206,
+     "completion_tokens": 70
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The screen displays \"GAME OVER\" with menu options. The player's character is not visible as the game has ended. No change occurred between the frames.",
+     "seconds": 3.15,
+     "prompt_tokens": 634,
+     "completion_tokens": 32
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The screen shows a \"GAME OVER\" message with three options: \"Save And Continue,\" \"Save And Quit,\" and \"Do Not Save And Continue.\" The player's character is not visible, as the game has ended. The inventory bar at the top remains unchanged, indicating no new items were collected. The hearts representing lives are also unchanged. No action is being taken by the player, as the game is paused at the game over screen.",
+     "seconds": 7.11,
+     "prompt_tokens": 1194,
+     "completion_tokens": 90
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "stateless",
+     "note": "The screen displays a black background with the text \"GAME OVER\" in purple. Below, a menu offers three options: \"Save And Continue\", \"Save And Quit\", and \"Do Not Save And Continue\". A small character sprite is positioned to the left of the first option. The top HUD shows 1/3 bombs, 372 rupees, 29 blue items, 40 arrows, 1 key, and an empty life meter. The scene is static across all frames.",
+     "seconds": 5.72,
+     "prompt_tokens": 1074,
+     "completion_tokens": 103,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [
+       "1/3 bombs (the mark is the magic meter's)"
+      ],
+      "remark": "the three menu lines read exactly"
+     }
+    }
+   ]
+  },
+  {
+   "sequence": "map_a",
+   "game_id": "a-link-to-the-past",
+   "save_frame": null,
+   "frames_show": "A cave room. The map key was pressed and no map opened. The character stands still by a dark pit; nothing moves in the four frames.",
+   "screen_change": {
+    "window_mean": 0.0,
+    "window_largest_cell": 0.0,
+    "window_share_of_cells_over_0.03": 0.0,
+    "step_median_mean": 0.0
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "stateless",
+     "note": "The character stands on a dirt path in a dark cave, facing right toward a small hole in the rock wall. The equipped item is a bomb. The character remains completely stationary across all four frames, with no change to the environment, health, or inventory.",
+     "seconds": 5.39,
+     "prompt_tokens": 1074,
+     "completion_tokens": 53,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [],
+      "remark": "still scene described as still; the screen change of this window is 0.0000, so the trigger would have skipped it"
+     }
+    }
+   ]
+  },
+  {
+   "sequence": "map_b",
+   "game_id": "a-link-to-the-past",
+   "save_frame": null,
+   "frames_show": "The world map, zoomed in on a mountain ledge under cloud. Markers blink: a number 7, a blue crystal, and the small head that marks the player's position. This is a map, not a play scene; nobody walks.",
+   "screen_change": {
+    "window_mean": 0.3396,
+    "window_largest_cell": 0.7495,
+    "window_share_of_cells_over_0.03": 0.9643,
+    "step_median_mean": 0.004
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "stateless",
+     "note": "The character is on a rocky ledge in a snowy area. A blue gem appears on a lower ledge to the right, and the character moves toward it. The character then disappears from the screen, leaving only the gem visible.",
+     "seconds": 5.41,
+     "prompt_tokens": 1074,
+     "completion_tokens": 46,
+     "verdict": {
+      "place_and_action_right": false,
+      "wrong_details": [
+       "read as a play scene: a character walking on a snowy ledge toward a gem"
+      ],
+      "remark": "the world map was not recognised as a map"
+     }
+    }
+   ]
+  },
+  {
+   "sequence": "menu_a",
+   "game_id": "a-link-to-the-past",
+   "save_frame": null,
+   "frames_show": "The item menu, open. The cursor moves; the name box at the top right reads BOMB, QUAKE, MAGIC POWDER, ETHER in the four frames.",
+   "screen_change": {
+    "window_mean": 0.1295,
+    "window_largest_cell": 0.5206,
+    "window_share_of_cells_over_0.03": 0.7333,
+    "step_median_mean": 0.0015
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "stateless",
+     "note": "The player is viewing the inventory menu. Across the frames, the selection cursor moves through the items, sequentially highlighting BOMB, QUAKE, MAGIC POWDER, and ETHER.",
+     "seconds": 5.55,
+     "prompt_tokens": 1074,
+     "completion_tokens": 38,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [],
+      "remark": "all 4 item names read exactly"
+     }
+    }
+   ]
+  },
+  {
+   "sequence": "menu_b",
+   "game_id": "a-link-to-the-past",
+   "save_frame": null,
+   "frames_show": "The item menu, open. The name box reads MAGIC MIRROR, FIREROD, BOW & ARROWS, MAGIC POWDER in the four frames. The crystals panel shows six blue crystals and one grey one.",
+   "screen_change": {
+    "window_mean": 0.1979,
+    "window_largest_cell": 0.7065,
+    "window_share_of_cells_over_0.03": 0.7779,
+    "step_median_mean": 0.0071
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "stateless",
+     "note": "The inventory menu is open. The cursor moves through the item grid, cycling the top-right display through \"MAGIC MIRROR\", \"FIREROD\", \"BOW & ARROWS\", and finally \"MAGIC POWDER\". The \"CRYSTALS\" panel shows six blue crystals and one greyed-out crystal. The \"EQUIPMENT\" panel displays a sword, shield, and blue mail.",
+     "seconds": 5.92,
+     "prompt_tokens": 1074,
+     "completion_tokens": 83,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [],
+      "remark": "all 4 item names read exactly; crystal count right"
+     }
+    }
+   ]
+  },
+  {
+   "sequence": "walk_00",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1212714,
+   "frames_show": "The top of a pyramid under an orange and purple sky, with two green statues below the stairs. The character walks along the upper terraces. Nobody jumps.",
+   "screen_change": {
+    "window_mean": 0.1913,
+    "window_largest_cell": 0.5926,
+    "window_share_of_cells_over_0.03": 0.856,
+    "step_median_mean": 0.1294
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character is on an upper ledge in a stone room with stairs leading down. They move from the right side of the ledge to the left, then jump down onto the lower floor.",
+     "seconds": 6.29,
+     "prompt_tokens": 1086,
+     "completion_tokens": 38,
+     "verdict": {
+      "place_and_action_right": false,
+      "wrong_details": [
+       "stone room (it is the top of a pyramid under an open sky)",
+       "jump down onto the lower floor (nobody jumps)"
+      ]
+     }
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The character is in a stone-walled outdoor area with a staircase and two green statues. The character moves from the right side of the upper platform, walks left, and then jumps down onto the lower level.",
+     "seconds": 22.42,
+     "prompt_tokens": 2206,
+     "completion_tokens": 43
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "Link stands on a high platform in a stone chamber, with three glass cases below. The camera pans up as Link jumps, revealing a dark sky and distant mountains above the room.",
+     "seconds": 67.66,
+     "prompt_tokens": 634,
+     "completion_tokens": 37
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "Link stands on a high ledge in a stone chamber, facing three green statues below. He jumps down, landing on the floor between them. The camera pans down to reveal the full room with stone walls and pillars.",
+     "seconds": 3.45,
+     "prompt_tokens": 1194,
+     "completion_tokens": 44
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "stateless",
+     "note": "The character is in a stone room with a staircase leading down. They move from the right side of the upper floor to the left, then back to the right. The camera pans slightly to follow their movement. The HUD displays \"LIFE\" and the numbers \"372\", \"19\", and \"40\".",
+     "seconds": 5.23,
+     "prompt_tokens": 1074,
+     "completion_tokens": 67,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [
+       "status bar number 19 (the screen shows 29)"
+      ],
+      "remark": "no jump this time; 'stone room' for an open-air stone terrace"
+     }
+    }
+   ]
+  },
+  {
+   "sequence": "walk_01",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1213799,
+   "frames_show": "First frame is black. Then a green palace room with a teal channel, a dark hole and a green block at the upper right. The character walks around the channel.",
+   "screen_change": {
+    "window_mean": 0.4304,
+    "window_largest_cell": 0.6721,
+    "window_share_of_cells_over_0.03": 0.99,
+    "step_median_mean": 0.0408
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The screen transitions from black to a top-down dungeon room with green walls and a brown floor. The character moves from the left side of the room, walks right, and then moves down to the bottom edge. A black hole and a green block are visible in the upper right corridor.",
+     "seconds": 5.63,
+     "prompt_tokens": 1086,
+     "completion_tokens": 58,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": []
+     }
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The screen fades from black to a dungeon room. The character walks from the left side of the room, around a central block, to the bottom right corner. A red shield is visible on the character's back in the final frame.",
+     "seconds": 7.84,
+     "prompt_tokens": 2206,
+     "completion_tokens": 48
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character moves right from a dark alcove into a green corridor. A new enemy appears below, and a green block is visible in the distance.",
+     "seconds": 2.42,
+     "prompt_tokens": 634,
+     "completion_tokens": 31
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "Link moves right in a green dungeon, passing a pit and an enemy. A new room appears to the right with a green block and a dark hole.",
+     "seconds": 3.17,
+     "prompt_tokens": 1194,
+     "completion_tokens": 32
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "stateless",
+     "note": "The screen begins black, then reveals a top-down dungeon room with green walls and a brown floor. The character starts in the lower-left, moves right into the central corridor, then returns to the bottom area. A red object appears on the floor near the character's final position.",
+     "seconds": 4.95,
+     "prompt_tokens": 1074,
+     "completion_tokens": 57,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [
+       "a red object on the floor (the character's own shield)"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "sequence": "walk_02",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1218778,
+   "frames_show": "The same green room. The character walks around the raised brown floor.",
+   "screen_change": {
+    "window_mean": 0.1069,
+    "window_largest_cell": 0.4317,
+    "window_share_of_cells_over_0.03": 0.4799,
+    "step_median_mean": 0.0631
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character moves through a green-walled maze. They travel from the lower-left area, up and around a central brown block, then down to the bottom-right corner. Finally, they move left along the bottom edge, passing a small red object on the floor.",
+     "seconds": 6.19,
+     "prompt_tokens": 1086,
+     "completion_tokens": 54,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [
+       "small red object on the floor (it is the character's own shield)"
+      ]
+     }
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character moves from the bottom-left corner of the maze into the central brown area. They navigate around the top of the brown block, then move down and to the right. Finally, they travel down the right side of the maze to the bottom-right corner.",
+     "seconds": 4.95,
+     "prompt_tokens": 1135,
+     "completion_tokens": 53,
+     "test": "repeat_same_room"
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "In a green-tiled room, the character moves right, then down into a lower chamber with brown floors and green walls. A glowing light appears on the floor below. The character stands still as the light pulses.",
+     "seconds": 3.32,
+     "prompt_tokens": 634,
+     "completion_tokens": 44
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The character moves right along a green-tiled path, then turns down into a lower chamber with brown floor tiles. A glowing pink light appears at the bottom of the screen in the final frame.",
+     "seconds": 3.6,
+     "prompt_tokens": 1194,
+     "completion_tokens": 40
+    }
+   ]
+  },
+  {
+   "sequence": "walk_03",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1235637,
+   "frames_show": "Brown rocky ground outside. The character walks. An orange enemy with a green shield appears; a pink shape shows at the top edge.",
+   "screen_change": {
+    "window_mean": 0.0901,
+    "window_largest_cell": 0.3782,
+    "window_share_of_cells_over_0.03": 0.8839,
+    "step_median_mean": 0.0436
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character moves left across a brown, rocky overworld area. A stone statue is visible on the left edge. The character approaches the statue, and a pink blob enemy appears at the top of the screen.",
+     "seconds": 5.6,
+     "prompt_tokens": 1086,
+     "completion_tokens": 43,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": []
+     }
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "Character moves right, then left, standing before a stone door. A small enemy appears on the left. No change in items or health.",
+     "seconds": 2.29,
+     "prompt_tokens": 634,
+     "completion_tokens": 29
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The character moves from a cave entrance into a cavern, approaching a large stone door. A small enemy appears on the left. The health bar remains full.",
+     "seconds": 3.39,
+     "prompt_tokens": 1194,
+     "completion_tokens": 32
+    }
+   ]
+  },
+  {
+   "sequence": "walk_04",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1243722,
+   "frames_show": "A cave room with a red-brown floor and a lit doorway at the bottom. The character walks up. A spark shows at the right in the last frame.",
+   "screen_change": {
+    "window_mean": 0.0645,
+    "window_largest_cell": 0.4758,
+    "window_share_of_cells_over_0.03": 0.5815,
+    "step_median_mean": 0.0443
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character moves from the lower area of a brown, walled room up to the top edge near a set of stairs. A lit torch appears on the right wall, and a small blue sparkle effect briefly flashes near the character.",
+     "seconds": 5.44,
+     "prompt_tokens": 1086,
+     "completion_tokens": 47,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": []
+     }
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "Character moves up from bottom of screen, exits a small pit area into a larger cavern. A small, glowing blue item appears on the ground to the right.",
+     "seconds": 3.03,
+     "prompt_tokens": 634,
+     "completion_tokens": 33
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "Character moves up and left in a cave. A small fire on the right side of the screen is now gone.",
+     "seconds": 3.19,
+     "prompt_tokens": 1194,
+     "completion_tokens": 24
+    }
+   ]
+  },
+  {
+   "sequence": "walk_05",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1258035,
+   "frames_show": "A cave room with two small grey pedestals and a flat pile of rock. The character walks around.",
+   "screen_change": {
+    "window_mean": 0.0732,
+    "window_largest_cell": 0.3816,
+    "window_share_of_cells_over_0.03": 0.5625,
+    "step_median_mean": 0.0657
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character moves from the left side of a brown dungeon room to the right, approaching an exit archway. The screen scrolls right to reveal a second exit. The character then moves down and stands directly in front of a floor switch located on the right side of the room.",
+     "seconds": 5.62,
+     "prompt_tokens": 1086,
+     "completion_tokens": 56,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [
+       "a second exit"
+      ]
+     }
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character moves rightward across a brown, enclosed room with stone walls. Two treasure chests are visible on the floor; the character passes between them. A rock formation remains stationary in the center-left area. No new objects or changes occur in the environment.",
+     "seconds": 3.81,
+     "prompt_tokens": 634,
+     "completion_tokens": 52
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The character moves right, passing two statues and a rock formation. A new entrance appears at the top right.",
+     "seconds": 1.52,
+     "prompt_tokens": 1194,
+     "completion_tokens": 23
+    }
+   ]
+  },
+  {
+   "sequence": "walk_06",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1266053,
+   "frames_show": "A narrow cave passage. The character swings a sword at a blue creature by a doorway; it is gone in the next frame and a small green item lies there.",
+   "screen_change": {
+    "window_mean": 0.0505,
+    "window_largest_cell": 0.3898,
+    "window_share_of_cells_over_0.03": 0.4174,
+    "step_median_mean": 0.03
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "In a brown dungeon room, the character moves from the left side to the right, passing a green enemy. A red enemy appears and is defeated. The character then walks back to the left, approaching a dark cave opening marked by a downward arrow.",
+     "seconds": 5.57,
+     "prompt_tokens": 1086,
+     "completion_tokens": 51,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [
+       "a green enemy, and a red enemy that is defeated (one blue creature was there)"
+      ]
+     }
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character is in a cave, facing right. The character moved from the left side of the screen to the right side. The character is now holding a shield.",
+     "seconds": 1.39,
+     "prompt_tokens": 634,
+     "completion_tokens": 34
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "In a cave, the player character moves right, then left, then right again. A blue enemy disappears. The player’s shield icon appears in the bottom-right corner of the screen.",
+     "seconds": 2.06,
+     "prompt_tokens": 1194,
+     "completion_tokens": 38
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "stateless",
+     "note": "The character is in an underground room with brown dirt floors and walls. A green arrow points down at a hole in the upper-left wall. The character moves from the left side of the room to the right, then returns to the left. A small green creature is visible near the hole. The HUD displays \"108\", \"20\", and \"40\" alongside a \"LIFE\" meter.",
+     "seconds": 5.37,
+     "prompt_tokens": 1074,
+     "completion_tokens": 84,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [
+       "status bar number 20 (the screen shows 28)"
+      ],
+      "remark": "the invented second enemy is gone"
+     }
+    }
+   ]
+  },
+  {
+   "sequence": "walk_07",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1268929,
+   "frames_show": "A cave passage with two closed chests, raised blocks and a skull tile. The character walks left. Sparks in the first frame.",
+   "screen_change": {
+    "window_mean": 0.0861,
+    "window_largest_cell": 0.319,
+    "window_share_of_cells_over_0.03": 0.7344,
+    "step_median_mean": 0.0759
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character is in a brown, underground dungeon room. They move from the right side of the room, past two chests and a switch, to the left. They then move up and enter a doorway in the upper-left wall, causing the screen to transition to a new room.",
+     "seconds": 6.94,
+     "prompt_tokens": 1086,
+     "completion_tokens": 57,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": []
+     }
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character moves left through a stone corridor, passing a blue arrow sign. They approach a wall with three locked doors and a shield icon below them. The character then turns right, entering a new area with a different floor pattern and another blue arrow sign pointing forward.",
+     "seconds": 1.68,
+     "prompt_tokens": 634,
+     "completion_tokens": 54
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The character moves left through a stone corridor, passing a vertical shaft with three chests and a bear trap on the right. The floor pattern changes from brown to dark gray as they enter a new section.",
+     "seconds": 2.88,
+     "prompt_tokens": 1194,
+     "completion_tokens": 41
+    }
+   ]
+  },
+  {
+   "sequence": "walk_08",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1275662,
+   "frames_show": "Outside by a stone well, then a black frame, then inside a cave: a narrow passage with skull tiles and sparks at the right.",
+   "screen_change": {
+    "window_mean": 0.1916,
+    "window_largest_cell": 0.7296,
+    "window_share_of_cells_over_0.03": 0.8795,
+    "step_median_mean": 0.1557
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character stands on a dirt path near a well. The screen cuts to black, then reappears in a dark underground room with brown walls. The character is now standing on a ledge above a hole, with a small explosion effect visible to the right.",
+     "seconds": 5.07,
+     "prompt_tokens": 1086,
+     "completion_tokens": 53,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": []
+     }
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character is in a brown, underground dungeon room. They move from the right side of the room, past two chests and a switch, to the left. They then move up and enter a doorway in the upper-left wall, causing the screen to transition to a new room.",
+     "seconds": 4.72,
+     "prompt_tokens": 1138,
+     "completion_tokens": 57,
+     "test": "after_other_room"
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The character stands on a dirt path in an outdoor area, facing a dark hole in the ground. The screen fades to black, and the scene changes to a dark interior room. The character is now standing on a narrow vertical walkway, with an explosion visible to the right.",
+     "seconds": 5.62,
+     "prompt_tokens": 2206,
+     "completion_tokens": 57
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "Link stands before a pit in a dark cave. He jumps down into it, landing on a lower ledge. A golden chest appears on the wall to his left.",
+     "seconds": 1.51,
+     "prompt_tokens": 634,
+     "completion_tokens": 34
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The character is in a dark cave, moving right and then down. A new vertical shaft appears on the right, with a switch on the wall. The character is now at the bottom of this new shaft.",
+     "seconds": 5.23,
+     "prompt_tokens": 1194,
+     "completion_tokens": 43
+    },
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "stateless",
+     "note": "The character stands in a dirt clearing near a stone well. The screen cuts to black, then reveals a new underground room with brown walls and a ladder. The character is now standing on a lower ledge, with a small explosion effect visible to the right.",
+     "seconds": 7.6,
+     "prompt_tokens": 1074,
+     "completion_tokens": 52,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": [
+       "a ladder (it is a narrow passage)"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "sequence": "walk_09",
+   "game_id": "a-link-to-the-past",
+   "save_frame": 1280016,
+   "frames_show": "A round rocky plateau with a pit in the middle, pink cloud and black void around it. The character walks around the plateau.",
+   "screen_change": {
+    "window_mean": 0.2027,
+    "window_largest_cell": 0.7904,
+    "window_share_of_cells_over_0.03": 0.8393,
+    "step_median_mean": 0.1549
+   },
+   "looks": [
+    {
+     "model": "qwen3.8-flash-next-iq3_s",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character navigates a rocky, pink-edged area, moving from the center-left to the top, then to the right, and finally back to the center. A shield is visible in the final frame.",
+     "seconds": 5.21,
+     "prompt_tokens": 1086,
+     "completion_tokens": 43,
+     "verdict": {
+      "place_and_action_right": true,
+      "wrong_details": []
+     }
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 2,
+     "prompt": "first",
+     "note": "The character moves from the top of a circular room to the bottom, passing a closed door. The camera follows, revealing more of the surrounding pink and brown terrain.",
+     "seconds": 3.33,
+     "prompt_tokens": 634,
+     "completion_tokens": 34
+    },
+    {
+     "model": "Qwen3.5-9B-UD-Q5_K_XL with its vision encoder",
+     "enlargement": 3,
+     "prompt": "first",
+     "note": "The character moves from the top of a circular pit to the bottom, passing a stone door. The camera pans down to follow.",
+     "seconds": 3.77,
+     "prompt_tokens": 1194,
+     "completion_tokens": 27
+    }
+   ]
+  }
+ ],
+ "screen_change_only": {
+  "crystali_still_0": {
+   "window_mean": 0.0031,
+   "window_largest_cell": 0.0609,
+   "window_share_of_cells_over_0.03": 0.0513,
+   "step_median_mean": 0.0016
+  },
+  "crystali_still_1": {
+   "window_mean": 0.0027,
+   "window_largest_cell": 0.545,
+   "window_share_of_cells_over_0.03": 0.0145,
+   "step_median_mean": 0.0001
+  },
+  "crystali_still_2": {
+   "window_mean": 0.0007,
+   "window_largest_cell": 0.1205,
+   "window_share_of_cells_over_0.03": 0.0089,
+   "step_median_mean": 0.0002
+  },
+  "crystali_still_3": {
+   "window_mean": 0.6671,
+   "window_largest_cell": 1.0,
+   "window_share_of_cells_over_0.03": 0.9676,
+   "step_median_mean": 0.0258
+  },
+  "crystali_still_4": {
+   "window_mean": 0.0012,
+   "window_largest_cell": 0.1489,
+   "window_share_of_cells_over_0.03": 0.0134,
+   "step_median_mean": 0.0006
+  },
+  "crystali_walk_0": {
+   "window_mean": 0.1822,
+   "window_largest_cell": 0.7033,
+   "window_share_of_cells_over_0.03": 0.6752,
+   "step_median_mean": 0.1375
+  },
+  "crystali_walk_1": {
+   "window_mean": 0.1578,
+   "window_largest_cell": 0.5885,
+   "window_share_of_cells_over_0.03": 0.596,
+   "step_median_mean": 0.113
+  },
+  "crystali_walk_2": {
+   "window_mean": 0.2287,
+   "window_largest_cell": 0.6648,
+   "window_share_of_cells_over_0.03": 0.798,
+   "step_median_mean": 0.1102
+  },
+  "crystali_walk_3": {
+   "window_mean": 0.6624,
+   "window_largest_cell": 1.0,
+   "window_share_of_cells_over_0.03": 0.9587,
+   "step_median_mean": 0.0245
+  },
+  "crystali_walk_4": {
+   "window_mean": 0.1056,
+   "window_largest_cell": 0.7966,
+   "window_share_of_cells_over_0.03": 0.6518,
+   "step_median_mean": 0.0829
+  },
+  "ctl_menu": {
+   "window_mean": 0.0002,
+   "window_largest_cell": 0.099,
+   "window_share_of_cells_over_0.03": 0.0033,
+   "step_median_mean": 0.0002
+  },
+  "long_a_down": {
+   "window_mean": 0.4268,
+   "window_largest_cell": 0.6654,
+   "window_share_of_cells_over_0.03": 0.99,
+   "step_median_mean": 0.0021
+  },
+  "long_a_left": {
+   "window_mean": 0.4083,
+   "window_largest_cell": 0.7207,
+   "window_share_of_cells_over_0.03": 0.99,
+   "step_median_mean": 0.0002
+  },
+  "long_a_right": {
+   "window_mean": 0.4114,
+   "window_largest_cell": 0.726,
+   "window_share_of_cells_over_0.03": 0.99,
+   "step_median_mean": 0.0052
+  },
+  "long_a_up": {
+   "window_mean": 0.4092,
+   "window_largest_cell": 0.6808,
+   "window_share_of_cells_over_0.03": 0.99,
+   "step_median_mean": 0.2001
+  },
+  "long_b_down": {
+   "window_mean": 0.0004,
+   "window_largest_cell": 0.0991,
+   "window_share_of_cells_over_0.03": 0.0045,
+   "step_median_mean": 0.0
+  },
+  "long_b_left": {
+   "window_mean": 0.093,
+   "window_largest_cell": 0.5037,
+   "window_share_of_cells_over_0.03": 0.8237,
+   "step_median_mean": 0.0017
+  },
+  "long_b_right": {
+   "window_mean": 0.2012,
+   "window_largest_cell": 0.4566,
+   "window_share_of_cells_over_0.03": 0.9888,
+   "step_median_mean": 0.0022
+  },
+  "long_b_up": {
+   "window_mean": 0.0219,
+   "window_largest_cell": 0.2091,
+   "window_share_of_cells_over_0.03": 0.2612,
+   "step_median_mean": 0.0
+  },
+  "the_lege_still_0": {
+   "window_mean": 0.0,
+   "window_largest_cell": 0.0,
+   "window_share_of_cells_over_0.03": 0.0,
+   "step_median_mean": 0.0
+  },
+  "the_lege_still_1": {
+   "window_mean": 0.0054,
+   "window_largest_cell": 0.2512,
+   "window_share_of_cells_over_0.03": 0.048,
+   "step_median_mean": 0.005
+  },
+  "the_lege_still_2": {
+   "window_mean": 0.0,
+   "window_largest_cell": 0.0,
+   "window_share_of_cells_over_0.03": 0.0,
+   "step_median_mean": 0.0
+  },
+  "the_lege_still_3": {
+   "window_mean": 0.0036,
+   "window_largest_cell": 0.4683,
+   "window_share_of_cells_over_0.03": 0.029,
+   "step_median_mean": 0.0027
+  },
+  "the_lege_still_4": {
+   "window_mean": 0.0034,
+   "window_largest_cell": 0.3664,
+   "window_share_of_cells_over_0.03": 0.0234,
+   "step_median_mean": 0.0031
+  },
+  "the_lege_walk_0": {
+   "window_mean": 0.0032,
+   "window_largest_cell": 0.4742,
+   "window_share_of_cells_over_0.03": 0.0179,
+   "step_median_mean": 0.003
+  },
+  "the_lege_walk_1": {
+   "window_mean": 0.0043,
+   "window_largest_cell": 0.2425,
+   "window_share_of_cells_over_0.03": 0.0424,
+   "step_median_mean": 0.0037
+  },
+  "the_lege_walk_2": {
+   "window_mean": 0.0047,
+   "window_largest_cell": 0.3639,
+   "window_share_of_cells_over_0.03": 0.0379,
+   "step_median_mean": 0.0035
+  },
+  "the_lege_walk_3": {
+   "window_mean": 0.0435,
+   "window_largest_cell": 0.9442,
+   "window_share_of_cells_over_0.03": 0.4107,
+   "step_median_mean": 0.0435
+  },
+  "the_lege_walk_4": {
+   "window_mean": 0.0033,
+   "window_largest_cell": 0.2852,
+   "window_share_of_cells_over_0.03": 0.0346,
+   "step_median_mean": 0.0031
+  }
+ },
+ "screen_change_names": {
+  "crystali": "crystalis (NES, scrolling)",
+  "the_lege": "the-legend-of-zelda-prg1 (NES, one fixed screen per room)",
+  "long, walk, ctl, menu, map": "a-link-to-the-past (SNES)"
+ }
+}

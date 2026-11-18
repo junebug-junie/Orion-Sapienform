@@ -14,7 +14,9 @@ Over the last ``--days`` (default 28) it reports:
   the ingress time the resolver uses, so a turn at the very edge of a window can fall either side;
 * expired acts whose promising turn got an intention carry reply in the window (Prime took the
   promise on and delivered something; the ledger does not count a carry as a keep in v1), with their act ids;
-* keep rate kept / (kept + expired), void and un-closeable left out, with a Beta(1, 1) posterior;
+* keep rate kept / (kept + expired), void and un-closeable left out, with a Beta(1, 1) posterior; this is the
+  headline over the graded settle class, with each void kind (#3595) and later carry deliveries beside it;
+* Prime concern vs act: how often Prime's promise concerns and the ledger's acts disagree (counted only);
 * the self-reinforcement guard: firm promises per JUDGED Juniper turn (judge model pass, not the
   quick gate), with a 90% Poisson score interval, against the frozen replay baseline (``REPLAY_BASELINE``);
   red above 2x. Stored items with no
@@ -67,6 +69,7 @@ from orion.grammar.promise_acts import (  # noqa: E402
     kept_evidence_kind,
     parse_promise_ref,
     promise_close_kind,
+    promise_void_kind,
 )
 from orion.harness.promise_gate import normalize_for_quote_match  # noqa: E402
 from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE  # noqa: E402
@@ -101,8 +104,9 @@ GUARD_RATIO_RED = 2.0
 # which pure noise gives about 2.4% of the time (Poisson). At 50 turns red needs 8 (about 5%), at 20
 # turns 4 (about 8%).
 GUARD_MIN_JUDGED_TURNS = 60
-# The keep rate's ceiling until #3595 lands: the share of firm promises a later chat reply could show
-# kept. Hand count of the 23 firm replay promises (one reader, not blind; #3595): 9 chat-showable,
+# The keep rate's ceiling, printed beside the headline: the share of firm promises a later chat reply could show
+# kept (rows stored before #3595 carry no settle class, so this hand count still frames them). Hand count
+# of the 23 firm replay promises (one reader, not blind; #3595): 9 chat-showable,
 # 8 delivered by a run or outside chat, 6 abstentions or standing states. A keep rate near this
 # number is the most the reply-only close can show, not a sign of broken promises. The 6 hold the
 # abstentions ("I won't float anything back up while you're asleep", "I'll stop muttering about bus
@@ -277,6 +281,8 @@ def close_summary(acts: Sequence[Mapping[str, Any]], *, unclosable: set[str],
 
     kinds: Counter[str] = Counter()
     evidence: Counter[str] = Counter()
+    void_kinds: Counter[str] = Counter()
+    void_later_carry: list[str] = []
     expired_with_carry: list[str] = []
     for act in acts:
         kind = promise_close_kind(act.get("outcome_source"), act.get("outcome_note"), act.get("closed_at") is not None)
@@ -285,6 +291,13 @@ def close_summary(acts: Sequence[Mapping[str, Any]], *, unclosable: set[str],
         kinds[kind] += 1
         if kind == "kept":
             evidence[kept_evidence_kind(act.get("outcome_note")) or "unknown"] += 1
+        if kind == "void":
+            void_kinds[promise_void_kind(act.get("outcome_note")) or "no_juniper_turn"] += 1
+            # #3595 rec 2: a carry run that delivered a void act later is a note here, never a reopen.
+            parsed = parse_promise_ref(str(act.get("test_before") or ""))
+            opened = _aware(act.get("opened_at"))
+            if parsed and opened and any(t > opened for t in carry_concerns.get(turn_concern_id(parsed[0]), [])):
+                void_later_carry.append(str(act["act_id"]))
         if kind == "expired":
             parsed = parse_promise_ref(str(act.get("test_before") or ""))
             opened, horizon = _aware(act.get("opened_at")), _aware(act.get("horizon_at"))
@@ -298,7 +311,45 @@ def close_summary(acts: Sequence[Mapping[str, Any]], *, unclosable: set[str],
             "void_share": round(kinds.get("void", 0) / closed, 3) if closed else None,
             "kept_by_evidence": dict(evidence), "expired_with_carry_reply": len(expired_with_carry),
             "expired_with_carry_reply_acts": expired_with_carry,
+            # Settle classes (#3595): which void each void close is. The keep rate below is over the graded
+            # class only (kept + expired: a chat-showable promise, or a conditional one whose condition arose);
+            # these voids sit beside it, never in it.
+            "void_by_kind": dict(void_kinds),
+            "void_with_later_carry": len(void_later_carry), "void_with_later_carry_acts": void_later_carry,
             "keep_rate": beta_summary(kept, expired)}
+
+
+def prime_vs_acts(acts: Sequence[Mapping[str, Any]], prime_state: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    """Prime's promise concerns against the ledger's acts, keyed by the promising turn (#3595 rec 3, #3531 point 6).
+    In shadow the two records may disagree by design; this only counts the disagreement. A concern is a promise
+    concern when its ``event_ref`` is ``turn:<corr>``; an act belongs to turn ``corr`` by its ``test_before`` ref.
+    ``concern_no_act``: Prime holds a promise concern for a turn that opened no act (a pre-#3532 promise, an offer,
+    a non-Juniper turn). ``act_no_concern``: an act whose turn Prime holds no open or recorded concern for (refused
+    by a loop-guard bound, or aged out). ``concern_open_act_closed``: Prime still holds it while the act closed.
+    None when Prime's state was not read."""
+    if prime_state is None:
+        return {"read": False}
+    from orion.prime.handback import turn_concern_id
+
+    by_corr: dict[str, list[Mapping[str, Any]]] = {}
+    for act in acts:
+        parsed = parse_promise_ref(str(act.get("test_before") or ""))
+        if parsed:
+            by_corr.setdefault(parsed[0], []).append(act)
+    open_turns = {str(c.get("event_ref"))[len("turn:"):]: str(c.get("concern_id"))
+                  for c in prime_state.get("concerns") or [] if str(c.get("event_ref") or "").startswith("turn:")}
+    recorded = {str(r.get("concern_id")) for r in prime_state.get("concern_record") or []}
+    concern_no_act = sorted(cid for corr, cid in open_turns.items() if corr not in by_corr)
+    act_no_concern, open_act_closed = [], []
+    for corr, corr_acts in by_corr.items():
+        cid = turn_concern_id(corr)
+        if corr not in open_turns and cid not in recorded:
+            act_no_concern.extend(str(a["act_id"]) for a in corr_acts)
+        elif corr in open_turns and all(a.get("closed_at") is not None for a in corr_acts):
+            open_act_closed.append(open_turns[corr])
+    return {"read": True, "concern_no_act": len(concern_no_act), "concern_no_act_ids": concern_no_act,
+            "act_no_concern": len(act_no_concern), "act_no_concern_ids": act_no_concern,
+            "concern_open_act_closed": len(open_act_closed), "concern_open_act_closed_ids": sorted(open_act_closed)}
 
 
 def _made(raw: Any) -> list[dict]:
@@ -701,7 +752,8 @@ def report(data: Mapping[str, Any], now: Optional[datetime] = None) -> dict[str,
             "browser_window": browser_window(data["turns"], now or datetime.now(timezone.utc)),
             "lanes": lane_split(stored),
             "prime": {**prime_by_ref(stored, data["carry"], data.get("prime_state"), data.get("prime_turns")),
-                      "read": data.get("prime_read") or "not read"}}
+                      "read": data.get("prime_read") or "not read"},
+            "prime_vs_acts": prime_vs_acts(data["acts"], data.get("prime_state"))}
 
 
 def _or_dash(x: Any) -> str:
@@ -757,7 +809,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           "_JUNIPER_REPLY_SQL)")
     print(f"kept by evidence: {led['kept_by_evidence'] or '-'}; expired with a carry reply: {led['expired_with_carry_reply']}"
           + _ids(led["expired_with_carry_reply_acts"]))
+    print(f"void by kind: {led['void_by_kind'] or '-'} (no_juniper_turn = she wrote nothing in 72 h; not_due = a "
+          "condition no judged reply saw arise; not_chat = delivered by a run or outside chat; absence_unchecked = "
+          "an abstention, no breach check yet; all censored, none graded, #3595)")
+    print(f"void acts a carry run delivered later (a note, never a reopen): {led['void_with_later_carry']}"
+          + _ids(led["void_with_later_carry_acts"]))
     kr = led["keep_rate"]
+    print(f"HEADLINE keep rate over the graded class (chat-showable, or conditional with its condition met): "
+          f"kept {led['kept']} / (kept + expired {led['expired']}); settle-class voids beside it, not in it")
     print(f"keep rate (Beta(1,1)) over kept {led['kept']} + expired {led['expired']} (void {led['void']} and "
           f"un-closeable {led['unclosable']} left out): mean {kr['mean']}, 90% {kr['lo90']}-{kr['hi90']}, n={kr['n']}; "
           f"ceiling ({led['keep_rate_ceiling']['name']}) {led['keep_rate_ceiling']['share']} "
@@ -795,6 +854,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           + _ids([f"{r['corr']} {r['lane']} who={r['prime_who']} {r['prime']}" for r in pr["rows"]]))
     print("  (who= is Prime's CURRENT classify_who rule applied to every row: a turn handed back as chat_juniper "
           "before #3602 deployed reads not_handed_back here if it had no browser surface)")
+    pv = out["prime_vs_acts"]
+    if pv.get("read"):
+        print(f"Prime concern vs act (shadow: may disagree, counted only): concern with no act {pv['concern_no_act']}"
+              + _ids(pv["concern_no_act_ids"]) + f"; act with no concern {pv['act_no_concern']}"
+              + _ids(pv["act_no_concern_ids"]) + f"; concern still open while its act closed "
+              f"{pv['concern_open_act_closed']}" + _ids(pv["concern_open_act_closed_ids"]))
+    else:
+        print("Prime concern vs act: not read (no Prime state)")
     of = out["offers"]
     print(f"offers accepted: {of['accepted']}; accepted_unmatched {of['accepted_unmatched']}"
           f"{_ids(of['accepted_unmatched_turns'])}; previous row not a Juniper turn {of['accepted_prev_not_juniper']}; "

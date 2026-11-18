@@ -88,7 +88,22 @@ before orion-attention-runtime is rebuilt.
 
 ## Review findings fixed
 
-(see below)
+An independent review subagent found no must-fix issues. The should-fix items and nits:
+
+- Finding: the rollup's first hour is only partly counted (the writer starts at deploy), but dig read it as a full hour. That would skew the frame interval and the event eligibility for a week.
+  - Fix: `coverage_sql` also returns the table's oldest hour, and `parse_first` skips that hour.
+  - Evidence: `test_the_rollups_own_first_hour_is_partial_and_skipped`.
+- Finding: the checks verified the new function against itself. The fixture is built by `frame_increments`, and eval E6 now uses only a threshold.
+  - Fix: eval E4 now compares the rollup's last whole hour with an independent SQL aggregate of that hour's raw `frame_json`, using the PR #3654 rules (rank by position, world-first filter). It skips the partial first hour.
+  - Evidence: before deploy, the same reference SQL and `frame_increments` were run on a live hour (23:00-24:00Z on 11-17, 1,702 frames). They agree exactly.
+- Finding: the manual grant and the empty prior after deploy.
+  - Fix: filed #3683 (grant; needs-juniper, verify-live) and #3684 (optional backfill; it writes to production, so it needs Juniper's go-ahead).
+- Nits fixed:
+  - "Ranked first" now means first among world-first entries. This is documented and tested. Live it equals the list head: 0 of 1,672 frames differ.
+  - Targets with no `target_id` are skipped.
+  - An explicit `<end>` that gets snapped to the hour is now said in the header.
+  - The grant test now names the new table.
+- Not changed: one upsert statement per row, about 20-30 per frame, every 2.1 s. That is fine at this rate.
 
 ## Restart required
 
@@ -100,12 +115,12 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_ST
 ## Risks / concerns
 
 - **Medium:** `dig attention` shows no data until the rebuilt runtime has counted at least one whole hour. It shows only a short prior until a week has passed. The header says so. There is no backfill from the 72 h of kept frames: it would read the same cold 1 GB that caused this problem.
-- **Medium:** the grant is a manual step. Until it is applied, Orion's read stops with a "needs GRANT" line. This is tracked on #3651.
+- **Medium:** the grant is a manual step. Until it is applied, Orion's read stops with a "needs GRANT" line. Tracked in #3683.
 - **Low:** the rollup is best effort. A failed upsert loses that frame's counts and logs `attention_hour_rollup_failed`. Live eval E4 compares the counts with the kept frames for the last hour.
-- **Issues:** none opened or closed. #3652 (7-day drift) becomes reachable once the rollup is a week old. It stays open until that is shown live.
+- **Issues:** opened #3683 (grant) and #3684 (backfill). None closed. #3652 (7-day drift) becomes reachable once the rollup is a week old. It stays open until that is shown live.
 
 ## PR link
 
-(filled after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3681
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

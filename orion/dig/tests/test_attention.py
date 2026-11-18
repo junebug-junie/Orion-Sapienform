@@ -286,8 +286,8 @@ def test_every_query_is_read_only_single_pass_and_time_bounded(tmp_path, monkeyp
 
 def test_a_missing_grant_is_said_not_shown_as_calm(tmp_path, monkeypatch):
     monkeypatch.setenv("ORION_DIG_HOME", str(tmp_path))
-    run = Runner(fail="ERROR:  permission denied for table substrate_attention_frames\n")
-    with pytest.raises(dig.DigError, match="needs GRANT SELECT ON substrate_attention_frames TO orion_readonly"):
+    run = Runner(fail="ERROR:  permission denied for table substrate_attention_hour_rollup\n")
+    with pytest.raises(dig.DigError, match="needs GRANT SELECT ON substrate_attention_hour_rollup TO orion_readonly"):
         dig.cmd_attention("24h", None, dig.Out("t"), runner=run)
 
 
@@ -332,3 +332,21 @@ def test_eligible_share_is_of_the_frames_the_target_was_judged():
 
 def test_pct_never_rounds_a_loss_up_to_100():
     assert A.pct(2690 / 2694) == "99.9%" and A.pct(1.0) == "100%"
+
+
+def test_the_rollups_own_first_hour_is_partial_and_skipped():
+    # the writer was deployed partway through the rollup's first hour: never read it as a full hour
+    from datetime import datetime as dt
+
+    assert A.parse_first([{"first": "2026-11-18 10:00:00+00", "origin": "2026-11-18 10:00:00+00"}]) == \
+        dt(2026, 11, 18, 11, tzinfo=timezone.utc)
+    assert A.parse_first([{"first": "2026-11-18 10:00:00+00", "origin": "2026-11-17 09:00:00+00"}]) == \
+        dt(2026, 11, 18, 10, tzinfo=timezone.utc)
+    assert A.parse_first([{"first": "", "origin": "2026-11-17 09:00:00+00"}]) is None
+
+
+def test_an_explicit_end_is_snapped_and_said(tmp_path, monkeypatch):
+    text = _baseline_text(tmp_path, monkeypatch)  # asked to 08:23Z
+    assert "asked to 2026-11-17T08:23Z: snapped down to whole UTC hours" in text
+    monkeypatch.setenv("ORION_DIG_HOME", str(tmp_path))
+    assert "snapped down" not in dig.cmd_attention("24h", "2026-11-17T08:00Z", dig.Out("t"), runner=Runner())

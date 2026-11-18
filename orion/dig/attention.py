@@ -94,6 +94,7 @@ class Window:
     end: datetime
     base_start: datetime
     first_hour: datetime | None = None
+    asked_end: datetime | None = None  # an explicit <end> before the snap to whole hours
 
     def covered(self, first: datetime | None) -> "Window":
         if first is None:
@@ -134,8 +135,10 @@ def parse_window(text: str | None = None, end: str | None = None, now: datetime 
     span = timedelta(hours=int(m.group(1))) if m.group(2) == "h" else timedelta(days=int(m.group(1)))
     if span <= timedelta(0) or span > MAX_WINDOW:
         raise ValueError(f"attention: window must be 1h to {MAX_WINDOW.days}d, got {label}")
-    stop = _floor_hour(parse_end(end, now))  # the rollup counts whole hours; the current hour is still filling
-    return Window(label, stop - span, stop, stop - span - BASELINE)
+    asked = parse_end(end, now)
+    stop = _floor_hour(asked)  # the rollup counts whole hours; the current hour is still filling
+    return Window(label, stop - span, stop, stop - span - BASELINE,
+                  asked_end=asked if end not in (None, "", "now") else None)
 
 
 # --- SQL ----------------------------------------------------------------------------------------
@@ -145,10 +148,12 @@ def _ts(dt: datetime) -> str:
 
 
 def coverage_sql(w: Window) -> str:
-    """The oldest rollup hour in [base_start, end): a primary-key range read."""
+    """The oldest rollup hour in [base_start, end), and the oldest rollup hour at all (``origin``: the
+    hour the writer was deployed, only partly counted). Primary-key reads."""
     return f"""SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}';
-SELECT min(hour) AS first FROM substrate_attention_hour_rollup
- WHERE hour >= '{_ts(w.base_start)}' AND hour < '{_ts(w.end)}'"""
+SELECT min(hour) FILTER (WHERE hour >= '{_ts(w.base_start)}' AND hour < '{_ts(w.end)}') AS first,
+       min(hour) AS origin
+  FROM substrate_attention_hour_rollup"""
 
 
 def frames_sql(w: Window) -> str:
@@ -244,6 +249,7 @@ class AttentionRead:
     base: Side
     kinds: dict[str, str] = field(default_factory=dict)  # target -> event|continuous|event-written|percentile
     took_sec: float | None = None
+    asked_end: str = ""
 
 
 def _truth(v: str) -> bool:
@@ -251,8 +257,17 @@ def _truth(v: str) -> bool:
 
 
 def parse_first(rows: list[dict[str, str]]) -> datetime | None:
+    """The first whole counted hour in range. The rollup's own first hour (``origin``) began counting at
+    deploy, partway through, so it is skipped: its frames would be read against a full hour of seconds
+    and of events (review 2026-11-18)."""
     raw = (rows[0].get("first") or "").strip() if rows else ""
-    return parse_end(raw) if raw else None
+    if not raw:
+        return None
+    first = parse_end(raw)
+    origin = (rows[0].get("origin") or "").strip()
+    if origin and parse_end(origin) == first:
+        first += timedelta(hours=1)
+    return first
 
 
 def parse(w: Window, frame_rows: Iterable[dict[str, str]], event_rows: Iterable[dict[str, str]],
@@ -440,6 +455,8 @@ def render(r: AttentionRead) -> list[str]:
     c, b = r.cur, r.base
     lines = [f"attention {r.window} to {r.end[:16]}Z, read-only, relative rates only"
              + (f" (read in {r.took_sec:.1f} s)" if r.took_sec is not None else "")]
+    if r.asked_end and r.asked_end[:16] != r.end[:16]:
+        lines.append(f"  asked to {r.asked_end[:16]}Z: snapped down to whole UTC hours (the rollup's grain)")
     if r.start != r.asked_start:
         lines.append(f"  counted only from {r.start[:16]}Z: the hourly rollup starts there")
     if not c.frames:
@@ -493,8 +510,9 @@ def read(w: Window, query: Callable[[str], list[dict[str, str]]]) -> AttentionRe
     w = w.covered(parse_first(query(coverage_sql(w))))
     if w.first_hour is None or w.seconds <= 0:
         r = AttentionRead(w.label, _ts(asked), _ts(max(asked, w.start)), _ts(w.end), _ts(w.base_start),
-                          Side(), Side())
+                          Side(), Side(), asked_end=_ts(w.asked_end) if w.asked_end else "")
         return r
     r = parse(w, query(frames_sql(w)), query(events_sql(w)), asked_start=asked)
     r.kinds = {t: target_kind(t) for t in targets(r)}
+    r.asked_end = _ts(w.asked_end) if w.asked_end else ""
     return r

@@ -45,3 +45,14 @@ def test_upsert_params_are_hour_bucketed_and_key_ordered():
     assert {r["hour"] for r in rows} == {datetime(2026, 11, 17, 8, tzinfo=timezone.utc)}
     keys = [(r["part"], r["target"], r["cause"]) for r in rows]
     assert keys == sorted(keys)  # one lock order for every writer
+
+
+def test_rank_is_among_world_first_entries_and_unnamed_targets_are_skipped():
+    frame = {"dominant_targets": [t("capability:x", "Candidate B novelty-only salience"),
+                                  t("world:chat", "world-first: attended -- x"),
+                                  {"target_id": "", "reasons": ["world-first: attended -- x"]}],
+             "suppressed_targets": [{"reasons": [WF + "body quiet for itself"]}]}
+    inc = R.frame_increments(frame)
+    assert inc[("won", "world:chat", "")] == [1, 1, 0, 0]  # first world-first entry is ranked first
+    assert inc[("frame", "", "")] == [1, 0, 0, 0]
+    assert all(k[1] for k in inc if k[0] != "frame")

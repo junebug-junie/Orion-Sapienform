@@ -17,7 +17,9 @@ One row per (hour, part, target, cause), counts summed over that hour's frames:
 * part ``not``: a = frames the target was judged and not attended, for that cause.
 
 Only world-first targets count (``reasons[0]`` starts ``world-first:``); the frame's other suppressed
-entries (capabilities, novelty-only nodes) are a different policy's view.
+entries (capabilities, novelty-only nodes) are a different policy's view. "Ranked first" is first among
+the world-first entries of ``dominant_targets`` (the same as the list head whenever the head is
+world-first: every live frame checked on 2026-11-18). An entry with no ``target_id`` is skipped.
 """
 from __future__ import annotations
 
@@ -104,7 +106,7 @@ def hour_of(ts: datetime | str) -> datetime:
 
 def frame_increments(frame: Mapping[str, Any]) -> dict[tuple[str, str, str], list[int]]:
     """(part, target, cause) -> [a, b, c, d] for one frame (``FieldAttentionFrameV1`` as a JSON dict)."""
-    dominant = _world_first(frame.get("dominant_targets"))
+    dominant = [t for t in _world_first(frame.get("dominant_targets")) if t.get("target_id")]
     n = len(dominant)
     out: dict[tuple[str, str, str], list[int]] = {("frame", "", ""): [1, int(n == 0), int(n > 1), 0]}
 
@@ -117,6 +119,8 @@ def frame_increments(frame: Mapping[str, Any]) -> dict[tuple[str, str, str], lis
         first, contested = int(rank == 1), int(n > 1)
         add(("won", str(t.get("target_id") or ""), ""), [1, first, contested, first * contested])
     for t in _world_first(frame.get("suppressed_targets")):
+        if not t.get("target_id"):
+            continue
         add(("not", str(t.get("target_id") or ""), classify(_first_reason(t))), [1, 0, 0, 0])
     return out
 

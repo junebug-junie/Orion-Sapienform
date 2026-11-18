@@ -7,8 +7,10 @@ Reads the window the way `python -P -m orion.dig attention` does (ReadOnlyPsql, 
   E2  every printed line is a rate with its numerator and denominator, or a ref (attention.bare_counts);
   E3  it is not empty-shell: frames were read, at least one target was eligible, and the rest share is a real
       rate (0 < rest < 1: a pinned 0 or 1 is a broken contest, not calm);
-  E4  the rollup's frame count for the last whole hour equals a plain count(*) of that hour's kept frames
-      (the writer missed none; skipped when that hour is older than the frames' 72 h retention);
+  E4  the rollup's last whole hour equals an independent SQL aggregate of that hour's raw frame_json (the
+      PR #3654 semantics: frames, rest, contested, and per target eligible and ranked first). About 1,700
+      frames, read once. Skipped when that hour is the rollup's partial first hour or older than the
+      frames' 72 h retention;
   E5  each event source's event count equals a plain count of its temporal_self_event rows;
   E6  at most 1% of not-attended frames fall in the "other" cause (a new verdict shape classify() misses);
   E7  each event source's lit seconds (SQL, overlap-merged) equal lit_seconds() over the raw event times.
@@ -66,10 +68,26 @@ def main(argv: list[str] | None = None) -> int:
         fails.append(f"E3 empty shell: frames={c.frames} eligible targets={len(c.present)} rest={c.rest}")
     hour_end = A.parse_end(r.end)
     hour = A._ts(hour_end - timedelta(hours=1))
-    rolled = q(f"SELECT coalesce(sum(a), 0) AS n FROM substrate_attention_hour_rollup WHERE hour = '{hour}' AND part = 'frame'")
-    kept = q(f"SELECT count(*) AS n FROM substrate_attention_frames WHERE generated_at >= '{hour}' AND generated_at < '{r.end}'")
-    if int(kept[0]["n"]) and int(rolled[0]["n"]) != int(kept[0]["n"]):
-        fails.append(f"E4 hour {hour}: rollup {rolled[0]['n']} frames != {kept[0]['n']} kept frames")
+    origin = q("SELECT min(hour) AS h FROM substrate_attention_hour_rollup")[0]["h"]
+    if origin and A.parse_end(origin) < hour_end - timedelta(hours=1):
+        rolled = {(x["part"], x["target"]): (int(x["a"]), int(x["b"]), int(x["c"])) for x in q(
+            f"""SELECT part, target, sum(a) AS a, sum(b) AS b, sum(c) AS c FROM substrate_attention_hour_rollup
+                 WHERE hour = '{hour}' AND part IN ('frame', 'won') GROUP BY 1, 2""")}
+        wf = f"'{A.WORLD_FIRST_PREFIX}%'"
+        raw = {(x["part"], x["target"]): (int(x["a"]), int(x["b"]), int(x["c"])) for x in q(f"""
+SET LOCAL statement_timeout = '25s';
+WITH f AS (SELECT frame_json->'dominant_targets' AS d,
+                  (SELECT count(*) FROM jsonb_array_elements(frame_json->'dominant_targets') e
+                    WHERE e->'reasons'->>0 LIKE {wf}) AS n
+             FROM substrate_attention_frames WHERE generated_at >= '{hour}' AND generated_at < '{r.end}')
+SELECT 'frame' AS part, '' AS target, count(*) AS a, count(*) FILTER (WHERE n = 0) AS b,
+       count(*) FILTER (WHERE n > 1) AS c FROM f
+UNION ALL
+SELECT 'won', t->>'target_id', count(*), count(*) FILTER (WHERE o = 1), count(*) FILTER (WHERE f.n > 1)
+  FROM f, jsonb_array_elements(f.d) WITH ORDINALITY AS x(t, o) WHERE t->'reasons'->>0 LIKE {wf} GROUP BY 2""")}
+        if raw.get(("frame", ""), (0,))[0] and rolled != raw:
+            diff = {k: (rolled.get(k), raw.get(k)) for k in set(rolled) | set(raw) if rolled.get(k) != raw.get(k)}
+            fails.append(f"E4 hour {hour}: rollup differs from raw frames: {dict(list(diff.items())[:3])}")
     for target, src in A.EVENT_SOURCES.items():
         cond = f"source_kind = '{src.kind}'"
         if src.payload_key:

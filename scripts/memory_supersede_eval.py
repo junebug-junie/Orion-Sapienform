@@ -84,8 +84,10 @@ SELECT m.memory_id::text AS memory_id, m.statement, m.purpose, m.created_at, m.o
 FROM episode_memory m WHERE m.memory_id = ANY(%s::uuid[])
 """
 UNDONE_SQL = """
-SELECT DISTINCT memory_id::text AS old_id, evidence->>'superseded_by' AS new_id
+SELECT DISTINCT ON (memory_id, evidence->>'superseded_by') memory_id::text AS old_id,
+       evidence->>'superseded_by' AS new_id, actor
 FROM episode_memory_event WHERE op = 'supersede_undone' AND evidence->>'superseded_by' IS NOT NULL
+ORDER BY memory_id, evidence->>'superseded_by', created_at
 """
 REVISIONS_SQL = """
 SELECT e.memory_id::text AS old_id, n.memory_id::text AS new_id, e.evidence->>'prior_confirmation_state' AS prior
@@ -159,7 +161,7 @@ async def cmd_build(args: argparse.Namespace) -> int:
             if r["old_id"] in got and r["new_id"] in got:
                 old = _row_from_db(got[r["old_id"]], state=r["prior"] or "auto")
                 new = _row_from_db(got[r["new_id"]])
-                items.append(_item(f"rev:{r['old_id'][:8]}", "confirmation_revise", "act", "correction", False,
+                items.append(_item(f"rev:{r['old_id'][:8]}:{r['new_id'][:8]}", "confirmation_revise", "act", "correction", False,
                                    old, new, apply_rules=False))
 
         pairs = []
@@ -178,13 +180,14 @@ async def cmd_build(args: argparse.Namespace) -> int:
                 items.append(_item(f"watch:{label}", source, "no_act", "compatible", True, old, new, apply_rules=True))
 
         checks = [c for c in checks if "corrects" in c and "both_true" in c]   # v2-format rows only
-        # Pairs a person put back after an apply (op supersede_undone): Juniper's own "this was wrong".
-        # 2026-11-18: both v3.1 dry-run proposals, rejected by her and undone. Hard negatives.
+        # Pairs someone put back after an apply (op supersede_undone). An undo is a human saying the
+        # link was wrong (2026-11-18: both v3.1 proposals, rejected by Juniper and undone by the
+        # operator). The undoing actor stays in the source so a test-rollback can be audited out.
         undone = await (await conn.execute(UNDONE_SQL)).fetchall()
         got = await rows([u["old_id"] for u in undone] + [u["new_id"] for u in undone])
         for u in undone:
             if u["old_id"] in got and u["new_id"] in got:
-                items.append(_item(f"undone:{u['old_id'][:8]}:{u['new_id'][:8]}", "undone_by_juniper", "no_act",
+                items.append(_item(f"undone:{u['old_id'][:8]}:{u['new_id'][:8]}", f"undone_by_{u['actor']}", "no_act",
                                    "compatible", True, _row_from_db(got[u["old_id"]]), _row_from_db(got[u["new_id"]]),
                                    apply_rules=False))
 
@@ -213,6 +216,8 @@ async def cmd_build(args: argparse.Namespace) -> int:
         if key not in seen:
             seen.add(key)
             out.append(it)
+    if len({it.item_id for it in out}) != len(out):
+        raise SystemExit("duplicate item ids in the labelled set: scoring would overwrite decisions")
     private_write(Path(args.out), "".join(json.dumps(item_to_dict(it), default=str) + "\n" for it in out))
     counts: dict[str, int] = {}
     for it in out:
@@ -329,15 +334,21 @@ async def cmd_run(args: argparse.Namespace) -> int:
                       "model": run["model"],
                       "file": str(out), **public}, indent=2, default=str))
     if args.record_db:
+        record_guard(args)
         # Only a run that matches production counts for the gate: the current checker, the votes
         # write time uses, and the production route.
-        if (args.checker != "v3" or args.votes != S.VOTES or args.route != PRODUCTION_ROUTE or args.set != "all"
-                or args.repeats < MIN_RECORD_REPEATS):
-            raise SystemExit(f"only a full v3 run with --votes {S.VOTES} and --repeats >= {MIN_RECORD_REPEATS} "
-                             f"on {PRODUCTION_ROUTE} is recorded")
         await record(args.dsn, run)
         print(f"recorded eval run {run['run_id']} passed={result['passed']}")
     return 0 if result["passed"] else 1
+
+
+def record_guard(args: argparse.Namespace) -> None:
+    """Only a run that matches production counts for the gate: the current checker, the votes
+    write time uses, the production route, the full set, and at least MIN_RECORD_REPEATS passes."""
+    if (args.checker != "v3" or args.votes != S.VOTES or args.route != PRODUCTION_ROUTE or args.set != "all"
+            or args.repeats < MIN_RECORD_REPEATS):
+        raise SystemExit(f"only a full v3 run with --votes {S.VOTES} and --repeats >= {MIN_RECORD_REPEATS} "
+                         f"on {PRODUCTION_ROUTE} is recorded")
 
 
 RECORD_SQL = """
@@ -353,6 +364,7 @@ async def record(dsn: str, run: dict[str, Any]) -> None:
 
     s = run["summary"]
     summary = {k: v for k, v in s.items() if k != "false_acts"}
+    summary["repeats"] = run.get("repeats")
     summary["false_act_items"] = [f["item_id"] for f in s["false_acts"]]
     async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
         await conn.execute(RECORD_SQL, (

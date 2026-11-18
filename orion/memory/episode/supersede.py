@@ -308,7 +308,8 @@ AskFn = Callable[..., Awaitable[str]]
 #
 # Mem0-style classification instead of a yes/no: the local model names how B relates to A. Asked
 # VOTES times at a temperature above 0 (self-consistency); a pair acts only on a unanimous,
-# high-confidence update or correction with "same attribute: yes". Anything else abstains, and
+# high-confidence update or correction whose checklist agrees (same referent, same attribute,
+# B says A changed, a kind that relation can retire). Anything else abstains, and
 # abstaining is always safe: both rows stay visible, which is the state before this module.
 
 REL_UPDATE = "update"            # A was true; B says it has since changed (A no longer current)
@@ -395,8 +396,8 @@ class Vote:
 
     @property
     def acting(self) -> bool:
-        """An update or correction whose own checklist agrees: same attribute, B's words say A is
-        wrong or changed, and A is a kind of thing that relation can retire."""
+        """An update or correction whose own checklist agrees: same specific referent, same
+        attribute, B's words say A is wrong or changed, and A is a kind that relation can retire."""
         if self.error is not None or self.relation not in ACTING_RELATIONS:
             return False
         if self.same_attribute is not True or self.b_says_changed is not True or self.same_referent is not True:
@@ -425,10 +426,11 @@ def parse_vote(text: str) -> Vote:
     except (TypeError, ValueError):
         conf = float("nan")
     if not (0.0 <= conf <= 1.0):  # also catches NaN
-        return Vote(rel or None, same, 0.0, reason, error="bad_confidence", a_kind=kind or None, b_says_changed=changed)
+        return Vote(rel or None, same, 0.0, reason, error="bad_confidence", a_kind=kind or None, b_says_changed=changed,
+                    same_referent=_yes(data.get("same_referent")))
     if rel not in RELATIONS or same is None:
         return Vote(rel or None, same, conf, reason, error="bad_answer_value", a_kind=kind or None,
-                    b_says_changed=changed)
+                    b_says_changed=changed, same_referent=_yes(data.get("same_referent")))
     # A malformed checklist field is not an error: such a vote can never act (Vote.acting needs a
     # known kind and a yes), so it abstains without holding the rest of the plan.
     return Vote(rel, same, conf, reason, a_kind=kind if kind in A_KINDS else None,

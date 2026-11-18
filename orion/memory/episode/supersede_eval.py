@@ -99,6 +99,11 @@ def load_items(path: Path) -> list[EvalItem]:
             if line.strip()]
 
 
+def base_id(item_id: str) -> str:
+    """The item id without its repeat suffix ("<id>@<n>", scripts/memory_supersede_eval.py --repeats)."""
+    return item_id.rsplit("@", 1)[0]
+
+
 def rule_refusal(old: MemoryRow, new: MemoryRow) -> Optional[str]:
     """The deterministic write-time rules, before any model call (None = eligible)."""
     if not can_correct(new):
@@ -155,8 +160,9 @@ def score(items: Sequence[EvalItem], decisions: Iterable[Decision]) -> dict[str,
                 tn += 1
                 src["correct"] += 1
     real = [it for it in items if it.kind == "real"]
-    real_pos = sum(1 for it in real if it.label == "act")
-    real_hard = sum(1 for it in real if it.label == "no_act" and it.hard_negative)
+    # Coverage floors count DISTINCT pairs: a repeated run (item ids "<id>@<n>") must not halve them.
+    real_pos = len({base_id(it.item_id) for it in real if it.label == "act"})
+    real_hard = len({base_id(it.item_id) for it in real if it.label == "no_act" and it.hard_negative})
     hard_false = sum(1 for f in false_acts
                      if any(it.item_id == f["item_id"] and it.hard_negative for it in items))
     fail: list[str] = []

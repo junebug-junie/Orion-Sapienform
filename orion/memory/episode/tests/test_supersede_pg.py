@@ -457,6 +457,27 @@ def test_pass_undo_stores_the_note_and_rewrites_the_manifest(tmp_path):
         m = json.loads(manifest.read_text())
         assert m["last_mode"] == "undo" and m["check_version"] == "supersede_classify.v3.1"
         assert m["in_effect"] == [] and m["applied"][0]["undone_at"]
+        # A refresh rebuilds in_effect from the database, inside a read-only transaction.
+        link2_old = await _old_row(pool, "Juniper told me the shed is blue.")
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                assert await s.apply_link(conn, s.Link(old_id=link2_old, new_id=new_id, reason="r", dense=0.7),
+                                          actor=s.ACTOR_PASS)
+        seen = {}
+        real_write = mod.write_manifest
+
+        async def spy(conn, *a, **k):
+            seen["ro"] = (await (await conn.execute("SHOW transaction_read_only")).fetchone())["transaction_read_only"]
+            return await real_write(conn, *a, **k)
+
+        mod.write_manifest = spy
+        manifest.write_text("not json")
+        assert await mod.cmd_manifest(argparse.Namespace(dsn=dsn, manifest=str(manifest), watch=[])) == 0
+        mod.write_manifest = real_write
+        assert seen["ro"] == "on"
+        m = json.loads(manifest.read_text())
+        assert m["last_mode"] == "refresh" and [(p["old_id"], p["new_id"]) for p in m["in_effect"]] == [(link2_old, new_id)]
+        assert m["in_effect"][0]["actor"] == s.ACTOR_PASS and len(m["undone"]) == 1
         assert m["undone"] == [{"old_id": old_id, "new_id": new_id, "actor": "juniper",
                                 "undone_at": m["undone"][0]["undone_at"], "note": "a different pet"}]
         # A second undo of the same pair finds nothing and leaves the manifest alone.

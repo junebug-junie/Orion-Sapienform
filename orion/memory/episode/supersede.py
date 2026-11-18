@@ -54,6 +54,7 @@ second event is written (the insert is also ON CONFLICT DO NOTHING on that id). 
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import uuid
@@ -63,6 +64,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Optional, Sequence
 
 from orion.memory.lived_memory import EPISODE_SQL
+
+logger = logging.getLogger(__name__)
 
 ACTOR_DISTILL = "memory.episode_distill"
 ACTOR_PASS = "memory.supersede_pass"
@@ -941,7 +944,10 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 vector, _ = await embed(client, cfg, statement, doc_prefix="supersede-check")
                 hits = await nearest(client, cfg, vector, n, where={"kind": KIND_EPISODE})
-        except SearchUnavailableError:
+        except SearchUnavailableError as exc:
+            # The plan only records "dense_unavailable"; the log keeps why (issue #3693: a live
+            # write-time run refused this way with no cause on record).
+            logger.warning("supersede_dense_unavailable error=%s: %s", type(exc).__name__, str(exc)[:300])
             return None
         out: dict[str, float] = {}
         for doc, sim in hits:

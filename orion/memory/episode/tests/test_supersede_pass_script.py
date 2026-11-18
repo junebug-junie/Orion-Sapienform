@@ -292,3 +292,28 @@ def test_apply_decision_trace_has_legs_votes_and_outcome_but_no_statements():
     assert secret not in json.dumps(d)
     assert d["legs"] == {"cosine": 0.6415, "shared": ["project:circe"]}
     assert d["votes"] == ["correction"] * 3 and d["outcome"] == "applied"
+
+
+def test_in_effect_comes_from_the_caller_and_a_broken_previous_file_is_ignored(tmp_path):
+    path = tmp_path / "m.json"
+    path.write_text("[1, 2]")  # valid JSON, not an object
+    live = [{"old_id": "o9", "new_id": "n9", "actor": "memory.episode_distill", "superseded_at": "t"}]
+    asyncio.run(P.write_manifest(FakeConn([]), path, mode="refresh", proposed=None, applied=None, watch=None,
+                                 undone=[], in_effect=live))
+    m = json.loads(path.read_text())
+    assert m["in_effect"] == live and m["applied"] == [] and m["proposed"] == []
+
+
+def test_the_meaning_index_failure_reason_is_logged(monkeypatch, caplog):
+    import logging
+
+    from orion.introspect import semantic_index
+    from orion.memory.episode import supersede as S
+
+    async def boom(*a, **k):
+        raise semantic_index.SearchUnavailableError("embed host 503")
+
+    monkeypatch.setattr(semantic_index, "embed", boom)
+    with caplog.at_level(logging.WARNING, logger=S.__name__):
+        assert asyncio.run(S.index_dense(object())("x")) is None
+    assert "supersede_dense_unavailable" in caplog.text and "embed host 503" in caplog.text

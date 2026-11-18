@@ -212,7 +212,9 @@ async def cmd_dry_run(args: argparse.Namespace) -> int:
         raise SystemExit("the supersede check never runs on the fast or metacog lanes")
     out = private_dir(Path(args.dir))
     async with await psycopg.AsyncConnection.connect(args.dsn, row_factory=dict_row) as conn:
-        await conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        # The first statement of the connection's one transaction (SET SESSION CHARACTERISTICS
+        # here would only cover later transactions, not this one).
+        await conn.execute("SET TRANSACTION READ ONLY")
         snap = await (await conn.execute(SNAPSHOT_SQL)).fetchall()
         if len(snap) > SNAPSHOT_MAX_ROWS:
             raise SystemExit(f"{len(snap)} active rows > {SNAPSHOT_MAX_ROWS}: stop and ask Juniper (CLAUDE.md s14)")
@@ -299,7 +301,7 @@ async def cmd_dry_run(args: argparse.Namespace) -> int:
                                  applied=None, watch=parse_watch(args.watch) or None, run_id=run_id, dense=dense_state,
                                  records=records, counts={"asked": len(records), "proposed": len(links),
                                                           "check_errors": plan["check_errors"]},
-                                 undone=await undone_events(conn))
+                                 **await db_state(conn))
     print(f"{len(links)} proposed pairs from {len(records)} checks; files in {out}")
     return 0
 
@@ -409,6 +411,28 @@ UNDONE_EVENTS_SQL = ("SELECT memory_id::text AS old_id, evidence->>'superseded_b
                      "FROM episode_memory_event WHERE op = 'supersede_undone' ORDER BY created_at, event_id")
 
 
+# Pairs whose retirement is in effect right now: a ``superseded`` event whose old row is still
+# superseded by that same new row (an undo, or a later revision, ends it).
+IN_EFFECT_SQL = ("SELECT e.memory_id::text AS old_id, e.evidence->>'superseded_by' AS new_id, e.actor, "
+                 "e.created_at FROM episode_memory_event e JOIN episode_memory m ON m.memory_id = e.memory_id "
+                 "WHERE e.op = 'superseded' AND m.status = 'superseded' "
+                 "AND m.invalidated_by::text = e.evidence->>'superseded_by' ORDER BY e.created_at, e.event_id")
+
+
+async def in_effect_pairs(conn: Any) -> list[dict[str, Any]]:
+    """Every pair retired right now, by any actor (the pass or write time): ids, actor, time."""
+    cur = await conn.execute(IN_EFFECT_SQL)
+    rows = [r if isinstance(r, dict) else dict(zip([d.name for d in cur.description], r))
+            for r in await cur.fetchall()]
+    return [{"old_id": str(r["old_id"]), "new_id": str(r["new_id"]), "actor": r["actor"],
+             "superseded_at": str(r["created_at"])} for r in rows]
+
+
+async def db_state(conn: Any) -> dict[str, Any]:
+    """What write_manifest reads from the database besides the watched rows."""
+    return {"undone": await undone_events(conn), "in_effect": await in_effect_pairs(conn)}
+
+
 async def undone_events(conn: Any) -> list[dict[str, Any]]:
     """The undone pairs for the manifest: ids, actor, time and note (no statements)."""
     cur = await conn.execute(UNDONE_EVENTS_SQL)
@@ -478,7 +502,8 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
                          applied: list[dict[str, Any]] | None, watch: list[tuple[str, str]] | None,
                          run_id: str = "", dense: str = "", records: Optional[list[CheckRecord]] = None,
                          counts: Optional[dict[str, Any]] = None,
-                         undone: Optional[list[dict[str, Any]]] = None) -> None:
+                         undone: Optional[list[dict[str, Any]]] = None,
+                         in_effect: Optional[list[dict[str, Any]]] = None) -> None:
     """Ids and statuses only -- never statements -- so Orion can verify the pass ran.
 
     Written where Orion's FCC turns can read it (default under /mnt/orion-fcc/notes, mode 644). The
@@ -487,15 +512,18 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
     ``verify_sql`` below reads every applied pair directly.
 
     ``proposed`` / ``applied`` / ``watch`` / ``undone`` None keep the previous manifest's value (an
-    undo or a refresh rewrites the file without a new proposal). ``undone`` lists every undone pair;
-    an ``applied`` entry whose pair was undone carries ``undone_at``, so the file never says a pair
-    is in effect after someone put it back."""
+    undo or a refresh rewrites the file without a new proposal). ``applied`` is this file's apply
+    history; an entry whose pair was undone carries ``undone_at``. ``in_effect`` is every pair
+    retired right now, read from the database by the caller (:func:`db_state`); without it, it is
+    the applied pairs minus the undone ones."""
     previous: dict[str, Any] = {}
     if path.exists():
         try:
             previous = json.loads(path.read_text(encoding="utf-8"))
         except ValueError:
             previous = {}
+    if not isinstance(previous, dict):
+        previous = {}
     applied_this_run = list(applied or [])  # the history line records only what this run did
     proposed_this_run = proposed or []
     # The check version that found the proposed pairs: an undo or a refresh proposes nothing new,
@@ -507,13 +535,15 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
     if applied is None:
         applied = [{k: v for k, v in a.items() if k != "undone_at"} for a in previous.get("applied") or []]
     if watch is None:
-        watch = [(str(w.get("label")), str(w.get("memory_id"))) for w in previous.get("watched") or []
-                 if w.get("memory_id")]
+        watch = [(str(w.get("label") or ""), str(w.get("memory_id"))) for w in previous.get("watched") or []
+                 if isinstance(w, dict) and w.get("memory_id")]
     if undone is None:
         undone = list(previous.get("undone") or [])
     undone_at = {(u["old_id"], u["new_id"]): u["undone_at"] for u in undone}
     applied_now = [{**a, **({"undone_at": undone_at[(a["old_id"], a["new_id"])]}
                             if (a["old_id"], a["new_id"]) in undone_at else {})} for a in applied]
+    if in_effect is None:
+        in_effect = [{"old_id": a["old_id"], "new_id": a["new_id"]} for a in applied_now if "undone_at" not in a]
     rows = {}
     if watch:
         cur = await conn.execute(WATCH_SQL, ([m for _, m in watch],))
@@ -530,7 +560,7 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
                             "re-applying a handled pair writes nothing",
         "proposed": [{"old_id": p["old_id"], "new_id": p["new_id"]} for p in proposed],
         "applied": applied_now,
-        "in_effect": [{"old_id": a["old_id"], "new_id": a["new_id"]} for a in applied_now if "undone_at" not in a],
+        "in_effect": in_effect,
         "undone": undone,
         "undone_rule": "an undone pair is never re-applied (supersede.py apply_link; issue #3629)",
         "run_id": run_id,
@@ -545,7 +575,7 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
         "statements": "not here: they live only in the operator's private pass directory",
     }
     append_history(history_path(path), {
-        "run_id": run_id, "mode": mode, "written_at": manifest["written_at"], "check_version": CHECK_VERSION,
+        "run_id": run_id, "mode": mode, "written_at": manifest["written_at"], "check_version": check_version,
         "dense": dense, "counts": counts or {},
         "proposed": [{"old_id": p["old_id"], "new_id": p["new_id"]} for p in proposed_this_run],
         "applied": [{"old_id": a["old_id"], "new_id": a["new_id"]} for a in applied_this_run]})
@@ -677,7 +707,7 @@ async def cmd_apply(args: argparse.Namespace) -> int:
                                  proposed=[{"old_id": p["old_id"], "new_id": p["new_id"]} for p in pairs],
                                  applied=applied_ids, watch=parse_watch(args.watch) or None, run_id=run_id,
                                  dense="on", counts={"applied": applied, "skipped": skipped},
-                                 undone=await undone_events(conn))
+                                 **await db_state(conn))
     await record_db(args.dsn, run_id, "pass_apply",
                     {"links": [{"old_id": p["old_id"], "new_id": p["new_id"]} for p in pairs],
                      "apply": "on", "dense": "on", "check_version": CHECK_VERSION, "decisions": decisions},
@@ -703,10 +733,16 @@ async def cmd_undo(args: argparse.Namespace) -> int:
             print("nothing to undo: that pair is not superseded by this mechanism", file=sys.stderr)
             return 1
         if not args.no_manifest:  # the manifest must not keep saying the pair is applied
-            await write_manifest(conn, Path(args.manifest), mode="undo", proposed=None, applied=None, watch=None,
-                                 run_id=f"pass_undo:{started.strftime('%Y%m%dT%H%M%SZ')}:{uuid.uuid4().hex[:6]}",
-                                 counts={"undone": 1, "old_id": args.old, "new_id": args.new, "actor": args.actor},
-                                 undone=await undone_events(conn))
+            try:
+                await write_manifest(
+                    conn, Path(args.manifest), mode="undo", proposed=None, applied=None,
+                    watch=parse_watch(args.watch) or None,
+                    run_id=f"pass_undo:{started.strftime('%Y%m%dT%H%M%SZ')}:{uuid.uuid4().hex[:6]}",
+                    counts={"undone": 1, "old_id": args.old, "new_id": args.new, "actor": args.actor},
+                    **await db_state(conn))
+            except Exception as exc:  # noqa: BLE001 -- the undo itself is committed; say so, don't fail it
+                print(f"undo applied; manifest NOT rewritten: {type(exc).__name__}: {exc}. "
+                      "Run: scripts/memory_supersede_pass.py manifest", file=sys.stderr)
     print(f"restored old={args.old} to active ({restored['restored_confirmation_state']}); "
           f"pointer on new={args.new} cleared")
     return 0
@@ -720,11 +756,12 @@ async def cmd_manifest(args: argparse.Namespace) -> int:
 
     started = datetime.now(timezone.utc)
     async with await psycopg.AsyncConnection.connect(args.dsn, row_factory=dict_row) as conn:
-        await conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        # The first statement of the connection's one transaction, so every read below is read-only.
+        await conn.execute("SET TRANSACTION READ ONLY")
         await write_manifest(conn, Path(args.manifest), mode="refresh", proposed=None, applied=None,
                              watch=parse_watch(args.watch) or None,
                              run_id=f"pass_refresh:{started.strftime('%Y%m%dT%H%M%SZ')}:{uuid.uuid4().hex[:6]}",
-                             undone=await undone_events(conn))
+                             **await db_state(conn))
     print(f"manifest rewritten: {args.manifest}")
     return 0
 
@@ -766,7 +803,8 @@ def main() -> int:
     for sp in (d, a, u, m):
         sp.add_argument("--manifest", default=str(DEFAULT_MANIFEST),
                         help="ids-only manifest Orion can read (no statements)")
-        sp.add_argument("--no-manifest", action="store_true")
+        if sp is not m:
+            sp.add_argument("--no-manifest", action="store_true")
         sp.add_argument("--watch", action="append", default=[], metavar="LABEL=MEMORY_ID",
                         help="report this row's final status in the manifest (repeatable)")
     args = ap.parse_args()

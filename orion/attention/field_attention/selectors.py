@@ -45,8 +45,11 @@ ObservationMode = Literal["watch", "inspect", "summarize", "ignore"]
 # prunes both node ids (RETIRED_PSEUDO_NODES), so neither can come back as a
 # host novelty target through select_host_targets either.
 # node:substrate.chat left 2026-11-13 (retire step 6; pruned by the digester too).
+# node:substrate.biometrics left 2026-11-18 (retire step 6, #3575; pruned too). Its
+# successors are not native targets: node:prediction.body_joint is a body signal (no
+# goal, same as node:prediction.body), node:prediction.room_joint a world source that
+# authors goals through the attended-world rule (goal_provenance._goal_eligible_node).
 PREDICTION_ERROR_NATIVE_TARGETS: dict[str, str] = {
-    "node:substrate.biometrics": "node_biometrics",
     "node:substrate.execution": "execution_trajectory",
 }
 

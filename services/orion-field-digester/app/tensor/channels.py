@@ -324,6 +324,13 @@ RETIRED_PSEUDO_NODES: dict[str, str] = {
         "retired 2026-11-11 PE step 3: fixed 0.65 placeholder, not a measurement; "
         "successor = turn-level self-bet"
     ),
+    # 2026-11-18 (PE step 6, #3575): biometrics_prediction_error deleted; the
+    # biometrics grammar pipeline, node projection and pressure organ stay. Same
+    # agreement with RETIRED_PREDICTION_ERROR_NODE_IDS.
+    "node:substrate.biometrics": (
+        "retired 2026-11-18 PE step 6: pressure-hint change / 0.30, not a forecast; "
+        "successor = node:prediction.body_joint / .room_joint"
+    ),
 }
 
 # Every node id reconcile drops wholesale (perturbation refusal covers only

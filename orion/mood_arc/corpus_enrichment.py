@@ -61,7 +61,8 @@ TimeSeries = list[tuple[datetime, dict[str, float]]]
 # retrain must not forward-fill its last pre-retirement value into fresh rows.
 # v4 still names the channel; the scorer 0.0-fills it (known, documented).
 # chat removed 2026-11-13 (step 6) for the same reason: node:substrate.chat retired.
-_PREDICTION_ERROR_DOMAINS = ("execution", "biometrics")
+# biometrics removed 2026-11-18 (step 6, #3575): node:substrate.biometrics retired.
+_PREDICTION_ERROR_DOMAINS = ("execution",)
 
 # substrate_codebase_delta_log.domain -> the channel name we train on. Kept
 # distinct from the raw domain string so `git_delta`/`pr_lifecycle_delta`/
@@ -377,8 +378,8 @@ def resolve_live_enrichment(
     `services/orion-field-digester/app/anomaly_scorer.py`'s per-tick scoring loop.
     Resolves the SINGLE latest known value (not a forward-filled per-row series) for
     each of the live-enrichment channels (`heartbeat_mean_ratio`,
-    `prediction_error_{execution,biometrics}`; bus_synaptic and chat retired 2026-11, so the v4
-    scorer 0.0-fills those two channels) as of `now`, over a
+    `prediction_error_execution`; bus_synaptic, chat and biometrics retired 2026-11, so the v4
+    scorer 0.0-fills those three channels) as of `now`, over a
     narrow trailing window -- these are the only phi-v2-audit channels the live
     scorer's in-process row-building path does not already produce (`action_warrant`
     was a sixth until 2026-11-07; the digester now computes it in-process); every other v4 channel (including all 5 cabinet channels)

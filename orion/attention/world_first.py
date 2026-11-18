@@ -87,6 +87,7 @@ from orion.attention.sustained import (
 from orion.schemas.attention_candidate import (
     ATTENTION_MIN_BAND_BY_NODE_ID,
     PERCEPTION_NODE_ID,
+    ROOM_JOINT_NODE_ID,
     WORLD_CHAT_SOURCE_ID,
     WORLD_READING_SOURCE_ID,
     AttentionCandidateV1,
@@ -138,6 +139,15 @@ READING_MIN_LINKS_7D = 5
 
 # Perception's tick writes every ~10 s; a reading older than this is stale.
 PERCEPTION_MAX_AGE_SEC: float = 180.0
+# An external source written on a slower clock keeps its reading current for two of its own write
+# intervals. node:prediction.room_joint (family A room joint surprise, #3575) is written once per scored
+# 5-min bucket; at 180 s it would read absent for 2 of every 5 minutes. 600 s = two buckets: a missed
+# bucket is tolerated, two in a row read absent. Never longer than the 1800 s PE staleness horizon.
+EXTERNAL_MAX_AGE_SEC_BY_NODE: dict[str, float] = {ROOM_JOINT_NODE_ID: 600.0}
+
+
+def external_max_age_sec(node_id: str) -> float:
+    return EXTERNAL_MAX_AGE_SEC_BY_NODE.get(node_id, PERCEPTION_MAX_AGE_SEC)
 
 # How long one event's reading stays news. Derived 2026-10-10 from 7 days of
 # substrate_node_prediction_error_history (225 isolated onsets -- top-decile,
@@ -895,7 +905,7 @@ def node_candidate(
     value_kind, polarity = node_prediction_error_semantics(node_id)
     if magnitude is None:
         absent_reason = absent_reason or "no magnitude (no stored history)"
-    elif kind == "external" and magnitude.age_sec > PERCEPTION_MAX_AGE_SEC and not absent_reason:
+    elif kind == "external" and magnitude.age_sec > external_max_age_sec(node_id) and not absent_reason:
         absent_reason = f"reading {magnitude.age_sec:.0f}s old"
     sustain_window: float | None = None
     dwell: float | None = None

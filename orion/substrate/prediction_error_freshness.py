@@ -81,6 +81,12 @@ PREDICTION_ERROR_MISSING_REASON_KEY = "prediction_error_missing_reason"
 # readers were fenced by the glossary value-kind rule (no entry = not a
 # measurement); listing it here makes every generic reader drop its lingering
 # history rows and close any tracked episode, the same as the others.
+#
+# node:substrate.biometrics joined 2026-11-18 (retire step 6, #3575): the mean
+# change of the machines' pressure hints over a fixed 0.30 scale -- never 0,
+# never near 1, not a forecast. Successors: node:prediction.body_joint and
+# node:prediction.room_joint (family A joint surprise, scored forecasts of every
+# raw body and room reading; the room one is a world source).
 RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
     {
         "node:substrate.harness_closure",
@@ -88,6 +94,7 @@ RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
         "node:substrate.route",
         "node:substrate.chat",
         "node:substrate.codebase",
+        "node:substrate.biometrics",
     }
 )
 

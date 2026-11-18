@@ -96,8 +96,9 @@ router = APIRouter(prefix="/api/attention-organ", tags=["attention-organ"])
 # `codebase` REMOVED 2026-11-13 (PE suite rebuild): a churn z, not a
 # forecast; node retired. Alarm nodes (cabinet, strain, street) are not
 # prediction-error domains and are skipped below (ALARM_NODE_IDS).
+# `biometrics` REMOVED 2026-11-18 (step 6, #3575); successors
+# node:prediction.body_joint / .room_joint (family A joint surprise).
 KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
-    "biometrics",
     "execution",
 )
 

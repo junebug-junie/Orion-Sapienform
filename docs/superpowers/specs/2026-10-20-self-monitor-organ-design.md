@@ -1,6 +1,14 @@
 # The self-monitor: Orion's organ for knowing how good they are at things
 
 Date: 2026-10-20. Status: design, docs only. No code until Juniper signs off.
+
+**Build status (2026-11-18):** v1 is built and live since 2026-11-03: record #3041, host #3066,
+stance cue #3063, E1 act gate + E2 self-question #3062 (same-job retries exempt, #3081),
+E3 self-finding outreach #3061, tuner retired #3050, false-broken fix #3078.
+E4 (trust weights) and E5 (revise a setting) are **deferred on purpose**:
+- E4 waits for a reader that asks for it.
+- E5 waits for a miscalibrated faculty that has a real tunable setting. On 11-18, the 3 miscalibrated
+  faculties were either over-performing or a bet to drop (#3326).
 Ladder: rung 6, metacognitive self-revision (`docs/plans/substrate/2026-06-27-self-modeling-loop-ladder.md`).
 
 ## In one paragraph

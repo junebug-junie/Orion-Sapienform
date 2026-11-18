@@ -752,7 +752,8 @@ class PrimeRuntime(MindLoopRuntime):
         if not data.get("found"):
             return  # tonight's run has not written yet; checked again later
         plan = dd.parse_plan(data.get("plan"))
-        self.state, done = dd.apply_plan(self.state, day, plan, now, run_id=data.get("run_id"))
+        taken_on = frozenset(it.open_ids(self.intentions)) if self._intentions_on() else frozenset()
+        self.state, done = dd.apply_plan(self.state, day, plan, now, run_id=data.get("run_id"), taken_on=taken_on)
         self.dream_day = dd.record(self.dream_day, done)
         logger.info("prime_dream_day_applied day=%s run=%s dropped=%s opened=%s kept=%d skipped=%s", day,
                     done.run_id or "-", ",".join(done.dropped) or "-", ",".join(done.opened) or "-", done.kept,

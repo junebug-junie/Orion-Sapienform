@@ -15,7 +15,15 @@ by-attention-design.md, #3574/#3610 patch 1):
 * ``new`` opens one concern the way a letter thread does: deterministic id, inside ``MAX_CONCERNS``, no
   displacement (that is #3610 patch 2). No room: counted, not opened.
 
-Applied at most once per day (``PrimeDreamDayStateV1.applied``), so a restart or a replay opens nothing twice.
+* A concern Prime has taken on (its intention run is open) is never dropped by the dream: the night's material does
+  not show the take-on, and every other automatic removal spares it (orion/prime/intention.py ``age_out``).
+
+Drops run before the new concern, whatever order the model wrote, so a drop frees room for it.
+
+Applied at most once per day (``PrimeDreamDayStateV1.applied``), so a restart or a replay opens nothing twice; a
+dream concern already in the track record is never reopened either. Prime applies only the Denver yesterday's row:
+a hand-run older day (``POST /dream-day/run``) or a night Prime missed entirely stays in its ``dream_day`` row and
+never reaches Prime. No backfill, by design (first night wins).
 """
 
 from __future__ import annotations
@@ -26,7 +34,9 @@ from typing import Any, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from orion.prime.state import MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, close_concern, note_outcome
+from orion.prime.state import (
+    CONCERN_TEXT_CAP, MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, close_concern, note_outcome,
+)
 from orion.schemas.dream_day import DreamDayPlanItemV1
 
 DREAM_DAY_KEY = "orion:prime:dream_day"
@@ -85,23 +95,33 @@ def parse_plan(raw: Any) -> list[DreamDayPlanItemV1]:
 
 
 def apply_plan(state: PrimeStateV1, day: date, plan: list[DreamDayPlanItemV1], now: datetime, *,
-               run_id: Optional[str] = None) -> tuple[PrimeStateV1, PrimeDreamDayAppliedV1]:
-    """Apply one night's plan to Prime's concerns (rules in the module docstring)."""
+               run_id: Optional[str] = None, taken_on: frozenset[str] = frozenset(),
+               ) -> tuple[PrimeStateV1, PrimeDreamDayAppliedV1]:
+    """Apply one night's plan to Prime's concerns (rules in the module docstring). ``taken_on``: concern ids whose
+    intention run is open; never dropped here."""
     concerns = list(state.concerns)
+    recorded = {r.concern_id for r in state.concern_record}
     dropped: list[str] = []
     opened: list[str] = []
     skipped: list[str] = []
     kept = 0
     news = 0
-    for i, item in enumerate(plan):
+    # Drops first (keeping each item's own index for its deterministic id).
+    for i, item in sorted(enumerate(plan), key=lambda t: t[1].action != "drop"):
         reason = " ".join((item.reason or "").split())[:REASON_CAP] or "no reason given"
         if item.action == "keep":
-            kept += 1
+            if any(c.concern_id == item.concern_id for c in concerns):
+                kept += 1
+            else:
+                skipped.append(f"keep {item.concern_id}: not held")
             continue
         if item.action == "drop":
             gone = next((c for c in concerns if c.concern_id == item.concern_id), None)
             if gone is None:
                 skipped.append(f"drop {item.concern_id}: not held")
+                continue
+            if gone.concern_id in taken_on:
+                skipped.append(f"drop {gone.concern_id}: taken on")
                 continue
             state = close_concern(state, gone, end="dropped", now=now,
                                   note=f"dropped: dream {day.isoformat()}: {reason}")
@@ -118,19 +138,21 @@ def apply_plan(state: PrimeStateV1, day: date, plan: list[DreamDayPlanItemV1], n
             continue
         news += 1
         cid = dream_concern_id(day, i)
-        if any(c.concern_id == cid for c in concerns):
+        if any(c.concern_id == cid for c in concerns) or cid in recorded:
+            skipped.append(f"new {cid}: already opened once")
             continue
         if len(concerns) >= MAX_CONCERNS:
             skipped.append("new: no room")
             continue
         concerns.append(PrimeConcernV1(
-            concern_id=cid, text=f"from my dream on {day.isoformat()}: {gist}"[:300],
+            concern_id=cid, text=f"from my dream on {day.isoformat()}: {gist}"[:CONCERN_TEXT_CAP],
             event_ref=f"{DREAM_EVENT_PREFIX}{day.isoformat()}#new{i}", opened_at=now, last_evidence_at=now))
         opened.append(cid)
     state = state.model_copy(update={"concerns": concerns})
     done = PrimeDreamDayAppliedV1(day=day, run_id=run_id, applied_at=now, dropped=dropped, opened=opened,
                                   kept=kept, skipped=skipped)
-    if dropped or opened or kept:
+    # Only a real change is news for Prime's next thought (pending_changes wakes it); a keep-only night is not.
+    if dropped or opened:
         state = note_outcome(state, (
             f"my dream on {day.isoformat()} looked at my concerns: dropped {len(dropped)}, opened {len(opened)}, "
             f"kept {kept} (a dream's keep renews nothing)" + (f"; {len(skipped)} skipped" if skipped else "")))

@@ -90,3 +90,34 @@ def test_the_evidence_clock_is_still_the_only_clock_after_a_plan():
     # A kept concern still fades on its own clock; touch_concern is the one renewal and stays untouched by the plan.
     st, _ = dd.apply_plan(_state("a"), DAY, _plan({"action": "keep", "concern_id": "a"}), NOW)
     assert touch_concern(st, "a", NOW).concerns[0].last_evidence_at == NOW
+
+
+def test_a_taken_on_concern_is_never_dropped_by_the_dream():
+    st, done = dd.apply_plan(_state("a", "b"), DAY, _plan({"action": "drop", "concern_id": "a", "reason": "r"}), NOW,
+                             taken_on=frozenset({"a"}))
+    assert [c.concern_id for c in st.concerns] == ["a", "b"] and done.skipped == ["drop a: taken on"]
+    assert st.concern_record == []
+
+
+def test_drops_run_first_so_a_new_listed_before_its_drop_still_gets_room():
+    full = _state(*[f"c{i}" for i in range(MAX_CONCERNS)])
+    st, done = dd.apply_plan(full, DAY, _plan({"action": "new", "gist": "the next thing"},
+                                              {"action": "drop", "concern_id": "c0", "reason": "done"}), NOW)
+    assert done.dropped == ["c0"] and done.opened == [dd.dream_concern_id(DAY, 0)]  # the new keeps its own index
+
+
+def test_a_dream_concern_already_in_the_track_record_is_never_reopened():
+    # The applied record was lost (restart), and yesterday's dream concern has since been dropped: no second open.
+    st, done = dd.apply_plan(_state("a"), DAY, _plan({"action": "new", "gist": "g"}), NOW)
+    cid = done.opened[0]
+    st, _ = dd.apply_plan(st, DAY, _plan({"action": "drop", "concern_id": cid, "reason": "done"}), NOW)
+    again, done2 = dd.apply_plan(st, DAY, _plan({"action": "new", "gist": "g"}), NOW)
+    assert cid not in [c.concern_id for c in again.concerns] and done2.skipped == [f"new {cid}: already opened once"]
+
+
+def test_a_keep_only_night_does_not_wake_prime_and_counts_only_held_keeps():
+    base = _state("a")
+    st, done = dd.apply_plan(base, DAY, _plan({"action": "keep", "concern_id": "a"},
+                                              {"action": "keep", "concern_id": "gone"}), NOW)
+    assert done.kept == 1 and done.skipped == ["keep gone: not held"]
+    assert st.pending_changes == base.pending_changes

@@ -70,3 +70,15 @@ def test_throttled_between_checks():
 def test_off_flag_skips_the_step_in_the_tick():
     rt = dream_rt(PLAN, enabled=False)
     assert not rt._dream_day_on()
+
+
+def test_a_concern_prime_has_taken_on_survives_the_dreams_drop():
+    from orion.prime import intention as it
+
+    rt = dream_rt(PLAN)
+    rt.s = SimpleNamespace(**{**vars(rt.s), "PRIME_INTENTION_TAKE_ON_ENABLED": True})
+    rt.intentions = rt.intentions.model_copy(update={"open": [it.PrimeIntentionOpenV1.model_construct(
+        concern_id="held1")]})
+    asyncio.run(rt._dream_day_upkeep(T0))
+    assert "held1" in [c.concern_id for c in rt.state.concerns]
+    assert "drop held1: taken on" in rt.dream_day.applied[-1].skipped

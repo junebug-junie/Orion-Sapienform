@@ -38,7 +38,8 @@ def test_asset_tolerates_audio_only_packets_from_a_warming_core():
     js = (HUB / 'static/js/retro-panel.js').read_text()
     draw = js[js.index('async function draw('):js.index('async function load()')]
     assert 'const picture=h.width>0 && h.height>0;' in draw
-    assert 'if(picture){\n      const image=ctx.createImageData' in draw   # 0x0 never reaches createImageData
+    assert 'let image=null;' in draw                                       # image outlives the decode block
+    assert 'if(picture){\n      image=ctx.createImageData' in draw         # 0x0 never reaches createImageData
     assert draw.index('const picture=') < draw.index('createImageData')
     assert 'if(picture){\n      if(screen.width!==h.width' in draw          # no frame credit without a picture
 

@@ -298,8 +298,9 @@
     // Drawing them would throw on a 0x0 image and close the socket, pausing the session before
     // the renderer ever produces a frame. Accept them as sound with no picture.
     const picture=h.width>0 && h.height>0;
+    let image=null;
     if(picture){
-      const image=ctx.createImageData(h.width,h.height), out=image.data;
+      image=ctx.createImageData(h.width,h.height); const out=image.data;
       for(let i=0;i<h.width*h.height;i++){
         const v=h.format===1?view.getUint32(offset+i*4,true):view.getUint16(offset+i*2,true);
         if(h.format===1){out[i*4]=(v>>16)&255;out[i*4+1]=(v>>8)&255;out[i*4+2]=v&255;}

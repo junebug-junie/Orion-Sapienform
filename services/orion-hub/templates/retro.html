@@ -8,7 +8,7 @@
 #chatPanel{position:absolute;left:0;right:0;bottom:0;max-height:45%;display:flex;flex-direction:column;gap:6px;padding:10px;background:#071017ee;border-top:1px solid #3a5057;z-index:4;text-align:left}#stage:fullscreen #chatPanel{position:fixed;max-height:40vh}
 #chatLog{overflow-y:auto;min-height:3em;font-size:14px;line-height:1.45}#chatLog .chatRow{margin:2px 0}#chatLog .orion b{color:#8ae0bc}#chatLog .you b{color:#f0c674}#chatLog .system{color:#bccdcd;font-style:italic}
 #chatForm{display:flex;gap:6px}#chatInput{flex:1;padding:6px 10px}#chatForm button{padding:6px 10px}.thumbs{display:inline-flex;gap:4px;align-items:center;margin-left:6px}.thumbs button{padding:0 8px;font-size:13px}.thumbs button[aria-pressed=true]{background:#8ae0bc;color:#112a24}.thumbState{margin-left:4px}
-</style><script src="/static/js/retro-panel.js?v=20" defer></script></head>
+</style><script src="/static/js/retro-panel.js?v=21" defer></script></head>
 <body><header><h1>Retro</h1><a href="/#hub" target="_top">Back to Hub</a></header>
 <section id="player" hidden><div class="bar"><select id="game" aria-label="Game"></select><button id="new" class="primary">New game</button><button id="orionplay" aria-pressed="false" title="Orion plays until you click the game or press any key or controller button">Let Orion play</button><button id="fullscreen" title="Fullscreen (Esc exits)">Fullscreen</button><label><input type="checkbox" id="mute">Mute</label></div>
 <div class="bar" id="saveBar"><button id="save" title="Save the whole game state now">Save</button><select id="saves" aria-label="Saved states, newest first"></select><button id="load" title="Load the chosen save (starts the game from it if none is running)">Load</button></div>

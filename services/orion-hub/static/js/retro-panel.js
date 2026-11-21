@@ -293,12 +293,19 @@
     if(epoch!==transportEpoch || socket!==media)return;
     const view=new DataView(bytes.buffer), n=view.getUint32(0), h=JSON.parse(new TextDecoder().decode(bytes.subarray(4,4+n)));
     if(h.version!==1 || h.width>512 || h.height>512 || h.audio_frames>16384)throw Error('Invalid packet');
-    let offset=4+n;const image=ctx.createImageData(h.width,h.height), out=image.data;
-    for(let i=0;i<h.width*h.height;i++){
-      const v=h.format===1?view.getUint32(offset+i*4,true):view.getUint16(offset+i*2,true);
-      if(h.format===1){out[i*4]=(v>>16)&255;out[i*4+1]=(v>>8)&255;out[i*4+2]=v&255;}
-      else {const six=h.format===2;out[i*4]=((v>>(six?11:10))&31)*255/31;out[i*4+1]=((v>>5)&(six?63:31))*255/(six?63:31);out[i*4+2]=(v&31)*255/31;}
-      out[i*4+3]=255;
+    let offset=4+n;
+    // A core warming up (N64/Angrylion, first picture at ~frame 64) sends audio-only packets.
+    // Drawing them would throw on a 0x0 image and close the socket, pausing the session before
+    // the renderer ever produces a frame. Accept them as sound with no picture.
+    const picture=h.width>0 && h.height>0;
+    if(picture){
+      const image=ctx.createImageData(h.width,h.height), out=image.data;
+      for(let i=0;i<h.width*h.height;i++){
+        const v=h.format===1?view.getUint32(offset+i*4,true):view.getUint16(offset+i*2,true);
+        if(h.format===1){out[i*4]=(v>>16)&255;out[i*4+1]=(v>>8)&255;out[i*4+2]=v&255;}
+        else {const six=h.format===2;out[i*4]=((v>>(six?11:10))&31)*255/31;out[i*4+1]=((v>>5)&(six?63:31))*255/(six?63:31);out[i*4+2]=(v&31)*255/31;}
+        out[i*4+3]=255;
+      }
     }
     offset+=h.video_bytes;
     if(audio && h.audio_frames){
@@ -313,9 +320,11 @@
     }
     // The audio device schedules PCM independently. Waiting for its start here
     // blocks decoding and presentation credit, adding delay to every round trip.
-    if(screen.width!==h.width || screen.height!==h.height){screen.width=h.width;screen.height=h.height;}
-    ctx.putImageData(image,0,0);screen.dataset.frame=h.frame;
-    lastPictureAt=performance.now();pictureReady=true;
+    if(picture){
+      if(screen.width!==h.width || screen.height!==h.height){screen.width=h.width;screen.height=h.height;}
+      ctx.putImageData(image,0,0);screen.dataset.frame=h.frame;
+      lastPictureAt=performance.now();pictureReady=true;
+    }
     if(flow && socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({ack:sequence}));
   }
   async function load(){const games=(await api('games')).sort((x,y)=>titleKey(x).localeCompare(titleKey(y)));el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title+(SYSTEM_LABEL[g.system]||'');o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;activeSystem=state.session?.system||'nes';conditionalResume=state.capabilities?.conditional_resume===true;mediaFlowControl=state.capabilities?.retro_media_ack_v1===true;

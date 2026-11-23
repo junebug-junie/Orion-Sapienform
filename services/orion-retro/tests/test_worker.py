@@ -5,7 +5,7 @@ from app import worker
 from settings import Settings
 
 
-def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, initial=True, loops=20, tick=None, cognition=False):
+def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, initial=True, loops=20, tick=None, cognition=False, slow=None):
     commands=queue.Queue(); urgent=queue.Queue(); result=[]; steps=[]
     clock=SimpleNamespace(now=0., loops=0)
     class Stop:
@@ -19,6 +19,7 @@ def exercise(monkeypatch,tmp_path,scenario, *, crash=False, quota=268435456, ini
         def step(self,*masks):
             if crash:raise RuntimeError('fixture_crash')
             steps.append(masks);self.video_frames+=1;self.audio_samples+=800
+            if slow:clock.now+=slow(len(steps))  # a core slower than the frame clock
             if tick:tick(enqueue)
         def close(self):pass
     monkeypatch.setattr(worker,'CoreProbe',Core)
@@ -196,3 +197,56 @@ def test_native_goal_ack_precedes_attributed_applied_input(monkeypatch, tmp_path
     assert applied and any(r['mask'] & 128 for r in applied)
     assert all(r['policy_id'] == 'goal-motor-v1' for r in applied)
     assert not any(r['kind'] == 'fatal' for r in rows)
+
+
+def evidence_rows(tmp_path):
+    # The pause gate logs to the session's evidence JSONL, not the reply stream.
+    import json
+    return [json.loads(line) for line in (tmp_path/'session.jsonl').read_text().splitlines()]
+
+
+def test_stall_gate_is_seconds_not_frames():
+    """The old gate paused at 3 late frames (50 ms). Live 2026-11-22: GoldenEye on the
+    jttl RSP held ~59 fps but one 43 s heavy stretch tripped that gate 59 times —
+    median 0.17 s between freezes. The pause must now require a sustained stall, far
+    longer than any transient."""
+    assert worker.DEADLINE_STALL_SECONDS >= 1.0
+
+
+def test_transient_hitch_stutters_and_keeps_the_controller(monkeypatch, tmp_path):
+    # A ~0.5 s heavy area (GoldenEye's Mission: Impossible stretches): the loop misses
+    # many frames in a row but recovers. Old policy: hard pause at miss 3, controller
+    # authority cleared, freeze-until-touched. New policy: one `stutter` evidence row,
+    # session stays running, inputs stay live.
+    rows, steps = exercise(monkeypatch, tmp_path, lambda *a: None, loops=60,
+                           slow=lambda n: .05 if 5 <= n <= 14 else 0)
+    log = evidence_rows(tmp_path)
+    stutters = [r for r in log if r['kind'] == 'stutter']
+    assert len(stutters) == 1 and stutters[0]['late_frames'] >= 3
+    assert not any(r['kind'] == 'transition' and r.get('reason') == 'deadline_overrun' for r in log)
+    assert not any(r['kind'] == 'status' and r['state'] == 'paused' for r in rows)
+
+
+def test_sustained_stall_still_hard_pauses(monkeypatch, tmp_path):
+    # A core that never catches up must still pause — the gate moved from 3 frames to
+    # DEADLINE_STALL_SECONDS of continuous lateness, it did not go away. The player
+    # keeps the lease alive with inputs (as the browser does), so `no_controller`
+    # cannot preempt the stall check.
+    held = {}
+    seq = [0]
+    ticks = [0]
+    def scenario(row, send):
+        if row.get('id') == 'grant2': held.update(row['result'])
+    def tick(send):
+        ticks[0] += 1
+        if held and ticks[0] % 15 == 0:  # keep the lease alive like a browser does
+            seq[0] += 1
+            send('input', f'i{seq[0]}', 'two', dict(port=1, lease=held['lease'], epoch=held['epoch'], seq=seq[0], mask=0))
+    rows, steps = exercise(monkeypatch, tmp_path, scenario, loops=120,
+                           slow=lambda n: .05 if n >= 5 else 0, tick=tick)
+    log = evidence_rows(tmp_path)
+    pause = next(r for r in log if r['kind'] == 'transition' and r.get('reason') == 'deadline_overrun')
+    assert any(r['kind'] == 'stutter' for r in log)
+    # The old gate paused by frame ~7 here; this core runs degraded (~15 fps) but not
+    # frozen, and only pauses after the lateness persists the full window.
+    assert pause['frame'] >= 20

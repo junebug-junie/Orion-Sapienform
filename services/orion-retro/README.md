@@ -79,7 +79,10 @@ with `HAVE_THR_AL=1 LLE=1` at `/opt/retro/mupen64plus_next.so` (license kept as
 `/opt/retro/Mupen64Plus-Next-LICENSE.txt`; source
 https://github.com/libretro/mupen64plus-libretro-nx/tree/6752836de8b224febfd5708444755b77712ac939).
 The service has no GPU or GL context, so N64 renders in software: Angrylion RDP with
-16 threads and the CXD4 LLE RSP. `libgl1` is in the image only because the core links
+16 threads and the jttl (ParaLLEl) RSP, which JITs RSP microcode instead of
+interpreting it like CXD4 did — GoldenEye's display lists were the serial wall that
+left the render threads idle at ~35 fps. ParaLLEl-RDP is deliberately not built: it
+requires a Vulkan hw-render context this service never offers. `libgl1` is in the image only because the core links
 it; this render path never calls it. Titles in the heaviest microcode class (GoldenEye
 007) cannot hold 60 fps on fewer render threads; when the loop misses 3 frames in a row
 the worker pauses the session with `deadline_overrun` rather than burst-catching-up, so

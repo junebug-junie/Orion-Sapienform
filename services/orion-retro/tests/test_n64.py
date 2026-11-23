@@ -54,8 +54,24 @@ def test_core_host_is_software_render_only_for_n64():
     host = s.core_host('n64')
     assert host['options']['mupen64plus-rdp-plugin'] == 'angrylion'
     assert host['options']['mupen64plus-rsp-plugin'] == 'cxd4'
-    assert int(host['options']['mupen64plus-angrylion-multithread']) <= 16  # under pids_limit
+    # GoldenEye's microcode is the heaviest class and drops 3 frames in a row (a
+    # deadline_overrun pause) at 8 threads, so the count is pinned, not just bounded.
+    assert int(host['options']['mupen64plus-angrylion-multithread']) == 16
     assert s.save_limit('n64') > 16_793_412 > s.save_limit('snes')
+
+
+def test_render_threads_have_cpu_quota_and_pid_room_to_match():
+    """Threads without quota are throttled threads: raising the render thread count
+    without raising `cpus` leaves GoldenEye pausing exactly as before. Pin the pair."""
+    import yaml
+    threads = int(Settings().core_host('n64')['options']['mupen64plus-angrylion-multithread'])
+    root = Path(__file__).resolve().parents[1]
+    compose = yaml.safe_load((root/'docker-compose.yml').read_text())['services']['retro']
+    # The core and the worker run alongside the render threads, so quota exceeds them.
+    assert compose['cpus'] > threads
+    # Every render thread is a thread, plus the core's own: pids must not be the limit.
+    assert compose['pids_limit'] > threads + 8
+    assert compose['memswap_limit'] == compose['mem_limit']  # no silent swap escape
 
 
 def test_n64_buttons_z_accepted_select_refused():

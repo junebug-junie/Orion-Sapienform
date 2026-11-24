@@ -32,7 +32,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.gpu_pool.client import WAIT_HOP_LABEL
 from orion.gpu_pool.config import PoolConfig, launch_digest
 from orion.gpu_pool.discovery import Probe, resolve_roles
-from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state
+from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state, transition
 from orion.gpu_pool.scheduler import (
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
     Reordered, Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, hold_cap, queue_position, schedule,
@@ -1562,14 +1562,36 @@ class PoolRuntime:
         finally:
             self._phase("resume", t)
 
+    async def _heal_thread(self, lease_id: str, cfg: dict, snap: Any) -> Any:
+        """A live lease whose thread has no next step is wedged: an event the graph rejected inside
+        ``wait`` (before the pre-check in ``_resume_inner``) left an errored task, so every later
+        resume found ``snap.next == ()`` and was dropped without a word (live 2026-11-24: one hold
+        sat in retry_wait 3 h). Re-enter ``wait`` with the state unchanged; the rejected event is
+        discarded, which is what rejecting it meant."""
+        await self.graph.aupdate_state(cfg, None, as_node="admit")
+        healed = await self.graph.aget_state(cfg)
+        logger.warning("gpu_pool_lease_thread_healed lease=%s status=%s next=%s",
+                       lease_id, healed.values.get("status"), healed.next)
+        return healed
+
     async def _resume_inner(self, lease_id: str, event: dict[str, Any]) -> dict | None:
         from langgraph.types import Command
 
         cfg = self._thread(lease_id)
         snap = await self.graph.aget_state(cfg)
+        if snap.values and not snap.next and snap.values.get("status") not in FINAL:
+            snap = await self._heal_thread(lease_id, cfg, snap)
         if not snap.values or not snap.next:
             return None
         event = {**event, "at": self.now().isoformat()}
+        try:
+            # Check the move before the graph runs it: a node that raises leaves an errored task in
+            # the checkpoint, and every later resume of that thread replays the same rejected event.
+            transition(snap.values, event, self.cfg)
+        except InvalidTransition as exc:
+            logger.info("gpu_pool_transition_rejected lease=%s %s", lease_id, exc)
+            await self._sync_row(lease_id)
+            return None
         try:
             values = await self.graph.ainvoke(Command(resume=event), cfg)
         except Exception as exc:  # noqa: BLE001 -- LangGraph may wrap node errors

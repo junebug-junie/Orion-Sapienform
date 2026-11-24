@@ -686,12 +686,25 @@ def test_a_full_lane_with_a_line_not_worth_its_price_holds_it(monkeypatch):
 
 def test_a_held_line_keeps_its_want_clock_so_hunger_grows_until_a_line_runs(monkeypatch):
     # Each bid is a new want and this family closes no act until a line is said, so a fresh opened_at on every
-    # bid read as "hunger 0 s" forever (live: 367 of 367 bids at net +0.000).
+    # bid read as "hunger 0 s" forever (live 2026-11-18..23: 367 of 367 bids at net +0.000).
     t = make_service(monkeypatch, bid_outcome="deferred", bid_reason="capacity_reserved", bid_net=0.0)
-    first = t.svc._want("w1", "s-1")
+    asyncio.run(t.svc.tick())
     t.svc.clock = lambda: NOW + 400
-    second = t.svc._want("w2", "s-1")
-    assert second.opened_at == first.opened_at and (NOW + 400) - first.opened_at.timestamp() == 400
-    assert rc.line_admitted(SimpleNamespace(outcome="funded", reason="net_positive", net=1.0))
-    t.svc._wanted_since.pop("s-1")                       # a line ran: the next want starts a new clock
-    assert t.svc._want("w3", "s-1").opened_at.timestamp() == NOW + 400
+    asyncio.run(t.svc.tick())
+    first, second = t.calls["bids"][0][0], t.calls["bids"][-1][0]
+    assert len(t.calls["bids"]) == 2 and first.want_id != second.want_id
+    assert second.opened_at == first.opened_at and first.opened_at.timestamp() == NOW
+
+
+def test_the_want_clock_resets_only_when_a_line_was_said(monkeypatch):
+    t = make_service(monkeypatch)                         # funded: the line runs and is delivered
+    asyncio.run(t.svc.tick())
+    assert t.db.lines and t.svc._wanted_since == {}
+
+
+def test_a_new_sitting_starts_a_new_want_clock(monkeypatch):
+    t = make_service(monkeypatch, bid_outcome="deferred", bid_reason="price", bid_net=0.5)
+    t.svc._wanted_since["old-sitting"] = NOW - 9999
+    t.svc._sitting_id = "old-sitting"
+    asyncio.run(t.svc.tick())
+    assert "old-sitting" not in t.svc._wanted_since

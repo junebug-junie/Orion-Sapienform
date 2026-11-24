@@ -184,7 +184,7 @@ class StageClock:
         return {"stance_sec": r(stance), "motor_sec": r(motor), "finalize_sec": r(finalize)}
 
 
-def line_admitted(decision: Any) -> bool:
+def line_admitted(decision: Any, now: datetime) -> bool:
     """A line runs when its bid is funded, or deferred only because the chat lane is full while the want is worth
     its price (net > 0). That second case is the body economy's own rule (``orion/physiology/binding.py``
     ``bind_verdict``: "a capacity deferral is queueing, never refusal"): the GPU pool's queue holds the line until a
@@ -194,7 +194,7 @@ def line_admitted(decision: Any) -> bool:
 
     if decision is None:
         return False
-    verdict = bind_verdict(decision, datetime.now(timezone.utc), None)
+    verdict = bind_verdict(decision, now, None)
     return verdict.admit and verdict.why in ("funded", "queued_at_pool")
 
 
@@ -370,6 +370,7 @@ class CommentaryService:
         if sid != self._sitting_id:
             self._sitting_id, self._last_exchange_at = sid, None
             self.recent_chat.clear()
+            self._wanted_since.clear()
         watch = await self._watch()
         newest = _epoch(await self._db("fetchval", NEWEST_NOTE_SQL, sid, quiet="retro_commentary_notes_unread"))
         last_attempt = _epoch(await self._db("fetchval", LAST_ATTEMPT_SQL, sid, quiet="retro_commentary_lines_unread"))
@@ -431,13 +432,12 @@ class CommentaryService:
             if newest_note:
                 object_text = f"{object_text}: {newest_note}"
             decision = await self._bid(self._want(line_id, sid), object_text)
-            if not line_admitted(decision):
+            if not line_admitted(decision, _utc(self.clock())):
                 outcome = getattr(decision, "outcome", None)
                 reason = f"{outcome}:{getattr(decision, 'reason', None) or '-'}" if decision is not None else "no_answer"
                 logger.info("retro_commentary_bid_refused sitting=%s want_id=%s reason=%s net=%s", sid, line_id,
                             reason, getattr(decision, "net", None))
                 return
-            self._wanted_since.pop(sid, None)
             if run.yielded:
                 logger.info("retro_commentary_yielded_before_start line_id=%s", line_id)
                 return
@@ -476,6 +476,10 @@ class CommentaryService:
                             "total_sec=%.1f", line_id, sid, final or result.get("outcome"), result.get("failure"),
                             run.yielded, time.monotonic() - started)
             out["final"] = final or (result.get("outcome") if inserted is not None else None)
+            if out["final"] in ("delivered", "passed"):
+                # Orion spoke or chose silence: the want was met. A yield, a failed insert, no seat or no frames
+                # leave the clock running, so hunger is not reset by a line that never happened.
+                self._wanted_since.pop(sid, None)
 
     async def _yield_if_spoken(self, run: Running, result: dict) -> bool:
         """Before each costly step: a person's message (or a turn of Juniper's already running) ends the line here,

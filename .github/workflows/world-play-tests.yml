@@ -1,0 +1,77 @@
+name: world-play-tests
+
+# Game company patch 4 (docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md, section 7):
+# world:play, someone playing on Orion, as the third world attention candidate; the replay its eligibility rule was
+# chosen from; the line act's pairing with it and Juniper's engagement grade.
+# Report: docs/superpowers/pr-reports/2026-11-24-retro-prime-attention-pr.md.
+on:
+  pull_request:
+    paths:
+      - "orion/attention/world_first.py"
+      - "orion/attention/play_read.py"
+      - "orion/attention/frame_rollup.py"
+      - "orion/attention/field_attention/selectors.py"
+      - "orion/schemas/attention_candidate.py"
+      - "orion/substrate/attention_broadcast.py"
+      - "orion/retro/watch.py"
+      - "orion/retro/sitting.py"
+      - "orion/grammar/line_engagement.py"
+      - "orion/grammar/act_ledger.py"
+      - "scripts/analysis/replay_world_play.py"
+      - "scripts/analysis/tests/test_replay_world_play.py"
+      - "tests/test_world_play_attention.py"
+      - "services/orion-substrate-runtime/app/worker.py"
+      - "services/orion-substrate-runtime/app/store.py"
+      - ".github/workflows/world-play-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/attention/world_first.py"
+      - "orion/attention/play_read.py"
+      - "orion/attention/frame_rollup.py"
+      - "orion/attention/field_attention/selectors.py"
+      - "orion/schemas/attention_candidate.py"
+      - "orion/substrate/attention_broadcast.py"
+      - "orion/retro/watch.py"
+      - "orion/retro/sitting.py"
+      - "orion/grammar/line_engagement.py"
+      - "orion/grammar/act_ledger.py"
+      - "scripts/analysis/replay_world_play.py"
+      - "scripts/analysis/tests/test_replay_world_play.py"
+      - "tests/test_world_play_attention.py"
+      - "services/orion-substrate-runtime/app/worker.py"
+      - "services/orion-substrate-runtime/app/store.py"
+      - ".github/workflows/world-play-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  world-play:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-substrate-runtime/requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install pytest-asyncio httpx
+      - name: Candidate, chat yield, broadcast, field contest, replay
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_world_play_attention.py \
+            tests/test_attention_world_first.py \
+            tests/test_attention_world_chat_evidence.py \
+            scripts/analysis/tests/test_replay_world_play.py
+      - name: Substrate-runtime wiring (cached read, absent on failure, flag)
+        env:
+          POSTGRES_URI: postgresql://unused/unused
+        run: |
+          PYTHONPATH=.:services/orion-substrate-runtime python -m pytest -q -p no:cacheprovider \
+            services/orion-substrate-runtime/tests/test_worker_world_first_broadcast.py

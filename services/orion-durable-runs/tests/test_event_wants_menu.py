@@ -145,8 +145,8 @@ def test_the_menu_sql_keeps_open_windows_older_than_hours_after_picking_the_late
     # The window filter runs on each want's LATEST decision (outer query), never before DISTINCT ON.
     assert sql.index("DISTINCT ON (want_id)") < sql.index(") latest_decision")
     assert "decided_at >= %(search_since)s" in sql
-    assert ("WHERE decided_at >= %(since)s OR (outcome = 'funded' AND (latest IS NULL OR latest::timestamptz > %(now)s))"
-            in sql)
+    assert ("WHERE decided_at >= %(since)s OR (outcome = 'funded' AND CASE WHEN latest ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' "
+            "THEN latest::timestamptz END > %(now)s)") in sql
 
 
 def test_a_funded_ask_want_whose_card_never_opened_is_not_a_concern():

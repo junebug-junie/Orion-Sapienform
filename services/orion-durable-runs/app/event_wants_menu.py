@@ -46,6 +46,9 @@ SITTING_PREFIX = "retro_sitting:"
 # How far back the menu searches for a want whose window is still open, whatever ``hours`` says: the
 # longest event window (a camera ask, ``orion_ask.expires_at`` = created + 7 days; live max latest - decided_at
 # 6 d 23:59) plus a day of margin. A want decided before this with a still-open window is not found.
+# Older than ``hours``, only a want with its own ``window.latest`` still ahead is read (family windows are
+# at most 24 h, so a want with no ``latest`` past ``hours`` is not open in practice; menu_from_rows drops it
+# either way). The CASE guards the cast: one malformed ``latest`` must not fail Prime's whole read.
 OPEN_WINDOW_SEARCH_HOURS = 192.0
 MAX_HOURS = OPEN_WINDOW_SEARCH_HOURS
 MAX_LIMIT = 50
@@ -65,7 +68,8 @@ SELECT DISTINCT ON (want_id) want_id, family, outcome, decided_at, net,
  ORDER BY want_id, decided_at DESC
 ) latest_decision
  WHERE decided_at >= %(since)s
-    OR (outcome = 'funded' AND (latest IS NULL OR latest::timestamptz > %(now)s))
+    OR (outcome = 'funded'
+        AND CASE WHEN latest ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN latest::timestamptz END > %(now)s)
 """
 
 READ_LABELS_SQL = "SELECT seed_id, title, url FROM world_pulse_read_seed WHERE seed_id = ANY(%(ids)s)"

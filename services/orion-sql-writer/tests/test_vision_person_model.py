@@ -269,7 +269,7 @@ def test_migration_declares_its_consumers_and_is_additive() -> None:
 
 # --- confirmed pictures teach the model (picture_same, 2026-11-24) ---------------------------------------
 
-NAMES = {"juniper": "Juniper", "addy": "Addy"}
+NAMES = {"juniper": "Juniper", "persona": "PersonA"}
 
 
 def _v(crop, verdict, name="Juniper", label="Juniper", kind="person", ask="ask-1"):
@@ -305,16 +305,16 @@ def test_a_picture_the_group_already_counts_is_not_counted_twice() -> None:
 
 def test_a_picture_now_in_a_group_with_another_name_teaches_nothing() -> None:
     rows, st = pm.picture_same_exemplars(
-        [_v("c1", "same") + ("Addy",), _v("c2", "same") + ("juniper",), _v("c3", "same") + (None,)],
+        [_v("c1", "same") + ("PersonA",), _v("c2", "same") + ("juniper",), _v("c3", "same") + (None,)],
         NAMES, set(), set())
     assert [r["crop_id"] for r in rows] == ["c2", "c3"] and st["picture_same_moved"] == 1
 
 
 def test_a_renamed_group_or_a_non_person_group_teaches_nothing() -> None:
     rows, st = pm.picture_same_exemplars(
-        [_v("c1", "same", name="Maeve", label="Teddy"), _v("c2", "same", name="el Coco", label="el Coco", kind="dog"),
-         _v("c3", "same", label=None), _v("c4", "same", name=None, label="Addy")], NAMES, set(), set())
-    assert [(r["person"], r["crop_id"]) for r in rows] == [("Addy", "c4")]
+        [_v("c1", "same", name="PersonB", label="PersonC"), _v("c2", "same", name="Pet", label="Pet", kind="dog"),
+         _v("c3", "same", label=None), _v("c4", "same", name=None, label="PersonA")], NAMES, set(), set())
+    assert [(r["person"], r["crop_id"]) for r in rows] == [("PersonA", "c4")]
     assert st["picture_same_name_changed"] == 1 and st["picture_same_not_person"] == 2
 
 

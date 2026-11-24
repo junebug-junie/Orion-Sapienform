@@ -16,6 +16,10 @@ Backfill protocol (AGENTS.md section 14). Writes, all mode 600 under ``/tmp/memo
     python scripts/memory_own_thought_settle.py --apply      # snapshot, then move the rows
     python scripts/memory_own_thought_settle.py --rollback   # put back the states in snapshot.csv
 
+Rollback only sticks while the new code is not running: the confirmation tick runs the same statement
+every pass and would move the rows straight back (logging a fresh event). Revert the code, or set
+MEMORY_CONFIRMATION_LOOP_ENABLED=false on orion-memory-consolidation, before rolling back.
+
 DSN: ``--dsn``, else ``ORION_PAGES_DSN``, else POSTGRES_URI from services/orion-durable-runs/.env
 (rewritten to localhost:55432).
 """
@@ -88,6 +92,13 @@ UPDATE orion_ask a SET status = 'open'
 WHERE a.ask_id = %s AND a.status = 'withdrawn' AND (a.expires_at IS NULL OR a.expires_at > now())
   AND EXISTS (SELECT 1 FROM episode_memory_event e WHERE e.op = '{OWN_THOUGHT_STATE}'
               AND e.reason = '{OWN_THOUGHT_REASON}' AND e.evidence->'withdrawn_ask_ids' ? a.ask_id)
+"""
+
+ROLLBACK_EVENT_SQL = f"""
+INSERT INTO episode_memory_event (event_id, memory_id, op, actor, episode_id, evidence, reason, created_at)
+SELECT gen_random_uuid(), m.memory_id, '{OWN_THOUGHT_STATE}_rolled_back', 'operator.own_thought_settle', m.episode_id,
+       jsonb_build_object('restored_state', %s::text), 'operator_rollback', now()
+FROM episode_memory m WHERE m.memory_id = %s::uuid
 """
 
 SNAPSHOT_FIELDS = ("memory_id", "voice", "channel", "stakes", "status", "confirmation_state",
@@ -198,7 +209,8 @@ def render_report(*, mode: str, snapshot: list[dict[str, Any]], moved: int, skip
         f"Needs another pass: {'yes' if skipped_waiting or anomalies else 'no'} "
         "(the confirmation tick runs the same statement every pass after deploy).",
         "", "Files: snapshot.csv (snapshot_dry_run.csv on a dry run), before_after.csv, progress.log, report.md (this directory).",
-        "Rollback: python scripts/memory_own_thought_settle.py --rollback", "",
+        "Rollback: python scripts/memory_own_thought_settle.py --rollback (only sticks with the new code "
+        "reverted or MEMORY_CONFIRMATION_LOOP_ENABLED=false: the tick re-runs this statement)", "",
     ]
     return "\n".join(lines)
 
@@ -257,7 +269,11 @@ def rollback(conn, out: Path) -> int:
     restored = reopened = 0
     with conn.transaction():
         for r in snap:
-            restored += conn.execute(ROLLBACK_MEMORY_SQL, (r["confirmation_state"], r["memory_id"])).rowcount
+            moved_back = conn.execute(ROLLBACK_MEMORY_SQL, (r["confirmation_state"], r["memory_id"])).rowcount
+            restored += moved_back
+            if not moved_back:
+                continue  # the row left own_thought since (superseded, answered): never reopen its card
+            conn.execute(ROLLBACK_EVENT_SQL, (r["confirmation_state"], r["memory_id"]))
             for card in filter(None, (r.get("cards") or "").split(",")):
                 ask_id, _, status = card.rpartition(":")
                 if status == "open":

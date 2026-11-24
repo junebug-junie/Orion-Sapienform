@@ -51,9 +51,8 @@ SOURCE_KIND = "memory_confirmation"
 # has no producer yet (spec section 8); it is listed so the cap and the Hub guard already cover it.
 RESOLVABLE_KINDS: tuple[str, ...] = (SOURCE_KIND, "open_question")
 LOOP_PREFIX = "memory-confirm-"
-# Orion's own thought: never asked (validate.initial_confirmation_state). Shared with the validator.
-OWN_THOUGHT_VOICE = "orion_thought"
-OWN_THOUGHT_STATE = "own_thought"
+# Orion's own thought: never asked (validate.initial_confirmation_state). One definition, the validator's.
+from orion.memory.episode.validate import OWN_THOUGHT_STATE, OWN_THOUGHT_VOICE  # noqa: E402
 # Asking states an own thought is moved out of. ``not_asked`` (backfill, #3537) is included: it
 # renders "Unconfirmed, check with Juniper", which is wrong for Orion's own thought.
 OWN_THOUGHT_FROM_STATES = ("pending_confirmation", "unconfirmed", "not_asked")
@@ -450,7 +449,8 @@ async def expire_cards(conn, *, now: Optional[datetime] = None) -> list[str]:
 # a camera migration the memory loop's databases do not all carry.
 SETTLE_OWN_THOUGHTS_SQL = f"""
 WITH target AS (
-    SELECT m.memory_id, m.episode_id, m.confirmation_state AS prior_state, m.confirmation_loop_id
+    SELECT m.memory_id, m.episode_id, m.confirmation_state AS prior_state, m.confirmation_loop_id,
+           m.updated_at AS prior_updated_at
     FROM episode_memory m
     WHERE m.voice = '{OWN_THOUGHT_VOICE}'
       AND m.confirmation_state IN ({", ".join(f"'{st}'" for st in OWN_THOUGHT_FROM_STATES)})
@@ -475,7 +475,9 @@ moved AS (
 logged AS (
     INSERT INTO episode_memory_event (event_id, memory_id, op, actor, episode_id, outcome_id, evidence,
                                       reason, created_at)
-    SELECT md5('{OWN_THOUGHT_STATE}|' || t.memory_id::text || '|' || t.prior_state)::uuid, t.memory_id,
+    -- Salted with the row's prior updated_at: a row moved again (after a rollback) logs a new event.
+    SELECT md5('{OWN_THOUGHT_STATE}|' || t.memory_id::text || '|' || t.prior_state || '|'
+               || coalesce(t.prior_updated_at::text, ''))::uuid, t.memory_id,
            '{OWN_THOUGHT_STATE}', '{ACTOR}', t.episode_id, NULL,
            jsonb_build_object('prior_state', t.prior_state, 'loop_id', t.confirmation_loop_id,
                               'withdrawn_ask_ids', coalesce((SELECT jsonb_agg(w.ask_id) FROM withdrawn w
@@ -553,7 +555,9 @@ async def apply_outcome(conn, outcome: OutcomeToApply, *, now: Optional[datetime
         if mem is None:
             await mark("outcome_orphaned", "memory_not_found", mid=None)
             return "orphaned"
-        if mem["confirmation_state"] not in ("pending_confirmation", "unconfirmed"):
+        # own_thought is answerable too: if Juniper's resolve commits while the settle step runs, the
+        # settle cannot see her uncommitted outcome and moves the row anyway. Her answer still wins.
+        if mem["confirmation_state"] not in ("pending_confirmation", "unconfirmed", OWN_THOUGHT_STATE):
             # First answer wins (spec section 5): a later answer for a settled memory is logged only.
             await mark("outcome_ignored", f"already_{mem['confirmation_state']}")
             return "already_resolved"

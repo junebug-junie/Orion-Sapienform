@@ -95,5 +95,17 @@ def test_dry_run_apply_rollback_end_to_end(tmp_path):
         assert await pool.fetchval("SELECT status FROM orion_ask WHERE ask_id = $1", c.ask_id_for(loop)) == "open"
         log = (out / "progress.log").read_text()
         assert "rollback (restored 2, cards reopened 1)" in log
+        assert await pool.fetchval("SELECT count(*) FROM episode_memory_event WHERE op = 'own_thought_rolled_back'") == 2
+        # A second settle (the tick, code still deployed) moves them back and logs a NEW event each.
+        async with pool.acquire() as conn:
+            assert len(await c.settle_own_thoughts(conn)) == 2
+        assert await pool.fetchval("SELECT count(*) FROM episode_memory_event WHERE op = 'own_thought'") == 4
+        # A row that left own_thought since is not restored, and its card is never reopened.
+        await pool.execute("UPDATE orion_ask SET status = 'withdrawn' WHERE ask_id = $1", c.ask_id_for(loop))
+        await pool.execute("UPDATE episode_memory SET confirmation_state = 'corrected' WHERE memory_id = $1",
+                           uuid.UUID(stuck))
+        assert S.main(["--dsn", dsn, "--out", str(out), "--rollback"]) == 0
+        assert (await states())[stuck] == "corrected"
+        assert await pool.fetchval("SELECT status FROM orion_ask WHERE ask_id = $1", c.ask_id_for(loop)) == "withdrawn"
 
     P.run(body)

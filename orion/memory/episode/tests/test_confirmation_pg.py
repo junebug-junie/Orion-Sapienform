@@ -524,3 +524,20 @@ def test_settle_leaves_a_row_whose_answer_is_still_waiting():
         await c.run_tick(pool, now=T0)  # applies her answer first
         assert (await _mem(pool, mid))["confirmation_state"] == "confirmed"
     run(body)
+
+
+def test_her_answer_still_applies_when_settle_moved_the_row_mid_resolve():
+    """Review race: the Hub's resolve commits while the settle runs, so the settle cannot see her
+    outcome and moves the row to own_thought anyway. Her answer must still apply."""
+    async def body(pool):
+        mid = await _memory(pool, voice="juniper_said")
+        async with pool.acquire() as conn:
+            await c.open_cards(conn, now=T0)
+        await _answer(pool, mid, "confirmed")
+        # The end state of the race: row moved, outcome committed, not yet applied.
+        await pool.execute("UPDATE episode_memory SET voice = 'orion_thought', confirmation_state = 'own_thought' "
+                           "WHERE memory_id = $1", uuid.UUID(mid))
+        await c.run_tick(pool, now=T0)
+        m = await _mem(pool, mid)
+        assert (m["confirmation_state"], m["voice"]) == ("confirmed", "worked_out_together")
+    run(body)

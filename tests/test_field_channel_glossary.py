@@ -83,7 +83,10 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
         "observer_failure_pressure",
     ):
         assert retired not in names
-    assert len(names) == 49, "a node-qualified entry must not introduce a new distinct channel name"
+    # +1 distinct name 2026-11-24 (PE retire Patch 2): the cabinet/strain/street alarms moved from
+    # prediction_error to their own node-qualified `alarm` channel. It is the only exception.
+    assert "alarm" in names
+    assert len(names - {"alarm"}) == 49, "a node-qualified entry must not introduce a new distinct channel name"
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names

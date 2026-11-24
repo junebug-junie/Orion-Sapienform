@@ -17,12 +17,30 @@ from orion.prediction.alarm_nodes import ALARM_NODE_IDS
 SIGNAL_HISTORY_TABLE = "substrate_node_signal_history"
 PE_HISTORY_TABLE = "substrate_node_prediction_error_history"
 
-# Patch 2: the signal nodes whose writer has left the prediction-error slot. Only the alarms; the
-# two cameras join in Patch 3. Every generic prediction-error reader skips these ids' PE side
-# (their stale ``prediction_error`` key, their week of old PE rows) the way it skips
-# RETIRED_PREDICTION_ERROR_NODE_IDS; alarm-aware readers get them back through the read-both SQL
-# and ``orion.substrate.signal_history.node_signal_value``.
-MOVED_SIGNAL_NODE_IDS: frozenset[str] = frozenset(ALARM_NODE_IDS)
+# How a history reader reads each node that has left the prediction-error slot: a per-node rule,
+# so a later patch flips one node without touching the readers (design rev 3, PR #3827).
+#   read_both    the signal table plus the node's old PE rows, deduped on (node_id, observed_at),
+#                signal table preferred. Patch 2: the three alarms, until their PE rows age out.
+#   signal_only  the signal table only, never the PE table. Patch 3 moves the two cameras here
+#                (new-scale rows only), because old- and new-scale camera rows must never share a
+#                ranking window -- so the cameras are deliberately NOT in a read-both union.
+# A node absent from the map is read from the PE table only (every real prediction-error node,
+# and the cameras until Patch 3).
+READ_BOTH = "read_both"
+SIGNAL_ONLY = "signal_only"
+READ_MODES: frozenset[str] = frozenset({READ_BOTH, SIGNAL_ONLY})
+HISTORY_READ_MODE_BY_NODE_ID: dict[str, str] = {node_id: READ_BOTH for node_id in sorted(ALARM_NODE_IDS)}
+
+# The signal nodes whose writer has left the prediction-error slot. Every generic prediction-error
+# reader skips these ids' PE side (their stale ``prediction_error`` key, their week of old PE rows)
+# the way it skips RETIRED_PREDICTION_ERROR_NODE_IDS; alarm-aware readers get them back through the
+# history source below and ``orion.substrate.signal_history.node_signal_value``.
+MOVED_SIGNAL_NODE_IDS: frozenset[str] = frozenset(HISTORY_READ_MODE_BY_NODE_ID)
+
+
+def history_read_mode(node_id: object) -> str | None:
+    """``read_both`` / ``signal_only`` for a moved node, None for a PE-table node."""
+    return HISTORY_READ_MODE_BY_NODE_ID.get(str(node_id or ""))
 
 
 def is_moved_signal_node(node_id: object) -> bool:
@@ -66,27 +84,40 @@ def _id_array(ids: Iterable[str]) -> str:
     return "ARRAY[" + ", ".join(f"'{node_id}'" for node_id in ids) + "]::text[]"
 
 
-def history_with_moved_source_sql(moved_ids: Iterable[str] = MOVED_SIGNAL_NODE_IDS) -> str:
-    moved = _id_array(moved_ids)
-    return f"""(
-    SELECT node_id, observed_at, value
-    FROM {PE_HISTORY_TABLE}
-    WHERE node_id <> ALL({moved})
-    UNION ALL
-    SELECT node_id, observed_at, value FROM (
+def history_with_moved_source_sql(read_modes: dict[str, str] | None = None) -> str:
+    """The derived table for a per-node read rule (default ``HISTORY_READ_MODE_BY_NODE_ID``)."""
+    modes = HISTORY_READ_MODE_BY_NODE_ID if read_modes is None else read_modes
+    unknown = set(modes.values()) - READ_MODES
+    if unknown:
+        raise ValueError(f"unknown history read mode(s): {sorted(unknown)}")
+    moved = _id_array(modes) if modes else None
+    both = [n for n, m in modes.items() if m == READ_BOTH]
+    signal_only = [n for n, m in modes.items() if m == SIGNAL_ONLY]
+    branches = [
+        f"""    SELECT node_id, observed_at, value
+    FROM {PE_HISTORY_TABLE}"""
+        + (f"\n    WHERE node_id <> ALL({moved})" if moved else "")
+    ]
+    if both:
+        ids = _id_array(both)
+        branches.append(f"""    SELECT node_id, observed_at, value FROM (
         SELECT DISTINCT ON (node_id, observed_at) node_id, observed_at, value
         FROM (
             SELECT node_id, observed_at, value, 0 AS pref
             FROM {SIGNAL_HISTORY_TABLE}
-            WHERE node_id = ANY({moved})
+            WHERE node_id = ANY({ids})
             UNION ALL
             SELECT node_id, observed_at, value, 1 AS pref
             FROM {PE_HISTORY_TABLE}
-            WHERE node_id = ANY({moved})
+            WHERE node_id = ANY({ids})
         ) both_tables
         ORDER BY node_id, observed_at, pref
-    ) moved_rows
-) node_history"""
+    ) read_both_rows""")
+    if signal_only:
+        branches.append(f"""    SELECT node_id, observed_at, value
+    FROM {SIGNAL_HISTORY_TABLE}
+    WHERE node_id = ANY({_id_array(signal_only)})""")
+    return "(\n" + "\n    UNION ALL\n".join(branches) + "\n) node_history"
 
 
 HISTORY_WITH_MOVED_SOURCE_SQL = history_with_moved_source_sql()

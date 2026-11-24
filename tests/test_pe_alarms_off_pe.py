@@ -234,6 +234,23 @@ def test_history_source_sql_keeps_other_nodes_and_unions_moved_ids() -> None:
         assert nid not in sql
 
 
-def test_history_source_sql_refuses_unsafe_literals() -> None:
+def test_history_source_sql_refuses_unsafe_literals_and_unknown_modes() -> None:
     with pytest.raises(ValueError):
-        sh.history_with_moved_source_sql(["node:x'; drop table t; --"])
+        sh.history_with_moved_source_sql({"node:x'; drop table t; --": sh.READ_BOTH})
+    with pytest.raises(ValueError):
+        sh.history_with_moved_source_sql({"node:substrate.cabinet": "both_please"})
+
+
+def test_read_rule_is_per_node_and_cameras_are_never_read_both() -> None:
+    """Design rev 3 (PR #3827): Patch 3 flips the cameras to signal_only (new-scale rows only);
+    their old- and new-scale rows must never share a window, so no camera is in a read-both union."""
+    assert sh.HISTORY_READ_MODE_BY_NODE_ID == {nid: sh.READ_BOTH for nid in ALARMS}
+    for nid in CAMERAS:
+        assert sh.history_read_mode(nid) is None
+    sql = sh.history_with_moved_source_sql(
+        {"node:substrate.cabinet": sh.READ_BOTH, "node:substrate.perception": sh.SIGNAL_ONLY}
+    )
+    both_part, signal_only_part = sql.split("read_both_rows")
+    assert "node:substrate.perception" not in both_part.split("WHERE node_id <> ALL")[1].split("\n", 1)[1]
+    assert "pref" not in signal_only_part and "substrate_node_prediction_error_history" not in signal_only_part
+    assert "node:substrate.perception" in signal_only_part

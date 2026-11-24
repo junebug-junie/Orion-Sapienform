@@ -243,6 +243,8 @@ def test_an_alarm_node_is_not_called_a_prediction_error():
     """Cabinet, strain and street are alarms (PE suite rebuild, 2026-11-13)."""
     cab = "node:substrate.cabinet"
     item = run(nh.read_node_history(FakeConn(_rows(node=cab, hours=24)), cab, NOW - timedelta(hours=24), NOW))
-    assert "not a prediction error" in item.text and "cabinet warming alarm" in item.text
+    # PE retire Patch 2: an alarm says "an alarm" and never files itself under prediction error.
+    assert "an alarm" in item.text and "cabinet warming alarm" in item.text
+    assert "prediction error" not in item.text and item.kind == "node_alarm_history"
     live = run(nh.read_node_history(FakeConn(_rows(hours=24)), NODE, NOW - timedelta(hours=24), NOW))
     assert f"{NODE} prediction error over" in live.text

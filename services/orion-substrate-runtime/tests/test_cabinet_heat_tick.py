@@ -16,7 +16,7 @@ def _worker(points):
     w._settings = SimpleNamespace(cabinet_heat_rise_threshold_c=0.5)
     w._store = SimpleNamespace(load_cabinet_points=lambda since, until: points)
     w.writes = []
-    w._write_prediction_error_node = lambda **kw: w.writes.append(kw)
+    w._write_signal_node = lambda **kw: w.writes.append(kw)
     return w
 
 
@@ -31,13 +31,13 @@ def test_elevated_and_rising_writes_a_nonzero_error_on_the_cabinet_node():
     w._cabinet_heat_tick()
     (write,) = w.writes
     assert write["node_id"] == CABINET_NODE_ID and write["reducer_key"] == "cabinet_heat"
-    assert 0.5 <= write["error"] <= 1.0
+    assert 0.5 <= write["value"] <= 1.0
 
 
 def test_elevated_but_flat_writes_a_calm_zero_every_tick():
     w = _worker(_ramp(30.5, 30.5))
     w._cabinet_heat_tick()
-    assert w.writes[0]["error"] == 0.0     # written (not skipped), so the node can return to calm
+    assert w.writes[0]["value"] == 0.0     # written (not skipped), so the node can return to calm
 
 
 def test_no_reading_writes_nothing():

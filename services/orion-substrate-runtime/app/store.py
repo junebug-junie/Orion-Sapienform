@@ -1009,10 +1009,13 @@ class BiometricsSubstrateStore:
     ) -> list[tuple[str, datetime, float]]:
         """Signal nodes' readings since `since` from BOTH tables, one row per (node_id,
         observed_at), signal table preferred. Oldest first per node."""
-        from orion.substrate.signal_history import READ_BOTH_SINCE_SQL, SIGNAL_NODE_IDS
+        from orion.prediction.signal_history_sql import READ_BOTH, HISTORY_READ_MODE_BY_NODE_ID
+        from orion.substrate.signal_history import READ_BOTH_SINCE_SQL
 
-        # Only the five signal nodes, like merge_signal_rows: never other nodes' PE rows.
-        ids = [n for n in (node_ids if node_ids is not None else SIGNAL_NODE_IDS) if n in SIGNAL_NODE_IDS]
+        # Only nodes whose per-node read rule is read_both (the alarms). Never the cameras: their
+        # old- and new-scale rows must not share a window (design rev 3, PR #3827).
+        both = sorted(n for n, m in HISTORY_READ_MODE_BY_NODE_ID.items() if m == READ_BOTH)
+        ids = [n for n in (node_ids if node_ids is not None else both) if n in both]
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text(READ_BOTH_SINCE_SQL), {"since": since, "node_ids": ids}

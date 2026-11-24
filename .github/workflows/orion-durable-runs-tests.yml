@@ -284,14 +284,10 @@ jobs:
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: |
           cd services/orion-durable-runs && python -m pytest tests -q -p no:cacheprovider
-      - name: Day dream citable facts (totals ref, per-kind judge detail, cut-short replies, retry time budget)
+      - name: Day dream citable facts, dig side (the totals file; the durable-runs side runs in the suite above)
         env:
           PYTHONPATH: ${{ github.workspace }}
-          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
-        run: |
-          cd services/orion-durable-runs && python -m pytest -q -p no:cacheprovider \
-            tests/test_dream_day_citable_facts.py tests/test_dream_day_postgres.py
-          cd ../.. && python -m pytest -q -p no:cacheprovider orion/dig/tests/test_dream_day_cmd.py
+        run: python -m pytest -q -p no:cacheprovider orion/dig/tests/test_dream_day_cmd.py
       - name: Curiosity compaction — sleep scheduling, real Postgres recovery, chronology replay
         env:
           PYTHONPATH: ${{ github.workspace }}

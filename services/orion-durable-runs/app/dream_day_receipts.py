@@ -14,6 +14,7 @@ verdict (claims taken from the memory's statement, not from the note) on the ``d
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
@@ -23,6 +24,10 @@ from orion.body_atlas import reminiscence as rm
 RECEIPT_RE = re.compile(
     r"^\s*(?:reply:\s*)?reminisce\s+\S+\s+saved\s+(rm:[0-9]{4}-[0-9]{2}-[0-9]{2}:[a-z_]+:[0-9a-f]+)")
 NOTE_CHARS = 2400
+# How the store marks a swapped-in note in the judge's text: the gate then keeps no raw judge answer for that memory,
+# so no hop words reach the dream_day row (app/dream_day_graph.py ``ground``).
+NOTE_MARKER = " -- the reminiscence note it saved ("
+logger = logging.getLogger("orion-durable-runs.dream_day")
 
 
 def receipt_hop_id(reply: str) -> str | None:
@@ -39,7 +44,8 @@ def judge_hop_notes(self_dir: str | Path, hop_ids: list[str]) -> dict[str, str]:
         return {}
     try:
         hops, _ = rm.load(Path(self_dir) / rm.LEDGER_FILE)
-    except OSError:
+    except (OSError, ValueError):   # unreadable or not UTF-8: the judge reads the receipt, the night goes on
+        logger.warning("dream_day_hop_notes_unreadable dir=%s", self_dir, exc_info=True)
         return {}
     out: dict[str, str] = {}
     for h in hops:

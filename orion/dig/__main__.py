@@ -1911,8 +1911,10 @@ def cmd_dream_day(day: date, out: Out, runner=None, claude_home: Path | None = N
     path.parent.mkdir(parents=True, exist_ok=True)
     # The roundup's count lines, the citable home for a day's totals (dream_day_read:<day>), written BEFORE the
     # receipt and stamped with its read_at: code takes this copy only for this read.
-    digs_line = f"digs that day: {len(calls)} dig command(s), {chat} in chat, {len(calls) - chat} in background runs"
-    totals = DreamDayTotalsV1(day=day, read_at=receipt.read_at, text=totals_text(roundup.lines, [digs_line]))
+    # A digs count is a fact only when every part of the digs was read; an UNREAD part says so instead (never 0).
+    digs_lines = [f"UNREAD {name}: {why} (that part is missing, not empty)" for name, why in digs_unread.items()] \
+        or [f"digs that day: {len(calls)} dig command(s), {chat} in chat, {len(calls) - chat} in background runs"]
+    totals = DreamDayTotalsV1(day=day, read_at=receipt.read_at, text=totals_text(roundup.lines, digs_lines))
     totals_path = path.with_name(f"{day.isoformat()}{DREAM_DAY_TOTALS_SUFFIX}")
     totals_tmp = totals_path.with_name(totals_path.name + ".tmp")
     totals_tmp.write_text(totals.model_dump_json(indent=1), encoding="utf-8")

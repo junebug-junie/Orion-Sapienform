@@ -49,6 +49,7 @@ from app.admitted_graph import (
     resource_nodes, retry_wait_node, taken_back,
 )
 from app.graph import attempt_timeout_sec
+from app.dream_day_receipts import NOTE_MARKER
 from app.harness_step import (
     TURN_REPLY_GRACE_SEC, HarnessStepFailed, RunTurn, harness_step_correlation_id, run_harness_step,
 )
@@ -212,14 +213,27 @@ ANSWER_SHAPE = [
 PROMPT_EXTRA_DIGS = 3
 
 
-def build_prompt(brief: DreamDayBriefV1, material: DreamDayMaterialV1, *, attempt: int = 0) -> str:
+RETRY_CAUSES = (
+    ("dream_day_cut_short", "ran out of time before it wrote the answer block"),
+    ("dream_day_not_read", "did not run the dream-day command this attempt (code found no fresh read receipt)"),
+    ("dream_day_no_answer", "ended without an answer block code could read"),
+)
+
+
+def retry_cause(last_error: Optional[str]) -> str:
+    err = str(last_error or "")
+    return next((why for key, why in RETRY_CAUSES if key in err), "saved nothing")
+
+
+def build_prompt(brief: DreamDayBriefV1, material: DreamDayMaterialV1, *, attempt: int = 0,
+                 last_error: Optional[str] = None) -> str:
     """The answer shape and the facts rule FIRST (code reads only the block; the judge reads only the cited records),
     then the steps, the material code laid out, and the shape reminder last. A retry says why the last attempt
     saved nothing (a retry resumes the same claude session, so what it read is still there)."""
     day = brief.day.isoformat()
     retry = [] if attempt <= 0 else [
-        f"Attempt {attempt + 1}: your last attempt ran out of time before it wrote the answer block, so it saved "
-        f"nothing. What you read is still in this session. Run `{DIG} dream-day {day}` again (code checks a fresh "
+        f"Attempt {attempt + 1}: your last attempt {retry_cause(last_error)}, so it saved nothing. What you read is "
+        f"still in this session. Run `{DIG} dream-day {day}` again (code checks a fresh "
         "read), dig nothing more, and write the answer block right away.", ""]
     return "\n".join([
         *retry,
@@ -424,6 +438,9 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             return await asyncio.wait_for(deps.judge(prompt, held, timeout), timeout=timeout + 5.0)
 
         verdicts = await judge_memories(check.memories, resolved, ask, time_left=time_left)
+        for v in verdicts:   # the partition: a reminiscence note's words never reach the row through the judge's raw
+            if any(NOTE_MARKER in str(resolved.get(r) or "") for r in v["refs"]):
+                v["raw"] = None
         logger.info("dream_day_grounding run=%s %s", held.get("run_id"),
                     {k: v for k, v in grounding_summary(verdicts, enabled=True).items() if k != "verdicts"})
         return verdicts
@@ -444,7 +461,8 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             attempt_started = admission.now()
             record = await run_harness_step(
                 deps.run_turn, held, step_key=DREAM_DAY_STEP_KEY,
-                prompt=build_prompt(brief, material, attempt=int(state.get("attempt") or 0)),
+                prompt=build_prompt(brief, material, attempt=int(state.get("attempt") or 0),
+                                   last_error=state.get("last_error")),
                 correlation_id=correlation_id, timeout_sec=turn_timeout, source_tag=DREAM_DAY_SOURCE_TAG,
                 session_id=DREAM_DAY_SESSION_ID, retrieval_query=f"my day {brief.day.isoformat()}",
                 require_lookup=False)

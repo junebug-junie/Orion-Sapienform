@@ -28,8 +28,8 @@ MIGRATIONS = ("manual_migration_episode_memory_v1.sql", "manual_migration_dream_
 REF_TABLES = """
 CREATE TABLE temporal_self_event (event_id text PRIMARY KEY, source_kind text, source_ref text, label text,
     verdict text, occurred_at timestamptz NOT NULL DEFAULT '2026-11-17 19:00+00', payload_json jsonb NOT NULL DEFAULT '{}'::jsonb);
-CREATE TABLE substrate_durable_run_state (entry_id text PRIMARY KEY, created_at timestamptz, run_id text, workflow text,
-    node text, status text, detail json);
+CREATE TABLE substrate_durable_run_state (entry_id text PRIMARY KEY, created_at timestamptz, run_id varchar,
+    workflow varchar, node varchar, status varchar, detail json);
 CREATE TABLE vision_events (event_id varchar PRIMARY KEY, stream_id text, narrative text);
 CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, verb varchar, object_ref text, outcome_note text);
 CREATE TABLE dream_cycle (cycle_id text PRIMARY KEY, trigger text, status text, hypothesis_count int, cycle_json jsonb,

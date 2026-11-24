@@ -231,6 +231,8 @@ def looks_like_answer(obj: Any) -> bool:
     turn may print with ``cat``, is not an answer."""
     if not isinstance(obj, dict):
         return False
+    if "<one sentence" in json.dumps(obj) or "<what the day was" in json.dumps(obj):  # the prompt's template echoed
+        return False
     if isinstance(obj.get("memories"), list) or isinstance(obj.get("plan"), list):
         return True
     day = obj.get("day")

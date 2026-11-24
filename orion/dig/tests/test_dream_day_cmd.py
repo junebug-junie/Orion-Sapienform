@@ -47,6 +47,10 @@ def test_dream_day_says_unread_in_page_and_receipt(tmp_path, monkeypatch) -> Non
     assert "UNREAD background runs (claude transcripts)" in text and "part(s) UNREAD" in text
     receipt = json.loads(dig.dream_day_receipt_path(DAY).read_text())
     assert "background runs (claude transcripts)" in receipt["unread"]
+    # A partial digs read is never a citable count: the totals say UNREAD, not "0 in background runs".
+    totals = json.loads(dig.dream_day_receipt_path(DAY).with_name("2026-11-16.totals.json").read_text())
+    assert "UNREAD background runs (claude transcripts)" in totals["text"]
+    assert "digs that day:" not in totals["text"]
 
 
 def test_main_routes_dream_day(monkeypatch) -> None:

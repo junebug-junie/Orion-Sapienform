@@ -193,8 +193,15 @@ def test_the_prompt_carries_the_facts_rule_the_totals_ref_and_the_shape_first():
     assert prompt.rstrip().splitlines()[-1].startswith("Remember: end your reply with the ```json answer block")
     assert "at most 3 more commands" in prompt and "a turn that runs out of time saves nothing" in prompt
     assert "Attempt" not in prompt.splitlines()[0]
-    retry = build_prompt(brief, material(), attempt=1)
+    retry = build_prompt(brief, material(), attempt=1, last_error="HarnessStepFailed: dream_day_cut_short: x")
     assert retry.startswith("Attempt 2: your last attempt ran out of time before it wrote the answer block")
+    # The note names the real cause, never a false one.
+    assert "did not run the dream-day command" in build_prompt(
+        brief, material(), attempt=1, last_error="HarnessStepFailed: dream_day_not_read: no read receipt")
+    assert "ended without an answer block" in build_prompt(
+        brief, material(), attempt=1, last_error="HarnessStepFailed: dream_day_no_answer: no answer block")
+    other = build_prompt(brief, material(), attempt=1, last_error="TimeoutError: hub away")
+    assert other.startswith("Attempt 2: your last attempt saved nothing") and "ran out of time" not in other.split("\n")[0]
     assert len(prompt) < 6000   # short: the material is the bulk
 
 
@@ -221,6 +228,9 @@ def test_a_cut_short_reply_is_its_own_failed_attempt_never_parsed():
     # Even parsed raw, the receipt object the turn printed is never read as an answer.
     assert parse_answer(REAL_1119_REPLY) is None
     assert not looks_like_answer({"day": "2026-11-19", "read_at": "2026-11-20T08:44:01Z"})
+    # The prompt's own answer template, echoed back, is not an answer either.
+    from app.dream_day_graph import ANSWER_SHAPE
+    assert parse_answer("\n".join(ANSWER_SHAPE)) is None
 
 
 @pytest.mark.parametrize("reply", [
@@ -329,3 +339,33 @@ def test_the_judges_page_is_capped_per_memory():
     assert "(cut: the judge's page is full)" in prompt
     small = grounding_prompt("A statement.", [ACT], RESOLVED)
     assert f"[{ACT}] {RESOLVED[ACT]}" in small and "(cut" not in small
+
+
+def test_a_memory_judged_on_a_reminiscence_note_keeps_no_raw_judge_text():
+    """The partition (#3739 exception): the hop's words go to the judge only, never into the row via its raw reply."""
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+    from app.dream_day_receipts import NOTE_MARKER
+
+    turn = "harness_turn_trace:rm-turn"
+    note_text = f"harness turn reminiscence_what_it_was reply: reminisce x saved rm:a{NOTE_MARKER}rm:a): secret week words"
+
+    class NoteWorld(TotalsWorld):
+        async def resolve(self, refs):
+            out = {r: RESOLVED[r] for r in refs if r in RESOLVED}
+            if turn in refs:
+                out[turn] = note_text
+            return out
+
+    async def scenario():
+        world = NoteWorld(replies=[answer_json(memories=[
+            {"statement": "I visited an old week and it had words.", "purpose": "happened", "refs": [turn]},
+            {"statement": "I read a paper about spiking networks.", "purpose": "happened", "refs": [ACT]}])],
+            judge=_judge_says({"supported": False, "unsupported_claims": ["old week"]},
+                              {"supported": True, "unsupported_claims": []}))
+        result = await run(world, InMemorySaver())
+        assert result["status"] == "completed"
+        verdicts = world.stored["fields"]["grounding"]["verdicts"]
+        assert verdicts[0]["raw"] is None and verdicts[1]["raw"] is not None
+        assert "secret week words" not in json.dumps(world.stored["fields"]["grounding"])
+    asyncio.run(scenario())

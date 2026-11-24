@@ -233,7 +233,7 @@ async def resolve_refs(pool: Any, refs: list[str], *, full: bool = False,
                 if rid in ids:
                     rows[f"{kind}:{rid}"] = (str(r["text"] or ""), str(r.get("detail") or ""))
     if full and self_dir:
-        from app.dream_day_receipts import judge_hop_notes, receipt_hop_id
+        from app.dream_day_receipts import NOTE_MARKER, judge_hop_notes, receipt_hop_id
 
         hops = {ref: receipt_hop_id(detail) for ref, (_, detail) in rows.items()
                 if ref.startswith("harness_turn_trace:")}
@@ -243,7 +243,7 @@ async def resolve_refs(pool: Any, refs: list[str], *, full: bool = False,
             for ref, hop_id in hops.items():
                 if hop_id in notes:
                     text, detail = rows[ref]
-                    rows[ref] = (text, f"{detail} -- the reminiscence note it saved ({hop_id}): {notes[hop_id]}")
+                    rows[ref] = (text, f"{detail}{NOTE_MARKER}{hop_id}): {notes[hop_id]}")
     return {ref: (f"{text} {detail}".strip() if full and detail else text) for ref, (text, detail) in rows.items()}
 
 

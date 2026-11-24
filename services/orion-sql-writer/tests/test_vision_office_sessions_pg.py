@@ -247,3 +247,21 @@ def test_missing_table_raises_migration_missing(pg) -> None:
     finally:
         with pg.begin() as conn:
             conn.execute(text("ALTER TABLE vision_office_session_away RENAME TO vision_office_session"))
+
+
+@needs_pg
+def test_stale_individual_stationary_flag_does_not_drop_a_visit(pg) -> None:
+    """#3614 review: on a room camera an individual's flag is its state as of
+    its newest crop. Juniper sat still past the hold (flag True), then left;
+    until she is seen again the flag is stale. Her moving sighting must still
+    count; only a sighting flagged stationary itself is a prop."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        record(conn, "jun", [(0, 600)])
+        record(conn, "pile", [(0, 600)], guess=None)
+        conn.execute(text("UPDATE vision_individual SET stationary = true"))
+        conn.execute(text("UPDATE vision_individual_sighting SET stationary = true WHERE individual_id = 'pile'"))
+        records, props, sightings = vos._records(conn, "cam0", at(0), at(600))
+    assert [r.individual_id for r in records] == ["jun"]
+    assert props == 1 and "jun" in sightings and "pile" not in sightings

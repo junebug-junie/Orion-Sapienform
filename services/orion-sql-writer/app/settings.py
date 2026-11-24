@@ -552,6 +552,13 @@ class Settings(BaseSettings):
     # office camera (cam0) stays out: a person at a desk sits still for hours.
     # Same rule as orion-vision-window's WINDOW_STATIONARY_STREAMS. Empty = none.
     vision_stationary_streams: str = Field("walkway,doorbell", alias="VISION_STATIONARY_STREAMS")
+    # Room cameras (2026-11-24, #3614): their own, longer hold; a gap always
+    # ends a run and a crop with a face starts a new one, so Juniper sitting
+    # still never leaves her seat marked as a prop. Live 11-15..16 a pile of
+    # office boxes read as a person in one box for 4-5 h; real people held one
+    # box for at most 22 min. Same keys as orion-vision-window. Empty = none.
+    vision_stationary_room_streams: str = Field("cam0", alias="VISION_STATIONARY_ROOM_STREAMS")
+    vision_stationary_room_min_sec: float = Field(7200.0, alias="VISION_STATIONARY_ROOM_MIN_SEC")
     # Two observations of one individual this close together are one sighting.
     vision_individuals_merge_gap_sec: float = Field(60.0, alias="VISION_INDIVIDUALS_MERGE_GAP_SEC")
     # Rows read per stream per tick; the cursor carries the rest to the next tick.

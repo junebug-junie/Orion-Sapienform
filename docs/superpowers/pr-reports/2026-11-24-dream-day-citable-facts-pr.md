@@ -130,7 +130,7 @@ Read-only, no rows written. Same resolver, prompt and parser as the run, on rout
 ```text
 #0 UNSUPPORTED -> UNSUPPORTED  "75 gpu waits" (+ "the run closed explored"); cites one gpu_wait: a total needs the totals ref
 #1 UNSUPPORTED -> UNSUPPORTED  was 6 claims, now 2: "SelfDefinition v100" (record says "revises v98"), "sent the reach-out"
-                                (record says reach_out flag true, not that it was sent). Ogden / 318 parts / GGUF now backed.
+                                (record says reach_out flag true, not that it was sent). the place, 318 parts and GGUF claims now backed.
 #2 UNSUPPORTED -> SUPPORTED    1.257 / 8.489: the curiosity run's finding now reaches the judge
 #3 UNSUPPORTED -> UNSUPPORTED  cites two office-camera frames (cam0, 11-23) for a walkway vehicle and three PRs: wrong records
 #4 UNSUPPORTED -> UNSUPPORTED  "three hub.promise acts" is a total; "still unkept" / "no promise_kept" stated nowhere

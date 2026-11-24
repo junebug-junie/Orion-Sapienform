@@ -126,6 +126,21 @@ def test_flag_ships_on_by_default(monkeypatch):
     assert "\nSUBSTRATE_SIGNAL_HISTORY_ENABLED=true\n" in example
 
 
+def test_a_failed_alarm_row_is_pending_once_and_enters_the_window_when_it_lands(monkeypatch):
+    """Review finding: the re-sampled row must not fill the retry cap with copies, and a retried
+    alarm row (its only home is the signal table) must reach the window once it lands."""
+    worker = _make_worker(monkeypatch, history_enabled=True)
+    worker._store.save_signal_history_samples.side_effect = [RuntimeError("down"), RuntimeError("down"), None]
+    node = _node("node:substrate.cabinet", 0.0, OBSERVED)
+    _run_tick(worker, [node])
+    _run_tick(worker, [node])
+    assert len(worker._signal_history_pending) == 1
+    later = OBSERVED + timedelta(seconds=30)
+    _run_tick(worker, [_node("node:substrate.cabinet", 0.0, later)])
+    assert worker._signal_history_pending == []
+    assert [t for t, _ in worker._pe_history_cache["node:substrate.cabinet"]] == [OBSERVED, later]
+
+
 def test_strain_event_row_is_a_signal_row_only(monkeypatch):
     monkeypatch.setenv("SUBSTRATE_WRITE_PREDICTION_ERROR_NODES", "true")
     from test_strain_news_tick import _reading, _worker
@@ -172,7 +187,9 @@ def test_pending_retry_buffer_is_capped(monkeypatch):
     worker = _make_worker(monkeypatch, history_enabled=True)
     worker._store.save_signal_history_samples.side_effect = RuntimeError("no table")
     cap = worker._SIGNAL_HISTORY_PENDING_MAX
-    worker._signal_history_pending = [("node:substrate.cabinet", OBSERVED, 0.0, "alarm")] * cap
+    worker._signal_history_pending = [
+        ("node:substrate.cabinet", OBSERVED - timedelta(seconds=30 * (i + 1)), 0.0, "alarm") for i in range(cap)
+    ]
     _run_tick(worker, [_node("node:substrate.cabinet", 0.0, OBSERVED + timedelta(seconds=30))])
     assert len(worker._signal_history_pending) == cap
     assert worker._signal_history_pending[-1][1] == OBSERVED + timedelta(seconds=30)

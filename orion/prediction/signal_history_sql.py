@@ -61,7 +61,11 @@ def glossary_channel_for(node_id: object) -> str:
 
 
 def history_table_for(node_id: object) -> str:
-    """The table a reading of this node lives in, for a provenance ref (``<table>:<node>@<ts>``)."""
+    """The table a reading of this node is read from, for a provenance ref (``<table>:<node>@<ts>``).
+
+    For a read_both node this names the successor table even for a reading that, until its old
+    PE rows age out (~2026-12-01), may come from the PE table: the ref names the source the
+    reader reads (both tables, deduped on the same primary key), not the physical row."""
     return SIGNAL_HISTORY_TABLE if is_moved_signal_node(node_id) else PE_HISTORY_TABLE
 
 

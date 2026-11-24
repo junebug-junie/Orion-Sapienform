@@ -2159,7 +2159,7 @@ class BiometricsSubstrateWorker:
                 )
                 # The event row lands in substrate_node_signal_history now (PE retire Patch 2),
                 # never the PE table; a failed write is kept and retried with the next write.
-                if not self._write_signal_history([(STRAIN_NODE_ID, now, EVENT_VALUE)]):
+                if self._write_signal_history([(STRAIN_NODE_ID, now, EVENT_VALUE)]) is None:
                     logger.warning("substrate_strain_news_event_record_failed (pending retry)")
                 logger.info(
                     "substrate_strain_news_event node_id=%s value=%.1f %s",
@@ -3026,9 +3026,10 @@ class BiometricsSubstrateWorker:
                 skip_metadata_keys=_PE_WRITER_SKIPS_TICK_OWNED,
             )
             logger.info(
-                "substrate_%s_node_written node_id=%s error=%.3f reducer_key=%s",
+                "substrate_%s_node_written node_id=%s %s=%.3f reducer_key=%s",
                 "signal" if signal_kind else "prediction_error",
                 node_id,
+                "value" if signal_kind else "error",
                 error,
                 reducer_key,
             )
@@ -3750,32 +3751,37 @@ class BiometricsSubstrateWorker:
     # 500 rows covers about an hour of a missing table; older rows are left to the backfill.
     _SIGNAL_HISTORY_PENDING_MAX = 500
 
-    def _write_signal_history(self, samples: list[tuple[str, datetime, float]]) -> bool:
+    def _write_signal_history(self, samples: list[tuple[str, datetime, float]]) -> list[Any] | None:
         """Write the signal nodes' readings into substrate_node_signal_history.
 
         PE retire Patch 2: a moved node (the alarms) lives ONLY here, so its rows are written
         whatever ``SUBSTRATE_SIGNAL_HISTORY_ENABLED`` says; the flag now gates only the cameras'
         Patch 1 dual-write (their PE-table row is still written). Fails open (a missing table
         logs, never costs the tick). A failed write is kept (newest _SIGNAL_HISTORY_PENDING_MAX
-        rows) and retried with the next write. Returns True when this call's rows landed."""
+        rows, deduped on (node_id, observed_at)) and retried with the next write. Returns the
+        rows that landed (this call's and any retried pending ones, so the caller can put a
+        retried alarm reading into its window too), or None when the write failed."""
         from orion.substrate.signal_history import is_moved_signal_node, signal_samples
 
         dual_write = bool(getattr(self._settings, "signal_history_enabled", False))
         rows: list[Any] = list(getattr(self, "_signal_history_pending", None) or [])
         try:
             rows += [r for r in signal_samples(samples) if dual_write or is_moved_signal_node(r[0])]
+            # A failed alarm row is re-sampled next tick (its observed_at did not advance), so
+            # dedupe: the cap must hold distinct readings, not copies of one.
+            rows = list({(r[0], r[1]): r for r in rows}.values())
             if not rows:
-                return True
+                return []
             self._store.save_signal_history_samples(rows)
             self._signal_history_pending = []
-            return True
+            return rows
         except Exception as exc:
             self._signal_history_pending = rows[-self._SIGNAL_HISTORY_PENDING_MAX:]
             logger.warning(
                 "substrate_signal_history_write_failed rows=%d pending=%d err=%s",
                 len(rows), len(self._signal_history_pending), exc,
             )
-            return False
+            return None
 
     @staticmethod
     def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
@@ -3893,7 +3899,6 @@ class BiometricsSubstrateWorker:
             # PE retire Patch 2: a moved alarm's reading goes to the signal table only; every
             # other node keeps its PE row (the cameras are also dual-written, Patch 1).
             pe_rows, _ = split_history_samples(new_samples)
-            moved_rows = [r for r in new_samples if is_moved_signal_node(r[0])]
             landed: list[tuple[str, datetime, float]] = []
             try:
                 if pe_rows:
@@ -3904,11 +3909,23 @@ class BiometricsSubstrateWorker:
                 logger.exception("substrate_pe_history_write_failed")
             else:
                 landed += pe_rows
-            if self._write_signal_history(new_samples):
-                landed += moved_rows
-            for node_id, observed_at, value in landed:
-                cache.setdefault(node_id, deque()).append((observed_at, value))
-                last_observed[node_id] = observed_at
+            # Alarm rows (this tick's and any retried pending ones) enter the window only once
+            # they landed in their one table. A retry that lands late is inserted in order.
+            for node_id, observed_at, value, _kind in self._write_signal_history(new_samples) or []:
+                if is_moved_signal_node(node_id):
+                    landed.append((node_id, observed_at, value))
+            for node_id, observed_at, value in sorted(landed, key=lambda r: r[1]):
+                window = cache.setdefault(node_id, deque())
+                if window and observed_at <= window[-1][0]:
+                    if any(t == observed_at for t, _ in window):
+                        continue
+                    items = sorted([*window, (observed_at, value)], key=lambda x: x[0])
+                    window.clear()
+                    window.extend(items)
+                else:
+                    window.append((observed_at, value))
+                if last_observed.get(node_id) is None or observed_at > last_observed[node_id]:
+                    last_observed[node_id] = observed_at
 
         horizon = now - WINDOW_7D
         for window in cache.values():

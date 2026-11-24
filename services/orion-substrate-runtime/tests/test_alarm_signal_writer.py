@@ -97,5 +97,3 @@ def test_history_seed_reads_the_alarms_read_both():
     sql, params = eng.executed[0]
     assert "substrate_node_signal_history" in sql and "DISTINCT ON (node_id, observed_at)" in sql
     assert params == {"since": TS} and rows == [("node:substrate.strain", TS, 1.0)]
-
-

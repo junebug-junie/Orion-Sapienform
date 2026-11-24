@@ -842,41 +842,6 @@ class BiometricsSubstrateStore:
             ).fetchall()
         return [(str(r[0]), r[1], float(r[2])) for r in rows]
 
-    def fetch_prediction_error_event_times(
-        self, *, node_id: str, since: datetime
-    ) -> list[datetime]:
-        """observed_at of one node's non-zero readings since `since`, oldest
-        first. Strain news (orion/regulation/strain_news.py) rebuilds its
-        budget state from these after a restart."""
-        with self._engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT observed_at
-                    FROM substrate_node_prediction_error_history
-                    WHERE node_id = :node_id AND observed_at >= :since AND value > 0
-                    ORDER BY observed_at
-                    """
-                ),
-                {"node_id": node_id, "since": since},
-            ).fetchall()
-        return [r[0] if r[0].tzinfo is not None else r[0].replace(tzinfo=timezone.utc) for r in rows]
-
-    def count_prediction_error_history(self, *, node_id: str, since: datetime) -> int:
-        """How many readings one node has since `since` (attention's 7-day history size)."""
-        with self._engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    """
-                    SELECT count(*)
-                    FROM substrate_node_prediction_error_history
-                    WHERE node_id = :node_id AND observed_at >= :since
-                    """
-                ),
-                {"node_id": node_id, "since": since},
-            ).fetchone()
-        return int(row[0] or 0) if row else 0
-
     def fetch_chat_turn_times(self, *, since: datetime) -> list[datetime]:
         """Juniper's chat turns since `since`, for world-first attention's
         chat source (query shared via orion.attention.world_first so every
@@ -1026,7 +991,7 @@ class BiometricsSubstrateStore:
         ]
 
     def count_signal_history_read_both(self, *, node_id: str, since: datetime) -> int:
-        """Read-both successor of count_prediction_error_history (strain warm-up count)."""
+        """How many readings one node has since `since`, both tables (strain warm-up count)."""
         from orion.substrate.signal_history import READ_BOTH_COUNT_SQL
 
         with self._engine.connect() as conn:
@@ -1038,7 +1003,8 @@ class BiometricsSubstrateStore:
     def fetch_signal_event_times_read_both(
         self, *, node_id: str, since: datetime
     ) -> list[datetime]:
-        """Read-both successor of fetch_prediction_error_event_times (strain restart seed)."""
+        """observed_at of one node's non-zero readings since `since`, both tables, oldest first
+        (strain news rebuilds its budget from these after a restart)."""
         from orion.substrate.signal_history import READ_BOTH_EVENT_TIMES_SQL
 
         with self._engine.connect() as conn:

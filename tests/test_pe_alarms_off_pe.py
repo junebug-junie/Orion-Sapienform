@@ -234,6 +234,15 @@ def test_history_source_sql_keeps_other_nodes_and_unions_moved_ids() -> None:
         assert nid not in sql
 
 
+def test_history_source_sql_compiles_with_only_the_callers_bind_parameter() -> None:
+    """A node-id literal like 'node:substrate.cabinet' must never become a bind parameter."""
+    from sqlalchemy import text
+
+    stmt = text(f"SELECT node_id FROM {sh.HISTORY_WITH_MOVED_SOURCE_SQL} WHERE observed_at >= :since")
+    assert set(stmt.compile().params) == {"since"}
+    assert "%" not in sh.HISTORY_WITH_MOVED_SOURCE_SQL and "$" not in sh.HISTORY_WITH_MOVED_SOURCE_SQL
+
+
 def test_history_source_sql_refuses_unsafe_literals_and_unknown_modes() -> None:
     with pytest.raises(ValueError):
         sh.history_with_moved_source_sql({"node:x'; drop table t; --": sh.READ_BOTH})

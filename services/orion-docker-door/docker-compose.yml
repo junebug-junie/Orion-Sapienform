@@ -1,0 +1,31 @@
+services:
+  docker-door:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    build:
+      context: ../..
+      dockerfile: services/orion-docker-door/Dockerfile
+    container_name: ${PROJECT}-docker-door
+    restart: unless-stopped
+    env_file:
+      - .env
+    # No published port: reachable only on app-net, and only from the callers named below.
+    volumes:
+      # The real socket. This container is the one place Orion's turns cannot exec into
+      # (the door refuses exec into any container that mounts the socket, itself included).
+      - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      # The record Orion cannot erase: append-only JSONL on the host, one file per day.
+      - ${DOCKER_DOOR_RECORD_HOST_DIR:-/mnt/storage-warm/orion-record}:/record
+    environment:
+      DOCKER_DOOR_ALLOWED_CALLERS: ${DOCKER_DOOR_ALLOWED_CALLERS:-${PROJECT}-harness-governor}
+      DOCKER_DOOR_PORT: ${DOCKER_DOOR_PORT:-2375}
+      DOCKER_DOOR_SOCKET: /var/run/docker.sock
+      DOCKER_DOOR_RECORD_DIR: /record
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

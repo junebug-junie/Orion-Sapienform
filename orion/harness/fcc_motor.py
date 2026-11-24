@@ -833,6 +833,7 @@ def _build_subprocess_env(
     gpu_lease: dict | None = None,
     chat_reply: bool = False,
     correlation_id: Optional[str] = None,
+    docker_door: bool = True,
 ) -> Dict[str, str]:
     env = os.environ.copy()
     from orion.harness.fcc_warm_relay import CORRELATION_HEADER
@@ -967,6 +968,15 @@ def _build_subprocess_env(
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     else:
         env.pop("CLAUDE_CODE_DISABLE_AUTO_MEMORY", None)
+    # Docker-door canary (orion/harness/docker_door_canary.py): inside a scheduled window this
+    # turn's docker CLI talks to the door instead of the socket. Warm slots pass
+    # docker_door=False and get it per turn through their env file instead.
+    if docker_door:
+        from orion.harness.docker_door_canary import door_docker_host
+
+        door = door_docker_host(correlation_id=corr)
+        if door:
+            env["DOCKER_HOST"] = door
     return env
 
 

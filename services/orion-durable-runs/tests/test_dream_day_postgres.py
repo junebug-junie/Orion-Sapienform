@@ -26,21 +26,39 @@ MIGRATIONS = ("manual_migration_episode_memory_v1.sql", "manual_migration_dream_
               "manual_migration_dream_day_grounding.sql")
 # Only the columns the resolve queries read (live types, 2026-11-18).
 REF_TABLES = """
-CREATE TABLE temporal_self_event (event_id text PRIMARY KEY, source_kind text, label text, verdict text,
-    payload_json jsonb NOT NULL DEFAULT '{}'::jsonb);
+CREATE TABLE temporal_self_event (event_id text PRIMARY KEY, source_kind text, source_ref text, label text,
+    verdict text, occurred_at timestamptz NOT NULL DEFAULT '2026-11-17 19:00+00', payload_json jsonb NOT NULL DEFAULT '{}'::jsonb);
+CREATE TABLE substrate_durable_run_state (entry_id text PRIMARY KEY, created_at timestamptz, run_id varchar,
+    workflow varchar, node varchar, status varchar, detail json);
+CREATE TABLE vision_events (event_id varchar PRIMARY KEY, stream_id text, narrative text);
 CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, verb varchar, object_ref text, outcome_note text);
-CREATE TABLE dream_cycle (cycle_id text PRIMARY KEY, trigger text, status text, hypothesis_count int, cycle_json jsonb);
+CREATE TABLE dream_cycle (cycle_id text PRIMARY KEY, trigger text, status text, hypothesis_count int, cycle_json jsonb,
+    started_at timestamptz NOT NULL DEFAULT '2026-11-18 01:00+00', no_link_count int);
 CREATE TABLE dream_hypothesis (hypothesis_id text PRIMARY KEY, claim text, why text);
 CREATE TABLE harness_turn_trace (correlation_id varchar PRIMARY KEY, workflow text, created_at timestamp,
     run_artifact jsonb);
 CREATE TABLE chat_history_log (id varchar PRIMARY KEY, correlation_id varchar, prompt text, response text);
-INSERT INTO temporal_self_event VALUES ('reverie_chain:r1', 'reverie_chain', 'an open loop', NULL,
-    '{"duration_sec": 3588.8}');
+INSERT INTO temporal_self_event (event_id, source_kind, source_ref, label, verdict, payload_json) VALUES
+    ('reverie_chain:r1', 'reverie_chain', 'r1', 'an open loop', NULL, '{"duration_sec": 3588.8}'),
+    ('curiosity_run:run1', 'curiosity_run', 'run1', NULL, NULL, '{"arm": "self_inquiry", "n_moved": 0}'),
+    ('curiosity_run:old1', 'curiosity_run', 'old1', NULL, NULL, '{"arm": "value_order", "n_moved": 2}'),
+    ('vision_percept:v1', 'vision_percept', 'v1', NULL, NULL, '{"entities": ["chair", "desk"]}'),
+    ('chat_turn:chat-1', 'chat_turn', 'chat-1', NULL, NULL, '{"speaker": "juniper"}');
+-- The run's finish rows: the older one first, then the one the resolver must take (newest), then another run's.
+INSERT INTO substrate_durable_run_state VALUES
+    ('e1', '2026-11-17 18:00+00', 'run1', 'curiosity.investigate', 'finish', 'completed',
+     '{"finding_text": "an older finding"}'),
+    ('e2', '2026-11-17 19:00+00', 'run1', 'curiosity.investigate', 'finish', 'completed',
+     json_build_object('finding_text', 'my answers name 1.257 real records on average ' || repeat('x', 5000))),
+    ('e3', '2026-11-17 19:00+00', 'run1', 'reading.turn', 'finish', 'completed', '{"finding_text": "not this run"}');
+INSERT INTO vision_events VALUES ('v1', 'cam0', 'A scene with a desk and a chair is observed.');
 INSERT INTO grammar_acts VALUES ('act_1', 'hub.world_pulse_read', 'look', 'reading:x', 'stage1_completed');
-INSERT INTO dream_cycle VALUES ('dc-1', 'pressure', 'completed', 0, '{"note": "pairs dream=3"}');
+INSERT INTO dream_cycle VALUES ('dc-1', 'pressure', 'completed', 0, '{"note": "pairs dream=3"}', '2026-11-18 01:00+00', 4);
 INSERT INTO dream_hypothesis VALUES ('h-1', 'two things link', 'same hour');
 INSERT INTO harness_turn_trace VALUES ('c-1', 'reminiscence_otherwise', '2026-11-17 10:00',
-    '{"final_text": "saved rm:2026-11-17:otherwise"}');
+    '{"final_text": "saved rm:2026-11-17:otherwise"}'),
+    ('c-rm', 'reminiscence_what_it_was', '2026-11-21 13:00',
+     '{"final_text": "reminisce what_it_was saved rm:2026-11-21:what_it_was:ffc6f3f855"}');
 INSERT INTO chat_history_log VALUES ('chat-1', 'corr-1', 'hello', 'hi');
 """
 
@@ -128,5 +146,68 @@ def test_every_ref_kind_resolves_and_persist_writes_once():
         assert [dict(r) for r in row] == [{"run_id": "dream-day-2026-11-17", "produced": True, "memories_written": 1,
                                            "day_text": "A quiet day.", "memories_unsupported": 1,
                                            "claims": ["the kids"]}]
+
+    with_db(body)
+
+
+def test_the_judge_reads_each_cited_kinds_real_content_capped(tmp_path):
+    """PR dream-day-citable-facts: the kinds dream memories actually cite carry their real words for the judge
+    (a curiosity run's finding, a camera's caption, a chat turn's words, the time), each detail capped; the short
+    text a memory stores is unchanged; a reminiscence receipt reads as its saved note (#3739); a stored night's
+    ``dream_day_read:<day>`` resolves to the count lines its row kept."""
+    import json
+
+    from app.dream_day_store import resolve_refs
+    from orion.memory.dream_day import EXPERIENCE_DETAIL_CHARS
+
+    from app import dream_day_receipts   # the ledger's file name, from the one module allowed to name it
+
+    (tmp_path / dream_day_receipts.rm.LEDGER_FILE).write_text(json.dumps({
+        "schema_version": "reminiscence_hop.v1", "hop_id": "rm:2026-11-21:what_it_was:ffc6f3f855",
+        "episode": "2026-11-21", "hop": "what_it_was", "period_start": "2025-11-11", "period_end": "2025-11-17",
+        "note": "[pr_text] That week had 27 commits and no merged PR.", "claims": [],
+        "written_at": "2026-11-21T13:00:57+00:00"}) + "\n")
+    refs = ["experience:curiosity_run:run1", "experience:curiosity_run:old1", "experience:vision_percept:v1",
+            "experience:chat_turn:chat-1", "dream_cycle:dc-1", "harness_turn_trace:c-rm", "harness_turn_trace:c-1",
+            "dream_day_read:2026-11-16", "dream_day_read:2026-11-15"]
+
+    async def body(pool):
+        async with pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO dream_day (day, run_id, status, produced, note, memories_written, memory_ids, items_dropped,"
+                " refs_dropped, memories_rejected, plan_rejected, kept, dropped, new, plan, day_refs, material, read,"
+                " created_at) VALUES ('2026-11-16', 'dream-day-2026-11-16', 'written', false, 'x', 0, '{}', 0, 0, 0, 0,"
+                " 0, 0, 0, '[]', '{}', '{}', %s, now()), ('2026-11-15', 'dream-day-2026-11-15', 'written', false, 'x',"
+                " 0, '{}', 0, 0, 0, 0, 0, 0, 0, '[]', '{}', '{}', '{\"unread\": {}}', now())",
+                (json.dumps({"unread": {}, "totals": "body: 226 experiences (gpu_wait 75)",
+                             "totals_read_at": "2026-11-17T08:40:00Z"}),))
+        short = await resolve_refs(pool, refs)
+        full = await resolve_refs(pool, refs, full=True, self_dir=str(tmp_path))
+        # A stored night with no totals (an older row) does not resolve: no totals ref without a stored copy.
+        assert "dream_day_read:2026-11-15" not in full and "dream_day_read:2026-11-15" not in short
+        assert set(full) == set(short) == set(refs) - {"dream_day_read:2026-11-15"}
+        # The stored evidence quote (short text) never carries the detail.
+        assert short["experience:curiosity_run:run1"] == "curiosity_run: "
+        assert short["harness_turn_trace:c-rm"].startswith("harness turn reminiscence_what_it_was at ")
+        run = full["experience:curiosity_run:run1"]
+        assert "at 2026-11-17 12:00 Denver" in run and '"arm": "self_inquiry"' in run
+        assert "what the run found: my answers name 1.257 real records" in run and "older finding" not in run
+        assert "not this run" not in run
+        # Capped in SQL: the 5,000-character finding never floods the judge.
+        assert len(run) <= len("curiosity_run: ") + 1 + EXPERIENCE_DETAIL_CHARS
+        assert "what the run found" not in full["experience:curiosity_run:old1"]   # no finish row: the payload alone
+        assert "camera cam0 (the office camera) saw: A scene with a desk and a chair" in full["experience:vision_percept:v1"]
+        assert "the turn: Juniper: hello / Orion: hi" in full["experience:chat_turn:chat-1"]
+        assert "started 2026-11-17 18:00 Denver; 4 pair(s) declined" in full["dream_cycle:dc-1"]
+        rm = full["harness_turn_trace:c-rm"]
+        assert "reminisce what_it_was saved rm:2026-11-21:what_it_was:ffc6f3f855" in rm
+        assert "the week 2025-11-11..2025-11-17: [pr_text] That week had 27 commits and no merged PR." in rm
+        assert "the reminiscence note" not in full["harness_turn_trace:c-1"]   # not a receipt: unchanged
+        # Without the ledger dir (the stored-quote path, or no mount), the receipt stays the receipt.
+        no_dir = await resolve_refs(pool, ["harness_turn_trace:c-rm"], full=True)
+        assert "27 commits" not in no_dir["harness_turn_trace:c-rm"]
+        assert full["dream_day_read:2026-11-16"].endswith("body: 226 experiences (gpu_wait 75)")
+        assert short["dream_day_read:2026-11-16"] == ("dig dream-day 2026-11-16 (my read of that day, at "
+                                                      "2026-11-17T08:40:00Z)")
 
     with_db(body)

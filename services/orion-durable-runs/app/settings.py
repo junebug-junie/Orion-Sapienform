@@ -501,8 +501,9 @@ class Settings(BaseSettings):
     # The pool route the run's hold is asked on. memory_distill = the agent seat on gpu1 only
     # (config/gpu_pool.yaml): memory work stays local (the parent spec).
     dream_day_route: str = Field("memory_distill", min_length=1, alias="DREAM_DAY_ROUTE")
-    # One turn attempt's hard bound (same as a reminiscence hop; Hub keeps its finalize reserve out of it).
-    dream_day_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="DREAM_DAY_TURN_TIMEOUT_SEC")
+    # One turn attempt's hard bound (Hub keeps its 330 s finalize reserve out of it; 900 left the motor 360 s and half
+    # the turns ran out before answering, 2026-11-20/23).
+    dream_day_turn_timeout_sec: float = Field(1200.0, ge=60.0, le=3600.0, alias="DREAM_DAY_TURN_TIMEOUT_SEC")
     # The grounding gate (2026-11-18 hardening): before a dream memory is written, the same local route, on the
     # run's own hold, judges it against the full text of the records it cites. Only a parsed "supported" verdict is
     # written; unsupported and unjudged (failed call, unparseable verdict) are counted and kept in the dream_day

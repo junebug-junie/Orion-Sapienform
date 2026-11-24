@@ -6,7 +6,8 @@ the one DB read (resolving refs) is the caller's, through ``RESOLVE_SQL``.
 
 Rules, all code:
 
-* **Parse.** The reply's LAST fenced ```json block (else its last top-level ``{...}``) is the answer. No
+* **Parse.** The reply's LAST answer-shaped JSON object is the answer (``looks_like_answer``), fenced or not, with
+  prose after it or not. No
   answer at all is a failed turn attempt (the caller raises). A malformed item is dropped and counted; it
   never sinks the whole answer.
 * **Every ref must resolve.** An item (memory, plan item, the day paragraph) with a ref of an unsupported
@@ -30,7 +31,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Iterator, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
@@ -40,7 +41,8 @@ from orion.memory.episode.validate import (
 )
 from orion.schemas.dream_day import (
     DREAM_DAY_MAX_MEMORIES, DREAM_DAY_MAX_NEW_CONCERNS, DREAM_DAY_PROMPT_VERSION, DREAM_DAY_PURPOSES,
-    DREAM_DAY_TEXT_MAX, DreamDayAnswerV1, DreamDayMemoryV1, DreamDayParagraphV1, DreamDayPlanItemV1, split_ref,
+    DREAM_DAY_READ_REF_KIND, DREAM_DAY_TEXT_MAX, DreamDayAnswerV1, DreamDayMemoryV1, DreamDayParagraphV1,
+    DreamDayPlanItemV1, split_ref,
 )
 from orion.schemas.memory_episode import DistilledMemoryV1, DistillEvidenceV1, EpisodeDistillationV1
 
@@ -56,35 +58,79 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n\s*```", re.S | re.I)
 # and the validator's names check read, unchanged since Patch 2), and ``detail``, the rest of the record the
 # grounding judge also reads (``resolve_refs(..., full=True)``: text + " " + detail). Every query reads ids only
 # from the ``ids`` array parameter. ``chat`` and ``chat_turn`` both open a chat_history_log row by id or
-# correlation id. What each kind gives (cut in SQL, so one huge row never floods the judge's prompt):
-#   experience          text: source_kind: label [verdict]   detail: the event's payload_json (many kinds carry no
-#                       label; the payload holds their facts: entities seen, minutes played, waited ms)
+# correlation id. Every detail is cut in SQL, so one huge row never floods the judge's prompt.
+#
+# Live 2026-11-24 (every ref cited across the dream_day.grounding verdicts, plans and day paragraphs so far):
+# experience:gpu_wait 16, dream_cycle 14, experience:curiosity_run 14, act 5, experience:vision_percept 5,
+# experience:retro_play 5, harness_turn_trace 4, experience:dream_cycle 3, experience:consolidation_window_close 3,
+# experience:office_session 2, experience:chat_turn 2, dream_hypothesis 2. Four nights (11-18, 11-20..22) had all
+# 5 memories refused because the cited record did not carry the fact. What each kind gives:
+#   experience          text: source_kind: label [verdict]
+#                       detail (EXPERIENCE_DETAIL_CHARS): when it happened (temporal_self_event.occurred_at, Denver),
+#                       the event's payload_json, and for the kinds whose payload is only counters, the record's
+#                       own words from its source table:
+#                         curiosity_run   what the run found: substrate_durable_run_state.detail->>'finding_text'
+#                                         of the run's curiosity.investigate ``finish`` row (run_id = source_ref);
+#                                         the payload only says {"arm", "n_moved", ...}
+#                         vision_percept  the caption: vision_events.narrative and which camera (stream_id), by
+#                                         event_id = source_ref; the payload only lists entities
+#                         chat_turn       the turn's words: chat_history_log prompt/response by id = source_ref;
+#                                         the payload only names the speaker
+#                       (gpu_wait, retro_play, office_session and dream_cycle payloads already carry their facts.)
 #   act                 text: actor verb object: outcome note           detail: none
-#   dream_cycle         text: trigger, status, link count, the note     detail: none
+#   dream_cycle         text: trigger, status, link count, the note
+#                       detail: when it started (Denver) and how many pairs it declined (dream_cycle.no_link_count)
 #   dream_hypothesis    text: the claim because why                     detail: none
-#   harness_turn_trace  text: the turn's workflow and time   detail: its final reply text (run_artifact.final_text)
+#   harness_turn_trace  text: the turn's workflow and time   detail: its final reply (run_artifact.final_text). A
+#                       reminiscence hop's reply is only its save receipt ("reminisce <hop> saved rm:..."): the
+#                       store swaps in the saved hop's note from the reminiscence ledger (#3739, judge only:
+#                       app/dream_day_receipts.py)
 #   chat_turn           text: Juniper's prompt and Orion's response, 300 characters each
 #                       detail: the same turn up to 1,000 characters each
-REF_TEXT_CHARS = 1500
+#   dream_day_read      text: which night's `dig dream-day` read it is  detail: the roundup's count lines it printed
+#                       (dream_day.read->>'totals' for a stored night; the run's own checkpointed totals file
+#                       before its row exists, ``totals_resolved``)
+EXPERIENCE_DETAIL_CHARS = 3000
+TURN_DETAIL_CHARS = 2400
+REF_TEXT_CHARS = 6500
+_DENVER_AT = "to_char({col} AT TIME ZONE 'America/Denver', 'YYYY-MM-DD HH24:MI') || ' Denver'"
 RESOLVE_SQL: dict[str, str] = {
-    "experience": "SELECT event_id AS id, coalesce(source_kind, '') || ': ' || coalesce(label, '') "
-                  "|| coalesce(' [' || verdict || ']', '') AS text, left(coalesce(payload_json::text, ''), 1200) "
-                  "AS detail FROM temporal_self_event WHERE event_id = ANY(%s)",
+    "experience": (
+        "SELECT e.event_id AS id, coalesce(e.source_kind, '') || ': ' || coalesce(e.label, '') "
+        "|| coalesce(' [' || e.verdict || ']', '') AS text, left(concat_ws(' ', "
+        "'at ' || " + _DENVER_AT.format(col="e.occurred_at") + " || ';', coalesce(e.payload_json::text, ''), "
+        "CASE e.source_kind "
+        "WHEN 'curiosity_run' THEN (SELECT 'what the run found: ' || (s.detail->>'finding_text') "
+        "FROM substrate_durable_run_state s WHERE s.run_id = e.source_ref AND s.workflow = 'curiosity.investigate' "
+        "AND s.node = 'finish' ORDER BY s.created_at DESC LIMIT 1) "
+        "WHEN 'vision_percept' THEN (SELECT 'camera ' || CASE v.stream_id WHEN 'cam0' THEN 'cam0 (the office camera)' "
+        "ELSE coalesce(v.stream_id, '?') END || ' saw: ' || coalesce(v.narrative, '') "
+        "FROM vision_events v WHERE v.event_id = e.source_ref) "
+        "WHEN 'chat_turn' THEN (SELECT 'the turn: Juniper: ' || left(coalesce(c.prompt, ''), 1000) || ' / Orion: ' "
+        "|| left(coalesce(c.response, ''), 1000) FROM chat_history_log c WHERE c.id = e.source_ref) END), "
+        f"{EXPERIENCE_DETAIL_CHARS}) AS detail FROM temporal_self_event e WHERE e.event_id = ANY(%s)"),
     "act": "SELECT act_id AS id, actor || ' ' || verb || ' ' || coalesce(object_ref, '') "
            "|| coalesce(': ' || outcome_note, '') AS text, '' AS detail FROM grammar_acts WHERE act_id = ANY(%s)",
     "dream_cycle": "SELECT cycle_id AS id, 'sleep ' || coalesce(trigger, '') || ' ' || status || ', '"
                    " || coalesce(hypothesis_count, 0) || ' links: ' || coalesce(cycle_json->>'note', '') AS text, "
-                   "'' AS detail FROM dream_cycle WHERE cycle_id = ANY(%s)",
+                   "'started ' || " + _DENVER_AT.format(col="started_at") + " || '; ' || coalesce(no_link_count, 0) "
+                   "|| ' pair(s) declined' AS detail FROM dream_cycle WHERE cycle_id = ANY(%s)",
     "dream_hypothesis": "SELECT hypothesis_id AS id, coalesce(claim, '') || ' because ' || coalesce(why, '') AS text, "
                         "'' AS detail FROM dream_hypothesis WHERE hypothesis_id = ANY(%s)",
     "harness_turn_trace": "SELECT correlation_id AS id, 'harness turn ' || coalesce(workflow, 'chat') || ' at ' "
-                          "|| created_at::text AS text, coalesce('reply: ' || left(run_artifact->>'final_text', 1200), '') "
+                          "|| created_at::text AS text, coalesce('reply: ' || "
+                          f"left(run_artifact->>'final_text', {TURN_DETAIL_CHARS}), '') "
                           "AS detail FROM harness_turn_trace WHERE correlation_id = ANY(%s)",
     "chat_turn": "SELECT x.id, x.text, x.detail FROM (SELECT unnest(ARRAY[c.id, c.correlation_id]) AS id, "
                  "'Juniper: ' || left(coalesce(c.prompt, ''), 300) || ' / Orion: ' || left(coalesce(c.response, ''), 300) "
                  "AS text, 'full turn: Juniper: ' || left(coalesce(c.prompt, ''), 1000) || ' / Orion: ' "
                  "|| left(coalesce(c.response, ''), 1000) AS detail "
                  "FROM chat_history_log c WHERE c.id = ANY(%s) OR c.correlation_id = ANY(%s)) x",
+    # A stored night only (the row's ``read`` carries the totals since PR dream-day-citable-facts). The run itself
+    # resolves its own night from its checkpoint (``totals_resolved``): its row does not exist yet.
+    "dream_day_read": "SELECT day::text AS id, 'dig dream-day ' || day::text || ' (my read of that day, at ' "
+                      "|| coalesce(read->>'totals_read_at', '?') || ')' AS text, read->>'totals' AS detail "
+                      "FROM dream_day WHERE day::text = ANY(%s) AND coalesce(read->>'totals', '') <> ''",
 }
 REF_KIND_ALIASES = {"chat": "chat_turn"}
 
@@ -112,36 +158,87 @@ def canonical_ref(raw: Any) -> Optional[str]:
     return f"{REF_KIND_ALIASES.get(kind, kind)}:{rid}"
 
 
+# --------------------------------------------------------------------------- the night's own read (totals)
+#
+# Live 2026-11-22: "75 gpu waits", "3,220 experiences", "hub.promise 3": a memory stated a day's count and cited
+# one gpu_wait row, which cannot show a total. The roundup `dig dream-day` prints carries those counts (its organ
+# lines: "body: 226 experiences (body_binding 131, gpu_wait 75, ...)"). The dig keeps its count lines beside the
+# read receipt; the run checkpoints them; a memory cites them as ``dream_day_read:<day>``.
+
+TOTALS_CHARS = 6000
+# A roundup line that quotes one record ("\"retro play: ...\" [experience:...]") or one cite ("cited from body:
+# ...") is not a count: that record is citable on its own, so it stays out of the totals.
+_QUOTE_LINE_RE = re.compile(r'^\s*("|cited from )')
+
+
+def totals_ref(day: date | str) -> str:
+    return f"{DREAM_DAY_READ_REF_KIND}:{day if isinstance(day, str) else day.isoformat()}"
+
+
+def totals_text(roundup_lines: Iterable[str], extra: Iterable[str] = ()) -> str:
+    """The roundup's count lines (every line that does not quote one record), then ``extra`` (the digs count),
+    cut at whole lines to ``TOTALS_CHARS``. Deterministic: the same roundup gives the same text."""
+    out: list[str] = []
+    used = 0
+    for line in [*(l for l in roundup_lines if not _QUOTE_LINE_RE.match(str(l))), *extra]:
+        line = " ".join(str(line).split())
+        if not line:
+            continue
+        if used + len(line) + 1 > TOTALS_CHARS:
+            out.append("(more count lines cut)")
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out)
+
+
+def totals_resolved(day: date, totals: Optional[Mapping[str, Any]], *, full: bool) -> dict[str, str]:
+    """{``dream_day_read:<day>``: text} from THIS run's checkpointed totals (``DreamDayTotalsV1`` json), or {} when the
+    run has none (an older dig, a missing file): the ref then does not resolve and its item is dropped. ``full``:
+    with the count lines (the judge); otherwise the short text alone (the stored evidence quote)."""
+    if not totals or str(totals.get("day")) != day.isoformat() or not str(totals.get("text") or "").strip():
+        return {}
+    text = f"dig dream-day {day.isoformat()} (my read of that day, at {totals.get('read_at')})"
+    return {totals_ref(day): f"{text} {totals['text']}" if full else text}
+
+
 # --------------------------------------------------------------------------- parse
 
 
-def _json_candidates(text: str) -> list[str]:
-    fenced = _FENCE_RE.findall(text or "")
-    if fenced:
-        return list(reversed(fenced))
-    # The last top-level {...} span: scan from each '{' that opens at depth 0.
-    out, depth, start = [], 0, None
-    in_str, esc = False, False
-    for i, ch in enumerate(text or ""):
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"' and depth > 0:
-            in_str = True
-        elif ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}" and depth > 0:
-            depth -= 1
-            if depth == 0 and start is not None:
-                out.append(text[start:i + 1])
-    return list(reversed(out))
+_DECODER = json.JSONDecoder()
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _json_objects(text: str) -> Iterator[dict]:
+    """Every JSON object the reply holds, LAST first: one decode attempt at each '{', so a fence (with or without
+    ``json``, the fence on the object's own line or not), prose after the block, an unclosed brace in the prose
+    before it, or a second fenced block of another language never hides the answer."""
+    text = text or ""
+    i = text.rfind("{")
+    while i >= 0:
+        try:
+            obj, _ = _DECODER.raw_decode(text, i)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            yield obj
+        i = text.rfind("{", 0, i)
+
+
+def looks_like_answer(obj: Any) -> bool:
+    """An answer object, not any dict that happens to share a key: ``memories`` or ``plan`` as a list, or ``day`` as
+    a paragraph object or a paragraph string. The read receipt (``{"day": "2026-11-19", "read_at": ...}``), which a
+    turn may print with ``cat``, is not an answer."""
+    if not isinstance(obj, dict):
+        return False
+    if "<one sentence" in json.dumps(obj) or "<what the day was" in json.dumps(obj):  # the prompt's template echoed
+        return False
+    if isinstance(obj.get("memories"), list) or isinstance(obj.get("plan"), list):
+        return True
+    day = obj.get("day")
+    if isinstance(day, dict):
+        return "text" in day
+    return isinstance(day, str) and len(day.strip()) >= 20 and not _DATE_RE.match(day.strip())
 
 
 @dataclass
@@ -152,12 +249,8 @@ class ParsedAnswer:
 
 def parse_answer(text: str) -> Optional[ParsedAnswer]:
     """The answer the reply ends with, or None when it holds no JSON object with any of the three parts."""
-    for raw in _json_candidates(text):
-        try:
-            obj = json.loads(raw)
-        except ValueError:
-            continue
-        if not isinstance(obj, dict) or not ({"memories", "plan", "day"} & set(obj)):
+    for obj in _json_objects(text):
+        if not looks_like_answer(obj):
             continue
         malformed = 0
         memories, plan = [], []
@@ -392,12 +485,20 @@ GROUNDING_PURPOSE = "dream_day_grounding"
 GROUNDING_MAX_TOKENS = 400
 GROUNDING_CLAIMS_MAX = 12
 GROUNDING_RAW_CHARS = 600
+# All of one memory's records together (each is cut to REF_TEXT_CHARS first): about 4-5k tokens on the local lane.
+GROUNDING_RECORDS_CHARS = 16000
 
 
 def grounding_prompt(statement: str, refs: Iterable[str], resolved: Mapping[str, str]) -> str:
     """The judge's question. Not the writer's prompt: it sees one statement and its records, nothing else."""
-    records = "\n".join(
-        f"[{ref}] {' '.join(str(resolved.get(ref) or '(no text)').split())[:REF_TEXT_CHARS]}" for ref in refs)
+    lines, used = [], 0
+    for ref in refs:
+        body = " ".join(str(resolved.get(ref) or "(no text)").split())[:REF_TEXT_CHARS]
+        if used + len(body) > GROUNDING_RECORDS_CHARS:   # fail-closed: a fact only in an unshown record is unsupported
+            body = body[:max(0, GROUNDING_RECORDS_CHARS - used)] + " (cut: the judge's page is full)"
+        lines.append(f"[{ref}] {body}")
+        used += len(body)
+    records = "\n".join(lines)
     return "\n".join([
         "Check one statement against the records it cites. Use only these records, not what seems likely. "
         "In the statement, \"I\" is Orion and \"you\" is Juniper.",

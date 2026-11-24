@@ -30,7 +30,9 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from orion.memory.dream_day import ZONE, night_window
-from orion.schemas.dream_day import DREAM_DAY_RUN_PREFIX, DREAM_DAY_WORKFLOW, DreamDayBriefV1, base_run_id
+from orion.schemas.dream_day import (
+    DREAM_DAY_MIN_ATTEMPT_SEC, DREAM_DAY_RUN_PREFIX, DREAM_DAY_WORKFLOW, DreamDayBriefV1, base_run_id,
+)
 from orion.schemas.durable_run import DurableRunRequestV1
 from orion.schemas.resource_admission import ResourceRequirementV1
 
@@ -166,7 +168,9 @@ class DreamDayTicker:
             result.decision, result.run_id = "complete", done
             return result
         timeout = float(self.settings.dream_day_turn_timeout_sec)
-        run_id = next_run_id(day, runs, now=now, deadline=deadline, min_left_sec=timeout,
+        # A new run needs the least night an attempt can use, not a whole (longer) brief attempt: its window is
+        # clamped to the deadline (orion/schemas/dream_day.py DREAM_DAY_MIN_ATTEMPT_SEC).
+        run_id = next_run_id(day, runs, now=now, deadline=deadline, min_left_sec=min(timeout, DREAM_DAY_MIN_ATTEMPT_SEC),
                              **({"max_runs": FORCED_MAX_RUNS, "retry_after_sec": 0.0} if forced else {}))
         if run_id is None:
             result.decision = "nothing_due"

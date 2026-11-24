@@ -12,12 +12,17 @@ the last 30 minutes. Each outcome's excess is ``-ln p`` minus its calm mean. For
 p is uniform, so ``-ln p`` is Exp(1), and the window sum is Gamma(n, 1). The Gamma tail is skewed to
 the right, so the old normal cut (z >= 1.645, value 0.55) is not p 0.05: it is p 0.065 to 0.071 for
 n = 1 to 8. The exact 95th percentile of a standardized Gamma(n) is 1.996 at n = 1 and falls with n
-(1.842 at n = 6), so z >= 2.0 has a calm tail <= 0.05 at every window size. Bar: 2.0 / 3.
-(The room / body nodes floor p at 0.05; with the floor the calm tail at z >= 2.0 is 3.3 % at n = 6,
-3.9 % at n = 2, 7.2 % at n = 1. Live windows hold 2 to 6 outcomes.)
+(1.842 at n = 6), so for the two joint nodes z >= 2.0 has a calm tail <= 0.05 at every window size.
+Bar: 2.0 / 3. The room / body nodes floor p at 0.05, which caps one outcome's excess; with the floor
+the calm tail at z >= 2.0 is <= 0.05 for n >= 2 (3.9 % at n = 2, 3.3 % at n = 6) but 7.3 % for a
+one-outcome window. Their windows normally hold 2 to 6 outcomes (prediction_surprise.py), so the same
+bar is kept; a one-outcome window crosses a little more often than 5 %.
 
 The chat node. ``node:prediction.chat_turn`` (orion/substrate/prediction_turn_surprise.py) uses the
-same z, but each turn is the sum of two yes/no bets, so z takes only a few values. One bet whose less
+same z over every turn settled in the last 30 minutes, but each turn is the sum of two yes/no bets, so
+z takes only a few values. The rates below are for a one-turn window, the worst case; a window
+holding two turns (the median in the 12-day turn replay) crosses less often (3.6 % at this bar,
+pairing adjacent live turns). One bet whose less
 likely side (calibrated probability q) happens reads ``z = sqrt((1 - q) / q)``. A two-point variable
 reaches z >= k with calm probability up to ``1 / (1 + k^2)`` (Cantelli's bound, tight here), so no
 z cut below 4.36 guarantees p <= 0.05, and the node clips at z = 3. The bar is therefore set from the
@@ -39,7 +44,10 @@ never seed, whatever their bar (endogenous_curiosity.py checks them first).
 Signal strength. The frontier evaluator invokes only when the top signal's strength is >= 0.5, and it
 ranks seeds of every source by strength. A crossing therefore maps onto one shared scale:
 ``0.55`` at the node's own bar, ``1.0`` at its ceiling (``seed_strength``). For a 0.55 bar this is the
-identity, so the camera nodes rank exactly as before.
+identity, so the camera nodes rank exactly as before. Ranking change: a node with a higher bar now
+ranks below its raw value (a forecast reading of 0.8 has strength 0.73; a chat reading of 0.9 has
+0.775), so repair-pressure and open-loop seeds, which keep their raw strength, win budget slots they
+used to lose to it.
 
 Rollback: delete an entry (that node falls back to 0.55), or empty the dict.
 """

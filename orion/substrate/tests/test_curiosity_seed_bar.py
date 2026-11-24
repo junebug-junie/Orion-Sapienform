@@ -58,10 +58,37 @@ def _gamma_tail(n: int, x: float) -> float:
     return sum(math.exp(-x) * x**k / math.factorial(k) for k in range(n))
 
 
+def _floored_tail(n: int, zcut: float, samples: int = 60_000) -> float:
+    """room / body: excess = -ln max(p, 0.05) - 0.95 with p uniform, calm var 0.698
+    (prediction_surprise.calm_excess_variance(0.95)). Seeded Monte Carlo."""
+    import random
+
+    from orion.substrate.prediction_surprise import calm_excess_variance
+
+    var = calm_excess_variance(0.95)
+    rng = random.Random(3821 + n)
+    hits = 0
+    for _ in range(samples):
+        s = sum(-math.log(max(rng.random(), 0.05)) - 0.95 for _ in range(n))
+        hits += s / math.sqrt(n * var) >= zcut
+    return hits / samples
+
+
+def test_floored_room_body_cut() -> None:
+    """Floored p (room / body): the same z 2.0 cut is <= 5 % for windows of 2+ outcomes and
+    ~7.3 % for a one-outcome window (exact: U <= exp(-(0.95 + 2 sd)))."""
+    from orion.substrate.prediction_surprise import calm_excess_variance
+
+    sd = math.sqrt(calm_excess_variance(0.95))
+    assert math.exp(-(0.95 + csb.FORECAST_Z_CUT * sd)) == pytest.approx(0.073, abs=0.002)
+    for n in (2, 3, 6):
+        assert _floored_tail(n, csb.FORECAST_Z_CUT) <= 0.05
+
+
 @pytest.mark.parametrize("n", range(1, 13))
 def test_forecast_cut_is_calm_p_005_at_every_window_size(n: int) -> None:
-    """Calm: excess per outcome is Exp(1) - 1, so the window z is a standardized Gamma(n).
-    z >= 2.0 has tail <= 0.05 for every n; the old 1.645 (value 0.55) does not."""
+    """Joint nodes (unfloored conformal p): excess per outcome is Exp(1) - 1, so the window z is a
+    standardized Gamma(n). z >= 2.0 has tail <= 0.05 for every n; the old 1.645 (value 0.55) does not."""
     tail_new = _gamma_tail(n, n + csb.FORECAST_Z_CUT * math.sqrt(n))
     tail_old = _gamma_tail(n, n + 1.645 * math.sqrt(n))
     assert tail_new <= 0.05
@@ -123,8 +150,18 @@ def test_room_joint_seeds_at_its_cut_and_not_below() -> None:
 
 def test_chat_turn_seeds_at_its_cut_and_not_below() -> None:
     assert csb.CHAT_TURN_NODE_ID in _seeded(_node(csb.CHAT_TURN_NODE_ID, 0.81))
-    # 0.75: a q ~ 0.15 'asks a question' turn; common under calm, no seed
+    # 0.75 is z 2.25: a lone rare-side bet at q ~ 0.165; no seed
     assert _seeded(_node(csb.CHAT_TURN_NODE_ID, 0.75)) == {}
+
+
+def test_chat_bar_single_bet_boundary() -> None:
+    """A lone bet's rare side reads z = sqrt((1 - q) / q); the bar z 2.4 sits at q = 1 / (1 + 2.4^2)
+    ~ 0.1479. Rarer than that seeds, more common does not."""
+    def value(q: float) -> float:
+        return min(1.0, math.sqrt((1 - q) / q) / csb.Z_FULL_SCALE)
+
+    assert csb.CHAT_TURN_NODE_ID in _seeded(_node(csb.CHAT_TURN_NODE_ID, value(0.147)))
+    assert _seeded(_node(csb.CHAT_TURN_NODE_ID, value(0.149))) == {}
 
 
 @pytest.mark.parametrize("node_id", [csb.ROOM_JOINT_NODE_ID, csb.CHAT_TURN_NODE_ID, csb.BODY_JOINT_NODE_ID,
@@ -162,6 +199,23 @@ def test_staleness_decay_still_applies_before_the_bar() -> None:
 )
 def test_retired_and_alarm_nodes_never_seed(node_id: str) -> None:
     assert _seeded(_node(node_id, 1.0)) == {}
+
+
+def test_ranking_change_repair_seed_beats_mapped_forecast_seed() -> None:
+    """A forecast reading of 0.8 maps to strength 0.73, so a 0.74 repair seed now outranks it."""
+    repair = SimpleNamespace(dimensions={"level": 0.74}, causal_molecule_ids=["m1"], summary="r", confidence=0.6)
+    out = endogenous_curiosity_candidates(
+        nodes=[_node(csb.BODY_JOINT_NODE_ID, 0.8)], repair_appraisal=repair,
+        config=EndogenousCuriosityConfig(enabled=True, budget=1), now=NOW,
+    )
+    assert [c.notes[-1] for c in out] == ["source:repair_pressure"]
+    assert csb.seed_strength(0.8, FORECAST_BAR) == pytest.approx(0.73)
+
+
+def test_config_table_is_read_only() -> None:
+    cfg = EndogenousCuriosityConfig(enabled=True)
+    with pytest.raises(TypeError):
+        cfg.seed_bar_by_node_id[csb.ROOM_JOINT_NODE_ID] = 0.1  # type: ignore[index]
 
 
 def test_override_table_from_config() -> None:

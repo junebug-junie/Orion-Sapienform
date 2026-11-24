@@ -32,3 +32,13 @@ def test_joint_proxy_folds_one_surprising_outcome():
     out = ev.joint_proxy(rows, "family_a_room")
     assert len(out) == 1 and out[0][1] > 0.9  # z ~ 3 -> value ~ 1
     assert ev.joint_proxy(rows, "family_a") == []
+
+
+def test_eval_constants_match_live_curiosity():
+    """The replay mirrors the live decay horizon and tick interval; fail if either drifts."""
+    from orion.substrate.pressure import PressureConfig
+
+    assert ev.HORIZON_S == PressureConfig().prediction_error_decay_horizon_seconds
+    settings_src = (Path(__file__).resolve().parents[1] / "app" / "settings.py").read_text()
+    block = settings_src.split("endogenous_curiosity_tick_interval_sec", 1)[1][:120]
+    assert f"{ev.TICK.total_seconds():.1f}" in block

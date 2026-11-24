@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
@@ -265,7 +265,7 @@ class EndogenousCuriosityConfig:
     # orion/substrate/curiosity_seed_bar.py).
     min_prediction_error: float = 0.55
     seed_bar_by_node_id: Mapping[str, float] = field(
-        default_factory=lambda: dict(CURIOSITY_SEED_BAR_BY_NODE_ID), hash=False
+        default_factory=lambda: MappingProxyType(dict(CURIOSITY_SEED_BAR_BY_NODE_ID)), hash=False
     )
     min_repair_level: float = 0.6
     min_loop_salience: float = 0.5
@@ -323,6 +323,7 @@ def _prediction_error_candidates(
         node_prediction_error_is_measurement as is_measurement,
     )
 
+    bars = CURIOSITY_SEED_BAR_BY_NODE_ID if bar_by_node_id is None else bar_by_node_id
     candidates: list[FrontierInvocationSignalV1] = []
     for node in nodes:
         try:
@@ -330,13 +331,12 @@ def _prediction_error_candidates(
             raw_error = _clamp01(metadata.get("prediction_error"))
             if raw_error <= 0.0:
                 continue
-            error = raw_error * _prediction_error_staleness_decay(node, now=now)
             node_id = str(getattr(node, "node_id", "") or "")
-            bars = CURIOSITY_SEED_BAR_BY_NODE_ID if bar_by_node_id is None else bar_by_node_id
+            if not node_id or node_id in NO_CURIOSITY_CONSUMER_NODE_IDS:
+                continue
+            error = raw_error * _prediction_error_staleness_decay(node, now=now)
             bar = seed_bar(node_id, min_error, bars)
             if error < bar:
-                continue
-            if not node_id or node_id in NO_CURIOSITY_CONSUMER_NODE_IDS:
                 continue
             if is_alarm_node(node_id):
                 # An alarm (cabinet warming, strain news, street event) fired;

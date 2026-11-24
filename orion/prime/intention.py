@@ -18,7 +18,8 @@ failed, Hub refused, the reply could not be stored, Prime let it go, or the hori
 open its concern is kept alive (``keep_taken_on``): Orion settled the whether; the run settles the concern.
 
 Adding a source: one adapter module in orion/prime/intention_sources/ (``PREFIX``, ``SOURCE``, ``HORIZON_SEC``,
-``horizon_from``, ``fetch``, ``adapt``) and one entry in ``ADAPTERS``. Prime, the order route, the workflow and the
+``horizon_from``, ``fetch``, ``adapt``; optionally ``take_on_refusal(concern)``, a pure check Prime runs before the
+act opens, for a concern the adapter already knows Hub will refuse) and one entry in ``ADAPTERS``. Prime, the order route, the workflow and the
 family do not change (acceptance S-1.9). A source whose ROUTE is new (the letter thread's ``next_letter``) also needs
 that route's delivery in Hub (scripts/intention_order.py refuses every route but ``chat_thread`` today).
 
@@ -144,6 +145,18 @@ def has_adapter(concern: PrimeConcernV1) -> bool:
     return adapter_for(concern.event_ref) is not None
 
 
+def source_refusal(concern: PrimeConcernV1) -> Optional[str]:
+    """The adapter's own reason this concern cannot be taken on (``take_on_refusal``, optional per adapter), or
+    None. Checked before the act opens, so Prime never spends a take-on on an order Hub must refuse (#3772)."""
+    check = getattr(adapter_for(concern.event_ref), "take_on_refusal", None)
+    return check(concern) if check is not None else None
+
+
+def can_take_on(concern: PrimeConcernV1) -> bool:
+    """Whether the frame may mark this concern "you can take this on": an adapter that does not refuse it."""
+    return has_adapter(concern) and source_refusal(concern) is None
+
+
 def horizon_for(concern: PrimeConcernV1) -> Optional[datetime]:
     """Prime's estimate of the concern's deadline (Hub's adapter answers the exact one)."""
     a = adapter_for(concern.event_ref)
@@ -190,6 +203,9 @@ def take_on_refusal(concern_id: str, state: PrimeStateV1, st: PrimeIntentionsSta
     if not has_adapter(concern):
         return ("nothing can carry that concern out: only promises I made in a chat with Juniper can be taken on "
                 "today")
+    refused = source_refusal(concern)
+    if refused is not None:
+        return refused
     if find_open(st, concern_id) is not None:
         return "I already took that concern on; its run is not finished"
     if any(d.concern_id == concern_id for d in st.done):
@@ -349,7 +365,8 @@ def frame_lines(st: PrimeIntentionsStateV1, now: datetime) -> list[str]:
 __all__ = [
     "ACT_GRACE_SEC", "ADAPTERS", "CHECK_INTERVAL_SEC", "INTENTIONS_KEY", "INTENTION_COMPONENT", "MAKE_BASIS",
     "MAX_UNREAD_READS", "MIN_RUN_ROOM_SEC", "OBJECT_PREFIX", "PrimeIntentionDoneV1", "PrimeIntentionOpenV1", "PrimeIntentionsStateV1",
-    "CARRY_SUBAGENT_HINT", "CARRY_SUBAGENT_TYPES", "act_horizon_sec", "adapter_for", "age_out", "carry_prompt", "find_open", "finish", "frame_lines", "has_adapter",
+    "CARRY_SUBAGENT_HINT", "CARRY_SUBAGENT_TYPES", "act_horizon_sec", "adapter_for", "age_out", "can_take_on", "carry_prompt", "find_open", "finish", "frame_lines", "has_adapter",
     "horizon_for", "keep_taken_on", "make_act", "no_take_on_ids", "open_ids", "order_due", "parse_not_before", "past_horizon", "run_terminal",
+    "source_refusal",
     "take_on", "take_on_refusal", "update_open",
 ]

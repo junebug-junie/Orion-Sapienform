@@ -49,7 +49,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import CONCERN_HORIZON_SEC, clamp_hours, describe_effects
-from orion.prime.intention import has_adapter
+from orion.prime.intention import can_take_on
 from orion.prime.state import (
     CONCERN_TEXT_CAP,
     MAX_CONCERNS,
@@ -559,7 +559,7 @@ def _now_lines(inputs: FrameInputs) -> list[str]:
 def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
                   no_take_on: frozenset[str] = frozenset(), evidence_clock: bool = False) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
-    if take_on and c.graded != "settled" and c.concern_id not in no_take_on and has_adapter(c):
+    if take_on and c.graded != "settled" and c.concern_id not in no_take_on and can_take_on(c):
         graded += "; you can take this on"
     ref = c.event_ref or ""
     about = (f"from turn {ref[len('turn:'):]}" if ref.startswith("turn:")

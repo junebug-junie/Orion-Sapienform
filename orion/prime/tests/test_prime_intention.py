@@ -274,3 +274,57 @@ def test_every_hinted_sub_agent_type_is_one_the_carry_turn_actually_lists():
     # Snapshot of the CLI built-ins from the 2026-11-17 transcripts (see intention.py), not read live.
     builtins = {"claude", "Explore", "general-purpose", "Plan", "statusline-setup"}
     assert set(it.CARRY_SUBAGENT_TYPES) <= builtins | set(FCC_AGENT_NAMES)
+
+
+# --- #3772: a promise from a turn with no chat thread is refused before any act opens ------------------------------
+
+def _folded_promise_concern(session, *, mode=None):
+    """A promise concern exactly as the hand-back opens it (orion/prime/handback.py fold_turn_signals)."""
+    from orion.prime import handback as hb
+    from orion.prime.tests.test_prime_handback import _finalize, _ingress
+
+    corr = "ab1fc9b0-d62c-5c84-afcd-5f5466692ccd"
+    promise = {"quote": "Check me at 11-23 12:00Z", "offer": False}
+    state, _, folded = hb.fold_turn_signals(PrimeStateV1(), hb.PrimeTurnsStateV1(), [
+        s for s in (hb.signal_from_hop(h) for h in (
+            _ingress(corr, session, "look into sleep", mode=mode),
+            _finalize(corr, "Check me at 11-23 12:00Z.", promises=[promise]))) if s is not None], T0)
+    (concern,) = state.concerns
+    return concern, folded[0].who
+
+
+def test_a_curiosity_run_promise_is_refused_up_front_with_what_to_do_instead():
+    concern, who = _folded_promise_concern("orion_curiosity")
+    assert who == "curiosity" and concern.concern_id == "ba9b129bcdd06506"   # the live 11-23 refused take-on
+    state = PrimeStateV1(concerns=[concern])
+    now = T0 + timedelta(hours=2)
+    answer = PrimeAnswerV1.model_validate({"move": {"kind": "take_on", "concern_id": concern.concern_id, "why": "w"}})
+    applied = apply_answer(state, answer, now=now, arc_ids=[], focus_pending=False,
+                           take_on_check=checker(it.PrimeIntentionsStateV1(), now))
+    assert applied.move is None
+    assert "curiosity run" in applied.move_refusal and "no chat thread" in applied.move_refusal
+    assert "curiosity_focus" in applied.move_refusal
+    frame = build_frame(state, FrameInputs(now=now, take_on=True))
+    assert "you can take this on" not in frame
+
+
+def test_a_chat_with_juniper_promise_is_still_offered_and_passes():
+    concern, who = _folded_promise_concern("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", mode="orion")
+    assert who == "chat_juniper"
+    state = PrimeStateV1(concerns=[concern])
+    now = T0 + timedelta(hours=2)
+    assert it.take_on_refusal(concern.concern_id, state, it.PrimeIntentionsStateV1(), now, enabled=True) is None
+    assert "you can take this on" in build_frame(state, FrameInputs(now=now, take_on=True))
+
+
+def test_the_hand_back_text_names_every_kind_of_turn_and_only_chat_with_juniper_has_a_thread():
+    from orion.prime import handback as hb
+
+    for who, words in hb.WHO_WORDS.items():
+        text = f"{hb.PROMISE_CONCERN_LEAD}{words} (1 promise, harness_turn_trace:x#promises_made[0])"
+        assert hb.promise_concern_who(text) == who
+        c = PrimeConcernV1(concern_id="c", text=text, event_ref="turn:x", opened_at=T0, last_evidence_at=T0)
+        assert (turn_promise.take_on_refusal(c) is None) == (who == turn_promise.THREAD_WHO)
+    # Older wording (before 11-12) is not read: it passes here and Hub's adapt still decides.
+    assert hb.promise_concern_who("a thread I opened in a chat with Juniper") is None
+    assert turn_promise.take_on_refusal(turn_concern()) is None

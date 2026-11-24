@@ -78,11 +78,12 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 ## Risks / concerns
 
+- Issues opened: #3768. Closed: none.
 - Severity: low. Concern: the reasons are stored but unused. Mitigation: #3768 (opened) designs the reader once real reasons exist.
 - Live path UNVERIFIED until the Hub is rebuilt and one reason is saved.
 
 ## PR link
 
-(filled below)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3769
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

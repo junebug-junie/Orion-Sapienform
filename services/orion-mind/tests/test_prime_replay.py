@@ -77,7 +77,11 @@ def test_recorded_tick_sequences_replay_identically():
     (checked by script; 1 part changed, 0 after mapping: now_section_and_one_cite.llm_calls).
     Re-recorded 2026-11-24 (#3425: a dropped cite's id is named early in the act note): with " | 1 cite(s) not shown:
     gpu_wait:not-shown" removed, every part equals the previous golden (checked by script; 2 parts changed,
-    now_section_and_one_cite.logs and .published, 0 after mapping)."""
+    now_section_and_one_cite.logs and .published, 0 after mapping).
+    Re-recorded 2026-11-24 (game company patch 4: hub.retro_watch and hub.retro_commentary declare slow and quicken):
+    with the two new "ORGANS YOU CAN SIGNAL" lines removed, every part of every scenario equals the previous golden
+    (checked by script; 1 part changed, 0 after mapping: regulate_and_settle.llm_calls, the only scenario that shows
+    the receptors). No scenario turns the sitting wake on (the flag is absent from the fake settings)."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

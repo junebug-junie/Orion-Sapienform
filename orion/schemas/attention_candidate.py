@@ -32,6 +32,10 @@ AttentionSourceKindV1 = Literal["internal", "external"]
 # proposals) can recognise a world target without importing the ranking code.
 WORLD_CHAT_SOURCE_ID = "world:chat"
 WORLD_READING_SOURCE_ID = "world:reading"
+# Someone plays a game on Orion's Retro service (game company patch 4, spec
+# docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md section 7). Built by
+# orion.attention.world_first.play_candidate from retro_sitting; eligible only while Orion watches.
+WORLD_PLAY_SOURCE_ID = "world:play"
 PERCEPTION_NODE_ID = "node:substrate.perception"
 WORLD_SOURCE_PREFIX = "world:"
 
@@ -186,3 +190,8 @@ class AttentionCandidateV1(BaseModel):
     # Additive and optional: built and consumed in-process, never deserialized
     # from another service.
     evidence: dict[str, Any] | None = None
+    # Set by a builder whose source is MEASURED (so it is not absent and its reading still shows) but
+    # which may not compete this tick, with the reason. world:play: Orion is not watching the sitting
+    # (no open sitting, the watch is off, or no stored look note in the last 3 minutes). judge_candidate
+    # reads it after the history check, so the value, percentile and band are still traced. None = no gate.
+    not_eligible_reason: str | None = None

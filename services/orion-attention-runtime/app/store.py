@@ -296,6 +296,13 @@ class AttentionRuntimeStore:
             for r in rows
         ]
 
+    def fetch_play_inputs(self, *, now: datetime):
+        """world:play (game company patch 4): (sittings or None, the open sitting's watch or None, absent
+        reason or None). orion.attention.play_read.read_play_inputs, shared with the other contest."""
+        from orion.attention.play_read import read_play_inputs
+
+        return read_play_inputs(self._engine, now=now)
+
     def fetch_accepted_reading_link_events(
         self, since: datetime
     ) -> list[tuple[datetime, str, str]]:

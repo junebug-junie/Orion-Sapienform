@@ -18,6 +18,10 @@ on:
       - "services/orion-hub/scripts/retro_commentary.py"
       - "orion/retro/commentary.py"
       - "services/orion-hub/tests/test_retro_line_pg.py"
+      - "services/orion-hub/tests/test_retro_prime_attention_pg.py"
+      - "services/orion-hub/tests/test_retro_prime_attention_hub.py"
+      - "orion/attention/play_read.py"
+      - "orion/attention/world_first.py"
       - "services/orion-hub/evals/retro_line_dry_eval.py"
       - "services/orion-durable-runs/app/temporal_self_sources.py"
       - "services/orion-hub/scripts/retro_leisure_self_start.py"
@@ -49,6 +53,10 @@ on:
       - "services/orion-hub/scripts/retro_commentary.py"
       - "orion/retro/commentary.py"
       - "services/orion-hub/tests/test_retro_line_pg.py"
+      - "services/orion-hub/tests/test_retro_prime_attention_pg.py"
+      - "services/orion-hub/tests/test_retro_prime_attention_hub.py"
+      - "orion/attention/play_read.py"
+      - "orion/attention/world_first.py"
       - "services/orion-hub/evals/retro_line_dry_eval.py"
       - "services/orion-durable-runs/app/temporal_self_sources.py"
       - "services/orion-hub/scripts/retro_leisure_self_start.py"
@@ -93,6 +101,8 @@ jobs:
             tests/test_retro_sitting_pg.py \
             tests/test_retro_watch_pg.py \
             tests/test_retro_line_pg.py \
+            tests/test_retro_prime_attention_pg.py \
+            tests/test_retro_prime_attention_hub.py \
             tests/test_retro_watch_service.py \
             tests/test_retro_frames.py \
             tests/test_retro_leisure_self_start.py \

@@ -73,6 +73,12 @@ async def test_line_rows_keep_the_hard_order_and_the_player_signals() -> None:
             assert await conn.fetchval(rc.THUMB_SQL, "L2", "up", "guest") == "guest"
             assert await conn.fetchval(rc.THUMB_SQL, "L3", "up", "juniper") is None
             assert await conn.fetchval(rc.THUMB_SQL, "nope", "down", "juniper") is None
+            # Patch 4: Juniper's thumb replaces a guest's; a guest's never replaces hers (her thumb is her grade).
+            assert await conn.fetchval(rc.THUMB_SQL, "L2", "down", "juniper") == "juniper"
+            assert await conn.fetchval(rc.THUMB_SQL, "L2", "up", "guest") == "juniper"
+            assert await conn.fetchrow("SELECT thumb, thumb_by FROM retro_line WHERE line_id = 'L2'") == ("down", "juniper")
+            assert await conn.fetchval(rc.THUMB_SQL, "L2", "up", "juniper") == "juniper"
+            await conn.execute("UPDATE retro_line SET thumb = NULL, thumb_by = NULL WHERE line_id = 'L2'")
 
             # A reply within 2 minutes of a delivered line marks it (once).
             await conn.execute("UPDATE retro_line SET finished_at = now() - interval '30 seconds' WHERE line_id = 'L2'")

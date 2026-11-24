@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     HUB_RETRO_SITTING_ENABLED: bool = Field(default=True, alias="HUB_RETRO_SITTING_ENABLED")
     HUB_RETRO_SITTING_GAP_SEC: float = Field(default=300.0, alias="HUB_RETRO_SITTING_GAP_SEC")
     HUB_RETRO_SITTING_MIN_SEC: float = Field(default=120.0, alias="HUB_RETRO_SITTING_MIN_SEC")
+    # Patch 4: a finished sitting posts one shadow event want (hub.retro_sitting) so Prime can hold it. Ships on.
+    HUB_RETRO_SITTING_EVENT_WANT_ENABLED: bool = Field(default=True, alias="HUB_RETRO_SITTING_EVENT_WANT_ENABLED")
     # Orion's look at the game screen (scripts/retro_watch.py; game company design, patch 2). Ships on; needs
     # the sitting record. Off -> no frame is kept, no bid, no model call, the page says the watch is off.
     # LOOK: at most one look in this many seconds (a ceiling; a look also needs screen change and a press).

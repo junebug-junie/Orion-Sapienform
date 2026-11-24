@@ -149,8 +149,14 @@ organs:
       retro_play: sitting_minutes
     # Patch 2 (looks): hub.retro_watch bids for each look; orion.watch_choice is Orion's own switch (dig watch).
     # Patch 3 (lines): hub.retro_commentary bids for each line Orion says to the person who plays.
+    # Patch 4 (Prime and attention): hub.retro_sitting is the event want a finished sitting posts (event_ref
+    # retro_sitting:<id>, salience = sitting minutes against the last 30 days), so Prime can hold it as a concern.
+    # Patch 4 also adds a NEW PRIME CONCERN SOURCE that CI cannot see (scripts/check_integration_seam.py reads no
+    # method): the two sitting wakes, read by services/orion-mind/app/prime_loop.py ``_read_sitting`` from the open
+    # sitting's Redis key (orion:retro:sitting) and folded by orion/prime/sitting.py. They are facts Prime is shown
+    # (at most two per sitting), not scores.
     families: [hub.retro_coplay, hub.retro_leisure, aitown.session, hub.retro_watch, orion.watch_choice,
-               hub.retro_commentary]
+               hub.retro_commentary, hub.retro_sitting]
     # The line turn reads GET /temporal-self/now?organ=play, puts up to 3 items in its game block and records its
     # cites with POST /temporal-self/now/use (closes the play part of #3457).
     reads_now: services/orion-hub/scripts/retro_commentary.py

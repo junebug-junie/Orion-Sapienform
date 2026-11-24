@@ -267,7 +267,7 @@ def test_a_funded_line_runs_held_at_system_with_frames_and_is_delivered(monkeypa
     assert len(pushed) == 1 and pushed[0]["source"] == "retro_commentary" and pushed[0]["line_id"] == line_id
     assert pushed[0]["retro_sitting_id"] == SID and pushed[0]["kind"] == "orion_outreach"
     assert len(t.history) == 1 and t.history[0]["source_tag"] == "retro_commentary" and not t.notified
-    assert t.calls["acts"] == [{"line_id": line_id, "sitting_id": SID, "text": row["text"]}]
+    assert t.calls["acts"] == [{"line_id": line_id, "sitting_id": SID, "text": row["text"], "player_stated": None}]
     # the checkable note was judged; the old one was shown and settled unchecked
     assert t.db.looks["look-2"]["verdict"] == "checked_holds" and t.db.looks["look-2"]["checkable"] is True
     assert t.db.looks["look-1"]["verdict"] == "unchecked" and t.db.looks["look-1"]["checkable"] is False

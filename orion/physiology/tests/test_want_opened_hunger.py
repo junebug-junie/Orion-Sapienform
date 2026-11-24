@@ -76,10 +76,13 @@ def test_hunger_from_is_parsed_and_validated():
         parse_families(base)
 
 
-def test_durable_intention_is_the_one_want_opened_family_in_the_live_config():
+def test_the_want_opened_families_in_the_live_config():
+    # durable.intention (#3640: the rank is the promise's age) and hub.retro_commentary (game company patch 4: the
+    # time since Orion last spoke in this sitting; its act now closes at Juniper's engagement horizon, not delivery).
     fams, err = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
     assert err is None
-    assert [f for f, c in fams.families.items() if c.hunger_from == "want_opened"] == ["durable.intention"]
+    assert sorted(f for f, c in fams.families.items() if c.hunger_from == "want_opened") == [
+        "durable.intention", "hub.retro_commentary"]
 
 
 def test_a_graded_family_mean_outcome_does_not_sink_the_rank():

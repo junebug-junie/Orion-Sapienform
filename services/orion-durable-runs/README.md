@@ -1489,6 +1489,8 @@ Attention as the want competition (docs/superpowers/specs/2026-11-04-attention-a
   (`orion/schemas/physiology_want.py`): every event want whose LATEST decision is funded and whose event
   has not expired (window end, or an answered camera ask), highest net first, each labelled from its
   source row. Code: `app/event_wants_menu.py`. Reader: Orion Prime (`PRIME_CONCERNS_FROM_EVENT_WANTS`).
+  A finished game sitting (`retro_sitting:<id>`, family `hub.retro_sitting`, game company patch 4) is labelled from
+  its `retro_sitting` row in counts only: "a game sitting: Juniper played <title> for N min, ended <time>".
 - **Replay.** `evals/event_wants_replay.py [--live --days 14]`: salience per source, the event rank vs
   the old rank, and how often Prime's frame would have had a funded event.
 

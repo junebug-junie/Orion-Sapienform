@@ -16,8 +16,10 @@ for p in (REPO_ROOT, SUBSTRATE_ROOT):
 from app.worker import BiometricsSubstrateWorker  # noqa: E402
 
 
-def _worker(monkeypatch, *, world_first: bool) -> BiometricsSubstrateWorker:
+def _worker(monkeypatch, *, world_first: bool, play: bool = False) -> BiometricsSubstrateWorker:
     monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    # world:play (game company patch 4) has its own tests below; the older tests here are about chat and reading.
+    monkeypatch.setenv("ATTENTION_WORLD_PLAY_ENABLED", "true" if play else "false")
     monkeypatch.setenv("ORION_ATTENTION_BROADCAST_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_PE_HISTORY_ENABLED", "false")
     monkeypatch.setenv("ATTENTION_WORLD_FIRST_ENABLED", "true" if world_first else "false")
@@ -161,3 +163,57 @@ def test_latest_message_not_read_when_no_turn_in_the_window(monkeypatch) -> None
     w._store.fetch_chat_turn_times.return_value = [now - timedelta(days=d, minutes=40) for d in range(1, 7)]
     _tick(w)
     w._store.fetch_latest_chat_turn.assert_not_called()
+
+
+# --- world:play (game company patch 4) -------------------------------------------------------------------------
+
+
+def _play_inputs(now):
+    from orion.attention.world_first import PlaySitting, PlayWatch
+
+    week = [PlaySitting(f"b{d}", now - timedelta(days=d, hours=3), now - timedelta(days=d, hours=2), backfilled=True,
+                        ended_at=now - timedelta(days=d, hours=2)) for d in range(1, 7)]
+    live = PlaySitting("S1", now - timedelta(minutes=25), now - timedelta(seconds=20), game_title="Crystalis")
+    watch = PlayWatch(mode="on", newest_note_at=now - timedelta(seconds=30), newest_note="A hero walks east.")
+    return week + [live], watch, None
+
+
+def test_play_is_read_cached_and_wins_a_calm_broadcast_while_orion_watches(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True, play=True)
+    now = datetime.now(timezone.utc)
+    w._store.fetch_chat_turn_times.return_value = []
+    w._store.fetch_accepted_reading_link_events.return_value = []
+    w._store.fetch_play_inputs.side_effect = lambda now: _play_inputs(now)
+    first = w._world_first_external_candidates(now)
+    w._world_first_external_candidates(now + timedelta(seconds=10))
+    assert [c.source_id for c in first] == ["world:chat", "world:play", "world:reading"]
+    assert w._store.fetch_play_inputs.call_count == 1
+    proj = _tick(w)
+    assert proj.attended_node_ids[:2] == ["world:play", "retro_sitting:S1"]
+
+
+def test_a_play_read_failure_is_absent_never_calm(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True, play=True)
+    w._store.fetch_chat_turn_times.return_value = []
+    w._store.fetch_accepted_reading_link_events.return_value = []
+    w._store.fetch_play_inputs.side_effect = RuntimeError("db down")
+    [play] = [c for c in w._world_first_external_candidates(datetime.now(timezone.utc)) if c.source_id == "world:play"]
+    assert play.absent and play.absent_reason == "retro_sitting unreadable (RuntimeError)"
+
+
+def test_play_off_never_reads_the_sitting_table(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True, play=False)
+    w._store.fetch_chat_turn_times.return_value = []
+    w._store.fetch_accepted_reading_link_events.return_value = []
+    ids = [c.source_id for c in w._world_first_external_candidates(datetime.now(timezone.utc))]
+    assert "world:play" not in ids and not w._store.fetch_play_inputs.called
+
+
+def test_the_play_flag_ships_on(monkeypatch) -> None:
+    monkeypatch.delenv("ATTENTION_WORLD_PLAY_ENABLED", raising=False)
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    import app.settings as settings_mod
+
+    settings_mod._settings = None
+    assert settings_mod.get_settings().attention_world_play_enabled is True
+    settings_mod._settings = None

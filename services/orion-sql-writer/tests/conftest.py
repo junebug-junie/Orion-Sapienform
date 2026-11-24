@@ -134,6 +134,9 @@ _DB_DEPENDENT_MODULES = {
     # 2026-11-16 (intention ledger D2, promise acts in shadow): 3 ERRORS (KeyError on the URI) with no
     # database; runs in sql-writer-integration.
     "test_promise_acts_integration",
+    # 2026-11-24 (game company patch 4, a line's engagement grade): 10 ERRORS (KeyError on the URI) with no database
+    # (every test errors on the fixture, measured in CI run 45357035850); runs in sql-writer-integration.
+    "test_retro_line_engagement_integration",
 }
 
 _TESTS_DIR = Path(__file__).resolve().parent

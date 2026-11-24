@@ -194,6 +194,7 @@ from orion.prime import day_dream as dd
 from orion.prime import day_letter as dl
 from orion.prime import hunger as hg
 from orion.prime import intention as it
+from orion.prime import sitting as sw
 from orion.prime.choice import (
     body_situation,
     care_promoted_events,
@@ -582,6 +583,10 @@ class PrimeRuntime(MindLoopRuntime):
             # Before observe(): a concern taken on does not fade while its run is open.
             self.state = it.keep_taken_on(self.state, self.intentions, now)
         self.state = lapse_concerns(observe(self.state, snap, now), now)
+        if self._sitting_wake_on():
+            sitting, watch, err = await self._read_sitting()
+            self.state = sw.observe_sitting(self.state, sitting, read_ok=err is None, now=now)
+            inputs.sitting_line = sw.sitting_frame_line(sitting, watch, now=now, read_error=err)
         if self._intentions_on():
             self.state = it.age_out(self.state, self.intentions, now)
         if self._handback_on():
@@ -691,6 +696,9 @@ class PrimeRuntime(MindLoopRuntime):
 
     async def _open_thought(self, act: ActV1, started_at: datetime) -> None:
         await super()._open_thought(act, started_at)
+        if self._sitting_wake_on():
+            # Game company patch 4: each sitting is named by at most 2 thoughts (orion/prime/sitting.py).
+            self.state = sw.note_sitting_thought(self.state)
         if self._hunger_on():
             # Guards 4 and 5: the thought counts for the budget; its content line is recorded as having fired.
             self.state = hg.note_thought(self.state, started_at, self._thought_need)
@@ -1355,6 +1363,40 @@ class PrimeRuntime(MindLoopRuntime):
         inputs = FrameInputs(now=self.clock(), body=body, body_error=body_err, temporal=temporal,
                              temporal_error=temporal_err, arc_ids=arc_ids, bid_lane=self.s.PRIME_BID_LANE)
         return snap, inputs
+
+    # --- game sittings (game company patch 4; orion/prime/sitting.py) ---------------------------------------
+    def _sitting_wake_on(self) -> bool:
+        return bool(getattr(self.s, "PRIME_SITTING_WAKE_ENABLED", False))
+
+    async def _read_sitting(self) -> tuple[Optional[sw.PrimeSittingV1], Optional[dict[str, Any]], Optional[str]]:
+        """(open sitting or None, its watch state or None, read error or None) from the bus Redis: the gateway's copy
+        of the open sitting (orion:retro:sitting, deleted at close) and its watch (orion:retro:watch). A failed read
+        is an error, never "nobody plays": the wakes then change nothing this tick. Not this prime concern source's
+        only consumer: CI cannot see it (scripts/check_integration_seam.py); config/integration/organs.yaml organ
+        play names it in a comment."""
+        from orion.retro.sitting import SITTING_KEY
+
+        try:
+            redis = self.bus.redis
+            raw = await asyncio.wait_for(redis.get(SITTING_KEY), 2.0)
+            wraw = await asyncio.wait_for(redis.get(sw.WATCH_KEY), 2.0) if raw is not None else None
+        except Exception as exc:  # noqa: BLE001 -- an unread sitting is not a closed one
+            logger.warning("prime_sitting_unread err=%s", type(exc).__name__)
+            return None, None, f"redis read failed ({type(exc).__name__})"
+
+        def load(v: Any) -> Optional[dict[str, Any]]:
+            if v is None:
+                return None
+            try:
+                out = json.loads(v.decode() if isinstance(v, (bytes, bytearray)) else str(v))
+            except ValueError:
+                return None
+            return out if isinstance(out, dict) else None
+
+        data = load(raw)
+        if raw is not None and data is None:
+            return None, None, "the open sitting's copy is not JSON"
+        return sw.parse_sitting(data), load(wraw), None
 
     def _event_mode(self) -> bool:
         return bool(getattr(self.s, "PRIME_CONCERNS_FROM_EVENT_WANTS", False))

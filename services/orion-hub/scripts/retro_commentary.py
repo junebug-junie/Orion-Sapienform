@@ -117,11 +117,17 @@ UPDATE retro_line SET replied_at = now(), replied_by = $2
 WHERE sitting_id = $1 AND outcome = 'delivered' AND replied_at IS NULL
   AND finished_at >= now() - make_interval(secs => $3)
 """
-# The thumb (scripts/retro_routes.py, the gateway): only a delivered line has one; the newest thumb wins.
+# The thumb (scripts/retro_routes.py, the gateway): only a delivered line has one; the newest thumb wins, except that
+# a guest's thumb never replaces Juniper's (game company patch 4: her thumb is the family weight's engagement grade,
+# orion/grammar/line_engagement.py). Returns who holds the line's thumb now; NULL when the line was not delivered.
 THUMB_SQL = """
-UPDATE retro_line SET thumb = $2, thumb_by = $3, thumb_at = now()
-WHERE line_id = $1 AND outcome = 'delivered'
-RETURNING thumb_by
+WITH u AS (
+    UPDATE retro_line SET thumb = $2, thumb_by = $3, thumb_at = now()
+    WHERE line_id = $1 AND outcome = 'delivered' AND (coalesce(thumb_by, '') <> 'juniper' OR $3 = 'juniper')
+    RETURNING thumb_by
+)
+SELECT coalesce((SELECT thumb_by FROM u),
+                (SELECT thumb_by FROM retro_line WHERE line_id = $1 AND outcome = 'delivered'))
 """
 
 
@@ -619,7 +625,8 @@ class CommentaryService:
                                            push_extra=meta, meta=meta)
         if sent.get("reason") == "sent":
             result.update(message_id=sent.get("message_id"))
-            await self._publish_act(bus, line_id=line_id, sitting_id=sid, text=reply.line)
+            await self._publish_act(bus, line_id=line_id, sitting_id=sid, text=reply.line,
+                                    player_stated=sitting.get("player_stated"))
             if cites and getattr(now_obj, "shown_id", None):
                 await self._record_use(now_obj.shown_id, f"{CITING_PREFIX}:{line_id}", cites)
         elif sent.get("reason") == "yielded":
@@ -816,10 +823,12 @@ class CommentaryService:
             return None
 
     @staticmethod
-    async def _default_publish_act(bus: Any, *, line_id: str, sitting_id: str, text: str) -> bool:
+    async def _default_publish_act(bus: Any, *, line_id: str, sitting_id: str, text: str,
+                                   player_stated: Optional[str] = None) -> bool:
         from scripts.act_emit import publish_line_said
 
-        return await publish_line_said(bus, line_id=line_id, sitting_id=sitting_id, text=text)
+        return await publish_line_said(bus, line_id=line_id, sitting_id=sitting_id, text=text,
+                                       player_stated=player_stated)
 
     async def _default_cancel_motor(self, correlation_id: str) -> None:
         from scripts.harness_governor_client import HarnessGovernorClient

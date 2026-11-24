@@ -705,3 +705,28 @@ line_id=... outcome=`, `retro_commentary_yielded`, `retro_chat_turn player=... f
 
 **Turn it off.** `HUB_RETRO_COMMENTARY_ENABLED=false` in `services/orion-hub/.env`, then rebuild `hub-app`: no line
 and no bid; the chat box still answers. Orion can stop lines itself with `dig watch quiet --why "..."`.
+
+## Prime and attention react to play (game company design, patch 4)
+
+What it does, in plain words: while Orion watches a sitting, the play can win Orion's attention (but never over
+Juniper's chat); a sitting wakes Prime twice at most (once when it passes 3 minutes, once when it ends); Prime can
+slow or quicken Orion's eyes and voice in the game; a finished sitting can become a Prime concern; and Juniper's
+thumbs and replies to lines count toward how much the line family is worth.
+
+- **Attention.** `world:play` in both contests (substrate broadcast, field contest). Eligible only while a sitting is
+  open, the watch is not off, and a look note was stored in the last 3 minutes. Check it:
+  `docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select generated_at, c->>'eligible', c->>'reason', c->>'value' from substrate_attention_broadcast_log, jsonb_array_elements((projection_json->'frame'->'debug'->'world_first'->'candidates')::jsonb) c where c->>'source_id' = 'world:play' order by generated_at desc limit 10"`.
+  Off: `ATTENTION_WORLD_PLAY_ENABLED=false` in orion-substrate-runtime and orion-attention-runtime.
+- **Line pairing.** A line said while `world:play` holds the workspace carries that loop
+  (`grammar_acts.workspace_ref`) and writes a non-final `acted` verdict on it.
+- **Prime's wakes.** Thought acts whose close note names `retro_sitting:<id>`: at most 2 per sitting.
+  `select act_id, outcome_note from grammar_acts where actor = 'prime' and verb = 'infer' and outcome_note like '%retro_sitting:%' order by opened_at desc limit 10`.
+  Off: `PRIME_SITTING_WAKE_ENABLED=false` in orion-mind.
+- **Prime's slow / quicken.** `hub.retro_watch` and `hub.retro_commentary` declare `[slow, quicken]`; the market
+  records what a signal did to each bid in `orion:prime:regulate:<family>` (fields `w:<want_id>`).
+- **The sitting's event want.** Family `hub.retro_sitting` (tier 2, a proposal), event_ref `retro_sitting:<id>`, on
+  Prime's EVENTS WORTH EFFORT menu when funded. Off: `HUB_RETRO_SITTING_EVENT_WANT_ENABLED=false`.
+- **Engagement.** A line said with "Juniper" stated is a `juniper_replied` act (horizon 300 s); the sql-writer's
+  horizon resolver grades it 1 on her thumb up or her reply within 2 minutes, 0 on a thumb down or silence. A guest's
+  thumb is stored on `retro_line` and never graded.
+- **The replay that chose the rule:** `scripts/analysis/replay_world_play.py` (exports in its docstring).

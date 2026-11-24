@@ -74,6 +74,7 @@ from orion.grammar.promise_acts import (
     promise_condition,
     promise_void_kind,
 )
+from orion.grammar.line_engagement import LINE_ACTOR, LINE_REPLY_WINDOW_SEC, line_grade, line_id_of
 from orion.grammar.reply_base_rate import ReplyBaseRate, juniper_reply_base_rate
 from orion.grammar.reply_base_rate import applies as reply_base_rate_applies
 
@@ -104,8 +105,13 @@ EXPIRY_GRACE_SEC = 120.0
 # the workspace when she is busier than her own week, and Orion's reply is the act that answers it
 # (live 2026-10-21: 11 of 20 hub.chat_reply acts opened while that winner was bindable).
 # node:substrate.chat left 2026-11-13 (prediction error retired, step 6).
+# Game company patch 4 (spec 2026-11-16 section 7, "Attention and action meet"): a game line answers someone
+# playing. A line said while ``world:play`` holds the workspace is stamped with that loop, and its close writes
+# Orion's non-final ``acted`` verdict on it. Never a verdict on a reading loop: the binding answers only the
+# refs listed here.
 ACT_ANSWERS_WORKSPACE_REFS: dict[str, tuple[str, ...]] = {
     "hub.chat_reply": ("world:chat",),
+    "hub.retro_commentary": ("world:play",),
 }
 
 _WORKSPACE_BINDING_ENABLED = True
@@ -926,6 +932,42 @@ _ASK_STATE_SQL = text(
 )
 
 
+_LINE_ROW_SQL = text(
+    "SELECT thumb, thumb_by, thumb_at, replied_at, replied_by FROM retro_line WHERE line_id = :line_id"
+)
+
+
+def _line_outcome(conn: Any, row: Any, now: datetime, unread: dict[str, int]) -> ActOutcomeV1 | None:
+    """The grade of a Juniper-stated game line's act once its horizon has passed (``line_grade``). The line row
+    and the reply read each run in a savepoint: a missing ``retro_line`` table (a database before the game
+    company migrations) is an unread row, retried next tick, never a 0."""
+    horizon_at = _aware(row["horizon_at"])
+    if now < horizon_at:
+        return None
+    opened_at = _aware(row["opened_at"])
+    line_id = line_id_of(row.get("test_before"))
+    nested = conn.begin_nested() if hasattr(conn, "begin_nested") else None
+    try:
+        line = conn.execute(_LINE_ROW_SQL, {"line_id": line_id}).mappings().first() if line_id else None
+        turn = conn.execute(_JUNIPER_REPLY_SQL, {
+            "opened_at": opened_at, "horizon_at": opened_at + timedelta(seconds=LINE_REPLY_WINDOW_SEC),
+            "correlation_id": row["correlation_id"]}).scalar()
+        if nested is not None:
+            nested.commit()
+    except Exception:  # noqa: BLE001
+        if nested is not None:
+            nested.rollback()
+        logger.warning("line_engagement_unread act_id=%s", row["act_id"])
+        unread["line"] = unread.get("line", 0) + 1
+        return None
+    grade = line_grade(dict(line) if line is not None else None, opened_at=opened_at, horizon_at=horizon_at,
+                       now=now, juniper_turn_at=turn)
+    if grade is None:
+        return None
+    return ActOutcomeV1(value=grade.value, observed_at=grade.observed_at, source=grade.source,  # type: ignore[arg-type]
+                        note=grade.note)
+
+
 def _ask_outcome(conn: Any, row: Any, now: datetime) -> ActOutcomeV1 | None:
     from orion.grammar.camera_ask_acts import ask_grade
 
@@ -1063,6 +1105,20 @@ def resolve_due_acts(
                     asks_withdrawn += 1
                 else:
                     asks_graded += 1
+            continue
+        if row["signal_id"] == "juniper_replied" and row["actor"] == LINE_ACTOR:
+            # A game line said while Juniper was the stated player (game company patch 4): her thumb, or her
+            # reply within 2 min, graded at the horizon (orion/grammar/line_engagement.py).
+            outcome = _line_outcome(conn, row, now, unread)
+            if outcome is None:
+                continue
+            if _one_close(conn, commit, None, act, outcome, f"resolver:{act.act_id}"):
+                if outcome.source == "expired":
+                    expired += 1
+                elif outcome.value >= 1.0:
+                    replied += 1
+                else:
+                    not_replied += 1
             continue
         if row["signal_id"] == "juniper_replied":
             first = conn.execute(

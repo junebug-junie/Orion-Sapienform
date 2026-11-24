@@ -66,6 +66,7 @@ from pydantic import (AwareDatetime, BaseModel, ConfigDict, Field, GetJsonSchema
 
 # Tries that never reached the model: the loop library's, re-exported here so Prime's callers and tests keep
 # their imports (moved to orion/mindloop/backoff.py on 2026-11-04, unchanged).
+from orion.prime.sitting import PrimeSittingSeenV1
 from orion.mindloop.backoff import (  # noqa: F401 -- re-exports
     GATEWAY_NO_SEAT_ERRORS,
     GATEWAY_UPSTREAM_5XX,
@@ -326,6 +327,11 @@ class PrimeStateV1(BaseModel):
     # Prime took on. No act is open for a waiting concern; it opens when the concern gets a slot. At most
     # ``WAITING_MAX``. Left out of the saved state while empty (same rollback rule as ``needs``).
     waiting: list[PrimeConcernV1] = Field(default_factory=list)
+    # Game sittings Prime has seen (game company patch 4, orion/prime/sitting.py): which of the two wakes fired and
+    # how many thoughts named each. Left out of the saved state while empty (an older reader reads a state without it);
+    # a state that HAS it is unreadable to a Hub, orion-durable-runs (dream_day_store) or orion-mind built before it
+    # (extra="forbid"): rebuild Hub and durable-runs before orion-mind, the same rule as ``needs``.
+    sittings: dict[str, PrimeSittingSeenV1] = Field(default_factory=dict)
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
@@ -343,6 +349,8 @@ class PrimeStateV1(BaseModel):
             out.pop("needs", None)
         if not self.waiting:
             out.pop("waiting", None)
+        if not self.sittings:
+            out.pop("sittings", None)
         return out
 
 

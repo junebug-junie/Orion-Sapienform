@@ -4889,6 +4889,11 @@ hub-app: a funded `hub.retro_commentary` bid runs a real unified turn under a `s
 frames; a person's message cancels a running line first; a guest's chat-box turn is stored with source
 `retro_guest`). Flags `HUB_RETRO_SITTING_*`, `HUB_RETRO_WATCH_*`, `HUB_RETRO_COMMENTARY_ENABLED`,
 `HUB_RETRO_LINE_*`; the runbook has the path, the checks and the off switch for each.
+Patch 4 (Prime and attention): a finished sitting posts one shadow event want (`hub.retro_sitting`,
+`HUB_RETRO_SITTING_EVENT_WANT_ENABLED`) so Prime can hold it; the gateway publishes its watch state to
+`orion:retro:watch` for Prime's frame; a line said while the page was told "Juniper" opens a `juniper_replied` act that
+the horizon resolver grades from her thumb or her reply within 2 minutes (the family weight's engagement record); a
+guest's thumb never counts.
 
 Retro media recovery is independent of the controller: `scripts/retro_transport.py`
 keeps one latest complete video/PCM packet per viewer and bounds sends at 750 ms.

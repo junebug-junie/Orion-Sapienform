@@ -52,9 +52,16 @@ def st():
 
 
 def test_only_binding_families_declare_receptors_and_the_parser_refuses_bad_ones():
-    # A receptor only on a family whose bids bind: curiosity investigate (#3010/#3011) and the dream cycle (step 4).
+    # A receptor only on a family whose bids bind: curiosity investigate (#3010/#3011), the dream cycle (step 4), and
+    # Orion's eyes and voice in a person's game (game company patch 4: hub.retro_watch, hub.retro_commentary).
     assert FAMS.get(C).receptors == ("slow",) and FAMS.get("dream.cycle").receptors == ("slow",)
-    assert sorted(f for f, c in FAMS.families.items() if c.receptors) == ["dream.cycle", C]
+    assert FAMS.get("hub.retro_watch").receptors == ("slow", "quicken")
+    assert FAMS.get("hub.retro_commentary").receptors == ("slow", "quicken")
+    assert sorted(f for f, c in FAMS.families.items() if c.receptors) == [
+        "dream.cycle", C, "hub.retro_commentary", "hub.retro_watch"]
+    from orion.physiology.binding import BINDING_PRODUCERS
+    # Their bids bind: a charge on a shadow bid would change nothing (families.yaml, receptors).
+    assert {"orion-hub.retro_watch.binding", "orion-hub.retro_commentary.binding"} <= BINDING_PRODUCERS
     base = {"version": 1, "families": {"x": {"tier": 2, "deferrable_window_s": 60, "receptors": ["calm"]}}}
     with pytest.raises(ValueError, match="receptors"):
         parse_families(base)

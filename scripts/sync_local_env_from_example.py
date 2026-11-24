@@ -145,6 +145,9 @@ SYNC_PREFIXES = (
     # Patch 3: Orion's lines while a person plays (hub-app, scripts/retro_commentary.py).
     "HUB_RETRO_COMMENTARY_",
     "HUB_RETRO_LINE_",
+    # Game company patch 4 (2026-11-24): world:play in both attention contests (orion-substrate-runtime,
+    # orion-attention-runtime). Not "ATTENTION_WORLD_": that would also sync the reading/first keys' local values.
+    "ATTENTION_WORLD_PLAY_",
     "ROOM_COMPANION_CONSULT_",
     # Claude's tools gated by Orion's consent (2026-11-13, Patch 1b): the companion's per-turn MCP server,
     # the governor's broker (CLAUDE_TOOLS_*, CHANNEL_CLAUDE_TOOL_REQUEST). orion-mind's PRIME_CONSENT_* keys

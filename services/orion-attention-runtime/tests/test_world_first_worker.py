@@ -206,3 +206,33 @@ def test_walkway_with_no_recent_history_row_is_absent() -> None:
     rows.append((walkway, NOW - timedelta(minutes=20), 1.0))
     cand = _by_id(_worker(pe_rows=rows)._world_first_candidates(_field(), NOW))[walkway]
     assert cand.absent and "old" in (cand.absent_reason or "")
+
+
+# --- world:play (game company patch 4) -------------------------------------------------------------------------
+
+
+def test_the_field_contest_reads_play_cached_and_absent_on_failure() -> None:
+    from orion.attention.world_first import PlaySitting, PlayWatch
+
+    w = _worker()
+    w._settings = SimpleNamespace(attention_world_first_enabled=True, attention_world_reading_enabled=True,
+                                  attention_world_play_enabled=True)
+    live = PlaySitting("S1", NOW - timedelta(minutes=25), NOW - timedelta(seconds=20), game_title="Crystalis")
+    w._store.fetch_play_inputs.return_value = ([live], PlayWatch(mode="on", newest_note_at=NOW), None)
+    first = _by_id(w._world_first_candidates(_field(), NOW))
+    _by_id(w._world_first_candidates(_field(), NOW + timedelta(seconds=5)))
+    assert first["world:play"].label == "Someone is playing Crystalis" and not first["world:play"].absent
+    assert w._store.fetch_play_inputs.call_count == 1
+    w2 = _worker()
+    w2._settings = w._settings
+    w2._store.fetch_play_inputs.side_effect = RuntimeError("db down")
+    assert _by_id(w2._world_first_candidates(_field(), NOW))["world:play"].absent
+
+
+def test_the_field_contest_play_flag_ships_on_and_off_reads_nothing() -> None:
+    from app.settings import Settings
+
+    assert Settings().attention_world_play_enabled is True
+    w = _worker()
+    assert "world:play" not in _by_id(w._world_first_candidates(_field(), NOW))
+    assert not w._store.fetch_play_inputs.called

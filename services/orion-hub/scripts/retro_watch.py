@@ -73,6 +73,11 @@ STALE_RING_SEC = 60.0          # no packet for this long and no sitting: the che
 PREF_SYNC_FIRST_DAYS = 400     # the first copy of Orion's choices after a start reaches back this far
 PREF_SYNC_DAYS = 2
 KEEP_FINISHED = 8              # counts of recently closed sittings kept for their play row
+# Game company patch 4: the watch's state for Prime's frame line (orion/prime/sitting.py reads it from the bus Redis,
+# next to orion:retro:sitting). Refreshed every WATCH_PUBLISH_SEC while a sitting is open; expires on its own.
+from orion.retro.sitting import WATCH_KEY  # noqa: E402 -- one name for the key, shared with orion/prime/sitting.py
+WATCH_PUBLISH_SEC = 15.0
+WATCH_KEY_TTL_SEC = 90
 # Held in Redis by hub-app while a line turn runs (scripts/retro_commentary.py): no look is bid for meanwhile.
 LINE_LOCK_KEY = "orion:retro:line_turn"
 
@@ -287,6 +292,9 @@ class WatchService:
                 await asyncio.sleep(self.check_sec)
                 now = self.clock()
                 self.check(now)
+                if now - getattr(self, "_watch_published_at", 0.0) >= WATCH_PUBLISH_SEC:
+                    self._watch_published_at = now
+                    self._spawn(self.publish_watch())
                 if now - self._flushed_at >= FLUSH_SEC and not self._flushing:
                     self._flushed_at = now
                     self._spawn(self.flush())
@@ -298,6 +306,31 @@ class WatchService:
             raise
         except Exception:  # noqa: BLE001 -- the next packet starts the loop again
             self._warn("retro_watch_loop_failed")
+
+    def watch_snapshot(self) -> Optional[dict]:
+        """What Prime's frame line needs about the watch of the open sitting, or None when none is open."""
+        cur = self.sitting.tracker.current
+        st = self.state
+        if cur is None or st is None or st.sitting_id != cur.sitting_id:
+            return None
+        return {"sitting_id": cur.sitting_id, "mode": self.mode.mode, "set_by": self.mode.set_by,
+                "why": self.mode.why, "counts": dict(st.counters), "last_note": st.last_stored_note,
+                "last_note_at": st.last_stored_at, "status": self.status().get("status", {}).get("code"),
+                "at": self.clock()}
+
+    async def publish_watch(self) -> None:
+        """``watch_snapshot`` into Redis (WATCH_KEY, with a TTL). Never raises: Prime's line then says unknown."""
+        snap = self.watch_snapshot()
+        if snap is None:
+            return
+        try:
+            redis = self.sitting.redis_provider()
+            if redis is None:
+                return
+            await asyncio.wait_for(redis.set(WATCH_KEY, json.dumps(snap, separators=(",", ":"), default=str),
+                                             ex=WATCH_KEY_TTL_SEC), OP_TIMEOUT_SEC)
+        except Exception:  # noqa: BLE001
+            self._warn("retro_watch_publish_failed")
 
     def _state_for(self, cur: Any) -> SittingWatch:
         st = self.state
@@ -880,4 +913,4 @@ def choice_from_act(act: dict) -> Optional[tuple]:
             act.get("session_id"), act.get("set_at"))
 
 
-__all__ = ["HOLDER", "LINE_LOCK_KEY", "LookFailed", "SittingWatch", "WatchService", "choice_from_act", "post_percept"]
+__all__ = ["HOLDER", "LINE_LOCK_KEY", "WATCH_KEY", "LookFailed", "SittingWatch", "WatchService", "choice_from_act", "post_percept"]

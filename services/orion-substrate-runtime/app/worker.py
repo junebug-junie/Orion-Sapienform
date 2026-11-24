@@ -3604,6 +3604,8 @@ class BiometricsSubstrateWorker:
             logger.warning("substrate_world_first_chat_latest_read_failed err=%s", type(exc).__name__)
             latest = None
         candidates = [chat_candidate(turns, now=now, latest_turn=latest)]
+        if bool(getattr(self._settings, "attention_world_play_enabled", False)):
+            candidates.append(self._world_play_candidate(now))
         if not bool(getattr(self._settings, "attention_world_reading_enabled", False)):
             return candidates
 
@@ -3626,6 +3628,26 @@ class BiometricsSubstrateWorker:
                 self._world_reading_link_events_cache_at = now
         candidates.append(reading_candidate(events, now=now))
         return candidates
+
+    # world:play (game company patch 4): the sitting table, the open sitting's watch and newest note, read
+    # at most every 30 s (the field of play moves on minutes; a note goes stale after 180 s).
+    _WORLD_PLAY_CACHE_SEC = 30.0
+
+    def _world_play_candidate(self, now: datetime) -> Any:
+        from orion.attention.world_first import play_candidate
+
+        cache_at = getattr(self, "_world_play_cache_at", None)
+        cached = getattr(self, "_world_play_cache", None)
+        if cache_at is not None and cached is not None and 0 <= (now - cache_at).total_seconds() < self._WORLD_PLAY_CACHE_SEC:
+            sittings, watch, absent = cached
+        else:
+            try:
+                sittings, watch, absent = self._store.fetch_play_inputs(now=now)
+            except Exception as exc:  # noqa: BLE001 -- absent, not calm
+                logger.warning("substrate_world_first_play_read_failed err=%s", type(exc).__name__)
+                sittings, watch, absent = None, None, f"retro_sitting unreadable ({type(exc).__name__})"
+            self._world_play_cache, self._world_play_cache_at = (sittings, watch, absent), now
+        return play_candidate(sittings, now=now, watch=watch, absent_reason=absent)
 
     # Prediction-error magnitude history (spec 2026-10-02, step 1). In-memory
     # per-node window seeded once from Postgres, so the 7-day percentiles do

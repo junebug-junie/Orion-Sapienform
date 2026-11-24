@@ -16,6 +16,10 @@ Layer 5 substrate service: polls latest `FieldStateV1` from Postgres and builds 
   one bounded world-first candidate. It shares the substrate journal definition and one-minute
   cache with the substrate broadcast, carries endpoint ids as evidence, and yields to eligible
   `world:chat`.
+- With `ATTENTION_WORLD_PLAY_ENABLED=true` (ships on; game company patch 4), includes `world:play`: minutes of
+  play on the Retro service against its own week, eligible only while Orion watches the open sitting, yielding to
+  `world:chat`, absent when `retro_sitting` cannot be read. Same read as the substrate broadcast
+  (`orion/attention/play_read.py`), cached 30 s. It is a channel target here (no pressure, no field node).
 
 ## Prerequisites
 

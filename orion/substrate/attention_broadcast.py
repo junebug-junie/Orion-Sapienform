@@ -34,6 +34,7 @@ from orion.schemas.attention_frame import (
 from orion.schemas.attention_candidate import (
     NO_ATTENTION_CONSUMER_NODE_IDS,
     PERCEPTION_WALKWAY_NODE_ID,
+    WORLD_PLAY_SOURCE_ID,
     WORLD_READING_SOURCE_ID,
     world_first_fenced,
 )
@@ -459,7 +460,7 @@ def world_first_signals(
                     [cand.source_id]
                     + (
                         [str(ref) for ref in cand.evidence_refs if str(ref) != cand.source_id]
-                        if cand.source_id == WORLD_READING_SOURCE_ID
+                        if cand.source_id in (WORLD_READING_SOURCE_ID, WORLD_PLAY_SOURCE_ID)
                         else []
                     )
                     + [str(t) for t in metadata.get("contributing_turn_ids") or []]

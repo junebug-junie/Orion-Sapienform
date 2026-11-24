@@ -1090,7 +1090,8 @@ async def physiology_bid(want: dict, object_text: Optional[str] = Query(default=
 @app.get("/physiology/event-wants")
 async def physiology_event_wants(hours: float = 24.0, limit: int = 8, care: int = 0) -> dict:
     """Read-only ``FundedEventWantsV1``: event wants whose latest decision is funded and whose event has
-    not expired, highest net first (attention as the want competition, patch 2). Orion Prime reads it as
+    not expired, highest net first. ``hours`` bounds how old a decision may be; a want with a known,
+    still-open window is kept whatever its age (back ``OPEN_WINDOW_SEARCH_HOURS``, #3558) (attention as the want competition, patch 2). Orion Prime reads it as
     its concern source. From want_ledger; no scoring here. ``care=1``: include each want's
     ``care_promoted`` (personality rev 4). Without it the field is left out, so a reader built before the
     field existed (``extra="forbid"``) still validates the payload whatever the deploy order."""

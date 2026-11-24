@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Iterator, Optional
 
 SITTING_KEY = "orion:retro:sitting"       # Redis: the open sitting as JSON, for both Hub processes
+WATCH_KEY = "orion:retro:watch"           # Redis: the open sitting's watch state, for Prime's frame (patch 4)
 SITTING_SUBJECT_PREFIX = "retro_sitting:" # Temporal Self subject of a person's sitting (never Orion's play)
 GAP_SEC_DEFAULT = 300.0
 MIN_SEC_DEFAULT = 120.0

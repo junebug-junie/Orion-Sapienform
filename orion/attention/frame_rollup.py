@@ -43,6 +43,8 @@ CAUSES: tuple[tuple[str, str], ...] = (
     ("no polarity", "no declared polarity%"),
     # world_first.yield_reading_to_chat: reading steps aside while Juniper is talking
     ("yields to chat", "yields to Juniper%"),
+    # world:play while Orion is not watching the sitting (world_first.play_watch_reason)
+    ("not watching", "not watching%"),
     ("quiet for itself", "%quiet for itself%"),
     ("usual for itself", "%usual for itself%"),
     ("high for itself", "%high for itself%"),

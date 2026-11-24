@@ -532,6 +532,7 @@ def world_first_targets(
     from orion.attention.world_first import (
         SOURCE_KIND_REF_PREFIX,
         WORLD_CHAT_SOURCE_ID,
+        WORLD_PLAY_SOURCE_ID,
         rank_candidates,
         yield_reading_to_chat,
     )
@@ -545,7 +546,9 @@ def world_first_targets(
         # Faded by event age for event-written sources (verdict.salience).
         salience = clamp01(verdict.salience) if verdict.eligible else 0.0
         value = float(mag.value)
-        is_chat = cand.source_id == WORLD_CHAT_SOURCE_ID
+        # Chat and play (game company patch 4) are not field nodes and their value is a count, not a
+        # prediction error: no pressure, no channel reading.
+        is_chat = cand.source_id in (WORLD_CHAT_SOURCE_ID, WORLD_PLAY_SOURCE_ID)
         target = FieldAttentionTargetV1(
             target_id=cand.source_id,
             # chat is not a field node; "channel" also keeps it out of

@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # Accepted world-pulse reading links are one bounded external candidate in
     # the world-first contest. Chat always yields reading on the same tick.
     attention_world_reading_enabled: bool = Field(True, alias="ATTENTION_WORLD_READING_ENABLED")
+    # world:play (game company patch 4, orion.attention.world_first.play_candidate): someone plays on the Retro
+    # service. Competes only while Orion watches the open sitting; chat always wins over it.
+    attention_world_play_enabled: bool = Field(True, alias="ATTENTION_WORLD_PLAY_ENABLED")
     # Event-written body nodes (glossary semantics: one reading per event,
     # carried forward) compete only for 300 s after the event that wrote
     # them, fading in rank (orion.attention.world_first.

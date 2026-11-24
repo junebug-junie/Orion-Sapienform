@@ -39,6 +39,8 @@ OFFICE_PREFIX = "office_session:"
 # A new philosophical curiosity finding (curiosity event wants step 3, services/orion-hub/scripts/curiosity_event_wants.py).
 CURIOSITY_PREFIX = "curiosity_run:"
 FINDING_LABEL_CHARS = 240
+# A finished game sitting (game company patch 4, services/orion-hub/scripts/retro_sitting.py ``_post_event_want``).
+SITTING_PREFIX = "retro_sitting:"
 MAX_HOURS = 72.0
 MAX_LIMIT = 50
 
@@ -60,6 +62,11 @@ READ_LABELS_SQL = "SELECT seed_id, title, url FROM world_pulse_read_seed WHERE s
 ASK_LABELS_SQL = "SELECT ask_id, question, status FROM orion_ask WHERE ask_id = ANY(%(ids)s)"
 OFFICE_TABLE_SQL = "SELECT to_regclass('vision_office_session') IS NOT NULL AS present"
 OFFICE_LABELS_SQL = "SELECT session_id, label, who_text FROM vision_office_session WHERE session_id = ANY(%(ids)s)"
+SITTING_TABLE_SQL = "SELECT to_regclass('retro_sitting') IS NOT NULL AS present"
+SITTING_LABELS_SQL = """
+SELECT sitting_id, game_title, game_id, player_stated, started_at, last_input_at FROM retro_sitting
+ WHERE sitting_id = ANY(%(ids)s)
+"""
 # The run's latest finish row (this service's own table): the finding's own words.
 FINISH_LABELS_SQL = """
 SELECT DISTINCT ON (run_id) run_id, detail FROM substrate_durable_run_state
@@ -94,6 +101,18 @@ def finding_label(detail: Any) -> str:
     if len(head) > FINDING_LABEL_CHARS:
         head = head[: FINDING_LABEL_CHARS - 1] + "…"
     return f"a curiosity finding: {head}"[:300]
+
+
+def sitting_label(row: Mapping[str, Any]) -> str:
+    """A finished sitting in counts only (no model, no note): who as the page was told, what, how long, when.
+    "Someone" unless the page was told "Juniper" (orion/retro/sitting.py who_words)."""
+    who = "Juniper" if str(row.get("player_stated") or "") == "juniper" else "Someone"
+    title = " ".join(str(row.get("game_title") or row.get("game_id") or "a game").split())[:80]
+    start, last = _ts(row.get("started_at")), _ts(row.get("last_input_at"))
+    minutes = int(round((last - start).total_seconds() / 60.0)) if start and last else None
+    span = f" for {minutes} min" if minutes is not None else ""
+    when = f", ended {last.strftime('%Y-%m-%d %H:%M')}Z" if last else ""
+    return f"a game sitting: {who} played {title}{span}{when}"[:300]
 
 
 def _ts(v: Any) -> Optional[datetime]:
@@ -208,6 +227,7 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
         ask_ids = sorted({x[len(ASK_PREFIX):] for x in refs if x.startswith(ASK_PREFIX)})
         office_ids = sorted({x[len(OFFICE_PREFIX):] for x in refs if x.startswith(OFFICE_PREFIX)})
         run_ids = sorted({x[len(CURIOSITY_PREFIX):] for x in refs if x.startswith(CURIOSITY_PREFIX)})
+        sitting_ids = sorted({x[len(SITTING_PREFIX):] for x in refs if x.startswith(SITTING_PREFIX)})
         labels: dict[str, str] = {}
         gone: set[str] = set()
         if read_ids:
@@ -238,6 +258,10 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
             for r in await (await conn.execute(OFFICE_LABELS_SQL, {"ids": office_ids})).fetchall():
                 labels[f"{OFFICE_PREFIX}{r['session_id']}"] = (
                     r["label"] or f"{r['who_text'] or 'someone'} in the office")[:300]
+        present = (await (await conn.execute(SITTING_TABLE_SQL)).fetchall()) if sitting_ids else []
+        if present and present[0]["present"]:
+            for r in await (await conn.execute(SITTING_LABELS_SQL, {"ids": sitting_ids})).fetchall():
+                labels[f"{SITTING_PREFIX}{r['sitting_id']}"] = sitting_label(r)
         if run_ids:
             for r in await (await conn.execute(FINISH_LABELS_SQL, {"ids": run_ids})).fetchall():
                 label = finding_label(r["detail"])
@@ -246,5 +270,6 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
     return menu_from_rows(rows, labels=labels, gone=gone, families=families, now=now, limit=limit)
 
 
-__all__ = ["FINISH_LABELS_SQL", "LATEST_EVENT_DECISIONS_SQL", "OFFICE_LABELS_SQL", "finding_label", "OFFICE_TABLE_SQL", "expires_at", "menu_from_rows",
+__all__ = ["FINISH_LABELS_SQL", "LATEST_EVENT_DECISIONS_SQL", "OFFICE_LABELS_SQL", "SITTING_LABELS_SQL", "finding_label",
+           "sitting_label", "OFFICE_TABLE_SQL", "expires_at", "menu_from_rows",
            "menu_payload", "read_menu"]

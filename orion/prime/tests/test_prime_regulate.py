@@ -150,7 +150,8 @@ def test_primes_receivers_come_from_families_yaml_and_list_dream_slow_only():
     fams, err = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
     assert fams is not None, err
     receptors = {f: c.receptors for f, c in fams.families.items() if c.receptors}   # prime_loop._receptors
-    assert receptors == {C: ("slow",), "dream.cycle": ("slow",)}
+    assert receptors == {C: ("slow",), "dream.cycle": ("slow",), "hub.retro_watch": ("slow", "quicken"),
+                         "hub.retro_commentary": ("slow", "quicken")}
     frame = build_frame(PrimeStateV1(), FrameInputs(now=T0, receptors=receptors))
     assert "- dream.cycle: slow" in frame and f"- {C}: slow" in frame
     move = RegulateMoveV1(kind="regulate", family="dream.cycle", direction="slow", why="w", hours=3)

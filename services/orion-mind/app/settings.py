@@ -218,6 +218,9 @@ class Settings(BaseSettings):
     # Surprise and connection are read from durable-runs GET /temporal-self/hunger every PRIME_HUNGER_READ_SEC.
     # false = no needs, no frame section, no salience on the bid: Prime wakes on changes only. The 6-hour quiet
     # floor is deleted, not restored by false. Shipped ON.
+    # Game company patch 4 (orion/prime/sitting.py): a game sitting wakes Prime twice at most (open past 3 min, end),
+    # at most 2 thoughts name one sitting, and the frame shows one line while someone plays. false = no wake, no line.
+    PRIME_SITTING_WAKE_ENABLED: bool = Field(default=True, alias="PRIME_SITTING_WAKE_ENABLED")
     PRIME_HUNGER_NEEDS_ENABLED: bool = Field(default=True, alias="PRIME_HUNGER_NEEDS_ENABLED")
     PRIME_HUNGER_THRESHOLD: float = Field(default=0.5, gt=0.0, le=1.0, alias="PRIME_HUNGER_THRESHOLD")
     PRIME_HUNGER_DAILY_BUDGET: int = Field(default=24, ge=1, alias="PRIME_HUNGER_DAILY_BUDGET")

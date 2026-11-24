@@ -75,7 +75,7 @@ import logging
 import math
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Protocol, Sequence
+from typing import Iterable, Mapping, Protocol, Sequence
 
 from orion.attention.sustained import (
     EVENT_ORIENTING_WINDOW_SEC as _ORIENTING_WINDOW_SEC,
@@ -89,6 +89,7 @@ from orion.schemas.attention_candidate import (
     PERCEPTION_NODE_ID,
     ROOM_JOINT_NODE_ID,
     WORLD_CHAT_SOURCE_ID,
+    WORLD_PLAY_SOURCE_ID,
     WORLD_READING_SOURCE_ID,
     AttentionCandidateV1,
     is_world_source_id,
@@ -477,6 +478,10 @@ def judge_candidate(
             candidate, False, "no declared polarity in the semantic layer", None, mag.band
         )
     band = _band_for(score, band_cuts)
+    if candidate.not_eligible_reason:
+        # A measured source its builder holds out this tick (world:play while Orion is not watching): the
+        # reading, percentile and band are traced, the source does not compete.
+        return CandidateVerdict(candidate, False, candidate.not_eligible_reason, score, band)
     rank_score = bad_direction_percentile(candidate, for_ranking=True)
     # A node admitted only for its own tail (walkway camera: p99+). Judged on
     # the mid-rank percentile: the camera score saturates at 1.0 for ~1.3% of
@@ -601,11 +606,18 @@ def rank_candidates(
     return ranking
 
 
+# World sources that step aside while Juniper is talking: Orion's own reading, and a game someone plays
+# on Orion (game company patch 4: "yields to Juniper", spec section 7). Juniper's chat never yields.
+YIELDS_TO_CHAT: tuple[str, ...] = (WORLD_READING_SOURCE_ID, WORLD_PLAY_SOURCE_ID)
+
+
 def yield_reading_to_chat(ranking: WorldFirstRanking) -> WorldFirstRanking:
-    """Make Juniper's eligible chat source outrank Orion's own reading.
+    """Make Juniper's eligible chat source outrank Orion's own reading and a game being played.
 
     Both background attention contests use this same post-ranking rule so a
-    reading candidate cannot win one contest while chat wins the other.
+    yielding candidate cannot win one contest while chat wins the other.
+    Nothing else yields to anything here: play does not make reading yield, nor
+    reading play (spec section 7: no rule makes reading yield to play).
     """
     if not any(
         verdict.candidate.source_id == WORLD_CHAT_SOURCE_ID
@@ -619,13 +631,13 @@ def yield_reading_to_chat(ranking: WorldFirstRanking) -> WorldFirstRanking:
             reason="yields to Juniper (world:chat eligible)",
         )
         for verdict in ranking.eligible
-        if verdict.candidate.source_id == WORLD_READING_SOURCE_ID
+        if verdict.candidate.source_id in YIELDS_TO_CHAT
     ]
     if yielded:
         ranking.eligible[:] = [
             verdict
             for verdict in ranking.eligible
-            if verdict.candidate.source_id != WORLD_READING_SOURCE_ID
+            if verdict.candidate.source_id not in YIELDS_TO_CHAT
         ]
         ranking.ineligible.extend(yielded)
     return ranking
@@ -1226,4 +1238,228 @@ CHAT_LATEST_TURN_SQL = (
     "SELECT id, created_at, left(prompt, 2000) FROM chat_history_log "
     + _CHAT_TURN_WHERE
     + "ORDER BY created_at DESC LIMIT 1"
+)
+
+
+# ---------------------------------------------------------------------------
+# world:play -- someone plays a game on Orion (game company patch 4).
+# ---------------------------------------------------------------------------
+#
+# Spec: docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md section 7, and its
+# "Metric quality gate records: Play rate". The events are the MINUTES WITH PLAYER INPUT, read from
+# ``retro_sitting``: every whole minute from a sitting's first mask change to its newest one (a sitting closes
+# after 5 minutes without a mask change, so a minute inside it held a press or one is at most 5 minutes away).
+# The reading is how many of the last 30 minutes held play, against the same count sampled every minute over
+# the last 7 days (``chat_rate_reading``, the instrument the other world candidates use). Rest is a true 0:
+# nobody played in the last 30 minutes. Backfilled sittings (patch 1, from the game journals, counted by mask
+# changes like the live counter) are the week's baseline; they are never "open".
+#
+# Eligible only while Orion is WATCHING (``play_watch_reason``): a sitting is open, the watch in force is not
+# off, and (rule ``note``) a look note was stored in the last 3 minutes. The rule was chosen from the replay
+# (scripts/analysis/replay_world_play.py; numbers in docs/superpowers/pr-reports/2026-11-24-retro-prime-attention-pr.md).
+# Yields to Juniper (YIELDS_TO_CHAT). Absent only when the sitting table cannot be read; a watch that cannot be
+# read holds the candidate out (fail closed), it does not make it absent.
+
+PLAY_RATE_WINDOW = timedelta(minutes=30)
+PLAY_RATE_GRID_STEP = timedelta(minutes=1)
+# Fewer play minutes than this in 7 days: insufficient_history (the same floor as chat and reading).
+PLAY_MIN_MINUTES_7D = 5
+# A sitting row with no ended_at whose newest input is older than this is not open: the gateway closes a
+# sitting 300 s after its last mask change and writes the row once a minute, so a row past 360 s is a crashed
+# writer's, not a sitting (orion/retro/sitting.py GAP_SEC_DEFAULT; services/orion-hub/scripts/retro_sitting.py).
+PLAY_OPEN_MAX_IDLE = timedelta(seconds=360)
+# "Orion is watching" on the game page: a stored note under 3 minutes old (orion/retro/watch.py
+# WATCHING_FRESH_SEC; the same number so the page and attention cannot disagree).
+PLAY_WATCHING_FRESH_SEC = 180.0
+PLAY_RULE_MODE = "mode"   # watching = a sitting is open and the watch in force is not off
+PLAY_RULE_NOTE = "note"   # ... and a look note was stored in the last PLAY_WATCHING_FRESH_SEC
+PLAY_RULES = (PLAY_RULE_MODE, PLAY_RULE_NOTE)
+PLAY_RULE_DEFAULT = PLAY_RULE_NOTE
+PLAY_EVIDENCE_KIND = "retro_play"
+PLAY_NOTE_EXCERPT_CHARS = 200
+PLAY_QUIET_LABEL = "nobody is playing"
+
+
+@dataclass(frozen=True)
+class PlaySitting:
+    """One ``retro_sitting`` row, as the candidate needs it."""
+
+    sitting_id: str
+    started_at: datetime
+    last_input_at: datetime
+    ended_at: datetime | None = None
+    game_title: str | None = None
+    game_id: str | None = None
+    player_stated: str | None = None
+    backfilled: bool = False
+
+
+@dataclass(frozen=True)
+class PlayWatch:
+    """What Orion's watch of the open sitting is doing: the mode in force (``orion.retro.watch.effective`` over
+    ``retro_watch_preference``), who set it and why, and the newest stored look note of that sitting."""
+
+    mode: str                                  # off | quiet | on
+    set_by: str | None = None                  # orion | juniper | None (both on)
+    why: str | None = None
+    newest_note_at: datetime | None = None
+    newest_note: str | None = None
+
+
+def play_minute_times(sittings: Iterable[PlaySitting], *, now: datetime) -> list[datetime]:
+    """One stamp per whole minute that held play, oldest first: each sitting from the minute of its first mask
+    change to the minute of its newest one (never past ``now``). Overlapping sittings count a minute once."""
+    now = _aware(now)
+    minutes: set[datetime] = set()
+    for s in sittings:
+        start = _aware(s.started_at).replace(second=0, microsecond=0)
+        end = min(_aware(s.last_input_at), now)
+        t = start
+        while t <= end:
+            minutes.add(t)
+            t += PLAY_RATE_GRID_STEP
+    return sorted(minutes)
+
+
+def open_play_sitting(sittings: Iterable[PlaySitting], *, now: datetime) -> PlaySitting | None:
+    """The live sitting open at ``now``, or None. Backfilled rows are history, never open."""
+    now = _aware(now)
+    live = [s for s in sittings
+            if not s.backfilled and s.ended_at is None and _aware(s.started_at) <= now
+            and now - _aware(s.last_input_at) <= PLAY_OPEN_MAX_IDLE]
+    return max(live, key=lambda s: _aware(s.last_input_at)) if live else None
+
+
+def play_watch_reason(
+    sitting: PlaySitting | None, watch: PlayWatch | None, *, now: datetime, rule: str = PLAY_RULE_DEFAULT
+) -> str | None:
+    """None when Orion is watching (the candidate may compete), else why not ("not watching: ...")."""
+    if rule not in PLAY_RULES:
+        raise ValueError(f"rule must be one of {PLAY_RULES}")
+    if sitting is None:
+        return "not watching: no sitting is open"
+    if watch is None:
+        return "not watching: the watch mode could not be read"
+    if watch.mode == "off":
+        who = {"orion": "Orion", "juniper": "Juniper"}.get(str(watch.set_by or ""), "the switch")
+        return f"not watching: the watch is off (set by {who}{': ' + watch.why if watch.why else ''})"
+    if rule == PLAY_RULE_NOTE:
+        at = _aware(watch.newest_note_at) if watch.newest_note_at is not None else None
+        if at is None or at > _aware(now) or (_aware(now) - at).total_seconds() >= PLAY_WATCHING_FRESH_SEC:
+            return "not watching: no look note stored in the last 3 min"
+    return None
+
+
+def play_label(sitting: PlaySitting | None, minutes_in_window: int) -> str:
+    """The loop's description (its id is a hash of it, orion/substrate/attention/scoring.py): who and what,
+    never a count or an age, so one sitting keeps one loop (the world:chat lesson, CHAT_TALKING_LABEL)."""
+    if not minutes_in_window or sitting is None:
+        return PLAY_QUIET_LABEL if not minutes_in_window else "someone played a game in the last 30 min"
+    who = "Juniper" if str(sitting.player_stated or "") == "juniper" else "Someone"
+    title = " ".join(str(sitting.game_title or sitting.game_id or "a game").split())[:80]
+    return f"{who} is playing {title}"
+
+
+def play_candidate(
+    sittings: Sequence[PlaySitting] | None,
+    *,
+    now: datetime,
+    watch: PlayWatch | None = None,
+    rule: str = PLAY_RULE_DEFAULT,
+    absent_reason: str | None = None,
+) -> AttentionCandidateV1:
+    """``world:play``. ``sittings`` None = the table could not be read: absent, never "nobody plays".
+    ``watch`` is the open sitting's watch (None: unread or no sitting); it gates eligibility only."""
+    now = _aware(now)
+    if sittings is None:
+        return AttentionCandidateV1(
+            candidate_id=f"attention-candidate:{WORLD_PLAY_SOURCE_ID}",
+            source_id=WORLD_PLAY_SOURCE_ID,
+            source_kind="external",
+            label="play activity unavailable",
+            unusualness=_missing_magnitude(),
+            absent=True,
+            absent_reason=absent_reason or "retro_sitting unreadable",
+            value_kind="count",
+            evidence_refs=[WORLD_PLAY_SOURCE_ID],
+        )
+    times = play_minute_times(sittings, now=now)
+    mag, mid = chat_rate_reading(
+        times, now=now, window=PLAY_RATE_WINDOW, grid_step=PLAY_RATE_GRID_STEP, min_turns=PLAY_MIN_MINUTES_7D
+    )
+    n = int(mag.value)
+    sitting = open_play_sitting(sittings, now=now)
+    gate = play_watch_reason(sitting, watch, now=now, rule=rule) if n else None
+    evidence = None
+    refs = [WORLD_PLAY_SOURCE_ID]
+    if sitting is not None:
+        refs.append(f"retro_sitting:{sitting.sitting_id}")
+    if n and absent_reason is None:
+        note, truncated = chat_message_excerpt(watch.newest_note or "", PLAY_NOTE_EXCERPT_CHARS) if watch else ("", False)
+        evidence = {
+            "kind": PLAY_EVIDENCE_KIND,
+            "sitting_id": sitting.sitting_id if sitting else None,
+            "game_title": (sitting.game_title or sitting.game_id) if sitting else None,
+            "player_stated": sitting.player_stated if sitting else None,
+            "minutes_in_window": n,
+            "window_min": int(PLAY_RATE_WINDOW.total_seconds() // 60),
+            "watch_mode": watch.mode if watch else None,
+            "watch_set_by": watch.set_by if watch else None,
+            "newest_note": note or None,
+            "newest_note_at": _aware(watch.newest_note_at).isoformat() if watch and watch.newest_note_at else None,
+            "truncated": truncated,
+        }
+    return AttentionCandidateV1(
+        candidate_id=f"attention-candidate:{WORLD_PLAY_SOURCE_ID}",
+        source_id=WORLD_PLAY_SOURCE_ID,
+        source_kind="external",
+        label=play_label(sitting, n),
+        unusualness=mag,
+        rank_percentile=mid,
+        observed_at=max(times, default=None),
+        absent=absent_reason is not None,
+        absent_reason=absent_reason,
+        value_kind="count",
+        polarity=None,
+        evidence_refs=refs,
+        evidence=evidence,
+        not_eligible_reason=gate,
+    )
+
+
+def play_watch_from_rows(
+    sitting: PlaySitting | None, prefs: Sequence[Mapping[str, object]] | None,
+    newest_note: tuple[datetime, str] | None,
+) -> PlayWatch | None:
+    """The open sitting's watch from ``retro_watch_preference`` rows ({scope, scope_id, set_by, mode, why,
+    set_at}) and its newest stored note, with the game page's own rule (``orion.retro.watch.effective``: the
+    lower of Orion's and Juniper's settings). None when there is no sitting or the preferences were not read."""
+    if sitting is None or prefs is None:
+        return None
+    from orion.retro.watch import effective, orion_choice
+
+    rows = [dict(r) for r in prefs]
+    mine = orion_choice([r for r in rows if r.get("set_by") == "orion"], sitting.sitting_id, sitting.game_id)
+    jun = [r for r in rows if r.get("set_by") == "juniper" and r.get("scope") == "all"]
+    jun_last = max(jun, key=lambda r: r.get("set_at")) if jun else None
+    m = effective(mine.get("mode") if mine else None, jun_last.get("mode") if jun_last else None,
+                  orion_why=mine.get("why") if mine else None, juniper_why=jun_last.get("why") if jun_last else None)
+    at, text_ = newest_note if newest_note else (None, None)
+    return PlayWatch(mode=m.mode, set_by=m.set_by, why=m.why, newest_note_at=at, newest_note=text_)
+
+
+# The SQL every contest uses, so the definition cannot drift between them. Sittings that can still speak into
+# the 7-day grid; the preferences that can apply to an open sitting; its newest stored note.
+PLAY_SITTINGS_SQL = (
+    "SELECT sitting_id, game_id, game_title, started_at, last_input_at, ended_at, player_stated, backfilled "
+    "FROM retro_sitting WHERE last_input_at >= :since ORDER BY started_at"
+)
+PLAY_PREFS_SQL = (
+    "SELECT scope, scope_id, set_by, mode, why, set_at FROM retro_watch_preference "
+    "WHERE (set_by = 'orion' AND ((scope = 'sitting' AND scope_id = :sitting_id) "
+    "OR (scope = 'game' AND scope_id = :game_id))) OR (set_by = 'juniper' AND scope = 'all')"
+)
+PLAY_NEWEST_NOTE_SQL = (
+    "SELECT looked_at, note FROM retro_watch_look WHERE sitting_id = :sitting_id AND outcome = 'stored' "
+    "ORDER BY looked_at DESC LIMIT 1"
 )

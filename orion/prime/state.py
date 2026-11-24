@@ -66,6 +66,7 @@ from pydantic import (AwareDatetime, BaseModel, ConfigDict, Field, GetJsonSchema
 
 # Tries that never reached the model: the loop library's, re-exported here so Prime's callers and tests keep
 # their imports (moved to orion/mindloop/backoff.py on 2026-11-04, unchanged).
+from orion.prime.sitting import PrimeSittingSeenV1
 from orion.mindloop.backoff import (  # noqa: F401 -- re-exports
     GATEWAY_NO_SEAT_ERRORS,
     GATEWAY_UPSTREAM_5XX,
@@ -313,6 +314,10 @@ class PrimeStateV1(BaseModel):
     # need history saves byte-for-byte as before. A state that HAS it cannot be read by an orion-mind or Hub built
     # before it (extra="forbid"): rebuild Hub before orion-mind; drop the key before rolling mind back.
     needs: PrimeNeedsStateV1 = Field(default_factory=PrimeNeedsStateV1)
+    # Game sittings Prime has seen (game company patch 4, orion/prime/sitting.py): which of the two wakes fired and
+    # how many thoughts named each. Left out of the saved state while empty (an older Hub or orion-mind reads a state
+    # without it); a state that HAS it needs both rebuilt (extra="forbid"), the same rule as ``needs``.
+    sittings: dict[str, PrimeSittingSeenV1] = Field(default_factory=dict)
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
@@ -328,6 +333,8 @@ class PrimeStateV1(BaseModel):
             del out["last_thought_id"]
         if self.needs.is_empty():
             out.pop("needs", None)
+        if not self.sittings:
+            out.pop("sittings", None)
         return out
 
 

@@ -189,6 +189,26 @@ async def open_sitting_line(bus: Any, now: Optional[float] = None) -> Optional[s
 
 GameResolver = Callable[[str], Awaitable[tuple[Optional[str], Optional[str]]]]
 
+# The finished sitting's event want (game company patch 4; config/physiology/families.yaml hub.retro_sitting).
+EVENT_FAMILY = "hub.retro_sitting"
+EVENT_PRODUCER = "orion-hub.retro_sitting.event_want"
+EVENT_SOURCE = "retro_sitting"
+EVENT_VERB = "hold"
+EVENT_TIER = 2
+EVENT_PREFIX = "retro_sitting:"
+# Minutes of the OTHER sittings that ended in the 30 days before this one (backfilled ones too: they are the
+# baseline patch 1 wrote for exactly this).
+EVENT_HISTORY_SQL = """
+SELECT extract(epoch FROM (last_input_at - started_at)) / 60.0 AS minutes FROM retro_sitting
+WHERE sitting_id <> $1 AND coalesce(ended_at, last_input_at) >= $2 AND coalesce(ended_at, last_input_at) < $3
+"""
+
+
+async def _default_bid(want: Any) -> Any:
+    from orion.physiology.client import abid
+
+    return await abid(want)
+
 
 class SittingService:
     """One per process. ``redis_provider`` / ``pool_provider`` return the client or None; both are
@@ -196,12 +216,16 @@ class SittingService:
 
     def __init__(self, config: Any, *, redis_provider: Callable[[], Any] = lambda: None,
                  pool_provider: Callable[[], Any] = lambda: None, resolve_game: Optional[GameResolver] = None,
-                 clock: Callable[[], float] = time.time, tracker: Optional[SittingTracker] = None):
+                 clock: Callable[[], float] = time.time, tracker: Optional[SittingTracker] = None,
+                 bid: Optional[Callable[[Any], Awaitable[Any]]] = None):
         self.enabled = bool(getattr(config, "HUB_RETRO_SITTING_ENABLED", True))
         self.min_sec = _setting(config, "HUB_RETRO_SITTING_MIN_SEC", MIN_SEC_DEFAULT)
         self.tracker = tracker or SittingTracker(gap_sec=_setting(config, "HUB_RETRO_SITTING_GAP_SEC", GAP_SEC_DEFAULT))
         self.redis_provider, self.pool_provider = redis_provider, pool_provider
         self.resolve_game, self.clock = resolve_game, clock
+        # Patch 4: a finished sitting posts one event want (``_post_event_want``); ``bid`` is injectable for tests.
+        self.event_want_enabled = bool(getattr(config, "HUB_RETRO_SITTING_EVENT_WANT_ENABLED", True))
+        self._bid: Callable[[Any], Awaitable[Any]] = bid or _default_bid
         # Set by scripts/retro_watch.py: sitting id -> notes Orion stored in it (None: the watch did not run).
         self.looks_for: Callable[[str], Optional[int]] = lambda _sid: None
         self._loop_task: Optional[asyncio.Task] = None
@@ -394,9 +418,44 @@ class SittingService:
         await self._resolve(s)
         stored = await self._persist(s)
         recorded = await self._play(s) if worth_recording(s, self.min_sec) else "too_short"
+        wanted = await self._post_event_want(s) if worth_recording(s, self.min_sec) else "too_short"
         logger.info("retro_sitting_closed sitting=%s reason=%s duration_sec=%.0f mask_changes=%d player=%s "
-                    "sitting_row=%s recorded=%s", s.sitting_id, s.end_reason, s.duration_sec, s.mask_changes,
-                    s.player_stated, stored, recorded)
+                    "sitting_row=%s recorded=%s event_want=%s", s.sitting_id, s.end_reason, s.duration_sec,
+                    s.mask_changes, s.player_stated, stored, recorded, wanted)
+
+    async def _post_event_want(self, s: Sitting) -> str:
+        """Game company patch 4 (spec section 6 part 5): one event want for a finished sitting, so Prime can hold
+        it as a concern. Salience = its minutes against the sittings of the last 30 days (``source_salience``;
+        under 20 past sittings nothing is posted: an unknown is not a calm 0). Shadow: nothing waits on the answer.
+        Returns what happened, for the close's log line. Never raises."""
+        if not self.event_want_enabled or s.backfilled:
+            return "off"
+        try:
+            from orion.physiology.event_wants import SOURCE_HISTORY, event_want, source_salience
+
+            ended = _ts(s.ended_at if s.ended_at is not None else s.last_input_at)
+            rows = await self._db("fetch", EVENT_HISTORY_SQL, s.sitting_id, ended - SOURCE_HISTORY, ended)
+            history = [float(r["minutes"]) for r in rows if r["minutes"] is not None]
+            salience = source_salience(s.duration_sec / 60.0, history)
+            if salience is None:
+                logger.info("retro_sitting_event_want_skipped sitting=%s reason=no_history history_n=%d",
+                            s.sitting_id, len(history))
+                return "no_history"
+            want = event_want(source=EVENT_SOURCE, key=s.sitting_id, family=EVENT_FAMILY, producer=EVENT_PRODUCER,
+                              verb=EVENT_VERB, tier=EVENT_TIER, event_ref=f"{EVENT_PREFIX}{s.sitting_id}",
+                              salience=salience, opened_at=ended,
+                              object_ref=f"retro_game:{s.game_id}" if s.game_id else None)
+            decision = await self._bid(want)
+        except LookupError:
+            return "no_pool"
+        except Exception:  # noqa: BLE001 -- a want never stops a close
+            self._warn("retro_sitting_event_want_failed")
+            return "failed"
+        outcome = getattr(decision, "outcome", None) if decision is not None else None
+        logger.info("retro_sitting_event_want sitting=%s minutes=%.1f salience=%.3f outcome=%s reason=%s",
+                    s.sitting_id, s.duration_sec / 60.0, salience, outcome,
+                    getattr(decision, "reason", None) if decision is not None else None)
+        return str(outcome or "unanswered")
 
     async def recover(self) -> int:
         """Repair what an earlier close could not write. Returns how many play rows it wrote.

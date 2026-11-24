@@ -402,37 +402,55 @@ async def publish_look_closed(bus: Any, *, want_id: str, sitting_id: str, produc
 
 # Line: Orion speaks to a person who plays (game company patch 3, 2026-11-18, spec section 4). Actor
 # hub.retro_commentary, verb say, object retro_sitting:<id>. Published only on DELIVERY (a pass, a yield, no frames or
-# a failed turn opens no act), opened and closed in one step: the line was said, produced 1. What the player made of
-# it (thumb, a reply within 2 min) is stored on the line's own retro_line row, not on this act. The act's id and
-# correlation id are the line id, which the line's GPU hold and want also carry.
+# a failed turn opens no act). The act's id and correlation id are the line id, which the line's GPU hold and want
+# also carry.
+#
+# Patch 4 (2026-11-24): what JUNIPER made of the line is the family weight's engagement term (the "same record" as
+# outreach: a juniper_replied act closed by the horizon resolver, orion/physiology/weights.py source (b)). So a line
+# said while the page was told "Juniper" opens with signal juniper_replied and horizon LINE_ENGAGE_HORIZON_SEC, and
+# the resolver grades it from her thumb or her reply within 2 min (orion/grammar/line_engagement.py). A line said to
+# a guest, or with nobody stated, keeps patch 3's act: opened and closed in one step, produced 1 (it is no record of
+# Juniper's engagement, so a guest's thumb never reaches the weight).
 LINE_ACTOR = "hub.retro_commentary"
 LINE_HORIZON_SEC = 60.0
 LINE_BASIS = "artifact_produced (the line pushed to the game page and written to chat history) at delivery"
+LINE_ENGAGE_BASIS = (
+    "juniper_replied by 300s: Juniper's thumb on the line (up 1, down 0) or her reply within 120 s; graded by the "
+    "horizon resolver (orion/grammar/line_engagement.py), spec 2026-11-16 section 4"
+)
 
 
-def _line_act(line_id: str, sitting_id: str):
+def _line_act(line_id: str, sitting_id: str, *, juniper: bool = False):
     from orion.grammar.acts import build_act
+    from orion.grammar.line_engagement import LINE_ENGAGE_HORIZON_SEC
 
     return build_act(
-        actor=LINE_ACTOR, verb="say", key=str(line_id), signal_id="artifact_produced",
-        horizon_sec=LINE_HORIZON_SEC, basis=LINE_BASIS,
+        actor=LINE_ACTOR, verb="say", key=str(line_id),
+        signal_id="juniper_replied" if juniper else "artifact_produced",
+        horizon_sec=LINE_ENGAGE_HORIZON_SEC if juniper else LINE_HORIZON_SEC,
+        basis=LINE_ENGAGE_BASIS if juniper else LINE_BASIS,
         object_ref=f"retro_sitting:{sitting_id}", test_before=f"retro_line:{line_id}",
     )
 
 
-async def publish_line_said(bus: Any, *, line_id: str, sitting_id: str, text: str = "") -> bool:
-    """Open and close one delivered line's act (produced 1). Best-effort: False when not published."""
+async def publish_line_said(bus: Any, *, line_id: str, sitting_id: str, text: str = "",
+                            player_stated: str | None = None) -> bool:
+    """One delivered line's act. Juniper stated: opened only (the resolver grades her engagement at the horizon).
+    Otherwise opened and closed in one step (produced 1). Best-effort: False when not published."""
     if bus is None or not _enabled():
         return False
+    juniper = str(player_stated or "") == "juniper"
     try:
         from orion.grammar.acts import act_closed_event, act_opened_event
         from orion.grammar.publish import publish_grammar_event
 
-        act = _line_act(line_id, sitting_id)
+        act = _line_act(line_id, sitting_id, juniper=juniper)
         corr = UUID(str(line_id))
         opened = act_opened_event(act, source_service="orion-hub", source_component="retro_commentary.act",
                                   correlation_id=str(line_id))
         await publish_grammar_event(bus, opened, source_name="orion-hub", correlation_id=corr)
+        if juniper:
+            return True
         closed = act_closed_event(act, produced=True, note=f"line delivered: {' '.join(str(text).split())}"[:500],
                                   source_service="orion-hub", source_component="retro_commentary.act",
                                   correlation_id=str(line_id))

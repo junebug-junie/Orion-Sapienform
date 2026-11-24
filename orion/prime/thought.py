@@ -374,6 +374,9 @@ class FrameInputs:
     # Hunger (integration Part B, orion/prime/hunger.py ``frame_lines``): the needs' content lines, strongest first.
     # None: PRIME_HUNGER_NEEDS_ENABLED is off and the section is not shown.
     needs: Optional[list[str]] = None
+    # A game sitting (game company patch 4, orion/prime/sitting.py ``sitting_frame_line``): one line while someone
+    # plays on the Retro service. None: nobody plays, or PRIME_SITTING_WAKE_ENABLED is off; the section is not shown.
+    sitting_line: Optional[str] = None
 
 
 def now_items(inputs: "FrameInputs") -> list[dict[str, Any]]:
@@ -663,6 +666,9 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
         "ENERGY MONEY:\n" + "\n".join(_energy_lines(inputs)),
         "CURIOSITY (whether a question waits for its next run):\n" + "\n".join(_curiosity_lines(inputs)),
     ]
+    if inputs.sitting_line:
+        sections.append("A GAME SITTING IS OPEN (a person plays on your Retro service; the play is theirs):\n"
+                        + inputs.sitting_line)
     if shows_now(inputs):
         sections.append("WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT (other organs, highest salience first; cite "
                         "the ones you use):\n" + "\n".join(_now_lines(inputs)))

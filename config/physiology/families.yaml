@@ -135,12 +135,16 @@ families:
     # than bind_verdict: only `funded` runs a look; deferred, refused or no answer skips it (a late look describes
     # a different screen). The spec says `deferrable_window_s: 0`; families.py refuses 0 for a bidding family (it
     # is the hunger clock), so 60 s = one look interval, and the producer still never holds a want. Lane chat:
-    # the one sighted lane (pool route retro_watch, class chat, priority system). No receptors yet: Prime's
-    # slow/quicken arrive with patch 4 (orion/physiology/tests/test_prime_charge.py pins the receptor set).
+    # the one sighted lane (pool route retro_watch, class chat, priority system).
+    # Receptors (patch 4, 2026-11-24, spec section 6 part 4): Prime can slow or quicken Orion's eyes. Its bids bind
+    # (only `funded` runs a look), so a slow charge held over an hour lowers the look count in that hour, and the
+    # market records what it did to each look bid (orion:prime:regulate:hub.retro_watch). A slow is never a stop:
+    # Orion's own stop is `dig watch off`.
     tier: 1
     deferrable_window_s: 60
     lanes: [chat]
     placement: one_of
+    receptors: [slow, quicken]
   hub.retro_commentary:
     # 2026-11-18, game company patch 3 (docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md
     # rev 4, sections 4 and 9): Orion says one line to a person who plays (act say retro_sitting:<id>,
@@ -150,11 +154,30 @@ families:
     # line turn; any other deferral or no answer skips it and the want is released, so a stale line never runs. 300 s is the spec's value ("a line five minutes late
     # is about something the player has left"); it is the hunger clock (families.py refuses 0 for a bidding family),
     # and the producer keeps the sitting's want clock (opened_at) across rebids until a line is said, so hunger grows. Lane chat: the line's turn rides a GPU pool hold of class chat at priority
-    # system. No receptors yet: Prime's slow/quicken arrive with patch 4 (orion/physiology/tests/test_prime_charge.py).
+    # system.
+    # Patch 4 (2026-11-24): receptors [slow, quicken] (Prime can turn Orion's voice down or up, spec section 6 part
+    # 4). hunger_from want_opened: the rank is the time since Orion last spoke IN THIS SITTING (spec section 9, "Its
+    # hunger grows with the time since Orion last spoke in this sitting"; the producer's want clock resets when a
+    # line is delivered or passed). Before, hunger counted from the family's last act close, which a Juniper-stated
+    # line's act now reaches only at its engagement horizon (orion/grammar/line_engagement.py), 5 min after the line.
     tier: 1
     deferrable_window_s: 300
     lanes: [chat]
     placement: one_of
+    receptors: [slow, quicken]
+    hunger_from: want_opened
+  hub.retro_sitting:
+    # 2026-11-24, game company patch 4 (spec section 6 part 5): a finished sitting posts ONE event want (event_ref
+    # retro_sitting:<id>, verb hold) so Prime can hold it as a concern. Salience = the sitting's minutes against the
+    # sittings of the last 30 days (source_salience, organ play's salience_magnitude rule sitting_minutes; nothing is
+    # posted under 20 past sittings). Producer: services/orion-hub/scripts/retro_sitting.py (at close). Shadow: no
+    # caller obeys it; Prime reads the funded ones on its EVENTS WORTH EFFORT menu
+    # (services/orion-durable-runs/app/event_wants_menu.py). No lanes: holding a sitting in mind costs no GPU.
+    # TIER 2 IS A PROPOSAL, like perception.office: Juniper signs off in PR review. No act-ledger actor.
+    # 21600: a sitting is worth thinking about for the rest of that evening, not the next day.
+    tier: 2
+    deferrable_window_s: 21600
+    lanes: []
   durable.intention:
     # 2026-11-13, choice-as-EFE Step -1 (docs/superpowers/specs/2026-11-13-choice-as-expected-free-energy-design.md):
     # the carry run of a concern Prime took on (intention.carry durable run, run act make:durable.intention,

@@ -171,8 +171,14 @@ def run() -> list[tuple[str, bool, str]]:
     dream_quicken = apply_answer(PrimeStateV1(), PrimeAnswerV1.model_validate(
         {"move": {"kind": "regulate", "family": "dream.cycle", "direction": "quicken", "why": "w", "hours": 3}}),
         now=inputs.now, arc_ids=inputs.arc_ids, focus_pending=False, receptors=receptors)
-    results.append(("regulate", err is None and sorted(receptors) == ["dream.cycle", "durable.curiosity_investigate"]
+    # Game company patch 4: Orion's eyes and voice in a person's game take both directions.
+    ok_eyes = apply_answer(PrimeStateV1(), PrimeAnswerV1.model_validate(
+        {"move": {"kind": "regulate", "family": "hub.retro_watch", "direction": "quicken", "why": "w", "hours": 1}}),
+        now=inputs.now, arc_ids=inputs.arc_ids, focus_pending=False, receptors=receptors)
+    results.append(("regulate", err is None and sorted(receptors) == [
+                        "dream.cycle", "durable.curiosity_investigate", "hub.retro_commentary", "hub.retro_watch"]
                     and "- durable.curiosity_investigate: slow" in reg_frame and "- dream.cycle: slow" in reg_frame
+                    and "- hub.retro_watch: slow, quicken" in reg_frame and ok_eyes.move is not None
                     and ok_move.move is not None and ok_dream.move is not None and refused.move is None
                     and dream_quicken.move is None and "not quicken" in (dream_quicken.move_refusal or "")
                     and "declares no receptors" in (refused.move_refusal or "") and len(reg_frame) <= FRAME_CHAR_CAP,

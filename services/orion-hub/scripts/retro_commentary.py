@@ -619,7 +619,8 @@ class CommentaryService:
                                            push_extra=meta, meta=meta)
         if sent.get("reason") == "sent":
             result.update(message_id=sent.get("message_id"))
-            await self._publish_act(bus, line_id=line_id, sitting_id=sid, text=reply.line)
+            await self._publish_act(bus, line_id=line_id, sitting_id=sid, text=reply.line,
+                                    player_stated=sitting.get("player_stated"))
             if cites and getattr(now_obj, "shown_id", None):
                 await self._record_use(now_obj.shown_id, f"{CITING_PREFIX}:{line_id}", cites)
         elif sent.get("reason") == "yielded":
@@ -816,10 +817,12 @@ class CommentaryService:
             return None
 
     @staticmethod
-    async def _default_publish_act(bus: Any, *, line_id: str, sitting_id: str, text: str) -> bool:
+    async def _default_publish_act(bus: Any, *, line_id: str, sitting_id: str, text: str,
+                                   player_stated: Optional[str] = None) -> bool:
         from scripts.act_emit import publish_line_said
 
-        return await publish_line_said(bus, line_id=line_id, sitting_id=sitting_id, text=text)
+        return await publish_line_said(bus, line_id=line_id, sitting_id=sitting_id, text=text,
+                                       player_stated=player_stated)
 
     async def _default_cancel_motor(self, correlation_id: str) -> None:
         from scripts.harness_governor_client import HarnessGovernorClient

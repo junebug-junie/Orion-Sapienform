@@ -18,6 +18,16 @@ Patch 1 (this module's first use) is additive:
     switch readers to them; until the old rows age out of the PE table (7-day prune, no DELETE),
     a reader must union both or it sees a short window.
 No reader uses the new table yet, so Orion's behavior does not change in Patch 1.
+
+Patch 2 (alarms off the prediction-error slot) moves the three alarms (``MOVED_SIGNAL_NODE_IDS``):
+  * their writer puts the value in node metadata ``signal_value`` / ``signal_kind`` and in this
+    table only. No ``prediction_error`` key, no PE-table row (CI: scripts/check_pe_alarm_readers.py).
+  * every history reader reads ``HISTORY_WITH_MOVED_SOURCE_SQL``: PE rows for the other nodes, and
+    the read-both union for the moved ids, so the week of old PE rows still counts as alarm
+    history until the 7-day prune ages it out (no DELETE).
+  * a reader of a node's value (``node_signal_value``) reads ``signal_value`` for a moved id and
+    never its stale ``prediction_error`` key (kill means kill, materializer resurrection).
+The cameras stay on the prediction-error slot until Patch 3.
 """
 
 from __future__ import annotations
@@ -27,8 +37,24 @@ from typing import Iterable
 
 from orion.prediction.alarm_nodes import ALARM_NODE_IDS
 
-SIGNAL_HISTORY_TABLE = "substrate_node_signal_history"
-PE_HISTORY_TABLE = "substrate_node_prediction_error_history"
+# Stdlib-only half (light readers import it without orion.substrate's heavy package init).
+from orion.prediction.signal_history_sql import (  # noqa: F401  (re-export)
+    ALARM_GLOSSARY_CHANNEL,
+    HISTORY_GLOSSARY_CHANNELS,
+    HISTORY_READ_MODE_BY_NODE_ID,
+    HISTORY_WITH_MOVED_SOURCE_SQL,
+    MOVED_SIGNAL_NODE_IDS,
+    READ_BOTH,
+    SIGNAL_ONLY,
+    PE_HISTORY_TABLE,
+    SIGNAL_HISTORY_TABLE,
+    glossary_channel_for,
+    history_read_mode,
+    history_table_for,
+    history_with_moved_source_sql,
+    is_moved_signal_node,
+)
+
 
 SIGNAL_KIND_ALARM = "alarm"
 SIGNAL_KIND_SCENE_CHANGE = "scene_change"
@@ -46,6 +72,13 @@ SIGNAL_KIND_BY_NODE_ID: dict[str, str] = {
 }
 SIGNAL_NODE_IDS: tuple[str, ...] = tuple(sorted(SIGNAL_KIND_BY_NODE_ID))
 
+
+# Node metadata keys a moved node carries instead of ``prediction_error``.
+SIGNAL_VALUE_KEY = "signal_value"
+SIGNAL_KIND_KEY = "signal_kind"
+PREDICTION_ERROR_KEY = "prediction_error"
+
+
 Row = tuple[str, datetime, float]
 SignalRow = tuple[str, datetime, float, str]
 
@@ -53,6 +86,35 @@ SignalRow = tuple[str, datetime, float, str]
 def signal_kind_for(node_id: object) -> str | None:
     """``alarm`` / ``scene_change`` for the five signal nodes, else None."""
     return SIGNAL_KIND_BY_NODE_ID.get(str(node_id or ""))
+
+
+def node_value_key(node_id: object) -> str:
+    """The metadata key that holds this node's value: ``signal_value`` for a moved node."""
+    return SIGNAL_VALUE_KEY if is_moved_signal_node(node_id) else PREDICTION_ERROR_KEY
+
+
+def node_signal_value(node_id: object, metadata: object) -> object:
+    """The raw stored value of a substrate value node, or None.
+
+    A moved node is read from ``signal_value`` only: a stale ``prediction_error`` key left on it
+    (an old write, a materializer resurrection) is never read. Raw (unconverted), like
+    ``metadata.get("prediction_error")`` was."""
+    if not isinstance(metadata, dict):
+        return None
+    return metadata.get(node_value_key(node_id))
+
+
+def split_history_samples(samples: Iterable[Row]) -> tuple[list[Row], list[SignalRow]]:
+    """(PE-table rows, signal-table rows) for one batch of history samples.
+
+    A moved node's reading goes to the signal table only. A non-moved signal node (camera, until
+    Patch 3) goes to both (Patch 1 dual-write). Every other node goes to the PE table only."""
+    samples = list(samples)
+    pe_rows: list[Row] = []
+    for node_id, observed_at, value in samples:
+        if not is_moved_signal_node(node_id):
+            pe_rows.append((str(node_id), observed_at, float(value)))
+    return pe_rows, signal_samples(samples)
 
 
 def signal_samples(samples: Iterable[Row]) -> list[SignalRow]:

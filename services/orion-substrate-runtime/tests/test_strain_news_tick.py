@@ -1,4 +1,4 @@
-"""node:substrate.strain's prediction_error: strain news through the existing PE node path
+"""node:substrate.strain's alarm value (signal_value since PE retire Patch 2): strain news through the node path
 (strain loop Part 2, orion/regulation/strain_news.py)."""
 from __future__ import annotations
 
@@ -30,11 +30,16 @@ def _worker(reading_fn, *, enabled=True, history_rows=500, event_times=()):
                                   orion_bus_url="redis://unused")
     w.writes, w.recorded = [], []
     w._store = SimpleNamespace(
-        fetch_prediction_error_event_times=lambda node_id, since: list(event_times),
-        count_prediction_error_history=lambda node_id, since: history_rows,
-        save_prediction_error_history_samples=lambda samples: w.recorded.extend(samples),
+        # PE retire Patch 2: the seed reads both tables, the event row lands in the signal table.
+        fetch_signal_event_times_read_both=lambda node_id, since: list(event_times),
+        count_signal_history_read_both=lambda node_id, since: history_rows,
+        save_signal_history_samples=lambda rows: w.recorded.extend(r[:3] for r in rows),
+        save_prediction_error_history_samples=lambda samples: w.pe_recorded.extend(samples),
     )
-    w._write_prediction_error_node = lambda **kw: w.writes.append(kw)
+    w.pe_recorded = []
+    w._write_signal_node = lambda **kw: w.writes.append(kw)
+    w._write_prediction_error_node = lambda **kw: w.pe_writes.append(kw)
+    w.pe_writes = []
 
     def read(now):
         r = reading_fn(now)
@@ -61,7 +66,7 @@ def test_onset_writes_one_and_records_the_event_row_then_holds_then_rests():
     w = _worker(lambda now: _reading(now))
     w._strain_attention_tick()
     (write,) = w.writes
-    assert write["node_id"] == STRAIN_NODE_ID and write["error"] == 1.0
+    assert write["node_id"] == STRAIN_NODE_ID and write["value"] == 1.0
     assert write["reducer_key"] == "strain_news"
     assert [(n, v) for n, _, v in w.recorded] == [(STRAIN_NODE_ID, 1.0)]
     # Next tick inside the 300 s orienting window: no event and no rest write (1.0 carried).
@@ -72,13 +77,13 @@ def test_onset_writes_one_and_records_the_event_row_then_holds_then_rests():
         **{**w._strain_news_state.__dict__,
            "last_event_at": w._strain_news_state.last_event_at - timedelta(seconds=301)})
     w._strain_attention_tick()
-    assert w.writes[-1]["error"] == 0.0 and len(w.recorded) == 1
+    assert w.writes[-1]["value"] == 0.0 and len(w.recorded) == 1
 
 
 def test_idle_writes_calm_zero_only():
     w = _worker(lambda now: _reading(now, level="idle"))
     w._strain_attention_tick()
-    assert [x["error"] for x in w.writes] == [0.0] and w.recorded == []
+    assert [x["value"] for x in w.writes] == [0.0] and w.recorded == []
 
 
 def test_restart_with_a_recorded_event_does_not_refire_onset():
@@ -88,7 +93,7 @@ def test_restart_with_a_recorded_event_does_not_refire_onset():
     w = _worker(lambda now: _reading(now, since=since), event_times=[since + timedelta(seconds=30)])
     w._strain_attention_tick()
     assert w.recorded == []
-    assert all(x["error"] == 0.0 for x in w.writes)
+    assert all(x["value"] == 0.0 for x in w.writes)
     # Control: same episode with no recorded event onsets.
     w2 = _worker(lambda now: _reading(now, since=since))
     w2._strain_attention_tick()
@@ -106,7 +111,7 @@ def test_a_failed_tick_backs_off():
     calls = []
     w = _worker(lambda now: _reading(now))
     w._store = SimpleNamespace(
-        fetch_prediction_error_event_times=lambda **kw: calls.append(1) or (_ for _ in ()).throw(RuntimeError("db")))
+        fetch_signal_event_times_read_both=lambda **kw: calls.append(1) or (_ for _ in ()).throw(RuntimeError("db")))
     w._strain_attention_tick()
     w._strain_attention_tick()
     assert calls == [1]
@@ -115,13 +120,22 @@ def test_a_failed_tick_backs_off():
 def test_warming_history_writes_rest_and_spends_no_event():
     w = _worker(lambda now: _reading(now), history_rows=10)
     w._strain_attention_tick()
-    assert [x["error"] for x in w.writes] == [0.0] and w.recorded == []
+    assert [x["value"] for x in w.writes] == [0.0] and w.recorded == []
     assert w._strain_news_state.events_today == 0
 
 
 def test_a_failure_never_raises_out_of_the_tick():
     w = _worker(lambda now: _reading(now))
     w._store = SimpleNamespace(
-        fetch_prediction_error_event_times=lambda **kw: (_ for _ in ()).throw(RuntimeError("db")))
+        fetch_signal_event_times_read_both=lambda **kw: (_ for _ in ()).throw(RuntimeError("db")))
     w._strain_attention_tick()
     assert w.writes == []
+
+
+def test_strain_never_touches_the_prediction_error_slot():
+    """PE retire Patch 2: no PE node write and no PE-table row, the event row is a signal row."""
+    now = datetime.now(timezone.utc)
+    w = _worker(lambda now: _reading(now))
+    w._strain_attention_tick()
+    assert w.pe_writes == [] and w.pe_recorded == []
+    assert [n for n, _, _ in w.recorded] == [STRAIN_NODE_ID]

@@ -108,10 +108,11 @@ RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
 # Alarms and news, not prediction errors (PE suite rebuild, "Alarms move out of
 # the PE group"). Each fires on a fact (the cabinet rose >= 0.5 C in 15 min while
 # elevated; a strain news event; a doorbell ring or a graded street handoff), not
-# on a miss against a forecast. They still travel on the node's
-# ``prediction_error`` field and in substrate_node_prediction_error_history,
-# because that is the attention contest's input and strain news rebuilds its
-# budget from those rows after a restart. What changes is who may read them:
+# on a miss against a forecast. Since PE retire Patch 2 (2026-11-24) they no
+# longer use the prediction-error slot at all: the node carries ``signal_value``
+# and the rows live in substrate_node_signal_history, read through the per-node
+# rule in orion/prediction/signal_history_sql.py (the contests and strain news
+# read them there). Who may read them:
 #
 # - Alarm-aware readers keep them: the attention contests (a ``trigger`` value
 #   means "it fired"), the dynamics pressure seed that admits them to the

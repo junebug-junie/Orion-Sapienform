@@ -2,20 +2,15 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 745,
   "_last_change": {
-    "change_count": 11,
-    "high_severity_count": 11,
+    "change_count": 6,
+    "high_severity_count": 3,
     "changes": [
-      "high   removed metric://bus_channel/orion-dream/orion:dream:compaction-delta",
-      "high   removed metric://bus_channel/orion-thought/orion:dream:compaction-request",
-      "high   removed metric://bus_channel/orion-thought/orion:reverie:chain",
-      "high   removed metric://bus_channel/orion-thought/orion:reverie:resonance-alert",
-      "high   removed metric://bus_channel/orion-thought/orion:reverie:thought",
-      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:attention:schema (all_producers: \u2026ate-runtime', 'orion-thought'] -> \u2026ate-runtime'])",
-      "high   routing_changed metric://inner_state/orion-cortex-exec/attention_salience_trace.v1 (declared_consumers: \u2026ance_inputs', 'services.orion-thought.app.reverie:build_rev\u2026 -> \u2026ance_inputs'])",
-      "high   routing_changed metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience (declared_consumers: \u2026ance_inputs', 'services.orion-thought.app.reverie:build_rev\u2026 -> \u2026ance_inputs'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026t stance cue, the Day letter and the reverie arc block)', '\u2026 -> \u2026t stance cue and the Day letter)', 'services.orion-hub.scri\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1 (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'])",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'], prompt_sites: ['services.orion-thought.app.reverie:build_reverie_context'] -> -)"
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error",
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error",
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error",
+      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.alarm",
+      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.strain.alarm",
+      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.street.alarm"
     ]
   },
   "definitions": {
@@ -4733,8 +4728,8 @@
       "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error": {
-      "meaning": "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): cabinet is warming -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node only; not in FieldStateV1 node_vectors.",
+    "metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.alarm": {
+      "meaning": "ALARM (cabinet warming alarm; orion.prediction.alarm_nodes.ALARM_NODE_IDS): cabinet is warming -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node (metadata signal_value) only; not in FieldStateV1 node_vectors. Until 2026-11-24 this value rode the prediction_error slot (node key and substrate_node_prediction_error_history); it was never a forecast miss, so a belief built on reading it as one needs a re-test.",
       "value_kind": "trigger",
       "rest": "0.0 = not elevated, or elevated but not rising >= 0.5 C in 15 min. Mostly zero by design (97% live).",
       "rest_range": [
@@ -4787,8 +4782,8 @@
       "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error": {
-      "meaning": "NEWS, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors.",
+    "metric://field_channel/orion-substrate-runtime/node:substrate.strain.alarm": {
+      "meaning": "ALARM (strain news; orion.prediction.alarm_nodes.ALARM_NODE_IDS): strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node (metadata signal_value) only; not in FieldStateV1 node_vectors. Until 2026-11-24 this value rode the prediction_error slot (node key and substrate_node_prediction_error_history); it was never a forecast miss, so a belief built on reading it as one needs a re-test.",
       "value_kind": "trigger",
       "rest": "0.0 = no strain news this tick (not strained, or strained with no event due). The strain level is not the value: a 54 h strain reads 0.0 between its news events.",
       "rest_range": [
@@ -4806,8 +4801,8 @@
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error": {
-      "meaning": "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body.",
+    "metric://field_channel/orion-substrate-runtime/node:substrate.street.alarm": {
+      "meaning": "ALARM (street event alarm; orion.prediction.alarm_nodes.ALARM_NODE_IDS): a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body. Until 2026-11-24 this value rode the prediction_error slot (node key and substrate_node_prediction_error_history); it was never a forecast miss, so a belief built on reading it as one needs a re-test.",
       "value_kind": "trigger",
       "rest": "0.0 = the street listener is up, a street camera delivered a frame recently, and no event passed the gate in the last 90 s. Written as a real 0.0 every tick, never decayed to it.",
       "rest_range": [

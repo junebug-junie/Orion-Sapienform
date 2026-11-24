@@ -264,15 +264,19 @@ class AttentionRuntimeStore:
         self, since: datetime
     ) -> list[tuple[str, datetime, float]]:
         """World-first (spec 2026-10-07 section A): every node's stored
-        prediction-error readings with observed_at >= since, written by
-        orion-substrate-runtime (substrate_node_prediction_error_history).
+        readings with observed_at >= since, written by orion-substrate-runtime
+        (substrate_node_prediction_error_history; the alarms from
+        substrate_node_signal_history read-both since PE retire Patch 2,
+        orion.substrate.signal_history.HISTORY_WITH_MOVED_SOURCE_SQL).
         Read-only here. Feeds orion.attention.pe_history_cache."""
+        from orion.prediction.signal_history_sql import HISTORY_WITH_MOVED_SOURCE_SQL
+
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT node_id, observed_at, value
-                    FROM substrate_node_prediction_error_history
+                    FROM {HISTORY_WITH_MOVED_SOURCE_SQL}
                     WHERE observed_at >= :since
                     ORDER BY observed_at
                     """

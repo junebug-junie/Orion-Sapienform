@@ -64,7 +64,10 @@ def _node_pressure(node: Any) -> float:
     md = getattr(node, "metadata", None) or {}
     val = md.get("dynamic_pressure")
     if val is None:
-        val = md.get("prediction_error")
+        from orion.substrate.signal_history import node_signal_value
+
+        # prediction_error, or signal_value for a moved alarm (PE retire Patch 2).
+        val = node_signal_value(getattr(node, "node_id", None), md)
     return _clamp01(val or 0.0)
 
 

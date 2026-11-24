@@ -1,4 +1,4 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime
+-- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime, orion-attention-runtime, orion-equilibrium-service, orion-thought, orion-hub
 -- Signal history for the five substrate nodes that are NOT prediction errors (design
 -- docs/superpowers/specs/2026-11-24-pe-retire-perception-and-alarms-design.md, PR #3781, Patch 1).
 --

@@ -45,6 +45,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping
 
 from orion.attention.pe_history_cache import NodePeHistoryCache
+from orion.prediction.signal_history_sql import glossary_channel_for
 from orion.attention.world_first import (
     MEASUREMENT_VALUE_KINDS,
     PREDICTION_NODE_PREFIX,
@@ -149,7 +150,7 @@ def short_name(node_id: str) -> str:
 
 
 def prompt_reaching_nodes() -> list[str]:
-    """Body nodes whose glossary prediction_error entry declares this module's prompt site.
+    """Body nodes whose glossary entry (prediction_error, or alarm) declares this module's prompt site.
 
     An unreadable glossary yields [] (render nothing) and is not cached."""
     global _NODES_CACHE
@@ -164,7 +165,9 @@ def prompt_reaching_nodes() -> list[str]:
         return []
     out: list[str] = []
     for entry in entries:
-        if entry.channel != "prediction_error" or not entry.node:
+        # Each node is described under its own channel: prediction_error, or alarm for the
+        # three alarms (PE retire Patch 2).
+        if not entry.node or entry.channel != glossary_channel_for(entry.node):
             continue
         sem = dict(entry.semantics)
         sites = sem.get("prompt_sites") or ()
@@ -339,14 +342,18 @@ def _reading(cache, node_id, mags, current, now, *, sustain: bool = True) -> Sel
 
     ref_kind = "alarm" if is_alarm_node(node_id) else "pe"
     ref = f"{ref_kind}:{name}@{_z(ref_ts)}" if ref_ts is not None else ""
+    # An alarm's rows live in substrate_node_signal_history (PE retire Patch 2).
+    from orion.prediction.signal_history_sql import history_table_for
+
+    table = history_table_for(node_id)
     if observed_at is None:
         source_ref = ""
     elif is_rate:
         start = now - TRIGGER_RATE_WINDOW
-        source_ref = (f"{HISTORY_TABLE}:{node_id} off->on transitions with observed_at in "
+        source_ref = (f"{table}:{node_id} off->on transitions with observed_at in "
                       f"({start.isoformat()}, {now.isoformat()}]; last write {_aware(observed_at).isoformat()}")
     else:
-        source_ref = f"{HISTORY_TABLE}:{node_id}@{_aware(observed_at).isoformat()}"
+        source_ref = f"{table}:{node_id}@{_aware(observed_at).isoformat()}"
     reading = SelfReadingV1(
         source_id=node_id,
         label=label,

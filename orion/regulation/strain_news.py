@@ -36,7 +36,8 @@ Budget (hard rules; ``scripts/analysis/replay_strain_news.py`` replays them over
 3. An unknown, stale, future-stamped or missing reading never fires and never counts as relief:
    the state is kept as it was (only the local-day counter rolls over).
 
-Restart safety: the caller persists each event (``substrate_node_prediction_error_history``) and
+Restart safety: the caller persists each event (``substrate_node_signal_history`` since PE retire
+Patch 2, read together with the older rows of the retired prediction-error table) and
 rebuilds the state with ``seed_state`` from those rows: an onset already recorded for the
 current episode is never fired again, today's count and the gap carry over, and reminder slots
 that already elapsed are consumed. What a restart loses (documented, conservative): a pending
@@ -317,7 +318,8 @@ def seed_state(
     max_age_sec: float = DEFAULT_MAX_AGE_SEC,
 ) -> StrainNewsState:
     """Rebuild the state after a restart from the persisted event rows (value > 0 rows of
-    ``node:substrate.strain`` in ``substrate_node_prediction_error_history``).
+    ``node:substrate.strain`` in ``substrate_node_signal_history``, read-both with the older
+    prediction-error table rows until they age out).
 
     - today's count and the last event time come from the rows;
     - if the reading is a known strained episode and an event was recorded at or after its

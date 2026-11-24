@@ -170,15 +170,16 @@ def test_cli_prompt_semantics_gate_passes():
 
 
 @pytest.mark.parametrize(
-    "node_id,kind",
+    "node_id,channel,kind",
     [
-        ("node:substrate.cabinet", "trigger"),
-        ("node:substrate.perception", "level"),
+        # The alarms have their own channel since PE retire Patch 2 (2026-11-24).
+        ("node:substrate.cabinet", "alarm", "trigger"),
+        ("node:substrate.perception", "prediction_error", "level"),
     ],
 )
-def test_node_qualified_prediction_error_entries_carry_semantics(node_id, kind):
+def test_node_qualified_prediction_error_entries_carry_semantics(node_id, channel, kind):
     nodes = {n.name: n for n in resolve_field_channels()}
-    node = nodes[f"{node_id}.prediction_error"]
+    node = nodes[f"{node_id}.{channel}"]
     assert node.value_kind == kind
     assert node.rest and node.sparsity
     assert node.producer_service == "orion-substrate-runtime"
@@ -224,7 +225,7 @@ def test_channel_in_neither_merge_set_gets_no_polarity(channel):
 def test_trigger_gets_no_polarity():
     assert derived_channel_polarity("prediction_error", "trigger") is None
     nodes = {n.name: n for n in resolve_field_channels()}
-    assert nodes["node:substrate.cabinet.prediction_error"].polarity is None
+    assert nodes["node:substrate.cabinet.alarm"].polarity is None
     assert nodes["node:substrate.perception.prediction_error"].polarity == "higher_is_worse"
 
 

@@ -37,14 +37,14 @@ def _glossary_trigger_nodes() -> set[str]:
         e["node"]
         for e in glossary.get("channels") or []
         if e.get("node")
-        and e.get("channel") == "prediction_error"
+        and e.get("channel") == "alarm"
         and (e.get("semantics") or {}).get("value_kind") == "trigger"
     }
 
 
 def test_alarm_set_is_exactly_the_glossary_trigger_entries() -> None:
-    """The glossary owns the meaning: a prediction_error entry whose value is "it
-    fired" is an alarm. The id set must not drift from it."""
+    """The glossary owns the meaning: an ``alarm`` entry (own channel since PE retire
+    Patch 2) whose value is "it fired" is an alarm. The id set must not drift from it."""
     assert ALARM_NODE_IDS == {
         "node:substrate.cabinet", "node:substrate.strain", "node:substrate.street",
     }
@@ -57,7 +57,12 @@ def test_glossary_never_calls_an_alarm_a_prediction_error_reading() -> None:
     glossary = yaml.safe_load((REPO / "config/field/field_channel_glossary.v1.yaml").read_text())
     for e in glossary.get("channels") or []:
         if e.get("node") in ALARM_NODE_IDS:
-            assert "not a prediction error" in e["meaning"], e["node"]
+            # PE retire Patch 2: the entry is an alarm under its own channel, and its text never
+            # files it as a prediction error (not even "not a prediction error").
+            assert e["channel"] == "alarm", e["node"]
+            assert e["meaning"].startswith("ALARM"), e["node"]
+            assert "prediction error" not in e["meaning"].lower(), e["node"]
+            assert e["trend_source"].startswith("substrate_node_signal_history"), e["node"]
             assert "orion.substrate.endogenous_curiosity:_prediction_error_candidates" not in (
                 e.get("consumers") or []
             ), e["node"]
@@ -72,10 +77,13 @@ def test_labels_say_alarm_not_prediction_error(node_id: str) -> None:
     assert not is_alarm_node(LIVE) and not is_alarm_node(None)
 
 
-def _node(node_id: str, value: float) -> SimpleNamespace:
+def _node(node_id: str, value: float, key: str = "signal_value") -> SimpleNamespace:
+    # An alarm carries signal_value since PE retire Patch 2; a PE node carries prediction_error.
+    if not is_alarm_node(node_id):
+        key = "prediction_error"
     return SimpleNamespace(
         node_id=node_id,
-        metadata={"prediction_error": value},
+        metadata={key: value},
         temporal=SimpleNamespace(observed_at=NOW - timedelta(seconds=10)),
     )
 
@@ -86,7 +94,9 @@ def test_curiosity_prediction_error_seeds_skip_alarms() -> None:
     attention open loop instead."""
     from orion.substrate.endogenous_curiosity import _prediction_error_candidates
 
-    nodes = [_node(nid, 1.0) for nid in ALARMS] + [_node(LIVE, 1.0)]
+    # Even a stale prediction_error key left on an alarm node never seeds curiosity.
+    nodes = [_node(nid, 1.0, key="prediction_error") for nid in ALARMS]
+    nodes += [_node(nid, 1.0) for nid in ALARMS] + [_node(LIVE, 1.0)]
     out = _prediction_error_candidates(
         nodes, anchor_scope="orion", subject_ref=None, min_error=0.1, now=NOW
     )
@@ -144,7 +154,7 @@ def test_broadcast_signal_for_an_alarm_says_alarm() -> None:
     )
     node = SimpleNamespace(
         node_id=nid, label="Strain news", node_kind="concept",
-        metadata={"prediction_error": 1.0, "dynamic_pressure": 0.5},
+        metadata={"signal_value": 1.0, "signal_kind": "alarm", "dynamic_pressure": 0.5},
         signals=SimpleNamespace(confidence=1.0),
         temporal=SimpleNamespace(observed_at=NOW - timedelta(seconds=5)),
     )
@@ -162,7 +172,7 @@ def test_legacy_pressure_signals_call_an_alarm_an_alarm() -> None:
     node = SimpleNamespace(
         node_id="node:substrate.cabinet", label="Cabinet warming alarm", node_kind="concept",
         metadata={"dynamic_pressure": 0.8, "dynamic_pressure_reason": "prediction_error_seed",
-                  "prediction_error": 0.7},
+                  "signal_value": 0.7, "signal_kind": "alarm"},
         signals=SimpleNamespace(confidence=1.0),
         temporal=SimpleNamespace(observed_at=NOW),
     )

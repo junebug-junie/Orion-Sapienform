@@ -74,13 +74,17 @@ def test_prune_signal_history_returns_rowcount():
     assert "DELETE FROM substrate_node_signal_history" in sql and params == {"older_than": TS}
 
 
-def test_read_both_defaults_to_the_five_ids_and_makes_naive_utc():
+def test_read_both_defaults_to_the_read_both_ids_and_makes_naive_utc():
     eng = _Engine(rows=[("node:substrate.cabinet", TS.replace(tzinfo=None), 0.0)])
     rows = _store(eng).fetch_signal_history_read_both(since=TS)
     assert rows == [("node:substrate.cabinet", TS, 0.0)]
     sql, params = eng.executed[0]
     assert "UNION ALL" in sql
-    assert params["since"] == TS and len(params["node_ids"]) == 5
+    # Only the per-node read_both ids (the three alarms); never the cameras (design rev 3, #3827).
+    assert params["since"] == TS
+    assert params["node_ids"] == ["node:substrate.cabinet", "node:substrate.strain", "node:substrate.street"]
+    _store(eng).fetch_signal_history_read_both(since=TS, node_ids=["node:substrate.perception"])
+    assert eng.executed[-1][1]["node_ids"] == []
 
 
 def test_count_and_event_times_read_both_scope_to_one_node():

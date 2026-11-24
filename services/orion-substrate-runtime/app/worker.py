@@ -1498,7 +1498,7 @@ class BiometricsSubstrateWorker:
             logger.exception("substrate_rpc_delivery_tick_failed")
 
     def _cabinet_heat_tick(self) -> None:
-        """Write node:substrate.cabinet's prediction_error: the cabinet warming error.
+        """Write node:substrate.cabinet's alarm value (signal_value): the cabinet warming error.
 
         Clock-driven and written EVERY tick (a calm 0.0 included), same rule as biometrics: a node
         written only when non-zero would hold its last high-water mark forever. A missing or stale
@@ -1517,9 +1517,9 @@ class BiometricsSubstrateWorker:
             if reading.thermal_state == "unknown":
                 logger.info("substrate_cabinet_heat_tick_unmeasured rows=%d", len(points))
                 return
-            self._write_prediction_error_node(
+            self._write_signal_node(
                 node_id=CABINET_NODE_ID,
-                error=reading.warming_error,
+                value=reading.warming_error,
                 now=now,
                 reducer_key="cabinet_heat",
             )
@@ -1950,9 +1950,9 @@ class BiometricsSubstrateWorker:
         # Each held event's correlation id was appended when it passed; the
         # writer dedupes, so re-sending the newest one here is a no-op.
         last_corr = held[-1].correlation_id if held else None
-        self._write_prediction_error_node(
+        self._write_signal_node(
             node_id=node_id,
-            error=value,
+            value=value,
             now=now,
             reducer_key="street_attention",
             contributing_id=last_corr,
@@ -2062,7 +2062,7 @@ class BiometricsSubstrateWorker:
         return (state.arousal if state is not None else None), view
 
     def _strain_attention_tick(self) -> None:
-        """Write node:substrate.strain's prediction_error: 1.0 on a strain news event, else 0.0.
+        """Write node:substrate.strain's alarm value (signal_value): 1.0 on a strain news event, else 0.0.
 
         The strain LEVEL never competes for attention (it would win every tick of a 54 h
         episode). Only rare news events do (orion/regulation/strain_news.py: onset, escalation,
@@ -2070,8 +2070,9 @@ class BiometricsSubstrateWorker:
         attention's orienting window (world-first fades it by its age and stops it at 300 s);
         every other tick with a known reading writes a calm 0.0, so the node has the history
         world-first needs to call a 1.0 unusual. An unknown or stale regulation reading writes
-        nothing. Each event is also recorded in substrate_node_prediction_error_history directly,
-        so a restart rebuilds the budget from it and never re-fires an onset. Fail-open.
+        nothing. Each event is also recorded in substrate_node_signal_history directly (PE retire
+        Patch 2; read back through the read-both union with the old PE rows), so a restart
+        rebuilds the budget from it and never re-fires an onset. Fail-open.
         """
         if not self._settings.enable_strain_attention:
             return
@@ -2114,7 +2115,9 @@ class BiometricsSubstrateWorker:
                 local_midnight = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
                 since = min(local_midnight, reading.since, now - timedelta(hours=1))
                 since = max(since, now - WINDOW_7D)
-                times = self._store.fetch_prediction_error_event_times(
+                # Read-both (PE retire Patch 2): the signal table plus the old PE rows still
+                # inside the 7-day prune, so a restart never forgets an event already spent.
+                times = self._store.fetch_signal_event_times_read_both(
                     node_id=STRAIN_NODE_ID, since=since
                 )
                 self._strain_news_state = seed_state(times, reading, now, tz)
@@ -2130,7 +2133,7 @@ class BiometricsSubstrateWorker:
                 # value unusual. Until then an event would be spent where attention cannot see
                 # it: build the calm history first, step the news later. Re-counted every
                 # _STRAIN_WARM_RECHECK (cheap while warming, and history can shrink).
-                n = self._store.count_prediction_error_history(
+                n = self._store.count_signal_history_read_both(
                     node_id=STRAIN_NODE_ID, since=now - WINDOW_7D
                 )
                 self._strain_warm_checked_at = now
@@ -2142,8 +2145,8 @@ class BiometricsSubstrateWorker:
                     )
             if not self._strain_history_warm:
                 if rest_write_allowed(self._strain_news_state, now, EVENT_ORIENTING_WINDOW_SEC):
-                    self._write_prediction_error_node(
-                        node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
+                    self._write_signal_node(
+                        node_id=STRAIN_NODE_ID, value=REST_VALUE, now=now, reducer_key="strain_news"
                     )
                 return
             event, self._strain_news_state = strain_news(
@@ -2151,16 +2154,13 @@ class BiometricsSubstrateWorker:
             )
             state = self._strain_news_state
             if event is not None:
-                self._write_prediction_error_node(
-                    node_id=STRAIN_NODE_ID, error=EVENT_VALUE, now=now, reducer_key="strain_news"
+                self._write_signal_node(
+                    node_id=STRAIN_NODE_ID, value=EVENT_VALUE, now=now, reducer_key="strain_news"
                 )
-                try:
-                    self._store.save_prediction_error_history_samples(
-                        [(STRAIN_NODE_ID, now, EVENT_VALUE)]
-                    )
-                except Exception:
-                    logger.exception("substrate_strain_news_event_record_failed")
-                self._dual_write_signal_history([(STRAIN_NODE_ID, now, EVENT_VALUE)])
+                # The event row lands in substrate_node_signal_history now (PE retire Patch 2),
+                # never the PE table; a failed write is kept and retried with the next write.
+                if self._write_signal_history([(STRAIN_NODE_ID, now, EVENT_VALUE)]) is None:
+                    logger.warning("substrate_strain_news_event_record_failed (pending retry)")
                 logger.info(
                     "substrate_strain_news_event node_id=%s value=%.1f %s",
                     STRAIN_NODE_ID, EVENT_VALUE, event.as_log_fields(),
@@ -2168,8 +2168,8 @@ class BiometricsSubstrateWorker:
                 return
             wrote = "none"
             if rest_write_allowed(state, now, EVENT_ORIENTING_WINDOW_SEC):
-                self._write_prediction_error_node(
-                    node_id=STRAIN_NODE_ID, error=REST_VALUE, now=now, reducer_key="strain_news"
+                self._write_signal_node(
+                    node_id=STRAIN_NODE_ID, value=REST_VALUE, now=now, reducer_key="strain_news"
                 )
                 wrote = "0.0"
             logger.info(
@@ -2793,7 +2793,79 @@ class BiometricsSubstrateWorker:
         extra_channels: dict[str, float] | None = None,
         missing_reason: str | None = None,
     ) -> bool:
+        """Write a node's ``prediction_error``. Refuses a moved signal node (the alarms, PE retire
+        Patch 2): an alarm is not a prediction error, and writes through ``_write_signal_node``.
+        CI (scripts/check_pe_alarm_readers.py) fails any call that names an alarm id here."""
+        from orion.substrate.signal_history import is_moved_signal_node
+
+        if is_moved_signal_node(node_id):
+            logger.error(
+                "substrate_prediction_error_write_refused_moved_node node_id=%s reducer_key=%s",
+                node_id, reducer_key,
+            )
+            return False
+        return self._upsert_value_node(
+            node_id=node_id,
+            error=error,
+            now=now,
+            reducer_key=reducer_key,
+            contributing_id=contributing_id,
+            evidence_event_ids=evidence_event_ids,
+            extra_channels=extra_channels,
+            missing_reason=missing_reason,
+        )
+
+    def _write_signal_node(
+        self,
+        *,
+        node_id: str,
+        value: float,
+        now: datetime,
+        reducer_key: str = "",
+        contributing_id: str | None = None,
+        evidence_event_ids: Sequence[str] = (),
+    ) -> bool:
+        """Write a moved signal node (cabinet, strain, street alarms; PE retire Patch 2).
+
+        Same node, identity and ownership as ``_write_prediction_error_node``, but the value goes
+        in ``metadata['signal_value']`` with ``signal_kind`` (``alarm``), and ``prediction_error``
+        is not set -- so the first write after deploy clears the old key on the graph (the codec
+        encodes an absent key as None). Refuses any node that is not moved."""
+        from orion.substrate.signal_history import is_moved_signal_node, signal_kind_for
+
+        if not is_moved_signal_node(node_id):
+            logger.error(
+                "substrate_signal_write_refused_not_a_signal_node node_id=%s reducer_key=%s",
+                node_id, reducer_key,
+            )
+            return False
+        return self._upsert_value_node(
+            node_id=node_id,
+            error=value,
+            now=now,
+            reducer_key=reducer_key,
+            contributing_id=contributing_id,
+            evidence_event_ids=evidence_event_ids,
+            signal_kind=signal_kind_for(node_id),
+        )
+
+    def _upsert_value_node(
+        self,
+        *,
+        node_id: str,
+        error: float,
+        now: datetime,
+        reducer_key: str = "",
+        contributing_id: str | None = None,
+        evidence_event_ids: Sequence[str] = (),
+        extra_channels: dict[str, float] | None = None,
+        missing_reason: str | None = None,
+        signal_kind: str | None = None,
+    ) -> bool:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
+
+        ``signal_kind`` (PE retire Patch 2): set for a moved signal node. The value is written to
+        ``signal_value`` / ``signal_kind`` instead of ``prediction_error``.
 
         ``missing_reason`` (2026-10-21): set when ``error`` is a placeholder
         because the producer's input is missing; written to
@@ -2873,11 +2945,21 @@ class BiometricsSubstrateWorker:
             from orion.substrate.adapters._common import make_temporal
 
             salience = max(0.0, min(1.0, error))
-            metadata: dict[str, Any] = {
-                "source_kind": "substrate_prediction_error",
-                "prediction_error": round(salience, 6),
-                "reducer_key": reducer_key,
-            }
+            if signal_kind:
+                from orion.substrate.signal_history import SIGNAL_KIND_KEY, SIGNAL_VALUE_KEY
+
+                metadata: dict[str, Any] = {
+                    "source_kind": "substrate_signal",
+                    SIGNAL_VALUE_KEY: round(salience, 6),
+                    SIGNAL_KIND_KEY: signal_kind,
+                    "reducer_key": reducer_key,
+                }
+            else:
+                metadata = {
+                    "source_kind": "substrate_prediction_error",
+                    "prediction_error": round(salience, 6),
+                    "reducer_key": reducer_key,
+                }
             # Additional field channels this node carries beyond prediction_error
             # (node:substrate.vision's perception_staleness / perception_yield).
             # Deliberately NOT clamped to [0, 1]: pressure-typed channels are
@@ -2944,8 +3026,10 @@ class BiometricsSubstrateWorker:
                 skip_metadata_keys=_PE_WRITER_SKIPS_TICK_OWNED,
             )
             logger.info(
-                "substrate_prediction_error_node_written node_id=%s error=%.3f reducer_key=%s",
+                "substrate_%s_node_written node_id=%s %s=%.3f reducer_key=%s",
+                "signal" if signal_kind else "prediction_error",
                 node_id,
+                "value" if signal_kind else "error",
                 error,
                 reducer_key,
             )
@@ -3667,43 +3751,55 @@ class BiometricsSubstrateWorker:
     # 500 rows covers about an hour of a missing table; older rows are left to the backfill.
     _SIGNAL_HISTORY_PENDING_MAX = 500
 
-    def _dual_write_signal_history(self, samples: list[tuple[str, datetime, float]]) -> None:
-        """PR #3781 Patch 1: copy the five non-PE nodes' readings (alarms, camera scene change)
-        into substrate_node_signal_history. Additive: the PE-table write is untouched, nothing
-        reads the new table yet. Fails open (a missing table logs, never costs the tick). A failed
-        write is kept (newest _SIGNAL_HISTORY_PENDING_MAX rows) and retried with the next write,
-        since the PE sampler has already moved past that reading."""
-        if not bool(getattr(self._settings, "signal_history_enabled", False)):
-            return
+    def _write_signal_history(self, samples: list[tuple[str, datetime, float]]) -> list[Any] | None:
+        """Write the signal nodes' readings into substrate_node_signal_history.
+
+        PE retire Patch 2: a moved node (the alarms) lives ONLY here, so its rows are written
+        whatever ``SUBSTRATE_SIGNAL_HISTORY_ENABLED`` says; the flag now gates only the cameras'
+        Patch 1 dual-write (their PE-table row is still written). Fails open (a missing table
+        logs, never costs the tick). A failed write is kept (newest _SIGNAL_HISTORY_PENDING_MAX
+        rows, deduped on (node_id, observed_at)) and retried with the next write. Returns the
+        rows that landed (this call's and any retried pending ones, so the caller can put a
+        retried alarm reading into its window too), or None when the write failed."""
+        from orion.substrate.signal_history import is_moved_signal_node, signal_samples
+
+        dual_write = bool(getattr(self._settings, "signal_history_enabled", False))
         rows: list[Any] = list(getattr(self, "_signal_history_pending", None) or [])
         try:
-            from orion.substrate.signal_history import signal_samples
-
-            rows += signal_samples(samples)
+            rows += [r for r in signal_samples(samples) if dual_write or is_moved_signal_node(r[0])]
+            # A failed alarm row is re-sampled next tick (its observed_at did not advance), so
+            # dedupe: the cap must hold distinct readings, not copies of one.
+            rows = list({(r[0], r[1]): r for r in rows}.values())
             if not rows:
-                return
+                return []
             self._store.save_signal_history_samples(rows)
             self._signal_history_pending = []
+            return rows
         except Exception as exc:
             self._signal_history_pending = rows[-self._SIGNAL_HISTORY_PENDING_MAX:]
             logger.warning(
                 "substrate_signal_history_write_failed rows=%d pending=%d err=%s",
                 len(rows), len(self._signal_history_pending), exc,
             )
+            return None
 
     @staticmethod
     def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
-        """(prediction_error, observed_at) for a node, or None if unusable.
+        """(value, observed_at) for a node, or None if unusable. The value is
+        ``prediction_error``, or ``signal_value`` for a moved alarm (PE retire Patch 2).
 
         A placeholder written for missing input (camera stale/warming/no frame,
         ``prediction_error_missing_reason``) is unusable: it is not recorded in
         the history and has no magnitude. Missing is a gap, never a 0.0."""
         from orion.substrate.prediction_error_freshness import missing_input_reason
 
+        from orion.substrate.signal_history import node_signal_value
+
         if missing_input_reason(node) is not None:
             return None
         metadata = getattr(node, "metadata", None) or {}
-        raw = metadata.get("prediction_error") if isinstance(metadata, dict) else None
+        # A moved alarm's value is signal_value; its stale prediction_error key is never read.
+        raw = node_signal_value(getattr(node, "node_id", None), metadata)
         if raw is None or isinstance(raw, bool):
             return None
         try:
@@ -3798,17 +3894,38 @@ class BiometricsSubstrateWorker:
             new_samples.append((node_id, observed_at, value))
 
         if new_samples:
+            from orion.substrate.signal_history import is_moved_signal_node, split_history_samples
+
+            # PE retire Patch 2: a moved alarm's reading goes to the signal table only; every
+            # other node keeps its PE row (the cameras are also dual-written, Patch 1).
+            pe_rows, _ = split_history_samples(new_samples)
+            landed: list[tuple[str, datetime, float]] = []
             try:
-                self._store.save_prediction_error_history_samples(new_samples)
+                if pe_rows:
+                    self._store.save_prediction_error_history_samples(pe_rows)
             except Exception:
                 # Not added to the in-memory window either, so the next tick
                 # retries the same reading instead of silently diverging.
                 logger.exception("substrate_pe_history_write_failed")
             else:
-                for node_id, observed_at, value in new_samples:
-                    cache.setdefault(node_id, deque()).append((observed_at, value))
+                landed += pe_rows
+            # Alarm rows (this tick's and any retried pending ones) enter the window only once
+            # they landed in their one table. A retry that lands late is inserted in order.
+            for node_id, observed_at, value, _kind in self._write_signal_history(new_samples) or []:
+                if is_moved_signal_node(node_id):
+                    landed.append((node_id, observed_at, value))
+            for node_id, observed_at, value in sorted(landed, key=lambda r: r[1]):
+                window = cache.setdefault(node_id, deque())
+                if window and observed_at <= window[-1][0]:
+                    if any(t == observed_at for t, _ in window):
+                        continue
+                    items = sorted([*window, (observed_at, value)], key=lambda x: x[0])
+                    window.clear()
+                    window.extend(items)
+                else:
+                    window.append((observed_at, value))
+                if last_observed.get(node_id) is None or observed_at > last_observed[node_id]:
                     last_observed[node_id] = observed_at
-            self._dual_write_signal_history(new_samples)
 
         horizon = now - WINDOW_7D
         for window in cache.values():
@@ -3825,14 +3942,14 @@ class BiometricsSubstrateWorker:
                 logger.info("substrate_pe_history_pruned rows=%d", pruned)
             except Exception:
                 logger.exception("substrate_pe_history_prune_failed")
-            if bool(getattr(s, "signal_history_enabled", False)):
-                try:
-                    pruned = self._store.prune_signal_history(
-                        older_than=now - timedelta(hours=float(s.pe_history_retention_hours))
-                    )
-                    logger.info("substrate_signal_history_pruned rows=%d", pruned)
-                except Exception as exc:
-                    logger.warning("substrate_signal_history_prune_failed err=%s", exc)
+            # Always pruned: the alarms live only in this table since PE retire Patch 2.
+            try:
+                pruned = self._store.prune_signal_history(
+                    older_than=now - timedelta(hours=float(s.pe_history_retention_hours))
+                )
+                logger.info("substrate_signal_history_pruned rows=%d", pruned)
+            except Exception as exc:
+                logger.warning("substrate_signal_history_prune_failed err=%s", exc)
 
         magnitudes: dict[str, Any] = {}
         # World-first ranking key (mid-rank: share below + half the share

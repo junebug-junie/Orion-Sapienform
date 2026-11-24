@@ -782,7 +782,20 @@ class BiometricsSubstrateStore:
         re-recording a node whose observed_at has not moved is a no-op even if
         the in-process "moved since last sample" check is bypassed (restart,
         failed write retried next tick).
+
+        A moved signal node (the alarms, PE retire Patch 2) is never written here: its row is
+        dropped with a warning, so no caller can put an alarm back in the prediction-error table
+        (kill means kill). Its home is substrate_node_signal_history.
         """
+        from orion.substrate.signal_history import is_moved_signal_node
+
+        moved = [row[0] for row in samples if is_moved_signal_node(row[0])]
+        if moved:
+            logger.warning(
+                "substrate_pe_history_moved_node_refused node_ids=%s rows=%d",
+                ",".join(sorted(set(moved))), len(moved),
+            )
+            samples = [row for row in samples if not is_moved_signal_node(row[0])]
         if not samples:
             return 0
         params = [
@@ -808,13 +821,19 @@ class BiometricsSubstrateStore:
     def fetch_prediction_error_history(
         self, *, since: datetime
     ) -> list[tuple[str, datetime, float]]:
-        """All readings with observed_at >= since, oldest first."""
+        """All readings with observed_at >= since, oldest first per node.
+
+        PE retire Patch 2: the moved alarms come from the read-both union (signal table, plus
+        their old PE rows until the 7-day prune), every other node from the PE table
+        (orion/substrate/signal_history.py HISTORY_WITH_MOVED_SOURCE_SQL)."""
+        from orion.prediction.signal_history_sql import HISTORY_WITH_MOVED_SOURCE_SQL
+
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT node_id, observed_at, value
-                    FROM substrate_node_prediction_error_history
+                    FROM {HISTORY_WITH_MOVED_SOURCE_SQL}
                     WHERE observed_at >= :since
                     ORDER BY node_id, observed_at
                     """
@@ -822,41 +841,6 @@ class BiometricsSubstrateStore:
                 {"since": since},
             ).fetchall()
         return [(str(r[0]), r[1], float(r[2])) for r in rows]
-
-    def fetch_prediction_error_event_times(
-        self, *, node_id: str, since: datetime
-    ) -> list[datetime]:
-        """observed_at of one node's non-zero readings since `since`, oldest
-        first. Strain news (orion/regulation/strain_news.py) rebuilds its
-        budget state from these after a restart."""
-        with self._engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT observed_at
-                    FROM substrate_node_prediction_error_history
-                    WHERE node_id = :node_id AND observed_at >= :since AND value > 0
-                    ORDER BY observed_at
-                    """
-                ),
-                {"node_id": node_id, "since": since},
-            ).fetchall()
-        return [r[0] if r[0].tzinfo is not None else r[0].replace(tzinfo=timezone.utc) for r in rows]
-
-    def count_prediction_error_history(self, *, node_id: str, since: datetime) -> int:
-        """How many readings one node has since `since` (attention's 7-day history size)."""
-        with self._engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    """
-                    SELECT count(*)
-                    FROM substrate_node_prediction_error_history
-                    WHERE node_id = :node_id AND observed_at >= :since
-                    """
-                ),
-                {"node_id": node_id, "since": since},
-            ).fetchone()
-        return int(row[0] or 0) if row else 0
 
     def fetch_chat_turn_times(self, *, since: datetime) -> list[datetime]:
         """Juniper's chat turns since `since`, for world-first attention's
@@ -959,8 +943,8 @@ class BiometricsSubstrateStore:
 
     # --- substrate_node_signal_history (manual_migration_node_signal_history_v1.sql) -----------
     # The five non-PE nodes (alarms, camera scene change; orion/substrate/signal_history.py).
-    # Patch 1 of PR #3781: written alongside the PE table, read by nobody live yet. The read_both
-    # helpers union both tables until the old PE rows age out.
+    # Patch 1 of PR #3781 added it beside the PE table. Patch 2: the alarms live only here, and
+    # the read_both helpers union both tables until their old PE rows age out.
 
     def save_signal_history_samples(
         self, samples: list[tuple[str, datetime, float, str]]
@@ -990,10 +974,13 @@ class BiometricsSubstrateStore:
     ) -> list[tuple[str, datetime, float]]:
         """Signal nodes' readings since `since` from BOTH tables, one row per (node_id,
         observed_at), signal table preferred. Oldest first per node."""
-        from orion.substrate.signal_history import READ_BOTH_SINCE_SQL, SIGNAL_NODE_IDS
+        from orion.prediction.signal_history_sql import READ_BOTH, HISTORY_READ_MODE_BY_NODE_ID
+        from orion.substrate.signal_history import READ_BOTH_SINCE_SQL
 
-        # Only the five signal nodes, like merge_signal_rows: never other nodes' PE rows.
-        ids = [n for n in (node_ids if node_ids is not None else SIGNAL_NODE_IDS) if n in SIGNAL_NODE_IDS]
+        # Only nodes whose per-node read rule is read_both (the alarms). Never the cameras: their
+        # old- and new-scale rows must not share a window (design rev 3, PR #3827).
+        both = sorted(n for n, m in HISTORY_READ_MODE_BY_NODE_ID.items() if m == READ_BOTH)
+        ids = [n for n in (node_ids if node_ids is not None else both) if n in both]
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text(READ_BOTH_SINCE_SQL), {"since": since, "node_ids": ids}
@@ -1004,7 +991,7 @@ class BiometricsSubstrateStore:
         ]
 
     def count_signal_history_read_both(self, *, node_id: str, since: datetime) -> int:
-        """Read-both successor of count_prediction_error_history (strain warm-up count)."""
+        """How many readings one node has since `since`, both tables (strain warm-up count)."""
         from orion.substrate.signal_history import READ_BOTH_COUNT_SQL
 
         with self._engine.connect() as conn:
@@ -1016,7 +1003,8 @@ class BiometricsSubstrateStore:
     def fetch_signal_event_times_read_both(
         self, *, node_id: str, since: datetime
     ) -> list[datetime]:
-        """Read-both successor of fetch_prediction_error_event_times (strain restart seed)."""
+        """observed_at of one node's non-zero readings since `since`, both tables, oldest first
+        (strain news rebuilds its budget from these after a restart)."""
         from orion.substrate.signal_history import READ_BOTH_EVENT_TIMES_SQL
 
         with self._engine.connect() as conn:

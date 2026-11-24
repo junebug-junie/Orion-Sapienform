@@ -258,10 +258,11 @@ class Settings(BaseSettings):
         168.0, ge=25.0, alias="SUBSTRATE_PE_HISTORY_RETENTION_HOURS"
     )
     # Signal history (PR #3781 Patch 1, docs/superpowers/specs/2026-11-24-pe-retire-perception-
-    # and-alarms-design.md). On: the five non-PE nodes (cabinet/strain/street alarms, room and
-    # walkway camera scene change) are ALSO written to substrate_node_signal_history, beside their
-    # PE-table rows, and pruned at the same retention. Nothing reads it yet. Off: no write, no
-    # prune. Fails open if manual_migration_node_signal_history_v1.sql is not applied yet.
+    # and-alarms-design.md). On: the two camera scene-change nodes are ALSO written to
+    # substrate_node_signal_history, beside their PE-table rows. Since Patch 2 the three alarms
+    # (cabinet/strain/street) live ONLY in that table, so their rows and the table's prune run
+    # whatever this says; off stops only the cameras' dual-write. Fails open if
+    # manual_migration_node_signal_history_v1.sql is not applied yet.
     signal_history_enabled: bool = Field(True, alias="SUBSTRATE_SIGNAL_HISTORY_ENABLED")
     # Minimum |median_1h - median_prior_24h| before trend reads rising/settling
     # (the effective threshold is max(this, 0.5 * (p90_7d - p50_7d))). A knob,

@@ -204,12 +204,20 @@ class AttentionCandidateSource(Protocol):
 # Semantic layer: value_kind and polarity, read, never invented.
 # ---------------------------------------------------------------------------
 
+from orion.prediction.signal_history_sql import glossary_channel_for  # noqa: E402  (stdlib only)
+
 
 _SEMANTICS_CACHE: dict[str, tuple[str | None, str | None]] = {}
 
 
 def node_prediction_error_semantics(node_id: str) -> tuple[str | None, str | None]:
     """(value_kind, polarity) for a node's prediction_error, from the glossary.
+
+    The entry is looked up under the node's OWN channel (PE retire Patch 2): the three alarms
+    moved to ``channel: alarm`` (value_kind trigger, no polarity), every other node is still
+    under ``prediction_error`` (``orion.prediction.signal_history_sql.glossary_channel_for``).
+    Looking only under ``prediction_error`` would read value_kind None for an alarm, and
+    judge_candidate would then drop it as "unknown: not a measurement".
 
     Polarity is ``derived_channel_polarity("prediction_error", value_kind)``
     -- the same derivation the metric lock uses (PR #2579): prediction_error
@@ -228,13 +236,13 @@ def node_prediction_error_semantics(node_id: str) -> tuple[str | None, str | Non
     try:
         from orion.field.channel_glossary import resolve_channel_entry
 
-        entry = resolve_channel_entry("prediction_error", node=node_id)
+        entry = resolve_channel_entry(glossary_channel_for(node_id), node=node_id)
         if entry is not None and entry.node == node_id:
             value_kind = dict(entry.semantics).get("value_kind")
     except Exception as exc:  # noqa: BLE001 -- a missing file must not stop attention
         logger.warning("world_first_glossary_unreadable node_id=%s err=%s", node_id, exc)
-        return None, derived_channel_polarity("prediction_error", None)
-    result = (value_kind, derived_channel_polarity("prediction_error", value_kind))
+        return None, derived_channel_polarity(glossary_channel_for(node_id), None)
+    result = (value_kind, derived_channel_polarity(glossary_channel_for(node_id), value_kind))
     _SEMANTICS_CACHE[node_id] = result
     return result
 
@@ -286,7 +294,7 @@ def node_prediction_error_event_written(node_id: str) -> bool:
     try:
         from orion.field.channel_glossary import resolve_channel_entry
 
-        entry = resolve_channel_entry("prediction_error", node=node_id)
+        entry = resolve_channel_entry(glossary_channel_for(node_id), node=node_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("world_first_glossary_unreadable node_id=%s err=%s", node_id, exc)
         return False
@@ -328,7 +336,7 @@ def node_prediction_error_continuous(node_id: str) -> bool:
     try:
         from orion.field.channel_glossary import resolve_channel_entry
 
-        entry = resolve_channel_entry("prediction_error", node=node_id)
+        entry = resolve_channel_entry(glossary_channel_for(node_id), node=node_id)
     except Exception as exc:  # noqa: BLE001
         if node_id not in _CONTINUOUS_WARNED:
             _CONTINUOUS_WARNED.add(node_id)

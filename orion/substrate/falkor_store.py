@@ -219,6 +219,10 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # DYNAMICS_METADATA_KEYS).
     "embedding_staleness",
     "prediction_error_missing_reason",
+    # Alarm value nodes (2026-11-24, PE retire Patch 2): their value lives here, not in
+    # prediction_error, and must survive a rehydrate (falkor_codec DYNAMICS_METADATA_KEYS).
+    "signal_value",
+    "signal_kind",
     # L6 (2026-10-06): without this the stamp never survives a rehydrate and
     # every tick falls back to observed_at -- i.e. the compounding decay the
     # stamp exists to remove (falkor_codec._decay_stamp_metadata_from_row).

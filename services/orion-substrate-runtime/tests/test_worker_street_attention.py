@@ -42,7 +42,7 @@ def _worker(**kw):
     # (the rung 6 raw-reading corpus was retired 2026-11-03).
     w._store = SimpleNamespace()
     w.writes = []
-    w._write_prediction_error_node = lambda **node: w.writes.append(node)
+    w._write_signal_node = lambda **node: w.writes.append(node)
     return w
 
 
@@ -73,7 +73,7 @@ def test_a_ring_passes_writes_the_node_and_logs_the_verdict(caplog) -> None:
     with caplog.at_level(logging.INFO, logger="orion.substrate.runtime"):
         w._process_street_event(_payload(), now=NOW)
     (write,) = w.writes
-    assert write["node_id"] == STREET_NODE_ID and write["error"] == 1.0
+    assert write["node_id"] == STREET_NODE_ID and write["value"] == 1.0
     assert write["reducer_key"] == "street_attention"
     assert write["contributing_id"] == "9f1c0e7a-0000-4000-8000-000000000001"  # retina -> attention trace
     assert write["evidence_event_ids"] == ["street_event:ev-1"]
@@ -125,7 +125,7 @@ def test_tick_writes_a_real_zero_when_calm_and_the_street_is_visible(listener_up
     w._street_state().frame_seen("walkway", NOW.timestamp() - 10)
     w._street_attention_tick(now=NOW)
     (write,) = w.writes
-    assert write["error"] == 0.0 and write["evidence_event_ids"] == []
+    assert write["value"] == 0.0 and write["evidence_event_ids"] == []
 
 
 def test_the_node_returns_to_calm_after_the_hold(listener_up) -> None:
@@ -134,7 +134,7 @@ def test_the_node_returns_to_calm_after_the_hold(listener_up) -> None:
     w._process_street_event(_payload(), now=NOW)
     w._street_attention_tick(now=NOW + timedelta(seconds=60))
     w._street_attention_tick(now=NOW + timedelta(seconds=91))
-    assert [x["error"] for x in w.writes] == [1.0, 1.0, 0.0]
+    assert [x["value"] for x in w.writes] == [1.0, 1.0, 0.0]
 
 
 def test_tick_writes_nothing_while_the_listener_is_down(monkeypatch) -> None:
@@ -159,7 +159,7 @@ def test_a_held_ring_is_still_written_with_the_cameras_dark(listener_up) -> None
     w = _worker()
     w._process_street_event(_payload(), now=NOW)
     w._street_attention_tick(now=NOW + timedelta(seconds=30))
-    assert [x["error"] for x in w.writes] == [1.0, 1.0]
+    assert [x["value"] for x in w.writes] == [1.0, 1.0]
 
 
 def test_a_held_ring_with_dark_cameras_closes_with_one_zero_then_goes_silent(listener_up) -> None:
@@ -170,7 +170,7 @@ def test_a_held_ring_with_dark_cameras_closes_with_one_zero_then_goes_silent(lis
     w._street_attention_tick(now=NOW + timedelta(seconds=30))
     w._street_attention_tick(now=NOW + timedelta(seconds=91))
     w._street_attention_tick(now=NOW + timedelta(seconds=121))
-    assert [x["error"] for x in w.writes] == [1.0, 1.0, 0.0]
+    assert [x["value"] for x in w.writes] == [1.0, 1.0, 0.0]
     assert w._street_state().ticks_unmeasured_total == 1
 
 

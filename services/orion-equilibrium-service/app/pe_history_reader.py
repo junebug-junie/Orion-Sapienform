@@ -1,4 +1,5 @@
-"""Read-only reader for ``substrate_node_prediction_error_history``.
+"""Read-only reader for ``substrate_node_prediction_error_history`` (and, for the three alarms,
+``substrate_node_signal_history`` read-both since PE retire Patch 2).
 
 Written by orion-substrate-runtime (one row per real observed_at advance of a
 ``node:substrate.*`` node, manual_migration_node_prediction_error_history_v1.sql);
@@ -52,11 +53,15 @@ class NodePeHistoryReader(AttentionSelfModelReader):
         if conn is None:
             raise NodePeHistoryReadError("postgres unavailable")
         try:
+            from orion.prediction.signal_history_sql import HISTORY_WITH_MOVED_SOURCE_SQL
+
             with conn.cursor() as cur:
+                # The alarms come read-both from substrate_node_signal_history (PE retire
+                # Patch 2); the derived table has no bind parameters, so %s stays the only one.
                 cur.execute(
-                    """
+                    f"""
                     SELECT node_id, observed_at, value
-                    FROM substrate_node_prediction_error_history
+                    FROM {HISTORY_WITH_MOVED_SOURCE_SQL}
                     WHERE observed_at >= %s
                     ORDER BY observed_at
                     """,

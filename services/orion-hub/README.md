@@ -4848,7 +4848,7 @@ answered, that orion-sql-writer applies on its own clock:
   `orion:ask:answered` event for the substrate entity. It does not count
   against the "who is this?" opener's daily cap.
 - "Someone else" / "Not sure" is a `vision_story_person` row with one picture
-  verdict per story crop; "someone else" crops go to the split pass (which
+  verdict per picture shown for that person; "someone else" crops go to the split pass (which
   refuses when they would be most of that individual's pictures).
 
 A correction of the name the story was written with also records the story's
@@ -4857,6 +4857,23 @@ else. The sentence shown is re-derived on read: Juniper's latest name or
 "someone else" on that story wins; otherwise the strict naming rule
 (`orion/vision/story_naming.py`) on today's names. The stored sentence is shown
 as "Orion first wrote: ..." when it differs.
+
+**Each person's own pictures (2026-11-24).** Juniper could not tell which row
+was which ("how the f would i know which is which, [name] or [name]?"). Now each
+person gets a letter (A, B, ...). Their row shows only their own pictures: the
+story-strip crops whose crop_id is theirs (a companion's come from the story they
+walked in), else vision-host's thumbnail of one of their crops. The row says which
+numbered boxes on the big picture are theirs, coloured like the drawn box, and the
+time crops above carry the same letters. Two groups with one name ("Sasha",
+"Sasha") show their group id. A person with no picture of their own is greyed
+("No picture of this person - not asked.") and the route refuses an answer about
+them (`no_picture_of_person`). A named row has "Yes, that's <name>" (`action:
+"confirm"`, sent with the name the card showed; 409 `label_changed` if it was
+renamed since): the same `vision_individual` answer a typed name is, so a name
+Orion copied over a same-person link becomes her typed label, plus one "same"
+picture verdict per picture shown (the existing picture-verdict path). Every picture verdict now covers only the
+pictures the card showed for that person, never crops she did not see. A yes on
+the walker counts as her answer on the story, like a name.
 
 ## Retro browser play
 

@@ -438,10 +438,13 @@ async def _individual(pool, iid: str, label=None, kind="person") -> None:
         "VALUES ($1, 'walkway', $2, ARRAY[1.0, 0.0]::real[], 3, now(), now(), 1, 1, $3, false)", iid, kind, label)
 
 
-async def _walk(pool, i: int, ids, *, name=None, together=None, kind="person", published=True) -> str:
+async def _walk(pool, i: int, ids, *, name=None, together=None, kind="person", published=True,
+                strip=None, thumbs=(0,)) -> str:
+    """``strip``: indexes of the evidence crops saved in the story strip (crop_0..);
+    with any, the strip also has a frame. ``thumbs``: indexes with a vision-host thumb."""
     sid = f"{i:032x}"
     ev = [{"crop_id": f"s{i}c{k}", "box": [1, 2, 3, 4], "clipped": False, "individual_id": iid,
-           "thumb": THUMB if k == 0 else None} for k, iid in enumerate(ids)]
+           "thumb": THUMB if k in thumbs else None} for k, iid in enumerate(ids)]
     subj = name or ("A dog" if kind == "dog" else "A person")
     await pool.execute(
         "INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, detection_count, "
@@ -451,6 +454,13 @@ async def _walk(pool, i: int, ids, *, name=None, together=None, kind="person", p
         sid, kind, len(ids), published, None if published else "companion",
         f"{subj} walked right to left on the walkway, over 5 s ({len(ids)} detections).",
         [e["crop_id"] for e in ev], json.dumps(ev), name, ids[0] if name else None, together)
+    if strip:
+        rec = {"version": 1, "dark": False,
+               "frame": {"file": "frame.jpg", "t": "2026-11-22T01:28:33+00:00", "crop_id": f"s{i}c{strip[0]}"},
+               "crops": [{"crop_id": f"s{i}c{k}", "t": f"2026-11-22T01:28:3{n}+00:00", "file": f"crop_{n}.jpg"}
+                         for n, k in enumerate(strip)]}
+        await pool.execute("UPDATE vision_motion_story SET evidence_strip = $2::jsonb, dark = false "
+                           "WHERE story_id = $1", sid, json.dumps(rec))
     return sid
 
 
@@ -530,13 +540,14 @@ def test_correcting_the_written_name_records_wrong_name_and_someone_else_records
 
     async def body(pool, client):
         await _individual(pool, "ind-maya", "Maya")
-        sid = await _walk(pool, 1, ["ind-maya"] * 3, name="Maya")
+        # Crops 0 and 2 are in the story's strip; crop 1 is never shown, so it gets no verdict.
+        sid = await _walk(pool, 1, ["ind-maya"] * 3, name="Maya", strip=[0, 2])
         await client.post(f"/api/vision/motion-stories/{sid}/verdict", json={"verdict": "right"})
         # Same name (any case): a confirmation, the "right" verdict stays.
         r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "name", "name": "maya"})
         assert r.status_code == 200 and r.json()["wrong_name_recorded"] is False
         assert await pool.fetchval("SELECT verdict FROM vision_motion_story_verdict WHERE story_id=$1", sid) == "right"
-        # "Someone else, called Cora": picture verdicts for every crop of that individual in the story.
+        # "Someone else, called Cora": picture verdicts for every picture of that individual the card showed.
         r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya",
                               json={"action": "someone_else", "name": "Cora"})
         assert r.status_code == 200, r.text
@@ -548,7 +559,7 @@ def test_correcting_the_written_name_records_wrong_name_and_someone_else_records
             "vision_story_person", "ind-maya", "answered", None)
         detail = json.loads(row["answer_detail"])
         assert [(p["crop_id"], p["verdict"], p["name"], p["index"]) for p in detail["pictures"]] == [
-            ("s1c0", "different", "Cora", 0), ("s1c1", "different", "Cora", 1), ("s1c2", "different", "Cora", 2)]
+            ("s1c0", "different", "Cora", 0), ("s1c2", "different", "Cora", 1)]
         assert out["story"]["display_sentence"].startswith("Cora walked")
         assert len(published) == 1                     # only the name was an entity event
         assert "why" not in detail                     # no reason typed: none stored
@@ -616,7 +627,9 @@ def test_story_person_refusals_change_nothing() -> None:
     async def body(pool, client):
         await _individual(pool, "ind-maya", "Maya")
         await _individual(pool, "ind-elsewhere")
-        sid = await _walk(pool, 1, ["ind-maya", "ind-maya", "ind-ghost"])
+        await _individual(pool, "ind-nopic")
+        await _individual(pool, "ind-anon")
+        sid = await _walk(pool, 1, ["ind-maya", "ind-maya", "ind-ghost", "ind-nopic", "ind-anon"], strip=[0, 2, 4])
         hidden = await _walk(pool, 2, ["ind-maya"] * 3, published=False)
         url = f"/api/vision/motion-stories/{sid}/people"
         cases = [
@@ -629,6 +642,13 @@ def test_story_person_refusals_change_nothing() -> None:
             (f"{url}/ind-maya", {"action": "name", "name": "x" * 121}, 422, "name_too_long"),
             (f"{url}/ind-maya", {"action": "someone_else", "name": "MAYA"}, 422, "someone_else_takes_another_name"),
             (f"{url}/ind-maya", {"action": "rename", "name": "X"}, 422, None),
+            # No picture of them on the card: never asked, so never a blind answer.
+            (f"{url}/ind-nopic", {"action": "name", "name": "X"}, 422, "no_picture_of_person"),
+            (f"{url}/ind-nopic", {"action": "someone_else", "name": ""}, 422, "no_picture_of_person"),
+            (f"{url}/ind-nopic", {"action": "unsure", "name": ""}, 422, "no_picture_of_person"),
+            # "Yes, that's <name>" needs a name to say yes to.
+            (f"{url}/ind-anon", {"action": "confirm", "name": ""}, 422, "nothing_to_confirm"),
+            (f"{url}/ind-maya", {"action": "confirm", "name": "Mia"}, 409, "label_changed"),
         ]
         for path, payload, code, detail in cases:
             r = await client.post(path, json=payload)
@@ -701,6 +721,213 @@ def test_the_juniper_card_marker_is_the_shared_one() -> None:
     from orion.grammar.camera_ask_acts import JUNIPER_STORY_CARD_REF
 
     assert msr.JUNIPER_STORY_CARD_REF == JUNIPER_STORY_CARD_REF
+
+
+# --- each person's own pictures (2026-11-24) -----------------------------------------------------------
+# Juniper, on story c486f5d8... (doorbell, 2026-11-22 01:28:30Z): six "who is this?" rows (Juniper,
+# Sasha, Sasha, unnamed 38e112de, two companions) and one unlabelled picture. "how the f would i know
+# which is which". Each row now carries the pictures of its own individual and its box numbers.
+
+
+def test_box_numbers_follow_the_order_sql_writer_drew_them() -> None:
+    ev = [{"crop_id": "a", "box": [1, 2, 3, 4]}, {"crop_id": "b", "box": None}, {"box": [1, 2, 3, 4]},
+          {"crop_id": "c", "box": [1, 2, 3, 4]}, {"crop_id": "d", "box": [1, 2, 3, 4]}]
+    # Only entries with a crop_id and a 4-number box are drawn: 1 = first (green), last = red.
+    assert msr.box_numbers(ev) == {"a": {"n": 1, "colour": "green"}, "c": {"n": 2, "colour": "blue"},
+                                   "d": {"n": 3, "colour": "red"}}
+    assert msr.box_numbers([{"crop_id": "x", "box": [1, 2, 3, 4]}]) == {"x": {"n": 1, "colour": "green"}}
+
+
+def test_attach_pictures_gives_each_person_only_their_own_crops() -> None:
+    ev = [{"crop_id": "c0", "individual_id": "jun", "thumb": None, "box": [1, 2, 3, 4]},
+          {"crop_id": "c1", "individual_id": "sasha", "thumb": THUMB, "box": [1, 2, 3, 4]},
+          {"crop_id": "c2", "individual_id": "sasha", "thumb": None, "box": [1, 2, 3, 4]},
+          {"crop_id": "c3", "individual_id": "thumbonly", "thumb": THUMB, "box": [1, 2, 3, 4]},
+          {"crop_id": "c4", "individual_id": "nopic", "thumb": None, "box": [1, 2, 3, 4]}]
+    strip = {"frame": {"file": "frame.jpg"}, "crops": [
+        {"crop_id": "c0", "file": "crop_0.jpg", "t": "t0"}, {"crop_id": "c1", "file": "crop_1.jpg", "t": "t1"},
+        {"crop_id": "c4", "missing": "frame_gone"}, {"crop_id": "c3", "file": "../../etc/passwd"}]}
+    boxes = msr.box_numbers(ev)
+    people = {p["individual_id"]: msr.attach_pictures(p, "s" * 32, strip, boxes)
+              for p in msr.people_in(ev, "walker", "person")}
+    assert people["jun"]["pictures"] == [{"story_id": "s" * 32, "file": "crop_0.jpg", "t": "t0", "crop_id": "c0"}]
+    assert [b["n"] for b in people["sasha"]["boxes"]] == [2, 3]
+    assert people["sasha"]["picture_crop_ids"] == ["c1"]          # c2 was never shown
+    # No strip crop, but vision-host's thumbnail of c3: that is a picture of them.
+    assert people["thumbonly"]["pictures"] == [] and people["thumbonly"]["picture_crop_ids"] == ["c3"]
+    assert people["thumbonly"]["pictured"] is True
+    # A crop whose frame was gone and no thumb: not pictured, so not asked.
+    assert people["nopic"]["pictured"] is False and people["nopic"]["picture_crop_ids"] == []
+    assert [b["colour"] for b in people["nopic"]["boxes"]] == ["red"]
+    # A pruned strip shows no crops; not boxed when there is no frame to box them on.
+    p = msr.attach_pictures(msr.people_in(ev[:1], "walker", "person")[0], "s" * 32, {**strip, "pruned_at": "x"}, None)
+    assert (p["pictures"], p["boxes"], p["pictured"]) == ([], [], False)
+
+
+@needs_pg
+def test_list_gives_every_person_their_own_pictures_boxes_and_companions_their_own_story() -> None:
+    async def body(pool, client):
+        for iid, label in (("ind-jun", "Juniper"), ("ind-sasha1", "Sasha"), ("ind-sasha2", "Sasha"), ("ind-anon", None),
+                           ("ind-c1", None), ("ind-c2", None)):
+            await _individual(pool, iid, label)
+        # The companions' story (not listed: it is a companion story) has its own strip.
+        partner = await _walk(pool, 2, ["ind-c1", "ind-c2", "ind-c2"], published=False, strip=[0, 1], thumbs=())
+        sid = await _walk(pool, 1, ["ind-jun", "ind-sasha1", "ind-sasha1", "ind-sasha2", "ind-anon"],
+                          together=[partner], strip=[0, 1, 3, 4], thumbs=())
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        assert r.status_code == 200, r.text
+        story = next(s for s in r.json()["stories"] if s["story_id"] == sid)
+        got = {p["individual_id"]: p for p in story["people"]}
+        assert list(got) == ["ind-jun", "ind-sasha1", "ind-sasha2", "ind-anon", "ind-c1", "ind-c2"]
+        assert [(c["story_id"], c["file"]) for c in got["ind-jun"]["pictures"]] == [(sid, "crop_0.jpg")]
+        assert [(c["story_id"], c["file"]) for c in got["ind-sasha1"]["pictures"]] == [(sid, "crop_1.jpg")]
+        assert [b["n"] for b in got["ind-sasha1"]["boxes"]] == [2, 3]
+        assert [(c["file"], b["n"]) for c, b in zip(got["ind-sasha2"]["pictures"], got["ind-sasha2"]["boxes"])] == [
+            ("crop_2.jpg", 4)]
+        assert got["ind-anon"]["boxes"] == [{"n": 5, "colour": "red"}]
+        # Companions: their own crops, from the story they walked in; not boxed on this frame.
+        assert [(c["story_id"], c["file"]) for c in got["ind-c1"]["pictures"]] == [(partner, "crop_0.jpg")]
+        assert got["ind-c1"]["boxes"] == [] and got["ind-c1"]["role"] == "companion"
+        assert got["ind-c2"]["picture_crop_ids"] == ["s2c1"]
+        assert all(p["pictured"] for p in got.values())
+
+    _run(body)
+
+
+@needs_pg
+def test_yes_thats_them_is_her_answer_with_same_pictures_for_the_pictures_shown() -> None:
+    published: list = []
+
+    async def body(pool, client):
+        await _individual(pool, "ind-sasha", "Sasha")
+        await _individual(pool, "ind-anon")
+        sid = await _walk(pool, 1, ["ind-sasha", "ind-sasha", "ind-anon"], name="Sasha", strip=[0, 2], thumbs=())
+        await client.post(f"/api/vision/motion-stories/{sid}/people/ind-sasha", json={"action": "someone_else"})
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-sasha",
+                              json={"action": "confirm", "name": "sasha"})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        row = await pool.fetchrow("SELECT * FROM orion_ask WHERE ask_id = $1", out["ask_id"])
+        # Her own "who is this?" answer: sql-writer makes the name a typed label (a copied one becomes hers).
+        assert (row["source_kind"], row["source_ref"], row["status"], row["answer"]) == (
+            "vision_individual", "ind-sasha", "answered", "Sasha")
+        assert "rule:juniper_story_naming" in json.loads(row["evidence_refs"])
+        detail = json.loads(row["answer_detail"])
+        assert (detail["action"], detail["name"], detail["story_id"]) == ("confirm", "Sasha", sid)
+        # One "same" picture per picture the card showed (s1c1 has no picture: no answer about it).
+        assert [(p["crop_id"], p["verdict"], p["name"]) for p in detail["pictures"]] == [("s1c0", "same", "Sasha")]
+        assert row["question"] == "Is this Sasha? Yes (said on a walkway story)"
+        # Not a name correction; the substrate entity event like any typed name.
+        assert out["wrong_name_recorded"] is False
+        assert [(e.source_kind, e.answer) for e in published] == [("vision_individual", "Sasha")]
+        # Her latest answer on this story wins: the yes undoes the earlier "someone else".
+        assert out["story"]["display_sentence"].startswith("Sasha walked") and out["story"]["name_source"] == "juniper"
+        person = next(p for p in out["story"]["people"] if p["individual_id"] == "ind-sasha")
+        assert person["story_action"]["action"] == "confirm"
+        # Renamed elsewhere after the card rendered: her yes to "Sasha" is refused, nothing written.
+        await pool.execute("UPDATE vision_individual SET label = 'Alice' WHERE individual_id = 'ind-sasha'")
+        before = await pool.fetchval("SELECT count(*) FROM orion_ask")
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-sasha",
+                              json={"action": "confirm", "name": "Sasha"})
+        assert (r.status_code, r.json()["detail"]) == (409, "label_changed")
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-sasha", json={"action": "confirm"})
+        assert r.status_code == 409
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == before
+
+    _run(body, published)
+
+
+@needs_pg
+def test_a_companion_in_two_stories_is_answered_on_the_pictures_the_list_showed() -> None:
+    async def body(pool, client):
+        await _individual(pool, "ind-walker")
+        await _individual(pool, "ind-friend")
+        # The friend walked in two together-stories. The list shows the first in together_story_ids
+        # (story ...0c, whose id sorts AFTER ...0b): the answer must cover that story's pictures.
+        late = await _walk(pool, 12, ["ind-friend"], published=False, strip=[0], thumbs=())
+        early = await _walk(pool, 11, ["ind-friend"], published=False, strip=[0], thumbs=())
+        sid = await _walk(pool, 1, ["ind-walker"], together=[late, early], strip=[0], thumbs=())
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        friend = next(p for s in r.json()["stories"] if s["story_id"] == sid
+                      for p in s["people"] if p["individual_id"] == "ind-friend")
+        assert friend["pictures"][0]["story_id"] == late and friend["picture_crop_ids"] == ["s12c0"]
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-friend", json={"action": "unsure"})
+        assert r.status_code == 200, r.text
+        d = json.loads(await pool.fetchval("SELECT answer_detail FROM orion_ask WHERE ask_id=$1", r.json()["ask_id"]))
+        assert [p["crop_id"] for p in d["pictures"]] == ["s12c0"]
+
+    _run(body)
+
+
+def test_sql_writer_records_a_story_yes_as_its_same_picture_verdict() -> None:
+    """The yes reuses the existing "same" picture verdict: sql-writer's picture_rows keeps it as written."""
+    pytest.importorskip("numpy")
+    import importlib.util
+
+    path = REPO_ROOT / "services" / "orion-sql-writer" / "app" / "vision_individuals.py"
+    spec = importlib.util.spec_from_file_location("_sqlwriter_vision_individuals_for_hub_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    import sys
+
+    sys.modules[spec.name] = mod          # dataclasses resolve annotations through sys.modules
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.modules.pop(spec.name, None)
+    assert mod.SOURCE_KIND_STORY_PERSON == msr.STORY_PERSON_KIND
+    detail = {"pictures": [{"image_ref": "crop:s1c0", "index": 0, "verdict": "same", "crop_id": "s1c0",
+                            "name": "Sasha"}]}
+    rows = mod.picture_rows("ask-1", "ind-sasha", detail, None)
+    assert [(r["v"], r["name"], r["crop_id"]) for r in rows] == [("same", "Sasha", "s1c0")]
+
+
+def test_box_numbers_match_what_sql_writer_actually_draws(tmp_path, monkeypatch) -> None:
+    """Parity with the real writer: run sql-writer's assemble_strip on one evidence list, record the
+    numbers it draws at each box, and compare with the Hub's box_numbers for the same list."""
+    pytest.importorskip("PIL")
+    import importlib.util
+    import sys
+    from datetime import datetime, timezone
+
+    from PIL import Image, ImageDraw
+
+    path = REPO_ROOT / "services" / "orion-sql-writer" / "app" / "vision_story_strip.py"
+    spec = importlib.util.spec_from_file_location("_sqlwriter_vision_story_strip_for_hub_test", path)
+    vss = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = vss
+    try:
+        spec.loader.exec_module(vss)
+    finally:
+        sys.modules.pop(spec.name, None)
+    t = datetime(2026, 11, 22, 1, 28, 33, tzinfo=timezone.utc)
+    ev = [{"crop_id": "a", "box": [10, 10, 50, 90], "t": t.isoformat()},
+          {"crop_id": None, "box": [1, 1, 2, 2], "t": t.isoformat()},        # no crop: never drawn
+          {"crop_id": "b", "box": None, "t": t.isoformat()},                 # no box: not numbered
+          {"crop_id": "c", "box": [60, 10, 100, 90], "t": t.isoformat()},
+          {"crop_id": "d", "box": [110, 10, 150, 90], "t": t.isoformat()}]
+    cfg = vss.StripConfig(strip_dir=str(tmp_path), frame_w=200.0, frame_h=100.0)
+    pending = tmp_path / vss.PENDING
+    pending.mkdir()
+    Image.new("RGB", (200, 100)).save(pending / f"{vss.frame_key('walkway', t)}.jpg")
+    drawn: list = []
+    real = ImageDraw.Draw
+
+    class Recorder:
+        def __init__(self, im):
+            self._d = real(im)
+
+        def rectangle(self, xy, outline=None, width=1):
+            drawn.append({"box": [round(v) for v in xy], "colour": outline})
+
+        def text(self, xy, s, fill=None):
+            drawn[-1]["n"] = int(s)
+
+    monkeypatch.setattr(ImageDraw, "Draw", Recorder)
+    vss.assemble_strip("f" * 32, "walkway", ev, cfg=cfg)
+    names = {vss.FIRST: "green", vss.MID: "blue", vss.LAST: "red"}
+    by_box = {tuple(d["box"]): {"n": d["n"], "colour": names[d["colour"]]} for d in drawn}
+    want = {e["crop_id"]: by_box[tuple(e["box"])] for e in ev if e["crop_id"] and e["box"]}
+    assert msr.box_numbers(ev) == want
 
 
 def test_clean_why_trims_spaces_and_blank_lines_but_keeps_line_breaks() -> None:

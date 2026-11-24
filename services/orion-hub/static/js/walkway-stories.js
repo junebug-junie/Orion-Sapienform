@@ -28,6 +28,15 @@
   // strict naming rule on today's names); if it differs from what Orion first
   // wrote, that is shown too.
   //
+  // One person at a time (2026-11-24, Juniper: "how the f would i know which is
+  // which, alice or addy?"). Each person gets a letter (A, B, ...). Their row
+  // shows THEIR OWN pictures (the strip crops that are theirs, by crop_id; else
+  // vision-host's thumbnail of one of their crops), and says which numbered
+  // boxes on the big picture are theirs, in the colour that box was drawn. The
+  // time crops above carry the same letter. A row with a name gets "Yes, that's
+  // <name>" (a "same" picture verdict). A person with no picture of their own is
+  // greyed: "No picture of this person - not asked." (the route refuses it too).
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
@@ -110,7 +119,9 @@
     }
     (Array.isArray(st.crops) ? st.crops : []).forEach((c) => {
       if (!c || typeof c !== "object") return;
-      if (typeof c.file === "string" && STRIP_FILE_RE.test(c.file)) out.crops.push({ url: stripUrl(id, c.file), t: c.t });
+      if (typeof c.file === "string" && STRIP_FILE_RE.test(c.file)) {
+        out.crops.push({ url: stripUrl(id, c.file), t: c.t, crop_id: typeof c.crop_id === "string" ? c.crop_id : null });
+      }
       else out.crops.push({ missing: MISSING_TEXT[c.missing] ? c.missing : "not_captured", t: c.t });
     });
     return out;
@@ -149,56 +160,183 @@
   function actionLine(a) {
     if (!a || !a.action) return "";
     if (a.action === "name") return `You named them ${a.name || ""} on this story.`;
+    if (a.action === "confirm") return `You said yes, this is ${a.name || "them"}.`;
     if (a.action === "someone_else") return a.name
       ? `You said this is someone else: ${a.name}.` : "You said this is someone else.";
     if (a.action === "unsure") return "You said you are not sure.";
     return "";
   }
 
-  function renderPerson(doc, story, p, onPerson) {
-    const box = el(doc, "div", "flex flex-wrap items-center gap-2 rounded border border-gray-700 bg-gray-900/60 p-2");
-    box.setAttribute("data-story-person", p.individual_id);
-    if (p.thumb && THUMB_RE.test(p.thumb)) {
-      const img = el(doc, "img", "h-12 w-auto rounded border border-gray-700");
-      img.setAttribute("src", `/api/vision/crop-thumbs/${p.thumb}`);
-      img.setAttribute("alt", "this person in the story");
-      img.setAttribute("loading", "lazy");
-      img.addEventListener("error", () => img.remove());
-      box.appendChild(img);
+  const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  // A chip colour per person letter; never the box colours (green / blue / red).
+  const CHIP = ["bg-amber-500 text-black", "bg-fuchsia-500 text-black", "bg-cyan-400 text-black",
+    "bg-lime-400 text-black", "bg-orange-400 text-black", "bg-pink-400 text-black"];
+  // The colour sql-writer drew each numbered box in (app/vision_story_strip.py).
+  const BOX_TEXT = { green: "text-green-400", blue: "text-blue-400", red: "text-red-400" };
+
+  // The story's people, one per individual_id, each with a letter.
+  function storyPeople(story) {
+    const seen = new Set();
+    const out = [];
+    (Array.isArray(story && story.people) ? story.people : []).forEach((p) => {
+      if (!p || !p.individual_id || seen.has(p.individual_id)) return;
+      seen.add(p.individual_id);
+      out.push(p);
+    });
+    return out.map((p, i) => ({ person: p, letter: LETTERS[i % LETTERS.length], chip: CHIP[i % CHIP.length] }));
+  }
+
+  // The pictures a person row shows: their own strip crops, else their thumbnail.
+  function personPictures(p) {
+    const out = [];
+    (Array.isArray(p && p.pictures) ? p.pictures : []).forEach((c) => {
+      if (c && STORY_RE.test(String(c.story_id || "")) && typeof c.file === "string" && STRIP_FILE_RE.test(c.file)) {
+        out.push({ url: stripUrl(c.story_id, c.file), t: c.t, crop_id: c.crop_id });
+      }
+    });
+    if (!out.length && p && typeof p.thumb === "string" && THUMB_RE.test(p.thumb)) {
+      out.push({ url: `/api/vision/crop-thumbs/${p.thumb}`, t: null, crop_id: p.thumb_crop_id || null });
     }
-    const text = el(doc, "div", "min-w-0 flex-1 space-y-0.5");
+    return out;
+  }
+
+  // Is this person askable? Only with a picture of their own on the card.
+  function isPictured(p) {
+    return personPictures(p).length > 0;
+  }
+
+  // crop_id -> {letter, chip} for the story's time crops.
+  function cropOwners(entries) {
+    const out = {};
+    entries.forEach((e) => {
+      (e.person.crop_ids || []).forEach((cid) => { if (!(cid in out)) out[cid] = e; });
+    });
+    return out;
+  }
+
+  // "Boxes 2, 3 on the big picture", "Not boxed on the big picture (they walked alongside)".
+  function boxesText(p, hasFrame) {
+    const boxes = Array.isArray(p && p.boxes) ? p.boxes.filter((b) => b && Number.isFinite(Number(b.n))) : [];
+    if (!hasFrame) return "";
+    if (!boxes.length) {
+      return p && p.role === "companion" ? "Not boxed on the big picture (they walked alongside)."
+        : "Not boxed on the big picture.";
+    }
+    return `${boxes.length === 1 ? "Box" : "Boxes"} ${boxes.map((b) => b.n).join(", ")} on the big picture.`;
+  }
+
+  function chipEl(doc, entry) {
+    const chip = el(doc, "span", `inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded px-1 text-[11px] font-bold ${entry.chip}`, entry.letter);
+    chip.setAttribute("data-person-letter", entry.letter);
+    return chip;
+  }
+
+  function renderPerson(doc, story, entry, onPerson, hasFrame) {
+    const p = entry.person;
+    const pics = personPictures(p);
+    const asked = pics.length > 0;
+    const box = el(doc, "div", "space-y-2 rounded border p-2 " + (asked
+      ? "border-gray-700 bg-gray-900/60" : "border-gray-800 bg-gray-900/30 opacity-60"));
+    box.setAttribute("data-story-person", p.individual_id);
+    box.setAttribute("data-person-letter", entry.letter);
+    box.setAttribute("data-person-asked", asked ? "1" : "0");
+
+    const head = el(doc, "div", "flex flex-wrap items-center gap-2");
+    head.appendChild(chipEl(doc, entry));
     const title = el(doc, "div", "text-xs text-gray-100", personTitle(p));
     title.setAttribute("data-person-title", "1");
-    text.appendChild(title);
+    head.appendChild(title);
+    if (p.label) {
+      // Two groups can carry one name (two "Addy"s): the group id tells them apart.
+      head.appendChild(el(doc, "span", "text-[10px] text-gray-500", `group ${String(p.short_id || "").slice(0, 8)}`));
+    }
+    box.appendChild(head);
+
+    const boxLine = boxesText(p, hasFrame);
+    if (boxLine) {
+      const line = el(doc, "div", "text-[10px] text-gray-400");
+      const boxes = Array.isArray(p.boxes) ? p.boxes : [];
+      if (boxes.length) {
+        line.appendChild(el(doc, "span", "", boxes.length === 1 ? "Box " : "Boxes "));
+        boxes.forEach((b, i) => {
+          if (i) line.appendChild(el(doc, "span", "", ", "));
+          const n = el(doc, "span", `font-bold ${BOX_TEXT[b.colour] || "text-blue-400"}`, String(b.n));
+          n.setAttribute("data-person-box", String(b.n));
+          line.appendChild(n);
+        });
+        line.appendChild(el(doc, "span", "", " on the big picture."));
+      } else {
+        line.textContent = boxLine;
+      }
+      line.setAttribute("data-person-boxes", boxes.map((b) => b.n).join(","));
+      box.appendChild(line);
+    }
+
+    if (!asked) {
+      const why = el(doc, "div", "text-[11px] text-gray-500", "No picture of this person - not asked.");
+      why.setAttribute("data-person-not-asked", "1");
+      box.appendChild(why);
+      return box;
+    }
+
+    const row = el(doc, "div", "flex flex-wrap items-start gap-2");
+    pics.forEach((c) => {
+      const cell = el(doc, "div", "flex flex-col items-center");
+      const img = el(doc, "img", "h-24 w-auto max-w-[5rem] object-contain rounded border-2 border-gray-500");
+      img.setAttribute("src", c.url);
+      img.setAttribute("alt", `Person ${entry.letter} (${personTitle(p)})${c.t ? ` at ${shortTime(c.t)}` : ""}`);
+      img.setAttribute("loading", "lazy");
+      img.setAttribute("data-person-picture", c.crop_id || "1");
+      img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
+      cell.appendChild(img);
+      if (c.t) cell.appendChild(el(doc, "span", "text-[10px] text-gray-500", shortTime(c.t)));
+      row.appendChild(cell);
+    });
+    box.appendChild(row);
+
     if (p.label && p.label_copied) {
-      text.appendChild(el(doc, "div", "text-[10px] text-gray-500", "Name carried over from a same-person answer."));
+      box.appendChild(el(doc, "div", "text-[10px] text-gray-500", "Name carried over from a same-person answer."));
     }
     const said = actionLine(p.story_action);
     if (said) {
       const line = el(doc, "div", "text-[10px] text-emerald-300", said);
       line.setAttribute("data-person-said", p.story_action.action);
-      text.appendChild(line);
+      box.appendChild(line);
     }
-    box.appendChild(text);
     const input = el(doc, "input", "min-h-[2.25rem] w-full sm:w-40 rounded border border-gray-600 bg-gray-950 px-2 text-xs text-gray-100");
     input.setAttribute("type", "text");
     input.setAttribute("maxlength", "120");
-    input.setAttribute("placeholder", p.label ? "Correct the name" : "Who is this?");
-    input.setAttribute("aria-label", `Name for ${personTitle(p)}`);
+    input.setAttribute("placeholder", p.label ? "Or type the right name" : "Who is this?");
+    input.setAttribute("aria-label", `Name for person ${entry.letter}`);
     input.setAttribute("data-person-name-input", "1");
-    box.appendChild(input);
-    const buttons = el(doc, "div", "flex flex-wrap gap-2");
-    [{ value: "name", label: p.label ? "Save name" : "Name them" },
-      { value: "someone_else", label: "Someone else" },
-      { value: "unsure", label: "Not sure" }].forEach((a) => {
-      const btn = el(doc, "button", "min-h-[2.25rem] rounded-lg border border-gray-600 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700", a.label);
+    const buttons = el(doc, "div", "flex flex-wrap items-center gap-2");
+    const actions = p.label
+      ? [{ value: "confirm", label: `Yes, that's ${p.label}`, primary: true },
+        { value: "someone_else", label: `No, not ${p.label}`,
+          title: "These pictures are not them. Type who it really is first, if you know." },
+        { value: "unsure", label: "Not sure" },
+        { value: "name", label: "Save typed name" }]
+      : [{ value: "name", label: "Name them", primary: true },
+        { value: "someone_else", label: "Someone else",
+          title: "These pictures are not this unnamed person. Type who it really is first, if you know." },
+        { value: "unsure", label: "Not sure" }];
+    // A named row: the yes / no / not sure line, then the name box on its own line.
+    // An unnamed row: the name box first, then its buttons.
+    const fix = p.label ? el(doc, "div", "flex flex-wrap items-center gap-2") : buttons;
+    if (!p.label) buttons.appendChild(input);
+    else fix.appendChild(input);
+    actions.forEach((a) => {
+      const btn = el(doc, "button", "min-h-[2.25rem] rounded-lg border px-3 py-1 text-xs " + (a.primary
+        ? "border-emerald-500 bg-emerald-800 text-white hover:bg-emerald-700"
+        : "border-gray-600 bg-gray-900 text-gray-200 hover:bg-gray-700"), a.label);
       btn.setAttribute("type", "button");
       btn.setAttribute("data-person-action", a.value);
-      if (a.value === "someone_else") btn.setAttribute("title", "Not this individual. Type who it really is first, if you know.");
+      if (a.title) btn.setAttribute("title", a.title);
       btn.addEventListener("click", () => onPerson(story, p, a.value, input.value, box));
-      buttons.appendChild(btn);
+      (p.label && a.value === "name" ? fix : buttons).appendChild(btn);
     });
     box.appendChild(buttons);
+    if (fix !== buttons) box.appendChild(fix);
     return box;
   }
 
@@ -239,6 +377,8 @@
     item.appendChild(el(doc, "div", "text-[11px] text-gray-400", meta.join(" · ")));
 
     const model = stripModel(story);
+    const entries = storyPeople(story);
+    const owners = cropOwners(entries);
     const pics = el(doc, "div", "space-y-1");
     pics.setAttribute("data-story-strip", model.frame ? "frame" : hasPicture(model) ? "crops" : "none");
     if (model.dark) pics.appendChild(el(doc, "div", "text-[11px] font-semibold text-amber-300", "Dark scene"));
@@ -251,7 +391,8 @@
       img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
       pics.appendChild(img);
       pics.appendChild(el(doc, "div", "text-[10px] text-gray-500",
-        `Picture from ${localTime(model.frame.t)}. Boxes: 1 = first (green), last = red.`));
+        `Picture from ${localTime(model.frame.t)}. Boxes: 1 = first (green), last = red. ` +
+        "Each person below says which boxes are theirs."));
     }
     if (model.crops.length) {
       const row = el(doc, "div", "flex flex-wrap items-start gap-2");
@@ -265,7 +406,14 @@
           img.setAttribute("data-story-crop", "1");
           img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
           cell.appendChild(img);
-          cell.appendChild(el(doc, "span", "text-[10px] text-gray-500", shortTime(c.t)));
+          const owner = c.crop_id ? owners[c.crop_id] : null;
+          const label = el(doc, "span", "flex items-center gap-1 text-[10px] text-gray-500");
+          if (owner) {
+            label.appendChild(chipEl(doc, owner));
+            cell.setAttribute("data-story-crop-person", owner.letter);
+          }
+          label.appendChild(el(doc, "span", "", shortTime(c.t)));
+          cell.appendChild(label);
         } else {
           const why = MISSING_TEXT[c.missing] || MISSING_TEXT.not_captured;
           cell.appendChild(el(doc, "span", "text-[10px] text-gray-500", `${shortTime(c.t)}: ${why}`));
@@ -297,12 +445,21 @@
     }
     item.appendChild(pics);
 
-    const people = Array.isArray(story.people) ? story.people.filter((p) => p && p.individual_id) : [];
     const who = el(doc, "div", "space-y-1");
-    who.setAttribute("data-story-people", String(people.length));
+    who.setAttribute("data-story-people", String(entries.length));
+    const askable = entries.filter((e) => isPictured(e.person)).length;
     who.appendChild(el(doc, "div", "text-[11px] font-semibold text-gray-300",
-      people.length ? "Who is this story about?" : "No individual linked to these boxes yet."));
-    if (typeof onPerson === "function") people.forEach((p) => who.appendChild(renderPerson(doc, story, p, onPerson)));
+      entries.length
+        ? `Who is in this story? ${entries.length} ${entries.length === 1 ? "person" : "people"} by Orion's count; ` +
+          "check each one against their own pictures."
+        : "No individual linked to these boxes yet."));
+    if (entries.length && askable < entries.length) {
+      who.appendChild(el(doc, "div", "text-[10px] text-gray-500",
+        `${entries.length - askable} without a picture of their own ${entries.length - askable === 1 ? "is" : "are"} not asked.`));
+    }
+    if (typeof onPerson === "function") {
+      entries.forEach((e) => who.appendChild(renderPerson(doc, story, e, onPerson, !!model.frame)));
+    }
     item.appendChild(who);
 
     const row = el(doc, "div", "flex flex-wrap gap-2");
@@ -376,7 +533,7 @@
         const res = await fetchFn(
           `/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/people/${encodeURIComponent(person.individual_id)}`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action, name: action === "unsure" ? "" : name }),
+            body: JSON.stringify({ action, name: action === "unsure" || action === "confirm" ? "" : name }),
           });
         if (!res.ok) {
           let detail = "";
@@ -390,6 +547,7 @@
         if (status) {
           status.textContent = action === "name"
             ? `Saved: ${name}. Orion applies it like any "who is this?" answer.`
+            : action === "confirm" ? `Saved: yes, that's ${person.label || "them"}.`
             : action === "someone_else" ? "Saved: someone else. Orion will try to split those pictures off that individual."
               : "Saved: not sure.";
           if (body.wrong_name_recorded) status.textContent += " Recorded as a wrong name for this story.";
@@ -449,7 +607,8 @@
   }
 
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
-                personTitle, actionLine, handoffText, renderStory, mount };
+                personTitle, actionLine, handoffText, renderStory, mount,
+                storyPeople, personPictures, isPictured, cropOwners, boxesText };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

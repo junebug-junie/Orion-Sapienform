@@ -39,6 +39,7 @@ from orion.schemas.attention_candidate import (
     world_first_fenced,
 )
 from orion.substrate.prediction_error_freshness import is_alarm_node, missing_input_reason
+from orion.substrate.signal_history import SIGNAL_VALUE_KEY, node_signal_value
 from orion.substrate.attention.common import compact, stable_id
 from orion.substrate.attention.policy import select_actions
 from orion.substrate.attention.scoring import build_open_loops, merge_signals
@@ -126,7 +127,11 @@ def _node_salience(metadata: dict[str, Any]) -> tuple[float, str]:
     if reason is not None:
         kind = "prediction_error" if str(reason).startswith("prediction_error") else "pressure"
     else:
-        kind = "prediction_error" if _f("prediction_error") > 0.0 else "pressure"
+        kind = (
+            "prediction_error"
+            if _f("prediction_error") > 0.0 or _f(SIGNAL_VALUE_KEY) > 0.0
+            else "pressure"
+        )
     return pressure, kind
 
 
@@ -379,7 +384,9 @@ def world_first_signals(
             if world_first_fenced(node_id):
                 continue
             metadata = dict(getattr(node, "metadata", None) or {})
-            if node_id.startswith(PREDICTION_ERROR_NODE_PREFIXES) and metadata.get("prediction_error") is not None:
+            # A moved alarm (PE retire Patch 2) carries signal_value, not prediction_error: it
+            # stays a candidate. Its stale prediction_error key is never read.
+            if node_id.startswith(PREDICTION_ERROR_NODE_PREFIXES) and node_signal_value(node_id, metadata) is not None:
                 absent = None
                 if node_id == PERCEPTION_NODE_ID:
                     absent = perception_absent_reason(

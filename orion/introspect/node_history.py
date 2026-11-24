@@ -1,7 +1,9 @@
-"""Read a substrate node's prediction-error history for the orion-introspect ``node_history`` tool.
+"""Read a substrate node's stored history for the orion-introspect ``node_history`` tool.
 
 Source: ``substrate_node_prediction_error_history`` (one row per real ``observed_at`` advance,
-written by orion-substrate-runtime, pruned at SUBSTRATE_PE_HISTORY_RETENTION_HOURS). Every
+written by orion-substrate-runtime, pruned at SUBSTRATE_PE_HISTORY_RETENTION_HOURS); the three
+alarms (cabinet, strain, street) come from ``substrate_node_signal_history`` (PE retire Patch 2),
+read together with their old PE rows until those age out. Every
 query is parameterized, bounded to one window and one node, and aggregated in Postgres, so a
 7-day window of a busy node (~14k rows) still returns a few kilobytes.
 
@@ -15,7 +17,12 @@ from typing import Any
 
 from orion.schemas.introspect import NODE_HISTORY_MAX_POINTS, NODE_HISTORY_TOP_CHANGES, IntrospectItemV1
 
-TABLE = "substrate_node_prediction_error_history"
+# PE retire Patch 2: the three alarms (cabinet, strain, street) live in substrate_node_signal_history;
+# their old PE rows stay readable until the 7-day prune, so the source is the shared read-both
+# derived table (orion/substrate/signal_history.py): PE rows for every other node, both tables
+# deduped on (node_id, observed_at) for the alarms. It has no bind parameters, so $1.. stay as is.
+# Stdlib-only module: no orion.substrate package init here.
+from orion.prediction.signal_history_sql import HISTORY_WITH_MOVED_SOURCE_SQL as TABLE  # noqa: E402
 
 SUMMARY_SQL = f"""
 select count(*)::int as n,
@@ -76,12 +83,21 @@ def sig(value: Any) -> float | None:
 
 
 def _signal_noun(node_id: str) -> str:
-    """What the stored value is: an alarm (cabinet, strain, street) is not a
-    prediction error (PE suite rebuild, 2026-11-13)."""
+    """What the stored value is: an alarm (cabinet, strain, street) says which alarm and where
+    it is stored, and never calls itself a prediction error (PE retire Patch 2)."""
     # Lazy: orion.substrate's package init is heavy.
     from orion.substrate.prediction_error_freshness import ALARM_LABELS
+    from orion.prediction.signal_history_sql import SIGNAL_HISTORY_TABLE
 
-    return f"({ALARM_LABELS[node_id]}, an alarm, not a prediction error)" if node_id in ALARM_LABELS else "prediction error"
+    if node_id in ALARM_LABELS:
+        return f"({ALARM_LABELS[node_id]}: an alarm, above 0 = it fired; stored in {SIGNAL_HISTORY_TABLE})"
+    return "prediction error"
+
+
+def _is_alarm(node_id: str) -> bool:
+    from orion.prediction.signal_history_sql import is_moved_signal_node
+
+    return is_moved_signal_node(node_id)
 
 
 def _iso(value: datetime) -> str:
@@ -132,7 +148,8 @@ async def read_node_history(conn: Any, node_id: str, start: datetime, end: datet
     return IntrospectItemV1(
         id=node_id,
         occurred_at=summary["last_at"],
-        kind="node_prediction_error_history",
+        # An alarm's record is not filed as a prediction error (PE retire Patch 2).
+        kind="node_alarm_history" if _is_alarm(node_id) else "node_prediction_error_history",
         epistemic_status="record",
         text=text,
         extra={
@@ -167,7 +184,7 @@ async def list_history_nodes(conn: Any, start: datetime, end: datetime) -> Intro
     nodes = [{"node_id": r["node_id"], "count": int(r["n"]), "last_at": _iso(r["last_at"])} for r in rows]
     label = _hours_label(start, end)
     text = (
-        f"{len(nodes)} nodes have readings (prediction error, or an alarm for cabinet/strain/street) "
+        f"{len(nodes)} nodes have readings (alarms for cabinet/strain/street, prediction errors for the rest) "
         f"in the {label} ending {_iso(end)}: "
         + ", ".join(f"{n['node_id']} ({n['count']})" for n in nodes)
         + ". Pass node_id=<one of these> for its history."

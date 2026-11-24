@@ -782,7 +782,20 @@ class BiometricsSubstrateStore:
         re-recording a node whose observed_at has not moved is a no-op even if
         the in-process "moved since last sample" check is bypassed (restart,
         failed write retried next tick).
+
+        A moved signal node (the alarms, PE retire Patch 2) is never written here: its row is
+        dropped with a warning, so no caller can put an alarm back in the prediction-error table
+        (kill means kill). Its home is substrate_node_signal_history.
         """
+        from orion.substrate.signal_history import is_moved_signal_node
+
+        moved = [row[0] for row in samples if is_moved_signal_node(row[0])]
+        if moved:
+            logger.warning(
+                "substrate_pe_history_moved_node_refused node_ids=%s rows=%d",
+                ",".join(sorted(set(moved))), len(moved),
+            )
+            samples = [row for row in samples if not is_moved_signal_node(row[0])]
         if not samples:
             return 0
         params = [
@@ -808,13 +821,19 @@ class BiometricsSubstrateStore:
     def fetch_prediction_error_history(
         self, *, since: datetime
     ) -> list[tuple[str, datetime, float]]:
-        """All readings with observed_at >= since, oldest first."""
+        """All readings with observed_at >= since, oldest first per node.
+
+        PE retire Patch 2: the moved alarms come from the read-both union (signal table, plus
+        their old PE rows until the 7-day prune), every other node from the PE table
+        (orion/substrate/signal_history.py HISTORY_WITH_MOVED_SOURCE_SQL)."""
+        from orion.prediction.signal_history_sql import HISTORY_WITH_MOVED_SOURCE_SQL
+
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT node_id, observed_at, value
-                    FROM substrate_node_prediction_error_history
+                    FROM {HISTORY_WITH_MOVED_SOURCE_SQL}
                     WHERE observed_at >= :since
                     ORDER BY node_id, observed_at
                     """
@@ -959,8 +978,8 @@ class BiometricsSubstrateStore:
 
     # --- substrate_node_signal_history (manual_migration_node_signal_history_v1.sql) -----------
     # The five non-PE nodes (alarms, camera scene change; orion/substrate/signal_history.py).
-    # Patch 1 of PR #3781: written alongside the PE table, read by nobody live yet. The read_both
-    # helpers union both tables until the old PE rows age out.
+    # Patch 1 of PR #3781 added it beside the PE table. Patch 2: the alarms live only here, and
+    # the read_both helpers union both tables until their old PE rows age out.
 
     def save_signal_history_samples(
         self, samples: list[tuple[str, datetime, float, str]]

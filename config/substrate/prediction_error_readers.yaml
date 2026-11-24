@@ -2,9 +2,12 @@
 # Checked in CI by scripts/check_pe_alarm_readers.py.
 #
 # node:substrate.cabinet / .strain / .street are ALARMS, not prediction errors: their value means "it
-# fired", not "how big a surprise" (orion/substrate/prediction_error_freshness.py, ALARM_NODE_IDS). They
-# still ride the node's prediction_error field and substrate_node_prediction_error_history, because the
-# attention contests and strain news read them there.
+# fired", not "how big a surprise" (orion/substrate/prediction_error_freshness.py, ALARM_NODE_IDS).
+# Since PE retire Patch 2 (2026-11-24) they no longer ride the prediction_error slot: their writer puts
+# the value in node metadata signal_value and in substrate_node_signal_history, history readers read
+# both tables (orion/prediction/signal_history_sql.py HISTORY_WITH_MOVED_SOURCE_SQL) until the old PE
+# rows age out, and the gate below also FAILS any producer that writes prediction_error for one of
+# them (moved-node writer fence).
 #
 # Every non-test Python file that touches prediction_error (names the history table, or reads the
 # "prediction_error" key or attribute) either skips alarms itself (calls is_alarm_node / uses
@@ -32,12 +35,10 @@ files:
   services/orion-equilibrium-service/app/self_signal_episode_gate.py:
     class: alarm_aware
     reason: the metacog episode gate; judge_candidate per node (trigger rule), labels via node_signal_label
-  orion/regulation/strain_news.py:
-    class: alarm_aware
-    reason: writes the strain trigger; its restart rebuild reads strain rows as event times (counts)
   orion/introspect/node_history.py:
     class: alarm_aware
-    reason: one requested node at a time, no ranking; _signal_noun uses ALARM_LABELS to say "an alarm"
+    reason: one requested node at a time, no ranking; reads the alarms read-both from the signal table and
+      _signal_noun uses ALARM_LABELS to say "an alarm"
   services/orion-substrate-runtime/app/worker.py:
     class: alarm_aware
     reason: writes the alarm nodes and samples history for the contest; labels via ALARM_LABELS; self-model
@@ -57,10 +58,6 @@ files:
     class: alarm_aware
     reason: per-node percentile cache; every consumer is alarm-aware (contests, self_readings, episode gate,
       rollup); a new consumer must check is_alarm_node itself
-  services/orion-substrate-runtime/app/brain_frame_producer.py:
-    class: alarm_aware
-    reason: _node_pressure falls back to the raw value as a display pressure; nodes rank by activation, and a
-      firing alarm shown as pressure matches the dynamics pressure seed
   # --- single_node -------------------------------------------------------------------------------
   orion/substrate/metacog_trend_signals.py:
     class: single_node

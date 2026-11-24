@@ -113,3 +113,50 @@ def test_tests_evals_and_excluded_paths_are_not_scanned(tmp_path):
 def test_an_unparseable_file_never_auto_passes_on_a_comment(tmp_path):
     broken = "# is_alarm_node handles this\n" + GENERIC + "def broken(:\n    x = 'unterminated\n"
     assert len(gate.check(_repo(tmp_path, {"orion/broken.py": broken}, {}))) == 1
+
+
+# --- moved-node writer fence (PE retire Patch 2) ---------------------------------------------------
+
+_REG = {"files": {"services/x/app/w.py": {"class": "not_a_reader", "reason": "writer"}}}
+
+
+def test_writing_prediction_error_for_an_alarm_id_literal_fails(tmp_path):
+    src = ("def tick(self, now):\n"
+           "    self._write_prediction_error_node(node_id='node:substrate.cabinet', error=1.0, now=now)\n"
+           "    return {'prediction_error': 1.0}\n")
+    problems = gate.check(_repo(tmp_path, {"services/x/app/w.py": src}, _REG))
+    assert len(problems) == 1 and "services/x/app/w.py:2" in problems[0]
+    assert "node:substrate.cabinet" in problems[0] and "_write_signal_node" in problems[0]
+    assert gate.main(["--root", str(tmp_path)]) == 1
+
+
+def test_writing_prediction_error_for_an_alarm_through_a_constant_fails(tmp_path):
+    files = {
+        "orion/consts.py": "STRAIN_NODE_ID = 'node:substrate.strain'\n",
+        "services/x/app/w.py": ("from orion.consts import STRAIN_NODE_ID\n"
+                                "def tick(store, now):\n"
+                                "    store.save_prediction_error_history_samples([(STRAIN_NODE_ID, now, 1.0)])\n"),
+    }
+    problems = gate.check(_repo(tmp_path, files, {}))
+    assert len(problems) == 1 and "STRAIN_NODE_ID" in problems[0] and ":3 " in problems[0]
+
+
+def test_a_prediction_error_dict_naming_an_alarm_fails(tmp_path):
+    src = "ROW = {'node_id': 'node:substrate.street', 'prediction_error': 1.0}\n"
+    problems = gate.check(_repo(tmp_path, {"services/x/app/w.py": src}, _REG))
+    assert len(problems) == 1 and "node:substrate.street" in problems[0]
+
+
+def test_writing_prediction_error_for_a_real_pe_node_still_passes(tmp_path):
+    src = ("def tick(self, now):\n"
+           "    self._write_prediction_error_node(node_id='node:prediction.body', error=1.0, now=now)\n"
+           "    self._write_signal_node(node_id='node:substrate.cabinet', value=1.0, now=now)\n"
+           "    return {'prediction_error': 1.0}\n")
+    assert gate.check(_repo(tmp_path, {"services/x/app/w.py": src}, _REG)) == []
+
+
+def test_the_live_worker_writes_no_alarm_through_the_pe_writer():
+    assert gate.moved_writer_problems(REPO) == []
+    assert gate.moved_node_ids() == {
+        "node:substrate.cabinet", "node:substrate.strain", "node:substrate.street",
+    }

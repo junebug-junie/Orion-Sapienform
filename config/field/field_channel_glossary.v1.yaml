@@ -369,10 +369,14 @@ channels:
   # `producer:` is orion-substrate-runtime, which computes every one of
   # these (orion-field-digester only ingests the receipt).
   #
-  # One of these never reaches FieldStateV1 node_vectors at all
-  # (cabinet): it lives only on the FalkorDB substrate
-  # node (`metadata.prediction_error`) and in
-  # substrate_node_prediction_error_history. Its trend_source says so.
+  # The three alarms below (cabinet, street, strain) are node-qualified
+  # `channel: alarm` entries since 2026-11-24 (PE retire Patch 2,
+  # docs/superpowers/specs/2026-11-24-pe-retire-perception-and-alarms-design.md):
+  # their value lives in node metadata `signal_value` and in
+  # substrate_node_signal_history, never in prediction_error. world-first
+  # attention and self-readings look each node up under its own channel
+  # (orion.prediction.signal_history_sql.glossary_channel_for). None of them
+  # reaches FieldStateV1 node_vectors.
   #
   # There is deliberately NO node:substrate.vision_organ prediction_error
   # entry: that node carries vision_frame_staleness and
@@ -395,11 +399,11 @@ channels:
   # node only. Live: 97% exact zeros, max 1.0.
   - node: "node:substrate.cabinet"
     producer: orion-substrate-runtime
-    channel: prediction_error
+    channel: alarm
     level: [node]
     category: physical_substrate
-    meaning: "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): cabinet is warming -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node only; not in FieldStateV1 node_vectors."
-    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.cabinet'"
+    meaning: "ALARM (cabinet warming alarm; orion.prediction.alarm_nodes.ALARM_NODE_IDS): cabinet is warming -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node (metadata signal_value) only; not in FieldStateV1 node_vectors. Until 2026-11-24 this value rode the prediction_error slot (node key and substrate_node_prediction_error_history); it was never a forecast miss, so a belief built on reading it as one needs a re-test."
+    trend_source: "substrate_node_signal_history WHERE node_id = 'node:substrate.cabinet' (kind alarm; read together with its older substrate_node_prediction_error_history rows until 2026-12-01)"
     consumers:
       - "orion.attention.world_first:judge_candidate"
     semantics:
@@ -421,11 +425,11 @@ channels:
   # staleness decay never touches it (not a FieldStateV1 node vector).
   - node: "node:substrate.street"
     producer: orion-substrate-runtime
-    channel: prediction_error
+    channel: alarm
     level: [node]
     category: self_monitoring
-    meaning: "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body."
-    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.street'"
+    meaning: "ALARM (street event alarm; orion.prediction.alarm_nodes.ALARM_NODE_IDS): a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body. Until 2026-11-24 this value rode the prediction_error slot (node key and substrate_node_prediction_error_history); it was never a forecast miss, so a belief built on reading it as one needs a re-test."
+    trend_source: "substrate_node_signal_history WHERE node_id = 'node:substrate.street' (kind alarm; read together with its older substrate_node_prediction_error_history rows until 2026-12-01)"
     consumers:
       - "orion.substrate.attention_broadcast:world_first_signals"
     semantics:
@@ -444,11 +448,11 @@ channels:
   # FalkorDB node only. Spec docs/superpowers/specs/2026-10-20-strain-loop-design.md.
   - node: "node:substrate.strain"
     producer: orion-substrate-runtime
-    channel: prediction_error
+    channel: alarm
     level: [node]
     category: physical_substrate
-    meaning: "NEWS, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors."
-    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.strain'"
+    meaning: "ALARM (strain news; orion.prediction.alarm_nodes.ALARM_NODE_IDS): strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node (metadata signal_value) only; not in FieldStateV1 node_vectors. Until 2026-11-24 this value rode the prediction_error slot (node key and substrate_node_prediction_error_history); it was never a forecast miss, so a belief built on reading it as one needs a re-test."
+    trend_source: "substrate_node_signal_history WHERE node_id = 'node:substrate.strain' (kind alarm; read together with its older substrate_node_prediction_error_history rows until 2026-12-01)"
     consumers:
       - "orion.attention.world_first:judge_candidate"
     semantics:

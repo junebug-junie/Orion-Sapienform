@@ -24,11 +24,21 @@ name. Each such file must be one of:
 It also fails on a registry entry whose file is gone or no longer touches prediction_error (a stale
 entry hides nothing today but would silently cover a new reader at the same path tomorrow).
 
+**Moved-node writer fence** (PE retire Patch 2, 2026-11-24): the three alarms left the
+prediction-error slot (``orion.prediction.signal_history_sql.MOVED_SIGNAL_NODE_IDS``). A producer
+that writes ``prediction_error`` for one of them fails: a call to a prediction-error writer
+(``_write_prediction_error_node``, ``_prediction_error_receipt``,
+``save_prediction_error_history_samples``) whose arguments name a moved id -- as a string literal or
+through a module constant bound to one (``CABINET_NODE_ID``) -- or a dict literal with a
+``"prediction_error"`` key next to a moved id. A writer passing a plain variable is caught at runtime
+instead (the worker's PE writer refuses a moved id; the store drops its PE-table row).
+
     python scripts/check_pe_alarm_readers.py            # repo root; exit 1 on any problem
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import re
 import sys
@@ -44,6 +54,19 @@ TOUCH = re.compile(r"substrate_node_prediction_error_history|[\"']prediction_err
 FILTERS = re.compile(r"\bis_alarm_node\b|\bALARM_NODE_IDS\b")
 CLASSES = ("alarm_aware", "filters_via", "single_node", "not_a_reader")
 SKIP_PARTS = {"tests", "test", "evals", "__pycache__", "node_modules", ".venv"}
+# Writers of the prediction-error slot (node key, field receipt, PE history table).
+PE_WRITER_CALLS = frozenset(
+    {"_write_prediction_error_node", "_prediction_error_receipt", "save_prediction_error_history_samples"}
+)
+
+
+def moved_node_ids() -> frozenset[str]:
+    """The ids that left the prediction-error slot, from the repo's own stdlib-only module."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from orion.prediction.signal_history_sql import MOVED_SIGNAL_NODE_IDS
+
+    return frozenset(MOVED_SIGNAL_NODE_IDS)
 
 
 def _is_test(rel: Path) -> bool:
@@ -77,6 +100,86 @@ def touching_files(root: Path) -> dict[str, bool]:
             if TOUCH.search(text):
                 out[rel.as_posix()] = bool(FILTERS.search(_code_only(text)))
     return out
+
+
+def _call_name(node: ast.Call) -> str:
+    f = node.func
+    return f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
+
+
+def _names_moved_id(node: ast.AST, moved: frozenset[str], moved_names: set[str]) -> str | None:
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub.value in moved:
+            return sub.value
+        name = sub.id if isinstance(sub, ast.Name) else sub.attr if isinstance(sub, ast.Attribute) else None
+        if name in moved_names:
+            return name
+    return None
+
+
+def moved_writer_problems(root: Path, moved: frozenset[str] | None = None) -> list[str]:
+    """Producers that write prediction_error for a moved node id (see module docstring)."""
+    moved = moved_node_ids() if moved is None else moved
+    # Cheap text prefilter first (an AST parse of every file is ~10x slower than the rest of
+    # the gate): only files that name a moved id can define a constant bound to one, and only
+    # files that call a PE writer or build a "prediction_error" dict can write one.
+    texts: dict[str, str] = {}
+    for top in SCAN_ROOTS:
+        base = root / top
+        if not base.is_dir():
+            continue
+        for p in sorted(base.rglob("*.py")):
+            rel = p.relative_to(root)
+            if not _is_test(rel):
+                texts[rel.as_posix()] = p.read_text(encoding="utf-8", errors="replace")
+
+    def _parse(text: str) -> ast.AST | None:
+        try:
+            return ast.parse(text)
+        except SyntaxError:
+            return None
+
+    # Module-level constants bound to a moved id anywhere in the scan (CABINET_NODE_ID = "...").
+    moved_names: set[str] = set()
+    for text in texts.values():
+        if not any(m in text for m in moved):
+            continue
+        tree = _parse(text)
+        for stmt in getattr(tree, "body", []):
+            if isinstance(stmt, (ast.Assign, ast.AnnAssign)) and isinstance(stmt.value, ast.Constant) \
+                    and stmt.value.value in moved:
+                targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                moved_names.update(t.id for t in targets if isinstance(t, ast.Name))
+    writer_pat = re.compile("|".join(sorted(PE_WRITER_CALLS)) + r"""|["']prediction_error["']""")
+    trees: dict[str, ast.AST] = {}
+    for rel, text in texts.items():
+        if writer_pat.search(text) and (
+            any(m in text for m in moved) or any(n in text for n in moved_names)
+        ):
+            tree = _parse(text)
+            if tree is not None:
+                trees[rel] = tree
+    problems: list[str] = []
+    for rel, tree in trees.items():
+        for node in ast.walk(tree):
+            hit = None
+            if isinstance(node, ast.Call) and _call_name(node) in PE_WRITER_CALLS:
+                hit = _names_moved_id(
+                    ast.Tuple(elts=[*node.args, *(k.value for k in node.keywords)], ctx=ast.Load()),
+                    moved, moved_names,
+                )
+                what = f"{_call_name(node)}(...)"
+            elif isinstance(node, ast.Dict) and any(
+                isinstance(k, ast.Constant) and k.value == "prediction_error" for k in node.keys
+            ):
+                hit = _names_moved_id(node, moved, moved_names)
+                what = "a {'prediction_error': ...} dict"
+            if hit:
+                problems.append(
+                    f"{rel}:{node.lineno} writes prediction_error for a moved alarm node ({hit}) via {what}. "
+                    f"The alarms left the prediction-error slot (PE retire Patch 2): write them with "
+                    f"_write_signal_node / substrate_node_signal_history.")
+    return problems
 
 
 def load_registry(root: Path) -> dict:
@@ -120,6 +223,7 @@ def check(root: Path) -> list[str]:
             problems.append(f"{path}: registered but {why}; remove the stale entry from {REGISTRY}")
         elif touching[path]:
             problems.append(f"{path}: registered but already filters alarms itself; remove the entry")
+    problems.extend(moved_writer_problems(root))
     return problems
 
 

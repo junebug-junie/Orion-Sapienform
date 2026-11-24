@@ -102,7 +102,14 @@ def evidence_ref(signal_id: str, observed_at: float | None) -> str | None:
     persisted history row via its primary key."""
     if observed_at is None:
         return None
-    return f"{SOURCE_TABLE}:{signal_id}@{_iso(observed_at)}"
+    return f"{source_table_for(signal_id)}:{signal_id}@{_iso(observed_at)}"
+
+
+def source_table_for(signal_id: str) -> str:
+    """The alarms' rows live in substrate_node_signal_history (PE retire Patch 2), same PK."""
+    from orion.prediction.signal_history_sql import history_table_for
+
+    return history_table_for(signal_id)
 
 
 @dataclass(frozen=True)
@@ -459,7 +466,7 @@ def episode_upstream(event: EpisodeEvent) -> dict[str, Any]:
         "p50_7d": obs.p50_7d,
         "p90_7d": obs.p90_7d,
         "trend": obs.trend,
-        "source_table": SOURCE_TABLE,
+        "source_table": source_table_for(ep.signal_id),
         "evidence_refs": refs,
         "evidence_ref_count": len(refs),
     }

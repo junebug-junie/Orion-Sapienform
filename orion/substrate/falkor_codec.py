@@ -268,6 +268,12 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # (prediction_error_freshness.classify_reading) and the broadcast's camera
 # absence check (attention_broadcast.world_first_signals). The reason is
 # encoded as None when absent, so ON MATCH clears it on the next real reading.
+# `signal_value` / `signal_kind` added 2026-11-24 (PE retire Patch 2, PR #3808 design): the three
+# alarms (cabinet, strain, street) write their value here instead of `prediction_error`
+# (orion/substrate/signal_history.py MOVED_SIGNAL_NODE_IDS). Consumers: the history sampler and
+# world-first broadcast (worker.py, attention_broadcast.world_first_signals), the dynamics
+# pressure seed (orion/substrate/pressure.py). Both encode as None when absent, and the alarm
+# writer no longer sets `prediction_error`, so its first write ON MATCH clears the old key.
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
@@ -280,6 +286,8 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "perception_yield",
     "embedding_staleness",
     "prediction_error_missing_reason",
+    "signal_value",
+    "signal_kind",
 )
 
 # Native properties ONLY SubstrateDynamicsEngine.tick() writes on an existing
@@ -357,6 +365,8 @@ EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
         "perception_yield",
         "embedding_staleness",
         "prediction_error_missing_reason",
+        "signal_value",
+        "signal_kind",
     }
 )
 
@@ -452,6 +462,11 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
             str(meta["prediction_error_missing_reason"]).strip() or None
             if meta.get("prediction_error_missing_reason") is not None
             else None
+        ),
+        # Alarm value nodes (2026-11-24): None when absent, so an old write's value never lingers.
+        "signal_value": _safe_float(meta.get("signal_value"), default=None),
+        "signal_kind": (
+            str(meta["signal_kind"]).strip() or None if meta.get("signal_kind") is not None else None
         ),
     }
 
@@ -562,6 +577,12 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     missing_reason = row.get("prediction_error_missing_reason")
     if missing_reason:
         metadata["prediction_error_missing_reason"] = str(missing_reason)
+    signal_value = _safe_float(row.get("signal_value"), default=None)
+    if signal_value is not None:
+        metadata["signal_value"] = signal_value
+    signal_kind = row.get("signal_kind")
+    if signal_kind:
+        metadata["signal_kind"] = str(signal_kind)
     # Fail-open, matching every other decode field in this function: a
     # malformed contributing_turn_ids_json value (corrupt JSON, wrong shape)
     # must not abort decoding the whole node -- treat it as absent rather

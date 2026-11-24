@@ -1,6 +1,7 @@
 """Self-readings for stance_react and reverie (self-calibration spec section C, patch 4).
 
-Reads ``substrate_node_prediction_error_history`` (written by orion-substrate-runtime) read-only
+Reads ``substrate_node_prediction_error_history`` (written by orion-substrate-runtime; the three
+alarms from ``substrate_node_signal_history`` read-both since PE retire Patch 2) read-only
 into one process-wide ``NodePeHistoryCache`` -- seeded once with 7 days, then topped up
 incrementally (the same cache orion-attention-runtime's field contest uses) -- and renders the
 block with ``orion.attention.self_readings.project_self_readings``. No LLM, no new table.
@@ -35,10 +36,14 @@ from .settings import settings
 
 logger = logging.getLogger("orion-thought.self_readings")
 
-_FETCH_SQL = (
-    "SELECT node_id, observed_at, value FROM substrate_node_prediction_error_history "
-    "WHERE observed_at >= :since ORDER BY observed_at"
-)
+def _fetch_sql() -> str:
+    """The alarms come read-both from substrate_node_signal_history (PE retire Patch 2)."""
+    from orion.prediction.signal_history_sql import HISTORY_WITH_MOVED_SOURCE_SQL
+
+    return (
+        f"SELECT node_id, observed_at, value FROM {HISTORY_WITH_MOVED_SOURCE_SQL} "
+        "WHERE observed_at >= :since ORDER BY observed_at"
+    )
 # Association rows written by orion-equilibrium-service's hourly rollup (self-calibration spec
 # section E): the newest row per (signal, outcome, hour) over the last SELF_SIGNAL_OUTCOME_
 # CONSECUTIVE_HOLDS hours (orion.attention.self_signal_outcomes.association_history_sql), so the
@@ -94,7 +99,7 @@ def fetch_since(since: datetime) -> Iterable[tuple[str, datetime, float]]:
     from sqlalchemy import text
 
     with _get_engine().connect() as conn:
-        rows = conn.execute(text(_FETCH_SQL), {"since": since}).fetchall()
+        rows = conn.execute(text(_fetch_sql()), {"since": since}).fetchall()
     return [(str(r[0]), r[1], float(r[2])) for r in rows]
 
 

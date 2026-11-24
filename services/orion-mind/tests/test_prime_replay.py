@@ -71,7 +71,10 @@ def test_recorded_tick_sequences_replay_identically():
     (checked by script; 1 part changed, 0 after mapping: now_section_and_one_cite.llm_calls, the only scenario that
     shows a now).
     Re-recorded again 2026-11-24 (#3425 follow-up: the experience refs line moved before "move", so the template keeps
-    its own closing): same check, same result (1 part changed, 0 after mapping)."""
+    its own closing): same check, same result (1 part changed, 0 after mapping).
+    Re-recorded 2026-11-24 (reveries that ask, #3814): the now section's example list says "questions your reveries
+    left" instead of "reveries"; with that mapped back, every part of every scenario equals the previous golden
+    (checked by script; 1 part changed, 0 after mapping: now_section_and_one_cite.llm_calls)."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

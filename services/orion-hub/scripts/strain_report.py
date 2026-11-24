@@ -70,8 +70,8 @@ STRAIN_HOLDS: Tuple[Tuple[str, str], ...] = (
      "a due sleep/dream cycle waits"),
     ("services.orion-thought.app.painting_self_start:arousal_level",
      "a due visual baseline image is deferred"),
-    ("services.orion-thought.app.chain:_next_chain_sleep_sec",
-     "the pause between reverie chains is doubled"),
+    ("services.orion-thought.app.reverie:live_deps",
+     "no reverie starts (a reverie runs only while I am idle)"),
     ("services.orion-hub.scripts.api_routes:_mutation_arousal_level",
      "no self-modification proposal is made"),
 )

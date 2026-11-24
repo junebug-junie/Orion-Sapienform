@@ -2,22 +2,20 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 745,
   "_last_change": {
-    "change_count": 13,
-    "high_severity_count": 13,
+    "change_count": 11,
+    "high_severity_count": 11,
     "changes": [
       "high   removed metric://bus_channel/orion-dream/orion:dream:compaction-delta",
       "high   removed metric://bus_channel/orion-thought/orion:dream:compaction-request",
       "high   removed metric://bus_channel/orion-thought/orion:reverie:chain",
       "high   removed metric://bus_channel/orion-thought/orion:reverie:resonance-alert",
       "high   removed metric://bus_channel/orion-thought/orion:reverie:thought",
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error",
       "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:attention:schema (all_producers: \u2026ate-runtime', 'orion-thought'] -> \u2026ate-runtime'])",
       "high   routing_changed metric://inner_state/orion-cortex-exec/attention_salience_trace.v1 (declared_consumers: \u2026ance_inputs', 'services.orion-thought.app.reverie:build_rev\u2026 -> \u2026ance_inputs'])",
       "high   routing_changed metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience (declared_consumers: \u2026ance_inputs', 'services.orion-thought.app.reverie:build_rev\u2026 -> \u2026ance_inputs'])",
       "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026t stance cue, the Day letter and the reverie arc block)', '\u2026 -> \u2026t stance cue and the Day letter)', 'services.orion-hub.scri\u2026)",
       "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1 (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'])",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'], prompt_sites: ['services.orion-thought.app.reverie:build_reverie_context'] -> -)",
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#prediction_error_confidence (absent_means: \u2026ness.py:26). -> \u2026ness.py:26). Since 2026-11-24 ACTIVE_INFERENCE_DOMAINS is e\u2026)"
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'], prompt_sites: ['services.orion-thought.app.reverie:build_reverie_context'] -> -)"
     ]
   },
   "definitions": {

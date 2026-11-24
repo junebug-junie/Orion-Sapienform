@@ -4929,12 +4929,15 @@ presses buttons only for an accepted goal. So a save taken where the game waits 
 mid room-exit, mode `0x0C`, waiting for DOWN) froze every run that loaded it: 8 runs, 11-16..23,
 zero decisions, and each skipped its end save, so the next run loaded the same save. Two guards:
 - The end save (and an orphan's save) is taken only when Retro's `status.zelda.observation` reads
-  play with Link controllable. The runner waits up to `SAVE_SETTLE_SEC` (3 s) for a scroll to
-  finish. Otherwise it records `end_save_error=skipped:not_controllable`.
-- A run with no decision offered within `NO_OFFER_SEC` (60 s) ends `no_decision_offered`
-  (journal row of the same name). When Link is also not controllable, the loaded save goes into
-  Redis `orion:retro:leisure:unplayable_saves`, and the next run loads the newest compatible save
-  not in that list. To give a marked save another try, delete that key.
+  Link controllable (play or cave). The runner waits up to `SAVE_SETTLE_SEC` (3 s) for a scroll to
+  finish. Otherwise, or when the status is unreadable, it records
+  `end_save_error=skipped:not_controllable`.
+- A run with no decision offered within `NO_OFFER_SEC` (60 s; 10 s more if Link has just become
+  controllable) ends `no_decision_offered` (journal row of the same name). Only when the game is
+  positively observed with Link not controllable, and the session is running, does the loaded save
+  go into Redis `orion:retro:leisure:unplayable_saves`. An unreadable game never marks a save. The
+  next run loads the newest compatible save not in that list; its `started` journal row counts the
+  skipped saves (`unplayable_skipped`). To give a marked save another try, delete that key.
 
 ### Cabinet sonification (live instrument)
 

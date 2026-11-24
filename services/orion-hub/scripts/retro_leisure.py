@@ -73,6 +73,7 @@ START_TIMEOUT_SEC = 10.0
 # room-exit, mode 0x0C, waited for DOWN through 8 sessions; #3774). Retro offers within seconds of
 # control, so a run with no offer by this time ends and, when Link is not controllable, marks the save.
 NO_OFFER_SEC = 60.0
+NO_OFFER_GRACE_SEC = 10.0
 # At session end, the policy has stopped: a scroll finishes on its own within a second, a frozen
 # exit never does. Wait this long for controllable play before saving; otherwise skip the save.
 SAVE_SETTLE_SEC = 3.0
@@ -372,6 +373,7 @@ class _Run:
     lineage_id: Optional[str] = None
     loaded_save_id: Optional[str] = None
     offered: bool = False                       # Retro offered at least one decision this run
+    unplayable_skipped: int = 0                 # compatible saves skipped as unplayable at start
     planned: int = 0
     rejections: int = 0
     sheds: int = 0
@@ -426,14 +428,22 @@ def _policy(session: dict, run: _Run) -> Optional[dict]:
     return None
 
 
-def _controllable(session: Any) -> bool:
-    """True when Retro's latest Zelda observation is normal play with Link controllable: the only
-    state a save may capture, and the only one where Retro offers decisions (navigate.py observe_frame)."""
+def _link_controllable(session: Any) -> Optional[bool]:
+    """Retro's latest Zelda observation: True when Link is controllable (play or cave; observe.py sets
+    it only there), False when the game is positively observed and Link is not, None when Retro could
+    not read the game (status 'unknown', or no observation). Retro offers decisions only on True
+    (navigate.py observe_frame)."""
     zelda = session.get('zelda') if isinstance(session, dict) else None
     obs = zelda.get('observation') if isinstance(zelda, dict) else None
     link = obs.get('link') if isinstance(obs, dict) else None
-    return (isinstance(link, dict) and obs.get('status') == 'observed' and obs.get('mode') == 'play'
-            and link.get('controllable') is True)
+    if not isinstance(link, dict) or obs.get('status') != 'observed':
+        return None
+    return link.get('controllable') is True
+
+
+def _controllable(session: Any) -> bool:
+    """The only state a save may capture."""
+    return _link_controllable(session) is True
 
 
 async def _settled_for_save(deps: 'LeisureDeps', run: '_Run') -> bool:
@@ -506,8 +516,9 @@ async def _start_game(deps: LeisureDeps, run: _Run) -> Optional[str]:
     status, saves = await deps.retro.call('GET', f'games/{run.game_id}/saves')
     if status == 200 and isinstance(saves, list):
         unplayable = await deps.store.unplayable_saves()
-        compatible = [x for x in saves if isinstance(x, dict) and x.get('compatible')
-                      and x.get('save_id') not in unplayable]
+        compatible = [x for x in saves if isinstance(x, dict) and x.get('compatible')]
+        run.unplayable_skipped = sum(1 for x in compatible if x.get('save_id') in unplayable)
+        compatible = [x for x in compatible if x.get('save_id') not in unplayable]
         run.loaded_save_id = compatible[0]['save_id'] if compatible else None
     elif status not in (200, 409):   # 409 saves_unavailable: play fresh, no lineage carry-over
         return f'retro_saves_unreadable:{status}'
@@ -646,7 +657,8 @@ async def _run(config, deps: LeisureDeps, s: dict, run: _Run, ledger: list, lock
         await asyncio.shield(_finish(deps, run, 'ledger_unwritable', mode=NORMAL, ledger=None))
         return LeisureOutcome(started=False, refusal='ledger_unwritable')
     await _journal(deps, 'started', leisure_id=run.leisure_id, session_id=run.session_id,
-                   lineage_id=run.lineage_id, loaded_save_id=run.loaded_save_id)
+                   lineage_id=run.lineage_id, loaded_save_id=run.loaded_save_id,
+                   unplayable_skipped=run.unplayable_skipped)
     used_before = _used_sec(LeisureGateInputs(
         now=run.started_at, enabled=True, retro_enabled=True, game_id=run.game_id, allowed_games=(),
         session_max_sec=s['session_max_sec'], daily_max_sec=s['daily_max_sec'], min_gap_sec=0,
@@ -748,8 +760,13 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
             decision = cognition.get('attempt')
             decision_id = decision.get('decision_id') if isinstance(decision, dict) else None
             run.offered = run.offered or bool(decision_id)
-            if not run.offered and elapsed >= NO_OFFER_SEC:
-                frozen = not _controllable(session)
+            control = _link_controllable(session)
+            # Link just became controllable: the offer may trail the 0.1 s status snapshot.
+            if not run.offered and elapsed >= NO_OFFER_SEC and not (
+                    control is True and elapsed < NO_OFFER_SEC + NO_OFFER_GRACE_SEC):
+                # Blame the save only when the frozen state is positively observed. An unreadable
+                # game (Retro cannot decode RAM) would otherwise mark every save in the lineage.
+                frozen = control is False and session.get('state') == 'running'
                 if frozen and run.loaded_save_id:
                     try:
                         await deps.store.mark_unplayable_save(run.loaded_save_id)

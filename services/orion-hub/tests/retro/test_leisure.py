@@ -773,8 +773,37 @@ def test_end_save_waits_out_a_scroll_then_saves(world):
                 state['stop_at'] = world.clock.t
         state['seen'] = len(r.calls)
         scrolling = state['stop_at'] is not None and world.clock.t - state['stop_at'] < 1.0
-        r.session['zelda']['observation'] = dict(PLAYING, mode='scroll' if scrolling else 'play')
+        # Real Retro: controllable only in play or cave (observe.py), never mid-scroll.
+        r.session['zelda']['observation'] = (dict(PLAYING, mode='scroll', link=dict(controllable=False))
+                                             if scrolling else dict(PLAYING))
     world.retro.on_tick = scroll_after_stop
     out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=90), deps=world.deps))
     assert state['stop_at'] is not None                                    # the scroll really was waited out
     assert out.ended.end_reason == 'session_cap' and out.ended.end_save_id == 'f' * 32
+
+
+def test_an_unreadable_game_ends_the_run_but_never_marks_the_save(world):
+    # Retro cannot decode RAM (unsupported core/ROM): no offer for any save. Marking would walk the
+    # whole lineage back one save per run.
+    world.retro.saves = [dict(save_id='s1', compatible=True)]
+    world.retro.offer_decisions = False
+    world.retro.observation = dict(status='unknown', reason='ram_unavailable')
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'no_decision_offered'
+    assert asyncio.run(world.deps.store.unplayable_saves()) == set()
+
+
+def test_a_save_in_a_cave_counts_as_controllable(world):
+    # Link stands in a cave at the cap: Retro offers there, so the end save is kept.
+    world.retro.saves = [dict(save_id='s1', compatible=True)]
+    world.retro.observation = dict(PLAYING, mode='cave')
+    out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=90), deps=world.deps))
+    assert out.ended.end_reason == 'session_cap' and out.ended.end_save_id == 'f' * 32
+
+
+def test_the_start_journal_counts_skipped_unplayable_saves(world):
+    world.retro.saves = [dict(save_id='bad', compatible=True), dict(save_id='good', compatible=True)]
+    asyncio.run(world.deps.store.mark_unplayable_save('bad'))
+    asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=5), deps=world.deps))
+    row = next(r for r in journal(world) if r['event'] == 'started')
+    assert row['loaded_save_id'] == 'good' and row['unplayable_skipped'] == 1

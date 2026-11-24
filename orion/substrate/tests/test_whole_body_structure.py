@@ -180,3 +180,33 @@ def test_merged_anti_copy_does_not_cancel():
     assert groups == [[0, 1]]
     merged = wbs.merged_series(x, groups)[:, 0]
     assert np.std(merged) > 0.9 and np.corrcoef(merged, a)[0, 1] > 0.99
+
+
+def _two_mode_series(rng, n, flip_at=None):
+    """Two fixed loading patterns over 12 channels; optionally swapped for new ones at ``flip_at``."""
+    q, _ = np.linalg.qr(rng.normal(size=(12, 4)))
+    f = rng.normal(size=(n, 2)) * [3.0, 2.0]
+    load = np.tile(q[:, :2], (n, 1, 1))
+    if flip_at is not None:
+        load[flip_at:] = q[:, 2:]
+    return np.einsum("tc,tic->ti", f, load) + rng.normal(size=(n, 12))
+
+
+def test_block_stability_finds_fixed_modes_above_chance():
+    rng = np.random.default_rng(13)
+    st = wbs.block_stability(_two_mode_series(rng, 6 * DAY), DAY, 2, rng=rng)
+    assert st.pairs == 5
+    assert st.stable_ranks == [1, 2]
+    assert np.all(st.median_by_rank > st.chance_max_by_rank)
+
+
+def test_block_stability_refuses_modes_that_change_every_block():
+    rng = np.random.default_rng(14)
+    x = np.vstack([_two_mode_series(rng, DAY) for _ in range(6)])  # new modes each day
+    st = wbs.block_stability(x, DAY, 2, rng=rng)
+    assert st.stable_ranks == []
+
+
+def test_block_stability_needs_two_blocks():
+    rng = np.random.default_rng(15)
+    assert wbs.block_stability(rng.normal(size=(DAY + 10, 4)), DAY, 2, rng=rng) is None

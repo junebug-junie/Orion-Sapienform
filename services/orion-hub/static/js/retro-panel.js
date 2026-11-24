@@ -21,6 +21,13 @@
     SYSTEM_BUTTONS = {nes:509, snes:4095, n64:16379},
     STICK = {ArrowLeft:[0,-1], ArrowRight:[0,1], ArrowUp:[1,-1], ArrowDown:[1,1], KeyJ:[2,-1], KeyL:[2,1], KeyI:[3,-1], KeyK:[3,1]};
   const SYSTEM_LABEL = {snes:' (SNES)', n64:' (N64)'};
+  // Retro-Bit Tribute64 (USB receiver, Xbox mode) on N64: its four yellow C buttons arrive as
+  // plain buttons, standard index -> [axis, direction]: Y = C-left, left-stick click = C-right,
+  // right-stick click = C-up, X = C-down. Its B is the right face button. Read from the pad's
+  // raw input on carbon-x1, 2026-11-24. It names itself an Xbox 360 pad, like an 8BitDo in X
+  // mode, so the player turns this on in More; it is kept per browser.
+  const TRIBUTE_C = {3:[2,-1], 10:[2,1], 11:[3,-1], 2:[3,1]};
+  let tribute64=false;try{tribute64=localStorage.getItem('retro_tribute64')==='1';}catch(_){}
   // A key is a game key only when this console has its button (or, on N64, its stick).
   const gameKey = code => !!((bits[code]||0)&(SYSTEM_BUTTONS[activeSystem] ?? 509) || activeSystem==='n64'&&STICK[code]);
   const titleKey = g => (g.title+(SYSTEM_LABEL[g.system]||'')).replace(/^the\s+/i,'').toLowerCase();
@@ -115,7 +122,8 @@
     let m=0; for(const code of keys) if(!(activeSystem==='n64' && STICK[code])) m |= bits[code] || 0;  // N64 arrows are the stick
     const pad = gamepad();
     if (pad && (document.activeElement===screen || document.fullscreenElement===stage || chatOpen))
-      m |= selectChord(chord, pad, padMask(pad, activeSystem==='n64'), performance.now(), code=>runHotkey(code));
+      m |= selectChord(chord, pad, activeSystem==='n64'&&tribute64?tributeMask(pad):padMask(pad, activeSystem==='n64'),
+        performance.now(), code=>runHotkey(code));
     else resetChord(chord);
     m&=SYSTEM_BUTTONS[activeSystem] ?? 509; // each authority refuses buttons its console lacks
     if((m&48)===48)m&=~48;if((m&192)===192)m&=~192;return m;
@@ -128,6 +136,7 @@
     const pad=gamepad();
     if(pad && (document.activeElement===screen || document.fullscreenElement===stage || chatOpen)){
       const a=pad.axes||[];for(let i=0;i<4;i++)if(Math.abs(a[i]||0)>.08)v[i]=a[i];
+      if(tribute64&&activeSystem==='n64')for(const [i,[axis,dir]] of Object.entries(TRIBUTE_C))if(pad.buttons[i]?.pressed)v[axis]=dir;
     }
     return v.map(x=>Math.round(Math.max(-1,Math.min(1,x))*32767));
   }
@@ -169,6 +178,13 @@
     if(b[14]?.pressed||stick&&a[0]<-.5)m|=64;if(b[15]?.pressed||stick&&a[0]>.5)m|=128;
     // N64 Z on L2, unless Select is held for the save/load chord.
     if(!stick && !b[8]?.pressed && (b[6]?.pressed || b[6]?.value>.5))m|=4096;
+    return m;
+  }
+  // Tribute64 on N64: A = N64 A, B = N64 B (the core reads B from libretro Y, bit 2); its
+  // C buttons leave the button mask and become the C stick in sticks().
+  function tributeMask(pad) {
+    let m=padMask(pad, true)&~(256|2|512);
+    if(pad.buttons[1]?.pressed)m|=2;
     return m;
   }
   function padStatus() {
@@ -595,6 +611,9 @@
   action('start',async()=>{focusGame();keys.add('Enter');send();setTimeout(()=>keys.delete('Enter'),150);});
   el('mute').onchange=()=>{if(gain)gain.gain.value=el('mute').checked?0:1;};
   el('port').onchange=neutral;
+  el('tribute64').checked=tribute64;
+  el('tribute64').onchange=()=>{tribute64=el('tribute64').checked;
+    try{localStorage.setItem('retro_tribute64',tribute64?'1':'0');}catch(_){}};
   // While the game has the keyboard, keys that scroll a page do nothing else. Before
   // this, unmapped PageUp/PageDown/Home/End/Space fell through to the browser and
   // scrolled the Hub page (the Retro frame is taller than the window) out from under

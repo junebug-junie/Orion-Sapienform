@@ -8,7 +8,7 @@ HUB = Path(__file__).resolve().parents[2]
 def test_template_has_play_panel_and_current_asset():
     html = (HUB / 'templates/retro.html').read_text()
     for marker in ('id="play"', 'id="atlas"', 'id="leisure"', 'id="zgoal"', 'id="zprediction"',
-                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=21'):
+                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=22'):
         assert marker in html, marker
 
 
@@ -163,7 +163,7 @@ def test_n64_dropdown_label_sort_buttons_and_sticks():
         r'function mask\(\) \{.*?\n  \}', r'function sticks\(\) \{.*?\n  \}',
         r'function padMask\(pad, n64=false\) \{.*?\n  \}'))
     probe = functions + '''
-let activeSystem='n64', pad=null;
+let activeSystem='n64', pad=null, tribute64=false;
 const screen={}, stage={}, document={activeElement:screen};
 const gamepad=()=>pad, chord={}, resetChord=()=>{}, selectChord=(_st,_pad,m)=>m;
 const keys=new Set(['ArrowUp','ArrowLeft','KeyX','KeyC','KeyL','ShiftLeft']);
@@ -206,3 +206,50 @@ def test_who_plays_question_is_inside_the_fullscreen_stage_and_wired():
                    "sessionStorage.setItem('retroSittingAsked',id)", "sessionStorage.getItem('retroSittingAsked')",
                    "screen.focus();"):
         assert marker in js, marker
+
+
+def test_tribute64_layout_turns_its_yellow_buttons_into_n64_c_buttons():
+    # Juniper 2026-11-24, GoldenEye: the Retro-Bit Tribute64 sends its yellow C buttons as plain
+    # buttons (measured on carbon-x1: Y = C-left, L3 = C-right, R3 = C-up, X = C-down), so they
+    # pressed N64 B or nothing, and its B pressed nothing. Mupen64Plus-Next reads N64 B from
+    # libretro Y (2), N64 A from libretro B (1), and the C buttons from the right analog stick.
+    import json, re, shutil, subprocess
+    import pytest
+    js = (HUB / 'static/js/retro-panel.js').read_text()
+    html = (HUB / 'templates/retro.html').read_text()
+    assert 'id="tribute64"' in html
+    assert "localStorage.setItem('retro_tribute64'" in js
+    if not shutil.which('node'): pytest.skip('node not installed')
+    functions = '\n'.join(re.search(pattern, js, re.S).group(0) for pattern in (
+        r'const TRIBUTE_C = .*?;', r'const bits = .*?;', r'function mask\(\) \{.*?\n  \}',
+        r'function sticks\(\) \{.*?\n  \}', r'function padMask\(pad, n64=false\) \{.*?\n  \}',
+        r'function tributeMask\(pad\) \{.*?\n  \}'))
+    probe = functions + '''
+let activeSystem='n64', tribute64=true, pad=null;
+const screen={}, stage={}, document={activeElement:screen}, keys=new Set();
+const gamepad=()=>pad, chord={}, resetChord=()=>{}, selectChord=(_st,_pad,m)=>m;
+const press=(...b)=>{pad={axes:[0,0,0,0],buttons:Array.from({length:16},(_,i)=>({pressed:b.includes(i)}))};
+  return {mask:mask(), sticks:sticks()};};
+const on={cLeft:press(3), cRight:press(10), cUp:press(11), cDown:press(2), a:press(0), b:press(1), z:press(6)};
+tribute64=false;
+const off={cDown:press(2), b:press(1)};
+activeSystem='snes'; tribute64=true;
+const snesX=press(3);
+console.log(JSON.stringify({on, off, snesX}));'''
+    run = subprocess.run(['node', '-e', probe], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    got = json.loads(run.stdout)
+    full, still = 32767, [0, 0, 0, 0]
+    assert got['on'] == {
+        'cLeft': {'mask': 0, 'sticks': [0, 0, -full, 0]},
+        'cRight': {'mask': 0, 'sticks': [0, 0, full, 0]},
+        'cUp': {'mask': 0, 'sticks': [0, 0, 0, -full]},
+        'cDown': {'mask': 0, 'sticks': [0, 0, 0, full]},
+        'a': {'mask': 1, 'sticks': still},
+        'b': {'mask': 2, 'sticks': still},
+        'z': {'mask': 4096, 'sticks': still},
+    }
+    # Off keeps the standard-pad map (8BitDo in X mode names itself the same Xbox 360 pad).
+    assert got['off'] == {'cDown': {'mask': 2, 'sticks': still}, 'b': {'mask': 256, 'sticks': still}}
+    # The layout is N64 only: on SNES the Y button stays SNES X.
+    assert got['snesX']['mask'] == 512

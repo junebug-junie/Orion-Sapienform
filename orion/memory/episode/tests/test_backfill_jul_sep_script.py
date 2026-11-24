@@ -327,3 +327,30 @@ def test_spread_sample_and_intervals():
 def test_name_repair_never_turns_backfill_rows_into_asks():
     src = (ROOT / "scripts" / "repair_episode_memory_ungrounded_names.py").read_text(encoding="utf-8")
     assert "m.run_id NOT LIKE 'backfill3537-%'" in src
+
+
+def test_backfill_floor_is_juniper_decision_and_live_floor_unchanged():
+    assert B.BACKFILL_OTHER_MIN == 0.53 and B.BAND_OTHER_MIN == 0.68 and B.BAND_ANY_MIN == 0.97
+    week = [{"week": "2026-08-03", "n": 40, "any_ref": 40, "other_ref": 23}]   # 57.5%
+    assert not B.gate_verdict(week)["pass"]                                    # live floor
+    assert B.gate_verdict(week, other_min=B.BACKFILL_OTHER_MIN)["pass"]       # backfill floor
+
+
+def test_small_weeks_below_the_floor_are_flagged_not_silently_passed():
+    weeks = [{"week": "2026-08-03", "n": 40, "any_ref": 40, "other_ref": 30},
+             {"week": "2026-08-10", "n": 4, "any_ref": 4, "other_ref": 1}]   # 25%, small
+    v = B.gate_verdict(weeks, other_min=0.53)
+    assert v["pass"]   # pooled 31/44 = 70%; the small week alone does not fail
+    assert [w["week"] for w in v["small_weeks_below"]] == ["2026-08-10"]
+    assert B.week_below(weeks[1], 0.53) and not B.week_below(weeks[0], 0.53)
+    big_low = [{"week": "2026-08-03", "n": 40, "any_ref": 40, "other_ref": 20}]   # 50%
+    assert not B.gate_verdict(big_low, other_min=0.53)["pass"]
+
+
+def test_gate_refuses_an_out_of_range_floor(monkeypatch):
+    monkeypatch.setattr(B, "_coverage_weeks", lambda pool: None)
+    monkeypatch.setattr(B.asyncio, "run", lambda coro: [])
+    with pytest.raises(SystemExit):
+        B.cmd_gate(SimpleNamespace(dsn="x", other_min=0.0))
+    with pytest.raises(SystemExit):
+        B.cmd_gate(SimpleNamespace(dsn="x", other_min=1.5))

@@ -345,3 +345,12 @@ def test_small_weeks_below_the_floor_are_flagged_not_silently_passed():
     assert B.week_below(weeks[1], 0.53) and not B.week_below(weeks[0], 0.53)
     big_low = [{"week": "2026-08-03", "n": 40, "any_ref": 40, "other_ref": 20}]   # 50%
     assert not B.gate_verdict(big_low, other_min=0.53)["pass"]
+
+
+def test_gate_refuses_an_out_of_range_floor(monkeypatch):
+    monkeypatch.setattr(B, "_coverage_weeks", lambda pool: None)
+    monkeypatch.setattr(B.asyncio, "run", lambda coro: [])
+    with pytest.raises(SystemExit):
+        B.cmd_gate(SimpleNamespace(dsn="x", other_min=0.0))
+    with pytest.raises(SystemExit):
+        B.cmd_gate(SimpleNamespace(dsn="x", other_min=1.5))

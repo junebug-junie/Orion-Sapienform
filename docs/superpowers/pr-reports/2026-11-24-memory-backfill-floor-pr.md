@@ -11,7 +11,7 @@ The July-September backfill can pass its gate on a floor that fits that chat, wi
 
 ## Current architecture
 
-`scripts/backfill_episode_memory_jul_sep.py gate` measured per-week referent coverage of the backfilled rows against the live band only (any >= 97%, besides Juniper/Orion >= 68%). Weeks under 10 rows were skipped without any flag.
+`scripts/backfill_episode_memory_jul_sep.py gate` measured per-week referent coverage of the backfilled rows against the live band only (any >= 97%, besides Juniper/Orion >= 68%). Weeks under 10 rows were listed (`small_weeks`) but never checked against the floor.
 
 ## Architecture touched
 
@@ -65,9 +65,16 @@ None needed. No service code changes.
 
 ## Review findings fixed
 
-- Finding: (pending review subagent)
-  - Fix:
-  - Evidence:
+- Finding: the dry-run report printed a bare "gate: FAIL" against the live floor, which reads as a backfill failure.
+  - Fix: the report prints the result against the live floor and against the backfill floor, each labelled; the dry run records `backfill_floor_pass`.
+  - Evidence: `cmd_report` dry-run section.
+- Finding: the gate line hard-coded "(backfill floor)" even when `--other-min` overrode it or an older gate file used 0.68.
+  - Fix: the label is derived from the floor actually used (backfill floor, live floor, or override).
+- Finding: `--other-min` had no bounds (0 would pass every week).
+  - Fix: values outside (0, 1] are refused; any value other than 0.53 prints a warning.
+  - Evidence: `test_gate_refuses_an_out_of_range_floor`.
+- Finding: this report said small weeks were skipped without a flag; they were listed but not checked.
+  - Fix: wording corrected.
 
 ## Restart required
 
@@ -84,6 +91,6 @@ No restart required.
 
 ## PR link
 
-(set after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3784
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

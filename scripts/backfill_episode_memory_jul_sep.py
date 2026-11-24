@@ -852,6 +852,8 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     verdict = {
         "pass": cov["n"] > 0 and cov["any_rate"] >= BAND_ANY_MIN and cov["other_rate"] >= BAND_OTHER_MIN,
         **cov, "band": {"any_min": BAND_ANY_MIN, "other_min": BAND_OTHER_MIN},
+        "backfill_floor_pass": cov["n"] > 0 and cov["any_rate"] >= BAND_ANY_MIN
+        and cov["other_rate"] >= BACKFILL_OTHER_MIN,
     }
     per_ep = [(r["with_other_referent"], r["memories"]) for r in results]
     verdict["other_rate_wilson95"] = wilson(cov["other"], cov["n"])
@@ -930,6 +932,11 @@ def cmd_gate(args: argparse.Namespace) -> int:
     pool = OneShotPool(args.dsn)
     weeks = asyncio.run(_coverage_weeks(pool))
     other_min = args.other_min if args.other_min is not None else BACKFILL_OTHER_MIN
+    if not 0.0 < other_min <= 1.0:
+        raise SystemExit(f"--other-min must be in (0, 1], got {other_min}")
+    if other_min != BACKFILL_OTHER_MIN:
+        print(f"WARNING: gate floor {other_min} is not the approved backfill floor {BACKFILL_OTHER_MIN}",
+              file=sys.stderr)
     verdict = gate_verdict(weeks, other_min=other_min)
     out = {"weeks": [{"week": str(w["week"]), "n": w["n"], "any_ref": w["any_ref"], "other_ref": w["other_ref"]}
                      for w in weeks], **verdict,
@@ -1019,6 +1026,9 @@ def cmd_report(args: argparse.Namespace) -> int:
     failed = sorted({e["episode_id"] for e in errors})
     verdict = "PASS" if gate.get("pass") and not failed else "NEEDS ANOTHER PASS" if failed else "BLOCKED (referent gate)"
 
+    floor_used = (gate.get("band") or {}).get("other_min")
+    floor_label = ("backfill floor" if floor_used == BACKFILL_OTHER_MIN
+                   else "live floor" if floor_used == BAND_OTHER_MIN else "override")
     lines = [f"# Memory backfill July-September 2026 (#{ISSUE}): {verdict}", "",
              "Ids and counts only. Private inputs stay in this directory (mode 600).", "",
              "## Plan", ""] + [f"- {k}: {v}" for k, v in plan.items()] + [
@@ -1027,13 +1037,16 @@ def cmd_report(args: argparse.Namespace) -> int:
              f"- with any referent: {(dry.get('referent_coverage') or {}).get('any')}",
              f"- with a referent besides Juniper/Orion: {(dry.get('referent_coverage') or {}).get('other')}",
              f"- high-stakes rows written not_asked (never asked): {dry.get('high_stakes_not_asked')}",
-             f"- gate: {'pass' if (dry.get('referent_coverage') or {}).get('pass') else 'FAIL'}",
+             f"- against the live floor (any {BAND_ANY_MIN}, besides Juniper/Orion {BAND_OTHER_MIN}): "
+             f"{'pass' if (dry.get('referent_coverage') or {}).get('pass') else 'FAIL'}",
+             f"- against the backfill floor (besides Juniper/Orion {BACKFILL_OTHER_MIN}): "
+             f"{'pass' if (dry.get('referent_coverage') or {}).get('backfill_floor_pass') else 'FAIL'}",
              "", "## Before / after", "", "| metric | before | after |", "|---|---|---|"] + [
              f"| {k} | {before.get(k)} | {after.get(k)} |" for k in COUNTS_SQL] + [
              "", "## Referent coverage gate (per week, by episode time)", "",
              f"- pass: {gate.get('pass')}; rows {gate.get('rows')}; pooled any {gate.get('pooled_any_rate')}, "
              f"non-self {gate.get('pooled_other_rate')}; band any >= {BAND_ANY_MIN}, non-self >= "
-             f"{(gate.get('band') or {}).get('other_min')} (backfill floor; live floor {BAND_OTHER_MIN})",
+             f"{floor_used} ({floor_label}; live floor {BAND_OTHER_MIN})",
              f"- weeks below band: {gate.get('week_failures')}",
              f"- small weeks below band (flagged, pooled): {gate.get('small_weeks_below')}", f"- weeks under {GATE_MIN_WEEK_ROWS} rows: "
              f"{gate.get('small_weeks')}", "", "| week | rows | any | non-self | below floor |", "|---|---|---|---|---|"] + [

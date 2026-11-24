@@ -214,6 +214,7 @@ before hub-app says one), and orion-hub and orion-durable-runs before orion-mind
 - Severity: low. Concern: `hub.retro_sitting` is tier 2 by proposal. Mitigation: Juniper decides tiers; it is shadow (nothing obeys it but Prime's menu).
 - Pre-existing failures seen, not caused here: `orion/substrate/tests/test_felt_state_lived_answers.py` (fails on main); four Hub test files that need the repo root, `~/.fcc/.env` or their own database.
 - Departures from spec, stated in the spec's patch 4 notes: no count in the label; a 30-minute window; `world:play` in the field contest too; "not watching" as a measured hold-out, not absence; the watch state published to Redis for Prime; the sitting's own event-want family; engagement only for Juniper-stated lines, horizon 300 s; `hunger_from: want_opened` for lines.
+- CI: 53 of 53 checks green after one fix (the sql-writer unit job ran the new Postgres module with no database; it joined the conftest's no-database skip list, like its sibling modules).
 - Issues opened: #3816 (verify-live, needs-juniper), #3817 (follow-up). Issues closed: none.
 
 ## PR link

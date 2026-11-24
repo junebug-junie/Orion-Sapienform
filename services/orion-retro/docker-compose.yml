@@ -11,11 +11,16 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 64
-    # N64 renders in software (Angrylion, 8 threads): ~2x real speed at 12 CPUs,
-    # 21 fps at 2. A 32 MB ROM plus a 16.8 MB state needs more than 512 MB.
-    mem_limit: 1536m
-    memswap_limit: 1536m
-    cpus: 12
+    # N64 renders in software (Angrylion, 16 threads): ~2x real speed at 12 CPUs,
+    # 21 fps at 2. GoldenEye's microcode needs all 16 threads to hold 60 fps, so the
+    # quota is 20 CPUs -- 16 render threads plus the core and worker, unthrottled.
+    # The RSP is jttl (JIT); CXD4 (interpreted) left ~5 cores busy of this quota with
+    # the render threads idle, so quota alone was never the ceiling.
+    # A 32 MB ROM plus a 16.8 MB state needs more than 512 MB; measured use stays near
+    # 0.2 GiB of 1.5 GiB (never OOMKilled), so 4 GiB is headroom, not the fix.
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 20
     ulimits:
       core: 0
       fsize: 268435456

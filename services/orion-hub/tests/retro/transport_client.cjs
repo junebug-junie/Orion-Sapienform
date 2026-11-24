@@ -194,6 +194,30 @@ test('media credits are negotiated and acknowledged only after a current frame i
   assert.equal(h.run('globalThis.oldMedia.sent.length'),0,'old decoder acknowledged a replacement connection');
 });
 
+test('a warming core\'s audio-only packet plays sound without a picture and never kills the session',async()=>{
+  // 2026-11-21: N64/Angrylion sends width=0/height=0 packets until its first real frame.
+  // draw() used to throw on the 0x0 createImageData, whose catch called neutral() and closed
+  // the sockets — pausing the session before the renderer ever warmed up ("Paused. Click the
+  // game to keep playing." forever). An audio-only packet must now be sound with no picture.
+  const h=page();
+  const header=Buffer.from(JSON.stringify({version:1,width:0,height:0,format:1,video_bytes:0,
+    audio_frames:1600,sample_rate:48000,sample_end:1600,frame:2}));
+  const prefix=Buffer.alloc(4);prefix.writeUInt32BE(header.length);
+  h.context.packet=require('node:zlib').deflateSync(Buffer.concat([prefix,header,Buffer.alloc(1600*8)]));
+  h.run('mediaFlowControl=true;openMedia(transportEpoch)');const socket=h.sockets.at(-1);
+  h.run('pictureReady=false;lastPictureAt=performance.now()-4000');   // as during a cold warm-up
+  await h.run('draw({data:globalThis.packet,epoch:transportEpoch,socket:media,flow:true,sequence:1})');
+  assert.equal(socket.sent[0].ack,1,'audio-only packet must still flow-control');
+  assert.equal(h.run('pictureReady'),false,'an audio-only packet must not credit a picture');
+  assert.equal(h.elements.get('screen').dataset.frame,undefined);
+  // The first real picture after warm-up draws and credits normally.
+  const pic=Buffer.from(JSON.stringify({version:1,width:2,height:2,format:1,video_bytes:16,audio_frames:0,frame:64}));
+  prefix.writeUInt32BE(pic.length);
+  h.context.packet=require('node:zlib').deflateSync(Buffer.concat([prefix,pic,Buffer.alloc(16)]));
+  await h.run('draw({data:globalThis.packet,epoch:transportEpoch,socket:media,flow:true,sequence:2})');
+  assert.equal(h.elements.get('screen').dataset.frame,64);assert.equal(h.run('pictureReady'),true);
+});
+
 test('PCM cannot hold a fresh picture or its credit behind an audio timer',async()=>{
   const h=page();
   const header=Buffer.from(JSON.stringify({version:1,width:1,height:1,format:1,video_bytes:4,

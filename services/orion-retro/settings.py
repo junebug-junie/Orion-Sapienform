@@ -46,12 +46,20 @@ class Settings:
 
     def core_host(self, system):
         """Extra frontend support one core needs. The service has no GPU or GL context,
-        so N64 renders in software: Angrylion RDP + CXD4 LLE RSP, 8 render threads
-        (fits pids_limit; the 'all threads' default spawns one per host CPU)."""
+        so N64 renders in software: Angrylion RDP + jttl (ParaLLEl) RSP, 16 render
+        threads (fits pids_limit; the 'all threads' default spawns one per host CPU).
+        GoldenEye's microcode is the heaviest class there is: on 8 render threads it
+        missed 3 frames in a row (`deadline_overrun` pauses), and on 16 threads CXD4 --
+        an interpreted LLE RSP -- became the serial wall: display-list generation runs
+        one-threaded through it while the render threads idle (measured 2026-11-22:
+        ~35 fps effective, ~5 cores of a 20-CPU quota, nr_throttled=0). jttl JIT-
+        compiles the RSP microcode instead of interpreting it; upstream pairs it with
+        Angrylion by default on modern desktop targets. ParaLLEl-RDP is not an option
+        here: it requires a Vulkan hw-render context our frontend does not provide."""
         if system != 'n64': return {}
         return dict(scratch=self.n64_scratch, warm_restore=True, options={
-            'mupen64plus-rdp-plugin': 'angrylion', 'mupen64plus-rsp-plugin': 'cxd4',
-            'mupen64plus-angrylion-multithread': '8'})
+            'mupen64plus-rdp-plugin': 'angrylion', 'mupen64plus-rsp-plugin': 'parallel',
+            'mupen64plus-angrylion-multithread': '16'})
 
     def battery(self, system):
         """Persist cartridge save memory per game (<saves>/<game>/battery.srm). N64 save

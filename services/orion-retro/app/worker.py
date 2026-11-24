@@ -14,6 +14,14 @@ from .zelda.observe import supported as zelda_supported, PROFILE as ZELDA_PROFIL
 from .zelda.runtime import ZeldaRuntime
 
 
+# The pause gate for a late frame loop. One late frame now means "a bad tenth of a
+# second", not "the core is falling behind forever" (measured 2026-11-22: GoldenEye on
+# the jttl RSP held ~59 fps, but one 43 s heavy stretch tripped the old 3-frame gate 59
+# times — median 0.17 s between freezes). Keep stuttering through transients; hard-pause
+# only when the loop stays late continuously for this many seconds.
+DEADLINE_STALL_SECONDS = 2.0
+
+
 class Battery:
     """Cartridge save memory for one game, kept in the save store across sessions.
     Loaded before the first frame; written when it changes (every 5 s) and at stop.
@@ -100,7 +108,7 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         send(dict(kind='ready', identity=core.identity, runtime_sha256=runtime_sha, fps=core.av.timing.fps,
                   game_profile=ZELDA_PROFILE if zelda else None))
         period = 1 / core.av.timing.fps
-        deadline = time.monotonic(); last_status = deadline; misses = 0
+        deadline = time.monotonic(); last_status = deadline; misses = 0; missed_since = 0.0; stuttered = False
         acquire_deadline = deadline+5
         pending = {}
         def not_running():
@@ -198,6 +206,7 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                                 # release barrier for a fresh lease loss after resume.
                                 authority.neutral.clear()
                                 acquire_deadline = time.monotonic()+5
+                            misses = 0; stuttered = False  # a deliberate pause/resume re-anchors the stall window
                         if state == 'paused': core.buttons = (0, 0)
                         record('transition', state=state, reason=op)
                         result = {'state': state}
@@ -249,11 +258,18 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                 now = time.monotonic()
                 late = now > deadline
                 misses = misses+1 if late else 0
+                if not late: stuttered = False  # an on-time frame ends the stutter episode
                 if late: deadline = now  # never execute catch-up bursts
-                if misses >= 3:
+                if late and misses == 1: missed_since = now
+                if misses >= 3 and not stuttered:
+                    # A hitch is visible stutter, not a lost session: log it once and keep
+                    # the controller live. Only a sustained stall (below) may pause.
+                    stuttered = True
+                    record('stutter', late_frames=misses, late_seconds=round(now-missed_since, 3))
+                if misses and now-missed_since >= DEADLINE_STALL_SECONDS:
                     scripted.cancel('deadline_overrun')
                     state = 'paused'; paused_by = 'deadline_overrun'; authority.clear(); reject_pending('deadline_overrun')
-                    core.buttons = (0, 0)
+                    core.buttons = (0, 0); stuttered = False
                     record('transition', state=state, reason='deadline_overrun')
                 time.sleep(max(0, deadline-time.monotonic()))
             else:

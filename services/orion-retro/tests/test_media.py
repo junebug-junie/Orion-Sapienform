@@ -27,6 +27,30 @@ def test_callback_copy_survives_native_buffer_reuse_and_queue_pressure():
     assert p.pcm==b'' and q.empty()
 
 
+def test_publish_emits_nothing_until_the_core_produces_a_picture():
+    # Live 2026-11-21: Mupen64Plus/Angrylion emits no video for its first ~64 frames. The
+    # unguarded publish sent width=0 packets; the browser threw on a 0x0 image, closed the
+    # socket, and paused the session before the renderer ever warmed up (every N64 game).
+    p=MediaProbe.__new__(MediaProbe)
+    p.pixel_format=1;p.error=None;p.video_frames=0;p.audio_samples=0
+    p.video=b'';p.pcm=bytearray();p.geometry=(0,0)
+    p.av=SimpleNamespace(timing=SimpleNamespace(sample_rate=48000))
+    audio=(C.c_int16*4)(123,-123,456,-456)
+    p._audio_batch(audio,2)
+    q=queue.Queue(1)
+    p.publish(q,2);p.publish(q,4)
+    # No packet, and the buffered audio drains: skipping the publish without draining
+    # trips media_audio_limit in ~30 frames and kills the core instead (measured live).
+    assert q.empty() and p.pcm==b''
+    # The first real picture publishes normally on the next even frame.
+    pixels=(C.c_uint32*4)(0xf800,0x07e0,0x001f,0xffff)
+    p._video(C.addressof(pixels),2,2,8)
+    p.publish(q,6)
+    raw=zlib.decompress(compress(q.get_nowait()));n=struct.unpack('!I',raw[:4])[0]
+    header=json.loads(raw[4:4+n])
+    assert header['width']==2 and header['height']==2 and header['video_bytes']==16
+
+
 def _die_while_writing(slot):
     import os
     import signal

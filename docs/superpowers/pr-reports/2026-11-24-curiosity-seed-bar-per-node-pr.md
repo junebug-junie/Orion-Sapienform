@@ -201,12 +201,12 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_ST
 - Severity: low. Concern: the chat bar's 4.6 % depends on the mix of stated bet probabilities; it can drift. Mitigation: the fixture test pins today's mix; the replay eval re-measures it.
 - Severity: low. Concern: the replay eval reads `substrate_node_prediction_error_history`, which is being retired; once it is gone the eval prints "no writes" for those nodes. It is also UNVERIFIED that each history row's `observed_at` equals the live node's `observed_at`, which the eval's decay mirror assumes. Mitigation: the joint rebuild already reads the backing table; port the rest when the history table is dropped.
 - Severity: low. Concern: room/body windows with a single outcome cross z 2.0 at 7.3 % calm, not 5 %. Mitigation: their windows normally hold 2-6 outcomes; stated in the module docstring.
-- Issues: Fixes #3821. Opened: (filled below).
+- Issues: Fixes #3821. Opened: #3825 (verify-live: re-measure room_joint / body_joint crossing rate ~2026-12-01).
 
 Fixes #3821
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3826
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

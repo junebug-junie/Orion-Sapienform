@@ -108,9 +108,12 @@ def test_dwell_is_the_seams_orienting_window():
         # retired harness_closure (2026-11-11, no glossary entry): not a
         # measurement even when fresh -> unknown, never hot
         ("node:substrate.harness_closure", _mag(0.99, "unusual"), None, "unknown"),
-        # event-written: news for 300 s, then faded (carried value, not calm)
-        ("node:substrate.execution", _mag(0.97, "high", age=60.0), None, "hot"),
-        ("node:substrate.execution", _mag(0.97, "high", age=400.0), None, "faded"),
+        # event-written: news for 300 s, then faded (carried value, not calm). Pinned on
+        # node:prediction.chat_turn since node:substrate.execution was retired (2026-11-24, #3576).
+        ("node:prediction.chat_turn", _mag(0.97, "high", age=60.0), None, "hot"),
+        ("node:prediction.chat_turn", _mag(0.97, "high", age=400.0), None, "faded"),
+        # retired execution: not a measurement even when fresh -> unknown, never hot
+        ("node:substrate.execution", _mag(0.97, "high", age=60.0), None, "unknown"),
     ],
 )
 def test_observation_kind_comes_from_the_attention_verdict(node, mag, absent, kind):

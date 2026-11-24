@@ -95,17 +95,21 @@ def test_failed_recording_preserves_frames_goals_and_drops_unknown_gap(store, ca
 
 
 def test_missing_recording_migration_keeps_worker_goal_emission(store, monkeypatch):
-    from test_goal_provenance_producer import _make_worker, _target, _frame
+    from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
+    from test_goal_provenance_producer import EXEC_PROBE, _make_worker, _target, _frame
+
+    # node:substrate.execution was retired 2026-11-24 (#3576); a TEST-ONLY native target stands in.
+    monkeypatch.setitem(PREDICTION_ERROR_NATIVE_TARGETS, EXEC_PROBE, "probe_event")
     worker = _make_worker(monkeypatch)
     worker._store = store
     with store._engine.begin() as c:
         c.exec_driver_sql("ALTER TABLE substrate_goal_provenance_streak RENAME COLUMN run_state TO unavailable_run_state")
     for i in range(3):
-        current = _frame([_target("node:substrate.execution", 0.8)]).model_copy(update={
+        current = _frame([_target(EXEC_PROBE, 0.8)]).model_copy(update={
             "frame_id": f"worker-{i}", "source_field_tick_id": f"worker-tick-{i}",
             "generated_at": START + timedelta(seconds=i * 2)})
         goal = worker._maybe_build_goal(current)
-    assert goal is not None and goal.field_target_id == "node:substrate.execution"
+    assert goal is not None and goal.field_target_id == EXEC_PROBE
     assert store.load_attention_frame_for_field_tick("worker-tick-2") is not None
     assert store.load_node_dominance_streak().count == 3
 

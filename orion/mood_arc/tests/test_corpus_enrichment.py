@@ -147,7 +147,7 @@ class _FakeConn:
         return _FakeCursor(self)
 
 
-def test_fetch_attention_self_model_splits_into_independent_per_field_series() -> None:
+def test_fetch_attention_self_model_splits_into_independent_per_field_series(monkeypatch) -> None:
     """Regression test for the finding this fixed: a DB row carrying only ONE of
     heartbeat_mean_ratio/prediction_error_by_domain must not blank out the OTHER field for
     that timestamp -- each field needs its own independent series so asof_forward_fill()'s
@@ -156,13 +156,18 @@ def test_fetch_attention_self_model_splits_into_independent_per_field_series() -
     t0 = datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
     t1 = datetime(2026, 9, 1, 0, 0, 30, tzinfo=timezone.utc)
     t2 = datetime(2026, 9, 1, 0, 1, 0, tzinfo=timezone.utc)
+    # No prediction-error domain is live since execution was retired (2026-11-24, #3576); the
+    # per-field split is exercised on a TEST-ONLY domain, "probe", in execution's old place.
+    import orion.mood_arc.corpus_enrichment as ce
+
+    monkeypatch.setattr(ce, "_PREDICTION_ERROR_DOMAINS", ("probe",))
     rows = [
         # t0: both groups present.
-        (t0, "0.9", {"execution": 0.1, "chat": 0.2, "biometrics": 0.3, "bus_synaptic": 0.4}),
+        (t0, "0.9", {"probe": 0.1, "execution": 0.2, "chat": 0.2, "biometrics": 0.3}),
         # t1: heartbeat ONLY -- prediction_error_by_domain absent this row.
         (t1, "0.95", None),
         # t2: prediction_error ONLY -- heartbeat_mean_ratio absent this row.
-        (t2, None, {"execution": 0.5, "chat": 0.6, "biometrics": 0.7, "bus_synaptic": 0.8}),
+        (t2, None, {"probe": 0.5, "execution": 0.6, "chat": 0.6, "biometrics": 0.7}),
     ]
     conn = _FakeConn(rows)
 
@@ -172,18 +177,19 @@ def test_fetch_attention_self_model_splits_into_independent_per_field_series() -
         {"heartbeat_mean_ratio": 0.9},
         {"heartbeat_mean_ratio": 0.95},
     ]
-    assert [v for _, v in series["prediction_error_execution"]] == [
-        {"prediction_error_execution": 0.1},
-        {"prediction_error_execution": 0.5},
+    assert [v for _, v in series["prediction_error_probe"]] == [
+        {"prediction_error_probe": 0.1},
+        {"prediction_error_probe": 0.5},
     ]
+    assert "prediction_error_execution" not in series  # retired: never a series
 
     # The real regression: asof-joining onto a tick at t2 must still carry heartbeat's t1
     # value forward (LOCF), not lose it because t2's own DB row had no heartbeat reading.
     corpus_rows = [_row(t2, idx=0)]
     asof_forward_fill(corpus_rows, series["heartbeat_mean_ratio"])
-    asof_forward_fill(corpus_rows, series["prediction_error_execution"])
+    asof_forward_fill(corpus_rows, series["prediction_error_probe"])
     assert corpus_rows[0].channels["heartbeat_mean_ratio"] == 0.95  # carried forward from t1
-    assert corpus_rows[0].channels["prediction_error_execution"] == 0.5  # t2's own reading
+    assert corpus_rows[0].channels["prediction_error_probe"] == 0.5  # t2's own reading
 
 
 def test_enrich_corpus_empty_rows_is_a_no_op() -> None:
@@ -241,10 +247,9 @@ def test_resolve_live_enrichment_returns_latest_value_per_channel() -> None:
 
     result = resolve_live_enrichment(conn, now=now, lookback_hours=1.0)
 
-    assert result == {
-        "heartbeat_mean_ratio": 0.97,
-        "prediction_error_execution": 0.6,
-    }
+    # No live prediction-error channel since execution was retired (2026-11-24, #3576): a
+    # lingering domain in the source row is ignored, never forwarded.
+    assert result == {"heartbeat_mean_ratio": 0.97}
 
 
 def test_resolve_live_enrichment_omits_channels_with_no_reading_in_window() -> None:
@@ -273,8 +278,8 @@ def test_resolve_live_enrichment_never_reads_the_retired_proposal_table() -> Non
 
 def test_resolve_live_enrichment_covers_every_live_channel() -> None:
     """Mirrors test_fetch_all_series_only_wires_dense_enough_signals()'s
-    channel-set assertion: the live prediction_error_* domains (execution; biometrics retired 2026-11-18, #3575;
-    bus_synaptic and chat retired 2026-11) + heartbeat_mean_ratio all round-trip when the
+    channel-set assertion: the live prediction_error_* domains (none since execution was retired
+    2026-11-24, #3576; biometrics, bus_synaptic and chat retired 2026-11) + heartbeat_mean_ratio round-trip when the
     source has a reading in-window. A retired domain in the source row is ignored."""
     now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
     conn = _SequencedFakeConn(
@@ -285,10 +290,7 @@ def test_resolve_live_enrichment_covers_every_live_channel() -> None:
 
     result = resolve_live_enrichment(conn, now=now)
 
-    assert set(result.keys()) == {
-        "heartbeat_mean_ratio",
-        "prediction_error_execution",
-    }
+    assert set(result.keys()) == {"heartbeat_mean_ratio"}
 
 
 def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
@@ -312,10 +314,8 @@ def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
     # attention_self_model contributes SEPARATE series (heartbeat_mean_ratio + one per
     # live prediction_error_{domain} channel), not one combined entry -- see
     # fetch_attention_self_model()'s docstring for why (independent LOCF per field).
-    assert set(series.keys()) == {
-        "heartbeat_mean_ratio",
-        "prediction_error_execution",
-    }
+    # (no prediction_error channel since execution was retired 2026-11-24, #3576)
+    assert set(series.keys()) == {"heartbeat_mean_ratio"}
     joined_queries = " ".join(conn.queries).lower()
     for forbidden_table in (
         "juniper_affective_state_log",

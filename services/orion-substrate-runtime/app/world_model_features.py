@@ -11,23 +11,16 @@ Honesty split (CLAUDE.md "no empty-shell cognition" -- a schema-valid payload
 with meaningless content is not a success state, so this must be flagged, not
 hidden):
 
-- ``execution_context``: REAL. This worker's execution prediction-error
-  scalar, cached on the worker instance by ``_execution_tick``. ``chat``
-  (slot 1) was retired 2026-11-13 with node:substrate.chat (step 6), and
-  ``route`` and ``bus_synaptic`` filled slots 2-3 until 2026-11, when both
-  prediction-error nodes were retired (PE suite rebuild step 5); those slots
-  are now 0.0 like
-  any other unused slot up to the configured dim (16), so the dim and the
-  world-model consumer are unchanged. ``transport`` is deliberately
-  EXCLUDED -- ``transport_prediction_error()`` is a retired metric (CLAUDE.md
-  0A "kill means kill", excluded from ``ACTIVE_INFERENCE_DOMAINS`` since
-  2026-07-26 because it measures a narrow 2-Redis-Stream census, not real bus
-  traffic); wiring a known-dead signal into a brand-new consumer would repeat
-  the exact mistake that section documents. The ``biometrics`` domain's own
-  prediction-error SCALAR (node:substrate.biometrics, distinct from the raw
-  biometrics feature-group VECTOR below) is also excluded here -- folding a
-  different domain's scalar into this group would blur what "execution
-  context" means; it stays inside its own node, not this trajectory step.
+- ``execution_context``: ZERO-FILLED since 2026-11-24. Its only real slot was
+  this worker's execution prediction-error scalar (``node:substrate.execution``),
+  retired with that node in PE suite rebuild retire step 6 (#3576): a clipped
+  EWMA z of cortex-exec pressure-hint change, not a forecast. ``chat``,
+  ``route`` and ``bus_synaptic`` filled slots 1-3 until their own retirements
+  (2026-11), and ``transport`` was never wired (retired 2026-07). Its
+  successors (``node:prediction.chat_turn``, ``node:prediction.body_joint``)
+  live in other organs and are event-shaped, so nothing replaces the slot here;
+  the group stays at its configured dim (16) so the world-model consumer is
+  unchanged, and ``meta.zero_filled_groups`` names it every tick.
 - ``vision_embedding``: REAL when a fresh, correctly-dimensioned embedding is
   available; explicitly zero-filled and flagged otherwise (see
   ``build_vision_embedding_group``'s docstring for the unresolved-dim
@@ -64,16 +57,12 @@ logger = logging.getLogger("orion.substrate.runtime.world_model_features")
 # wrong-dim this particular tick), not a permanent, patch-wide gap, so it is
 # added to the meta list dynamically instead (see
 # ``assemble_world_model_trajectory_step``).
-ALWAYS_ZERO_FILLED_GROUPS: Tuple[str, ...] = ("biometrics", "affect", "memory_pointers")
-
-# Execution-context domain order. Index in this tuple is the vector slot each
-# scalar lands in -- kept fixed so a downstream consumer's slot->domain
-# mapping stays stable across ticks even when a domain's cached scalar is
-# `None` this particular tick (its slot is simply left at 0.0).
-# "chat" (slot 1) left 2026-11-13 with node:substrate.chat (PE suite rebuild
-# retire step 6); slot 1 is now 0.0 padding like slots 2-3, dim unchanged.
-_EXECUTION_CONTEXT_DOMAINS: Tuple[str, ...] = ("execution",)
-
+ALWAYS_ZERO_FILLED_GROUPS: Tuple[str, ...] = (
+    "biometrics",
+    "affect",
+    "execution_context",
+    "memory_pointers",
+)
 
 @dataclass(frozen=True)
 class WorldModelFeatureDims:
@@ -88,22 +77,6 @@ class WorldModelFeatureDims:
     memory_pointers: int
     temporal: int
     vision_embedding: int
-
-
-@dataclass(frozen=True)
-class ExecutionContextScalars:
-    """Real per-domain prediction-error scalars, as cached by the worker's own
-    ``_*_tick()`` methods. ``None`` means that tick has not produced a real
-    value yet this process lifetime (cold start / that grammar-event stream
-    has been empty) -- treated as "not available yet", never coerced to 0.0,
-    so a genuine confirmed-calm 0.0 reading is never confused with "never
-    ticked" (same distinction ``_perception_prediction_error_tick`` already
-    makes for its own domain, worker.py's ``still_warming`` branch)."""
-
-    execution: Optional[float]
-
-    def as_ordered_values(self) -> Tuple[Optional[float], ...]:
-        return (self.execution,)
 
 
 def temporal_features(
@@ -152,28 +125,6 @@ def temporal_features(
 
 def zero_feature_group(dim: int) -> WorldModelFeatureGroupV1:
     return WorldModelFeatureGroupV1(dim=dim, vector=[0.0] * dim)
-
-
-def build_execution_context_group(
-    dim: int, scalars: ExecutionContextScalars
-) -> Tuple[WorldModelFeatureGroupV1, List[str]]:
-    """Fixed-slot layout (see ``_EXECUTION_CONTEXT_DOMAINS``): whichever
-    domains have a real cached scalar populate their slot; the rest -- both
-    "not ticked yet" domains and any slot beyond the real domains up to
-    ``dim`` -- stay 0.0. Returns the group plus the list of domain names that
-    were actually real this tick (for ``meta.real_execution_context_domains``,
-    the honesty trail)."""
-    vector = [0.0] * dim
-    real_domains: List[str] = []
-    for i, (name, value) in enumerate(
-        zip(_EXECUTION_CONTEXT_DOMAINS, scalars.as_ordered_values())
-    ):
-        if i >= dim:
-            break
-        if value is not None:
-            vector[i] = float(value)
-            real_domains.append(name)
-    return WorldModelFeatureGroupV1(dim=dim, vector=vector), real_domains
 
 
 def build_vision_embedding_group(
@@ -261,7 +212,6 @@ def assemble_world_model_trajectory_step(
     now: datetime,
     process_started_at: datetime,
     dims: WorldModelFeatureDims,
-    execution_context: ExecutionContextScalars,
     vision_embedding_vector: Optional[Sequence[float]],
     vision_embedding_at: Optional[datetime],
     vision_embedding_max_age_sec: float,
@@ -272,9 +222,6 @@ def assemble_world_model_trajectory_step(
     per request is valid: ``services/orion-world-model/app/main.py``'s
     ``WorldModelService`` holds no session/window state across requests, so
     this producer does not need to buffer a rolling trajectory window."""
-    execution_context_group, real_domains = build_execution_context_group(
-        dims.execution_context, execution_context
-    )
     vision_group, vision_meta = build_vision_embedding_group(
         dims.vision_embedding,
         raw_vector=vision_embedding_vector,
@@ -294,7 +241,7 @@ def assemble_world_model_trajectory_step(
         ts=now.timestamp(),
         biometrics=zero_feature_group(dims.biometrics),
         affect=zero_feature_group(dims.affect),
-        execution_context=execution_context_group,
+        execution_context=zero_feature_group(dims.execution_context),
         memory_pointers=zero_feature_group(dims.memory_pointers),
         temporal=WorldModelFeatureGroupV1(dim=dims.temporal, vector=temporal_vector),
         vision_embedding=vision_group,
@@ -302,7 +249,9 @@ def assemble_world_model_trajectory_step(
     meta: Dict[str, Any] = {
         "producer": "orion-substrate-runtime",
         "zero_filled_groups": zero_filled_groups,
-        "real_execution_context_domains": real_domains,
+        # Kept (always empty since 2026-11-24, #3576) so a reader keyed on
+        # it reads "no real domain", not a missing field.
+        "real_execution_context_domains": [],
         **vision_meta,
     }
     return step, meta

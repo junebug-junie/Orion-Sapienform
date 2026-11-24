@@ -38,7 +38,7 @@ _NOW = datetime(2026, 9, 25, 0, 0, 0, tzinfo=timezone.utc)
 
 # Every node that has a _prediction_error_receipt() call site today.
 _RECEIPT_NODE_IDS = {
-    "node:substrate.execution",
+    # node:substrate.execution retired 2026-11-24 (step 6, #3576): no receipt call site.
     # node:substrate.biometrics retired 2026-11-18 (step 6, #3575): no receipt call site.
     # node:substrate.route and node:substrate.bus_synaptic retired 2026-11
     # (PE suite rebuild step 5), node:substrate.chat 2026-11-13 (step 6): no
@@ -118,7 +118,7 @@ def test_every_domain_still_has_a_receipt_call() -> None:
     tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
     found = {_node_id(call) for call in (*_receipt_calls(tree), *_helper_calls(tree))}
     assert _RECEIPT_NODE_IDS <= found, _RECEIPT_NODE_IDS - found
-    assert not ({"node:substrate.route", "node:substrate.bus_synaptic", "node:substrate.chat", "node:substrate.codebase", "node:substrate.biometrics"} & found)
+    assert not ({"node:substrate.route", "node:substrate.bus_synaptic", "node:substrate.chat", "node:substrate.codebase", "node:substrate.biometrics", "node:substrate.execution"} & found)
 
 
 def _grammar_event(event_id: str) -> GrammarEventV1:

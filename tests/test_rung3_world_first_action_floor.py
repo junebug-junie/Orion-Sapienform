@@ -14,11 +14,31 @@ import pytest
 import orion.substrate.attention_broadcast as ab
 from orion.schemas.attention_frame import CuriosityCandidateActionV1, OpenLoopV1, PredictionErrorMagnitudeV1
 
+
+# node:substrate.execution was retired 2026-11-24 (#3576). Its role here (a live event-written level
+# body node) is played by the test-only EVENT_BODY probe from tests/fixtures/self_readings_history.py.
+import importlib.util as _probe_ilu  # noqa: E402
+from pathlib import Path as _ProbePath  # noqa: E402
+
+_probe_spec = _probe_ilu.spec_from_file_location(
+    "self_readings_history_probe_test_rung3_world_first_action_floor",
+    _ProbePath(__file__).resolve().parents[1] / "tests" / "fixtures" / "self_readings_history.py",
+)
+_probe_fx = _probe_ilu.module_from_spec(_probe_spec)
+_probe_spec.loader.exec_module(_probe_fx)
+EVENT_BODY = _probe_fx.EVENT_BODY
+
+
+@pytest.fixture(autouse=True)
+def _install_probe_glossary(monkeypatch):
+    _probe_fx.install_probe_glossary(monkeypatch)
+
+
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
 # An event-written body node (glossary sparsity designed_sparse). Was
 # node:substrate.route until its retirement (2026-11, PE suite rebuild step 5),
 # then codebase (retired 2026-11-13).
-ROUTE = "node:substrate.execution"
+ROUTE = EVENT_BODY
 
 
 @pytest.fixture(autouse=True)

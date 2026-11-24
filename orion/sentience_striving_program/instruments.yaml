@@ -290,7 +290,10 @@ instruments:
       (PE suite rebuild step 5), and chat 2026-11-13 (step 6; successor
       node:prediction.chat_turn, a scored forecast), and biometrics 2026-11-18
       (step 6, #3575; successors node:prediction.body_joint / .room_joint, family A
-      joint surprise): one live domain remains (execution).
+      joint surprise), and execution 2026-11-24 (step 6, #3576; successors the
+      "more steps than usual" turn self-bet in node:prediction.chat_turn and
+      node:prediction.body_joint): no field-native domain remains. O2's evidence
+      now rests on the scored forecasts (chat_turn, family A), not this table.
     last_reviewed: 2026-09-02
     claims:
       - id: transport_retired
@@ -303,6 +306,17 @@ instruments:
           CLAUDE.md records transport as the canonical case of a known-bad metric
           that was excluded from one consumer while still ticking and still
           winning budget slots in another. This claim keeps it dead.
+      - id: execution_pe_retired
+        question: "Is node:substrate.execution's prediction error really gone, not just excluded?"
+        kind: absent_from_repo
+        target: "def execution_prediction_error"
+        recorded: 0
+        recorded_at: 2026-11-24
+        note: >-
+          PE suite rebuild step 6, the last fake node: an EWMA z of the change in four
+          cortex-exec pressure hints, negatives clipped (59% exact 0 from clipping).
+          Successors: node:prediction.chat_turn's more-steps bet and
+          node:prediction.body_joint. The execution trajectory reducer stays.
       - id: chat_pe_retired
         question: "Is node:substrate.chat's prediction error really gone, not just excluded?"
         kind: absent_from_repo

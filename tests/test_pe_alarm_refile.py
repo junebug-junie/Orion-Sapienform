@@ -28,7 +28,7 @@ from orion.substrate.prediction_error_freshness import (
 REPO = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
 ALARMS = sorted(ALARM_NODE_IDS)
-LIVE = "node:substrate.execution"
+LIVE = "node:prediction.body"  # a live PE node (execution retired 2026-11-24, #3576)
 
 
 def _glossary_trigger_nodes() -> set[str]:
@@ -68,7 +68,7 @@ def test_labels_say_alarm_not_prediction_error(node_id: str) -> None:
     label = node_signal_label(node_id, node_id.removeprefix("node:substrate."))
     assert "prediction error" not in label
     assert is_alarm_node(node_id)
-    assert node_signal_label(LIVE, "execution") == "execution prediction error"
+    assert node_signal_label(LIVE, "body") == "body prediction error"
     assert not is_alarm_node(LIVE) and not is_alarm_node(None)
 
 

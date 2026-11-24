@@ -128,16 +128,11 @@ RPC_EXCLUDED_KEY_SUFFIX = "#gpu_pool_wait"
 
 # Signal computed from, or sharing a short upstream with, the outcome: an association would be the
 # outcome measuring itself. Each entry names the producing code (metric quality gate step 2).
-CIRCULAR_PAIRS: dict[tuple[str, str], str] = {
-    ("node:substrate.execution", "turn_failed"): (
-        "execution's surprise is computed from the same harness runs' failure_pressure and "
-        "execution_friction (orion/substrate/execution_loop/grammar_extract.py compute_pressure_hints)"
-    ),
-    ("node:substrate.execution", "response_repair"): (
-        "execution's surprise is computed from the same harness runs whose reply was repaired "
-        "(orion/substrate/execution_loop/grammar_extract.py compute_pressure_hints: step and reasoning load)"
-    ),
-}
+# Empty since 2026-11-24: both entries named node:substrate.execution (its surprise was computed
+# from the same harness runs' failure_pressure / step load as turn_failed / response_repair), which
+# was retired (#3576). Its retired id cannot reach the rollup any more (retired ids are dropped),
+# so the pairs were dead. A new signal that shares an upstream with an outcome goes back here.
+CIRCULAR_PAIRS: dict[tuple[str, str], str] = {}
 
 _OUTCOME_WORDS = {
     "turn_failed": "a failed turn",

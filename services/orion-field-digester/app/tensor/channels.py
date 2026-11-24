@@ -331,6 +331,13 @@ RETIRED_PSEUDO_NODES: dict[str, str] = {
         "retired 2026-11-18 PE step 6: pressure-hint change / 0.30, not a forecast; "
         "successor = node:prediction.body_joint / .room_joint"
     ),
+    # 2026-11-24 (PE step 6, #3576): execution_prediction_error deleted; the
+    # execution trajectory reducer and projection stay. Same agreement with
+    # RETIRED_PREDICTION_ERROR_NODE_IDS.
+    "node:substrate.execution": (
+        "retired 2026-11-24 PE step 6: clipped EWMA z of pressure-hint change, not a forecast; "
+        "successor = node:prediction.chat_turn (more-steps bet) / node:prediction.body_joint"
+    ),
 }
 
 # Every node id reconcile drops wholesale (perturbation refusal covers only

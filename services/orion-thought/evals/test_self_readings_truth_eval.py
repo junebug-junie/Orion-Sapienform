@@ -24,6 +24,13 @@ fx = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fx)  # type: ignore[union-attr]
 
 
+# node:substrate.execution, the event-written body vehicle here, was retired 2026-11-24 (#3576).
+# Its shape lives on as the TEST-ONLY probe fx.EVENT_BODY, which needs the probe glossary.
+@pytest.fixture(autouse=True)
+def _probe_glossary(monkeypatch):
+    fx.install_probe_glossary(monkeypatch)
+
+
 def _block(rows, now):
     cache = NodePeHistoryCache()
     cache.refresh(lambda since: [r for r in rows if r[1] >= since], now=now)
@@ -38,7 +45,7 @@ def test_busy_body_every_number_resolves_to_its_row(monkeypatch) -> None:
     block = _block(rows, fx.NOW)
     assert block.text, block.skip_reason
     assert check_block(block.text, rows, fx.NOW) == []
-    assert set(block.shown) == {"node:substrate.execution", fx.CONTINUOUS_BODY,
+    assert set(block.shown) == {fx.EVENT_BODY, fx.CONTINUOUS_BODY,
                                 "node:substrate.cabinet"}
 
 
@@ -68,7 +75,7 @@ from datetime import datetime, timezone  # noqa: E402
 from orion.attention.self_readings import build_self_readings, render_self_readings  # noqa: E402
 from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1  # noqa: E402
 
-_EXE = "node:substrate.execution"
+_EXE = fx.EVENT_BODY
 _ROW = SelfSignalOutcomeAssociationV1(
     association_id="ssa-0123456789", computed_at=datetime(2026, 10, 14, 3, tzinfo=timezone.utc),
     signal_id=_EXE, outcome="rpc_timeout", n_high=42, events_high=13, n_normal=120, events_normal=12,

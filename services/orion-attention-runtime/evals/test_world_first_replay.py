@@ -9,6 +9,27 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from replay_world_first import replay, spike_check, storm_check  # noqa: E402
+import pytest
+
+
+# node:substrate.execution was retired 2026-11-24 (#3576). Its role here (a live event-written level
+# body node) is played by the test-only EVENT_BODY probe from tests/fixtures/self_readings_history.py.
+import importlib.util as _probe_ilu  # noqa: E402
+from pathlib import Path as _ProbePath  # noqa: E402
+
+_probe_spec = _probe_ilu.spec_from_file_location(
+    "self_readings_history_probe_test_world_first_replay",
+    _ProbePath(__file__).resolve().parents[3] / "tests" / "fixtures" / "self_readings_history.py",
+)
+_probe_fx = _probe_ilu.module_from_spec(_probe_spec)
+_probe_spec.loader.exec_module(_probe_fx)
+EVENT_BODY = _probe_fx.EVENT_BODY
+
+
+@pytest.fixture(autouse=True)
+def _install_probe_glossary(monkeypatch):
+    _probe_fx.install_probe_glossary(monkeypatch)
+
 
 END = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
 
@@ -34,12 +55,12 @@ def test_calm_body_and_quiet_chat_is_mostly_no_winner() -> None:
 
 
 def test_real_spike_wins_and_a_sustained_storm_keeps_winning() -> None:
-    rows = _calm_rows("node:substrate.execution", 0.0)
-    rows.append(("node:substrate.execution", END - timedelta(hours=2), 1.0))
+    rows = _calm_rows(EVENT_BODY, 0.0)
+    rows.append((EVENT_BODY, END - timedelta(hours=2), 1.0))
     out = spike_check(rows, [], None, start=END - timedelta(days=1), end=END,
-                      node_id="node:substrate.execution", min_value=0.9)
+                      node_id=EVENT_BODY, min_value=0.9)
     assert out["readings"] == 1 and out["won"] == 1
-    storm = storm_check(rows, [], None, node_id="node:substrate.execution",
+    storm = storm_check(rows, [], None, node_id=EVENT_BODY,
                         storm_start=END - timedelta(hours=5), hours=5.0)
     assert storm["won_share"] > 0.9
 
@@ -51,7 +72,7 @@ def test_one_carried_event_holds_at_most_the_orienting_window_with_decay() -> No
     from orion.attention.world_first import EVENT_ORIENTING_WINDOW_SEC
 
     # codebase (the live case) was retired 2026-11-13; execution is the same event-written shape.
-    node = "node:substrate.execution"
+    node = EVENT_BODY
     rows = _calm_rows(node, 0.0, every_min=15)
     rows = [r for r in rows if r[1] < END - timedelta(minutes=40)]
     rows.append((node, END - timedelta(minutes=40), 0.988))

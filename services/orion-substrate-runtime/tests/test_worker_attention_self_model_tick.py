@@ -31,6 +31,20 @@ if str(SUBSTRATE_ROOT) not in sys.path:
 from app.worker import BiometricsSubstrateWorker
 
 
+@pytest.fixture(autouse=True)
+def _probe_domain(monkeypatch):
+    """No live Active-Inference domain is left since node:substrate.execution was retired
+    2026-11-24 (#3576). The tick's PE plumbing is exercised on a test-only "probe" domain
+    added to both the worker's node map and the reducer's domain set (patched in the
+    globals the code actually reads: another test can re-import `app`)."""
+    from orion.substrate import attention_self_model as asm
+
+    g = BiometricsSubstrateWorker._brain_frame_prediction_error_and_evidence_by_domain.__globals__
+    monkeypatch.setitem(g, "_PREDICTION_ERROR_DOMAIN_NODE_IDS",
+                        {**g["_PREDICTION_ERROR_DOMAIN_NODE_IDS"], "node:substrate.probe": "probe"})
+    monkeypatch.setattr(asm, "ACTIVE_INFERENCE_DOMAINS", frozenset(asm.ACTIVE_INFERENCE_DOMAINS | {"probe"}))
+
+
 def _make_worker(
     monkeypatch, *, broadcast_enabled: bool = True, self_model_enabled: bool = True
 ) -> BiometricsSubstrateWorker:
@@ -100,7 +114,7 @@ def test_self_model_tick_disabled_by_default_is_noop(monkeypatch):
 
 def test_self_model_tick_persists_real_model(monkeypatch):
     worker = _make_worker(monkeypatch, self_model_enabled=True)
-    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.42))
+    fake_store = _fake_store(_pe_node("node:substrate.probe", 0.42))
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
         return_value=fake_store,
@@ -139,7 +153,7 @@ def test_self_model_generated_at_is_fresh_even_with_stale_field_frame(monkeypatc
     )
     worker._store.get_latest_field_attention_frame.return_value = stale_field_frame
 
-    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.3))
+    fake_store = _fake_store(_pe_node("node:substrate.probe", 0.3))
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
         return_value=fake_store,
@@ -201,7 +215,7 @@ def test_self_model_tick_never_calls_a_foreign_writer(monkeypatch):
     # Isolate the attention ticks from the prediction-error history writers (on by default).
     monkeypatch.setenv("SUBSTRATE_WRITE_PREDICTION_ERROR_NODES", "false")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
-    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.1))
+    fake_store = _fake_store(_pe_node("node:substrate.probe", 0.1))
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
         return_value=fake_store,
@@ -241,7 +255,7 @@ def test_trend_buffer_accumulates_across_ticks(monkeypatch):
 
     fake_store = MagicMock()
     fake_store.snapshot.side_effect = [
-        _fake_store(_pe_node("node:substrate.execution", error)).snapshot.return_value
+        _fake_store(_pe_node("node:substrate.probe", error)).snapshot.return_value
         for error in (0.1, 0.5, 0.9, 0.2)
     ]
     with patch(
@@ -253,17 +267,17 @@ def test_trend_buffer_accumulates_across_ticks(monkeypatch):
 
     assert len(worker._attention_self_model_trend_buffer) == 4
     assert list(worker._attention_self_model_trend_buffer) == [
-        {"execution": 0.1},
-        {"execution": 0.5},
-        {"execution": 0.9},
-        {"execution": 0.2},
+        {"probe": 0.1},
+        {"probe": 0.5},
+        {"probe": 0.9},
+        {"probe": 0.2},
     ]
     # 4th call's model should carry a real, non-degenerate predicted_shift --
     # at least 2 snapshots must exist in the window before a trend is
     # computed at all (compute_prediction_error_trend's own contract).
     last_model = worker._store.save_attention_self_model.call_args.args[0]
     assert last_model.predicted_shift is not None
-    assert "execution" in last_model.predicted_shift
+    assert "probe" in last_model.predicted_shift
 
 
 def test_trend_buffer_respects_configured_maxlen(monkeypatch):
@@ -273,7 +287,7 @@ def test_trend_buffer_respects_configured_maxlen(monkeypatch):
 
     fake_store = MagicMock()
     fake_store.snapshot.side_effect = [
-        _fake_store(_pe_node("node:substrate.execution", error)).snapshot.return_value
+        _fake_store(_pe_node("node:substrate.probe", error)).snapshot.return_value
         for error in (0.1, 0.2, 0.3, 0.4, 0.5)
     ]
     with patch(
@@ -285,9 +299,9 @@ def test_trend_buffer_respects_configured_maxlen(monkeypatch):
 
     assert len(worker._attention_self_model_trend_buffer) == 3
     assert list(worker._attention_self_model_trend_buffer) == [
-        {"execution": 0.3},
-        {"execution": 0.4},
-        {"execution": 0.5},
+        {"probe": 0.3},
+        {"probe": 0.4},
+        {"probe": 0.5},
     ]
 
 
@@ -368,7 +382,7 @@ def test_self_model_tick_persists_with_heartbeat_fields_when_available(monkeypat
     heartbeat_mean_ratio/heartbeat_verdict fields."""
     monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
-    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.1))
+    fake_store = _fake_store(_pe_node("node:substrate.probe", 0.1))
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "ok": True,
@@ -398,7 +412,7 @@ def test_self_model_tick_still_persists_when_heartbeat_unreachable(monkeypatch):
     persist -- heartbeat fields simply stay honestly absent."""
     monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
-    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.1))
+    fake_store = _fake_store(_pe_node("node:substrate.probe", 0.1))
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
         return_value=fake_store,
@@ -420,7 +434,7 @@ def test_self_model_tick_still_persists_when_heartbeat_unreachable(monkeypatch):
 def test_attention_surface_tick_projects_a_pending_row(monkeypatch):
     worker = _make_worker(monkeypatch, self_model_enabled=True)
     worker._pending_attention_schema = None
-    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.42))
+    fake_store = _fake_store(_pe_node("node:substrate.probe", 0.42))
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
         return_value=fake_store,
@@ -485,3 +499,26 @@ def test_attention_surface_publish_failure_is_logged_not_raised(monkeypatch):
     )
     asyncio.run(worker._publish_pending_attention_schema())  # must not raise
     assert worker._pending_attention_schema is None
+
+
+def test_with_no_live_domain_a_lingering_execution_node_reads_unknown(monkeypatch):
+    """The real sets are empty since node:substrate.execution was retired 2026-11-24 (#3576):
+    a lingering execution node in the graph must not produce a confidence. It reads unknown
+    (None) with a basis that says why, never a made-up 1.0 or 0.0."""
+    monkeypatch.undo()
+    from orion.substrate import attention_self_model as asm
+
+    assert asm.ACTIVE_INFERENCE_DOMAINS == frozenset()
+    worker = _make_worker(monkeypatch, self_model_enabled=True)
+    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.9))
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ):
+        worker._attention_broadcast_tick()
+
+    model = worker._store.save_attention_self_model.call_args.args[0]
+    assert model.prediction_error_confidence is None
+    assert model.prediction_error_by_domain is None
+    assert model.predicted_shift is None
+    assert model.prediction_error_confidence_basis == asm.NO_ACTIVE_INFERENCE_DOMAINS_BASIS

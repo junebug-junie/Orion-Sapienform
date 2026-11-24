@@ -81,7 +81,12 @@ def test_recorded_tick_sequences_replay_identically():
     Re-recorded 2026-11-24 (game company patch 4: hub.retro_watch and hub.retro_commentary declare slow and quicken):
     with the two new "ORGANS YOU CAN SIGNAL" lines removed, every part of every scenario equals the previous golden
     (checked by script; 1 part changed, 0 after mapping: regulate_and_settle.llm_calls, the only scenario that shows
-    the receptors). No scenario turns the sitting wake on (the flag is absent from the fake settings)."""
+    the receptors). No scenario turns the sitting wake on (the flag is absent from the fake settings).
+    Re-recorded 2026-11-24 (#3783, Prime sends what it holds to the now): with the ``&held=...`` query keys removed
+    from the now URLs in log lines, and the now section's header and the experience prompt's order words ("what is
+    about your concerns first ...") mapped back to "highest salience first", every part of every scenario equals
+    the previous golden (checked by script; 5 parts changed, 0 after mapping). No scenario's now item carries
+    held_refs, so no line is marked."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

@@ -544,7 +544,8 @@ def test_walkway_story_linked_groups_are_one_person_asked_once_browser_smoke():
         first.locator("[data-person-action='confirm']").click()
         page.wait_for_function("() => !!document.querySelector(\"[data-person-said='confirm']\")")
         assert posts == [(f"/api/vision/motion-stories/{sid}/people/ind-sasha1",
-                          {"action": "confirm", "name": "Sasha", "why": "", "group": True})]
+                          {"action": "confirm", "name": "Sasha", "why": "", "group": True,
+                           "crop_ids": ["k3", "k1"]})]
         page.locator("[data-person-not-same-toggle]").first.click()
         page.locator("[data-person-not-same-pair]").first.click()
         page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes('not the same person')")

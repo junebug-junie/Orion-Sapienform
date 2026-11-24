@@ -251,6 +251,10 @@ class PersonBody(BaseModel):
     # Which card sent it: "one_at_a_time" (Patch B) is stored as answer_detail.card; the old list
     # card (a cached page) sends nothing. A "not sure" story leaves the reopened queue on the first.
     card: Literal["list", "one_at_a_time"] = "list"
+    # The crop ids of the pictures the card SHOWED for this person (group answers). When the
+    # server's pictures for the person differ (a link landed since the card rendered), 409
+    # ``pictures_changed``: never a verdict on a picture she did not see.
+    crop_ids: Optional[list[str]] = Field(default=None, max_length=16)
 
 
 def clean_why(raw: str) -> str:
@@ -637,43 +641,45 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
     if not stories:
         return
     try:
-        together = sorted({t for s in stories for t in s.get("together_story_ids") or []})
-        partners: dict[str, Any] = {}
-        if together:
-            for r in await conn.fetch(
-                    "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
-                    "WHERE story_id = ANY($1::text[])", together):
-                partners[r["story_id"]] = {"kind": r["kind"], "evidence": _evidence_list(r["evidence"]),
-                                           "strip": _strip_of(r["evidence_strip"])}
-            plinks = await _late_links(conn, [r["evidence"] for r in partners.values()])
-            for r in partners.values():
-                r["evidence"] = fill_late_links(r["evidence"], plinks)
-        for s in stories:
-            seen = {p["individual_id"] for p in s["people"]}
-            s["_areas"] = story_persons.crop_areas(
-                [s.get("evidence") or []] + [partners[t]["evidence"] for t in s.get("together_story_ids") or []
-                                             if t in partners])
-            for t in s.get("together_story_ids") or []:
-                r = partners.get(t)
-                if r is None:
-                    continue
-                for p in people_in(r["evidence"], "companion", r["kind"] or "person"):
-                    if p["individual_id"] not in seen:
-                        seen.add(p["individual_id"])
-                        p["story_id"] = t
-                        # Their pictures are in the story they walked in; not boxed on this frame.
-                        attach_pictures(p, t, r["strip"], None)
-                        s["people"].append(p)
-        ids = sorted({p["individual_id"] for s in stories for p in s["people"]}
-                     | {e.get("individual_id") for s in stories for e in s.get("evidence") or []
-                        if isinstance(e.get("individual_id"), str)})
-        rows = {r["individual_id"]: r for r in await conn.fetch(_LABELS_SQL, ids)} if ids else {}
-        acts: dict[str, list[dict[str, Any]]] = {}
-        for r in await conn.fetch(_STORY_ACTIONS_SQL, [s["story_id"] for s in stories],
-                                  [WHO_IS_THIS_KIND, STORY_PERSON_KIND]):
-            acts.setdefault(r["story_id"], []).append({
-                "individual_id": r["individual_id"], "action": r["action"], "name": r["name"],
-                "why": r["why"] or None, "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"])})
+        # A savepoint: a failed read never aborts a caller's transaction (fail-open there too).
+        async with conn.transaction():
+            together = sorted({t for s in stories for t in s.get("together_story_ids") or []})
+            partners: dict[str, Any] = {}
+            if together:
+                for r in await conn.fetch(
+                        "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
+                        "WHERE story_id = ANY($1::text[])", together):
+                    partners[r["story_id"]] = {"kind": r["kind"], "evidence": _evidence_list(r["evidence"]),
+                                               "strip": _strip_of(r["evidence_strip"])}
+                plinks = await _late_links(conn, [r["evidence"] for r in partners.values()])
+                for r in partners.values():
+                    r["evidence"] = fill_late_links(r["evidence"], plinks)
+            for s in stories:
+                seen = {p["individual_id"] for p in s["people"]}
+                s["_areas"] = story_persons.crop_areas(
+                    [s.get("evidence") or []] + [partners[t]["evidence"] for t in s.get("together_story_ids") or []
+                                                 if t in partners])
+                for t in s.get("together_story_ids") or []:
+                    r = partners.get(t)
+                    if r is None:
+                        continue
+                    for p in people_in(r["evidence"], "companion", r["kind"] or "person"):
+                        if p["individual_id"] not in seen:
+                            seen.add(p["individual_id"])
+                            p["story_id"] = t
+                            # Their pictures are in the story they walked in; not boxed on this frame.
+                            attach_pictures(p, t, r["strip"], None)
+                            s["people"].append(p)
+            ids = sorted({p["individual_id"] for s in stories for p in s["people"]}
+                         | {e.get("individual_id") for s in stories for e in s.get("evidence") or []
+                            if isinstance(e.get("individual_id"), str)})
+            rows = {r["individual_id"]: r for r in await conn.fetch(_LABELS_SQL, ids)} if ids else {}
+            acts: dict[str, list[dict[str, Any]]] = {}
+            for r in await conn.fetch(_STORY_ACTIONS_SQL, [s["story_id"] for s in stories],
+                                      [WHO_IS_THIS_KIND, STORY_PERSON_KIND]):
+                acts.setdefault(r["story_id"], []).append({
+                    "individual_id": r["individual_id"], "action": r["action"], "name": r["name"],
+                    "why": r["why"] or None, "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"])})
     except Exception as exc:  # noqa: BLE001 - the card still shows the stored story
         logger.warning("motion_story_people_lookup_failed error=%s", exc)
         for s in stories:
@@ -700,6 +706,13 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
 # ("Sasha", "Sasha"). ``persons`` shows each linked group once (orion/vision/story_persons.py); an
 # answer with ``group: true`` is written for each camera group in it.
 
+# A 'same' row joins two groups unless a newer "same person? no" about that pair is answered and
+# still waiting for sql-writer (which writes it over the row on its next cycle): the card shows
+# the two apart at once, and nothing fans out over a link she just said is wrong.
+_LIVE_SAME = (
+    "v.verdict = 'same' AND NOT EXISTS (SELECT 1 FROM orion_ask q WHERE q.source_kind = 'vision_same_individual' "
+    "AND q.status = 'answered' AND q.source_ref = v.individual_a || '|' || v.individual_b "
+    "AND lower(btrim(q.answer)) IN ('different', 'no') AND q.answered_at > v.decided_at)")
 # Every id reachable from each story person over 'same' links (also through groups not in the story).
 _COMPONENT_SQL = """
 WITH RECURSIVE g(start, id) AS (
@@ -707,13 +720,23 @@ WITH RECURSIVE g(start, id) AS (
   UNION
   SELECT g.start, CASE WHEN v.individual_a = g.id THEN v.individual_b ELSE v.individual_a END
   FROM vision_individual_pair_verdict v JOIN g ON g.id IN (v.individual_a, v.individual_b)
-  WHERE v.verdict = 'same')
+  WHERE """ + _LIVE_SAME + """)
+SELECT start, id FROM g WHERE start <> id
+"""
+# The same walk with one pair left out: would these two still be joined without that row?
+_COMPONENT_WITHOUT_SQL = """
+WITH RECURSIVE g(start, id) AS (
+  SELECT x, x FROM unnest($1::text[]) x
+  UNION
+  SELECT g.start, CASE WHEN v.individual_a = g.id THEN v.individual_b ELSE v.individual_a END
+  FROM vision_individual_pair_verdict v JOIN g ON g.id IN (v.individual_a, v.individual_b)
+  WHERE """ + _LIVE_SAME + """ AND NOT (v.individual_a = $2 AND v.individual_b = $3))
 SELECT start, id FROM g WHERE start <> id
 """
 # The direct 'same' rows between two of these people (one "not the same person?" button each).
 _DIRECT_LINKS_SQL = """
-SELECT individual_a, individual_b FROM vision_individual_pair_verdict
-WHERE verdict = 'same' AND individual_a = ANY($1::text[]) AND individual_b = ANY($1::text[])
+SELECT v.individual_a, v.individual_b FROM vision_individual_pair_verdict v
+WHERE """ + _LIVE_SAME + """ AND v.individual_a = ANY($1::text[]) AND v.individual_b = ANY($1::text[])
 """
 
 
@@ -842,6 +865,8 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                     if person is None:
                         raise HTTPException(status_code=422, detail="individual_not_in_story")
                     person_key = person["person_key"]
+                    if body.crop_ids is not None and set(body.crop_ids) != {c["crop_id"] for c in person["pictures"]}:
+                        raise HTTPException(status_code=409, detail="pictures_changed")
                 else:
                     one = await _single_target(conn, story, story_id, individual_id)
                     if one is None:
@@ -917,7 +942,8 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                 ",".join(skipped) or "-", wrong_name, published, len(why))
     return {"ok": True, "story_id": story_id, "individual_id": individual_id, "action": body.action,
             "ask_id": ask_ids[0] if ask_ids else None, "ask_ids": ask_ids, "skipped_individual_ids": skipped,
-            "person_key": person_key, "wrong_name_recorded": wrong_name, "published": published,
+            "person_key": person_key, "skipped_all": not ask_ids, "wrong_name_recorded": wrong_name,
+            "published": published,
             "story": stories[0] if stories else None, "tally": tally}
 
 
@@ -957,43 +983,57 @@ async def record_not_same_person(story_id: str, person_key: str, body: NotSameBo
             raise HTTPException(status_code=400, detail="bad_individual_id")
     pool = _pool(request)
     row: Any = None
+    already = False
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 if await conn.fetchval("SELECT 1 FROM vision_motion_story WHERE story_id = $1 AND published",
                                        story_id) is None:
                     raise HTTPException(status_code=404, detail="story_not_found")
-                fresh = [_story_dict(r) for r in await conn.fetch(_ONE_STORY_SQL, story_id)]
-                async with conn.transaction():
-                    await _enrich(conn, fresh)
-                person = next((p for p in fresh[0].get("persons") or [] if p["person_key"] == person_key), None)
-                if person is None:
-                    raise HTTPException(status_code=422, detail="person_not_in_story")
                 a, b = sorted((body.a, body.b))
-                if {"a": a, "b": b} not in person["links"]:
-                    raise HTTPException(status_code=422, detail="not_a_direct_link_of_this_person")
-                # Would they still be joined without this row? Then the pair answer cannot split them.
-                rest = [(r["start"], r["id"]) for r in await conn.fetch(
-                    _COMPONENT_SQL.replace("WHERE v.verdict = 'same'",
-                                           "WHERE v.verdict = 'same' AND NOT (v.individual_a = $2 "
-                                           "AND v.individual_b = $3)"), [a], a, b)]
-                if story_persons.connected(rest, a, b):
-                    raise HTTPException(status_code=409, detail="still_linked")
-                spec = story_persons.not_same_answer(a=a, b=b, story_id=story_id, person_key=person_key)
-                refs = [f"motion_story:{story_id}", f"individual:{a}", f"individual:{b}", JUNIPER_STORY_CARD_REF]
-                row = await conn.fetchrow(
-                    _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}", spec["question"], json.dumps(refs),
-                    None, json.dumps([]), spec["answer"], spec["kind"], spec["source_ref"],
-                    json.dumps(spec["detail"]))
+                row = await conn.fetchrow(_PENDING_NOT_SAME_SQL, story_persons.pair_ref(a, b))
+                # A second click before sql-writer applied the first: the same answer, not a new row.
+                already = row is not None
+                if not already:
+                    fresh = [_story_dict(r) for r in await conn.fetch(_ONE_STORY_SQL, story_id)]
+                    if fresh:
+                        async with conn.transaction():
+                            await _enrich(conn, fresh)
+                    person = next((p for p in (fresh[0].get("persons") if fresh else None) or []
+                                   if p["person_key"] == person_key), None)
+                    if person is None:
+                        raise HTTPException(status_code=422, detail="person_not_in_story")
+                    if {"a": a, "b": b} not in person["links"]:
+                        raise HTTPException(status_code=422, detail="not_a_direct_link_of_this_person")
+                    # Would they still be joined without this row? Then the pair answer cannot split them.
+                    rest = [(r["start"], r["id"]) for r in await conn.fetch(_COMPONENT_WITHOUT_SQL, [a], a, b)]
+                    if story_persons.connected(rest, a, b):
+                        raise HTTPException(status_code=409, detail="still_linked")
+                    spec = story_persons.not_same_answer(a=a, b=b, story_id=story_id, person_key=person_key)
+                    refs = [f"motion_story:{story_id}", f"individual:{a}", f"individual:{b}", JUNIPER_STORY_CARD_REF]
+                    row = await conn.fetchrow(
+                        _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}", spec["question"], json.dumps(refs),
+                        None, json.dumps([]), spec["answer"], spec["kind"], spec["source_ref"],
+                        json.dumps(spec["detail"]))
     except HTTPException:
         raise
     except Exception as exc:
         _raise_motion_http(exc)
     stories, tally = await _readback(pool, story_id)
-    logger.info("motion_story_not_same story_id=%s person_key=%s pair=%s ask_id=%s",
-                story_id, person_key, row["source_ref"], row["ask_id"])
+    logger.info("motion_story_not_same story_id=%s person_key=%s pair=%s ask_id=%s already=%s",
+                story_id, person_key, row["source_ref"], row["ask_id"], already)
     return {"ok": True, "story_id": story_id, "person_key": person_key, "ask_id": row["ask_id"],
-            "pair": row["source_ref"], "story": stories[0] if stories else None, "tally": tally}
+            "pair": row["source_ref"], "already_recorded": already,
+            "story": stories[0] if stories else None, "tally": tally}
+
+
+# Her "not the same person" for this pair, answered and not yet applied by sql-writer.
+_PENDING_NOT_SAME_SQL = """
+SELECT ask_id, source_ref FROM orion_ask
+WHERE source_kind = 'vision_same_individual' AND status = 'answered' AND applied_at IS NULL
+  AND source_ref = $1 AND lower(btrim(answer)) IN ('different', 'no')
+ORDER BY answered_at DESC LIMIT 1
+"""
 
 
 

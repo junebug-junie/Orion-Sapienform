@@ -1054,6 +1054,7 @@ def test_answering_a_merged_person_again_writes_no_second_answer_per_group() -> 
         r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
                               json={"action": "confirm", "name": "sasha", "group": True})
         assert r.json()["ask_ids"] == [] and r.json()["skipped_individual_ids"] == ["ind-a", "ind-b"]
+        assert r.json()["skipped_all"] is True
         counts = await pool.fetch("SELECT source_ref, count(*) AS n FROM orion_ask WHERE source_kind = "
                                   "'vision_individual' GROUP BY 1 ORDER BY 1")
         assert [(c["source_ref"], c["n"]) for c in counts] == [("ind-a", 1), ("ind-b", 1)]
@@ -1106,6 +1107,12 @@ def test_not_the_same_person_writes_her_pair_answer_for_one_direct_link() -> Non
         url = f"/api/vision/motion-stories/{sid}/persons/{person['person_key']}/not-same"
         r = await client.post(url, json={"a": "ind-b", "b": "ind-a"})
         assert r.status_code == 200, r.text
+        # Shown apart at once, before sql-writer writes it over the 'same' row; a second click is the same answer.
+        assert [p["individual_ids"] for p in r.json()["story"]["persons"]] == [["ind-a"], ["ind-b"]]
+        again = await client.post(url, json={"a": "ind-a", "b": "ind-b"})
+        assert again.status_code == 200 and again.json()["already_recorded"] is True
+        assert again.json()["ask_id"] == r.json()["ask_id"]
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == 1
         row = await pool.fetchrow("SELECT * FROM orion_ask WHERE ask_id = $1", r.json()["ask_id"])
         assert (row["source_kind"], row["source_ref"], row["answer"], row["status"]) == (
             "vision_same_individual", "ind-a|ind-b", "different", "answered")
@@ -1116,6 +1123,8 @@ def test_not_the_same_person_writes_her_pair_answer_for_one_direct_link() -> Non
         r = await client.post(url, json={"a": "ind-a", "b": "ind-c"})
         assert (r.status_code, r.json()["detail"]) == (422, "not_a_direct_link_of_this_person")
         # Still joined through another path (a-c-b): the pair answer could not split them. Said so plainly.
+        await pool.execute("UPDATE orion_ask SET applied_at = now()")
+        await pool.execute("UPDATE vision_individual_pair_verdict SET decided_at = now() + interval '1 minute'")
         await _same(pool, "ind-a", "ind-c")
         await _same(pool, "ind-c", "ind-b")
         before = await pool.fetchval("SELECT count(*) FROM orion_ask")
@@ -1193,3 +1202,25 @@ def test_tally_counts_cant_see_answers_apart() -> None:
         assert (r.json()["tally"]["person_answers"], r.json()["tally"]["cant_see"]) == (2, 1)
 
     _run(body)
+
+
+@needs_pg
+def test_a_group_answer_on_pictures_the_card_did_not_show_is_refused() -> None:
+    """A link that lands between render and click changes the person's pictures: 409, nothing written."""
+    async def body(pool, client):
+        await _individual(pool, "ind-a", "Sasha")
+        await _individual(pool, "ind-b", "Sasha")
+        sid = await _walk(pool, 1, ["ind-a", "ind-b"], strip=[0, 1], thumbs=())
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        shown = [c["crop_id"] for c in r.json()["stories"][0]["persons"][0]["pictures"]]
+        assert shown == ["s1c0"]
+        await _same(pool, "ind-a", "ind-b")             # linked after the card rendered
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
+                              json={"action": "unsure", "group": True, "crop_ids": shown})
+        assert (r.status_code, r.json()["detail"]) == (409, "pictures_changed")
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == 0
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
+                              json={"action": "unsure", "group": True, "crop_ids": ["s1c1", "s1c0"]})
+        assert r.status_code == 200 and len(r.json()["ask_ids"]) == 2
+
+    _run(body, [])

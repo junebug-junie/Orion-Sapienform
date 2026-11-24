@@ -633,12 +633,20 @@
             // A yes carries the name the card showed: the server refuses it if the name changed since.
             // A linked person (`grouped`) is answered for each of its camera groups.
             body: JSON.stringify({ action, name: action === "unsure" ? "" : action === "confirm" ? (person.label || "") : name,
-              why: String(whyTyped || "").trim(), group: !!person.grouped }),
+              why: String(whyTyped || "").trim(), group: !!person.grouped,
+              crop_ids: person.grouped ? personPictures(person).map((c) => c.crop_id).filter(Boolean) : undefined }),
           });
         if (res.status === 409) {
-          // The name changed since the card loaded (renamed elsewhere): show the new one, ask again.
+          // The name or the pictures changed since the card loaded (renamed, or linked to another
+          // camera group): show the new card, ask again.
+          let detail = "";
+          try { detail = (await res.json()).detail || ""; } catch (_) { /* not JSON */ }
           await load(false);
-          if (status) status.textContent = "That name changed since this card loaded. Showing the new one; nothing saved.";
+          if (status) {
+            status.textContent = detail === "pictures_changed"
+              ? "Orion's pictures of this person changed since this card loaded. Showing the new ones; nothing saved."
+              : "That name changed since this card loaded. Showing the new one; nothing saved.";
+          }
           return;
         }
         if (!res.ok) {
@@ -676,6 +684,7 @@
             : action === "confirm" ? `Saved: yes, that's ${person.label || "them"}.`
             : action === "someone_else" ? "Saved: someone else. Orion will try to split those pictures off that individual."
               : "Saved: not sure.";
+          if (body.skipped_all) status.textContent = "Already recorded: you said the same before. Nothing new saved.";
           if (body.wrong_name_recorded) status.textContent += " Recorded as a wrong name for this story.";
         }
       } catch (err) {

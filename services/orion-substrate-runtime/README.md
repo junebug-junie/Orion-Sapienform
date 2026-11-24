@@ -672,6 +672,18 @@ reverie). It writes no prediction error: `node:substrate.harness_closure` (a fix
 retired 2026-11-11 (retire step 3,
 `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`).
 
+**Retired 2026-11-24 (PE suite rebuild retire step 6, #3576): `node:substrate.execution`, the
+last fake prediction-error node.** It was an EWMA z of the mean change in four cortex-exec
+pressure hints, negatives clipped, /3 -- not a forecast (59% exact 0 from the clipping).
+`execution_prediction_error()`, its receipt and node write are deleted; `_execution_tick` still
+runs the execution trajectory reducer and projection (`/projections/execution_trajectory`, the
+Hub chat-turn trace). Successors are scored forecasts written elsewhere:
+`node:prediction.chat_turn` (the "more steps than usual" turn self-bet) and
+`node:prediction.body_joint`. With it gone, `ACTIVE_INFERENCE_DOMAINS` and
+`_PREDICTION_ERROR_DOMAIN_NODE_IDS` are empty: the self-model's `prediction_error_confidence`
+and `predicted_shift` read unknown (None) every tick, and the world-model publish tick's
+`execution_context` group is zero-filled and named in `meta.zero_filled_groups`.
+
 **Retired 2026-11 (PE suite rebuild step 5): `node:substrate.bus_synaptic` and
 `node:substrate.route`'s prediction error.** Neither was a forecast: bus_synaptic counted the
 fraction of bus edges with `|z| >= 3` (a lull-ending detector), route scored a categorical
@@ -1432,7 +1444,7 @@ must be flagged in `payload.meta`, not hidden):
 
 | Group | Status | Source |
 |---|---|---|
-| `execution_context` | **Real** | Two of this worker's existing per-domain prediction-error scalars, cached by their own `_execution_tick`/`_chat_tick` methods. Fixed slot order: `[execution, chat]`; slots 2-3 held route/bus_synaptic until their 2026-11 retirement and are now 0.0 like every remaining slot up to `SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT` (default 16, unchanged). |
+| `execution_context` | **Always zero-filled** (since 2026-11-24) | Its only real slot was the execution prediction-error scalar, retired with `node:substrate.execution` (#3576). The dim (16) is unchanged so the world-model consumer is unaffected. |
 | `temporal` | **Real** | Pure function over wall-clock time (`world_model_features.temporal_features`): hour-of-day/day-of-week/minute-of-hour sin/cos pairs + tanh-squashed session-elapsed time. |
 | `vision_embedding` | **Real when available and correctly dimensioned; zero-filled + flagged otherwise** | See "Unresolved vision-embedding dim" below. |
 | `biometrics` | **Always zero-filled** | The real biometrics numeric vector lives in `orion-field-digester`, not cheaply reachable from this process per CLAUDE.md section 5's service-boundary rule. This is a different signal from `node:substrate.biometrics`'s own prediction-error *scalar* (which this worker does compute) -- that scalar is deliberately not folded into `execution_context` either; see `world_model_features.py`'s module docstring. |

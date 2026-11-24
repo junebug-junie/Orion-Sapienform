@@ -180,6 +180,15 @@ class Settings(BaseSettings):
     # model kept every concern on every thought: 0 of 54 concern acts faded and new letter threads found no room.
     # false: a keep renews, as before (instant rollback; no state migration either way).
     PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED: bool = Field(default=True, alias="PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED")
+    # Prime's concern contest (design 2026-11-17 patch 2, #3574; #3656; orion/prime/slots.py): letter threads, dream
+    # concerns and concerns Prime names with every slot full wait for a slot instead of being forgotten; a waiting one
+    # takes the slot of a held concern quiet for half its life with no question open, if it beats it (score = own-source
+    # salience x fade; unscored ranks last; newer evidence breaks unscored ties); a new promise pushes out the weakest
+    # held concern that is not a promise and not taken on. Every push-out closes the concern "displaced" with both
+    # scores. false: no displacement; waiting concerns still take free slots (instant rollback).
+    PRIME_CONCERN_CONTEST_ENABLED: bool = Field(default=True, alias="PRIME_CONCERN_CONTEST_ENABLED")
+    # The score lead a scored waiting concern needs over a scored held one. A bracketed default to grade on live data.
+    PRIME_CONCERN_CONTEST_MARGIN: float = Field(default=0.1, ge=0.0, le=1.0, alias="PRIME_CONCERN_CONTEST_MARGIN")
     # Living Prime Part 2, every turn ends back in Prime (orion/prime/handback.py, app/prime_loop.py): Prime listens
     # to the cockpit hops Hub already publishes (orion:cockpit:hop) and folds each finished chat, curiosity, consult
     # and letter turn into its state on the tick. A turn that made a promise opens a concern (at most 1 held, 4 a

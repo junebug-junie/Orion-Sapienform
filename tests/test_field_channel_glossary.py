@@ -68,8 +68,10 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     #   node:prediction.chat_turn the same day, no count change.)
     # - node:substrate.biometrics removed, + node:prediction.body_joint / .room_joint added
     #   (family A joint surprise, 2026-11-18, #3575): 59 -> 60.
-    assert len(entries) == 60
+    # - node:substrate.execution removed (retire step 6, 2026-11-24, #3576): 60 -> 59.
+    assert len(entries) == 59
     assert not any(e.node == "node:substrate.biometrics" for e in entries)
+    assert not any(e.node == "node:substrate.execution" for e in entries)
     assert not any(e.node == "node:substrate.codebase" for e in entries)
     assert not any(e.node == "node:substrate.harness_closure" for e in entries)
     names = {e.channel for e in entries}
@@ -131,11 +133,11 @@ def test_load_glossary_categories_cover_all_seven_semantic_groups():
 def test_resolve_channel_entry_prefers_node_qualified_over_bare():
     """The whole point of version 2: a node's qualified entry must describe
     that node, not the generic bare "recent prediction missed reality"
-    meaning. (Pinned on bus_synaptic until its 2026-11 retirement.)"""
-    bus = resolve_channel_entry("prediction_error", "node:substrate.execution")
+    meaning. (Pinned on bus_synaptic, then execution, until their 2026-11 retirements.)"""
+    bus = resolve_channel_entry("prediction_error", "node:prediction.chat_turn")
     bare = resolve_channel_entry("prediction_error")
     assert bus is not None and bare is not None
-    assert bus.node == "node:substrate.execution"
+    assert bus.node == "node:prediction.chat_turn"
     assert bare.node is None
     assert bus.meaning != bare.meaning
     assert bus.trend_source

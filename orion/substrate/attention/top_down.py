@@ -86,7 +86,7 @@ class GoalContext:
     priority: float             # [0,1]
     goal_artifact_id: Optional[str] = None
     # What the goal is ABOUT -- FieldGoalProvenanceV1.field_target_id, e.g.
-    # "node:substrate.execution". Same id space as OpenLoopV1.source_refs, so
+    # "world:reading". Same id space as OpenLoopV1.source_refs, so
     # relevance() can join them exactly. Optional because a goal that names no
     # target must produce no bias at all (see relevance()), never a fabricated
     # constant -- that fabrication is exactly what made voluntary override

@@ -73,6 +73,8 @@ on:
       - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
       - "orion/schemas/dream_day.py"           # dream.day (the day dream Patch 2)
       - "orion/memory/dream_day.py"            # its parse / ref check / memories / grade
+      - "orion/harness/cut_short.py"           # dream.day names a cut-short turn (test_dream_day_citable_facts.py)
+      - "orion/dig/__main__.py"                # `dig dream-day` writes the totals file dream.day reads
       - "services/orion-sql-db/manual_migration_dream_day*.sql"   # test_dream_day_postgres.py applies them
       - "orion/memory/episode/**"              # dream memories go through validate + store
       - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
@@ -174,6 +176,8 @@ on:
       - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
       - "orion/schemas/dream_day.py"           # dream.day (the day dream Patch 2)
       - "orion/memory/dream_day.py"            # its parse / ref check / memories / grade
+      - "orion/harness/cut_short.py"           # dream.day names a cut-short turn (test_dream_day_citable_facts.py)
+      - "orion/dig/__main__.py"                # `dig dream-day` writes the totals file dream.day reads
       - "services/orion-sql-db/manual_migration_dream_day*.sql"   # test_dream_day_postgres.py applies them
       - "orion/memory/episode/**"              # dream memories go through validate + store
       - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
@@ -280,6 +284,10 @@ jobs:
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: |
           cd services/orion-durable-runs && python -m pytest tests -q -p no:cacheprovider
+      - name: Day dream citable facts, dig side (the totals file; the durable-runs side runs in the suite above)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider orion/dig/tests/test_dream_day_cmd.py
       - name: Curiosity compaction — sleep scheduling, real Postgres recovery, chronology replay
         env:
           PYTHONPATH: ${{ github.workspace }}

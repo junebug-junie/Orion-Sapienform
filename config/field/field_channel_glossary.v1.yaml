@@ -649,32 +649,12 @@ channels:
       sparsity: designed_sparse
       absent_means: "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason (embedding_staleness 1.0 when stale); substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start."
 
-  # orion/substrate/prediction_error.py:409-453
-  # _score_and_update_ewma_prediction_error: :452 returns 0.0 with no z yet
-  # (cold start); :453 min(1, max(0, z)/3). Execution input (:456): mean
-  # |delta| of 4 pressure hints. Written only when a batch had events
-  # (worker.py:3991). Live: 72% exact zeros.
-  - node: "node:substrate.execution"
-    producer: orion-substrate-runtime
-    channel: prediction_error
-    level: [node]
-    category: self_monitoring
-    meaning: "How much more execution pressure changed this batch than it usually does: z-score of the mean change in 4 execution pressure hints versus its own running average, negatives clipped, 3 sigma = 1.0."
-    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.execution'"
-    consumers:
-      - "orion.attention.field_attention.selectors:select_node_targets"
-      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
-      - "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
-    semantics:
-      value_kind: level
-      rest: "0.0 = change at or below its usual (negative z clipped), or no baseline yet. Mostly zero by design (72% live)."
-      # rest_range live 2026-10-13: 90.0% exact 0.0, p50 0.0, p95 0.397, max 1.0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors); 77% in substrate_node_prediction_error_history
-      rest_range: [0.0, 0.0]
-      sparsity: designed_sparse
-      absent_means: "only written when a batch carried execution events; between batches the last value is carried forward in node_vectors, and the self-model drops the domain after 1800 s."
-      prompt_sites:
-        - "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
-        - "orion.attention.self_readings:render_self_readings"
+  # node:substrate.execution was RETIRED 2026-11-24 (PE suite rebuild retire step 6,
+  # #3576), the last fake prediction-error node: an EWMA z of the mean change in four
+  # cortex-exec pressure hints, negatives clipped, /3; not a forecast. Exact zeros from
+  # the clipping: 59% of 2,286 history rows 2026-11-17..24 (90% of field-state ticks 2026-10-13). Successors: the "more steps than usual" turn self-bet
+  # inside node:prediction.chat_turn (below) and node:prediction.body_joint. The id is
+  # on RETIRED_PREDICTION_ERROR_NODE_IDS and the field digester's RETIRED_PSEUDO_NODES.
 
   # node:substrate.chat was RETIRED 2026-11-13 (PE suite rebuild retire step 6):
   # an EWMA z of the change in two chat pressure hints, negatives clipped; not a

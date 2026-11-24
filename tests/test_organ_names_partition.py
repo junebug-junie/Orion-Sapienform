@@ -26,6 +26,13 @@ FIELD_NOTE_WRITER = "services/orion-durable-runs/app/pr_field_note_ledger.py"
 # (test_the_reminiscence_reader_never_hands_back_hop_text below). ALLOWED above is unchanged: the gate stays
 # closed to recall, memory and every other reader.
 REMINISCENCE_READER = "services/orion-durable-runs/app/reminiscence_ledger.py"
+# The third named exception, for the reminiscence ledger ONLY and for ONE reader: the day dream's grounding judge
+# (#3739; Juniper approved 2026-11-24, PR dream-day-citable-facts). A dream memory that cites a reminiscence hop turn
+# was judged against the turn's save receipt, never the hop's words, so it could never pass. This module hands the
+# judge the saved note; it is called only from app/dream_day_store.py ``resolve_refs`` on the judge's full read
+# (test_the_dream_judge_reader_feeds_only_the_judge below), never the stored evidence quote, recall or memory.
+DREAM_JUDGE_READER = "services/orion-durable-runs/app/dream_day_receipts.py"
+DREAM_JUDGE_STORE = "services/orion-durable-runs/app/dream_day_store.py"
 
 
 def _readers(*terms: str) -> list[str]:
@@ -73,7 +80,8 @@ def test_only_the_atlas_and_dig_read_the_reminiscence_ledgers():
                     "body_atlas import reminiscence", "reminiscence_path", "reminiscence_body_path")
     assert "orion/body_atlas/reminiscence.py" in hits and "orion/dig/__main__.py" in hits  # the grep really ran
     assert REMINISCENCE_READER in hits  # the exception is real, so this check really covers it
-    assert [h for h in hits if not h.startswith(ALLOWED) and h != REMINISCENCE_READER] == []
+    assert DREAM_JUDGE_READER in hits
+    assert [h for h in hits if not h.startswith(ALLOWED) and h not in (REMINISCENCE_READER, DREAM_JUDGE_READER)] == []
 
 
 LEDGER_MODULES = ("names", "claims", "field_notes", "portrait", "reminiscence", "organ_ids")  # orion.body_atlas.<module> reads a self ledger
@@ -114,7 +122,7 @@ def test_no_module_outside_the_atlas_and_dig_imports_a_ledger_module_in_any_form
         found = _ledger_imports(tree)
         if rel == FIELD_NOTE_WRITER:  # may import field_notes, and nothing else of the self ledgers
             found = [m for m in found if m not in ("field_notes", "orion.body_atlas.field_notes")]
-        if rel == REMINISCENCE_READER:  # may import reminiscence, and nothing else of the self ledgers
+        if rel in (REMINISCENCE_READER, DREAM_JUDGE_READER):  # may import reminiscence, nothing else of the ledgers
             found = [m for m in found if m not in ("reminiscence", "orion.body_atlas.reminiscence")]
         if found:
             bad.append(rel)
@@ -190,3 +198,27 @@ def test_the_ast_check_sees_every_import_form():
     assert _ledger_imports(ast.parse("from orion.body_atlas import portrait"))
     assert _ledger_imports(ast.parse("from orion.body_atlas import reminiscence as rm"))
     assert not _ledger_imports(ast.parse("from orion.body_atlas import capacities"))
+
+
+def test_the_dream_judge_reader_feeds_only_the_judge():
+    """The third exception never writes, never touches a hop's refs or claims, and its one text-returning function
+    (``judge_hop_notes``) is called from exactly one place: dream_day_store.resolve_refs, inside its ``full and self_dir``
+    branch (the grounding judge's read), never on the short text a memory stores as its evidence quote."""
+    import ast
+
+    tree = ast.parse((_REPO / DREAM_JUDGE_READER).read_text(encoding="utf-8"))
+    words = [ast.unparse(n) for n in ast.walk(tree)
+             if isinstance(n, ast.Attribute) and n.attr in ("because", "claims", "refs")]
+    assert words == []
+    writes = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.Call)
+              and isinstance(n.func, (ast.Attribute, ast.Name))
+              and getattr(n.func, "attr", getattr(n.func, "id", "")) in ("append", "open", "write_text", "write")]
+    assert writes == []
+    callers = [h for h in _readers("judge_hop_notes") if not h.startswith("services/orion-durable-runs/tests/")]
+    assert sorted(callers) == sorted([DREAM_JUDGE_READER, DREAM_JUDGE_STORE, "tests/test_organ_names_partition.py"])
+    store = ast.parse((_REPO / DREAM_JUDGE_STORE).read_text(encoding="utf-8"))
+    uses = [n for n in ast.walk(store) if isinstance(n, ast.Name) and n.id == "judge_hop_notes"]
+    branches = [n for n in ast.walk(store) if isinstance(n, ast.If) and ast.unparse(n.test) == "full and self_dir"]
+    assert len(branches) == 1 and uses  # the check really looked at the one use
+    inside = {id(x) for x in ast.walk(branches[0])}
+    assert all(id(u) in inside for u in uses)

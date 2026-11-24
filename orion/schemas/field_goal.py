@@ -30,7 +30,7 @@ from orion.core.schemas.drives import GraphReadyArtifact, ProposalStatus
 
 
 class FieldGoalProvenanceV1(GraphReadyArtifact):
-    # The target the producer chose this tick -- e.g. "node:substrate.execution". Since
+    # The target the producer chose this tick -- e.g. "world:reading". Since
     # 2026-09-06 (the one bridge) this prefers a qualified target the substrate competition
     # is holding, so it is not always the field's raw salience top-1; see
     # orion/attention/field_attention/goal_provenance.py::top_node_substrate_target.

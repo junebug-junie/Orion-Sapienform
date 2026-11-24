@@ -91,8 +91,9 @@ def test_channels_endpoint_returns_38_raw_channels_plus_1_derived(client):
     # ...but the per-node meanings are nested, not lost.
     pe = next(c for c in body["channels"] if c["channel"] == "prediction_error")
     by_node = {v["node"]: v for v in pe["node_variants"]}
-    assert "node:substrate.execution" in by_node
-    # Retired 2026-11 (PE suite rebuild step 5): no per-node meaning listed.
+    assert "node:prediction.chat_turn" in by_node
+    # Retired 2026-11 (step 5; execution step 6, 2026-11-24, #3576): no per-node meaning listed.
+    assert "node:substrate.execution" not in by_node
     assert "node:substrate.bus_synaptic" not in by_node and "node:substrate.route" not in by_node
     # harness_closure was retired 2026-11-11: no glossary entry, no variant.
     assert "node:substrate.harness_closure" not in by_node

@@ -25,9 +25,10 @@ FIVE = (
 )
 
 
+# A live PE node beside the five (was node:substrate.execution until its 2026-11-24 retirement, #3576).
 def _nodes():
     nodes = [_pe_node(node_id, 0.1 * i, OBSERVED) for i, (node_id, _) in enumerate(FIVE)]
-    nodes.append(_pe_node("node:substrate.execution", 0.3, OBSERVED))
+    nodes.append(_pe_node("node:prediction.body", 0.3, OBSERVED))
     return nodes
 
 
@@ -36,7 +37,7 @@ def test_five_nodes_dual_written_with_kind_pe_rows_unchanged(monkeypatch):
     _run_tick(worker, _nodes())
     pe_rows = worker._store.save_prediction_error_history_samples.call_args.args[0]
     # The PE table still gets all six readings, unchanged.
-    assert {r[0] for r in pe_rows} == {n for n, _ in FIVE} | {"node:substrate.execution"}
+    assert {r[0] for r in pe_rows} == {n for n, _ in FIVE} | {"node:prediction.body"}
     (sig_rows,) = worker._store.save_signal_history_samples.call_args.args
     assert sorted((n, k) for n, _, _, k in sig_rows) == sorted(FIVE)
     pe_by_id = {n: (t, v) for n, t, v in pe_rows}
@@ -57,7 +58,7 @@ def test_stale_reading_is_not_rewritten_to_signal_table(monkeypatch):
 
 def test_non_signal_nodes_never_reach_the_signal_table(monkeypatch):
     worker = _make_worker(monkeypatch, history_enabled=True)
-    _run_tick(worker, [_pe_node("node:substrate.execution", 0.3, OBSERVED)])
+    _run_tick(worker, [_pe_node("node:prediction.body", 0.3, OBSERVED)])
     worker._store.save_signal_history_samples.assert_not_called()
 
 

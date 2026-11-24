@@ -82,8 +82,11 @@ def test_fixed_builder_frames_show_no_steady_novelty() -> None:
     assert report.old_formula_pairs == 0
 
 
-def test_candidate_a_targets_are_ignored() -> None:
-    a_target = _target("node:substrate.execution", 0.5, 0.5, kind="node")
+def test_candidate_a_targets_are_ignored(monkeypatch) -> None:
+    # PREDICTION_ERROR_NATIVE_TARGETS is empty since execution was retired (2026-11-24, #3576);
+    # a TEST-ONLY native target stands in.
+    monkeypatch.setitem(mod.PREDICTION_ERROR_NATIVE_TARGETS, "node:substrate.probe", "probe")
+    a_target = _target("node:substrate.probe", 0.5, 0.5, kind="node")
     frames = [{"node_targets": [a_target]}, {"node_targets": [a_target]}]
     report = mod.analyze(frames)
     assert report.targets == 0

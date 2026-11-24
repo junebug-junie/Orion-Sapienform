@@ -122,7 +122,9 @@ def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     # -1 2026-11-13: node:substrate.codebase retired (churn z, not a forecast).
     # -1 +2 2026-11-18 (#3575): node:substrate.biometrics retired; node:prediction.body_joint and
     #   node:prediction.room_joint (family A joint surprise) added.
-    assert len(ranges) == 13
+    # -1 2026-11-24 (#3576): node:substrate.execution retired (the last fake PE node).
+    assert len(ranges) == 12
+    assert ("node:substrate.execution", "prediction_error") not in ranges
     assert ranges[("node:substrate.street", "prediction_error")] == ("trigger", (0.0, 0.0))
     assert ranges[("node:substrate.perception_walkway", "prediction_error")][1] == (0.0, 0.0)
     for key, (kind, rng) in ranges.items():

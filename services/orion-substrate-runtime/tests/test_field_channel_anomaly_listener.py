@@ -99,16 +99,24 @@ def _node(node_id, prediction_error=None):
 
 def test_prediction_error_by_domain_reads_fixed_nodes(monkeypatch):
     worker = _make_worker(monkeypatch)
+    # No live domain is left since node:substrate.execution was retired 2026-11-24 (#3576):
+    # the map read is exercised on a test-only "probe" domain.
+    # Patch the globals the method actually reads (another test can re-import `app`).
+    g = BiometricsSubstrateWorker._brain_frame_prediction_error_and_evidence_by_domain.__globals__
+    monkeypatch.setitem(g, "_PREDICTION_ERROR_DOMAIN_NODE_IDS",
+                        {**g["_PREDICTION_ERROR_DOMAIN_NODE_IDS"], "node:substrate.probe": "probe"})
     nodes = [
-        _node("node:substrate.execution", 0.001),
+        _node("node:substrate.probe", 0.001),
+        _node("node:substrate.execution", 0.003),
         _node("node:substrate.biometrics", 0.002),
         _node("node:substrate.bus_synaptic", 1.0),
         _node("node:substrate.codebase", 0.65),  # not a recognized domain (deliberately)
         _node("sub-concept-seed-orion", None),  # unrelated node, no prediction_error
     ]
     out = worker._brain_frame_prediction_error_by_domain(nodes)
-    # bus_synaptic retired 2026-11 (PE step 5), biometrics 2026-11-18 (step 6): not domains any more.
-    assert out == {"execution": 0.001}
+    # bus_synaptic retired 2026-11 (PE step 5), biometrics 2026-11-18 and execution 2026-11-24
+    # (step 6): not domains any more.
+    assert out == {"probe": 0.001}
 
 
 def test_prediction_error_by_domain_empty_when_no_nodes(monkeypatch):

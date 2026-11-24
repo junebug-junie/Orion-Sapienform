@@ -335,9 +335,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     absent_means="None when the broadcast lane is stale.",
                 ),
             ),
-            # :175-217 _unconditional_prediction_error_confidence = 1 - mean
-            # PE over active domains; None with no active domain. Live 3
-            # days: median 0.977, p5 0.79.
+            # _unconditional_prediction_error_confidence = 1 - mean PE over
+            # ACTIVE_INFERENCE_DOMAINS; None with no active domain. Since
+            # 2026-11-24 (#3576, execution retired) the set is empty, so this
+            # reads None on every tick. Before: median 0.977, p5 0.79.
             (
                 "prediction_error_confidence",
                 MetricSemantics(
@@ -351,7 +352,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     absent_means=(
                         "None when no active domain has a fresh reading (each "
                         "drops after 1800 s, orion/substrate/"
-                        "prediction_error_freshness.py:26)."
+                        "prediction_error_freshness.py:26). Since 2026-11-24 "
+                        "ACTIVE_INFERENCE_DOMAINS is empty (execution retired, "
+                        "#3576), so it is None on every tick."
                     ),
                     polarity="higher_is_better",
                 ),
@@ -884,8 +887,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "transport_baseline_hourly.timeout_count (gpu_pool_wait keys excluded). "
             "Circular pairs (signal computed from, or sharing a short upstream with, "
             "the outcome) are verdict excluded_circular and never rendered: "
-            "execution x turn_failed / response_repair, chat x response_repair "
-            "(CIRCULAR_PAIRS; bus_synaptic x rpc_timeout left with the retired node, 2026-11)."
+            "none live today (CIRCULAR_PAIRS is empty: execution x turn_failed / "
+            "response_repair left with node:substrate.execution 2026-11-24, #3576; "
+            "chat and bus_synaptic pairs left with their retired nodes, 2026-11)."
         ),
     ),
     InnerStateSignal(

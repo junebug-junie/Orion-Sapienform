@@ -10,6 +10,10 @@ on:
   pull_request:
     paths:
       - "orion/prime/**"
+      # The concern contest's rules (design 2026-11-17 patch 2): Prime's slots are decided by them.
+      - "orion/attention/concern_contest.py"
+      - "orion/attention/world_first.py"
+      - "orion/attention/tests/test_concern_contest.py"
       - "orion/mindloop/**"
       - "orion/curiosity/replica/**"
       - "orion/curiosity/tests/test_replica_*.py"
@@ -50,6 +54,10 @@ on:
     branches: [main]
     paths:
       - "orion/prime/**"
+      # The concern contest's rules (design 2026-11-17 patch 2): Prime's slots are decided by them.
+      - "orion/attention/concern_contest.py"
+      - "orion/attention/world_first.py"
+      - "orion/attention/tests/test_concern_contest.py"
       - "orion/mindloop/**"
       - "orion/curiosity/replica/**"
       - "orion/curiosity/tests/test_replica_*.py"
@@ -128,6 +136,10 @@ jobs:
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_hunger_replay.py
       - name: Concern evidence clock replay 11-14..11-17 (#3574; a bare keep no longer renews, the jam ends)
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_concern_evidence_clock_replay.py
+      - name: Concern contest rules (orion/attention/concern_contest.py; quiet first, unscored last, ties keep the incumbent)
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/attention/tests/test_concern_contest.py
+      - name: Concern contest replay 11-17..11-24 (#3574 patch 2, #3656; threads held, no promise lost, no churn)
+        run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_concern_contest_replay.py
       - name: Take-on replay on the live promise concern d8db9d7b1bba4cf7 (frame, decision, adapter, request, ages out)
         run: PYTHONPATH=${{ github.workspace }} python -m orion.prime.evals.run_intention_take_on_replay
       - name: orion-mind (resident loop + every existing Mind test)

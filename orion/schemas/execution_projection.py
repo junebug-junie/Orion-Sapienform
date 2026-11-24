@@ -110,6 +110,10 @@ class ExecutionTrajectoryProjectionV1(BaseModel):
     projection_id: str
     generated_at: datetime
     runs: dict[str, ExecutionRunStateV1] = Field(default_factory=dict)
+    # RETIRED 2026-11-24 (#3576): execution_prediction_error and node:substrate.execution
+    # were deleted, so nothing reads or advances these three fields any more. They stay
+    # only because this model is extra="forbid" and every stored projection row carries
+    # them; dropping them would make those rows fail to load. Former meaning:
     # EWMA baseline of execution_prediction_error's raw per-tick mean pressure-hint
     # delta (orion/substrate/prediction_error.py). Domain-level state, not per-run --
     # tracks "what does a normal tick's delta look like for this mesh" so that

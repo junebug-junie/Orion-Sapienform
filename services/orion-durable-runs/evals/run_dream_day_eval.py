@@ -10,6 +10,8 @@ write time and no longer does (retention) is said, never hidden.
     python3 services/orion-durable-runs/evals/run_dream_day_eval.py --day 2026-11-17
     python3 services/orion-durable-runs/evals/run_dream_day_eval.py --json
     python3 services/orion-durable-runs/evals/run_dream_day_eval.py --day 2026-11-17 --judge   # re-judge now
+    python3 services/orion-durable-runs/evals/run_dream_day_eval.py --day 2026-11-22 --judge-candidates
+        # re-judge the night's gate candidates (written AND refused, from dream_day.grounding) with today's resolver
 
 Reads through ``docker exec orion-athena-sql-db psql`` with ``default_transaction_read_only=on`` (nothing can be
 written), or ``--dsn`` with a read-only psycopg session.
@@ -21,6 +23,11 @@ the same ref resolver (app/dream_day_store.py ``resolve_refs``, read-only sessio
 verdict parser (orion/memory/dream_day.py ``judge_memories``), on the same local route through the gateway's
 HTTP door (``--gateway``, default $ORION_GATEWAY_URL or http://localhost:8210). It writes nothing. The 90%-supported
 gate over 7 nights (spec acceptance) reads the ``supported`` share it prints.
+
+``--judge-candidates`` (PR dream-day-citable-facts) re-judges every memory the gate saw that night, refused ones
+included (``dream_day.grounding.verdicts``: statement + refs), with the resolver as it is now, and prints each stored
+verdict beside the new one. ``--self-dir`` (default /mnt/orion-fcc/self) is the reminiscence ledger the judge's read
+uses for a reminiscence turn's receipt (#3739), as the run's own mount does.
 """
 from __future__ import annotations
 
@@ -65,6 +72,8 @@ EXISTS_SQL = {
     "harness_turn_trace": "SELECT correlation_id AS id FROM harness_turn_trace WHERE correlation_id IN ({ids})",
     "chat_turn": "SELECT id FROM chat_history_log WHERE id IN ({ids}) UNION "
                  "SELECT correlation_id FROM chat_history_log WHERE correlation_id IN ({ids})",
+    "dream_day_read": "SELECT day::text AS id FROM dream_day WHERE day::text IN ({ids}) "
+                      "AND coalesce(read->>'totals', '') <> ''",
 }
 
 
@@ -170,8 +179,10 @@ def gateway_ask(gateway: str, route: str):
     return ask
 
 
-def rejudge(memories: list[dict[str, Any]], dsn: str, gateway: str, route: str) -> list[dict[str, Any]]:
-    """The gate, re-run now on written memories. Read-only: resolve through a read-only session, ask the model."""
+def rejudge(memories: list[dict[str, Any]], dsn: str, gateway: str, route: str,
+            self_dir: str | None = None) -> list[dict[str, Any]]:
+    """The gate, re-run now. Read-only: resolve through a read-only session, ask the model. Each item is a written
+    memory (``evidence`` refs) or a stored gate candidate (``refs``)."""
     import asyncio
 
     from app.dream_day_store import resolve_refs
@@ -183,12 +194,14 @@ def rejudge(memories: list[dict[str, Any]], dsn: str, gateway: str, route: str) 
     async def go() -> list[dict[str, Any]]:
         checked = []
         for m in memories:
-            refs = [c for c in (canonical_ref(e["ref"]) for e in (m.get("evidence") or [])) if c]
+            raw = m["refs"] if "refs" in m else [e["ref"] for e in (m.get("evidence") or [])]
+            refs = [c for c in (canonical_ref(r) for r in raw) if c]
             checked.append(CheckedMemory(statement=" ".join(m["statement"].split()), purpose=m["purpose"], refs=refs))
-        resolved = await resolve_refs(ReadOnlyPool(dsn), sorted({r for c in checked for r in c.refs}), full=True)
+        resolved = await resolve_refs(ReadOnlyPool(dsn), sorted({r for c in checked for r in c.refs}), full=True,
+                                      self_dir=self_dir)
         verdicts = await judge_memories(checked, resolved, gateway_ask(gateway, route))
         for m, v in zip(memories, verdicts):
-            v["memory_id"] = m["memory_id"]
+            v["memory_id"] = m.get("memory_id") or m.get("candidate_id")
             v["ref_text"] = {r: resolved.get(r) for r in v["refs"]}
         return verdicts
     return asyncio.run(go())
@@ -216,7 +229,12 @@ def main(argv: list[str] | None = None) -> int:
                     "(read-only; calls the local route through the gateway)")
     ap.add_argument("--gateway", default=os.environ.get("ORION_GATEWAY_URL", "http://localhost:8210"))
     ap.add_argument("--route", default="memory_distill")
+    ap.add_argument("--judge-candidates", action="store_true", help="re-judge every gate candidate of the night "
+                    "(refused ones too, from dream_day.grounding) with today's resolver; read-only")
+    ap.add_argument("--self-dir", default=os.environ.get("REMINISCENCE_LEDGER_DIR", "/mnt/orion-fcc/self"))
     ns = ap.parse_args(argv)
+    if ns.judge_candidates:
+        return judge_candidates(ns)
     day_where = f"WHERE day = {_lit(ns.day)}::date" if ns.day else ""
     mem_where = f"AND m.episode_id = {_lit('dream_day:' + ns.day)}" if ns.day else ""
     present = query("SELECT to_regclass('dream_day') IS NOT NULL AS present", ns.dsn)[0]["present"]
@@ -233,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         for e in m.get("evidence") or []:
             kind, _, rid = e["ref"].partition(":")
             e["resolves_now"] = f"{REF_KIND_ALIASES.get(kind, kind)}:{rid}" in alive
-    verdicts = rejudge(memories, ns.dsn or default_dsn(), ns.gateway, ns.route) if ns.judge else None
+    verdicts = rejudge(memories, ns.dsn or default_dsn(), ns.gateway, ns.route, ns.self_dir) if ns.judge else None
     if ns.json:
         print(json.dumps({"days": days, "memories": memories, "rejudged": verdicts}, indent=1, default=str))
         return 0
@@ -268,6 +286,47 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {v['memory_id']}: {v['status'].upper()}"
                   + (f" -- unsupported: {'; '.join(v['unsupported_claims'])}" if v["unsupported_claims"] else "")
                   + (f" -- {v['error']}" if v.get("error") else ""))
+    return 0
+
+
+def judge_candidates(ns) -> int:
+    """Every memory the gate judged on the chosen night(s), refused ones included, re-judged now; stored vs now."""
+    where = f"WHERE day = {_lit(ns.day)}::date AND grounding IS NOT NULL" if ns.day else "WHERE grounding IS NOT NULL"
+    nights = query(f"SELECT day::text, grounding FROM dream_day {where} ORDER BY day", ns.dsn)
+    items = []
+    for night in nights:
+        g = night["grounding"]
+        g = json.loads(g) if isinstance(g, str) else (g or {})
+        for i, v in enumerate(g.get("verdicts") or []):
+            items.append({"candidate_id": f"{night['day']}#{i}", "statement": v.get("statement") or "",
+                          "purpose": v.get("purpose") or "happened", "refs": list(v.get("refs") or []),
+                          "stored": v.get("status"), "stored_claims": v.get("unsupported_claims") or []})
+    if not items:
+        print("no gate candidates stored for that night")
+        return 0
+    verdicts = rejudge(items, ns.dsn or default_dsn(), ns.gateway, ns.route, ns.self_dir)
+    if ns.json:
+        print(json.dumps({"candidates": items, "rejudged": verdicts}, indent=1, default=str))
+        return 0
+    flips = 0
+    for item, v in zip(items, verdicts):
+        flipped = item["stored"] != "supported" and v["status"] == "supported"
+        flips += flipped
+        print(f"\n[{item['candidate_id']}] stored {str(item['stored']).upper()} -> now {v['status'].upper()}"
+              f"{'  (FLIPPED)' if flipped else ''}")
+        print(f"  STATEMENT: {item['statement']}")
+        print(f"  REFS: {', '.join(item['refs'])}")
+        if item["stored_claims"]:
+            print(f"  stored unsupported: {'; '.join(item['stored_claims'])}")
+        if v["unsupported_claims"]:
+            print(f"  now unsupported:    {'; '.join(v['unsupported_claims'])}")
+        if v.get("error"):
+            print(f"  error: {v['error']}")
+        for ref, text in (v.get("ref_text") or {}).items():
+            print(f"  REF {ref}: {(text or '(does not resolve)')[:300]}")
+    n = len(items)
+    ok = sum(1 for v in verdicts if v["status"] == "supported")
+    print(f"\ncandidates re-judged now ({ns.route}): {ok}/{n} supported; {flips} flipped from refused to supported")
     return 0
 
 

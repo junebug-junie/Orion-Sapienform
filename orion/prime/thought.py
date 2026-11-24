@@ -41,6 +41,7 @@ recent runs reach Prime through the now; the frame's CURIOSITY section only says
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Any, Callable, Literal, Mapping, Optional, Sequence, Union
@@ -50,6 +51,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import CONCERN_HORIZON_SEC, clamp_hours, describe_effects
 from orion.prime.intention import can_take_on
+from orion.prime.slots import queue
 from orion.prime.state import (
     CONCERN_TEXT_CAP,
     MAX_CONCERNS,
@@ -284,15 +286,26 @@ signal stops charging curiosity). Its replies are under ORGAN REPLIES. A refusal
 organ, not a command: you may ask differently, wait, or drop the concern."""
 
 
+CONTEST_PROMPT = """
+
+Your 3 slots are decided by a contest, not by you. A concern you name while all 3 are full waits for a slot. A
+waiting concern takes a held concern's slot only when nothing has touched the held one for half its life (12 h) and
+no question about it is open, and the waiting one's evidence is stronger or newer. A promise you made gets a slot at
+once: it pushes out your weakest concern that is not a promise and not taken on (one with a question open goes
+last, but it can go). Each concern line shows its standing. Dropping a held concern you no longer need is still
+yours to do; a waiting concern cannot be dropped, it leaves when its own life runs out."""
+
+
 def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False,
                   organ_replies: bool = False, take_on: bool = False, experiences: bool = False,
-                  needs: bool = False, evidence_clock: bool = False) -> str:
+                  needs: bool = False, evidence_clock: bool = False, contest: bool = False) -> str:
     """The base prompt, plus the regulate move only when regulation is on and some family receives it, plus
     the organ-replies paragraph when that section is in the frame, plus the take-on move when it is on
     (PRIME_INTENTION_TAKE_ON_ENABLED). ``events``: concerns come from funded event wants (event_id), not arcs.
     ``experiences``: the now was read (``shows_now``), so the frame lists experiences Prime may cite.
     ``needs``: hunger is on and the frame has the WHAT IS PULLING AT YOU section (orion/prime/hunger.py).
-    ``evidence_clock``: a keep no longer renews a concern (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED); say what does."""
+    ``evidence_clock``: a keep no longer renews a concern (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED); say what does.
+    ``contest``: the concern contest decides the slots (PRIME_CONCERN_CONTEST_ENABLED); say how."""
     base = SYSTEM_PROMPT
     if evidence_clock:
         base = base.replace(_KEEP_RENEWS, _EVIDENCE_RENEWS)
@@ -313,6 +326,8 @@ def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: b
         base += EXPERIENCE_PROMPT
     if needs:
         base += NEEDS_PROMPT
+    if contest:
+        base += CONTEST_PROMPT
     return base
 
 
@@ -361,6 +376,10 @@ class FrameInputs:
     take_on: bool = False
     # PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED: a concern line says when something last touched it, not when it was kept.
     evidence_clock: bool = False
+    # The concern contest (PRIME_CONCERN_CONTEST_ENABLED; orion/prime/slots.py): concern_id -> its standing line, and
+    # the waiting list's lines. None: the contest is off and neither is shown.
+    standings: Optional[dict[str, str]] = None
+    waiting: Optional[list[str]] = None
     intentions: Optional[list[str]] = None
     # Concerns already taken on (open or ended): never marked "you can take this on".
     no_take_on: set[str] = field(default_factory=set)
@@ -559,7 +578,8 @@ def _now_lines(inputs: FrameInputs) -> list[str]:
 
 
 def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
-                  no_take_on: frozenset[str] = frozenset(), evidence_clock: bool = False) -> str:
+                  no_take_on: frozenset[str] = frozenset(), evidence_clock: bool = False,
+                  standing: Optional[str] = None) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
     if take_on and c.graded != "settled" and c.concern_id not in no_take_on and can_take_on(c):
         graded += "; you can take this on"
@@ -569,6 +589,9 @@ def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
     line = (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
             f"{_age(now, c.opened_at.isoformat())}, {'last touched' if evidence_clock else 'last kept'} "
             f"{_age(now, c.last_evidence_at.isoformat())}{graded})")
+    if standing:
+        # The concern contest (orion/prime/slots.py standing_lines): its score and whether it can lose its slot.
+        line += f"\n  {standing}"
     # A promise concern's own sentence (orion/prime/handback.py promise_text): only here, never in the Prime block.
     return f"{line}\n  PROMISE: {c.promise_text}" if c.promise_text else line
 
@@ -644,8 +667,12 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
           if inputs.needs is not None else []),
         "YOUR CONCERNS:\n" + ("\n".join(_concern_line(c, inputs.now, take_on=inputs.take_on,
                                                        no_take_on=frozenset(inputs.no_take_on),
-                                                       evidence_clock=inputs.evidence_clock)
+                                                       evidence_clock=inputs.evidence_clock,
+                                                       standing=(inputs.standings or {}).get(c.concern_id))
                                          for c in state.concerns) or "(none)"),
+        *(["WAITING FOR A SLOT (they take a slot when one frees, or when a concern of yours has been quiet for half "
+           "its life and loses the contest; a promise takes one at once unless every slot holds a promise or "
+           "something you took on):\n" + "\n".join(inputs.waiting)] if inputs.waiting is not None else []),
         "HOW YOUR CONCERNS HAVE ENDED:\n" + track_record(state),
         "YOUR LAST READING:\n" + (state.last_reading or "(none yet)"),
         "WHAT HAPPENED TO YOUR EARLIER MOVES:\n" + ("\n".join(f"- {o}" for o in state.recent_outcomes) or "(none yet)"),
@@ -802,6 +829,14 @@ def regulate_refusal(move: RegulateMoveV1, state: PrimeStateV1,
     return None
 
 
+def _want_salience(listed: Mapping[str, Any]) -> Optional[float]:
+    """A listed event want's own-source salience (0..1), or None (unscored, never 0)."""
+    value = listed.get("salience")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value) if 0.0 <= value <= 1.0 else None
+
+
 def apply_answer(
     state: PrimeStateV1, answer: PrimeAnswerV1, *, now: datetime, arc_ids: list[str], focus_pending: Optional[bool],
     receptors: Optional[Mapping[str, Sequence[str]]] = None, event_ids: Optional[list[str]] = None,
@@ -810,6 +845,7 @@ def apply_answer(
     focus_unread: Optional[str] = None,
     shown_experience: Optional[Sequence[str]] = None,
     evidence_clock: bool = False,
+    contest: bool = False,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
     ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
@@ -829,7 +865,11 @@ def apply_answer(
 
     ``evidence_clock`` (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED, #3574): a keep is recorded (``Applied.kept``) but no
     longer renews ``last_evidence_at``. Only real evidence does, and the runtime applies it after the move is
-    actually sent (orion/prime/state.py ``touch_concern``): a refused move renews nothing. Off: a keep renews."""
+    actually sent (orion/prime/state.py ``touch_concern``): a refused move renews nothing. Off: a keep renews.
+
+    ``contest`` (PRIME_CONCERN_CONTEST_ENABLED, design 2026-11-17 patch 2): a concern Prime adds while all 3 slots
+    are full waits for a slot (``state.waiting``) instead of being refused; the contest decides on the tick. An event
+    concern records its want's own ``salience`` as ``evidence_salience`` (its contest score)."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -852,8 +892,10 @@ def apply_answer(
         concerns = [c.model_copy(update={"last_evidence_at": now}) if c.concern_id in kept_ids else c
                     for c in concerns]
     added: list[str] = []
+    waiting = list(state.waiting)
     for add in answer.concerns.add:
-        if len(concerns) >= MAX_CONCERNS:
+        full = len(concerns) >= MAX_CONCERNS
+        if full and not contest:
             warnings.append(f"concern not added, already holding {MAX_CONCERNS}: {add.text[:80]!r}")
             continue
         if event_ids is not None:
@@ -861,21 +903,28 @@ def apply_answer(
                 warnings.append(f"concern not added, it names no funded event shown in the frame "
                                 f"(event_id {add.event_id!r}): {add.text[:80]!r}")
                 continue
-            if any(c.event_ref == add.event_id for c in concerns):
+            if any(c.event_ref == add.event_id for c in [*concerns, *waiting]):
                 warnings.append(f"concern not added, a concern already holds event {add.event_id!r}: {add.text[:80]!r}")
                 continue
             listed = (event_wants or {}).get(add.event_id) or {}
             family = str(listed.get("family") or "").strip()[:200] or None
             promoted = listed.get("care_promoted") if isinstance(listed.get("care_promoted"), bool) else None
             concern = PrimeConcernV1(concern_id=new_id(), text=add.text, event_ref=add.event_id, opened_at=now,
-                                     last_evidence_at=now, event_family=family, event_care_promoted=promoted)
-            concerns.append(concern)
-            added.append(concern.concern_id)
+                                     last_evidence_at=now, event_family=family, event_care_promoted=promoted,
+                                     evidence_salience=_want_salience(listed))
+        else:
+            arc_id = add.arc_id if add.arc_id in arc_ids else None
+            if add.arc_id and arc_id is None:
+                warnings.append(f"arc_id {add.arc_id!r} was not in the frame; concern kept without an arc")
+            concern = PrimeConcernV1(concern_id=new_id(), text=add.text, arc_id=arc_id, opened_at=now,
+                                     last_evidence_at=now)
+        if full:
+            # The concern contest (PRIME_CONCERN_CONTEST_ENABLED): a concern Prime names with every slot full waits
+            # for a slot (orion/prime/slots.py) and competes for one on the next tick. Q4: Prime named it.
+            waiting.append(concern)
+            warnings.append(f"concern {concern.concern_id} waits for a slot, already holding {MAX_CONCERNS}: "
+                            f"{add.text[:80]!r}")
             continue
-        arc_id = add.arc_id if add.arc_id in arc_ids else None
-        if add.arc_id and arc_id is None:
-            warnings.append(f"arc_id {add.arc_id!r} was not in the frame; concern kept without an arc")
-        concern = PrimeConcernV1(concern_id=new_id(), text=add.text, arc_id=arc_id, opened_at=now, last_evidence_at=now)
         concerns.append(concern)
         added.append(concern.concern_id)
 
@@ -955,6 +1004,8 @@ def apply_answer(
         "last_thought_at": now,
         "thoughts_total": state.thoughts_total + 1,
     })
+    for concern in waiting[len(state.waiting):]:
+        new_state = queue(new_state, concern)
     experience_cites, cite_warnings = shown_cites(cited, shown_experience)
     warnings.extend(cite_warnings)
     allowed = set(shown_experience or ())

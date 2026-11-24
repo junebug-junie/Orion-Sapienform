@@ -91,7 +91,6 @@ def node_prediction_error_is_measurement(node_id: str) -> bool:
 # is decided by the glossary's prompt_sites, and an unlisted node falls back to its short name.
 # Units go on the reading (schema), not in the line: the line's scale is the 0-10 score.
 _WORDS: dict[str, tuple[str, str]] = {
-    "node:substrate.execution": ("surprise in how my task execution is going", "clipped z / 3"),
     "node:substrate.cabinet": ("my cabinet's warming alarm", "firings in the last hour"),
     "node:substrate.strain": ("news that I am under strain (heat or a GPU backlog)", "news events in the last hour"),
     "node:prediction.room": ("how much my office's temperature is surprising my own forecast",

@@ -553,13 +553,14 @@ def desired_exemplars(conn, tz: ZoneInfo, picture_same: bool = True) -> Tuple[Li
     return rows, stats
 
 
-def picture_same_exemplars(verdicts: Iterable[Tuple[str, str, str, Optional[str], Optional[str], Optional[str]]],
+def picture_same_exemplars(verdicts: Iterable[Tuple[Optional[str], ...]],
                            names: Dict[str, str], positives: AbstractSet[Tuple[str, str]],
                            negatives: AbstractSet[Tuple[str, str]]) -> Tuple[List[dict], dict]:
     """Picture verdicts -> +1 ``picture_same`` exemplars (pure).
 
-    ``verdicts``: (crop_id, ask_id, verdict, verdict_name, group_label, group_kind),
-    oldest answer first. ``names``: casefolded name -> display form.
+    ``verdicts``: (crop_id, ask_id, verdict, verdict_name, group_label, group_kind
+    [, crop_group_label]), oldest answer first. ``crop_group_label``: the name of
+    the group the crop sits in NOW (None = unnamed or no group). ``names``: casefolded name -> display form.
     ``positives`` / ``negatives``: (casefolded person, crop_id) already +1 / -1
     for that person from any other source.
 
@@ -568,12 +569,15 @@ def picture_same_exemplars(verdicts: Iterable[Tuple[str, str, str, Optional[str]
     it (the group was renamed since she answered) the picture is skipped: it is
     not clear which name she meant. A picture already +1 for that person (its
     named group already counts it) is not counted twice; a picture she also
-    said is NOT that person is never a positive."""
+    said is NOT that person is never a positive. A picture that has since moved
+    into a group carrying another name is skipped: that group would hold two
+    people's truths."""
     rows: List[dict] = []
     stats = {"picture_same_seen": 0, "picture_same_positives": 0, "picture_same_already_counted": 0,
-             "picture_same_ruled_out": 0, "picture_same_name_changed": 0, "picture_same_not_person": 0}
+             "picture_same_ruled_out": 0, "picture_same_name_changed": 0, "picture_same_not_person": 0,
+             "picture_same_moved": 0}
     taken = set(positives)
-    for crop_id, ask_id, verdict, vname, label, kind in verdicts:
+    for crop_id, ask_id, verdict, vname, label, kind, *rest in verdicts:
         if verdict != "same" or not crop_id:
             continue
         stats["picture_same_seen"] += 1
@@ -584,6 +588,10 @@ def picture_same_exemplars(verdicts: Iterable[Tuple[str, str, str, Optional[str]
         said = (vname or "").strip()
         if said and said.casefold() != group.casefold():
             stats["picture_same_name_changed"] += 1
+            continue
+        now_in = ((rest[0] if rest else None) or "").strip()
+        if now_in and now_in.casefold() != group.casefold():
+            stats["picture_same_moved"] += 1
             continue
         key = (group.casefold(), crop_id)
         if key in negatives:
@@ -612,8 +620,10 @@ def _picture_same_rows(conn, names: Dict[str, str], rows: List[dict]) -> Tuple[L
             "WHERE revoked_at IS NULL AND NOT (source = ANY(:s))"), {"s": list(RECONCILED_SOURCES)}).fetchall():
         (pos if int(pol) == 1 else neg).add((person.strip().casefold(), crop_id))
     verdicts = conn.execute(text(
-        "SELECT v.crop_id, v.ask_id, v.verdict, v.name, i.label, i.kind FROM vision_ask_picture_verdict v "
+        "SELECT v.crop_id, v.ask_id, v.verdict, v.name, i.label, i.kind, ci.label FROM vision_ask_picture_verdict v "
         "JOIN vision_individual i ON i.individual_id = v.individual_id "
+        "LEFT JOIN vision_crop_observation c ON c.crop_id = v.crop_id "
+        "LEFT JOIN vision_individual ci ON ci.individual_id = c.individual_id "
         "WHERE v.verdict = 'same' AND v.crop_id IS NOT NULL "
         "ORDER BY v.answered_at, v.ask_id, v.picture_index")).fetchall()
     return picture_same_exemplars([tuple(r) for r in verdicts], names, pos, neg)
@@ -665,6 +675,27 @@ def load_crops_by_id(conn, crop_ids: Iterable[str], tz: ZoneInfo) -> Dict[str, C
     return {c.crop_id: c for c in _load_crops(conn, "crop_id = ANY(:i)", {"i": ids}, tz)} if ids else {}
 
 
+def regroup_confirmed_orphans(conn, crops: Dict[str, Crop]) -> Dict[str, Crop]:
+    """An album crop that is no longer in any group (``orphan:<crop_id>``) goes
+    back to the group Juniper confirmed it in (its newest "same" picture
+    verdict), so one walk-past stays one group in the bars and the eval rather
+    than one group per picture. Orphans with no such verdict stay alone."""
+    from dataclasses import replace
+
+    from sqlalchemy import text
+
+    orphans = sorted(k for k, c in crops.items() if c.cluster.startswith("orphan:"))
+    if not orphans:
+        return crops
+    out = dict(crops)
+    for crop_id, iid in conn.execute(text(
+            "SELECT DISTINCT ON (crop_id) crop_id, individual_id FROM vision_ask_picture_verdict "
+            "WHERE crop_id = ANY(:i) AND verdict = 'same' ORDER BY crop_id, answered_at DESC"),
+            {"i": orphans}).fetchall():
+        out[crop_id] = replace(out[crop_id], cluster=iid)
+    return out
+
+
 def load_album(conn, tz: ZoneInfo) -> Tuple[Dict[str, Dict[int, List[Crop]]], str]:
     """Active exemplars with their vectors, and a fingerprint of the album."""
     from sqlalchemy import text
@@ -674,7 +705,8 @@ def load_album(conn, tz: ZoneInfo) -> Tuple[Dict[str, Dict[int, List[Crop]]], st
         "WHERE revoked_at IS NULL ORDER BY exemplar_id")).fetchall()
     fingerprint = hashlib.md5(("|".join(r[0] for r in ex) + "|" + MODEL_VERSION).encode()).hexdigest()
     rows = [(r[1], r[2], int(r[3])) for r in ex]
-    return build_album(rows, load_crops_by_id(conn, (r[1] for r in rows), tz)), fingerprint
+    crops = regroup_confirmed_orphans(conn, load_crops_by_id(conn, (r[1] for r in rows), tz))
+    return build_album(rows, crops), fingerprint
 
 
 def fit_all(album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig,

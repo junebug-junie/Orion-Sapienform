@@ -303,6 +303,13 @@ def test_a_picture_the_group_already_counts_is_not_counted_twice() -> None:
     assert st["picture_same_already_counted"] == 2
 
 
+def test_a_picture_now_in_a_group_with_another_name_teaches_nothing() -> None:
+    rows, st = pm.picture_same_exemplars(
+        [_v("c1", "same") + ("Addy",), _v("c2", "same") + ("juniper",), _v("c3", "same") + (None,)],
+        NAMES, set(), set())
+    assert [r["crop_id"] for r in rows] == ["c2", "c3"] and st["picture_same_moved"] == 1
+
+
 def test_a_renamed_group_or_a_non_person_group_teaches_nothing() -> None:
     rows, st = pm.picture_same_exemplars(
         [_v("c1", "same", name="Maeve", label="Teddy"), _v("c2", "same", name="el Coco", label="el Coco", kind="dog"),
@@ -621,22 +628,34 @@ def test_confirmed_pictures_of_an_impure_group_teach_and_the_flag_takes_them_bac
         _verdict(conn, "ask-u", "mixed-2", "mixed", "unsure")
         _verdict(conn, "ask-n", "mixed-3", "mixed", "different")
         _verdict(conn, "ask-y2", "jun1-0", "jun1", "same", "Juniper")      # its pure group already counts it
+        _verdict(conn, "ask-y3", "mixed-3", "mixed", "same", "JUNIPER")    # also said "not Juniper": stays out
+        _verdict(conn, "ask-y4", "mixed-4", "mixed", "same", "juniper")    # already +1 from an Is-this-X yes
+        conn.execute(text(
+            "INSERT INTO vision_person_exemplar (exemplar_id, person_label, crop_id, polarity, source, ask_id) "
+            "VALUES ('e-pick', 'juniper', 'mixed-4', 1, 'confirm_pick_yes', 'ask-p')"))
         s = pm.run_person_model(conn, NOW, CFG)
         got = album(conn)
     assert s["person_impure_clusters"] == 1 and s["person_picture_same_exemplars"] == 2
     assert got == {("Juniper", "mixed-0", 1, "picture_same"), ("Juniper", "mixed-1", 1, "picture_same"),
-                   ("Juniper", "mixed-3", -1, "picture_different"), ("Juniper", "jun1-0", 1, "cluster_label")}
+                   ("Juniper", "mixed-3", -1, "picture_different"), ("Juniper", "jun1-0", 1, "cluster_label"),
+                   ("juniper", "mixed-4", 1, "confirm_pick_yes")}
+    assert s["person_picture_same_exemplars"] == 2
     with pg.begin() as conn:
         assert pm.run_person_model(conn, NOW, CFG)["person_exemplars_added"] == 0     # idempotent
-        # A confirmed picture that has left its group still teaches, as a group of its own.
-        conn.execute(text("UPDATE vision_crop_observation SET individual_id = NULL WHERE crop_id = 'mixed-1'"))
+        # A confirmed picture that has left its group still teaches, in the group she confirmed
+        # it in (one walk-past stays one group). Without that step an orphan is a group of one.
+        conn.execute(text("UPDATE vision_crop_observation SET individual_id = NULL "
+                          "WHERE crop_id IN ('mixed-1', 'mixed-4')"))
         album_now, _ = pm.load_album(conn, ZONE)
-        assert {c.cluster for c in album_now["Juniper"][1] if c.crop_id.startswith("mixed-")} == {
-            "mixed", "orphan:mixed-1"}
+        assert {c.crop_id: c.cluster for c in album_now["Juniper"][1] if c.crop_id.startswith("mixed-")} == {
+            "mixed-0": "mixed", "mixed-1": "mixed", "mixed-4": "mixed"}
+        lone = pm.load_crops_by_id(conn, ["mixed-1"], ZONE)
+        assert lone["mixed-1"].cluster == "orphan:mixed-1"
         off = pm.run_person_model(conn, NOW, replace(CFG, picture_same_positives=False))
         got = album(conn)
     assert off["person_exemplars_revoked"] == 2 and off["person_picture_same_exemplars"] == 0
-    assert got == {("Juniper", "mixed-3", -1, "picture_different"), ("Juniper", "jun1-0", 1, "cluster_label")}
+    assert got == {("Juniper", "mixed-3", -1, "picture_different"), ("Juniper", "jun1-0", 1, "cluster_label"),
+                   ("juniper", "mixed-4", 1, "confirm_pick_yes")}
 
 
 @needs_pg

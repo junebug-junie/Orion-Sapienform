@@ -249,7 +249,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         conn.execute(text("SET TRANSACTION READ ONLY"))
         rows, stats = pm.desired_exemplars(conn, tz, picture_same=not args.no_picture_same)
         ex = [(r["person"], r["crop_id"], r["polarity"]) for r in rows]
-        album = pm.build_album(ex, pm.load_crops_by_id(conn, (r[1] for r in ex), tz))
+        album = pm.build_album(ex, pm.regroup_confirmed_orphans(conn, pm.load_crops_by_id(conn, (r[1] for r in ex), tz)))
         if not album:
             print(json.dumps({"verdict": "nothing to evaluate", **stats}))
             return 2

@@ -1899,26 +1899,44 @@ def picture_rows(ask_id: str, individual_id: str, detail: Dict[str, Any], answer
     return out
 
 
-def _record_pictures(conn, rows: List[dict]) -> int:
+# A story-card picture verdict that repeats one already kept (same individual, crop, verdict and name)
+# is not kept twice (who-card Patch A, Orion's question 4: a linked person answered again after a
+# mid-story merge must not double the "same" pictures a later reader counts).
+_DUPLICATE_STORY_VERDICT_SQL = (
+    "AND NOT EXISTS (SELECT 1 FROM vision_ask_picture_verdict d WHERE d.individual_id = :ind "
+    "AND d.crop_id = CAST(:crop AS text) AND d.verdict = :v "
+    "AND lower(coalesce(d.name, '')) = lower(coalesce(CAST(:name AS text), ''))) "
+)
+
+
+def _record_pictures(conn, rows: List[dict], *, story_card: bool = False) -> int:
     """Keep each picture's verdict. Nothing here moves a crop: app/vision_split.py
-    acts on the 'different' rows later in the same cycle (when enabled)."""
+    acts on the 'different' rows later in the same cycle (when enabled).
+    ``story_card``: the answer came from a walkway story card (answer_detail.story_id);
+    a verdict it repeats is skipped. Returns the rows kept."""
     from sqlalchemy import text
 
     if not rows:
         return 0
     crop = _crops_for_refs(conn, [r["ref"] for r in rows])
+    kept = 0
     for r in rows:
-        conn.execute(text(
+        params = {k: v for k, v in {**r, "crop": r.get("crop_id") or crop.get(r["ref"])}.items() if k != "crop_id"}
+        dedupe = story_card and params["crop"] is not None
+        kept += conn.execute(text(
             "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
-            "crop_id, answered_at) VALUES (:ask, :ref, :idx, :ind, :v, :name, :crop, :at) "
-            "ON CONFLICT (ask_id, image_ref) DO NOTHING"),
-            {k: v for k, v in {**r, "crop": r.get("crop_id") or crop.get(r["ref"])}.items() if k != "crop_id"})
+            "crop_id, answered_at) SELECT :ask, :ref, :idx, :ind, :v, :name, CAST(:crop AS text), :at WHERE true "
+            + (_DUPLICATE_STORY_VERDICT_SQL if dedupe else "")
+            + "ON CONFLICT (ask_id, image_ref) DO NOTHING"), params).rowcount or 0
     others = [r for r in rows if r["v"] != "same"]
     if others:
         logger.info("[VISION_PICTURE_VERDICT] ask_id=%s individual_id=%s pictures=%d not_same=%s",
                     rows[0]["ask"], rows[0]["ind"], len(rows),
                     ",".join(f"{r['idx']}:{r['v']}" for r in others))
-    return len(rows)
+    if kept < len(rows):
+        logger.info("[VISION_PICTURE_VERDICT_REPEAT] ask_id=%s individual_id=%s skipped=%d",
+                    rows[0]["ask"], rows[0]["ind"], len(rows) - kept)
+    return kept
 
 
 def same_name_target(conn, individual_id: str, name: str, *, exclude: Sequence[str] = ()) -> Optional[str]:
@@ -2024,9 +2042,10 @@ def _apply_answers(conn, now: datetime) -> int:
             label = _clean_name(answer)
             if label:
                 _apply_typed_name(conn, ref, label, ask_id, at, now)
-                _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at))
+                d = _detail(detail)
+                _record_pictures(conn, picture_rows(ask_id, ref, d, at), story_card="story_id" in d)
         elif kind == SOURCE_KIND_STORY_PERSON:
-            _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at))
+            _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at), story_card=True)
         elif kind == SOURCE_KIND_PERSON_CONFIRM:
             _apply_person_confirm(conn, ask_id, ref, answer, at, now, _detail(detail))
         else:
@@ -2128,6 +2147,11 @@ def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: d
     names = pair_names(pair, same, detail)
     logger.info("[VISION_PAIR_VERDICT] ask_id=%s a=%s b=%s verdict=%s face_cosine=%s cosine_source=%s names=%d",
                 ask_id, a, b, "same" if same else "different", sim, sim_source, len(names))
+    if not same:
+        # A 'different' written over a 'same' row (Juniper's "not the same person" on a story card,
+        # who-card Patch A) splits the group: a name only copied across that link must follow
+        # what is left of each side, not stay behind.
+        rederive_copied_labels(conn, [a, b], ask_id, at)
     if names:
         for iid in (a, b):
             if iid in names:
@@ -2137,6 +2161,60 @@ def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: d
         if len(labels) == 1:
             (named, label), = labels.items()
             _propagate_label(conn, named, label, ask_id, at)
+
+
+def same_group_of(conn, individual_id: str) -> List[str]:
+    """Every individual joined to ``individual_id`` by 'same' rows (transitively), itself included."""
+    from sqlalchemy import text
+
+    return sorted({r[0] for r in conn.execute(text(
+        "WITH RECURSIVE g(id) AS (SELECT CAST(:i AS text) UNION "
+        "  SELECT CASE WHEN v.individual_a = g.id THEN v.individual_b ELSE v.individual_a END "
+        "  FROM vision_individual_pair_verdict v JOIN g ON g.id IN (v.individual_a, v.individual_b) "
+        "  WHERE v.verdict = 'same') SELECT id FROM g"), {"i": individual_id}).fetchall()})
+
+
+def rederive_copied_labels(conn, individual_ids: Sequence[str], ask_id: str,
+                           at: datetime) -> Dict[str, Optional[str]]:
+    """After a 'same' link is removed: every COPIED label in the groups of ``individual_ids``
+    is recomputed from what is left of its group -- the newest name Juniper typed in it
+    (``_propagate_label``'s rule: copies follow the newest typed name), or cleared when no
+    typed name is left. A typed name (``label_copied = false``) is never touched. Returns
+    {individual_id: new label or None} for the labels that changed."""
+    from sqlalchemy import text
+
+    changed: Dict[str, Optional[str]] = {}
+    done: set = set()
+    for start in individual_ids:
+        if start in done:
+            continue
+        group = same_group_of(conn, start)
+        done.update(group)
+        rows = conn.execute(text(
+            "SELECT individual_id, label, label_copied, labeled_at, label_ask_id FROM vision_individual "
+            "WHERE individual_id = ANY(:ids)"), {"ids": group}).fetchall()
+        typed = [r for r in rows if r[1] and not r[2]]
+        typed.sort(key=lambda r: (r[3] is not None, r[3] or at, r[0]))
+        source = typed[-1] if typed else None
+        for r in rows:
+            if not r[2] or not r[1]:
+                continue
+            if source is None:
+                conn.execute(text(
+                    "UPDATE vision_individual SET label=NULL, labeled_at=NULL, label_ask_id=NULL, label_copied=false, "
+                    "updated_at=now() WHERE individual_id=:i AND label_copied"), {"i": r[0]})
+                changed[r[0]] = None
+            elif r[1] != source[1] or r[4] != source[4]:
+                conn.execute(text(
+                    "UPDATE vision_individual SET label=:l, labeled_at=:at, label_ask_id=:a, label_copied=true, "
+                    "updated_at=now() WHERE individual_id=:i AND label_copied"),
+                    {"l": source[1], "at": source[3] or at, "a": source[4], "i": r[0]})
+                if r[1] != source[1]:
+                    changed[r[0]] = source[1]
+    if changed:
+        logger.info("[VISION_LABEL_REDERIVED] ask_id=%s changed=%s", ask_id,
+                    ",".join(f"{k}->{v!r}" for k, v in sorted(changed.items())))
+    return changed
 
 
 # The slow "who is this?" rule (10 sightings over 5 days) counts only its own
@@ -2170,7 +2248,10 @@ PRIOR_CONFIRM_ASKED_TODAY_SQL = (
 )
 CONFIRM_ASKED_TODAY_SQL = (
     "SELECT count(*) FROM orion_ask WHERE created_at >= :d AND (source_kind = :same "
-    "OR (source_kind = 'vision_individual' AND evidence_refs @> CAST(:face AS jsonb)))"
+    "OR (source_kind = 'vision_individual' AND evidence_refs @> CAST(:face AS jsonb))) "
+    # Juniper's own "not the same person" on a walkway story card (who-card Patch A, 2026-11-24) is a
+    # vision_same_individual row too, written already answered: not a question Orion asked.
+    "AND NOT coalesce(answer_detail ? 'story_id', false)"
 )
 
 # An earlier ask about the same subject blocks a new one: open, answered or

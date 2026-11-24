@@ -131,3 +131,19 @@ def test_camera_faculties_have_plain_names() -> None:
     for faculty in ("vision.person_confirm", "vision.person_confirm.camera_prior", "vision.same_person",
                     "vision.same_person.handoff"):
         assert not plain_name(faculty).endswith(" bets"), faculty
+
+
+def test_juniper_s_own_not_same_person_on_a_story_card_grades_nothing() -> None:
+    """Who-card Patch A (2026-11-24): "these camera groups are not the same person" on a walkway story
+    card is a vision_same_individual row Juniper wrote herself. Orion made no guess: no bet."""
+    from orion.vision.story_persons import not_same_answer
+
+    spec = not_same_answer(a="a0", b="b0", story_id="f" * 32, person_key="a0")
+    row = dict(_same(answer=spec["answer"]), answer_detail=spec["detail"],
+               evidence_refs=[f"motion_story:{'f' * 32}", "individual:a0", "individual:b0",
+                              "rule:juniper_story_naming"])
+    assert adapters.camera_ask(row) is None
+    # The marker alone (or story_id alone) is enough, as for every Juniper card.
+    assert adapters.camera_ask(dict(row, answer_detail={"names": {}})) is None
+    assert adapters.camera_ask(dict(row, evidence_refs=["individual:a0"])) is None
+    assert adapters.camera_ask(_same(answer="no")).outcome == "refuted"

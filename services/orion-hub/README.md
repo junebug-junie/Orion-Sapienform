@@ -4875,6 +4875,23 @@ picture verdict per picture shown (the existing picture-verdict path). Every pic
 pictures the card showed for that person, never crops she did not see. A yes on
 the walker counts as her answer on the story, like a name.
 
+**One person per linked group (2026-11-24, who-card redesign Patch A).** Camera
+groups Juniper already said are the same person (a `same` row in
+`vision_individual_pair_verdict`, also through groups not in the story) are one
+row: `persons` on each listed story (`orion/vision/story_persons.py`), next to
+`people` for one more release. The row shows at most four pictures from all its
+groups (largest box first), all their box numbers, and "Seen as N camera groups in
+this story". An answer with `group: true` is written once per camera group, each on
+that group's shown pictures only, so one answer writes at most four rows; a group
+whose latest answer on this story already says the same thing is skipped
+(`skipped_individual_ids`). Two different typed names never group into one row. A
+grouped row also offers "These are N camera groups - not the same person?":
+`POST /api/vision/motion-stories/{story_id}/persons/{person_key}/not-same {a, b}`
+writes her "same person? no" (`vision_same_individual`, `different`) for one direct
+link; sql-writer writes it over the `same` row and re-derives names that were only
+copied across it. It is refused (409 `still_linked`) when the two stay joined
+through other links.
+
 ## Retro browser play
 
 `/retro` offers native NES viewing/control without an additional access code through a

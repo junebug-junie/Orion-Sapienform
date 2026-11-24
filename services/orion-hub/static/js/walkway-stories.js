@@ -42,6 +42,14 @@
   // no young kids; not his build"). Stored as the answer's `why`, shown back
   // under what she said. Raw context clues for a later primitive to read.
   //
+  // One person per linked group (2026-11-24, who-card redesign Patch A). Camera
+  // groups Juniper already said are the same person (a "same" link, mostly made
+  // when she typed a name she used before) are ONE row: their pictures together,
+  // "Seen as N camera groups in this story", asked once. The answer is written for
+  // each camera group (`group: true`). A wrong link would hide here, so a grouped
+  // row also offers "These are N camera groups - not the same person?", which
+  // records her "same person? no" for one direct link (scripts/motion_story_routes.py).
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
@@ -180,12 +188,16 @@
   // The colour sql-writer drew each numbered box in (app/vision_story_strip.py).
   const BOX_TEXT = { green: "text-green-400", blue: "text-blue-400", red: "text-red-400" };
 
-  // The story's people, one per individual_id, each with a letter.
+  // The story's persons, each with a letter: the server's linked groups (`persons`),
+  // else one per camera group (`people`, an older server).
   function storyPeople(story) {
     const seen = new Set();
     const out = [];
-    (Array.isArray(story && story.people) ? story.people : []).forEach((p) => {
-      if (!p || !p.individual_id || seen.has(p.individual_id)) return;
+    const persons = Array.isArray(story && story.persons) ? story.persons : null;
+    (persons || (Array.isArray(story && story.people) ? story.people : [])).forEach((raw) => {
+      if (!raw) return;
+      const p = persons ? Object.assign({}, raw, { individual_id: raw.person_key, grouped: true }) : raw;
+      if (!p.individual_id || seen.has(p.individual_id)) return;
       seen.add(p.individual_id);
       out.push(p);
     });
@@ -202,6 +214,9 @@
     (Array.isArray(p && p.pictures) ? p.pictures : []).forEach((c) => {
       if (c && STORY_RE.test(String(c.story_id || "")) && typeof c.file === "string" && STRIP_FILE_RE.test(c.file)) {
         out.push({ url: stripUrl(c.story_id, c.file), t: c.t, crop_id: c.crop_id });
+      } else if (c && typeof c.thumb === "string" && THUMB_RE.test(c.thumb)) {
+        // A camera group of a linked person that has only vision-host's thumbnail.
+        out.push({ url: `/api/vision/crop-thumbs/${c.thumb}`, t: null, crop_id: c.crop_id || null });
       }
     });
     if (!out.length && p && typeof p.thumb === "string" && THUMB_RE.test(p.thumb)) {
@@ -236,13 +251,29 @@
     return `${boxes.length === 1 ? "Box" : "Boxes"} ${boxes.map((b) => b.n).join(", ")} on the big picture.`;
   }
 
+  // "Seen as 2 camera groups in this story." for a linked person; "" for one group.
+  function groupsText(p) {
+    const n = Array.isArray(p && p.individual_ids) ? p.individual_ids.length : 1;
+    return n > 1 ? `Seen as ${n} camera groups in this story (you said they are the same person).` : "";
+  }
+
+  // The "not the same person?" choices: one per direct link between two of its groups.
+  function notSameChoices(p) {
+    const groups = Array.isArray(p && p.groups) ? p.groups : [];
+    const letter = {};
+    groups.forEach((g, i) => { letter[g.individual_id] = `group ${String(g.short_id || g.individual_id || "").slice(0, 8)}`; });
+    return (Array.isArray(p && p.links) ? p.links : [])
+      .filter((l) => l && letter[l.a] && letter[l.b])
+      .map((l) => ({ a: l.a, b: l.b, label: `${letter[l.a]} and ${letter[l.b]} are different people` }));
+  }
+
   function chipEl(doc, entry) {
     const chip = el(doc, "span", `inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded px-1 text-[11px] font-bold ${entry.chip}`, entry.letter);
     chip.setAttribute("data-person-letter", entry.letter);
     return chip;
   }
 
-  function renderPerson(doc, story, entry, onPerson, hasFrame) {
+  function renderPerson(doc, story, entry, onPerson, hasFrame, onNotSame) {
     const p = entry.person;
     const pics = personPictures(p);
     const asked = isPictured(p);
@@ -262,6 +293,12 @@
       head.appendChild(el(doc, "span", "text-[10px] text-gray-500", `group ${String(p.short_id || "").slice(0, 8)}`));
     }
     box.appendChild(head);
+    const seenAs = groupsText(p);
+    if (seenAs) {
+      const line = el(doc, "div", "text-[10px] text-sky-300", seenAs);
+      line.setAttribute("data-person-groups", String(p.individual_ids.length));
+      box.appendChild(line);
+    }
 
     const boxLine = boxesText(p, hasFrame);
     if (boxLine) {
@@ -362,7 +399,37 @@
     });
     box.appendChild(buttons);
     if (fix !== buttons) box.appendChild(fix);
+    if (seenAs) box.appendChild(renderNotSame(doc, story, p, onNotSame));
     return box;
+  }
+
+  // "These are N camera groups - not the same person?" (Orion's question 1): a wrong link
+  // would otherwise hide inside one row. Opens one button per direct link.
+  function renderNotSame(doc, story, p, onNotSame) {
+    const wrap = el(doc, "div", "space-y-1");
+    wrap.setAttribute("data-person-not-same", "1");
+    const toggle = el(doc, "button", "text-[10px] text-gray-400 underline",
+      `These are ${p.individual_ids.length} camera groups - not the same person?`);
+    toggle.setAttribute("type", "button");
+    toggle.setAttribute("data-person-not-same-toggle", "1");
+    const list = el(doc, "div", "hidden flex flex-wrap gap-2");
+    list.setAttribute("data-person-not-same-list", "1");
+    const choices = notSameChoices(p);
+    if (!choices.length) {
+      list.appendChild(el(doc, "div", "text-[10px] text-gray-500",
+        "They are joined through other camera groups, not directly. This card cannot split them."));
+    }
+    choices.forEach((c) => {
+      const btn = el(doc, "button", "min-h-[2.25rem] rounded-lg border border-gray-600 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700", c.label);
+      btn.setAttribute("type", "button");
+      btn.setAttribute("data-person-not-same-pair", `${c.a}|${c.b}`);
+      btn.addEventListener("click", () => { if (typeof onNotSame === "function") onNotSame(story, p, c, wrap); });
+      list.appendChild(btn);
+    });
+    toggle.addEventListener("click", () => list.classList.toggle("hidden"));
+    wrap.appendChild(toggle);
+    wrap.appendChild(list);
+    return wrap;
   }
 
   function whyLine(a) {
@@ -382,7 +449,7 @@
     return "";
   }
 
-  function renderStory(doc, story, onVerdict, onPerson) {
+  function renderStory(doc, story, onVerdict, onPerson, onNotSame) {
     const item = el(doc, "div", "rounded-lg border border-gray-700 bg-gray-800/60 p-3 space-y-2");
     item.setAttribute("data-story-id", story.story_id);
     const shown = story.display_sentence || story.sentence;
@@ -488,7 +555,7 @@
         `${entries.length - askable} without a picture of their own ${entries.length - askable === 1 ? "is" : "are"} not asked.`));
     }
     if (typeof onPerson === "function") {
-      entries.forEach((e) => who.appendChild(renderPerson(doc, story, e, onPerson, !!model.frame)));
+      entries.forEach((e) => who.appendChild(renderPerson(doc, story, e, onPerson, !!model.frame, onNotSame)));
     }
     item.appendChild(who);
 
@@ -564,8 +631,9 @@
           `/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/people/${encodeURIComponent(person.individual_id)}`, {
             method: "POST", headers: { "Content-Type": "application/json" },
             // A yes carries the name the card showed: the server refuses it if the name changed since.
+            // A linked person (`grouped`) is answered for each of its camera groups.
             body: JSON.stringify({ action, name: action === "unsure" ? "" : action === "confirm" ? (person.label || "") : name,
-              why: String(whyTyped || "").trim() }),
+              why: String(whyTyped || "").trim(), group: !!person.grouped }),
           });
         if (res.status === 409) {
           // The name changed since the card loaded (renamed elsewhere): show the new one, ask again.
@@ -591,7 +659,7 @@
               why: (b.querySelector("[data-person-why-input]") || {}).value || "",
             };
           });
-          const fresh = renderStory(doc, body.story, onVerdict, onPerson);
+          const fresh = renderStory(doc, body.story, onVerdict, onPerson, onNotSame);
           fresh.querySelectorAll("[data-story-person]").forEach((b) => {
             const kept = typedElsewhere[b.getAttribute("data-story-person")];
             if (!kept) return;
@@ -616,6 +684,35 @@
       }
     }
 
+    async function onNotSame(story, person, choice, wrap) {
+      const buttons = wrap.querySelectorAll("[data-person-not-same-pair]");
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        const res = await fetchFn(
+          `/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/persons/${encodeURIComponent(person.person_key)}/not-same`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ a: choice.a, b: choice.b }),
+          });
+        if (!res.ok) {
+          let detail = "";
+          try { detail = (await res.json()).detail || ""; } catch (_) { /* not JSON */ }
+          if (detail === "still_linked") {
+            if (status) status.textContent = "Not saved: those two are also joined through other camera groups, so this answer would not split them.";
+            buttons.forEach((b) => { b.disabled = false; });
+            return;
+          }
+          throw new Error(detail ? `${res.status} ${detail}` : `HTTP ${res.status}`);
+        }
+        const body = await res.json();
+        const item = wrap.closest("[data-story-id]");
+        if (body.story && item) item.replaceWith(renderStory(doc, body.story, onVerdict, onPerson, onNotSame));
+        if (status) status.textContent = "Saved: not the same person. Orion unlinks them on its next pass; they then show as two people.";
+      } catch (err) {
+        if (status) status.textContent = `Could not save that (${err.message}). Try again.`;
+        buttons.forEach((b) => { b.disabled = false; });
+      }
+    }
+
     async function load(fromTimer) {
       const unchecked = uncheckedBox && uncheckedBox.checked ? "true" : "false";
       const checkable = !checkableBox || checkableBox.checked ? "true" : "false";
@@ -631,7 +728,7 @@
         if (typing) return;
         list.textContent = "";
         const stories = body.stories || [];
-        stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, onPerson)));
+        stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, onPerson, onNotSame)));
         if (status) {
           const which = checkable === "true" ? "checkable: daylight, with a picture" : "all, including dark or no picture";
           status.textContent = stories.length
@@ -666,7 +763,7 @@
 
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
                 personTitle, actionLine, whyLine, handoffText, renderStory, mount,
-                storyPeople, personPictures, isPictured, cropOwners, boxesText };
+                storyPeople, personPictures, isPictured, cropOwners, boxesText, groupsText, notSameChoices };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

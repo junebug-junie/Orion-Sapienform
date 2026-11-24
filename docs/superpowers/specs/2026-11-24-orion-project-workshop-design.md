@@ -43,7 +43,16 @@ One container per active project: `orion-project-<project_id>`.
 - **Disk:** one named volume per project mounted at `/work`. Holds a git repository that Orion owns (`/work/.git`, created at open). Size cap 20 GB [default], checked by the launcher before each step.
 - **Caps:** 4 CPUs, 8 GB memory, 512 processes [defaults].
 - **Lifetime:** the box runs only during a step. Between steps it is stopped, not removed. Long-running services are a non-goal for the first version.
-- **What it does not get:** no Docker socket; no bind mounts from the host; no repo checkout of Orion-Sapienform; no `.env`; no Postgres, Redis bus, or FalkorDB credentials; no GitHub token; no notify token.
+- **What comes in from Orion's freedom today** (Juniper, 2026-11-24: "why not give Orion all the freedom they have today, but in this box"):
+  - a clone of Orion-Sapienform at `/work/orion-repo`, refreshed from `origin/main` at each step start. Orion can read it, branch it, and change it freely inside the box;
+  - Orion's existing GitHub identity (`ORION_GITHUB_TOKEN`, machine user `orion-sapienform`). Orion can push branches and open PRs exactly as today. Branch protection on `main` (code-owner review) still means only Juniper merges;
+  - read-only Postgres as `orion_readonly`, for raw SQL reads beyond what `dig` offers. Blinded experiment arms stay hidden from that role (#3458);
+  - `dig`, all of it, through the dig door (3b).
+- **What stays out, and why.** Each of these three would make the box the same as the house:
+  - the Docker socket: it is root on athena and on every container, so with it the box has no walls;
+  - Postgres superuser and any write role: one bad statement can destroy Orion's memory, which no record can undo;
+  - the Redis bus: it has no password, so any access lets the box publish into Orion's live mind, not just read it.
+  Also out: host bind mounts, `.env` files, the notify token, FalkorDB credentials. Notifications and other live acts go through checked `dig` verbs instead.
 
 ### 2. The walls (network)
 
@@ -133,7 +142,8 @@ Cannot, by construction:
 - touch Orion's running system directly: no raw SQL, bus, Docker, or repo writes. Self-reads and self-writes go through `dig` only;
 - reach anything on the home network or tailnet except the model lanes;
 - spend money: no payment credential exists in the box;
-- act as Juniper or as Orion's GitHub identity: no token is in the box;
+- act as Juniper, or merge anything: the box holds only Orion's own GitHub identity, and `main` needs Juniper's review;
+- write to Orion's database, or publish on the bus;
 - edit the record of what it did.
 
 Can, but only recorded (shadow, open by default):
@@ -161,7 +171,7 @@ One gap: Orion's governor turns can still `docker exec` into a project box or ch
 
 1. Public internet from a project box: open with recording and tripwires, or read-only (GET only, which needs TLS decryption in the proxy), or an allowlist Orion asks to widen? [open, recorded]
 2. Where do boxes run: athena, or hecate when it is up? [athena]
-3. GitHub: should a project be able to publish to a repository owned by `orion-sapienform`? That needs a fine-grained token limited to Orion-owned repos, which is one manual token creation in the GitHub UI. [no; local git only in v1, the Hub shows the repo]
+3. GitHub: the box gets Orion's existing token, so Orion can push branches and open PRs on Orion-Sapienform as today. Should Orion also be able to create and publish their own repositories under `orion-sapienform`? The existing classic `repo` token already allows that. [yes]
 4. Long-running services (a web app Orion builds and leaves running): allowed? [no in v1]
 5. Caps: 4 CPU, 8 GB memory, 20 GB disk, 45 min per step, at most 3 steps per project per day? [yes]
 
@@ -201,7 +211,7 @@ Run inside a test box (`orion-project-test`) by the patch 1 smoke:
 2. `curl -sS https://example.com` succeeds and the proxy log shows `CONNECT example.com:443` for this project.
 3. `curl` to `192.168.1.1`, a tailnet IP, the Postgres port, and the Redis bus port all fail, and each failure shows as a denied entry.
 4. `nc` / `ssh` to any outside host fails (internal network).
-5. `env` shows no Postgres, Redis, GitHub, or notify credential.
+5. `env` shows the `orion_readonly` DSN and Orion's GitHub token, and no superuser DSN, Redis, or notify credential. An `INSERT` through the `orion_readonly` DSN fails. A push to `main` fails; a push to a branch works.
 6. A fixed-prompt step ("create hello.py, run it, write step.json") closes with an `orion_project_step_log` row, a transcript whose SHA matches, and a commit containing `hello.py`.
 7. `docker stop` mid-step closes the step `produced = 0, note = "stopped"`.
 8. Inside the box, `dig portrait` and `dig body` print the same output as the same command run in the governor at the same time, and both calls appear in the step log.

@@ -147,7 +147,7 @@ def test_an_unkept_promise_older_than_a_day_lives_on_but_does_not_block_the_next
     early = PROMISED + timedelta(hours=20)
     st0, t0, _ = _fold(_hops())
     _, _, f2 = hb.fold_turn_signals(st0, t0, [hb.signal_from_hop(h) for h in _hops(corr="next-2", at=early)], early)
-    assert f2[0].thread_refused == "already holding 1 concern opened by a turn"
+    assert f2[0].thread_refused == "waiting: already holding 1 concern opened by a turn"
 
 
 def test_the_ttls():

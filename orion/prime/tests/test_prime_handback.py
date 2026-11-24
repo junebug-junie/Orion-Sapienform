@@ -233,14 +233,48 @@ def test_only_one_turn_concern_is_held_at_once_and_the_refusal_is_recorded():
     state, turns, _ = _fold(PrimeStateV1(), hb.PrimeTurnsStateV1(), *_promise_turn("t1"))
     state, turns, folded = _fold(state, turns, *_promise_turn("t2"))
     assert len(state.concerns) == 1 and folded[0].opened_concern_id is None
-    assert "already holding 1 concern opened by a turn" in (folded[0].thread_refused or "")
-    assert "no concern" in "\n".join(hb.turn_lines(turns, T0))
+    # #3656: held back by the loop guard, the promise waits (never lost), and the turn record says so.
+    assert folded[0].thread_refused == "waiting: already holding 1 concern opened by a turn"
+    assert [w.concern_id for w in state.waiting] == [hb.turn_concern_id("t2")]
+    assert hb.turn_concern_id("t2") in turns.no_bet_concern_ids
+    assert "made 1 promise(s), waiting: already holding 1" in "\n".join(hb.turn_lines(turns, T0))
+    assert any("waits for a slot" in c for c in state.pending_changes)
 
 
-def test_turn_concerns_respect_max_concerns():
+def test_a_new_promise_with_every_slot_full_pushes_out_the_weakest_non_promise():
+    # #3656 (live 11-17 21:55Z, corr d391d241): it was refused "already holding 3 concerns" and lost.
+    held = [_concern(f"{i:016x}") for i in range(MAX_CONCERNS)]
+    held[1] = held[1].model_copy(update={"last_evidence_at": T0 - timedelta(hours=5)})  # the oldest evidence
+    state = PrimeStateV1(concerns=held)
+    state, turns, folded = _fold(state, hb.PrimeTurnsStateV1(), *_promise_turn("t1"))
+    cid = hb.turn_concern_id("t1")
+    assert folded[0].opened_concern_id == cid and folded[0].thread_refused is None
+    assert len(state.concerns) == MAX_CONCERNS and cid in {c.concern_id for c in state.concerns}
+    rec = state.concern_record[-1]
+    assert rec.concern_id == held[1].concern_id and rec.end == "displaced" and not rec.produced
+    assert rec.note.startswith(f"displaced: by {cid}; score unscored held vs unscored new;")
+    assert turns.turn_concerns_opened_at  # counts toward 4 a day
+
+
+def test_a_new_promise_never_pushes_out_a_promise_or_a_taken_on_concern_it_waits():
+    held = [_concern(f"{i:016x}", event_ref=f"turn:old{i}") for i in range(MAX_CONCERNS - 1)]
+    held.append(_concern("feedfeedfeedfeed"))
+    long_ago = T0 - timedelta(hours=30)  # past the 24 h turn-slot hold, so the loop guard lets a new one through
+    held = [c.model_copy(update={"last_evidence_at": long_ago}) for c in held]
+    state, _, folded = hb.fold_turn_signals(PrimeStateV1(concerns=held), hb.PrimeTurnsStateV1(),
+                                            _signals(*_promise_turn("t1")), T0 + timedelta(minutes=3),
+                                            taken_on=frozenset({"feedfeedfeedfeed"}))
+    assert [c.concern_id for c in state.concerns] == [c.concern_id for c in held] and not state.concern_record
+    assert folded[0].thread_refused == "waiting: all 3 concerns I hold are promises or taken on"
+    assert [w.concern_id for w in state.waiting] == [hb.turn_concern_id("t1")]
+
+
+def test_with_the_contest_off_a_promise_without_room_waits():
     state = PrimeStateV1(concerns=[_concern(f"{i:016x}") for i in range(MAX_CONCERNS)])
-    state, _, folded = _fold(state, hb.PrimeTurnsStateV1(), *_promise_turn("t1"))
-    assert len(state.concerns) == MAX_CONCERNS and "already holding 3 concerns" in folded[0].thread_refused
+    state, _, folded = hb.fold_turn_signals(state, hb.PrimeTurnsStateV1(), _signals(*_promise_turn("t1")),
+                                            T0 + timedelta(minutes=3), contest=False)
+    assert len(state.concerns) == MAX_CONCERNS and not state.concern_record
+    assert "already holding 3 concerns" in folded[0].thread_refused and state.waiting
 
 
 def test_at_most_four_turn_concerns_a_day():

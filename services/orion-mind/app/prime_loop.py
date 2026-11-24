@@ -241,6 +241,7 @@ from orion.prime.thought import (
     apply_answer,
     build_frame,
     event_ids,
+    held_now_refs,
     parse_answer,
     shown_experience_ids,
     shows_now,
@@ -1464,17 +1465,21 @@ class PrimeRuntime(MindLoopRuntime):
         include = ",".join([i for i in (n.experience_id for n in self._shown_needs) if i][:NOW_MAX_PINNED])
         if include:
             params["include"] = include
+        # #3783: what Prime holds, so rows about a held concern rank first. Repeated ``held=`` keys (refs may hold
+        # commas); the reuse check below keys on them too, so a concern change reads a fresh now.
+        held = held_now_refs(self.state)
+        reuse_key = include + "\n" + "\n".join(held)
         clock = self.clock()
         if self._now_unseen is not None:
             u_since, read_at, page = self._now_unseen
-            if (u_since == since and include == self._now_unseen_include
+            if (u_since == since and reuse_key == self._now_unseen_include
                     and (clock - read_at).total_seconds() <= NOW_REUSE_MAX_SEC):
                 logger.info("prime_now_reused shown_id=%s items=%d", page.get("shown_id"), len(page.get("items") or []))
                 return page
             self._now_unseen = None
         if self._thought_id:
             params["run_ref"] = f"{PRIME_IDENTITY.thought_ref}{self._thought_id}"
-        url = f"{base}{NOW_PATH}?{urllib.parse.urlencode(params)}"
+        url = f"{base}{NOW_PATH}?{urllib.parse.urlencode([*params.items(), *(('held', h) for h in held)])}"
         try:
             data = await asyncio.to_thread(self.get_json, url)
         except Exception as exc:  # noqa: BLE001 -- the now never fails a thought
@@ -1488,7 +1493,7 @@ class PrimeRuntime(MindLoopRuntime):
             return None
         logger.info("prime_now_read shown_id=%s items=%d candidates=%s", data["shown_id"], len(data["items"]),
                     data.get("candidates"))
-        self._now_unseen, self._now_unseen_include = (since, clock, data), include
+        self._now_unseen, self._now_unseen_include = (since, clock, data), reuse_key
         return data
 
     def _now_since(self) -> Optional[str]:

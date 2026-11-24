@@ -42,9 +42,9 @@ def format_now_section(now: Optional[TemporalNowV1]) -> list[str]:
     if now is None or not now.items:
         return []
     lines = [
-        f"{HEADER} (Orion's now: the most salient experiences of your other organs, read when this run "
-        "started, highest salience first. Salience is how unusual the event was for its own source over 30 "
-        "days, 0 to 1; 'unknown' means too little history).",
+        f"{HEADER} (Orion's now: recent experiences of your other organs, read when this run started, one per "
+        "organ before any organ's second. Salience is how unusual the event was for its own source over 30 "
+        "days, 0 to 1; 'unknown' means too little history or no measure for that source).",
         "",
     ]
     for item in now.items:

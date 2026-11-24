@@ -62,7 +62,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (AwareDatetime, BaseModel, ConfigDict, Field, GetJsonSchemaHandler, SerializerFunctionWrapHandler,
+                      field_validator, model_serializer, model_validator)
 
 TEMPORAL_SELF_REDUCER_VERSION = "temporal_self.reducer.v1"
 
@@ -557,6 +558,7 @@ NOW_MAX_ITEMS = 12
 NOW_MAX_PER_ORGAN = 2
 NOW_MAX_CITES = 3
 NOW_RELATED_REFS_CAP = 8
+NOW_HELD_REFS_CAP = 4
 
 
 class TemporalNowItemV1(_Forbid):
@@ -573,6 +575,24 @@ class TemporalNowItemV1(_Forbid):
     salience: float | None = Field(default=None, ge=0.0, le=1.0)
     surprise_nats: float | None = None  # only where a real prediction exists
     related_refs: list[str] = Field(default_factory=list, max_length=NOW_RELATED_REFS_CAP)
+    # #3783: the refs the reader holds (``GET /temporal-self/now?held=...``; Prime: a concern's event_ref, ``arc:<id>``
+    # or ``prime_concern:<id>``) that this row's own ids match exactly. Such a row ranks first. Left out of the body
+    # while empty, so a read without ``held`` (reverie, curiosity, the thought service, dream day) is byte-for-byte
+    # the old body and an image built before this field still validates it.
+    held_refs: list[str] = Field(default_factory=list, max_length=NOW_HELD_REFS_CAP)
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
+        if handler.mode == "serialization":
+            return handler({k: v for k, v in core_schema.items() if k != "serialization"})
+        return handler(core_schema)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_held(self, handler: SerializerFunctionWrapHandler) -> Any:
+        out = handler(self)
+        if isinstance(out, dict) and not out.get("held_refs"):
+            out.pop("held_refs", None)
+        return out
 
 
 class TemporalNowV1(_Forbid):

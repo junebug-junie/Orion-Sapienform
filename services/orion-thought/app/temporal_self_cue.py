@@ -163,7 +163,7 @@ def _age(occurred_at: datetime, as_of: datetime) -> str:
 
 
 def render_now_block(now: TemporalNowV1, *, as_of: Optional[datetime] = None) -> str:
-    """One line per experience, in the server's order (highest salience first): the cite token, the
+    """One line per experience, in the server's order (one per organ before any organ's second): the cite token, the
     code-written label, the organ, how long ago. "" when the now holds nothing. No LLM."""
     as_of = as_of or datetime.now(timezone.utc)
     lines = []

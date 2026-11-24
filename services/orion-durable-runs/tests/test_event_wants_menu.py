@@ -17,7 +17,7 @@ sys.path[:0] = [str(REPO), str(Path(__file__).resolve().parents[1])]
 from app.event_wants_menu import (  # noqa: E402
     FINISH_LABELS_SQL, finding_label,
     ASK_LABELS_SQL, LATEST_EVENT_DECISIONS_SQL, OFFICE_LABELS_SQL, OFFICE_TABLE_SQL, READ_LABELS_SQL, menu_from_rows,
-    read_menu,
+    OPEN_WINDOW_SEARCH_HOURS, read_menu,
 )
 from app.physiology_market import EVENT_HISTORY_SQL, Market  # noqa: E402
 from orion.physiology.families import load_families  # noqa: E402
@@ -100,6 +100,53 @@ def test_read_menu_labels_from_the_source_rows_and_drops_an_answered_ask():
     labels = {w.event_ref: w.label for w in menu.wants}
     assert labels == {"world_pulse_read_seed:s1": "a read finished: Bees learn",
                       "orion_ask:k1": "an open camera question to Juniper: Is this Jacob?"}
+
+
+def test_a_three_day_old_open_camera_ask_stays_on_the_menu_prime_reads():
+    """#3558: a camera ask is decided once and stays open 7 days. Prime reads ``hours=24``; an ask decided
+    3 days ago whose window is still open is on the menu. An answered one and an expired one are not."""
+    three_days = NOW - timedelta(days=3)
+    pool = _Pool({
+        LATEST_EVENT_DECISIONS_SQL: [
+            _row("open", "orion_ask:k1", family="vision.ask", decided=three_days, latest=three_days + timedelta(days=7)),
+            _row("answered", "orion_ask:k2", family="vision.ask", decided=three_days,
+                 latest=three_days + timedelta(days=7)),
+            _row("expired", "orion_ask:k3", family="vision.ask", decided=NOW - timedelta(days=7, hours=1),
+                 latest=NOW - timedelta(hours=1)),
+        ],
+        ASK_LABELS_SQL: [{"ask_id": "k1", "question": "Is this Jacob?", "status": "open"},
+                         {"ask_id": "k2", "question": "Whose car?", "status": "answered"},
+                         {"ask_id": "k3", "question": "Who is this?", "status": "open"}],
+    })
+    menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=8))
+    assert [w.want_id for w in menu.wants] == ["open"]
+    assert menu.wants[0].label == "an open camera question to Juniper: Is this Jacob?"
+    params = pool.seen[0][1]
+    # The search reaches back past ``hours`` far enough to find any still-open camera ask (7-day window).
+    assert params["since"] == NOW - timedelta(hours=24)
+    assert params["search_since"] == NOW - timedelta(hours=OPEN_WINDOW_SEARCH_HOURS)
+    assert OPEN_WINDOW_SEARCH_HOURS > 7 * 24
+    assert params["now"] == NOW
+
+
+def test_an_old_want_with_no_known_window_end_is_not_kept_past_hours():
+    """Past ``hours`` only a want with a known, still-open window end is kept (no end, no proof it is open).
+    Inside ``hours`` the old rule holds: no end reads as open."""
+    old = NOW - timedelta(days=2)
+    rows = [_row("old", "x_unknown:1", family="no.such.family", decided=old),
+            _row("new", "x_unknown:2", family="no.such.family")]
+    menu = menu_from_rows(rows, labels={}, gone=set(), families=FAMS, now=NOW, limit=8,
+                          since=NOW - timedelta(hours=24))
+    assert [w.want_id for w in menu.wants] == ["new"]
+
+
+def test_the_menu_sql_keeps_open_windows_older_than_hours_after_picking_the_latest_decision():
+    sql = " ".join(LATEST_EVENT_DECISIONS_SQL.split())
+    # The window filter runs on each want's LATEST decision (outer query), never before DISTINCT ON.
+    assert sql.index("DISTINCT ON (want_id)") < sql.index(") latest_decision")
+    assert "decided_at >= %(search_since)s" in sql
+    assert ("WHERE decided_at >= %(since)s OR (outcome = 'funded' AND (latest IS NULL OR latest::timestamptz > %(now)s))"
+            in sql)
 
 
 def test_a_funded_ask_want_whose_card_never_opened_is_not_a_concern():

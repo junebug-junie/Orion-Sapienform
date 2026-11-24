@@ -278,3 +278,79 @@ def test_supersede_summary_counts_pairs_touching_backfill(tmp_path):
     s = B.supersede_summary(tmp_path, backfill_ids={"a"})
     assert (s["pairs"], s["pairs_touching_backfill"]) == (2, 1)
     assert B.supersede_summary(tmp_path / "none") == {"ran": False}
+
+
+def test_backfill_rows_queue_no_confirmation_asks():
+    m_high = SimpleNamespace(confirmation_state="pending_confirmation", stakes="high")
+    m_low = SimpleNamespace(confirmation_state="auto", stakes="low")
+    res = B.without_asks(SimpleNamespace(memories=[m_high, m_low]))
+    assert (m_high.confirmation_state, m_low.confirmation_state) == ("not_asked", "auto")
+    kept = SimpleNamespace(confirmation_state="pending_confirmation")
+    B.without_asks(SimpleNamespace(memories=[kept]), asks=True)
+    assert kept.confirmation_state == "pending_confirmation"
+    assert res.memories[0] is m_high
+
+
+def test_the_asker_selects_only_pending_rows():
+    """open_cards (and the do-not-remint guard) pick rows by state = 'pending_confirmation' only, so
+    a not_asked row can never become an ask."""
+    src = (ROOT / "orion" / "memory" / "episode" / "confirmation.py").read_text(encoding="utf-8")
+    start = src.index("async def open_cards(")
+    body = src[start: src.index("\nasync def ", start + 10) if "\nasync def " in src[start + 10:] else None]
+    assert "confirmation_state = 'pending_confirmation'" in body
+    assert "not_asked" not in src
+
+
+def test_not_asked_is_supersedable_but_never_corrects_and_is_hedged():
+    from orion.memory.episode import supersede as S
+    from orion.memory.voice_render import VoicedMemory, render_memory
+
+    row = SimpleNamespace(confirmation_state="not_asked", purpose="happened", statement="x")
+    assert S.can_be_superseded(row)          # nobody will ever settle it: not held immune
+    assert not S.can_correct(row)            # unsettled: never retires anything
+    vm = VoicedMemory(voice="juniper_said", channel="chat", statement="s", confirmation_state="not_asked",
+                      has_verified_juniper_quote=True)
+    assert render_memory(vm).startswith("Unconfirmed")   # recall still hedges it
+
+
+def test_spread_sample_and_intervals():
+    eps = [{"episode_status": "closed", "episode_id": str(i)} for i in range(101)]
+    picked = B.spread_sample(eps, 15)
+    assert len(picked) == 15 and picked[0]["episode_id"] == "0" and picked[-1]["episode_id"] == "100"
+    lo, hi = B.wilson(8, 15)
+    assert lo < 8 / 15 < hi
+    lo2, hi2 = B.cluster_interval([(3, 10), (5, 5)])
+    assert lo2 <= 8 / 15 <= hi2
+    assert B.wilson(0, 0) == (None, None)
+
+
+def test_name_repair_never_turns_backfill_rows_into_asks():
+    src = (ROOT / "scripts" / "repair_episode_memory_ungrounded_names.py").read_text(encoding="utf-8")
+    assert "m.run_id NOT LIKE 'backfill3537-%'" in src
+
+
+def test_backfill_floor_is_juniper_decision_and_live_floor_unchanged():
+    assert B.BACKFILL_OTHER_MIN == 0.53 and B.BAND_OTHER_MIN == 0.68 and B.BAND_ANY_MIN == 0.97
+    week = [{"week": "2026-08-03", "n": 40, "any_ref": 40, "other_ref": 23}]   # 57.5%
+    assert not B.gate_verdict(week)["pass"]                                    # live floor
+    assert B.gate_verdict(week, other_min=B.BACKFILL_OTHER_MIN)["pass"]       # backfill floor
+
+
+def test_small_weeks_below_the_floor_are_flagged_not_silently_passed():
+    weeks = [{"week": "2026-08-03", "n": 40, "any_ref": 40, "other_ref": 30},
+             {"week": "2026-08-10", "n": 4, "any_ref": 4, "other_ref": 1}]   # 25%, small
+    v = B.gate_verdict(weeks, other_min=0.53)
+    assert v["pass"]   # pooled 31/44 = 70%; the small week alone does not fail
+    assert [w["week"] for w in v["small_weeks_below"]] == ["2026-08-10"]
+    assert B.week_below(weeks[1], 0.53) and not B.week_below(weeks[0], 0.53)
+    big_low = [{"week": "2026-08-03", "n": 40, "any_ref": 40, "other_ref": 20}]   # 50%
+    assert not B.gate_verdict(big_low, other_min=0.53)["pass"]
+
+
+def test_gate_refuses_an_out_of_range_floor(monkeypatch):
+    monkeypatch.setattr(B, "_coverage_weeks", lambda pool: None)
+    monkeypatch.setattr(B.asyncio, "run", lambda coro: [])
+    with pytest.raises(SystemExit):
+        B.cmd_gate(SimpleNamespace(dsn="x", other_min=0.0))
+    with pytest.raises(SystemExit):
+        B.cmd_gate(SimpleNamespace(dsn="x", other_min=1.5))

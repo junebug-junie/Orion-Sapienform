@@ -343,6 +343,21 @@ PROMISE_TO: dict[str, str] = {
 }
 
 
+# A promise concern's ``text`` opens with this, then the turn's ``WHO_WORDS`` and " (" (``fold_turn_signals``).
+# Prime cannot edit a concern's text (only keep / add / drop), so this stays readable for the concern's life.
+PROMISE_CONCERN_LEAD = "a promise I made in a "
+
+
+def promise_concern_who(text: str) -> Optional[str]:
+    """Which kind of turn made the promise a concern holds, read back from the text ``fold_turn_signals`` wrote
+    (#3772: the take-on must know whether the turn had a chat thread). None when the text is not one this module
+    writes today (e.g. the pre-11-12 "a thread I opened ..." wording)."""
+    if not text.startswith(PROMISE_CONCERN_LEAD):
+        return None
+    rest = text[len(PROMISE_CONCERN_LEAD):]
+    return next((who for who, words in WHO_WORDS.items() if rest.startswith(f"{words} (")), None)
+
+
 def promise_text(who: TurnWho, quotes: Sequence[str], at: datetime) -> Optional[str]:
     """The promise sentence(s) Prime is shown for a promise concern, labelled with who and when. None with no
     quote (an older signal, or a judge row with no quote text)."""
@@ -466,7 +481,7 @@ def fold_turn_signals(
                 # Prime block (S-1.8). Juniper's opening line is kept for context; the sentence is promise_text.
                 asked = (f': Juniper: "{_cut(_first_line(start.prompt_excerpt), 120)}"'
                          if start.who == "chat_juniper" and _first_line(start.prompt_excerpt) else "")
-                text = _cut(f"a promise I made in a {words} ({n} promise{'s' if n != 1 else ''}, "
+                text = _cut(f"{PROMISE_CONCERN_LEAD}{words} ({n} promise{'s' if n != 1 else ''}, "
                             f"{refs[0]}{' ...' if n > 1 else ''}){asked}", 300)
                 concern = PrimeConcernV1(concern_id=turn_concern_id(corr), text=text,
                                          event_ref=f"{TURN_EVENT_PREFIX}{corr}", opened_at=now, last_evidence_at=now,
@@ -562,6 +577,8 @@ __all__ = [
     "fold_turn_signals",
     "link_started_turn",
     "note_opened_later",
+    "PROMISE_CONCERN_LEAD",
+    "promise_concern_who",
     "promise_refs",
     "promise_text",
     "holds_turn_slot",

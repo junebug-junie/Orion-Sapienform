@@ -65,7 +65,13 @@ def test_recorded_tick_sequences_replay_identically():
     Then re-recorded 2026-11-17 (concern evidence clock, #3574): with the track record's and CONCERN_BASIS's fade words
     ("nothing renewed it for ...") mapped back to "not kept for ...", every part of every scenario equals the
     previous golden (checked by script; 8 parts changed, 0 after mapping). No scenario turns the clock on (the flag
-    is absent from the fake settings), so a keep still renews in every scenario."""
+    is absent from the fake settings), so a keep still renews in every scenario.
+    Re-recorded 2026-11-24 (#3425, Prime's experience cites in the reply template): with the template's new top-level
+    "refs" line and the reworded cite paragraph mapped back, every part of every scenario equals the previous golden
+    (checked by script; 1 part changed, 0 after mapping: now_section_and_one_cite.llm_calls, the only scenario that
+    shows a now).
+    Re-recorded again 2026-11-24 (#3425 follow-up: the experience refs line moved before "move", so the template keeps
+    its own closing): same check, same result (1 part changed, 0 after mapping)."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

@@ -33,7 +33,8 @@ would send to the model and checks it is something a mind could act on honestly:
                lines, and that line is not a change (it cannot wake Prime by itself).
 * now          -- (integration patch 3) a full now (12 items, TemporalNowV1-valid, labels at the 200-char cap) adds
                the WHAT YOUR ORGANS LIVED section with every item's [experience:<id>], the frame stays under the
-               cap, the dashboard's runs are not in the frame, and apply_answer keeps only shown cites, at most 3.
+               cap, the dashboard's runs are not in the frame, and apply_answer keeps only shown cites, at most 3;
+               and (#3425) the system prompt's JSON reply template itself carries the top-level experience refs.
 
 Since integration patch 3 the frame does not read the curiosity dashboard; the fixture's dashboard copy still feeds
 ``settles`` (settling reads it) and its pending_focus page stands in for the cheap read (same shape).
@@ -52,7 +53,7 @@ from pathlib import Path
 from orion.curiosity.focus import FocusRow, format_focus_section
 from orion.prime.acts import settle_nomination
 from orion.prime.state import PrimeConcernV1, PrimeStateV1, close_concern
-from orion.prime.thought import FrameInputs, PrimeAnswerV1, apply_answer, build_frame
+from orion.prime.thought import FrameInputs, PrimeAnswerV1, apply_answer, build_frame, system_prompt
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "prime_inputs_live_2026-10-30.json"
 FRAME_CHAR_CAP = 12000
@@ -246,10 +247,18 @@ def _now_check(state: PrimeStateV1, data: dict) -> tuple[str, bool, str]:
                                                                     for e in ["not:shown", *ids[:5]]]})
     applied = apply_answer(state, answer, now=inputs.now, arc_ids=inputs.arc_ids, focus_pending=False,
                            shown_experience=ids)
+    # #3425: the cite must be part of the reply template itself (live, a paragraph after it was not followed).
+    prompt = system_prompt(None, events=True, take_on=True, experiences=True, needs=True, evidence_clock=True)
+    start = prompt.index("Reply with ONE JSON object")
+    template = prompt[start:prompt.index("\n\n", start)]
+    in_template = ('"refs": [] | [{"kind": "experience"' in template
+                   and template.index('"refs": [] |') < template.index('"move": null |')
+                   and template.rstrip().endswith('"id": "..."}]}}'))
     ok = (shown_all and len(frame) <= FRAME_CHAR_CAP and "(28 more were recorded and not shown" in frame
-          and not any(f"run {r}" in frame for r in runs) and applied.experience_cites == ids[:3])
+          and not any(f"run {r}" in frame for r in runs) and applied.experience_cites == ids[:3] and in_template)
     return ("now", ok, f"{len(frame)} chars (cap {FRAME_CHAR_CAP}); 12 ids shown={shown_all}; "
-                       f"cites kept {len(applied.experience_cites)} of 6 (1 not shown, cap 3)")
+                       f"cites kept {len(applied.experience_cites)} of 6 (1 not shown, cap 3); "
+                       f"cite in reply template={in_template}")
 
 
 def main() -> int:

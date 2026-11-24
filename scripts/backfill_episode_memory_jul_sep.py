@@ -84,6 +84,10 @@ MAX_ATTEMPTS = 4          # episode_distill_graph.EPISODE_DISTILL_MIN_ATTEMPTS
 # Spec band (core-memory-pages design, "Pair detection"; #3537 comments): live weeks since 10-05.
 BAND_ANY_MIN = 0.97
 BAND_OTHER_MIN = 0.68
+# Juniper, 2026-11-24 (#3537): a floor for the July-September backfill only. That chat names fewer
+# people and things besides Juniper/Orion than live October chat (dry run 61/106 = 57.5% vs October
+# 178/239 = 74.5%). Lowest live week 68.4% x measured ratio 0.773 = 52.9%. Live floors are unchanged.
+BACKFILL_OTHER_MIN = 0.53
 GATE_MIN_WEEK_ROWS = 10   # a smaller week is reported, and pooled into the overall check
 SELF_KEYS = frozenset({"person:juniper", "person:orion"})   # orion.memory.referents.resolve
 SMOKE_SESSION = re.compile(r"smoke|deploy-check", re.IGNORECASE)
@@ -153,6 +157,9 @@ COUNTS_SQL = {
     "rejected_invalid_events_backfill": (
         "SELECT count(*) AS n FROM episode_memory_event WHERE op = 'rejected_invalid' "
         "AND evidence->>'run_id' LIKE %(run_like)s"),
+    "not_asked_high_backfill": (
+        "SELECT count(*) AS n FROM episode_memory WHERE run_id LIKE %(run_like)s "
+        "AND stakes = 'high' AND confirmation_state = 'not_asked'"),
     "pending_confirmation_high_backfill": (
         "SELECT count(*) AS n FROM episode_memory WHERE run_id LIKE %(run_like)s "
         "AND stakes = 'high' AND confirmation_state = 'pending_confirmation'"),
@@ -403,26 +410,39 @@ def referent_coverage(memories: Iterable[Any]) -> dict[str, Any]:
             "any_rate": (any_ref / n) if n else None, "other_rate": (other / n) if n else None}
 
 
-def gate_verdict(weeks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Per-week rows {week, n, any_ref, other_ref} -> pass/fail against the live band. Every week with
-    at least GATE_MIN_WEEK_ROWS rows must be in band, and so must the pooled total."""
-    failures = []
+def gate_verdict(weeks: list[dict[str, Any]], *, other_min: float = BAND_OTHER_MIN) -> dict[str, Any]:
+    """Per-week rows {week, n, any_ref, other_ref} -> pass/fail against the band (``other_min`` = the
+    floor for "a referent besides Juniper/Orion"). Every week with at least GATE_MIN_WEEK_ROWS rows
+    must be in band, and so must the pooled total. A smaller week below the floor does not fail the
+    gate alone, but it is listed in ``small_weeks_below`` so it is never passed silently."""
+    failures, small_below = [], []
     for w in weeks:
         n = int(w["n"])
-        if n < GATE_MIN_WEEK_ROWS:
+        if n == 0:
             continue
         a, o = int(w["any_ref"]) / n, int(w["other_ref"]) / n
-        if a < BAND_ANY_MIN or o < BAND_OTHER_MIN:
+        if n < GATE_MIN_WEEK_ROWS:
+            if a < BAND_ANY_MIN or o < other_min:
+                small_below.append({"week": str(w["week"]), "n": n, "any_rate": round(a, 3),
+                                    "other_rate": round(o, 3)})
+            continue
+        if a < BAND_ANY_MIN or o < other_min:
             failures.append({"week": str(w["week"]), "n": n, "any_rate": round(a, 3), "other_rate": round(o, 3)})
     total = sum(int(w["n"]) for w in weeks)
     pooled_any = sum(int(w["any_ref"]) for w in weeks) / total if total else None
     pooled_other = sum(int(w["other_ref"]) for w in weeks) / total if total else None
-    pooled_ok = total > 0 and pooled_any >= BAND_ANY_MIN and pooled_other >= BAND_OTHER_MIN
+    pooled_ok = total > 0 and pooled_any >= BAND_ANY_MIN and pooled_other >= other_min
     return {"pass": bool(pooled_ok and not failures), "rows": total,
             "pooled_any_rate": None if pooled_any is None else round(pooled_any, 3),
             "pooled_other_rate": None if pooled_other is None else round(pooled_other, 3),
-            "week_failures": failures,
+            "other_min": other_min, "week_failures": failures, "small_weeks_below": small_below,
             "small_weeks": [str(w["week"]) for w in weeks if int(w["n"]) < GATE_MIN_WEEK_ROWS]}
+
+
+def week_below(w: dict[str, Any], other_min: float) -> bool:
+    """One week's rates under either floor (any referent, or besides Juniper/Orion)."""
+    n = int(w["n"])
+    return bool(n) and (int(w["any_ref"]) / n < BAND_ANY_MIN or int(w["other_ref"]) / n < other_min)
 
 
 def occurred_after_episode(memories: Iterable[Any], ended_at: datetime, slack: timedelta = timedelta(days=1)) -> int:
@@ -447,6 +467,53 @@ def dry_run_sample(episodes: list[dict[str, Any]], min_exchanges: int = 10) -> l
             if total >= min_exchanges:
                 return picked
     return picked
+
+
+def spread_sample(episodes: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+    """``n`` closed episodes evenly spaced across the whole range (first and last included)."""
+    closed = [e for e in episodes if e["episode_status"] == "closed"]
+    if n >= len(closed):
+        return closed
+    if n <= 1:
+        return closed[:1]
+    idx = sorted({round(i * (len(closed) - 1) / (n - 1)) for i in range(n)})
+    return [closed[i] for i in idx]
+
+
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[Optional[float], Optional[float]]:
+    """Row-level 95% interval (treats rows as independent; they are not: see cluster_interval)."""
+    if n == 0:
+        return None, None
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return round(max(0.0, c - h), 3), round(min(1.0, c + h), 3)
+
+
+def cluster_interval(per_episode: list[tuple[int, int]], reps: int = 4000, seed: int = 3537) -> tuple[Optional[float], Optional[float]]:
+    """95% interval of the pooled rate when whole episodes are resampled (memories from one episode
+    share a topic, so they are not independent draws). ``per_episode`` = [(hits, rows)]."""
+    import random
+
+    eps = [(k, n) for k, n in per_episode if n]
+    if not eps:
+        return None, None
+    rng = random.Random(seed)
+    rates = []
+    for _ in range(reps):
+        draw = [eps[rng.randrange(len(eps))] for _ in eps]
+        rows = sum(n for _, n in draw)
+        rates.append(sum(k for k, _ in draw) / rows)
+    rates.sort()
+    # A percentile bootstrap over few clusters runs narrow by about sqrt((G-1)/G): widen the
+    # deviations from the point estimate by sqrt(G/(G-1)) (small-cluster correction).
+    g = len(eps)
+    point = sum(k for k, _ in eps) / sum(n for _, n in eps)
+    scale = (g / (g - 1)) ** 0.5 if g > 1 else 1.0
+    lo = point - (point - rates[int(0.025 * reps)]) * scale
+    hi = point + (rates[int(0.975 * reps) - 1] - point) * scale
+    return round(max(0.0, lo), 3), round(min(1.0, hi), 3)
 
 
 # ----------------------------------------------------------------------------------- progress
@@ -561,11 +628,29 @@ def referent_policy():
     return ReferentPolicy(grounding_auto_accept=True, cooccurrence_auto_accept=True)
 
 
-async def persist(pool: OneShotPool, episode: dict[str, Any], turns: list[Any], answer: dict[str, Any]) -> dict[str, Any]:
+NOT_ASKED = "not_asked"
+
+
+def without_asks(result: Any, *, asks: bool = False) -> Any:
+    """Juniper (2026-11-19): backfilled memories queue no confirmation questions. A high-stakes row
+    the validator marks ``pending_confirmation`` is written ``not_asked`` instead. The asker
+    (orion/memory/episode/confirmation.py ``open_cards``) selects only ``pending_confirmation``, so it
+    never asks; recall and the pages still hedge it as unconfirmed (voice_render, pages/juniper);
+    supersede may retire it but never lets it retire anything (supersede.CORRECTION_STATES).
+    The memory id does not depend on the state, so this changes no ids."""
+    if not asks:
+        for m in result.memories:
+            if m.confirmation_state == "pending_confirmation":
+                m.confirmation_state = NOT_ASKED
+    return result
+
+
+async def persist(pool: OneShotPool, episode: dict[str, Any], turns: list[Any], answer: dict[str, Any],
+                  *, asks: bool = False) -> dict[str, Any]:
     from orion.memory.episode.store import persist_episode
     from orion.memory.episode.validate import coverage
 
-    result = validated_for(episode, turns, answer)
+    result = without_asks(validated_for(episode, turns, answer), asks=asks)
     now = _utc(episode["last_turn_at"])
     async with pool.connection() as conn:
         await conn.execute(INSERT_SHADOW_SQL, shadow_params(episode))
@@ -726,7 +811,8 @@ async def _candidates(pool: OneShotPool) -> list[str]:
 
 def cmd_dry_run(args: argparse.Namespace) -> int:
     plan = _load_plan()
-    sample = dry_run_sample(plan["episodes"], args.exchanges)
+    sample = (spread_sample(plan["episodes"], args.episodes) if args.episodes
+              else dry_run_sample(plan["episodes"], args.exchanges))
     pool = OneShotPool(args.dsn)
     loop = asyncio.new_event_loop()
     candidates = loop.run_until_complete(_candidates(pool))
@@ -740,7 +826,7 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
         answer = _answer(lane, episode, turns, candidates, prog)
         prog.done += 1
         prog.turns += len(turns)
-        result = validated_for(episode, turns, answer)
+        result = without_asks(validated_for(episode, turns, answer))
         memories.extend(result.memories)
         late = occurred_after_episode(result.memories, _utc(episode["last_turn_at"]))
         cov = referent_coverage(result.memories)
@@ -751,6 +837,7 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
                         "high_stakes_pending_confirmation": sum(
                             1 for m in result.memories
                             if m.stakes == "high" and m.confirmation_state == "pending_confirmation"),
+                        "high_stakes_not_asked": sum(1 for m in result.memories if m.confirmation_state == NOT_ASKED),
                         "occurred_after_episode": late, "model": answer.get("model")})
         anomalies = []
         if not result.memories:
@@ -765,9 +852,15 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     verdict = {
         "pass": cov["n"] > 0 and cov["any_rate"] >= BAND_ANY_MIN and cov["other_rate"] >= BAND_OTHER_MIN,
         **cov, "band": {"any_min": BAND_ANY_MIN, "other_min": BAND_OTHER_MIN},
+        "backfill_floor_pass": cov["n"] > 0 and cov["any_rate"] >= BAND_ANY_MIN
+        and cov["other_rate"] >= BACKFILL_OTHER_MIN,
     }
+    per_ep = [(r["with_other_referent"], r["memories"]) for r in results]
+    verdict["other_rate_wilson95"] = wilson(cov["other"], cov["n"])
+    verdict["other_rate_episode_bootstrap95"] = cluster_interval(per_ep)
+    verdict["any_rate_wilson95"] = wilson(cov["any"], cov["n"])
     out = {"episodes": results, "referent_coverage": verdict, "errors": prog.errors,
-           "high_stakes_pending_confirmation": sum(r["high_stakes_pending_confirmation"] for r in results)}
+           "high_stakes_not_asked": sum(r["high_stakes_not_asked"] for r in results)}
     write_private(OUT / "dry_run.json", json.dumps(out, indent=1, default=str))
     prog.line(f"dry_run_done memories={cov['n']} any_rate={cov['any_rate']} other_rate={cov['other_rate']} "
               f"gate={'pass' if verdict['pass'] else 'FAIL'}")
@@ -805,7 +898,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         prog.done += 1
         prog.turns += len(turns)
         try:
-            out = loop.run_until_complete(persist(pool, episode, turns, answer))
+            out = loop.run_until_complete(persist(pool, episode, turns, answer, asks=args.confirmation_asks))
         except Exception as exc:  # noqa: BLE001 -- recorded; the episode is retried by a re-run
             prog.errors += 1
             _append_error(episode["episode_id"], "persist_failed", f"{type(exc).__name__}: {str(exc)[:160]}")
@@ -838,10 +931,17 @@ async def _coverage_weeks(pool: OneShotPool) -> list[dict[str, Any]]:
 def cmd_gate(args: argparse.Namespace) -> int:
     pool = OneShotPool(args.dsn)
     weeks = asyncio.run(_coverage_weeks(pool))
-    verdict = gate_verdict(weeks)
+    other_min = args.other_min if args.other_min is not None else BACKFILL_OTHER_MIN
+    if not 0.0 < other_min <= 1.0:
+        raise SystemExit(f"--other-min must be in (0, 1], got {other_min}")
+    if other_min != BACKFILL_OTHER_MIN:
+        print(f"WARNING: gate floor {other_min} is not the approved backfill floor {BACKFILL_OTHER_MIN}",
+              file=sys.stderr)
+    verdict = gate_verdict(weeks, other_min=other_min)
     out = {"weeks": [{"week": str(w["week"]), "n": w["n"], "any_ref": w["any_ref"], "other_ref": w["other_ref"]}
                      for w in weeks], **verdict,
-           "band": {"any_min": BAND_ANY_MIN, "other_min": BAND_OTHER_MIN, "min_week_rows": GATE_MIN_WEEK_ROWS}}
+           "band": {"any_min": BAND_ANY_MIN, "other_min": other_min, "live_other_min": BAND_OTHER_MIN,
+                    "min_week_rows": GATE_MIN_WEEK_ROWS}}
     write_private(OUT / "referent_gate.json", json.dumps(out, indent=1, default=str))
     print(json.dumps(out, indent=1, default=str))
     return 0 if verdict["pass"] else 1
@@ -926,6 +1026,9 @@ def cmd_report(args: argparse.Namespace) -> int:
     failed = sorted({e["episode_id"] for e in errors})
     verdict = "PASS" if gate.get("pass") and not failed else "NEEDS ANOTHER PASS" if failed else "BLOCKED (referent gate)"
 
+    floor_used = (gate.get("band") or {}).get("other_min")
+    floor_label = ("backfill floor" if floor_used == BACKFILL_OTHER_MIN
+                   else "live floor" if floor_used == BAND_OTHER_MIN else "override")
     lines = [f"# Memory backfill July-September 2026 (#{ISSUE}): {verdict}", "",
              "Ids and counts only. Private inputs stay in this directory (mode 600).", "",
              "## Plan", ""] + [f"- {k}: {v}" for k, v in plan.items()] + [
@@ -933,16 +1036,23 @@ def cmd_report(args: argparse.Namespace) -> int:
              f"- memories: {(dry.get('referent_coverage') or {}).get('n')}",
              f"- with any referent: {(dry.get('referent_coverage') or {}).get('any')}",
              f"- with a referent besides Juniper/Orion: {(dry.get('referent_coverage') or {}).get('other')}",
-             f"- high-stakes rows waiting for confirmation: {dry.get('high_stakes_pending_confirmation')}",
-             f"- gate: {'pass' if (dry.get('referent_coverage') or {}).get('pass') else 'FAIL'}",
+             f"- high-stakes rows written not_asked (never asked): {dry.get('high_stakes_not_asked')}",
+             f"- against the live floor (any {BAND_ANY_MIN}, besides Juniper/Orion {BAND_OTHER_MIN}): "
+             f"{'pass' if (dry.get('referent_coverage') or {}).get('pass') else 'FAIL'}",
+             f"- against the backfill floor (besides Juniper/Orion {BACKFILL_OTHER_MIN}): "
+             f"{'pass' if (dry.get('referent_coverage') or {}).get('backfill_floor_pass') else 'FAIL'}",
              "", "## Before / after", "", "| metric | before | after |", "|---|---|---|"] + [
              f"| {k} | {before.get(k)} | {after.get(k)} |" for k in COUNTS_SQL] + [
              "", "## Referent coverage gate (per week, by episode time)", "",
              f"- pass: {gate.get('pass')}; rows {gate.get('rows')}; pooled any {gate.get('pooled_any_rate')}, "
-             f"non-self {gate.get('pooled_other_rate')}; band any >= {BAND_ANY_MIN}, non-self >= {BAND_OTHER_MIN}",
-             f"- weeks below band: {gate.get('week_failures')}", f"- weeks under {GATE_MIN_WEEK_ROWS} rows: "
-             f"{gate.get('small_weeks')}", "", "| week | rows | any | non-self |", "|---|---|---|---|"] + [
-             f"| {w['week']} | {w['n']} | {w['any_ref']} | {w['other_ref']} |" for w in gate.get("weeks", [])] + [
+             f"non-self {gate.get('pooled_other_rate')}; band any >= {BAND_ANY_MIN}, non-self >= "
+             f"{floor_used} ({floor_label}; live floor {BAND_OTHER_MIN})",
+             f"- weeks below band: {gate.get('week_failures')}",
+             f"- small weeks below band (flagged, pooled): {gate.get('small_weeks_below')}", f"- weeks under {GATE_MIN_WEEK_ROWS} rows: "
+             f"{gate.get('small_weeks')}", "", "| week | rows | any | non-self | below floor |", "|---|---|---|---|---|"] + [
+             f"| {w['week']} | {w['n']} | {w['any_ref']} | {w['other_ref']} | "
+             f"{'BELOW' if week_below(w, (gate.get('band') or {}).get('other_min', BACKFILL_OTHER_MIN)) else ''} |"
+             for w in gate.get("weeks", [])] + [
              "", "## Errors", "", f"- error records: {len(errors)}; episodes that failed: {len(failed)}"] + [
              f"  - {e}" for e in failed] + [
              "", "## Supersede pass dry run (nothing applied)", "",
@@ -974,9 +1084,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     pl.add_argument("--force", action="store_true")
     d = sub.add_parser("dry-run")
     d.add_argument("--exchanges", type=int, default=10)
+    d.add_argument("--episodes", type=int, default=0, help="N evenly spaced episodes instead of ~--exchanges")
     r = sub.add_parser("run")
     r.add_argument("--limit", type=int, default=0)
-    sub.add_parser("gate")
+    r.add_argument("--confirmation-asks", action="store_true",
+                   help="write high-stakes rows pending_confirmation (the asker queues them). Default: not_asked")
+    g = sub.add_parser("gate")
+    g.add_argument("--other-min", type=float, default=None,
+                   help=f"floor for a referent besides Juniper/Orion (default: backfill floor {BACKFILL_OTHER_MIN})")
     c = sub.add_parser("counts")
     c.add_argument("--label", choices=("before", "after"), required=True)
     sub.add_parser("report")

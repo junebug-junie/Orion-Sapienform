@@ -63,6 +63,8 @@ SELECT m.memory_id::text AS memory_id, m.episode_id, m.statement, m.stakes, m.st
          AS juniper_prompts
 FROM episode_memory m
 WHERE m.status = 'active' AND m.stakes = 'low' AND m.confirmation_state = 'auto'
+  -- July-September backfill rows (#3537) never queue a confirmation ask (Juniper, 2026-11-19).
+  AND m.run_id NOT LIKE 'backfill3537-%'
 ORDER BY m.created_at
 """
 KEYS_SQL = "SELECT DISTINCT referent_key FROM episode_memory_referent"

@@ -127,6 +127,13 @@ Not run. No dependency, port or compose wiring change beyond two env keys. Live 
 - Finding: promise intake can push out a concern with a question open; not stated.
   - Fix: kept (Juniper: a promise waits only if every slot is a promise), ranked last, and now said in the prompt
     and README.
+- Finding (CI, not the review): `concern_contest.py` imported `world_first.py`, which pulls `orion.substrate` and
+  `requests`. orion-mind's image ships no `requests`, so the deployed orion-mind would have failed to import Prime.
+  - Fix: `event_fade` is copied into `concern_contest.py`; a test pins it to world_first's, and a test proves
+    `orion.prime.slots`/`thought` never import world_first.
+  - Evidence: `import app.prime_loop` succeeds with `requests` blocked; prime CI job green.
+- Finding (CI): the promise-shadow gate (`orion/grammar/tests/test_promise_acts.py`) flagged the actor name in the
+  replay's docstring. Fix: wording.
 - Nits fixed: dream never re-queues an ended concern; prompt says a waiting concern cannot be dropped; README says
   flag off is not a rollback; `no_churn` also checks open questions and the thought rule; replay prints
   displacements within 1 h of seating.

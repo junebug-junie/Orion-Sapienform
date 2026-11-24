@@ -599,6 +599,11 @@ class Settings(BaseSettings):
     # age Juniper gave (child / adult) when the cluster's stored vectors confidently
     # read as the other band. Removes candidates only; off on cameras with a prior.
     vision_person_age_veto_enabled: bool = Field(True, alias="VISION_PERSON_AGE_VETO_ENABLED")
+    # Each picture Juniper confirmed is the named person (a "same" picture verdict,
+    # e.g. "Yes, that's X" on a walkway story card) teaches the person model as a
+    # positive example, even when its group looks like two people. False = only
+    # whole named groups teach positives; existing picture_same rows are revoked.
+    vision_person_picture_same_positives: bool = Field(True, alias="VISION_PERSON_PICTURE_SAME_POSITIVES")
     # The person model runs inside the individuals tick at most this often.
     vision_person_model_interval_sec: float = Field(600.0, alias="VISION_PERSON_MODEL_INTERVAL_SEC")
     # Comma list of crop labels the retention prune never deletes (labelled

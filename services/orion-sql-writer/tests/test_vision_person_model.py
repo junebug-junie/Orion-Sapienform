@@ -267,6 +267,62 @@ def test_migration_declares_its_consumers_and_is_additive() -> None:
     assert "DROP" not in body and "DELETE" not in body and "UPDATE" not in body
 
 
+# --- confirmed pictures teach the model (picture_same, 2026-11-24) ---------------------------------------
+
+NAMES = {"juniper": "Juniper", "addy": "Addy"}
+
+
+def _v(crop, verdict, name="Juniper", label="Juniper", kind="person", ask="ask-1"):
+    return (crop, ask, verdict, name, label, kind)
+
+
+def test_a_same_picture_is_a_positive_for_the_groups_name() -> None:
+    rows, st = pm.picture_same_exemplars([_v("c1", "same", name="juniper", label="juniper")], NAMES, set(), set())
+    assert rows == [{"person": "Juniper", "crop_id": "c1", "polarity": 1, "source": "picture_same",
+                     "ask_id": "ask-1"}]
+    assert st["picture_same_positives"] == 1
+
+
+def test_a_different_picture_is_never_a_positive_for_that_name() -> None:
+    rows, _ = pm.picture_same_exemplars([_v("c1", "different")], NAMES, set(), set())
+    assert rows == []
+    # A picture she said "same" on once and "not Juniper" on elsewhere stays out.
+    rows, st = pm.picture_same_exemplars([_v("c2", "same")], NAMES, set(), {("juniper", "c2")})
+    assert rows == [] and st["picture_same_ruled_out"] == 1
+
+
+def test_an_unsure_picture_is_ignored() -> None:
+    rows, st = pm.picture_same_exemplars([_v("c1", "unsure", name=None)], NAMES, set(), set())
+    assert rows == [] and st["picture_same_seen"] == 0
+
+
+def test_a_picture_the_group_already_counts_is_not_counted_twice() -> None:
+    rows, st = pm.picture_same_exemplars([_v("c1", "same"), _v("c3", "same", ask="ask-2"),
+                                          _v("c3", "same", ask="ask-3")], NAMES, {("juniper", "c1")}, set())
+    assert [(r["crop_id"], r["ask_id"]) for r in rows] == [("c3", "ask-2")]
+    assert st["picture_same_already_counted"] == 2
+
+
+def test_a_renamed_group_or_a_non_person_group_teaches_nothing() -> None:
+    rows, st = pm.picture_same_exemplars(
+        [_v("c1", "same", name="Maeve", label="Teddy"), _v("c2", "same", name="el Coco", label="el Coco", kind="dog"),
+         _v("c3", "same", label=None), _v("c4", "same", name=None, label="Addy")], NAMES, set(), set())
+    assert [(r["person"], r["crop_id"]) for r in rows] == [("Addy", "c4")]
+    assert st["picture_same_name_changed"] == 1 and st["picture_same_not_person"] == 2
+
+
+def test_picture_same_positives_ship_on_and_the_flag_turns_them_off() -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import person_model_config
+
+    assert pm.PersonModelConfig().picture_same_positives is True
+    assert person_model_config(Settings()).picture_same_positives is True
+    off = person_model_config(Settings(VISION_PERSON_PICTURE_SAME_POSITIVES=False))
+    assert off is not None and off.picture_same_positives is False
+    # Always reconciled: flag off revokes the rows instead of leaving them behind.
+    assert pm.PICTURE_SAME_SOURCE in pm.RECONCILED_SOURCES
+
+
 def test_settings_ship_the_model_on_and_off_means_no_config() -> None:
     from app.settings import Settings
     from app.vision_individuals_loop import person_model_config
@@ -529,6 +585,58 @@ def test_a_mixed_named_cluster_adds_nothing_to_the_album(pg) -> None:
         n = conn.execute(text("SELECT count(*) FROM vision_person_exemplar e JOIN vision_crop_observation c "
                               "USING (crop_id) WHERE c.individual_id='mixed'")).scalar()
     assert s["person_impure_clusters"] == 1 and n == 0
+
+
+def _verdict(conn, ask: str, crop: str, iid: str, verdict: str, name=None) -> None:
+    from sqlalchemy import text
+
+    conn.execute(text(
+        "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
+        "crop_id, answered_at) VALUES (:a, :r, 0, :i, :v, :n, :c, :t)"),
+        {"a": ask, "r": f"crop:{crop}", "i": iid, "v": verdict, "n": name, "c": crop, "t": NOW})
+
+
+@needs_pg
+def test_confirmed_pictures_of_an_impure_group_teach_and_the_flag_takes_them_back(pg) -> None:
+    from dataclasses import replace
+
+    from sqlalchemy import text
+
+    def album(conn):
+        return {(r[0], r[1], r[2], r[3]) for r in conn.execute(text(
+            "SELECT person_label, crop_id, polarity, source FROM vision_person_exemplar "
+            "WHERE revoked_at IS NULL AND (crop_id LIKE 'mixed-%' OR crop_id = 'jun1-0')"))}
+
+    with pg.begin() as conn:
+        _world(conn)
+        for iid in ("jun1", "jun2", "jun3", "p1d0", "p2d0", "p3d0", "p4d0"):
+            conn.execute(text(
+                "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, started_at, "
+                "ended_at, dwell_sec, observation_count) SELECT 's-' || :i, :i, 'walkway', min(observed_at), "
+                "max(observed_at), 0, count(*) FROM vision_crop_observation WHERE individual_id=:i"), {"i": iid})
+        mixed = [_vec(1, 0.01 * i) for i in range(3)] + [_vec(0, 0, 0, 0, 0, 1, 0.01 * i) for i in range(3)]
+        _add_cluster(conn, "mixed", "Juniper", mixed, day=9)
+        _verdict(conn, "ask-y", "mixed-0", "mixed", "same", "Juniper")     # "Yes, that's Juniper"
+        _verdict(conn, "ask-y", "mixed-1", "mixed", "same", "Juniper")
+        _verdict(conn, "ask-u", "mixed-2", "mixed", "unsure")
+        _verdict(conn, "ask-n", "mixed-3", "mixed", "different")
+        _verdict(conn, "ask-y2", "jun1-0", "jun1", "same", "Juniper")      # its pure group already counts it
+        s = pm.run_person_model(conn, NOW, CFG)
+        got = album(conn)
+    assert s["person_impure_clusters"] == 1 and s["person_picture_same_exemplars"] == 2
+    assert got == {("Juniper", "mixed-0", 1, "picture_same"), ("Juniper", "mixed-1", 1, "picture_same"),
+                   ("Juniper", "mixed-3", -1, "picture_different"), ("Juniper", "jun1-0", 1, "cluster_label")}
+    with pg.begin() as conn:
+        assert pm.run_person_model(conn, NOW, CFG)["person_exemplars_added"] == 0     # idempotent
+        # A confirmed picture that has left its group still teaches, as a group of its own.
+        conn.execute(text("UPDATE vision_crop_observation SET individual_id = NULL WHERE crop_id = 'mixed-1'"))
+        album_now, _ = pm.load_album(conn, ZONE)
+        assert {c.cluster for c in album_now["Juniper"][1] if c.crop_id.startswith("mixed-")} == {
+            "mixed", "orphan:mixed-1"}
+        off = pm.run_person_model(conn, NOW, replace(CFG, picture_same_positives=False))
+        got = album(conn)
+    assert off["person_exemplars_revoked"] == 2 and off["person_picture_same_exemplars"] == 0
+    assert got == {("Juniper", "mixed-3", -1, "picture_different"), ("Juniper", "jun1-0", 1, "cluster_label")}
 
 
 @needs_pg

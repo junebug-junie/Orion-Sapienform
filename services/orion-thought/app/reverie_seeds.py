@@ -339,11 +339,16 @@ class LivedDoc:
 
 def pick_anchor(docs: Mapping[str, LivedDoc], with_vectors: set[str]) -> LivedDoc | None:
     """The newest live memory that has a vector: what Orion most recently kept is "now" for this seed.
+    Orion's own first-person memories (``episode_memory``) come first; a stance or person fact (Juniper's
+    words) anchors only when no episode memory has a vector. (Smoke 2026-11-24: the newest record overall
+    was a one-line person fact, a poor "now".)
 
     Spec deviation (documented): the spec's anchor is "the most salient item in the now". The now's items
     are temporal-self events, not lived memories, and have no vector in this index; embedding one would
     put a vector-host call on every reverie. The newest kept memory is the simplest honest stand-in."""
     pool = [d for d in docs.values() if d.doc_id in with_vectors]
+    own = [d for d in pool if d.doc_id.startswith("episode_memory:")]
+    pool = own or pool
     if not pool:
         return None
     floor = datetime.min.replace(tzinfo=timezone.utc)

@@ -475,3 +475,14 @@ def test_settings_ship_on_with_the_spec_defaults(monkeypatch):
     assert s.reverie_enabled is True and s.reverie_interval_sec == 60 and s.reverie_quiet_min_calm_sec == 600
     assert s.reverie_max_per_day == 8 and s.reverie_focus_max_per_day == 3
     assert s.reverie_far_memory_band_ranks == (5, 25) and s.reverie_thread_lapse_days == 14
+
+
+def test_far_memory_anchor_prefers_orions_own_memories():
+    s = seeds()
+    day = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    docs = {
+        "person_fact:p": s.LivedDoc("person_fact:p", "a fact", day + timedelta(days=9), day + timedelta(days=9)),
+        "episode_memory:e": s.LivedDoc("episode_memory:e", "mine", day, day),
+    }
+    assert s.pick_anchor(docs, set(docs)).doc_id == "episode_memory:e"
+    assert s.pick_anchor({"person_fact:p": docs["person_fact:p"]}, {"person_fact:p"}).doc_id == "person_fact:p"

@@ -34,6 +34,7 @@ def test_writable_self_inquiry_prompt_carries_the_stamped_testing_command() -> N
     assert COUNT in text
     assert STAMP in text
     assert f'MERGE (v:PriorRevision {{prior_id: "...", run_id: "{RUN}",' in text
+    assert "Inconclusive is a real answer: run the counting command" in text
     assert "<RUN_ID>" not in text
 
 
@@ -58,6 +59,8 @@ def test_kickoff_and_self_inquiry_show_the_same_testing_command() -> None:
 
 
 def test_a_test_written_with_the_command_is_counted_and_one_without_the_stamp_is_not() -> None:
+    """Pins the scorer behaviour the prompt fix relies on (unchanged by #3375): only a stamped
+    test counts. The prompt tests above are the regression guard."""
     before = {
         "self:a": PriorState("self:a", 0.6, 1, "open", last_run_id="older", run_id="older"),
         "self:b": PriorState("self:b", 0.6, 0, "open", run_id="older"),

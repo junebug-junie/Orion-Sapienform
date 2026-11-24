@@ -1052,7 +1052,7 @@ def schedule(
                     out.append(SwapUnload(seat, "operator_released"))
                 elif over and seat not in frozen_seats:   # frozen: its unload cannot happen, keep the holders
                     for l in holders:
-                        if l.status == "granted":
+                        if l.status == "granted" and l.lease_id not in expiring:
                             recall(l, "max_hold")
             elif _warm(spec):
                 pass   # warm standby: stays loaded while idle; only a resident's demand drains it

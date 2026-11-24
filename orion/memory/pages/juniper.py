@@ -102,7 +102,9 @@ def sources_from_rows(person_rows: Iterable[Mapping[str, Any]],
             continue
         state = str(row.get("confirmation_state") or "")
         confirmed = {"confirmed": "Juniper confirmed it", "pending_confirmation": "not yet confirmed",
-                     "not_asked": "not yet confirmed"}.get(state, "")
+                     "not_asked": "not yet confirmed",
+                     # Orion's own thought, never asked (issue #3840): Orion's view, not a fact about her.
+                     "own_thought": "my own thought, not checked with Juniper"}.get(state, "")
         purpose = str(row.get("purpose") or "")
         label = f"my memory ({purpose}{', ' + confirmed if confirmed else ''})"
         out.append(PageSource(

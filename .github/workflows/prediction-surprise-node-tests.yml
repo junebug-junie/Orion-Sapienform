@@ -21,6 +21,9 @@ on:
       - "orion/attention/self_readings.py"
       - "orion/substrate/attention_broadcast.py"
       - "orion/substrate/endogenous_curiosity.py"
+      - "orion/substrate/curiosity_seed_bar.py"
+      - "orion/substrate/tests/test_curiosity_seed_bar.py"
+      - "orion/substrate/tests/fixtures/chat_turn_calibrated_q_2026-11-24.json"
       - "orion/metrics/semantics.py"
       - "config/field/field_channel_glossary.v1.yaml"
       - "services/orion-substrate-runtime/**"
@@ -33,6 +36,8 @@ on:
       - "orion/substrate/prediction_joint_surprise.py"
       - "orion/schemas/prediction.py"
       - "orion/attention/world_first.py"
+      - "orion/substrate/endogenous_curiosity.py"
+      - "orion/substrate/curiosity_seed_bar.py"
       - "services/orion-substrate-runtime/**"
       - ".github/workflows/prediction-surprise-node-tests.yml"
 
@@ -57,6 +62,8 @@ jobs:
             orion/substrate/tests/test_prediction_turn_surprise.py \
             orion/substrate/tests/test_prediction_joint_surprise.py \
             orion/substrate/tests/test_endogenous_curiosity.py \
+            orion/substrate/tests/test_curiosity_seed_bar.py \
+            services/orion-substrate-runtime/evals/test_curiosity_seed_bar_replay_eval.py \
             tests/test_attention_world_first.py \
             tests/test_room_joint_world_source.py \
             tests/test_attention_self_readings.py

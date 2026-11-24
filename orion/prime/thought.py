@@ -247,19 +247,22 @@ ends 3 days after you made it, even if you kept it. One move per thought:
 
 # The reply template's closing text (arc and event mode alike). With the now in the frame, system_prompt puts the
 # top-level "refs" (experience cites) INTO the template: appended only as a later paragraph, the model followed the
-# template and never cited (#3425; 2026-11-24: 1 cite in 73 live Prime thoughts).
+# template and never cited (#3425; 11-16..11-24 live: 1 of 70 Prime thoughts shown a now cited).
 _REPLY_CLOSE = '"id": "..."}]}}'
-_REPLY_CLOSE_WITH_CITES = ('"id": "..."}]},\n "refs": [] | [{"kind": "experience", "id": "<the id after experience:>"}]}')
+assert SYSTEM_PROMPT.count(_REPLY_CLOSE) == 1, "the reply template's closing text moved; update _REPLY_CLOSE"
+_REPLY_CLOSE_WITH_CITES = ('"id": "..."}]},\n'
+                           ' "refs": [] | [{"kind": "experience", "id": "<the id after experience:>"}]}')
 
 
 EXPERIENCE_PROMPT = """
 
 WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT lists what Orion's other organs recorded since then (readings,
 curiosity runs, camera sightings, prediction surprises, reveries ...), highest salience first, each with its
-[experience:<id>]. When one of them shaped this thought, cite it in the answer's top-level "refs" (the last key
-of the reply above, not the move's refs): [{"kind": "experience", "id": "<the id after experience:>"}], at most 3,
-only ones you actually used. If your reading mentions something from that section, cite it.
-Citing nothing is a normal answer when nothing there shaped the thought. Copy ids exactly; an id the section did not list is not recorded.
+[experience:<id>]. When one of them shaped this thought, cite it in the top-level "refs" key at the end of the
+JSON reply template (not the move's refs): [{"kind": "experience", "id": "<the id after experience:>"}], at most 3,
+only ones you actually used. If your reading draws on something from that section, cite it.
+Citing nothing is a normal answer when nothing there shaped the thought. Copy ids exactly; an id the section
+did not list is not recorded.
 Never write an experience id in a question's "question" or "why": a curiosity run cannot open one; say what
 happened in words."""
 
@@ -295,6 +298,9 @@ def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: b
     if events:
         base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
                 .replace(_ARC_REFS, _EVENT_REFS).replace(_ARC_REFS_JSON, _EVENT_REFS_JSON))
+    if experiences:
+        # Before any paragraph is appended: only the template's own closing text is swapped (#3425).
+        base = base.replace(_REPLY_CLOSE, _REPLY_CLOSE_WITH_CITES, 1)
     if receptors and any(receptors.values()):
         base += REGULATE_PROMPT
     if take_on:
@@ -302,7 +308,7 @@ def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: b
     if organ_replies:
         base += ORGAN_REPLIES_PROMPT
     if experiences:
-        base = base.replace(_REPLY_CLOSE, _REPLY_CLOSE_WITH_CITES) + EXPERIENCE_PROMPT
+        base += EXPERIENCE_PROMPT
     if needs:
         base += NEEDS_PROMPT
     return base

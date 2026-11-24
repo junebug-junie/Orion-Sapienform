@@ -115,7 +115,7 @@ def _reply_template(prompt: str) -> str:
 
 
 def test_the_reply_template_itself_carries_the_experience_cites_when_the_now_is_shown():
-    """#3425: live 11-16..11-24 Prime cited in 1 of 73 thoughts that were shown a now. The cite instruction was a
+    """#3425: live 11-16..11-24 Prime cited in 1 of 70 thoughts that were shown a now. The cite instruction was a
     paragraph after the template, and the template's only "refs" sat inside the move (arc/act only), so the
     model followed the template. The top-level refs must be IN the template, in arc and event mode alike, with
     regulate and take-on on (their paragraphs sit between the template and the cite paragraph live)."""
@@ -133,7 +133,8 @@ def test_the_reply_template_itself_carries_the_experience_cites_when_the_now_is_
 
 
 def test_an_answer_written_to_the_new_template_records_its_cites():
-    """An answer shaped exactly like the template (top-level refs after the move) keeps its shown cites."""
+    """An answer shaped exactly like the template (top-level refs after the move) keeps its shown cites.
+    Characterization, not the regression: the parser already accepted top-level refs before #3425."""
     raw = {"reading": "the closet ran hot after the reading", "pick": "none",
            "concerns": {"keep": [], "add": [], "drop": []}, "move": None,
            "refs": [{"kind": "experience", "id": SHOWN[0]}, {"kind": "experience", "id": f"experience:{SHOWN[2]}"}]}

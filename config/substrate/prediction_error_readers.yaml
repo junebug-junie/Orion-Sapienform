@@ -7,7 +7,10 @@
 # the value in node metadata signal_value and in substrate_node_signal_history, history readers read
 # both tables (orion/prediction/signal_history_sql.py HISTORY_WITH_MOVED_SOURCE_SQL) until the old PE
 # rows age out, and the gate below also FAILS any producer that writes prediction_error for one of
-# them (moved-node writer fence).
+# them (moved-node writer fence). Since Patch 3 (2026-11-24) the two cameras (node:substrate.perception,
+# .perception_walkway) are moved too: camera scene change in signal_value / the signal table, read
+# signal-table-only with scale IN ('v2','v2_partial'); the gate fails any producer writing
+# prediction_error for them and any SQL naming the signal table with a camera id and no scale predicate.
 #
 # Every non-test Python file that touches prediction_error (names the history table, or reads the
 # "prediction_error" key or attribute) either skips alarms itself (calls is_alarm_node / uses
@@ -35,10 +38,6 @@ files:
   services/orion-equilibrium-service/app/self_signal_episode_gate.py:
     class: alarm_aware
     reason: the metacog episode gate; judge_candidate per node (trigger rule), labels via node_signal_label
-  orion/introspect/node_history.py:
-    class: alarm_aware
-    reason: one requested node at a time, no ranking; reads the alarms read-both from the signal table and
-      _signal_noun uses ALARM_LABELS to say "an alarm"
   services/orion-substrate-runtime/app/worker.py:
     class: alarm_aware
     reason: writes the alarm nodes and samples history for the contest; labels via ALARM_LABELS; self-model
@@ -63,9 +62,6 @@ files:
     class: single_node
     reason: reads the field prediction_error of the node ids its callers pass (none since 2026-11-24),
       one SQL JSON path per named node
-  services/orion-field-digester/app/digestion/decay.py:
-    class: single_node
-    reason: decay horizons for node:substrate.perception and node:substrate.perception_walkway only
   # --- not_a_reader ------------------------------------------------------------------------------
   orion/attention/field_attention/candidate_precision_weighted.py:
     class: not_a_reader

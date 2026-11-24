@@ -513,17 +513,19 @@ def _prediction_error_label(node_id: str) -> str:
     -- a non-empty string that is not a label, just the id said twice. See
     docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
 
-    ``node:substrate.perception`` -> ``"Perception prediction error"``.
+    ``node:substrate.chat`` -> ``"Chat prediction error"``; a signal node gets its own name
+    (``node:substrate.perception`` -> ``"Room camera scene change"``).
     Falls back to the raw node_id if it does not match the expected shape --
     never returns an empty label (the schema requires one) and never invents a
     domain name that is not in the id.
     """
-    from orion.substrate.prediction_error_freshness import ALARM_LABELS
+    from orion.substrate.prediction_error_freshness import SIGNAL_NODE_LABELS
 
-    alarm = ALARM_LABELS.get(str(node_id or "").strip())
+    alarm = SIGNAL_NODE_LABELS.get(str(node_id or "").strip())
     if alarm:
-        # An alarm is not a prediction error (cabinet warming alarm, strain
-        # news, street event alarm): the atlas and reverie read this label.
+        # An alarm or a camera is not a prediction error (cabinet warming alarm,
+        # strain news, street event alarm; room / walkway camera scene change):
+        # the atlas and reverie read this label.
         return f"{alarm[:1].upper()}{alarm[1:]}"
     domain = str(node_id or "").strip()
     for prefix in ("node:substrate.", "node:", "substrate."):
@@ -2310,7 +2312,18 @@ class BiometricsSubstrateWorker:
         ):
             self._log_perception_score(stream_id, result, node_id="none")
             return
-        if stream_id in self._perception_walkway_stream_ids():
+        walkway_stream = stream_id in self._perception_walkway_stream_ids()
+        if result.raw_surprise is not None:
+            # Camera scene change stage 1 (PE retire Patch 3): rank this frame's raw 1 - cos
+            # against the same stream's last 2 h. Fed under either scorer, so a switch back from
+            # legacy_z finds a warm window.
+            self._scene_change_observe(
+                PERCEPTION_WALKWAY_NODE_ID if walkway_stream else PERCEPTION_NODE_ID,
+                stream_id,
+                now,
+                result.raw_surprise,
+            )
+        if walkway_stream:
             # Walkway group: its own node, its own cache. Nothing below this
             # branch (room score, room vector cache) moves.
             walkway = self._perception_walkway_state()
@@ -2339,6 +2352,69 @@ class BiometricsSubstrateWorker:
             with self._perception_room_lock():
                 self._last_perception_prediction_error = result.score
         self._log_perception_score(stream_id, result, node_id=PERCEPTION_NODE_ID)
+
+    # --- camera scene change (PE retire Patch 3, orion/substrate/scene_change.py) ------------
+
+    def _scene_change_lock(self) -> threading.Lock:
+        # getattr: tests build the worker via __new__ and skip __init__.
+        lock = getattr(self, "_scene_change_scorer_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._scene_change_scorer_lock = lock
+        return lock
+
+    def _scene_change_scorer_for(self, node_id: str) -> Any:
+        """The node's scorer (caller holds ``_scene_change_lock``)."""
+        from orion.substrate.scene_change import SceneChangeScorer
+
+        scorers = getattr(self, "_scene_change_scorers", None)
+        if scorers is None:
+            scorers = self._scene_change_scorers = {}
+        scorer = scorers.get(node_id)
+        if scorer is None:
+            scorer = scorers[node_id] = SceneChangeScorer()
+        return scorer
+
+    def _scene_change_scorer_mode(self) -> str:
+        mode = str(getattr(self._settings, "perception_scene_change_scorer", "rank_v2") or "rank_v2")
+        if mode not in ("rank_v2", "legacy_z"):
+            if not getattr(self, "_scene_change_mode_warned", False):
+                self._scene_change_mode_warned = True
+                logger.warning("substrate_scene_change_scorer_unknown value=%s using=rank_v2", mode)
+            return "rank_v2"
+        return mode
+
+    def _scene_change_observe(self, node_id: str, stream_id: str, now: datetime, raw: float) -> None:
+        try:
+            with self._scene_change_lock():
+                self._scene_change_scorer_for(node_id).observe(stream_id, now, raw)
+        except Exception:  # noqa: BLE001 -- never costs the legacy score or the frame
+            logger.warning("substrate_scene_change_observe_failed node_id=%s", node_id, exc_info=True)
+
+    def _scene_change_tick(self, node_id: str, now: datetime) -> Any:
+        """Stage 2 for one camera node this tick. Restores the saved stage-2 history on the first
+        tick (a failed load is retried next tick and nothing is saved until it succeeds, so a DB
+        hiccup at boot never overwrites 24 h of saved values), and saves it when a value is added.
+        """
+        with self._scene_change_lock():
+            scorer = self._scene_change_scorer_for(node_id)
+            if not scorer.restored:
+                try:
+                    payload = self._store.load_scene_change_stage2(node_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("substrate_scene_change_stage2_load_failed node_id=%s err=%s", node_id, exc)
+                    payload = False
+                if payload is not False:
+                    n = scorer.restore_stage2(payload, now=now)
+                    logger.info("substrate_scene_change_stage2_restored node_id=%s values=%d", node_id, n)
+            reading, sampled = scorer.tick(now)
+            snapshot = scorer.stage2_to_json() if sampled and scorer.restored else None
+        if snapshot is not None:
+            try:
+                self._store.save_scene_change_stage2(node_id, snapshot)
+            except Exception as exc:  # noqa: BLE001 -- the in-memory window keeps going
+                logger.warning("substrate_scene_change_stage2_save_failed node_id=%s err=%s", node_id, exc)
+        return reading
 
     def _perception_walkway_stream_ids(self) -> frozenset[str]:
         return _parse_stream_ids(
@@ -2486,18 +2562,18 @@ class BiometricsSubstrateWorker:
         stream_id: str | None,
         now: datetime,
     ) -> None:
-        """One perception node's tick. ``cached_score`` is the latest scored
-        frame since the last publish (None = no scored frame in the window).
+        """One camera node's tick: its camera scene change (PE retire Patch 3).
 
-        A real reading publishes that score. Missing input -- embeddings stale,
-        baseline still warming, or no scored frame in the window -- still
-        writes the receipt and graph node, marked with
-        ``prediction_error_missing_reason``. The receipt then carries no value,
-        so the field digester drops the field channel (absent, not 0.0). The
-        graph node keeps a 0.0 placeholder plus the reason, so it is never
-        recorded in substrate_node_prediction_error_history and never read as
-        calm (orion/substrate/prediction_error_freshness.py). Raises on
-        failure; the caller isolates each node."""
+        ``rank_v2`` (default, ``SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER``): stage 2 of the
+        two-stage rank (``_scene_change_tick``) over the trailing 5 min of frames, in nats.
+        ``legacy_z`` (rollback): ``cached_score``, the latest legacy clipped z not yet published.
+
+        A real reading writes the value to the node's ``signal_value`` with its ``signal_scale``.
+        Missing input -- embeddings stale, scorer still warming, or no scored frame -- still
+        writes the graph node, as a 0.0 placeholder marked ``prediction_error_missing_reason``, so
+        it is never recorded in substrate_node_signal_history and never read as calm
+        (orion/substrate/prediction_error_freshness.py). No field receipt: the cameras left the
+        field's prediction_error channel. Raises on failure; the caller isolates each node."""
         last_at = embedding_at
         if last_at is None:
             # Nothing observed since this process started -- same startup-
@@ -2558,79 +2634,74 @@ class BiometricsSubstrateWorker:
         # this, 49 h of stale zeros (2026-10-18..20) made 31% of the room
         # camera's 7-day window exact 0.0 placeholders: its p90 read 0.137
         # against 0.205 over live hours only, so ordinary frames ranked "high".
-        still_warming = staleness < 1.0 and surprise_n < 2
-        missing_reason: str | None = None
-        if staleness >= 1.0:
-            score = 0.0
-            missing_reason = PERCEPTION_MISSING_STALE
-        elif still_warming:
-            score = 0.0
-            missing_reason = PERCEPTION_MISSING_WARMING
-            logger.info(
-                "%s_tick_still_warming stream_id=%s surprise_n=%d",
-                log_prefix,
-                stream_id or "none",
-                surprise_n,
-            )
-        elif cached_score is None:
-            score = 0.0
-            missing_reason = PERCEPTION_MISSING_NO_FRAME
-        else:
-            score = cached_score
+        # PE retire Patch 3 (2026-11-24): the value is camera scene change, not a prediction
+        # error. It is written to the node's signal_value (``_write_signal_node``) and reaches
+        # history as substrate_node_signal_history rows; no prediction_error key, no PE-table
+        # row, and no field receipt (the camera left the field's prediction_error channel, and
+        # its decay entries left orion-field-digester's decay.py in the same patch).
+        from orion.prediction.signal_history_sql import SCALE_V1
 
-        # Receipt on EVERY tick, unconditionally -- NOT gated on
-        # score > 0.0. This mirrors
-        # the retired vision-channel tick's receipt (it lived a few hundred lines above
-        # in this file), and for the identical
-        # documented reason: the receipt is the ONLY path into
-        # orion-field-digester's field-node-vector `prediction_error`
-        # channel (state_deltas.py's `target_kind == "prediction_signal"`
-        # perturbation, a separate write path from the FalkorDB
-        # substrate-graph node `_write_prediction_error_node` writes
-        # below). Gating this receipt would
-        # reproduce the exact bug the retired vision-channel tick's comment
-        # documents fixing on this same node shape: a real spike writes
-        # the field vector high, then a calm tick with score == 0.0 never
-        # sends a corrective receipt, so the field vector never refreshes
-        # back down -- confirmed live there as a stuck
-        # prediction_error=0.5714 while the eye was actually healthy.
-        #
-        # 2026-11-10 (PE suite rebuild spec, retire step 8): a missing tick's
-        # receipt carries the missing_reason and NO prediction_error value, so
-        # the digester drops the field channel (absent = unmeasured) instead of
-        # writing the 0.0 placeholder into it. Still sent every tick: absence
-        # has to replace a stale held spike just as a real 0.0 replaces it.
-        self._store.save_receipt(
-            _prediction_error_receipt(
-                reducer_key=reducer_key,
-                node_id=node_id,
-                prediction_error=None if missing_reason else score,
-                missing_reason=missing_reason,
-                now=now,
-            )
-        )
-        # Written every tick, not only on fault -- same "must not
-        # outlive its own evidence" reasoning as the retired
-        # node:substrate.vision and node:substrate.bus_synaptic: a node that can only go
-        # up and never refresh back down to a genuine calm reading
-        # produces permanent false alarms in any future consumer polling
-        # its raw value.
-        self._write_prediction_error_node(
+        missing_reason: str | None = None
+        scale: str | None = None
+        detail = ""
+        if self._scene_change_scorer_mode() == "rank_v2":
+            # Ticked even while stale, so its trailing window and stage-2 clock keep moving.
+            reading = self._scene_change_tick(node_id, now)
+            if staleness >= 1.0:
+                score, missing_reason = 0.0, PERCEPTION_MISSING_STALE
+            elif reading.missing_reason is not None:
+                score, missing_reason = 0.0, reading.missing_reason
+                if reading.missing_reason == PERCEPTION_MISSING_WARMING:
+                    logger.info(
+                        "%s_tick_still_warming stream_id=%s stage2_values=%d",
+                        log_prefix, stream_id or "none", reading.n_stage2,
+                    )
+            else:
+                score, scale = float(reading.value), reading.scale
+            detail = (
+                f" m={reading.m:.5f}" if reading.m is not None else " m=none"
+            ) + (
+                f" p2={reading.p2:.5f}" if reading.p2 is not None else " p2=none"
+            ) + f" stage2_n={reading.n_stage2} recent_n={reading.n_recent}"
+        else:
+            # legacy_z rollback: the old clipped EWMA z, scale v1 (never read by the contests).
+            # `< 2`, not `< 1`: the scalar surprise EWMA gives its first z only once surprise.n
+            # was already >= 1 going in (orion/bus/ewma.py; review finding 2026-08-20).
+            still_warming = staleness < 1.0 and surprise_n < 2
+            if staleness >= 1.0:
+                score, missing_reason = 0.0, PERCEPTION_MISSING_STALE
+            elif still_warming:
+                score, missing_reason = 0.0, PERCEPTION_MISSING_WARMING
+            elif cached_score is None:
+                score, missing_reason = 0.0, PERCEPTION_MISSING_NO_FRAME
+            else:
+                score, scale = cached_score, SCALE_V1
+
+        # Written every tick, placeholder or not -- same "must not outlive its own evidence"
+        # reasoning as the retired node:substrate.vision: a node that can only go up and never
+        # refresh back down produces permanent false alarms in any consumer polling its value. A
+        # placeholder (stale / warming / no frame) carries prediction_error_missing_reason, so the
+        # history sampler never records it and readers never read it as calm.
+        self._write_signal_node(
             node_id=node_id,
-            error=score,
+            value=score,
             now=now,
             reducer_key=reducer_key,
             extra_channels={"embedding_staleness": staleness},
             missing_reason=missing_reason,
+            signal_scale=None if missing_reason else scale,
         )
         logger.info(
-            "%s_tick_completed age_sec=%.1f staleness=%.3f score=%.3f stream_id=%s missing=%s",
+            "%s_tick_completed age_sec=%.1f staleness=%.3f scene_change=%.3f scale=%s stream_id=%s "
+            "missing=%s%s",
             log_prefix,
             age_seconds,
             staleness,
             score,
+            scale or "none",
             stream_id or "none",
             missing_reason or "no",
+            detail,
         )
 
     async def _perception_prediction_error_tick_loop(self) -> None:
@@ -2824,13 +2895,19 @@ class BiometricsSubstrateWorker:
         reducer_key: str = "",
         contributing_id: str | None = None,
         evidence_event_ids: Sequence[str] = (),
+        extra_channels: dict[str, float] | None = None,
+        missing_reason: str | None = None,
+        signal_scale: str | None = None,
     ) -> bool:
-        """Write a moved signal node (cabinet, strain, street alarms; PE retire Patch 2).
+        """Write a moved signal node: the cabinet, strain and street alarms (PE retire Patch 2) and
+        the two camera scene-change nodes (Patch 3).
 
         Same node, identity and ownership as ``_write_prediction_error_node``, but the value goes
-        in ``metadata['signal_value']`` with ``signal_kind`` (``alarm``), and ``prediction_error``
-        is not set -- so the first write after deploy clears the old key on the graph (the codec
-        encodes an absent key as None). Refuses any node that is not moved."""
+        in ``metadata['signal_value']`` with ``signal_kind`` (``alarm`` / ``scene_change``), and
+        ``prediction_error`` is not set -- so the first write after deploy clears the old key on
+        the graph (the codec encodes an absent key as None). A camera also writes
+        ``signal_scale`` (the history row's scale), ``embedding_staleness`` and, for a placeholder,
+        ``prediction_error_missing_reason``. Refuses any node that is not moved."""
         from orion.substrate.signal_history import is_moved_signal_node, signal_kind_for
 
         if not is_moved_signal_node(node_id):
@@ -2846,7 +2923,10 @@ class BiometricsSubstrateWorker:
             reducer_key=reducer_key,
             contributing_id=contributing_id,
             evidence_event_ids=evidence_event_ids,
+            extra_channels=extra_channels,
+            missing_reason=missing_reason,
             signal_kind=signal_kind_for(node_id),
+            signal_scale=signal_scale,
         )
 
     def _upsert_value_node(
@@ -2861,11 +2941,14 @@ class BiometricsSubstrateWorker:
         extra_channels: dict[str, float] | None = None,
         missing_reason: str | None = None,
         signal_kind: str | None = None,
+        signal_scale: str | None = None,
     ) -> bool:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
 
         ``signal_kind`` (PE retire Patch 2): set for a moved signal node. The value is written to
-        ``signal_value`` / ``signal_kind`` instead of ``prediction_error``.
+        ``signal_value`` / ``signal_kind`` instead of ``prediction_error``. An alarm's value is
+        clamped to 0..1 as before; a camera's scene change (Patch 3) is nats and is written
+        unclamped, with ``signal_scale``; its salience is the 0..1 ``signal_unit_value``.
 
         ``missing_reason`` (2026-10-21): set when ``error`` is a placeholder
         because the producer's input is missing; written to
@@ -2946,14 +3029,27 @@ class BiometricsSubstrateWorker:
 
             salience = max(0.0, min(1.0, error))
             if signal_kind:
-                from orion.substrate.signal_history import SIGNAL_KIND_KEY, SIGNAL_VALUE_KEY
+                from orion.substrate.signal_history import (
+                    SIGNAL_KIND_KEY,
+                    SIGNAL_KIND_SCENE_CHANGE,
+                    SIGNAL_SCALE_KEY,
+                    SIGNAL_VALUE_KEY,
+                    signal_unit_value,
+                )
 
+                stored = salience
+                if signal_kind == SIGNAL_KIND_SCENE_CHANGE:
+                    # Nats (0 .. 4.67), not a 0..1 score: never clamped at 1.
+                    stored = max(0.0, float(error))
+                    salience = max(0.0, min(1.0, signal_unit_value(node_id, stored)))
                 metadata: dict[str, Any] = {
                     "source_kind": "substrate_signal",
-                    SIGNAL_VALUE_KEY: round(salience, 6),
+                    SIGNAL_VALUE_KEY: round(stored, 6),
                     SIGNAL_KIND_KEY: signal_kind,
                     "reducer_key": reducer_key,
                 }
+                if signal_scale:
+                    metadata[SIGNAL_SCALE_KEY] = str(signal_scale)
             else:
                 metadata = {
                     "source_kind": "substrate_prediction_error",
@@ -3751,22 +3847,27 @@ class BiometricsSubstrateWorker:
     # 500 rows covers about an hour of a missing table; older rows are left to the backfill.
     _SIGNAL_HISTORY_PENDING_MAX = 500
 
-    def _write_signal_history(self, samples: list[tuple[str, datetime, float]]) -> list[Any] | None:
+    def _write_signal_history(
+        self,
+        samples: list[tuple[str, datetime, float]],
+        scales: dict[tuple[str, datetime], str] | None = None,
+    ) -> list[Any] | None:
         """Write the signal nodes' readings into substrate_node_signal_history.
 
-        PE retire Patch 2: a moved node (the alarms) lives ONLY here, so its rows are written
-        whatever ``SUBSTRATE_SIGNAL_HISTORY_ENABLED`` says; the flag now gates only the cameras'
-        Patch 1 dual-write (their PE-table row is still written). Fails open (a missing table
+        A moved node (the alarms since PE retire Patch 2, the cameras since Patch 3) lives ONLY
+        here; every signal node is moved now, so there is no flag. Fails open (a missing table
         logs, never costs the tick). A failed write is kept (newest _SIGNAL_HISTORY_PENDING_MAX
         rows, deduped on (node_id, observed_at)) and retried with the next write. Returns the
         rows that landed (this call's and any retried pending ones, so the caller can put a
-        retried alarm reading into its window too), or None when the write failed."""
+        retried alarm reading into its window too), or None when the write failed.
+
+        Each row carries its ``scale`` (``scales``: (node_id, observed_at) -> the camera node's
+        ``signal_scale``; 'v1' when absent, i.e. every alarm row)."""
         from orion.substrate.signal_history import is_moved_signal_node, signal_samples
 
-        dual_write = bool(getattr(self._settings, "signal_history_enabled", False))
         rows: list[Any] = list(getattr(self, "_signal_history_pending", None) or [])
         try:
-            rows += [r for r in signal_samples(samples) if dual_write or is_moved_signal_node(r[0])]
+            rows += [r for r in signal_samples(samples, scales) if is_moved_signal_node(r[0])]
             # A failed alarm row is re-sampled next tick (its observed_at did not advance), so
             # dedupe: the cap must hold distinct readings, not copies of one.
             rows = list({(r[0], r[1]): r for r in rows}.values())
@@ -3866,8 +3967,16 @@ class BiometricsSubstrateWorker:
             }
         last_observed: dict[str, datetime] = self._pe_history_last_observed
 
+        from orion.substrate.signal_history import (
+            CURRENT_SCALES,
+            SCALE_V1,
+            SIGNAL_SCALE_KEY,
+            is_camera_scene_change_node,
+        )
+
         current: dict[str, tuple[float, datetime]] = {}
         new_samples: list[tuple[str, datetime, float]] = []
+        sample_scales: dict[tuple[str, datetime], str] = {}
         for node in nodes:
             node_id = str(getattr(node, "node_id", "") or "")
             if not node_id.startswith(self._PE_HISTORY_NODE_PREFIX):
@@ -3887,17 +3996,27 @@ class BiometricsSubstrateWorker:
                     observed_at.isoformat(),
                 )
                 continue
-            current[node_id] = reading
+            scale: str | None = None
+            if is_camera_scene_change_node(node_id):
+                # The row's scale is the node's own (PE retire Patch 3): v2 / v2_partial, or v1
+                # under the legacy_z rollback scorer. An old-scale reading is stored, but it gets
+                # no magnitude: it would be ranked against a window of the other scale.
+                metadata = getattr(node, "metadata", None) or {}
+                scale = str(metadata.get(SIGNAL_SCALE_KEY) or SCALE_V1)
+            if scale is None or scale in CURRENT_SCALES:
+                current[node_id] = reading
             previous = last_observed.get(node_id)
             if previous is not None and previous >= observed_at:
                 continue  # observed_at has not moved: stale, no new sample
             new_samples.append((node_id, observed_at, value))
+            if scale is not None:
+                sample_scales[(node_id, observed_at)] = scale
 
         if new_samples:
             from orion.substrate.signal_history import is_moved_signal_node, split_history_samples
 
-            # PE retire Patch 2: a moved alarm's reading goes to the signal table only; every
-            # other node keeps its PE row (the cameras are also dual-written, Patch 1).
+            # PE retire Patch 2/3: a moved node's reading (alarms, cameras) goes to the signal
+            # table only; every other node keeps its PE row.
             pe_rows, _ = split_history_samples(new_samples)
             landed: list[tuple[str, datetime, float]] = []
             try:
@@ -3911,9 +4030,17 @@ class BiometricsSubstrateWorker:
                 landed += pe_rows
             # Alarm rows (this tick's and any retried pending ones) enter the window only once
             # they landed in their one table. A retry that lands late is inserted in order.
-            for node_id, observed_at, value, _kind in self._write_signal_history(new_samples) or []:
-                if is_moved_signal_node(node_id):
-                    landed.append((node_id, observed_at, value))
+            for row in self._write_signal_history(new_samples, sample_scales) or []:
+                node_id, observed_at, value = row[0], row[1], row[2]
+                if not is_moved_signal_node(node_id):
+                    continue
+                # A camera row on the old scale (legacy_z rollback) is stored but never enters
+                # the ranking window: readers read current-scale camera rows only.
+                if is_camera_scene_change_node(node_id) and (row[4] if len(row) > 4 else SCALE_V1) not in CURRENT_SCALES:
+                    if last_observed.get(node_id) is None or observed_at > last_observed[node_id]:
+                        last_observed[node_id] = observed_at
+                    continue
+                landed.append((node_id, observed_at, value))
             for node_id, observed_at, value in sorted(landed, key=lambda r: r[1]):
                 window = cache.setdefault(node_id, deque())
                 if window and observed_at <= window[-1][0]:

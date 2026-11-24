@@ -34,22 +34,26 @@ probability 0.084 at any bar below 0.95. The rate depends on the mix of stated p
 fixture test (orion/substrate/tests/test_curiosity_seed_bar.py) pins it and the replay eval re-measures it
 (services/orion-substrate-runtime/evals/run_curiosity_seed_bar_replay_eval.py).
 
-Camera nodes keep the old bar. ``node:substrate.perception`` / ``perception_walkway`` store a clipped
-EWMA z of embedding change, not a forecast miss. Patch 3 of #3781 replaces their seed with a scene-change
-seed, so they stay at 0.55 until then.
+The camera nodes (PE retire Patch 3, 2026-11-24). ``node:substrate.perception`` / ``perception_walkway``
+no longer store a clipped z; their value is camera scene change (orion/substrate/scene_change.py), read
+from ``signal_value`` in nats, unclamped: ``max(0, -ln p2 - 1)`` with p2 a calibrated rank. Under calm
+p2 is uniform, so the value crosses 2.0 nats with probability e^-3 = 5.0 % (the #3821 rule): bar 2.0.
+Their ceiling is the largest reachable value, ln(288 + 1) - 1 = 4.67 nats (stage 2 ranks against at most
+288 values), derived from the window size, not from a replay maximum.
 
 Any other node uses ``EndogenousCuriosityConfig.min_prediction_error`` (0.55). Retired and alarm nodes
 never seed, whatever their bar (endogenous_curiosity.py checks them first).
 
 Signal strength. The frontier evaluator invokes only when the top signal's strength is >= 0.5, and it
 ranks seeds of every source by strength. A crossing therefore maps onto one shared scale:
-``0.55`` at the node's own bar, ``1.0`` at its ceiling (``seed_strength``). For a 0.55 bar this is the
-identity, so the camera nodes rank exactly as before. Ranking change: a node with a higher bar now
+``0.55`` at the node's own bar, ``1.0`` at its ceiling (``seed_strength``; the ceiling is 1.0 unless
+``CURIOSITY_SEED_CEILING_BY_NODE_ID`` names one, as it does for the cameras: 0.55 at 2.0 nats, 1.0 at
+4.67). For a 0.55 bar and ceiling 1.0 this is the identity. Ranking change: a node with a higher bar now
 ranks below its raw value (a forecast reading of 0.8 has strength 0.73; a chat reading of 0.9 has
 0.775), so repair-pressure and open-loop seeds, which keep their raw strength, win budget slots they
 used to lose to it.
 
-Rollback: delete an entry (that node falls back to 0.55), or empty the dict.
+Rollback: delete an entry (that node falls back to 0.55 and ceiling 1.0), or empty the dicts.
 """
 from __future__ import annotations
 
@@ -70,10 +74,13 @@ Z_FULL_SCALE = 3.0
 FORECAST_Z_CUT = 2.0
 # Chat turns: exact calm crossing rate of the live bets <= 5 % (4.6 % on 2026-11-17..24).
 CHAT_TURN_Z_CUT = 2.4
-# Pre-#3821 bar; camera nodes and unlisted nodes keep it.
+# Pre-#3821 bar; unlisted nodes keep it.
 LEGACY_BAR = 0.55
 # Strength a crossing gets exactly at its node's bar.
 STRENGTH_AT_BAR = 0.55
+# Camera scene change (nats): calm crossing e^-3 = 5.0 % at 2.0; largest value ln(289) - 1.
+SCENE_CHANGE_BAR_NATS = 2.0
+SCENE_CHANGE_CEILING_NATS = 4.666426688112432  # == orion.substrate.scene_change.SCENE_CHANGE_CAP_NATS (test)
 
 CURIOSITY_SEED_BAR_BY_NODE_ID: dict[str, float] = {
     ROOM_NODE_ID: FORECAST_Z_CUT / Z_FULL_SCALE,
@@ -81,8 +88,15 @@ CURIOSITY_SEED_BAR_BY_NODE_ID: dict[str, float] = {
     ROOM_JOINT_NODE_ID: FORECAST_Z_CUT / Z_FULL_SCALE,
     BODY_JOINT_NODE_ID: FORECAST_Z_CUT / Z_FULL_SCALE,
     CHAT_TURN_NODE_ID: CHAT_TURN_Z_CUT / Z_FULL_SCALE,
-    PERCEPTION_NODE_ID: LEGACY_BAR,
-    PERCEPTION_WALKWAY_NODE_ID: LEGACY_BAR,
+    PERCEPTION_NODE_ID: SCENE_CHANGE_BAR_NATS,
+    PERCEPTION_WALKWAY_NODE_ID: SCENE_CHANGE_BAR_NATS,
+}
+
+# A node whose value is not on a 0..1 scale names its ceiling here (the value that maps to strength
+# 1.0). Every other node's ceiling is 1.0.
+CURIOSITY_SEED_CEILING_BY_NODE_ID: dict[str, float] = {
+    PERCEPTION_NODE_ID: SCENE_CHANGE_CEILING_NATS,
+    PERCEPTION_WALKWAY_NODE_ID: SCENE_CHANGE_CEILING_NATS,
 }
 
 
@@ -92,10 +106,17 @@ def seed_bar(node_id: str, default: float, bars: Mapping[str, float] | None = No
     return float(table.get(str(node_id or ""), default))
 
 
-def seed_strength(error: float, bar: float) -> float:
+def seed_ceiling(node_id: str, ceilings: Mapping[str, float] | None = None) -> float:
+    """The node's own ceiling (strength 1.0), or 1.0 for a node with no entry."""
+    table = CURIOSITY_SEED_CEILING_BY_NODE_ID if ceilings is None else ceilings
+    return float(table.get(str(node_id or ""), 1.0))
+
+
+def seed_strength(error: float, bar: float, ceiling: float = 1.0) -> float:
     """Map a crossing (``error >= bar``) onto the shared strength scale: STRENGTH_AT_BAR at the bar,
-    1.0 at the ceiling. Identity when the bar is STRENGTH_AT_BAR."""
-    if bar >= 1.0:
+    1.0 at ``ceiling``. Identity when the bar is STRENGTH_AT_BAR and the ceiling 1.0. A bar at or
+    above its ceiling has no room to grade: every crossing is 1.0."""
+    if bar >= ceiling:
         return 1.0
-    frac = (float(error) - bar) / (1.0 - bar)
+    frac = (float(error) - bar) / (ceiling - bar)
     return max(0.0, min(1.0, STRENGTH_AT_BAR + (1.0 - STRENGTH_AT_BAR) * frac))

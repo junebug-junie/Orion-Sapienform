@@ -511,7 +511,7 @@ Five nodes write into the prediction-error slot but are not forecast misses: the
 `substrate_node_signal_history` (`kind` = `alarm` or `scene_change`;
 `services/orion-sql-db/manual_migration_node_signal_history_v1.sql`).
 
-When `SUBSTRATE_SIGNAL_HISTORY_ENABLED=true`:
+When `SUBSTRATE_SIGNAL_HISTORY_ENABLED=true` (Patch 1; the flag was removed in Patch 3):
 
 1. Every reading of those five nodes that the PE-history sampler records is also written to the
    new table (same node_id, observed_at, value). Strain's direct event row is copied too.
@@ -546,7 +546,43 @@ The cabinet, strain and street alarms are no longer prediction errors anywhere:
 4. **Fence.** `scripts/check_pe_alarm_readers.py` fails CI on any producer that writes
    `prediction_error` for an alarm id.
 
-The cameras stay on the prediction-error slot until Patch 3.
+### Patch 3: the cameras become "camera scene change" (2026-11-24)
+
+The two camera nodes (`node:substrate.perception`, `node:substrate.perception_walkway`) leave the
+prediction-error slot too. Nothing about them forecasts anything; their value now says how
+unusual the change in the camera's picture over the last 5 minutes is, relative to the last two
+hours of the same camera, ranked against its own last 24 hours.
+
+1. **Score** (`orion/substrate/scene_change.py`, `SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER=rank_v2`).
+   Stage 1 ranks each frame's raw `1 - cos` against the same stream's frames in the last 2 h.
+   Stage 2, every 30 s tick, takes the smallest stage-1 p over the trailing 5 min and ranks it
+   against the node's own 5-min minima over the last 24 h (288 values, one every 5 min).
+   Value = `max(0, -ln p2 - 1)` nats: exactly 0 on 63% of calm intervals, above 2.0 on 5%,
+   at most `ln(289) - 1 = 4.67`. Until stage 1 holds 200 frames over 30 min and stage 2 holds
+   48 values (4 h) the node writes the `warming` placeholder. Stage 2 is saved in
+   `substrate_perception_embedding_baseline` under `stream_id = 'scene_change_stage2|<node_id>'`
+   (one row per node), so a restart waits only for stage 1.
+2. **Writer.** `_write_signal_node` writes `signal_value` (nats, unclamped), `signal_kind:
+   scene_change` and `signal_scale` (`v2_partial` until stage 2 holds 24 h, then `v2`). No
+   `prediction_error` key (the first write clears it), no PE-table row, and no field receipt:
+   the cameras left the field's `prediction_error` channel, and orion-field-digester's decay map
+   lost their entries in the same patch. `SUBSTRATE_SIGNAL_HISTORY_ENABLED` is gone: all five
+   signal nodes live only in `substrate_node_signal_history`.
+3. **Readers.** Both cameras are `signal_only` in `HISTORY_READ_MODE_BY_NODE_ID`: signal table,
+   `scale IN ('v2','v2_partial')`. Old clipped-z rows (`scale = 'v1'`, set by the ALTER) are never
+   ranked with new ones, so each camera reads `insufficient_history` in the contests until 200
+   new rows exist: about 13 h at one row per ~4 min sampler pass, after the 4 h first-deploy
+   warm-up (about 17 h in all). Calm checks and win share count `scale = 'v2'` only.
+4. **Migration first.** `services/orion-sql-db/manual_migration_node_signal_history_scale_v1.sql`
+   (additive; the post-pull rebuild applies it before the rebuilds). Every service in its
+   REQUIRED-BY header is refused `up` until it is applied.
+5. **Rollback.** `SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER=legacy_z` writes the old clipped z as
+   `scale = 'v1'`: stored, but not read by the contests or curiosity (they read current-scale rows
+   only), so both cameras go quiet rather than mixing scales. Cleanup step 5b deletes the legacy
+   path and this key (#3851) after the 7-day eval
+   (`services/orion-substrate-runtime/evals/run_scene_change_calm_eval.py`, #3850) and #3806.
+6. **Old-scale data.** `substrate_node_pe_history_snapshot_20261124` (frozen 2026-11-24, 14,472
+   rows of the five nodes, readable by `orion_readonly`) keeps the old scale for re-tests.
 
 ## Self-tuned prediction expectation (rung 6) -- retired 2026-11-03
 

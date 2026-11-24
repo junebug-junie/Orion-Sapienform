@@ -16,7 +16,9 @@ from app.worker import _prediction_error_label
 @pytest.mark.parametrize(
     "node_id,expected",
     [
-        ("node:substrate.perception_walkway", "Perception walkway prediction error"),
+        # A camera has its own name since PE retire Patch 3 (not a prediction error).
+        ("node:substrate.perception_walkway", "Walkway camera scene change"),
+        ("node:substrate.perception", "Room camera scene change"),
         ("node:substrate.biometrics", "Biometrics prediction error"),
         ("node:substrate.bus_synaptic", "Bus synaptic prediction error"),
         ("substrate.route", "Route prediction error"),

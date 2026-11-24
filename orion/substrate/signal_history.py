@@ -27,7 +27,14 @@ Patch 2 (alarms off the prediction-error slot) moves the three alarms (``MOVED_S
     history until the 7-day prune ages it out (no DELETE).
   * a reader of a node's value (``node_signal_value``) reads ``signal_value`` for a moved id and
     never its stale ``prediction_error`` key (kill means kill, materializer resurrection).
-The cameras stay on the prediction-error slot until Patch 3.
+Patch 3 (cameras off the prediction-error slot, 2026-11-24) moves the two cameras too:
+  * their value is camera scene change (orion/substrate/scene_change.py), in nats, written to
+    ``signal_value`` (unclamped) with ``signal_kind`` ``scene_change`` and ``signal_scale``
+    (``v2`` / ``v2_partial``; ``v1`` under the legacy_z rollback scorer).
+  * their history rows carry ``scale``; every reader reads them signal_only with
+    ``scale IN ('v2','v2_partial')`` (orion/prediction/signal_history_sql.py).
+  * a consumer that needs a 0..1 size (the dynamics pressure seed, node salience) uses
+    ``signal_unit_value``: nats / the 4.67-nat cap for a camera.
 """
 
 from __future__ import annotations
@@ -40,6 +47,16 @@ from orion.prediction.alarm_nodes import ALARM_NODE_IDS
 # Stdlib-only half (light readers import it without orion.substrate's heavy package init).
 from orion.prediction.signal_history_sql import (  # noqa: F401  (re-export)
     ALARM_GLOSSARY_CHANNEL,
+    CALM_CHECK_SCALES,
+    CAMERA_NODE_IDS,
+    CURRENT_SCALES,
+    SCALE_PREDICATE_SQL,
+    SCALE_V1,
+    SCALE_V2,
+    SCALE_V2_PARTIAL,
+    SCALES,
+    SCENE_CHANGE_GLOSSARY_CHANNEL,
+    is_camera_scene_change_node,
     HISTORY_GLOSSARY_CHANNELS,
     HISTORY_READ_MODE_BY_NODE_ID,
     HISTORY_WITH_MOVED_SOURCE_SQL,
@@ -62,9 +79,11 @@ SIGNAL_KINDS: frozenset[str] = frozenset({SIGNAL_KIND_ALARM, SIGNAL_KIND_SCENE_C
 
 # Same ids as orion.schemas.attention_candidate.PERCEPTION_NODE_ID / PERCEPTION_WALKWAY_NODE_ID
 # (pinned by a test; not imported, to keep this module stdlib-only).
-SCENE_CHANGE_NODE_IDS: frozenset[str] = frozenset(
-    {"node:substrate.perception", "node:substrate.perception_walkway"}
-)
+SCENE_CHANGE_NODE_IDS: frozenset[str] = CAMERA_NODE_IDS
+
+# ln(289) - 1: the largest camera scene-change value (orion/substrate/scene_change.py
+# SCENE_CHANGE_CAP_NATS, pinned equal by a test; a literal here keeps this module light).
+SCENE_CHANGE_CAP_NATS = 4.666426688112432
 
 SIGNAL_KIND_BY_NODE_ID: dict[str, str] = {
     **{node_id: SIGNAL_KIND_ALARM for node_id in ALARM_NODE_IDS},
@@ -76,11 +95,14 @@ SIGNAL_NODE_IDS: tuple[str, ...] = tuple(sorted(SIGNAL_KIND_BY_NODE_ID))
 # Node metadata keys a moved node carries instead of ``prediction_error``.
 SIGNAL_VALUE_KEY = "signal_value"
 SIGNAL_KIND_KEY = "signal_kind"
+# Which scale a camera's signal_value is on (v1 legacy z / v2_partial / v2); the history sampler
+# copies it into the row's ``scale``. Alarms do not write it (their rows are 'v1').
+SIGNAL_SCALE_KEY = "signal_scale"
 PREDICTION_ERROR_KEY = "prediction_error"
 
 
 Row = tuple[str, datetime, float]
-SignalRow = tuple[str, datetime, float, str]
+SignalRow = tuple[str, datetime, float, str, str]  # node_id, observed_at, value, kind, scale
 
 
 def signal_kind_for(node_id: object) -> str | None:
@@ -104,11 +126,26 @@ def node_signal_value(node_id: object, metadata: object) -> object:
     return metadata.get(node_value_key(node_id))
 
 
+def signal_unit_value(node_id: object, raw: object) -> float:
+    """A signal node's value on a 0..1 size scale, for a consumer that needs one (the dynamics
+    pressure seed, node salience). A camera's scene change is nats (0 .. 4.67): divided by the cap.
+    Every other value is returned as is (an alarm is already 0..1). Non-numeric reads 0.0."""
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if value != value:  # NaN
+        return 0.0
+    if is_camera_scene_change_node(node_id):
+        return max(0.0, min(1.0, value / SCENE_CHANGE_CAP_NATS))
+    return value
+
+
 def split_history_samples(samples: Iterable[Row]) -> tuple[list[Row], list[SignalRow]]:
     """(PE-table rows, signal-table rows) for one batch of history samples.
 
-    A moved node's reading goes to the signal table only. A non-moved signal node (camera, until
-    Patch 3) goes to both (Patch 1 dual-write). Every other node goes to the PE table only."""
+    A moved node's reading (alarms since Patch 2, cameras since Patch 3) goes to the signal table
+    only. Every other node goes to the PE table only."""
     samples = list(samples)
     pe_rows: list[Row] = []
     for node_id, observed_at, value in samples:
@@ -117,13 +154,21 @@ def split_history_samples(samples: Iterable[Row]) -> tuple[list[Row], list[Signa
     return pe_rows, signal_samples(samples)
 
 
-def signal_samples(samples: Iterable[Row]) -> list[SignalRow]:
-    """The subset of PE-history samples that belong in the signal table, tagged with their kind."""
+def signal_samples(
+    samples: Iterable[Row], scales: dict[tuple[str, datetime], str] | None = None
+) -> list[SignalRow]:
+    """The subset of history samples that belong in the signal table, tagged with kind and scale.
+
+    ``scales`` maps (node_id, observed_at) to the reading's ``signal_scale``; a missing or unknown
+    scale is 'v1' (every alarm row, and a camera row written by the legacy scorer)."""
     out: list[SignalRow] = []
     for node_id, observed_at, value in samples:
         kind = signal_kind_for(node_id)
         if kind is not None:
-            out.append((str(node_id), observed_at, float(value), kind))
+            scale = (scales or {}).get((str(node_id), observed_at), SCALE_V1)
+            if scale not in SCALES:
+                scale = SCALE_V1
+            out.append((str(node_id), observed_at, float(value), kind, scale))
     return out
 
 
@@ -151,8 +196,8 @@ def merge_signal_rows(pe_rows: Iterable[Row], signal_rows: Iterable[Row]) -> lis
 # --- SQL (sqlalchemy text(); psycopg2 binds a Python list to ANY(:node_ids)) -------------------
 
 INSERT_SIGNAL_HISTORY_SQL = f"""
-INSERT INTO {SIGNAL_HISTORY_TABLE} (node_id, observed_at, value, kind)
-VALUES (:node_id, :observed_at, :value, :kind)
+INSERT INTO {SIGNAL_HISTORY_TABLE} (node_id, observed_at, value, kind, scale)
+VALUES (:node_id, :observed_at, :value, :kind, :scale)
 ON CONFLICT (node_id, observed_at) DO NOTHING
 """
 

@@ -84,9 +84,12 @@ def _worker(monkeypatch, scores: list[float | None]):
     worker._settings = MagicMock()
     worker._settings.perception_baseline_retention_days = 30.0
     worker._settings.enable_perception_prediction_error_tick = True
+    # The legacy clipped-z path (PE retire Patch 3 rollback scorer); rank_v2 is pinned in
+    # test_worker_scene_change.py.
+    worker._settings.perception_scene_change_scorer = "legacy_z"
     worker._settings.perception_walkway_stream_ids = "walkway"
     worker._settings.perception_log_only_stream_ids = "doorbell"
-    worker._write_prediction_error_node = MagicMock()
+    worker._write_signal_node = MagicMock()
     worker._last_perception_prediction_error = None
     worker._last_perception_embedding_at = None
     worker._last_perception_stream_id = None
@@ -97,7 +100,7 @@ def _worker(monkeypatch, scores: list[float | None]):
 
 
 def _write(worker, node_id: str) -> dict:
-    calls = [c.kwargs for c in worker._write_prediction_error_node.call_args_list if c.kwargs["node_id"] == node_id]
+    calls = [c.kwargs for c in worker._write_signal_node.call_args_list if c.kwargs["node_id"] == node_id]
     return calls[-1]
 
 
@@ -108,7 +111,7 @@ def test_tick_publishes_the_latest_frame_not_the_window_peak(monkeypatch) -> Non
         worker._handle_perception_prediction_error_message(_message("cam0"))
     worker._perception_prediction_error_tick()
     room = _write(worker, ROOM)
-    assert room["error"] == 0.1
+    assert room["value"] == 0.1
     assert room["missing_reason"] is None
 
 
@@ -117,7 +120,7 @@ def test_walkway_tick_publishes_its_own_latest_frame(monkeypatch) -> None:
     for _ in range(3):
         worker._handle_perception_prediction_error_message(_message("walkway"))
     worker._perception_prediction_error_tick()
-    assert _write(worker, WALKWAY)["error"] == 0.4
+    assert _write(worker, WALKWAY)["value"] == 0.4
     assert _write(worker, WALKWAY)["missing_reason"] is None
 
 
@@ -127,11 +130,11 @@ def test_published_frame_is_never_republished_and_an_empty_window_is_missing(mon
     worker = _worker(monkeypatch, [0.8])
     worker._handle_perception_prediction_error_message(_message("cam0"))
     worker._perception_prediction_error_tick()
-    assert _write(worker, ROOM)["error"] == 0.8
+    assert _write(worker, ROOM)["value"] == 0.8
     # Next tick: embeddings still fresh, but no scored frame since the publish.
     worker._perception_prediction_error_tick()
     room = _write(worker, ROOM)
-    assert room["error"] == 0.0
+    assert room["value"] == 0.0
     assert room["missing_reason"] == PERCEPTION_MISSING_NO_FRAME
 
 
@@ -142,7 +145,7 @@ def test_a_calm_window_is_a_real_zero_not_missing(monkeypatch) -> None:
         worker._handle_perception_prediction_error_message(_message("cam0"))
     worker._perception_prediction_error_tick()
     room = _write(worker, ROOM)
-    assert room["error"] == 0.0
+    assert room["value"] == 0.0
     assert room["missing_reason"] is None
 
 
@@ -153,7 +156,7 @@ def test_stale_input_is_marked_missing_not_calm(monkeypatch) -> None:
     worker._last_perception_surprise_n = 50
     worker._perception_prediction_error_tick()
     room = _write(worker, ROOM)
-    assert room["error"] == 0.0
+    assert room["value"] == 0.0
     assert room["missing_reason"] == PERCEPTION_MISSING_STALE
     assert room["extra_channels"]["embedding_staleness"] == 1.0
 
@@ -165,12 +168,13 @@ def test_warming_input_is_marked_missing(monkeypatch) -> None:
     walkway.surprise_n = 1
     walkway.score = 0.9  # must not leak through while warming
     worker._perception_prediction_error_tick()
-    assert _write(worker, WALKWAY)["error"] == 0.0
+    assert _write(worker, WALKWAY)["value"] == 0.0
     assert _write(worker, WALKWAY)["missing_reason"] == PERCEPTION_MISSING_WARMING
 
 
 def _node(node_id: str, value: float, observed_at: datetime, missing: str | None = None):
-    metadata = {"prediction_error": value}
+    # PE retire Patch 3: a camera's value is signal_value (camera scene change), scale v2.
+    metadata = {"signal_value": value, "signal_kind": "scene_change", "signal_scale": "v2"}
     if missing:
         metadata[PREDICTION_ERROR_MISSING_REASON_KEY] = missing
     return SimpleNamespace(node_id=node_id, metadata=metadata, temporal=SimpleNamespace(observed_at=observed_at))
@@ -196,8 +200,10 @@ def test_missing_placeholder_never_reaches_the_history(monkeypatch) -> None:
         _node(WALKWAY, 0.42, now - timedelta(seconds=5)),
     ]
     magnitudes = worker._prediction_error_magnitudes(nodes=nodes, now=now)
-    saved = worker._store.save_prediction_error_history_samples.call_args.args[0]
-    assert [row[0] for row in saved] == [WALKWAY]
+    # A camera reading lives only in the signal table (PE retire Patch 3), never the PE table.
+    worker._store.save_prediction_error_history_samples.assert_not_called()
+    saved = worker._store.save_signal_history_samples.call_args.args[0]
+    assert [(row[0], row[3], row[4]) for row in saved] == [(WALKWAY, "scene_change", "v2")]
     # The placeholder has no magnitude this tick either: absent, not quiet.
     assert ROOM not in magnitudes
     assert WALKWAY in magnitudes
@@ -209,10 +215,11 @@ def test_reading_after_a_missing_stretch_is_recorded(monkeypatch) -> None:
     worker._prediction_error_magnitudes(
         nodes=[_node(ROOM, 0.0, now - timedelta(seconds=60), missing=PERCEPTION_MISSING_STALE)], now=now
     )
-    worker._store.save_prediction_error_history_samples.assert_not_called()
+    worker._store.save_signal_history_samples.assert_not_called()
     worker._prediction_error_magnitudes(nodes=[_node(ROOM, 0.31, now)], now=now)
-    saved = worker._store.save_prediction_error_history_samples.call_args.args[0]
-    assert saved == [(ROOM, now, 0.31)]
+    saved = worker._store.save_signal_history_samples.call_args.args[0]
+    assert saved == [(ROOM, now, 0.31, "scene_change", "v2")]
+    worker._store.save_prediction_error_history_samples.assert_not_called()
 
 
 def test_freshness_classifier_omits_missing_input() -> None:
@@ -222,58 +229,34 @@ def test_freshness_classifier_omits_missing_input() -> None:
     assert missing_input_reason(_node(ROOM, 0.0, now, missing="  ")) is None
 
 
-# --- Field receipt: missing is absent, never 0.0 (2026-11-10) ----------------
-# PE suite rebuild spec retire step 8. The graph node above already marked the
-# placeholder, but the field-bound receipt still carried prediction_error=0.0,
-# so the digester wrote 0.0 into the field (live 2026-11-08 09:00:33-09:01:34,
-# a 95 s embedding gap). The receipt must now carry the reason and no value.
+# --- Field receipt: none at all since PE retire Patch 3 (2026-11-24) ---------
+# 2026-11-10 (retire step 8) made a missing tick's receipt carry no value. Since
+# 2026-11-24 the cameras left the field's prediction_error channel entirely:
+# camera scene change lives on the graph node and in the signal table, and the
+# tick sends no receipt in any state, under either scorer.
 
 
-def _receipt_after(worker, node_id: str) -> dict:
-    for call in reversed(worker._store.save_receipt.call_args_list):
-        delta = call.args[0].state_deltas[0]
-        if delta.target_id == node_id:
-            assert delta.target_kind == "prediction_signal"
-            return delta.after
-    raise AssertionError(f"no receipt saved for {node_id}")
-
-
-def test_stale_tick_receipt_carries_no_field_value(monkeypatch) -> None:
-    worker = _worker(monkeypatch, [])
-    worker._last_perception_prediction_error = 0.7
-    worker._last_perception_embedding_at = datetime.now(timezone.utc) - timedelta(hours=2)
-    worker._last_perception_surprise_n = 50
-    worker._perception_prediction_error_tick()
-    after = _receipt_after(worker, ROOM)
-    assert "prediction_error" not in after["pressure_hints"]
-    assert after[PREDICTION_ERROR_MISSING_REASON_KEY] == PERCEPTION_MISSING_STALE
-
-
-def test_warming_and_empty_window_receipts_carry_no_field_value(monkeypatch) -> None:
-    worker = _worker(monkeypatch, [])
-    walkway = worker._perception_walkway_state()
-    walkway.embedding_at = datetime.now(timezone.utc)
-    walkway.surprise_n = 1
-    walkway.score = 0.9
-    worker._last_perception_embedding_at = datetime.now(timezone.utc)
-    worker._last_perception_surprise_n = 50  # warm, but no frame this window
-    worker._perception_prediction_error_tick()
-    walk = _receipt_after(worker, WALKWAY)
-    assert "prediction_error" not in walk["pressure_hints"]
-    assert walk[PREDICTION_ERROR_MISSING_REASON_KEY] == PERCEPTION_MISSING_WARMING
-    room = _receipt_after(worker, ROOM)
-    assert "prediction_error" not in room["pressure_hints"]
-    assert room[PREDICTION_ERROR_MISSING_REASON_KEY] == PERCEPTION_MISSING_NO_FRAME
-
-
-def test_real_readings_including_calm_zero_reach_the_field(monkeypatch) -> None:
-    worker = _worker(monkeypatch, [0.0, 0.0])
-    for _ in range(2):
-        worker._handle_perception_prediction_error_message(_message("cam0"))
-    worker._perception_prediction_error_tick()
-    after = _receipt_after(worker, ROOM)
-    assert after["pressure_hints"] == {"prediction_error": 0.0}
-    assert PREDICTION_ERROR_MISSING_REASON_KEY not in after
+def test_no_field_receipt_in_any_state_under_either_scorer(monkeypatch) -> None:
+    for scorer in ("legacy_z", "rank_v2"):
+        # stale room, warming walkway
+        worker = _worker(monkeypatch, [])
+        worker._settings.perception_scene_change_scorer = scorer
+        worker._last_perception_prediction_error = 0.7
+        worker._last_perception_embedding_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        worker._last_perception_surprise_n = 50
+        walkway = worker._perception_walkway_state()
+        walkway.embedding_at = datetime.now(timezone.utc)
+        walkway.surprise_n = 1
+        worker._perception_prediction_error_tick()
+        # a real reading (legacy) / warming (rank_v2)
+        worker2 = _worker(monkeypatch, [0.0, 0.0])
+        worker2._settings.perception_scene_change_scorer = scorer
+        for _ in range(2):
+            worker2._handle_perception_prediction_error_message(_message("cam0"))
+        worker2._perception_prediction_error_tick()
+        for w in (worker, worker2):
+            w._store.save_receipt.assert_not_called()
+            assert ROOM in {c.kwargs["node_id"] for c in w._write_signal_node.call_args_list}
 
 
 def test_receipt_builder_refuses_a_value_and_a_reason_together() -> None:

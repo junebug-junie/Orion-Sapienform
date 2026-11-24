@@ -93,8 +93,8 @@ def test_event_written_set_comes_from_glossary_semantics() -> None:
         # for the orienting window: the 1.0's age is the event's age.
         "node:substrate.strain": True,
         "node:substrate.cabinet": False,    # designed_sparse but rewritten every 30 s tick
-        "node:substrate.perception": False,  # "written as 0.0 every tick"
-        "node:substrate.perception_walkway": False,  # walkway camera, same "written as 0.0 every tick"
+        "node:substrate.perception": False,  # scene change, "per-tick writer" (PE retire Patch 3)
+        "node:substrate.perception_walkway": False,  # walkway camera, same per-tick writer
         "node:substrate.street": False,  # designed_sparse, "written every tick while measurable"
         # per_tick, "written once per gated forecast outcome": a 30-min state, not an event, so no
         # orienting-window fade (its ~5 min write gap would otherwise read as past the window).
@@ -106,9 +106,13 @@ def test_event_written_set_comes_from_glossary_semantics() -> None:
     }
     from orion.field.channel_glossary import load_glossary
 
+    from orion.prediction.signal_history_sql import HISTORY_GLOSSARY_CHANNELS
+
+    # Each node is described under its own channel: prediction_error, alarm (PE retire Patch 2)
+    # or scene_change (Patch 3).
     pe_nodes = {
         e.node for e in load_glossary()["entries"]
-        if e.channel == "prediction_error" and e.node
+        if e.channel in HISTORY_GLOSSARY_CHANNELS and e.node
     }
     # Every node-qualified PE entry is classified on purpose here.
     assert pe_nodes == set(expected)

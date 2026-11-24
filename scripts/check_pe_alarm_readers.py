@@ -32,6 +32,16 @@ that writes ``prediction_error`` for one of them fails: a call to a prediction-e
 through a module constant bound to one (``CABINET_NODE_ID``) -- or a dict literal with a
 ``"prediction_error"`` key next to a moved id. A writer passing a plain variable is caught at runtime
 instead (the worker's PE writer refuses a moved id; the store drops its PE-table row).
+Since PE retire Patch 3 (2026-11-24) the two cameras (``node:substrate.perception``,
+``node:substrate.perception_walkway``) are moved ids too, so the same fence covers them.
+
+**Camera scale fence** (Patch 3): the cameras' history rows carry ``scale`` (``v1`` old clipped z,
+``v2`` / ``v2_partial`` scene change) and old- and new-scale rows must never share a window. So any
+SQL text in non-test code (evals included) that names ``substrate_node_signal_history`` (or
+``SIGNAL_HISTORY_TABLE``) together with a camera id (a literal or a constant bound to one) and has
+no ``scale`` predicate fails, and so does the shared builder's own output
+(``history_with_moved_source_sql()``): every branch over the signal table that names a camera id
+must carry ``scale IN ('v2','v2_partial')``.
 
     python scripts/check_pe_alarm_readers.py            # repo root; exit 1 on any problem
 """
@@ -176,9 +186,93 @@ def moved_writer_problems(root: Path, moved: frozenset[str] | None = None) -> li
                 what = "a {'prediction_error': ...} dict"
             if hit:
                 problems.append(
-                    f"{rel}:{node.lineno} writes prediction_error for a moved alarm node ({hit}) via {what}. "
-                    f"The alarms left the prediction-error slot (PE retire Patch 2): write them with "
-                    f"_write_signal_node / substrate_node_signal_history.")
+                    f"{rel}:{node.lineno} writes prediction_error for a moved signal node ({hit}) via {what}. "
+                    f"The alarms (PE retire Patch 2) and the cameras (Patch 3) left the prediction-error "
+                    f"slot: write them with _write_signal_node / substrate_node_signal_history.")
+    return problems
+
+
+SIGNAL_TABLE_TOKENS = ("substrate_node_signal_history", "SIGNAL_HISTORY_TABLE")
+# Names that stand for a camera id in SQL-building code (besides the literals themselves).
+CAMERA_ID_NAMES = frozenset({"PERCEPTION_NODE_ID", "PERCEPTION_WALKWAY_NODE_ID", "CAMERA_NODE_IDS",
+                             "SCENE_CHANGE_NODE_IDS"})
+
+
+def camera_node_ids() -> frozenset[str]:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from orion.prediction.signal_history_sql import CAMERA_NODE_IDS
+
+    return frozenset(CAMERA_NODE_IDS)
+
+
+def _string_segments(text: str) -> list[tuple[int, str]]:
+    """(line, source text) of every string literal / f-string in a Python source."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    out: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Constant, ast.JoinedStr)) and (
+            isinstance(node, ast.JoinedStr) or isinstance(node.value, str)
+        ):
+            seg = ast.get_source_segment(text, node)
+            if seg:
+                out.append((node.lineno, seg))
+    return out
+
+
+def builder_scale_problems(sql: str, cameras: frozenset[str]) -> list[str]:
+    """Every UNION branch of the shared history source that reads the signal table for a camera
+    must carry the current-scale predicate."""
+    from orion.prediction.signal_history_sql import SCALE_PREDICATE_SQL
+
+    problems = []
+    for branch in sql.split("UNION ALL"):
+        if "substrate_node_signal_history" in branch and any(c in branch for c in cameras) \
+                and SCALE_PREDICATE_SQL not in branch:
+            problems.append(
+                "orion/prediction/signal_history_sql.py history_with_moved_source_sql(): a branch reads "
+                f"substrate_node_signal_history for a camera without `{SCALE_PREDICATE_SQL}` "
+                "(old- and new-scale camera rows must never share a window, PE retire Patch 3).")
+    return problems
+
+
+def unscaled_camera_sql_problems(root: Path, cameras: frozenset[str] | None = None) -> list[str]:
+    """SQL text naming the signal table with a camera id and no ``scale`` predicate."""
+    cameras = camera_node_ids() if cameras is None else cameras
+    problems: list[str] = []
+    for top in SCAN_ROOTS:
+        base = root / top
+        if not base.is_dir():
+            continue
+        for p in sorted(base.rglob("*.py")):
+            rel = p.relative_to(root)
+            # Evals are scanned: a calm-check eval is exactly where an unscaled read would hide.
+            if bool((SKIP_PARTS - {"evals"}) & set(rel.parts)) or rel.name.startswith("test_") \
+                    or rel.name == "conftest.py":
+                continue
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if not any(t in text for t in SIGNAL_TABLE_TOKENS):
+                continue
+            for line, seg in _string_segments(text):
+                if not any(t in seg for t in SIGNAL_TABLE_TOKENS):
+                    continue
+                if not (any(c in seg for c in cameras) or any(n in seg for n in CAMERA_ID_NAMES)):
+                    continue
+                if re.search(r"\bscale\b", seg, re.IGNORECASE) or "SCALE_PREDICATE_SQL" in seg:
+                    continue
+                problems.append(
+                    f"{rel.as_posix()}:{line} reads substrate_node_signal_history for a camera with no "
+                    f"`scale` predicate. Camera rows are 'v1' (old clipped z) or 'v2'/'v2_partial' "
+                    f"(scene change) and must never share a window: add scale IN ('v2','v2_partial') "
+                    f"(or scale = 'v2' for a calm check / win share), or read through "
+                    f"orion.prediction.signal_history_sql.HISTORY_WITH_MOVED_SOURCE_SQL.")
+    if root.resolve() == REPO_ROOT.resolve():
+        from orion.prediction.signal_history_sql import history_with_moved_source_sql
+
+        problems.extend(builder_scale_problems(history_with_moved_source_sql(), cameras))
     return problems
 
 
@@ -224,6 +318,7 @@ def check(root: Path) -> list[str]:
         elif touching[path]:
             problems.append(f"{path}: registered but already filters alarms itself; remove the entry")
     problems.extend(moved_writer_problems(root))
+    problems.extend(unscaled_camera_sql_problems(root))
     return problems
 
 

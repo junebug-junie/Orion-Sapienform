@@ -83,9 +83,17 @@ NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset({STREET_NODE_ID})
 # readings fell within 2.5 min of a person/dog/bike/stroller motion story,
 # against 7.2% for any reading, while its p90-p99 band was at chance (6.2%).
 # Overrides NO_ATTENTION_CONSUMER_NODE_IDS for those two contests only.
-# Known limit: a 1.0 reading reaches mid-rank p99 only while fewer than ~2% of
-# the window sits at the 1.0 ceiling (live 1.5% on 2026-10-21). If the street
-# saturates more often, the floor stops being reachable -- re-check then.
+# Known limit (old score): a 1.0 reading reached mid-rank p99 only while fewer
+# than ~2% of the window sat at the 1.0 ceiling (live 1.5% on 2026-10-21).
+# 2026-11-24 (PE retire Patch 3): the walkway's value is now camera scene change
+# in nats (orion/substrate/scene_change.py), a calibrated rank with no ceiling
+# pile-up (replay max 3.93 against the 4.67 cap), so the p99+ floor is reachable
+# without the mid-rank trick. Its window is current-scale rows only, so the
+# walkway (and the room camera) read insufficient_history in the contests until
+# 200 new rows exist: about 13 h at one row per ~4 min sampler pass, after the
+# scorer's first-deploy warm-up of 4 h -- about 17 h in all. Re-measure the
+# walkway win rate on scale = 'v2' rows
+# (services/orion-substrate-runtime/evals/run_scene_change_calm_eval.py).
 # Rollback: delete the entry (the fence above then applies everywhere again).
 # Record: docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md.
 ATTENTION_MIN_BAND_BY_NODE_ID: dict[str, str] = {PERCEPTION_WALKWAY_NODE_ID: "unusual"}

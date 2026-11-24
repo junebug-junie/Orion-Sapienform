@@ -2,15 +2,13 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 745,
   "_last_change": {
-    "change_count": 6,
-    "high_severity_count": 3,
+    "change_count": 4,
+    "high_severity_count": 2,
     "changes": [
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error",
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error",
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.alarm",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.strain.alarm",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.street.alarm"
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error",
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error",
+      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.perception.scene_change",
+      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.scene_change"
     ]
   },
   "definitions": {
@@ -4747,16 +4745,16 @@
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error": {
-      "meaning": "How surprising the room camera's latest frame is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. One reading per tick (~30 s), from a frame that arrived since the previous reading.",
-      "value_kind": "level",
-      "rest": "0.0 = the frame is at or below this stream's usual surprise. Reachable: 61% of live readings 2026-10-14..21 were exact 0.0 (replay of stored per-frame baselines). A 0.0 placeholder written while the input is missing (embeddings stale, baseline warming, or no scored frame in the window) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history and the self-model omits it.",
+    "metric://field_channel/orion-substrate-runtime/node:substrate.perception.scene_change": {
+      "meaning": "Room camera scene change: how unusual the change in this camera's picture over the last 5 minutes is, relative to the last two hours of the same camera, ranked against its own last 24 hours. Value = max(0, -ln p - 1) nats, p the rank of the smallest per-frame rank in the last 5 minutes among this camera's own 5-minute minima of the last 24 hours. 0 = an ordinary 5 minutes; above 2.0 = rarer than 1 in 20; at most 4.67. A change that lasts (lights on, dusk) reads high while new and is absorbed within about 2 hours: it measures change, not state. Nothing here forecasts anything: it is a change score, not a forecast miss. Until 2026-11-24 this node was a clipped z-score under prediction_error (clip(z, 0, 3) / 3 with a variance floor); those rows are scale v1 and a belief built on them needs a re-test.",
+      "value_kind": "scene_change_excess",
+      "rest": "0.0 = this camera's last 5 minutes changed no more than an ordinary 5 minutes of its own last 24 hours. Reachable by theory: exactly 0 on 63% (1 - 1/e) of calm intervals. A 0.0 placeholder written while the input is missing (embeddings stale, scorer warming, or no scored frame) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history.",
       "rest_range": [
         0.0,
         0.0
       ],
       "sparsity": "designed_sparse",
-      "absent_means": "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason; substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start before the first embedding arrives.",
+      "absent_means": "per-tick writer: the graph node gets a 0.0 placeholder every 30 s tick while the input is missing, marked prediction_error_missing_reason; substrate_node_signal_history gets no row then (a gap = missing, not calm). After a restart the node is warming until stage 1 holds 200 frames over 30 min (stage 2 is restored from substrate_perception_embedding_baseline); on first deploy also until stage 2 holds 48 five-minute values (4 h).",
       "polarity": "higher_is_worse",
       "declared_consumers": [
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
@@ -4764,16 +4762,16 @@
       "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error": {
-      "meaning": "How surprising the walkway (outdoor) camera's latest frame is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. One reading per tick (~30 s), from a frame that arrived since the previous reading. Kept apart from node:substrate.perception so the street does not overwrite the room cameras.",
-      "value_kind": "level",
-      "rest": "0.0 = the frame is at or below the walkway stream's usual surprise (63% of live readings 2026-10-15..21). A 0.0 placeholder written while the input is missing (embeddings stale, baseline warming, or no scored frame in the window) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history.",
+    "metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.scene_change": {
+      "meaning": "Walkway (outdoor) camera scene change: how unusual the change in this camera's picture over the last 5 minutes is, relative to the last two hours of the same camera, ranked against its own last 24 hours. Value = max(0, -ln p - 1) nats, p the rank of the smallest per-frame rank in the last 5 minutes among this camera's own 5-minute minima of the last 24 hours. 0 = an ordinary 5 minutes; above 2.0 = rarer than 1 in 20; at most 4.67. A change that lasts (dusk, a parked car) reads high while new and is absorbed within about 2 hours: it measures change, not state. Kept apart from node:substrate.perception so the street does not overwrite the room cameras. Nothing here forecasts anything: it is a change score, not a forecast miss. Until 2026-11-24 this node was a clipped z-score under prediction_error (clip(z, 0, 3) / 3 with a variance floor); those rows are scale v1 and a belief built on them needs a re-test.",
+      "value_kind": "scene_change_excess",
+      "rest": "0.0 = the walkway's last 5 minutes changed no more than an ordinary 5 minutes of its own last 24 hours. Reachable by theory: exactly 0 on 63% (1 - 1/e) of calm intervals. A 0.0 placeholder written while the input is missing (embeddings stale, scorer warming, or no scored frame) carries prediction_error_missing_reason on the node and is NOT a reading: it is never recorded in the history.",
       "rest_range": [
         0.0,
         0.0
       ],
       "sparsity": "designed_sparse",
-      "absent_means": "per-tick writer: the graph node and receipt get a 0.0 placeholder every tick while the input is missing, marked prediction_error_missing_reason (embedding_staleness 1.0 when stale); substrate_node_prediction_error_history gets no row then (a gap = missing, not calm). Nothing written until 15 s after process start.",
+      "absent_means": "per-tick writer: the graph node gets a 0.0 placeholder every 30 s tick while the input is missing, marked prediction_error_missing_reason (embedding_staleness 1.0 when stale); substrate_node_signal_history gets no row then (a gap = missing, not calm). After a restart the node is warming until stage 1 holds 200 frames over 30 min; on first deploy also until stage 2 holds 48 five-minute values (4 h).",
       "polarity": "higher_is_worse",
       "declared_consumers": [
         "orion.attention.world_first:judge_candidate",

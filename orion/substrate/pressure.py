@@ -49,14 +49,15 @@ def prediction_error_pressure(node: BaseSubstrateNodeV1, config: PressureConfig,
     # Lazy: prediction_error_freshness imports PressureConfig from this module.
     from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
 
-    from orion.substrate.signal_history import node_signal_value
+    from orion.substrate.signal_history import node_signal_value, signal_unit_value
 
     node_id = getattr(node, "node_id", None)
     if is_retired_prediction_error_node(node_id):
         return 0.0  # a retired node's stored value is not a reading
     # A moved alarm (PE retire Patch 2) seeds from its signal_value: a firing alarm is still
-    # admitted to the workspace; its stale prediction_error key is never read.
-    raw = float(node_signal_value(node_id, node.metadata) or 0.0)
+    # admitted to the workspace; its stale prediction_error key is never read. A camera's scene
+    # change (Patch 3) is nats; signal_unit_value puts it on 0..1 (nats / the 4.67 cap).
+    raw = signal_unit_value(node_id, node_signal_value(node_id, node.metadata) or 0.0)
     if raw <= 0.0:
         return 0.0
     observed = node.temporal.observed_at

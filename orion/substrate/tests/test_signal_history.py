@@ -46,10 +46,31 @@ def test_signal_samples_keeps_only_the_five_and_tags_kind():
         (PERCEPTION_WALKWAY_NODE_ID, T0, 0.25),
         ("node:prediction.body", T0, 1.2),
     ])
+    # No scale given: every row is old scale 'v1' (an alarm row is always 'v1').
     assert rows == [
-        ("node:substrate.cabinet", T0, 0.0, "alarm"),
-        (PERCEPTION_WALKWAY_NODE_ID, T0, 0.25, "scene_change"),
+        ("node:substrate.cabinet", T0, 0.0, "alarm", "v1"),
+        (PERCEPTION_WALKWAY_NODE_ID, T0, 0.25, "scene_change", "v1"),
     ]
+
+
+def test_signal_samples_carries_the_camera_scale_and_refuses_unknown_scales():
+    rows = signal_samples(
+        [(PERCEPTION_WALKWAY_NODE_ID, T0, 2.5), (PERCEPTION_NODE_ID, T0, 1.0), ("node:substrate.strain", T0, 1.0)],
+        {(PERCEPTION_WALKWAY_NODE_ID, T0): "v2_partial", (PERCEPTION_NODE_ID, T0): "v9"},
+    )
+    assert [(r[0], r[4]) for r in rows] == [
+        (PERCEPTION_WALKWAY_NODE_ID, "v2_partial"), (PERCEPTION_NODE_ID, "v1"), ("node:substrate.strain", "v1"),
+    ]
+
+
+def test_signal_unit_value_puts_camera_nats_on_0_1():
+    from orion.substrate.signal_history import SCENE_CHANGE_CAP_NATS, signal_unit_value
+
+    assert signal_unit_value(PERCEPTION_NODE_ID, SCENE_CHANGE_CAP_NATS) == 1.0
+    assert signal_unit_value(PERCEPTION_NODE_ID, 2.0) == 2.0 / SCENE_CHANGE_CAP_NATS
+    assert signal_unit_value(PERCEPTION_NODE_ID, 9.0) == 1.0
+    assert signal_unit_value("node:substrate.cabinet", 1.0) == 1.0
+    assert signal_unit_value(PERCEPTION_NODE_ID, None) == 0.0
 
 
 def test_merge_dedupes_on_key_signal_wins_other_nodes_dropped_naive_is_utc():

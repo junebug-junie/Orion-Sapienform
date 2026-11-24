@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from orion.substrate.signal_history import (  # noqa: E402
     INSERT_SIGNAL_HISTORY_SQL,
     PE_HISTORY_TABLE,
+    SCALE_V1,
     SIGNAL_HISTORY_TABLE,
     SIGNAL_NODE_IDS,
     signal_kind_for,
@@ -140,8 +141,9 @@ def run(conn: Any, *, days: float, apply: bool, job_dir: Path, now: datetime,
         if value is None or not (value == value) or observed_at > now + timedelta(minutes=5):
             anomalies += 1  # NaN / null / future-stamped: counted in the report, never copied
             continue
+        # Every PE-table row is old scale ('v1'; PE retire Patch 3 added the scale column).
         targets.append({"node_id": str(node_id), "observed_at": observed_at,
-                        "value": float(value), "kind": signal_kind_for(node_id)})
+                        "value": float(value), "kind": signal_kind_for(node_id), "scale": SCALE_V1})
     stamp = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     mode = "apply" if apply else "dry_run"
     with (job_dir / f"snapshot-{mode}-{stamp}.jsonl").open("x") as fh:

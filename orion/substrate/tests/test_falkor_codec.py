@@ -142,6 +142,7 @@ def test_encode_concept_node_properties_are_native_scalars_without_payload_json(
         "prediction_error_missing_reason": None,
         "signal_value": None,
         "signal_kind": None,
+        "signal_scale": None,
         # topic-foundry's HDBSCAN cluster id -- absent metadata encodes as
         # None, matching subject_ref/provenance_model_name's convention for
         # optional scalar fields (see TOPIC_FOUNDRY_METADATA_KEYS).

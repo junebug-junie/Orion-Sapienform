@@ -65,9 +65,12 @@ def _worker(*, walkway_ids: str | None = "walkway", started_ago_sec: float = 0.0
     worker._settings = MagicMock()
     worker._settings.perception_baseline_retention_days = 30.0
     worker._settings.enable_perception_prediction_error_tick = True
+    # The legacy clipped-z path (PE retire Patch 3 rollback scorer); rank_v2 is pinned in
+    # test_worker_scene_change.py.
+    worker._settings.perception_scene_change_scorer = "legacy_z"
     if walkway_ids is not None:
         worker._settings.perception_walkway_stream_ids = walkway_ids
-    worker._write_prediction_error_node = MagicMock()
+    worker._write_signal_node = MagicMock()
     worker._last_perception_prediction_error = None
     worker._last_perception_embedding_at = None
     worker._last_perception_stream_id = None
@@ -80,7 +83,7 @@ def _worker(*, walkway_ids: str | None = "walkway", started_ago_sec: float = 0.0
 def _writes(worker) -> dict[str, dict]:
     return {
         call.kwargs["node_id"]: call.kwargs
-        for call in worker._write_prediction_error_node.call_args_list
+        for call in worker._write_signal_node.call_args_list
     }
 
 
@@ -114,8 +117,8 @@ def test_walkway_embedding_never_changes_the_room_node() -> None:
 
     worker._perception_prediction_error_tick()
     writes = _writes(worker)
-    assert writes[ROOM]["error"] == 0.11
-    assert writes[WALKWAY]["error"] == walkway_peak
+    assert writes[ROOM]["value"] == 0.11
+    assert writes[WALKWAY]["value"] == walkway_peak
 
 
 def test_room_embedding_never_changes_the_walkway_node() -> None:
@@ -138,11 +141,11 @@ def test_room_embedding_never_changes_the_walkway_node() -> None:
 
     worker._perception_prediction_error_tick()
     writes = _writes(worker)
-    assert writes[WALKWAY]["error"] == 0.33
-    assert writes[ROOM]["error"] == room_peak
+    assert writes[WALKWAY]["value"] == 0.33
+    assert writes[ROOM]["value"] == room_peak
 
 
-def test_both_nodes_written_every_tick_with_receipts() -> None:
+def test_both_nodes_written_every_tick_without_receipts() -> None:
     worker = _worker()
     now = datetime.now(timezone.utc)
     worker._last_perception_prediction_error = 0.2
@@ -154,15 +157,10 @@ def test_both_nodes_written_every_tick_with_receipts() -> None:
     for _ in range(3):
         worker._perception_prediction_error_tick()
 
-    calls = [c.kwargs["node_id"] for c in worker._write_prediction_error_node.call_args_list]
+    calls = [c.kwargs["node_id"] for c in worker._write_signal_node.call_args_list]
     assert calls.count(ROOM) == 3 and calls.count(WALKWAY) == 3
-    targets = _receipt_targets(worker)
-    assert targets.count(ROOM) == 3 and targets.count(WALKWAY) == 3
-    walkway_receipt = next(
-        c.args[0] for c in worker._store.save_receipt.call_args_list
-        if c.args[0].state_deltas[0].target_id == WALKWAY
-    )
-    assert walkway_receipt.state_deltas[0].reducer_id == "substrate.perception_walkway"
+    # No field receipt since PE retire Patch 3 (the cameras left the field).
+    assert _receipt_targets(worker) == []
     assert _writes(worker)[WALKWAY]["reducer_key"] == "perception_walkway"
     assert "embedding_staleness" in _writes(worker)[WALKWAY]["extra_channels"]
 
@@ -180,9 +178,9 @@ def test_walkway_goes_stale_to_zero_while_room_stays_live() -> None:
 
     worker._perception_prediction_error_tick()
     writes = _writes(worker)
-    assert writes[WALKWAY]["error"] == 0.0
+    assert writes[WALKWAY]["value"] == 0.0
     assert writes[WALKWAY]["extra_channels"]["embedding_staleness"] == 1.0
-    assert writes[ROOM]["error"] == 0.4
+    assert writes[ROOM]["value"] == 0.4
     assert writes[ROOM]["extra_channels"]["embedding_staleness"] == 0.0
 
 
@@ -197,7 +195,7 @@ def test_walkway_never_seen_reads_stale_after_startup_grace_not_skipped() -> Non
 
     worker._perception_prediction_error_tick()
     writes = _writes(worker)
-    assert writes[WALKWAY]["error"] == 0.0
+    assert writes[WALKWAY]["value"] == 0.0
     assert writes[WALKWAY]["extra_channels"]["embedding_staleness"] == 1.0
 
 
@@ -208,7 +206,7 @@ def test_walkway_still_warming_writes_zero() -> None:
     walkway.embedding_at = datetime.now(timezone.utc)
     walkway.surprise_n = 1
     worker._perception_prediction_error_tick()
-    assert _writes(worker)[WALKWAY]["error"] == 0.0
+    assert _writes(worker)[WALKWAY]["value"] == 0.0
 
 
 def test_walkway_write_failure_does_not_skip_the_room_node() -> None:
@@ -223,9 +221,9 @@ def test_walkway_write_failure_does_not_skip_the_room_node() -> None:
         if kwargs["node_id"] == WALKWAY:
             raise RuntimeError("boom")
 
-    worker._write_prediction_error_node.side_effect = _boom
+    worker._write_signal_node.side_effect = _boom
     worker._perception_prediction_error_tick()  # must not raise
-    assert ROOM in [c.kwargs["node_id"] for c in worker._write_prediction_error_node.call_args_list]
+    assert ROOM in [c.kwargs["node_id"] for c in worker._write_signal_node.call_args_list]
 
 
 def test_stream_group_parsing() -> None:

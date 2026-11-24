@@ -1,0 +1,31 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime, orion-attention-runtime, orion-equilibrium-service, orion-thought, orion-hub
+-- Scale column for substrate_node_signal_history (PE retire Patch 3, the two cameras; design
+-- docs/superpowers/specs/2026-11-24-pe-retire-perception-and-alarms-design.md rev 4, PR #3827).
+--
+-- scale 'v1'          every row written before this patch, and every alarm row (cabinet, strain,
+--                     street): the ALTER's default marks all existing rows 'v1'. For the two
+--                     cameras that is the old clipped z-score (clip(z, 0, 3) / 3).
+-- scale 'v2_partial'  camera scene change (two-stage rank, nats) while the stage-2 window holds
+--                     less than 24 h of 5-min values. Read by the contests; excluded from calm
+--                     checks and win share.
+-- scale 'v2'          camera scene change with a full 24 h stage-2 window.
+--
+-- Every history reader goes through orion/prediction/signal_history_sql.py
+-- history_with_moved_source_sql(): the two cameras are read signal-table-only with
+-- `scale IN ('v2','v2_partial')`, so old- and new-scale camera rows never share a ranking window.
+-- That SQL names the column, so this file must be applied before any REQUIRED-BY service starts
+-- on the Patch 3 code (scripts/safe_docker_build.sh refuses `up` until it is).
+--
+-- The camera scorer's stage-2 values (288 five-minute minima per camera node) are saved in
+-- substrate_perception_embedding_baseline under stream_id 'scene_change_stage2|<node_id>'
+-- (one row per node, replaced on each save): no schema change there.
+--
+-- Apply (the post-pull rebuild applies it automatically: additive DDL only, Postgres 11+ fills
+-- the constant default without a table rewrite):
+--   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 \
+--     < services/orion-sql-db/manual_migration_node_signal_history_scale_v1.sql
+-- Check: python3 scripts/check_sql_migrations_applied.py --file manual_migration_node_signal_history_scale_v1.sql
+-- Additive and idempotent; re-running is safe.
+
+ALTER TABLE substrate_node_signal_history
+    ADD COLUMN IF NOT EXISTS scale text NOT NULL DEFAULT 'v1';

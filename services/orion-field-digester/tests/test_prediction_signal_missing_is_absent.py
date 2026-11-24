@@ -13,6 +13,11 @@ The producer (orion-substrate-runtime ``_prediction_error_receipt``) now sends
 on such ticks. This file pins the digester half: the channel and its
 ``node_vector_updated_at`` stamp are dropped, a later real reading restores
 them, and a real 0.0 is still a reading.
+
+2026-11-24 (PE retire Patch 3): the cameras left the field -- substrate-runtime
+sends no receipt for them and app/tensor/channels.py RETIRED_PSEUDO_NODES prunes
+both ids. The digester contract is generic, so it is pinned on a test-only
+off-lattice probe id; the camera-specific checks below pin the pruning.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from orion.schemas.field_state import FieldStateV1
 from orion.schemas.state_delta import StateDeltaV1
 from orion.substrate.prediction_error_freshness import PREDICTION_ERROR_MISSING_REASON_KEY
 
-ROOM = "node:substrate.perception"
+ROOM = "node:substrate.probe"  # test-only off-lattice pseudo-node (the cameras left the field)
 T0 = datetime(2026, 11, 8, 8, 59, 32, tzinfo=timezone.utc)
 
 
@@ -119,7 +124,7 @@ from app.tensor.field_state import empty_field_state  # noqa: E402
 from app.tensor.reconcile import reconcile_field_state_with_lattice  # noqa: E402
 from app.tensor.update_rules import run_digestion_tick  # noqa: E402
 
-WALKWAY = "node:substrate.perception_walkway"
+CAMERAS = ("node:substrate.perception", "node:substrate.perception_walkway")
 REPO = Path(__file__).resolve().parents[3]
 
 
@@ -151,13 +156,13 @@ class _Field:
         return self.state
 
 
-def test_the_camera_nodes_stay_off_the_lattice() -> None:
+def test_the_probe_and_camera_nodes_stay_off_the_lattice() -> None:
     # Reconcile seeds every NODE_CHANNELS key (prediction_error = 0.0) on lattice
-    # nodes each tick. If a camera node joins `nodes:`, the 0.0 comes back.
+    # nodes each tick. If one of these joins `nodes:`, the 0.0 comes back.
     lattice = load_lattice(REPO / "config" / "field" / "orion_field_topology.v1.yaml")
     assert ROOM not in lattice.nodes
-    assert WALKWAY not in lattice.nodes
-    assert "node:substrate.perception" not in lattice.nodes  # the hold test below relies on it
+    for camera in CAMERAS:
+        assert camera not in lattice.nodes
 
 
 def test_missing_stays_absent_through_a_full_tick() -> None:
@@ -174,15 +179,25 @@ def test_missing_stays_absent_through_a_full_tick() -> None:
         assert "prediction_error" not in state.node_vectors.get(ROOM, {})
 
 
-def test_a_stopped_producer_expires_instead_of_holding_the_last_spike() -> None:
-    # No receipt at all (producer down, or a producer newer than this digester).
-    max_age = EXPIRING_NODE_CHANNELS_BY_NODE[(ROOM, "prediction_error")]
+def test_a_camera_value_held_from_before_the_cutover_is_pruned_not_held() -> None:
+    """PE retire Patch 3: the cameras' 180 s expiry entries left decay.py with their receipts.
+    A camera prediction_error the field still held at deploy (or a late replayed receipt) is
+    dropped by reconcile, never held as the last spike."""
+    assert not any(node in CAMERAS for node, _ in EXPIRING_NODE_CHANNELS_BY_NODE)
     field = _Field()
-    field.tick(T0, [_delta(T0, value=0.9)])
-    held = field.tick(T0 + timedelta(seconds=max_age - 10))
-    assert held.node_vectors[ROOM]["prediction_error"] == 0.9
-    gone = field.tick(T0 + timedelta(seconds=max_age + 10))
-    assert "prediction_error" not in gone.node_vectors.get(ROOM, {})
+    for camera in CAMERAS:
+        field.state.node_vectors[camera] = {"prediction_error": 0.9}
+        field.state.node_vector_updated_at[camera] = {"prediction_error": T0}
+    late = [
+        _delta(T0, value=0.9).model_copy(
+            update={"target_id": c, "after": {"node_id": c, "pressure_hints": {"prediction_error": 0.9}}}
+        )
+        for c in CAMERAS
+    ]
+    state = field.tick(T0 + timedelta(seconds=1), late)
+    for camera in CAMERAS:
+        assert camera not in state.node_vectors
+        assert camera not in state.node_vector_updated_at
 
 
 def test_node_scoped_expiry_leaves_other_nodes_prediction_error_alone() -> None:

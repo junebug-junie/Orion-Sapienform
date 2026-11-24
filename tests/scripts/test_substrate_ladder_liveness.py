@@ -143,6 +143,17 @@ def test_retired_rungs_are_listed_and_never_checked():
     assert [r.name for r in ll.RUNGS][-2:] == ["field_state", "attention"]
 
 
+def test_camera_rungs_read_scene_change_rows_not_receipts():
+    """PE retire Patch 3 (2026-11-24): the cameras send no field receipt, so a receipts rung
+    would read red forever. Their liveness is their own signal-history rows."""
+    names = {r.name: r for r in ll.RUNGS}
+    for node in ("node:substrate.perception", "node:substrate.perception_walkway"):
+        assert f"receipts:{node.removeprefix('node:')}" not in names
+        rung = names[f"signal:{node.removeprefix('node:')}"]
+        assert (rung.table, rung.ts_column, rung.lane_column, rung.lane_value) == (
+            "substrate_node_signal_history", "observed_at", "node_id", node)
+
+
 # ----------------------------------------------------------------- freshness
 
 

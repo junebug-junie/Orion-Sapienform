@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[1]
@@ -155,8 +156,90 @@ def test_writing_prediction_error_for_a_real_pe_node_still_passes(tmp_path):
     assert gate.check(_repo(tmp_path, {"services/x/app/w.py": src}, _REG)) == []
 
 
-def test_the_live_worker_writes_no_alarm_through_the_pe_writer():
+def test_the_live_worker_writes_no_alarm_or_camera_through_the_pe_writer():
     assert gate.moved_writer_problems(REPO) == []
     assert gate.moved_node_ids() == {
         "node:substrate.cabinet", "node:substrate.strain", "node:substrate.street",
+        "node:substrate.perception", "node:substrate.perception_walkway",
     }
+
+
+# --- PE retire Patch 3: the cameras -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("call", [
+    "self._write_prediction_error_node(node_id='node:substrate.perception', error=0.4, now=now)",
+    "self._store.save_receipt(_prediction_error_receipt(reducer_key='perception_walkway', "
+    "node_id='node:substrate.perception_walkway', prediction_error=0.4, now=now))",
+    "store.save_prediction_error_history_samples([(PERCEPTION_NODE_ID, now, 0.4)])",
+])
+def test_a_producer_writing_prediction_error_for_a_camera_fails(tmp_path, call):
+    files = {
+        "orion/consts.py": "PERCEPTION_NODE_ID = 'node:substrate.perception'\n",
+        "services/x/app/w.py": f"def tick(self, store, now):\n    {call}\n",
+    }
+    problems = gate.moved_writer_problems(_repo(tmp_path, files, {}))
+    assert len(problems) == 1 and "services/x/app/w.py:2" in problems[0]
+    assert "moved signal node" in problems[0]
+    assert gate.main(["--root", str(tmp_path)]) == 1
+
+
+_UNSCALED = (
+    "SQL = \"select value from substrate_node_signal_history "
+    "where node_id = 'node:substrate.perception_walkway'\"\n"
+)
+
+
+def test_sql_naming_the_signal_table_with_a_camera_and_no_scale_fails(tmp_path):
+    root = _repo(tmp_path, {"services/x/evals/run_calm.py": _UNSCALED,
+                            "orion/y.py": "Q = f\"select * from {SIGNAL_HISTORY_TABLE} where node_id = {PERCEPTION_NODE_ID}\"\n"},
+                 {})
+    problems = gate.check(root)
+    assert {p.split(":")[0] for p in problems} == {"services/x/evals/run_calm.py", "orion/y.py"}
+    assert all("scale" in p for p in problems)
+
+
+@pytest.mark.parametrize("pred", ["AND scale = 'v2'", "AND scale IN ('v2','v2_partial')"])
+def test_sql_with_a_scale_predicate_or_without_a_camera_passes(tmp_path, pred):
+    ok = _UNSCALED.replace("'\"\n", f"' {pred}\"\n")
+    alarm_only = "SQL = \"select value from substrate_node_signal_history where node_id = 'node:substrate.strain'\"\n"
+    assert gate.check(_repo(tmp_path, {"services/x/evals/run_calm.py": ok, "orion/a.py": alarm_only}, {})) == []
+
+
+def test_tests_are_not_scanned_for_the_scale_fence(tmp_path):
+    assert gate.check(_repo(tmp_path, {"orion/tests/test_x.py": _UNSCALED}, {})) == []
+
+
+def test_the_shared_builder_carries_the_scale_predicate_for_cameras():
+    from orion.prediction import signal_history_sql as m
+
+    assert gate.unscaled_camera_sql_problems(REPO) == []
+    assert gate.builder_scale_problems(m.history_with_moved_source_sql(), gate.camera_node_ids()) == []
+
+
+def test_mutation_builder_without_the_scale_predicate_is_caught(monkeypatch):
+    """Mutation: drop the predicate from the signal_only branch (or put a camera in a read-both
+    union) and the fence must fail."""
+    from orion.prediction import signal_history_sql as m
+
+    cameras = gate.camera_node_ids()
+    stripped = m.history_with_moved_source_sql().replace(f" AND {m.SCALE_PREDICATE_SQL}", "")
+    assert gate.builder_scale_problems(stripped, cameras)
+    read_both_cams = m.history_with_moved_source_sql({**m.HISTORY_READ_MODE_BY_NODE_ID,
+                                                      **{c: m.READ_BOTH for c in cameras}})
+    assert gate.builder_scale_problems(read_both_cams, cameras)
+    monkeypatch.setattr(m, "history_with_moved_source_sql", lambda read_modes=None: stripped)
+    assert gate.unscaled_camera_sql_problems(REPO)
+
+
+def test_mutation_live_worker_writing_a_camera_through_the_pe_writer_is_caught(tmp_path):
+    """Mutation of the real worker: route a camera back through _write_prediction_error_node."""
+    src = (REPO / "services/orion-substrate-runtime/app/worker.py").read_text()
+    mutated = src.replace("        self._write_signal_node(\n            node_id=node_id,\n            value=score,",
+                          "        self._write_prediction_error_node(\n            node_id=PERCEPTION_NODE_ID,\n"
+                          "            error=score,", 1)
+    assert mutated != src
+    files = {"services/orion-substrate-runtime/app/worker.py": mutated,
+             "orion/consts.py": "PERCEPTION_NODE_ID = 'node:substrate.perception'\n"}
+    problems = gate.moved_writer_problems(_repo(tmp_path, files, {}))
+    assert any("PERCEPTION_NODE_ID" in p for p in problems)

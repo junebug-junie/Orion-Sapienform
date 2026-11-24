@@ -97,6 +97,10 @@ organs:
       prediction_surprise: surprise_nats
       experiment_result: effect_z
     families: [prediction.experiment]
+    # orion:prediction:joint_surprise (#3575, 2026-11-18): family A body / room joint-group surprise, folded by
+    # substrate-runtime into node:prediction.body_joint / .room_joint (attention, curiosity, self-readings read
+    # those nodes). Not yet a temporal-self kind of its own: big joint spikes as experience items is a follow-up.
+    channels: ["orion:prediction:joint_surprise"]
     reads_now: null
     exempt_read: "orion-prediction forecasts sensor series; no forecast reads experiences yet (design call, #3457). The experiment runner (prediction.experiment) must not read experience: a randomised arm that depends on Orion's state is no longer randomised; its stop rules read sensors and the pool only"
   metacognition:

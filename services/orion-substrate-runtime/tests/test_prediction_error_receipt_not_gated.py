@@ -38,8 +38,8 @@ _NOW = datetime(2026, 9, 25, 0, 0, 0, tzinfo=timezone.utc)
 
 # Every node that has a _prediction_error_receipt() call site today.
 _RECEIPT_NODE_IDS = {
-    "node:substrate.biometrics",
     "node:substrate.execution",
+    # node:substrate.biometrics retired 2026-11-18 (step 6, #3575): no receipt call site.
     # node:substrate.route and node:substrate.bus_synaptic retired 2026-11
     # (PE suite rebuild step 5), node:substrate.chat 2026-11-13 (step 6): no
     # receipt call site, asserted below. node:substrate.codebase too (retired
@@ -118,7 +118,7 @@ def test_every_domain_still_has_a_receipt_call() -> None:
     tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
     found = {_node_id(call) for call in (*_receipt_calls(tree), *_helper_calls(tree))}
     assert _RECEIPT_NODE_IDS <= found, _RECEIPT_NODE_IDS - found
-    assert not ({"node:substrate.route", "node:substrate.bus_synaptic", "node:substrate.chat", "node:substrate.codebase"} & found)
+    assert not ({"node:substrate.route", "node:substrate.bus_synaptic", "node:substrate.chat", "node:substrate.codebase", "node:substrate.biometrics"} & found)
 
 
 def _grammar_event(event_id: str) -> GrammarEventV1:
@@ -184,8 +184,9 @@ def test_receipt_stamps_the_live_definition_version() -> None:
     pressure_hints, not inside it, so the field digester never makes it a channel."""
     from orion.schemas.prediction_error_definitions import prediction_error_definition_version
 
-    # chat_session left the version table 2026-11-13 (its PE was retired); unlisted keys read 1.
-    for reducer_key, expected in (("chat_session", 1), ("node_biometrics", 3), ("execution_trajectory", 1)):
+    # chat_session left the version table 2026-11-13 and node_biometrics 2026-11-18 (their PEs were
+    # retired); unlisted keys read 1.
+    for reducer_key, expected in (("chat_session", 1), ("node_biometrics", 1), ("execution_trajectory", 1)):
         receipt = worker_module._prediction_error_receipt(
             reducer_key=reducer_key,
             node_id="node:substrate.x",

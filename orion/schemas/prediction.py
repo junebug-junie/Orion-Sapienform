@@ -149,6 +149,47 @@ class PredictionTurnSurpriseV1(BaseModel):
     z: float
 
 
+# --- Joint surprise (family A groups; services/orion-prediction/app/family_a_live.py) ---------------
+
+PREDICTION_JOINT_SURPRISE_CHANNEL = "orion:prediction:joint_surprise"
+PREDICTION_JOINT_SURPRISE_KIND = "prediction.joint_surprise.v1"
+
+
+class PredictionJointSurpriseV1(BaseModel):
+    """One scored joint-group bucket of family A (every raw body / room reading forecast at once), as surprise.
+
+    ``group`` (config/prediction/family_a.v1.yaml, #3580): ``body`` = Orion's machines, cabinet, closet, AC and
+    office temp; ``room`` = office air and light, sound after #3581 (a world source). ``d2`` = squared Mahalanobis miss of
+    the group's readings under the group's residual covariance: misses on coupled readings count once.
+    ``p`` = adaptive conformal p of d^2 (scaled by the hour-before difficulty) against ``n_cal`` calibration
+    rows; ``excess`` = -ln p - ``calm_point`` (E[-ln p] for a uniform p on that grid), 0 on average when the
+    forecaster is calibrated. ``top_shares``: which readings carried the miss (a hint, not a cause).
+
+    Published only for scored rows with the adaptive p whose target is <= 30 min old. substrate-runtime folds
+    it into ``node:prediction.body_joint`` / ``node:prediction.room_joint`` (successor of
+    ``node:substrate.biometrics``). Kill switch ``PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    joint_id: str = Field(..., min_length=1, max_length=64)
+    family: Literal["family_a"]
+    group: Literal["body", "room"]
+    run_id: str = Field(..., min_length=1, max_length=64)
+    horizon_min: int = Field(..., ge=1)
+    origin_ts: AwareDatetime
+    target_ts: AwareDatetime
+    scored_at: AwareDatetime
+    calibration: Literal["adaptive"]
+    n_observed: int = Field(..., ge=1)
+    n_cal: int = Field(..., ge=1)
+    d2: float = Field(..., ge=0.0)
+    p: float = Field(..., gt=0.0, le=1.0)
+    calm_point: float = Field(..., ge=0.0)
+    excess: float
+    top_shares: dict[str, float] = Field(default_factory=dict, max_length=8)
+
+
 # --- Action bets (docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md) -------
 #
 # HTTP contracts only (orion-prediction :8132, /action-bets/*); no bus channel in v1. A body asks for

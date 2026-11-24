@@ -100,7 +100,7 @@ def test_self_model_tick_disabled_by_default_is_noop(monkeypatch):
 
 def test_self_model_tick_persists_real_model(monkeypatch):
     worker = _make_worker(monkeypatch, self_model_enabled=True)
-    fake_store = _fake_store(_pe_node("node:substrate.biometrics", 0.42))
+    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.42))
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
         return_value=fake_store,
@@ -139,7 +139,7 @@ def test_self_model_generated_at_is_fresh_even_with_stale_field_frame(monkeypatc
     )
     worker._store.get_latest_field_attention_frame.return_value = stale_field_frame
 
-    fake_store = _fake_store(_pe_node("node:substrate.biometrics", 0.3))
+    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.3))
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
         return_value=fake_store,
@@ -161,6 +161,8 @@ def test_self_model_tick_reads_broadcast_lane_field_frame(monkeypatch):
     object the broadcast tick just persisted -- no second construction, no
     drift between what gets saved to the broadcast lane and what the
     self-model reducer reasons about."""
+    # Isolate the attention ticks from the prediction-error history writers (on by default).
+    monkeypatch.setenv("SUBSTRATE_WRITE_PREDICTION_ERROR_NODES", "false")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
     fake_store = _fake_store()
     with patch(
@@ -196,6 +198,8 @@ def test_self_model_tick_never_calls_a_foreign_writer(monkeypatch):
     tick must be read-only against every existing live input. Asserts the
     only new store call beyond the existing broadcast-tick writes is the one
     it exclusively owns."""
+    # Isolate the attention ticks from the prediction-error history writers (on by default).
+    monkeypatch.setenv("SUBSTRATE_WRITE_PREDICTION_ERROR_NODES", "false")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
     fake_store = _fake_store(_pe_node("node:substrate.execution", 0.1))
     with patch(
@@ -237,7 +241,7 @@ def test_trend_buffer_accumulates_across_ticks(monkeypatch):
 
     fake_store = MagicMock()
     fake_store.snapshot.side_effect = [
-        _fake_store(_pe_node("node:substrate.biometrics", error)).snapshot.return_value
+        _fake_store(_pe_node("node:substrate.execution", error)).snapshot.return_value
         for error in (0.1, 0.5, 0.9, 0.2)
     ]
     with patch(
@@ -249,17 +253,17 @@ def test_trend_buffer_accumulates_across_ticks(monkeypatch):
 
     assert len(worker._attention_self_model_trend_buffer) == 4
     assert list(worker._attention_self_model_trend_buffer) == [
-        {"biometrics": 0.1},
-        {"biometrics": 0.5},
-        {"biometrics": 0.9},
-        {"biometrics": 0.2},
+        {"execution": 0.1},
+        {"execution": 0.5},
+        {"execution": 0.9},
+        {"execution": 0.2},
     ]
     # 4th call's model should carry a real, non-degenerate predicted_shift --
     # at least 2 snapshots must exist in the window before a trend is
     # computed at all (compute_prediction_error_trend's own contract).
     last_model = worker._store.save_attention_self_model.call_args.args[0]
     assert last_model.predicted_shift is not None
-    assert "biometrics" in last_model.predicted_shift
+    assert "execution" in last_model.predicted_shift
 
 
 def test_trend_buffer_respects_configured_maxlen(monkeypatch):
@@ -364,7 +368,7 @@ def test_self_model_tick_persists_with_heartbeat_fields_when_available(monkeypat
     heartbeat_mean_ratio/heartbeat_verdict fields."""
     monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
-    fake_store = _fake_store(_pe_node("node:substrate.biometrics", 0.1))
+    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.1))
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "ok": True,
@@ -394,7 +398,7 @@ def test_self_model_tick_still_persists_when_heartbeat_unreachable(monkeypatch):
     persist -- heartbeat fields simply stay honestly absent."""
     monkeypatch.setenv("SUBSTRATE_HEARTBEAT_H1_URL", "http://orion-athena-heartbeat:7251/h1")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
-    fake_store = _fake_store(_pe_node("node:substrate.biometrics", 0.1))
+    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.1))
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
         return_value=fake_store,
@@ -416,7 +420,7 @@ def test_self_model_tick_still_persists_when_heartbeat_unreachable(monkeypatch):
 def test_attention_surface_tick_projects_a_pending_row(monkeypatch):
     worker = _make_worker(monkeypatch, self_model_enabled=True)
     worker._pending_attention_schema = None
-    fake_store = _fake_store(_pe_node("node:substrate.biometrics", 0.42))
+    fake_store = _fake_store(_pe_node("node:substrate.execution", 0.42))
     with patch(
         "orion.substrate.graphdb_store.build_substrate_store_from_env",
         return_value=fake_store,

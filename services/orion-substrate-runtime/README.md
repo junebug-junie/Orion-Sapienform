@@ -429,11 +429,37 @@ EWMA z of the change in two chat pressure hints, not a forecast).
   rests at exactly 0 (85 % of 294 replayed turns, 79 % of node writes).
 - No chat turn = no write: the node ages to stale (absent), never calm. FalkorDB node only.
 - Not an Active-Inference domain (absent between chats by design), so the self-model confidence
-  averages execution and biometrics only.
+  averages execution and biometrics only (execution only since 2026-11-18).
 - `/health` `prediction_turn_surprise`; kill switch `SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED`
   (producer: `PREDICTION_TURN_SURPRISE_EVENTS_ENABLED`).
 - `_chat_tick` still reduces chat grammar into the chat projection (repair appraisal and
   `/projections/chat_session` read it); it no longer writes a prediction error.
+
+## Family A joint surprise nodes (2026-11-18, default on)
+
+`node:prediction.body_joint` and `node:prediction.room_joint`: how much Orion's body and the office
+are surprising Orion's own forecast of every raw reading at once. They replace
+`node:substrate.biometrics` (retired the same PR, #3575: the mean change of the machines' pressure
+hints over a fixed 0.30 scale, not a forecast).
+
+- Listens on `orion:prediction:joint_surprise` (`prediction.joint_surprise.v1` from orion-prediction,
+  one per scored family A joint-group bucket with the adaptive p;
+  `services/orion-prediction/app/family_a_live.py`). Groups (#3580): body = machines, cabinet,
+  closet, AC, office temp; room = office eCO2, PM2.5, lux, humidity (sound after #3581).
+- Folds the last 30 min of independent outcomes per group
+  (`orion/substrate/prediction_joint_surprise.py`): summed excess over its calm variance
+  (Var of -ln p for a uniform conformal p, about 1.0), stored as `clip(z / 3, 0, 1)`. Coupled
+  readings already count once upstream (whitened by the group's residual covariance).
+- `node:prediction.room_joint` is a WORLD source (`_WORLD_NODE_IDS`): it can author a goal through
+  the attended-world rule, reads absent in world-first after 600 s without a write, and the
+  body-only gates and self-readings skip it. `node:prediction.body_joint` is a body signal.
+- No events = no writes: both nodes age to stale (absent), never calm. FalkorDB node only.
+- `/health` `prediction_joint_surprise` (counters, window, top reading); kill switch
+  `SUBSTRATE_PREDICTION_JOINT_SURPRISE_NODES_ENABLED` (producer:
+  `PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED`).
+- The biometrics tick still reduces biometrics grammar into the node projection, pressure organ
+  and active pressure; it no longer writes a prediction error (`BIOMETRICS_SILENT_NODE_*` removed
+  with it).
 
 ## Prediction-error magnitude history (2026-10-02, default on)
 

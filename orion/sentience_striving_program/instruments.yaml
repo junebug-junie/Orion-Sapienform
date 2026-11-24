@@ -288,8 +288,9 @@ instruments:
       excluded-but-ticking, per CLAUDE.md's metric-retirement rule. route and its
       2026-07 transport successor bus_synaptic were retired the same way 2026-11
       (PE suite rebuild step 5), and chat 2026-11-13 (step 6; successor
-      node:prediction.chat_turn, a scored forecast): two live domains remain
-      (execution, biometrics).
+      node:prediction.chat_turn, a scored forecast), and biometrics 2026-11-18
+      (step 6, #3575; successors node:prediction.body_joint / .room_joint, family A
+      joint surprise): one live domain remains (execution).
     last_reviewed: 2026-09-02
     claims:
       - id: transport_retired

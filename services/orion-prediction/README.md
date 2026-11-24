@@ -460,7 +460,9 @@ over live rows: what the two nodes would have read.
 `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`, "A. Neural forecaster").
 Slice 1 (#3267) built the gate and the baselines and measured them. Slice 2 runs them live in this
 service's own select -> issue -> score loop as one multivariate series (`app/family_a_live.py`, own task,
-same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
+same `PREDICTION_TICK_SEC`). Since #3575 (2026-11-18) its body and room joint groups are published as
+`prediction.joint_surprise.v1` and become `node:prediction.body_joint` / `.room_joint` in substrate-runtime
+(successor of `node:substrate.biometrics`); see **Joint groups** below.
 
 **Live loop** (`PREDICTION_FAMILY_A_ENABLED`, on):
 
@@ -504,6 +506,15 @@ same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
   its default of one thread per core made one family A fit take > 120 s on the loaded host vs 1.5 s.
   The single-series loop's numpy calls run on the same 4 threads.
 - The self-monitor does not grade `family_a:` reading rows yet (`orion/self_monitor/collect.py`).
+- **Joint groups** (#3575 / #3580): every input has a `group` in the config (`body`: machines, cabinet,
+  closet, AC, office temp; `room`: office eCO2/TVOC, PM2.5, lux, humidity -- classified by cause; `none`: office sound, blend only until #3581 fixes the meter).
+  Select fits each group's own covariance, static and adaptive calibration tails on the same residuals
+  (`metrics[h]["groups"]`; a group with no target or a pool under 200 rows is skipped, `groups_skipped`).
+  Issue writes one more joint row per group per horizon (`family = 'family_a_body' / 'family_a_room'`,
+  own hour-before difficulty); score scores them in the same pass from the same readings. Scored group rows
+  with the adaptive p and a target <= 30 min old are published on `orion:prediction:joint_surprise`
+  (`PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED`, on); the blended row is stored, never published. Calm check
+  per group: `evals/run_family_a_calm_live_eval.py --family all` (also `--exclude START..END` for outages).
 
 - **Inputs**: `config/prediction/family_a.v1.yaml`, 45 candidates read as 5-min means from the raw tables
   only (`orion_biometrics_summary.measurements`, `orion_biometrics_cluster`, `home_cooling_sample`,
@@ -686,7 +697,7 @@ POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_c_live_eval.py --hou
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_calm_live_eval.py --hours 24   # surprise calm check (live, read-only)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_node_replay_eval.py --hours 72  # gate + node fold replayed (live, read-only)
 OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 2 [--out <dir>]  # family A gate + rungs + static vs adaptive joint surprise (read-only, ~75 s)
-POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --hours 168      # family A calm check on stored joint rows (PASS needs 7 days)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --hours 168 --family all  # family A calm check on stored joint rows, blend + each group (PASS needs 7 days)
 OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --replay-hours 24  # dry run of the live loop in memory (read-only, ~4 min)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_gate_replay_eval.py --hours 24 [--compare-module /tmp/fa_old.py]  # per-bucket gate replay vs stored refusals; FAIL on any degeneracy refusal (read-only, ~10 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14   # adaptive ranges replayed (read-only, ~6 min)

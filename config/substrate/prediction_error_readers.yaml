@@ -41,10 +41,10 @@ files:
   services/orion-substrate-runtime/app/worker.py:
     class: alarm_aware
     reason: writes the alarm nodes and samples history for the contest; labels via ALARM_LABELS; self-model
-      PE domains are the explicit _PREDICTION_ERROR_DOMAIN_NODE_IDS (execution, biometrics)
+      PE domains are the explicit _PREDICTION_ERROR_DOMAIN_NODE_IDS (execution; biometrics retired 2026-11-18)
   orion/attention/field_attention/selectors.py:
     class: alarm_aware
-    reason: precision path reads only PREDICTION_ERROR_NATIVE_TARGETS (biometrics, execution); world-first
+    reason: precision path reads only PREDICTION_ERROR_NATIVE_TARGETS (execution); world-first
       path ranks contest verdicts (world_first trigger rule), where alarms compete as alarms
   services/orion-attention-runtime/app/worker.py:
     class: alarm_aware
@@ -64,7 +64,7 @@ files:
   # --- single_node -------------------------------------------------------------------------------
   orion/substrate/metacog_trend_signals.py:
     class: single_node
-    reason: reads the field prediction_error of the node ids its callers pass (execution, biometrics),
+    reason: reads the field prediction_error of the node ids its callers pass (execution),
       one SQL JSON path per named node
   services/orion-field-digester/app/digestion/decay.py:
     class: single_node
@@ -127,7 +127,7 @@ files:
   services/orion-attention-runtime/app/store.py:
     class: not_a_reader
     reason: data access for the contest cache; the EWMA baseline advances only for the native targets
-      (biometrics, execution)
+      (execution)
   services/orion-equilibrium-service/app/pe_history_reader.py:
     class: not_a_reader
     reason: read-only SELECT of history rows into NodePeHistoryCache

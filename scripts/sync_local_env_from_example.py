@@ -460,6 +460,8 @@ SYNC_PREFIXES = (
     "SUBSTRATE_PREDICTION_SURPRISE_",
     # Chat-turn surprise -> node:prediction.chat_turn (substrate-runtime, 2026-11-13).
     "SUBSTRATE_PREDICTION_TURN_SURPRISE_",
+    # Family A joint surprise -> node:prediction.body_joint / .room_joint (substrate-runtime, 2026-11-18).
+    "SUBSTRATE_PREDICTION_JOINT_SURPRISE_",
     # Camera perception in the situation brief (Hub + cortex-exec, 2026-10-07).
     "ORION_SITUATION_PERCEPTION_",
     "ORION_SITUATION_STREET_",

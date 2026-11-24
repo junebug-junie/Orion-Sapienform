@@ -18,9 +18,12 @@ from orion.schemas.self_signal_outcome import (
 
 T0 = datetime(2026, 10, 1, 0, tzinfo=timezone.utc)
 NOW = T0 + timedelta(days=30)
-BIO = "node:substrate.biometrics"
+BIO = "node:prediction.body_joint"  # live body vehicle (biometrics retired 2026-11-18, #3575)
 EXE = "node:substrate.execution"
 CAB = "node:substrate.cabinet"
+# classify_signal_hours judges a level signal by its own week: execution is the last live level body
+# signal (biometrics, the old vehicle, retired 2026-11-18, #3575).
+LEVEL = EXE
 
 
 def _hours(conds: list[str], events: list[int], *, signal: str = BIO, outcome: str = "turn_failed",
@@ -81,7 +84,7 @@ def _week(value_fn, *, start: datetime, end: datetime, step_s: int = 35) -> list
 def test_no_rows_in_an_hour_is_unknown_not_normal() -> None:
     h = T0 + timedelta(days=8)
     hist = _week(lambda k: 0.01 + (k % 50) / 1000.0, start=T0, end=h - timedelta(hours=2))
-    got = sso.classify_signal_hours(BIO, hist, [h])
+    got = sso.classify_signal_hours(LEVEL, hist, [h])
     assert got[h].condition == "unknown"
     assert got[h].judged_sec == 0.0
 
@@ -89,7 +92,7 @@ def test_no_rows_in_an_hour_is_unknown_not_normal() -> None:
 def test_too_little_history_is_unknown() -> None:
     h = T0 + timedelta(hours=1)
     hist = _week(lambda k: 0.5, start=h, end=h + timedelta(hours=1), step_s=60)  # 60 readings < 200
-    got = sso.classify_signal_hours(BIO, hist, [h])
+    got = sso.classify_signal_hours(LEVEL, hist, [h])
     assert got[h].condition == "unknown"
     assert got[h].n_readings == 60 and got[h].n_judged == 0
 
@@ -107,7 +110,7 @@ def test_a_sustained_top_of_week_hour_is_high_a_typical_hour_normal() -> None:
     hist = _week(lambda k: 0.01 + (k % 50) / 1000.0, start=T0, end=hot_h)
     hist += _week(lambda k: 0.9, start=hot_h, end=hot_h + timedelta(minutes=20))  # 20 min at the top
     hist += _week(lambda k: 0.01 + (k % 50) / 1000.0, start=hot_h + timedelta(minutes=20), end=calm_h + timedelta(hours=1))
-    got = sso.classify_signal_hours(BIO, hist, [hot_h, calm_h])
+    got = sso.classify_signal_hours(LEVEL, hist, [hot_h, calm_h])
     assert got[hot_h].condition == "high"
     assert got[hot_h].hot_sec > sso.HIGH_HOUR_HOT_SEC
     assert got[calm_h].condition == "normal"
@@ -118,7 +121,7 @@ def test_one_hot_reading_is_not_a_high_hour() -> None:
     h = T0 + timedelta(days=8)
     hist = _week(lambda k: 0.01 + (k % 50) / 1000.0, start=T0, end=h + timedelta(hours=1))
     hist.append((h + timedelta(minutes=30, seconds=1), 0.95))  # one spike, next reading 35 s later
-    got = sso.classify_signal_hours(BIO, sorted(hist), [h])
+    got = sso.classify_signal_hours(LEVEL, sorted(hist), [h])
     assert got[h].n_hot >= 1
     assert got[h].condition == "normal"
 
@@ -128,7 +131,7 @@ def test_scattered_top_decile_readings_are_a_normal_hour() -> None:
     typical hour (~360 s of hot time): that is the signal's normal, not a high hour."""
     h = T0 + timedelta(days=8)
     hist = _week(lambda k: 0.01 + (k * 7919 % 1000) / 10000.0, start=T0, end=h + timedelta(hours=1))
-    got = sso.classify_signal_hours(BIO, hist, [h])
+    got = sso.classify_signal_hours(LEVEL, hist, [h])
     assert got[h].hot_sec >= sso.HIGH_HOUR_HOT_SEC  # plenty of scattered hot time...
     assert got[h].condition == "normal"  # ...but never sustained
 

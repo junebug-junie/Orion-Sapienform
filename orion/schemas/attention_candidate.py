@@ -86,13 +86,23 @@ NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset({STREET_NODE_ID})
 # Record: docs/superpowers/pr-reports/2026-10-21-camera-surprise-honest-input-pr.md.
 ATTENTION_MIN_BAND_BY_NODE_ID: dict[str, str] = {PERCEPTION_WALKWAY_NODE_ID: "unusual"}
 
+# Family A room joint surprise (#3575; Juniper's #3580 decision, 2026-11-17): office eCO2, PM2.5,
+# lux and humidity (sound once #3581 fixes the meter) forecast together, scored as one joint miss. Their causes are people,
+# windows, time of day and weather, so the node is WORLD: it can author a goal that permits the
+# readonly fetch/recall acts (requires_world_goal) and the body-only gates skip it. Office temp
+# stays body (node:prediction.body_joint) until family C measures Orion's share of it.
+# Written by orion/substrate/prediction_joint_surprise.py; the id string lives here so this
+# module stays free of orion.substrate imports.
+ROOM_JOINT_NODE_ID = "node:prediction.room_joint"
+
 # Substrate nodes that measure the outside world, not Orion's body. The
 # walkway is an outdoor camera, so it is world (2026-10-21): external sources
-# are absent after 180 s without a reading, and the body-only self-signal
-# gates (equilibrium episodes, hourly outcomes) do not read it. The street
-# node (doorbell rings, cross-camera handoffs) is world too.
+# are absent after 180 s without a reading (longer for a slower writer:
+# orion.attention.world_first.EXTERNAL_MAX_AGE_SEC_BY_NODE), and the body-only
+# self-signal gates (equilibrium episodes, hourly outcomes) do not read it. The
+# street node (doorbell rings, cross-camera handoffs) and the room joint are world too.
 _WORLD_NODE_IDS: frozenset[str] = frozenset(
-    {PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID, STREET_NODE_ID}
+    {PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID, STREET_NODE_ID, ROOM_JOINT_NODE_ID}
 )
 
 
@@ -156,7 +166,7 @@ class AttentionCandidateV1(BaseModel):
     # value is unchanged. None = a level read every tick, or decay disabled.
     event_window_sec: float | None = Field(default=None, gt=0.0)
     # Set for an INTERNAL source the semantic layer marks as read every tick
-    # (biometrics: orion.attention.world_first.
+    # (was biometrics, retired 2026-11-18: orion.attention.world_first.
     # node_prediction_error_continuous). Such a source is high for itself ~10%
     # of the time by construction, so it competes only when it has been hot for
     # more than orion.attention.sustained.SUSTAIN_DWELL_SEC of the trailing

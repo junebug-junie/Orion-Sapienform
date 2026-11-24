@@ -1885,7 +1885,8 @@ def cmd_dream_day(day: date, out: Out, runner=None, claude_home: Path | None = N
     from orion.dig import digs, organs
     from orion.evals.model_replay.sandbox import ReadOnlyPsql
     from orion.integration.organs import load_organs
-    from orion.schemas.dream_day import DreamDayReadV1
+    from orion.memory.dream_day import totals_ref, totals_text
+    from orion.schemas.dream_day import DREAM_DAY_TOTALS_SUFFIX, DreamDayReadV1, DreamDayTotalsV1
 
     runner = runner or ReadOnlyPsql(timeout_sec=60.0)
     unread: dict[str, str] = {}
@@ -1908,6 +1909,14 @@ def cmd_dream_day(day: date, out: Out, runner=None, claude_home: Path | None = N
         digs_total=len(calls), digs_chat=chat, digs_background=len(calls) - chat, unread=unread)
     path = dream_day_receipt_path(day)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # The roundup's count lines, the citable home for a day's totals (dream_day_read:<day>), written BEFORE the
+    # receipt and stamped with its read_at: code takes this copy only for this read.
+    digs_line = f"digs that day: {len(calls)} dig command(s), {chat} in chat, {len(calls) - chat} in background runs"
+    totals = DreamDayTotalsV1(day=day, read_at=receipt.read_at, text=totals_text(roundup.lines, [digs_line]))
+    totals_path = path.with_name(f"{day.isoformat()}{DREAM_DAY_TOTALS_SUFFIX}")
+    totals_tmp = totals_path.with_name(totals_path.name + ".tmp")
+    totals_tmp.write_text(totals.model_dump_json(indent=1), encoding="utf-8")
+    totals_tmp.replace(totals_path)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(receipt.model_dump_json(indent=1), encoding="utf-8")
     tmp.replace(path)
@@ -1917,6 +1926,7 @@ def cmd_dream_day(day: date, out: Out, runner=None, claude_home: Path | None = N
                                     f"runs; read in {took:.1f} s; full list: {digs_path}").split("\n")
     tail = [f"UNREAD {name}: {why} (that part is missing, not empty)" for name, why in unread.items()]
     tail.append(f"read receipt: {path} ({'whole day read' if not unread else f'{len(unread)} part(s) UNREAD'})")
+    tail.append(f"a day's totals (the organ count lines above): cite [{totals_ref(day)}]")
     return "\n".join(page + tail)
 
 

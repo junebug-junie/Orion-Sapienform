@@ -5,7 +5,8 @@
   on this same service, so the read is stored as an ``experience_shown`` row like every other reader's).
 * ``record_cites``: the run's ``experience:`` cites to ``POST /temporal-self/now/use`` (record_use keeps only
   ids that were shown, at most 3).
-* ``read_receipt``: the read receipt ``dig dream-day`` left in the self dir this container mounts.
+* ``read_receipt``: the read receipt ``dig dream-day`` left in the self dir this container mounts; ``read_totals``: the
+  count lines it left beside it (the citable ``dream_day_read:<day>``).
 * ``resolve_refs``: one SELECT per ref kind (orion/memory/dream_day.py ``RESOLVE_SQL``).
 * ``resolve_refs``' text per kind is documented at orion/memory/dream_day.py ``RESOLVE_SQL``; the grounding gate
   (app/dream_day_graph.py ``ground``) reads it.
@@ -31,8 +32,9 @@ from orion.memory.dream_day import RESOLVE_SQL, day_window, grade, refs_by_kind
 from orion.memory.episode.validate import ValidationResult
 from orion.prime.state import PrimeStateV1
 from orion.schemas.dream_day import (
-    DREAM_DAY_PROMPT_VERSION, DREAM_DAY_RECEIPT_DIR, DreamDayBriefV1, DreamDayConcernV1, DreamDayCycleV1,
-    DreamDayHypothesisV1, DreamDayMaterialV1, DreamDayNowItemV1, DreamDayReadV1, DreamDayV1,
+    DREAM_DAY_PROMPT_VERSION, DREAM_DAY_RECEIPT_DIR, DREAM_DAY_TOTALS_SUFFIX, DreamDayBriefV1, DreamDayConcernV1,
+    DreamDayCycleV1, DreamDayHypothesisV1, DreamDayMaterialV1, DreamDayNowItemV1, DreamDayReadV1, DreamDayTotalsV1,
+    DreamDayV1,
 )
 from orion.schemas.temporal_self import TemporalNowV1
 
@@ -191,14 +193,33 @@ async def read_receipt(self_dir: str, day: date) -> Optional[DreamDayReadV1]:
     return await asyncio.to_thread(_read_receipt_sync, Path(self_dir) / DREAM_DAY_RECEIPT_DIR / f"{day.isoformat()}.json")
 
 
+def _read_totals_sync(path: Path) -> Optional[DreamDayTotalsV1]:
+    try:
+        return DreamDayTotalsV1.model_validate_json(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None    # a dig from before the totals file: the totals ref simply does not resolve
+    except Exception:  # noqa: BLE001 -- a torn or foreign file is "no totals", never a crash
+        logger.warning("dream_day_totals_unreadable path=%s", path, exc_info=True)
+        return None
+
+
+async def read_totals(self_dir: str, day: date) -> Optional[DreamDayTotalsV1]:
+    """The count lines `dig dream-day <day>` left beside its receipt (the ``dream_day_read:<day>`` ref)."""
+    return await asyncio.to_thread(
+        _read_totals_sync, Path(self_dir) / DREAM_DAY_RECEIPT_DIR / f"{day.isoformat()}{DREAM_DAY_TOTALS_SUFFIX}")
+
+
 # --------------------------------------------------------------------------- refs
 
 
-async def resolve_refs(pool: Any, refs: list[str], *, full: bool = False) -> dict[str, str]:
+async def resolve_refs(pool: Any, refs: list[str], *, full: bool = False,
+                       self_dir: Optional[str] = None) -> dict[str, str]:
     """{canonical ref: text} for every ref that names a real row. Unknown kinds resolve to nothing. ``full``: the
     record's short text plus its detail (what the grounding judge reads); otherwise the short text alone (the
-    memory's stored evidence quote). See orion/memory/dream_day.py RESOLVE_SQL for each kind."""
-    out: dict[str, str] = {}
+    memory's stored evidence quote). See orion/memory/dream_day.py RESOLVE_SQL for each kind. ``self_dir`` (judge
+    only): a harness turn whose reply is a reminiscence save receipt reads as the saved hop's note
+    (app/dream_day_receipts.py, #3739)."""
+    rows: dict[str, tuple[str, str]] = {}
     by_kind = refs_by_kind(refs)
     async with pool.connection() as conn:
         for kind, ids in by_kind.items():
@@ -207,13 +228,23 @@ async def resolve_refs(pool: Any, refs: list[str], *, full: bool = False) -> dic
                 continue
             params = (ids, ids) if sql.count("%s") == 2 else (ids,)
             for row in await (await conn.execute(sql, params)).fetchall():
-                rid = str(dict(row)["id"])
+                r = dict(row)
+                rid = str(r["id"])
                 if rid in ids:
-                    r = dict(row)
-                    text = str(r["text"] or "")
-                    detail = str(r.get("detail") or "")
-                    out[f"{kind}:{rid}"] = f"{text} {detail}".strip() if full and detail else text
-    return out
+                    rows[f"{kind}:{rid}"] = (str(r["text"] or ""), str(r.get("detail") or ""))
+    if full and self_dir:
+        from app.dream_day_receipts import judge_hop_notes, receipt_hop_id
+
+        hops = {ref: receipt_hop_id(detail) for ref, (_, detail) in rows.items()
+                if ref.startswith("harness_turn_trace:")}
+        hops = {ref: h for ref, h in hops.items() if h}
+        if hops:
+            notes = await asyncio.to_thread(judge_hop_notes, self_dir, sorted(set(hops.values())))
+            for ref, hop_id in hops.items():
+                if hop_id in notes:
+                    text, detail = rows[ref]
+                    rows[ref] = (text, f"{detail} -- the reminiscence note it saved ({hop_id}): {notes[hop_id]}")
+    return {ref: (f"{text} {detail}".strip() if full and detail else text) for ref, (text, detail) in rows.items()}
 
 
 async def known_referents(pool: Any) -> list[str]:

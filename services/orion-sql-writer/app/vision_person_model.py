@@ -99,9 +99,10 @@ class PersonModelConfig:
     # Only age answers newer than this count: a child grows past the band.
     age_answer_max_age_days: float = 730.0
     # Object-clue veto (docs/superpowers/specs/2026-11-24-walkway-clue-evidence-design.md,
-    # patch 3): a stroller / dog box next to the person, per passage. A candidate whose
-    # own album passages almost never show a clue the cluster shows is dropped (unsure ->
-    # no guess, accept -> unsure). Never names anyone; never on a camera with a prior.
+    # patch 3): a stroller / dog box next to the person, per passage. When the GUESSED
+    # person's album passages almost never show a clue the cluster shows, the guess is
+    # dropped (unsure -> no guess) or weakened (accept -> unsure). Never changes the name;
+    # never on a camera with a prior.
     clue_veto_enabled: bool = True
     clue_kinds: Tuple[str, ...] = ("stroller", "dog")
     # ln odds against the candidate before it is dropped (2.3 = 10:1).
@@ -396,10 +397,10 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
     ``age_veto``. Design: docs/superpowers/specs/2026-11-13-person-age-band-soft-veto-design.md.
 
     Clue veto (``clues``: (cluster -> counts, person -> album counts, street counts);
-    design 2026-11-24 patch 3). For each candidate, ``clue_llr``; at or below
-    ``-cfg.clue_veto_llr`` the candidate moves down one band: an ``unsure`` is
-    dropped, an ``accept`` becomes ``unsure``. It can only remove or weaken a
-    name, never add one. Exempt like the age veto: a cluster on a camera with a
+    design 2026-11-24 patch 3). After the guess is chosen exactly as without it,
+    ``clue_llr`` for the guessed name; at or below ``-cfg.clue_veto_llr`` an
+    ``unsure`` guess is dropped (no question) and an ``accept`` becomes ``unsure``.
+    It never changes the name or raises a band. Exempt like the age veto: a cluster on a camera with a
     prior. Weakened names land in ``clue_trace[cluster]`` (name -> llr) and on
     the guess as ``clue_veto``."""
     priors = priors or {}
@@ -437,15 +438,8 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
             b = band(s, bars[(p, ch)])
             if b == "reject" and p.strip().casefold() == dominant and not album_has_stream(album, p, stream):
                 b = "unsure"  # a reject bound fitted on other cameras is not evidence here
-            if b != "reject" and cc is not None and p in person_clues:
-                llr = clue_llr(cc, person_clues[p], street_clues, cfg.clue_min_passages)
-                if llr is not None and llr <= -cfg.clue_veto_llr:
-                    clued[p] = round(llr, 3)
-                    if b == "unsure":
-                        continue                  # clue veto: removes a candidate, never adds one
-                    b = "unsure"
             if b != "reject":
-                pre_accepts += b == "accept" and p not in clued
+                pre_accepts += b == "accept"
                 pband = person_bands.get(p.strip().casefold()) if cband else None
                 if pband is not None and pband != cband:
                     struck.append(p)          # age-band veto: removes a candidate, never adds one
@@ -453,8 +447,6 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
                 scored.append((b == "accept", s, p, ch, b))
         if struck and veto_trace is not None:
             veto_trace[cid] = sorted(struck)
-        if clued and clue_trace is not None:
-            clue_trace[cid] = dict(sorted(clued.items()))
         if not scored:
             continue
         accepted = [x for x in scored if x[0]]
@@ -466,6 +458,17 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
             best = max(by_prior, key=lambda x: x[1])
             basis = "prior"
         b = "unsure" if max(len(accepted), pre_accepts) > 1 else best[4]
+        # Clue veto on the chosen guess only, after it is chosen: it can drop the
+        # question or weaken "probably" to "ask", never change the name or raise a band.
+        if cc is not None and best[2] in person_clues:
+            llr = clue_llr(cc, person_clues[best[2]], street_clues, cfg.clue_min_passages)
+            if llr is not None and llr <= -cfg.clue_veto_llr:
+                clued[best[2]] = round(llr, 3)
+                if clue_trace is not None:
+                    clue_trace[cid] = dict(clued)
+                if b != "accept":
+                    continue
+                b = "unsure"
         g = {"individual_id": cid, "person_label": best[2], "channel": best[3],
              "score": round(best[1], 4), "band": b, "basis": basis}
         if struck:
@@ -509,12 +512,13 @@ def _rate(k: int, n: int) -> float:
 
 def clue_llr(cluster: ClueCounts, person: ClueCounts, street: ClueCounts, min_passages: int) -> Optional[float]:
     """ln P(the cluster's clues | it is this person) / P(... | the street), summed over
-    each clue the cluster shows (passages with it x per-passage log ratio). A clue
+    each clue the cluster shows, ONCE per clue (one per-passage log ratio). A clue
     counts only when the person has ``min_passages`` album passages where it could be
     seen. None when no clue counts. Absence is not used: a camera cluster can mix
     people, and one clean passage says little."""
     total, used = 0.0, False
     for clue, (k, _n) in cluster.items():
+        k = min(k, 1)   # once per cluster: many passages of one mixed cluster are not many sightings of them
         pk, pn = person.get(clue, (0, 0))
         sk, sn = street.get(clue, (0, 0))
         if k == 0 or pn < min_passages or sn == 0:

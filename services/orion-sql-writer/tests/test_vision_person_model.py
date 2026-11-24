@@ -1309,34 +1309,48 @@ def test_clue_llr_is_negative_when_the_person_never_shows_the_clue() -> None:
     assert llr is not None and llr < -3.0
     assert pm.clue_llr({"stroller": (1, 1)}, {"stroller": (0, 5)}, street, 10) is None   # too few passages
     assert pm.clue_llr({"stroller": (0, 4)}, regular, street, 10) is None               # no clue shown
-    assert pm.clue_llr({"stroller": (2, 2)}, regular, street, 10) == pytest.approx(2 * llr)
+    # Once per cluster: seven stroller passages of one mixed cluster do not add up.
+    assert pm.clue_llr({"stroller": (7, 57)}, regular, street, 10) == pytest.approx(llr)
+    # Someone who does push a stroller, just less than the street: never near the cutoff.
+    assert pm.clue_llr({"stroller": (7, 57)}, {"stroller": (2, 40)}, street, 10) > -1.0
 
 
 def _clues(person_rates):
     return ({"x": {"stroller": (1, 1)}}, person_rates, {"stroller": (26, 301)})
 
 
-def test_clue_veto_drops_an_unsure_candidate_and_never_adds_one() -> None:
+def test_clue_veto_drops_the_question_and_never_changes_the_name() -> None:
     album, bars, cl = _two_people()
     (off,) = pm.attribute(cl, album, bars, {}, CFG)
     assert off["person_label"] == "A" and off["band"] == "unsure"
     trace: dict = {}
-    (on,) = pm.attribute(cl, album, bars, {}, CFG, clue_trace=trace,
-                         clues=_clues({"A": {"stroller": (0, 189)}, "B": {"stroller": (20, 100)}}))
-    assert on["person_label"] == "B" and set(on["clue_veto"]) == {"A"} and set(trace["x"]) == {"A"}
-    # Both ruled out: no guess at all (nobody named, nobody asked about).
-    assert pm.attribute(cl, album, bars, {}, CFG, clues=_clues(
-        {"A": {"stroller": (0, 189)}, "B": {"stroller": (0, 189)}})) == []
+    # A is vetoed: no guess at all -- NOT "Is this B?" instead.
+    assert pm.attribute(cl, album, bars, {}, CFG, clue_trace=trace,
+                        clues=_clues({"A": {"stroller": (0, 189)}, "B": {"stroller": (20, 100)}})) == []
+    assert set(trace["x"]) == {"A"}
+    # Only B (not the guess) would be vetoed: the guess is untouched.
+    assert pm.attribute(cl, album, bars, {}, CFG, clues=_clues({"B": {"stroller": (0, 189)}})) == [off]
 
 
-def test_clue_veto_turns_an_accept_into_unsure() -> None:
+def test_clue_veto_turns_an_accept_into_unsure_with_the_same_name() -> None:
     album, bars, cl = _two_people()
-    bars = {k: pm.Bar(b.person, b.channel, 0.0, None, 19, 19) for k, b in bars.items()}
-    bars[("B", "body")] = pm.Bar("B", "body", None, None, 19, 19)
+    bars = dict(bars)
+    bars[("A", "body")] = pm.Bar("A", "body", 0.0, None, 19, 19)
     (off,) = pm.attribute(cl, album, bars, {}, CFG)
     assert (off["person_label"], off["band"]) == ("A", "accept")
     (on,) = pm.attribute(cl, album, bars, {}, CFG, clues=_clues({"A": {"stroller": (0, 189)}}))
     assert (on["person_label"], on["band"]) == ("A", "unsure") and set(on["clue_veto"]) == {"A"}
+
+
+def test_clue_veto_never_promotes_the_other_of_two_accepts() -> None:
+    album, bars, cl = _two_people()
+    bars = {k: pm.Bar(b.person, b.channel, 0.0, None, 19, 19) for k, b in bars.items()}
+    (off,) = pm.attribute(cl, album, bars, {}, CFG)
+    assert off["band"] == "unsure"                       # accepted for two people
+    for vetoed in ("A", "B"):
+        got = pm.attribute(cl, album, bars, {}, CFG, clues=_clues({vetoed: {"stroller": (0, 189)}}))
+        assert all(g["band"] != "accept" for g in got)
+        assert all(g["person_label"] == off["person_label"] for g in got)
 
 
 def test_clue_veto_changes_nothing_without_evidence_or_on_a_prior_camera() -> None:

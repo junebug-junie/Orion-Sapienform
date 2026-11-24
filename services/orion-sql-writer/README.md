@@ -632,11 +632,13 @@ so the existing "Is this Juniper?" asks ask the right name, and the office line 
    `docs/superpowers/specs/2026-11-24-walkway-clue-evidence-design.md` patch 3).
    A stroller or dog box in the same frame, within one person-height sideways,
    is a clue on that crop; the unit is the passage (cluster, stream, minute).
-   Per candidate, `clue_llr` sums ln(P(clue | their album passages) /
-   P(clue | street passages)) over the clues the cluster shows (add-0.5
-   smoothing; a person needs 10+ album passages). At or below -2.3 (10:1
-   against) an `unsure` candidate is dropped and an `accept` becomes `unsure`.
-   It only removes or weakens names. Exempt on a camera with a prior. Nothing
+   The guess is chosen exactly as without it; then `clue_llr` for the guessed
+   name sums ln(P(clue | their album passages) / P(clue | street passages)),
+   once per clue the cluster shows (add-0.5 smoothing; a person needs 10+
+   album passages; only passages after the detector started boxing that kind
+   count). At or below -2.3 (10:1 against) an `unsure` guess is dropped (no
+   question) and an `accept` becomes `unsure`. It never changes the name or
+   raises a band. A walk past crossing a minute boundary counts as two passages. Exempt on a camera with a prior. Nothing
    new is stored; log `person_clue_veto individual_id=.. names=name:llr`, cycle
    stats `person_clue_vetoes`, `person_clue_veto_dropped`. Replay against
    Juniper's "Is this X?" answers: `evals/run_clue_veto_replay_eval.py`.

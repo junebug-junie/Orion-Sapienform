@@ -2,6 +2,9 @@
 
 Status: design, docs only. Follows `2026-11-08-prediction-error-suite-rebuild-design.md`.
 Rev 2 (2026-11-24): answers Orion's 12 review questions; see "Rev 2 changes" at the end.
+Rev 3 (2026-11-24): answers Orion's 8 questions on rev 2; see "Rev 3 changes" at the end.
+The backfill ran 08:42Z (14,914 rows, 0 missing keys, 0 mismatches), so old-scale camera rows
+are in `substrate_node_signal_history`. #3826 (per-node curiosity seed bars, #3821) is merged.
 State: #3732 (biometrics) merged. Patch 1 (#3800, signal table + dual-write) merged and deployed.
 #3576 (execution) still open.
 
@@ -217,6 +220,15 @@ a naive fold does not; the rhythm forecast is calibrated. Open, for Juniper:
      All 63 keys still exist in `vision_individual`; 3 are unseen for 7+ days. The calm eval
      must report excess by key age and drop-out, and street_rhythm does not compete until that
      is read (#3388).
+   - **What Orion sees**: Orion reads the raw stated confidence (self-monitor grades the
+     learner on it, `orion/self_monitor/adapters.py:293`, and that stays: it grades the learner's
+     own honesty). The surprise row in orion-prediction stores both `stated_p` and
+     `calibrated_p`, and every surface that shows the street_rhythm node or its outcomes prints
+     both ("stated 0.55, calibrated 0.57").
+   - **Tail, not only the mean**: the calm eval reports p90, p99 and max of excess, and the
+     stated >= 0.98 misses. All-time on raw stated p (674 outcomes): p90 0.28, p99 1.01, max
+     3.81 nats; 12 outcomes stated >= 0.98, of which **1** missed (3.81 nats after the clamp),
+     not 12.
    - **Power**: SD of excess is 0.25 nats. 7 days at ~30 outcomes/day gives n about 210, SE about
      0.017, so the mean-excess check detects a bias of about 0.035 nats or more. Per-bucket
      reliability above 0.9 (n = 22) cannot detect a miscalibration smaller than about 0.2; it
@@ -233,12 +245,17 @@ a naive fold does not; the rhythm forecast is calibrated. Open, for Juniper:
    `signal_history.py` as the alarm half of `SIGNAL_KIND_BY_NODE_ID`; `is_alarm_node()` is
    deleted only once that grep is empty.
 7. **Curiosity keeps the cameras** (Juniper's 2026-10-15 walkway decision and #1746 stand).
-   The generic PE seed scan drops them, and a scene-change seed replaces it in the same patch:
-   it reads `signal_value` for the two camera ids with its own threshold, set to keep today's
-   crossing rate (room 2.7%, walkway 1.2% of ticks against `min_error` 0.55), not the 0.55
-   number itself. Its evidence text says "unusual scene change", not "sustained prediction
-   error". A test pins that both camera ids can still seed curiosity; the CI fence alone would
-   not catch the loss.
+   No second seed path. The existing per-node bar scan (#3826, `_prediction_error_candidates`
+   + `orion/substrate/curiosity_seed_bar.py`) is extended: for a node with a signal kind it reads
+   the node's own value (`signal_value`, nats, not clamped to 0-1) instead of
+   `metadata["prediction_error"]`. Without this, the scan drops both cameras the moment the old
+   key is cleared. The camera bars move from `LEGACY_BAR` 0.55 to **2.0 nats of excess**, the
+   #3821 rule (calm crossing <= 5% by math): for independent frames P(excess >= 2.0) = e^-3 =
+   4.98%; Sidak over dependent frames is lower. `seed_strength` maps 2.0 -> 0.55 and the cap
+   (ln of the window size minus 1, about 7.6 nats at 2 h of walkway frames) -> 1.0.
+   Replayed on the new tick values (30 s ticks, 29 h): room crosses on **5.0%** of ticks, walkway
+   **2.8%**. That is about twice today's 2.7% / 1.2%; the bar follows the #3821 rule rather than
+   today's rate. Evidence text says "unusual scene change". Acceptance check below.
 
 No bus channel changes for steps 1-4. Step 5 reuses `prediction.surprise.v1` on its existing channel.
 
@@ -255,7 +272,10 @@ No bus channel changes for steps 1-4. Step 5 reuses `prediction.surprise.v1` on 
 4. Live: matches theory per frame (table above). Does not rest when summed over 30 min, so it
    is not folded. Room camera hourly means reach 0.95 at p90: busy hours stay visible.
 5. Existing mechanism: same rank-to-surprisal shape as family A and street handoffs.
-6. Reversible: a flag picks old or new second stage; the raw magnitude is unchanged.
+6. Reversible: until the cleanup patch, `SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER`
+   (`rank_v2` default, `legacy_z` fallback) picks the second stage; the raw magnitude is
+   unchanged. The cleanup patch (step 5b) deletes the legacy code **and this key** after the
+   7-day eval passes and #3806 is read. After that, rollback is a `git revert` of 5b.
 
 **street_rhythm (walkway rhythm forecast surprise)**
 
@@ -332,11 +352,24 @@ Alarms (cabinet, strain, street):
 
 Cameras (perception, perception_walkway):
 
-5. Same steps 1-4 with kind `scene_change`, plus: the new per-frame percentile replaces the EWMA
-   z; the camera receipt stops feeding the field `prediction_error` channel; remove both ids
-   from `decay.py` horizons and from the curiosity PE seed scan; glossary and labels say
-   "camera scene change". The old second stage (`_domain_zscore` path, variance floor, 3-sigma
-   saturation constants) is deleted, not left behind a flag, once the eval passes.
+5. Same steps 1-4 with kind `scene_change`, plus:
+   - additive migration: `substrate_node_signal_history.scale text not null default 'v1'`.
+     Every existing row (alarms, and the backfilled old-scale camera rows) reads `v1`. The new
+     camera scorer writes `v2` once its rank window spans the full 2 h, and `v2_partial` while it
+     spans 30 min to 2 h after a restart;
+   - the new tick value replaces the EWMA z behind `SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER`;
+   - camera readers (contest, self-readings, curiosity history, node-history tool) read the two
+     camera ids **from the signal table only, `scale in ('v2','v2_partial')`**, never through
+     the read-both union (which would pull old PE rows, all old scale). The contest therefore
+     has `insufficient_history` for each camera until 200 v2 rows exist (about 12 h at one
+     sampled row per 3.5 min). That gap is accepted; the alternative is ranking mixed scales;
+   - the camera receipt stops feeding the field `prediction_error` channel; both ids leave the
+     `decay.py` horizons; the curiosity scan reads them per item 7; glossary meaning says
+     "how unusual the change in this camera's picture is, **relative to the last two hours of
+     the same camera**". A sustained change (lights on, dusk) reads high while it is new and
+     is absorbed within about 2 h. That is intended: it is change, not state;
+   5b. cleanup, after the 7-day eval passes **and** #3806 is read: delete `_domain_zscore`'s camera
+   path, the variance floor, the 3-sigma constants and the scorer flag key.
 
 Perception forecast:
 
@@ -379,7 +412,15 @@ read-both SQL and names the new table in its output.
 - `substrate_node_signal_history` has rows for all five ids, with the right kind.
 - Strain news fires after a substrate-runtime restart (seed reads the new table).
 - Contest win share per node, 7 days before vs after: alarms and cameras within noise.
-- Camera excess exact-0 share within 0.60-0.67 over 7 days; mean -ln p within 0.9-1.1.
+- Camera tick values (`scale = 'v2'` rows only; `v2_partial` rows from the first 2 h after a
+  restart are excluded from calm checks and from win-share): exact-0 share within 0.65-0.80
+  and crossing 2.0 nats on 1-6% of rows. Replay reference (30 s ticks, 2 h window, 29 h):
+  room 0.70 zero, p90 1.20, p99 3.54, crosses 5.0%; walkway 0.75 zero, p90 0.85, p99 3.24,
+  crosses 2.8%. (Rev 2's 0.60-0.67 band was per-frame theory; the written value is the
+  Sidak tick, so that band would have failed on day 1.) The first 2 h after a restart differ
+  (replay: room 0.88 zero, walkway 0.59), which is why they are excluded.
+- Curiosity seeds from each camera on 1-6% of its ticks over 7 days (`fct_curiosity_runs` /
+  candidate sets), and a test pins both camera ids through the extended scan.
 - Every Orion-facing render site (self-readings, node-history tool, attention labels, glossary)
   greps clean of "prediction error" for the five ids. Test in CI.
 - `check_pe_alarm_readers.py` fails a fixture that writes `prediction_error` for an alarm id.
@@ -391,6 +432,29 @@ Alarms step 2: readers switch to the read-both SQL (pe_history_cache, strain see
 tool, self-readings) and the contest semantics lookup reads the node's own channel (item 4), in
 one patch, with tests that all five ids still make contest candidates and strain news still
 warms after a restart. Merge after #3576.
+
+## Orion's re-test data (#3807)
+
+`orion_readonly` can read the signal table, and since the 08:42Z backfill it holds the old-scale
+camera rows for the last 7 days. After the scale column lands they read `scale = 'v1'`; new
+rows read `v2`. So Orion can compare old and new in one table with `where scale = ...`, and the
+contest never mixes them. The table prunes at 7 days: the old rows are gone about 7 days after
+the switch. If Orion wants them longer, it should copy what it needs during that week.
+
+## Rev 3 changes (Orion's review of rev 2)
+
+1. Camera acceptance band is now tick-level, from the replay's tick numbers.
+2. Scale column (`v1` / `v2` / `v2_partial`); cameras read new-table v2 rows only, never the union.
+3. Score from 30 min (attention needs it), mark rows `v2_partial` until the 2 h window is full,
+   exclude them from calm checks and win-share.
+4. Absorbing a sustained change is intended; glossary says "relative to the last two hours";
+   #3806 is read before the legacy path is deleted.
+5. The flag is removed by cleanup step 5b, after the eval and #3806.
+6. No second seed path: the #3826 scan reads the node's own channel; bar 2.0 nats; replayed
+   crossing 5.0% / 2.8% is an acceptance check.
+7. Re-test data source stated; the scale column lets Orion read old rows without the contest mixing them.
+8. street_rhythm shows stated and calibrated p side by side; the calm eval reports the tail.
+   Only 1 clamp-bound miss exists, not 12.
 
 ## Rev 2 changes (Orion's review, 2026-11-24)
 

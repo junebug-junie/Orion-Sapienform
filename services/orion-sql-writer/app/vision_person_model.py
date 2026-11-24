@@ -98,6 +98,16 @@ class PersonModelConfig:
     age_veto_enabled: bool = True
     # Only age answers newer than this count: a child grows past the band.
     age_answer_max_age_days: float = 730.0
+    # Object-clue veto (docs/superpowers/specs/2026-11-24-walkway-clue-evidence-design.md,
+    # patch 3): a stroller / dog box next to the person, per passage. A candidate whose
+    # own album passages almost never show a clue the cluster shows is dropped (unsure ->
+    # no guess, accept -> unsure). Never names anyone; never on a camera with a prior.
+    clue_veto_enabled: bool = True
+    clue_kinds: Tuple[str, ...] = ("stroller", "dog")
+    # ln odds against the candidate before it is dropped (2.3 = 10:1).
+    clue_veto_llr: float = 2.3
+    # A person's clue rates count only with this many album passages.
+    clue_min_passages: int = 10
 
 
 @dataclass(frozen=True)
@@ -352,7 +362,9 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
               priors: Optional[Dict[str, Dict[str, float]]] = None,
               person_bands: Optional[Dict[str, str]] = None,
               cluster_bands: Optional[Dict[str, str]] = None,
-              veto_trace: Optional[Dict[str, List[str]]] = None) -> List[dict]:
+              veto_trace: Optional[Dict[str, List[str]]] = None,
+              clues: Optional[Tuple[Dict[str, ClueCounts], Dict[str, ClueCounts], ClueCounts]] = None,
+              clue_trace: Optional[Dict[str, Dict[str, float]]] = None) -> List[dict]:
     """One guess per unnamed cluster: its best-scoring person, banded. A
     cluster accepted for two people is downgraded to unsure. ``blocked``:
     cluster -> casefolded names Juniper said it is not.
@@ -381,10 +393,19 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
     with a prior (the office: its prior path and infrared reads were never
     replayed), any cluster or person with no band. Names it struck land in
     ``veto_trace[cluster]`` and, when a guess is still made, on the guess as
-    ``age_veto``. Design: docs/superpowers/specs/2026-11-13-person-age-band-soft-veto-design.md."""
+    ``age_veto``. Design: docs/superpowers/specs/2026-11-13-person-age-band-soft-veto-design.md.
+
+    Clue veto (``clues``: (cluster -> counts, person -> album counts, street counts);
+    design 2026-11-24 patch 3). For each candidate, ``clue_llr``; at or below
+    ``-cfg.clue_veto_llr`` the candidate moves down one band: an ``unsure`` is
+    dropped, an ``accept`` becomes ``unsure``. It can only remove or weaken a
+    name, never add one. Exempt like the age veto: a cluster on a camera with a
+    prior. Weakened names land in ``clue_trace[cluster]`` (name -> llr) and on
+    the guess as ``clue_veto``."""
     priors = priors or {}
     person_bands = person_bands or {}
     cluster_bands = cluster_bands or {}
+    cluster_clues, person_clues, street_clues = clues if clues else ({}, {}, {})
     out: List[dict] = []
     persons = sorted(album)
     sides: Dict[Tuple[str, str, int], _Side] = {}
@@ -400,6 +421,8 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
         dominant = top[0] if top[1] >= PRIOR_DOMINANCE else None
         cband = None if prior else cluster_bands.get(cid)
         struck: List[str] = []
+        clued: Dict[str, float] = {}
+        cc = None if prior else cluster_clues.get(cid)
         pre_accepts = 0               # accepts BEFORE the veto: it never promotes unsure -> accept
         scored = []
         for p in persons:
@@ -414,8 +437,15 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
             b = band(s, bars[(p, ch)])
             if b == "reject" and p.strip().casefold() == dominant and not album_has_stream(album, p, stream):
                 b = "unsure"  # a reject bound fitted on other cameras is not evidence here
+            if b != "reject" and cc is not None and p in person_clues:
+                llr = clue_llr(cc, person_clues[p], street_clues, cfg.clue_min_passages)
+                if llr is not None and llr <= -cfg.clue_veto_llr:
+                    clued[p] = round(llr, 3)
+                    if b == "unsure":
+                        continue                  # clue veto: removes a candidate, never adds one
+                    b = "unsure"
             if b != "reject":
-                pre_accepts += b == "accept"
+                pre_accepts += b == "accept" and p not in clued
                 pband = person_bands.get(p.strip().casefold()) if cband else None
                 if pband is not None and pband != cband:
                     struck.append(p)          # age-band veto: removes a candidate, never adds one
@@ -423,6 +453,8 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
                 scored.append((b == "accept", s, p, ch, b))
         if struck and veto_trace is not None:
             veto_trace[cid] = sorted(struck)
+        if clued and clue_trace is not None:
+            clue_trace[cid] = dict(sorted(clued.items()))
         if not scored:
             continue
         accepted = [x for x in scored if x[0]]
@@ -438,8 +470,58 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
              "score": round(best[1], 4), "band": b, "basis": basis}
         if struck:
             g["age_veto"] = sorted(struck)
+        if clued:
+            g["clue_veto"] = dict(sorted(clued.items()))
         out.append(g)
     return out
+
+
+# --- object clues (pure) ------------------------------------------------------------------------------
+
+# {clue: (passages with the clue, passages where the clue COULD be seen)}
+ClueCounts = Dict[str, Tuple[int, int]]
+# One crop: (passage key, clue kinds boxed next to the person, clue kinds the
+# detector was already boxing at that moment). A kind added to the detector later
+# (stroller: 2026-11-18) must not count older passages as "no stroller".
+ClueObs = Tuple[str, FrozenSet[str], FrozenSet[str]]
+
+
+def clue_counts(obs: Iterable[ClueObs]) -> ClueCounts:
+    """Crop rows -> per clue, (passages where it was seen at least once, passages
+    where it could be seen). Frames of one walk past are not independent, so the
+    passage is the unit."""
+    seen: Dict[str, set] = {}
+    able: Dict[str, set] = {}
+    for passage, clues, eligible in obs:
+        seen.setdefault(passage, set()).update(clues & eligible)
+        able.setdefault(passage, set()).update(eligible)
+    out: Dict[str, Tuple[int, int]] = {}
+    for passage, kinds in able.items():
+        for c in kinds:
+            k, n = out.get(c, (0, 0))
+            out[c] = (k + (c in seen[passage]), n + 1)
+    return out
+
+
+def _rate(k: int, n: int) -> float:
+    return (k + 0.5) / (n + 1.0)
+
+
+def clue_llr(cluster: ClueCounts, person: ClueCounts, street: ClueCounts, min_passages: int) -> Optional[float]:
+    """ln P(the cluster's clues | it is this person) / P(... | the street), summed over
+    each clue the cluster shows (passages with it x per-passage log ratio). A clue
+    counts only when the person has ``min_passages`` album passages where it could be
+    seen. None when no clue counts. Absence is not used: a camera cluster can mix
+    people, and one clean passage says little."""
+    total, used = 0.0, False
+    for clue, (k, _n) in cluster.items():
+        pk, pn = person.get(clue, (0, 0))
+        sk, sn = street.get(clue, (0, 0))
+        if k == 0 or pn < min_passages or sn == 0:
+            continue
+        total += k * math.log(_rate(pk, pn) / _rate(sk, sn))
+        used = True
+    return total if used else None
 
 
 def exemplar_id(person: str, crop_id: str, source: str) -> str:
@@ -654,6 +736,58 @@ def street_pools(conn, now: datetime, cfg: PersonModelConfig, tz: ZoneInfo
         "SELECT individual_id FROM vision_individual WHERE individual_id = ANY(:i) AND last_seen_at > :since"),
         {"i": list(face_street), "since": now - timedelta(days=cfg.candidate_days)}).fetchall()} if face_street else set()
     return {k: v for k, v in face_street.items() if k in recent}, face_street
+
+
+# A clue box counts as "next to" the person within this many person-heights sideways,
+# in the same frame (services/orion-sql-writer/evals/run_clue_rates_eval.py measured it).
+CLUE_NEAR_HEIGHTS = 1.0
+
+_CLUE_STARTS_SQL = ("SELECT label, min(observed_at) FROM vision_crop_observation "
+                    "WHERE label = ANY(:kinds) GROUP BY label")
+
+_CROP_CLUES_SQL = """
+WITH starts AS (
+  SELECT label, since FROM unnest(CAST(:start_kinds AS text[]), CAST(:start_at AS timestamptz[])) AS s(label, since))
+SELECT c.crop_id,
+       c.stream_id || '|' || coalesce(c.individual_id, c.crop_id) || '|'
+         || to_char(date_trunc('minute', c.observed_at), 'YYYY-MM-DD"T"HH24:MI') AS passage,
+       coalesce(array_agg(DISTINCT o.label) FILTER (WHERE o.label IS NOT NULL), '{}') AS clues,
+       coalesce((SELECT array_agg(s.label) FROM starts s WHERE s.since <= c.observed_at), '{}') AS eligible
+FROM vision_crop_observation c
+LEFT JOIN vision_crop_observation o ON o.stream_id = c.stream_id AND o.observed_at = c.observed_at
+  AND o.label = ANY(:kinds) AND cardinality(c.box_xyxy) = 4 AND cardinality(o.box_xyxy) = 4
+  AND abs(((o.box_xyxy[1] + o.box_xyxy[3]) / 2) - ((c.box_xyxy[1] + c.box_xyxy[3]) / 2))
+      < :near * (c.box_xyxy[4] - c.box_xyxy[2])
+WHERE c.crop_id = ANY(:ids)
+GROUP BY c.crop_id, passage
+"""
+
+
+def load_crop_clues(conn, crop_ids: Iterable[str], kinds: Sequence[str]) -> Dict[str, ClueObs]:
+    """crop_id -> (passage key, clue kinds boxed next to the person in that frame,
+    clue kinds the detector had started boxing by then)."""
+    from sqlalchemy import text
+
+    ids = sorted(set(crop_ids))
+    if not ids or not kinds:
+        return {}
+    # When the detector first boxed each kind: one scan per cycle, not one per crop.
+    starts = conn.execute(text(_CLUE_STARTS_SQL), {"kinds": list(kinds)}).fetchall()
+    return {r[0]: (r[1], frozenset(r[2] or ()), frozenset(r[3] or ())) for r in conn.execute(
+        text(_CROP_CLUES_SQL), {"ids": ids, "kinds": list(kinds), "near": CLUE_NEAR_HEIGHTS,
+                                "start_kinds": [s[0] for s in starts], "start_at": [s[1] for s in starts]}).fetchall()}
+
+
+def clue_inputs(album: Dict[str, Dict[int, List[Crop]]], street: Dict[str, List[Crop]],
+                obs: Dict[str, ClueObs]
+                ) -> Tuple[Dict[str, ClueCounts], Dict[str, ClueCounts], ClueCounts]:
+    """(cluster -> counts for each street cluster, person -> counts of their +1 album,
+    street counts over every street crop): the ``clues`` argument of ``attribute``."""
+    def counts(crops: Iterable[Crop]) -> ClueCounts:
+        return clue_counts(obs[c.crop_id] for c in crops if c.crop_id in obs)
+    return ({cid: counts(cs) for cid, cs in street.items()},
+            {p: counts(pols.get(1, [])) for p, pols in album.items()},
+            counts(c for cs in street.values() for c in cs))
 
 
 def not_a_person_names(conn) -> FrozenSet[str]:
@@ -880,8 +1014,27 @@ def run_person_model(conn, now: datetime, cfg: PersonModelConfig) -> dict:
         except Exception as exc:  # noqa: BLE001
             person_bands, cluster_bands, age_veto_error = {}, {}, str(exc)[:200]
             logger.warning("person_age_veto_skipped error=%s", exc)
+    clues = None
+    clue_trace: Dict[str, Dict[str, float]] = {}
+    clue_veto_error = None
+    if cfg.clue_veto_enabled and not priors_ok:
+        clue_veto_error = "camera priors failed to load: clue veto off (office exemption unknown)"
+    elif cfg.clue_veto_enabled:
+        # Fails open, like the age veto: an error means no clue veto this cycle, never no guesses.
+        try:
+            with conn.begin_nested():
+                obs = load_crop_clues(conn, [c.crop_id for pols in album.values() for c in pols.get(1, [])]
+                                      + [c.crop_id for cs in street.values() for c in cs], cfg.clue_kinds)
+            clues = clue_inputs(album, street, obs)
+        except Exception as exc:  # noqa: BLE001
+            clues, clue_veto_error = None, str(exc)[:200]
+            logger.warning("person_clue_veto_skipped error=%s", exc)
     guesses = attribute(street, album, bars, _blocked(conn), cfg, priors=priors,
-                        person_bands=person_bands, cluster_bands=cluster_bands, veto_trace=veto_trace)
+                        person_bands=person_bands, cluster_bands=cluster_bands, veto_trace=veto_trace,
+                        clues=clues, clue_trace=clue_trace)
+    for cid, names in sorted(clue_trace.items()):
+        logger.info("person_clue_veto individual_id=%s names=%s", cid,
+                    ",".join(f"{k}:{v}" for k, v in names.items()))
     guessed = {g["individual_id"] for g in guesses}
     all_struck = sorted(c for c in veto_trace if c not in guessed)
     for cid in all_struck:
@@ -899,4 +1052,7 @@ def run_person_model(conn, now: datetime, cfg: PersonModelConfig) -> dict:
         "person_age_bands_people": len(person_bands), "person_age_bands_clusters": len(cluster_bands),
         "person_age_vetoes": len(veto_trace), "person_age_veto_all_struck": len(all_struck),
         **({"person_age_veto_error": age_veto_error} if age_veto_error else {}),
+        "person_clue_vetoes": len(clue_trace),
+        "person_clue_veto_dropped": sum(1 for c in clue_trace if c not in guessed),
+        **({"person_clue_veto_error": clue_veto_error} if clue_veto_error else {}),
     }

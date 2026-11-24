@@ -1288,3 +1288,76 @@ def test_confirm_revokes_clear_the_age_veto_in_the_same_statement(pg) -> None:
             assert vi._age_veto_clear(conn) == ""
         finally:
             conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS age_veto jsonb"))
+
+
+# --- clue veto (design 2026-11-24, patch 3) -----------------------------------------------------------
+
+ALL = frozenset({"stroller", "dog"})
+
+
+def test_clue_counts_use_passages_and_only_kinds_the_detector_was_boxing() -> None:
+    obs = [("p1", frozenset({"stroller"}), ALL), ("p1", frozenset(), ALL),          # one passage, seen once
+           ("p2", frozenset(), ALL),
+           ("old", frozenset(), frozenset({"dog"}))]                               # before strollers were boxed
+    assert pm.clue_counts(obs) == {"stroller": (1, 2), "dog": (0, 3)}
+
+
+def test_clue_llr_is_negative_when_the_person_never_shows_the_clue() -> None:
+    street = {"stroller": (26, 301)}
+    regular = {"stroller": (0, 189)}
+    llr = pm.clue_llr({"stroller": (1, 1)}, regular, street, 10)
+    assert llr is not None and llr < -3.0
+    assert pm.clue_llr({"stroller": (1, 1)}, {"stroller": (0, 5)}, street, 10) is None   # too few passages
+    assert pm.clue_llr({"stroller": (0, 4)}, regular, street, 10) is None               # no clue shown
+    assert pm.clue_llr({"stroller": (2, 2)}, regular, street, 10) == pytest.approx(2 * llr)
+
+
+def _clues(person_rates):
+    return ({"x": {"stroller": (1, 1)}}, person_rates, {"stroller": (26, 301)})
+
+
+def test_clue_veto_drops_an_unsure_candidate_and_never_adds_one() -> None:
+    album, bars, cl = _two_people()
+    (off,) = pm.attribute(cl, album, bars, {}, CFG)
+    assert off["person_label"] == "A" and off["band"] == "unsure"
+    trace: dict = {}
+    (on,) = pm.attribute(cl, album, bars, {}, CFG, clue_trace=trace,
+                         clues=_clues({"A": {"stroller": (0, 189)}, "B": {"stroller": (20, 100)}}))
+    assert on["person_label"] == "B" and set(on["clue_veto"]) == {"A"} and set(trace["x"]) == {"A"}
+    # Both ruled out: no guess at all (nobody named, nobody asked about).
+    assert pm.attribute(cl, album, bars, {}, CFG, clues=_clues(
+        {"A": {"stroller": (0, 189)}, "B": {"stroller": (0, 189)}})) == []
+
+
+def test_clue_veto_turns_an_accept_into_unsure() -> None:
+    album, bars, cl = _two_people()
+    bars = {k: pm.Bar(b.person, b.channel, 0.0, None, 19, 19) for k, b in bars.items()}
+    bars[("B", "body")] = pm.Bar("B", "body", None, None, 19, 19)
+    (off,) = pm.attribute(cl, album, bars, {}, CFG)
+    assert (off["person_label"], off["band"]) == ("A", "accept")
+    (on,) = pm.attribute(cl, album, bars, {}, CFG, clues=_clues({"A": {"stroller": (0, 189)}}))
+    assert (on["person_label"], on["band"]) == ("A", "unsure") and set(on["clue_veto"]) == {"A"}
+
+
+def test_clue_veto_changes_nothing_without_evidence_or_on_a_prior_camera() -> None:
+    album, bars, cl = _two_people()
+    base = pm.attribute(cl, album, bars, {}, CFG)
+    for rates in ({"A": {"stroller": (0, 5)}}, {"A": {"stroller": (30, 100)}}, {}):
+        assert pm.attribute(cl, album, bars, {}, CFG, clues=_clues(rates)) == base
+    off_cfg = _dc.replace(CFG, clue_veto_llr=99.0)
+    assert pm.attribute(cl, album, bars, {}, off_cfg, clues=_clues({"A": {"stroller": (0, 189)}})) == base
+    album_o, bars_o, office = _office_world()
+    base_o = pm.attribute(office, album_o, bars_o, {}, CFG, priors=PRIORS)
+    cid = next(iter(office))
+    every = {p: {"stroller": (0, 189)} for p in album_o}
+    assert pm.attribute(office, album_o, bars_o, {}, CFG, priors=PRIORS,
+                        clues=({cid: {"stroller": (3, 3)}}, every, {"stroller": (26, 301)})) == base_o
+
+
+def test_settings_ship_the_clue_veto_on() -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import person_model_config
+
+    assert person_model_config(Settings()).clue_veto_enabled is True
+    assert person_model_config(Settings(VISION_PERSON_CLUE_VETO_ENABLED=False)).clue_veto_enabled is False
+    assert "\nVISION_PERSON_CLUE_VETO_ENABLED=true\n" in (SERVICE / ".env_example").read_text()

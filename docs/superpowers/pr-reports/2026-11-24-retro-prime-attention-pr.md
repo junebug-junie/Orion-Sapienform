@@ -218,6 +218,6 @@ before hub-app says one), and orion-hub and orion-durable-runs before orion-mind
 
 ## PR link
 
-PR_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3820
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

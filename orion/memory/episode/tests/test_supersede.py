@@ -362,6 +362,21 @@ def test_open_asks_rejected_rows_and_unsettled_corrections_are_out():
     assert s.candidates_for(unsettled, corpus(OLD, unsettled), dense={"old": 0.9}) == []
 
 
+def test_own_thought_can_be_retired_by_a_settled_correction_but_never_corrects():
+    """Issue #3840: same rules as not_asked. Nobody will settle an own thought, so a settled
+    correction may retire it; it is unsettled, so it never retires anything itself."""
+    mine = row("mine", "Juniper told me her pet Biscuit is a cat.", state="own_thought", refs=("pet:biscuit",))
+    assert s.can_be_superseded(mine) and not s.can_correct(mine)
+    got = s.candidates_for(NEW, corpus(mine, NEW), dense={"mine": 0.9})
+    assert [cand.old.memory_id for cand in got] == ["mine"]
+    newer_mine = row("nm", "Juniper told me Biscuit is a dog, not a cat.", days=3, state="own_thought",
+                     refs=("pet:biscuit",))
+    assert s.candidates_for(newer_mine, corpus(OLD, newer_mine), dense={"old": 0.9}) == []
+    # An own view stays protected by purpose, whatever its state.
+    view = row("v", "I think Biscuit is a cat.", purpose="orion_view", state="own_thought", refs=("pet:biscuit",))
+    assert not s.can_be_superseded(view)
+
+
 def test_same_episode_siblings_and_undone_pairs_are_never_candidates():
     sib_old = s.MemoryRow("so", OLD.statement, "about_juniper", T0, episode_id="ep-1", referents=OLD.referents)
     sib_new = s.MemoryRow("sn", NEW.statement, "about_juniper", T0 + timedelta(days=1), episode_id="ep-1",

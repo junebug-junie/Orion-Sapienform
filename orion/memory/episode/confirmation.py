@@ -20,6 +20,11 @@ The loop, end to end:
    never drops it. Idempotent: the apply event's id is derived from the outcome id.
 4. **Expire** (``expire_cards``). A card unanswered for ``ASK_TTL`` is closed as ``expired`` and
    the memory becomes ``unconfirmed``. Silence is never a yes, and no outcome row is written.
+5. **Own thoughts are never asked** (``settle_own_thoughts``, issue #3840, Juniper 2026-11-24).
+   A memory in Orion's own voice (``orion_thought``) is stored ``own_thought`` by the validator and
+   never gets a card. The tick also moves any orion_thought row still in an asking state
+   (``pending_confirmation``, ``unconfirmed``, ``not_asked``) to ``own_thought`` and withdraws its
+   open card with a recorded reason, so a row written by an older writer is never asked either.
 
 Card wording is deterministic (``render_question``): the memory's own statement, quoted, framed by
 where it came from (voice + channel) and why Orion is asking (``stakes_reason``). Source
@@ -46,6 +51,12 @@ SOURCE_KIND = "memory_confirmation"
 # has no producer yet (spec section 8); it is listed so the cap and the Hub guard already cover it.
 RESOLVABLE_KINDS: tuple[str, ...] = (SOURCE_KIND, "open_question")
 LOOP_PREFIX = "memory-confirm-"
+# Orion's own thought: never asked (validate.initial_confirmation_state). One definition, the validator's.
+from orion.memory.episode.validate import OWN_THOUGHT_STATE, OWN_THOUGHT_VOICE  # noqa: E402
+# Asking states an own thought is moved out of. ``not_asked`` (backfill, #3537) is included: it
+# renders "Unconfirmed, check with Juniper", which is wrong for Orion's own thought.
+OWN_THOUGHT_FROM_STATES = ("pending_confirmation", "unconfirmed", "not_asked")
+OWN_THOUGHT_REASON = "orion_thought_never_asked"
 MAX_OPEN_CARDS = 5
 # New memory cards per local day (review of #2517): when Juniper answers promptly, slots free fast,
 # and without this the 5-card cap alone would let the queue refill all day.
@@ -304,7 +315,7 @@ JOIN LATERAL (
     LIMIT 1
 ) r ON true
 WHERE m.stakes = 'high' AND m.confirmation_state = 'pending_confirmation' AND m.status = 'active'
-  AND m.confirmation_loop_id IS NULL
+  AND m.confirmation_loop_id IS NULL AND m.voice <> 'orion_thought'
 """
 
 
@@ -349,6 +360,8 @@ async def open_cards(
             FROM episode_memory
             WHERE stakes = 'high' AND confirmation_state = 'pending_confirmation' AND status = 'active'
               AND confirmation_loop_id IS NULL AND NOT (memory_id = ANY($2::uuid[]))
+              -- Backstop (issue #3840): Orion's own thought is never asked, whatever its state.
+              AND voice <> 'orion_thought'
             ORDER BY created_at, memory_id
             LIMIT $1
             """,
@@ -428,6 +441,69 @@ async def expire_cards(conn, *, now: Optional[datetime] = None) -> list[str]:
     return moved
 
 
+# One statement, no bind parameters and no '%', so asyncpg (the tick) and psycopg (the one-time
+# script, scripts/memory_own_thought_settle.py) run the same SQL. Rows with an answer not yet
+# applied are left for the applier first (her answer wins). Every open card is withdrawn; every
+# moved row gets one episode_memory_event ``own_thought`` carrying the reason, its prior state and the
+# withdrawn ask ids (the card's own record of why). orion_ask.answer_detail is not used: it comes from
+# a camera migration the memory loop's databases do not all carry.
+SETTLE_OWN_THOUGHTS_SQL = f"""
+WITH target AS (
+    SELECT m.memory_id, m.episode_id, m.confirmation_state AS prior_state, m.confirmation_loop_id,
+           m.updated_at AS prior_updated_at
+    FROM episode_memory m
+    WHERE m.voice = '{OWN_THOUGHT_VOICE}'
+      AND m.confirmation_state IN ({", ".join(f"'{st}'" for st in OWN_THOUGHT_FROM_STATES)})
+      AND NOT EXISTS (
+          SELECT 1 FROM attention_loop_outcome o
+          WHERE o.loop_id = m.confirmation_loop_id
+            AND NOT EXISTS (SELECT 1 FROM episode_memory_event e WHERE e.outcome_id = o.outcome_id))
+    FOR UPDATE OF m
+),
+withdrawn AS (
+    UPDATE orion_ask a
+    SET status = 'withdrawn'
+    FROM target t
+    WHERE a.source_kind = '{SOURCE_KIND}' AND a.source_ref = t.confirmation_loop_id AND a.status = 'open'
+    RETURNING a.ask_id, a.source_ref
+),
+moved AS (
+    UPDATE episode_memory m SET confirmation_state = '{OWN_THOUGHT_STATE}', updated_at = now()
+    FROM target t WHERE m.memory_id = t.memory_id
+    RETURNING m.memory_id
+),
+logged AS (
+    INSERT INTO episode_memory_event (event_id, memory_id, op, actor, episode_id, outcome_id, evidence,
+                                      reason, created_at)
+    -- Salted with the row's prior updated_at: a row moved again (after a rollback) logs a new event.
+    SELECT md5('{OWN_THOUGHT_STATE}|' || t.memory_id::text || '|' || t.prior_state || '|'
+               || coalesce(t.prior_updated_at::text, ''))::uuid, t.memory_id,
+           '{OWN_THOUGHT_STATE}', '{ACTOR}', t.episode_id, NULL,
+           jsonb_build_object('prior_state', t.prior_state, 'loop_id', t.confirmation_loop_id,
+                              'withdrawn_ask_ids', coalesce((SELECT jsonb_agg(w.ask_id) FROM withdrawn w
+                                                             WHERE w.source_ref = t.confirmation_loop_id),
+                                                            '[]'::jsonb)),
+           '{OWN_THOUGHT_REASON}', now()
+    FROM target t
+    ON CONFLICT (event_id) DO NOTHING
+    RETURNING 1
+)
+SELECT t.memory_id::text AS memory_id, t.prior_state,
+       (SELECT count(*) FROM withdrawn w WHERE w.source_ref = t.confirmation_loop_id) AS withdrawn_cards,
+       (SELECT count(*) FROM moved) AS moved_total, (SELECT count(*) FROM logged) AS logged_total
+FROM target t
+ORDER BY t.memory_id
+"""
+
+
+async def settle_own_thoughts(conn) -> list[str]:
+    """Move every orion_thought memory still in an asking state to ``own_thought`` and withdraw its
+    open card (issue #3840). Idempotent. Returns the memory ids moved."""
+    async with conn.transaction():
+        rows = await conn.fetch(SETTLE_OWN_THOUGHTS_SQL)
+    return [r["memory_id"] for r in rows]
+
+
 PENDING_OUTCOMES_SQL = """
 SELECT o.outcome_id, o.loop_id, o.verdict, o.actor, o.note, o.features_at_close
 FROM attention_loop_outcome o
@@ -479,7 +555,9 @@ async def apply_outcome(conn, outcome: OutcomeToApply, *, now: Optional[datetime
         if mem is None:
             await mark("outcome_orphaned", "memory_not_found", mid=None)
             return "orphaned"
-        if mem["confirmation_state"] not in ("pending_confirmation", "unconfirmed"):
+        # own_thought is answerable too: if Juniper's resolve commits while the settle step runs, the
+        # settle cannot see her uncommitted outcome and moves the row anyway. Her answer still wins.
+        if mem["confirmation_state"] not in ("pending_confirmation", "unconfirmed", OWN_THOUGHT_STATE):
             # First answer wins (spec section 5): a later answer for a settled memory is logged only.
             await mark("outcome_ignored", f"already_{mem['confirmation_state']}")
             return "already_resolved"
@@ -618,9 +696,10 @@ async def run_tick(
     daily_cap: int = DAILY_CAP,
     tz_name: str = DEFAULT_TZ,
 ) -> dict[str, int]:
-    """One pass, in the order that frees slots before filling them: expire, catch up, reap, open.
+    """One pass, in the order that frees slots before filling them: expire, catch up, settle own
+    thoughts, reap, open.
     One bad outcome is logged and counted (``apply_failed``) and never stops the rest."""
-    summary = {"expired": 0, "applied": 0, "apply_failed": 0, "reaped": 0, "opened": 0}
+    summary = {"expired": 0, "applied": 0, "apply_failed": 0, "own_thought": 0, "reaped": 0, "opened": 0}
     async with pool.acquire() as conn:
         summary["expired"] = len(await expire_cards(conn, now=now))
         for outcome in await pending_outcomes(conn):
@@ -633,6 +712,9 @@ async def run_tick(
                 continue
             if result not in ("already_applied", "not_memory"):
                 summary["applied"] += 1
+        # After answers are applied (her answer wins), before the opener (an own thought never
+        # takes a card slot).
+        summary["own_thought"] = len(await settle_own_thoughts(conn))
         summary["reaped"] = len(await reap_stuck(conn, now=now))
         if summary["reaped"]:
             logger.warning("memory_confirmation_reaped count=%s", summary["reaped"])

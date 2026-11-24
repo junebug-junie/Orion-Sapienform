@@ -63,7 +63,7 @@ ZONE = ZoneInfo("America/Denver")
 # Joined back to episode_memory only for stakes and invalid_at. No bind parameters and no '%', so
 # psycopg and asyncpg both run it.
 EPISODE_SQL = f"""
-SELECT l.*, e.stakes AS stakes
+SELECT l.*, e.stakes AS stakes, e.confirmation_state AS confirmation_state
 FROM ({lived_memory.EPISODE_SQL.strip()}
 ) l
 JOIN episode_memory e ON e.memory_id::text = l.record_id
@@ -172,6 +172,8 @@ def sources_from_rows(episode_rows: Iterable[Mapping[str, Any]], chat_rows: Iter
             bits.append("I wrote it down to follow up")
         if row.get("confirmed"):
             bits.append("Juniper confirmed it")
+        if row.get("confirmation_state") == "own_thought":
+            bits.append("my own thought, not checked with Juniper")  # issue #3840
         if _is_correction(row):
             bits.append("a correction")
         out.append(PageSource(

@@ -142,7 +142,7 @@ SELECT s.story_id, s.stream_id, s.kind, s.started_at, s.ended_at, s.detection_co
 FROM vision_motion_story s
 LEFT JOIN vision_motion_story_verdict v ON v.story_id = s.story_id
 WHERE s.published AND ($1::boolean IS FALSE OR s.clean)
-  AND ($2::boolean IS FALSE OR v.story_id IS NULL)
+  AND ($2::boolean IS FALSE OR v.story_id IS NULL OR s.story_id = ANY($6::text[]))
   AND ($4::integer IS NULL OR s.rules_version = $4)
   AND ($5::boolean IS FALSE OR coalesce(s.dark IS FALSE AND s.evidence_strip->'frame'->>'file' IS NOT NULL
                                          AND NOT (s.evidence_strip ? 'pruned_at'), false))
@@ -187,6 +187,34 @@ ON CONFLICT (story_id) DO UPDATE
 RETURNING story_id
 """
 
+# --- "not sure" stories go back in the unchecked queue once (who-card Patch B, 2026-11-24) ---------
+# Juniper (2026-11-24, answer 5): the stories she could only answer "not sure" on go back into the
+# unchecked queue ONCE, so the one-at-a-time card can ask them properly. A story is reopened when a
+# camera group's latest answer on it is "not sure" and no answer on it came from the one-at-a-time
+# card (``answer_detail.card = 'one_at_a_time'``); the first answer she gives there closes it again
+# (it keeps its old verdict). No date cut-off: it does not depend on when this is deployed.
+# Live 2026-11-24: 130 stories have a camera group whose latest answer is "not sure" (123 of them
+# answered before that day: the design's "124").
+ONE_AT_A_TIME_CARD = "one_at_a_time"
+_REOPENED_SQL = """
+WITH a AS (
+  SELECT answer_detail->>'story_id' AS story_id, answer_detail->>'action' AS action,
+         answer_detail->>'card' AS card,
+         row_number() OVER (PARTITION BY answer_detail->>'story_id', source_ref
+                            ORDER BY answered_at DESC, created_at DESC, ask_id DESC) AS rn
+  FROM orion_ask
+  WHERE source_kind = ANY($1::text[]) AND status = 'answered' AND answer_detail ? 'story_id')
+SELECT story_id FROM a
+GROUP BY story_id
+HAVING bool_or(rn = 1 AND action = 'unsure') AND NOT bool_or(coalesce(card = $2, false))
+"""
+
+
+async def _reopened(conn: Any) -> list[str]:
+    rows = await conn.fetch(_REOPENED_SQL, [WHO_IS_THIS_KIND, STORY_PERSON_KIND], ONE_AT_A_TIME_CARD)
+    return [r["story_id"] for r in rows]
+
+
 # One story, the list's columns (the person route returns it re-derived).
 _ONE_STORY_SQL = _LIST_SQL.split("FROM vision_motion_story s")[0] + (
     "FROM vision_motion_story s LEFT JOIN vision_motion_story_verdict v ON v.story_id = s.story_id "
@@ -217,6 +245,12 @@ class PersonBody(BaseModel):
     # Who-card Patch A (2026-11-24): the answer is for the whole linked person (every camera group
     # the card showed a picture of), not only ``individual_id``'s group.
     group: bool = False
+    # Who-card Patch B: "I don't know who" on an unnamed person. Stored with "unsure" as
+    # answer_detail.dont_know (she can see them; she does not know them). Ignored otherwise.
+    dont_know: bool = False
+    # Which card sent it: "one_at_a_time" (Patch B) is stored as answer_detail.card; the old list
+    # card (a cached page) sends nothing. A "not sure" story leaves the reopened queue on the first.
+    card: Literal["list", "one_at_a_time"] = "list"
 
 
 def clean_why(raw: str) -> str:
@@ -263,7 +297,19 @@ async def _tally(conn: Any) -> dict[str, Any]:
     # The default queue is checkable stories only, so the gate speaks for those.
     # Say how many published stories it does not cover (dark, or no picture).
     out["not_checkable"] = int(await conn.fetchval(_NOT_CHECKABLE_SQL, version) or 0)
+    # "Can't see them" (unsure) answers, apart: a rising share means the pictures are too small
+    # or too dark, not that Juniper is unsure (who-card design section 4).
+    seen = await conn.fetchrow(_CANT_SEE_SQL, version, [WHO_IS_THIS_KIND, STORY_PERSON_KIND])
+    out["person_answers"] = int(seen["answers"] or 0)
+    out["cant_see"] = int(seen["cant_see"] or 0)
     return out
+
+
+_CANT_SEE_SQL = """
+SELECT count(*) AS answers, count(*) FILTER (WHERE a.answer_detail->>'action' = 'unsure') AS cant_see
+FROM orion_ask a JOIN vision_motion_story s ON s.story_id = a.answer_detail->>'story_id'
+WHERE a.source_kind = ANY($2::text[]) AND a.status = 'answered' AND s.rules_version = $1
+"""
 
 
 def _story_dict(row: Any) -> dict[str, Any]:
@@ -303,13 +349,23 @@ async def list_motion_stories(
             # Only stories under the rules the tally counts: a verdict on an
             # older rules version would never count toward the gate.
             tally = await _tally(conn)
+            reopened = await _reopened(conn) if unchecked_only else []
             rows = await conn.fetch(_LIST_SQL, clean_only, unchecked_only, limit, tally["rules_version"],
-                                    checkable_only)
+                                    checkable_only, reopened)
             stories = [_story_dict(r) for r in rows]
             await _enrich(conn, stories)
     except Exception as exc:
         _raise_motion_http(exc)
-    return {"ok": True, "stories": stories, "tally": tally}
+    shown = set(reopened)
+    for s in stories:
+        s["reopened"] = s["story_id"] in shown and s.get("verdict") is not None
+    return {"ok": True, "stories": [public_story(s) for s in stories], "tally": tally}
+
+
+def public_story(story: dict[str, Any]) -> dict[str, Any]:
+    """The story as the card gets it: ``persons`` only. ``people`` (one per camera group) was
+    kept beside ``persons`` for one release (Patch A) and is dropped here (Patch B)."""
+    return {k: v for k, v in story.items() if k != "people"}
 
 
 @router.post("/api/vision/motion-stories/{story_id}/verdict")
@@ -825,7 +881,8 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                         continue
                     spec = story_persons.person_answer(
                         action=body.action, name=name, story_id=story_id, picture_crop_ids=t["picture_crop_ids"],
-                        why=why, person_key=person_key, group_size=len(targets))
+                        why=why, person_key=person_key, group_size=len(targets), dont_know=body.dont_know,
+                        card=None if body.card == "list" else body.card)
                     thumb = f"thumb:{t['thumb']}" if t.get("thumb") else None
                     refs = [f"motion_story:{story_id}", f"individual:{iid}"]
                     if spec["kind"] == WHO_IS_THIS_KIND:
@@ -871,7 +928,7 @@ async def _readback(pool: Any, story_id: str) -> tuple[list[dict[str, Any]], Opt
         async with pool.acquire() as conn:
             fresh = [_story_dict(r) for r in await conn.fetch(_ONE_STORY_SQL, story_id)]
             await _enrich(conn, fresh)
-            return fresh, await _tally(conn)
+            return [public_story(s) for s in fresh], await _tally(conn)
     except Exception as exc:  # noqa: BLE001
         logger.warning("motion_story_person_readback_failed story_id=%s error=%s", story_id, exc)
         return [], None
@@ -938,6 +995,34 @@ async def record_not_same_person(story_id: str, person_key: str, body: NotSameBo
     return {"ok": True, "story_id": story_id, "person_key": person_key, "ask_id": row["ask_id"],
             "pair": row["source_ref"], "story": stories[0] if stories else None, "tally": tally}
 
+
+
+# --- names Orion knows, for "No, it's ..." (who-card Patch B, 2026-11-24) ----------------------------
+# Juniper (answer 1): a short list of the names Orion knows, most seen first, plus "someone not
+# listed" and "I don't know who". Only names she TYPED (never a copied one), one row per name
+# (case-insensitive), ranked by sightings over every camera group that carries it.
+KNOWN_NAMES_MAX = 12
+_KNOWN_NAMES_SQL = """
+SELECT (array_agg(btrim(label) ORDER BY sighting_count DESC, labeled_at DESC NULLS LAST, individual_id))[1] AS name,
+       sum(sighting_count) AS seen
+FROM vision_individual
+WHERE label IS NOT NULL AND NOT label_copied AND btrim(label) <> '' AND kind = $1
+GROUP BY lower(btrim(label))
+ORDER BY sum(sighting_count) DESC, lower(btrim(label))
+LIMIT $2
+"""
+
+
+@router.get("/api/vision/known-names")
+async def list_known_names(request: Request, kind: str = Query("person", pattern=r"^[a-z_]{1,32}$"),
+                           limit: int = Query(8, ge=1, le=KNOWN_NAMES_MAX)) -> dict[str, Any]:
+    pool = _pool(request)
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(_KNOWN_NAMES_SQL, kind, limit)
+    except Exception as exc:
+        _raise_motion_http(exc)
+    return {"ok": True, "names": [{"name": clean_name(r["name"]), "seen": int(r["seen"] or 0)} for r in rows]}
 
 
 def _strip_dir() -> Path:

@@ -1215,3 +1215,25 @@ def test_not_the_same_person_over_a_typed_name_link_splits_it_and_rederives_copi
         # Juniper's own card: Orion's "same person?" daily cap does not count it.
         assert conn.execute(text(vi.CONFIRM_ASKED_TODAY_SQL), {
             "d": NOW - timedelta(days=1), "same": vi.SOURCE_KIND_SAME, "face": '["rule:face"]'}).scalar() == 0
+
+
+@needs_pg
+def test_a_no_on_an_unlinked_pair_leaves_copied_names_and_their_provenance_alone(pg) -> None:
+    """Review fix: re-deriving copies after a 'different' rewrites only a different name, never the
+    label_ask_id of a copy whose name is unchanged (it keys the person model's pair_same exemplars)."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_individual(conn, "a", n=3, face_n=0, face=None, label="Sasha", labeled_at=NOW - timedelta(days=1))
+        _add_individual(conn, "b", n=3, face_n=0, face=None)
+        _add_individual(conn, "x", n=3, face_n=0, face=None)
+        conn.execute(text("UPDATE vision_individual SET label='sasha', label_copied=true, label_ask_id='ask-pair-1' "
+                          "WHERE individual_id = 'b'"))
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                          "decided_at) VALUES ('a', 'b', 'same', 'ask-pair-1', :t)"), {"t": NOW - timedelta(days=1)})
+        _pair_ask(conn, "ask-no", "b", "x", "no", {})
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _label(conn, "b") == ("sasha", True, "ask-pair-1")
+        assert _label(conn, "x") == (None, False, None)

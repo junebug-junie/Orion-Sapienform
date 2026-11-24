@@ -1901,7 +1901,9 @@ def picture_rows(ask_id: str, individual_id: str, detail: Dict[str, Any], answer
 
 # A story-card picture verdict that repeats one already kept (same individual, crop, verdict and name)
 # is not kept twice (who-card Patch A, Orion's question 4: a linked person answered again after a
-# mid-story merge must not double the "same" pictures a later reader counts).
+# mid-story merge must not double the "same" pictures a later reader counts). Known limit: the check
+# looks at every earlier verdict on that crop, so a repeat after a later correction (the crop split
+# away and back, or a 'same' later contradicted) is also dropped; the earlier row still stands.
 _DUPLICATE_STORY_VERDICT_SQL = (
     "AND NOT EXISTS (SELECT 1 FROM vision_ask_picture_verdict d WHERE d.individual_id = :ind "
     "AND d.crop_id = CAST(:crop AS text) AND d.verdict = :v "
@@ -2204,13 +2206,14 @@ def rederive_copied_labels(conn, individual_ids: Sequence[str], ask_id: str,
                     "UPDATE vision_individual SET label=NULL, labeled_at=NULL, label_ask_id=NULL, label_copied=false, "
                     "updated_at=now() WHERE individual_id=:i AND label_copied"), {"i": r[0]})
                 changed[r[0]] = None
-            elif r[1] != source[1] or r[4] != source[4]:
+            elif r[1].strip().casefold() != source[1].strip().casefold():
+                # Only a different name is rewritten: a copy that already carries it keeps its own
+                # provenance (label_ask_id keys the person model's pair_same exemplars).
                 conn.execute(text(
                     "UPDATE vision_individual SET label=:l, labeled_at=:at, label_ask_id=:a, label_copied=true, "
                     "updated_at=now() WHERE individual_id=:i AND label_copied"),
                     {"l": source[1], "at": source[3] or at, "a": source[4], "i": r[0]})
-                if r[1] != source[1]:
-                    changed[r[0]] = source[1]
+                changed[r[0]] = source[1]
     if changed:
         logger.info("[VISION_LABEL_REDERIVED] ask_id=%s changed=%s", ask_id,
                     ",".join(f"{k}->{v!r}" for k, v in sorted(changed.items())))

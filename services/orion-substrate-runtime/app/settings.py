@@ -69,16 +69,6 @@ class Settings(BaseSettings):
     biometrics_offline_frozen_hint_guard: bool = Field(
         True, alias="BIOMETRICS_OFFLINE_FROZEN_HINT_GUARD"
     )
-    # Kill switch: leave nodes that stopped reporting (hecate in BMC-only standby)
-    # out of node:substrate.biometrics' prediction-error mean. "Stopped" = last
-    # report older than BIOMETRICS_SILENT_NODE_CADENCE_MULTIPLE x the node's own
-    # learned report interval (orion/substrate/biometrics_loop/report_cadence.py).
-    biometrics_silent_node_exclusion: bool = Field(
-        True, alias="BIOMETRICS_SILENT_NODE_EXCLUSION"
-    )
-    biometrics_silent_node_cadence_multiple: float = Field(
-        6.0, alias="BIOMETRICS_SILENT_NODE_CADENCE_MULTIPLE"
-    )
     node_catalog_path: str = Field(
         "config/biometrics/node_catalog.yaml",
         alias="NODE_CATALOG_PATH",
@@ -183,6 +173,17 @@ class Settings(BaseSettings):
     prediction_turn_surprise_channel: str = Field(
         "orion:prediction:turn_surprise", alias="SUBSTRATE_PREDICTION_TURN_SURPRISE_CHANNEL"
     )
+    # Family A joint surprise -> node:prediction.body_joint / node:prediction.room_joint (successor of
+    # node:substrate.biometrics, #3575): the last 30 min of scored family A joint-group outcomes
+    # (orion/substrate/prediction_joint_surprise.py). Subscribes to orion:prediction:joint_surprise.
+    # Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill switch (no listener, no writes; both
+    # nodes age to stale). Producer side: PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED.
+    prediction_joint_surprise_nodes_enabled: bool = Field(
+        True, alias="SUBSTRATE_PREDICTION_JOINT_SURPRISE_NODES_ENABLED"
+    )
+    prediction_joint_surprise_channel: str = Field(
+        "orion:prediction:joint_surprise", alias="SUBSTRATE_PREDICTION_JOINT_SURPRISE_CHANNEL"
+    )
     street_events_channel: str = Field(
         "orion:vision:street:events", alias="SUBSTRATE_STREET_EVENTS_CHANNEL"
     )
@@ -256,6 +257,12 @@ class Settings(BaseSettings):
     pe_history_retention_hours: float = Field(
         168.0, ge=25.0, alias="SUBSTRATE_PE_HISTORY_RETENTION_HOURS"
     )
+    # Signal history (PR #3781 Patch 1, docs/superpowers/specs/2026-11-24-pe-retire-perception-
+    # and-alarms-design.md). On: the five non-PE nodes (cabinet/strain/street alarms, room and
+    # walkway camera scene change) are ALSO written to substrate_node_signal_history, beside their
+    # PE-table rows, and pruned at the same retention. Nothing reads it yet. Off: no write, no
+    # prune. Fails open if manual_migration_node_signal_history_v1.sql is not applied yet.
+    signal_history_enabled: bool = Field(True, alias="SUBSTRATE_SIGNAL_HISTORY_ENABLED")
     # Minimum |median_1h - median_prior_24h| before trend reads rising/settling
     # (the effective threshold is max(this, 0.5 * (p90_7d - p50_7d))). A knob,
     # not a finding.

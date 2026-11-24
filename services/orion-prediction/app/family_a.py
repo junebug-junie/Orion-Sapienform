@@ -85,11 +85,21 @@ class InputSource:
     role: str | None = None
 
 
+# Joint groups (#3575 / #3580, Juniper 2026-11-17): each input is scored in exactly one group's joint
+# surprise beside the blended one. body = Orion's machines, cabinet, closet, AC (+ office temp, until
+# family C measures Orion's share of it); room = office air and light (a world source).
+# ``none`` = forecast and scored in the blend, but in no group yet: an input whose meaning is in doubt
+# (office sound: the meter reads 75-81 dBA in a quiet office, #3581; it joins room when that is fixed).
+GROUPS = ("body", "room")
+NO_GROUP = "none"
+
+
 @dataclass(frozen=True)
 class InputSpec:
     id: str
     unit: str
     source: InputSource
+    group: str = "body"
 
 
 @dataclass(frozen=True)
@@ -98,6 +108,9 @@ class FamilyAConfig:
     horizons_min: tuple[int, ...]
     hygiene: Hygiene
     inputs: tuple[InputSpec, ...]
+
+    def group_of(self, input_id: str) -> str | None:
+        return next((i.group for i in self.inputs if i.id == input_id), None)
 
 
 def _minutes(v: Any, where: str) -> int:
@@ -154,7 +167,11 @@ def parse_config(doc: Mapping) -> FamilyAConfig:
         if src in sources:
             raise FamilyAConfigError(f"{iid}: same source as {sources[src]} (one reading, two names)")
         sources[src] = iid
-        inputs.append(InputSpec(id=iid, unit=str(raw.get("unit", "")), source=src))
+        group = raw.get("group")
+        if group not in (*GROUPS, NO_GROUP):
+            raise FamilyAConfigError(f"{iid}: group must be one of {(*GROUPS, NO_GROUP)} (got {group!r}); "
+                                     "classify by cause, never by default")
+        inputs.append(InputSpec(id=iid, unit=str(raw.get("unit", "")), source=src, group=str(group)))
     if not inputs:
         raise FamilyAConfigError("no inputs")
     return FamilyAConfig(grain_min=grain, horizons_min=horizons, hygiene=hyg, inputs=tuple(inputs))

@@ -584,7 +584,7 @@ class ThoughtSettings(BaseSettings):
     )
     # Continuous body signals must last (spec docs/superpowers/specs/2026-10-16-
     # attention-continuous-signal-quota-design.md, option (b)). A body node the
-    # glossary marks as read every tick (biometrics, bus_synaptic) qualifies
+    # glossary marks as read every tick (none today: biometrics, bus_synaptic retired 2026-11) qualifies
     # only when hot for more than 300 s of the last 600 s of its own readings
     # and hot now (orion.attention.sustained). false = today's verdict exactly.
     # Ships on (Juniper's rule).

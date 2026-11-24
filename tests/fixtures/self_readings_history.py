@@ -9,8 +9,10 @@ than live so the tests stay fast; every node still clears the 200-reading histor
 2026-11: bus_synaptic and route were retired (PE suite rebuild step 5) and left
 this fixture; chat followed 2026-11-13 (step 6), replaced by node:prediction.chat_turn,
 and codebase the same day (a churn z, no successor). The continuous body source that must be SUSTAINED to win
-(orion/attention/sustained.py) is now biometrics, the remaining per-tick body
-node; it was bus_synaptic before.
+(orion/attention/sustained.py) was bus_synaptic, then biometrics. Biometrics was retired
+2026-11-18 (#3575) and no live glossary node is continuous any more, so the rule is tested on
+a TEST-ONLY probe node (``CONTINUOUS_BODY``) that a test registers in the glossary with
+``install_probe_glossary(monkeypatch)``: a per-tick level body signal shaped like biometrics was.
 """
 
 from __future__ import annotations
@@ -18,8 +20,40 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 NOW = datetime(2026, 10, 14, 3, 30, tzinfo=timezone.utc)
-CONTINUOUS_BODY = "node:substrate.biometrics"
+CONTINUOUS_BODY = "node:substrate.probe"
 Row = tuple[str, datetime, float]
+
+# The retired biometrics entry's semantics, minus the metacog prompt site (biometrics retired
+# 2026-11-18, #3575): a per-tick level body signal that reaches the self-readings prompt.
+PROBE_SEMANTICS = {
+    "value_kind": "level",
+    "rest": "about 0.02-0.03 (test-only probe)",
+    "rest_range": [0.0, 0.03],
+    "sparsity": "per_tick",
+    "absent_means": "carried forward between samples (test-only probe).",
+    "prompt_sites": ["orion.attention.self_readings:render_self_readings"],
+}
+
+
+def install_probe_glossary(monkeypatch) -> None:
+    """Add a glossary entry for ``CONTINUOUS_BODY`` (test only) and clear every cache that read the
+    glossary, so world-first, self-readings and the episode gate see one continuous body node."""
+    import orion.attention.self_readings as sr
+    import orion.attention.world_first as wf
+    import orion.field.channel_glossary as cg
+
+    real = cg.load_glossary()
+    probe = cg.FieldChannelGlossaryEntry(
+        channel="prediction_error", level=("node",), category="physical_substrate",
+        meaning="TEST-ONLY per-tick level body signal (stands in for the retired node:substrate.biometrics)",
+        node=CONTINUOUS_BODY, semantics=cg._freeze_semantics(PROBE_SEMANTICS),
+    )
+    patched = {**real, "entries": tuple(real["entries"]) + (probe,)}
+    real_load = cg.load_glossary
+    monkeypatch.setattr(cg, "load_glossary", lambda path=None: patched if path is None else real_load(path))
+    for name in ("_SEMANTICS_CACHE", "_EVENT_WRITTEN_CACHE", "_CONTINUOUS_CACHE"):
+        monkeypatch.setattr(wf, name, {})
+    monkeypatch.setattr(sr, "_NODES_CACHE", None)
 
 
 def _series(node: str, step_min: float, fn, *, now: datetime = NOW, days: float = 7.0) -> list[Row]:
@@ -36,7 +70,7 @@ _STRAIN_EVENTS = (150, 400, 650, 900, 1150, 1400, 1650, 1900)
 def calm_rows(now: datetime = NOW) -> list[Row]:
     """Every node in its usual range; event-written nodes' last event long past."""
     rows: list[Row] = []
-    rows += _series("node:substrate.biometrics", 5, lambda k: 0.005 + (k * 37 % 100) / 1400.0, now=now)
+    rows += _series(CONTINUOUS_BODY, 5, lambda k: 0.005 + (k * 37 % 100) / 1400.0, now=now)
     rows += _series("node:substrate.execution", 10, lambda k: 0.0 if k % 4 else 0.2 + (k % 7) / 10.0, now=now)
     # chat-turn surprise (node:prediction.chat_turn, 2026-11-13; replaced node:substrate.chat): one
     # write per settled chat turn, ~80% exact 0.0 (live replay shape).
@@ -50,6 +84,9 @@ def calm_rows(now: datetime = NOW) -> list[Row]:
     # ~60% exact 0.0, otherwise clip(z / 3) mostly below 0.55 (live replay shape).
     rows += _series("node:prediction.room", 5, lambda k: 0.0 if k % 5 < 3 else (k * 29 % 100) / 180.0, now=now)
     rows += _series("node:prediction.body", 5, lambda k: 0.0 if k % 5 < 3 else (k * 31 % 100) / 200.0, now=now)
+    # family A body joint surprise (2026-11-18, #3575, successor of node:substrate.biometrics): same
+    # shape, one write per scored bucket, ~58% exact 0.0 (live replay of stored joint rows).
+    rows += _series("node:prediction.body_joint", 5, lambda k: 0.0 if k % 5 < 3 else (k * 41 % 100) / 210.0, now=now)
     # perception is the world, not the body: never a self-reading.
     rows += _series("node:substrate.perception", 5, lambda k: 0.0 if k % 2 else 0.9, now=now)
     return rows

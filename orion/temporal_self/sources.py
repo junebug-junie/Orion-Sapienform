@@ -667,8 +667,9 @@ def story_name(row: Row) -> tuple[str | None, str | None]:
     the cluster's own name was typed by her. A name counts as Juniper's only when she vouched for THIS
     story, the same rule the Hub card uses (motion_story_routes.story_display):
 
-    * her latest name / "someone else" answer on this story wins (``story_answers``, oldest first): a
-      name -> that name; "someone else" -> who she said it really is, or no name;
+    * her latest name / "yes, that's <name>" / "someone else" answer on this story wins
+      (``story_answers``, oldest first): a name or a yes -> that name; "someone else" -> who she said
+      it really is, or no name;
     * else her spot-check verdict on this story is "right" (``story_verdict``), which vouches for the
       name it was written with;
     * else the written name is the recognizer's guess.
@@ -677,7 +678,7 @@ def story_name(row: Row) -> tuple[str | None, str | None]:
     the story was folded changes a re-fold's label, not the stored arc.
     """
     direct = [a for a in (row.get("story_answers") or [])
-              if isinstance(a, Mapping) and a.get("action") in ("name", "someone_else")]
+              if isinstance(a, Mapping) and a.get("action") in ("name", "confirm", "someone_else")]
     if direct:
         name = str(direct[-1].get("name") or "").strip()
         return (name, "juniper") if name else (None, None)

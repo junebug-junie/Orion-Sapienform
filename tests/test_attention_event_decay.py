@@ -33,7 +33,7 @@ NOW = datetime(2026, 10, 10, 5, 51, 3, tzinfo=timezone.utc)
 # The live case was node:substrate.codebase (retired 2026-11-13); execution is the
 # same event-written level shape ("only written when a batch carried ...").
 CODEBASE = "node:substrate.execution"
-BIOMETRICS = "node:substrate.biometrics"
+BIOMETRICS = "node:prediction.body_joint"  # per-tick body rival (biometrics retired 2026-11-18, #3575)
 
 # A codebase-shaped week: written every 15 min, 91% exact zeros.
 _WEEK = [NOW - timedelta(minutes=15 * i) for i in range(1, 672)]
@@ -73,11 +73,13 @@ def test_event_written_set_comes_from_glossary_semantics() -> None:
         "node:substrate.perception": False,  # "written as 0.0 every tick"
         "node:substrate.perception_walkway": False,  # walkway camera, same "written as 0.0 every tick"
         "node:substrate.street": False,  # designed_sparse, "written every tick while measurable"
-        "node:substrate.biometrics": False,  # per_tick
         # per_tick, "written once per gated forecast outcome": a 30-min state, not an event, so no
         # orienting-window fade (its ~5 min write gap would otherwise read as past the window).
         "node:prediction.room": False,
         "node:prediction.body": False,
+        # Family A joint surprise (#3575, successor of node:substrate.biometrics): same, per scored bucket.
+        "node:prediction.body_joint": False,
+        "node:prediction.room_joint": False,
     }
     from orion.field.channel_glossary import load_glossary
 

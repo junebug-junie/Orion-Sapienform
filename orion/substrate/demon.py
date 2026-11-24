@@ -15,7 +15,11 @@ One model, two readouts:
   ``cut_cost_curve`` compares the whole model against a cut model, in which every part forecasts
   only from its own past.
 
-Baselines: ``clock`` forecasts a residual of 0 (the time-of-day profile). ``persistence``
+Baselines: ``clock`` forecasts each organ's mean over the training window: "the usual, at
+today's level". (Until 2026-11-24 it forecast a raw residual of 0, the 14-day time-of-day profile.
+The model's own long-range forecast converges to the training mean, so whenever today's level sat
+off the 14-day profile, the model beat that baseline at every horizon without any dynamics: the
+first live replay read a flat ~6% skill out to 2 h.) ``persistence``
 forecasts that the residual stays where it is. A model's skill at k is measured against the better
 (lower-MSE) of the two at that k.
 
@@ -208,13 +212,12 @@ def rolling_errors(
         targets = np.stack([z[origins + k] for k in range(1, horizon + 1)], axis=1)  # (m, K, n)
         model = fit_var1(z_train)
         cut_models = {name: fit_cut(z_train, part) for name, part in partitions.items()}
-        zero = -mu / sd  # a raw residual of 0, in standardized units
 
         def _err(fc: np.ndarray) -> np.ndarray:
             return ((targets - fc) ** 2).sum(axis=2)
 
         whole.append(_err(_rollout(model, z0, horizon)))
-        clock.append(_err(np.broadcast_to(zero, targets.shape)))
+        clock.append(_err(np.zeros_like(targets)))  # the training mean, standardized
         persist.append(_err(np.broadcast_to(z0[:, None, :], targets.shape)))
         for name, cm in cut_models.items():
             cuts[name].append(_err(_rollout(cm, z0, horizon)))

@@ -101,6 +101,10 @@ def test_named_story_says_where_the_name_came_from() -> None:
     gone = S.street_event(dict(row, story_verdict="right", story_answers=[{"action": "someone_else", "name": None}]))
     assert gone.label.startswith("Outside (doorbell camera): a person walked")
     assert (gone.payload["named"], gone.payload["name_source"], gone.payload["individual_id"]) == (False, None, None)
+    # "Yes, that's Robin" on the Hub card (2026-11-24) vouches for the name, and undoes an earlier "someone else".
+    yes = [{"action": "someone_else", "name": None}, {"action": "confirm", "name": "Robin"}]
+    assert S.street_event(dict(row, story_answers=yes)).label.startswith(
+        "Outside (doorbell camera): Robin (named by Juniper) walked")
     # She can name an unnamed story too.
     assert S.street_event(story("s4", at(0), story_answers=[{"action": "name", "name": "Ana"}])).label.startswith(
         "Outside (walkway camera): Ana (named by Juniper) walked")

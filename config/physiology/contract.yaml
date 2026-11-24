@@ -143,8 +143,8 @@ readers:
     note: "2026-11-18, already the Patch D shape (stricter: deferred and no answer skip the look)"
   - module: services/orion-hub/scripts/retro_commentary.py
     role: bidder
-    reason: "Orion's line to a person who plays BINDS (game company patch 3, hub.retro_commentary) -- only a funded bid runs a line turn (orion.physiology.binding names the producer). Reads no regulation or price state of its own; a heat refusal is the GPU pool's own refusal of its system hold."
-    note: "2026-11-18, already the Patch D shape (stricter: deferred and no answer skip the line)"
+    reason: "Orion's line to a person who plays BINDS (game company patch 3, hub.retro_commentary) -- a funded or queued_at_pool bid runs a line turn (orion.physiology.binding names the producer). Reads no regulation or price state of its own; a heat refusal is the GPU pool's own refusal of its system hold."
+    note: "2026-11-18, already the Patch D shape (funded or queued_at_pool run the line; other deferrals and no answer skip it)"
   - module: services/orion-sql-writer/app/ask_bind.py
     role: bidder
     reason: camera asks' BINDING bid (attention patch 4b) -- every camera opener obeys the market's decision (orion.physiology.binding) before a card opens; held re-bids with a backoff, no deadline (#3285). Reads no regulation or price state of its own.

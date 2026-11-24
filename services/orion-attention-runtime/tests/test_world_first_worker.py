@@ -60,14 +60,17 @@ def _by_id(cands):
 
 
 def test_candidates_cover_every_stored_node_plus_chat() -> None:
-    rows = _history("node:substrate.execution", 0.0, 0.9) + _history("node:substrate.biometrics", 0.02, 0.02)
+    # (biometrics retired 2026-11-18, #3575: its lingering rows build no candidate; the body joint does.)
+    rows = (_history("node:substrate.execution", 0.0, 0.9) + _history("node:prediction.body_joint", 0.0, 0.0)
+            + _history("node:substrate.biometrics", 0.02, 0.02))
     cands = _by_id(_worker(pe_rows=rows)._world_first_candidates(_field(), NOW))
     assert set(cands) == {
-        "node:substrate.execution", "node:substrate.biometrics", "world:chat", "world:reading"
+        "node:substrate.execution", "node:prediction.body_joint", "world:chat", "world:reading"
     }
     ex = cands["node:substrate.execution"]
     assert ex.source_kind == "internal" and ex.unusualness.band == "unusual"
-    assert cands["node:substrate.biometrics"].unusualness.percentile_now == 0.0
+    assert cands["node:prediction.body_joint"].source_kind == "internal"
+    assert cands["node:prediction.body_joint"].unusualness.percentile_now == 0.0
 
 
 def test_unreadable_history_makes_body_nodes_absent_not_calm() -> None:
@@ -138,18 +141,18 @@ def test_tick_saves_a_world_first_frame_and_logs_no_winner(monkeypatch) -> None:
 def test_event_decay_setting_reaches_the_candidates() -> None:
     """ATTENTION_EVENT_DECAY_ENABLED: execution is event-written (glossary), so
     with the flag on it carries the orienting window; off, it does not.
-    Per-tick biometrics never does."""
+    The per-tick body joint never does (biometrics retired 2026-11-18, #3575)."""
     from app.settings import Settings
     from orion.attention.world_first import EVENT_ORIENTING_WINDOW_SEC
 
     assert Settings.model_fields["attention_event_decay_enabled"].default is True
-    rows = _history("node:substrate.execution", 0.0, 0.9) + _history("node:substrate.biometrics", 0.02, 0.02)
+    rows = _history("node:substrate.execution", 0.0, 0.9) + _history("node:prediction.body_joint", 0.0, 0.0)
     for flag, expected in ((True, EVENT_ORIENTING_WINDOW_SEC), (False, None)):
         w = _worker(pe_rows=rows)
         w._settings = SimpleNamespace(attention_world_first_enabled=True, attention_event_decay_enabled=flag)
         cands = _by_id(w._world_first_candidates(_field(), NOW))
         assert cands["node:substrate.execution"].event_window_sec == expected
-        assert cands["node:substrate.biometrics"].event_window_sec is None
+        assert cands["node:prediction.body_joint"].event_window_sec is None
 
 
 def test_walkway_bids_as_world_and_wins_only_in_its_own_p99_band() -> None:

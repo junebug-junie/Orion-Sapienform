@@ -4848,7 +4848,7 @@ answered, that orion-sql-writer applies on its own clock:
   `orion:ask:answered` event for the substrate entity. It does not count
   against the "who is this?" opener's daily cap.
 - "Someone else" / "Not sure" is a `vision_story_person` row with one picture
-  verdict per story crop; "someone else" crops go to the split pass (which
+  verdict per picture shown for that person; "someone else" crops go to the split pass (which
   refuses when they would be most of that individual's pictures).
 
 A correction of the name the story was written with also records the story's
@@ -4857,6 +4857,23 @@ else. The sentence shown is re-derived on read: Juniper's latest name or
 "someone else" on that story wins; otherwise the strict naming rule
 (`orion/vision/story_naming.py`) on today's names. The stored sentence is shown
 as "Orion first wrote: ..." when it differs.
+
+**Each person's own pictures (2026-11-24).** Juniper could not tell which row
+was which ("how the f would i know which is which, [name] or [name]?"). Now each
+person gets a letter (A, B, ...). Their row shows only their own pictures: the
+story-strip crops whose crop_id is theirs (a companion's come from the story they
+walked in), else vision-host's thumbnail of one of their crops. The row says which
+numbered boxes on the big picture are theirs, coloured like the drawn box, and the
+time crops above carry the same letters. Two groups with one name ("Sasha",
+"Sasha") show their group id. A person with no picture of their own is greyed
+("No picture of this person - not asked.") and the route refuses an answer about
+them (`no_picture_of_person`). A named row has "Yes, that's <name>" (`action:
+"confirm"`, sent with the name the card showed; 409 `label_changed` if it was
+renamed since): the same `vision_individual` answer a typed name is, so a name
+Orion copied over a same-person link becomes her typed label, plus one "same"
+picture verdict per picture shown (the existing picture-verdict path). Every picture verdict now covers only the
+pictures the card showed for that person, never crops she did not see. A yes on
+the walker counts as her answer on the story, like a name.
 
 ## Retro browser play
 
@@ -4923,6 +4940,21 @@ the atlas view with that (neighbours, visits, crossed sides), so a visited room 
 an exit predicts `reach_room <id>`. It is cleared when the level is known again, never written
 anywhere, and does nothing while Retro knows the level. Leisure counts every decision Retro
 offers; co-play counts only the decisions it plans. Eval: `evals/zelda_dungeon_bounce_replay.py`.
+
+**Frozen saves (2026-11-24, #3774).** Retro offers a decision only when Link can move, and leisure
+presses buttons only for an accepted goal. So a save taken where the game waits for input (live:
+mid room-exit, mode `0x0C`, waiting for DOWN) froze every run that loaded it: 8 runs, 11-16..23,
+zero decisions, and each skipped its end save, so the next run loaded the same save. Two guards:
+- The end save (and an orphan's save) is taken only when Retro's `status.zelda.observation` reads
+  Link controllable (play or cave). The runner waits up to `SAVE_SETTLE_SEC` (3 s) for a scroll to
+  finish. Otherwise, or when the status is unreadable, it records
+  `end_save_error=skipped:not_controllable`.
+- A run with no decision offered within `NO_OFFER_SEC` (60 s; 10 s more if Link has just become
+  controllable) ends `no_decision_offered` (journal row of the same name). Only when the game is
+  positively observed with Link not controllable, and the session is running, does the loaded save
+  go into Redis `orion:retro:leisure:unplayable_saves`. An unreadable game never marks a save. The
+  next run loads the newest compatible save not in that list; its `started` journal row counts the
+  skipped saves (`unplayable_skipped`). To give a marked save another try, delete that key.
 
 ### Cabinet sonification (live instrument)
 

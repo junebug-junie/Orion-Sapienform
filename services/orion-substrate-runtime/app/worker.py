@@ -49,7 +49,6 @@ from orion.substrate.cabinet_ambient_spike_consumer import (
     apply_cabinet_ambient_spike_bump,
     build_cabinet_ambient_spike_grammar_events,
 )
-from orion.substrate.biometrics_loop.report_cadence import NodeReportCadence, silent_nodes
 from orion.substrate.biometrics_loop.pressure_organ import (
     build_absence_trigger_event,
     sweep_absent_nodes,
@@ -70,7 +69,6 @@ from orion.substrate.transport_loop.constants import (
 from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
 from orion.substrate.prediction_error import (
     CodebaseMassBaseline,
-    biometrics_prediction_error,
     perception_prediction_error,
     vision_channel_staleness_pressure,
     codebase_prediction_error,
@@ -186,14 +184,17 @@ _DRIVE_STATE_MAX_AGE_SEC = 300.0
 # node:substrate.chat left 2026-11-13 (PE suite rebuild retire step 6): its
 # successor, node:prediction.chat_turn, is a scored forecast that rests at 0
 # and is absent between chat turns, so it is not a self-model domain.
+# node:substrate.biometrics left 2026-11-18 (retire step 6, #3575): mean change
+# of pressure hints / 0.30, not a forecast. Its successors, node:prediction.
+# body_joint / .room_joint (family A joint surprise), are written per scored
+# 5-min bucket and go stale between, so they are not self-model domains either.
 _PREDICTION_ERROR_DOMAIN_NODE_IDS = {
     "node:substrate.execution": "execution",
-    "node:substrate.biometrics": "biometrics",
 }
 
 
 def _prediction_error_nodes_enabled() -> bool:
-    return os.getenv(_PREDICTION_ERROR_NODE_FLAG, "false").strip().lower() in _TRUTHY
+    return os.getenv(_PREDICTION_ERROR_NODE_FLAG, "true").strip().lower() in _TRUTHY
 
 
 # docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md
@@ -559,10 +560,6 @@ class BiometricsSubstrateWorker:
     _substrate_graph_store_warm_lock = threading.Lock()
     _substrate_graph_store_warming = False
     _substrate_graph_store: Any = None
-    # Per-node biometrics report interval, learned in-process (report_cadence.py),
-    # and the last silent-node set logged. Instance attributes once assigned.
-    _report_cadence: Any = None
-    _last_silent_biometrics_nodes: frozenset = frozenset()
 
     def __init__(self) -> None:
         self._settings = get_settings()
@@ -851,6 +848,16 @@ class BiometricsSubstrateWorker:
                 asyncio.create_task(
                     self._prediction_turn_surprise_listener_loop(),
                     name="substrate-prediction-turn-surprise-listener",
+                )
+            )
+        # Family A joint surprise -> node:prediction.body_joint / .room_joint
+        # (orion/substrate/prediction_joint_surprise.py; successor of
+        # node:substrate.biometrics). Event-driven only: no events, no writes.
+        if self._bus is not None and s.prediction_joint_surprise_nodes_enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._prediction_joint_surprise_listener_loop(),
+                    name="substrate-prediction-joint-surprise-listener",
                 )
             )
         if s.enable_strain_attention:
@@ -1237,39 +1244,6 @@ class BiometricsSubstrateWorker:
         )
         return event.event_id
 
-    def _silent_biometrics_nodes(
-        self, projection: NodeBiometricsProjectionV1, now: datetime
-    ) -> frozenset[str]:
-        """Nodes left out of this tick's biometrics prediction error.
-
-        A node whose last report is older than N x its own report interval (hecate
-        powered down to BMC-only standby) has frozen hints; counting them added a
-        0.0 delta per key. See orion/substrate/biometrics_loop/report_cadence.py.
-        The interval tracker learns on every tick, even with the kill switch off.
-        Logs only when the set changes.
-        """
-        cadence = self._report_cadence
-        if cadence is None:
-            cadence = NodeReportCadence()
-            self._report_cadence = cadence
-        cadence.observe(projection)
-        if not self._settings.biometrics_silent_node_exclusion:
-            return frozenset()
-        silent = silent_nodes(
-            projection,
-            cadence=cadence,
-            multiple=self._settings.biometrics_silent_node_cadence_multiple,
-        )
-        if silent != self._last_silent_biometrics_nodes:
-            logger.info(
-                "biometrics_silent_nodes excluded=%s fleet_cadence_sec=%s multiple=%s",
-                ",".join(sorted(silent)) or "-",
-                cadence.fleet_cadence_sec(),
-                self._settings.biometrics_silent_node_cadence_multiple,
-            )
-            self._last_silent_biometrics_nodes = silent
-        return silent
-
     def _absence_sweep(self, now: datetime) -> list[GrammarEventV1]:
         """Evaluate nodes that are sending nothing.
 
@@ -1385,8 +1359,6 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_active_pressure(ACTIVE_NODE_PRESSURE_PROJECTION_ID)
             return loaded or _empty_pressure(now)
 
-        prev_projection = load_node_bio()
-
         def publish_hook(accepted: list[GrammarEventV1]) -> None:
             published.extend(accepted)
 
@@ -1418,56 +1390,11 @@ class BiometricsSubstrateWorker:
             quarantined_out=quarantined,
         )
 
-        if last_id is not None:
-            curr_projection = load_node_bio()
-            silent = self._silent_biometrics_nodes(curr_projection, now)
-            error = biometrics_prediction_error(
-                prev_projection, curr_projection, exclude_nodes=silent
-            )
-            evidence_event_ids = _prediction_error_evidence_event_ids(
-                events, quarantined_event_ids=quarantined
-            )
-            self._store.save_receipt(
-                _prediction_error_receipt(
-                    reducer_key="node_biometrics",
-                    node_id="node:substrate.biometrics",
-                    prediction_error=error,
-                    now=now,
-                    caused_by_event_ids=evidence_event_ids,
-                    # Kill switch off = silent nodes were NOT excluded, so this is
-                    # not the live formula: stamp 1, which here means "not the live
-                    # formula, never folded" (not "the v1 formula"). (Room
-                    # keys are always out since v3; there is no switch for that.)
-                    definition_version=(
-                        None if self._settings.biometrics_silent_node_exclusion else 1
-                    ),
-                )
-            )
-            # Write the node on every tick, not just when error > 0.0 -- the
-            # same fix already applied to bus_synaptic (2026-07-30), extended
-            # here after `route` was found frozen at a stale 0.00025 while its
-            # tick kept running: a categorical/quiet domain returns error == 0.0
-            # on most ticks, so gating the node write left the node holding its
-            # last NON-ZERO value indefinitely. Consumers that poll this node's
-            # raw current value (orion-equilibrium-service, AST/HOT's
-            # prediction_error_by_domain) then read a stale high-water mark as
-            # if it were a current reading -- a value that can rise but never
-            # come back down to a genuine calm 0.0. The receipt above is
-            # likewise written every tick -- see the comment on
-            # _prediction_error_receipt for why it is not an audit-only write.
-            # evidence_event_ids passed unconditionally too (2026-08-11) --
-            # same reasoning: this is the durable copy of the receipt's
-            # evidence, so it must not lag the node's own prediction_error
-            # value by skipping calm ticks.
-            self._write_prediction_error_node(
-                node_id="node:substrate.biometrics",
-                error=error,
-                now=now,
-                reducer_key="node_biometrics",
-                contributing_id=last_id,
-                evidence_event_ids=evidence_event_ids,
-            )
-
+        # No prediction error here since 2026-11-18 (#3575, PE suite rebuild retire step 6):
+        # node:substrate.biometrics (mean change of the machines' pressure hints / 0.30) was not a
+        # forecast. Its successors are node:prediction.body_joint / .room_joint (family A joint
+        # surprise from orion-prediction, _process_prediction_joint_surprise). This tick still
+        # reduces biometrics grammar into the node projection, pressure organ and active pressure.
         return last_id, published
 
     def _get_substrate_graph_store(self, *, log_label: str):
@@ -1817,6 +1744,105 @@ class BiometricsSubstrateWorker:
             logger.exception("substrate_prediction_turn_surprise_failed")
 
     # ------------------------------------------------------------------
+    # Family A joint surprise -> node:prediction.body_joint / .room_joint
+    # (orion/substrate/prediction_joint_surprise.py; successor of node:substrate.biometrics, #3575)
+    # ------------------------------------------------------------------
+
+    _PREDICTION_JOINT_SURPRISE_LISTENER_NAME = "substrate_prediction_joint_surprise_listener"
+
+    def _prediction_joint_surprise_state(self):
+        # getattr: tests build the worker via __new__ and skip __init__.
+        state = getattr(self, "_prediction_joint_surprise", None)
+        if state is None:
+            from orion.substrate.prediction_joint_surprise import JointSurpriseState
+
+            state = JointSurpriseState()
+            self._prediction_joint_surprise = state
+        return state
+
+    def prediction_joint_surprise_status(self) -> dict[str, Any]:
+        """Counters and current window per node, for /health (``prediction_joint_surprise``)."""
+        from orion.substrate.prediction_joint_surprise import PREDICTION_JOINT_SURPRISE_NODE_IDS
+
+        state = self._prediction_joint_surprise_state()
+        now = datetime.now(timezone.utc)
+        nodes: dict[str, Any] = {}
+        for node_id in sorted(PREDICTION_JOINT_SURPRISE_NODE_IDS):
+            r = state.reading(node_id, now=now)
+            nodes[node_id] = None if r is None else {
+                "z": round(r.z, 4), "value": round(r.value, 4), "n": r.n,
+                "newest_target_ts": r.newest_target_ts.isoformat(), "top_reading": r.top_reading,
+            }
+        return {
+            "enabled": bool(self._settings.prediction_joint_surprise_nodes_enabled),
+            "counts": state.counts_snapshot(),
+            "nodes": nodes,
+        }
+
+    async def _prediction_joint_surprise_listener_loop(self) -> None:
+        await run_subscription(
+            self._bus,
+            self._settings.prediction_joint_surprise_channel,
+            self._handle_prediction_joint_surprise_message,
+            stop_event=self._stop,
+            name=self._PREDICTION_JOINT_SURPRISE_LISTENER_NAME,
+        )
+
+    async def _handle_prediction_joint_surprise_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            self._prediction_joint_surprise_state().bump("invalid_total")
+            logger.warning("substrate_prediction_joint_surprise_decode_failed: %s", decoded.error)
+            return
+        await asyncio.to_thread(self._process_prediction_joint_surprise, decoded.envelope.payload or {})
+
+    def _process_prediction_joint_surprise(self, payload: Any, *, now: datetime | None = None) -> None:
+        """Fold one PredictionJointSurpriseV1 into its group's window and write the node. Fail-open.
+
+        One ``substrate_prediction_joint_surprise`` log line per event (group, horizon, excess, top reading,
+        verdict). Writes only on an accepted event, so a quiet or dead producer leaves both nodes to age
+        to stale = absent to every reader. FalkorDB node only, no field receipt: the field digester's
+        decay never touches it."""
+        from orion.schemas.prediction import PredictionJointSurpriseV1
+        from orion.substrate.prediction_joint_surprise import REDUCER_KEY
+
+        state = self._prediction_joint_surprise_state()
+        try:
+            event = PredictionJointSurpriseV1.model_validate(payload)
+        except ValueError as exc:
+            state.bump("invalid_total")
+            logger.error("substrate_prediction_joint_surprise_invalid err=%s", exc)
+            return
+        try:
+            now = now or datetime.now(timezone.utc)
+            node_id, verdict = state.add(event, now=now)
+            state.bump(verdict)
+            reading = state.reading(node_id, now=now) if verdict == "accepted" and node_id else None
+            logger.info(
+                "substrate_prediction_joint_surprise group=%s h=%d target=%s excess=%+.3f top=%s verdict=%s "
+                "node=%s window_z=%s n=%s joint_id=%s",
+                event.group, event.horizon_min, event.target_ts.isoformat(), event.excess,
+                max(event.top_shares, key=lambda k: event.top_shares[k]) if event.top_shares else "none",
+                verdict, node_id or "none",
+                "none" if reading is None else f"{reading.z:+.3f}",
+                "none" if reading is None else reading.n,
+                event.joint_id,
+            )
+            if reading is None:
+                return
+            written = self._write_prediction_error_node(
+                node_id=reading.node_id,
+                error=reading.value,
+                now=now,
+                reducer_key=REDUCER_KEY,
+                evidence_event_ids=[f"prediction_joint_surprise:{jid}" for jid in reading.joint_ids],
+            )
+            state.bump("node_writes_total" if written else "node_write_skipped_total")
+        except Exception:
+            state.bump("failed_total")
+            logger.exception("substrate_prediction_joint_surprise_failed")
+
+    # ------------------------------------------------------------------
     # Street events -> node:substrate.street (orion/substrate/street_attention.py)
     # ------------------------------------------------------------------
 
@@ -2136,6 +2162,7 @@ class BiometricsSubstrateWorker:
                     )
                 except Exception:
                     logger.exception("substrate_strain_news_event_record_failed")
+                self._dual_write_signal_history([(STRAIN_NODE_ID, now, EVENT_VALUE)])
                 logger.info(
                     "substrate_strain_news_event node_id=%s value=%.1f %s",
                     STRAIN_NODE_ID, EVENT_VALUE, event.as_log_fields(),
@@ -3620,6 +3647,33 @@ class BiometricsSubstrateWorker:
     # skew and not recorded: it would otherwise pin last_observed in the
     # future and silently drop every correct reading until the clock caught up.
     _PE_HISTORY_MAX_FUTURE_SKEW = timedelta(minutes=5)
+    # Failed signal-history rows kept for retry (PR #3781 Patch 1). ~5 rows per ~35 s tick, so
+    # 500 rows covers about an hour of a missing table; older rows are left to the backfill.
+    _SIGNAL_HISTORY_PENDING_MAX = 500
+
+    def _dual_write_signal_history(self, samples: list[tuple[str, datetime, float]]) -> None:
+        """PR #3781 Patch 1: copy the five non-PE nodes' readings (alarms, camera scene change)
+        into substrate_node_signal_history. Additive: the PE-table write is untouched, nothing
+        reads the new table yet. Fails open (a missing table logs, never costs the tick). A failed
+        write is kept (newest _SIGNAL_HISTORY_PENDING_MAX rows) and retried with the next write,
+        since the PE sampler has already moved past that reading."""
+        if not bool(getattr(self._settings, "signal_history_enabled", False)):
+            return
+        rows: list[Any] = list(getattr(self, "_signal_history_pending", None) or [])
+        try:
+            from orion.substrate.signal_history import signal_samples
+
+            rows += signal_samples(samples)
+            if not rows:
+                return
+            self._store.save_signal_history_samples(rows)
+            self._signal_history_pending = []
+        except Exception as exc:
+            self._signal_history_pending = rows[-self._SIGNAL_HISTORY_PENDING_MAX:]
+            logger.warning(
+                "substrate_signal_history_write_failed rows=%d pending=%d err=%s",
+                len(rows), len(self._signal_history_pending), exc,
+            )
 
     @staticmethod
     def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
@@ -3738,6 +3792,7 @@ class BiometricsSubstrateWorker:
                 for node_id, observed_at, value in new_samples:
                     cache.setdefault(node_id, deque()).append((observed_at, value))
                     last_observed[node_id] = observed_at
+            self._dual_write_signal_history(new_samples)
 
         horizon = now - WINDOW_7D
         for window in cache.values():
@@ -3754,6 +3809,14 @@ class BiometricsSubstrateWorker:
                 logger.info("substrate_pe_history_pruned rows=%d", pruned)
             except Exception:
                 logger.exception("substrate_pe_history_prune_failed")
+            if bool(getattr(s, "signal_history_enabled", False)):
+                try:
+                    pruned = self._store.prune_signal_history(
+                        older_than=now - timedelta(hours=float(s.pe_history_retention_hours))
+                    )
+                    logger.info("substrate_signal_history_pruned rows=%d", pruned)
+                except Exception as exc:
+                    logger.warning("substrate_signal_history_prune_failed err=%s", exc)
 
         magnitudes: dict[str, Any] = {}
         # World-first ranking key (mid-rank: share below + half the share

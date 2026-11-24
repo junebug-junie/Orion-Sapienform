@@ -49,7 +49,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import CONCERN_HORIZON_SEC, clamp_hours, describe_effects
-from orion.prime.intention import has_adapter
+from orion.prime.intention import can_take_on
 from orion.prime.state import (
     CONCERN_TEXT_CAP,
     MAX_CONCERNS,
@@ -245,13 +245,25 @@ ends 3 days after you made it, even if you kept it. One move per thought:
 "move": {"kind": "take_on", "concern_id": "<concern_id>", "why": "...", "not_before": null | "<ISO time UTC>"}"""
 
 
+# The reply template's move line (arc and event mode alike). With the now in the frame, system_prompt puts the
+# top-level "refs" (experience cites) INTO the template, just before "move": appended only as a later paragraph,
+# the model followed the template and left refs out (#3425; 11-16..11-24 live: 1 of 70 Prime thoughts shown a now
+# cited). Before "move", not after it: a 2026-11-24 live sample with refs as the last key lost the closing brace
+# in 6 of 15 answers (invalid JSON); the template's own "}}" ending stays as it was.
+_REPLY_MOVE = '\n "move": null | {"kind": "curiosity_focus"'
+assert SYSTEM_PROMPT.count(_REPLY_MOVE) == 1, "the reply template's move line moved; update _REPLY_MOVE"
+_REPLY_CITES_THEN_MOVE = ('\n "refs": [] | [{"kind": "experience", "id": "<the id after experience:>"}],' + _REPLY_MOVE)
+
+
 EXPERIENCE_PROMPT = """
 
 WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT lists what Orion's other organs recorded since then (readings,
 curiosity runs, camera sightings, prediction surprises, questions your reveries left ...), highest salience first, each with its
-[experience:<id>]. When one of them shaped this thought, cite it: add "refs" to your JSON object,
-"refs": [{"kind": "experience", "id": "<the id after experience:>"}], at most 3, only ones you actually used.
-Citing nothing is a normal answer. Copy ids exactly; an id the section did not list is not recorded.
+[experience:<id>]. When one of them shaped this thought, cite it in the top-level "refs" key of the JSON reply
+template, the one before "move" (not the move's refs): [{"kind": "experience", "id": "<the id after experience:>"}], at most 3,
+only ones you actually used. If your reading draws on something from that section, cite it.
+Citing nothing is a normal answer when nothing there shaped the thought. Copy ids exactly; an id the section
+did not list is not recorded.
 Never write an experience id in a question's "question" or "why": a curiosity run cannot open one; say what
 happened in words."""
 
@@ -287,6 +299,10 @@ def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: b
     if events:
         base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
                 .replace(_ARC_REFS, _EVENT_REFS).replace(_ARC_REFS_JSON, _EVENT_REFS_JSON))
+    if experiences:
+        # Before any paragraph is appended (REGULATE/TAKE_ON carry their own "move" snippets): only the template's
+        # move line is swapped (#3425).
+        base = base.replace(_REPLY_MOVE, _REPLY_CITES_THEN_MOVE, 1)
     if receptors and any(receptors.values()):
         base += REGULATE_PROMPT
     if take_on:
@@ -545,7 +561,7 @@ def _now_lines(inputs: FrameInputs) -> list[str]:
 def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
                   no_take_on: frozenset[str] = frozenset(), evidence_clock: bool = False) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
-    if take_on and c.graded != "settled" and c.concern_id not in no_take_on and has_adapter(c):
+    if take_on and c.graded != "settled" and c.concern_id not in no_take_on and can_take_on(c):
         graded += "; you can take this on"
     ref = c.event_ref or ""
     about = (f"from turn {ref[len('turn:'):]}" if ref.startswith("turn:")

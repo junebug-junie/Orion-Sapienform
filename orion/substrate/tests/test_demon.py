@@ -99,7 +99,8 @@ def test_more_history_sees_at_least_as_far():
     s_short = demon.skill_curve(short.whole, short.baseline)
     s_long = demon.skill_curve(long.whole, long.baseline)
     assert demon.horizon_steps(s_long) >= demon.horizon_steps(s_short)
-    assert s_long[-1] > s_short[-1]
+    # Where any signal is left (15 min). At 60 min both read ~0 against the fair baseline.
+    assert s_long[2] > s_short[2] + 0.02
 
 
 def test_white_noise_has_no_horizon():
@@ -278,3 +279,15 @@ def test_relaxation_and_growth_are_not_decay(tail):
     rng = np.random.default_rng(25)
     col = np.concatenate([rng.normal(size=100), tail])
     assert demon.refusal_reason(col[:, None], ["thermal"]) is None
+
+
+def test_a_level_offset_is_not_foresight():
+    """2026-11-24 live replay: today's level sat off the long-run profile, and the model beat a
+    'residual 0' clock at every horizon by forecasting its training mean (flat ~6% skill to 2 h).
+    White noise around a shifted level must have no horizon."""
+    rng = np.random.default_rng(26)
+    x = rng.normal(size=(288 * 6, 3)) + 2.0
+    errs = demon.rolling_errors(x, horizon=24)
+    skill = demon.skill_curve(errs.whole, errs.baseline)
+    assert demon.horizon_steps(skill) == 0
+    assert np.all(skill[6:] < 0.01)

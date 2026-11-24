@@ -91,7 +91,6 @@ def node_prediction_error_is_measurement(node_id: str) -> bool:
 # is decided by the glossary's prompt_sites, and an unlisted node falls back to its short name.
 # Units go on the reading (schema), not in the line: the line's scale is the 0-10 score.
 _WORDS: dict[str, tuple[str, str]] = {
-    "node:substrate.biometrics": ("how much my machines' load readings are moving", "share of a 0.30 swing"),
     "node:substrate.execution": ("surprise in how my task execution is going", "clipped z / 3"),
     "node:substrate.cabinet": ("my cabinet's warming alarm", "firings in the last hour"),
     "node:substrate.strain": ("news that I am under strain (heat or a GPU backlog)", "news events in the last hour"),
@@ -101,6 +100,10 @@ _WORDS: dict[str, tuple[str, str]] = {
                              "surprise z-score / 3, last 30 min"),
     "node:prediction.chat_turn": ("how much my recent chat turns surprised my own bets about them",
                                   "surprise z-score / 3, last 30 min"),
+    # Successor of node:substrate.biometrics (2026-11-18, #3575). The room joint is a world
+    # source, so self-readings (body only) never render it.
+    "node:prediction.body_joint": ("how much my machines, cabinet and closet together are surprising my own forecast",
+                                   "joint surprise z-score / 3, last 30 min"),
 }
 
 _STATE_WORDS = {

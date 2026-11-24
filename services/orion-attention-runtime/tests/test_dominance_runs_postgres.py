@@ -101,11 +101,11 @@ def test_missing_recording_migration_keeps_worker_goal_emission(store, monkeypat
     with store._engine.begin() as c:
         c.exec_driver_sql("ALTER TABLE substrate_goal_provenance_streak RENAME COLUMN run_state TO unavailable_run_state")
     for i in range(3):
-        current = _frame([_target("node:substrate.biometrics", 0.8)]).model_copy(update={
+        current = _frame([_target("node:substrate.execution", 0.8)]).model_copy(update={
             "frame_id": f"worker-{i}", "source_field_tick_id": f"worker-tick-{i}",
             "generated_at": START + timedelta(seconds=i * 2)})
         goal = worker._maybe_build_goal(current)
-    assert goal is not None and goal.field_target_id == "node:substrate.biometrics"
+    assert goal is not None and goal.field_target_id == "node:substrate.execution"
     assert store.load_attention_frame_for_field_tick("worker-tick-2") is not None
     assert store.load_node_dominance_streak().count == 3
 

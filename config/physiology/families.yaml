@@ -146,10 +146,10 @@ families:
     # rev 4, sections 4 and 9): Orion says one line to a person who plays (act say retro_sitting:<id>,
     # services/orion-hub/scripts/retro_commentary.py). TIER 1 IS JUNIPER'S DECISION (spec section 9; go for patch 3
     # on 2026-11-18, "hit it"). Tier 1 reserves 0 on the chat lane today: a line pays the lane's price like any bid.
-    # Its bids BIND, stricter than bind_verdict: only `funded` runs a line turn; deferred, refused or no answer skips
-    # it and the want is released, so a stale line never runs. 300 s is the spec's value ("a line five minutes late
+    # Its bids BIND: `funded` or bind_verdict's `queued_at_pool` (lane full, net > 0: the GPU pool queues it) runs a
+    # line turn; any other deferral or no answer skips it and the want is released, so a stale line never runs. 300 s is the spec's value ("a line five minutes late
     # is about something the player has left"); it is the hunger clock (families.py refuses 0 for a bidding family),
-    # and the producer never holds a want. Lane chat: the line's turn rides a GPU pool hold of class chat at priority
+    # and the producer keeps the sitting's want clock (opened_at) across rebids until a line is said, so hunger grows. Lane chat: the line's turn rides a GPU pool hold of class chat at priority
     # system. No receptors yet: Prime's slow/quicken arrive with patch 4 (orion/physiology/tests/test_prime_charge.py).
     tier: 1
     deferrable_window_s: 300

@@ -37,5 +37,14 @@
   "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
   "horizon_at": "2026-11-15T07:08:40.440369+00:00",
   "quote_ref": "harness_turn_trace:a129b72f-e698-425a-a435-3388cd7cd759#promises_made[0]"
+ },
+ "no_thread_concern": {
+  "_note": "Live 11-22 (#3772): concern ba9b129bcdd06506, opened by curiosity run 1c162ffc7034's turn ab1fc9b0. Prime took it on 11-23 17:22Z (act_aff9db0f35262af4ec65673d) and Hub refused: no chat history row. Text as orion/prime/handback.py fold_turn_signals writes it.",
+  "concern_id": "ba9b129bcdd06506",
+  "text": "a promise I made in a curiosity run (1 promise, harness_turn_trace:ab1fc9b0-d62c-5c84-afcd-5f5466692ccd#promises_made[0])",
+  "event_ref": "turn:ab1fc9b0-d62c-5c84-afcd-5f5466692ccd",
+  "promise_text": "a promise I made in a curiosity run at 2026-11-22 07:48Z: \"Check me at 11-23 12:00Z — either way, it's checkable.\"",
+  "opened_at": "2026-11-22T07:48:36+00:00",
+  "last_evidence_at": "2026-11-22T07:48:36+00:00"
  }
 }

@@ -54,22 +54,28 @@ class CaptionGate:
         stationary_iou: float,
         stationary_max_gap_sec: float,
         stationary_streams: Iterable[str] | str | None = None,
+        stationary_room_streams: Iterable[str] | str = (),
+        stationary_room_min_sec: Optional[float] = None,
     ) -> None:
         self.streams = set(_csv(streams))
         # Fixture (prop) tracking only where props exist: WINDOW_STATIONARY_STREAMS.
-        # None keeps the old behavior (every gated stream). The office camera is
-        # gated but not tracked: Juniper at her desk is not a prop (2026-11-04).
+        # None keeps the old behavior (every gated stream). Room cameras (the
+        # office) are tracked with the room rule: a longer hold, a gap ends the
+        # run, a face restarts it (orion.vision.stationary.StreamRule, #3614).
         fixture_streams = self.streams if stationary_streams is None else set(_csv(stationary_streams)) & self.streams
+        room_streams = set(_csv(stationary_room_streams)) & self.streams
         self.labels = list(dict.fromkeys(_csv(labels)))
         self.min_score = float(min_score)
         self.max_age_sec = float(max_age_sec)
         self._fixtures: Dict[str, FixtureTracker] = {
             label: FixtureTracker(
-                streams=fixture_streams,
+                streams=fixture_streams - room_streams,
                 min_sec=stationary_min_sec,
                 iou=stationary_iou,
                 max_gap_sec=stationary_max_gap_sec,
                 label=label,
+                room_streams=room_streams,
+                room_min_sec=stationary_room_min_sec,
             )
             for label in self.labels
         }
@@ -88,18 +94,20 @@ class CaptionGate:
 
     def _observe(self, stream_id: str, items: Sequence[Item]) -> None:
         """Feed this window's detections to the per-label prop trackers."""
-        per_label: Dict[str, List[Tuple[float, List[List[float]]]]] = {l: [] for l in self.labels}
+        per_label: Dict[str, List[Tuple[float, List[List[float]], List[bool]]]] = {l: [] for l in self.labels}
         for art, ts in items:
             objects = art.outputs.objects if art.outputs else None
             if objects is None:  # caption-only / embed-only: not a detection pass
                 continue
             boxes: Dict[str, List[List[float]]] = {l: [] for l in self.labels}
+            faces: Dict[str, List[bool]] = {l: [] for l in self.labels}
             for o in objects:
                 label = str(o.label or "").strip().lower()
                 if label in boxes and float(o.score) >= self.min_score and len(o.box_xyxy or []) == 4:
                     boxes[label].append([float(v) for v in o.box_xyxy])
+                    faces[label].append(o.face_score is not None or bool(o.face_embedding))
             for label in self.labels:
-                per_label[label].append((float(ts), boxes[label]))
+                per_label[label].append((float(ts), boxes[label], faces[label]))
         for label, frames in per_label.items():
             if frames:
                 self._fixtures[label].observe_window(stream_id, frames)

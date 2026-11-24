@@ -134,11 +134,16 @@ DEFAULT_BROADCAST_STALE_THRESHOLD_SEC = 60.0
 # node:prediction.chat_turn, is a scored forecast that is absent between chat
 # turns by design, so it is not averaged into this always-on confidence.
 #
+# **2026-11-18: `biometrics` retired** (retire step 6, #3575). Its successors,
+# node:prediction.body_joint / .room_joint (family A joint surprise), are written
+# once per scored 5-min bucket and stale between outages, so they are not
+# averaged in either. Execution is the last domain (retire step 6 continues, #3576).
+#
 # This constant does NOT affect the pre-existing branch-gated
 # `confidence`/`confidence_basis` fields below, which keep their original
 # (unfiltered, all-domains) formula unchanged -- additive only. It DOES now
 # gate `predicted_shift` (2026-07-31), which was previously unfiltered.
-ACTIVE_INFERENCE_DOMAINS = frozenset({"execution", "biometrics"})
+ACTIVE_INFERENCE_DOMAINS = frozenset({"execution"})
 
 
 def _round_or_none(value: float | None, digits: int = 4) -> float | None:

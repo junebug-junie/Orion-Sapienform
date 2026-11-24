@@ -77,9 +77,9 @@ def test_daily_volume(result):
 def test_without_the_dwell_every_signal_opens_constantly(rows, result):
     no_dwell = replay(rows, open_dwell_sec=0.0)
     # >100/day while bus_synaptic was in the fixture; ~68/day without the
-    # retired nodes (2026-11).
-    assert len(no_dwell["episodes"]) / _days(no_dwell) > 50
-    assert len(no_dwell["episodes"]) > 8 * len(result["episodes"])
+    # retired nodes (2026-11); ~30/day once biometrics left too (2026-11-18, #3575).
+    assert len(no_dwell["episodes"]) / _days(no_dwell) > 20
+    assert len(no_dwell["episodes"]) > 5 * len(result["episodes"])  # 7x after biometrics left (#3575)
 
 
 def test_retired_nodes_are_not_replayed_at_all(rows, result):

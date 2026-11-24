@@ -102,8 +102,10 @@ def test_pruned_set_is_the_union_and_never_a_live_lattice_node() -> None:
     assert PRUNED_NODE_IDS == frozenset(RETIRED_LATTICE_NODES) | frozenset(RETIRED_PSEUDO_NODES)
     assert not (PRUNED_NODE_IDS & set(_lattice().nodes))
     # Live prediction-error nodes must never be caught by this.
-    for live in ("node:substrate.execution", "node:substrate.biometrics"):
+    # (biometrics retired 2026-11-18, #3575: it is pruned now, execution is the live one.)
+    for live in ("node:substrate.execution",):
         assert live not in PRUNED_NODE_IDS
+    assert "node:substrate.biometrics" in PRUNED_NODE_IDS
 
 
 def test_pe_step5_retired_nodes_agree_with_the_shared_deny_list() -> None:

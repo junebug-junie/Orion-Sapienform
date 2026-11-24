@@ -196,14 +196,14 @@ def test_select_node_targets_only_covers_the_confirmed_live_reducers() -> None:
     # earlier draft's inclusion of it here was a real bug this test would
     # have caught, and now does. route and bus_synaptic were retired 2026-11
     # (PE suite rebuild step 5) the same way, and chat 2026-11-13 (step 6).
+    # biometrics retired 2026-11-18 (#3575; successors are not native targets).
     assert set(PREDICTION_ERROR_NATIVE_TARGETS.keys()) == {
-        "node:substrate.biometrics",
         "node:substrate.execution",
     }
     assert "node:substrate.transport" not in PREDICTION_ERROR_NATIVE_TARGETS
 
 
-def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max_to_one() -> None:
+def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max_to_one(probe_native) -> None:
     # Code-review regression test (2026-07-30): the only rewritten test that
     # previously exercised normalize_across_targets() with more than one real
     # competitor -- everything else fed it a single target, which trivially
@@ -219,7 +219,7 @@ def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max
     # makes: whichever of two DIFFERENT real raw scores is lower maps to
     # exactly 0.0, the higher to exactly 1.0.
     histories = {
-        "node:substrate.biometrics": [0.01, 0.01, 0.02, 0.01, 0.02],
+        "node:substrate.probe": [0.01, 0.01, 0.02, 0.01, 0.02],
         "node:substrate.execution": [0.02, 0.03, 0.02, 0.03, 0.95],
     }
     from orion.attention.field_attention.candidate_precision_weighted import (
@@ -633,7 +633,7 @@ def test_real_change_still_reads_as_novelty_after_a_steady_run() -> None:
     assert targets[0].novelty_score == pytest.approx(0.6)
 
 
-def test_a_quiet_domain_stops_winning_on_its_last_reading() -> None:
+def test_a_quiet_domain_stops_winning_on_its_last_reading(probe_native) -> None:
     """2026-09-29: chat reports only when a turn lands. Its last reading used to stay
     the "current" error for hours and win the competition (replayed: 1,129 of 1,440
     minutes on 2026-09-22, 764 of them on a reading >30 min old)."""
@@ -648,24 +648,24 @@ def test_a_quiet_domain_stops_winning_on_its_last_reading() -> None:
         ewma=0.1, variance=0.02, observation_count=300, last_value=0.2,
         last_observed_at=now - timedelta(seconds=5),
     )
-    baselines = {"node:substrate.biometrics": stale_chat, "node:substrate.execution": fresh_exec}
+    baselines = {"node:substrate.probe": stale_chat, "node:substrate.execution": fresh_exec}
     unaged = {t.target_id: t for t in select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines)}
-    assert unaged["node:substrate.biometrics"].salience_score == 1.0  # the old behaviour
+    assert unaged["node:substrate.probe"].salience_score == 1.0  # the old behaviour
     aged = {t.target_id: t for t in select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines, now=now)}
     assert aged["node:substrate.execution"].salience_score == 1.0
-    assert aged["node:substrate.biometrics"].salience_score == 0.0
-    assert aged["node:substrate.biometrics"].dominant_channels == {"prediction_error": 0.0}
-    assert any("stale reading" in r and "45 min old" in r for r in aged["node:substrate.biometrics"].reasons)
+    assert aged["node:substrate.probe"].salience_score == 0.0
+    assert aged["node:substrate.probe"].dominant_channels == {"prediction_error": 0.0}
+    assert any("stale reading" in r and "45 min old" in r for r in aged["node:substrate.probe"].reasons)
 
 
-def test_build_attention_frame_ages_readings_against_its_own_clock() -> None:
+def test_build_attention_frame_ages_readings_against_its_own_clock(probe_native) -> None:
     from datetime import timedelta
 
     from orion.attention.field_attention.builder import build_attention_frame
 
     now = BASE
     baselines = {
-        "node:substrate.biometrics": PrecisionEwmaBaseline(
+        "node:substrate.probe": PrecisionEwmaBaseline(
             ewma=0.1, variance=0.02, observation_count=300, last_value=0.8,
             last_observed_at=now - timedelta(minutes=15),
         )
@@ -674,12 +674,12 @@ def test_build_attention_frame_ages_readings_against_its_own_clock() -> None:
         field=_FIELD_FOR_NODE_TESTS, policy=POLICY, prediction_error_baselines=baselines, now=now
     )
     chat = next(
-        t for t in (*frame.node_targets, *frame.suppressed_targets) if t.target_id == "node:substrate.biometrics"
+        t for t in (*frame.node_targets, *frame.suppressed_targets) if t.target_id == "node:substrate.probe"
     )
     assert chat.dominant_channels["prediction_error"] == pytest.approx(0.4)
 
 
-def test_a_fully_faded_set_reads_zero_salience_not_a_tie_at_the_top() -> None:
+def test_a_fully_faded_set_reads_zero_salience_not_a_tie_at_the_top(probe_native) -> None:
     """Review 2026-09-29: every competitor faded to 0 used to normalize to 1.0."""
     from datetime import timedelta
 
@@ -688,7 +688,16 @@ def test_a_fully_faded_set_reads_zero_salience_not_a_tie_at_the_top() -> None:
         ewma=0.1, variance=0.02, observation_count=300, last_value=0.8,
         last_observed_at=now - timedelta(minutes=45),
     )
-    baselines = {"node:substrate.biometrics": faded, "node:substrate.execution": faded}
+    baselines = {"node:substrate.probe": faded, "node:substrate.execution": faded}
     targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines, now=now)
     assert {t.target_id for t in targets} == set(baselines)
     assert all(t.salience_score == 0.0 for t in targets)
+
+
+# execution is the last live native target since node:substrate.biometrics was retired 2026-11-18
+# (#3575). Multi-target competition needs two, so these tests add a test-only native target.
+@pytest.fixture
+def probe_native(monkeypatch):
+    from orion.attention.field_attention import selectors
+
+    monkeypatch.setitem(selectors.PREDICTION_ERROR_NATIVE_TARGETS, "node:substrate.probe", "probe")

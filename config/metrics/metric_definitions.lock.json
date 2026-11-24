@@ -1,21 +1,25 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 744,
+  "metric_count": 746,
   "_last_change": {
-    "change_count": 11,
-    "high_severity_count": 11,
+    "change_count": 15,
+    "high_severity_count": 12,
     "changes": [
       "high   removed metric://bus_channel/orion-dream/orion:dream:compaction-delta",
       "high   removed metric://bus_channel/orion-thought/orion:dream:compaction-request",
       "high   removed metric://bus_channel/orion-thought/orion:reverie:chain",
       "high   removed metric://bus_channel/orion-thought/orion:reverie:resonance-alert",
       "high   removed metric://bus_channel/orion-thought/orion:reverie:thought",
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error",
       "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:attention:schema (all_producers: \u2026ate-runtime', 'orion-thought'] -> \u2026ate-runtime'])",
       "high   routing_changed metric://inner_state/orion-cortex-exec/attention_salience_trace.v1 (declared_consumers: \u2026ance_inputs', 'services.orion-thought.app.reverie:build_rev\u2026 -> \u2026ance_inputs'])",
       "high   routing_changed metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience (declared_consumers: \u2026ance_inputs', 'services.orion-thought.app.reverie:build_rev\u2026 -> \u2026ance_inputs'])",
       "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026t stance cue, the Day letter and the reverie arc block)', '\u2026 -> \u2026t stance cue and the Day letter)', 'services.orion-hub.scri\u2026)",
       "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1 (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'])",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'], prompt_sites: ['services.orion-thought.app.reverie:build_reverie_context'] -> -)"
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'], prompt_sites: ['services.orion-thought.app.reverie:build_reverie_context'] -> -)",
+      "medium added metric://bus_channel/orion-prediction/orion:prediction:joint_surprise",
+      "medium added metric://field_channel/orion-substrate-runtime/node:prediction.body_joint.prediction_error",
+      "medium added metric://field_channel/orion-substrate-runtime/node:prediction.room_joint.prediction_error"
     ]
   },
   "definitions": {
@@ -2830,6 +2834,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-prediction/orion:prediction:joint_surprise": {
+      "schema_id": "PredictionJointSurpriseV1",
+      "all_producers": [
+        "orion-prediction"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-prediction/orion:prediction:surprise": {
       "schema_id": "PredictionSurpriseV1",
       "all_producers": [
@@ -4641,6 +4656,27 @@
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
+    "metric://field_channel/orion-substrate-runtime/node:prediction.body_joint.prediction_error": {
+      "meaning": "How much Orion's body as a whole is surprising Orion's own forecast: every raw machine, cabinet, closet and cabinet-AC reading (plus office temperature) forecast together 5 and 15 minutes ahead, the misses scored as ONE joint miss (coupled readings count once), over the last 30 minutes, as excess surprise in units of its calm spread (a z-score), 3 sigma = 1.0. 0 = the body did what the forecast expected.",
+      "value_kind": "surprise_excess",
+      "rest": "0.0 = the joint misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time); live replay of 4.5 days of stored blended joint rows through this fold (2026-11-13..18, PR #3575 report): 58% exact 0.0.",
+      "rest_range": [
+        0.0,
+        0.55
+      ],
+      "sparsity": "per_tick",
+      "absent_means": "written once per scored joint-group bucket (about every 5 min). Nothing is written when no row passes (prediction service down, a refused bucket, the first hour after a restart before the adaptive p exists, PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_JOINT_SURPRISE_NODES_ENABLED off): the node keeps its last value (current for up to 1800 s), then every reader treats it as stale, never as calm.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
     "metric://field_channel/orion-substrate-runtime/node:prediction.chat_turn.prediction_error": {
       "meaning": "How much Orion's recent chat turns surprised Orion's own bets about them (will the reply ask a question; will it take more steps than usual), over the last 30 minutes: summed excess surprise in nats over what the recalibrated bets expected, divided by its calm spread (a z-score), 3 sigma = 1.0. 0 = the turns went the way the bets leaned.",
       "value_kind": "surprise_excess",
@@ -4683,27 +4719,22 @@
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error": {
-      "meaning": "How much the machines' pressure readings moved since the last sample: mean absolute change across the machines' own pressure hints, 0.30 of change = 1.0 (a fixed scale, not versus its own history). Room sensors (athena's cabinet_* hints: proximity, vibration, ambient audio, climate, EM, UV) are not in it since definition v3 (2026-11-12).",
-      "value_kind": "level",
-      "rest": "about 0.02-0.03 (sensor jitter); 0.0 = nothing moved at all.",
+    "metric://field_channel/orion-substrate-runtime/node:prediction.room_joint.prediction_error": {
+      "meaning": "How much the office (Juniper's room) is surprising Orion's own forecast: eCO2, PM2.5, light and humidity forecast together 5 and 15 minutes ahead, the misses scored as ONE joint miss, over the last 30 minutes, as excess surprise in units of its calm spread (a z-score), 3 sigma = 1.0. 0 = the room did what the forecast expected. Caused by people, windows, time of day and weather, so it is the outside world, not Orion's body.",
+      "value_kind": "surprise_excess",
+      "rest": "0.0 = the room's joint misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time). Room-group rows start at deploy; its own calm check (#3309 per group) gates any reliance on it.",
       "rest_range": [
         0.0,
-        0.03
+        0.55
       ],
       "sparsity": "per_tick",
-      "absent_means": "carried forward in node_vectors between biometrics samples; dropped from the self-model after 1800 s.",
+      "absent_means": "written once per scored room-group bucket (about every 5 min). Nothing is written when no row passes (prediction service down, a refused bucket, no adaptive p yet, either kill switch off): the node keeps its last value, read as absent by world-first after 600 s and by every reader after 1800 s, never as calm.",
       "polarity": "higher_is_worse",
       "declared_consumers": [
-        "orion.attention.field_attention.selectors:select_node_targets",
-        "orion.substrate.endogenous_curiosity:_prediction_error_candidates",
-        "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
-      "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings",
-        "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
-      ],
-      "notes": "category=physical_substrate level=node",
+      "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error": {

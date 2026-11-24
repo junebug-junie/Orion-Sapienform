@@ -47,7 +47,8 @@ def test_reads_evidence_off_known_domain_nodes() -> None:
         ),
     ]
     out = worker._brain_frame_prediction_error_evidence_by_domain(nodes)
-    assert out == {"biometrics": ["gev_1", "gev_2"], "execution": ["gev_3"]}
+    # node:substrate.biometrics was retired 2026-11-18 (#3575): a lingering node is not a domain.
+    assert out == {"execution": ["gev_3"]}
 
 
 def test_skips_unknown_node_ids() -> None:
@@ -108,24 +109,25 @@ class TestCombinedSinglePassHelper:
         worker = _make_worker()
         nodes = [
             _node(
-                "node:substrate.biometrics",
+                "node:substrate.execution",
                 {
                     "prediction_error": 0.4,
                     "prediction_error_evidence_event_ids": ["gev_1", "gev_2"],
                 },
             ),
-            _node("node:substrate.execution", {"prediction_error": 0.0}),
-            # Retired 2026-11 (PE step 5, chat step 6): never read as a domain.
+            # Retired 2026-11 (PE step 5; chat and biometrics step 6): never read as a domain.
             _node("node:substrate.route", {"prediction_error": 0.9}),
             _node("node:substrate.chat", {"prediction_error": 0.7}),
+            _node("node:substrate.biometrics", {"prediction_error": 0.2,
+                                                "prediction_error_evidence_event_ids": ["gev_9"]}),
         ]
 
         pe_by_domain, evidence_by_domain = (
             worker._brain_frame_prediction_error_and_evidence_by_domain(nodes)
         )
 
-        assert pe_by_domain == {"biometrics": 0.4, "execution": 0.0}
-        assert evidence_by_domain == {"biometrics": ["gev_1", "gev_2"]}
+        assert pe_by_domain == {"execution": 0.4}
+        assert evidence_by_domain == {"execution": ["gev_1", "gev_2"]}
 
     def test_individual_methods_delegate_to_the_same_single_pass(self) -> None:
         """The two individually-named methods must still return exactly what

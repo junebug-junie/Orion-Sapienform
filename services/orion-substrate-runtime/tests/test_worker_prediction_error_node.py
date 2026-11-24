@@ -121,7 +121,7 @@ def test_write_prediction_error_node_warns_when_store_init_failed(monkeypatch, c
 
 
 def test_write_prediction_error_node_noop_when_flag_off(monkeypatch) -> None:
-    monkeypatch.delenv(_PREDICTION_ERROR_NODE_FLAG, raising=False)
+    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "false")
     store = _FakeStore()
     worker = _make_worker(store)
     now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -429,3 +429,11 @@ def test_evidence_event_ids_capped(monkeypatch) -> None:
     node = store.nodes["node:substrate.chat"]
     assert len(node.metadata["prediction_error_evidence_event_ids"]) == 50
     assert node.metadata["prediction_error_evidence_event_ids"] == many_ids[:50]
+
+
+def test_prediction_error_nodes_default_on_when_unset(monkeypatch) -> None:
+    """Flags ship on: an unset SUBSTRATE_WRITE_PREDICTION_ERROR_NODES means on (compose default too)."""
+    from app.worker import _prediction_error_nodes_enabled
+
+    monkeypatch.delenv(_PREDICTION_ERROR_NODE_FLAG, raising=False)
+    assert _prediction_error_nodes_enabled() is True

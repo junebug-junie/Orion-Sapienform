@@ -62,7 +62,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from orion.vision.stationary import StillRun, advance, box_iou, is_stationary
+from orion.vision.stationary import StillRun, StreamRule, advance, box_iou, is_stationary, stream_rules
 from orion.vision.zones import Zone
 
 logger = logging.getLogger("sql-writer.vision_individuals")
@@ -374,20 +374,25 @@ def _dt(t: float) -> datetime:
 
 
 def advance_stationary(
-    ind: Individual, box: Sequence[float], at: datetime, *, iou: float, min_sec: float, max_gap_sec: float
+    ind: Individual, box: Sequence[float], at: datetime, *, iou: float, min_sec: float, max_gap_sec: float,
+    room: bool = False, face: bool = False,
 ) -> None:
     """Fold one observation into the individual's "box has not moved" run.
 
-    Older-than-the-run observations are ignored. While the individual is
-    already stationary a gap does not break the run (the prop is still in the
-    same place after a night the detector missed it); a moved box always does.
+    Older-than-the-run observations are ignored. On an outdoor camera, while
+    the individual is already stationary a gap does not break the run (the
+    prop is still in the same place after a night the detector missed it); a
+    moved box always does. On a room camera (``room``) a gap always breaks it
+    and a crop with a face starts a new run: a person who sat still at the
+    office desk is a person again the moment they come back (#3614).
     ``min_sec <= 0`` disables the rule (nothing is ever stationary).
     """
     run = None
     if ind.still_box and ind.still_since is not None and ind.still_last is not None:
         run = StillRun(tuple(ind.still_box), _ts(ind.still_since), _ts(ind.still_last))
     nxt = advance(run, box, _ts(at), iou_threshold=iou,
-                  max_gap_sec=None if ind.stationary else max_gap_sec)
+                  max_gap_sec=max_gap_sec if (room or not ind.stationary) else None,
+                  restart=room and face)
     ind.still_box = [float(v) for v in nxt.box]
     ind.still_since = _dt(nxt.since)
     ind.still_last = _dt(nxt.last)
@@ -429,6 +434,8 @@ def apply_batch(
     stationary_iou: float = 0.5,
     stationary_max_gap_sec: float = 300.0,
     stationary_streams: Optional[Iterable[str]] = None,
+    stationary_room_streams: Iterable[str] = (),
+    stationary_room_min_sec: Optional[float] = None,
     cannot_link: Optional[Dict[str, Iterable[str]]] = None,
     cannot_link_margin: float = 0.10,
     continuation_threshold: Optional[float] = None,
@@ -477,6 +484,8 @@ def apply_batch(
     With the continuation lane off this is exactly the single body rule it
     replaces.
     """
+    # stream -> stationary rule (unused when stationary_streams is None).
+    rules = stream_rules(stationary_streams or (), stationary_min_sec, stationary_room_streams, stationary_room_min_sec)
     forbidden = set(no_embed_zones)
     inds = {k: replace(v, centroid=list(v.centroid),
                        face_centroid=list(v.face_centroid) if v.face_centroid else None,
@@ -604,12 +613,16 @@ def apply_batch(
         if continuation_threshold is not None:
             _observe(ind.individual_id, crop.observed_at, crop.box_xyxy)
         assigned += 1
-        # Prop detection only on streams that have props (None: every stream).
-        # The office camera stays out: a person at a desk sits still for hours
-        # (2026-11-04), and a prop gets no asks, attention or "who is around".
-        if stationary_streams is None or crop.stream_id in stationary_streams:
+        # Prop detection only on streams that have props (None: every stream
+        # with the outdoor rule). A prop gets no asks, attention or "who is
+        # around". Room cameras (the office) use the room rule: a person at a
+        # desk sits still (2026-11-04), boxes on the floor did 4-5 h (11-16).
+        key = str(crop.stream_id or "").strip().lower()
+        rule = rules.get(key) if (stationary_streams is not None or key in rules) else StreamRule(stationary_min_sec)
+        if rule is not None:
             advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
-                               min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
+                               min_sec=rule.min_sec, max_gap_sec=stationary_max_gap_sec,
+                               room=rule.room, face=bool(crop.face_embedding))
         crop_stationary[crop.crop_id] = ind.stationary
 
         zone_key = crop.zone or _NO_ZONE
@@ -1159,6 +1172,10 @@ class IndividualsConfig:
     # Streams the stationary rule applies to (VISION_STATIONARY_STREAMS). Others
     # never mark an individual stationary. None = every stream.
     stationary_streams: Optional[Tuple[str, ...]] = None
+    # Room cameras (VISION_STATIONARY_ROOM_STREAMS): own hold, a gap ends a
+    # run, a face restarts it (orion.vision.stationary.StreamRule, #3614).
+    stationary_room_streams: Tuple[str, ...] = ()
+    stationary_room_min_sec: float = 7200.0
     # Visual confirmation asks (2026-10-15). A person with at least this many
     # face crops gets "who is this?" the same day, and only people with this
     # many faces are compared for "are these the same person?". <= 0 disables both.
@@ -1513,6 +1530,8 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 stationary_min_sec=cfg.stationary_min_sec, stationary_iou=cfg.stationary_iou,
                 stationary_max_gap_sec=cfg.stationary_max_gap_sec,
                 stationary_streams=None if cfg.stationary_streams is None else set(cfg.stationary_streams),
+                stationary_room_streams=cfg.stationary_room_streams,
+                stationary_room_min_sec=cfg.stationary_room_min_sec,
                 continuation_threshold=cfg.continuation_threshold if cfg.continuation_enabled else None,
                 continuation_gap_sec=min(cfg.continuation_gap_sec, cfg.merge_gap_sec),
                 continuation_max_disp=cfg.continuation_max_disp,

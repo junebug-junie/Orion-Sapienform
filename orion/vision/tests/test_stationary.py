@@ -32,3 +32,30 @@ def test_older_observation_leaves_run_alone():
 
 def test_zero_min_sec_never_stationary():
     assert not is_stationary(StillRun(tuple(SK), 0.0, 1e6), 0)
+
+
+def test_stream_rules_room_cameras_get_their_own_hold():
+    from orion.vision.stationary import StreamRule, stream_rules
+
+    rules = stream_rules("walkway, Doorbell", 1800, "cam0", 7200)
+    assert rules == {"walkway": StreamRule(1800.0), "doorbell": StreamRule(1800.0),
+                     "cam0": StreamRule(7200.0, room=True)}
+    assert stream_rules("", 1800, "", 7200) == {}
+    assert stream_rules("walkway", 0, "cam0", 0) == {}  # a hold <= 0 turns it off
+    # A room listed in both lists is a room.
+    assert stream_rules("cam0", 1800, ["cam0"], 7200)["cam0"].room
+
+
+def test_marked_outdoor_prop_survives_gaps_a_room_one_does_not():
+    from orion.vision.stationary import StreamRule
+
+    held = StillRun(tuple(SK), 0.0, 7300.0)
+    assert StreamRule(1800).gap_sec(held, 300) is None
+    assert StreamRule(7200, room=True).gap_sec(held, 300) == 300
+    assert StreamRule(1800).gap_sec(StillRun(tuple(SK), 0.0, 60.0), 300) == 300
+
+
+def test_restart_starts_a_new_run_in_place():
+    run = StillRun(tuple(SK), 0.0, 5000.0)
+    nxt = advance(run, SK, 5020.0, iou_threshold=0.5, max_gap_sec=300, restart=True)
+    assert nxt.since == 5020.0 and nxt.last == 5020.0

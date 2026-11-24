@@ -300,7 +300,8 @@ def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: b
         base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
                 .replace(_ARC_REFS, _EVENT_REFS).replace(_ARC_REFS_JSON, _EVENT_REFS_JSON))
     if experiences:
-        # Before any paragraph is appended: only the template's own closing text is swapped (#3425).
+        # Before any paragraph is appended (REGULATE/TAKE_ON carry their own "move" snippets): only the template's
+        # move line is swapped (#3425).
         base = base.replace(_REPLY_MOVE, _REPLY_CITES_THEN_MOVE, 1)
     if receptors and any(receptors.values()):
         base += REGULATE_PROMPT

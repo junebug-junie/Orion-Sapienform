@@ -119,6 +119,6 @@ Deploy order: orion-hub, orion-mind, orion-prediction, orion-cortex-exec, orion-
 
 ## PR link
 
-(this PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3814
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -167,7 +167,8 @@ def make_outreach(monkeypatch):
     return outreach, queue, history, notified, rows
 
 
-def make_service(monkeypatch, *, looks=None, bid_outcome="funded", frames=FRAMES, compose=None, sitting=SITTING):
+def make_service(monkeypatch, *, looks=None, bid_outcome="funded", frames=FRAMES, compose=None, sitting=SITTING,
+                 bid_reason="ok", bid_net=None):
     db = Table(looks if looks is not None else [look(1, NOW - 600, "Link enters a cave by the well."),
                                                  look(2, NOW - 15, "Link walks down a dark corridor.")])
     outreach, queue, history, notified, rows = make_outreach(monkeypatch)
@@ -176,7 +177,7 @@ def make_service(monkeypatch, *, looks=None, bid_outcome="funded", frames=FRAMES
 
     async def bid(want, object_text):
         calls["bids"].append((want, object_text))
-        return SimpleNamespace(outcome=bid_outcome, reason="ok")
+        return SimpleNamespace(outcome=bid_outcome, reason=bid_reason, net=bid_net)
 
     async def release(want_id):
         calls["released"].append(want_id)
@@ -666,3 +667,31 @@ def test_a_guest_message_on_a_main_chat_socket_cannot_borrow_the_game_sources():
     src = open(wh.__file__).read()
     assert 'if data.get("source") in ("retro_commentary", "retro_guest")' in src
     assert src.index("_retro_commentary.person_spoke()") < src.index("prepare_retro_turn(")
+
+
+def test_a_full_lane_with_a_line_worth_its_price_queues_at_the_pool_and_runs(monkeypatch):
+    # Live 2026-11-18..23: every line bid read "lane:chat is full". The economy's own rule (bind_verdict) says a
+    # capacity deferral with net > 0 queues at the GPU pool; it is not a refusal.
+    t = make_service(monkeypatch, bid_outcome="deferred", bid_reason="capacity_reserved", bid_net=0.4)
+    asyncio.run(t.svc.tick())
+    assert t.calls["compose"] and t.db.lines
+
+
+def test_a_full_lane_with_a_line_not_worth_its_price_holds_it(monkeypatch):
+    for reason, net in (("capacity_reserved", 0.0), ("price", 0.5), ("sated", 0.5)):
+        t = make_service(monkeypatch, bid_outcome="deferred", bid_reason=reason, bid_net=net)
+        asyncio.run(t.svc.tick())
+        assert t.db.lines == {} and t.calls["compose"] == [], reason
+
+
+def test_a_held_line_keeps_its_want_clock_so_hunger_grows_until_a_line_runs(monkeypatch):
+    # Each bid is a new want and this family closes no act until a line is said, so a fresh opened_at on every
+    # bid read as "hunger 0 s" forever (live: 367 of 367 bids at net +0.000).
+    t = make_service(monkeypatch, bid_outcome="deferred", bid_reason="capacity_reserved", bid_net=0.0)
+    first = t.svc._want("w1", "s-1")
+    t.svc.clock = lambda: NOW + 400
+    second = t.svc._want("w2", "s-1")
+    assert second.opened_at == first.opened_at and (NOW + 400) - first.opened_at.timestamp() == 400
+    assert rc.line_admitted(SimpleNamespace(outcome="funded", reason="net_positive", net=1.0))
+    t.svc._wanted_since.pop("s-1")                       # a line ran: the next want starts a new clock
+    assert t.svc._want("w3", "s-1").opened_at.timestamp() == NOW + 400

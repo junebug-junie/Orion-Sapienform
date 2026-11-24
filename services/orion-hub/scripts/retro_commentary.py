@@ -184,6 +184,20 @@ class StageClock:
         return {"stance_sec": r(stance), "motor_sec": r(motor), "finalize_sec": r(finalize)}
 
 
+def line_admitted(decision: Any) -> bool:
+    """A line runs when its bid is funded, or deferred only because the chat lane is full while the want is worth
+    its price (net > 0). That second case is the body economy's own rule (``orion/physiology/binding.py``
+    ``bind_verdict``: "a capacity deferral is queueing, never refusal"): the GPU pool's queue holds the line until a
+    seat frees, bounded by ``HUB_RETRO_LINE_SEAT_WAIT_SEC``. Every other deferral (price, sated, no lane, consent)
+    and no answer at all hold the line. Live 2026-11-18..23: every line bid read "lane:chat is full"."""
+    from orion.physiology.binding import bind_verdict
+
+    if decision is None:
+        return False
+    verdict = bind_verdict(decision, datetime.now(timezone.utc), None)
+    return verdict.admit and verdict.why in ("funded", "queued_at_pool")
+
+
 @dataclass
 class Running:
     line_id: str
@@ -228,6 +242,11 @@ class CommentaryService:
         # Hub restart forgets them (the chat history rows remain; a line turn then shows none).
         self.recent_chat: deque = deque(maxlen=C.RECENT_CHAT)
         self._sitting_id: Optional[str] = None
+        # When the open sitting first wanted a line that has not been admitted yet (epoch seconds). Each bid is a
+        # new want, and this family closes no act until a line is said, so without it the market reads hunger
+        # "0 s since opened" on every bid, the rank stays 0, and no line is ever funded (live 2026-11-18..23:
+        # 367 of 367 bids deferred at net +0.000). A held want grows hunger; the clock resets once a line runs.
+        self._wanted_since: dict[str, float] = {}
         self._last_exchange_at: Optional[float] = None
         self._hot_until = 0.0
         self.last_gate: Optional[str] = None
@@ -344,6 +363,7 @@ class CommentaryService:
         sitting = await self._sitting()
         if sitting is None:
             self._sitting_id = None
+            self._wanted_since.clear()          # no sitting: no line is wanted
             self.last_gate = C.GATE_NO_SITTING
             return C.GATE_NO_SITTING
         sid = str(sitting["sitting_id"])
@@ -375,8 +395,9 @@ class CommentaryService:
         from orion.schemas.physiology_want import WantV1, WantWindowV1
 
         now = _utc(self.clock())
+        opened = _utc(self._wanted_since.setdefault(sitting_id, self.clock()))
         return WantV1(want_id=want_id, family=C.FAMILY, producer=C.BINDING_PRODUCER, verb=C.VERB, tier=C.TIER,
-                      object_ref=C.OBJECT_PREFIX + sitting_id, correlation_id=want_id, opened_at=now,
+                      object_ref=C.OBJECT_PREFIX + sitting_id, correlation_id=want_id, opened_at=opened,
                       window=WantWindowV1(latest=now + timedelta(seconds=C.DEFERRABLE_WINDOW_S)), lanes=["chat"])
 
     async def run_line(self, sitting: dict) -> Optional[str]:
@@ -410,11 +431,13 @@ class CommentaryService:
             if newest_note:
                 object_text = f"{object_text}: {newest_note}"
             decision = await self._bid(self._want(line_id, sid), object_text)
-            outcome = getattr(decision, "outcome", None)
-            if outcome != "funded":
+            if not line_admitted(decision):
+                outcome = getattr(decision, "outcome", None)
                 reason = f"{outcome}:{getattr(decision, 'reason', None) or '-'}" if decision is not None else "no_answer"
-                logger.info("retro_commentary_bid_refused sitting=%s want_id=%s reason=%s", sid, line_id, reason)
+                logger.info("retro_commentary_bid_refused sitting=%s want_id=%s reason=%s net=%s", sid, line_id,
+                            reason, getattr(decision, "net", None))
                 return
+            self._wanted_since.pop(sid, None)
             if run.yielded:
                 logger.info("retro_commentary_yielded_before_start line_id=%s", line_id)
                 return

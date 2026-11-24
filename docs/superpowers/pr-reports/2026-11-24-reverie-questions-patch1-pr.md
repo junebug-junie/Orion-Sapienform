@@ -110,12 +110,12 @@ Deploy order: orion-hub, orion-mind, orion-prediction, orion-cortex-exec, orion-
 ## Risks / concerns
 
 - Severity: medium. Concern: the agent-lane call from orion-thought has never run live; if the gateway refuses `agent` without a pool hold, every reverie is a lane refusal (logged `reverie_skipped reason=llm_unavailable` / `lane_refused_stretch`, no rows). Mitigation: Orion checks `lane_refused_stretch` live; UNVERIFIED.
-- Severity: medium. Concern: the visual (painting) chain still reads the latest narrated reverie interpretation as a context seed (`services/orion-thought/app/store.py load_latest_reverie_interpretation`). Painting was out of scope, so that read is left on the old table; with no new rows it will age out and the slot goes empty. Mitigation: ticket filed (see below).
+- Severity: medium. Concern: the visual (painting) chain still reads the latest narrated reverie interpretation as a context seed (`services/orion-thought/app/store.py load_latest_reverie_interpretation`). Painting was out of scope, so that read is left on the old table; with no new rows it will age out and the slot goes empty. Mitigation: ticket #3813.
 - Severity: low. Concern: the reverie-scope `AttentionSalienceTraceV1` emit stopped with the narration tick; chat-scope traces continue. Readers that split by scope see no new reverie rows.
 - Severity: low. Concern: `config/physiology/consent.yaml` still carries Juniper's standing consent for dream compaction downscale; its only bidder (the applier) is retired. Left as granted; removing a grant is her call.
 - Severity: low. Concern: far-memory anchor deviates from the spec (newest kept episode memory, not "the most salient item in the now", which has no vector). Documented in `reverie_seeds.pick_anchor`.
 - Severity: low. Concern: the near-duplicate matcher is the reverie organ's own word-set Jaccard ≥ 0.6 (the inquiry manager's embedding matcher is design-only); a ref used in the last 14 days is "spent", so a standing gap is not re-asked daily (spec relied on the duplicate refusal for that).
-- Issues: closes #3414 (resonance monitor retired). Opened: see PR comments.
+- Issues: closes #3414 (resonance monitor retired). Opened: #3813 (painting context seed).
 
 ## PR link
 

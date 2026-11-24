@@ -1,7 +1,8 @@
 # Walkway "who is this?" card redesign (proposal)
 
 Status: PROPOSAL. Juniper approves before anything here is built.
-Date: 2026-11-24. Follows the bug fix "each person row shows their own pictures"
+Date: 2026-11-24. Names other than Juniper and Orion are placeholders
+("Sasha", "[name 1]", "[name 2]"); the repo keeps real names out of tracked files. Follows the bug fix "each person row shows their own pictures"
 (branch `fix/walkway-story-card-per-person-pictures`, called PR 1 below).
 
 ## Arsonist summary
@@ -24,13 +25,13 @@ numbers and a letter, and a named row has "Yes, that's <name>". This proposal is
 the next step: ask about one person at a time, grade the sentence in small yes/no
 parts, and show two groups that are already the same person as one person.
 
-The biggest surprise in the live data: the two "Addy" rows on Juniper's example
+The biggest surprise in the live data: the two "Sasha" rows on Juniper's example
 story are already linked as the same person. 304 of the 313 "same person" links
 join two groups that carry the same typed name (mostly made by the same-name
 link, `_link_same_name`, when she types a name she used before).
-The card simply does not show the link, so it asks about Addy twice. Only 3 names
-still have same-name groups that are not linked (Bethany 3 groups, Juniper on the
-doorbell 2, Maeve 2). So "merge" is mostly a display problem, not a data problem.
+The card simply does not show the link, so it asks about Sasha twice. Only 3 names
+still have same-name groups that are not linked ([name 1] 3 groups, Juniper on the
+doorbell 2, [name 2] 2). So "merge" is mostly a display problem, not a data problem.
 
 ## Current architecture
 
@@ -93,9 +94,9 @@ The card shows one person, not a list. A person here is one linked group
 
 - Top: a tight crop of this person from this story (their largest strip crop),
   and the big picture with only their box numbers called out.
-- Question: "Is this Addy?" when the group has a name; "Who is this?" when not.
+- Question: "Is this Sasha?" when the group has a name; "Who is this?" when not.
 - Three answers:
-  - **Yes, that's Addy** -> PR 1's yes: a `vision_individual` answer with the
+  - **Yes, that's Sasha** -> PR 1's yes: a `vision_individual` answer with the
     name shown, plus `same` picture verdicts on the pictures shown.
   - **No, it's ...** -> opens a short list: the names Orion knows (most seen first)
     plus "someone not listed" (type a name) and "I don't know who". Picking a name
@@ -132,9 +133,9 @@ working:
 ### 3. Two groups that are one person
 
 - **Already linked (the common case, 27 of 30 names):** show them as one person
-  ("Addy - seen as 2 camera groups in this story"). No question.
+  ("Sasha - seen as 2 camera groups in this story"). No question.
 - **Same name, not linked (3 names today):** one extra question after the person
-  answers: "Orion has another Addy group. Same person?" with both crops side by
+  answers: "Orion has another Sasha group. Same person?" with both crops side by
   side. Yes writes a `vision_same_individual` answer (the existing "same
   person?" path, `_apply_pair_answer`), which creates the `same` link.
 - **Undo, mirroring the split undo:** add `scripts/undo_vision_link.py
@@ -165,10 +166,10 @@ taught the person model. Proposal:
 
 1. "No, it's ..." - pick from known names, or always type? A list is faster but
    can put a wrong name one tap away.
-2. Should "Yes, that's Addy" also count as "right people" for the sentence, so
+2. Should "Yes, that's Sasha" also count as "right people" for the sentence, so
    one click answers both? (Saves a click; mixes two questions again.)
 3. Which sentence parts do you want graded: people, direction, place, length?
-4. Same-name groups that are not linked (Bethany, Maeve, Juniper on the
+4. Same-name groups that are not linked ([name 1], [name 2], Juniper on the
    doorbell): ask on the card, or let Orion link them without asking, as it
    already does when you type a name?
 5. Re-ask the 124 "not sure only" stories, or leave them closed?
@@ -261,6 +262,6 @@ Numbers are from the live database on 2026-11-24. Re-measure 14 days after deplo
 
 Patch A (small, no schema): group already-linked camera groups into one person
 row on the current list card, ask once, and write the answer to each group. This
-removes the "Addy, Addy" double ask today (148 rows on 97 stories) without the
+removes the "Sasha, Sasha" double ask today (148 rows on 97 stories) without the
 one-at-a-time layout. Patch B: the one-at-a-time card and "No, it's ...". Patch
 C: sentence parts table and derived verdict. Patch D: link undo.

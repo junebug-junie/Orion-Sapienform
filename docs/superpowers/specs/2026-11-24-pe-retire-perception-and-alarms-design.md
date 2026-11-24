@@ -295,16 +295,18 @@ No bus channel changes for steps 1-4. Step 5 reuses `prediction.surprise.v1` on 
 
 ### Metric quality gate (§0A) for the two new values
 
-**scene_change (per-frame camera percentile)**
+**scene_change (two-stage camera rank, rev 4)**
 
 1. Provenance: same raw `1 - cos` as today, from `perception_prediction_error()`; only the
    second stage changes (rank instead of EWMA z).
 2. Independence: it is a monotone rescoring of the current camera signal (r 0.66-0.76). It is
    a replacement, not new signal. Walkway vs room were already shown independent (r 0.016, spec 11-08).
-3. Theory: split-conformal rank. Under exchangeability p is uniform, so -ln p ~ Exp(1),
-   mean 1, and excess is 0 with probability 1 - 1/e.
-4. Live: matches theory per frame (table above). Does not rest when summed over 30 min, so it
-   is not folded. Room camera hourly means reach 0.95 at p90: busy hours stay visible.
+3. Theory: split-conformal rank, twice. Stage 2 ranks the 5-min minimum of stage-1 p against
+   the camera's own 5-min minima; under exchangeable intervals p2 is uniform, so -ln p2 ~ Exp(1)
+   and excess is 0 with probability 1 - 1/e, crossing 2.0 with probability e^-3.
+4. Live (replay at the real sampler cadence, item 3): 0.654 / 0.662 exact 0, crossing 4.6% /
+   3.1%. A 30-min sum of per-frame values does not rest, so nothing is summed. Stage 2's window
+   was 12 h in replay (only 29 h of logs); 24 h is UNVERIFIED.
 5. Existing mechanism: same rank-to-surprisal shape as family A and street handoffs.
 6. Reversible: until the cleanup patch, `SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER`
    (`rank_v2` default, `legacy_z` fallback) picks the second stage; the raw magnitude is

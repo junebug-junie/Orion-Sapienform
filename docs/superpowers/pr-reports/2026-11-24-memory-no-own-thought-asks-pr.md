@@ -106,7 +106,7 @@ Dry run against live, 2026-11-24 (no writes). Files are under `/tmp/memory-own-t
 - Rows held back because an answer is waiting: 0. Open cards to withdraw: 1.
 - After the pass: `pending_confirmation` by voice goes from juniper_said 24 / orion_thought 21 / worked_out_together 1 to juniper_said 24 / worked_out_together 1.
 
-Apply status: see Risks.
+Apply status: NOT applied. The brief said the apply was approved, but Juniper approved on the wrong "0 confirmed" numbers, so this production write waits for her yes on the corrected numbers. After she says yes, run this one command from the primary checkout: `.venv/bin/python scripts/memory_own_thought_settle.py --apply`. After deploy, the confirmation tick does the same move on its own.
 
 ## Review findings fixed
 
@@ -140,4 +140,6 @@ No manual restart. The post-pull rebuild picks up orion-memory-consolidation and
 
 ## PR link
 
-(filled after open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3861
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

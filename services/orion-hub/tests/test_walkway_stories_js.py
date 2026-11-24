@@ -75,3 +75,13 @@ def test_render_story_shows_the_handoff_line() -> None:
       return hit ? [hit.attrs["data-story-handoff"], hit.textContent] : null;
     })()""")
     assert got == ["from", "Came from the door camera 38 s earlier."]
+
+
+def test_why_line_shows_how_juniper_could_tell() -> None:
+    got = _node("""[
+      api.whyLine({action: "someone_else", why: "  pushing a stroller  "}),
+      api.whyLine({action: "name", why: null}),
+      api.whyLine({action: "unsure", why: ""}),
+      api.whyLine(null)
+    ]""")
+    assert got == ["How you could tell: pushing a stroller", "", "", ""]

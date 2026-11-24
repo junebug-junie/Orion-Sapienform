@@ -57,6 +57,13 @@ listed (``display_sentence``): a direct answer on THIS story wins for it;
 otherwise the same strict rule sql-writer uses (orion.vision.story_naming) runs
 on the names individuals carry now. ``sentence`` stays what was written.
 
+**How she could tell** (2026-11-24, Juniper: "someone walking with back turned --
+orion asks if it is jason? I can say no because he is pushing a stroller and I
+know jason doesnt have young kids..."). Every person action takes an optional
+free-text ``why``, stored as ``answer_detail.why`` on the same ask row and shown
+back on the card. Nothing reasons over it yet: it is the raw context-clue record
+a later primitive (who someone is from more than their face/build) will read.
+
 Same asyncpg pool as the ask card (``app.state.memory_pg_pool``); all DB calls
 are awaited (``scripts/check_async_routes_not_blocking.py``).
 """
@@ -173,6 +180,7 @@ WHO_IS_THIS_KIND = ask_routes.WHO_IS_THIS_KIND        # "vision_individual"
 STORY_PERSON_KIND = "vision_story_person"
 JUNIPER_STORY_CARD_REF = "rule:juniper_story_naming"   # == orion.grammar.camera_ask_acts (a test pins it)
 PERSON_ACTIONS = ("name", "someone_else", "unsure")
+WHY_MAX_CHARS = 1000
 _INDIVIDUAL_ID_RE = re.compile(r"[0-9A-Za-z_.:-]{1,128}")
 _THUMB_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -181,6 +189,15 @@ class PersonBody(BaseModel):
     action: Literal["name", "someone_else", "unsure"]
     # For "name": who this is. For "someone_else": optionally who it really is.
     name: str = Field(default="", max_length=ask_routes.MAX_ANSWER_CHARS)
+    # How Juniper could tell, in her words (optional, any action): "pushing a stroller,
+    # Jason has no young kids, not his build". Stored as answer_detail.why on the ask row.
+    why: str = Field(default="", max_length=WHY_MAX_CHARS)
+
+
+def clean_why(raw: str) -> str:
+    """Her reason as typed, trimmed; blank lines and runs of spaces collapsed, line breaks kept."""
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in str(raw or "").replace("\r", "").split("\n")]
+    return "\n".join(ln for ln in lines if ln)[:WHY_MAX_CHARS]
 
 
 def tally_from_counts(counts: dict[str, int], named_checked: int, rules_version: int | None) -> dict[str, Any]:
@@ -302,7 +319,8 @@ _LABELS_SQL = ("SELECT individual_id, kind, label, label_copied FROM vision_indi
 # (a handful per story; the latest one per person is picked in Python).
 _STORY_ACTIONS_SQL = """
 SELECT answer_detail->>'story_id' AS story_id, source_ref AS individual_id,
-       answer_detail->>'action' AS action, answer_detail->>'name' AS name, ask_id, answered_at
+       answer_detail->>'action' AS action, answer_detail->>'name' AS name,
+       answer_detail->>'why' AS why, ask_id, answered_at
 FROM orion_ask
 WHERE source_kind = ANY($2::text[]) AND status = 'answered'
   AND answer_detail->>'story_id' = ANY($1::text[])
@@ -492,7 +510,7 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
                                   [WHO_IS_THIS_KIND, STORY_PERSON_KIND]):
             acts.setdefault(r["story_id"], []).append({
                 "individual_id": r["individual_id"], "action": r["action"], "name": r["name"],
-                "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"])})
+                "why": r["why"] or None, "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"])})
     except Exception as exc:  # noqa: BLE001 - the card still shows the stored story
         logger.warning("motion_story_people_lookup_failed error=%s", exc)
         return
@@ -586,6 +604,9 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                 detail: dict[str, Any] = {"story_id": story_id, "action": body.action, "via": "motion_story"}
                 if name:
                     detail["name"] = name
+                why = clean_why(body.why)
+                if why:
+                    detail["why"] = why
                 if body.action == "name":
                     kind, answer = WHO_IS_THIS_KIND, name
                     question = "Who is this? (named on a walkway story)"
@@ -631,8 +652,9 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
             stories = fresh
     except Exception as exc:  # noqa: BLE001 - saved already; the card reloads on its next poll
         logger.warning("motion_story_person_readback_failed story_id=%s error=%s", story_id, exc)
-    logger.info("motion_story_person story_id=%s individual_id=%s action=%s ask_id=%s wrong_name=%s published=%s",
-                story_id, individual_id, body.action, row["ask_id"], wrong_name, published)
+    logger.info("motion_story_person story_id=%s individual_id=%s action=%s ask_id=%s wrong_name=%s "
+                "published=%s why_chars=%d",
+                story_id, individual_id, body.action, row["ask_id"], wrong_name, published, len(clean_why(body.why)))
     return {"ok": True, "story_id": story_id, "individual_id": individual_id, "action": body.action,
             "ask_id": row["ask_id"], "wrong_name_recorded": wrong_name, "published": published,
             "story": stories[0] if stories else None, "tally": tally}

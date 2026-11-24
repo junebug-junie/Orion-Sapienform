@@ -90,6 +90,47 @@ def select_channels(x: np.ndarray, *, min_presence: float = MIN_PRESENCE) -> np.
     return np.flatnonzero(present & (sd > 0))
 
 
+COPY_THRESHOLD = 0.95
+
+
+def merge_copies(x: np.ndarray, *, threshold: float = COPY_THRESHOLD) -> list[list[int]]:
+    """Group channels that are near-exact copies (|r| >= threshold over the whole series).
+
+    One bus message often lights several channels: a request and its reply, or the four
+    ``social:claim:*`` channels one revision writes. Counted as separate channels, that plumbing
+    reads as "coupling" even on a quiet night (the 2026-11-24 first replay: z >= 2.7 on every quiet
+    night). Each group becomes one channel (see ``merged_series``). Groups are connected
+    components of the |r| >= threshold graph.
+    """
+    r = np.abs(correlation(x))
+    n = len(r)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i, j in zip(*np.nonzero(np.triu(r >= threshold, k=1))):
+        parent[find(int(i))] = find(int(j))
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return sorted(groups.values(), key=lambda g: g[0])
+
+
+def merged_series(x: np.ndarray, groups: Sequence[Sequence[int]]) -> np.ndarray:
+    """One column per group: the mean of its members' standardized values (NaN-aware)."""
+    x = np.asarray(x, dtype=float)
+    mu = np.nanmean(x, axis=0)
+    sd = np.nanstd(x, axis=0)
+    z = (x - mu) / np.where(sd > 0, sd, 1.0)
+    with np.errstate(invalid="ignore"):
+        cols = [np.nanmean(z[:, list(g)], axis=1) if len(g) > 1 else z[:, g[0]] for g in groups]
+    return np.stack(cols, axis=1)
+
+
 def correlation(x: np.ndarray) -> np.ndarray:
     """Correlation of a (T, n) window. A missing value is set to the column mean.
 

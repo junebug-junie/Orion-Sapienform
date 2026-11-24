@@ -8,6 +8,8 @@ on:
     paths:
       - "orion/substrate/demon.py"
       - "orion/substrate/tests/test_demon.py"
+      - "orion/substrate/whole_body_structure.py"
+      - "orion/substrate/tests/test_whole_body_structure.py"
       - "services/orion-field-digester/requirements.txt"
       - "requirements-dev.txt"
       - ".github/workflows/field-demon-tests.yml"
@@ -16,6 +18,8 @@ on:
     paths:
       - "orion/substrate/demon.py"
       - "orion/substrate/tests/test_demon.py"
+      - "orion/substrate/whole_body_structure.py"
+      - "orion/substrate/tests/test_whole_body_structure.py"
       - "services/orion-field-digester/requirements.txt"
       - "requirements-dev.txt"
       - ".github/workflows/field-demon-tests.yml"
@@ -36,5 +40,5 @@ jobs:
           # numpy-only imports are not enough. Same deps as causal-geometry-tests.yml.
           python -m pip install -r services/orion-field-digester/requirements.txt
           python -m pip install -r requirements-dev.txt
-      - name: Demon core
-        run: python -m pytest -q -p no:cacheprovider orion/substrate/tests/test_demon.py
+      - name: Demon core + whole-body structure
+        run: python -m pytest -q -p no:cacheprovider orion/substrate/tests/test_demon.py orion/substrate/tests/test_whole_body_structure.py

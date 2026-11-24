@@ -148,3 +148,25 @@ def test_correlation_handles_missing_and_constant():
     r = wbs.correlation(x)
     assert np.all(np.isfinite(r))
     assert r[2, 0] == 0.0 and r[2, 2] == 1.0
+
+
+def test_merge_copies_groups_plumbing_and_keeps_distinct_channels():
+    rng = np.random.default_rng(10)
+    a, b = rng.normal(size=(2, 2000))
+    x = np.stack([a, a + 0.01 * rng.normal(size=2000), b, 2 * a, b + 0.5 * rng.normal(size=2000)], axis=1)
+    groups = wbs.merge_copies(x)
+    assert groups == [[0, 1, 3], [2], [4]]
+    merged = wbs.merged_series(x, groups)
+    assert merged.shape == (2000, 3)
+    assert abs(np.corrcoef(merged[:, 0], a)[0, 1]) > 0.99
+
+
+def test_merging_copies_removes_fake_coupling():
+    """Four copies of one independent process read as coupled; merged, they read as one channel."""
+    rng = np.random.default_rng(11)
+    base = rng.normal(size=(3000, 3))
+    x = np.hstack([base, np.repeat(base[:, :1], 3, axis=1) + 1e-3 * rng.normal(size=(3000, 3))])
+    assert wbs.total_correlation(wbs.correlation(x)) > 2.0
+    merged = wbs.merged_series(x, wbs.merge_copies(x))
+    assert merged.shape[1] == 3
+    assert wbs.total_correlation(wbs.correlation(merged)) < 0.01

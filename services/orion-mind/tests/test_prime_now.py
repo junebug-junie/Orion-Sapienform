@@ -78,9 +78,11 @@ def test_the_frame_shows_the_now_with_ids_and_refs_and_reads_since_the_last_thou
     assert q["organ"] == ["prime"]
     assert q["since"] == [(T0 - timedelta(hours=2, seconds=120)).isoformat()]
     assert q["run_ref"][0].startswith("prime_thought:")
-    # Nothing cited: nothing posted (the shown row already says "read, cited nothing").
-    assert posts.calls == []
+    # Nothing cited: the read is still closed, with no cites (#3498: "read, cited nothing", not "never closed").
+    [(url, body)] = posts.calls
+    assert url.endswith("/temporal-self/now/use") and body["shown_id"] == "shown-1" and body["cites"] == []
     assert _infer_close(rt)["value"] == 1.0
+    assert "now_use" not in _infer_close(rt).get("note", "")  # an empty close says nothing on the act note
 
 
 def test_prime_sends_what_it_holds_and_the_frame_marks_an_item_about_a_held_concern():
@@ -190,7 +192,8 @@ def test_an_empty_now_says_so_and_still_offers_nothing_to_cite():
     asyncio.run(rt.tick())
     frame = rt.llm.calls[0]["user_prompt"]
     assert "(nothing new from the other organs since your last thought)" in frame
-    assert posts.calls == []
+    # the model ran on an empty now: the read is closed with no cite (the unshown id is never sent)
+    assert [body["cites"] for _url, body in posts.calls] == [[]]
 
 
 def test_the_frame_no_longer_reads_the_curiosity_dashboard():
@@ -242,6 +245,15 @@ def test_the_next_read_starts_where_the_seen_now_ended_and_a_failed_read_skips_n
     asyncio.run(rt2.tick())
     for url in _now_gets(rt2):
         assert urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["since"] == [(T0 - timedelta(hours=3)).isoformat()]
+
+
+def test_a_try_that_never_reached_the_model_closes_nothing():
+    """#3498: Prime's read is closed only by a thought whose model answered."""
+    posts = Posts()
+    rt = runtime(answer=MOVE, now_page=now_page(shown_id="first"), post_json=posts)
+    rt.llm = SeqLLM([NO_SEAT])
+    asyncio.run(rt.tick())
+    assert len(_now_gets(rt)) == 1 and posts.calls == []
 
 
 def test_the_real_use_client_has_its_own_short_timeout():

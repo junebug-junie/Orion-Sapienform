@@ -42,3 +42,15 @@ def test_missing_tables_are_named_and_read_as_zero():
     assert rep["experience_use_rate"] == 0.0 and rep["closed_count"] == 0
     assert "missing tables (migration manual_migration_experience_now_v1.sql not applied): experience_shown, " \
            "experience_use" in rep_mod.render(rep)
+
+
+def test_reads_split_closed_with_no_cite_from_never_closed():
+    """#3498: "read and cited nothing" (closed, no use) is not "never closed" (the model never saw the read)."""
+    rep = rep_mod.build_report(kind_counts={"reading_turn": 2}, uses=[], cites_made={},
+                               reads={"reverie": (5, 2, 3)}, lo=LO, hi=HI, registry=load_organs(), missing_tables=[])
+    by = {o["organ"]: o for o in rep["organs"]}
+    assert (by["reverie"]["now_reads"], by["reverie"]["reads_no_cite"], by["reverie"]["reads_unclosed"]) == (5, 2, 3)
+    assert by["prime"]["reads_unclosed"] == 0
+    line = next(ln for ln in rep_mod.render(rep).splitlines() if ln.startswith("reverie"))
+    assert line.split()[1:5] == ["0", "5", "2", "3"]
+    assert "unclosed" in rep_mod.render(rep).splitlines()[1]

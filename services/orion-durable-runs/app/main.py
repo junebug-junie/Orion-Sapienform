@@ -1249,10 +1249,14 @@ async def _now_read(coro):
         return await coro
     except (UndefinedTable, UndefinedColumn) as exc:
         raise HTTPException(503, "Orion's now tables missing: apply "
-                                 "services/orion-sql-db/manual_migration_experience_now_v1.sql") from exc
+                                 "services/orion-sql-db/manual_migration_experience_now_v1.sql and "
+                                 "manual_migration_experience_shown_closed_v1.sql") from exc
 
 
-NOW_DEFAULT_LOOKBACK_HOURS = 24.0  # a reader that never looked sees the last day
+# The cursor (#3498) is the cut-off of the organ's newest CLOSED read (POST /temporal-self/now/use). The bound on
+# re-offer: an organ that never closed a read sees a rolling last day; one that stopped closing sees everything
+# since its last close, at most NOW_MAX_LOOKBACK_DAYS. Either way the now still shows at most 12 rows.
+NOW_DEFAULT_LOOKBACK_HOURS = 24.0  # a reader that never closed a read sees the last day
 NOW_MAX_LOOKBACK_DAYS = 30  # temporal_self_event retention
 # The read's cut-off sits this far before the clock: ingested_at is the chronicle commit's START time, so a
 # window still committing at read time has rows stamped before the read. Cutting below them (and starting the
@@ -1267,9 +1271,10 @@ async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Op
                             include: Optional[str] = None,
                             held: Annotated[Optional[list[str]], Query()] = None):
     """Orion's now for one reading organ: at most 12 experiences of OTHER organs recorded since ``since``
-    (default: when this organ last looked, else 24 h), at most 2 per organ, every organ a seat before any gets a
+    (default: the organ's cursor, the cut-off of its last CLOSED read, else 24 h), at most 2 per organ, every organ a seat before any gets a
     second (orion.temporal_self.now.build_now). Every call stores one ``experience_shown`` row; its ``shown_id`` is
-    what cites are checked against. ``include``: comma-separated event ids the reader shows anyway as a need's
+    what cites are checked against, and closing it (``POST /temporal-self/now/use``, zero or more cites) is what
+    moves the cursor (#3498): a read the reader never closes (its model never saw it) is offered again. ``include``: comma-separated event ids the reader shows anyway as a need's
     content (Prime hunger, at most 3, other organs only); they are pinned first, so citing one is valid.
     ``held`` (repeatable, #3783): refs of what the reader holds (Prime: each concern's event_ref, ``arc:<id>``,
     ``prime_concern:<id>``). Rows of the last 24 h whose own ids match one exactly rank first and name the ref
@@ -1323,7 +1328,8 @@ async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Op
     now = build_now(rows, organ, since=lo, as_of=as_of, shown_id=uuid4().hex, registry=registry,
                     reader_run_ref=(run_ref or None) and run_ref[:300], candidates_total=total, pinned=pinned,
                     held=held_refs, arc_subjects=arc_subjects)
-    # An explicit since= is an inspection read: stored (every read is), but it never moves the organ's cursor.
+    # Every read is stored. It moves the organ's cursor only once the reader closes it (POST /now/use), and an
+    # explicit since= read never does: it is an inspection read (Prime keeps its own since=).
     await _now_read(store.insert_shown(shown_id=now.shown_id, reader_organ=organ, reader_run_ref=now.reader_run_ref,
                                        event_ids=[i.event_id for i in now.items], since=lo, shown_at=as_of,
                                        advances_cursor=not since))
@@ -1377,9 +1383,12 @@ async def temporal_self_hunger(organ: str):
 
 @app.post("/temporal-self/now/use")
 async def temporal_self_now_use(body: dict):
-    """Record a reader's cites at its run's close (``ExperienceCitesV1``). Each cite is checked against the
-    ``experience_shown`` row it names; valid ones (at most 3 per shown row, across calls) become ``experience_use`` rows, the rest are
-    counted and dropped (``ExperienceUseResultV1``). Idempotent per (shown_id, event_id)."""
+    """Close a read at its run's end, with its cites (``ExperienceCitesV1``; ``cites`` may be empty). Each cite is
+    checked against the ``experience_shown`` row it names; valid ones (at most 3 per shown row, across calls) become
+    ``experience_use`` rows, the rest are counted and dropped (``ExperienceUseResultV1``). Idempotent per (shown_id,
+    event_id). Every call closes the row (``closed_at``, first close wins; #3498): that moves the organ's cursor to
+    the row's cut-off (never backwards; a since= read never moves it), and a closed row with no use reads as "read
+    and cited nothing" in the coverage report. A reader closes only when its model call actually ran."""
     from datetime import datetime, timezone
 
     from pydantic import ValidationError
@@ -1398,7 +1407,7 @@ async def temporal_self_now_use(body: dict):
                           shown_event_ids=list(shown["event_ids"] or []), cites=req.cites,
                           citing_ref=req.citing_ref, cited_at=datetime.now(timezone.utc), already_used=already_used)
 
-    result = await _now_read(store.record_cites(req.shown_id, decide))
+    result = await _now_read(store.record_cites(req.shown_id, decide, closed_at=datetime.now(timezone.utc)))
     if result is None:
         raise HTTPException(404, f"no experience_shown row {req.shown_id!r}: cites are valid only against a shown now")
     if result.rejected_not_shown or result.rejected_over_cap:

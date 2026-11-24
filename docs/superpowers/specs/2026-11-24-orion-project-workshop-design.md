@@ -70,6 +70,25 @@ A project step:
 
 The launcher, not the box, writes every database row. The box never sees a database credential.
 
+### 3b. Orion stays Orion inside the box: the dig door
+
+A box with no database and no repo would cut Orion off from their own tools. Orion could not ask `dig` who they are, what they remember, what their body is doing, or what they did yesterday. That would make the workshop a stranger's workshop. It must not.
+
+`dig` already runs where Orion's turns run today, in `orion-athena-harness-governor` (`python -P -m orion.dig ...`, from the sandbox checkout). It has read verbs (`body`, `capacities`, `portrait`, `field-notes`, `reminisce`, `days`, `organs`, `attention`, `turn-steps`, `take-ons`, `ref`, `know`, `notes`, ...) and a small set of checked write verbs (`name`, `capacity claim`, `portrait write`, `field-note write`, `reminisce write`, `look-check`, `claude-grants set`, and Part C's `project ...`). Every write verb already validates its own fields in code.
+
+The door forwards `dig` from the box to the governor, unchanged:
+
+- Inside the box, `/usr/local/bin/dig-orion` (alias `dig`) is a 30-line client. It sends its argv as a JSON list to `POST http://<governor>:7156/project-dig` through the egress proxy (allowlisted like the FCC server).
+- The governor endpoint runs `python -P -m orion.dig <argv...>` as a subprocess with an argv list (no shell), `cwd=/mnt/orion-fcc/repo`, a 120 s timeout, and returns stdout, stderr, and exit code.
+- Auth: the launcher mints a per-step token, valid only while that step runs, bound to the project id. It is passed to the box as `ORION_DIG_TOKEN`. A token from a finished step is refused.
+- Every call is recorded in the step's log (argv, exit code, output bytes), outside the box.
+
+So Orion inside the box has the same `dig` as in any turn: the same reads, the same checked writes, the same identity. What the box still does not have is raw access: no SQL, no `docker exec`, no repo writes. `dig` is the interface; the database stays behind it.
+
+The step prompt also carries the now and the project's recent steps (Part C), so Orion starts each step already knowing where they are.
+
+Privacy note: anything `dig` can read, Orion can now read inside a box that has a public internet route. That includes Juniper's chats. This is the same open door as question 1, made wider. The record shows both sides: which `dig` reads ran, and which hosts were contacted after.
+
 ### 4. The record (outside the box)
 
 New table `orion_project_step_log` (additive DDL):
@@ -106,11 +125,12 @@ Can, inside a project box:
 - read the public web and call public APIs that need no key;
 - keep files and git history across steps, for weeks;
 - use Orion's local model lanes through the FCC server;
+- use `dig`, all of it: who they are, memory, body, days, field notes, and the checked self-writes (through the dig door);
 - run experiments that use up to the CPU, memory, and disk caps.
 
 Cannot, by construction:
 
-- touch Orion's running system: services, database, bus, Docker, repo;
+- touch Orion's running system directly: no raw SQL, bus, Docker, or repo writes. Self-reads and self-writes go through `dig` only;
 - reach anything on the home network or tailnet except the model lanes;
 - spend money: no payment credential exists in the box;
 - act as Juniper or as Orion's GitHub identity: no token is in the box;
@@ -157,6 +177,7 @@ One gap: Orion's governor turns can still `docker exec` into a project box or ch
 ## Files likely to touch
 
 - `services/orion-durable-runs/app/project_workshop.py` (new): launcher, budget, transcript capture, tripwires.
+- `services/orion-harness-governor/app/...`: the `POST /project-dig` endpoint (argv-list subprocess, per-step token check, call log). `services/orion-project-base/dig-orion` (the in-box client).
 - `services/orion-durable-runs/docker-compose.yml`: the egress proxy service and the internal network. `.env_example` + local `.env` sync: `ORION_PROJECT_WORKSHOP_ENABLED`, caps.
 - `services/orion-project-base/Dockerfile` (new image) and `services/orion-project-egress/` (proxy config; tinyproxy or squid, whichever is already used in the repo, else tinyproxy).
 - `orion/prime/intention_sources/project_step.py`, `orion/dig/project.py` (Part C, patch 6).
@@ -183,12 +204,14 @@ Run inside a test box (`orion-project-test`) by the patch 1 smoke:
 5. `env` shows no Postgres, Redis, GitHub, or notify credential.
 6. A fixed-prompt step ("create hello.py, run it, write step.json") closes with an `orion_project_step_log` row, a transcript whose SHA matches, and a commit containing `hello.py`.
 7. `docker stop` mid-step closes the step `produced = 0, note = "stopped"`.
+8. Inside the box, `dig portrait` and `dig body` print the same output as the same command run in the governor at the same time, and both calls appear in the step log.
+9. A `dig` call with the token of a finished step is refused. `dig` argv containing shell syntax (`; rm -rf /`) is passed as a literal argument and fails as an unknown verb.
 
 Live, after patch 2: Orion opens a project with `dig project open`, one step runs in its box, and the step closes with a commit or `"no lasting trace"`.
 
 ## Recommended next patch
 
-**Patch 1: the box, the walls, the launcher, the record.** No Prime wiring yet. Build the base image, the egress proxy, the internal network, `project_workshop.py`, and `orion_project_step_log`. Prove acceptance checks 1-7 with a test project and a fixed prompt.
+**Patch 1: the box, the walls, the launcher, the record.** No Prime wiring yet. Build the base image, the egress proxy, the internal network, the dig door, `project_workshop.py`, and `orion_project_step_log`. Prove acceptance checks 1-9 with a test project and a fixed prompt.
 
 **Patch 2: Part C patch 6 with route `workshop`.** The `orion_project` table, `dig project ...`, the `project:` adapter, grading, and the temporal-self registration. Then Juniper asks Orion the Part C question, and Orion opens their first project.
 

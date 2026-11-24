@@ -215,16 +215,28 @@ WHERE source_kind = 'faculty_status_changed' AND source_table = 'self_monitor'
     # its row is written 5 minutes later, when the gap is noticed, or later still by its recovery. A
     # read by ended_at alone that landed in between stored the row late and never folded it. The
     # ended_at bound keeps the read on the index (a row is written within a week of its end).
-    # player_stated (game company patch 1, kind human_play) needs manual_migration_retro_watch_v1.sql.
+    # player_stated (game company patch 1, kind human_play) needs manual_migration_retro_watch_v1.sql;
+    # looks (patch 2: notes Orion stored while watching the sitting) needs manual_migration_retro_watch_v2.sql.
     SourceQuery("retro_play", """
 SELECT session_id, retro_session_id, lineage_id, game_id, game_title, kind, started_at, ended_at, summary,
   control_basis, human_may_be_in_control, played_together, human_share, decisions, predictions_met, predictions_unknown, rooms_new, deaths, memory_card_id,
-  duration_sec, player_stated, created_at
+  duration_sec, player_stated, looks, created_at
 FROM retro_play_sessions
 WHERE ended_at >= %(lo)s::timestamptz - interval '8 days' AND ended_at < %(hi)s
   AND greatest(ended_at, coalesce(created_at, ended_at)) >= %(lo)s
   AND greatest(ended_at, coalesce(created_at, ended_at)) < %(hi)s
 """, optional_table="retro_play_sessions"),
+    # Game company patch 3 (spec rev 4 section 8): a note Orion stored while a person played becomes an
+    # event only once a line turn checked it against frames of the same moment and it held. The chronicle
+    # never rewrites a stored event, so 'unchecked' and 'contradicted' looks are never read. Keyed and
+    # available at settled_at (the adapter's occurrence time); the settled_at columns need
+    # manual_migration_retro_lines_v1.sql (REQUIRED-BY this service).
+    SourceQuery("retro_look", """
+SELECT look_id, sitting_id, game_id, looked_at, note, verdict, outcome, settled_at, settled_by_line
+FROM retro_watch_look
+WHERE verdict = 'checked_holds' AND outcome = 'stored' AND settled_at IS NOT NULL
+  AND settled_at >= %(lo)s AND settled_at < %(hi)s
+""", optional_table="retro_watch_look"),
     # Episodes from the street (PR #2763 item 1), three reads of one kind; the adapter
     # (sources.street_event) decides every rule again, these only narrow the rows.
     # 1. Published clean motion stories, with the spot-check verdict counts of the newest rules version
@@ -313,6 +325,12 @@ FROM prediction_effect_estimate
 WHERE claim_kind = 'experimental_effect' AND details->>'estimator' = 'family_c_pooled_run'
   AND created_at >= %(lo)s AND created_at < %(hi)s
 """, optional_table="prediction_effect_estimate"),
+    # One night's day dream (day-dream spec Patch 2): one dream_day row a Denver day, available at created_at.
+    SourceQuery("dream_day", """
+SELECT day, run_id, produced, note, memories_written, memory_ids, kept, dropped, new, items_dropped, refs_dropped,
+  day_text, created_at
+FROM dream_day WHERE created_at >= %(lo)s AND created_at < %(hi)s
+""", optional_table="dream_day"),
     # A Prime thought: a closed prime/infer act, available at closed_at. Most close in seconds; one
     # closed 2.3 days late (live, to 11-15), so opened_at is widened by three days.
     SourceQuery("prime_thought", """

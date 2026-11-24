@@ -95,6 +95,12 @@ TemporalSourceKind = Literal[
     "arousal_transition",
     # one finished Retro (game) session, orion-hub's retro_play_sessions (Orion plays Zelda, F)
     "retro_play",
+    # one note Orion stored while a person played (orion-hub retro_watch_look) that a line turn checked
+    # against frames of the same moment and found to hold (game company patch 3, spec rev 4 section 8).
+    # Opens/refreshes the sitting's play arc; the human_play retro_play row closes it. No salience.
+    # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
+    # orion-prediction) before orion-durable-runs writes the first retro_look event.
+    "retro_look",
     # one notable outside (walkway / doorbell) event: story, ring, or gated handoff (PR #2763 item 1)
     "street_event",
     # the physiology node's binding-constraint rows (felt state: onset, change, keepalive, release)
@@ -117,6 +123,11 @@ TemporalSourceKind = Literal[
     # family_c_pooled_run): "I held my town sessions to see what they cost: GPU3 +x W, tier-1 +y s"
     # (Family C Experiment 1, docs/superpowers/specs/2026-11-16-family-c-first-experiment-economy-native.md)
     "experiment_result",
+    # one night's day dream (orion-durable-runs dream_day, the day-dream spec Patch 2): the paragraph of what the
+    # day was, and the ids of the memories Orion kept of it. Experience only (no arc folds it).
+    # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
+    # orion-prediction) before orion-durable-runs writes the first dream_day row (~01:00 Denver).
+    "dream_day",
 ]
 
 ArcKind = Literal[

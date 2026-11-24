@@ -40,6 +40,10 @@ MIGRATIONS = (
     REPO / "services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql",
     # Game company patch 1: the retro_play source query selects retro_play_sessions.player_stated.
     REPO / "services/orion-sql-db/manual_migration_retro_watch_v1.sql",
+    # Game company patch 2: and retro_play_sessions.looks (notes Orion stored while watching).
+    REPO / "services/orion-sql-db/manual_migration_retro_watch_v2.sql",
+    # Game company patch 3: the retro_look source reads retro_watch_look.settled_at (and settled_by_line).
+    REPO / "services/orion-sql-db/manual_migration_retro_lines_v1.sql",
     # Episodes from the street (PR #2763 item 1): stories (+ cant_tell) and the StreetEventV1 outbox.
     REPO / "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql",
     REPO / "services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql",

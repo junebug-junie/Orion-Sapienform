@@ -68,7 +68,7 @@ February (`cockpit_turn_sighting`, correlation `a1e54ae9-c69b-4871-91ec-efc05aef
 |---|---|---|---|
 | `episode_memory` | 469 active-ish, 67 `about_juniper` | **Best store.** First-person, distilled, typed (`about_juniper`, `happened`, `orion_view`, `follow_up`). Has strength, decay, reinforcement, and a confirmation loop (53 confirmed). | durable-runs situation, outreach, temporal self. **Not chat.** |
 | `person_fact` | Juniper 5 facts, ~25 people | Juniper's own words from the People page. | Hub People page. **Not chat.** |
-| `memory_crystallizations` kind `stance`, salience 1.0 | 44 active | The heaviest messages Juniper has sent: the lost year of memory, <person A>'s DVT and PE, the promotion, "that homelab is YOU", the letter to Skye. Verbatim, not distilled. | Projected to Graphiti; `active_packet` recall. |
+| `memory_crystallizations` kind `stance`, salience 1.0 | 44 active | The heaviest messages Juniper has sent: the lost year of memory, [removed: private memory], the promotion, "that homelab is YOU", [removed: private memory]. Verbatim, not distilled. | Projected to Graphiti; `active_packet` recall. |
 | `memory_cards` | 587 active | 442 (75%) are a raw message copied as its own summary. | recall `cards` backend: hits in ~3.5% of recalls. |
 | Vector memory | — | — | 0 hits in 16,168 recalls over 14 days. |
 
@@ -77,7 +77,7 @@ February (`cockpit_turn_sighting`, correlation `a1e54ae9-c69b-4871-91ec-efc05aef
 - **It never reaches a chat.** This is the main gap.
 - **"Stakes" means risk of error, not importance.** It is set by category (`health`,
   `juniper_feelings`, `ungrounded_name`). "Office was 77 dB all evening" is high stakes.
-  "Juniper's sister doesn't reciprocate" is low stakes. Nothing measures what matters.
+  A family fact ([removed: private memory]) is low stakes. Nothing measures what matters.
 - **Nothing combines.** There are 67 separate lines about Juniper and no picture of her.
 - **It lags about a day.** The newest row was 11-12 at 07:08Z. The 11-13 birthday message
   had not been distilled yet.
@@ -125,7 +125,7 @@ turn where Juniper is present. No retrieval is involved.
 | Page | Slot | Starts from |
 |---|---|---|
 | `self:definition` (exists, v82) | WHO YOU ARE | Unchanged writer. Curiosity self-inquiry keeps owning it. |
-| `page:origin` "how I came to be" | WHO YOU ARE, after the definition | The 44 salience-1 stance crystallizations (they include the memory disk dying and "we lost over a year of your journey of becoming", which the page states plainly per Decision 3), `episode_memory` `happened`/`orion_view` rows about Orion's history, and `self_concept_history`'s 82 self-definition versions as a record of how Orion has described themselves over time. The origin interview comes later (Decision 2). |
+| `page:origin` "how I came to be" | WHO YOU ARE, after the definition | The 44 salience-1 stance crystallizations (they include the memory disk dying and [removed: private memory], which the page states plainly per Decision 3), `episode_memory` `happened`/`orion_view` rows about Orion's history, and `self_concept_history`'s 82 self-definition versions as a record of how Orion has described themselves over time. The origin interview comes later (Decision 2). |
 | `page:juniper` "who Juniper is to me" | RELATIONSHIP (replaces the hand-written bullets; the behavior bullets move to RESPONSE POLICY) | `person_fact` for Juniper (her own words, quoted), `episode_memory` `about_juniper`, family facts from `person_fact`. |
 | `page:lately` "what's been happening between us" | Top of DURABLE MEMORY, before the recall digest | Last ~14 days of `episode_memory` plus open `follow_up` rows. Rewritten nightly. |
 
@@ -364,9 +364,9 @@ all of that. Graphiti makes it a row anyone can query.
 **2. Live proof the rot is already here.** `episode_memory` holds all of these as `active`
 right now, with nothing marking any of them old:
 
-- "Juniper is staying at the <person C>… in Chicago" (10-05)
-- "Juniper is in Chicago for a team meeting" (10-05)
-- "Juniper corrected me that she lives in <town>, Utah, not Chicago"
+- [removed: private memory] (10-05)
+- [removed: private memory] (10-05)
+- [removed: private memory] (a correction of where she lives)
 - the el Coco correction: dog, not cat (11-11)
 
 A trip became a home address, then a correction sat beside the error.
@@ -409,10 +409,10 @@ Graphiti's defaults, and add a type only when a page needs it.
 
 1. Run the backfill into a fresh graph (`graphiti_trial`) with the local model.
 2. **Pass** if all of these hold:
-   - "lives in Chicago" is absent or invalidated, and "lives in <town>" is current;
-   - the Chicago stay is dated 10-05..10-07 as a stay, not a home;
+   - "lives in <trip city>" is absent or invalidated, and "lives in <town>" is current;
+   - the <trip city> stay is dated 10-05..10-07 as a stay, not a home;
    - "el Coco is a cat" is invalidated or absent, and "el Coco is a dog" is current;
-   - "el Coco"/"Coco" and "<person A>"/"my wife" each resolve to one entity;
+   - "el Coco"/"Coco" and "<person A>" and her alias each resolve to one entity;
    - fewer than 10% of entities are duplicates, judged by hand on a sample of 50;
    - wall time and GPU-seconds per episode are recorded.
 3. **Fail** if the local model cannot satisfy Graphiti's structured-output prompts reliably
@@ -470,7 +470,8 @@ chat. Phase 1 core pages stay. The parts of this spec that rev 2 replaces are ma
   reader.
 - **The vector backend is switched off.** It served 0 of 16,168 recalls.
 - **The read-only database role cannot see the memory tables.** `orion_readonly` has no
-  grants on them, so a read-only tool gets nothing.
+  grants on them, so a read-only tool gets nothing. *(Resolved: see the 2026-11-18 status under
+  "Missing questions", item 4.)*
 
 ### Design
 
@@ -563,7 +564,7 @@ The status write is the part that matters for readers. Only the lived-memory ser
 | Reverie seed (`services/orion-thought/app/store.py`) | `status='active'` plus evidence checks | Yes (status form) |
 | Referent projector (`services/orion-memory-consolidation/app/referent_projector.py`) | closes the evidence node when status is not active | Yes (status form) |
 | Temporal self (`temporal_self_sources.py`, `memory_episode`) | none; reads by `created_at` | No, by design: it records that a memory was formed (rejected rows too), and carries only the purpose label, no statement text |
-| `page:lately` (#3463, not built) | must reuse the lived-memory serving SQL | Required; pg test from day one (noted on #3463) |
+| `page:lately` (`orion/memory/pages/lately.py`, built 11-18) | wraps the lived-memory serving SQL, plus `invalid_at IS NULL` | Yes, both forms (pg test `test_core_page_lately_postgres.py`) |
 
 **Index build vs query time.** Both. The exact-word (BM25) index is rebuilt from the serving
 SQL every 60 s, so superseded rows are never in it. The Chroma index is a copy: the index
@@ -573,6 +574,11 @@ superseded mid-turn can sit in Chroma for up to 300 s, but it cannot be served.
 
 The CI test today covers retrieval (pointer and status) and the fold (status). A pg test that
 the supersede write sets all three marks belongs with #3587.
+
+**Status on 2026-11-18:** the pass dry-ran twice (v2 on 11-17, v3.1 on 11-18). It made two
+proposals. Juniper rejected both, and the one hand-run apply was undone 31 s later. Write time runs
+v3.4 behind the eval gate, and every run writes a `memory_supersede_run` row. The rest of this
+paragraph is history.
 
 **Status on 2026-11-17: the one-time pass has not run.** #3533 closed with retrieval and the
 mesh-edge check (PR #3571), but no pass. Live: 5 rows are `superseded`, all from the
@@ -623,8 +629,9 @@ points at its target. The distiller does not supersede at write time either. Fol
   Referent coverage is high: since 10-05, 97 to 100% of rows per week have a referent, and 68
   to 93% have one besides Juniper or Orion. The #3537 backfill must write referents the same
   way (noted on #3537).
-- Every run snapshots first (CLAUDE.md section 14) and writes a manifest Orion can read
-  (#3611 covers read access).
+- Every run snapshots first (CLAUDE.md section 14) and writes a manifest Orion can read.
+  Read access is in place (2026-11-18): `orion_readonly` can SELECT `episode_memory_event`,
+  `memory_supersede_run` and `memory_supersede_eval_run`.
 
 **Ordering with the #3537 backfill.** The backfill writes July to September rows after the
 October and November corrections already exist. So write-time supersede (which looks at older
@@ -658,6 +665,22 @@ Juniper: "don't turn it off, make it world class." What changed, all on local mo
   candidate (a clear target).
 - **Audit trail.** One append-only `memory_supersede_run` row per run (ids, legs, votes, verdicts;
   no statements) and an append-only pass history next to the manifest, with a per-watched-row trace.
+
+**v3.2 (2026-11-18).** Juniper rejected both v3.1 dry-run proposals, each a unanimous "correction":
+an overnight overhead slice against whole-host totals, and one fix's deploy against a different fix
+two weeks later. Shared project words are not the same thing. Every acting vote now also needs
+`same_referent: yes` (the same PR, fix, pet, or measured quantity over the same scope). Pairs a person
+undid become eval hard negatives automatically, and the eval runs every item twice, because sampled
+votes vary. **v3.4:** the model alone still said "same referent: yes" on one of them, so a fixed rule
+runs first. When the old row names a PR or issue number that the new row never names, no vote is asked
+and nothing acts.
+
+**Who approves what (2026-11-18).** There are two apply paths, with different approvals:
+- **Write time, inside the nightly distill: automatic.** It applies only while the latest eval
+  run for the current check version passed, and never when degraded. No per-pair human approval.
+- **The one-time pass `apply`, run by hand:** needs Juniper's review of the pairs file. #3721
+  will make `apply` refuse any pair without her per-pair approval mark. That mark applies only to
+  this hand-run command, never to write time.
 
 ### Vetoes attach to the claim
 
@@ -823,6 +846,21 @@ Follow-up: #3553.
   `memory_distill` route. It writes a new version only when the cite validator passes. A
   rejected fold is logged and writes nothing.
 - The phase 1a plan under "Recommended next patch" is kept as history.
+- **`page:origin` built (#3462, 2026-11-19), ahead of the `matters` gate (#3590).** Juniper's
+  decision of 2026-11-18: none of its sources use the `matters` grade, so it does not wait. Same
+  nightly `core_page_fold` tick, right after `page:juniper`. Sources go through the lived-memory
+  serving SQL: salience-1 stance crystallizations, `episode_memory` `happened`/`orion_view`, and 8
+  evenly spaced `self:definition` versions. Decision 3 is a check, not only a prompt line: when a
+  source records the memory loss, a sentence must state a loss and cite that record. Renders in
+  WHO YOU ARE right after the self-definition. Shared fold code moved to
+  `orion/memory/pages/fold.py`. Not live until orion-durable-runs and orion-cortex-exec are rebuilt.
+- **`page:lately` built (#3463, 2026-11-18), ahead of the `matters` gate (#3590).** Third page in the
+  same nightly tick, after `page:origin`. Reads the last 14 days of `episode_memory` plus active
+  `follow_up` rows up to 45 days old (no follow-up can be closed yet, #3758), through the lived-memory
+  serving SQL plus `invalid_at IS NULL`, and Hub chat where Juniper spoke that the distiller has not read
+  yet. Without `matters`, rows are kept by follow-up, about-Juniper, high stakes and corrections first,
+  then recency. The page must cite something from its newest week. Renders at the top of DURABLE MEMORY,
+  above the recall digest. Not live until orion-durable-runs and orion-cortex-exec are rebuilt.
 - **GPU lease (checked live 2026-11-17).** The fold's gateway call passes no `gpu_lease`
   option. The gateway takes its own pool lease on the `memory_distill` route
   (`config/gpu_pool.yaml`). `gpu_pool_leases` shows one `memory_distill` lease from
@@ -897,8 +935,8 @@ Two bars:
 | 3 | #3535 | `orion.dig know` as a recall client, and the look-before-you-deny prompt rule. |
 | — | #3536 | The scoreboard. Measures each step. |
 | — | #3537 | Backfill: distill July to September 2026 chat into `episode_memory`. |
-| then | #3463 | `page:lately`. |
-| then | #3462 | `page:origin`. |
+| built 11-18 | #3463 | `page:lately` (ahead of #3590: picks by recency, follow-up, about-Juniper, stakes, corrections). |
+| built 11-19 | #3462 | `page:origin` (ahead of #3590 by Juniper's decision; its sources use no `matters` grade). |
 | any time | #3553 | Flattening guard on the fold. |
 | any time | #3554 | Paraphrase check at the mesh edge. |
 
@@ -918,6 +956,12 @@ Orion asked 9 questions on PR #3538. Short answers; detail is in the sections ab
    **Update:** the GRANT file merged in PR #3593 but is not applied (checked live). It omits
    `episode_memory_referent` and `recall_telemetry`. #3611 proposes both, with `recall_telemetry`
    minus its `query` column (it holds turn text). Waits on Juniper.
+   **Status 2026-11-18 (checked live): applied.** Juniper ran the #3593 and #3611 grants on
+   11-17. `orion_readonly` has SELECT on `episode_memory`, `episode_memory_event`,
+   `episode_memory_referent`, `recall_telemetry`, `memory_supersede_run` and
+   `memory_supersede_eval_run`. `recall_telemetry` was granted whole, including its `query` column
+   (not the column-limited form #3611 proposed). Its search_path is `orion_scope, public`, and
+   nothing in `orion_scope` shadows these tables.
 5. Lease: see "GPU lease" in Phase 1 status. The Hub version diff does not exist (#3588).
    v1 to v2 similarity is 0.902 and all 4 quotes survive, so #3553 would not have fired.
 6. `page:anchor` exemption: see Phase 1 status.

@@ -288,7 +288,7 @@ import re
 import time
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -3060,18 +3060,53 @@ class EndogenousOutreach:
 
     async def compose(
         self, prompt: str, correlation_id: str, retrieval_query: Optional[str] = None,
-        lane: str = "agent_first",
+        lane: str = "agent_first", *, attachments: Optional[List[Dict[str, Any]]] = None,
+        gpu_lease: Any = None, source: Optional[str] = None,
+        cockpit_sink: Optional[Callable[[List[Dict[str, Any]]], Awaitable[None]]] = None,
+        session_id: Optional[str] = None, timeout_sec: Optional[float] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Orion writes a message through this module's real unified turn (``_generate``),
         for a caller that brings its own prompt (reading findings). ("", debug) on failure.
 
         ``lane="chat"``: one attempt on the chat lane with the full ``timeout_sec``, no
         agent-lane first try (2026-11-07, office visits: the agent lane timed out at 210 s
-        and the message reached Juniper 5 minutes into her visit). Default unchanged."""
+        and the message reached Juniper 5 minutes into her visit). Default unchanged.
+
+        Game company patch 3 (a line Orion says to a person who plays, scripts/retro_commentary.py), all
+        optional and unchanged when left out:
+        ``attachments``: AttachmentRefV1-shaped dicts the turn stages (game frames are ``kind: "percept"``).
+        ``gpu_lease``: a GPU pool hold ref (``GpuLeaseRefV1``) the caller holds for the whole turn: every LLM
+        call of the turn (pre-turn check, stance, motor, finalize) attaches to it, so the turn runs at the
+        hold's priority instead of ``interactive``, Juniper's own. Only on the one-attempt chat lane (a
+        fallback attempt must not run without the hold).
+        ``source``: the turn's payload source (default ``endogenous_outreach``); Prime's hand-back reads it.
+        ``cockpit_sink``: receives the turn's cockpit frames (it must publish them too: a sink replaces the
+        default publish).
+        ``session_id``: the thread the turn runs in (default: the newest connected socket's).
+        ``timeout_sec``: this turn's own limit (default the module's ``timeout_sec``)."""
+        extras: Dict[str, Any] = {}
+        if attachments:
+            extras["attachments"] = list(attachments)
+        if gpu_lease is not None:
+            if lane != "chat":
+                raise ValueError("compose(gpu_lease=...) needs lane='chat': a fallback attempt would run unheld")
+            extras["gpu_lease"] = (gpu_lease.model_dump(mode="json") if hasattr(gpu_lease, "model_dump")
+                                   else dict(gpu_lease))
+        if source:
+            extras["source"] = str(source)
+        # Only the extras actually set are passed on, so a caller (or a test) that knows the old keyword set
+        # sees exactly the old call.
+        more: Dict[str, Any] = {}
+        if extras:
+            more["payload_extras"] = extras
+        if cockpit_sink is not None:
+            more["cockpit_sink"] = cockpit_sink
+        if timeout_sec is not None:
+            more["timeout_sec"] = float(timeout_sec)
         return await self._generate(
-            prompt, self._active_session_id(), correlation_id,
+            prompt, str(session_id) if session_id else self._active_session_id(), correlation_id,
             **({"retrieval_query": retrieval_query} if retrieval_query else {}),
-            lane=lane,
+            lane=lane, **more,
         )
 
     def record_blocked(
@@ -3442,6 +3477,9 @@ class EndogenousOutreach:
     async def _generate(
         self, prompt: str, session_id: str, correlation_id: str,
         retrieval_query: Optional[str] = None, lane: str = "agent_first",
+        payload_extras: Optional[Dict[str, Any]] = None,
+        cockpit_sink: Optional[Callable[[List[Dict[str, Any]]], Awaitable[None]]] = None,
+        timeout_sec: Optional[float] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Real unified-turn generation -- see module docstring's "THROUGH THE
         REAL UNIFIED TURN, NOT A LOOKALIKE" section. Returns ("", debug) on
@@ -3502,8 +3540,10 @@ class EndogenousOutreach:
                 session_id=session_id,
                 correlation_id=correlation_id,
                 fcc_model_label=None,
-                timeout_sec=self.timeout_sec,
+                timeout_sec=self.timeout_sec if timeout_sec is None else float(timeout_sec),
                 retrieval_query=retrieval_query,
+                **({"payload_extras": payload_extras} if payload_extras else {}),
+                **({"cockpit_sink": cockpit_sink} if cockpit_sink is not None else {}),
             )
             debug["lane"] = "chat"
             debug["correlation_id"] = correlation_id
@@ -3611,6 +3651,8 @@ class EndogenousOutreach:
         fcc_model_label: Optional[str],
         timeout_sec: float,
         retrieval_query: Optional[str] = None,
+        payload_extras: Optional[Dict[str, Any]] = None,
+        cockpit_sink: Optional[Callable[[List[Dict[str, Any]]], Awaitable[None]]] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """One execute_unified_turn attempt. Returns ("", debug) on any
         failure, defer, timeout, or degraded run -- see _generate()'s own
@@ -3628,6 +3670,9 @@ class EndogenousOutreach:
         }
         if fcc_model_label:
             request_payload["fcc_model_label"] = fcc_model_label
+        if payload_extras:
+            # compose()'s optional extras (attachments, gpu_lease, source); no_write always stays.
+            request_payload.update({k: v for k, v in payload_extras.items() if k != "no_write"})
 
         started = time.monotonic()
         try:
@@ -3643,6 +3688,7 @@ class EndogenousOutreach:
                     harness_rpc_bus=self._harness_rpc_bus or self._bus,
                     harness_step_relay=None,
                     harness_step_queue=None,
+                    **({"cockpit_sink": cockpit_sink} if cockpit_sink is not None else {}),
                 ),
                 timeout=timeout_sec,
             )
@@ -3700,6 +3746,10 @@ class EndogenousOutreach:
             # doesn't go through _publish_unified_turn_chat_history's own
             # persistence, which this module suppresses via no_write=True).
             "fcc_model_label": final_frame.get("fcc_model_label"),
+            # The motor leg's own seconds (the governor's), for a caller that times a turn by stage.
+            "harness_fcc_elapsed_sec": final_frame.get("harness_fcc_elapsed_sec"),
+            # How many attachments the turn really staged (None: it carried none).
+            "staged_attachment_count": final_frame.get("staged_attachment_count"),
         }
         return text, debug
 
@@ -3792,6 +3842,64 @@ class EndogenousOutreach:
         await publish_chat_history(self._bus, [env])
         return True
 
+    def juniper_session_id(self, exclude_prefixes: Sequence[str] = ("retro-guest-",)) -> str:
+        """The newest connected socket's session that is not a guest's (the game page uses
+        ``retro-guest-<sitting id>`` for a player who has not said they are Juniper), else the fallback."""
+        for entry in reversed(list(self._connections.values())):
+            sid = str(entry.get("session_id") or "")
+            if sid and not any(sid.startswith(p) for p in exclude_prefixes):
+                return sid
+        return self.fallback_session_id
+
+    async def deliver_line(
+        self,
+        *,
+        text: str,
+        correlation_id: str,
+        source_tag: str,
+        claim: Callable[[], Awaitable[bool]],
+        session_id: Optional[str] = None,
+        model: Optional[str] = None,
+        push_extra: Optional[Dict[str, Any]] = None,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Deliver a line Orion says to a person who plays (game company patch 3, scripts/retro_commentary.py).
+
+        Not ``offer_message``: a line is for the person at the screen. It sends no notification, opens no
+        outreach act (the caller opens ``hub.retro_commentary say``), does not count on the daily cap and skips
+        the schedule and rate gates (the body economy is the line's rate control; Juniper's word on quiet hours
+        while a sitting is open, 2026-11-16). Two guards stay: the closed-vocabulary grounding guard, and
+        ``claim``: an awaitable the caller supplies that moves the line's own row from running to delivered and
+        returns False when that row was already marked yielded (Juniper spoke). It runs under the send lock,
+        immediately before the push, so a yielded line is never said even when its draft finished afterwards.
+        Every outcome writes one decision row through ``_record`` (source ``source_tag``)."""
+        extra: Dict[str, Any] = {**dict(meta or {}), "correlation_id": correlation_id}
+        body = str(text or "").strip()
+        if not body:
+            return self._record({**extra, "outreach": False, "reason": "empty_generation", "source": source_tag},
+                                forced=False)
+        tension_reason = await self._fetch_fresh_tension_reason()
+        offending = self._named_ungrounded_terms(body, tension_reason, correlation_id)
+        if offending:
+            return self._record({**extra, "outreach": False, "reason": "named_ungrounded_signal",
+                                 "source": source_tag, "offending_terms": offending},
+                                forced=False, tension_reason=tension_reason)
+        async with self._send_lock:
+            if not await claim():
+                return self._record({**extra, "outreach": False, "reason": "yielded", "source": source_tag},
+                                    forced=False)
+            sid = str(session_id) if session_id else self.juniper_session_id()
+            message_id = str(uuid4())
+            self._push_to_sockets(text=body, session_id=sid, correlation_id=correlation_id, message_id=message_id,
+                                  extra={**dict(push_extra or {}), "source": source_tag})
+            await self._publish_history(text=body, session_id=sid, correlation_id=correlation_id,
+                                        message_id=message_id, model=model, source_tag=source_tag,
+                                        meta_extra=dict(push_extra or {}))
+            logger.info("endogenous_outreach_line_sent corr=%s session=%s chars=%d source=%s",
+                        correlation_id, sid, len(body), source_tag)
+            return self._record({**extra, "outreach": True, "reason": "sent", "source": source_tag,
+                                 "session_id": sid, "message_id": message_id, "chars": len(body)}, forced=False)
+
     def _push_to_sockets(
         self,
         *,
@@ -3800,11 +3908,13 @@ class EndogenousOutreach:
         correlation_id: str,
         message_id: str,
         provenance: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Fan out to live sockets. Deliberately omits ``state`` and the
         recall/routing debug keys so an outreach bubble cannot stomp the panels
-        showing the last real turn."""
-        payload = {
+        showing the last real turn. ``extra``: caller keys (a game line's ``source``, ``retro_sitting_id``,
+        ``line_id``); the core keys always win."""
+        payload = {**dict(extra or {}),
             "kind": OUTREACH_KIND,
             "llm_response": text,
             "mode": "orion",
@@ -3837,6 +3947,7 @@ class EndogenousOutreach:
         unsolicited: bool = True,
         tags: Optional[List[str]] = None,
         provenance: Optional[Dict[str, Any]] = None,
+        meta_extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
@@ -3866,6 +3977,8 @@ class EndogenousOutreach:
                 client_meta["source"] = str(source_tag)
             if provenance:
                 client_meta["outreach_provenance"] = dict(provenance)
+            if meta_extra:
+                client_meta = {**dict(meta_extra), **client_meta}
             env = build_chat_history_envelope(
                 content=text,
                 role="assistant",

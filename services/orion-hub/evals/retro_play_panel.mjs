@@ -15,7 +15,7 @@ try{
   const assets=[];page.on('response',r=>{if(r.url().includes('/static/js/'))assets.push([r.url(),r.status()]);});
   await page.goto(url+'/retro');
   // Rendered template + linked asset.
-  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=18') && s===200),JSON.stringify(assets));
+  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=21') && s===200),JSON.stringify(assets));
   // Leisure is visible live on open, by watching only.
   await page.waitForSelector('#play:not([hidden])',{timeout:8000});
   await page.waitForFunction(()=>document.querySelector('#leisure').textContent.includes('playing alone'),{timeout:8000});
@@ -171,6 +171,136 @@ try{
   assert.equal(await page.evaluate(()=>document.activeElement.id),'screen','the game lost the keyboard after the answer');
   await new Promise(r=>setTimeout(r,5500));                         // one more poll: asked once, not again
   assert.equal(await page.$eval('#whoPlays',e=>e.hidden),true);
+  // Orion's look (game company patch 2): the page shows the server's own reason, never its own words.
+  // This harness has no database, so no game has a calibrated floor: the page must say so, not "watching".
+  await page.waitForFunction(()=>!document.querySelector('#watch').hidden,{timeout:9000});
+  const watchText=await page.$eval('#watchText',e=>e.textContent);
+  assert(watchText.startsWith('No looks for this game yet'),'watch line: '+watchText);
+  assert.equal(await page.$eval('#watchSwitch',e=>e.value),'on',"Juniper's switch starts on (watch and talk)");
+  // Three positions (patch 3): Off / Watch quietly / Watch and talk map to off / quiet / on.
+  assert.deepEqual(await page.$$eval('#watchSwitch option',o=>o.map(x=>[x.value,x.textContent])),
+    [['off','Off'],['quiet','Watch quietly'],['on','Watch and talk']]);
+  const watchPost=page.waitForRequest(r=>r.url().endsWith('/api/retro/sitting/watch') && r.method()==='POST',{timeout:3000});
+  await page.select('#watchSwitch','quiet');
+  assert.deepEqual(JSON.parse((await watchPost).postData()),{mode:'quiet'});
+  await page.waitForFunction(()=>!document.querySelector('#watchSwitch').disabled,{timeout:3000});
+  const watchAfter=await page.$eval('#watchSwitch',e=>e.value);   // stored, or put back with the server's reason
+  assert(['quiet','on'].includes(watchAfter),watchAfter);
+  await page.click('#screen');
+  // --- The chat box (game company patch 3) ---------------------------------------------------------
+  const chatFix=async()=>(await fetch(url+'/__fixture/chat')).json();
+  const sittingId=(await sittingNow()).sitting_id;
+  for(let i=0;i<50 && (await chatFix()).sockets<1;i++)await new Promise(r=>setTimeout(r,100));
+  assert.equal((await chatFix()).sockets,1,'the page never opened the Hub chat socket');
+  // Fullscreen first: the chat box lives inside #stage, so it must work there.
+  await page.click('#fullscreen');
+  await page.waitForFunction(()=>document.fullscreenElement?.id==='stage',{timeout:3000});
+  await page.waitForFunction(()=>document.activeElement?.id==='screen',{timeout:3000});
+  for(const id of ['chatToggle','chatPanel','chatStrip','chatInput'])
+    assert.equal(await page.$eval('#stage',(s,id)=>s.contains(document.getElementById(id)),id),true,id+' is outside #stage');
+  // A held game button, then T: the panel opens, one neutral input releases the button, and with no
+  // controller connected the game pauses (a keyboard player cannot type and play at once).
+  const inputs=l=>l.retro.filter(r=>r.op==='input');
+  await page.keyboard.down('ArrowRight');
+  for(let i=0;i<30 && !inputs(await fixture()).some(r=>r.mask===128);i++)await new Promise(r=>setTimeout(r,50));
+  assert(inputs(await fixture()).some(r=>r.mask===128),'the held button never reached the game');
+  log=await fixture();const opsBefore=log.retro.length;
+  await page.keyboard.press('KeyT');
+  await page.waitForFunction(()=>!document.querySelector('#chatPanel').hidden && document.activeElement?.id==='chatInput',{timeout:3000});
+  assert.equal(await page.$eval('#chatInput',e=>e.value),'','the T that opened the chat was typed into it');
+  await page.keyboard.up('ArrowRight');
+  for(let i=0;i<30;i++){log=await fixture();if(log.retro.slice(opsBefore).some(r=>r.op==='pause'))break;await new Promise(r=>setTimeout(r,100));}
+  const afterOpen=log.retro.slice(opsBefore);
+  assert(afterOpen.some(r=>r.op==='pause'),'opening the chat with no controller did not pause the game: '+JSON.stringify(afterOpen));
+  // The page repeats the held state every 50 ms, so one repeat of the held button can land between the snapshot
+  // and the key press. What must hold: a neutral input is sent, and nothing held is sent after it.
+  const firstNeutral=afterOpen.findIndex(r=>r.op==='input' && r.mask===0);
+  assert(firstNeutral>=0,'opening the chat sent no neutral input: '+JSON.stringify(afterOpen));
+  assert(!afterOpen.slice(firstNeutral).some(r=>r.op==='input' && r.mask!==0),
+    'a held button was sent after the chat opened: '+JSON.stringify(afterOpen));
+  assert.equal(await page.evaluate(()=>document.fullscreenElement?.id),'stage','opening the chat left fullscreen');
+  // Typing never moves the character: game keys typed into the input change no button mask.
+  await page.type('#chatInput','zx as qw ');
+  for(const k of ['ArrowLeft','ArrowUp','ArrowRight','ShiftLeft','KeyT'])await page.keyboard.press(k);
+  assert.equal(await page.$eval('#chatPanel',e=>e.hidden),false,'T typed in the chat closed or reopened it');
+  await page.$eval('#chatInput',e=>{e.value='';});
+  await page.type('#chatInput','where am I?');
+  await new Promise(r=>setTimeout(r,400));
+  log=await fixture();
+  const moved=log.retro.slice(opsBefore).filter(r=>r.op==='input' && r.mask!==0);
+  assert.deepEqual(moved,[],'typing in the chat moved the character');
+  assert.equal(await page.evaluate(()=>document.activeElement?.id),'chatInput');
+  // Send: the stub /ws receives the contract frame; a guest is on a page-local session.
+  await page.keyboard.press('Enter');
+  let chatLog;
+  for(let i=0;i<50;i++){chatLog=await chatFix();if(chatLog.frames.some(f=>f.text_input))break;await new Promise(r=>setTimeout(r,100));}
+  const sent=chatLog.frames.find(f=>f.text_input);
+  assert.deepEqual(sent,{text_input:'where am I?',mode:'orion',disable_tts:true,session_id:'retro-guest-'+sittingId,
+    surface_context:{surface:'retro',input_modality:'typed',retro_sitting_id:sittingId}},JSON.stringify(sent));
+  const hellos=chatLog.frames.filter(f=>f.type==='session_hello');
+  assert(hellos.length>=1 && hellos.at(-1).session_id==='retro-guest-'+sittingId,'no session_hello for the guest session: '+JSON.stringify(chatLog.frames));
+  assert(chatLog.frames.indexOf(hellos[0])<chatLog.frames.indexOf(sent),'the hello must come before the message');
+  await page.waitForFunction(()=>document.querySelector('#chatStripText').textContent==='Reply to: where am I?' && !document.querySelector('#chatStrip').hidden,{timeout:3000});
+  const panelText=await page.$eval('#chatLog',e=>e.textContent);
+  assert(panelText.includes('where am I?') && panelText.includes('Reply to: where am I?'),panelText);
+  assert(!panelText.includes('draft (must not show)'),'a non-final frame was shown as the reply');
+  assert.equal(await page.$('#chatStrip .thumbs'),null,'a reply is not a line: no thumbs');
+  // A dropped chat socket reconnects without taking focus from the typing player.
+  await fetch(url+'/__fixture/chat_drop',{method:'POST'});
+  await new Promise(r=>setTimeout(r,300));
+  for(let i=0;i<40 && (await chatFix()).sockets<1;i++)await new Promise(r=>setTimeout(r,100));
+  assert.equal((await chatFix()).sockets,1,'the chat socket did not reconnect');
+  await new Promise(r=>setTimeout(r,300));
+  assert.equal(await page.evaluate(()=>document.activeElement?.id),'chatInput','a reconnect stole focus');
+  // A line push: the strip shows it with thumbs; a thumb POSTs and shows the stored state.
+  await fetch(url+'/__fixture/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(
+    {kind:'orion_outreach',llm_response:'That jump took three tries.',source:'retro_commentary',retro_sitting_id:sittingId,line_id:'line-1'})});
+  await page.waitForFunction(()=>document.querySelector('#chatStripText').textContent==='That jump took three tries.' &&
+    document.querySelector('#chatStrip .thumbs[data-line="line-1"]'),{timeout:3000});
+  assert(await page.$('#chatLog .thumbs[data-line="line-1"]'),'the line is missing from the panel');
+  await page.click('#chatStrip .thumbs button[data-thumb="up"]');
+  for(let i=0;i<30;i++){chatLog=await chatFix();if(chatLog.thumbs.length)break;await new Promise(r=>setTimeout(r,100));}
+  assert.deepEqual(chatLog.thumbs,[{line_id:'line-1',body:{thumb:'up'}}],JSON.stringify(chatLog.thumbs));
+  await page.waitForFunction(()=>[...document.querySelectorAll('.thumbs[data-line="line-1"]')].every(b=>
+    b.querySelector('button[data-thumb="up"]').getAttribute('aria-pressed')==='true' && b.querySelector('.thumbState').textContent.startsWith('Saved: thumb up')),{timeout:3000});
+  // Orion's other messages are to Juniper: a guest at the game never sees them (review finding, patch 3).
+  await fetch(url+'/__fixture/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(
+    {kind:'orion_outreach',llm_response:'A private note for Juniper.',source:'endogenous_outreach'})});
+  await new Promise(r=>setTimeout(r,600));
+  assert(!(await page.$eval('#chatLog',e=>e.textContent)).includes('A private note for Juniper.'),'a guest saw outreach meant for Juniper');
+  // A flip of "Who's playing?" mid-sitting changes only later messages.
+  const flip=await page.evaluate(async id=>(await fetch('/api/retro/sitting/player',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({player:'juniper',sitting_id:id})})).status,sittingId);
+  assert.equal(flip,200,'flip refused');
+  await new Promise(r=>setTimeout(r,5600));   // one sitting poll
+  await page.type('#chatInput','it is me');await page.keyboard.press('Enter');
+  for(let i=0;i<50;i++){chatLog=await chatFix();if(chatLog.frames.filter(f=>f.text_input).length>=2)break;await new Promise(r=>setTimeout(r,100));}
+  const [firstMsg,secondMsg]=chatLog.frames.filter(f=>f.text_input);
+  assert.equal(firstMsg.session_id,'retro-guest-'+sittingId,'the earlier message was rewritten');
+  assert.equal(secondMsg.session_id,'juniper-main-thread','Juniper stated: the message must use her main chat thread');
+  // Juniper stated: any other outreach goes to the panel only, never the strip.
+  await fetch(url+'/__fixture/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(
+    {kind:'orion_outreach',llm_response:'A news note from Orion.',source:'endogenous_outreach'})});
+  await page.waitForFunction(()=>document.querySelector('#chatLog').textContent.includes('A news note from Orion.'),{timeout:3000});
+  assert(!(await page.$eval('#chatStripText',e=>e.textContent)).includes('A news note from Orion.'),'a non-line outreach reached the strip');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('orion_sid')),'juniper-main-thread');
+  assert(chatLog.frames.some(f=>f.type==='session_hello' && f.session_id==='juniper-main-thread'),'no hello for Juniper\'s thread');
+  // Close: the game resumes (we paused it) and gets the keyboard back, still in fullscreen.
+  log=await fixture();const opsBeforeClose=log.retro.length;
+  await page.click('#chatClose');
+  await page.waitForFunction(()=>document.querySelector('#chatPanel').hidden,{timeout:2000});
+  for(let i=0;i<50;i++){log=await fixture();if(log.retro.slice(opsBeforeClose).some(r=>r.op==='control'))break;await new Promise(r=>setTimeout(r,100));}
+  assert(log.retro.slice(opsBeforeClose).some(r=>r.op==='resume'),'closing the chat did not resume the game');
+  assert(log.retro.slice(opsBeforeClose).some(r=>r.op==='control'),'closing the chat did not take the controller back');
+  await page.waitForFunction(()=>document.activeElement?.id==='screen',{timeout:3000});
+  assert.equal(await page.evaluate(()=>document.fullscreenElement?.id),'stage');
+  // The small button opens it too.
+  await page.click('#chatToggle');
+  await page.waitForFunction(()=>!document.querySelector('#chatPanel').hidden && document.activeElement?.id==='chatInput',{timeout:3000});
+  await page.screenshot({path:out+'/chat-box.png'});
+  await page.click('#chatToggle');
+  await page.waitForFunction(()=>document.querySelector('#chatPanel').hidden,{timeout:2000});
+  await page.evaluate(()=>document.exitFullscreen());
   assert.deepEqual(errors,[]);
-  fs.writeFileSync(out+'/play-panel.json',JSON.stringify({atlas,goal,retro:log.retro.map(r=>r.op+(r.channel?':'+r.channel:'')),human:log.human},null,2));
+  fs.writeFileSync(out+'/play-panel.json',JSON.stringify({chat:chatLog,atlas,goal,retro:log.retro.map(r=>r.op+(r.channel?':'+r.channel:'')),human:log.human},null,2));
 }finally{await browser.close();}

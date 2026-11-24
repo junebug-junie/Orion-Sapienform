@@ -255,6 +255,13 @@ def _cockpit_ingress_payload(
     surface_context = payload.get("surface_context")
     if isinstance(surface_context, dict) and surface_context:
         ingress["surface_context"] = dict(surface_context)
+    # Who the turn belongs to, for Prime's hand-back (orion/prime/handback.py classify_who): a line Orion says
+    # to a person who plays (source retro_commentary) and a guest's chat-box turn (chat_history_source
+    # retro_guest) are class ``play``, never Juniper's chat (game company patch 3, spec section 6 seam 3).
+    for key in ("source", "chat_history_source"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            ingress[key] = value.strip()[:120]
     attachment_meta = _attachment_meta_for_cockpit(raw_attachments)
     if attachment_meta:
         ingress["attachments"] = attachment_meta
@@ -835,6 +842,17 @@ def _pool_state_is_fresh(state: Any) -> bool:
     if generated.tzinfo is None:
         generated = generated.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - generated).total_seconds() <= _POOL_STATE_MAX_AGE_SEC
+
+
+def _with_staged_count(frames: list[dict[str, Any]], staged: Any) -> list[dict[str, Any]]:
+    """Stamp the final frame with how many attachments the turn really staged (``staged`` None: the turn carried
+    none). A caller that named its attachments in the prompt (a game line: "Attached: 4 frames") checks it, so a
+    turn never stands on frames it did not carry (game company patch 3)."""
+    if staged is not None:
+        for frame in frames:
+            if isinstance(frame, dict) and frame.get("type") == "final":
+                frame["staged_attachment_count"] = len(staged)
+    return frames
 
 
 def _harness_owns_model_line(payload: dict[str, Any]) -> bool:
@@ -1667,7 +1685,8 @@ async def _execute_unified_turn_body(
             )
             staged_attachments = [
                 HarnessAttachmentV1(
-                    path=item.path, mime=item.mime, sha256=item.sha256, filename=item.filename
+                    path=item.path, mime=item.mime, sha256=item.sha256, filename=item.filename,
+                    source=item.source,
                 )
                 for item in staged
             ]
@@ -1947,7 +1966,7 @@ async def _execute_unified_turn_body(
             "reason": run.finalize_degraded_reason,
         }
         await _finish_cockpit(run, success=True)
-        return [
+        return _with_staged_count([
             degraded_frame,
             *_success_frames(
                 run,
@@ -1956,7 +1975,7 @@ async def _execute_unified_turn_body(
                 mode_tag=mode_tag,
                 retain_fetch_text=reading_only,
             ),
-        ]
+        ], staged_attachments if staging_attempted else None)
     if not run.finalize_ran or not run.final_text:
         _log_promise_ledger_skip(promise_view, correlation_id, "harness_error")
         await _finish_cockpit(run, success=False)
@@ -1979,13 +1998,13 @@ async def _execute_unified_turn_body(
         promise_view=promise_view,
     )
     await _finish_cockpit(run, success=True)
-    return _success_frames(
+    return _with_staged_count(_success_frames(
         run,
         correlation_id=correlation_id,
         fcc_model_label=resolved_model_label,
         mode_tag=mode_tag,
         retain_fetch_text=reading_only,
-    )
+    ), staged_attachments if staging_attempted else None)
 
 
 async def _publish_unified_turn_chat_history(
@@ -2420,8 +2439,13 @@ async def run_unified_turn(
     harness_rpc_bus: Any | None = None,
     harness_step_relay: Any | None = None,
     client_meta: dict[str, Any] | None = None,
+    utterance_origin: str | None = "juniper",
 ) -> list[dict[str, Any]]:
     """Execute unified turn and emit WS frames.
+
+    ``utterance_origin``: "juniper" for her own turn (the default). None for a speaker who is not known to be
+    her: a guest typing in the game page's chat box (game company patch 3), like a relayed third-party room
+    turn on the HTTP path (scripts/api_routes.py).
 
     With HUB_UNIFIED_DRAFT_FIRST_ENABLED (spec L8) the governor's pre-judge
     draft is forwarded as a `draft_preview` frame the moment it arrives, and
@@ -2546,7 +2570,7 @@ async def run_unified_turn(
             harness_step_queue=step_queue,
             cockpit_sink=cockpit_sink,
             cockpit_run_holder=cockpit_run_holder,
-            utterance_origin="juniper",
+            utterance_origin="juniper" if utterance_origin == "juniper" else None,
             client_meta=client_meta,
             draft_preview=draft_first,
         )

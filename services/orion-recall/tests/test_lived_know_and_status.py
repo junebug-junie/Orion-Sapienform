@@ -24,9 +24,11 @@ GARDEN = _row("p2", "Juniper planted tomatoes along the garden fence.")
 def test_know_finds_a_memory_from_two_words_the_chat_floor_would_skip(no_dense):
     calls: List[Any] = []
     reader = LivedMemoryRecall(Pool({"episode_memory": [STITCHES, GARDEN, OFFICE]}), _cfg(),
-                               reranker=overlap_reranker, rewriter=fixed_rewriter(["x y"], calls), clock=lambda: NOW)
-    # A chat turn this short is not searched at all (min_query_tokens=5)...
+                               reranker=overlap_reranker, rewriter=fixed_rewriter([], calls), clock=lambda: NOW)
+    # A chat turn this short, naming no known entity, is searched only when the short-message
+    # rewrite asks for it (#3613); here it says NONE, so nothing is searched...
     assert asyncio.run(reader.recall("dog stitches")).debug["skipped"] == "few_content_words"
+    calls.clear()
     # ...a deliberate lookup is, with no rewrite (its words already are the search).
     got = asyncio.run(reader.know("dog stitches vet"))
     assert [s.rec.record_id for s in got.strong] == ["p1"]

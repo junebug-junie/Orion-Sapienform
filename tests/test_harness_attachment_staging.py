@@ -248,3 +248,65 @@ def test_a_long_filename_is_truncated_in_the_prompt(store, sandbox):
     block = describe_for_prompt(out)
     label = block.split("(sent as ")[1].split(")")[0]
     assert len(label) <= 64
+
+
+# --- percepts: stills of a game screen from orion-percept-store (game company patch 3) -------------------------
+
+def _percept(sha, expires):
+    return {"kind": "percept", "sha256": sha, "mime": "image/png", "frames_expire_at": expires}
+
+
+def test_a_live_percept_is_fetched_from_the_store_and_marked_as_a_game_screen(tmp_path):
+    from datetime import datetime, timezone
+    from orion.harness.attachment_staging import GAME_SCREEN, stage_attachments
+
+    sha = "c" * 64
+    asked = []
+    staged = stage_attachments([_percept(sha, "2026-11-18T12:00:00+00:00")], correlation_id="corr-p",
+                               root=tmp_path, fetch=lambda s: asked.append(s) or b"\x89PNG-bytes",
+                               now=datetime(2026, 11, 18, 11, 0, tzinfo=timezone.utc))
+    assert asked == [sha] and len(staged) == 1
+    assert staged[0].source == GAME_SCREEN and staged[0].path.endswith(".png")
+    assert open(staged[0].path, "rb").read() == b"\x89PNG-bytes"
+
+
+def test_an_expired_percept_is_answered_from_the_ref_without_asking_the_store(tmp_path, caplog):
+    from datetime import datetime, timezone
+    from orion.harness.attachment_staging import stage_attachments
+
+    import logging
+
+    asked = []
+    with caplog.at_level(logging.INFO, logger="orion.harness.attachment-staging"):
+        staged = stage_attachments([_percept("d" * 64, "2026-11-18T10:00:00+00:00")], correlation_id="corr-e",
+                                   root=tmp_path, fetch=lambda s: asked.append(s) or b"x",
+                                   now=datetime(2026, 11, 18, 11, 0, tzinfo=timezone.utc))
+    assert staged == [] and asked == []
+    assert "expired by design" in caplog.text
+
+
+def test_a_percept_missing_before_its_time_is_logged_as_lost(tmp_path, caplog):
+    import logging
+    from datetime import datetime, timezone
+    from orion.harness.attachment_staging import stage_attachments
+
+    with caplog.at_level(logging.ERROR):
+        staged = stage_attachments([_percept("e" * 64, "2026-11-18T12:00:00+00:00")], correlation_id="corr-l",
+                                   root=tmp_path, fetch=lambda s: None,
+                                   now=datetime(2026, 11, 18, 11, 0, tzinfo=timezone.utc))
+    assert staged == [] and "lost" in caplog.text
+
+
+def test_the_prompt_names_game_frames_as_frames_never_as_juniper_attached():
+    from orion.harness.attachment_staging import GAME_SCREEN, describe_for_prompt
+
+    frames = [{"path": f"/s/{i}.png", "source": GAME_SCREEN} for i in range(4)]
+    text = describe_for_prompt(frames)
+    assert "These are 4 frames of the game screen from the last 30 seconds, oldest first" in text
+    assert "Juniper attached" not in text
+    one = describe_for_prompt(frames[:1])
+    assert "This is 1 frame of the game screen" in one
+    mixed = describe_for_prompt([{"path": "/s/u.png", "filename": "photo.png"}, *frames[:2]])
+    assert "Juniper attached an image" in mixed and "These are 2 frames" in mixed
+    # a person's upload alone: the old sentence, byte for byte
+    assert describe_for_prompt([{"path": "/s/u.png"}]).startswith("\n\nJuniper attached an image to this message.")

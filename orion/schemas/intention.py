@@ -80,6 +80,9 @@ class IntentionSourceV1(_Model):
     quote_ref: Optional[str] = Field(default=None, max_length=300)
     # What recall searches for during the turn.
     retrieval_query: Optional[str] = Field(default=None, max_length=1000)
+    # When Orion made the promise (turn_promise: the harness_turn_trace row's created_at). The carry run's want
+    # opens here: its body-economy rank is the promise's age (#3640). None: the run's own request time.
+    promised_at: Optional[AwareDatetime] = None
 
 
 class IntentionOrderV1(_Model):
@@ -131,6 +134,10 @@ class IntentionCarryBriefV1(_Model):
     horizon_at: AwareDatetime
     retrieval_query: Optional[str] = Field(default=None, max_length=1000)
     timeout_sec: float = Field(default=INTENTION_TURN_TIMEOUT_SEC, ge=60.0, le=3600.0)
+    # IntentionSourceV1.promised_at: the want's opened_at in orion-durable-runs (app/run_bids.py, #3640). ROLLOUT:
+    # additive on an extra=forbid model -- deploy orion-durable-runs before orion-hub (an older durable-runs answers
+    # 422, which Hub reports as ``unavailable`` and Prime re-sends).
+    promised_at: Optional[AwareDatetime] = None
 
 
 class IntentionDeliverV1(_Model):

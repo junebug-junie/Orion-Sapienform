@@ -500,6 +500,33 @@ runs the automatic half.
   orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
 - **Off:** `PR_FIELD_NOTES_ENABLED=false` and restart: no poll, no runs, no code records.
 
+### The day dream: night tick + `dream.day` (2026-11-18, Patch 2a)
+
+Spec: `docs/superpowers/specs/2026-11-17-nightly-day-dream-design.md`, Patch 2 (2a: the plan is stored, not handed to
+Prime). Contract: `orion/schemas/dream_day.py`. Code: `app/dream_day_poll.py` (tick), `app/dream_day_graph.py` (the
+run), `app/dream_day_store.py` (reads + the one write), `orion/memory/dream_day.py` (parse, ref check, memories, grade).
+
+- **When.** Every 600 s inside the Denver window `[DREAM_DAY_START_HOUR_LOCAL, DREAM_DAY_END_HOUR_LOCAL)` (01:00-03:00),
+  one run `dream-day-<day>` for the Denver day that just closed; a failed run gets one retry (`-a2`) while a whole turn
+  still fits. The window end is the run's deadline: a missed night is a missed night. `GET /health` ->
+  `dream_day_tick`. Hand trigger: `POST /dream-day/run?day=YYYY-MM-DD` (a closed day of the last week, 3 h deadline,
+  same idempotency). Dry run: `GET /dream-day/plan[?day=...]`.
+- **Run.** `gather` (no hold, once): the day's `dream_cycle` rows with hypotheses and pair answers, Prime's held
+  concerns (read-only), and `GET /temporal-self/now?organ=dream` (the integration read-back). `dream`: one unified
+  turn on `DREAM_DAY_ROUTE` (`memory_distill`, the gpu1 agent seat), `require_lookup=False`; the turn runs
+  `python -P -m orion.dig dream-day <day>` first (roundup + every dig, read in the governor). A missing read receipt
+  or a reply with no JSON answer is a failed attempt. `persist`: every ref must resolve (experience, act,
+  dream_cycle, dream_hypothesis, harness_turn_trace, chat_turn) or its item is dropped and counted; at most 5
+  memories go through `orion.memory.episode.validate` and are written (`channel='dream'`, voice `orion_thought`,
+  ids from (day, index)) with the `dream_day` row in one transaction; the now's `experience:` cites go to
+  `POST /temporal-self/now/use`.
+- **Grade.** `produced` only when at least one memory row was written and read back; otherwise
+  "no lasting trace". The act is `dream.cycle make` (the existing family; key = run id), closed with that grade.
+- **Trace.** `dream_day` row per night; `temporal_self_event` kind `dream_day` (the chronicle reads the row);
+  `episode_memory` rows with `channel='dream'`; `experience_use` rows citing `dream_day:<day>`.
+  Eval: `python3 services/orion-durable-runs/evals/run_dream_day_eval.py [--day D]` (each dream memory beside its refs).
+- **Off.** `DREAM_DAY_ENABLED=false`, restart. Memories are listable/retirable by `run_id` (`channel='dream'`).
+
 ### Daily reminiscence: overnight tick + `reminiscence.episode` (2026-11-07, design Patch 2)
 
 Once a day Orion visits one week of their own past and writes five short hops about it (design
@@ -586,10 +613,16 @@ submits it on Prime's order. It runs on the same single-step harness graph as co
 attempt retried with its findings. The full reply is checkpointed; Hub reads it from `GET /runs/{run_id}`
 (`harness_steps.carry.text`). Run id `intention-<concern_id>` (one per take-on). Run act: `make:durable.intention`
 (`app/run_acts.py`). Its bid BINDS (`app/run_bids.py` `BINDING_FAMILIES`) as family `durable.intention`, TIER 1
-(Juniper 2026-11-13; `config/physiology/families.yaml`, window 86400 s, agent lanes): hold end = min(opened +
-86400 s, the promise's horizon - 1800 s), admitted at hold end, never dropped. Prime cancels the run
+(Juniper 2026-11-13; `config/physiology/families.yaml`, window 86400 s, agent lanes): hold end = min(the run's
+`requested_at` + 86400 s, the promise's horizon - the deadline margin), admitted at hold end, never dropped. Its RANK
+is the age of the promise (#3640, Juniper 2026-11-18; family `hunger_from: want_opened`): the want opens at
+`brief.promised_at` (the promise's `harness_turn_trace.created_at`), and rank = 1 - exp(-age / 86400 s), never reset
+by another carry's close and never scaled by the family's mean outcome. A fresh promise still ranks ~0. Replay:
+`evals/intention_promise_age_replay.py [--live --dsn ...]`. Prime cancels the run
 (`POST /runs/{id}/cancel`) when it lets the concern go or the horizon passes. ADDITIVE workflow value: deploy
 orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before this service, and orion-mind last.
+`brief.promised_at` (#3640) is additive on `extra="forbid"`: deploy THIS service before orion-hub (an older one answers
+422; Hub reports `unavailable` and Prime re-sends). Roll back orion-hub before this service.
 
 ### Admitted Orion's Day letter (`orion_day.letter`): Prime's end-of-day turn (2026-11-12)
 
@@ -834,7 +867,7 @@ Keys: `RPC_HEALTH_PUBLISH_ENABLED` (true), `RPC_HEALTH_PUBLISH_INTERVAL_SEC` (30
 `orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before this
 service ships `channel_latency` (the schema is `extra="forbid"`).
 
-## Core memory pages: the nightly `page:juniper` fold (2026-11-15, Phase 1a)
+## Core memory pages: the nightly `page:juniper` and `page:origin` folds (2026-11-15, Phase 1)
 
 **What it does:** once a night, Orion rewrites their own short page "who Juniper is to me" from the
 records about her, checks that every sentence points at a real record, and makes it the live version.
@@ -872,12 +905,43 @@ Not a durable run: it is one LLM call, so it is a tick (`app/core_page_fold.py`)
   by hand with `WRITE_ANCHOR_SQL_TEMPLATE` from `orion/memory/pages/anchor.py`:
   `python3 -c "from orion.memory.pages.anchor import WRITE_ANCHOR_SQL_TEMPLATE as t; print(t)" | docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 -v anchor="<new lines>"`
   (cortex-exec picks it up within 5 minutes; no restart).
-- **Manual:** `curl -X POST 'http://localhost:8124/core-pages/juniper/fold?dry_run=true'` folds now at any
-  hour and returns the page and its check without publishing; `dry_run=false` publishes a passing page.
-  Offline from the host: `scripts/core_page_juniper_dry_run.py`.
-- **Health:** `/health` -> `core_page_fold` (last decision, version, check; never the page text).
+- **Manual:** `curl -X POST 'http://localhost:8124/core-pages/juniper/fold?dry_run=true'` (or `.../origin/fold`)
+  folds now at any hour and returns the page and its check without publishing; `dry_run=false` publishes a
+  passing page. Offline from the host: `scripts/core_page_dry_run.py --page juniper|origin|lately`.
+- **Health:** `/health` -> `core_page_fold` (page:juniper's last decision, version, check; never the page
+  text) and `core_page_folds` (the same, per page slug).
 - **Off / rollback:** `ORION_CORE_PAGES_ENABLED=false` (here: no fold; cortex-exec: today's RELATIONSHIP).
   Rows are insert-only: to roll back a bad version, publish a copy of the previous one as a new version.
+- **`page:origin` "how I came to be" (issue #3462, 2026-11-19):** the same tick folds a second page
+  right after page:juniper (one at a time; `CORE_PAGE_FOLD_PAGES=juniper,origin` picks which; each page
+  has its own once-a-day and attempt counts). Built ahead of the `matters` grade gate (#3590) by
+  Juniper's decision of 2026-11-18: none of its sources use that grade. It reads, through the lived-memory
+  serving SQL (`orion/memory/lived_memory.py`, so a row an active correction points at is dropped too):
+  Juniper's salience-1 `stance` crystallizations (verbatim), `episode_memory` `happened`/`orion_view`
+  rows, and an evenly spaced sample of 8 `self:definition` versions (first and newest always in). Its
+  check adds one rule to the shared one (spec Decision 3): when a source records the memory loss (the
+  disk dying, a year lost), some sentence must say a loss in plain words and cite that record
+  (`memory_loss_not_stated` otherwise). Rendered in WHO YOU ARE right after the self-definition
+  (felt-state lane `orion_core_page_origin`). Page logic: `orion/memory/pages/origin.py`; shared check
+  and stored row: `orion/memory/pages/fold.py`. The mesh-edge check guards its sentences like page:juniper.
+- **`page:lately` "what has mattered lately" (issue #3463):** the third page in the same tick, after
+  page:origin. It reads the last 14 days of `episode_memory` plus active `follow_up` rows up to 45 days
+  old (nothing can close a follow-up yet, so the page calls them "follow-ups I wrote down", never "open"),
+  through the lived-memory serving SQL (active only; never superseded, rejected, expired, pointed at by an
+  active correction, or with `invalid_at` set), and Hub chat turns where Juniper spoke that the episode
+  distiller has not distilled yet (an episode in `memory_episode_shadow` with no `episode_distill_run`
+  row; command turns left out). Sources are dated on Juniper's (Denver) calendar. No `matters` grade yet (#3590): when there are too many rows, follow-ups, `about_juniper` rows,
+  high-stakes rows and corrections are kept first, then the newest of the rest. Its check adds one rule:
+  when some source is from the last 7 days, the page must cite one of them (`not_recent` otherwise). The
+  change signal also moves when a row ages out of the 14-day window, so a quiet day with nothing new and
+  nothing aging out is skipped (`no_new_sources`). Rendered at the top of DURABLE MEMORY, above the
+  recall digest (felt-state lane `orion_core_page_lately`, shown while under 21 days old). Page logic:
+  `orion/memory/pages/lately.py`. Coverage eval (counts only):
+  `python -m orion.memory.pages.evals.lately_coverage --page-json <dry-run json>`.
+- **`CORE_PAGE_FOLD_PAGES` and deploy order:** an unknown slug fails startup on purpose (a typo must not
+  turn a page off). So set `CORE_PAGE_FOLD_PAGES=juniper,origin,lately` in the live `.env` only once code
+  that knows `lately` is what you deploy, and before rolling this service back to an older image,
+  remove `lately` from that key first. The sync script reports this key as "diverged" and leaves it alone.
 - **Deploy order:** orion-sql-writer first (it validates the new `core_page_fold` producer value), then
   this service. orion-cortex-exec and the harness renderer can go in any order (the capsule field is additive
   on a model that ignores unknown fields).
@@ -999,6 +1063,15 @@ REQUIRED-BY this service and orion-hub) as source `retro_play`: one `play` arc p
 session, shown in the chat stance cue. The query is skipped while the table does not exist
 (`to_regclass`), so the source can never fail the whole read. Kill switch:
 `TEMPORAL_SELF_RETRO_PLAY_ENABLED` (ON).
+
+**Retro look source (2026-11-18, game company patch 3).** The chronicle reads orion-hub's `retro_watch_look`
+as source `retro_look`, but only notes a line turn checked against frames of the same moment and found to
+hold (`verdict = 'checked_holds'`, `outcome = 'stored'`, `settled_at` set; columns from
+`services/orion-sql-db/manual_migration_retro_lines_v1.sql`, REQUIRED-BY this service). The event is keyed by
+`settled_at`, its subject is the sitting (`retro_sitting:<id>`), its label is "Saw on the game screen:
+<note>", and it carries no salience. The first look opens the sitting's `play` arc, later looks refresh it
+(counts plus first and last look only), and the sitting's `human_play` `retro_play` row closes it. Kill
+switch: `TEMPORAL_SELF_RETRO_LOOK_ENABLED` (ON).
 
 **Street episodes (2026-10-23, walkway follow-ups spec PR #2763 item 1).** The chronicle reads notable
 outside events as source `street_event`, three reads of one kind: published clean motion stories whose

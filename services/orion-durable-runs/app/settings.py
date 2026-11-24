@@ -219,6 +219,9 @@ class Settings(BaseSettings):
     # chronicle reads orion-hub's retro_play_sessions as source `retro_play`, one `play` arc per
     # finished Retro session (chat stance cue, recent arcs, Day letter count). Off: not read.
     temporal_self_retro_play_enabled: bool = Field(True, alias="TEMPORAL_SELF_RETRO_PLAY_ENABLED")
+    # Game company patch 3: the chronicle reads orion-hub's retro_watch_look as source `retro_look` (only notes a
+    # line turn checked and found to hold), opening and refreshing the sitting's `play` arc. false -> not read.
+    temporal_self_retro_look_enabled: bool = Field(True, alias="TEMPORAL_SELF_RETRO_LOOK_ENABLED")
     # Episodes from the street (walkway follow-ups spec PR #2763 item 1): the chronicle reads notable
     # outside events as source `street_event` (spot-check-gated motion stories, doorbell rings, graded
     # handoffs with p < 0.05), one `street` arc each, labelled "Outside (<camera>)". Off: not read,
@@ -385,6 +388,14 @@ class Settings(BaseSettings):
             raise ValueError("REMINISCENCE_END_HOUR_LOCAL must be after REMINISCENCE_HOUR_LOCAL (same Denver day)")
         return v
 
+    @field_validator("dream_day_end_hour_local")
+    @classmethod
+    def _dream_day_window_has_room(cls, v: int, info):
+        start = info.data.get("dream_day_start_hour_local", 1)
+        if v <= start:
+            raise ValueError("DREAM_DAY_END_HOUR_LOCAL must be after DREAM_DAY_START_HOUR_LOCAL (same Denver night)")
+        return v
+
     @field_validator("core_page_fold_end_hour_local")
     @classmethod
     def _fold_window_has_room(cls, v: int, info):
@@ -392,6 +403,14 @@ class Settings(BaseSettings):
         if v <= start:
             raise ValueError("CORE_PAGE_FOLD_END_HOUR_LOCAL must be after CORE_PAGE_FOLD_HOUR_LOCAL (same Denver day)")
         return v
+
+    @field_validator("core_page_fold_pages")
+    @classmethod
+    def _fold_pages_known(cls, v: str):
+        from orion.memory.pages.registry import selected_specs
+
+        specs = selected_specs(v)   # raises on an unknown slug
+        return ",".join(spec.slug for spec in specs)
 
     @field_validator("core_page_fold_route")
     @classmethod
@@ -470,12 +489,36 @@ class Settings(BaseSettings):
     # One step attempt's hard time bound, the same 900 s the field-note turn needs (Hub keeps a 330 s
     # finalize reserve out of it: 900 -> 540 s of motor, PR #3114). A cap, not a cost.
     reminiscence_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="REMINISCENCE_TURN_TIMEOUT_SEC")
+    # The day dream, Patch 2 (docs/superpowers/specs/2026-11-17-nightly-day-dream-design.md): inside the Denver
+    # window [DREAM_DAY_START_HOUR_LOCAL, DREAM_DAY_END_HOUR_LOCAL), submit one dream.day run for the Denver day that
+    # just closed (one turn on DREAM_DAY_ROUTE that reads the day and writes up to 5 memories, channel 'dream').
+    # The window end is the run's admission deadline: a missed night is a missed night. Needs admission
+    # (DURABLE_RUNS_ADMISSION_ENABLED). false -> no tick, no runs (rollback: set false, restart; POST
+    # /dream-day/run refuses too).
+    dream_day_enabled: bool = Field(True, alias="DREAM_DAY_ENABLED")
+    dream_day_start_hour_local: int = Field(1, ge=0, le=22, alias="DREAM_DAY_START_HOUR_LOCAL")
+    dream_day_end_hour_local: int = Field(3, ge=1, le=23, alias="DREAM_DAY_END_HOUR_LOCAL")
+    # The pool route the run's hold is asked on. memory_distill = the agent seat on gpu1 only
+    # (config/gpu_pool.yaml): memory work stays local (the parent spec).
+    dream_day_route: str = Field("memory_distill", min_length=1, alias="DREAM_DAY_ROUTE")
+    # One turn attempt's hard bound (same as a reminiscence hop; Hub keeps its finalize reserve out of it).
+    dream_day_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="DREAM_DAY_TURN_TIMEOUT_SEC")
+    # The grounding gate (2026-11-18 hardening): before a dream memory is written, the same local route, on the
+    # run's own hold, judges it against the full text of the records it cites. Only a parsed "supported" verdict is
+    # written; unsupported and unjudged (failed call, unparseable verdict) are counted and kept in the dream_day
+    # row's grounding column, never written. false -> the ref check alone decides (rollback: false, restart).
+    dream_day_grounding_gate_enabled: bool = Field(True, alias="DREAM_DAY_GROUNDING_GATE_ENABLED")
     # Core memory pages, Phase 1a (docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md):
     # every CORE_PAGE_FOLD_POLL_SEC, inside the Denver window [CORE_PAGE_FOLD_HOUR_LOCAL, CORE_PAGE_FOLD_END_HOUR_LOCAL),
-    # fold Orion's page:juniper once (one LLM call, app/core_page_fold.py) when its records changed since the
-    # current version. A page that passes the cite check goes live (no approval step, Juniper's decision 1).
-    # The same key gates the RELATIONSHIP render in orion-cortex-exec. false -> no fold (rollback: false, restart).
+    # fold each of Orion's pages once (one LLM call each, app/core_page_fold.py) when its records changed since
+    # the current version. A page that passes the cite check goes live (no approval step, Juniper's decision 1).
+    # The same key gates the page render in orion-cortex-exec. false -> no fold (rollback: false, restart).
     orion_core_pages_enabled: bool = Field(True, alias="ORION_CORE_PAGES_ENABLED")
+    # Which pages fold, in order (orion/memory/pages/registry.py): juniper = "who Juniper is to me"
+    # (RELATIONSHIP), origin = "how I came to be" (WHO YOU ARE, issue #3462), lately = "what has mattered
+    # lately" (top of DURABLE MEMORY, issue #3463). Drop a slug to stop folding that page; its last version
+    # still shows until ORION_CORE_PAGES_ENABLED=false in orion-cortex-exec.
+    core_page_fold_pages: str = Field("juniper,origin,lately", alias="CORE_PAGE_FOLD_PAGES")
     # The gateway route the fold calls. memory_distill = the agent seat on gpu1 only (config/gpu_pool.yaml),
     # leased per call by the gateway. The fast and metacog lanes are refused (they share the small card).
     core_page_fold_route: str = Field("memory_distill", alias="CORE_PAGE_FOLD_ROUTE")

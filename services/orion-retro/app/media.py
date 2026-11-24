@@ -90,6 +90,13 @@ class MediaProbe(CoreProbe):
         return result
 
     def publish(self, pipe, frame):
+        # A cold core has no picture yet (live 2026-11-21: Angrylion's first frame arrives at
+        # ~frame 64). Publishing width=0 packets makes the browser throw on a 0x0 image and
+        # close the socket, which pauses the session before the renderer ever warms up.
+        # Skipping them without draining would trip media_audio_limit in ~30 frames, killing
+        # the core instead: send nothing, but drop the buffered audio.
+        if not self.video:
+            self.pcm.clear(); return
         if frame % 2: return
         header = dict(version=1, frame=frame, width=self.geometry[0], height=self.geometry[1],
                       format=self.pixel_format, video_bytes=len(self.video),

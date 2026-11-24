@@ -22,6 +22,10 @@ What changed from ``budget.build_llm_view`` (the pile the letter was written fro
   past that their long bodies share one clip cap (water filling), marked in place and counted.
 * **Readings, news, code changes, dreams, the street and visual reveries are a trimmed tail**: one
   short line or paragraph each, cut off as a whole at ``TAIL_MAX_CHARS`` with the rest counted.
+* **Last night's day dream** (day-dream spec Patch 3) sits right before the roundup: when the night
+  produced, "Last night I slept on the day", the day paragraph and the written memory ids, citable as
+  ``[dream_day:<day>]``; otherwise one line, "no day dream for <day>: <reason>" (no row, a row with no
+  memory and its note, the run failed, or the row could not be read). A bad night is visible, never silent.
 * **The daily organ roundup** (integration patch 4, ``orion/dig/organs.py``) sits right after Juniper's
   conversations: what each organ did, every line a count, a quote or a ref (``[experience:<id>]``,
   ``[act:<id>]``). When it is in the material it replaces the tail's readings, dreams, street and visual
@@ -81,7 +85,7 @@ GITHUB_TAIL_CHARS = 1_500
 VISUAL_TAIL_ITEMS = 6
 
 # Source names in source_chars / source_shares, in digest order. "frame" = header, headings, joins.
-SOURCES = ("frame", "chronology", "temporal_core", "juniper", "roundup", "curiosity", "self_sense", "reveries",
+SOURCES = ("frame", "chronology", "temporal_core", "juniper", "dream_day", "roundup", "curiosity", "self_sense", "reveries",
            "walkway", "world_pulse", "github", "dreams", "visual_reveries", "readings")
 
 
@@ -170,6 +174,43 @@ def _roundup_section(material: OrionDayMaterialV1) -> str:
         return ""
     return "\n".join([f"{ROUNDUP_HEADING} (my organ roundup for {r.day.isoformat()}: every line a count, a quote "
                       "or a ref; cite an item by its bracketed experience ref, as shown)", *r.lines])
+
+
+# --- last night's day dream (day-dream spec Patch 3) ------------------------------------------------
+
+DREAM_DAY_HEADING = "## Last night I slept on the day"
+
+
+def dream_day_line(material: OrionDayMaterialV1) -> str | None:
+    """The one line a night with no day dream gets ("no day dream for <day>: <reason>"), or None when the night
+    produced (or the dream was not read at all: an older brief). Shared by the letter input and the email."""
+    d = material.dream_day
+    day = material.letter_date.isoformat()
+    if d is None:
+        s = material.sources.get("dream_day")
+        if s is not None and s.status == "error":
+            return f"no day dream for {day}: could not read it ({s.error or 'error'})"
+        return None
+    if d.status == "produced":
+        return None
+    reason = {
+        "not_produced": f"the night wrote no memory ({d.note or 'no note'})",
+        "failed": f"the night's run failed ({d.error or 'no error recorded'})",
+        "no_row": "no dream_day row (the night did not run)",
+    }[d.status]
+    return f"no day dream for {d.day.isoformat()}: {reason}"
+
+
+def _dream_day_section(material: OrionDayMaterialV1) -> str:
+    d = material.dream_day
+    if d is not None and d.status == "produced":
+        out = [f"{DREAM_DAY_HEADING} [dream_day:{d.day.isoformat()}]"]
+        if d.day_text:
+            out.append(_no_refs(d.day_text))
+        out.append("Memories I wrote: " + (", ".join(d.memory_ids) if d.memory_ids else "none"))
+        return "\n".join(out)
+    line = dream_day_line(material)
+    return f"{DREAM_DAY_HEADING}\n{line}" if line else ""
 
 
 # --- self-sense, deduplicated ------------------------------------------------------------------
@@ -400,6 +441,9 @@ def render_day_input(
     juniper = _juniper_section(material, tz)
     if juniper:
         parts.append(("juniper", juniper))
+    dream_day = _dream_day_section(material)
+    if dream_day:
+        parts.append(("dream_day", dream_day))
     roundup = _roundup_section(material)
     if roundup:
         parts.append(("roundup", roundup))
@@ -479,5 +523,5 @@ async def build_day_input(
                     material=material)
 
 
-__all__ = ["DAY_INPUT_BUDGET_TOKENS", "ROUNDUP_HEADING", "ROUNDUP_REPLACES", "DayInput", "build_day_input", "latest_self_sense",
+__all__ = ["DAY_INPUT_BUDGET_TOKENS", "DREAM_DAY_HEADING", "ROUNDUP_HEADING", "dream_day_line", "ROUNDUP_REPLACES", "DayInput", "build_day_input", "latest_self_sense",
            "render_day_input", "sample_reveries_by_theme"]

@@ -137,6 +137,14 @@ SYNC_PREFIXES = (
     # Session threads (2026-11-15): Hub's hourly round-up of coding-session messages
     # (scripts/session_roundup_loop.py).
     "HUB_SESSION_ROUNDUP_",
+    # Game company (2026-11-17/18): the sitting record (patch 1) and Orion's look at the game screen
+    # (patch 2), both in Hub's Retro gateway. No prefix matched them before, so a default run added none.
+    "HUB_RETRO_SITTING_",
+    "HUB_RETRO_WATCH_",
+    "HUB_RETRO_LOOK_",
+    # Patch 3: Orion's lines while a person plays (hub-app, scripts/retro_commentary.py).
+    "HUB_RETRO_COMMENTARY_",
+    "HUB_RETRO_LINE_",
     "ROOM_COMPANION_CONSULT_",
     # Claude's tools gated by Orion's consent (2026-11-13, Patch 1b): the companion's per-turn MCP server,
     # the governor's broker (CLAUDE_TOOLS_*, CHANNEL_CLAUDE_TOOL_REQUEST). orion-mind's PRIME_CONSENT_* keys
@@ -470,6 +478,8 @@ SYNC_PREFIXES = (
     "PR_FIELD_NOTES_",
     # Daily reminiscence Patch 2 (orion-durable-runs overnight tick + reminiscence.episode runs, 2026-11-07).
     "REMINISCENCE_",
+    # The day dream Patch 2 (orion-durable-runs night tick + dream.day runs, 2026-11-18).
+    "DREAM_DAY_",
     # Hourly frame samples (orion-sql-writer, 2026-10-29).
     "VISION_HOURLY_FRAMES_",
     # Person graph loop + its sighting refresh (orion-substrate-runtime, 2026-11-03).

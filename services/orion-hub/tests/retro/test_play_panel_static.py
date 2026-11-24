@@ -8,7 +8,7 @@ HUB = Path(__file__).resolve().parents[2]
 def test_template_has_play_panel_and_current_asset():
     html = (HUB / 'templates/retro.html').read_text()
     for marker in ('id="play"', 'id="atlas"', 'id="leisure"', 'id="zgoal"', 'id="zprediction"',
-                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=18'):
+                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=21'):
         assert marker in html, marker
 
 
@@ -29,6 +29,19 @@ def test_blur_keeps_a_handoff_but_a_hidden_tab_ends_it():
     assert "if(document.hidden){away=true;neutral();}" in js   # nobody can watch a hidden tab
     # Once the handed-off grant is gone, the page leaves handoff mode.
     assert '!mine || mine.epoch!==handoffGrant.epoch' in js
+
+
+def test_asset_tolerates_audio_only_packets_from_a_warming_core():
+    # 2026-11-21: N64/Angrylion sends no picture for its first ~64 frames. draw() threw on the
+    # resulting 0x0 image, neutral() printed "Paused. Click the game to keep playing.", and the
+    # closed socket paused the session before the renderer ever warmed up — no N64 game loaded.
+    js = (HUB / 'static/js/retro-panel.js').read_text()
+    draw = js[js.index('async function draw('):js.index('async function load()')]
+    assert 'const picture=h.width>0 && h.height>0;' in draw
+    assert 'let image=null;' in draw                                       # image outlives the decode block
+    assert 'if(picture){\n      image=ctx.createImageData' in draw         # 0x0 never reaches createImageData
+    assert draw.index('const picture=') < draw.index('createImageData')
+    assert 'if(picture){\n      if(screen.width!==h.width' in draw          # no frame credit without a picture
 
 
 def test_policy_poll_is_fast_while_orion_holds_the_controller():

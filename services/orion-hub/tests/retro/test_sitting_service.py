@@ -11,7 +11,7 @@ from orion.retro.sitting import SITTING_KEY
 from scripts import retro_routes, retro_sitting, retro_transport
 from scripts.retro_memory_export import _COLUMNS
 
-PLAY_COLUMNS = _COLUMNS + ("player_stated",)      # the exporter's columns, then the one a sitting adds
+PLAY_COLUMNS = _COLUMNS + ("player_stated", "looks")   # the exporter's columns, then the ones a sitting adds
 
 SID = "a" * 36
 
@@ -298,7 +298,7 @@ def test_the_prompt_line_says_what_is_known_and_only_that():
              "game_title": "A Link to the Past", "player_stated": None}
     line = retro_sitting.sitting_line(open_, now=1000.0 + 47 * 60 + 5)
     assert line.startswith("Someone is playing A Link to the Past on your Retro service, for 47 min so far.")
-    assert "You do not know who holds the controller." in line and "You are not watching the screen" in line
+    assert "You do not know who holds the controller." in line and "it holds nothing you saw on the screen" in line
     told = retro_sitting.sitting_line(dict(open_, player_stated="juniper"), now=1000.0 + 50 * 60)
     assert told.startswith("Juniper is playing") and "do not know who" not in told and "3 min ago" in told
     for not_open in (None, {}, "x", dict(open_, ended_at=2000.0), {"started_at": "?", "last_input_at": 1}):
@@ -360,7 +360,9 @@ def test_the_page_routes(tmp_path, monkeypatch):
     app = FastAPI(); app.include_router(retro_routes.create_router(cfg, sitting=svc))
     good = {"Origin": "http://testserver"}
     with TestClient(app) as c:
-        assert c.get("/api/retro/sitting").json() == {"enabled": True, "sitting": None}
+        first = c.get("/api/retro/sitting").json()
+        assert first.pop("watch")["status"]["code"] == "no_sitting"   # patch 2: the watch rides along
+        assert first == {"enabled": True, "sitting": None}
         assert app.state.retro_sitting is svc                         # the gateway's shutdown finds it here
         assert c.post("/api/retro/sitting/player", json={"player": "juniper"}).status_code == 403   # no origin
         assert c.post("/api/retro/sitting/player", json={"player": "juniper"}, headers=good).status_code == 409
@@ -395,7 +397,9 @@ def test_the_game_page_works_when_the_record_cannot_be_loaded(tmp_path, monkeypa
     assert isinstance(router.retro_sitting, retro_routes.NoSitting)
     app = FastAPI(); app.include_router(router)
     with TestClient(app) as c:
-        assert c.get("/api/retro/sitting").json() == {"enabled": False, "sitting": None}
+        page = c.get("/api/retro/sitting").json()
+        assert page.pop("watch")["enabled"] is False                  # no record, no watch: the page says so
+        assert page == {"enabled": False, "sitting": None}
         assert c.post("/api/retro/sitting/player", json={"player": "guest"},
                       headers={"Origin": "http://testserver"}).status_code == 409
     none = router.retro_sitting

@@ -11,12 +11,15 @@ RUN git clone https://github.com/snes9xgit/snes9x.git /src && \
     make -C libretro -j2
 
 # N64: software rendering only (no GPU/GL context in this service). THR_AL = Angrylion
-# RDP, LLE = CXD4 RSP. The core links libGL but never calls it with Angrylion.
+# RDP, LLE = CXD4 RSP fallback, PARALLEL_RSP = jttl RSP (a JIT recompiler; the fast
+# accurate RSP for GPU-less hosts). ParaLLEl-RDP is deliberately NOT built: it asks the
+# frontend for a Vulkan hw-render context (SET_HW_RENDER) and our libretro frontend
+# (orion/retro/probe.py) implements none, so the core would refuse to start.
 FROM python@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89 AS n64
 RUN apt-get update && apt-get install -y --no-install-recommends git build-essential ca-certificates nasm libgl-dev zlib1g-dev libpng-dev
 RUN git clone https://github.com/libretro/mupen64plus-libretro-nx.git /src && \
     cd /src && git checkout 6752836de8b224febfd5708444755b77712ac939 && \
-    make -j8 HAVE_THR_AL=1 LLE=1
+    make -j8 HAVE_THR_AL=1 LLE=1 HAVE_PARALLEL_RSP=1
 
 FROM python@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

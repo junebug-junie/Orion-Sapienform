@@ -498,7 +498,8 @@ async def live(series_id: str) -> dict[str, Any]:
 
 
 def _learning_progress_read(today: date, series: tuple[str, ...]) -> dict[str, Any]:
-    since = datetime.combine(today - timedelta(days=2 * lp.WINDOW_DAYS + 1), datetime.min.time(), timezone.utc)
+    since = datetime.combine(today - timedelta(days=max(2 * lp.WINDOW_DAYS, lp.RHO_HISTORY_DAYS) + 1),
+                             datetime.min.time(), timezone.utc)
     assert _store is not None
     pairs = _store.daily_skill_pairs(series, lp.HORIZON_MIN, since)
     rosters = _store.daily_rosters(series, since)
@@ -517,6 +518,7 @@ def _learning_progress_read(today: date, series: tuple[str, ...]) -> dict[str, A
             "prior": {"start": p.prior.start.isoformat(), "end": p.prior.end.isoformat(),
                       "days": p.prior.days, "mean_skill": p.prior.mean_skill},
             "roster_changed_on": p.roster_changed_on.isoformat() if p.roster_changed_on else None,
+            "rho": p.rho, "rho_pairs": p.rho_pairs, "rho_source": p.rho_source, "se_iid": p.se_iid,
         })
     return {"as_of": today.isoformat(), "horizon_min": lp.HORIZON_MIN, "window_days": lp.WINDOW_DAYS,
             "alpha": lp.ALPHA, "min_effect": lp.MIN_EFFECT, "series": out}

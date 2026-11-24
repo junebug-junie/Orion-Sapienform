@@ -20,6 +20,8 @@ pytestmark = pytest.mark.skipif(not DSN, reason="ORION_TEST_PG_URI (throwaway da
 REPO = Path(__file__).resolve().parents[3]
 PLAY_MIGRATION = REPO / "services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql"
 WATCH_MIGRATION = REPO / "services/orion-sql-db/manual_migration_retro_watch_v1.sql"
+# Patch 2: the look counters (recovery reads notes_stored) and retro_play_sessions.looks.
+WATCH_V2_MIGRATION = REPO / "services/orion-sql-db/manual_migration_retro_watch_v2.sql"
 SID = "a" * 36
 
 
@@ -45,6 +47,7 @@ async def test_a_sitting_is_stored_and_read_back_as_a_play_arc_that_credits_orio
                 await conn.execute(PLAY_MIGRATION.read_text())
                 await conn.execute(WATCH_MIGRATION.read_text())
                 await conn.execute(WATCH_MIGRATION.read_text())          # a second apply changes nothing
+                await conn.execute(WATCH_V2_MIGRATION.read_text())
 
             async def resolve(sid): return "a-link-to-the-past", "The Legend of Zelda: A Link to the Past"
             # The play happened an hour ago by the service's clock; the rows are written now, by the

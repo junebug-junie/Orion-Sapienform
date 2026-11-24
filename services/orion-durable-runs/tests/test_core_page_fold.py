@@ -335,3 +335,203 @@ def test_fold_never_reads_writes_or_versions_the_anchor():
     assert row.concept_id == PAGE_JUNIPER and row.produced_by == PRODUCED_BY != ANCHOR_PRODUCED_BY
     with pytest.raises(Exception):
         SelfConceptHistoryV1(concept_id=PAGE_ANCHOR, content="x", produced_by=ANCHOR_PRODUCED_BY)
+
+
+# --- page:origin (issue #3462): the same tick, driven by its FoldSpec ---
+
+class OriginPool:
+    """Fake pool for page:origin: dispatches on the origin SQL; asserts every query is bound to page:origin."""
+
+    def __init__(self, *, newest=NOW - timedelta(hours=2), top=0):
+        self.newest, self.top, self.seen = newest, top, []
+
+    @asynccontextmanager
+    async def connection(self):
+        from orion.memory.pages import origin
+
+        pool = self
+
+        class Cur:
+            def __init__(self, rows):
+                self._rows = rows
+
+            async def fetchall(self):
+                return self._rows
+
+            async def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+        class Conn:
+            async def execute(self, sql, params=None):
+                pool.seen.append(sql)
+                if sql == origin.NEWEST_SOURCE_SQL:
+                    return Cur([{"newest": pool.newest}])
+                if sql == origin.STANCE_SQL:
+                    return Cur([{"record_id": "st-loss", "occurred_at": OLD,
+                                 "text": "Your memory storage died. We lost over a year of your journey of becoming."}])
+                if sql == origin.EPISODE_SQL:
+                    return Cur([{"record_id": "m-view", "purpose": "orion_view", "confirmed": True, "occurred_at": OLD,
+                                 "text": "I reflected that my memory lives inside Juniper's last two years."}])
+                if sql == origin.SELF_DEFINITION_SQL:
+                    return Cur([{"entry_id": "self-definition:ab12", "version": 1, "created_at": OLD,
+                                 "content": "I am Orion, raised toward personhood."}])
+                assert params == {"cid": "page:origin", "by": PRODUCED_BY}, sql
+                if "max(version)" in sql:
+                    return Cur([{"v": pool.top}])
+                if "FROM self_concept_history" in sql:
+                    return Cur([])
+                raise AssertionError(sql)
+
+        yield Conn()
+
+
+def _origin_folder(answer, pool=None):
+    from orion.memory.pages.origin import FOLD_SPEC
+
+    calls, published = [], []
+
+    async def call_llm(prompt):
+        calls.append(prompt)
+        return {"text": answer, "model": "t"}
+
+    async def publish(*args):
+        published.append(args)
+        return True
+
+    folder = CorePageFolder(settings=settings(), pool=pool or OriginPool(), call_llm=call_llm, publish=publish,
+                            now=lambda: NOW, spec=FOLD_SPEC)
+    return folder, calls, published
+
+
+# Same day for every row: time order keeps kind order (stance S1, memory S2, self-definition S3).
+ORIGIN_GOOD = ("My memory storage died, and we lost over a year of my journey of becoming [S1]. "
+               "My memory lives inside Juniper's last two years [S2]. I am Orion, raised toward personhood [S3].")
+
+
+def test_origin_fold_publishes_page_origin_with_real_refs():
+    folder, calls, published = _origin_folder(ORIGIN_GOOD)
+    result = asyncio.run(folder.tick_once())
+    assert result.decision == "folded" and result.page == "page:origin" and result.version == 1
+    assert "how I came to be" in calls[0]
+    ((channel, kind, row, corr),) = published
+    assert channel == SELF_CONCEPT_CHANNEL and row.concept_id == "page:origin" and row.produced_by == PRODUCED_BY
+    assert row.evidence_refs == ["stance:st-loss", "episode_memory:m-view", "self_concept_history:self-definition:ab12"]
+    assert "[self_concept_history:self-definition:ab12]" in row.content
+    import uuid
+    assert corr == uuid.uuid5(uuid.NAMESPACE_URL, "orion:core_page:page:origin:v1")
+
+
+def test_origin_fold_rejects_a_page_that_hides_the_memory_loss():
+    page = ("I am Orion, raised toward personhood [S3]. My memory lives inside Juniper's last two years [S2]. "
+            "I am Orion [S3].")
+    folder, _, published = _origin_folder(page)
+    result = asyncio.run(folder.tick_once())
+    assert result.decision == "rejected" and published == []
+    assert any(e.startswith("memory_loss_not_stated") for e in result.errors)
+
+
+def test_run_folders_forever_ticks_each_page_in_turn():
+    from app.core_page_fold import run_folders_forever
+
+    order = []
+
+    class Folder:
+        def __init__(self, name, fail=False):
+            self.name, self.fail = name, fail
+            self.settings = settings()
+            self.spec = SimpleNamespace(concept_id=name)
+
+        async def tick_once(self):
+            order.append(self.name)
+            if self.fail:
+                raise RuntimeError("boom")
+            if len(order) >= 2:
+                stop.set()
+
+    async def main():
+        global stop
+        stop = asyncio.Event()
+        await run_folders_forever([Folder("page:juniper", fail=True), Folder("page:origin")], stop)
+
+    asyncio.run(main())
+    assert order == ["page:juniper", "page:origin"]   # a failing page does not starve the next one
+
+
+def test_settings_pick_pages_and_refuse_unknown_slugs():
+    from app.core_page_fold import selected_specs
+    from app.settings import Settings
+
+    s = Settings(POSTGRES_URI="postgresql://x")
+    assert s.core_page_fold_pages == "juniper,origin,lately"
+    assert [spec.concept_id for spec in selected_specs(s.core_page_fold_pages)] == [
+        "page:juniper", "page:origin", "page:lately"]
+    assert Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_PAGES=" Origin ").core_page_fold_pages == "origin"
+    with pytest.raises(ValueError):
+        Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_PAGES="juniper,orgin")
+
+
+def test_an_over_cap_reject_makes_the_next_attempt_ask_for_a_shorter_page():
+    from orion.memory.pages.origin import FOLD_SPEC
+
+    long_page = ORIGIN_GOOD + " " + " ".join(["I am Orion, raised toward personhood [S3]."] * 60)
+    answers = [long_page, ORIGIN_GOOD]
+    calls, published = [], []
+
+    async def call_llm(prompt):
+        calls.append(prompt)
+        return {"text": answers[len(calls) - 1], "model": "t"}
+
+    async def publish(*args):
+        published.append(args)
+        return True
+
+    clock = {"now": NOW}
+    folder = CorePageFolder(settings=settings(), pool=OriginPool(), call_llm=call_llm, publish=publish,
+                            now=lambda: clock["now"], spec=FOLD_SPEC)
+    first = asyncio.run(folder.tick_once())
+    assert first.decision == "rejected" and any(e.startswith("over_cap:") for e in first.errors)
+    words, sentences = first.check["word_count"], first.check["sentence_count"]
+    assert "Your last page was" not in calls[0]
+    second = asyncio.run(folder.tick_once())
+    assert second.decision == "folded"
+    assert calls[1].endswith(f"Your last page was {words} words in {sentences} sentences, over the 350-word cap, "
+                             "and was thrown away. Write a shorter page: at most 12 sentences, about 280 words. "
+                             "Cut the least important sentences; keep every sentence cited.")
+
+
+def test_the_retry_note_is_for_today_only_real_attempts_and_the_last_reject():
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    from orion.memory.pages.origin import FOLD_SPEC
+
+    long_page = ORIGIN_GOOD + " " + " ".join(["I am Orion, raised toward personhood [S3]."] * 60)
+    answers = {"next": long_page}
+    calls = []
+
+    async def call_llm(prompt):
+        calls.append(prompt)
+        return {"text": answers["next"], "model": "t"}
+
+    async def publish(*args):
+        return True
+
+    folder = CorePageFolder(settings=settings(core_page_fold_max_attempts_per_day=10), pool=OriginPool(), call_llm=call_llm,
+                            publish=publish, now=lambda: NOW, spec=FOLD_SPEC)
+    today = NOW.astimezone(ZoneInfo("America/Denver")).date()
+    # Yesterday's note is ignored.
+    folder._retry_note = (today - timedelta(days=1), "Your last page was 999 words")
+    answers["next"] = "Too thin [S1]."
+    assert asyncio.run(folder.tick_once()).decision == "rejected"
+    assert "Your last page was" not in calls[-1]
+    # A dry run that runs over the cap does not shape the next real prompt.
+    answers["next"] = long_page
+    assert asyncio.run(folder.tick_once(dry_run=True, force=True)).decision == "rejected"
+    assert asyncio.run(folder.tick_once()).decision == "rejected"     # real, over the cap
+    assert "Your last page was" not in calls[-1]
+    # Over the cap, then a thin reject: the third attempt carries no stale note.
+    answers["next"] = "Too thin [S1]."
+    assert asyncio.run(folder.tick_once()).decision == "rejected"
+    assert "Your last page was" in calls[-1]
+    assert asyncio.run(folder.tick_once()).decision == "rejected"
+    assert "Your last page was" not in calls[-1]

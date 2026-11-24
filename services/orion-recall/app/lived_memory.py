@@ -9,9 +9,16 @@ Pipeline, once per chat turn (PCR continuity phase):
 0. **Query rewrite** (step 2, ``app/lived_rewrite.py``). A small local model reads the message
    and the last turns of the conversation and writes up to 3 short searches that name what the
    message points at ("okay, I beat it!" -> the game). Bounded by ``rewrite_timeout_sec``; on
-   timeout or error the raw message is used alone. A message below ``min_query_tokens`` content
-   words is not searched and not rewritten (step 1's floor; replay showed a rewrite bypass let
-   small talk in).
+   timeout or error the raw message is used alone.
+
+   **Short-message gate** (issue #3613). A message below ``min_query_tokens`` content words is
+   searched only when it carries signal: it names a known entity (``app/lived_entities.py``:
+   referents and people from Orion's own stores, gate ``short_entity``), or the rewrite, asked
+   the short-message question (``SHORT_PROMPT``: does a good reply need something from before
+   this conversation?), writes searches (gate ``short_rewrite``). A message with no content word
+   at all ("ok", "thanks!") is never searched and never rewritten (``short_no_content``); a
+   rewrite that answers NONE, fails or times out means no search (``short_none``). Every call
+   records its gate in the recall trace (``gate``).
 1. **Candidates, two ways, per search** (the message plus each rewrite). Meaning: embed it
    (orion-vector-host ``/embedding``, bge-large) and take the nearest docs in the
    ``orion_lived_memory`` Chroma collection. Exact words: BM25 over the same live records, so
@@ -79,6 +86,7 @@ from orion.memory.lived_memory import (
     split_doc_id,
 )
 
+from .lived_entities import EntityIndex, load_entities
 from .lived_links import SEED_DOCS, ReferentGraph, load_graph
 from .lived_rewrite import Rewriter, fetch_context
 
@@ -352,13 +360,15 @@ class LivedMemoryConfig:
     min_fit: float
     max_lines: int
     timeout_sec: float
-    # A message with fewer content words than this ("hi Orion, how are you?") has nothing to
-    # search with: greetings matched greeting-shaped stance messages by form, not content.
-    # A rare-word bypass ("Biscuit is home!") was tried and let small talk back in (13% -> 30-48%
-    # of small-talk messages injecting, replay 2026-11-17), so it is not here. A rewrite bypass
-    # (search a short message when the rewrite names something) was tried in step 2 and raised
-    # small-talk injection to 35% with no referring hit gained, so it is not here either.
+    # A message with fewer content words than this ("hi Orion, how are you?") is searched only
+    # through the short-message gate (issue #3613): it names a known entity, or the short-message
+    # rewrite judges that a reply needs a memory. Blind bypasses were tried and let small talk in:
+    # any rare word (13% -> 30-48% of small-talk messages injecting, replay 2026-11-17), and any
+    # rewrite of the general prompt (35%). Greetings matched greeting-shaped stance messages by
+    # form, not content.
     min_query_tokens: int = 0
+    # Issue #3613 rollback switch: False = the plain floor (a short message is never searched).
+    short_gate: bool = True
     # Step 2 (issue #3534). rewrite_timeout_sec bounds the pre-turn rewrite; past it the raw
     # message is used. link_top_k is how many referent neighbours join the rerank (0 = off).
     rewrite_timeout_sec: float = 2.5
@@ -380,6 +390,7 @@ class LivedMemoryRecall:
         self._by_doc: Dict[str, LivedRecord] = {}
         self._bm25: BM25 | None = None
         self._names: List[str] = []
+        self._entities: EntityIndex | None = None
         self._graph: ReferentGraph | None = None
         self._graph_loaded_at = 0.0
         self._graph_task: asyncio.Future | None = None
@@ -394,6 +405,11 @@ class LivedMemoryRecall:
                 self._by_doc = {r.doc_id: r for r in recs}
                 self._bm25 = BM25([r.text for r in recs])
                 self._names = sorted({r.text.split(",", 1)[0] for r in recs if r.kind == KIND_PERSON_FACT})
+                try:
+                    self._entities = await load_entities(self.pool)
+                except Exception as exc:  # noqa: BLE001 -- keep the last good index; none means the rewrite decides
+                    logger.warning("lived_memory_entities_unavailable error=%s kept_previous=%s",
+                                   type(exc).__name__, self._entities is not None)
                 self._loaded_at = time.monotonic()
         if self.cfg.link_top_k > 0:
             if force or self._graph_loaded_at == 0.0:
@@ -443,11 +459,24 @@ class LivedMemoryRecall:
         return await nearest(client, self.cfg.search, vector, k if not replay else k * 4)
 
     async def _rewrite(self, query: str, *, session_id: str | None, exclude_ids: Sequence[str],
-                       as_of: datetime | None) -> List[str]:
+                       as_of: datetime | None, short: bool = False) -> List[str]:
         context = await fetch_context(self.pool, session_id, before=as_of or self._clock(), exclude_text=query,
                                       exclude_ids=exclude_ids)
         assert self._rewriter is not None
+        if short:
+            return list(await self._rewriter(query, context, short=True))
         return list(await self._rewriter(query, context))
+
+    def entity_mentions(self, text: str) -> set[str]:
+        """Known entities named in ``text`` (empty when the entity index is not loaded)."""
+        return self._entities.mentions(text) if self._entities is not None else set()
+
+    def entity_name_tokens(self, text: str) -> set[str]:
+        """Words of the known entity names in ``text``: names for the exact-word fallback, so a
+        short message naming one ("vesper again?") can be served when the reranker is down."""
+        if self._entities is None:
+            return set()
+        return {t for alias in self._entities.matched_names(text) for t in tokenize(alias)}
 
     async def recall(self, query: str, *, client: httpx.AsyncClient | None = None,
                      as_of: datetime | None = None, session_id: str | None = None,
@@ -483,19 +512,47 @@ class LivedMemoryRecall:
         try:
             qtoks = set(tokenize(query))
             floor = self.cfg.min_query_tokens if min_query_tokens is None else int(min_query_tokens)
+            # Issue #3613: why this call did or did not search (persisted in the recall trace).
+            gate = GATE_WORDS
             if len(qtoks) < floor:
-                # Too few words to search with. Replay (2026-11-17) tried letting the rewrite
-                # rescue these: no referring message in the bank was this short, and small-talk
-                # injection rose from 13% to 35%. So the step 1 floor stands, and the rewrite is
-                # not even asked.
-                out.debug["skipped"] = "few_content_words"
                 out.debug["content_tokens"] = len(qtoks)
-                return out
+                if not qtoks:
+                    gate = GATE_SHORT_NO_CONTENT  # "ok", "thanks!", "haha yeah": nothing to search with
+                elif not self.cfg.short_gate:
+                    gate = GATE_SHORT_OFF         # the plain floor (switched back off)
+                else:
+                    if self._entities is None:
+                        # First call only: later calls match against the index already loaded
+                        # (at most SNAPSHOT_TTL_SEC old) and refresh it below, overlapping the rewrite.
+                        t = time.perf_counter()
+                        await self.snapshot()
+                        timings["snapshot"] = int((time.perf_counter() - t) * 1000)
+                    named = self.entity_mentions(query)
+                    if named:
+                        gate = GATE_SHORT_ENTITY
+                        out.debug["entities"] = len(named)
+                    elif rewrite and self._rewriter is not None and not long_message:
+                        # (A message too long for the rewrite with this few content words is a
+                        # pasted id or number blob: nothing to ask about.)
+                        gate = GATE_SHORT_REWRITE  # decided below, once the rewrite answers
+                    else:
+                        gate = GATE_SHORT_NONE
+                out.debug["gate"] = gate
+                if gate in (GATE_SHORT_NO_CONTENT, GATE_SHORT_NONE, GATE_SHORT_OFF):
+                    out.debug["skipped"] = "few_content_words"
+                    return out
+            else:
+                out.debug["gate"] = gate
+            short_rewrite = gate == GATE_SHORT_REWRITE
             # The rewrite starts first: it does not need the snapshot, and it is the slow part.
             rewrite_task: asyncio.Future | None = None
             rewrite_started = time.perf_counter()
             if not rewrite:
                 pass  # rewrite_info stays "off"
+            elif short_rewrite:
+                rewrite_task = asyncio.ensure_future(
+                    self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of, short=True))
+                pending.append(rewrite_task)
             elif self._rewriter is not None and not long_message:
                 rewrite_task = asyncio.ensure_future(
                     self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of))
@@ -533,6 +590,17 @@ class LivedMemoryRecall:
                 return as_of is None or rec.created_at is None or rec.created_at < as_of
 
             replay = as_of is not None
+            if short_rewrite:
+                # The short-message judgment decides whether to search at all, so nothing else
+                # (not even the embedder call) runs until it answers. NONE, a failure or a
+                # timeout: no search.
+                queries = await rewrites()
+                if not queries:
+                    out.debug["gate"] = GATE_SHORT_NONE
+                    out.debug["skipped"] = "few_content_words"
+                    return out
+                # How many known entities the searches name (the trace keeps the count; #3613 (b)).
+                out.debug["rewrite_entities"] = len(self.entity_mentions(" ; ".join(queries)))
             raw_dense = asyncio.ensure_future(self._dense(client, query, DENSE_TOP_K, replay=replay))
             pending.append(raw_dense)
             queries = await rewrites()
@@ -639,7 +707,7 @@ class LivedMemoryRecall:
             # Every id that reached the rerank, not only the injected ones (#3628): "the target was a
             # candidate but fell below the bar" is then visible in recall_telemetry.lived_trace.
             out.debug["candidate_ids"] = [r.doc_id for r in recs]
-            names = name_tokens(query, self._names)
+            names = name_tokens(query, self._names) | self.entity_name_tokens(query)
             all_tokens = set(qtoks)
             for q in queries:
                 all_tokens |= set(tokenize(q))
@@ -762,14 +830,27 @@ class LivedMemoryRecall:
                           backend=BACKEND_DEGRADED, degraded_reasons=[reason])
         query = " ".join(str(query or "").split())[:QUERY_MAX_CHARS]
         qtoks = set(tokenize(query))
-        if not query or len(qtoks) < self.cfg.min_query_tokens or self._bm25 is None:
+        # Same gate as recall(), minus the rewrite (no time left for it): the trace says which.
+        if len(qtoks) >= self.cfg.min_query_tokens:
+            gate = GATE_WORDS
+        elif not qtoks:
+            gate = GATE_SHORT_NO_CONTENT
+        elif not self.cfg.short_gate:
+            gate = GATE_SHORT_OFF
+        elif self.entity_mentions(query):
+            gate = GATE_SHORT_ENTITY
+        else:
+            gate = GATE_SHORT_NONE
+        out.debug["gate"] = gate
+        if not query or self._bm25 is None or gate not in (GATE_WORDS, GATE_SHORT_ENTITY):
             out.backend = ""  # nothing a search could have run on: no note
-            out.debug = {"timings_ms": timings, "skipped": "few_content_words_or_no_snapshot"}
+            out.debug = {"timings_ms": timings, "skipped": "few_content_words_or_no_snapshot", "gate": gate}
             return out
         lexical_best = dict(self.lexical(query))
         out.lexical_hits = len(lexical_best)
         recs = [self._by_doc[d] for d in lexical_best if d in self._by_doc]
-        chosen = lexical_fallback(recs, lexical_best, qtoks, name_tokens(query, self._names),
+        chosen = lexical_fallback(recs, lexical_best, qtoks,
+                                  name_tokens(query, self._names) | self.entity_name_tokens(query),
                                   max_lines=self.cfg.max_lines)
         if chosen:
             try:
@@ -851,6 +932,18 @@ STATUS_ERROR = "error"              # failed, and nothing was served
 STATUS_OFF = "off"                  # the reader is switched off or not started
 # `know` only: matches were found but the serving-gate re-check failed, so none could be shown.
 STATUS_UNVERIFIED = "unverified"
+# Issue #3613: why a chat-turn call did or did not search, persisted as ``lived_trace.gate``.
+# lived_status keeps the outcome (ok, below_bar, skipped_short, degraded, ...); the gate says how a
+# short message got there. A short message that searched reads e.g. status ok + gate short_entity.
+GATE_WORDS = "words"                      # at or above the content-word floor: always searched
+GATE_SHORT_ENTITY = "short_entity"        # short, but names a known entity: searched
+GATE_SHORT_REWRITE = "short_rewrite"      # short; the short-message rewrite wrote searches: searched
+GATE_SHORT_NONE = "short_none"            # short; no entity, rewrite said NONE (or failed): not searched
+GATE_SHORT_NO_CONTENT = "short_no_content"  # no content word at all: not searched, not rewritten
+GATE_SHORT_OFF = "short_off"              # short, and the gate is switched off (plain floor): not searched
+GATES = (GATE_WORDS, GATE_SHORT_ENTITY, GATE_SHORT_REWRITE, GATE_SHORT_NONE, GATE_SHORT_NO_CONTENT,
+         GATE_SHORT_OFF)
+
 STATUSES = (STATUS_OK, STATUS_BELOW_BAR, STATUS_SKIPPED_SHORT, STATUS_DEGRADED, STATUS_TIMEOUT,
             STATUS_ERROR, STATUS_OFF, STATUS_UNVERIFIED)
 
@@ -893,6 +986,10 @@ def trace_of(debug: Dict[str, Any] | None) -> Dict[str, Any]:
         "candidate_ids": [str(x) for x in (d.get("candidate_ids") or [])][:TRACE_MAX_IDS],
         "injected_ids": [str(x.get("id")) for x in (d.get("injected") or []) if isinstance(x, dict)][:TRACE_MAX_IDS],
     }
+    if d.get("gate"):  # #3613: why this chat-turn call did or did not search
+        out["gate"] = str(d["gate"])
+    if d.get("rewrite_entities") is not None:  # known entities the short-message searches named
+        out["rewrite_entities"] = int(d["rewrite_entities"])
     if d.get("weak_ids"):
         out["weak_ids"] = [str(x) for x in d["weak_ids"]][:TRACE_MAX_IDS]
     if d.get("recheck_dropped"):  # the serving gate removed these after the snapshot
@@ -981,7 +1078,7 @@ def items_for(chosen: Sequence[Scored]) -> List[Dict[str, Any]]:
 
 __all__ = [
     "BACKEND_DEGRADED", "BACKEND_HYBRID", "BM25", "DEGRADED_EMPTY_NOTE", "DEGRADED_EMPTY_NOTE_RERANKED",
-    "KNOW_MAX_HITS", "KnowResult", "STATUSES",
+    "GATES", "KNOW_MAX_HITS", "KnowResult", "STATUSES",
     "DEGRADED_HEADER", "HEADER", "KINDS", "LivedMemoryConfig", "LivedMemoryRecall", "LivedRecall", "SOURCE",
     "index_loop", "items_for", "lexical_fallback", "name_tokens", "rank", "recency", "render_line",
     "rerank_query", "rrf", "run_index_pass",

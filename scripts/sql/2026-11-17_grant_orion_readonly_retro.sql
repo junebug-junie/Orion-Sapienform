@@ -10,7 +10,7 @@
 --
 -- Read-only grant, not under services/orion-sql-db/: GRANT is not on the post-pull auto-apply
 -- allowlist. Apply by hand (from the host), on Juniper's word:
---   docker exec orion-athena-sql-db psql -U postgres -d conjourney -f - < scripts/sql/2026-11-17_grant_orion_readonly_retro.sql
+--   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -f - < scripts/sql/2026-11-17_grant_orion_readonly_retro.sql
 
 BEGIN;
 

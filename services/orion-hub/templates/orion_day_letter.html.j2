@@ -60,6 +60,19 @@
 </td></tr>
 {% endif %}
 
+{% if dream_day %}
+{#- Day-dream Patch 3: last night's day dream for this day, or the one line saying why there is none. -#}
+{{ heading(dream_day_heading) }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="dream-day">
+{% if dream_day.produced %}
+{% if dream_day.text %}<p style="margin:8px 0 8px 0;">{{ dream_day.text }}</p>{% endif %}
+<p style="margin:0 0 12px 0;font-size:12px;color:{{ muted }};">Memories I wrote: {% if dream_day.memory_ids %}{% for mid in dream_day.memory_ids %}<code style="font-family:Menlo,Consolas,monospace;">{{ mid }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}</p>
+{% else %}
+<p style="margin:8px 0 12px 0;color:{{ muted }};">{{ dream_day.line }}</p>
+{% endif %}
+</td></tr>
+{% endif %}
+
 {% if organ_roundup %}
 {#- Integration patch 4: the daily organ roundup the letter read, every line as written (counts, quotes,
     refs). Monospace so the indented item lines stay under their organ. -#}

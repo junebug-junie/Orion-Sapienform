@@ -40,6 +40,7 @@ on:
       - "orion/consult/core.py"
       # The day letter as Prime's end-of-day turn (living Prime Part 3) orders through this contract.
       - "orion/schemas/orion_day.py"
+      - "orion/schemas/dream_day.py"
       # Intentions Prime takes on (choice-as-EFE Step -1) order and deliver through this contract.
       - "orion/schemas/intention.py"
       # Prime's choice point publishes this contract (personality rev 4).
@@ -79,6 +80,7 @@ on:
       - "orion/consult/core.py"
       # The day letter as Prime's end-of-day turn (living Prime Part 3) orders through this contract.
       - "orion/schemas/orion_day.py"
+      - "orion/schemas/dream_day.py"
       # Intentions Prime takes on (choice-as-EFE Step -1) order and deliver through this contract.
       - "orion/schemas/intention.py"
       # Prime's choice point publishes this contract (personality rev 4).

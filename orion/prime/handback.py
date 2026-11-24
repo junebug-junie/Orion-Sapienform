@@ -19,7 +19,8 @@ from its correlation id, ``turn_concern_id``). Per finished turn Prime keeps:
 
 * who: ``chat_juniper`` (a turn Juniper sent from a Hub browser surface; an /api/chat post from an eval or a
   coding session is not handed back, #3602), ``curiosity``, ``consult``, ``letter`` or ``intention`` (the carry
-  turn of a concern Prime took on, orion/prime/intention.py; its promises open no concern). Every other session
+  turn of a concern Prime took on, orion/prime/intention.py; its promises open no concern) or ``play`` (a line
+  Orion spoke while someone played, or a guest's message from the game page; game company patch 3). Every other session
   (world-pulse reads, self-sense evals, PR field notes, reminiscence, outreach) is not handed back: those are
   ~90% of turns (live 11-09..11-12) and are not threads of Orion's own life with anyone;
 * a one-line gist, cut from the prompt and the reply (code, not a model);
@@ -75,13 +76,14 @@ from orion.regulation.juniper_turns import is_browser_surface_turn
 TURNS_KEY = "orion:prime:turns"
 HANDBACK_CHANNEL = "orion:cockpit:hop"
 
-TurnWho = Literal["chat_juniper", "curiosity", "consult", "letter", "intention"]
+TurnWho = Literal["chat_juniper", "curiosity", "consult", "letter", "intention", "play"]
 WHO_WORDS: dict[str, str] = {
     "chat_juniper": "chat with Juniper",
     "curiosity": "curiosity run",
     "consult": "consult with Claude",
     "letter": "day letter",
     "intention": "carry turn for something I took on",
+    "play": "game sitting",
 }
 
 CURIOSITY_SESSION_ID = "orion_curiosity"
@@ -91,6 +93,10 @@ CONSULT_SESSION_PREFIX = "consult-"
 LETTER_SESSION_ID = "orion_day_letter"
 # The carry turn of an intention Prime took on (orion/schemas/intention.py INTENTION_SESSION_ID; a test pins the two).
 INTENTION_SESSION_ID = "orion_intention"
+# Game company patch 3: the ingress raw of a line turn carries source "retro_commentary"; a guest's message from the
+# game page carries chat_history_source "retro_guest" (the chat_history_log source Hub writes for it).
+PLAY_LINE_SOURCE = "retro_commentary"
+PLAY_GUEST_SOURCE = "retro_guest"
 # Loop guard (choice-as-EFE design Step -1, "Dangerous failure"): a carry turn's own promises open no concern.
 NO_THREAD_WHO = frozenset({"intention"})
 # Orion's own system sessions are named orion_*; a Hub chat turn Juniper sent from a browser surface carries
@@ -216,6 +222,11 @@ def classify_who(session_id: Optional[str], raw: dict[str, Any]) -> Optional[Tur
         return "letter"
     if sid == INTENTION_SESSION_ID:
         return "intention"
+    # Game company patch 3 (spec rev 4 section 6 seam 3): a line Orion spoke while someone played, and a guest's
+    # message from the game page, are play. Checked BEFORE Juniper's chat: a line runs in her chat session and a
+    # guest types on a browser surface, so without this order either would be recorded as Juniper speaking.
+    if raw.get("source") == PLAY_LINE_SOURCE or raw.get("chat_history_source") == PLAY_GUEST_SOURCE:
+        return "play"
     # Juniper's chat is a turn a Hub browser surface sent (#3602): the same rule the promise ledger and the
     # report use (orion/regulation/juniper_turns.py ``is_browser_surface_turn``). ``mode`` alone is not enough:
     # an eval script or a coding session posting to /api/chat carries ``mode`` but no ``surface_context``
@@ -325,6 +336,7 @@ PROMISE_TO: dict[str, str] = {
     "consult": "in a consult with Claude",
     "letter": "in a day letter",
     "intention": "in a carry turn",
+    "play": "during a game sitting",
 }
 
 

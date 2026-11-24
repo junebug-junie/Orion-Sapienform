@@ -86,6 +86,8 @@ ARC_SOURCE_TABLES = (
     "self_monitor",
     # Office sessions (2026-11-05): the final visit row that labels an office company arc.
     "vision_office_session",
+    # Game company patch 3: a settled checked_holds look (source retro_look) opens/refreshes a play arc.
+    "retro_watch_look",
 )
 
 # Families with an explicit (non-direct) join path. Any other actor links only through a

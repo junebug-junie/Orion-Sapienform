@@ -34,9 +34,9 @@ def answers(*texts):
     return ask, seen
 
 
-def vote(relation, conf=0.9, same="yes", reason="r", kind="lasting_state", changed="yes"):
-    return json.dumps({"a_kind": kind, "b_says_a_wrong_or_changed": changed, "same_attribute": same,
-                       "relation": relation, "confidence": conf, "reason": reason})
+def vote(relation, conf=0.9, same="yes", reason="r", kind="lasting_state", changed="yes", referent="yes"):
+    return json.dumps({"a_kind": kind, "b_says_a_wrong_or_changed": changed, "same_referent": referent,
+                       "same_attribute": same, "relation": relation, "confidence": conf, "reason": reason})
 
 
 COR = vote("correction", reason="B says the pet is a dog, A said a cat.")
@@ -429,3 +429,172 @@ def test_missing_or_mixed_checklist_fields():
     assert plan["check_errors"] == 0 and plan["refused_because"] == []    # abstained, plan not held
     assert not s.parse_vote(vote("update", kind="measurement")).acting
     assert not s.parse_vote(vote("update", changed="no")).acting
+
+
+def test_a_correction_needs_the_same_specific_referent():
+    """v3.2: a shared project word is not the same item (two pairs Juniper rejected, 2026-11-18)."""
+    assert not s.parse_vote(vote("correction", kind="measurement", referent="no")).acting
+    assert not s.parse_vote(vote("update", referent="no")).acting
+    missing = json.loads(vote("correction"))
+    del missing["same_referent"]
+    v = s.parse_vote(json.dumps(missing))
+    assert v.error is None and not v.acting                     # missing = abstain, not an error
+    ask, seen = answers(vote("correction", referent="no"))
+    c = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert not c.acts and c.abstain == "checklist:correction" and len(seen) == 1
+    assert '"same_referent"' in s.build_classify_prompt(OLD, NEW)
+
+
+def test_a_named_pr_needs_the_same_number_in_b():
+    """v3.3: Juniper's rejected pair, made up: a named PR's deploy vs a general 'nothing deployed'."""
+    a = row("a", "Juniper said the login fix is deployed and linked PR #41.")
+    b = row("b", "Juniper said nothing is deployed yet; the ticket closes when a fix lands.", days=14)
+    same = row("c", "Juniper said PR #41 is not deployed after all.", days=1)
+    assert s.numbered_items(a.statement) == {"41"} and not s.same_numbered_item(a, b) and s.same_numbered_item(a, same)
+    assert s.same_numbered_item(row("x", "Biscuit is a cat."), b)          # A names no number: no constraint
+    ask, seen = answers()
+    v = asyncio.run(s.classify_pair(a, b, ask, budget=[3]))
+    assert not v.acts and not v.juniper_acts and v.abstain == s.NUMBERED_ITEM_NOT_IN_B and seen == []
+    ask, _ = answers(*(vote("correction", kind="event"),) * 3)
+    assert asyncio.run(s.classify_pair(a, same, ask)).acts
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("text,ids", [
+    ("merged PR #2968, then left", {"2968"}), ("see #41.", {"41"}), ("PR-41 and PRs 42", {"41", "42"}),
+    ("issues 12 and ticket #0099", {"12", "99"}), ("orion#41", {"41"}),
+    ("about 40 W in 2026-11-18", set()), ("#1 and PR 7", set()), ("# 2026 review", set()), ("abc#41st", set()),
+])
+def test_numbered_items_regex(text, ids):
+    assert s.numbered_items(text) == ids
+
+
+def test_numbered_rule_edge_cases():
+    a2 = row("a2", "PR #14 and PR #15 are deployed.")
+    assert s.same_numbered_item(a2, row("b2", "PR #15 is not deployed.", days=1))       # one of two named
+    a = row("a", "Juniper said the fix is PR #14.")
+    assert s.same_numbered_item(a, row("b", "It was PR #41, not #14.", days=1))          # renumbering that names the old one
+    assert not s.same_numbered_item(a, row("c", "It was PR #41.", days=1))               # blocked: an accepted cost
+
+
+def test_juniper_words_correct_a_numbered_item_without_restating_it():
+    """v3.5: her verified words outrank the number rule, but still need every vote acting with the
+    same referent; the strict (model-only) path never bypasses it."""
+    a = row("a", "Juniper said the login fix is deployed and linked PR #41.")
+    hers = row("b", "Juniper said: no, that login fix is not deployed, I reverted it.", days=1)
+    hers = replace(hers, voice="juniper_said", juniper_quoted=True)
+    ask, seen = answers(*(vote("correction", kind="event"),) * 3)
+    v = asyncio.run(s.classify_pair(a, hers, ask))
+    assert not v.acts and v.juniper_acts and len(seen) == 3 and v.abstain == s.NUMBERED_JUNIPER_ONLY
+    ask, _ = answers(vote("correction", kind="event"), vote("update"), vote("correction", kind="event"))
+    v = asyncio.run(s.classify_pair(a, hers, ask))
+    assert v.juniper_acts and v.relation == "correction"      # split votes, majority correction, her path
+    two = row("a2", "Juniper said the login fix is in PR #41 and deployed.", days=0)
+    cands = s.candidates_for(hers, corpus(a, two, hers), dense={"a": 0.8, "a2": 0.79})
+    ask, _ = answers(*(vote("correction", kind="event"),) * 6)
+    links, _ = asyncio.run(s.check_pairs(hers, cands, ask))
+    assert links == []                                          # two qualify: no clear target
+    ask, _ = answers(vote("correction", kind="event", referent="no"))
+    v = asyncio.run(s.classify_pair(a, hers, ask))
+    assert not v.juniper_acts and v.abstain == "checklist:correction"
+    cands = s.candidates_for(hers, corpus(a, hers), dense={"a": 0.8})
+    ask, _ = answers(*(vote("correction", kind="event"),) * 3)
+    links, _ = asyncio.run(s.check_pairs(hers, cands, ask))
+    assert [(l.old_id, l.path) for l in links] == [("a", "juniper")]
+    plan = asyncio.run(s.plan_for_new_rows([hers], corpus(a, hers), answers(*(vote("correction", kind="event"),) * 3)[0],
+                                           dense=_dense({"a": 0.8}), apply_gate=OPEN))
+    assert len(plan["links"]) == 1 and plan["abstained"] == {}     # a linked pair is not counted as abstained
+
+
+def test_the_plan_counts_why_pairs_abstained():
+    a = row("old", "Juniper said the login fix is deployed (PR #41).", refs=("pet:biscuit",))
+    ask, seen = answers()
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(a), ask, dense=_dense({"old": 0.75}), apply_gate=OPEN))
+    assert plan["abstained"] == {s.NUMBERED_ITEM_NOT_IN_B: 1} and seen == []
+    assert plan["decisions"][0]["abstain"] == s.NUMBERED_ITEM_NOT_IN_B
+
+
+def test_index_dense_retries_once_then_refuses(monkeypatch):
+    import orion.introspect.semantic_index as si
+
+    calls = []
+
+    async def flaky_embed(client, cfg, text, *, doc_prefix):
+        calls.append(1)
+        if len(calls) == 1:
+            raise si.SearchUnavailableError("chroma unavailable: ReadTimeout")
+        return [0.1], "m"
+
+    async def near(client, cfg, vector, n, *, where=None):
+        return [("episode_memory:abc", 0.9)]
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(si, "embed", flaky_embed)
+    monkeypatch.setattr(si, "nearest", near)
+    monkeypatch.setattr(s.asyncio, "sleep", no_sleep)
+    cfg = si.SearchConfig(chroma_url="http://c", embed_url="http://e", collection="x", min_similarity=0.0)
+    got = asyncio.run(s.index_dense(cfg)("statement"))
+    assert len(calls) == 2 and got is not None
+
+    async def always_down(client, cfg, text, *, doc_prefix):
+        calls.append(1)
+        raise si.SearchUnavailableError("down")
+
+    calls.clear()
+    monkeypatch.setattr(si, "embed", always_down)
+    dense = s.index_dense(cfg)
+    assert asyncio.run(dense("statement")) is None and len(calls) == 1     # "down" is not transient
+    async def timeout_down(client, cfg, text, *, doc_prefix):
+        calls.append(1)
+        raise si.SearchUnavailableError("chroma unavailable: ReadTimeout")
+    calls.clear()
+    monkeypatch.setattr(si, "embed", timeout_down)
+    dense = s.index_dense(cfg)
+    assert asyncio.run(dense("one")) is None and len(calls) == 2           # one retry
+    assert asyncio.run(dense("two")) is None and len(calls) == 3           # the plan's retry is spent
+
+
+def test_plan_records_dense_time_and_retries():
+    async def dense(_statement):
+        return {"old": 0.75}
+    dense.retries = lambda: 1
+    ask, _ = answers(*COR3)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=dense, apply_gate=OPEN))
+    assert plan["dense_calls"] == 1 and plan["dense_ms"] >= 0 and plan["dense_retries"] == 1
+
+
+def test_record_run_derives_abstained_from_decisions_on_every_path():
+    class Conn:
+        def __init__(self):
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.params = params
+
+    conn = Conn()
+    plan = {"apply": "on", "check_version": s.CHECK_VERSION,
+            "decisions": [{"old_id": "a", "new_id": "b", "abstain": "vote:compatible", "linked": False},
+                          {"old_id": "c", "new_id": "b", "abstain": "", "linked": True}]}
+    asyncio.run(s.record_run(conn, run_id="pass_apply:x", source="pass_apply", plan=plan))
+    counts = conn.params[9].obj
+    assert counts["abstained"] == {"vote:compatible": 1}
+
+
+def test_record_run_counts_apply_outcomes_from_per_pair_decisions():
+    class Conn:
+        params = None
+
+        async def execute(self, sql, params):
+            Conn.params = params
+
+    plan = {"apply": "on", "check_version": s.CHECK_VERSION, "dense": "on",
+            "decisions": [{"old_id": "a", "new_id": "b", "outcome": "applied"},
+                          {"old_id": "c", "new_id": "d", "outcome": "undone_never_reapplied"},
+                          {"old_id": "e", "new_id": "f", "outcome": "applied"}]}
+    asyncio.run(s.record_run(Conn(), run_id="pass_apply:y", source="pass_apply", plan=plan, applied=[{}, {}]))
+    counts = Conn.params[9].obj
+    assert counts["outcomes"] == {"applied": 2, "undone_never_reapplied": 1} and "abstained" not in counts

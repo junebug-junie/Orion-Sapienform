@@ -49,10 +49,12 @@ _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
 field_notes: Any = None     # app.pr_field_note_poll.FieldNotePoller while PR_FIELD_NOTES_ENABLED (Patch 2)
 _field_notes_task: asyncio.Task | None = None
-core_pages: Any = None      # app.core_page_fold.CorePageFolder while ORION_CORE_PAGES_ENABLED
+core_pages: dict[str, Any] = {}   # slug -> app.core_page_fold.CorePageFolder while ORION_CORE_PAGES_ENABLED
 _core_pages_task: asyncio.Task | None = None
 reminiscence: Any = None    # app.reminiscence_poll.ReminiscenceTicker while REMINISCENCE_ENABLED (Patch 2)
 _reminiscence_task: asyncio.Task | None = None
+dream_day: Any = None       # app.dream_day_poll.DreamDayTicker while DREAM_DAY_ENABLED (day dream Patch 2)
+_dream_day_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
 claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
@@ -583,6 +585,7 @@ def _build_chronicle():
         exclude_kinds=tuple(k for k, on in (("arousal_transition", s.temporal_self_strain_arcs_enabled),
                                             ("body_binding", s.temporal_self_binding_arcs_enabled),
                                             ("retro_play", s.temporal_self_retro_play_enabled),
+                                            ("retro_look", s.temporal_self_retro_look_enabled),
                                             ("street_event", s.temporal_self_street_episodes_enabled),
                                             ("office_session", s.temporal_self_office_sessions_enabled),
                                             ("faculty_status_changed", s.self_monitor_enabled)) if not on)),
@@ -624,7 +627,7 @@ def _build_personality():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
-    global field_notes, _field_notes_task, reminiscence, _reminiscence_task
+    global field_notes, _field_notes_task, reminiscence, _reminiscence_task, dream_day, _dream_day_task
     global rpc_health_publisher, situation, temporal_self, personality, market, cooling_act, _cooling_act_task
     global checkpoint_prune, _checkpoint_prune_task
     global core_pages, _core_pages_task, _market_refresh_task
@@ -696,14 +699,21 @@ async def lifespan(app: FastAPI):
             if rpc_bus is None:
                 logger.warning("core_page_fold_not_started reason=no_bus")
             else:
-                # Core memory pages Phase 1a: Orion's page:juniper, folded overnight (app/core_page_fold.py).
-                from app.core_page_fold import CorePageFolder, bus_llm_caller, bus_publisher, service_source
+                # Core memory pages: Orion's page:juniper, page:origin and page:lately, folded overnight one
+                # after the other (app/core_page_fold.py; CORE_PAGE_FOLD_PAGES picks which).
+                from app.core_page_fold import (
+                    CorePageFolder, bus_llm_caller, bus_publisher, run_folders_forever, selected_specs, service_source,
+                )
 
                 source = service_source(_settings)
-                core_pages = CorePageFolder(
-                    settings=_settings, pool=_checkpointer_cm,
-                    call_llm=bus_llm_caller(rpc_bus, _settings, source), publish=bus_publisher(rpc_bus, source))
-                _core_pages_task = asyncio.create_task(core_pages.run_forever(_stop))
+                call_llm, publish = bus_llm_caller(rpc_bus, _settings, source), bus_publisher(rpc_bus, source)
+                fold_lock = asyncio.Lock()   # one fold at a time across pages, loop and manual trigger alike
+                core_pages = {
+                    spec.slug: CorePageFolder(settings=_settings, pool=_checkpointer_cm, call_llm=call_llm,
+                                              publish=publish, spec=spec, lock=fold_lock)
+                    for spec in selected_specs(_settings.core_page_fold_pages)
+                }
+                _core_pages_task = asyncio.create_task(run_folders_forever(list(core_pages.values()), _stop))
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -728,6 +738,12 @@ async def lifespan(app: FastAPI):
                                                   ledger=ReminiscenceLedger(_settings.reminiscence_ledger_dir,
                                                                             _settings.reminiscence_repo_dir))
                 _reminiscence_task = asyncio.create_task(reminiscence.run_forever(_stop))
+            if _settings.dream_day_enabled:
+                # The day dream Patch 2: one dream.day run a Denver night, for the day that just closed.
+                from app.dream_day_poll import DreamDayTicker
+
+                dream_day = DreamDayTicker(settings=_settings, pool=admission.pool, submit=admission.submit)
+                _dream_day_task = asyncio.create_task(dream_day.run_forever(_stop))
         if _settings.orion_bus_enabled:
             patterns = [_settings.request_channel, RESOURCE_EVENT_CHANNEL]
             if admission is not None:
@@ -765,6 +781,8 @@ async def lifespan(app: FastAPI):
             _field_notes_task.cancel()
         if _reminiscence_task is not None:
             _reminiscence_task.cancel()
+        if _dream_day_task is not None:
+            _dream_day_task.cancel()
         if _core_pages_task is not None:
             _core_pages_task.cancel()
         if _cooling_act_task is not None:
@@ -831,22 +849,30 @@ async def health() -> dict[str, Any]:
         "field_note_poll": field_notes.health() if field_notes is not None else None,
         # Daily reminiscence Patch 2: the last tick's decision (episode, week, run submitted or why not).
         "reminiscence_tick": reminiscence.health() if reminiscence is not None else None,
-        # Core memory pages Phase 1a: the last page:juniper fold tick (decision, version, check; no text).
-        "core_page_fold": core_pages.health() if core_pages is not None else None,
+        # The day dream Patch 2: the last night tick's decision (day, run submitted or why not).
+        "dream_day_tick": dream_day.health() if dream_day is not None else None,
+        # Core memory pages: the last page:juniper fold tick (decision, version, check; no text). Kept as
+        # its own key so existing readers of /health see the same shape.
+        "core_page_fold": core_pages["juniper"].health() if "juniper" in core_pages else None,
+        # Every folded page's last tick, by slug (page:juniper repeated here, page:origin, ...).
+        "core_page_folds": {slug: folder.health() for slug, folder in core_pages.items()} or None,
         # LangGraph checkpoint pruning: mode (dry_run ships), last pass's totals / deletions.
         "checkpoint_prune": (checkpoint_prune.health() if checkpoint_prune is not None
                              else {"mode": _settings.checkpoint_prune_mode}),
     }
 
 
-@app.post("/core-pages/juniper/fold")
-async def core_page_juniper_fold(dry_run: bool = True) -> dict[str, Any]:
-    """Fold page:juniper now, at any hour, skipping the once-a-day and no-change gates. ``dry_run``
-    (the default) returns the page and its cite check and publishes nothing; ``dry_run=false``
-    publishes a passing page as the next live version."""
-    if core_pages is None:
+@app.post("/core-pages/{slug}/fold")
+async def core_page_fold_now(slug: str, dry_run: bool = True) -> dict[str, Any]:
+    """Fold one page (``juniper``, ``origin``) now, at any hour, skipping the once-a-day and no-change
+    gates. ``dry_run`` (the default) returns the page and its cite check and publishes nothing;
+    ``dry_run=false`` publishes a passing page as the next live version."""
+    if not core_pages:
         raise HTTPException(503, "core pages are off (ORION_CORE_PAGES_ENABLED / bus)")
-    result = await core_pages.tick_once(dry_run=dry_run, force=True)
+    folder = core_pages.get(slug.strip().lower())
+    if folder is None:
+        raise HTTPException(404, f"no core page {slug!r} folds here (CORE_PAGE_FOLD_PAGES: {sorted(core_pages)})")
+    result = await folder.tick_once(dry_run=dry_run, force=True)
     return result.as_dict()
 
 
@@ -865,6 +891,71 @@ async def reminiscence_plan(any_hour: bool = False) -> dict[str, Any]:
     # (five hops written and a failed run today: the first step is the cross-read)
     return {**result.as_dict(), "first_step": first,
             "first_prompt": build_prompt(req.brief, first) if req is not None and first else None}
+
+
+@app.get("/dream-day/plan")
+async def dream_day_plan(day: str | None = None) -> dict[str, Any]:
+    """Read-only: what the night tick would do now (or, with ``day``, what a hand trigger for that closed Denver
+    day would do), with the turn's prompt as the gather step would build it from an EMPTY material (the real
+    gather reads the now, which stores a shown row, so a plan never runs it). Submits nothing."""
+    from datetime import date as _date, datetime, timezone
+
+    from app.dream_day_graph import build_prompt
+    from orion.memory.dream_day import day_window
+    from orion.schemas.dream_day import DreamDayMaterialV1
+
+    if dream_day is None:
+        raise HTTPException(503, "the day dream is off (DREAM_DAY_ENABLED / admission)")
+    if day:
+        try:
+            result = await dream_day.submit_for(_date.fromisoformat(day), dry_run=True)
+        except ValueError as exc:
+            raise HTTPException(400, f"day is not a date: {day!r}") from exc
+    else:
+        result = await dream_day.tick_once(dry_run=True)
+    req = result.request if result.decision == "would_submit" else None
+    prompt = None
+    if req is not None:
+        lo, hi = day_window(req.brief.day)
+        prompt = build_prompt(req.brief, DreamDayMaterialV1(day=req.brief.day, window_start=lo, window_end=hi,
+                                                            gathered_at=datetime.now(timezone.utc)))
+    return {**result.as_dict(), "prompt": prompt}
+
+
+@app.get("/dream-day/result")
+async def dream_day_result(day: str) -> dict[str, Any]:
+    """The stored night for one Denver day, for Prime (day-dream Patch 2b): ``found``, ``run_id``, ``produced``
+    and the ref-checked ``plan`` (``DreamDayPlanItemV1`` dicts). Read-only. ``found: false`` when no row exists."""
+    from datetime import date as _date
+
+    from app.dream_day_store import read_result
+
+    if dream_day is None:
+        raise HTTPException(503, "the day dream is off (DREAM_DAY_ENABLED / admission)")
+    try:
+        target = _date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(400, f"day is not a date: {day!r}") from exc
+    return (await read_result(dream_day.pool, target)) or {"day": target.isoformat(), "found": False}
+
+
+@app.post("/dream-day/run")
+async def dream_day_run(day: str) -> dict[str, Any]:
+    """The hand trigger: submit one dream.day run for a closed Denver day of the last week, outside the night
+    window (deadline 3 h). Same idempotency as the tick: a day with a dream_day row, or a run in flight or
+    completed, is refused with the reason. Writes real memories (channel 'dream') when the run completes."""
+    from datetime import date as _date
+
+    if dream_day is None:
+        raise HTTPException(503, "the day dream is off (DREAM_DAY_ENABLED / admission)")
+    try:
+        target = _date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(400, f"day is not a date: {day!r}") from exc
+    result = await dream_day.submit_for(target)
+    if result.decision != "submitted":
+        raise HTTPException(409, result.as_dict())
+    return result.as_dict()
 
 
 @app.post("/pr-field-notes/poll")

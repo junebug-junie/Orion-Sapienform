@@ -1,6 +1,6 @@
 # Game company: Orion watches, comments and chats while someone plays
 
-Status: DESIGN, revision 4. Step 0 has run (2026-11-17, see "Step 0 results"). Patch 1 is merged (PR #3627); its live proof is #3626. Patch 2 waits for Juniper's go.
+Status: revision 4. Step 0 has run (2026-11-17). Patch 1 is merged and deployed (PR #3627; live proof #3626). Patch 2 is merged and deployed (PR #3727; live proof #3726; no look has run on real play yet). Patch 3 is PR #3745 (live proof #3741). The unscripted note-quality check (patch 2 acceptance) has not run: it runs on the first live notes, and Juniper sets the bar.
 Date: 2026-11-16. All live numbers were read on 2026-11-16 unless a line says otherwise.
 Ticket: #3500.
 
@@ -400,7 +400,11 @@ Every part of the play lands in `temporal_self_event`, through the experience co
   - **A look's event is written only when a turn checked it and it held.** Each note ends in one of three buckets: `contradicted`, `checked_holds`, `unchecked`. A line turn that saw frames from the note's window judges it, also when the turn passes (the judgment is part of the turn's output, not of the line). Only `checked_holds` becomes an event. `unchecked` (quiet mode, refused line bids, a note no turn could see) and `contradicted` stay in `retro_watch_look` with their bucket, and never reach the day. The sitting's own event carries the counts of all three.
   - **Expected share.** Looks are at least 60 seconds apart and a turn sees frames of the last 30 seconds, so at most one of 12 shown notes is checkable: about 8%. So few looks will become events. That is the price of not putting unjudged notes into the day.
   - **The label says it is a look.** "Saw on the game screen: <note>". Every reader that copies a label into a prompt carries those words with it, so no reader has to know the source kind to treat it as unverified.
-  - Readers found that put an event label into a prompt: `orion/prime/thought.py`, `orion/prime/hunger.py`, `orion/curiosity/now_section.py`, `services/orion-thought/app/temporal_self_cue.py`. Not yet checked: the dream cycle, `orion/orion_day/gather.py`, world-pulse resonance, dig. Patch 2 finishes that list before the source is turned on.
+  - Readers that put an event label into a prompt. The list was finished by patch 2 (read-only audit, 2026-11-18); the `retro_look` source is not turned on until patch 3. An arc's `subject_label` is the label of its event (`orion/temporal_self/arcs.py`), so an arc reader carries the event label too.
+    - Event or now labels: `orion/prime/thought.py` (Prime's thought), `orion/prime/hunger.py` (hunger content), `orion/curiosity/now_section.py` (curiosity kickoff), `services/orion-thought/app/temporal_self_cue.py` (the now block in reverie narration), `orion/dig/organs.py` (`dig organs` prints labels into a turn's tool result).
+    - Arc labels: the dream cycle (`services/orion-dream/app/replay.py` arc candidates, into `recombine.py`'s prompt); the day letter through `orion/temporal_self/day_block.py` and `orion/orion_day/temporal_core.py` (`orion/orion_day/gather.py` reads no label column itself); world-pulse resonance (`orion/world_pulse_read/resonance_retrieval.py`, into the judge prompt); the chat stance cue (`orion/temporal_self/stance_cue.py`); recent arcs in reverie (`orion/temporal_self/recent_arcs.py`); `dig arc <id>` (`orion/refs.py`).
+    - Not traced to a prompt: `orion/world_pulse_read/resonance_findings.py` (excerpts of arc labels), `orion/prime/block.py`'s "tending" line, and the result file `dig days` writes beside its printout.
+    - So the "Saw on the game screen:" prefix is what reaches every one of them: no reader needs to know the source kind.
 - **The lines.** A line is Orion's own chat row, with no prompt. The existing rule already keeps such a row from opening or extending a conversation (`orion/temporal_self/sources.py:103`). So four hours of lines do not read as "Talked with Juniper". Orion asked this in question 8.
 - **The chat box.** A message from Juniper is a conversation turn, as it should be. A guest's message is not (section 5).
 - **One live arc.** The kind `play` is already in the arc list (`orion/schemas/temporal_self.py:118`, `orion/temporal_self/day_block.py:43`). No new kind is added. Today a play arc is "one finished Retro session". With looks, the arc opens at the first settled look of a sitting and closes with the `human_play` row. A look settles at the next line turn or at the close, so the arc can open some minutes after play starts. While someone plays, Orion's day holds an open play arc. The chat stance already has a clause for play arcs (`orion/temporal_self/stance_cue.py:311`).
@@ -906,3 +910,18 @@ Patch 1, on Juniper's go. It uses no GPU, and it ends the state where 27 hours o
 Patch 1 is merged (PR #3627). Its live proof is #3626.
 
 Patch 2 next, on Juniper's go only. It starts with the per-game floor table and the reader list from section 8, then the look.
+
+Patch 2 is built on branch `feat/retro-look` (report `docs/superpowers/pr-reports/2026-11-18-retro-look-pr.md`). Two choices made while building it, each with its reason:
+
+- `hub.retro_watch` has `deferrable_window_s: 60`, not 0. `orion/physiology/families.py` refuses 0 for a bidding family: the window is also its hunger clock. The producer still never holds a want: only `funded` runs a look.
+- The calibration histogram uses each check's change over the last 30 s (the look's own window), not its 2-second step. On the step 0 frames the 30-second value separates still from play on A Link to the Past and the 2-second step does not (`services/orion-hub/evals/retro_look_replay.py`).
+
+Patch 3 is built on branch `feat/retro-lines` (report `docs/superpowers/pr-reports/2026-11-18-retro-lines-pr.md`). Choices made while building it, each with its reason:
+
+- **The outreach door carries the line's own GPU hold.** `compose` gained `gpu_lease` (with `attachments`, `source`, a cockpit sink and a session). The line takes a hold of class `chat` at priority `system` and the turn rides it, as a durable turn does: pre-turn check, stance, motor and finalize attach to the hold through the held route, whose priority is `system` in `config/gpu_pool.yaml`. A test reads that file; the line refuses to start if it ever reads `interactive`.
+- **Every person's message yields a running line**, a guest's chat-box message too: the chat lane runs one turn at a time, and the player's turn goes first whoever the player is.
+- **The frames route is loopback plus the Retro hub token.** tailscale serve also reaches the gateway from loopback, so the address alone would admit a browser.
+- **The near-copy cut-off is 0.45**, from the step 0 notes (no live look existed): every pair of notes about different sequences scored at most 0.404. `services/orion-hub/evals/retro_line_dry_eval.py` recomputes it.
+- **A line's act opens and closes at delivery** (`hub.retro_commentary say`, produced 1). What the player made of the line (thumb, a reply within 2 min) is stored on its `retro_line` row; wiring it into the family's weight waits for patch 4's receptors.
+- **Game lines are not in the day letter's chat gather**, and a guest's turn is excluded from every "Juniper spoke" rule in `orion/regulation/juniper_turns.py` (dream idle gate, arousal, the act and promise ledgers), beyond the three readers this spec names.
+- **Not built:** the last 6 look notes in every turn's game block (section 5, "What the server adds"; the line turn has them); a cancel listener in orion-thought (#3658: a line cancelled mid-stance lets that one call finish, and nothing it returns is said).

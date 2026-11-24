@@ -74,8 +74,8 @@ def test_the_rules_layer_stops_protected_rows_before_the_model():
 
     async def ask(prompt, *, temperature=0.0):
         asked.append(prompt)
-        return json.dumps({"a_kind": "lasting_state", "b_says_a_wrong_or_changed": "yes", "relation": "correction",
-                           "same_attribute": "yes", "confidence": 1.0, "reason": "r"})
+        return json.dumps({"a_kind": "lasting_state", "b_says_a_wrong_or_changed": "yes", "same_referent": "yes",
+                           "relation": "correction", "same_attribute": "yes", "confidence": 1.0, "reason": "r"})
 
     d = asyncio.run(mod.decide_v3(pending, ask, 3))
     assert not d.acted and d.stopped_by == "rule" and asked == []
@@ -99,3 +99,46 @@ def test_heldout_fixtures_load():
     items = e.load_items(e.HELDOUT_PATH)
     assert len(items) >= 8 and all(it.source.startswith("heldout_") for it in items)
     assert sum(it.hard_negative for it in items) >= 6
+
+
+def test_repeats_do_not_halve_the_real_coverage_floors():
+    from dataclasses import replace as _r
+
+    base = _set(pos=1, neg=3)                       # 3 distinct real hard negatives: under the floor of 5
+    items = [_r(it, item_id=f"{it.item_id}@{n}") for n in range(2) for it in base]
+    r = e.score(items, [e.Decision(it.item_id, it.label == "act", "correction") for it in items])
+    assert r["real_hard_negatives"] == 3 and not r["passed"]
+    assert e.base_id("veto:a:b@1") == "veto:a:b"
+
+
+def test_record_needs_two_repeats_on_the_full_production_run():
+    import argparse
+
+    import pytest
+
+    spec = importlib.util.spec_from_file_location("memory_supersede_eval_g", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    ok = argparse.Namespace(checker="v3", votes=s.VOTES, route=s.EVAL_ROUTE, set="all", repeats=2)
+    mod.record_guard(ok)
+    for bad in ({"repeats": 1}, {"set": "real"}, {"votes": 5}, {"checker": "v2"}, {"route": "agent"}):
+        with pytest.raises(SystemExit):
+            mod.record_guard(argparse.Namespace(**{**vars(ok), **bad}))
+
+
+def test_group_items_score_the_clear_target_rule():
+    items = {it.item_id: it for it in e.load_items(e.SYNTHETIC_PATH)}
+    group = items["syn:juniper-two-targets"]
+    assert group.others and group.new.juniper_quoted and group.label == "no_act"
+    spec = importlib.util.spec_from_file_location("memory_supersede_eval_grp", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    async def ask(prompt, *, temperature=0.0):
+        return json.dumps({"a_kind": "event", "b_says_a_wrong_or_changed": "yes", "same_referent": "yes",
+                           "relation": "correction", "same_attribute": "yes", "confidence": 1.0, "reason": "r"})
+
+    d = asyncio.run(mod.decide_v3(group, ask, 3))      # both targets qualify on her path: no clear target
+    assert not d.acted and d.detail == "group:2:0_links"
+    single = e.item_from_dict({**e.item_to_dict(group), "others": []})
+    assert asyncio.run(mod.decide_v3(single, ask, 3)).acted

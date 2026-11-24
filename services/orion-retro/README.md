@@ -79,8 +79,18 @@ with `HAVE_THR_AL=1 LLE=1` at `/opt/retro/mupen64plus_next.so` (license kept as
 `/opt/retro/Mupen64Plus-Next-LICENSE.txt`; source
 https://github.com/libretro/mupen64plus-libretro-nx/tree/6752836de8b224febfd5708444755b77712ac939).
 The service has no GPU or GL context, so N64 renders in software: Angrylion RDP with
-8 threads and the CXD4 LLE RSP. `libgl1` is in the image only because the core links
-it; this render path never calls it. This core alone gets a log callback (it calls
+16 threads and the jttl (ParaLLEl) RSP, which JITs RSP microcode instead of
+interpreting it like CXD4 did — GoldenEye's display lists were the serial wall that
+left the render threads idle at ~35 fps. ParaLLEl-RDP is deliberately not built: it
+requires a Vulkan hw-render context this service never offers. `libgl1` is in the image only because the core links
+it; this render path never calls it. Titles in the heaviest microcode class (GoldenEye
+007) cannot hold 60 fps on fewer render threads; when the loop stays late continuously
+for `DEADLINE_STALL_SECONDS` (2 s) the worker pauses the session with `deadline_overrun`
+rather than burst-catching-up — a transient hitch only logs one `stutter` evidence row
+and keeps the controller live, because on 2026-11-22 the old 3-frame gate turned GoldenEye's
+heavy areas into freeze-then-jerk cycles at ~59 fps. So render-thread count and the
+container's `cpus` quota have to move together — see
+`tests/test_n64.py::test_render_threads_have_cpu_quota_and_pid_room_to_match`. This core alone gets a log callback (it calls
 one unguarded) and a system directory on the container tmpfs (`/tmp/n64`).
 
 Cartridge saves (in-game save slots, EEPROM, SRAM, flash, Controller Pak) are kept
@@ -195,7 +205,14 @@ Native worker queues and HTTP/WS ingress are bounded. Three consecutive late
 frames pause, a silent/hung/crashed worker fails the session, and stop escalates
 from cooperative shutdown to termination/kill of only its child. Restart marks
 active persisted state failed (`service_restart`), never resumes play by itself;
-start a new session from a save instead. No raw A/V recording, model invocation or memory export occurs.
+start a new session from a save instead. This service records no raw A/V, invokes no model and exports no memory.
+That promise is the engine's own. Orion's perception of the game begins one hop
+later, in Hub's Retro gateway (game company patch 2,
+`services/orion-hub/scripts/retro_watch.py`): while a person plays, the gateway
+keeps one of the video packets it already relays every 2 s in memory, and a look
+sends at most 4 stills (never sound, never a stream) to `orion-percept-store`,
+where each is gone within the hour; one model call writes a note, and only the
+note is kept. The engine itself still opens no second viewer for this.
 
 ## Save states
 

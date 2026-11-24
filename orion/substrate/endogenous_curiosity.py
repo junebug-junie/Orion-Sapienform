@@ -27,13 +27,18 @@ Guardrails (all load-bearing, do not relax casually):
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.schemas.attention_candidate import NO_CURIOSITY_CONSUMER_NODE_IDS
+from orion.substrate.curiosity_seed_bar import (
+    CURIOSITY_SEED_BAR_BY_NODE_ID,
+    seed_bar,
+    seed_strength,
+)
 from orion.substrate.prediction_error_freshness import (
     is_alarm_node,
     is_retired_prediction_error_node,
@@ -255,7 +260,13 @@ class EndogenousCuriosityConfig:
     enabled: bool = False
     kill_switch: bool = False
     budget: int = 3
+    # Bar for a node with no entry in ``seed_bar_by_node_id``. The live seedable
+    # nodes each have their own bar on their own calm scale (#3821,
+    # orion/substrate/curiosity_seed_bar.py).
     min_prediction_error: float = 0.55
+    seed_bar_by_node_id: Mapping[str, float] = field(
+        default_factory=lambda: dict(CURIOSITY_SEED_BAR_BY_NODE_ID), hash=False
+    )
     min_repair_level: float = 0.6
     min_loop_salience: float = 0.5
 
@@ -287,9 +298,17 @@ def _prediction_error_candidates(
     subject_ref: str | None,
     min_error: float,
     now: datetime,
+    bar_by_node_id: Mapping[str, float] | None = None,
 ) -> list[FrontierInvocationSignalV1]:
     """One candidate per node whose prediction_error is a real measurement and is
-    still above ``min_error`` after staleness decay.
+    still at or above its own seed bar after staleness decay.
+
+    Seed bar (#3821): ``bar_by_node_id`` (default
+    ``orion.substrate.curiosity_seed_bar.CURIOSITY_SEED_BAR_BY_NODE_ID``) gives
+    each live node a bar on its own calm scale; a node with no entry uses
+    ``min_error``. A listed node's ``signal_strength`` is mapped so its own bar
+    reads 0.55 and its ceiling 1.0 (``seed_strength``); an unlisted node's
+    strength is its decayed error, as before.
 
     Value-kind rule (retire step 3, docs/superpowers/specs/2026-11-08-prediction-
     error-suite-rebuild-design.md): a node whose glossary value_kind is not a
@@ -312,9 +331,11 @@ def _prediction_error_candidates(
             if raw_error <= 0.0:
                 continue
             error = raw_error * _prediction_error_staleness_decay(node, now=now)
-            if error < min_error:
-                continue
             node_id = str(getattr(node, "node_id", "") or "")
+            bars = CURIOSITY_SEED_BAR_BY_NODE_ID if bar_by_node_id is None else bar_by_node_id
+            bar = seed_bar(node_id, min_error, bars)
+            if error < bar:
+                continue
             if not node_id or node_id in NO_CURIOSITY_CONSUMER_NODE_IDS:
                 continue
             if is_alarm_node(node_id):
@@ -336,7 +357,7 @@ def _prediction_error_candidates(
                     target_zone="concept_graph",
                     task_type_candidate="evidence_gap_scan",
                     focal_node_refs=[node_id],
-                    signal_strength=error,
+                    signal_strength=seed_strength(error, bar) if node_id in bars else error,
                     evidence_summary=f"sustained prediction error on {node_id}",
                     confidence=0.7,
                     notes=["endogenous_seed", "source:prediction_error"],
@@ -487,6 +508,7 @@ def endogenous_curiosity_candidates(
         subject_ref=subject_ref,
         min_error=cfg.min_prediction_error,
         now=resolved_now,
+        bar_by_node_id=cfg.seed_bar_by_node_id,
     )
     repair = _repair_pressure_candidate(
         repair_appraisal,

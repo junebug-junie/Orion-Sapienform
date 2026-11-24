@@ -20,9 +20,9 @@ from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefV1
 
 @dataclass
 class _ClaudeLimit:
-    observed: bool = False
-    state: str = "unknown"
-    staleness_sec: float | None = None
+    observed: bool = True
+    state: str = "limited"
+    staleness_sec: float | None = 1.0
 
 
 def _help() -> HelpRequestV1:
@@ -59,13 +59,13 @@ def _run(*, claude_limit: Any = None, claude: Any = None) -> PeerBriefV1:
     return brief
 
 
-def test_unobserved_meter_names_the_cause_without_cursor() -> None:
+def test_limited_meter_names_the_cause_without_cursor() -> None:
     brief = _run()
     assert brief.status == "refused_budget"
     assert brief.peer == "claude_room"
     assert brief.refusal_reason == (
-        "Claude helper refused: this service cannot see Claude's usage meter, "
-        "so it refuses rather than spend blind. [claude_budget_unobserved]"
+        "Claude helper refused: Claude's usage meter reads limited. "
+        "[claude_budget_limited]"
     )
     assert "cursor" not in brief.refusal_reason.lower()
 
@@ -86,7 +86,7 @@ def test_orion_facing_surfaces_show_the_reason() -> None:
         format_budget_spent_progress(status="refused_budget", next_hop_n=2, reason=brief.refusal_reason)
     )
     assert "Claude helper refused" in line
-    assert "[claude_budget_unobserved]" not in line  # codes stay out of the short line
+    assert "[claude_budget_limited]" not in line  # codes stay out of the short line
     assert "hop 2" in line
 
 

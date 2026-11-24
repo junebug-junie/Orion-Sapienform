@@ -9,7 +9,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from .settings import Settings, get_settings
-from .worker import run_consumer
+from .worker import run_consumer, seed_claude_limit_memory
 
 logger = logging.getLogger("orion-curiosity-peer")
 
@@ -63,6 +63,9 @@ async def main_async() -> None:
         )
         await stop.wait()
         return
+
+    # Restart must not forget a fresh "you've hit your limit" (#3655).
+    await asyncio.to_thread(seed_claude_limit_memory, settings)
 
     heartbeat = build_heartbeat_chassis(settings)
     if settings.ORION_BUS_ENABLED:

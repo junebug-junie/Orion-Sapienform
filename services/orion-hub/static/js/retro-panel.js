@@ -23,7 +23,8 @@
   const SYSTEM_LABEL = {snes:' (SNES)', n64:' (N64)'};
   // Retro-Bit Tribute64 (USB receiver, Xbox mode) on N64: its four yellow C buttons arrive as
   // plain buttons, standard index -> [axis, direction]: Y = C-left, left-stick click = C-right,
-  // right-stick click = C-up, X = C-down. Its B is the right face button. Read from the pad's
+  // right-stick click = C-up, X = C-down. Its B is the right face button, Z the left trigger
+  // (L2, already N64 Z). Read from the pad's
   // raw input on carbon-x1, 2026-11-24. It names itself an Xbox 360 pad, like an 8BitDo in X
   // mode, so the player turns this on in More; it is kept per browser.
   const TRIBUTE_C = {3:[2,-1], 10:[2,1], 11:[3,-1], 2:[3,1]};
@@ -190,7 +191,7 @@
   function padStatus() {
     let pads=[];try { pads=Array.from(navigator.getGamepads?.() || []).filter(p=>p && p.connected!==false); } catch (_) { /* no API */ }
     const pad=gamepad(), other=pads.find(p=>p.mapping!=='standard');
-    el('padInfo').textContent = pad ? `Controller: ${pad.id}. Click the game, then play.`
+    el('padInfo').textContent = pad ? `Controller: ${pad.id}${tribute64?' (Tribute64 layout on for N64)':''}. Click the game, then play.`
       : other ? `Controller ${other.id} is not in standard mode. On an 8BitDo Pro 2, set the mode switch on the back to X and reconnect (a USB cable if Bluetooth still says this).`
       : 'No controller found. Connect it, then press any button.';
   }
@@ -613,7 +614,7 @@
   el('port').onchange=neutral;
   el('tribute64').checked=tribute64;
   el('tribute64').onchange=()=>{tribute64=el('tribute64').checked;
-    try{localStorage.setItem('retro_tribute64',tribute64?'1':'0');}catch(_){}};
+    try{localStorage.setItem('retro_tribute64',tribute64?'1':'0');}catch(_){}padStatus();};
   // While the game has the keyboard, keys that scroll a page do nothing else. Before
   // this, unmapped PageUp/PageDown/Home/End/Space fell through to the browser and
   // scrolled the Hub page (the Retro frame is taller than the window) out from under

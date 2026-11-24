@@ -30,14 +30,15 @@ def _block(rows, now):
     return project_self_readings(cache, now=now)
 
 
-def test_busy_body_every_number_resolves_to_its_row() -> None:
+def test_busy_body_every_number_resolves_to_its_row(monkeypatch) -> None:
+    # No live glossary node is continuous since biometrics was retired 2026-11-18 (#3575): the
+    # sustained continuous body source is the fixture's test-only probe.
+    fx.install_probe_glossary(monkeypatch)
     rows = fx.busy_body_rows()
     block = _block(rows, fx.NOW)
     assert block.text, block.skip_reason
     assert check_block(block.text, rows, fx.NOW) == []
-    # The sustained continuous body source is biometrics since bus_synaptic's
-    # 2026-11 retirement (PE suite rebuild step 5).
-    assert set(block.shown) == {"node:substrate.execution", "node:substrate.biometrics",
+    assert set(block.shown) == {"node:substrate.execution", fx.CONTINUOUS_BODY,
                                 "node:substrate.cabinet"}
 
 

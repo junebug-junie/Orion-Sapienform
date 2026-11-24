@@ -69,16 +69,6 @@ class Settings(BaseSettings):
     biometrics_offline_frozen_hint_guard: bool = Field(
         True, alias="BIOMETRICS_OFFLINE_FROZEN_HINT_GUARD"
     )
-    # Kill switch: leave nodes that stopped reporting (hecate in BMC-only standby)
-    # out of node:substrate.biometrics' prediction-error mean. "Stopped" = last
-    # report older than BIOMETRICS_SILENT_NODE_CADENCE_MULTIPLE x the node's own
-    # learned report interval (orion/substrate/biometrics_loop/report_cadence.py).
-    biometrics_silent_node_exclusion: bool = Field(
-        True, alias="BIOMETRICS_SILENT_NODE_EXCLUSION"
-    )
-    biometrics_silent_node_cadence_multiple: float = Field(
-        6.0, alias="BIOMETRICS_SILENT_NODE_CADENCE_MULTIPLE"
-    )
     node_catalog_path: str = Field(
         "config/biometrics/node_catalog.yaml",
         alias="NODE_CATALOG_PATH",
@@ -182,6 +172,17 @@ class Settings(BaseSettings):
     )
     prediction_turn_surprise_channel: str = Field(
         "orion:prediction:turn_surprise", alias="SUBSTRATE_PREDICTION_TURN_SURPRISE_CHANNEL"
+    )
+    # Family A joint surprise -> node:prediction.body_joint / node:prediction.room_joint (successor of
+    # node:substrate.biometrics, #3575): the last 30 min of scored family A joint-group outcomes
+    # (orion/substrate/prediction_joint_surprise.py). Subscribes to orion:prediction:joint_surprise.
+    # Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill switch (no listener, no writes; both
+    # nodes age to stale). Producer side: PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED.
+    prediction_joint_surprise_nodes_enabled: bool = Field(
+        True, alias="SUBSTRATE_PREDICTION_JOINT_SURPRISE_NODES_ENABLED"
+    )
+    prediction_joint_surprise_channel: str = Field(
+        "orion:prediction:joint_surprise", alias="SUBSTRATE_PREDICTION_JOINT_SURPRISE_CHANNEL"
     )
     street_events_channel: str = Field(
         "orion:vision:street:events", alias="SUBSTRATE_STREET_EVENTS_CHANNEL"

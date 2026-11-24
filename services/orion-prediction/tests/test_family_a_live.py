@@ -33,9 +33,14 @@ def _cfg() -> fa.FamilyAConfig:
     import yaml
 
     doc = yaml.safe_load(CONFIG_PATH.read_text())
-    doc["inputs"] = [{"id": "s.x", "unit": "C", "source": {"table": "biometrics", "node": "n", "key": "x"}},
-                     {"id": "s.y", "unit": "W", "source": {"table": "biometrics", "node": "n", "key": "y"}}]
+    doc["inputs"] = [{"id": "s.x", "unit": "C", "group": "body", "source": {"table": "biometrics", "node": "n", "key": "x"}},
+                     {"id": "s.y", "unit": "W", "group": "room", "source": {"table": "biometrics", "node": "n", "key": "y"}}]
     return fa.parse_config(doc)
+
+
+def _blend(joints: list[dict]) -> list[dict]:
+    """The blended joint rows (family_a); group rows (family_a_body / _room) are tested on their own."""
+    return [j for j in joints if j["family"] == fl.FAMILY]
 
 
 class Recording:
@@ -123,7 +128,7 @@ def test_reading_rows_score_against_the_real_bucket_mean(ran):
 
 def test_joint_rows_score_and_turn_adaptive_once_an_hour_is_known(ran):
     live, _l, _n = ran
-    js = live.store.joints
+    js = _blend(live.store.joints)
     scored = [j for j in js if j["status"] == "scored"]
     assert len(scored) >= 40
     for j in scored:
@@ -146,7 +151,7 @@ def test_gate_refuses_a_stale_input_and_stores_why_never_a_degraded_forecast():
     for _ in range(14):
         now += G
         live.tick(now)
-    refused = [j for j in live.store.joints if j["status"] == "refused"]
+    refused = [j for j in _blend(live.store.joints) if j["status"] == "refused"]
     assert refused
     assert all("stale" in j["refusal"]["s.y"] for j in refused)
     origins = {j["origin_ts"] for j in refused}
@@ -172,7 +177,7 @@ def test_a_target_resting_flat_inside_its_band_is_issued_and_scored_not_refused(
     for _ in range(14):
         now += G
         live.tick(now)
-    js = live.store.joints
+    js = _blend(live.store.joints)
     assert js and not [j for j in js if j["status"] == "refused"]
     assert live.state.counts["refused"] == 0
     scored = [j for j in js if j["status"] == "scored"]
@@ -197,13 +202,13 @@ def test_a_sensor_frozen_after_select_refuses_buckets_until_the_next_select_drop
     for _ in range(80):                                                # ~6 h 40 min: one more select
         now += G
         live.tick(now)
-    refused = [j for j in live.store.joints if j["status"] == "refused"]
+    refused = [j for j in _blend(live.store.joints) if j["status"] == "refused"]
     assert refused and all(j["refusal"] == {"s.x": ["flat_beyond_training"]} or
                            j["refusal"] == {"s.x": ("flat_beyond_training",)} for j in refused)
     assert not [r for r in live.store.forecasts if r["origin_ts"] in {j["origin_ts"] for j in refused}]
     assert live.served.run_id != first_select and "s.x" not in live.served.named
     assert live.state.last_select["refused_inputs"]["s.x"] == ["flat_beyond_training"]
-    after = [j for j in live.store.joints if j["run_id"] == live.served.run_id]
+    after = [j for j in _blend(live.store.joints) if j["run_id"] == live.served.run_id]
     assert after and all(j["status"] != "refused" for j in after)   # the rest is served without it
 
 
@@ -253,9 +258,11 @@ def test_a_scoring_backlog_past_the_joint_limit_never_strands_a_joint_row():
         live.issue(now)
     for _ in range(12):                             # recovery: 5 joint rows per pass
         live.score(now + timedelta(minutes=20))
-    js = live.store.joints
+    js = _blend(live.store.joints)
     assert js and all(j["status"] == "scored" for j in js), {j["status"] for j in js}
     assert all(j["n_observed"] == 2 for j in js)
+    groups = [j for j in live.store.joints if j["family"] != fl.FAMILY]
+    assert groups and all(j["status"] == "scored" and j["n_observed"] == 1 for j in groups)
 
 
 def test_a_thin_calibration_pool_refuses_the_selection(monkeypatch):
@@ -372,7 +379,7 @@ def test_a_probe_that_died_to_a_new_low_before_select_is_not_served_as_rest():
         now += G
         live.tick(now)
     issued_with_x = [r for r in live.store.forecasts if r["series_id"] == fl.PREFIX + "s.x"]
-    refused = [j for j in live.store.joints if j["status"] == "refused" and "s.x" in (j["refusal"] or {})]
+    refused = [j for j in _blend(live.store.joints) if j["status"] == "refused" and "s.x" in (j["refusal"] or {})]
     assert refused                                                     # caught within the day, never calm
     # dead since day7 - 6 h; the half-dead day it died on is its flattest day (0.25), so the limit is
     # 0.625 and the refusals start ~15 h in, like real readings frozen at their median (12-15 h)
@@ -465,3 +472,167 @@ def test_a_zero_width_adaptive_range_keeps_the_validation_range():
     mine = [r for r in live.store.forecasts if r["origin_ts"] == origin and r["role"] == "champion"]
     assert mine and all(r["interval_source"] == fl.INTERVAL_SOURCE for r in mine)
     assert all(r["quantiles"]["0.9"] > r["quantiles"]["0.1"] for r in mine)
+
+
+# --- joint groups (#3575 / #3580): body and room scored apart, published as prediction.joint_surprise.v1 ---
+
+def test_selection_calibrates_each_group_on_its_own_readings(ran):
+    live, _l, _n = ran
+    champ = next(r for r in live.store.runs if r["kind"] == "champion_blend")
+    for h in ("5", "15"):
+        g = champ["metrics"][h]["groups"]
+        assert {k: v["targets"] for k, v in g.items()} == {"body": ["s.x"], "room": ["s.y"]}
+        for v in g.values():
+            assert len(v["joint"]["cal_tail"]) >= fa.MIN_CAL and len(v["joint"]["cal_tail_adaptive"]) >= fa.MIN_CAL
+            assert len(v["joint"]["cov"]) == 1                       # the group's own block, nothing borrowed
+        assert champ["metrics"][h]["groups_skipped"] == {}
+
+
+def test_each_bucket_gets_one_row_per_group_scored_on_that_groups_readings_only(ran):
+    live, _l, _n = ran
+    rows = [j for j in live.store.joints if j["family"] in fl.GROUP_OF_FAMILY]
+    blend = {(j["origin_ts"], j["horizon_min"]) for j in _blend(live.store.joints)}
+    for fam, reading in (("family_a_body", "s.x"), ("family_a_room", "s.y")):
+        mine = [j for j in rows if j["family"] == fam]
+        assert {(j["origin_ts"], j["horizon_min"]) for j in mine} == blend   # one per blended bucket
+        scored = [j for j in mine if j["status"] == "scored"]
+        assert len(scored) >= 40
+        for j in scored:
+            assert j["n_observed"] == 1 and set(j["top_shares"]) == {reading}
+            assert j["excess"] == pytest.approx(-np.log(j["p"]) - j["calm_point"])
+        # the group's own hour-before difficulty turns its p adaptive, as for the blend
+        late = [j for j in scored if j["origin_ts"] >= DAY7 + timedelta(minutes=80)]
+        assert late and all(j["calibration"] == fa.ADAPTIVE and j["difficulty"] is not None for j in late)
+
+
+def test_only_fresh_adaptive_group_rows_become_events_and_they_validate():
+    from orion.schemas.prediction import PredictionJointSurpriseV1
+
+    live, _l = _live()
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    events = []
+    for _ in range(26):
+        now += G
+        live.tick(now)
+        events += live.take_pending_events()
+    assert live.take_pending_events() == []                         # taking clears the queue
+    assert events and {e["group"] for e in events} == {"body", "room"}
+    for e in events:
+        ev = PredictionJointSurpriseV1.model_validate(e)
+        assert ev.calibration == "adaptive" and ev.family == "family_a"
+        row = next(j for j in live.store.joints if str(j["joint_id"]) == ev.joint_id)
+        assert row["family"] == fl.GROUP_FAMILIES[ev.group] and row["excess"] == pytest.approx(ev.excess)
+    # every scored adaptive group row of the run was published once (none were older than the window)
+    adaptive = [j for j in live.store.joints if j["family"] in fl.GROUP_OF_FAMILY and j.get("calibration") == fa.ADAPTIVE]
+    assert sorted(e["joint_id"] for e in events) == sorted(str(j["joint_id"]) for j in adaptive)
+    assert not [j for j in live.store.joints if j["family"] == fl.FAMILY and str(j["joint_id"]) in
+                {e["joint_id"] for e in events}]                    # the blend is never published
+
+
+def test_a_backlog_scored_late_is_stored_but_never_published_as_now():
+    live, _l = _live()
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    for _ in range(20):                       # issue only: scoring is down
+        now += G
+        live.issue(now)
+    live.score(now + timedelta(hours=2))      # the backlog scores two hours late
+    assert [j for j in live.store.joints if j["family"] in fl.GROUP_OF_FAMILY and j["status"] == "scored"]
+    assert live.take_pending_events() == []
+
+
+def test_events_off_queues_nothing_and_rows_are_still_scored():
+    live, _l = _live(events_enabled=False)
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    for _ in range(26):
+        now += G
+        live.tick(now)
+    assert live.take_pending_events() == [] and live.state.counts["events_queued"] == 0
+    assert live.state.counts["group_scored"] > 0
+
+
+def test_a_group_with_no_target_is_skipped_and_writes_no_rows():
+    cfg = _cfg()
+    cfg = fa.FamilyAConfig(grain_min=cfg.grain_min, horizons_min=cfg.horizons_min, hygiene=cfg.hygiene,
+                           inputs=tuple(fa.InputSpec(id=i.id, unit=i.unit, source=i.source, group="body")
+                                        for i in cfg.inputs))
+    live = fl.FamilyALive(fl.MemoryStore(), cfg, Recording(_frame()), settle_sec=60, select_interval_sec=6 * 3600,
+                          seeds=(0, 1), train_days=7)
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    assert live.state.last_select["groups_skipped"] == {"5": {"room": "no_targets"}, "15": {"room": "no_targets"}}
+    for _ in range(3):
+        now += G
+        live.tick(now)
+    fams = {j["family"] for j in live.store.joints}
+    assert fams == {fl.FAMILY, "family_a_body"}
+
+
+def test_a_refused_bucket_writes_a_refused_row_for_every_group_too():
+    f = _frame()
+    f.loc[DAY7 + timedelta(minutes=40):, "s.y"] = np.nan
+    live, _l = _live(f)
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    for _ in range(14):
+        now += G
+        live.tick(now)
+    refused = [j for j in live.store.joints if j["status"] == "refused"]
+    by = {}
+    for j in refused:
+        by.setdefault((j["origin_ts"], j["horizon_min"]), set()).add(j["family"])
+    assert by and all(v == {fl.FAMILY, "family_a_body", "family_a_room"} for v in by.values())
+
+
+def test_a_run_without_groups_scores_its_old_group_rows_missing_not_with_another_yardstick():
+    """Rows issued under a run whose stored metrics have no groups (before this patch) get no group rows;
+    a group row whose run lost the group is scored missing ('no_group'), never with the blend's calibration."""
+    live, _l = _live()
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    now += G
+    live.issue(now)
+    champ = next(r for r in live.store.runs if r["kind"] == "champion_blend")
+    for h in ("5", "15"):
+        champ["metrics"][h]["groups"].pop("room")
+    fresh, _l2 = _live(store=live.store)           # a restart: reads the run back from its stored metrics
+    fresh.score(now + timedelta(minutes=30))
+    room = [j for j in live.store.joints if j["family"] == "family_a_room"]
+    assert room and all(j["status"] == "missing" and j["calibration"] == "no_group" for j in room)
+
+
+def test_an_input_in_no_group_is_scored_in_the_blend_only():
+    """office sound (#3581): forecast, scored in the blend, never in a group's joint."""
+    cfg = _cfg()
+    cfg = fa.FamilyAConfig(grain_min=cfg.grain_min, horizons_min=cfg.horizons_min, hygiene=cfg.hygiene,
+                           inputs=(fa.InputSpec(id="s.x", unit="C", source=cfg.inputs[0].source, group="body"),
+                                   fa.InputSpec(id="s.y", unit="W", source=cfg.inputs[1].source, group=fa.NO_GROUP)))
+    live = fl.FamilyALive(fl.MemoryStore(), cfg, Recording(_frame()), settle_sec=60, select_interval_sec=6 * 3600,
+                          seeds=(0, 1), train_days=7)
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    for _ in range(3):
+        now += G
+        live.tick(now)
+    champ = next(r for r in live.store.runs if r["kind"] == "champion_blend")
+    assert {g: v["targets"] for g, v in champ["metrics"]["5"]["groups"].items()} == {"body": ["s.x"]}
+    assert champ["metrics"]["5"]["groups_skipped"] == {"room": "no_targets"}
+    assert "s.y" in champ["metrics"]["5"]["targets"]                    # still forecast, still in the blend
+    assert {j["family"] for j in live.store.joints} == {fl.FAMILY, "family_a_body"}
+
+
+def test_the_config_rejects_an_unclassified_input():
+    from tests.test_family_a import CONFIG_PATH
+    import yaml
+
+    doc = yaml.safe_load(CONFIG_PATH.read_text())
+    doc["inputs"] = [{"id": "s.x", "unit": "C", "source": {"table": "biometrics", "node": "n", "key": "x"}}]
+    with pytest.raises(fa.FamilyAConfigError, match="group"):
+        fa.parse_config(doc)
+    live_cfg = fa.parse_config(yaml.safe_load(CONFIG_PATH.read_text()))
+    assert live_cfg.group_of("office.sound_dba") == fa.NO_GROUP            # until #3581
+    assert live_cfg.group_of("office.temp_c") == "body"                    # until family C measures Orion's share
+    assert {i.id for i in live_cfg.inputs if i.group == "room"} == {
+        "office.humidity_pct", "office.eco2_ppm", "office.tvoc_ppb", "office.pm25_ug_m3", "office.lux"}

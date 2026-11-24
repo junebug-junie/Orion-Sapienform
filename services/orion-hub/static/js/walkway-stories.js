@@ -37,6 +37,11 @@
   // <name>" (a "same" picture verdict). A person with no picture of their own is
   // greyed: "No picture of this person - not asked." (the route refuses it too).
   //
+  // How she could tell (2026-11-24): an optional "How could you tell?" box per
+  // person goes with whichever answer she gives ("pushing a stroller; Jason has
+  // no young kids; not his build"). Stored as the answer's `why`, shown back
+  // under what she said. Raw context clues for a later primitive to read.
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
@@ -50,6 +55,7 @@
   ];
   // Fifth button: Juniper could not judge it. Never right, never wrong.
   const CANT_TELL = { value: "cant_tell", label: "Can't tell" };
+  const WHY_MAX_CHARS = 1000;
   const THUMB_RE = /^[0-9a-f]{64}$/;
   const STORY_RE = /^[0-9a-f]{32}$/;
   const STRIP_FILE_RE = /^(crop_[0-3]|frame)\.jpg$/;
@@ -308,12 +314,26 @@
       line.setAttribute("data-person-said", p.story_action.action);
       box.appendChild(line);
     }
+    const why = whyLine(p.story_action);
+    if (why) {
+      const line = el(doc, "div", "text-[10px] text-gray-400 whitespace-pre-line", why);
+      line.setAttribute("data-person-why", "1");
+      box.appendChild(line);
+    }
     const input = el(doc, "input", "min-h-[2.25rem] w-full sm:w-40 rounded border border-gray-600 bg-gray-950 px-2 text-xs text-gray-100");
     input.setAttribute("type", "text");
     input.setAttribute("maxlength", "120");
     input.setAttribute("placeholder", p.label ? "Or type the right name" : "Who is this?");
     input.setAttribute("aria-label", `Name for person ${entry.letter}`);
     input.setAttribute("data-person-name-input", "1");
+    // How she could tell (optional), sent with whichever answer she gives.
+    const whyInput = el(doc, "textarea", "w-full min-h-[2.5rem] rounded border border-gray-600 bg-gray-950 px-2 py-1 text-xs text-gray-100");
+    whyInput.setAttribute("rows", "2");
+    whyInput.setAttribute("maxlength", String(WHY_MAX_CHARS));
+    whyInput.setAttribute("placeholder", "How could you tell? (optional) e.g. pushing a stroller, he has no young kids, not his build");
+    whyInput.setAttribute("aria-label", `How you could tell, for person ${entry.letter}`);
+    whyInput.setAttribute("data-person-why-input", "1");
+    box.appendChild(whyInput);
     const buttons = el(doc, "div", "flex flex-wrap items-center gap-2");
     const actions = p.label
       ? [{ value: "confirm", label: `Yes, that's ${p.label}`, primary: true },
@@ -337,12 +357,17 @@
       btn.setAttribute("type", "button");
       btn.setAttribute("data-person-action", a.value);
       if (a.title) btn.setAttribute("title", a.title);
-      btn.addEventListener("click", () => onPerson(story, p, a.value, input.value, box));
+      btn.addEventListener("click", () => onPerson(story, p, a.value, input.value, box, whyInput.value));
       (p.label && a.value === "name" ? fix : buttons).appendChild(btn);
     });
     box.appendChild(buttons);
     if (fix !== buttons) box.appendChild(fix);
     return box;
+  }
+
+  function whyLine(a) {
+    const why = a && typeof a.why === "string" ? a.why.trim() : "";
+    return why ? `How you could tell: ${why}` : "";
   }
 
   // Street continuity (2026-10-20): the other camera's sighting of this passage,
@@ -526,7 +551,7 @@
       }
     }
 
-    async function onPerson(story, person, action, typed, box) {
+    async function onPerson(story, person, action, typed, box, whyTyped) {
       const name = String(typed || "").trim().replace(/\s+/g, " ");
       if (action === "name" && !name) {
         if (status) status.textContent = "Type a name first.";
@@ -539,7 +564,8 @@
           `/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/people/${encodeURIComponent(person.individual_id)}`, {
             method: "POST", headers: { "Content-Type": "application/json" },
             // A yes carries the name the card showed: the server refuses it if the name changed since.
-            body: JSON.stringify({ action, name: action === "unsure" ? "" : action === "confirm" ? (person.label || "") : name }),
+            body: JSON.stringify({ action, name: action === "unsure" ? "" : action === "confirm" ? (person.label || "") : name,
+              why: String(whyTyped || "").trim() }),
           });
         if (res.status === 409) {
           // The name changed since the card loaded (renamed elsewhere): show the new one, ask again.
@@ -555,7 +581,27 @@
         const body = await res.json();
         if (body.tally) showTally(body.tally);
         const item = box.closest("[data-story-id]");
-        if (body.story && item) item.replaceWith(renderStory(doc, body.story, onVerdict, onPerson));
+        if (body.story && item) {
+          // Keep what she is half-way through typing in the OTHER person boxes of this story.
+          const typedElsewhere = {};
+          item.querySelectorAll("[data-story-person]").forEach((b) => {
+            if (b === box) return;
+            typedElsewhere[b.getAttribute("data-story-person")] = {
+              name: (b.querySelector("[data-person-name-input]") || {}).value || "",
+              why: (b.querySelector("[data-person-why-input]") || {}).value || "",
+            };
+          });
+          const fresh = renderStory(doc, body.story, onVerdict, onPerson);
+          fresh.querySelectorAll("[data-story-person]").forEach((b) => {
+            const kept = typedElsewhere[b.getAttribute("data-story-person")];
+            if (!kept) return;
+            const n = b.querySelector("[data-person-name-input]");
+            const w = b.querySelector("[data-person-why-input]");
+            if (n) n.value = kept.name;
+            if (w) w.value = kept.why;
+          });
+          item.replaceWith(fresh);
+        }
         if (status) {
           status.textContent = action === "name"
             ? `Saved: ${name}. Orion applies it like any "who is this?" answer.`
@@ -580,7 +626,7 @@
         const body = await res.json();
         showTally(body.tally);
         // The 60 s refresh never wipes a name Juniper is typing (a filter change she makes does reload).
-        const typing = fromTimer === true && Array.from(list.querySelectorAll("[data-person-name-input]"))
+        const typing = fromTimer === true && Array.from(list.querySelectorAll("[data-person-name-input], [data-person-why-input]"))
           .some((i) => i.value.trim() || doc.activeElement === i);
         if (typing) return;
         list.textContent = "";
@@ -619,7 +665,7 @@
   }
 
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
-                personTitle, actionLine, handoffText, renderStory, mount,
+                personTitle, actionLine, whyLine, handoffText, renderStory, mount,
                 storyPeople, personPictures, isPictured, cropOwners, boxesText };
 
   global.OrionWalkwayStories = api;

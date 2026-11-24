@@ -271,7 +271,8 @@ def main() -> None:
         "body_spikes": [
             spike_check(pe, turns, st, start=start, end=end, node_id="node:substrate.execution", min_value=0.9,
                         event_decay=decay),
-            spike_check(pe, turns, st, start=start, end=end, node_id="node:substrate.biometrics", min_value=0.25,
+            # node:substrate.biometrics retired 2026-11-18 (#3575); its successor is the body joint surprise.
+            spike_check(pe, turns, st, start=start, end=end, node_id="node:prediction.body_joint", min_value=0.55,
                         event_decay=decay),
         ],
         "synthetic_storm": storm_check(pe, turns, st, node_id="node:substrate.execution",

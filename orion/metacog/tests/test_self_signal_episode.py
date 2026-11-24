@@ -95,15 +95,16 @@ def test_dwell_is_the_seams_orienting_window():
 @pytest.mark.parametrize(
     "node,mag,absent,kind",
     [
-        ("node:substrate.biometrics", _mag(0.95, "high"), None, "hot"),
-        ("node:substrate.biometrics", _mag(0.995, "unusual"), None, "hot"),
-        ("node:substrate.biometrics", _mag(0.5, "usual"), None, "calm"),
-        ("node:substrate.biometrics", _mag(0.0, "quiet"), None, "calm"),
+        # a per-tick body measurement (node:substrate.biometrics until its retirement, #3575)
+        ("node:prediction.body_joint", _mag(0.95, "high"), None, "hot"),
+        ("node:prediction.body_joint", _mag(0.995, "unusual"), None, "hot"),
+        ("node:prediction.body_joint", _mag(0.5, "usual"), None, "calm"),
+        ("node:prediction.body_joint", _mag(0.0, "quiet"), None, "calm"),
         # absent / no history / stale: silence is not calm
-        ("node:substrate.biometrics", _mag(0.99, "unusual"), "db down", "unknown"),
-        ("node:substrate.biometrics", None, None, "unknown"),
-        ("node:substrate.biometrics", _mag(0.99, "insufficient_history", n=10), None, "unknown"),
-        ("node:substrate.biometrics", _mag(0.99, "unusual", age=4000.0), None, "unknown"),
+        ("node:prediction.body_joint", _mag(0.99, "unusual"), "db down", "unknown"),
+        ("node:prediction.body_joint", None, None, "unknown"),
+        ("node:prediction.body_joint", _mag(0.99, "insufficient_history", n=10), None, "unknown"),
+        ("node:prediction.body_joint", _mag(0.99, "unusual", age=4000.0), None, "unknown"),
         # retired harness_closure (2026-11-11, no glossary entry): not a
         # measurement even when fresh -> unknown, never hot
         ("node:substrate.harness_closure", _mag(0.99, "unusual"), None, "unknown"),

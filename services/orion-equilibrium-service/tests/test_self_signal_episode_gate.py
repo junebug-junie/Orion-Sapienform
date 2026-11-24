@@ -24,7 +24,7 @@ from orion.schemas.attention_frame import PredictionErrorMagnitudeV1  # noqa: E4
 
 T0 = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
 BUS = "node:substrate.execution"  # any live PE node; bus_synaptic retired 2026-11
-BIO = "node:substrate.biometrics"
+BIO = "node:substrate.cabinet"  # second live body node (biometrics retired 2026-11-18, #3575)
 
 
 def _mag(pct: float, band: str, value: float = 0.12) -> PredictionErrorMagnitudeV1:

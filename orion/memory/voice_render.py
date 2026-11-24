@@ -46,7 +46,8 @@ class VoicedMemory:
     has_verified_juniper_quote: bool = False
     has_verified_orion_quote: bool = False
     # auto | pending_confirmation | unconfirmed (asked, no answer in 7 days; set by
-    # orion/memory/episode/confirmation.py) | confirmed | corrected | rejected
+    # orion/memory/episode/confirmation.py) | not_asked (high stakes, never to be asked: the
+    # July-September backfill, #3537) | confirmed | corrected | rejected
     confirmation_state: str = "auto"
 
 
@@ -96,7 +97,7 @@ def render_memory(item: VoicedMemory) -> str:
                 f"not something Juniper and I discussed: {statement}")
     else:
         line = f"My own note ({item.channel or 'unknown source'}, {when}), not Juniper's words: {statement}"
-    if item.confirmation_state in ("pending_confirmation", "unconfirmed"):
+    if item.confirmation_state in ("pending_confirmation", "unconfirmed", "not_asked"):
         # An expired ask is not a resolution: the memory keeps its Unconfirmed label for good.
         line = "Unconfirmed, check with Juniper if natural: " + line
     return line

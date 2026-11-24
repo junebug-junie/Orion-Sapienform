@@ -56,7 +56,7 @@ def test_worker_source_writes_neither_retired_node() -> None:
 
 
 def test_active_inference_domains_match_the_worker_domain_map() -> None:
-    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution", "biometrics"}
+    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution"}   # biometrics retired 2026-11-18 (#3575)
     assert set(worker_module._PREDICTION_ERROR_DOMAIN_NODE_IDS.values()) == set(
         ACTIVE_INFERENCE_DOMAINS
     )

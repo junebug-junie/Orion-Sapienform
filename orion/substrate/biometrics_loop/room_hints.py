@@ -7,15 +7,12 @@ host that reads them. They measure the room around the machines (a person walkin
 past, a door, a fan in the hallway), not Orion's machine body.
 
 Juniper approved (2026-11-12) taking them out of the machine-body reading. This
-module is the one owner of that list. Two generic consumers read node hints as
-"how is the body":
+module is the one owner of that list. One generic consumer reads node hints as
+"how is the body": ``orion/substrate/biometrics_loop/pressure_organ.py`` (node pressure
+detected / reinforced / decayed, and the primary hint kind). The other,
+``biometrics_prediction_error`` (``node:substrate.biometrics``), was retired 2026-11-18 (#3575).
 
-- ``orion/substrate/prediction_error.py::biometrics_prediction_error`` (the
-  ``node:substrate.biometrics`` surprise number; definition v3).
-- ``orion/substrate/biometrics_loop/pressure_organ.py`` (node pressure detected /
-  reinforced / decayed, and the primary hint kind).
-
-Both call :func:`machine_body_hints`. There is no kill switch: a room reading in the
+It calls :func:`machine_body_hints`. There is no kill switch: a room reading in the
 body mean is the thing being retired, so there is nothing to fall back to.
 
 The keys stay on the projection. Named consumers still read them on purpose:

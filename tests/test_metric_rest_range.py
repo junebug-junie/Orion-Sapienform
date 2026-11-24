@@ -120,13 +120,16 @@ def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     # -2 2026-11: node:substrate.bus_synaptic and node:substrate.route retired.
     # +2 2026-11-11: node:prediction.room and node:prediction.body (forecast surprise).
     # -1 2026-11-13: node:substrate.codebase retired (churn z, not a forecast).
-    assert len(ranges) == 12
+    # -1 +2 2026-11-18 (#3575): node:substrate.biometrics retired; node:prediction.body_joint and
+    #   node:prediction.room_joint (family A joint surprise) added.
+    assert len(ranges) == 13
     assert ranges[("node:substrate.street", "prediction_error")] == ("trigger", (0.0, 0.0))
     assert ranges[("node:substrate.perception_walkway", "prediction_error")][1] == (0.0, 0.0)
     for key, (kind, rng) in ranges.items():
         assert isinstance(rng, tuple), key
         assert rest_range_problem(rng, kind) is None, key
-    assert ranges[("node:substrate.biometrics", "prediction_error")][1] == (0.0, 0.03)
+    assert ranges[("node:prediction.body_joint", "prediction_error")] == ("surprise_excess", (0.0, 0.55))
+    assert ("node:substrate.biometrics", "prediction_error") not in ranges
     assert ("node:substrate.bus_synaptic", "prediction_error") not in ranges
     assert ("node:substrate.route", "prediction_error") not in ranges
     # The documented failure states must sit OUTSIDE the calm band.
@@ -143,9 +146,9 @@ def test_placeholder_in_real_glossary_has_no_rest_range():
 
 def test_rest_range_projects_onto_lineage_and_lock_in_order():
     nodes = {n.name: n for n in resolve_field_channels()}
-    node = nodes["node:substrate.biometrics.prediction_error"]
-    assert node.rest_range == (0.0, 0.03)
-    assert fingerprint(node)["rest_range"] == [0.0, 0.03]
+    node = nodes["node:prediction.body_joint.prediction_error"]
+    assert node.rest_range == (0.0, 0.55)
+    assert fingerprint(node)["rest_range"] == [0.0, 0.55]
     # Ordered, never sorted: a malformed hi<lo must not lock as valid-looking.
-    flipped = MetricNode(**{**node.__dict__, "rest_range": (0.03, 0.0)})
-    assert fingerprint(flipped)["rest_range"] == [0.03, 0.0]
+    flipped = MetricNode(**{**node.__dict__, "rest_range": (0.55, 0.0)})
+    assert fingerprint(flipped)["rest_range"] == [0.55, 0.0]

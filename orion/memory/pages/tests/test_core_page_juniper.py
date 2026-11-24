@@ -295,3 +295,13 @@ def test_he_about_someone_else_is_not_misgendering():
     assert misgendered_sentences(["Juniper uses she/her, never he/him.", "She is my creator."]) == []
     # Whole words only: "the", "her", "Hester" are not he/him/his.
     assert misgendered_sentences(["Juniper and the others use her room."]) == []
+
+
+def test_a_number_must_be_in_a_cited_record():
+    """#3776, shared check: Rowan's fact holds the 12; a 15 it does not hold is refused."""
+    h = {s.ref: k for k, s in _handles().items()}
+    base = (f"Juniper uses she/her [{h['person_fact:f-pron']}]. Pip is her daughter [{h['person_fact:f-pip']}]. ")
+    good = base + f"Rowan has been her wife for 12 years [{h['person_fact:f-rowan']}]."
+    assert check_page(good, _handles()).ok
+    bad = check_page(base + f"Rowan has been her wife for 15 years [{h['person_fact:f-rowan']}].", _handles())
+    assert [e.split(":")[0] for e in bad.errors] == ["unbacked_number"]

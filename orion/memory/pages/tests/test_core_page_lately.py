@@ -162,3 +162,19 @@ def test_core_page_from_payload_strips_cites():
     assert page.evidence_count == 1 and page.written_at == "2026-11-19"
     assert CTX_KEY_LATELY == "orion_core_page_lately"
     assert core_page_from_payload(None) is None
+
+
+def test_a_date_written_from_the_record_stamp_is_backed_by_the_cited_record():
+    """#3776 review: the prompt shows each record's date, so a page that writes it ("2026-11-20", "the
+    20th", "Nov 20") is backed by that record even when its text holds no digits."""
+    from datetime import date as _date
+
+    from orion.memory.pages.fold import PageSource, check_page
+
+    handles = {"S1": PageSource(ref="episode_memory:a", kind="episode_memory", text="We talked about the garden.",
+                                label="", when=_date(2026, 11, 20))}
+    page = ("On 2026-11-20 we talked about the garden [S1]. On the 20th we talked [S1]. "
+            "By Nov 20, 2026 the garden came up [S1].")
+    assert check_page(page, handles).ok, check_page(page, handles).errors
+    bad = check_page(page + " On the 21st we talked [S1].", handles)
+    assert [e.split(":")[0] for e in bad.errors] == ["unbacked_number"]

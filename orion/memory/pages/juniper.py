@@ -13,7 +13,8 @@ What this module does, in order:
    check below is the contract.
 3. ``check_page`` is deterministic: it rejects an uncited sentence, a cite that names no source,
    a quote (3+ words in double quotes) found word for word in none of the sentence's cited
-   records, an unclosed quote, a list or heading line, leftover ``<think`` text, a page over
+   records, a digit number (outside "Month D" dates) found in none of the sentence's cited
+   records (#3776), an unclosed quote, a list or heading line, leftover ``<think`` text, a page over
    ``WORD_CAP`` words, a page with fewer than ``MIN_SENTENCES`` sentences, and a sentence that
    calls Juniper he/him/his (``misgendered_sentences``). Every line break
    is a hard sentence break. On pass

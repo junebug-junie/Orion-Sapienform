@@ -8,7 +8,8 @@ way lives here, once:
 
 - ``handle_map`` numbers sources ``[S1]..[Sn]`` for the prompt;
 - ``check_page`` is the deterministic truth check (every sentence cites a real record, quotes are
-  word for word in a cited record, no lists or headings, word cap, Juniper never he/him);
+  word for word in a cited record, every number is in a cited record, no lists or headings, word
+  cap, Juniper never he/him);
 - ``render_text`` strips stored cites for a prompt; ``history_row`` builds the
   ``self_concept_history`` row; ``core_page_from_payload`` turns the felt-state lane payload into a
   ``CorePageV1``;
@@ -217,6 +218,45 @@ def quoted_spans(sentence: str) -> list[str]:
     return spans
 
 
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+           "november", "december")
+_ORD = r"(?:st|nd|rd|th)?"
+# "August 13" / "August 13th": a date, checked against a record's day, not as a number.
+DATE_MENTION = re.compile(rf"\b({'|'.join(m.capitalize() for m in _MONTHS)})\s+(\d{{1,2}}){_ORD}\b")
+# A digit number: "1,400,000" (thousands commas), "2.5", "13th", "1990s", "10pm". Not "S12" or "v2" (a
+# letter or dot right before it), so cite handles and version tags are not numbers.
+_NUMBER = re.compile(r"(?<![\w.])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?[a-zA-Z]*(?![\w])")
+
+
+def _bare_number(n: str) -> str:
+    """One written form per value: "13th" -> "13", "1990s" -> "1990", "1,400" -> "1400", "08" -> "8",
+    "2.50" -> "2.5", "2.0" -> "2". A sign is not part of the match, so "-5" is backed by "5"."""
+    n = re.sub(r"[a-zA-Z]+$", "", n).replace(",", "")
+    whole, _, frac = n.partition(".")
+    whole = str(int(whole)) if whole else "0"
+    frac = frac.rstrip("0")
+    return f"{whole}.{frac}" if frac else whole
+
+
+def date_parts(when: date | None) -> str:
+    """A record's date as the numbers a page may say about it ("2026 11 20"): the prompt shows every
+    record's date, and a page may write it as "2026-11-20", "Nov 20" or "the 20th"."""
+    return f"{when.year} {when.month} {when.day}" if when else ""
+
+
+def sentence_numbers(sentence: str) -> list[str]:
+    """Digit numbers in a sentence, outside "Month D" dates, bare (``_bare_number``)."""
+    return [_bare_number(n) for n in _NUMBER.findall(DATE_MENTION.sub(" ", sentence))]
+
+
+def unbacked_numbers(sentence: str, cited_texts: Sequence[str]) -> list[str]:
+    """The sentence's numbers (``sentence_numbers``) that appear in none of the cited texts. Digits
+    only: "5" is not backed by "five". Shared by ``check_page`` and the page:origin history eval
+    (issue #3776). ``check_page`` adds each cited record's date (``date_parts``) to its texts."""
+    pool = {_bare_number(n) for n in _NUMBER.findall(" ".join(cited_texts))}
+    return [n for n in sentence_numbers(sentence) if n not in pool]
+
+
 def _clean(text: str) -> str:
     text = re.sub(r"[ \t]+([.,;:!?])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -308,12 +348,14 @@ def check_page(raw: str, handles: Mapping[str, PageSource], *, word_cap: int = W
     for sentence, cites in sentences:
         cited.append((sentence, [handles[h].ref for h in cites if h in handles]))
         cited_texts: list[str] = []
+        raw_texts: list[str] = []
         for handle in cites:
             src = handles.get(handle)
             if src is None:
                 errors.append(f"unresolvable_cite: {handle}")
                 continue
             cited_texts.append(_norm(src.text))
+            raw_texts.append(f"{src.text} {date_parts(src.when)}")
             if src.ref not in refs:
                 refs.append(src.ref)
         if not cites:
@@ -324,6 +366,10 @@ def check_page(raw: str, handles: Mapping[str, PageSource], *, word_cap: int = W
             # Whole words only: "1990" must not match inside "19901".
             if len(quote.split()) >= _QUOTE_MIN_WORDS and not any(f" {quote} " in f" {t} " for t in cited_texts):
                 errors.append(f"unsupported_quote: {span[:80]}")
+        # A number is a claim too (#3776): it must be in a record this sentence cites. A kept sentence
+        # whose cite moved to a record without its number is refused, not shipped.
+        for number in dict.fromkeys(unbacked_numbers(sentence, raw_texts)):
+            errors.append(f"unbacked_number: {number} in: {sentence[:80]}")
 
     # Juniper uses she/her (rule 1 of the fold prompt). A page that calls her he/him never ships.
     for sentence in misgendered_sentences([sentence for sentence, _ in sentences]):
@@ -391,12 +437,18 @@ def length_rule() -> str:
 
 
 _OVER_CAP = re.compile(r"^over_cap: (\d+) words > (\d+)$")
+_UNBACKED_NUMBER = re.compile(r"^unbacked_number: (\S+) in: ")
 
 
 def retry_note(errors: Sequence[str], sentence_count: int = 0) -> str | None:
-    """A rejected page's errors -> the line the next attempt's prompt ends with, or None. Only for an
-    over-cap page: it says the word count and asks for a shorter page, with a sentence budget scaled
-    from the last page (its sentences x TARGET_WORDS / its words), never above TARGET_SENTENCES."""
+    """A rejected page's errors -> the line(s) the next attempt's prompt ends with, or None.
+
+    - over cap: says the word count and asks for a shorter page, with a sentence budget scaled from
+      the last page (its sentences x TARGET_WORDS / its words), never above TARGET_SENTENCES;
+    - unbacked numbers (#3776): names the numbers and asks to cite the record that holds each one or
+      leave it out.
+    Other errors get no note."""
+    notes: list[str] = []
     for err in errors:
         m = _OVER_CAP.match(str(err))
         if m:
@@ -405,10 +457,15 @@ def retry_note(errors: Sequence[str], sentence_count: int = 0) -> str | None:
             if sentence_count > 0 and words > 0:
                 budget = max(3, min(TARGET_SENTENCES, sentence_count * TARGET_WORDS // words))
             shape = f" in {sentence_count} sentences" if sentence_count > 0 else ""
-            return (f"Your last page was {words} words{shape}, over the {m.group(2)}-word cap, and was thrown "
-                    f"away. Write a shorter page: at most {budget} sentences, about {TARGET_WORDS} words. Cut the "
-                    "least important sentences; keep every sentence cited.")
-    return None
+            notes.append(f"Your last page was {words} words{shape}, over the {m.group(2)}-word cap, and was thrown "
+                         f"away. Write a shorter page: at most {budget} sentences, about {TARGET_WORDS} words. Cut "
+                         "the least important sentences; keep every sentence cited.")
+            break
+    numbers = list(dict.fromkeys(m.group(1) for m in (_UNBACKED_NUMBER.match(str(e)) for e in errors) if m))
+    if numbers:
+        notes.append(f"Your last page was thrown away because a sentence used a number that no record it cites "
+                     f"holds: {', '.join(numbers)}. Cite the record that holds the number, or leave the number out.")
+    return "\n".join(notes) or None
 
 
 def with_retry_note(prompt: str, note: str | None) -> str:

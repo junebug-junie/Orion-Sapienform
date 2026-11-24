@@ -18,7 +18,7 @@ def test_every_page_prompt_uses_the_shared_length_rule():
     assert rule in lately.build_fold_prompt([], today=date(2026, 11, 19))
 
 
-def test_retry_note_only_for_over_cap_and_names_the_count():
+def test_retry_note_for_over_cap_names_the_count_and_other_errors_get_none():
     note = retry_note(["uncited: x", "over_cap: 354 words > 350"])
     assert note.startswith("Your last page was 354 words, over the 350-word cap")
     assert f"at most {TARGET_SENTENCES} sentences, about {TARGET_WORDS} words" in note
@@ -29,5 +29,14 @@ def test_retry_note_only_for_over_cap_and_names_the_count():
     assert "at most 12 sentences" in retry_note(["over_cap: 400 words > 350"], 20)
     assert retry_note(["uncited: x", "too_thin: 1 cited sentences < 3"], 9) is None
     assert retry_note([]) is None
+    assert retry_note(["uncited: x"]) is None
     assert with_retry_note("P", None) == "P"
     assert with_retry_note("P", note) == f"P\n\n{note}"
+
+
+def test_retry_note_names_unbacked_numbers_and_keeps_the_cap_note():
+    note = retry_note(["unbacked_number: 342 in: I am made of 342 parts.", "unbacked_number: 7 in: x",
+                       "unbacked_number: 342 in: again"])
+    assert "342, 7" in note and "Cite the record that holds the number, or leave the number out" in note
+    both = retry_note(["over_cap: 400 words > 350", "unbacked_number: 9 in: y"], 8)
+    assert "over the 350-word cap" in both and "holds: 9." in both

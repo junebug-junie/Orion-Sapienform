@@ -68,7 +68,42 @@ alone, it does not ship.
   `source_ref` = the ask id, so it is written once.
 - Shows on the person's People page with the other facts. Removable there.
 
-### Patch 2: a clue list per person, read from pictures
+### Patch 2 revised (2026-11-24, after measuring live data)
+
+The plan below assumed every clue needs a new picture reader. Live data says
+otherwise:
+
+- The detector already boxes `stroller` (since 2026-11-18) and `dog`. They need
+  no SigLIP read: a clue is "a box of that kind in the same frame, within one
+  person-height sideways".
+- The walked-together link (`together_pairs`, >= 2 shared moving instants) misses
+  most dogs: a dog is often a one-frame passage. So clues are read per frame,
+  not from `together_story_ids`.
+- Answer key: the person album (`vision_person_exemplar` +1, not also -1).
+  That is ~99.8% crops of clusters she named that passed the album purity
+  check, not pictures confirmed one by one. Good enough to measure; not perfect.
+- Unit: a passage (one cluster, one stream, one minute). Frames of one walk
+  past are not independent; per-crop counts overstated the evidence ~2x.
+
+Measured with `services/orion-sql-writer/evals/run_clue_rates_eval.py`
+(2026-11-18..24, 372 street passages; all stroller boxes fall in ~23 minutes,
+so this is about 20 street stroller events in one week):
+
+| clue | street rate | regulars (>= 10 passages) | weight of evidence |
+|---|---|---|---|
+| stroller | 7.8% | 0-4% | -3.4 for the most-seen regular; -0.5 to -1.4 for the rest (thin) |
+| dog | 11.3% | 0-27% | -1.7 to +0.9 (person-dependent, positive for some) |
+| named dog | 4.0% | 0-17% | -0.7 to +1.5 (weak) |
+
+Street includes regulars not named yet, which shrinks weights toward 0.
+
+So: stroller is evidence "not them" in direction, but the size rests on ~20
+events; patch 3 must learn it per person from passages, not take these
+numbers as fixed. Dog clues can point either way and stay low weight.
+Clothes, hair and build still have no answer key: they wait for a labelled
+set, and the SigLIP plan below applies only to them.
+
+### Patch 2 (original plan): a clue list per person, read from pictures
 
 - `orion/person_model/clues.yaml` (committed, generic): the clue kinds that
   can be read, each with its text prompts, the same way the age read works.

@@ -170,8 +170,8 @@ scripts/rebuild_services_from_git_diff.sh
 
 - Severity: medium. Concern: rows tolerated under the budget hide real corruption. Mitigation: every refresh logs the per-kind counts, the stats line carries a total, and the counts ride on the scan receipt.
 - Severity: low. Concern: the untyped MERGE now updates both rows of an existing twin until the repair runs. Mitigation: both rows get identical data; run the repair above.
-- Severity: low. Concern: whether `SET n:Concept` re-adds a label bit that FalkorDB dropped is UNVERIFIED. Mitigation: verify-live issue (listed below).
-- Issues opened: verify-live follow-up (see PR comment). Issues closed: #3512.
+- Severity: low. Concern: whether `SET n:Concept` re-adds a label bit that FalkorDB dropped is UNVERIFIED. Mitigation: verify-live issue #3864.
+- Issues opened: #3864 (verify-live + needs-juniper: post-deploy hydrate check and the aitown twin repair). Issues closed: #3512.
 
 ## PR link
 

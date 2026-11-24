@@ -15,7 +15,7 @@ forever and H1 would measure nothing.
 
 Update rule per absorbed atom (`absorb()`):
   1. A local 1-site unitary at the atom's routed site (routing.SiteAssignment),
-     parameterized by confidence*salience -- the "absorption" step.
+     rotation angle _MAX_STRENGTH * level -- the "absorption" step.
   2. **Fixed post-review (2026-07-24)**: a *chain* of 2-site entangling
      unitaries from the atom's routed site through every remaining site to
      the end of the chain (site, site+1), (site+1, site+2), ..., not just
@@ -58,16 +58,24 @@ confirmed live 2026-07-28 that a single `HeartbeatSubstrate`, absorbing real
 `orion:grammar:event` traffic with never any decay, thermalizes to a
 permanent near-ceiling boundary/bulk ratio (quantum-chaotic thermalization,
 Page's-theorem territory -- not a threshold-tuning bug, a missing mechanism).
-`decay_reheat_tick()` below adds that mechanism: a deterministic relaxation
-toward this trajectory's own seed-derived initial state (not a shared target
--- preserves inter-trajectory diversity, see `ensemble.py`), balanced against
-a small two-site entangling "reheat" driven by real live `bus_synaptic` data
-(a single-site reheat gate was tried first and is PROVABLY incapable of
-moving entanglement entropy across any cut -- confirmed the hard way with a
-null-result spike before correcting to two-site gates). Neither mechanism is
-claimed to be rigorously-derived open-quantum-system physics -- both are
-honest, disclosed heuristics, same "documented choice, not derivation" spirit
-as `_HOP_DECAY`/`_MIN_STRENGTH`/`_MAX_STRENGTH` above.
+`decay_tick()` below adds that mechanism: a deterministic relaxation toward
+this trajectory's own seed-derived initial state (not a shared target --
+preserves inter-trajectory diversity, see `ensemble.py`). An honest,
+disclosed heuristic, not rigorously-derived open-quantum-system physics.
+
+**2026-11-24 (#3838): the two-site "reheat" was removed.** It was driven by
+the raw mean |gap_z| of the orion_bus_synapse graph, which sat below its own
+calm floor (live 0.53 vs sqrt(2/pi) ~= 0.80) and gave a near-constant
+reheat_prob of ~0.0035 per bond per 2 s tick, and busy and quiet bus edges
+were not significantly different (10-02 shuffle p=0.16). Replay with and
+without it: README "Reheat removed". Bus activity now enters through the bus
+seat itself (bus_activity_zscore_computed, calm-floor corrected, routing.py).
+
+**2026-11-24 (#3838): gate strength is ``level``.** The old rule used
+confidence x salience for the one-site gate and confidence x (1 - uncertainty)
+for the two-site chain. The input audit found those fields are mostly stamped
+constants, so both gates now use one rotation angle, ``_MAX_STRENGTH *
+level``. A measured input at rest (level 0) applies no gate.
 """
 from __future__ import annotations
 
@@ -100,25 +108,23 @@ def _build_generators() -> tuple[dict[OperatorKind, np.ndarray], dict[OperatorKi
 
 _ONE_SITE_GENERATORS, _TWO_SITE_GENERATORS = _build_generators()
 
-# Bounds on gate "strength" (the rotation angle in expm(1j * strength * G)).
-# Kept small and bounded so a single high-confidence/high-salience atom can't
-# swing the substrate arbitrarily far in one step -- deliberately conservative
-# defaults for a v0 that has not been tuned against any real data yet.
-_MIN_STRENGTH = 0.05
+# Largest gate rotation angle, reached at level 1.0. Kept small so a single
+# atom can't swing the substrate arbitrarily far in one step. Level 0 (a
+# measured input at rest) is no gate; the old _MIN_STRENGTH floor (0.05) made
+# every atom push even when its reading was calm, so it was removed with the
+# 2026-11-24 overhaul.
 _MAX_STRENGTH = 0.45
 
 # Per-hop decay applied to the 2-site entangling gate's strength as it
 # propagates from the organ's boundary site toward the far end of the chain
 # (see absorb()'s post-review fix). 0.7 is a bounded, deterministic default,
 # not tuned against any real data -- same "documented choice, not derivation"
-# discipline as _MIN_STRENGTH/_MAX_STRENGTH above.
+# discipline as _MAX_STRENGTH above.
 _HOP_DECAY = 0.7
 
 
-def _strength(a: float, b: float) -> float:
-    a = max(0.0, min(1.0, a))
-    b = max(0.0, min(1.0, b))
-    return _MIN_STRENGTH + (_MAX_STRENGTH - _MIN_STRENGTH) * a * b
+def _strength(level: float) -> float:
+    return _MAX_STRENGTH * max(0.0, min(1.0, float(level)))
 
 
 def site_reduced_density_matrix(mps: qtn.MatrixProductState, site: int) -> np.ndarray:
@@ -143,7 +149,7 @@ class HeartbeatSubstrate:
         self._mps.normalize()
         self.tick_count = 0
         self.seed = seed
-        # Own seeded RNG for decay/reheat stochastic draws -- NOT the global
+        # Own seeded RNG for decay stochastic draws -- NOT the global
         # np.random state. Reusing the same seed as the MPS's own
         # initialization keeps this trajectory fully, deterministically
         # self-contained ("this seed" determines both the initial state and
@@ -157,9 +163,9 @@ class HeartbeatSubstrate:
         self._rng = np.random.default_rng(seed)
         # Relaxation targets are NOT computed here -- __init__ must stay free
         # of any behavior that would make test_compute_h1_on_fresh_substrate_
-        # is_not_degenerate's "zero absorptions, zero decay/reheat applied"
+        # is_not_degenerate's "zero absorptions, zero decay applied"
         # assumption false. Call compute_relaxation_targets() explicitly once,
-        # right after construction, before any decay_reheat_tick() call.
+        # right after construction, before any decay_tick() call.
         self._relaxation_ops: list[np.ndarray] | None = None
 
     def compute_relaxation_targets(self, gamma: float) -> None:
@@ -193,36 +199,27 @@ class HeartbeatSubstrate:
             ops.append(U.conj().T @ D @ U)
         self._relaxation_ops = ops
 
-    def decay_reheat_tick(self, decay_prob: float, reheat_prob: float, reheat_strength: float) -> None:
-        """One dissipation-ensemble tick: per-site stochastic relaxation
-        toward this trajectory's own target (decay_prob per site), plus
-        per-bond stochastic two-site entangling "reheat" (reheat_prob per
-        bond) -- see module docstring for why reheat must be two-site.
-        Independent of `absorb()` and does NOT increment `tick_count`
-        (that counter tracks real organ traffic, not dissipation-ensemble
-        housekeeping -- keeps `test_compute_h1_tick_count_reflects_
-        absorptions` meaningful unchanged).
+    def decay_tick(self, decay_prob: float) -> None:
+        """One dissipation tick: per-site stochastic relaxation toward this
+        trajectory's own target (``decay_prob`` per site). Independent of
+        `absorb()` and does NOT increment `tick_count` (that counter tracks
+        real organ traffic, not dissipation housekeeping).
 
-        Stochastic draws come from `self._rng` (seeded from this
-        trajectory's own construction seed, see `__init__`), not the global
-        `np.random` state -- this instance is a fully self-contained,
-        deterministically-replayable unit given its seed and the sequence of
-        `absorb()`/`decay_reheat_tick()` calls it receives.
+        Draws come from `self._rng` (seeded from this trajectory's own
+        construction seed, see `__init__`), not the global `np.random` state,
+        so a trajectory is deterministically replayable given its seed and
+        its sequence of `absorb()`/`decay_tick()` calls.
         """
         if self._relaxation_ops is None:
-            raise RuntimeError("compute_relaxation_targets() must be called before decay_reheat_tick()")
+            raise RuntimeError("compute_relaxation_targets() must be called before decay_tick()")
 
+        applied = False
         for site in range(N_SITES):
             if self._rng.random() < decay_prob:
                 self._mps.gate_(self._relaxation_ops[site], site, contract=True)
-        for left in range(N_SITES - 1):
-            if self._rng.random() < reheat_prob:
-                G2 = _TWO_SITE_GENERATORS["amplitude"]
-                U2 = sla.expm(1j * reheat_strength * G2).reshape(PHYS_DIM, PHYS_DIM, PHYS_DIM, PHYS_DIM)
-                self._mps.gate_(
-                    U2, (left, left + 1), contract="swap+split", max_bond=BOND_DIM, cutoff=0.0,
-                )
-        self._mps.normalize()
+                applied = True
+        if applied:
+            self._mps.normalize()
 
     def absorb(self, assignment: SiteAssignment) -> None:
         """Apply one atom's absorption-and-entangle update. See module docstring.
@@ -253,14 +250,17 @@ class HeartbeatSubstrate:
             # mis-indexing.
             raise ValueError(f"site {site} has no right-neighbor within N_SITES={N_SITES}")
 
-        strength_1 = _strength(assignment.confidence, assignment.salience)
+        strength = _strength(assignment.level)
+        if strength <= 0.0:
+            # A measured input at rest: counted as real traffic, no gate.
+            self.tick_count += 1
+            return
         G1 = _ONE_SITE_GENERATORS[assignment.operator_kind]
-        U1 = sla.expm(1j * strength_1 * G1)
+        U1 = sla.expm(1j * strength * G1)
         self._mps.gate_(U1, site, contract=True)
 
-        base_strength = _strength(assignment.confidence, 1.0 - assignment.uncertainty)
         G2 = _TWO_SITE_GENERATORS[assignment.operator_kind]
-        hop_strength = base_strength
+        hop_strength = strength
         for left in range(site, N_SITES - 1):
             U2 = sla.expm(1j * hop_strength * G2).reshape(PHYS_DIM, PHYS_DIM, PHYS_DIM, PHYS_DIM)
             self._mps.gate_(

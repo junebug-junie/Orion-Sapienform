@@ -1,6 +1,6 @@
 """EnsembleSubstrate: N independent HeartbeatSubstrate trajectories, sharing
 the same real event stream but each with its own seed-derived relaxation
-target and stochastic decay/reheat draws.
+target and stochastic decay draws.
 
 Design doc: docs/superpowers/specs/2026-07-28-precision-weighted-attention-
 organ-and-heartbeat-discrimination-design.md, "Decision: N-trajectory
@@ -49,8 +49,11 @@ def spread_gate(recent_spread: float, base_decay_prob: float, sensitivity: float
     speed back up once trajectories agree -- it does NOT by itself prevent
     eventual full convergence under arbitrarily long silence (the gate's own
     signal, spread, decays toward zero as decay proceeds, removing its own
-    brake) -- that residual case is what the bus_synaptic-driven reheat
-    below is for. An honest, disclosed heuristic (`exp(-sensitivity *
+    brake). That is now intended: full relaxation under real silence IS the
+    rest state. Each trajectory relaxes to its own seed-derived target, so
+    the ensemble does not collapse to clones. (A bus_synaptic-driven "reheat"
+    used to hold a floor under this; it was removed 2026-11-24, #3838 --
+    see mps_state.py.) An honest, disclosed heuristic (`exp(-sensitivity *
     spread)`), not a derived control law.
     """
     return base_decay_prob * float(np.exp(-sensitivity * recent_spread))
@@ -62,8 +65,6 @@ class EnsembleConfig:
     gamma: float = 0.2
     base_decay_prob: float = 0.15
     decay_spread_sensitivity: float = 4.0
-    reheat_strength: float = 0.08
-    reheat_prob_scale: float = 0.02
 
 
 @dataclass
@@ -110,7 +111,7 @@ class EnsembleH1ResultV1:
 
 class EnsembleSubstrate:
     """Owns N HeartbeatSubstrate trajectories. Fans the same real atom out to
-    every trajectory's absorb(); each trajectory's own decay_reheat_tick()
+    every trajectory's absorb(); each trajectory's own decay_tick()
     stochastic draws (independently seeded, see mps_state.py) are what gives
     the ensemble genuine, non-clone diversity."""
 
@@ -140,16 +141,16 @@ class EnsembleSubstrate:
             traj.absorb(assignment)
         self._recent_spread = self.std_ratio()
 
-    def decay_reheat_tick(self, reheat_prob: float) -> None:
+    def decay_tick(self) -> None:
         """One ensemble-wide dissipation tick: spread-gated decay (using the
         ensemble's spread from the PREVIOUS ratio computation, not this
-        tick's -- avoids a same-tick circularity) plus bus_synaptic-driven
-        two-site reheat, applied independently per trajectory."""
+        tick's -- avoids a same-tick circularity), applied independently per
+        trajectory."""
         eff_decay_prob = spread_gate(
             self._recent_spread, self.config.base_decay_prob, self.config.decay_spread_sensitivity
         )
         for traj in self.trajectories:
-            traj.decay_reheat_tick(eff_decay_prob, reheat_prob, self.config.reheat_strength)
+            traj.decay_tick(eff_decay_prob)
         self._recent_spread = self.std_ratio()
 
     def ratios(self) -> list[float]:
@@ -174,8 +175,8 @@ class EnsembleSubstrate:
 
     def max_bond(self) -> int:
         """Max bond dimension across all trajectories -- a health check
-        (should never exceed routing.BOND_DIM given absorb()/
-        decay_reheat_tick() both cap it on every gate), not a mean/typical
+        (should never exceed routing.BOND_DIM given absorb()
+        caps it on every gate), not a mean/typical
         value, matching the single-substrate stats field this replaces."""
         return max(t.max_bond() for t in self.trajectories)
 

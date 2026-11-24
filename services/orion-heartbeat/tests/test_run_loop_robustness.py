@@ -25,12 +25,20 @@ def _grammar_envelope_bytes(svc: HeartbeatService, *, payload: dict) -> bytes:
     return svc.codec.encode(env)
 
 
+_ROLE = {
+    "orion-hub": "repair_pressure_reading",
+    "orion-biometrics": "gpu_pressure_signal",
+    "orion-cortex-orch": "route_arbitration_decided",
+}
+
+
 def _atom_emitted_payload(*, source_service: str = "orion-hub", atom_type: str = "observation") -> dict:
     return {
         "event_kind": "atom_emitted",
         "provenance": {"source_service": source_service},
         "atom": {
             "atom_type": atom_type,
+            "semantic_role": _ROLE.get(source_service, "x"),
             "confidence": 0.8,
             "salience": 0.5,
             "uncertainty": 0.2,
@@ -119,7 +127,7 @@ async def test_run_survives_mixed_batch_good_bad_and_out_of_scope(monkeypatch) -
 async def test_run_survives_malformed_atom_fields(monkeypatch) -> None:
     svc = HeartbeatService()
     payload = _atom_emitted_payload()
-    payload["atom"]["confidence"] = "not-a-number"
+    payload["atom"]["salience"] = "not-a-number"
     raw = _grammar_envelope_bytes(svc, payload=payload)
     _fake_bus_run(svc, [raw], monkeypatch)
 

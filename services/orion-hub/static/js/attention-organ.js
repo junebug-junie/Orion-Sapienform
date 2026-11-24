@@ -161,6 +161,7 @@
     if (name === "orion-cortex-exec") return "exec";
     if (name === "orion-bus") return "bus";
     if (name === "orion-cortex-orch") return "orch";
+    if (name === "orion-harness-governor") return "harness";
     return name;
   }
 
@@ -1306,8 +1307,8 @@
         host,
         "Queue depth at or above " +
           ABSORB_QUEUE_WARN +
-          " — the depth at which a live burst previously starved the dissipation loop's socket I/O and " +
-          "produced a spurious FalkorDB timeout. The substrate's freshness lags real events here, not its correctness.",
+          " — the depth at which a live burst previously starved the event loop. " +
+          "The substrate's freshness lags real events here, not its correctness.",
         "text-amber-400/80"
       );
     }
@@ -1320,78 +1321,7 @@
       errorBlock(host, "Dissipation drive", hb.health_error);
       return;
     }
-    card(host, "Dissipation drive", "decay ⇄ reheat");
-
-    var reheat = health.last_reheat;
-    if (reheat) {
-      var saturated = Number(reheat.signal) >= 1.0;
-      var chain = el(
-        "div",
-        "rounded-lg border p-2 mb-3 " +
-          (saturated ? "border-red-900/60 bg-red-950/20" : "border-gray-800 bg-black/30")
-      );
-      var chainHead = el("div", "flex items-center justify-between gap-2 mb-1");
-      chainHead.appendChild(
-        el("div", "text-[10px] uppercase tracking-wide text-gray-500", "Last real reheat tick")
-      );
-      if (saturated) {
-        chainHead.appendChild(badge("saturated", "border-red-800 bg-red-950/50 text-red-300"));
-      }
-      chain.appendChild(chainHead);
-      var flow = el("div", "text-[11px] font-mono text-gray-200 break-all");
-      flow.textContent =
-        "raw mean|gap_z| " +
-        num(reheat.raw_mean_abs_gap_zscore, 4) +
-        "  ÷ " +
-        num(reheat.zscore_saturation, 1) +
-        "  → signal " +
-        num(reheat.signal, 4) +
-        "  × scale  → reheat_prob " +
-        num(reheat.reheat_prob, 5);
-      chain.appendChild(flow);
-      // service.py only overwrites last_reheat after a SUCCESSFUL tick, so a
-      // persistently failing FalkorDB query serves the last good block
-      // forever. Age it against the loop's own configured interval rather
-      // than rendering the timestamp as inert gray text.
-      var reheatAgeSec = null;
-      if (reheat.at) {
-        var parsedAt = Date.parse(reheat.at);
-        if (Number.isFinite(parsedAt)) reheatAgeSec = (Date.now() - parsedAt) / 1000;
-      }
-      var interval = config && Number(config.decay_reheat_interval_sec);
-      var reheatStale =
-        reheatAgeSec !== null && Number.isFinite(interval) && interval > 0
-          ? reheatAgeSec > interval * 5
-          : false;
-      chain.appendChild(
-        el(
-          "div",
-          "text-[10px] mt-1 " + (reheatStale ? "text-amber-300" : "text-gray-500"),
-          (reheat.at || "") +
-            (reheatAgeSec === null ? "" : "  ·  " + age(reheatAgeSec) + " ago") +
-            (reheatStale ? "  ·  STALE — dissipation loop may be failing" : "")
-        )
-      );
-      host.appendChild(chain);
-      if (saturated) {
-        note(
-          host,
-          "Reheat signal is clipped at its ceiling: raw mean|gap_z| is above the saturation constant, so " +
-            "min(1, z/sat) returns 1.0 no matter how bus activity moves. Reheat is running at constant maximum, " +
-            "which means this input is not currently gating anything — the design spec's calibration assumed a " +
-            "raw value near 1.0–1.1. Worth re-checking the saturation constant against real data before trusting " +
-            "reheat as a dynamic driver.",
-          "text-red-300/90"
-        );
-      }
-    } else {
-      note(
-        host,
-        "No dissipation tick recorded yet by this orion-heartbeat build. Rebuild the heartbeat service to " +
-          "surface the live reheat inputs.",
-        "text-amber-400/80"
-      );
-    }
+    card(host, "Dissipation drive", "decay only");
 
     var config = health.config;
     if (config) {
@@ -1404,9 +1334,7 @@
         ["gamma (relaxation)", num(config.gamma, 3)],
         ["base_decay_prob", num(config.base_decay_prob, 3)],
         ["decay_spread_sensitivity", num(config.decay_spread_sensitivity, 2)],
-        ["reheat_strength", num(config.reheat_strength, 3)],
-        ["reheat_prob_scale", num(config.reheat_prob_scale, 3)],
-        ["decay/reheat interval", num(config.decay_reheat_interval_sec, 1) + "s"],
+        ["decay interval", num(config.decay_interval_sec, 1) + "s"],
         ["h1 interval", num(config.h1_interval_sec, 1) + "s"],
         ["silence floor (mean)", "≤" + num(config.low_ratio, 2)],
         ["mean high (redundant conjunct)", "≥" + num(config.high_ratio, 2)],
@@ -1424,8 +1352,9 @@
 
     note(
       host,
-      "Decay is gated by trajectory spread (disagreement suppresses relaxation); reheat is driven by real " +
-        "inter-service bus timing jitter. Without both, the substrate thermalizes and can never read anything but 'redundant'."
+      "Decay is gated by trajectory spread (disagreement suppresses relaxation). Under real silence it relaxes " +
+        "each trajectory toward rest. The bus_synaptic reheat was removed (#3838): it sat below its own calm floor " +
+        "and did not move with bus activity. Bus activity now reaches the substrate through the bus seat."
     );
   }
 

@@ -49,9 +49,7 @@ def test_health_endpoint_exposes_live_tuning_and_band_edges() -> None:
         "gamma",
         "base_decay_prob",
         "decay_spread_sensitivity",
-        "reheat_strength",
-        "reheat_prob_scale",
-        "decay_reheat_interval_sec",
+        "decay_interval_sec",
         "h1_interval_sec",
     ):
         assert key in config, key
@@ -63,14 +61,25 @@ def test_health_endpoint_exposes_live_tuning_and_band_edges() -> None:
     assert config["bulk_redundant_min"] == verdict_thresholds()["bulk_redundant_min"]
     assert body["absorb_queue_maxsize"] >= 1
     assert set(body["organ_site_map"]) == set(body["allowlisted_organs"])
+    for retired in ("reheat_strength", "reheat_prob_scale", "decay_reheat_interval_sec"):
+        assert retired not in config, retired
 
 
-def test_health_last_reheat_is_absent_until_a_real_dissipation_tick() -> None:
-    """`last_reheat` reports what the dissipation loop ACTUALLY fed the
-    substrate. Before any tick has run there is nothing real to report, and a
-    fabricated zero would read as "the organ was reheated by a calm bus"
-    rather than "the organ has not been reheated yet"."""
+def test_health_has_no_reheat_surface_and_names_the_input_rules() -> None:
+    """#3838: the bus_synaptic reheat was removed outright -- no stale
+    `last_reheat` block may linger on /health. The input-rule counters and
+    the reasons for every unrouted producer must be visible instead."""
     with TestClient(app) as client:
         body = client.get("/health").json()
 
-    assert body["last_reheat"] is None
+    assert "last_reheat" not in body
+    assert body["seat_order"] == [
+        "orion-hub",
+        "orion-biometrics",
+        "orion-cortex-exec",
+        "orion-bus",
+        "orion-harness-governor",
+    ]
+    for key in ("events_skipped_input", "events_skipped_input_by_reason", "inputs_absorbed_by_kind", "inputs_unlisted_role"):
+        assert key in body, key
+    assert body["unrouted_producer_reasons"]["orion-sql-writer"]

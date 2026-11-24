@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CYCLIC_ORGAN_SHIFT: dict[str, str] = {
-    "orion-hub": "orion-biometrics",
-    "orion-biometrics": "orion-cortex-exec",
-    "orion-cortex-exec": "orion-bus",
-    "orion-bus": "orion-cortex-orch",
-    "orion-cortex-orch": "orion-hub",
-}
+from .routing import BOUNDARY_SITES
+
+# Arm B moves every seat's traffic one seat to the right (site 0 -> 1, ...,
+# site 4 -> 0), as the pre-reg states. 2026-11-24 (#3838): this is now done on
+# the routed site, not by renaming source_service, because a seat can hold
+# more than one service (cortex-orch shares the execution seat) and each
+# service keeps its own input rule.
 
 REL_SHUFFLE_MAX = 0.05
 MEAN_RATIO_DELTA_MAX = 0.01
@@ -55,9 +55,13 @@ class ProbeVerdict:
     kick: KickScore
 
 
-def shuffle_source_service(source_service: str) -> str:
-    """Cyclic organ permutation. Unknown organs pass through (caller skips)."""
-    return CYCLIC_ORGAN_SHIFT.get(source_service, source_service)
+def shuffle_site(site_index: int) -> int:
+    """Cyclic seat permutation over the boundary block. Bulk sites pass
+    through unchanged (no atom is routed there)."""
+    if site_index not in BOUNDARY_SITES:
+        return site_index
+    pos = BOUNDARY_SITES.index(site_index)
+    return BOUNDARY_SITES[(pos + 1) % len(BOUNDARY_SITES)]
 
 
 def _rms(profile: list[float]) -> float:

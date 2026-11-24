@@ -9,31 +9,26 @@ import math
 import pytest
 
 from app.substrate.lattice_probe import (
-    CYCLIC_ORGAN_SHIFT,
     decide_probe,
     score_kick,
     score_shuffle,
-    shuffle_source_service,
+    shuffle_site,
 )
+from app.substrate.routing import BOUNDARY_SITES, BULK_SITES
 
 
-def test_cyclic_shift_is_a_5_cycle_of_v0_organs() -> None:
-    organs = set(CYCLIC_ORGAN_SHIFT)
-    assert organs == set(CYCLIC_ORGAN_SHIFT.values())
-    assert len(organs) == 5
-    cursor = "orion-hub"
-    seen = {cursor}
-    for _ in range(4):
-        cursor = CYCLIC_ORGAN_SHIFT[cursor]
-        seen.add(cursor)
-    assert cursor != "orion-hub"
-    cursor = CYCLIC_ORGAN_SHIFT[cursor]
-    assert cursor == "orion-hub"
-    assert seen == organs
+def test_shuffle_site_is_a_cycle_over_the_boundary_seats() -> None:
+    # Pre-reg arm B: site 0 -> 1, ..., site 4 -> 0.
+    assert [shuffle_site(s) for s in BOUNDARY_SITES] == [1, 2, 3, 4, 0]
+    cursor = 0
+    for _ in range(len(BOUNDARY_SITES)):
+        cursor = shuffle_site(cursor)
+    assert cursor == 0
 
 
-def test_shuffle_unknown_organ_passes_through() -> None:
-    assert shuffle_source_service("orion-vision-edge") == "orion-vision-edge"
+def test_shuffle_site_leaves_bulk_sites_alone() -> None:
+    for site in BULK_SITES:
+        assert shuffle_site(site) == site
 
 
 def test_shuffle_null_when_profiles_and_verdict_match() -> None:

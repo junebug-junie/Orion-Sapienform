@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Read-only calibration harness for orion-heartbeat's N-trajectory ensemble
-dissipation mechanism (per-trajectory relaxation targets, spread-gated decay,
-bus_synaptic-driven two-site reheat).
+dissipation mechanism (per-trajectory relaxation targets, spread-gated decay).
+
+2026-11-24 (#3838): points 3 and 4 below are history. The bus_synaptic reheat
+was removed: its driver sat below its own calm floor and did not move with
+bus activity. This harness now replays decay only, through the overhauled
+routing (route_atom(source_service, atom) with per-role input rules).
 
 Design doc: docs/superpowers/specs/2026-07-28-precision-weighted-attention-
 organ-and-heartbeat-discrimination-design.md.
@@ -40,7 +44,7 @@ Two replay modes:
   grammar: replays REAL historical `grammar_events` rows (Postgres,
     orion-sql-writer's durable store, confirmed this session: 1.6M rows
     spanning 5 real days) through the ensemble in real chronological order,
-    with decay/reheat opportunities driven by REAL wall-clock gaps between
+    with decay opportunities driven by REAL wall-clock gaps between
     events, not a fixed synthetic tick count. This is the mode that actually
     answers Missing Question 9 (does the tuning hold up against real organ
     silence durations, not an invented pattern) and should be re-run any
@@ -48,12 +52,12 @@ Two replay modes:
     history accumulates.
 
 No writes, no events, no flag/config changes. Read-only against Postgres
-(grammar_events) and FalkorDB (orion_bus_synapse), both via the same
+(grammar_events), via the same
 connection conventions already established by measure_ast_hot_reducer.py /
 services/orion-heartbeat's own code.
 
 Environment: this script needs quimb (a services/orion-heartbeat-specific
-dependency, not installed repo-wide) plus psycopg2 and redis clients. DO NOT
+dependency, not installed repo-wide) plus psycopg2. DO NOT
 `pip install` these into the shared repo venv (`./venv`) -- that's an
 undocumented, unreproducible side effect on a venv other sessions/agents
 share (confirmed live 2026-07-28: this is exactly what happened developing
@@ -61,7 +65,7 @@ this script, and it should not be repeated). Use a dedicated venv scoped to
 this script instead:
 
   python3 -m venv .harness-venv
-  .harness-venv/bin/pip install quimb==1.14.0 psycopg2-binary redis
+  .harness-venv/bin/pip install quimb==1.14.0 psycopg2-binary
 
 Usage (from repo root, with that dedicated venv):
   PYTHONPATH=.:services/orion-heartbeat .harness-venv/bin/python3 \\
@@ -82,10 +86,8 @@ Usage (from repo root, with that dedicated venv):
   tail -f /tmp/heartbeat-ensemble-calibration/progress.log
 
   # Alternative: run inside the live orion-heartbeat container instead (has
-  # real quimb==1.14.0 already, and real network access to Postgres/FalkorDB
-  # over their internal hostnames/ports -- no --falkordb-port override
-  # needed there, only when running from the host against the externally
-  # mapped port):
+  # real quimb==1.14.0 already, and real network access to Postgres over
+  # its internal hostname):
   docker cp scripts/analysis/measure_heartbeat_ensemble_calibration.py \\
     orion-athena-heartbeat:/tmp/calibrate.py
   docker exec -e PYTHONPATH=/app orion-athena-heartbeat python3 /tmp/calibrate.py --mode grammar
@@ -115,9 +117,6 @@ PROGRESS_EVERY_N_EVENTS = 500  # append-only checkpoint cadence, not tuned -- ch
 # diagnosable trail instead of total silence.
 
 DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
-DEFAULT_FALKORDB_HOST = "orion-athena-falkordb"
-DEFAULT_FALKORDB_PORT = 6379
-_BUS_SYNAPTIC_ZSCORE_SATURATION = 3.0  # mirrors orion/substrate/prediction_error.py
 
 
 def _import_heartbeat_substrate():
@@ -135,6 +134,7 @@ def _import_heartbeat_substrate():
         SiteAssignment,
         UnroutableAtomTypeError,
         UnroutableOrganError,
+        SkippedInputError,
         route_atom,
     )
     return {
@@ -148,41 +148,10 @@ def _import_heartbeat_substrate():
         "SiteAssignment": SiteAssignment,
         "UnroutableAtomTypeError": UnroutableAtomTypeError,
         "UnroutableOrganError": UnroutableOrganError,
+        "SkippedInputError": SkippedInputError,
         "route_atom": route_atom,
     }
 
-
-# ---------------------------------------------------------------------------
-# Real bus_synaptic query -- drives reheat strength from live ambient activity
-# ---------------------------------------------------------------------------
-
-def query_real_bus_synaptic_raw_mean_abs_z(
-    host: str = DEFAULT_FALKORDB_HOST, port: int = DEFAULT_FALKORDB_PORT,
-) -> float:
-    """RAW mean(|gap_zscore|) across reliable orion_bus_synapse edges
-    (count>5, per bus-mirror's documented cold-start floor). Deliberately
-    NOT the calm-floor-corrected anomaly-detection version -- see module
-    docstring point 4."""
-    try:
-        import redis
-    except ImportError:
-        logger.warning("redis client unavailable; falling back to 0.0 (no reheat)")
-        return 0.0
-    try:
-        r = redis.Redis(host=host, port=port, decode_responses=True, socket_timeout=5.0)
-        result = r.execute_command(
-            "GRAPH.QUERY", "orion_bus_synapse",
-            "MATCH ()-[rel]->() WHERE rel.count > 5 RETURN avg(abs(rel.gap_zscore))",
-        )
-        return float(result[1][0][0])
-    except Exception as exc:  # noqa: BLE001 - read-only diagnostic, must not crash the harness
-        logger.warning("bus_synaptic query failed (%s); falling back to 0.0 (no reheat)", exc)
-        return 0.0
-
-
-# ---------------------------------------------------------------------------
-# Mechanism -- validated shape from this session's spikes
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class EnsembleConfig:
@@ -190,10 +159,8 @@ class EnsembleConfig:
     gamma: float = 0.2
     base_decay_prob: float = 0.15
     decay_spread_sensitivity: float = 4.0
-    reheat_strength: float = 0.08
-    reheat_prob_scale: float = 0.02
     # Cadence assumption for real-time replay: how many real seconds one
-    # decay/reheat "opportunity" represents. NOT independently derived --
+    # decay "opportunity" represents. NOT independently derived --
     # matches HEARTBEAT_H1_INTERVAL_SEC's default (30s) order of magnitude
     # as a starting point (services/orion-heartbeat/app/settings.py:38);
     # Missing Question 7 in the design doc is still open on whether
@@ -224,26 +191,17 @@ class CalibrationTrajectory:
             U = eigvecs[:, order].conj().T
             ops.append(U.conj().T @ D @ U)
         self.decay_ops = ops
-        self.reheat_generator = mods["_TWO_SITE_GENERATORS"]["amplitude"]
         self.phys_dim = phys_dim
         self.n_sites = n_sites
         self.bond_dim = mods["BOND_DIM"]
         self.boundary_bulk_cut = mods["BOUNDARY_BULK_CUT"]
         self.max_possible_entropy = np.log2(self.bond_dim)
 
-    def decay_reheat_tick(self, decay_prob: float, reheat_prob: float, cfg: EnsembleConfig) -> None:
-        import scipy.linalg as sla
+    def decay_tick(self, decay_prob: float) -> None:
+        # Reheat removed 2026-11-24 (#3838), matching mps_state.decay_tick().
         for site in range(self.n_sites):
             if self.rng.random() < decay_prob:
                 self.substrate._mps.gate_(self.decay_ops[site], site, contract=True)
-        for left in range(self.n_sites - 1):
-            if self.rng.random() < reheat_prob:
-                U2 = sla.expm(1j * cfg.reheat_strength * self.reheat_generator).reshape(
-                    self.phys_dim, self.phys_dim, self.phys_dim, self.phys_dim
-                )
-                self.substrate._mps.gate_(
-                    U2, (left, left + 1), contract="swap+split", max_bond=self.bond_dim, cutoff=0.0,
-                )
         self.substrate._mps.normalize()
 
     def absorb(self, assignment) -> None:
@@ -268,7 +226,6 @@ class TickRecord:
 def run_ensemble(
     cfg: EnsembleConfig,
     mods: dict,
-    reheat_prob: float,
     event_stream,  # iterable of (label, assignment_or_None, n_gap_ticks) triples
     total_events: Optional[int] = None,
 ) -> list[TickRecord]:
@@ -291,7 +248,7 @@ def run_ensemble(
             for _ in range(n_gap_ticks):
                 eff_decay_prob = spread_gate(recent_spread, cfg.base_decay_prob, cfg.decay_spread_sensitivity)
                 for traj in trajectories:
-                    traj.decay_reheat_tick(eff_decay_prob, reheat_prob, cfg)
+                    traj.decay_tick(eff_decay_prob)
                 ratios = [t.ratio() for t in trajectories]
                 recent_spread = float(np.std(ratios))
                 records.append(TickRecord(label=label, mean_ratio=float(np.mean(ratios)), std_ratio=recent_spread))
@@ -330,7 +287,7 @@ def synthetic_event_stream(mods: dict, rng: random.Random, busy_ticks: int, quie
         assignment = mods["SiteAssignment"](
             site_index=mods["ORGAN_SITE_MAP"][organ],
             operator_kind=rng.choice(["amplitude", "phase", "rotation", "projection"]),
-            confidence=rng.uniform(0.4, 0.9), salience=rng.uniform(0.4, 0.9), uncertainty=rng.uniform(0.1, 0.4),
+            level=rng.uniform(0.2, 0.8), input_kind="measured",
         )
         yield "busy", assignment, 0
     for _ in range(quiet_ticks):
@@ -340,7 +297,7 @@ def synthetic_event_stream(mods: dict, rng: random.Random, busy_ticks: int, quie
         assignment = mods["SiteAssignment"](
             site_index=mods["ORGAN_SITE_MAP"][organ],
             operator_kind=rng.choice(["amplitude", "phase", "rotation", "projection"]),
-            confidence=rng.uniform(0.4, 0.9), salience=rng.uniform(0.4, 0.9), uncertainty=rng.uniform(0.1, 0.4),
+            level=rng.uniform(0.2, 0.8), input_kind="measured",
         )
         yield "busy2", assignment, 0
 
@@ -375,6 +332,7 @@ def grammar_event_stream(rows, mods: dict, cfg: EnsembleConfig):
     route_atom = mods["route_atom"]
     UnroutableOrganError = mods["UnroutableOrganError"]
     UnroutableAtomTypeError = mods["UnroutableAtomTypeError"]
+    SkippedInputError = mods["SkippedInputError"]
 
     prev_ts: Optional[datetime] = None
     skipped_organ = 0
@@ -385,13 +343,9 @@ def grammar_event_stream(rows, mods: dict, cfg: EnsembleConfig):
         emitted_at = row["emitted_at"]
         atom = (row["event_json"] or {}).get("atom") or {}
         try:
-            assignment = route_atom(
-                source_service=row["source_service"],
-                atom_type=str(atom.get("atom_type") or ""),
-                confidence=atom.get("confidence"),
-                salience=atom.get("salience"),
-                uncertainty=atom.get("uncertainty"),
-            )
+            assignment = route_atom(source_service=row["source_service"], atom=atom)
+        except SkippedInputError:
+            continue
         except UnroutableOrganError:
             skipped_organ += 1
             continue
@@ -441,33 +395,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--n-trajectories", type=int, default=8)
     parser.add_argument("--gamma", type=float, default=0.2)
     parser.add_argument("--base-decay-prob", type=float, default=0.15)
-    parser.add_argument("--reheat-strength", type=float, default=0.08)
-    parser.add_argument("--reheat-prob-scale", type=float, default=0.02)
     parser.add_argument("--seconds-per-decay-tick", type=float, default=2.0)
     parser.add_argument("--postgres-uri", default=os.environ.get("POSTGRES_URI", DEFAULT_POSTGRES_URI))
-    parser.add_argument("--falkordb-host", default=os.environ.get("FALKORDB_HOST", DEFAULT_FALKORDB_HOST))
-    parser.add_argument(
-        "--falkordb-port", type=int,
-        default=int(os.environ.get("FALKORDB_PORT", DEFAULT_FALKORDB_PORT)),
-        help="6379 when run inside the docker network (container's internal port); "
-             "6380 when run from the host against orion-athena-falkordb's externally "
-             "mapped port -- confirmed live this session these are NOT interchangeable, "
-             "a plain (non-FalkorDB) Redis instance also answers on host:6379.",
-    )
     args = parser.parse_args(argv)
 
     cfg = EnsembleConfig(
         n_trajectories=args.n_trajectories, gamma=args.gamma, base_decay_prob=args.base_decay_prob,
-        reheat_strength=args.reheat_strength, reheat_prob_scale=args.reheat_prob_scale,
         seconds_per_decay_tick=args.seconds_per_decay_tick,
     )
 
     mods = _import_heartbeat_substrate()
-    real_z = query_real_bus_synaptic_raw_mean_abs_z(host=args.falkordb_host, port=args.falkordb_port)
-    real_signal = min(1.0, real_z / _BUS_SYNAPTIC_ZSCORE_SATURATION)
-    reheat_prob = cfg.reheat_prob_scale * real_signal
-    logger.info("real_bus_synaptic_raw_mean_abs_z=%.4f -> reheat_prob=%.4f", real_z, reheat_prob)
-
     rng = random.Random(42)
     total_events: Optional[int] = None
     if args.mode == "synthetic":
@@ -479,7 +416,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         total_events = len(rows)
         stream = grammar_event_stream(rows, mods, cfg)
 
-    records = run_ensemble(cfg, mods, reheat_prob, stream, total_events=total_events)
+    records = run_ensemble(cfg, mods, stream, total_events=total_events)
     table = summarize(records)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -487,7 +424,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"# Heartbeat ensemble calibration -- mode={args.mode}\n\n"
         f"Generated: {datetime.now(timezone.utc).isoformat()}\n\n"
         f"Config: {cfg}\n\n"
-        f"real_bus_synaptic_raw_mean_abs_z={real_z:.4f} -> reheat_prob={reheat_prob:.4f}\n\n"
         f"{table}\n"
     )
     REPORT_PATH.write_text(report, encoding="utf-8")

@@ -3,13 +3,13 @@ from __future__ import annotations
 import pytest
 
 from app.substrate.mps_state import HeartbeatSubstrate
-from app.substrate.routing import BOND_DIM, N_SITES, SiteAssignment, route_atom
+from app.substrate.routing import BOND_DIM, N_SITES, ORGAN_SITE_MAP, SiteAssignment
 
 
-def _sample_assignment(site_organ: str = "orion-hub", **kwargs):
-    defaults = dict(confidence=0.8, salience=0.6, uncertainty=0.3)
-    defaults.update(kwargs)
-    return route_atom(source_service=site_organ, atom_type="observation", **defaults)
+def _sample_assignment(site_organ: str = "orion-hub", level: float = 0.6, operator_kind: str = "amplitude"):
+    return SiteAssignment(
+        site_index=ORGAN_SITE_MAP[site_organ], operator_kind=operator_kind, level=level, input_kind="measured"
+    )
 
 
 def test_initial_state_is_normalized() -> None:
@@ -22,7 +22,7 @@ def test_absorb_keeps_state_normalized_and_bond_capped() -> None:
     sub = HeartbeatSubstrate(seed=1)
     organs = ["orion-hub", "orion-biometrics", "orion-cortex-exec", "orion-bus", "orion-cortex-orch"]
     for i in range(20):
-        assignment = _sample_assignment(organs[i % len(organs)], confidence=0.7, salience=0.5, uncertainty=0.2)
+        assignment = _sample_assignment(organs[i % len(organs)], level=0.5)
         sub.absorb(assignment)
 
     assert sub.tick_count == 20
@@ -43,18 +43,15 @@ def test_entropy_profile_shape_and_bounds() -> None:
 
 def test_absorb_is_deterministic_given_same_seed_and_events() -> None:
     events = [
-        ("orion-hub", "observation", 0.9, 0.5, 0.1),
-        ("orion-biometrics", "signal", 0.6, 0.7, 0.4),
-        ("orion-cortex-exec", "reasoning_step", 0.8, 0.3, 0.2),
+        ("orion-hub", "amplitude", 0.5),
+        ("orion-biometrics", "amplitude", 0.7),
+        ("orion-cortex-exec", "rotation", 0.3),
     ]
 
     def run() -> list[float]:
         sub = HeartbeatSubstrate(seed=99)
-        for organ, atom_type, conf, sal, unc in events:
-            assignment = route_atom(
-                source_service=organ, atom_type=atom_type, confidence=conf, salience=sal, uncertainty=unc
-            )
-            sub.absorb(assignment)
+        for organ, kind, level in events:
+            sub.absorb(_sample_assignment(organ, level=level, operator_kind=kind))
         return sub.entropy_profile()
 
     profile_a = run()
@@ -80,7 +77,7 @@ def test_absorb_guards_against_a_site_with_no_right_neighbor() -> None:
     # claiming it does.
     sub = HeartbeatSubstrate(seed=1)
     bad_assignment = SiteAssignment(
-        site_index=N_SITES - 1, operator_kind="amplitude", confidence=1.0, salience=1.0, uncertainty=0.0
+        site_index=N_SITES - 1, operator_kind="amplitude", level=1.0, input_kind="measured"
     )
     with pytest.raises(ValueError):
         sub.absorb(bad_assignment)
@@ -95,54 +92,54 @@ def test_absorb_actually_changes_the_state() -> None:
     profile_before = sub_untouched.entropy_profile()
 
     sub_touched = HeartbeatSubstrate(seed=seed)
-    sub_touched.absorb(_sample_assignment("orion-hub", confidence=0.95, salience=0.9, uncertainty=0.05))
+    sub_touched.absorb(_sample_assignment("orion-hub", level=0.9))
     profile_after = sub_touched.entropy_profile()
 
     assert profile_after != pytest.approx(profile_before, abs=1e-9)
 
 
-def test_decay_reheat_tick_raises_before_relaxation_targets_computed() -> None:
+def test_decay_tick_raises_before_relaxation_targets_computed() -> None:
     # compute_relaxation_targets() must be called once before any
-    # decay_reheat_tick() -- documented guard, previously untested anywhere.
+    # decay_tick() -- documented guard, previously untested anywhere.
     sub = HeartbeatSubstrate(seed=1)
     with pytest.raises(RuntimeError, match="compute_relaxation_targets"):
-        sub.decay_reheat_tick(decay_prob=0.1, reheat_prob=0.1, reheat_strength=0.05)
+        sub.decay_tick(decay_prob=0.1)
 
 
-def test_decay_reheat_tick_does_not_change_tick_count() -> None:
+def test_decay_tick_does_not_change_tick_count() -> None:
     sub = HeartbeatSubstrate(seed=1)
     sub.compute_relaxation_targets(gamma=0.2)
     sub.absorb(_sample_assignment("orion-hub"))
     assert sub.tick_count == 1
 
     for _ in range(10):
-        sub.decay_reheat_tick(decay_prob=0.3, reheat_prob=0.1, reheat_strength=0.05)
+        sub.decay_tick(decay_prob=0.3)
 
     assert sub.tick_count == 1  # dissipation is not organ traffic
 
 
-def test_decay_reheat_tick_keeps_state_normalized() -> None:
+def test_decay_tick_keeps_state_normalized() -> None:
     sub = HeartbeatSubstrate(seed=1)
     sub.compute_relaxation_targets(gamma=0.2)
     sub.absorb(_sample_assignment("orion-hub"))
 
     for _ in range(20):
-        sub.decay_reheat_tick(decay_prob=0.3, reheat_prob=0.1, reheat_strength=0.05)
+        sub.decay_tick(decay_prob=0.3)
 
     assert sub.norm() == pytest.approx(1.0, abs=1e-6)
     assert sub.max_bond() <= BOND_DIM
 
 
-def test_decay_reheat_tick_is_deterministic_given_same_seed() -> None:
+def test_decay_tick_is_deterministic_given_same_seed() -> None:
     # Same discipline as test_absorb_is_deterministic_given_same_seed_and_
-    # events -- decay_reheat_tick's own stochastic draws must come from this
+    # events -- decay_tick's own stochastic draws must come from this
     # trajectory's own seeded RNG, not global np.random state.
     def run() -> list[float]:
         sub = HeartbeatSubstrate(seed=55)
         sub.compute_relaxation_targets(gamma=0.2)
         sub.absorb(_sample_assignment("orion-hub"))
         for _ in range(15):
-            sub.decay_reheat_tick(decay_prob=0.3, reheat_prob=0.1, reheat_strength=0.05)
+            sub.decay_tick(decay_prob=0.3)
         return sub.entropy_profile()
 
     assert run() == pytest.approx(run(), abs=1e-10)
@@ -165,12 +162,7 @@ def test_absorb_reaches_every_bulk_site_not_just_the_nearest_one() -> None:
     bulk_internal_indices = (5, 6, 7)
 
     for i in range(120):
-        assignment = _sample_assignment(
-            organs[i % len(organs)],
-            confidence=0.6 + 0.3 * ((i * 7) % 5) / 5.0,
-            salience=0.4 + 0.4 * ((i * 3) % 5) / 5.0,
-            uncertainty=0.1 + 0.3 * ((i * 11) % 5) / 5.0,
-        )
+        assignment = _sample_assignment(organs[i % len(organs)], level=0.3 + 0.6 * ((i * 7) % 5) / 5.0)
         sub.absorb(assignment)
 
     profile_final = sub.entropy_profile()
@@ -179,3 +171,42 @@ def test_absorb_reaches_every_bulk_site_not_just_the_nearest_one() -> None:
             f"cut index {idx} never moved from its initial value across 120 absorptions "
             "-- this is exactly the frozen-bulk-site bug found by review"
         )
+
+
+def test_absorb_at_level_zero_applies_no_gate_but_counts_the_atom() -> None:
+    # #3838: a measured input at rest (level 0) must not perturb the state.
+    sub = HeartbeatSubstrate(seed=5)
+    before = sub.entropy_profile()
+    for _ in range(25):
+        sub.absorb(_sample_assignment("orion-biometrics", level=0.0))
+    assert sub.tick_count == 25
+    assert sub.entropy_profile() == pytest.approx(before, abs=1e-12)
+
+
+def test_absorb_push_grows_with_level() -> None:
+    # A larger measured level moves the state further than a smaller one.
+    import numpy as np
+
+    def moved(level: float) -> float:
+        sub = HeartbeatSubstrate(seed=8)
+        before = np.array(sub.entropy_profile())
+        sub.absorb(_sample_assignment("orion-hub", level=level))
+        return float(np.abs(np.array(sub.entropy_profile()) - before).sum())
+
+    assert moved(0.1) < moved(0.9)
+
+
+def test_decay_tick_relaxes_a_busy_state_to_rest() -> None:
+    # The 07-28 thermalization check, at trajectory level, with no reheat:
+    # silence alone must bring the seam entanglement down. Each site is
+    # damped toward its own dominant eigenvector, so the rest state is a
+    # near-product state (seam entropy ~0), not the random initial state.
+    sub = HeartbeatSubstrate(seed=13)
+    sub.compute_relaxation_targets(gamma=0.2)
+    for i in range(200):
+        sub.absorb(_sample_assignment(["orion-hub", "orion-bus", "orion-cortex-exec"][i % 3], level=0.9))
+    busy = sub.entropy_profile()[4]
+    assert busy > 0.5
+    for _ in range(300):
+        sub.decay_tick(decay_prob=0.15)
+    assert sub.entropy_profile()[4] < 0.05 * busy

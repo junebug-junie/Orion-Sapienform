@@ -21,7 +21,7 @@ from app.substrate.proprioception import (
     occupancy_distinctness,
     profile_smear,
 )
-from app.substrate.routing import ORGAN_SITE_MAP
+from app.substrate.routing import SEAT_ORDER
 
 
 def test_dark_seats_are_organs_with_zero_fires_in_the_window() -> None:
@@ -30,7 +30,7 @@ def test_dark_seats_are_organs_with_zero_fires_in_the_window() -> None:
         "orion-biometrics": 12,
         "orion-cortex-exec": 0,
         "orion-bus": 3,
-        "orion-cortex-orch": 1,
+        "orion-harness-governor": 1,
     }
     assert dark_seats(counts) == ["orion-cortex-exec", "orion-hub"]
 
@@ -39,29 +39,29 @@ def test_dark_seats_missing_organ_counts_as_dark() -> None:
     assert dark_seats({"orion-bus": 4}) == [
         "orion-biometrics",
         "orion-cortex-exec",
-        "orion-cortex-orch",
+        "orion-harness-governor",
         "orion-hub",
     ]
 
 
 def test_dark_seats_empty_window_is_all_organs() -> None:
-    assert dark_seats({}) == sorted(ORGAN_SITE_MAP)
+    assert dark_seats({}) == sorted(SEAT_ORDER)
 
 
 def test_occupancy_distinctness_one_organ_talking_is_one() -> None:
-    counts = {name: 0 for name in ORGAN_SITE_MAP}
+    counts = {name: 0 for name in SEAT_ORDER}
     counts["orion-cortex-exec"] = 20
     assert occupancy_distinctness(counts) == pytest.approx(1.0)
 
 
 def test_occupancy_distinctness_uniform_is_zero() -> None:
-    counts = {name: 4 for name in ORGAN_SITE_MAP}
+    counts = {name: 4 for name in SEAT_ORDER}
     assert occupancy_distinctness(counts) == pytest.approx(0.0)
 
 
 def test_occupancy_distinctness_empty_is_absent() -> None:
     assert occupancy_distinctness({}) is None
-    assert occupancy_distinctness({name: 0 for name in ORGAN_SITE_MAP}) is None
+    assert occupancy_distinctness({name: 0 for name in SEAT_ORDER}) is None
 
 
 def test_profile_smear_far_half_of_near_is_smeared() -> None:
@@ -117,7 +117,7 @@ def test_profile_smear_nan_or_negative_is_absent_not_local() -> None:
 
 def test_compute_proprioception_nearly_dead_near_leaves_smear_absent() -> None:
     reading = compute_proprioception(
-        fire_counts={name: 3 for name in ORGAN_SITE_MAP},
+        fire_counts={name: 3 for name in SEAT_ORDER},
         mean_profile=[1e-5, 1e-5, 0.3, 0.5, 0.6, 0.6, 0.5, 0.4, 0.4],
     )
     assert reading.smear is None
@@ -142,7 +142,7 @@ def test_compute_proprioception_untracked_fires_leaves_occupancy_absent() -> Non
 
 
 def test_compute_proprioception_combines_occupancy_and_profile() -> None:
-    counts = {name: 0 for name in ORGAN_SITE_MAP}
+    counts = {name: 0 for name in SEAT_ORDER}
     counts["orion-hub"] = 10
     reading = compute_proprioception(
         fire_counts=counts,
@@ -152,7 +152,7 @@ def test_compute_proprioception_combines_occupancy_and_profile() -> None:
         "orion-biometrics",
         "orion-bus",
         "orion-cortex-exec",
-        "orion-cortex-orch",
+        "orion-harness-governor",
     ]
     assert reading.organ_fire_counts["orion-hub"] == 10
     assert reading.organ_distinctness == pytest.approx(1.0)
@@ -188,11 +188,11 @@ def test_rare_organ_not_dark_when_it_fired_inside_window() -> None:
     clock = _Clock()
     w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
     clock.t += 300  # past warm-up
-    w.record("orion-cortex-orch")
+    w.record("orion-harness-governor")
     for _ in range(500):  # flood from a busy organ; count window of 64 would evict orch
         w.record("orion-biometrics")
     clock.t += 120
-    assert "orion-cortex-orch" not in dark_seats(w.counts())
+    assert "orion-harness-governor" not in dark_seats(w.counts())
     assert "orion-hub" in dark_seats(w.counts())
 
 
@@ -200,7 +200,7 @@ def test_organ_flagged_dark_after_window_passes_with_recency() -> None:
     clock = _Clock()
     w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
     clock.t += 300  # past warm-up
-    w.record("orion-cortex-orch")
+    w.record("orion-harness-governor")
     w.record("orion-bus")
     clock.t += 200
     w.record("orion-bus")
@@ -209,11 +209,11 @@ def test_organ_flagged_dark_after_window_passes_with_recency() -> None:
     reading = compute_proprioception(
         fire_counts=snap.counts, mean_profile=[1.0] * 9, fire_snapshot=snap
     )
-    assert "orion-cortex-orch" in reading.dark_seats
+    assert "orion-harness-governor" in reading.dark_seats
     assert "orion-bus" not in reading.dark_seats
-    assert reading.organ_seconds_since_last_fire["orion-cortex-orch"] == pytest.approx(350)
+    assert reading.organ_seconds_since_last_fire["orion-harness-governor"] == pytest.approx(350)
     assert reading.organ_seconds_since_last_fire["orion-hub"] is None
-    assert reading.organ_last_fired_at["orion-cortex-orch"].startswith("1970-01-12")
+    assert reading.organ_last_fired_at["orion-harness-governor"].startswith("1970-01-12")
     assert reading.fire_window_sec == 300
 
 

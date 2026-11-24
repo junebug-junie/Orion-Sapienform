@@ -76,30 +76,14 @@ class Settings(BaseSettings):
     # effective_decay_prob = base_decay_prob * exp(-sensitivity * spread).
     decay_spread_sensitivity: float = Field(4.0, alias="HEARTBEAT_DECAY_SPREAD_SENSITIVITY")
 
-    # Two-site entangling reheat gate strength (rotation angle) -- see
-    # mps_state.py's module docstring for why reheat must be two-site, not
-    # one-site (a one-site gate is provably incapable of moving entanglement
-    # entropy across any cut).
-    reheat_strength: float = Field(0.08, alias="HEARTBEAT_REHEAT_STRENGTH")
-
-    # Scales real live bus_synaptic activity (see falkordb_* settings below)
-    # into a per-bond reheat probability: reheat_prob = reheat_prob_scale *
-    # min(1, raw_mean_abs_gap_zscore / BUS_SYNAPTIC_ZSCORE_SATURATION).
-    reheat_prob_scale: float = Field(0.02, alias="HEARTBEAT_REHEAT_PROB_SCALE")
-
-    # Wall-clock cadence for the decay/reheat dissipation loop -- deliberately
-    # a SEPARATE timer from message consumption (Missing Question 7,
-    # resolved this way): if organs go quiet, real messages stop arriving,
-    # but dissipation must keep running on its own clock or "rest" could
-    # never actually be reached.
-    decay_reheat_interval_sec: float = Field(2.0, alias="HEARTBEAT_DECAY_REHEAT_INTERVAL_SEC")
-
-    # FalkorDB connection for the real bus_synaptic reheat driver -- same
-    # naming convention as services/orion-substrate-runtime's .env_example
-    # (FALKORDB_URI / FALKORDB_BUS_GRAPH), a second, additive, read-only
-    # consumer of the same already-live graph, no new graph/schema.
-    falkordb_uri: str = Field("redis://orion-athena-falkordb:6379", alias="FALKORDB_URI")
-    falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
+    # Wall-clock cadence for the decay dissipation loop -- deliberately a
+    # SEPARATE timer from message consumption: if organs go quiet, real
+    # messages stop arriving, but dissipation must keep running on its own
+    # clock or "rest" could never actually be reached. (Renamed from
+    # HEARTBEAT_DECAY_REHEAT_INTERVAL_SEC when the bus_synaptic reheat and its
+    # FALKORDB_URI / FALKORDB_BUS_GRAPH / HEARTBEAT_REHEAT_* keys were removed,
+    # 2026-11-24, #3838.)
+    decay_interval_sec: float = Field(2.0, alias="HEARTBEAT_DECAY_INTERVAL_SEC")
 
     # Bound on the intake->absorb queue (see service.py's _run()/
     # _absorb_worker_loop() split) -- decouples cheap message intake from

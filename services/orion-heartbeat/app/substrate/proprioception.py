@@ -1,4 +1,4 @@
-"""Tick-level proprioception for the five heartbeat organs.
+"""Tick-level proprioception for the five heartbeat seats (routing.SEAT_ORDER).
 
 Dark seats and organ distinctness come from who actually talked in the
 recent absorb window. Smear comes from the current ensemble mean entropy
@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from .routing import ORGAN_SITE_MAP
+from .routing import SEAT_ORDER
 
 # Wall-clock occupancy window. A 64-event COUNT window read rare organs as dark
 # by sampling (biometrics ~11k/h vs cortex-orch ~26/h) -- see settings
@@ -75,9 +75,9 @@ class FireSnapshot:
 
 
 def dark_seats(fire_counts: dict[str, int]) -> list[str]:
-    """Organs in ORGAN_SITE_MAP with zero (or missing) fires this window."""
+    """Seats (routing.SEAT_ORDER) with zero (or missing) fires this window."""
     return sorted(
-        name for name in ORGAN_SITE_MAP if int(fire_counts.get(name, 0) or 0) <= 0
+        name for name in SEAT_ORDER if int(fire_counts.get(name, 0) or 0) <= 0
     )
 
 
@@ -88,7 +88,7 @@ def occupancy_distinctness(fire_counts: dict[str, int]) -> float | None:
     organs, divided by log(5), then flipped. Empty window is absent, not 0
     — 0 would mean "all seats equally busy," which is the opposite of silence.
     """
-    counts = [max(0, int(fire_counts.get(name, 0) or 0)) for name in ORGAN_SITE_MAP]
+    counts = [max(0, int(fire_counts.get(name, 0) or 0)) for name in SEAT_ORDER]
     total = sum(counts)
     if total <= 0:
         return None
@@ -141,7 +141,7 @@ def compute_proprioception(
             smear=smear,
             smeared=smeared,
         )
-    counts = {name: max(0, int(fire_counts.get(name, 0) or 0)) for name in ORGAN_SITE_MAP}
+    counts = {name: max(0, int(fire_counts.get(name, 0) or 0)) for name in SEAT_ORDER}
     cold = fire_snapshot is not None and not fire_snapshot.warm
     if cold or sum(counts.values()) <= 0:
         # Empty window (idle) or warm-up after restart is unknown, not
@@ -199,13 +199,13 @@ class OrganFireWindow:
         self._wall_clock = wall_clock
         self._started = clock()
         self._events: dict[str, deque[float]] = {
-            name: deque(maxlen=max_events_per_organ) for name in ORGAN_SITE_MAP
+            name: deque(maxlen=max_events_per_organ) for name in SEAT_ORDER
         }
         # (monotonic, wall) of last fire; survives pruning.
         self._last_fire: dict[str, tuple[float, float]] = {}
 
     def record(self, organ: str) -> None:
-        if organ in ORGAN_SITE_MAP:
+        if organ in SEAT_ORDER:
             now = self._clock()
             self._events[organ].append(now)
             self._last_fire[organ] = (now, self._wall_clock())
@@ -225,7 +225,7 @@ class OrganFireWindow:
         self._prune(now)
         last_at: dict[str, str | None] = {}
         since: dict[str, float | None] = {}
-        for name in ORGAN_SITE_MAP:
+        for name in SEAT_ORDER:
             fired = self._last_fire.get(name)
             if fired is None:
                 last_at[name] = None

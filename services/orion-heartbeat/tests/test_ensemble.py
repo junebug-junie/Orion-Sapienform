@@ -8,15 +8,15 @@ from app.substrate.routing import route_atom
 
 
 def _small_config(**overrides) -> EnsembleConfig:
-    base = dict(n_trajectories=4, gamma=0.2, base_decay_prob=0.15,
-                decay_spread_sensitivity=4.0, reheat_strength=0.08, reheat_prob_scale=0.02)
+    base = dict(n_trajectories=4, gamma=0.2, base_decay_prob=0.15, decay_spread_sensitivity=4.0)
     base.update(overrides)
     return EnsembleConfig(**base)
 
 
 def _sample_assignment():
     return route_atom(
-        source_service="orion-bus", atom_type="signal", confidence=0.7, salience=0.6, uncertainty=0.3
+        source_service="orion-bus",
+        atom={"atom_type": "signal", "semantic_role": "bus_activity_zscore_computed", "confidence": 0.9, "uncertainty": 0.6},
     )
 
 
@@ -51,19 +51,19 @@ def test_ensemble_ratios_length_matches_n_trajectories() -> None:
     assert all(0.0 <= r <= 1.0 for r in ratios)
 
 
-def test_decay_reheat_tick_does_not_change_tick_count() -> None:
+def test_decay_tick_does_not_change_tick_count() -> None:
     """Dissipation is a separate concern from real organ traffic -- tick_count
     must keep meaning "how many real atoms this trajectory has absorbed",
-    unchanged by decay_reheat_tick()."""
+    unchanged by decay_tick()."""
     ensemble = EnsembleSubstrate(config=_small_config(), base_seed=4000)
     ensemble.absorb(_sample_assignment())
     assert ensemble.tick_count() == 1
     for _ in range(20):
-        ensemble.decay_reheat_tick(reheat_prob=0.05)
+        ensemble.decay_tick()
     assert ensemble.tick_count() == 1
 
 
-def test_decay_reheat_ensemble_is_deterministic_given_same_seeds() -> None:
+def test_decay_ensemble_is_deterministic_given_same_seeds() -> None:
     """Acceptance Check 6: replaying the same event stream through two
     separately-constructed ensembles with the same base_seed must reproduce
     bit-identical output, despite genuine per-trajectory stochastic jumps --
@@ -72,10 +72,10 @@ def test_decay_reheat_ensemble_is_deterministic_given_same_seeds() -> None:
         ensemble = EnsembleSubstrate(config=_small_config(), base_seed=5000)
         ensemble.absorb(_sample_assignment())
         for _ in range(15):
-            ensemble.decay_reheat_tick(reheat_prob=0.05)
+            ensemble.decay_tick()
         ensemble.absorb(_sample_assignment())
         for _ in range(15):
-            ensemble.decay_reheat_tick(reheat_prob=0.05)
+            ensemble.decay_tick()
         return ensemble.ratios()
 
     first = run()

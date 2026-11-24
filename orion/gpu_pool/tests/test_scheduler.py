@@ -429,3 +429,14 @@ def test_a_frozen_operator_seat_keeps_its_holders_past_max_hold():
                    granted_at=T0 - timedelta(seconds=cfg.roles["experiment"].max_hold_sec + 1))
     assert [r.lease_id for r in of(Recall, schedule(cfg, live(), loaded, [holder], T0))] == ["x"]
     assert not of(Recall, schedule(cfg, live(), loaded, [holder], T0, frozen={"experiment"}))
+
+
+def test_a_hold_expired_this_tick_is_not_also_recalled():
+    """Live 2026-11-24: back from a 3 h outage, a background hold was past its heartbeat TTL and
+    background_max_hold_sec at once. One tick sent Expire then Recall; Recall on retry_wait is
+    illegal and the rejection wedged the lease."""
+    held = lease("agent", "granted", "agent", priority="background", kind="hold", lease_id="h",
+                 granted_at=T0 - timedelta(hours=6), expires_at=T0 - timedelta(hours=3))
+    decisions = run([held])
+    assert [d.lease_id for d in of(Expire, decisions)] == ["h"]
+    assert not [d for d in of(Recall, decisions) if d.lease_id == "h"]

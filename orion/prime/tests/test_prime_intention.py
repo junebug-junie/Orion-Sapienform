@@ -328,3 +328,48 @@ def test_the_hand_back_text_names_every_kind_of_turn_and_only_chat_with_juniper_
     # Older wording (before 11-12) is not read: it passes here and Hub's adapt still decides.
     assert hb.promise_concern_who("a thread I opened in a chat with Juniper") is None
     assert turn_promise.take_on_refusal(turn_concern()) is None
+
+
+def test_the_folded_concern_carries_its_turn_kind_as_a_field_for_every_kind_of_turn():
+    """#3785: fold_turn_signals sets turn_who, and it survives the JSON round trip through orion:prime:state."""
+    concern, who = _folded_promise_concern("orion_curiosity")
+    assert concern.turn_who == who == "curiosity"
+    again = PrimeStateV1.model_validate_json(PrimeStateV1(concerns=[concern]).model_dump_json()).concerns[0]
+    assert again.turn_who == "curiosity" and again == concern
+    chat, who = _folded_promise_concern("9c91d646-cbd0-4977-8cdd-d2c82045c7f9", mode="orion")
+    assert chat.turn_who == who == "chat_juniper"
+
+
+def test_a_reworded_text_with_the_turn_kind_field_is_still_refused():
+    """#3785 check: the take-on reads the field, not the words, so rewording the concern text changes nothing."""
+    from orion.prime import handback as hb
+
+    for who in hb.WHO_WORDS:
+        c = PrimeConcernV1(concern_id="c", text="something Orion said it would do (reworded)", event_ref="turn:x",
+                           opened_at=T0, last_evidence_at=T0, turn_who=who)
+        assert hb.promise_concern_who(c.text) is None
+        refusal = turn_promise.take_on_refusal(c)
+        assert (refusal is None) == (who == turn_promise.THREAD_WHO)
+        if refusal is not None:
+            assert hb.WHO_WORDS[who] in refusal
+    # The field wins over the text: a chat-worded text whose field says curiosity is refused.
+    lying = PrimeConcernV1(concern_id="c", text=f"{hb.PROMISE_CONCERN_LEAD}{hb.WHO_WORDS['chat_juniper']} (1 promise)",
+                           event_ref="turn:x", opened_at=T0, last_evidence_at=T0, turn_who="curiosity")
+    assert "curiosity run" in turn_promise.take_on_refusal(lying)
+    # A kind of turn this image does not know yet still loads and is refused by name (not a KeyError).
+    newer = lying.model_copy(update={"turn_who": "some_new_kind"})
+    assert "some_new_kind" in turn_promise.take_on_refusal(newer)
+
+
+def test_a_concern_saved_before_the_field_still_loads_and_falls_back_to_its_text():
+    """Consumer-first migration: an old saved concern has no turn_who key; it loads, reads from text, and saves back
+    byte-for-byte without the key (so an image built before #3785 can still read the state)."""
+    from orion.prime import handback as hb
+
+    text = f"{hb.PROMISE_CONCERN_LEAD}{hb.WHO_WORDS['curiosity']} (1 promise, harness_turn_trace:x#promises_made[0])"
+    old = PrimeConcernV1(concern_id="c", text=text, event_ref="turn:x", opened_at=T0, last_evidence_at=T0)
+    raw = PrimeStateV1(concerns=[old]).model_dump_json()
+    assert "turn_who" not in raw
+    loaded = PrimeStateV1.model_validate_json(raw)
+    assert loaded.concerns[0].turn_who is None and loaded.model_dump_json() == raw
+    assert "curiosity run" in turn_promise.take_on_refusal(loaded.concerns[0])

@@ -24,7 +24,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Optional, Union
 
-from orion.prime.handback import WHO_WORDS, promise_concern_who
+from orion.prime.handback import WHO_WORDS, concern_turn_who
 from orion.prime.state import PrimeConcernV1
 from orion.schemas.intention import INTENTION_SESSION_ID, IntentionSourceV1, aware
 from orion.schemas.promise_horizon import PROMISE_HORIZON_SEC
@@ -58,14 +58,15 @@ THREAD_WHO = "chat_juniper"
 
 
 def take_on_refusal(concern: PrimeConcernV1) -> Optional[str]:
-    """Why Prime cannot take this promise on, or None. Pure: read from the concern's text, which names the kind of
-    turn that made the promise. A text this cannot read (older wording) passes; Hub's ``adapt`` still refuses it."""
-    who = promise_concern_who(concern.text)
+    """Why Prime cannot take this promise on, or None. Pure: the concern's ``turn_who`` names the kind of turn that
+    made the promise (#3785); a concern saved before that field is read from its text. Neither readable (older
+    wording) passes; Hub's ``adapt`` still refuses it."""
+    who = concern_turn_who(concern)
     if who is None or who == THREAD_WHO:
         return None
-    return (f"that promise was made in a {WHO_WORDS[who]}, not in a chat with Juniper: there is no chat thread to "
-            "carry a reply back to, so Hub would refuse the order. To act on it, send a curiosity_focus question "
-            "for this concern; or drop it with your why")
+    return (f"that promise was made in a {WHO_WORDS.get(who, who)}, not in a chat with Juniper: there is no chat "
+            "thread to carry a reply back to, so Hub would refuse the order. To act on it, send a curiosity_focus "
+            "question for this concern; or drop it with your why")
 
 
 def horizon_from(opened_at: datetime) -> datetime:

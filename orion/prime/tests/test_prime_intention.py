@@ -361,6 +361,38 @@ def test_a_reworded_text_with_the_turn_kind_field_is_still_refused():
     assert "some_new_kind" in turn_promise.take_on_refusal(newer)
 
 
+def test_a_queued_promise_keeps_its_turn_kind_through_waiting_and_seating():
+    """A promise the loop guard holds back waits in ``state.waiting`` (slots.queue) and is seated later: the field
+    must survive both hops."""
+    from orion.prime import slots
+
+    concern, _ = _folded_promise_concern("orion_curiosity")
+    queued = slots.queue(PrimeStateV1(), concern)
+    (waiting,) = queued.waiting
+    assert waiting.turn_who == "curiosity"
+    again = PrimeStateV1.model_validate_json(queued.model_dump_json())
+    assert again.waiting[0].turn_who == "curiosity"
+    assert "curiosity run" in turn_promise.take_on_refusal(again.waiting[0])
+
+
+# A promise concern exactly as orion:prime:state saves it before #3785 (no turn_who key).
+PRE_3785_STATE = (
+    '{"concerns": [{"concern_id": "ba9b129bcdd06506", "text": "a promise I made in a curiosity run (1 promise, '
+    'harness_turn_trace:ab1fc9b0-d62c-5c84-afcd-5f5466692ccd#promises_made[0])", '
+    '"event_ref": "turn:ab1fc9b0-d62c-5c84-afcd-5f5466692ccd", '
+    '"promise_text": "a promise I made in a curiosity run at 2026-11-12 07:08Z: \\"Check me at 11-23 12:00Z\\"", '
+    '"opened_at": "2026-11-12T07:08:57Z", "last_evidence_at": "2026-11-12T07:08:57Z"}]}'
+)
+
+
+def test_a_literal_pre_field_saved_state_loads_and_is_refused_from_its_text():
+    loaded = PrimeStateV1.model_validate_json(PRE_3785_STATE)
+    (c,) = loaded.concerns
+    assert c.turn_who is None
+    assert "curiosity run" in turn_promise.take_on_refusal(c)
+    assert "turn_who" not in loaded.model_dump_json()
+
+
 def test_a_concern_saved_before_the_field_still_loads_and_falls_back_to_its_text():
     """Consumer-first migration: an old saved concern has no turn_who key; it loads, reads from text, and saves back
     byte-for-byte without the key (so an image built before #3785 can still read the state)."""

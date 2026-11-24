@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     HUB_RETRO_LOOK_SEC: float = Field(default=60.0, alias="HUB_RETRO_LOOK_SEC")
     HUB_RETRO_WATCH_SEAT_WAIT_SEC: float = Field(default=30.0, alias="HUB_RETRO_WATCH_SEAT_WAIT_SEC")
     # Orion's lines while a person plays (scripts/retro_commentary.py; game company design, patch 3). Ships on; needs
-    # the watch (a line needs a stored note) and the watch mode "on" (watch and talk). A funded hub.retro_commentary
+    # the watch (a line needs a stored note) and the watch mode "on" (watch and talk). A funded (or pool-queued) hub.retro_commentary
     # bid runs a real unified turn through the outreach door under a GPU pool hold of class chat at priority system,
     # with the game's newest frames. Off -> no line, no bid; the chat box on the game page still answers.
     # LINE_MIN_GAP_SEC: since the last line or chat-box exchange. LINE_TIMEOUT_SEC: one line turn's limit.

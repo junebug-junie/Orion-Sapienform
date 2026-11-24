@@ -110,6 +110,13 @@ class Settings(BaseSettings):
     # props does not make the stream "present". Same keys as orion-sql-writer.
     # Room cameras stay out: a person at a desk sits still for hours.
     WINDOW_STATIONARY_STREAMS: str = "walkway"
+    # Room cameras (2026-11-24, #3614): tracked with their own, longer hold; a
+    # gap always ends a run and a box with a face starts a new one, so Juniper
+    # sitting still never leaves her seat marked as a prop. Same keys as
+    # orion-sql-writer. Live 11-15..16 a pile of office boxes read as a person
+    # in one box for 4-5 h; real people held one box for at most 22 min.
+    VISION_STATIONARY_ROOM_STREAMS: str = "cam0"
+    VISION_STATIONARY_ROOM_MIN_SEC: float = 7200.0
     VISION_STATIONARY_MIN_SEC: float = 1800.0
     VISION_STATIONARY_IOU: float = 0.5
     VISION_STATIONARY_MAX_GAP_SEC: float = 300.0

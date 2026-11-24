@@ -130,10 +130,12 @@ def test_caption_of_a_stationary_prop_only_is_dropped():
 
 
 def test_office_person_sitting_still_for_hours_is_not_a_prop():
-    """2026-11-04 review H1: cam0 is caption-gated but not prop-tracked
-    (WINDOW_STATIONARY_STREAMS=walkway). Juniper at her desk in the same box
-    for 2 h is still a person, so her caption stands."""
-    gate = _gate(streams="walkway,cam0", stationary_streams="walkway")
+    """2026-11-04 review H1: Juniper at her desk in the same box for 2 h is
+    still a person, so her caption stands. Under the room rule (2026-11-24,
+    #3614) the office hold is 2 h, and her last box before the caption is
+    seen just under it."""
+    gate = _gate(streams="walkway,cam0", stationary_streams="walkway",
+                 stationary_room_streams="cam0", stationary_room_min_sec=7200)
     t0 = time.time() - 7300
     for k in range(int(2 * 60 * 3)):
         gate.apply("cam0", [(_detect([("person", 0.8, SKELETON)], stream="cam0"), t0 + 20.0 * k)])
@@ -144,12 +146,31 @@ def test_office_person_sitting_still_for_hours_is_not_a_prop():
     assert items[1][0].outputs.caption.text == "A woman is typing on a laptop at a desk."
 
 
-def test_real_settings_track_props_on_the_walkway_only():
+def test_office_box_pile_captions_are_rejected_past_the_room_hold():
+    """2026-11-16: captions of a box pile ("packing items into a box") reached
+    Orion as Juniper's activity. Past the room hold the pile is a prop and its
+    caption is rejected."""
+    gate = _gate(streams="walkway,cam0", stationary_streams="walkway",
+                 stationary_room_streams="cam0", stationary_room_min_sec=7200)
+    t0 = time.time() - 3 * 3600 - 100
+    for k in range(int(3 * 60 * 3)):
+        gate.apply("cam0", [(_detect([("person", 0.6, SKELETON)], stream="cam0"), t0 + 20.0 * k)])
+    now = t0 + 20.0 * 540
+    art = _caption("Organizing or packing items into a box.", source=[_src("person", SKELETON, 0.6)],
+                   stream="cam0", frame_ts=now - 1)
+    items, stats, _ = gate.apply("cam0", [(_detect([("person", 0.6, SKELETON)], stream="cam0"), now - 1), (art, now)])
+    cap = items[1][0].outputs.caption
+    assert cap is None or cap.text != "Organizing or packing items into a box."
+
+
+def test_real_settings_track_walkway_props_and_the_office_as_a_room():
     from app.settings import Settings
 
     s = Settings()
     assert "cam0" in s.WINDOW_CAPTION_GATE_STREAMS.split(",")
     assert "cam0" not in s.WINDOW_STATIONARY_STREAMS.split(",")
+    assert s.VISION_STATIONARY_ROOM_STREAMS.split(",") == ["cam0"]
+    assert s.VISION_STATIONARY_ROOM_MIN_SEC >= 2 * 3600
 
 
 def test_stale_caption_is_dropped():

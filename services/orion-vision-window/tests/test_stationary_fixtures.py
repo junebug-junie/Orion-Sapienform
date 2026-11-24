@@ -74,3 +74,58 @@ def test_room_cameras_are_never_filtered() -> None:
 def test_disabled_with_zero_min_sec() -> None:
     tr = FixtureTracker(streams=["walkway"], min_sec=0, iou=0.5, max_gap_sec=300)
     assert _feed_skeleton(tr) is None
+
+
+# --- room cameras (the office, #3614) -----------------------------------------
+
+
+def _room():
+    return FixtureTracker(streams=["walkway"], min_sec=1800, iou=0.5, max_gap_sec=300,
+                          room_streams="cam0", room_min_sec=7200)
+
+
+def test_room_box_pile_still_for_four_hours_is_a_prop():
+    """2026-11-15..16: boxes on the office floor read as `person` in one box
+    for 4-5 h. Past the room hold (2 h) they no longer make the office present."""
+    tr = _room()
+    assert _feed_skeleton(tr, minutes=110, stream="cam0") is False
+    assert _feed_skeleton(tr, start=110 * 60.0, minutes=20, stream="cam0") is True
+    assert tr.presence_labels("cam0", frozenset({"person", "chair"})) == frozenset({"chair"})
+
+
+def test_room_person_who_sat_still_is_present_again_after_leaving():
+    """The review's lifecycle: Juniper sits still 2.5 h (her seat becomes a
+    prop), leaves for an hour, comes back to the same box. On a room camera a
+    gap ends the run, so she counts as present at once."""
+    tr = _room()
+    assert _feed_skeleton(tr, minutes=150, stream="cam0") is True
+    back = 150 * 60.0 + 3600.0
+    assert tr.observe_window("cam0", [(back, [SKELETON])]) is False
+    assert tr.presence_labels("cam0", frozenset({"person"})) == frozenset({"person"})
+
+
+def test_outdoor_prop_still_survives_the_same_gap():
+    tr = _room()
+    assert _feed_skeleton(tr, minutes=35, stream="walkway") is True
+    assert tr.observe_window("walkway", [(35 * 60.0 + 3600.0, [SKELETON])]) is True
+
+
+def test_room_face_restarts_the_run():
+    """A box with a face is a person: the run starts over, so a person who
+    sits still but shows their face is never a prop."""
+    tr = _room()
+    assert _feed_skeleton(tr, minutes=150, stream="cam0") is True
+    t = 150 * 60.0 + 20.0
+    assert tr.observe_window("cam0", [(t, [SKELETON], [True])]) is False
+    assert tr.observe_window("cam0", [(t + 20.0, [SKELETON], [False])]) is False
+
+
+def test_face_does_not_restart_an_outdoor_prop():
+    tr = _room()
+    assert _feed_skeleton(tr, minutes=35, stream="walkway") is True
+    assert tr.observe_window("walkway", [(35 * 60.0 + 20.0, [SKELETON], [True])]) is True
+
+
+def test_room_person_at_the_desk_for_an_hour_and_a_half_is_a_person():
+    tr = _room()
+    assert _feed_skeleton(tr, minutes=90, stream="cam0") is False

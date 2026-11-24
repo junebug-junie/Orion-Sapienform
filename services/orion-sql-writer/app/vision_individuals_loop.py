@@ -64,6 +64,8 @@ def individuals_config(settings: Settings) -> IndividualsConfig:
         stationary_iou=float(settings.vision_stationary_iou),
         stationary_max_gap_sec=float(settings.vision_stationary_max_gap_sec),
         stationary_streams=tuple(s.strip() for s in str(settings.vision_stationary_streams or "").split(",") if s.strip()),
+        stationary_room_streams=tuple(s.strip() for s in str(settings.vision_stationary_room_streams or "").split(",") if s.strip()),
+        stationary_room_min_sec=float(settings.vision_stationary_room_min_sec),
         ask_face_min_faces=int(settings.vision_ask_face_min_faces),
         same_ask_min_face_cosine=float(settings.vision_same_ask_min_face_cosine),
         confirm_ask_daily_cap=int(settings.vision_confirm_ask_daily_cap),

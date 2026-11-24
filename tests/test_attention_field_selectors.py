@@ -370,6 +370,20 @@ def test_select_host_targets_excludes_prediction_error_native_ids() -> None:
     assert target_ids == {"node:athena"}
 
 
+def test_select_host_targets_excludes_a_lingering_retired_pe_node() -> None:
+    """node:substrate.execution left the native targets 2026-11-24 (#3576). Until the field
+    digester prunes its stale vector, it must not come back as a host novelty target."""
+    field = FieldStateV1(
+        generated_at=BASE,
+        tick_id="tick_host_retired",
+        node_vectors={
+            "node:athena": {"cpu_pressure": 0.5},
+            "node:substrate.execution": {"prediction_error": 0.9},
+        },
+    )
+    assert {t.target_id for t in select_host_targets(field, POLICY, None)} == {"node:athena"}
+
+
 def test_select_host_targets_first_tick_has_zero_novelty_not_excluded() -> None:
     # No previous_frame -- novelty_for_target's own real contract: no prior
     # to diff against, so novelty is genuinely 0.0. The target still

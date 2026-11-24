@@ -509,11 +509,11 @@ def _prediction_error_label(node_id: str) -> str:
 
     These nodes render in the Concept Atlas alongside organically-discovered
     topics, so their label is read by a person. It used to be
-    ``f"substrate:{node_id}"``, i.e. ``substrate:node:substrate.execution``
+    ``f"substrate:{node_id}"``, i.e. ``substrate:node:substrate.perception``
     -- a non-empty string that is not a label, just the id said twice. See
     docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
 
-    ``node:substrate.execution`` -> ``"Execution prediction error"``.
+    ``node:substrate.perception`` -> ``"Perception prediction error"``.
     Falls back to the raw node_id if it does not match the expected shape --
     never returns an empty label (the schema requires one) and never invents a
     domain name that is not in the id.

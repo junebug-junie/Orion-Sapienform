@@ -103,7 +103,7 @@
         this mechanism — everything else shifted as a side effect of that branch growing.
       </div>
       <div class="text-[11px] text-gray-400 bg-gray-950 border border-gray-800 rounded p-2 mt-2">
-        <b class="text-gray-300">Structurally impossible, not just rare:</b> the override can only
+        <b class="text-gray-300">Structurally impossible, not just rare:</b> the override can
         no longer fire for any domain (route, bus_synaptic, chat, biometrics and execution were all retired
         2026-11). Every competing loop is invisible to this decision — most of the remaining
         "no override" share, by design, not a gap this mechanism is meant to close.

@@ -212,6 +212,10 @@ def test_no_live_domain_is_left_and_the_panel_reads_unknown() -> None:
     out = reconcile_confidence(rows, None, row_age_sec=1.0)
     assert out["verdict"] == "unknown"
     assert out["domains_used"] == 0
+    # The deploy transition: an old stored row still has a confidence, but no domain is live.
+    assert reconcile_confidence(rows, 0.91, row_age_sec=1.0)["verdict"] == "unknown"
+    # The panel says so in words, not with an empty bar list (attention-organ.js).
+    assert "None live: every domain was retired" in ORGAN_JS
 
 
 def test_build_domain_rows_marks_active_inference_membership(one_live_domain) -> None:

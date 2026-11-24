@@ -651,8 +651,8 @@ channels:
 
   # node:substrate.execution was RETIRED 2026-11-24 (PE suite rebuild retire step 6,
   # #3576), the last fake prediction-error node: an EWMA z of the mean change in four
-  # cortex-exec pressure hints, negatives clipped, /3; not a forecast (72-90% exact
-  # zeros from the clipping). Successors: the "more steps than usual" turn self-bet
+  # cortex-exec pressure hints, negatives clipped, /3; not a forecast. Exact zeros from
+  # the clipping: 59% of 2,286 history rows 2026-11-17..24 (90% of field-state ticks 2026-10-13). Successors: the "more steps than usual" turn self-bet
   # inside node:prediction.chat_turn (below) and node:prediction.body_joint. The id is
   # on RETIRED_PREDICTION_ERROR_NODE_IDS and the field digester's RETIRED_PSEUDO_NODES.
 

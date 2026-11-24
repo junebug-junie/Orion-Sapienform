@@ -137,7 +137,22 @@ No compose or env change. No image built from the worktree. Live path UNVERIFIED
 
 ## Review findings fixed
 
-See the review section appended after the review subagent ran.
+A review subagent read the committed diff. Verdict: no high findings. Kill complete in live code; every empty set handled without division by zero, `[0]`, `IN ()` or a made-up 1.0/0.0. Fixed:
+
+- Finding (medium): the new execution-tick test no longer proved the trajectory projection is still saved.
+  - Fix: it now asserts the tick passes `save_execution_trajectory` and a loader that returns the stored projection.
+  - Evidence: `test_worker_execution_tick_no_prediction_error.py` passes.
+- Finding (medium): PR report placeholders (review, link).
+  - Fix: filled here.
+- Finding (low): a lingering `node:substrate.execution` field vector could score as a host novelty target if attention-runtime deploys before the digester prunes it.
+  - Fix: `select_host_targets` also drops retired PE ids; test `test_select_host_targets_excludes_a_lingering_retired_pe_node`.
+- Finding (low): stale docstring example in `_prediction_error_label`; broken Hub sentence ("can only no longer").
+  - Fix: both reworded.
+- Finding (low): exact-zero share stated as 59 % here and 72-90 % in the glossary.
+  - Fix: glossary now states both with windows (59 % of 2,286 history rows 2026-11-17..24; 90 % of field-state ticks 2026-10-13).
+- Finding (low): no UI check for the "None live" note; Hub "no live domain" test did not cover an old stored confidence.
+  - Fix: both asserted in `test_attention_organ_page.py`.
+- CI (Static repo gates, attention-focus-runs): rest-range count 13 -> 12 and the Postgres dominance test's vehicle moved to the probe. Fixed.
 
 ## Restart required
 
@@ -164,6 +179,6 @@ substrate-runtime first (stops the writes), digester second (prunes the field no
 
 ## PR link
 
-(filled in after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3809
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

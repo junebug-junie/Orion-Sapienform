@@ -54,12 +54,16 @@ def test_execution_tick_reduces_but_writes_no_prediction_error(monkeypatch) -> N
     # Patch the globals the tick actually reads (another test can re-import `app`).
     g = BiometricsSubstrateWorker._execution_tick.__globals__
     monkeypatch.setitem(
-        g, "process_execution_grammar_events", lambda **kwargs: reduced.append(kwargs["events"])
+        g, "process_execution_grammar_events", lambda **kwargs: reduced.append(kwargs)
     )
 
     worker._execution_tick()
 
-    assert [e.event_id for e in reduced[0]] == ["gev-1"]
+    assert [e.event_id for e in reduced[0]["events"]] == ["gev-1"]
+    # The reducer half stays wired: the projection the Hub trace and
+    # /projections/execution_trajectory read is still loaded and saved (review 2026-11-24).
+    assert reduced[0]["save_projection"] == worker._store.save_execution_trajectory
+    assert reduced[0]["load_projection"]() is projection
     worker._write_prediction_error_node.assert_not_called()
     worker._store.save_receipt.assert_not_called()
     assert "execution_prediction_error" not in g

@@ -399,8 +399,14 @@ def select_host_targets(
     docstring for the full scoring contract and its disclosed scope
     (novelty only, magnitude/dwell not applied here).
     """
+    from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
+
+    # A retired PE node (e.g. node:substrate.execution, 2026-11-24, #3576) is not a host either,
+    # even before the field digester prunes its lingering vector (review 2026-11-24).
     host_vectors = {
-        tid: v for tid, v in field.node_vectors.items() if tid not in PREDICTION_ERROR_NATIVE_TARGETS
+        tid: v
+        for tid, v in field.node_vectors.items()
+        if tid not in PREDICTION_ERROR_NATIVE_TARGETS and not is_retired_prediction_error_node(tid)
     }
     return _novelty_targets(
         field,

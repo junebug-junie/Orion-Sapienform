@@ -12,8 +12,8 @@ by-attention-design.md, #3574/#3610 patch 1):
   ``faded``, so the fade evidence #3648 is waiting on stays readable.
 * ``keep`` changes nothing. A keep is a model saying so; only a sent question or a take-on renews a concern
   (``state.touch_concern``). The keep and its reason stay in the ``dream_day`` row.
-* ``new`` opens one concern the way a letter thread does: deterministic id, inside ``MAX_CONCERNS``, no
-  displacement (that is #3610 patch 2). No room: counted, not opened.
+* ``new`` opens one concern the way a letter thread does: deterministic id, inside ``MAX_CONCERNS``. No room: it
+  waits for a slot (``state.waiting``; the concern contest, orion/prime/slots.py, #3610 patch 2, decides when).
 
 * A concern Prime has taken on (its intention run is open) is never dropped by the dream: the night's material does
   not show the take-on, and every other automatic removal spares it (orion/prime/intention.py ``age_out``).
@@ -34,6 +34,7 @@ from typing import Any, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from orion.prime.slots import queue
 from orion.prime.state import (
     CONCERN_TEXT_CAP, MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, close_concern, note_outcome,
 )
@@ -141,12 +142,16 @@ def apply_plan(state: PrimeStateV1, day: date, plan: list[DreamDayPlanItemV1], n
         if any(c.concern_id == cid for c in concerns) or cid in recorded:
             skipped.append(f"new {cid}: already opened once")
             continue
-        if len(concerns) >= MAX_CONCERNS:
-            skipped.append("new: no room")
-            continue
-        concerns.append(PrimeConcernV1(
+        new = PrimeConcernV1(
             concern_id=cid, text=f"from my dream on {day.isoformat()}: {gist}"[:CONCERN_TEXT_CAP],
-            event_ref=f"{DREAM_EVENT_PREFIX}{day.isoformat()}#new{i}", opened_at=now, last_evidence_at=now))
+            event_ref=f"{DREAM_EVENT_PREFIX}{day.isoformat()}#new{i}", opened_at=now, last_evidence_at=now)
+        if len(concerns) >= MAX_CONCERNS:
+            # No room: it waits for a slot (orion/prime/slots.py, the concern contest), never forgotten.
+            if cid not in {w.concern_id for w in state.waiting}:
+                state = queue(state, new)
+            skipped.append("new: no room, waiting for a slot")
+            continue
+        concerns.append(new)
         opened.append(cid)
     state = state.model_copy(update={"concerns": concerns})
     done = PrimeDreamDayAppliedV1(day=day, run_id=run_id, applied_at=now, dropped=dropped, opened=opened,

@@ -107,7 +107,8 @@ def thoughts(acts: Iterable[dict[str, Any]]) -> dict[str, int]:
 
 
 def concerns(acts: Iterable[dict[str, Any]]) -> dict[str, int]:
-    out = {"opened": 0, "open": 0, "settled": 0, "dropped": 0, "faded": 0, "lapsed": 0, "expired": 0, "other": 0}
+    out = {"opened": 0, "open": 0, "settled": 0, "dropped": 0, "faded": 0, "lapsed": 0, "displaced": 0, "expired": 0,
+           "other": 0}
     for act in acts:
         if act.get("verb") != "predict":
             continue

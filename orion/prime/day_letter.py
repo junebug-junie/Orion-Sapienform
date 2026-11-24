@@ -25,7 +25,8 @@ the runtime does the I/O):
 4. **Settle.** The run's terminal state (``GET {durable}/runs/<run_id>``) closes the act: 1 = this run wrote the
    day's letter row, else 0. The letter's threads (the run's finish detail) become Prime concerns, at most
    ``LETTER_CONCERNS_MAX`` and never past ``MAX_CONCERNS``; each places the usual concern bet, so a later Prime
-   ``ask`` about one (curiosity's only way to hear the letter) can settle it. Threads with no room are counted.
+   ``ask`` about one (curiosity's only way to hear the letter) can settle it. Threads with no room wait for a slot
+   (orion/prime/slots.py, the concern contest, 2026-11-24).
 5. **A missed day** (every attempt failed, or Hub refused) is recorded; the next order lists it in
    ``missed_letters`` so the next letter says it could not write that day. Hub adds the day before on its own when
    it has no row and Prime did not list it (Prime was down).
@@ -46,7 +47,8 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 from orion.grammar.acts import build_act
 from orion.prime.acts import ACTOR
-from orion.prime.state import MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, note_change
+from orion.prime.slots import known_ids, seat_or_wait
+from orion.prime.state import PrimeConcernV1, PrimeStateV1, note_change
 from orion.schemas.grammar import ActV1
 from orion.schemas.orion_day import ORION_DAY_TIMEZONE, MissedLetterV1, orion_day_run_id
 
@@ -262,29 +264,30 @@ def thread_concern_id(day: date, index: int) -> str:
 
 def thread_concerns(state: PrimeStateV1, day: date, threads: list[str], now: datetime
                     ) -> tuple[PrimeStateV1, list[str], int]:
-    """Open concerns from the letter's threads, in the letter's order, within the caps. Returns
-    (state, opened concern ids, threads left without room). Deterministic ids: a replay opens nothing twice."""
-    held = {c.concern_id for c in state.concerns}
+    """Open concerns from the letter's threads, in the letter's order: a thread with a free slot (and room in the
+    letter's share, ``LETTER_CONCERNS_MAX``) is held; every other thread waits for a slot (orion/prime/slots.py; the
+    concern contest decides later). Returns (state, opened concern ids, threads left waiting). Deterministic ids: a
+    replay opens or queues nothing twice. Before 2026-11-24 a thread with no room was counted and forgotten."""
     opened: list[str] = []
-    no_room = 0
+    waiting = 0
     for i, thread in enumerate(t.strip() for t in threads):
         if not thread:
             continue
         cid = thread_concern_id(day, i)
-        if cid in held:
-            continue
-        if len(opened) >= LETTER_CONCERNS_MAX or len(state.concerns) >= MAX_CONCERNS:
-            no_room += 1
+        if cid in known_ids(state):
             continue
         text = f"a thread from my letter for {day.isoformat()}: {thread}"[:300]
         concern = PrimeConcernV1(concern_id=cid, text=text, event_ref=f"{LETTER_EVENT_PREFIX}{day.isoformat()}#thread{i}",
                                  opened_at=now, last_evidence_at=now)
-        state = state.model_copy(update={"concerns": [*state.concerns, concern]})
-        opened.append(cid)
+        state, seated = seat_or_wait(state, concern, now)
+        if seated:
+            opened.append(cid)
+        else:
+            waiting += 1
     if opened:
         state = note_change(state, f"my letter for {day.isoformat()} named {len([t for t in threads if t.strip()])} "
                                    f"thread(s); I now hold {len(opened)} of them as concerns")
-    return state, opened, no_room
+    return state, opened, waiting
 
 
 def status_lines(st: PrimeDayLetterStateV1, now: datetime) -> list[str]:

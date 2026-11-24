@@ -211,10 +211,13 @@ from orion.prime.handback import (
     fold_turn_signals,
     link_started_turn,
     signal_from_hop,
+    thread_refusal,
     turn_lines,
 )
+from orion.prime import slots
 from orion.prime.state import (
     MAX_RECENT_OUTCOMES,
+    is_promise_concern,
     PRIME_CONCERNS_KEY,
     PrimeConcernV1,
     PrimeNominationV1,
@@ -492,9 +495,9 @@ class PrimeRuntime(MindLoopRuntime):
             return
         signals = list(self._turn_inbox)
         self._turn_inbox.clear()
-        taken_on = frozenset(it.open_ids(self.intentions)) if self._intentions_on() else frozenset()
         self.state, self.turn_record, folded = fold_turn_signals(self.state, self.turn_record, signals, now,
-                                                                 taken_on=taken_on)
+                                                                 taken_on=self._taken_on(),
+                                                                 contest=self._contest_on())
         for t in folded:
             logger.info("prime_turn_handback corr=%s who=%s verdict=%s promises=%d opened=%s refused=%s settled=%s",
                         t.correlation_id, t.who, t.verdict, len(t.promise_refs), t.opened_concern_id or "-",
@@ -589,6 +592,9 @@ class PrimeRuntime(MindLoopRuntime):
             await self._dream_day_upkeep(now)
         if self._intentions_on():
             await self._intention_upkeep(now)
+        # The concern contest (orion/prime/slots.py): after every path that opens, ends or queues a concern this tick,
+        # before the concern acts are flushed, so a seated concern opens its act and a displaced one closes on this tick.
+        self._run_contest(now)
         await self._maybe_settle(now)
         await self._settle_regulations(now)
         await self._flush_concern_acts()
@@ -966,6 +972,12 @@ class PrimeRuntime(MindLoopRuntime):
         no_room = 0
         if produced and threads:
             self.state, concern_ids, no_room = dl.thread_concerns(self.state, day, threads, now)
+            # The contest runs at once, so the letter's line says what it really holds (a waiting thread may take a
+            # quiet concern's slot on this tick).
+            self._run_contest(now)
+            mine = {dl.thread_concern_id(day, i) for i in range(len(threads))}
+            concern_ids = [c.concern_id for c in self.state.concerns if c.concern_id in mine]
+            no_room = sum(1 for w in self.state.waiting if w.concern_id in mine)
         if produced and op.missed_sent:
             self.day_letter = dl.mark_told(self.day_letter, list(op.missed_sent))
         if turn_correlation_id and self._handback_on():
@@ -978,7 +990,7 @@ class PrimeRuntime(MindLoopRuntime):
                     "concerns=%s no_room=%d note=%r", day, op.act_id, produced, outcome, run_id or op.run_id,
                     turn_correlation_id or "-", len(threads), ",".join(concern_ids) or "-", no_room, note)
         tail = (f"; {len(threads)} thread(s), {len(concern_ids)} now held as concerns"
-                + (f", {no_room} without room" if no_room else "")) if produced else ""
+                + (f", {no_room} waiting for a slot" if no_room else "")) if produced else ""
         self.state = note_outcome(self.state, f"my letter for {day} (act {op.act_id}): {note}{tail}")
 
 
@@ -1243,6 +1255,9 @@ class PrimeRuntime(MindLoopRuntime):
         if self._personality_line_on():
             inputs.tending, inputs.tending_error = await self._read_tending(now)
         inputs.evidence_clock = self._evidence_clock_on()
+        if self._contest_on():
+            inputs.standings = slots.standing_lines(self.state, now, taken_on=self._taken_on())
+            inputs.waiting = slots.waiting_lines(self.state, now)
         frame = build_frame(self.state, inputs)
         # The choice point's options: the concerns this frame shows, captured now (the answer may add or drop).
         shown = shown_concerns(self.state.concerns)
@@ -1250,7 +1265,8 @@ class PrimeRuntime(MindLoopRuntime):
                                                     organ_replies=shows_organ_replies(inputs),
                                                     take_on=inputs.take_on, experiences=shows_now(inputs),
                                                     needs=inputs.needs is not None,
-                                                    evidence_clock=inputs.evidence_clock), frame)
+                                                    evidence_clock=inputs.evidence_clock,
+                                                    contest=self._contest_on()), frame)
         self._now_after_call(orion_now, reached=reply.kind == "model")
         reply.context.update(focus_pending=focus_pending, focus_unread=focus_unread,
                              now_shown_id=(orion_now or {}).get("shown_id"),
@@ -1341,6 +1357,41 @@ class PrimeRuntime(MindLoopRuntime):
 
     def _event_mode(self) -> bool:
         return bool(getattr(self.s, "PRIME_CONCERNS_FROM_EVENT_WANTS", False))
+
+    def _contest_on(self) -> bool:
+        """PRIME_CONCERN_CONTEST_ENABLED (design 2026-11-17 patch 2, #3574, #3656): a waiting concern can take the slot
+        of a quiet one, and a new promise pushes out the weakest non-promise (orion/prime/slots.py). Off: no
+        displacement; threads and promises without room still wait for a free slot. Settings default True (shipped
+        on); the getattr default False only matters for fake test settings that lack the key."""
+        return bool(getattr(self.s, "PRIME_CONCERN_CONTEST_ENABLED", False))
+
+    def _contest_margin(self) -> float:
+        return float(getattr(self.s, "PRIME_CONCERN_CONTEST_MARGIN", slots.DEFAULT_MARGIN))
+
+    def _taken_on(self) -> frozenset[str]:
+        return frozenset(it.open_ids(self.intentions)) if self._intentions_on() else frozenset()
+
+    def _run_contest(self, now: datetime) -> slots.ContestReport:
+        """One contest pass over the waiting list (orion/prime/slots.py ``run_contest``). A waiting promise opens only
+        when the hand-back's loop guard allows it (one turn concern held, 4 opened in 24 h); when it opens, it counts
+        toward the 4 a day."""
+        taken_on = self._taken_on()
+        bound = None
+        if self._handback_on():
+            def bound(state: PrimeStateV1, promise: PrimeConcernV1) -> Optional[str]:
+                return thread_refusal(state, self.turn_record, now, exempt=taken_on, room=False)
+        self.state, rep = slots.run_contest(self.state, now, taken_on=taken_on, contest=self._contest_on(),
+                                            margin=self._contest_margin(), promise_bound=bound)
+        held = {c.concern_id: c for c in self.state.concerns}
+        opened_promises = [cid for cid in rep.seated if cid in held and is_promise_concern(held[cid])]
+        if opened_promises and self._handback_on():
+            self.turn_record = self.turn_record.model_copy(update={"turn_concerns_opened_at": [
+                *self.turn_record.turn_concerns_opened_at, *([now] * len(opened_promises))]})
+        if rep.seated or rep.displaced or rep.expired:
+            logger.info("prime_concern_contest seated=%s displaced=%s expired=%s waiting=%d",
+                        ",".join(rep.seated) or "-", ",".join(f"{h}>{b}" for h, b in rep.displaced) or "-",
+                        ",".join(rep.expired) or "-", len(self.state.waiting))
+        return rep
 
     def _evidence_clock_on(self) -> bool:
         """PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED (#3574): a bare keep no longer renews a concern; a sent question or a
@@ -1590,7 +1641,7 @@ class PrimeRuntime(MindLoopRuntime):
                                event_wants=listed_wants(inputs.events) if inputs.event_mode else None,
                                take_on_check=self._take_on_check(now) if self._intentions_on() else None,
                                shown_experience=reply.context.get("now_event_ids"),
-                               evidence_clock=self._evidence_clock_on())
+                               evidence_clock=self._evidence_clock_on(), contest=self._contest_on())
         if inputs.event_mode:
             new = set(applied.added)
             for c in applied.state.concerns:

@@ -49,8 +49,10 @@ decides whether Prime actually thinks):
 
 Loop guard (turns open concerns, concerns steer turns). On top of ``MAX_CONCERNS`` and ``CONCERN_TTL``:
 at most ``TURN_CONCERNS_MAX_OPEN`` turn-opened concerns held at once (so at least two slots stay for Prime's own
-thoughts), and at most ``TURN_CONCERNS_PER_DAY`` opened in any 24 hours. A thread refused by a bound is recorded
-on the turn, never silently dropped.
+thoughts), and at most ``TURN_CONCERNS_PER_DAY`` opened in any 24 hours. A promise held back by a
+bound waits in ``state.waiting`` and opens when the bound clears (2026-11-24, #3656); the turn record says so. With
+all 3 slots full a promise pushes out the weakest held concern that is not a promise and not taken on
+(orion/prime/slots.py). Never silently dropped.
 
 Turns Prime started (its curiosity question) still close the act that started them through the existing
 nomination grading (orion/prime/acts.py ``settle_nomination``); the runtime links the run's turn correlation id
@@ -69,6 +71,7 @@ from typing import Any, Literal, Optional, Sequence
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from orion.prime.acts import settle_concern
+from orion.prime.slots import known_ids, queue, seat_promise
 from orion.prime.state import (CONCERN_TTL, MAX_CONCERNS, PROMISE_EVENT_PREFIX, PROMISE_TEXT_CAP, PrimeConcernV1,
                                PrimeStateV1, note_change)
 from orion.regulation.juniper_turns import is_browser_surface_turn
@@ -381,9 +384,10 @@ def _open_turn_concerns(state: PrimeStateV1, now: datetime, exempt: frozenset[st
 
 
 def thread_refusal(state: PrimeStateV1, turns: PrimeTurnsStateV1, now: datetime, *,
-                   exempt: frozenset[str] = frozenset()) -> Optional[str]:
-    """Why a thread a turn opened may not become a concern now (the loop guard), or None."""
-    if len(state.concerns) >= MAX_CONCERNS:
+                   exempt: frozenset[str] = frozenset(), room: bool = True) -> Optional[str]:
+    """Why a thread a turn opened may not become a concern now (the loop guard), or None. ``room`` False: leave out
+    the 3-slot check (the hand-back seats a promise through orion/prime/slots.py ``seat_promise`` instead, #3656)."""
+    if room and len(state.concerns) >= MAX_CONCERNS:
         return f"already holding {MAX_CONCERNS} concerns"
     if _open_turn_concerns(state, now, exempt) >= TURN_CONCERNS_MAX_OPEN:
         return f"already holding {TURN_CONCERNS_MAX_OPEN} concern opened by a turn"
@@ -399,11 +403,17 @@ def _push_seen(seen: list[str], corr: str) -> list[str]:
 
 def fold_turn_signals(
     state: PrimeStateV1, turns: PrimeTurnsStateV1, signals: Sequence[TurnSignalV1], now: datetime, *,
-    taken_on: frozenset[str] = frozenset(),
+    taken_on: frozenset[str] = frozenset(), contest: bool = True,
 ) -> tuple[PrimeStateV1, PrimeTurnsStateV1, list[PrimeTurnV1]]:
     """Fold hops, in arrival order, into Prime's state and the hand-back record. Returns the turns folded now.
     Pure and deterministic; a hop seen twice, or a finalize with no ingress, changes nothing. ``taken_on``:
-    concerns Prime took on, which do not count toward ``TURN_CONCERNS_MAX_OPEN``."""
+    concerns Prime took on, which do not count toward ``TURN_CONCERNS_MAX_OPEN``.
+
+    A promise is never lost for lack of room (#3656; orion/prime/slots.py ``seat_promise``): with all 3 slots full it
+    pushes out the weakest held concern that is not a promise and not taken on (``contest`` on), else it waits in
+    ``state.waiting``. A promise the loop guard holds back (one turn concern held, or 4 opened in 24 h) waits too and
+    opens when the bound clears (the runtime's contest, ``promise_bound``). The turn record says which
+    (``thread_refused`` starts with "waiting:"). A promise inside a carry turn still opens nothing (loop guard)."""
     pending = list(turns.pending)
     recent = list(turns.recent)
     seen = list(turns.seen)
@@ -444,9 +454,11 @@ def fold_turn_signals(
         if refs and start.who in NO_THREAD_WHO:
             refused = "a promise made inside a carry turn opens no concern (loop guard)"
         elif refs:
-            refused = thread_refusal(state, turns.model_copy(update={"turn_concerns_opened_at": opened_at}), now,
-                                     exempt=taken_on)
-            if refused is None:
+            bound = thread_refusal(state, turns.model_copy(update={"turn_concerns_opened_at": opened_at}), now,
+                                   exempt=taken_on, room=False)
+            if turn_concern_id(corr) in known_ids(state):
+                refused = f"already held, waiting or ended as concern {turn_concern_id(corr)}"
+            else:
                 n = len(refs)
                 # Live 11-12 (concern d8db9d7b1bba4cf7) the old words "a thread I opened" read to Prime as "a new
                 # chat thread opened": say it is a promise. The sentence itself goes in promise_text (frame only).
@@ -459,12 +471,22 @@ def fold_turn_signals(
                 concern = PrimeConcernV1(concern_id=turn_concern_id(corr), text=text,
                                          event_ref=f"{TURN_EVENT_PREFIX}{corr}", opened_at=now, last_evidence_at=now,
                                          promise_text=promise_text(start.who, sig.promise_quotes, sig.at))
-                state = state.model_copy(update={"concerns": [*state.concerns, concern]})
-                state = note_change(state, f"a {words} turn ({corr}) made a promise, now concern "
-                                           f"{concern.concern_id}")
-                opened = concern.concern_id
-                opened_at.append(now)
-                no_bet = [*no_bet, opened][-MAX_NO_BET_IDS:]
+                no_bet = [*no_bet, concern.concern_id][-MAX_NO_BET_IDS:]
+                if bound is not None:
+                    state = queue(state, concern)
+                    refused = f"waiting: {bound}"
+                else:
+                    state, seated, why = seat_promise(state, concern, now, taken_on=taken_on, contest=contest)
+                    if seated:
+                        state = note_change(state, f"a {words} turn ({corr}) made a promise, now concern "
+                                                   f"{concern.concern_id}")
+                        opened = concern.concern_id
+                        opened_at.append(now)
+                    else:
+                        refused = why
+                if refused is not None:
+                    state = note_change(state, f"a {words} turn ({corr}) made a promise; it waits for a slot as "
+                                               f"concern {concern.concern_id} ({refused})")
         turn = PrimeTurnV1(correlation_id=corr, who=start.who, gist=gist, started_at=start.started_at,
                            finished_at=sig.at, verdict=sig.verdict, promise_refs=refs,
                            promises_kept=list(sig.promises_kept), opened_concern_id=opened, thread_refused=refused,
@@ -504,7 +526,9 @@ def turn_lines(turns: PrimeTurnsStateV1, now: datetime, *, limit: int = 5) -> li
         bits = []
         if t.opened_concern_id:
             bits.append(f"opened concern {t.opened_concern_id}")
-        if t.thread_refused:
+        if t.thread_refused and t.thread_refused.startswith("waiting:"):
+            bits.append(f"made {len(t.promise_refs)} promise(s), {t.thread_refused}")
+        elif t.thread_refused:
             bits.append(f"made {len(t.promise_refs)} promise(s), no concern: {t.thread_refused}")
         if t.settled_concern_ids:
             bits.append(f"answered concern {', '.join(t.settled_concern_ids)}")

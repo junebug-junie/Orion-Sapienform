@@ -31,6 +31,7 @@ VOICE_HUB_EDIT = "hub_edit"
 VOICE_STORY_REASON = "story_reason"
 CATEGORY_HOW_YOU_COULD_TELL = "how_you_could_tell"
 STORY_REASON_FACT_PREFIX = "why-"
+STORY_REASON_NOT_THEM_PREFIX = "A sighting that was NOT them: "
 ROLE_INTERLOCUTOR = "interlocutor"
 ROLE_SELF = "self"
 

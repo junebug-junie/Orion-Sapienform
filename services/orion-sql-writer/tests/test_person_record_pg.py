@@ -342,18 +342,21 @@ def test_story_reasons_become_how_you_could_tell_facts_on_the_linked_person(pg) 
         _story_answer(conn, "ask-name", "vision_individual", "robin-1",
                       dict(story, action="name", name="Robin", why="White dog, green leash."))
         _story_answer(conn, "ask-anon", "vision_story_person", "anon-1",
-                      dict(story, action="unsure", why="Too dark to tell."))
+                      dict(story, action="name", name="Kit", why="Kit's red coat."))
+        _story_answer(conn, "ask-unsure", "vision_story_person", "sam-1",
+                      dict(story, action="unsure", why="Too dark to tell."))     # says nothing about Sam
         _story_answer(conn, "ask-dog", "vision_individual", "dog-1",
                       dict(story, action="name", name="Biscuit", why="Fluffy, green leash."))
         _story_answer(conn, "ask-nowhy", "vision_story_person", "sam-1", dict(story, action="unsure"))
         _story_answer(conn, "ask-card", "vision_individual", "sam-1", {"why": "not a story answer"})
     summary, _ = _run(pg)
     assert (summary["story_reasons_stored"], summary["story_reasons_waiting"],
-            summary["story_reasons_not_a_person"]) == (2, 1, 1)   # a dog gets no person record
+            summary["story_reasons_skipped"]) == (2, 1, 1)   # a dog gets no person record
     persons = dict(_rows(pg, "SELECT display_name, person_id FROM person"))
     assert _rows(pg, "SELECT fact_id, person_id, category, value_text, voice, source_ref FROM person_fact "
                      "WHERE voice = 'story_reason' ORDER BY fact_id") == [
-        ("why-ask-else", persons["Sam"], "how_you_could_tell", "Sam rarely pushes a stroller.\nNot his build.",
+        ("why-ask-else", persons["Sam"], "how_you_could_tell",
+         "A sighting that was NOT them: Sam rarely pushes a stroller.\nNot his build.",
          "story_reason", "ask:ask-else"),
         ("why-ask-name", persons["Robin"], "how_you_could_tell", "White dog, green leash.",
          "story_reason", "ask:ask-name")]
@@ -369,3 +372,19 @@ def test_story_reasons_become_how_you_could_tell_facts_on_the_linked_person(pg) 
         conn.execute(text("UPDATE vision_individual SET label = 'Kit' WHERE individual_id = 'anon-1'"))
     summary3, _ = _run(pg, NOW + timedelta(minutes=2))
     assert (summary3["story_reasons_stored"], summary3["story_reasons_waiting"]) == (1, 0)
+
+
+@needs_pg
+def test_a_failing_story_reason_never_rolls_back_the_links(pg, monkeypatch) -> None:
+    from app import person_record as rec
+
+    def boom(conn):
+        from sqlalchemy import text
+        conn.execute(text("SELECT no_such_column FROM person"))
+
+    monkeypatch.setattr(rec, "apply_story_reasons", boom)
+    with pg.begin() as conn:
+        _cluster(conn, "sam-1", "Sam")
+    summary, _ = _run(pg)
+    assert "story_reasons_error" in summary
+    assert _rows(pg, "SELECT count(*) FROM person_link WHERE source_ref = 'sam-1' AND revoked_at IS NULL") == [(1,)]

@@ -85,6 +85,6 @@ No manual restart: the post-pull rebuild rebuilds orion-sql-writer after merge.
 
 ## PR link
 
-(filled below)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3824
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

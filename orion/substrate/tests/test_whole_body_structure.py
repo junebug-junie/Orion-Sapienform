@@ -170,3 +170,13 @@ def test_merging_copies_removes_fake_coupling():
     merged = wbs.merged_series(x, wbs.merge_copies(x))
     assert merged.shape[1] == 3
     assert wbs.total_correlation(wbs.correlation(merged)) < 0.01
+
+
+def test_merged_anti_copy_does_not_cancel():
+    rng = np.random.default_rng(12)
+    a = rng.normal(size=2000)
+    x = np.stack([a, -a + 1e-3 * rng.normal(size=2000)], axis=1)
+    groups = wbs.merge_copies(x)
+    assert groups == [[0, 1]]
+    merged = wbs.merged_series(x, groups)[:, 0]
+    assert np.std(merged) > 0.9 and np.corrcoef(merged, a)[0, 1] > 0.99

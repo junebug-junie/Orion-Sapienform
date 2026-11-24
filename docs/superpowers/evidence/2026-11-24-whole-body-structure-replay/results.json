@@ -1,26 +1,26 @@
 {
-  "generated_at": "2026-11-24T04:01:02.502218+00:00",
+  "generated_at": "2026-11-24T04:09:50.356382+00:00",
   "since": "2026-10-25T04:00:00+00:00",
   "source_rows": {
-    "orion_biometrics_summary": 82895,
-    "bus_traffic_rollup_5m": 3166,
-    "attention_salience_trace": 17079,
-    "grammar_acts": 6525,
-    "cockpit_turn_sighting": 6744,
+    "orion_biometrics_summary": 82911,
+    "bus_traffic_rollup_5m": 3167,
+    "attention_salience_trace": 17081,
+    "grammar_acts": 6528,
+    "cockpit_turn_sighting": 6746,
     "curiosity_run_outcomes": 295,
     "chat_message(user)": 207,
-    "vision_events": 57290,
+    "vision_events": 57301,
     "hub_attention_minute": 1295,
-    "home_cooling_sample": 513489
+    "home_cooling_sample": 513593
   },
   "seed": 3290,
   "whole_body": {
     "label": "whole_body",
-    "rows": 2304,
+    "rows": 2305,
     "channels": 55,
     "channels_by_group": {
-      "body": 16,
-      "mind": 38,
+      "body": 18,
+      "mind": 36,
       "world": 1
     },
     "windows": 168,
@@ -30,122 +30,119 @@
       "coupling": {
         "windows": 168,
         "beats_share": 1.0,
-        "median_z": 12.29392532005755,
+        "median_z": 12.293922355961172,
         "median_p_real": 1.0,
-        "obs_median": 11.937340321269632,
-        "null_median": 5.124800985772823
+        "obs_median": 11.93734055896515,
+        "null_median": 5.124801048006375
       },
       "modes_effective": {
         "windows": 168,
         "beats_share": 1.0,
-        "median_z": 4.8531297808113205,
+        "median_z": 4.853131786184208,
         "median_p_real": 1.0,
-        "obs_median": 23.328201556830642,
-        "null_median": 34.55449828710182
+        "obs_median": 23.32819943158585,
+        "null_median": 34.55449859619591
       },
       "leading_share": {
         "windows": 168,
         "beats_share": 0.3273809523809524,
-        "median_z": 1.7389750616637074,
+        "median_z": 1.738974584767855,
         "median_p_real": 0.95,
-        "obs_median": 0.11088697516377288,
-        "null_median": 0.08799999791619353
+        "obs_median": 0.11088697397198793,
+        "null_median": 0.0880000032669215
       },
       "redundancy_synergy": {
         "windows": 168,
         "beats_share": 0.9821428571428571,
-        "median_z": 5.419505785032211,
+        "median_z": 5.419492454941713,
         "median_p_real": 1.0,
-        "obs_median": 3.2668567210035295,
-        "null_median": 1.166418485995973
+        "obs_median": 3.2668568795738135,
+        "null_median": 1.1664188746378072
       },
       "body_mind": {
         "windows": 168,
-        "beats_share": 0.4880952380952381,
-        "median_z": 1.911576679732474,
-        "median_p_real": 0.95,
-        "obs_median": 2.2015467837434666,
-        "null_median": 1.882119041896086
+        "beats_share": 0.9821428571428571,
+        "median_z": 4.848516287523969,
+        "median_p_real": 1.0,
+        "obs_median": 2.72957847586545,
+        "null_median": 1.9138927572774183
       },
       "structure_drift": {
         "windows": 167,
         "beats_share": 0.23952095808383234,
-        "median_z": -0.025193327861886893,
+        "median_z": -0.025190656177033456,
         "median_p_real": 0.75,
-        "obs_median": 0.02775387750325105,
-        "null_median": 0.027580602781737018
+        "obs_median": 0.02775388166888303,
+        "null_median": 0.0275806030407238
       }
     },
     "rest": {
+      "nights": 8,
+      "quiet_nights": 3,
       "coupling": {
-        "quiet_nights": 8,
-        "min_abs_z": 8.923184608804918,
+        "quiet_nights": 3,
+        "min_abs_z": 8.270468479485485,
         "share_within_1sd": 0.0
       },
       "modes_effective": {
-        "quiet_nights": 8,
-        "min_abs_z": 3.206407420692399,
+        "quiet_nights": 3,
+        "min_abs_z": 2.6602874284682096,
         "share_within_1sd": 0.0
       },
       "leading_share": {
-        "quiet_nights": 8,
-        "min_abs_z": 0.2519050265243679,
-        "share_within_1sd": 0.25
+        "quiet_nights": 3,
+        "min_abs_z": 0.022548490130311197,
+        "share_within_1sd": 0.3333333333333333
       },
       "redundancy_synergy": {
-        "quiet_nights": 8,
-        "min_abs_z": 6.749097218126746,
+        "quiet_nights": 3,
+        "min_abs_z": 6.097990584300793,
         "share_within_1sd": 0.0
       },
       "body_mind": {
-        "quiet_nights": 8,
-        "min_abs_z": 0.3518163649056126,
-        "share_within_1sd": 0.375
-      },
-      "structure_drift": {
-        "quiet_nights": 7,
-        "min_abs_z": 7.84524480157798,
-        "share_within_1sd": 0.0
+        "quiet_nights": 3,
+        "min_abs_z": 0.438458957382753,
+        "share_within_1sd": 0.6666666666666666
       }
     },
     "spearman": {
       "coupling~modes_effective": 0.9259899474086486,
       "coupling~leading_share": 0.6572526966354697,
       "coupling~redundancy_synergy": 0.8414464393276002,
-      "coupling~body_mind": 0.22133417020565807,
+      "coupling~body_mind": 0.451850314586381,
       "coupling~structure_drift": 0.18719531676749773,
       "modes_effective~leading_share": 0.749206574172028,
       "modes_effective~redundancy_synergy": 0.9112881591002275,
-      "modes_effective~body_mind": 0.12830214465405623,
+      "modes_effective~body_mind": 0.378245200216642,
       "modes_effective~structure_drift": 0.21056767703835017,
       "leading_share~redundancy_synergy": 0.7278840459402413,
-      "leading_share~body_mind": 0.14363917979763213,
+      "leading_share~body_mind": 0.24902435197230227,
       "leading_share~structure_drift": 0.10410246632380679,
-      "redundancy_synergy~body_mind": 0.16949448524759445,
+      "redundancy_synergy~body_mind": 0.339444525994503,
       "redundancy_synergy~structure_drift": 0.15266884475455286,
-      "body_mind~structure_drift": -0.04544095973285787
+      "body_mind~structure_drift": 0.09340698980696095
     },
     "stability": {
       "days": 8,
       "median_similarity_by_rank": [
-        0.5560421047131483,
-        0.6301703929915448,
-        0.4734792716383669,
-        0.5118936744014231,
-        0.5198094900802734,
-        0.42604203533080104,
-        0.5091121687989524,
-        0.2518666882345699
+        0.5560419161884456,
+        0.6301704479367651,
+        0.4734795973610777,
+        0.5118941591375394,
+        0.5198106679170681,
+        0.4260422263278125,
+        0.5091135230909477,
+        0.25186650501303937
       ],
       "min_similarity_by_rank": [
-        0.2594058939894023,
-        0.4489745229764486,
-        0.14143385271547743,
-        0.2032440893554552,
-        0.10240901566027244,
-        0.20992622180835815,
-        0.3290533904571227,
-        0.011296606329162323
+        0.259406083757155,
+        0.44897177577813985,
+        0.1414334859805133,
+        0.20324418380159653,
+        0.10241030943121286,
+        0.20992692827051201,
+        0.32905390580776134,
+        0.011295914792242012
       ]
     },
     "leading_modes": {
@@ -153,23 +150,23 @@
         "bus:orion:gpu_pool:event(+1 copies)(+0.36)",
         "bus:orion:embedding:generate(+2 copies)(+0.34)",
         "bus:orion:spark:introspect:candidate(+0.31)",
-        "bus:orion:debug:turn:dossier(+1 copies)(+0.27)"
+        "bus:orion:gpu_pool:lease:request(+1 copies)(+0.27)"
       ],
       "rank2": [
         "bus:orion:exec:request:VisionHostService(+2 copies)(+0.30)",
         "bus:orion:vision:inventory:sql-write(+1 copies)(+0.29)",
         "body:gpu_mem(-0.28)",
-        "body:fan(+0.25)"
+        "body:swap(-0.26)"
       ],
       "rank3": [
         "bus:orion:spark:signal(+0.35)",
         "world:cooling_watts(+0.28)",
-        "body:swap(+0.28)",
+        "body:swap(+0.27)",
         "bus:orion:biometrics:cluster(+0.27)"
       ],
       "rank4": [
         "bus:orion:exec:request:VisionHostService(+2 copies)(+0.34)",
-        "bus:orion:signals:*(+0.34)",
+        "bus:orion:signals:*(+0.33)",
         "bus:orion:vision:inventory:sql-write(+1 copies)(+0.31)",
         "bus:orion:vision:guard:signal(+0.28)"
       ],
@@ -180,10 +177,10 @@
         "bus:orion:system_one:appraisal(-0.32)"
       ],
       "rank6": [
-        "bus:orion:gpu_pool:actuate:result(+0.50)",
-        "bus:orion:gpu_pool:actuate:request(+0.49)",
-        "bus:orion:llm:worker:announce(-0.39)",
-        "bus:orion:rpc_health:snapshot(-0.29)"
+        "bus:orion:gpu_pool:actuate:result(+0.48)",
+        "bus:orion:gpu_pool:actuate:request(+0.47)",
+        "bus:orion:llm:worker:announce(-0.38)",
+        "bus:orion:rpc_health:snapshot(-0.31)"
       ],
       "rank7": [
         "bus:orion:substrate:brain_frame(+0.33)",
@@ -192,73 +189,73 @@
         "body:cpu(+0.30)"
       ],
       "rank8": [
-        "bus:orion:spark:signal(+0.26)",
-        "bus:orion:system_one:appraisal(+0.26)",
-        "body:mem(-0.25)",
-        "bus:orion:field_channel:anomaly_score(-0.25)"
+        "bus:orion:spark:signal(+0.28)",
+        "bus:orion:field_channel:anomaly_score(-0.27)",
+        "bus:orion:gpu_pool:state(-0.25)",
+        "bus:orion:system_one:appraisal(+0.25)"
       ]
     },
-    "seconds": 10.0,
+    "seconds": 8.9,
     "span": [
       "2026-11-16T04:00:00+00:00",
-      "2026-11-24T03:55:00+00:00"
+      "2026-11-24T04:00:00+00:00"
     ],
     "organs_and_demon": {
       "rank_beats_null_share": [
-        0.39285714285714285,
-        0.9285714285714286,
+        0.35714285714285715,
+        0.9642857142857143,
         1.0,
         1.0,
         1.0,
         1.0,
         1.0,
-        1.0
+        0.9642857142857143
       ],
       "organs_stable": false,
       "preview_modes_unstable": [
         {
           "rank": 1,
-          "share": 0.09796011223606747,
+          "share": 0.09809927541843116,
           "top_channels": [
             "bus:orion:gpu_pool:event(+1 copies)(+0.36)",
             "bus:orion:embedding:generate(+2 copies)(+0.34)",
             "bus:orion:spark:introspect:candidate(+0.31)",
-            "bus:orion:debug:turn:dossier(+1 copies)(+0.27)"
+            "bus:orion:gpu_pool:lease:request(+1 copies)(+0.27)"
           ]
         },
         {
           "rank": 2,
-          "share": 0.06385692545958516,
+          "share": 0.06375982055573443,
           "top_channels": [
             "bus:orion:exec:request:VisionHostService(+2 copies)(+0.30)",
             "bus:orion:vision:inventory:sql-write(+1 copies)(+0.29)",
             "body:gpu_mem(-0.28)",
-            "body:fan(+0.25)"
+            "body:swap(-0.26)"
           ]
         },
         {
           "rank": 3,
-          "share": 0.056551796984953696,
+          "share": 0.05637041069098749,
           "top_channels": [
             "bus:orion:spark:signal(+0.35)",
             "world:cooling_watts(+0.28)",
-            "body:swap(+0.28)",
+            "body:swap(+0.27)",
             "bus:orion:biometrics:cluster(+0.27)"
           ]
         },
         {
           "rank": 4,
-          "share": 0.05133983930673042,
+          "share": 0.051259577295615255,
           "top_channels": [
             "bus:orion:exec:request:VisionHostService(+2 copies)(+0.34)",
-            "bus:orion:signals:*(+0.34)",
+            "bus:orion:signals:*(+0.33)",
             "bus:orion:vision:inventory:sql-write(+1 copies)(+0.31)",
             "bus:orion:vision:guard:signal(+0.28)"
           ]
         },
         {
           "rank": 5,
-          "share": 0.04727646518130566,
+          "share": 0.04723683738208566,
           "top_channels": [
             "body:cpu(+0.39)",
             "body:thermal(+0.39)",
@@ -268,12 +265,12 @@
         },
         {
           "rank": 6,
-          "share": 0.042624434477811834,
+          "share": 0.04313725762568271,
           "top_channels": [
-            "bus:orion:gpu_pool:actuate:result(+0.50)",
-            "bus:orion:gpu_pool:actuate:request(+0.49)",
-            "bus:orion:llm:worker:announce(-0.39)",
-            "bus:orion:rpc_health:snapshot(-0.29)"
+            "bus:orion:gpu_pool:actuate:result(+0.48)",
+            "bus:orion:gpu_pool:actuate:request(+0.47)",
+            "bus:orion:llm:worker:announce(-0.38)",
+            "bus:orion:rpc_health:snapshot(-0.31)"
           ]
         }
       ],
@@ -282,17 +279,17 @@
       "horizon_p10_min": 120.0,
       "horizon_p90_min": 120.0,
       "skill_vs_best_baseline": [
-        0.2033,
-        0.1417,
-        0.0918,
-        0.06,
-        0.0422,
-        0.0264,
-        0.0191,
-        0.014,
-        0.01,
+        0.2027,
+        0.1413,
+        0.0923,
+        0.0605,
+        0.0427,
+        0.0267,
+        0.0193,
+        0.0141,
+        0.0101,
         0.0073,
-        0.0058,
+        0.0059,
         0.005,
         0.0037,
         0.003,
@@ -301,8 +298,8 @@
         0.0016,
         0.0012,
         0.0011,
-        0.001,
-        0.0008,
+        0.0009,
+        0.0007,
         0.0006,
         0.0005,
         0.0004
@@ -334,18 +331,18 @@
         1.0
       ],
       "full_cut_cost": [
-        0.0458,
-        0.0312,
-        0.031,
-        0.0276,
-        0.0252,
-        0.0182,
-        0.0146,
-        0.0114,
-        0.0085,
+        0.0444,
+        0.0307,
+        0.0311,
+        0.0278,
+        0.0255,
+        0.0183,
+        0.0147,
+        0.0115,
+        0.0086,
         0.0064,
         0.0054,
-        0.0046,
+        0.0047,
         0.0035,
         0.0029,
         0.0023,
@@ -360,24 +357,24 @@
         0.0004
       ],
       "full_cut_excess_over_null": [
-        0.0612,
-        0.035,
-        0.0291,
+        0.0579,
+        0.033,
+        0.0287,
         0.0243,
-        0.0219,
-        0.016,
-        0.0128,
-        0.0102,
-        0.0077,
-        0.0058,
-        0.0051,
-        0.0044,
-        0.0033,
+        0.0222,
+        0.0159,
+        0.0127,
+        0.01,
+        0.0075,
+        0.0057,
+        0.0049,
+        0.0043,
+        0.0032,
         0.0027,
         0.0022,
         0.0018,
         0.0015,
-        0.0012,
+        0.0011,
         0.0011,
         0.0009,
         0.0007,
@@ -386,13 +383,14 @@
         0.0004
       ],
       "full_cut_null_sd": [
-        0.0047,
-        0.0034,
-        0.0029,
-        0.0022,
-        0.0018,
+        0.0027,
+        0.0039,
+        0.0035,
+        0.0023,
+        0.0021,
+        0.0017,
         0.0012,
-        0.001,
+        0.0009,
         0.0007,
         0.0005,
         0.0004,
@@ -402,7 +400,6 @@
         0.0001,
         0.0001,
         0.0001,
-        0.0,
         0.0,
         0.0,
         0.0,
@@ -485,156 +482,156 @@
     "channel_rule": "count channels active (nonzero) in >= 90% of buckets; levels present in >= 90%; near-exact copies (|r| >= 0.95) merged",
     "layer1": {
       "pairs_scored": 1485,
-      "top50_non_body": 47,
+      "top50_non_body": 46,
       "top10": [
-        {
-          "a": "bus:orion:biometrics:cluster",
-          "b": "bus:orion:spark:signal",
-          "r": 0.778,
-          "lag_min": 0,
-          "p": 3.605581661466486e-38
-        },
         {
           "a": "bus:orion:gpu_pool:actuate:request",
           "b": "bus:orion:gpu_pool:actuate:result",
           "r": 0.905,
           "lag_min": 0,
-          "p": 8.733489452708631e-35
+          "p": 2.0150559470423552e-36
         },
         {
           "a": "bus:orion:embedding:generate(+2 copies)",
           "b": "bus:orion:spark:introspect:candidate",
           "r": 0.877,
           "lag_min": 0,
-          "p": 8.57696283354411e-31
+          "p": 4.716359472723807e-30
         },
         {
           "a": "bus:orion:equilibrium:snapshot",
           "b": "bus:orion:spark:signal",
-          "r": 0.651,
+          "r": 0.653,
           "lag_min": 0,
-          "p": 3.435415177942921e-22
+          "p": 4.600225663254674e-23
         },
         {
           "a": "bus:orion:embedding:generate(+2 copies)",
           "b": "bus:orion:gpu_pool:event(+1 copies)",
           "r": 0.833,
           "lag_min": 0,
-          "p": 4.164507555462048e-22
+          "p": 5.772229886252348e-22
         },
         {
           "a": "bus:orion:embedding:generate(+2 copies)",
           "b": "bus:orion:grammar:event",
           "r": 0.501,
           "lag_min": 0,
-          "p": 3.343625808078969e-17
+          "p": 1.1687608135589482e-17
         },
         {
           "a": "bus:orion:exec:request:VisionHostService(+2 copies)",
           "b": "bus:orion:vision:inventory:sql-write(+1 copies)",
-          "r": 0.84,
+          "r": 0.841,
           "lag_min": 0,
-          "p": 5.761468161228933e-17
+          "p": 2.1139263893862157e-17
         },
         {
           "a": "body:power",
           "b": "body:thermal",
           "r": 0.612,
           "lag_min": 0,
-          "p": 1.0388096255878934e-16
+          "p": 3.537344736535425e-16
         },
         {
           "a": "body:cpu",
           "b": "body:power",
-          "r": 0.496,
+          "r": 0.495,
           "lag_min": 0,
-          "p": 1.6319399311448335e-15
+          "p": 1.4268054827756984e-15
         },
         {
-          "a": "bus:orion:gpu_pool:event(+1 copies)",
-          "b": "bus:orion:spark:introspect:candidate",
-          "r": 0.716,
+          "a": "bus:orion:exec:request:VisionHostService(+2 copies)",
+          "b": "bus:orion:signals:*",
+          "r": 0.729,
           "lag_min": 0,
-          "p": 3.4645485881451262e-15
+          "p": 1.0217933016348435e-13
+        },
+        {
+          "a": "bus:orion:gpu_pool:actuate:request",
+          "b": "bus:orion:llm:worker:announce",
+          "r": -0.287,
+          "lag_min": 5,
+          "p": 2.99337680299861e-13
         }
       ],
       "top_non_body": [
-        {
-          "a": "bus:orion:biometrics:cluster",
-          "b": "bus:orion:spark:signal",
-          "r": 0.778,
-          "lag_min": 0,
-          "p": 3.605581661466486e-38
-        },
         {
           "a": "bus:orion:gpu_pool:actuate:request",
           "b": "bus:orion:gpu_pool:actuate:result",
           "r": 0.905,
           "lag_min": 0,
-          "p": 8.733489452708631e-35
+          "p": 2.0150559470423552e-36
         },
         {
           "a": "bus:orion:embedding:generate(+2 copies)",
           "b": "bus:orion:spark:introspect:candidate",
           "r": 0.877,
           "lag_min": 0,
-          "p": 8.57696283354411e-31
+          "p": 4.716359472723807e-30
         },
         {
           "a": "bus:orion:equilibrium:snapshot",
           "b": "bus:orion:spark:signal",
-          "r": 0.651,
+          "r": 0.653,
           "lag_min": 0,
-          "p": 3.435415177942921e-22
+          "p": 4.600225663254674e-23
         },
         {
           "a": "bus:orion:embedding:generate(+2 copies)",
           "b": "bus:orion:gpu_pool:event(+1 copies)",
           "r": 0.833,
           "lag_min": 0,
-          "p": 4.164507555462048e-22
+          "p": 5.772229886252348e-22
         },
         {
           "a": "bus:orion:embedding:generate(+2 copies)",
           "b": "bus:orion:grammar:event",
           "r": 0.501,
           "lag_min": 0,
-          "p": 3.343625808078969e-17
+          "p": 1.1687608135589482e-17
         },
         {
           "a": "bus:orion:exec:request:VisionHostService(+2 copies)",
           "b": "bus:orion:vision:inventory:sql-write(+1 copies)",
-          "r": 0.84,
+          "r": 0.841,
           "lag_min": 0,
-          "p": 5.761468161228933e-17
-        },
-        {
-          "a": "bus:orion:gpu_pool:event(+1 copies)",
-          "b": "bus:orion:spark:introspect:candidate",
-          "r": 0.716,
-          "lag_min": 0,
-          "p": 3.4645485881451262e-15
-        },
-        {
-          "a": "bus:orion:debug:turn:dossier(+1 copies)",
-          "b": "bus:orion:embedding:generate(+2 copies)",
-          "r": 0.567,
-          "lag_min": 0,
-          "p": 7.824473030081111e-14
+          "p": 2.1139263893862157e-17
         },
         {
           "a": "bus:orion:exec:request:VisionHostService(+2 copies)",
           "b": "bus:orion:signals:*",
-          "r": 0.728,
+          "r": 0.729,
           "lag_min": 0,
-          "p": 9.283503872044971e-14
+          "p": 1.0217933016348435e-13
+        },
+        {
+          "a": "bus:orion:gpu_pool:actuate:request",
+          "b": "bus:orion:llm:worker:announce",
+          "r": -0.287,
+          "lag_min": 5,
+          "p": 2.99337680299861e-13
+        },
+        {
+          "a": "bus:orion:gpu_pool:actuate:result",
+          "b": "bus:orion:llm:worker:announce",
+          "r": -0.362,
+          "lag_min": 5,
+          "p": 4.0235561594901696e-13
+        },
+        {
+          "a": "bus:orion:home:cooling:sample",
+          "b": "bus:orion:system:health",
+          "r": 0.256,
+          "lag_min": 0,
+          "p": 1.3564440039944242e-12
         }
       ]
     }
   },
   "body_only": {
     "label": "body_only",
-    "rows": 7776,
+    "rows": 7777,
     "channels": 16,
     "channels_by_group": {
       "body": 16,
@@ -647,105 +644,102 @@
     "features": {
       "coupling": {
         "windows": 624,
-        "beats_share": 0.5673076923076923,
-        "median_z": 2.3543714026916094,
+        "beats_share": 0.5416666666666666,
+        "median_z": 2.4171463800544224,
         "median_p_real": 1.0,
-        "obs_median": 1.8240969816228731,
-        "null_median": 1.1099243696053447
+        "obs_median": 1.824096981622873,
+        "null_median": 1.111555165490234
       },
       "modes_effective": {
         "windows": 624,
-        "beats_share": 0.34935897435897434,
-        "median_z": 1.5614677466355809,
+        "beats_share": 0.35096153846153844,
+        "median_z": 1.5715666849202885,
         "median_p_real": 0.95,
-        "obs_median": 10.063480838359279,
-        "null_median": 11.67574300343297
+        "obs_median": 10.063480838359283,
+        "null_median": 11.673630697719659
       },
       "leading_share": {
         "windows": 624,
-        "beats_share": 0.17307692307692307,
-        "median_z": 0.8968607807820073,
+        "beats_share": 0.1778846153846154,
+        "median_z": 0.913020091966241,
         "median_p_real": 0.8,
-        "obs_median": 0.19900143309737356,
-        "null_median": 0.17374761673465594
+        "obs_median": 0.19900143309737361,
+        "null_median": 0.17355233668913952
       },
       "redundancy_synergy": {
         "windows": 624,
-        "beats_share": 0.20673076923076922,
-        "median_z": 0.9952295643512366,
+        "beats_share": 0.18269230769230768,
+        "median_z": 0.9917190311623663,
         "median_p_real": 0.75,
         "obs_median": 0.34347200103249764,
-        "null_median": 0.20058633907639223
+        "null_median": 0.1998353054607107
       },
       "structure_drift": {
         "windows": 623,
-        "beats_share": 0.18619582664526485,
-        "median_z": -0.3938396185558058,
+        "beats_share": 0.17174959871589085,
+        "median_z": -0.40250455124500745,
         "median_p_real": 0.6,
-        "obs_median": 0.031650664910086654,
-        "null_median": 0.03763520356653267
+        "obs_median": 0.0316506649100867,
+        "null_median": 0.037545624472223434
       }
     },
     "rest": {
+      "nights": 27,
+      "quiet_nights": 15,
       "coupling": {
-        "quiet_nights": 27,
-        "min_abs_z": 0.01217332808062948,
-        "share_within_1sd": 0.5185185185185185
+        "quiet_nights": 15,
+        "min_abs_z": 0.22173808473695983,
+        "share_within_1sd": 0.4666666666666667
       },
       "modes_effective": {
-        "quiet_nights": 27,
-        "min_abs_z": 0.007912009466900731,
-        "share_within_1sd": 0.7037037037037037
+        "quiet_nights": 15,
+        "min_abs_z": 0.16065826231412814,
+        "share_within_1sd": 0.6666666666666666
       },
       "leading_share": {
-        "quiet_nights": 27,
-        "min_abs_z": 0.0832469580739708,
-        "share_within_1sd": 0.7037037037037037
+        "quiet_nights": 15,
+        "min_abs_z": 0.04675425024424763,
+        "share_within_1sd": 0.6
       },
       "redundancy_synergy": {
-        "quiet_nights": 27,
-        "min_abs_z": 0.04256378183604897,
-        "share_within_1sd": 0.6296296296296297
-      },
-      "structure_drift": {
-        "quiet_nights": 26,
-        "min_abs_z": 1.4421588289312242,
-        "share_within_1sd": 0.0
+        "quiet_nights": 15,
+        "min_abs_z": 0.05862890875119132,
+        "share_within_1sd": 0.6
       }
     },
     "spearman": {
-      "coupling~modes_effective": 0.9490773181874306,
-      "coupling~leading_share": 0.8000607482405235,
-      "coupling~redundancy_synergy": 0.8625896036547722,
-      "coupling~structure_drift": -0.06991995955199105,
-      "modes_effective~leading_share": 0.9162953944931472,
-      "modes_effective~redundancy_synergy": 0.942592764538832,
-      "modes_effective~structure_drift": -0.09324823357573819,
-      "leading_share~redundancy_synergy": 0.9138006667489815,
-      "leading_share~structure_drift": -0.11315437696448573,
-      "redundancy_synergy~structure_drift": -0.06318616803551232
+      "coupling~modes_effective": 0.9425575997036671,
+      "coupling~leading_share": 0.7844370909988888,
+      "coupling~redundancy_synergy": 0.8397973083096678,
+      "coupling~structure_drift": -0.058394232307668485,
+      "modes_effective~leading_share": 0.9130155821706384,
+      "modes_effective~redundancy_synergy": 0.9338149401160637,
+      "modes_effective~structure_drift": -0.09205971599844211,
+      "leading_share~redundancy_synergy": 0.9156191134707989,
+      "leading_share~structure_drift": -0.11586192809322259,
+      "redundancy_synergy~structure_drift": -0.06211650717864815
     },
     "stability": {
       "days": 27,
       "median_similarity_by_rank": [
-        0.6626783015385209,
-        0.6704700535010104,
-        0.5641920455089073,
-        0.4598598991489217,
-        0.5448869279175246,
-        0.549591881508612,
-        0.46751573565284044,
-        0.5068111775799558
+        0.6626783015385214,
+        0.6704700535010127,
+        0.5641920455089056,
+        0.45985989914892234,
+        0.5448869279175219,
+        0.5495918815086114,
+        0.46751573565283894,
+        0.5068111775799587
       ],
       "min_similarity_by_rank": [
-        0.11519185668252903,
-        0.34227566579772933,
-        0.017357104121804256,
-        0.06559521824470903,
-        0.012808163742981016,
-        0.016220324141438397,
-        0.013697919260661929,
-        0.009128281639168578
+        0.11519185668252882,
+        0.34227566579772895,
+        0.01735710412180321,
+        0.06559521824470271,
+        0.012808163742979925,
+        0.01622032414143658,
+        0.013697919260664182,
+        0.009128281639167197
       ]
     },
     "leading_modes": {
@@ -770,13 +764,13 @@
       "rank4": [
         "body:cabinet_ambient_audio_activity(+0.68)",
         "body:cabinet_climate_activity(+0.52)",
-        "body:cabinet_proximity_activity(+0.28)",
+        "body:cabinet_proximity_activity(+0.27)",
         "body:net(-0.25)"
       ],
       "rank5": [
         "body:cabinet_vibration_activity(+0.47)",
         "body:gpu_util(+0.44)",
-        "body:power(+0.32)",
+        "body:power(+0.33)",
         "body:disk_capacity(+0.32)"
       ],
       "rank6": [
@@ -789,7 +783,7 @@
         "body:cabinet_proximity_activity(+0.84)",
         "body:cabinet_ambient_audio_activity(-0.29)",
         "body:net(-0.25)",
-        "body:cabinet_vibration_activity(-0.22)"
+        "body:cabinet_vibration_activity(-0.23)"
       ],
       "rank8": [
         "body:cabinet_vibration_activity(+0.64)",
@@ -798,7 +792,7 @@
         "body:disk(+0.30)"
       ]
     },
-    "seconds": 12.8,
+    "seconds": 13.0,
     "merged_copies": {
       "before": 16,
       "after": 16,

@@ -121,11 +121,20 @@ def merge_copies(x: np.ndarray, *, threshold: float = COPY_THRESHOLD) -> list[li
 
 
 def merged_series(x: np.ndarray, groups: Sequence[Sequence[int]]) -> np.ndarray:
-    """One column per group: the mean of its members' standardized values (NaN-aware)."""
+    """One column per group: the mean of its members' standardized values (NaN-aware).
+
+    A member that moves opposite to the group's first member (r < 0) is sign-flipped first, so an
+    anti-copy adds to the group instead of cancelling it.
+    """
     x = np.asarray(x, dtype=float)
     mu = np.nanmean(x, axis=0)
     sd = np.nanstd(x, axis=0)
     z = (x - mu) / np.where(sd > 0, sd, 1.0)
+    r = correlation(x)
+    for g in groups:
+        for i in g[1:]:
+            if r[g[0], i] < 0:
+                z[:, i] = -z[:, i]
     with np.errstate(invalid="ignore"):
         cols = [np.nanmean(z[:, list(g)], axis=1) if len(g) > 1 else z[:, g[0]] for g in groups]
     return np.stack(cols, axis=1)

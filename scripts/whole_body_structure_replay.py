@@ -115,7 +115,9 @@ def load(uri: str, since: datetime) -> tuple[np.ndarray, list[str], dict[str, st
         bus_names = sorted({k for _, c in bus_rows for k in c})
         for b, c in bus_rows:
             for k in bus_names:
-                add(f"bus:{k}", "mind", b, float(np.log1p(c.get(k, 0))))
+                # Body telemetry that rides the bus is body, not mind (review 2026-11-24).
+                grp = "body" if k.startswith("orion:biometrics") else "mind"
+                add(f"bus:{k}", grp, b, float(np.log1p(c.get(k, 0))))
 
         def counts_query(sql: str, label: str, grp: str, name_fn) -> None:
             cur.execute(sql, (since,))
@@ -198,7 +200,7 @@ def _verdict(observed: float, null: np.ndarray, higher) -> tuple[float, float, b
     return z, p, p == 1.0
 
 
-def score_windows(x: np.ndarray, starts: list[int], length: int, groups: dict, rng) -> list[dict]:
+def score_windows(x: np.ndarray, starts: list[int], length: int, groups: dict, rng, *, drift: bool = True) -> list[dict]:
     """Every feature of each window, with its null (N_NULL shifted draws) and verdict."""
     out = []
     prev_r = None
@@ -206,7 +208,7 @@ def score_windows(x: np.ndarray, starts: list[int], length: int, groups: dict, r
         win = x[s:s + length]
         obs = _features(win, groups)
         r = wbs.correlation(win)
-        obs["structure_drift"] = wbs.structure_drift(prev_r, r) if prev_r is not None and len(win) == length else None
+        obs["structure_drift"] = wbs.structure_drift(prev_r, r) if drift and prev_r is not None else None
         prev_r = r
         null = {k: [] for k in FEATURES}
         for _ in range(N_NULL):
@@ -359,7 +361,10 @@ def _merge(x: np.ndarray, names: list[str], group: dict) -> tuple[np.ndarray, li
 # --- main ---------------------------------------------------------------------------------
 
 
-def run_block(label: str, x: np.ndarray, idx: np.ndarray, names: list[str], group: dict, rng) -> dict:
+def run_block(label: str, x: np.ndarray, idx: np.ndarray, names: list[str], group: dict, rng,
+              raw_quiet: np.ndarray) -> dict:
+    """``raw_quiet`` is Juniper's messages + Hub attention beats per row, from the raw columns
+    (both fail the activity rule, so they are never among ``names``)."""
     groups = {"body": [i for i, n in enumerate(names) if group[n] == "body"],
               "mind": [i for i, n in enumerate(names) if group[n] == "mind"]}
     starts = list(range(0, len(x) - WINDOW - STEP + 1, STEP))
@@ -369,11 +374,10 @@ def run_block(label: str, x: np.ndarray, idx: np.ndarray, names: list[str], grou
     hour = (idx // wbs.BUCKETS_PER_HOUR) % 24
     night_starts = [int(t) for t in np.flatnonzero((hour == NIGHT_UTC[0]) & (idx % wbs.BUCKETS_PER_HOUR == 0))
                     if t + 72 <= len(x)]
-    quiet_cols = [names.index(n) for n in ("world:juniper_messages", "world:hub_attention_beats") if n in names]
-    raw_quiet = getattr(run_block, "raw_quiet")
-    quiet = [s for s in night_starts if not np.nansum(raw_quiet[s:s + 72])] if quiet_cols else night_starts
-    night_rows = score_windows(x, quiet, 72, groups, rng) if quiet else []
-    rest = {}
+    quiet = [s for s in night_starts if not np.nansum(raw_quiet[s:s + 72])]
+    # Drift is not scored at rest: successive quiet nights are ~24 h apart, its null 1 h.
+    night_rows = score_windows(x, quiet, 72, groups, rng, drift=False) if quiet else []
+    rest = {"nights": len(night_starts), "quiet_nights": len(quiet)}
     for k in FEATURES:
         zs = [r[k]["z"] for r in night_rows if k in r and np.isfinite(r[k]["z"])]
         if zs:
@@ -424,8 +428,9 @@ def main() -> int:
     sel = [int(j) for j in wbs.select_channels(res[lo:hi]) if _active(raw[lo:hi, j], names[j])]
     x_all, names_all, group, merge_info = _merge(res[lo:hi][:, sel], [names[j] for j in sel], group)
     idx_all = idx[lo:hi]
-    run_block.raw_quiet = raw[lo:hi][:, quiet_cols].sum(axis=1) if quiet_cols else np.zeros(hi - lo)
-    whole = run_block("whole_body", x_all, idx_all, names_all, group, rng)
+    if len(quiet_cols) != 2:
+        raise SystemExit("quiet-night test needs world:juniper_messages and world:hub_attention_beats")
+    whole = run_block("whole_body", x_all, idx_all, names_all, group, rng, raw[lo:hi][:, quiet_cols].sum(axis=1))
     whole["span"] = [datetime.fromtimestamp(int(idx_all[0]) * BUCKET, timezone.utc).isoformat(),
                      datetime.fromtimestamp(int(idx_all[-1]) * BUCKET, timezone.utc).isoformat()]
 
@@ -470,9 +475,8 @@ def main() -> int:
     b_rows = np.flatnonzero(np.isfinite(res[:, body_cols]).any(axis=1))
     blo, bhi = int(b_rows.min()), int(b_rows.max()) + 1
     bsel = [body_cols[j] for j in wbs.select_channels(res[blo:bhi][:, body_cols])]
-    run_block.raw_quiet = raw[blo:bhi][:, quiet_cols].sum(axis=1) if quiet_cols else np.zeros(bhi - blo)
     xb, nb, group, body_merge = _merge(res[blo:bhi][:, bsel], [names[j] for j in bsel], group)
-    body = run_block("body_only", xb, idx[blo:bhi], nb, group, rng)
+    body = run_block("body_only", xb, idx[blo:bhi], nb, group, rng, raw[blo:bhi][:, quiet_cols].sum(axis=1))
     body["merged_copies"] = body_merge
     body.pop("_starts")
     report["body_only"] = body

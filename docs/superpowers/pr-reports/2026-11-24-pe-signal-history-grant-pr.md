@@ -88,6 +88,6 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_ST
 
 ## PR link
 
-(this PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3804
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

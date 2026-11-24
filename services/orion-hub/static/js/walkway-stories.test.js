@@ -68,3 +68,47 @@ test('gate line says how many dark or picture-less stories the gate does not cov
     '3 dark or picture-less stories are not in it.');
   assert.equal(ws.gateLine({ checked: 10, not_checkable: 0, gate }), 'Hub only for now: 40 more to check.');
 });
+
+// Each person's own pictures (2026-11-24, Juniper: "how the f would i know which is which").
+test('story people: one row per individual, lettered in order', () => {
+  const got = ws.storyPeople({ people: [{ individual_id: 'a' }, null, { individual_id: 'b' }, { individual_id: 'a' },
+    { individual_id: '' }, { individual_id: 'c' }] });
+  assert.deepEqual(got.map((e) => [e.person.individual_id, e.letter]), [['a', 'A'], ['b', 'B'], ['c', 'C']]);
+  assert.deepEqual(ws.storyPeople({}), []);
+  const many = ws.storyPeople({ people: Array.from({ length: 28 }, (_, i) => ({ individual_id: `p${i}` })) });
+  assert.deepEqual(many.slice(24).map((e) => e.letter), ['Y', 'Z', 'A1', 'B1']);
+});
+
+test('person pictures: only whitelisted strip crops, else their own thumbnail, else none', () => {
+  const sid = 'a'.repeat(32);
+  const p = { pictures: [{ story_id: sid, file: 'crop_1.jpg', t: 't1', crop_id: 'c1' },
+    { story_id: '../x', file: 'crop_0.jpg' }, { story_id: sid, file: '../../etc/passwd' }], thumb: H('f') };
+  assert.deepEqual(ws.personPictures(p), [{ url: `/api/vision/motion-stories/${sid}/strip/crop_1.jpg`, t: 't1', crop_id: 'c1' }]);
+  assert.deepEqual(ws.personPictures({ pictures: [], thumb: H('f'), thumb_crop_id: 'c9' }),
+    [{ url: `/api/vision/crop-thumbs/${H('f')}`, t: null, crop_id: 'c9' }]);
+  assert.equal(ws.isPictured({ pictures: [], thumb: 'nope', pictured: true }), false);
+  assert.equal(ws.isPictured({ pictures: [{ story_id: sid, file: 'crop_0.jpg' }], pictured: true }), true);
+  // The server decides: a thumbnail it could not tie to a crop is shown nowhere as askable.
+  assert.equal(ws.isPictured({ pictures: [], thumb: H('f'), pictured: false }), false);
+  assert.equal(ws.isPictured({ pictures: [{ story_id: sid, file: 'crop_0.jpg' }] }), false);
+});
+
+test('boxes text says which numbered boxes are theirs, or that they are not boxed', () => {
+  assert.equal(ws.boxesText({ boxes: [{ n: 2 }, { n: 3 }] }, true), 'Boxes 2, 3 on the big picture.');
+  assert.equal(ws.boxesText({ boxes: [{ n: 5 }] }, true), 'Box 5 on the big picture.');
+  assert.equal(ws.boxesText({ boxes: [], role: 'companion' }, true),
+    'Not boxed on the big picture (they walked alongside).');
+  assert.equal(ws.boxesText({ boxes: [{ n: 1 }] }, false), '');
+});
+
+test('crop owners: each time crop gets the letter of the person it belongs to', () => {
+  const entries = ws.storyPeople({ people: [{ individual_id: 'a', crop_ids: ['c0', 'c2'] },
+    { individual_id: 'b', crop_ids: ['c1'] }] });
+  const owners = ws.cropOwners(entries);
+  assert.deepEqual(['c0', 'c1', 'c2'].map((c) => owners[c].letter), ['A', 'B', 'A']);
+  assert.equal(owners.c3, undefined);
+});
+
+test('a yes on a named row reads back as a yes', () => {
+  assert.equal(ws.actionLine({ action: 'confirm', name: 'Sasha' }), 'You said yes, this is Sasha.');
+});

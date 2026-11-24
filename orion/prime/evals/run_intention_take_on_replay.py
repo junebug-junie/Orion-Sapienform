@@ -12,6 +12,9 @@ of the new primitive, with no model call and no write:
 * request      -- Hub's carry request validates (``DurableRunRequestV1``, workflow ``intention.carry``), its prompt
                   starts with ``prime_concern:<id>`` (S-1.5) and its admission deadline is the horizon;
 * no_adapter   -- the letter-thread concern Prime also holds is refused with a reason (S-1.1: no adapter yet);
+* no_thread    -- the live 11-22 promise from a curiosity run's turn (concern ba9b129bcdd06506, #3772) is refused
+                  BEFORE any act opens, the refusal names a curiosity_focus question instead, and the frame does
+                  not mark it "you can take this on" (Hub had refused its order: no chat history row);
 * ages_out     -- held past the horizon and never taken on, the concern leaves Prime's list as ``lapsed``.
 
 Default input: the captured fixture (deterministic, used by the test). ``--live`` reads the same rows from Postgres
@@ -143,6 +146,20 @@ def run(fx: dict[str, Any]) -> dict[str, Any]:
         now=now, arc_ids=[], focus_pending=False, take_on_check=check)
     checks["no_adapter"] = refused.move is None and "only promises" in (refused.move_refusal or "")
     notes["no_adapter_refusal"] = refused.move_refusal
+
+    no_thread = PrimeConcernV1.model_validate({k: v for k, v in fx["no_thread_concern"].items() if k != "_note"})
+    nt_state = PrimeStateV1(concerns=[concern, no_thread])
+    nt_now = no_thread.opened_at + timedelta(hours=2)
+    nt = apply_answer(nt_state, PrimeAnswerV1.model_validate({"move": {
+        "kind": "take_on", "concern_id": no_thread.concern_id, "why": "I said I would check"}}),
+        now=nt_now, arc_ids=[], focus_pending=False,
+        take_on_check=lambda m, st: it.take_on_refusal(m.concern_id, st, intentions, nt_now, enabled=True))
+    nt_frame = build_frame(nt_state, FrameInputs(now=nt_now, take_on=True))
+    checks["no_thread"] = (nt.move is None and "curiosity run" in (nt.move_refusal or "")
+                           and "curiosity_focus" in (nt.move_refusal or "")
+                           and not any(no_thread.concern_id in line and "you can take this on" in line
+                                       for line in nt_frame.splitlines()))
+    notes["no_thread_refusal"] = nt.move_refusal
 
     later = it.horizon_for(concern) + timedelta(minutes=1)
     aged = it.age_out(state, intentions, later)

@@ -950,6 +950,74 @@ class BiometricsSubstrateStore:
             )
             return int(result.rowcount or 0)
 
+    # --- substrate_node_signal_history (manual_migration_node_signal_history_v1.sql) -----------
+    # The five non-PE nodes (alarms, camera scene change; orion/substrate/signal_history.py).
+    # Patch 1 of PR #3781: written alongside the PE table, read by nobody live yet. The read_both
+    # helpers union both tables until the old PE rows age out.
+
+    def save_signal_history_samples(
+        self, samples: list[tuple[str, datetime, float, str]]
+    ) -> int:
+        """Append (node_id, observed_at, value, kind) readings; idempotent on the PK."""
+        if not samples:
+            return 0
+        from orion.substrate.signal_history import INSERT_SIGNAL_HISTORY_SQL
+
+        params = [
+            {"node_id": node_id, "observed_at": observed_at, "value": float(value), "kind": kind}
+            for node_id, observed_at, value, kind in samples
+        ]
+        with self._engine.begin() as conn:
+            conn.execute(text(INSERT_SIGNAL_HISTORY_SQL), params)
+        return len(params)
+
+    def prune_signal_history(self, *, older_than: datetime) -> int:
+        from orion.substrate.signal_history import PRUNE_SIGNAL_HISTORY_SQL
+
+        with self._engine.begin() as conn:
+            result = conn.execute(text(PRUNE_SIGNAL_HISTORY_SQL), {"older_than": older_than})
+            return int(result.rowcount or 0)
+
+    def fetch_signal_history_read_both(
+        self, *, since: datetime, node_ids: list[str] | None = None
+    ) -> list[tuple[str, datetime, float]]:
+        """Signal nodes' readings since `since` from BOTH tables, one row per (node_id,
+        observed_at), signal table preferred. Oldest first per node."""
+        from orion.substrate.signal_history import READ_BOTH_SINCE_SQL, SIGNAL_NODE_IDS
+
+        # Only the five signal nodes, like merge_signal_rows: never other nodes' PE rows.
+        ids = [n for n in (node_ids if node_ids is not None else SIGNAL_NODE_IDS) if n in SIGNAL_NODE_IDS]
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(READ_BOTH_SINCE_SQL), {"since": since, "node_ids": ids}
+            ).fetchall()
+        return [
+            (str(r[0]), r[1] if r[1].tzinfo is not None else r[1].replace(tzinfo=timezone.utc), float(r[2]))
+            for r in rows
+        ]
+
+    def count_signal_history_read_both(self, *, node_id: str, since: datetime) -> int:
+        """Read-both successor of count_prediction_error_history (strain warm-up count)."""
+        from orion.substrate.signal_history import READ_BOTH_COUNT_SQL
+
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(READ_BOTH_COUNT_SQL), {"since": since, "node_ids": [node_id]}
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def fetch_signal_event_times_read_both(
+        self, *, node_id: str, since: datetime
+    ) -> list[datetime]:
+        """Read-both successor of fetch_prediction_error_event_times (strain restart seed)."""
+        from orion.substrate.signal_history import READ_BOTH_EVENT_TIMES_SQL
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(READ_BOTH_EVENT_TIMES_SQL), {"since": since, "node_ids": [node_id]}
+            ).fetchall()
+        return [r[0] if r[0].tzinfo is not None else r[0].replace(tzinfo=timezone.utc) for r in rows]
+
     def save_system_one_appraisal(
         self, frame: SystemOneAppraisalFrameV1, *, retention_hours: float
     ) -> None:

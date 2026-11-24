@@ -251,7 +251,9 @@ def _now_check(state: PrimeStateV1, data: dict) -> tuple[str, bool, str]:
     prompt = system_prompt(None, events=True, take_on=True, experiences=True, needs=True, evidence_clock=True)
     start = prompt.index("Reply with ONE JSON object")
     template = prompt[start:prompt.index("\n\n", start)]
-    in_template = '"refs": [] | [{"kind": "experience"' in template
+    in_template = ('"refs": [] | [{"kind": "experience"' in template
+                   and template.index('"refs": [] |') < template.index('"move": null |')
+                   and template.rstrip().endswith('"id": "..."}]}}'))
     ok = (shown_all and len(frame) <= FRAME_CHAR_CAP and "(28 more were recorded and not shown" in frame
           and not any(f"run {r}" in frame for r in runs) and applied.experience_cites == ids[:3] and in_template)
     return ("now", ok, f"{len(frame)} chars (cap {FRAME_CHAR_CAP}); 12 ids shown={shown_all}; "

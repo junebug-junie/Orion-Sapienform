@@ -44,11 +44,23 @@ consumers apply:
   closes their open "who is this?" cards, and links the individual to an
   existing one she typed the same name for. ``OrionAskAnsweredV1`` is published
   so orion-substrate-runtime writes the substrate entity.
+- ``confirm`` ("Yes, that's <name>", 2026-11-24; only on a row that has a name,
+  and only the name the card showed: 409 ``label_changed`` otherwise): the same
+  ``vision_individual`` answer as a typed name (so a copied name she said yes to
+  becomes her typed label), with ``answer_detail.pictures`` = one "same" picture
+  verdict per picture of that individual the card SHOWED.
 - ``someone_else`` (optionally with a name for who it really is) / ``unsure``:
   a ``vision_story_person`` ask whose ``answer_detail.pictures`` holds one
-  picture verdict per crop of that individual in the story. orion-sql-writer
-  stores them in ``vision_ask_picture_verdict``; "someone else" ones are split
-  off by the split-on-verdict pass (app/vision_split.py).
+  picture verdict ("different" / "unsure") per picture of that
+  individual the card SHOWED. orion-sql-writer stores them in
+  ``vision_ask_picture_verdict``; "someone else" ones are split off by the
+  split-on-verdict pass (app/vision_split.py).
+
+**Each person's own pictures** (2026-11-24, Juniper: "how the f would i know
+which is which"). Every person carries ``pictures`` (the strip crops that are
+theirs, by crop_id), ``boxes`` (their numbered boxes on the story's frame) and
+``pictured``. A person with no picture of their own is shown but not asked: the
+person route refuses them (``no_picture_of_person``).
 
 A correction of the name the story was written with (a different name, or
 "someone else" on the named walker) also records the story's "Wrong name"
@@ -179,15 +191,16 @@ class VerdictBody(BaseModel):
 WHO_IS_THIS_KIND = ask_routes.WHO_IS_THIS_KIND        # "vision_individual"
 STORY_PERSON_KIND = "vision_story_person"
 JUNIPER_STORY_CARD_REF = "rule:juniper_story_naming"   # == orion.grammar.camera_ask_acts (a test pins it)
-PERSON_ACTIONS = ("name", "someone_else", "unsure")
+PERSON_ACTIONS = ("name", "confirm", "someone_else", "unsure")
 WHY_MAX_CHARS = 1000
 _INDIVIDUAL_ID_RE = re.compile(r"[0-9A-Za-z_.:-]{1,128}")
 _THUMB_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
 class PersonBody(BaseModel):
-    action: Literal["name", "someone_else", "unsure"]
-    # For "name": who this is. For "someone_else": optionally who it really is.
+    # "confirm" (2026-11-24): "Yes, that's <name>" on a row that already has a name.
+    action: Literal["name", "confirm", "someone_else", "unsure"]
+    # For "name": who this is. For "someone_else": optionally who it really is. Ignored for "confirm".
     name: str = Field(default="", max_length=ask_routes.MAX_ANSWER_CHARS)
     # How Juniper could tell, in her words (optional, any action): "pushing a stroller,
     # Jason has no young kids, not his build". Stored as answer_detail.why on the ask row.
@@ -388,12 +401,76 @@ def people_in(evidence: list[dict[str, Any]], role: str, kind: str) -> list[dict
         if not iid or not isinstance(iid, str):
             continue
         p = out.setdefault(iid, {"individual_id": iid, "short_id": iid[:8], "role": role, "kind": kind,
-                                 "crop_ids": [], "thumb": None})
+                                 "crop_ids": [], "thumb": None, "thumb_crop_id": None})
         if e.get("crop_id"):
             p["crop_ids"].append(str(e["crop_id"]))
         if p["thumb"] is None and isinstance(e.get("thumb"), str) and _THUMB_HEX_RE.fullmatch(e["thumb"]):
             p["thumb"] = e["thumb"]
+            p["thumb_crop_id"] = str(e["crop_id"]) if e.get("crop_id") else None
     return list(out.values())
+
+
+# --- each person's own pictures (2026-11-24) ---------------------------------------------------------
+# Juniper, on a story with six "who is this?" rows and one unlabelled picture: "how the f
+# would i know which is which". Each person row now carries the pictures of THAT
+# individual: the strip crops whose crop_id is one of theirs (sql-writer writes crop_id
+# on every strip crop, app/vision_story_strip.py), else vision-host's own thumbnail of
+# one of their crops. A walker's boxes on the story's frame are numbered the way
+# sql-writer drew them: 1..n over the evidence entries that have a crop_id and a
+# 4-number box, first green, last red, the rest blue. A person with no picture of their
+# own is not asked: the person route refuses it, so no answer is blind.
+
+def strip_files(strip: Any) -> dict[str, dict[str, Any]]:
+    """crop_id -> {"file", "t"} for the saved crops of one story strip ({} when pruned)."""
+    if not isinstance(strip, dict) or strip.get("pruned_at"):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for c in strip.get("crops") or []:
+        if (isinstance(c, dict) and c.get("crop_id") and isinstance(c.get("file"), str)
+                and _STRIP_NAME_RE.fullmatch(c["file"])):
+            out.setdefault(str(c["crop_id"]), {"file": c["file"], "t": c.get("t")})
+    return out
+
+
+def box_numbers(evidence: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """crop_id -> {"n", "colour"}: the number and colour sql-writer drew for that box
+    on the story's frame (app/vision_story_strip.assemble_strip)."""
+    ev = [e for e in evidence if isinstance(e, dict) and e.get("crop_id")]
+    boxed = [e for e in ev if isinstance(e.get("box"), list) and len(e["box"]) == 4]
+    n = len(boxed)
+    out: dict[str, dict[str, Any]] = {}
+    for j, e in enumerate(boxed):
+        colour = "green" if j == 0 else "red" if j == n - 1 else "blue"
+        out.setdefault(str(e["crop_id"]), {"n": j + 1, "colour": colour})
+    return out
+
+
+def attach_pictures(person: dict[str, Any], strip_story_id: str, strip: Any,
+                    boxes: Optional[dict[str, dict[str, Any]]]) -> dict[str, Any]:
+    """Set ``pictures``, ``boxes``, ``picture_crop_ids`` and ``pictured`` on one person.
+    ``strip_story_id`` / ``strip``: the story whose strip holds this person's crops (a
+    companion's are in the story it walked in). ``boxes``: the box numbers on the shown
+    frame, or None when this person is not boxed on it (a companion, or no frame)."""
+    files = strip_files(strip)
+    pics = [{"story_id": strip_story_id, "file": files[cid]["file"], "t": files[cid]["t"], "crop_id": cid}
+            for cid in dict.fromkeys(person.get("crop_ids") or []) if cid in files]
+    person["pictures"] = pics
+    person["boxes"] = [boxes[cid] for cid in dict.fromkeys(person.get("crop_ids") or []) if boxes and cid in boxes]
+    shown = [p["crop_id"] for p in pics]
+    if not shown and person.get("thumb") and person.get("thumb_crop_id"):
+        shown = [person["thumb_crop_id"]]
+    person["picture_crop_ids"] = shown
+    person["pictured"] = bool(shown)
+    return person
+
+
+def _strip_of(raw: Any) -> Optional[dict[str, Any]]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) else None
 
 
 def story_display(story: dict[str, Any], labels: dict[str, str],
@@ -401,12 +478,13 @@ def story_display(story: dict[str, Any], labels: dict[str, str],
     """(display name, sentence to show, why) for one story. ``answers``: every
     answer Juniper gave on this story, oldest first, each with its individual_id.
 
-    Her latest name / "someone else" about any of the story's walker ids wins for
-    this story: a name -> that name; "someone else" -> who she said it really is,
+    Her latest name / "yes, that's <name>" / "someone else" about any of the story's
+    walker ids wins for this story: a name or a yes -> that name; "someone else" -> who she said it really is,
     or no name. A later "not sure" does not undo it. With none, the strict naming
     rule on the names the individuals carry now (``why='rule'``)."""
     walkers = {p["individual_id"] for p in story.get("people") or [] if p.get("role") == "walker"}
-    direct = [a for a in answers if a.get("individual_id") in walkers and a.get("action") in ("name", "someone_else")]
+    direct = [a for a in answers if a.get("individual_id") in walkers
+              and a.get("action") in ("name", "confirm", "someone_else")]
     if direct:
         name = (direct[-1].get("name") or "").strip() or None
         why = "juniper"
@@ -479,6 +557,11 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
             s["evidence"] = fill_late_links(s.get("evidence") or [], links)
     for s in stories:
         s["people"] = people_in(s.get("evidence") or [], "walker", s.get("kind") or "person")
+        strip = s.get("evidence_strip")
+        framed = isinstance(strip, dict) and not strip.get("pruned_at") and isinstance(strip.get("frame"), dict)
+        boxes = box_numbers(s.get("evidence") or []) if framed else None
+        for p in s["people"]:
+            attach_pictures(p, s["story_id"], strip, boxes)
         s["display_name"], s["display_sentence"], s["name_source"] = s.get("name_label"), s.get("sentence"), "stored"
     if not stories:
         return
@@ -487,9 +570,10 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
         partners: dict[str, Any] = {}
         if together:
             for r in await conn.fetch(
-                    "SELECT story_id, kind, evidence FROM vision_motion_story WHERE story_id = ANY($1::text[])",
-                    together):
-                partners[r["story_id"]] = {"kind": r["kind"], "evidence": _evidence_list(r["evidence"])}
+                    "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
+                    "WHERE story_id = ANY($1::text[])", together):
+                partners[r["story_id"]] = {"kind": r["kind"], "evidence": _evidence_list(r["evidence"]),
+                                           "strip": _strip_of(r["evidence_strip"])}
             plinks = await _late_links(conn, [r["evidence"] for r in partners.values()])
             for r in partners.values():
                 r["evidence"] = fill_late_links(r["evidence"], plinks)
@@ -503,6 +587,8 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
                     if p["individual_id"] not in seen:
                         seen.add(p["individual_id"])
                         p["story_id"] = t
+                        # Their pictures are in the story they walked in; not boxed on this frame.
+                        attach_pictures(p, t, r["strip"], None)
                         s["people"].append(p)
         ids = sorted({p["individual_id"] for s in stories for p in s["people"]}
                      | {e.get("individual_id") for s in stories for e in s.get("evidence") or []
@@ -575,7 +661,7 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
         async with pool.acquire() as conn:
             async with conn.transaction():
                 story = await conn.fetchrow(
-                    "SELECT story_id, kind, name_label, rules_version, evidence, together_story_ids "
+                    "SELECT story_id, kind, name_label, rules_version, evidence, together_story_ids, evidence_strip "
                     "FROM vision_motion_story WHERE story_id = $1 AND published", story_id)
                 if story is None:
                     raise HTTPException(status_code=404, detail="story_not_found")
@@ -584,18 +670,27 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                 ev = fill_late_links(ev, await _late_links(conn, [ev]))
                 person = next((p for p in people_in(ev, "walker", story["kind"])
                                if p["individual_id"] == individual_id), None)
+                if person is not None:
+                    attach_pictures(person, story_id, _strip_of(story["evidence_strip"]), None)
                 if person is None and story["together_story_ids"]:
-                    for r in await conn.fetch(
-                            "SELECT story_id, kind, evidence FROM vision_motion_story WHERE story_id = ANY($1::text[]) "
-                            "ORDER BY story_id", list(story["together_story_ids"])):
+                    order = {t: i for i, t in enumerate(story["together_story_ids"])}
+                    partners = await conn.fetch(
+                        "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
+                        "WHERE story_id = ANY($1::text[])", list(story["together_story_ids"]))
+                    # The list's order (together_story_ids), so the pictures answered are the ones it showed.
+                    for r in sorted(partners, key=lambda r: order.get(r["story_id"], len(order))):
                         pev = _evidence_list(r["evidence"])
                         pev = fill_late_links(pev, await _late_links(conn, [pev]))
                         person = next((p for p in people_in(pev, "companion", r["kind"])
                                        if p["individual_id"] == individual_id), None)
                         if person is not None:
+                            attach_pictures(person, r["story_id"], _strip_of(r["evidence_strip"]), None)
                             break
                 if person is None:
                     raise HTTPException(status_code=422, detail="individual_not_in_story")
+                if not person["pictured"]:
+                    # The card shows no picture of them and does not ask: never a blind answer.
+                    raise HTTPException(status_code=422, detail="no_picture_of_person")
                 current = await conn.fetchrow("SELECT label FROM vision_individual WHERE individual_id = $1",
                                               individual_id)
                 if current is None:
@@ -604,6 +699,15 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                         and name.casefold() == current["label"].strip().casefold()):
                     # "Someone else, called <their own name>": contradictory (the split refuses it too).
                     raise HTTPException(status_code=422, detail="someone_else_takes_another_name")
+                if body.action == "confirm":
+                    # "Yes, that's <name>": only for a row that has a name, and only the name the card
+                    # showed her (a rename or relabel since the card rendered must not get her yes).
+                    label = clean_name(current["label"])
+                    if not label:
+                        raise HTTPException(status_code=422, detail="nothing_to_confirm")
+                    if name.casefold() != label.casefold():
+                        raise HTTPException(status_code=409, detail="label_changed")
+                    name = label
                 thumb = f"thumb:{person['thumb']}" if person["thumb"] else None
                 detail: dict[str, Any] = {"story_id": story_id, "action": body.action, "via": "motion_story"}
                 if name:
@@ -613,7 +717,18 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                 if body.action == "name":
                     kind, answer = WHO_IS_THIS_KIND, name
                     question = "Who is this? (named on a walkway story)"
+                elif body.action == "confirm":
+                    # A yes is her own answer to "who is this?": sql-writer applies it as a TYPED label
+                    # (a copied name she said yes to becomes hers; label_copied=false) and records the
+                    # pictures shown as "same" picture verdicts (the multi-picture who-is-this path).
+                    kind, answer = WHO_IS_THIS_KIND, name
+                    question = f"Is this {name}? Yes (said on a walkway story)"
+                    detail["pictures"] = [
+                        {"image_ref": f"crop:{cid}", "index": i, "verdict": "same", "crop_id": cid, "name": name}
+                        for i, cid in enumerate(person["picture_crop_ids"])]
                 else:
+                    # Picture verdicts, one per picture the card SHOWED of this person (the existing
+                    # vision_ask_picture_verdict path: "same" / "different" / "unsure").
                     kind, answer = STORY_PERSON_KIND, None
                     question = ("Is this someone else? (said on a walkway story)" if body.action == "someone_else"
                                 else "Not sure who this is (said on a walkway story)")
@@ -621,9 +736,9 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                     detail["pictures"] = [
                         {"image_ref": f"crop:{cid}", "index": i, "verdict": verdict, "crop_id": cid,
                          "name": name or None}
-                        for i, cid in enumerate(person["crop_ids"])]
+                        for i, cid in enumerate(person["picture_crop_ids"])]
                 refs = [f"motion_story:{story_id}", f"individual:{individual_id}"]
-                if body.action == "name":
+                if kind == WHO_IS_THIS_KIND:
                     # Juniper's own card, not an ask Orion made: it opens no vision.ask act and counts in no
                     # ask statistic (attention patch 4a, orion/grammar/camera_ask_acts.py).
                     refs.append(JUNIPER_STORY_CARD_REF)
@@ -641,7 +756,7 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
     except Exception as exc:
         _raise_motion_http(exc)
     published = False
-    if body.action == "name":
+    if row["source_kind"] == WHO_IS_THIS_KIND:
         # The substrate entity, exactly as a Hub "who is this?" answer writes it. Right after
         # the commit: a failed read-back below must never lose it.
         published = await ask_routes._publish_answered(ask_routes._event_from_row(row))

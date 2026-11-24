@@ -34,6 +34,7 @@ on:
       - "services/orion-hub/scripts/motion_story_routes.py"
       - "services/orion-hub/tests/test_motion_story_routes.py"
       - "services/orion-hub/static/js/walkway-stories.js"
+      - "services/orion-sql-writer/app/vision_story_strip.py"
       - "services/orion-hub/tests/test_walkway_stories_js.py"
       - "services/orion-sql-db/manual_migration_vision_handoff_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"
@@ -63,6 +64,7 @@ on:
       - "services/orion-hub/scripts/motion_story_routes.py"
       - "services/orion-hub/tests/test_motion_story_routes.py"
       - "services/orion-hub/static/js/walkway-stories.js"
+      - "services/orion-sql-writer/app/vision_story_strip.py"
       - "services/orion-hub/tests/test_walkway_stories_js.py"
       - "services/orion-sql-db/manual_migration_vision_handoff_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"
@@ -120,7 +122,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/orion-durable-runs/requirements.txt
           python -m pip install -r requirements-dev.txt
-          python -m pip install asyncpg==0.29.0 pytest-asyncio sqlalchemy
+          # pillow: the Hub walkway card box-number parity test runs sql-writer's real strip drawing.
+          python -m pip install asyncpg==0.29.0 pytest-asyncio sqlalchemy pillow
           # orion-memory-consolidation's pin: redis 5.0.x's graph module imports distutils,
           # which Python 3.12 removed, so the referent projector's Falkor client needs >=5.1.
           python -m pip install redis==5.2.1

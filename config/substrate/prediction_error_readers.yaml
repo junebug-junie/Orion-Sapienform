@@ -85,6 +85,9 @@ files:
   services/orion-hub/scripts/autonomy_constitution.py:
     class: not_a_reader
     reason: a constitution category label
+  scripts/backfill_signal_history_from_pe.py:
+    class: not_a_reader
+    reason: one-off copy of the five signal nodes' PE-table rows into substrate_node_signal_history (PR #3781 Patch 1); copies values unchanged, never reads them as a size
   scripts/check_pe_alarm_readers.py:
     class: not_a_reader
     reason: this gate; names the key in its own patterns and messages

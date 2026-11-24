@@ -854,6 +854,12 @@ Follow-up: #3553.
   source records the memory loss, a sentence must state a loss and cite that record. Renders in
   WHO YOU ARE right after the self-definition. Shared fold code moved to
   `orion/memory/pages/fold.py`. Not live until orion-durable-runs and orion-cortex-exec are rebuilt.
+- **`page:origin` history eval (#3733, 2026-11-24).** `orion/memory/pages/evals/origin_history.py` scores
+  every stored version, read-only: the Decision 3 loss sentence (the live `check_origin_page`, re-run),
+  cite mix by kind, version-to-version text similarity and claim churn, and a deterministic
+  faithfulness floor (content-word overlap per sentence and per cite, dates and numbers the cited
+  records must hold). Counts to stdout; sentences and record text only to a local file under
+  `~/.orion/evals/`.
 - **`page:lately` built (#3463, 2026-11-18), ahead of the `matters` gate (#3590).** Third page in the
   same nightly tick, after `page:origin`. Reads the last 14 days of `episode_memory` plus active
   `follow_up` rows up to 45 days old (no follow-up can be closed yet, #3758), through the lived-memory

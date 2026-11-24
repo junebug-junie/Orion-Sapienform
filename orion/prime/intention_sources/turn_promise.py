@@ -8,6 +8,9 @@ Answers, from the concern's ``event_ref``, what the carry turn needs (orion/prim
   out, as the hand-back counts them), plus the one originating exchange from ``chat_history_log`` (Juniper's
   prompt and Orion's reply). Nothing from any other thread.
 * **route**: back into that chat thread (``chat_history_log.session_id``).
+* **take-on refusal** (``take_on_refusal``, before any act opens): only a promise made in a chat with Juniper has a
+  thread to answer in. A promise from a curiosity run, consult, letter or game sitting is refused up front with
+  what to do instead (#3772: two take-ons in 11-20..23 burned their act on an order Hub had to refuse).
 
 Loop guard (design "Dangerous failure"): a promise made in one of Orion's own sessions (``orion_*``, the carry
 session ``orion_intention`` included) is refused here, on top of the hand-back opening no concern for it.
@@ -21,6 +24,8 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Optional, Union
 
+from orion.prime.handback import WHO_WORDS, promise_concern_who
+from orion.prime.state import PrimeConcernV1
 from orion.schemas.intention import INTENTION_SESSION_ID, IntentionSourceV1, aware
 from orion.schemas.promise_horizon import PROMISE_HORIZON_SEC
 
@@ -46,6 +51,21 @@ LIMIT 1
 
 def correlation_id(event_ref: str) -> str:
     return event_ref[len(PREFIX):]
+
+
+# The one kind of turn whose promise has a chat thread to carry the reply back to (orion/prime/handback.py TurnWho).
+THREAD_WHO = "chat_juniper"
+
+
+def take_on_refusal(concern: PrimeConcernV1) -> Optional[str]:
+    """Why Prime cannot take this promise on, or None. Pure: read from the concern's text, which names the kind of
+    turn that made the promise. A text this cannot read (older wording) passes; Hub's ``adapt`` still refuses it."""
+    who = promise_concern_who(concern.text)
+    if who is None or who == THREAD_WHO:
+        return None
+    return (f"that promise was made in a {WHO_WORDS[who]}, not in a chat with Juniper: there is no chat thread to "
+            "carry a reply back to, so Hub would refuse the order. To act on it, send a curiosity_focus question "
+            "for this concern; or drop it with your why")
 
 
 def horizon_from(opened_at: datetime) -> datetime:
@@ -110,4 +130,5 @@ def adapt(event_ref: str, row: Optional[dict[str, Any]], *, why: str) -> Union[I
         retrieval_query=_cut(quotes[0][1], 1000), promised_at=promised_at)
 
 
-__all__ = ["FETCH_SQL", "HORIZON_SEC", "PREFIX", "SOURCE", "adapt", "correlation_id", "fetch", "horizon_from"]
+__all__ = ["FETCH_SQL", "HORIZON_SEC", "PREFIX", "SOURCE", "THREAD_WHO", "adapt", "correlation_id", "fetch", "horizon_from",
+           "take_on_refusal"]

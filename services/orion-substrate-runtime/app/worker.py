@@ -2160,6 +2160,7 @@ class BiometricsSubstrateWorker:
                     )
                 except Exception:
                     logger.exception("substrate_strain_news_event_record_failed")
+                self._dual_write_signal_history([(STRAIN_NODE_ID, now, EVENT_VALUE)])
                 logger.info(
                     "substrate_strain_news_event node_id=%s value=%.1f %s",
                     STRAIN_NODE_ID, EVENT_VALUE, event.as_log_fields(),
@@ -3640,6 +3641,33 @@ class BiometricsSubstrateWorker:
     # skew and not recorded: it would otherwise pin last_observed in the
     # future and silently drop every correct reading until the clock caught up.
     _PE_HISTORY_MAX_FUTURE_SKEW = timedelta(minutes=5)
+    # Failed signal-history rows kept for retry (PR #3781 Patch 1). ~5 rows per ~35 s tick, so
+    # 500 rows covers about an hour of a missing table; older rows are left to the backfill.
+    _SIGNAL_HISTORY_PENDING_MAX = 500
+
+    def _dual_write_signal_history(self, samples: list[tuple[str, datetime, float]]) -> None:
+        """PR #3781 Patch 1: copy the five non-PE nodes' readings (alarms, camera scene change)
+        into substrate_node_signal_history. Additive: the PE-table write is untouched, nothing
+        reads the new table yet. Fails open (a missing table logs, never costs the tick). A failed
+        write is kept (newest _SIGNAL_HISTORY_PENDING_MAX rows) and retried with the next write,
+        since the PE sampler has already moved past that reading."""
+        if not bool(getattr(self._settings, "signal_history_enabled", False)):
+            return
+        rows: list[Any] = list(getattr(self, "_signal_history_pending", None) or [])
+        try:
+            from orion.substrate.signal_history import signal_samples
+
+            rows += signal_samples(samples)
+            if not rows:
+                return
+            self._store.save_signal_history_samples(rows)
+            self._signal_history_pending = []
+        except Exception as exc:
+            self._signal_history_pending = rows[-self._SIGNAL_HISTORY_PENDING_MAX:]
+            logger.warning(
+                "substrate_signal_history_write_failed rows=%d pending=%d err=%s",
+                len(rows), len(self._signal_history_pending), exc,
+            )
 
     @staticmethod
     def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
@@ -3758,6 +3786,7 @@ class BiometricsSubstrateWorker:
                 for node_id, observed_at, value in new_samples:
                     cache.setdefault(node_id, deque()).append((observed_at, value))
                     last_observed[node_id] = observed_at
+            self._dual_write_signal_history(new_samples)
 
         horizon = now - WINDOW_7D
         for window in cache.values():
@@ -3774,6 +3803,14 @@ class BiometricsSubstrateWorker:
                 logger.info("substrate_pe_history_pruned rows=%d", pruned)
             except Exception:
                 logger.exception("substrate_pe_history_prune_failed")
+            if bool(getattr(s, "signal_history_enabled", False)):
+                try:
+                    pruned = self._store.prune_signal_history(
+                        older_than=now - timedelta(hours=float(s.pe_history_retention_hours))
+                    )
+                    logger.info("substrate_signal_history_pruned rows=%d", pruned)
+                except Exception as exc:
+                    logger.warning("substrate_signal_history_prune_failed err=%s", exc)
 
         magnitudes: dict[str, Any] = {}
         # World-first ranking key (mid-rank: share below + half the share

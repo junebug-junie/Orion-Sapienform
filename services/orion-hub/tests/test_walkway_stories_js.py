@@ -42,7 +42,8 @@ def test_action_line_says_what_juniper_said_on_this_story() -> None:
       api.actionLine({action: "other"})
     ]""")
     assert got == ["You named them Theo on this story.", "You said this is someone else: Cora.",
-                   "You said this is someone else.", "You said you are not sure.", "", ""]
+                   "You said this is someone else.", "You said you can't see them.", "", ""]
+    assert _node('api.actionLine({action: "unsure", dont_know: true})') == "You said you don't know who this is."
 
 
 def test_handoff_line_says_where_the_passage_came_from_or_went() -> None:

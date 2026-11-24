@@ -84,6 +84,11 @@ each of its camera groups on that group's shown pictures (at most four rows); a
 repeat of a group's latest answer on the story is skipped. ``POST .../persons/{person_key}/not-same``
 records "these are not the same person" for one direct link.
 
+**One person at a time** (2026-11-24, who-card Patch B). ``people`` is dropped from the
+responses (``persons`` only); ``GET /api/vision/known-names`` feeds "No, it's ...";
+stories whose person she could only answer "not sure" on are back in the unchecked
+queue until her first answer from the one-at-a-time card (``reopened``).
+
 Same asyncpg pool as the ask card (``app.state.memory_pg_pool``); all DB calls
 are awaited (``scripts/check_async_routes_not_blocking.py``).
 """
@@ -408,7 +413,8 @@ _LABELS_SQL = ("SELECT individual_id, kind, label, label_copied FROM vision_indi
 _STORY_ACTIONS_SQL = """
 SELECT answer_detail->>'story_id' AS story_id, source_ref AS individual_id,
        answer_detail->>'action' AS action, answer_detail->>'name' AS name,
-       answer_detail->>'why' AS why, ask_id, answered_at
+       answer_detail->>'why' AS why, answer_detail->>'card' AS card,
+       coalesce(answer_detail @> '{"dont_know": true}'::jsonb, false) AS dont_know, ask_id, answered_at
 FROM orion_ask
 WHERE source_kind = ANY($2::text[]) AND status = 'answered'
   AND answer_detail->>'story_id' = ANY($1::text[])
@@ -679,7 +685,8 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
                                       [WHO_IS_THIS_KIND, STORY_PERSON_KIND]):
                 acts.setdefault(r["story_id"], []).append({
                     "individual_id": r["individual_id"], "action": r["action"], "name": r["name"],
-                    "why": r["why"] or None, "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"])})
+                    "why": r["why"] or None, "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"]),
+                    "dont_know": bool(r["dont_know"])})
     except Exception as exc:  # noqa: BLE001 - the card still shows the stored story
         logger.warning("motion_story_people_lookup_failed error=%s", exc)
         for s in stories:
@@ -895,12 +902,13 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                     if len(named) != 1 or name.casefold() not in named:
                         raise HTTPException(status_code=409, detail="label_changed")
                     name = named[name.casefold()]
-                latest = {a["individual_id"]: {"action": a["action"], "name": a["name"]}
+                latest = {a["individual_id"]: {"action": a["action"], "name": a["name"], "card": a["card"]}
                           for a in await conn.fetch(_STORY_ACTIONS_SQL, [story_id],
                                                     [WHO_IS_THIS_KIND, STORY_PERSON_KIND])}
                 for t in targets:
                     iid = t["individual_id"]
-                    if story_persons.already_said(latest.get(iid), body.action, name):
+                    if story_persons.already_said(latest.get(iid), body.action, name,
+                                                  card=None if body.card == "list" else body.card):
                         # Idempotent (Orion's question 4): the same answer again writes no second row.
                         skipped.append(iid)
                         continue

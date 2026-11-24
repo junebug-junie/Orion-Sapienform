@@ -189,34 +189,75 @@ def test_walkway_stories_card_browser_smoke():
         browser.close()
 
 
-def _person(iid: str, **kw) -> dict:
-    base = {"individual_id": iid, "short_id": iid[:8], "role": "walker", "kind": "person", "crop_ids": ["c1"],
-            "thumb": H, "thumb_crop_id": "c1", "label": None, "label_copied": False, "known": True,
-            "story_action": None, "pictures": [], "boxes": [], "pictured": True}
+def _pp(key: str, **kw) -> dict:
+    """One person as the server lists it (``persons``, who-card Patches A/B): one camera group unless given."""
+    ids = kw.pop("individual_ids", [key])
+    pics = kw.pop("pictures", None)
+    crops = kw.pop("crop_ids", ["c1"])
+    if pics is None:
+        pics = [{"thumb": H, "crop_id": crops[0], "t": None, "individual_id": key}]
+    base = {"person_key": key, "individual_ids": ids, "crop_ids": crops, "short_id": key[:8], "role": "walker",
+            "kind": "person", "label": None, "label_copied": False, "known": True, "story_action": None,
+            "pictures": pics, "boxes": [], "pictured": bool(pics), "asked_ids": ids if pics else [],
+            "groups": [{"individual_id": i, "short_id": i[:8], "picture_crop_ids": crops if pics else [],
+                        "asked": bool(pics)} for i in ids],
+            "links": []}
     base.update(kw)
     return base
 
 
-def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
-    """Who the story is about (2026-10-18): one box per person, a typed name / "Someone else" /
-    "Not sure" POSTs to the person route, and the story re-renders from the server's answer."""
+def _page(p, html, handle, height=900):
+    browser = p.chromium.launch()
+    page = browser.new_page(viewport={"width": 360, "height": height})
+    page.route("http://hub.test/**", handle)
+    page.route(re.compile(r"^(?!http://hub\.test).*"), lambda r: r.fulfill(status=204, body=""))
+    page.goto("http://hub.test/")
+    page.wait_for_function("() => !!window.OrionWalkwayStories")
+    page.add_style_tag(content=".hidden{display:none!important}")
+    page.select_option("#visionSource", "walkway-live")
+    page.wait_for_selector("#walkwayStoriesList [data-story-person]")
+    return browser, page
+
+
+def _html() -> str:
+    html = (HUB / "templates" / "index.html").read_text(encoding="utf-8")
+    html = html.replace("{{HUB_CFG}}", "{}")
+    return re.sub(r"\{\{[A-Z0-9_]+\}\}", "", html)
+
+
+def _static(route, path):
+    f = HUB / path.lstrip("/")
+    if f.is_file():
+        ctype = "application/javascript" if f.suffix == ".js" else "text/css" if f.suffix == ".css" else "application/octet-stream"
+        return route.fulfill(body=f.read_bytes(), content_type=ctype)
+    return route.fulfill(status=404, body="")
+
+
+NAMES = {"ok": True, "names": [{"name": "Theo", "seen": 40}, {"name": "Alex", "seen": 30}, {"name": "Sasha", "seen": 9}]}
+
+
+def _fits(page):
+    assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
+    assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
+
+
+def test_walkway_story_one_person_at_a_time_browser_smoke():
+    """Who-card Patch B (2026-11-24): one person at a time; "Is this Alex?" / "Who is this?"; "No, it's ..."
+    lists the names Orion knows; a name picked from the list is held as "Changed to X - Undo" until the next
+    person (Juniper's answer 1); a typed name and "Can't see them" save at once; Next / progress; 360 px."""
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
 
-    html = (HUB / "templates" / "index.html").read_text(encoding="utf-8")
-    html = html.replace("{{HUB_CFG}}", "{}")
-    html = re.sub(r"\{\{[A-Z0-9_]+\}\}", "", html)
+    html = _html()
     anon = _story(1, sentence="A person walked right to left, over 5 s (3 detections).",
                   display_sentence="A person walked right to left, over 5 s (3 detections).", display_name=None,
-                  name_source="rule", people=[_person("ind-anon1234567"),
-                                              _person("ind-dog", role="companion", kind="dog"),
-                                              _person("ind-ghost", role="companion", thumb=None,
-                                                      pictured=False)])
+                  name_source="rule",
+                  persons=[_pp("ind-anon1234567"), _pp("ind-dog", role="companion", kind="dog"),
+                           _pp("ind-ghost", role="companion", pictures=[])])
     alex = _story(2, name_label="Alex", individual_id="ind-alex", sentence="Alex walked left to right, over 5 s (3 detections).",
                   display_sentence="Alex walked left to right, over 5 s (3 detections).", display_name="Alex",
-                  name_source="rule", people=[_person("ind-alex", label="Alex", label_copied=True)])
+                  name_source="rule", persons=[_pp("ind-alex", label="Alex", label_copied=True)], reopened=True)
     posts: list[tuple[str, str, dict]] = []
-    lists: list[str] = []
 
     def handle(route):
         url = route.request.url
@@ -224,153 +265,128 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
         if path == "/":
             return route.fulfill(body=html, content_type="text/html")
         if path.startswith("/static/"):
-            f = HUB / path.lstrip("/")
-            if f.is_file():
-                ctype = "application/javascript" if f.suffix == ".js" else "text/css" if f.suffix == ".css" else "application/octet-stream"
-                return route.fulfill(body=f.read_bytes(), content_type=ctype)
-            return route.fulfill(status=404, body="")
+            return _static(route, path)
+        if path == "/api/vision/known-names":
+            return route.fulfill(body=json.dumps(NAMES), content_type="application/json")
         if path == "/api/vision/motion-stories":
-            lists.append(url)
             return route.fulfill(body=json.dumps({"ok": True, "stories": [anon, alex], "tally": _tally(1, 1)}),
                                  content_type="application/json")
         m = re.fullmatch(r"/api/vision/motion-stories/([0-9a-f]{32})/people/([^/]+)", path)
         if m:
             sent = json.loads(route.request.post_data or "{}")
             posts.append((m.group(1), m.group(2), sent))
-            if m.group(2) == "ind-anon1234567":
-                story = dict(anon, display_sentence="Theo walked right to left, over 5 s (3 detections).",
-                             display_name="Theo", name_source="juniper",
-                             people=[_person("ind-anon1234567", story_action={"action": "name", "name": "Theo"}),
-                                     *anon["people"][1:]])
-                body = {"ok": True, "story": story, "wrong_name_recorded": False, "tally": _tally(1, 1)}
-            else:
-                story = dict(alex, verdict="wrong_name", display_sentence="A person walked left to right, over 5 s (3 detections).",
-                             display_name=None, name_source="juniper",
-                             people=[_person("ind-alex", label="Alex", story_action={"action": "someone_else", "name": None,
-                                                                    "why": sent.get("why") or None})])
+            if m.group(2) == "ind-alex":
+                story = dict(alex, verdict="wrong_name", display_sentence="Cora walked left to right, over 5 s (3 detections).",
+                             persons=[_pp("ind-alex", label="Alex", story_action={"action": "someone_else", "name": "Cora"})])
                 body = {"ok": True, "story": story, "wrong_name_recorded": True, "tally": _tally(2, 1, wrong_name=1)}
+            else:
+                body = {"ok": True, "story": None, "wrong_name_recorded": False, "tally": _tally(1, 1)}
             return route.fulfill(body=json.dumps(body), content_type="application/json")
         if path == f"/api/vision/crop-thumbs/{H}" or re.fullmatch(r"/api/vision/motion-stories/[0-9a-f]{32}/strip/.*", path):
             return route.fulfill(body=PIXEL, content_type="image/gif")
-        if path.startswith("/api/vision/crop-thumbs/") or path == "/api/vision/frames/latest/image":
-            return route.fulfill(status=404, body="")
-        return route.fulfill(body="{}", content_type="application/json")
+        return route.fulfill(status=404, body="")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 360, "height": 800})
-        page.route("http://hub.test/**", handle)
-        page.route(re.compile(r"^(?!http://hub\.test).*"), lambda r: r.fulfill(status=204, body=""))
-        page.goto("http://hub.test/")
-        page.wait_for_function("() => !!window.OrionWalkwayStories")
-        page.add_style_tag(content=".hidden{display:none!important}")
-        page.select_option("#visionSource", "walkway-live")
-        page.wait_for_selector("#walkwayStoriesList [data-story-person]")
+        browser, page = _page(p, html, handle)
         items = page.locator("#walkwayStoriesList [data-story-id]")
         first = items.nth(0)
-        boxes = first.locator("[data-story-person]")
-        assert boxes.count() == 3
-        assert boxes.nth(0).locator("[data-person-title]").text_content() == "unnamed person (individual ind-anon)"
-        assert boxes.nth(1).locator("[data-person-title]").text_content() == "With them: unnamed dog (individual ind-dog)"
-        assert "Who is in this story?" in first.text_content()
-        # ind-ghost has no picture of its own: shown greyed, not asked (no name box, no reason box, no buttons).
-        assert boxes.nth(2).get_attribute("data-person-asked") == "0"
-        assert "No picture of this person - not asked." in boxes.nth(2).text_content()
-        assert boxes.nth(2).locator("[data-person-action], [data-person-why-input]").count() == 0
-        assert boxes.nth(0).locator(f"img[data-person-picture][src='/api/vision/crop-thumbs/{H}']").count() == 1
-        second = items.nth(1)
-        assert second.locator("[data-person-title]").text_content() == "Alex"
-        assert "carried over from a same-person answer" in second.text_content()
-        assert second.locator("[data-person-name-input]").get_attribute("placeholder") == "Or type the right name"
-        assert second.locator("[data-person-action='confirm']").text_content() == "Yes, that's Alex"
-        assert second.locator("[data-person-action='someone_else']").text_content() == "No, not Alex"
-        # Fits a 360 px phone with the name boxes.
-        assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
-        assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
-
-        # "Name them" with nothing typed: nothing is sent.
-        boxes.nth(0).locator("[data-person-action='name']").click()
-        assert "Type a name first" in page.locator("#walkwayStoriesStatus").text_content()
+        # One person shown, of the two with a picture; the third is not asked.
+        assert first.locator("[data-story-person]").count() == 1
+        assert first.locator("[data-story-progress]").get_attribute("data-story-progress") == "1/2"
+        assert "1 without a picture of their own is not asked." in first.text_content()
+        assert first.locator("[data-person-question]").text_content() == "Who is this?"
+        assert first.locator("[data-person-action='yes']").count() == 0          # nothing to say yes to
+        assert first.locator("[data-person-action='cant_see']").text_content() == "Can't see them"
+        _fits(page)
+        # "It's ..." opens the list: the names Orion knows, most seen first.
+        first.locator("[data-person-action='no']").click()
+        assert [b.text_content() for b in first.locator("[data-person-pick]").all()] == ["Theo", "Alex", "Sasha"]
+        _fits(page)
+        # A name picked from the list: no request yet, "Named Theo" with Undo.
+        first.locator("[data-person-pick='Theo']").click()
+        page.wait_for_selector("[data-person-pending='Theo']")
         assert posts == []
-        # Half-typed text in the dog's box survives the walker's save re-rendering the story.
-        boxes.nth(1).locator("[data-person-why-input]").fill("on a red leash")
-        boxes.nth(0).locator("[data-person-name-input]").fill("  Theo  ")
-        boxes.nth(0).locator("[data-person-action='name']").click()
-        page.wait_for_function("() => document.querySelector('#walkwayStoriesList [data-story-id] [data-story-sentence]')"
-                               ".textContent.startsWith('Theo walked')")
-        assert posts[-1] == (f"{1:032x}", "ind-anon1234567", {"action": "name", "name": "Theo", "why": "", "group": False})
-        first = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
-        assert first.locator("[data-story-person='ind-dog'] [data-person-why-input]").input_value() == "on a red leash"
-        assert first.locator("[data-story-person='ind-anon1234567'] [data-person-why-input]").input_value() == ""
-        assert "Orion first wrote: A person walked" in first.locator("[data-story-first-written]").text_content()
-        assert first.locator("[data-person-said='name']").text_content() == "You named them Theo on this story."
-        assert "named by you" in first.text_content()
-        assert 'Saved: Theo' in page.locator("#walkwayStoriesStatus").text_content()
-
-        # "Someone else" on the story's named walker: the story loses the name and gets "Wrong name".
-        # With how she could tell (2026-11-24): the reason goes with the answer and shows back.
-        second = page.locator("#walkwayStoriesList [data-story-id]").nth(1)
+        page.locator("[data-person-undo]").click()
+        page.wait_for_function("() => !document.querySelector('[data-person-pending]')")
+        assert posts == [] and "Undone" in page.locator("#walkwayStoriesStatus").text_content()
+        first = items.nth(0)
+        first.locator("[data-person-action='no']").click()
+        first.locator("[data-person-pick='Theo']").click()
+        page.wait_for_selector("[data-person-pending='Theo']")
+        # Next person sends it.
+        first.locator("[data-story-nav='next']").click()
+        page.wait_for_function("() => document.querySelector('[data-story-progress]').getAttribute('data-story-progress') === '2/2'")
+        assert posts == [(f"{1:032x}", "ind-anon1234567", {"action": "name", "name": "Theo", "why": "", "group": True,
+                                                           "card": "one_at_a_time", "dont_know": False,
+                                                           "crop_ids": ["c1"]})]
+        first = items.nth(0)
+        assert first.locator("[data-person-question]").text_content() == "Walking with them: Who is this?"
+        assert first.locator("[data-story-nav-done]").count() == 1
+        # "Can't see them": saved at once, says Orion will not ask again.
+        first.locator("[data-person-action='cant_see']").click()
+        page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes(\"won't ask\")")
+        assert posts[-1][1:] == ("ind-dog", {"action": "unsure", "name": "", "why": "", "group": True,
+                                             "card": "one_at_a_time", "dont_know": False, "crop_ids": ["c1"]})
+        # A named person: "Is this Alex?", the list leaves out Alex, a typed name saves at once.
+        second = items.nth(1)
+        assert second.locator("[data-story-reopened]").count() == 1 and first.locator("[data-story-reopened]").count() == 0
+        assert second.locator("[data-person-question]").text_content() == "Is this Alex?"
+        assert second.locator("[data-person-action='yes']").text_content() == "Yes, that's Alex"
+        assert "carried over from a same-person answer" in second.text_content()
+        second.locator("[data-person-action='no']").click()
+        assert [b.text_content() for b in second.locator("[data-person-pick]").all()] == ["Theo", "Sasha"]
         second.locator("[data-person-why-input]").fill("  Pushing a stroller; Alex has no young kids.  ")
-        second.locator("[data-person-action='someone_else']").click()
+        second.locator("[data-person-name-input]").fill("  Cora ")
+        second.locator("[data-person-action='typed']").click()
         page.wait_for_function(
             "() => document.querySelectorAll('#walkwayStoriesList [data-story-id]')[1]"
             ".querySelector(\"[data-story-verdict='wrong_name']\").getAttribute('aria-pressed') === 'true'")
-        assert posts[-1] == (f"{2:032x}", "ind-alex", {"action": "someone_else", "name": "",
-                                                       "why": "Pushing a stroller; Alex has no young kids.",
-                                                       "group": False})
-        second = page.locator("#walkwayStoriesList [data-story-id]").nth(1)
-        assert second.locator("[data-person-why]").text_content() == (
-            "How you could tell: Pushing a stroller; Alex has no young kids.")
-        assert second.locator("[data-story-sentence]").text_content().startswith("A person walked")
+        assert posts[-1][1:] == ("ind-alex", {"action": "someone_else", "name": "Cora",
+                                              "why": "Pushing a stroller; Alex has no young kids.", "group": True,
+                                              "card": "one_at_a_time", "dont_know": False, "crop_ids": ["c1"]})
         assert "Recorded as a wrong name" in page.locator("#walkwayStoriesStatus").text_content()
-        assert "wrong names 1" in page.locator("#walkwayStoriesTally").text_content()
-
-        # A half-typed name does not block a filter change she makes herself.
-        page.locator("#walkwayStoriesList [data-person-name-input]").first.fill("Half")
-        before = len(lists)
-        page.uncheck("#walkwayStoriesCheckable")
+        # "Save name" with nothing typed sends nothing.
+        n = len(posts)
+        items.nth(1).locator("[data-person-action='no']").click()
+        items.nth(1).locator("[data-person-action='typed']").click()
+        assert "Type a name first" in page.locator("#walkwayStoriesStatus").text_content() and len(posts) == n
+        # A held pick is sent when the page closes (keepalive), never lost.
+        items.nth(1).locator("[data-person-pick='Theo']").click()
+        page.wait_for_selector("[data-person-pending='Theo']")
+        page.evaluate("() => window.dispatchEvent(new Event('pagehide'))")
         for _ in range(50):
-            if len(lists) > before:
+            if len(posts) > n:
                 break
             page.wait_for_timeout(50)
-        assert "checkable_only=false" in lists[-1]
+        assert posts[-1][1:] == ("ind-alex", {"action": "someone_else", "name": "Theo", "why": "", "group": True,
+                                              "card": "one_at_a_time", "dont_know": False, "crop_ids": ["c1"]})
         browser.close()
-
 
 
 def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_browser_smoke():
     """Juniper's story c486f5d8... (2026-11-22, doorbell): Juniper, Sasha, Sasha, an unnamed person and two
-    companions, one picture with no link to its row (2026-11-24: "how the f would i know which is which").
-    Each row now shows ITS OWN crops, a letter that also tags the time crops, its box numbers, and a
-    named row says "Yes, that's <name>"; a person without a picture of their own is not asked."""
+    companions. One at a time, each person shows ITS OWN crops, a letter that also tags the time crops,
+    and its box numbers; a person without a picture of their own is never asked; "Yes, that's Sasha"."""
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
 
-    html = (HUB / "templates" / "index.html").read_text(encoding="utf-8")
-    html = html.replace("{{HUB_CFG}}", "{}")
-    html = re.sub(r"\{\{[A-Z0-9_]+\}\}", "", html)
+    html = _html()
     sid, partner = f"{7:032x}", f"{8:032x}"
 
     def pic(story_id, n, crop):
         return {"story_id": story_id, "file": f"crop_{n}.jpg", "t": f"2026-11-22T01:28:3{n}+00:00", "crop_id": crop}
 
-    people = [
-        _person("ind-jun", label="Juniper", crop_ids=["k0"], thumb=None, pictures=[pic(sid, 0, "k0")],
-                boxes=[{"n": 1, "colour": "green"}], pictured=True),
-        _person("ind-sasha1", label="Sasha", crop_ids=["k1", "k2"], thumb=None, pictures=[pic(sid, 1, "k1")],
-                boxes=[{"n": 2, "colour": "blue"}, {"n": 3, "colour": "blue"}], pictured=True),
-        _person("ind-sasha2", label="Sasha", crop_ids=["k3"], thumb=None, pictures=[pic(sid, 2, "k3")],
-                boxes=[{"n": 4, "colour": "blue"}], pictured=True),
-        _person("ind-anon38e1", crop_ids=["k4"], thumb=None, pictures=[pic(sid, 3, "k4")],
-                boxes=[{"n": 5, "colour": "red"}], pictured=True),
-        _person("ind-cab04a49", role="companion", crop_ids=["p0"], thumb=None, pictures=[pic(partner, 0, "p0")],
-                boxes=[], pictured=True, story_id=partner),
-        _person("ind-c2f73f7e", role="companion", crop_ids=["p1"], thumb=None, pictures=[], boxes=[],
-                pictured=False, story_id=partner),
-        _person("ind-jun", label="Juniper", crop_ids=["k0"], thumb=None),     # a repeat: shown once
+    persons = [
+        _pp("ind-jun", label="Juniper", crop_ids=["k0"], pictures=[pic(sid, 0, "k0")], boxes=[{"n": 1, "colour": "green"}]),
+        _pp("ind-sasha1", label="Sasha", crop_ids=["k1", "k2"], pictures=[pic(sid, 1, "k1")],
+            boxes=[{"n": 2, "colour": "blue"}, {"n": 3, "colour": "blue"}]),
+        _pp("ind-sasha2", label="Sasha", crop_ids=["k3"], pictures=[pic(sid, 2, "k3")], boxes=[{"n": 4, "colour": "blue"}]),
+        _pp("ind-anon38e1", crop_ids=["k4"], pictures=[pic(sid, 3, "k4")], boxes=[{"n": 5, "colour": "red"}]),
+        _pp("ind-cab04a49", role="companion", crop_ids=["p0"], pictures=[pic(partner, 0, "p0")], story_id=partner),
+        _pp("ind-c2f73f7e", role="companion", crop_ids=["p1"], pictures=[], story_id=partner),
     ]
     story = _story(7, sentence="A person walked right to left and toward the house on the porch, over 6 s "
-                               "(5 detections), moving alongside another person.", people=people,
+                               "(5 detections), moving alongside another person.", persons=persons,
                    evidence_strip={"version": 1, "dark": False,
                                    "frame": {"file": "frame.jpg", "t": "2026-11-22T01:28:33+00:00", "crop_id": "k2"},
                                    "crops": [{"crop_id": c, "t": f"2026-11-22T01:28:3{n}+00:00", "file": f"crop_{n}.jpg"}
@@ -383,11 +399,9 @@ def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_bro
         if path == "/":
             return route.fulfill(body=html, content_type="text/html")
         if path.startswith("/static/"):
-            f = HUB / path.lstrip("/")
-            if f.is_file():
-                ctype = "application/javascript" if f.suffix == ".js" else "text/css" if f.suffix == ".css" else "application/octet-stream"
-                return route.fulfill(body=f.read_bytes(), content_type=ctype)
-            return route.fulfill(status=404, body="")
+            return _static(route, path)
+        if path == "/api/vision/known-names":
+            return route.fulfill(body=json.dumps(NAMES), content_type="application/json")
         if path == "/api/vision/motion-stories":
             return route.fulfill(body=json.dumps({"ok": True, "stories": [story], "tally": _tally(1, 1)}),
                                  content_type="application/json")
@@ -395,8 +409,8 @@ def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_bro
         if m:
             sent = json.loads(route.request.post_data or "{}")
             posts.append((m.group(2), sent))
-            again = dict(story, people=[dict(p, story_action={"action": "confirm", "name": "Sasha"})
-                                        if p["individual_id"] == "ind-sasha2" else p for p in people])
+            again = dict(story, persons=[dict(p, story_action={"action": "confirm", "name": "Sasha"})
+                                         if p["person_key"] == "ind-sasha2" else p for p in persons])
             return route.fulfill(body=json.dumps({"ok": True, "story": again, "wrong_name_recorded": False,
                                                   "tally": _tally(1, 1)}), content_type="application/json")
         if re.fullmatch(r"/api/vision/motion-stories/[0-9a-f]{32}/strip/(crop_[0-3]|frame)\.jpg", path):
@@ -404,83 +418,71 @@ def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_bro
         return route.fulfill(status=404, body="")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 360, "height": 900})
-        page.route("http://hub.test/**", handle)
-        page.route(re.compile(r"^(?!http://hub\.test).*"), lambda r: r.fulfill(status=204, body=""))
-        page.goto("http://hub.test/")
-        page.wait_for_function("() => !!window.OrionWalkwayStories")
-        page.add_style_tag(content=".hidden{display:none!important}")
-        page.select_option("#visionSource", "walkway-live")
-        page.wait_for_selector("#walkwayStoriesList [data-story-person]")
+        browser, page = _page(p, html, handle)
         item = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
-        rows = item.locator("[data-story-person]")
-        assert rows.count() == 6                                   # the repeated individual is shown once
-        assert [rows.nth(i).get_attribute("data-person-letter") for i in range(6)] == list("ABCDEF")
-        # Each row: its own crop, from its own story's strip.
-        srcs = [rows.nth(i).locator("img[data-person-picture]").get_attribute("src") for i in range(5)]
-        assert srcs == [f"/api/vision/motion-stories/{sid}/strip/crop_0.jpg",
-                        f"/api/vision/motion-stories/{sid}/strip/crop_1.jpg",
-                        f"/api/vision/motion-stories/{sid}/strip/crop_2.jpg",
-                        f"/api/vision/motion-stories/{sid}/strip/crop_3.jpg",
-                        f"/api/vision/motion-stories/{partner}/strip/crop_0.jpg"]
-        assert rows.nth(0).locator("img[data-person-picture]").get_attribute("alt").startswith("Person A (Juniper)")
-        # The two "Sasha" rows are told apart by their box numbers and group ids.
-        assert rows.nth(1).get_attribute("data-person-letter") == "B"
-        assert rows.nth(1).locator("[data-person-boxes]").get_attribute("data-person-boxes") == "2,3"
-        assert rows.nth(2).locator("[data-person-boxes]").get_attribute("data-person-boxes") == "4"
-        assert "group ind-sash" in rows.nth(1).text_content() and "group ind-sash" in rows.nth(2).text_content()
-        assert "text-red-400" in rows.nth(3).locator("[data-person-box='5']").get_attribute("class")
-        assert "they walked alongside" in rows.nth(4).text_content()
-        # The time crops above carry the same letters.
+        assert item.locator("[data-story-progress]").get_attribute("data-story-progress") == "1/5"
+        assert "1 without a picture of their own is not asked." in item.text_content()
+        # The time crops above carry each person's letter.
         assert [c.get_attribute("data-story-crop-person")
                 for c in item.locator("[data-story-crop-person]").all()] == ["A", "B", "C", "D"]
-        # The companion with no picture of their own: greyed, not asked.
-        assert rows.nth(5).get_attribute("data-person-asked") == "0"
-        assert rows.nth(5).locator("[data-person-action]").count() == 0
-        assert "1 without a picture of their own is not asked." in item.text_content()
-        # Named rows say yes in one click; an unnamed row asks for a name.
-        assert rows.nth(3).locator("[data-person-action='confirm']").count() == 0
-        assert rows.nth(3).locator("[data-person-action='name']").text_content() == "Name them"
-        rows.nth(2).locator("[data-person-action='confirm']").click()
-        page.wait_for_function("() => !!document.querySelector(\"[data-person-said='confirm']\")")
-        assert posts == [("ind-sasha2", {"action": "confirm", "name": "Sasha", "why": "", "group": False})]
-        assert "Saved: yes, that's Sasha." in page.locator("#walkwayStoriesStatus").text_content()
-        assert page.locator("[data-person-said='confirm']").text_content() == "You said yes, this is Sasha."
-        assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
-        assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
+        want = [("A", "Is this Juniper?", f"/api/vision/motion-stories/{sid}/strip/crop_0.jpg", "1"),
+                ("B", "Is this Sasha?", f"/api/vision/motion-stories/{sid}/strip/crop_1.jpg", "2,3"),
+                ("C", "Is this Sasha?", f"/api/vision/motion-stories/{sid}/strip/crop_2.jpg", "4"),
+                ("D", "Who is this?", f"/api/vision/motion-stories/{sid}/strip/crop_3.jpg", "5"),
+                ("E", "Walking with them: Who is this?", f"/api/vision/motion-stories/{partner}/strip/crop_0.jpg", "")]
+        for k, (letter, question, src, boxes) in enumerate(want):
+            item = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
+            row = item.locator("[data-story-person]")
+            assert row.get_attribute("data-person-letter") == letter
+            assert row.locator("[data-person-question]").text_content() == question
+            assert row.locator("img[data-person-picture]").get_attribute("src") == src
+            if boxes:
+                assert row.locator("[data-person-boxes]").get_attribute("data-person-boxes") == boxes
+            else:
+                assert "they walked alongside" in row.text_content()
+            if k == 2:
+                # The second "Sasha": told apart from the first by its box numbers and group id.
+                assert "group ind-sash" in row.text_content()
+                row.locator("[data-person-action='yes']").click()
+                page.wait_for_function("() => !!document.querySelector(\"[data-person-said='confirm']\")")
+                assert posts == [("ind-sasha2", {"action": "confirm", "name": "Sasha", "why": "", "group": True,
+                                                 "card": "one_at_a_time", "dont_know": False, "crop_ids": ["k3"]})]
+                assert "Saved: yes, that's Sasha." in page.locator("#walkwayStoriesStatus").text_content()
+                # Still on the same person after saving: she moves on herself.
+                assert page.locator("[data-story-progress]").get_attribute("data-story-progress") == "3/5"
+            _fits(page)
+            if k < len(want) - 1:
+                page.locator("[data-story-nav='next']").click()
+                page.wait_for_function(
+                    f"() => document.querySelector('[data-story-progress]').getAttribute('data-story-progress') === '{k + 2}/5'")
+        assert page.locator("[data-story-nav-done]").count() == 1
+        page.locator("[data-story-nav='back']").click()
+        page.wait_for_function("() => document.querySelector('[data-story-progress]').getAttribute('data-story-progress') === '4/5'")
         browser.close()
 
 
 def test_walkway_story_linked_groups_are_one_person_asked_once_browser_smoke():
-    """Who-card Patch A (2026-11-24): the two "Sasha" camera groups Juniper already linked are ONE row
+    """Who-card Patch A (2026-11-24): the two "Sasha" camera groups Juniper already linked are ONE person
     (both groups' pictures, "Seen as 2 camera groups"), a yes is sent once with group=true, and the
-    row offers "not the same person?" for its direct link (Orion's question 1)."""
+    person offers "not the same person?" for its direct link (Orion's question 1)."""
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
 
-    html = (HUB / "templates" / "index.html").read_text(encoding="utf-8")
-    html = html.replace("{{HUB_CFG}}", "{}")
-    html = re.sub(r"\{\{[A-Z0-9_]+\}\}", "", html)
+    html = _html()
     sid = f"{9:032x}"
 
     def pic(n, crop):
         return {"story_id": sid, "file": f"crop_{n}.jpg", "t": f"2026-11-22T01:28:3{n}+00:00", "crop_id": crop,
                 "individual_id": "x"}
 
-    sasha = {"person_key": "ind-sasha1", "individual_ids": ["ind-sasha1", "ind-sasha2"], "crop_ids": ["k1", "k3"],
-             "role": "walker", "kind": "person", "label": "Sasha", "label_copied": False, "short_id": "ind-sash",
-             "pictures": [pic(2, "k3"), pic(1, "k1")], "boxes": [{"n": 2, "colour": "blue"}, {"n": 4, "colour": "blue"}],
-             "pictured": True, "asked_ids": ["ind-sasha1", "ind-sasha2"], "story_action": None,
-             "groups": [{"individual_id": "ind-sasha1", "short_id": "ind-sas1", "picture_crop_ids": ["k1"], "asked": True},
+    sasha = _pp("ind-sasha1", individual_ids=["ind-sasha1", "ind-sasha2"], crop_ids=["k1", "k3"], label="Sasha",
+                short_id="ind-sash", pictures=[pic(2, "k3"), pic(1, "k1")],
+                boxes=[{"n": 2, "colour": "blue"}, {"n": 4, "colour": "blue"}],
+                groups=[{"individual_id": "ind-sasha1", "short_id": "ind-sas1", "picture_crop_ids": ["k1"], "asked": True},
                         {"individual_id": "ind-sasha2", "short_id": "ind-sas2", "picture_crop_ids": ["k3"], "asked": True}],
-             "links": [{"a": "ind-sasha1", "b": "ind-sasha2"}]}
-    anon = {"person_key": "ind-anon", "individual_ids": ["ind-anon"], "crop_ids": ["k4"], "role": "walker",
-            "kind": "person", "label": None, "short_id": "ind-anon", "pictures": [pic(3, "k4")],
-            "boxes": [{"n": 5, "colour": "red"}], "pictured": True, "asked_ids": ["ind-anon"], "story_action": None,
-            "groups": [{"individual_id": "ind-anon", "short_id": "ind-anon", "picture_crop_ids": ["k4"], "asked": True}],
-            "links": []}
-    story = _story(9, sentence="Sasha walked right to left, over 6 s (4 detections).", people=[], persons=[sasha, anon],
+                links=[{"a": "ind-sasha1", "b": "ind-sasha2"}])
+    anon = _pp("ind-anon", crop_ids=["k4"], pictures=[pic(3, "k4")], boxes=[{"n": 5, "colour": "red"}])
+    story = _story(9, sentence="Sasha walked right to left, over 6 s (4 detections).", persons=[sasha, anon],
                    evidence_strip={"version": 1, "dark": False,
                                    "frame": {"file": "frame.jpg", "t": "2026-11-22T01:28:33+00:00", "crop_id": "k1"},
                                    "crops": [{"crop_id": c, "t": f"2026-11-22T01:28:3{n}+00:00", "file": f"crop_{n}.jpg"}
@@ -493,11 +495,9 @@ def test_walkway_story_linked_groups_are_one_person_asked_once_browser_smoke():
         if path == "/":
             return route.fulfill(body=html, content_type="text/html")
         if path.startswith("/static/"):
-            f = HUB / path.lstrip("/")
-            if f.is_file():
-                ctype = "application/javascript" if f.suffix == ".js" else "text/css" if f.suffix == ".css" else "application/octet-stream"
-                return route.fulfill(body=f.read_bytes(), content_type=ctype)
-            return route.fulfill(status=404, body="")
+            return _static(route, path)
+        if path == "/api/vision/known-names":
+            return route.fulfill(body=json.dumps(NAMES), content_type="application/json")
         if path == "/api/vision/motion-stories":
             return route.fulfill(body=json.dumps({"ok": True, "stories": [story], "tally": _tally(1, 1)}),
                                  content_type="application/json")
@@ -512,43 +512,39 @@ def test_walkway_story_linked_groups_are_one_person_asked_once_browser_smoke():
         return route.fulfill(status=404, body="")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 360, "height": 900})
-        page.route("http://hub.test/**", handle)
-        page.route(re.compile(r"^(?!http://hub\.test).*"), lambda r: r.fulfill(status=204, body=""))
-        page.goto("http://hub.test/")
-        page.wait_for_function("() => !!window.OrionWalkwayStories")
-        page.add_style_tag(content=".hidden{display:none!important}")
-        page.select_option("#visionSource", "walkway-live")
-        page.wait_for_selector("#walkwayStoriesList [data-story-person]")
+        browser, page = _page(p, html, handle)
         item = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
-        rows = item.locator("[data-story-person]")
-        assert rows.count() == 2                                   # Sasha once, not twice
-        first = rows.nth(0)
-        assert first.locator("[data-person-title]").text_content() == "Sasha"
+        assert item.locator("[data-story-progress]").get_attribute("data-story-progress") == "1/2"   # Sasha once
+        first = item.locator("[data-story-person]")
+        assert first.locator("[data-person-question]").text_content() == "Is this Sasha?"
         assert first.locator("[data-person-groups]").text_content().startswith("Seen as 2 camera groups")
         assert [i.get_attribute("src") for i in first.locator("img[data-person-picture]").all()] == [
             f"/api/vision/motion-stories/{sid}/strip/crop_2.jpg", f"/api/vision/motion-stories/{sid}/strip/crop_1.jpg"]
         assert first.locator("[data-person-boxes]").get_attribute("data-person-boxes") == "2,4"
-        # Both of Sasha's time crops carry Sasha's letter.
         assert [c.get_attribute("data-story-crop-person") for c in item.locator("[data-story-crop-person]").all()] == [
             "A", "A", "B"]
-        assert rows.nth(1).locator("[data-person-not-same]").count() == 0     # one group: nothing to split
-        # "Not the same person?" is hidden until asked for, then names the link.
         pair = first.locator("[data-person-not-same-pair]")
         assert not pair.is_visible()
         first.locator("[data-person-not-same-toggle]").click()
         assert pair.is_visible() and pair.text_content() == "group ind-sas1 and group ind-sas2 are different people"
-        assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
-        assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
-        first.locator("[data-person-action='confirm']").click()
+        _fits(page)
+        first.locator("[data-person-action='yes']").click()
         page.wait_for_function("() => !!document.querySelector(\"[data-person-said='confirm']\")")
         assert posts == [(f"/api/vision/motion-stories/{sid}/people/ind-sasha1",
-                          {"action": "confirm", "name": "Sasha", "why": "", "group": True,
-                           "crop_ids": ["k3", "k1"]})]
+                          {"action": "confirm", "name": "Sasha", "why": "", "group": True, "card": "one_at_a_time",
+                           "dont_know": False, "crop_ids": ["k3", "k1"]})]
         page.locator("[data-person-not-same-toggle]").first.click()
         page.locator("[data-person-not-same-pair]").first.click()
         page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes('not the same person')")
         assert posts[-1] == (f"/api/vision/motion-stories/{sid}/persons/ind-sasha1/not-same",
                              {"a": "ind-sasha1", "b": "ind-sasha2"})
+        # The one unnamed person next: "It's ..." and "I don't know who" (an "unsure" that says why).
+        page.locator("[data-story-nav='next']").click()
+        page.wait_for_function("() => document.querySelector('[data-person-question]').textContent === 'Who is this?'")
+        page.locator("[data-person-action='no']").click()
+        page.locator("[data-person-action='dont_know']").click()
+        page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes(\"don't know\")")
+        assert posts[-1] == (f"/api/vision/motion-stories/{sid}/people/ind-anon",
+                             {"action": "unsure", "name": "", "why": "", "group": True, "card": "one_at_a_time",
+                              "dont_know": True, "crop_ids": ["k4"]})
         browser.close()

@@ -4892,6 +4892,22 @@ link; sql-writer writes it over the `same` row and re-derives names that were on
 copied across it. It is refused (409 `still_linked`) when the two stay joined
 through other links.
 
+**One person at a time (2026-11-24, who-card redesign Patch B).** The card now
+asks about one person: their pictures (the largest first), "Is this Sasha?" or
+"Who is this?", and three answers: "Yes, that's Sasha", "No, it's ..." and "Can't
+see them" (an `unsure` answer; Orion does not ask about those pictures again).
+"No, it's ..." lists the names Orion knows, most seen first
+(`GET /api/vision/known-names`: names Juniper typed, one per name, never the
+person's own), plus "Someone not listed" and "I don't know who". A name picked
+from the list is one tap with no confirm step, so the card holds it as "Changed to
+X - Undo" and sends it only when she moves to the next person (or leaves the page,
+as a keepalive request). Then "Next person (2 of 4)". A person with no picture of
+their own is never asked. `people` is gone from the list response (`persons` only).
+Every answer carries `card: "one_at_a_time"`. Stories whose camera group's latest
+answer was "not sure" (130 live on 2026-11-24) are back in the unchecked queue
+until her first answer there (`reopened: true` on the story). The tally adds
+`person_answers` and `cant_see`, shown as "can't see them N of M person answers".
+
 ## Retro browser play
 
 `/retro` offers native NES viewing/control without an additional access code through a

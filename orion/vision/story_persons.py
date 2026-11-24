@@ -184,13 +184,17 @@ def group_people(people: Sequence[Mapping[str, Any]], roots: Mapping[str, str],
     return out
 
 
-def already_said(latest: Optional[Mapping[str, Any]], action: str, name: str) -> bool:
+def already_said(latest: Optional[Mapping[str, Any]], action: str, name: str, *, card: Optional[str] = None) -> bool:
     """Would this answer repeat what this camera group's latest answer on the story says?
 
     A name and a yes are both a ``vision_individual`` answer: a second one with the same
     name would be a second who-is-this answer (and duplicate "same" pictures) for one
     (story, individual), so it is skipped (Orion's question 4)."""
     if not latest or not latest.get("action"):
+        return False
+    if (latest.get("card") or None) != (card or None):
+        # The one-at-a-time card re-asks a "not sure" story once (Patch B): its answer is new
+        # even when the list card said the same before.
         return False
     said, said_name = latest["action"], _fold(latest.get("name"))
     if action in ("name", "confirm") and said in ("name", "confirm"):

@@ -307,12 +307,11 @@ def test_r2a_pressure_matches_service_keyed_candidates_and_compute_pressure():
             src("crystallization", 50, "c1", "0.7"), src("metacog", 60, "k2", "degraded", has_text=False)]
     items = dream.prepare_items(rows)
     value, counts, new = dream.pressure_at(items, [x[0] for x in items], T+timedelta(minutes=5), T)
+    # compaction_request / resonance rows (retired sources, 2026-11-24) are skipped, as the service skips them.
     raw = {"metacog": [dict(id="m", severity="critical", summary="x", dedupe_key="k1")],
-           "compaction_request": [dict(request_id="r", theme="x", dedupe_key="theme")],
-           "resonance": [dict(alert_id="a", theme_key="x", violation_count=3, dedupe_key="loop")],
            "crystallization": [dict(crystallization_id="c1", subject="x", summary="x", salience=0.7, dedupe_key="c1")]}
     assert (value, counts, new) == svc.compute_pressure(svc.keyed_candidates(raw), ())
-    assert value == 1.0 + 0.5 + 0.6 + 0.7
+    assert value == 1.0 + 0.7
 
 
 def test_r2a_prior_keys_hold_pressure_and_rejected_rows_still_count_as_seen():
@@ -386,14 +385,12 @@ def test_r2a_export_mirrors_the_service_source_queries_and_carries_no_text():
     store = (ROOT / "services/orion-dream/app/cycle_store.py").read_text()
     assert f'METACOG_KEY_RE = r"{dream.METACOG_KEY_RE}"' in store
     for fragment in ["severity IN ('degraded', 'critical')", "h.op IN ('auto_activate', 'approve')",
-                     "c.status = 'active'", "DISTINCT ON (lower(theme))", "DISTINCT ON (lower(theme_key))",
+                     "c.status = 'active'",
                      # the row kept per key, which prepare_items' rank mirrors
                      "ORDER BY dedupe_key, (severity = 'critical') DESC, ts DESC",
-                     "ORDER BY lower(theme), created_at DESC",
-                     "ORDER BY lower(theme_key), violation_count DESC, created_at DESC",
                      "ORDER BY c.crystallization_id, h.created_at DESC",
                      # open window bounds, which pressure_at's bisect mirrors
-                     "ts > :since AND ts < :until", "created_at > :since AND created_at < :until",
+                     "ts > :since AND ts < :until",
                      "h.created_at > :since AND h.created_at < :until"]:
         assert fragment in store
     cycle_src = (ROOT / "services/orion-dream/app/cycle.py").read_text()
@@ -406,14 +403,10 @@ def test_r2a_export_mirrors_the_service_source_queries_and_carries_no_text():
     for projection in [
             "SELECT 'source' AS kind, 'metacog' AS source_kind, ts AS at, id::text AS id, severity, trigger_kind,\n"
             "        md5(lower(dedupe_key)) AS dedupe_key, has_text FROM (",
-            "SELECT 'source', 'compaction_request', created_at, request_id::text, NULL, NULL,\n"
-            "        md5(lower(theme)), btrim(coalesce(theme, '')) <> ''",
-            "SELECT 'source', 'resonance', created_at, alert_id::text, violation_count::text, NULL,\n"
-            "        md5(lower(theme_key)), btrim(coalesce(theme_key, '')) <> ''",
             "SELECT 'source', 'crystallization', h.created_at, c.crystallization_id::text, c.salience::text, NULL,\n"
             "        md5(c.crystallization_id::text),"]:
         assert projection in sql
-    assert sql.count("SELECT 'source'") == 4
+    assert sql.count("SELECT 'source'") == 2
 
 
 def test_saved_checks_record_an_upward_threshold_crossing():

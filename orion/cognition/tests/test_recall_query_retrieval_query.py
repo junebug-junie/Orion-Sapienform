@@ -110,7 +110,7 @@ def _prefetch(ctx: dict[str, Any], recall_cfg: dict[str, Any]) -> tuple[MagicMoc
 def test_prefetch_and_builder_agree_context_only_needs_no_text() -> None:
     """PR #2423 review: prefetch refused context_only with no text while the builder
     allowed it. Both now allow it."""
-    ctx: dict[str, Any] = {"verb": "reverie_narrate"}
+    ctx: dict[str, Any] = {"verb": "chat_general"}
     assert build_recall_query_v1(ctx, correlation_id="c", recall_cfg={"query_mode": "context_only"}) is not None
     bus, diag = _prefetch(ctx, {"query_mode": "context_only"})
     assert diag["reason"] != "empty_query_text"

@@ -2,8 +2,8 @@ name: shed-not-failure-tests
 
 # A deliberate GPU-pool shed (gpu_pool_unavailable:shed:*) is not a failure (2026-10-20):
 # cortex-exec keeps the shed reason on the failed-step atom, the execution reducer counts it
-# as shed (failure_pressure stays 0), reverie does not count a pool refusal toward a theme's
-# no_coalition streak. No DB, bus or LLM.
+# as shed (failure_pressure stays 0), and a refused reverie lane writes no row and does not spend
+# its quiet stretch (given up after 3 refusals). No DB, bus or LLM.
 
 on:
   pull_request:
@@ -20,8 +20,7 @@ on:
       - "services/orion-cortex-exec/tests/test_router_shed_grammar.py"
       - "services/orion-thought/app/reverie.py"
       - "services/orion-thought/app/chain.py"
-      - "services/orion-thought/tests/test_reverie_chain.py"
-      - "services/orion-thought/tests/test_reverie_spontaneous_thought.py"
+      - "services/orion-thought/tests/test_reverie_questions.py"
       - ".github/workflows/shed-not-failure-tests.yml"
   push:
     branches: [main]
@@ -38,8 +37,7 @@ on:
       - "services/orion-cortex-exec/tests/test_router_shed_grammar.py"
       - "services/orion-thought/app/reverie.py"
       - "services/orion-thought/app/chain.py"
-      - "services/orion-thought/tests/test_reverie_chain.py"
-      - "services/orion-thought/tests/test_reverie_spontaneous_thought.py"
+      - "services/orion-thought/tests/test_reverie_questions.py"
       - ".github/workflows/shed-not-failure-tests.yml"
 
 permissions:
@@ -67,6 +65,6 @@ jobs:
       - name: cortex-exec failed-step atom (producer -> reducer)
         working-directory: services/orion-cortex-exec
         run: PYTHONPATH=${{ github.workspace }}/services/orion-cortex-exec:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_exec_grammar_emit.py tests/test_router_shed_grammar.py
-      - name: reverie chain refusal handling
+      - name: reverie lane refusal handling (a refused lane writes no row and does not spend the stretch)
         working-directory: services/orion-thought
-        run: PYTHONPATH=${{ github.workspace }}/services/orion-thought:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_reverie_chain.py tests/test_reverie_spontaneous_thought.py tests/test_reverie_thin_import_boundary.py
+        run: PYTHONPATH=${{ github.workspace }}/services/orion-thought:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_reverie_questions.py tests/test_reverie_thin_import_boundary.py

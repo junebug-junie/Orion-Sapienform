@@ -480,6 +480,6 @@ families:
   thought.reverie:
     tier: 2
     deferrable_window_s: 900
-    # verbs: reverie_expectation_judge, reverie_narrate
-    lanes: [fast]
+    # verbs: reverie_question (reveries that ask, 2026-11-24; the agent lane, like curiosity)
+    lanes: [agent]
     placement: one_of

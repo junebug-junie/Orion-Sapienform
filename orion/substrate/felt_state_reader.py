@@ -41,6 +41,8 @@ class LaneSpec:
     cache_ttl_sec: int | None = None
 
 
+LATEST_REVERIE_QUESTION_CTX_KEY = "latest_reverie_question"
+
 _LANES: tuple[LaneSpec, ...] = (
     # self_state lane removed 2026-07-22, SelfStateV1 burn
     # (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
@@ -183,15 +185,23 @@ _LANES: tuple[LaneSpec, ...] = (
         where_sql="concept_id = 'page:anchor' AND produced_by = 'juniper_anchor'",
         cache_ttl_sec=300,
     ),
+    # The newest question a quiet-stretch reverie left and code accepted (reveries that ask, 2026-11-24;
+    # replaces the retired narration's latest_reverie_thought lane over substrate_reverie_thought).
+    # A reverie runs only when Juniper has been away 45 min or more (the quiet gate), so the old
+    # 180 s "fresh" bound would never overlap a chat turn: a question from the last 6 h is shown when
+    # she comes back. Cache 2 min, so a new question reaches the next turns quickly.
     LaneSpec(
-        ctx_key="latest_reverie_thought",
-        table="substrate_reverie_thought",
-        payload_col="thought_json",
+        ctx_key=LATEST_REVERIE_QUESTION_CTX_KEY,
+        table="reverie_question",
+        payload_col=(
+            "json_build_object('question_id', question_id, 'question', question, 'seed_kind', seed_kind, "
+            "'routed_to', routed_to, 'created_at', created_at)"
+        ),
         ts_col="created_at",
         projection_id=None,
-        # 2× the reverie tick interval (90s), same 2x convention as
-        # curiosity_signals above.
-        max_age_sec=180,
+        max_age_sec=6 * 3600,
+        where_sql="question IS NOT NULL AND refused_reason IS NULL AND none_reason IS NULL",
+        cache_ttl_sec=120,
     ),
 )
 

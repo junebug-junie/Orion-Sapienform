@@ -125,7 +125,7 @@ def _economy():
 
 def build_cycle_deps():
     """Real IO for the dream cycle. Tests build CycleDeps with fakes instead."""
-    from app import cycle_store, llm, rem_store
+    from app import cycle_store, llm
     from app.cycle import CycleDeps
 
     async def _complete(prompt: str) -> str:
@@ -142,41 +142,6 @@ def build_cycle_deps():
             # the next call is cheap.
             await _drop_cycle_bus()
             raise
-
-    async def _rem(cycle_id: str, since):
-        from app.rem_compaction import run_rem_compaction_once
-
-        # run_rem_compaction_once calls its loader/persister synchronously;
-        # do the DB IO in threads here and hand it pure in-memory seams.
-        requests = await asyncio.to_thread(
-            rem_store.load_pending_requests, settings.DREAM_REM_MAX_REQUESTS, since
-        )
-        staged: list = []
-        try:
-            bus = await _cycle_bus()
-        except Exception:
-            bus = None
-        from app.compaction_consent import ask_consent_and_apply
-        from app.rem_compaction import consolidate_evidence_ids
-
-        salience = await asyncio.to_thread(rem_store.load_thought_salience, consolidate_evidence_ids(requests))
-        delta = await run_rem_compaction_once(
-            bus,
-            request_loader=lambda _n: requests,
-            delta_persister=lambda d: staged.append(d) or True,
-            dream_id=cycle_id,
-            salience_loader=lambda _ids: salience,
-        )
-        for d in staged:
-            stored = await asyncio.to_thread(rem_store.persist_compaction_delta, d)
-            # Attention patch 3d: ask the consent gate only about a delta that is really stored (the
-            # want_ledger row names it), after the persist. On allow + apply on, the store downscales.
-            if stored and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED:
-                try:
-                    await ask_consent_and_apply(d)
-                except Exception as exc:  # noqa: BLE001 -- the ask is a trace; the sleep goes on
-                    logger.warning("rem compaction consent ask failed id=%s err=%s", d.delta_id, exc)
-        return delta.delta_id if delta is not None else None
 
     async def _start_story(trigger):
         bus = await _cycle_bus()
@@ -315,7 +280,6 @@ def build_cycle_deps():
         persist_pressure_observation=cycle_store.persist_pressure_observation,
         read_errors=read_errors,
         complete=_complete,
-        rem_compaction=_rem,
         compact_curiosity=_compact_curiosity if settings.DREAM_CURIOSITY_COMPACTION_ENABLED else None,
         start_story=(
             (_start_carry if settings.DREAM_CARRY_ENABLED else _start_story)
@@ -440,49 +404,6 @@ async def run_dream_endpoint(mode: str = "standard"):
         ) from exc
     finally:
         await bus.close()
-
-
-@app.post("/dreams/rem-preview", summary="Stage a REM compaction delta (Phase F)")
-async def rem_preview_endpoint():
-    """Run one REM compaction pass — proposes what sleep *would* do to memory.
-
-    Staged and hard-gated: returns `{"status": "disabled"}` unless
-    ORION_DREAM_REM_ENABLED. Even when enabled it applies **nothing** — it emits a
-    proposal-marked MemoryCompactionDeltaV1 for the hub "what sleep would do"
-    panel and persists it to the staging table.
-    """
-    if not settings.ORION_DREAM_REM_ENABLED:
-        return {"status": "disabled", "reason": "ORION_DREAM_REM_ENABLED is false"}
-
-    from app import rem_store
-    from app.rem_compaction import consolidate_evidence_ids, run_rem_compaction_once
-
-    # The DB reads run in threads, not on the event loop.
-    requests = await asyncio.to_thread(rem_store.load_pending_requests, settings.DREAM_REM_MAX_REQUESTS)
-    salience = await asyncio.to_thread(rem_store.load_thought_salience, consolidate_evidence_ids(requests))
-    bus = OrionBusAsync(settings.ORION_BUS_URL) if settings.ORION_BUS_ENABLED else None
-    try:
-        if bus is not None:
-            await bus.connect()
-        from app.compaction_consent import ask_consent_and_apply
-
-        # A preview never writes memory: the consent is asked (and recorded) with no store.
-        delta = await run_rem_compaction_once(bus, request_loader=lambda _n: requests,
-                                              salience_loader=lambda _ids: salience,
-                                              consent_asker=lambda d: ask_consent_and_apply(d, preview=True))
-    finally:
-        if bus is not None:
-            await bus.close()
-
-    if delta is None:
-        return {"status": "empty", "reason": "nothing settled to compact"}
-    return {
-        "status": "staged",
-        "delta_id": delta.delta_id,
-        "cards_out": delta.metrics.cards_out,
-        "proposal_marked": delta.proposal_marked,
-        "applied": False,
-    }
 
 
 @app.post("/dreams/carry/run", summary="Start one carried dream by hand")

@@ -78,3 +78,25 @@ def test_limit_zero_and_no_engine_return_empty(monkeypatch) -> None:
 def test_distinct_lines_are_unchanged_and_capped(monkeypatch) -> None:
     monkeypatch.setattr(reader, "_get_engine", lambda: _Engine(_rows("a", "b", "c", "d")))
     assert [r.text for r in reader.fetch_recent_reverie_snippets(2)] == ["a", "b"]
+
+
+def test_reads_only_accepted_recent_reverie_questions(monkeypatch) -> None:
+    """Reveries that ask (2026-11-24): the brief shows questions code accepted, never the retired
+    narration table, never a refused or none row."""
+    seen: list[str] = []
+
+    class _QConn(_Conn):
+        def execute(self, query, params):
+            seen.append(str(query))
+            return super().execute(query, params)
+
+    class _QEngine(_Engine):
+        def connect(self):
+            return _QConn(self.rows, self.params)
+
+    monkeypatch.setattr(reader, "_get_engine", lambda: _QEngine(_rows("Why do long turns surprise me?")))
+    out = reader.fetch_recent_reverie_snippets(2)
+    assert [r.text for r in out] == ["Why do long turns surprise me?"]
+    sql = seen[0]
+    assert "FROM reverie_question" in sql and "substrate_reverie_thought" not in sql
+    assert "refused_reason IS NULL" in sql and "none_reason IS NULL" in sql

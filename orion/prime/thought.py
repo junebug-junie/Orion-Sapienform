@@ -260,7 +260,7 @@ _REPLY_CITES_THEN_MOVE = ('\n "refs": [] | [{"kind": "experience", "id": "<the i
 EXPERIENCE_PROMPT = """
 
 WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT lists what Orion's other organs recorded since then (readings,
-curiosity runs, camera sightings, prediction surprises, reveries ...), highest salience first, each with its
+curiosity runs, camera sightings, prediction surprises, questions your reveries left ...), highest salience first, each with its
 [experience:<id>]. When one of them shaped this thought, cite it in the top-level "refs" key of the JSON reply
 template, the one before "move" (not the move's refs): [{"kind": "experience", "id": "<the id after experience:>"}], at most 3,
 only ones you actually used. If your reading draws on something from that section, cite it.

@@ -80,7 +80,7 @@ ARC_SOURCE_TABLES = (
     "dream_cycle", "dream_hypothesis", "episode_memory", "field_dominance_run", "gpu_pool_events",
     "memory_consolidation_windows", "orion_metacog", "physiology", "regulation", "retro_play_sessions",
     "reverie_visual_attempt", "reverie_visual_chain", "substrate_action_outcomes", "substrate_attention_schema",
-    "substrate_attention_broadcast_log", "substrate_reverie_chain", "substrate_reverie_thought", "vision_events", "vision_handoff_street_outbox",
+    "substrate_attention_broadcast_log", "substrate_reverie_thought", "vision_events", "vision_handoff_street_outbox",
     "vision_motion_story", "vision_presence_transition",
     # Self-monitor patch 2: the self_monitor node's faculty_status_changed rows (faculty arcs).
     "self_monitor",

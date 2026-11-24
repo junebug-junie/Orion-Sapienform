@@ -147,7 +147,10 @@ class IntrospectToolBindingV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     # "prime" (2026-10-30, Orion Prime 2A): Prime's resident loop in orion-mind, not a harness turn.
     # Only Hub's queue_curiosity_focus responder accepts it (scripts/curiosity_focus_listener.py).
-    invocation_context: Literal["unified_chat", "curiosity", "prime"]
+    # "reverie" (2026-11-24, reveries that ask Patch 1): orion-thought's quiet-stretch reverie queues its
+    # question the same way (origin self only, never replacing a pending focus, a daily cap). ADDITIVE on a
+    # forbid model: deploy orion-hub before orion-thought sends it.
+    invocation_context: Literal["unified_chat", "curiosity", "prime", "reverie"]
     parent_run_id: str
     parent_trace_id: str
     memory_allowed: bool

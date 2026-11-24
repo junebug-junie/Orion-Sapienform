@@ -5,7 +5,7 @@ the organ shows its model:
 
 * Prime: ``orion.prime.thought.build_frame`` + ``system_prompt(..., experiences=True)``; Prime cites in its answer's
   ``refs`` as ``{"kind": "experience", "id": "<event_id>"}``.
-* reverie: the real ``orion/cognition/prompts/reverie_narrate.j2`` rendered with an ``orion_now`` block in the shape
+* reverie: the real ``orion/cognition/prompts/reverie_question.j2`` (reveries that ask) rendered with an ``orion_now`` block in the shape
   of ``services/orion-thought/app/temporal_self_cue.py render_now_block``; reverie cites in ``cites``.
 * curiosity: ``orion.curiosity.now_section.format_now_section`` (the kickoff block); curiosity cites
   ``[experience:<id>]`` in its finding.
@@ -90,11 +90,12 @@ def _reverie_block() -> str:
 def reverie_case() -> dict[str, Any]:
     from orion.cognition.prompt_render import prompt_environment  # the environment production renders with
 
-    template = (REPO / "orion" / "cognition" / "prompts" / "reverie_narrate.j2").read_text(encoding="utf-8")
+    template = (REPO / "orion" / "cognition" / "prompts" / "reverie_question.j2").read_text(encoding="utf-8")
     prompt = prompt_environment().from_string(template).render(
-        attended_signal={"selected_description": "the deploy plan is still unfinished", "attended_node_ids": ["n-1"],
-                         "selected_open_loop_id": "ol-1"},
-        open_loops=[{"id": "ol-1", "description": "deploy plan unfinished"}],
+        seed_kind="absence",
+        seed_material=("A neighbor usually passes the walkway camera between 07:00 and 08:00 on weekdays (14 days of "
+                       "support). On Tuesday the camera watched that window and saw no person at all: nobody passed."),
+        seed_refs=["vision_percept_expectation:exp-1"], seed_evidence="clean",
         orion_now=_reverie_block())
     return {"case_id": "reverie-mail-truck", "organ": "reverie", "system": "",
             "prompt": prompt, "cited_event_ids": ["street_event:walkway:2611"],

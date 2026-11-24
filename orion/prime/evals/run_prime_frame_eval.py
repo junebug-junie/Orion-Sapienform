@@ -229,7 +229,7 @@ def _now_check(state: PrimeStateV1, data: dict) -> tuple[str, bool, str]:
     from orion.schemas.temporal_self import NOW_LABEL_MAX, NOW_MAX_ITEMS, TemporalNowV1
 
     inputs = _inputs(data)
-    kinds = ["reading_turn", "curiosity_run", "vision_percept", "prediction_surprise", "reverie_chain", "street_event"]
+    kinds = ["reading_turn", "curiosity_run", "vision_percept", "prediction_surprise", "reverie_question", "street_event"]
     organs = ["reading", "curiosity", "camera", "prediction", "reverie", "street"]
     items = [{"event_id": f"{kinds[i % 6]}:cortex-{i:02d}-8580502e-e6ac-5b06-90c9-0f244b9d51ab", "organ": organs[i % 6],
               "source_kind": kinds[i % 6], "label": ("x" * NOW_LABEL_MAX), "related_refs": [f"act:act_{i:032x}"] * 8,

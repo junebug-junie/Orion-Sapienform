@@ -42,10 +42,12 @@ def test_dream_verb_background_lane() -> None:
     assert out["llm_lane"] == "background"
 
 
-def test_reverie_narrate_verb_background_lane() -> None:
-    step = SimpleNamespace(verb_name="reverie_narrate", step_name="llm_reverie_narrate")
-    out = resolve_llm_lane_for_step(step=step, ctx={}, settings=_settings())
-    assert out["llm_lane"] == "background"
+def test_reverie_question_rides_the_agent_lane_it_asks_for() -> None:
+    """reveries that ask (2026-11-24): the reverie's one call goes on curiosity's lane, not the background one."""
+    step = SimpleNamespace(verb_name="reverie_question", step_name="llm_reverie_question")
+    out = resolve_llm_lane_for_step(step=step, ctx={"execution_lane": "agent", "llm_route": "agent"},
+                                    settings=_settings())
+    assert out["llm_lane"] == "agent"
     assert out["allow_chat_fallback"] is False
 
 

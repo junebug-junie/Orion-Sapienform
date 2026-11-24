@@ -1,13 +1,12 @@
 """Dream cycle v2: one sleep, end to end.
 
-    pressure --(>= threshold AND idle)--> replay --> REM compaction (staged)
-                                            |
-                                            +--> recombination --> hypotheses
+    pressure --(>= threshold AND idle)--> replay --> recombination --> hypotheses
                                                  (dream arm + control arm)
 
 Nothing here mutates canonical memory. The only writes are the v2 tables
-(cycle_store.CYCLE_WRITE_TABLES) and, when ORION_DREAM_REM_ENABLED, the
-existing staged dream_compaction_delta table.
+(cycle_store.CYCLE_WRITE_TABLES). The REM compaction pass over the reverie chain's compaction
+requests was removed 2026-11-24 with the chain (reveries that ask, Patch 1); cycles carry
+compaction_delta_id = None from then on.
 
 All IO is injected (`CycleDeps`) so the whole cycle runs in tests with fakes.
 """
@@ -57,8 +56,6 @@ class CycleDeps:
     load_last_attempt_end: Callable[[], Optional[datetime]]
     persist_cycle: Callable[[DreamCycleV1], bool]
     complete: Complete
-    # (cycle_id, window since) -> staged delta id or None
-    rem_compaction: Optional[Callable[[str, datetime], Awaitable[Optional[str]]]] = None
     persist_pressure_observation: Optional[Callable[[DreamPressureObservationV1], bool]] = None
     # A completed, saved sleep ends in a story dream: publishes the trigger
     # app/story.py builds. Best effort: a failure never fails or undoes the sleep.
@@ -537,11 +534,6 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         pool = candidates + arcs[:arc_slots] + walkway[:walkway_slots]
 
         compaction_delta_id = None
-        if deps.rem_compaction is not None:
-            try:
-                compaction_delta_id = await deps.rem_compaction(cycle_id, pressure.since)
-            except Exception as exc:
-                logger.warning("dream_cycle rem compaction failed err=%s", exc)
 
         d_pairs = dream_pairs(
             replay, settings.DREAM_HYPOTHESES_PER_CYCLE, window_minutes=settings.DREAM_PAIR_WINDOW_MINUTES,

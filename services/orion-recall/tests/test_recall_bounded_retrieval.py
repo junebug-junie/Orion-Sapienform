@@ -336,7 +336,7 @@ def test_anchor_rail_reaches_exact_fetch_without_monkeypatching_tokens(wired) ->
 
 
 def test_context_only_runs_feeds_and_no_retrievers(wired) -> None:
-    q = RecallQueryV1(fragment="", verb="reverie_narrate", mode="context_only")
+    q = RecallQueryV1(fragment="", verb="chat_general", mode="context_only")
     _bundle, decision = asyncio.run(worker.process_recall(q, corr_id="c-ctx"))
     assert wired["falkor_neighborhood"].calls == []
     assert wired["exact"].calls == []  # no anchor rail

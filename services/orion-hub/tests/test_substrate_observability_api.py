@@ -115,9 +115,6 @@ def test_summary_full_contract_shape(client):
         "attention_broadcast",
         "curiosity",
         "reverie",
-        "compaction_queue",
-        "compaction_delta",
-        "resonance_alert",
         "hub_presence",
     }
     assert body["attention_broadcast"]["dwell_ticks"] == 4

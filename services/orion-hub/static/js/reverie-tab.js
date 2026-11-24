@@ -86,7 +86,7 @@
       title: "1 · Continuity + context inputs",
       desc:
         "The previous run's own caption (reverie_visual_chain.prior_description), Orion's own " +
-        "most recent real reverie-thought interpretation (context_text), a real quantified " +
+        "newest accepted reverie question (context_text), a real quantified " +
         "self-study observation (self_study_text), a governed episode memory (memory_text), " +
         "how many consecutive runs have used continuity so far (continuity_streak), and which " +
         "context-seed's turn it is next (context_slot_rotation).",
@@ -94,7 +94,7 @@
         'Fixed seed only when NONE of prior_description/context_text/self_study_text/memory_text ' +
         'exist (fresh install, no history yet): "a calm orion, soft abstract light, dreaming". ' +
         "Every later run reads all these from Postgres, concurrently.",
-      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_interpretation, load_latest_self_study_reflection, load_episode_memory_seed",
+      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_question_context, load_latest_self_study_reflection, load_episode_memory_seed",
     },
     {
       id: "continuity-cap",
@@ -122,7 +122,7 @@
         "observing, or remembering.",
       detail:
         "Patch 3 (shipped): a deliberately narrow first context-seed slice -- Orion's own " +
-        "reverie-thought interpretation, already surfaced by this tab's Text sub-view (no new " +
+        "reverie question (since 2026-11-24), already surfaced by this tab's Questions sub-view (no new " +
         "privacy surface). Patch 5 (shipped): a second, richer context-seed from the self-study " +
         "analysis system's real quantified self-observation. Patch 6 (shipped): a third, from " +
         "the Recall system's memory_crystallizations table -- real shared-life content, " +
@@ -420,57 +420,53 @@
     }
   }
 
-  // --- Text panel ---------------------------------------------------------
+  // --- Questions panel (reveries that ask; the old text chain is retired) ---
 
-  function renderTextChain(chain) {
-    const thoughts = (chain.thoughts || [])
-      .map(
-        (t) => `
-        <div class="border-l-2 border-gray-700 pl-3 py-1">
-          <p class="text-sm text-gray-200">${escapeHtml(t.interpretation)}</p>
-          <p class="text-[11px] text-gray-500">${fmtTime(t.created_at)} · salience ${Number(t.salience).toFixed(2)}</p>
-        </div>`
-      )
-      .join("");
-    const badges = [];
-    if (chain.downstream && chain.downstream.compaction_queued) {
-      badges.push(
-        `<span class="px-2 py-0.5 rounded-full border border-amber-700 text-amber-400 text-[11px]">queued for dream compaction</span>`
-      );
+  function renderQuestion(q) {
+    let body;
+    if (q.state === "asked") {
+      body = `<p class="text-sm text-gray-100">${escapeHtml(q.question)}</p>` +
+        (q.why ? `<p class="text-[11px] text-gray-400">why: ${escapeHtml(q.why)}</p>` : "");
+    } else if (q.state === "refused") {
+      body = `<p class="text-sm text-gray-500 line-through">${escapeHtml(q.question || "")}</p>` +
+        `<p class="text-[11px] text-red-400">refused by code: ${escapeHtml(q.refused_reason)}${q.refused_detail ? " (" + escapeHtml(q.refused_detail) + ")" : ""}</p>`;
+    } else {
+      body = `<p class="text-sm text-gray-400 italic">no question: ${escapeHtml(q.none_reason || "")}</p>`;
     }
-    if (chain.downstream && chain.downstream.theme_resonance_alert_count > 0) {
-      badges.push(
-        `<span class="px-2 py-0.5 rounded-full border border-red-700 text-red-400 text-[11px]">${chain.downstream.theme_resonance_alert_count} resonance alert(s) on this theme</span>`
-      );
-    }
+    const routed = String(q.routed_to || "none").startsWith("focus:")
+      ? `<span class="px-2 py-0.5 rounded-full border border-emerald-700 text-emerald-400 text-[11px]">sent to curiosity</span>`
+      : `<span class="px-2 py-0.5 rounded-full border border-gray-700 text-gray-500 text-[11px]">${escapeHtml(q.route_note || "not sent")}</span>`;
     return `
       <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2">
         <div class="flex justify-between items-center text-[11px] text-gray-500">
-          <span>${fmtTime(chain.created_at)} · theme <span class="text-gray-400">${escapeHtml(chain.theme_key || "unknown")}</span></span>
-          <span class="px-2 py-0.5 rounded-full border border-gray-700">${escapeHtml(chain.terminal_reason)}</span>
+          <span>${fmtTime(q.created_at)} · from <span class="text-gray-400">${escapeHtml(q.seed_kind)}</span></span>
+          ${routed}
         </div>
-        <div class="flex flex-col gap-1">${thoughts || '<span class="text-xs text-gray-500 italic">no thoughts recorded</span>'}</div>
-        <div class="flex gap-2 flex-wrap">${badges.join("") || '<span class="text-[11px] text-gray-600 italic">no downstream effect yet</span>'}</div>
+        ${body}
+        <details class="text-[11px] text-gray-500"><summary>material</summary>
+          <p class="whitespace-pre-wrap">${escapeHtml(q.seed_material)}</p>
+          <p>${(q.seed_refs || []).map(escapeHtml).join(", ")}</p>
+        </details>
       </div>`;
   }
 
   async function loadText() {
     const container = el("reverieTextGrid");
     if (!container) return;
-    setStatus("Loading text reverie chain…");
+    setStatus("Loading reverie questions…");
     try {
-      const resp = await fetch("/api/reverie/text/recent?limit=30");
+      const resp = await fetch("/api/reverie/questions/recent?limit=30");
       const data = await resp.json();
       if (!data.ok) throw new Error("bad response");
-      if (!data.chains.length) {
-        container.innerHTML = `<div class="text-sm text-gray-500 italic p-4">No text reverie chains yet.</div>`;
+      if (!data.questions.length) {
+        container.innerHTML = `<div class="text-sm text-gray-500 italic p-4">No reverie questions yet. A reverie runs only in a quiet stretch.</div>`;
       } else {
-        container.innerHTML = data.chains.map(renderTextChain).join("");
+        container.innerHTML = data.questions.map(renderQuestion).join("");
       }
       loaded.text = true;
-      setStatus(`Loaded ${data.chains.length} text chain(s).`);
+      setStatus(`Loaded ${data.questions.length} reverie question(s).`);
     } catch (e) {
-      setStatus("Failed to load text reverie chain: " + e.message);
+      setStatus("Failed to load reverie questions: " + e.message);
     }
   }
 

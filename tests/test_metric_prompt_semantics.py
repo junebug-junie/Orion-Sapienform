@@ -272,7 +272,8 @@ def test_inner_state_field_semantics_reach_the_node():
         "#coalition_stability_score"
     ]
     assert node.value_kind == "bucket"
-    assert node.prompt_sites == ("services.orion-thought.app.reverie:build_reverie_context",)
+    # The narration reverie's prompt (build_reverie_context) was its only prompt site; retired 2026-11-24.
+    assert node.prompt_sites == ()
 
 
 # ------------------------------------------------------------ lock + drift

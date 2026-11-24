@@ -1,38 +1,19 @@
+"""The chat stance's reverie glimpse: the newest question a quiet-stretch reverie left (reveries that ask,
+2026-11-24), read from felt_state_reader's ``latest_reverie_question`` lane, labelled as Orion's own."""
 from __future__ import annotations
 
 import json
 
-from app.chat_stance import _project_reverie_glimpse
+from app.chat_stance import REVERIE_GLIMPSE_PREFIX, _project_reverie_glimpse
 
-# Real, valid SpontaneousThoughtV1 shape: coalition must validate as a real
-# CoalitionSnapshotV1 (not a bare list) and evidence_refs must be a genuine
-# subset of its grounding_ids(), or is_hollow()'s real guard rejects the
-# thought -- this is the whole point of re-deriving hollowness from the
-# schema instead of trusting a bare stored `hollow` bool.
-_INTERPRETATION = "The coalition is fixated on unresolved transport anomalies."
-# What the stance prompt actually receives: the interpretation, labelled as
-# Orion's own reverie by orion.memory.voice_render (source monitoring).
-_RENDERED = ("Something I was turning over on my own (reverie, 07-12), "
-             "not something Juniper and I discussed: " + _INTERPRETATION)
+_QUESTION = "Why do turns I call unlikely to run long run long 37% of the time?"
+_RENDERED = ("Something I was turning over on my own (reverie, 11-24), "
+             "not something Juniper and I discussed: " + REVERIE_GLIMPSE_PREFIX + _QUESTION)
 
 
-def _fresh_payload(**overrides):
-    payload = {
-        "thought_id": "th-1",
-        "correlation_id": "corr-1",
-        "interpretation": _INTERPRETATION,
-        "hollow": False,
-        "evidence_refs": ["node:a", "loop:open-1"],
-        "coalition": {
-            "attended_node_ids": ["node:a", "node:b"],
-            "selected_open_loop_id": "loop:open-1",
-            "open_loop_ids": ["loop:open-1", "loop:open-2"],
-            "generated_at": "2026-07-12T00:00:00+00:00",
-            "broadcast_stale": False,
-        },
-        "chain_id": "chain:123",
-        "created_at": "2026-07-12T00:05:00+00:00",
-    }
+def _payload(**overrides):
+    payload = {"question_id": "q-1", "question": _QUESTION, "seed_kind": "lost_bet",
+               "routed_to": "focus:f-1", "created_at": "2026-11-24T03:05:00+00:00"}
     payload.update(overrides)
     return payload
 
@@ -41,100 +22,34 @@ def test_none_when_ctx_key_absent():
     assert _project_reverie_glimpse({}) is None
 
 
-def test_none_when_hollow_true():
-    ctx = {"latest_reverie_thought": _fresh_payload(hollow=True)}
+def test_none_when_question_blank_or_missing():
+    assert _project_reverie_glimpse({"latest_reverie_question": _payload(question="   ")}) is None
+    assert _project_reverie_glimpse({"latest_reverie_question": {"created_at": "2026-11-24T03:05:00+00:00"}}) is None
+
+
+def test_question_is_rendered_as_orions_own_with_its_date():
+    assert _project_reverie_glimpse({"latest_reverie_question": _payload()}) == _RENDERED
+
+
+def test_json_string_payload_is_accepted_and_garbage_fails_open():
+    assert _project_reverie_glimpse({"latest_reverie_question": json.dumps(_payload())}) == _RENDERED
+    assert _project_reverie_glimpse({"latest_reverie_question": "{not valid json"}) is None
+    assert _project_reverie_glimpse({"latest_reverie_question": 12345}) is None
+
+
+def test_retired_narration_key_is_ignored():
+    ctx = {"latest_reverie_thought": {"interpretation": "The coalition is fixated.", "hollow": False}}
     assert _project_reverie_glimpse(ctx) is None
 
 
-def test_none_when_interpretation_empty_or_whitespace():
-    # Empty/whitespace interpretation is independently rejected by is_hollow()
-    # itself (interpretation_too_short), re-deriving the same guard the
-    # producer already applied -- not merely trusting the stored bool.
-    ctx = {"latest_reverie_thought": _fresh_payload(interpretation="   ")}
-    assert _project_reverie_glimpse(ctx) is None
-
-    ctx2 = {"latest_reverie_thought": _fresh_payload(interpretation="")}
-    assert _project_reverie_glimpse(ctx2) is None
-
-
-def test_none_when_coalition_absent():
-    """is_hollow() rejects absent_coalition even if the stored `hollow` bool
-    says False -- this is exactly the defense-in-depth case a shallow
-    `payload.get("hollow") is True` check would have missed."""
-    ctx = {"latest_reverie_thought": _fresh_payload(coalition=None, hollow=False)}
-    assert _project_reverie_glimpse(ctx) is None
-
-
-def test_none_when_evidence_refs_unanchored():
-    """is_hollow() rejects evidence outside the coalition's grounding ids, even
-    if the stored `hollow` bool says False."""
-    ctx = {
-        "latest_reverie_thought": _fresh_payload(
-            evidence_refs=["node:not-in-coalition"], hollow=False
-        )
-    }
-    assert _project_reverie_glimpse(ctx) is None
-
-
-def test_none_when_payload_fails_schema_validation():
-    """A payload that no longer validates as SpontaneousThoughtV1 at all
-    (e.g. schema drift) must fail closed, not partially parse."""
-    ctx = {"latest_reverie_thought": {"interpretation": "missing required fields"}}
-    assert _project_reverie_glimpse(ctx) is None
-
-
-def test_returns_interpretation_verbatim_for_dict_payload():
-    payload = _fresh_payload()
-    ctx = {"latest_reverie_thought": payload}
-    result = _project_reverie_glimpse(ctx)
-    assert result == _RENDERED
-    assert isinstance(result, str)
-    # Only the interpretation string comes back -- no other field's concrete
-    # values leak into the projected result.
-    assert "evt:1" not in result
-    assert "node:a" not in result
-    assert "node:b" not in result
-    assert "loop:open-1" not in result
-    assert "chain:123" not in result
-
-
-def test_returns_interpretation_verbatim_for_json_string_payload():
-    payload = _fresh_payload()
-    ctx = {"latest_reverie_thought": json.dumps(payload)}
-    result = _project_reverie_glimpse(ctx)
-    assert result == _RENDERED
-
-
-def test_none_when_payload_is_malformed_json_string():
-    ctx = {"latest_reverie_thought": "{not valid json"}
-    assert _project_reverie_glimpse(ctx) is None
-
-
-def test_none_when_payload_is_unexpected_type():
-    ctx = {"latest_reverie_thought": 12345}
-    assert _project_reverie_glimpse(ctx) is None
-
-
-def test_ctx_key_wiring_only_sets_no_other_fields(monkeypatch):
-    """Guard the call-site contract: chat_reverie_glimpse, when set, is exactly
-    the interpretation string and nothing else (dict, tuple, evidence, etc.)."""
-    import app.chat_stance as chat_stance
-
-    payload = _fresh_payload()
-    ctx = {"latest_reverie_thought": payload}
-    glimpse = chat_stance._project_reverie_glimpse(ctx)
-    if glimpse:
-        ctx["chat_reverie_glimpse"] = glimpse
-    assert ctx["chat_reverie_glimpse"] == _RENDERED
-    assert isinstance(ctx["chat_reverie_glimpse"], str)
+def test_only_the_question_text_crosses_into_the_prompt():
+    result = _project_reverie_glimpse({"latest_reverie_question": _payload(seed_kind="absence", routed_to="focus:x")})
+    assert "focus:x" not in result and "absence" not in result and "q-1" not in result
 
 
 def test_glimpse_is_never_presented_as_juniper_or_as_shared():
-    """A reverie reaching the stance prompt is Orion's own thought, by construction."""
-    ctx = {"latest_reverie_thought": _fresh_payload(
-        interpretation="Juniper told me Hecate is flashed and we decided to rack it.")}
-    result = _project_reverie_glimpse(ctx)
+    result = _project_reverie_glimpse({"latest_reverie_question": _payload(
+        question="Juniper told me the disk is flashed; did it change the GPU limits?")})
     assert result.startswith("Something I was turning over on my own (reverie, ")
-    assert "not something Juniper and I discussed" in result
     prefix = result.split(": ", 1)[0]
-    assert "Juniper told me" not in prefix and "I told Juniper" not in prefix and "worked out" not in prefix
+    assert "Juniper told me" not in prefix

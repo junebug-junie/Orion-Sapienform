@@ -6,13 +6,11 @@ evidence for that claim" -- until this tab, neither chain had one).
 Two independent chains, no shared code between them (see
 docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md §1-2):
 
-1. **Text chain** (`services/orion-thought/app/chain.py`, live since
-   mid-July): a self-driven tick narrates the current attention coalition.
-   A settled run closes into one `substrate_reverie_chain` row referencing
-   its `substrate_reverie_thought` rows (via `chain_json.thought_ids`, a
-   plain JSON list -- no FK). Downstream: a settled chain queues a
-   `dream_compaction_request_queue` row (`origin_chain_id`); a re-igniting
-   theme fires a `substrate_reverie_resonance_alert` (`theme_key`).
+1. **Reverie questions** (`services/orion-thought/app/reverie.py`, 2026-11-24, reveries that ask): one
+   `reverie_question` row per reverie -- the seed it started from, the question (or why none, or why code
+   refused it), and where it was routed (`GET /api/reverie/questions/recent`). The old text chain
+   (`substrate_reverie_chain` / `_thought`, its compaction queue and resonance alerts) is retired; its
+   tables stay as history and this tab no longer reads them.
 
 2. **Visual chain** (`services/orion-thought/app/visual_chain.py`, live
    since 2026-08-25): generate -> store -> caption. One `reverie_visual_chain`
@@ -55,13 +53,10 @@ enforces this at startup. If they drift, images 404 with "artifact file
 missing on disk" even though the DB rows are fine.
 
 **Privacy note** (design doc §7, revisited for Patch 3 as this comment
-required): the prompt now also includes Orion's own reverie-thought
-interpretation (`orion-thought`'s `store.load_latest_reverie_interpretation`)
-as a context-seed. This crosses no NEW privacy boundary: interpretation text
-is the text chain's own narration, already gated by the coalition-grounding +
-hollow guard (`orion/schemas/reverie.py`) before a row is ever written, and
-already surfaced verbatim by this same tab's sibling `text_recent` endpoint
-below -- a second consumer of an already-exposed field, not a new exposure.
+required; updated 2026-11-24): the prompt also includes Orion's newest accepted reverie question
+(`orion-thought`'s `store.load_latest_reverie_question_context`) as a context-seed. This crosses no
+NEW privacy boundary: the question is already shown verbatim by this tab's sibling
+`questions_recent` endpoint below -- a second consumer of an already-exposed field.
 No raw chat/dream content reaches the prompt (still a deliberately narrow
 first slice of design doc §1's full "recent activity, chats, dreams" list) --
 widening the source set further is a separate, later change that must redo
@@ -179,20 +174,6 @@ def _iso(value: Any) -> str | None:
         v = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
         return v.isoformat()
     return None
-
-
-def _thought_ids_of(chain_json: Any) -> list[str]:
-    """Normalize chain_json.thought_ids to a list[str] -- the one place both
-    the batch-fetch and the per-chain lookup read this field from, so they
-    can never disagree on key type (review finding: they previously did --
-    the batch query str()-cast, the per-chain lookup didn't, so a
-    non-string id would silently vanish from every chain's thought list with
-    no error)."""
-    cj = chain_json if isinstance(chain_json, dict) else {}
-    ids = cj.get("thought_ids") or []
-    if not isinstance(ids, list):
-        return []
-    return [str(i) for i in ids]
 
 
 # ───────────────────────────────────────────────────────────────
@@ -437,137 +418,57 @@ async def visual_image(sha256: str) -> Response:
 
 
 # ───────────────────────────────────────────────────────────────
-# Text chain
+# Reverie questions (reveries that ask, 2026-11-24). The old text chain
+# (substrate_reverie_chain / _thought) is retired; its tables stay as history
+# and this tab no longer reads them.
 # ───────────────────────────────────────────────────────────────
 
+_QUESTIONS_SQL = (
+    "SELECT question_id, thread_id, seed_kind, seed_refs, seed_material, question, why, none_reason, "
+    "refused_reason, refused_detail, routed_to, route_note, outcome, created_at "
+    "FROM reverie_question ORDER BY created_at DESC LIMIT :limit"
+)
 
-def _fetch_text_recent(limit: int) -> dict[str, Any]:
+
+def _fetch_questions_recent(limit: int) -> list[dict[str, Any]]:
     with _engine().connect() as conn:
-        chain_rows = (
-            conn.execute(
-                text(
-                    "SELECT chain_id, created_at, theme_key, terminal_reason, "
-                    "ema_salience, committed_proposal_id, chain_json "
-                    "FROM substrate_reverie_chain "
-                    "ORDER BY created_at DESC LIMIT :limit"
-                ),
-                {"limit": limit},
-            )
-            .mappings()
-            .all()
-        )
-        chain_ids = [r["chain_id"] for r in chain_rows]
-        theme_keys = sorted(
-            {r["theme_key"] for r in chain_rows if r["theme_key"] and r["theme_key"] != "unknown"}
-        )
-        all_thought_ids = sorted({tid for r in chain_rows for tid in _thought_ids_of(r["chain_json"])})
+        return [dict(r) for r in conn.execute(text(_QUESTIONS_SQL), {"limit": limit}).mappings().all()]
 
-        thoughts_by_id: dict[str, dict[str, Any]] = {}
-        if all_thought_ids:
-            thought_rows = (
-                conn.execute(
-                    text(
-                        "SELECT thought_id, created_at, salience, interpretation "
-                        "FROM substrate_reverie_thought "
-                        "WHERE thought_id = ANY(:ids)"
-                    ),
-                    {"ids": all_thought_ids},
-                )
-                .mappings()
-                .all()
-            )
-            for t in thought_rows:
-                thoughts_by_id[t["thought_id"]] = dict(t)
 
-        compaction_chain_ids: set[str] = set()
-        if chain_ids:
-            rows = (
-                conn.execute(
-                    text(
-                        "SELECT DISTINCT origin_chain_id FROM dream_compaction_request_queue "
-                        "WHERE origin_chain_id = ANY(:chain_ids)"
-                    ),
-                    {"chain_ids": chain_ids},
-                )
-                .mappings()
-                .all()
-            )
-            compaction_chain_ids = {r["origin_chain_id"] for r in rows}
-
-        resonance_counts: dict[str, int] = {}
-        if theme_keys:
-            rows = (
-                conn.execute(
-                    text(
-                        "SELECT theme_key, count(*) AS n FROM substrate_reverie_resonance_alert "
-                        "WHERE theme_key = ANY(:themes) GROUP BY theme_key"
-                    ),
-                    {"themes": theme_keys},
-                )
-                .mappings()
-                .all()
-            )
-            resonance_counts = {r["theme_key"]: int(r["n"]) for r in rows}
-
+def question_view(row: dict[str, Any]) -> dict[str, Any]:
+    """One reverie as the tab shows it: what it started from, and the question, or why there was none,
+    or why code refused it. A refused or empty reverie is never shown as a question."""
+    if row.get("refused_reason"):
+        state = "refused"
+    elif row.get("none_reason") or not row.get("question"):
+        state = "none"
+    else:
+        state = "asked"
     return {
-        "chain_rows": list(chain_rows),
-        "thoughts_by_id": thoughts_by_id,
-        "compaction_chain_ids": compaction_chain_ids,
-        "resonance_counts": resonance_counts,
+        "question_id": row.get("question_id"),
+        "thread_id": row.get("thread_id"),
+        "created_at": _iso(row.get("created_at")),
+        "seed_kind": row.get("seed_kind"),
+        "seed_refs": list(row.get("seed_refs") or []),
+        "seed_material": row.get("seed_material") or "",
+        "state": state,
+        "question": row.get("question") if state != "none" else None,
+        "why": row.get("why"),
+        "none_reason": row.get("none_reason"),
+        "refused_reason": row.get("refused_reason"),
+        "refused_detail": row.get("refused_detail"),
+        "routed_to": row.get("routed_to") or "none",
+        "route_note": row.get("route_note"),
+        "outcome": row.get("outcome"),
     }
 
 
-@router.get("/text/recent")
-async def text_recent(limit: int = Query(DEFAULT_LIMIT, ge=1)) -> dict[str, Any]:
+@router.get("/questions/recent")
+async def questions_recent(limit: int = Query(DEFAULT_LIMIT, ge=1)) -> dict[str, Any]:
     limit = _clamp_limit(limit)
     try:
-        fetched = await asyncio.to_thread(_fetch_text_recent, limit)
-    except HTTPException:
-        raise
+        rows = await asyncio.to_thread(_fetch_questions_recent, limit)
     except Exception as exc:
-        logger.warning("reverie text_recent query failed: %s", exc)
-        raise HTTPException(status_code=503, detail="reverie_text_query_failed") from exc
-
-    thoughts_by_id = fetched["thoughts_by_id"]
-    compaction_chain_ids = fetched["compaction_chain_ids"]
-    resonance_counts = fetched["resonance_counts"]
-
-    chains = []
-    for c in fetched["chain_rows"]:
-        ids = _thought_ids_of(c["chain_json"])
-        thoughts = [
-            {
-                "thought_id": tid,
-                "created_at": _iso(thoughts_by_id[tid]["created_at"]),
-                "salience": thoughts_by_id[tid]["salience"],
-                "interpretation": thoughts_by_id[tid]["interpretation"],
-            }
-            for tid in ids
-            if tid in thoughts_by_id
-        ]
-        chains.append(
-            {
-                "chain_id": c["chain_id"],
-                "created_at": _iso(c["created_at"]),
-                "theme_key": c["theme_key"],
-                "terminal_reason": c["terminal_reason"],
-                "ema_salience": c["ema_salience"],
-                "thoughts": thoughts,
-                "downstream": {
-                    # dream_compaction_request_queue.consumed_at is never set
-                    # anywhere in the codebase today (confirmed live,
-                    # 2026-08-26) -- REM re-folds the same backlog every
-                    # pass. Reported honestly as "queued", not "applied":
-                    # nothing downstream of this queue ever mutates memory
-                    # (Phase G's applier is separate and gated).
-                    "compaction_queued": c["chain_id"] in compaction_chain_ids,
-                    # A count over the whole theme, not this specific chain
-                    # -- the resonance detector operates over a window of
-                    # chains sharing a theme, not one chain in isolation, so
-                    # attributing a single alert to a single chain would
-                    # overclaim causality.
-                    "theme_resonance_alert_count": resonance_counts.get(c["theme_key"], 0),
-                },
-            }
-        )
-    return {"ok": True, "chains": chains}
+        logger.warning("reverie questions_recent query failed: %s", exc)
+        raise HTTPException(status_code=503, detail="reverie_questions_query_failed") from exc
+    return {"ok": True, "questions": [question_view(r) for r in rows]}

@@ -79,7 +79,7 @@ def test_orions_live_answer_scores_its_nodes_and_tables() -> None:
     got = grounded_records(text)
     assert set(got.records) == {
         "node:athena", "node:circe", "node:prometheus",
-        "table:dreams", "table:substrate_reverie_chain", "table:harness_turn_trace",
+        "table:dreams", "table:reverie_question", "table:harness_turn_trace",
         "count:418", "count:492", "date:2026-09-08",
     }
     assert got.score == 9

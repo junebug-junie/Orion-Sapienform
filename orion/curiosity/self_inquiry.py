@@ -135,8 +135,12 @@ SELF_INQUIRY_PG_TABLES: tuple[tuple[str, str], ...] = (
         "every motor turn; the run_artifact JSON holds step_count, fcc_elapsed_sec, "
         "fcc_served_model, grounding_status, final_text",
     ),
-    ("substrate_reverie_chain", "your reverie chains: theme, salience, how each ended (skeleton only)"),
-    ("substrate_reverie_thought", "the narrated reverie thoughts themselves: thought_json, interpretation, salience"),
+    # History only since 2026-11-24 (reveries that ask, Patch 1): the narration chain stopped writing. Its
+    # successor, reverie_question, joins this list once its orion_readonly grant is applied
+    # (scripts/sql/2026-11-18_grant_orion_readonly_reverie_question_table.sql): Hub blocks the line on a
+    # missing grant, so listing it first would stop every self-inquiry run.
+    ("substrate_reverie_chain", "your old reverie chains, until 2026-11-24: theme, salience, how each ended"),
+    ("substrate_reverie_thought", "your old narrated reverie thoughts, until 2026-11-24: interpretation, salience"),
     ("reverie_visual_chain", "your image-and-reread reverie chains"),
     ("substrate_attention_schema", "what you were attending to, and why, per process"),
     ("chat_stance_belief_log", "the stance you computed before each chat turn"),

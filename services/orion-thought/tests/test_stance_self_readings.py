@@ -5,7 +5,7 @@ import asyncio
 import importlib.util
 import json
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -14,14 +14,11 @@ from jinja2 import Environment
 import app.self_readings_cue as cue_mod
 import orion.attention.self_signal_outcomes as sso_mod
 from app.bus_listener import build_stance_react_context, run_stance_react
-from app.reverie import build_reverie_context
-from orion.schemas.attention_frame import AttentionBroadcastProjectionV1, AttentionFrameV1, OpenLoopV1
 from orion.schemas.self_reading import SelfReadingsBlockV1
 from orion.schemas.thought import HubAssociationBundleV1, StanceReactRequestV1
 
 _REPO = Path(__file__).resolve().parents[3]
 _STANCE = _REPO / "orion" / "cognition" / "prompts" / "stance_react.j2"
-_REVERIE = _REPO / "orion" / "cognition" / "prompts" / "reverie_narrate.j2"
 _spec = importlib.util.spec_from_file_location(
     "self_readings_history", _REPO / "tests" / "fixtures" / "self_readings_history.py"
 )
@@ -83,14 +80,6 @@ def test_stance_prompt_byte_identical_to_main_when_off(ctx) -> None:
     assert _render(_STANCE.read_text(), **ctx) == _render(old, **ctx)
 
 
-def test_reverie_prompt_byte_identical_to_main_when_off() -> None:
-    old = _main_template(_REVERIE)
-    if old is None or "HOW MY BODY IS DOING" in old:
-        pytest.skip("origin/main template unavailable or already carries the block")
-    b = _broadcast()
-    ctx = build_reverie_context(b)
-    assert "self_readings" not in ctx
-    assert _render(_REVERIE.read_text(), **ctx) == _render(old, **ctx)
 
 
 def _strip_blocks(template: str) -> str:
@@ -120,11 +109,6 @@ def test_stance_blocks_leave_no_residue_when_off(ctx) -> None:
     assert _render(text, **ctx) == _render(_strip_blocks(text), **ctx)
 
 
-def test_reverie_block_leaves_no_residue_when_off() -> None:
-    text = _REVERIE.read_text()
-    ctx = build_reverie_context(_broadcast())
-    assert _strip_blocks(text) != text
-    assert _render(text, **ctx) == _render(_strip_blocks(text), **ctx)
 
 
 # --- flag on ---------------------------------------------------------------------------------
@@ -146,24 +130,6 @@ def test_stance_prompt_renders_block_and_labels_mind_numbers() -> None:
     assert "Oríon's own estimates from Mind, not measurements" in out
 
 
-def _broadcast() -> AttentionBroadcastProjectionV1:
-    loop = OpenLoopV1(id="ol-1", description="probe_event spiked", salience=0.7)
-    return AttentionBroadcastProjectionV1(frame=AttentionFrameV1(open_loops=[loop]),
-                                          selected_open_loop_id="ol-1", attended_node_ids=[fx.EVENT_BODY])
-
-
-def test_reverie_coalition_branch_renders_block_concern_branch_never() -> None:
-    ctx = build_reverie_context(_broadcast(), self_readings=_BLOCK)
-    assert ctx["self_readings"] == _BLOCK
-    out = _render(_REVERIE.read_text(), **ctx)
-    assert "HOW MY BODY IS DOING" in out and "[pe:probe_event@" in out
-    from orion.schemas.reverie import ConcernCardV1
-
-    card = ConcernCardV1.from_harness_turn(
-        coalition_ref="harness_closure:c", user_message_excerpt="Will the deploy slip?",
-        stance_imperative="Name the tradeoff.", created_at=datetime(2026, 10, 14, tzinfo=timezone.utc))
-    lifted = build_reverie_context(_broadcast(), concern_cards=[card], self_readings=_BLOCK)
-    assert "self_readings" not in lifted
 
 
 # --- the cue: fail-open, bounded --------------------------------------------------------------

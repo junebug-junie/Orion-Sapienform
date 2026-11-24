@@ -27,14 +27,13 @@ def _rows():
             {"id": "m3", "summary": "all fine", "severity": "nominal", "trigger_kind": "x", "tags": [],
              "occurred_at": t(30)},
         ],
-        "compaction_request": [
-            {"request_id": "r1", "theme": "juniper's sleep schedule", "reason": "recurs across chains",
-             "occurred_at": t(10)},
-        ],
-        "resonance": [
-            {"alert_id": "a1", "theme_key": "being watched", "violation_count": 4, "occurred_at": t(40)},
-        ],
+        # compaction_request / resonance were sources until 2026-11-24 (the reverie chain, their producer,
+        # was retired); two crystallizations at their weights keep the fixture's pressure the same.
         "crystallization": [
+            {"crystallization_id": "r1", "subject": "juniper's sleep schedule", "summary": "recurs across days",
+             "salience": 0.5, "tags": ["sleep"], "occurred_at": t(10)},
+            {"crystallization_id": "a1", "subject": "being watched", "summary": "the camera feeling comes back",
+             "salience": 0.7, "tags": ["camera"], "occurred_at": t(40)},
             {"crystallization_id": "c1", "subject": "Juniper prefers plain English",
              "summary": "dense answers get asked to be re-said", "salience": 0.8, "tags": ["style"],
              "occurred_at": t(50)},
@@ -55,8 +54,8 @@ def test_candidates_drop_unusable_rows_and_weight_by_declared_rules():
     assert "crystallization:c2" not in cands  # zero salience carries nothing
     assert cands["metacog:m1"].weight == 1.0
     assert cands["metacog:m2"].weight == 0.6
-    assert cands["compaction_request:r1"].weight == 0.5
-    assert cands["resonance:a1"].weight == pytest.approx(0.7)
+    assert cands["crystallization:r1"].weight == 0.5
+    assert cands["crystallization:a1"].weight == pytest.approx(0.7)
     assert cands["crystallization:c1"].weight == 0.8
     assert all(c.reason for c in cands.values())
 
@@ -66,7 +65,7 @@ def test_pressure_is_sum_of_weights_and_zero_when_nothing_new():
 
     total, counts, new_counts = compute_pressure(keyed_candidates(_rows()))
     assert total == pytest.approx(1.0 + 0.6 + 0.5 + 0.7 + 0.8)
-    assert counts == new_counts == {"metacog": 2, "compaction_request": 1, "resonance": 1, "crystallization": 1}
+    assert counts == new_counts == {"metacog": 2, "crystallization": 3}
     assert compute_pressure(keyed_candidates({k: [] for k in _rows()})) == (0.0, {}, {})
 
 
@@ -462,23 +461,6 @@ def test_window_uses_last_good_cycle_start_not_attempt_end():
     f = _Fakes(_rows(), last_start=start, last_end=start + timedelta(hours=3))
     asyncio.run(run_cycle_once(f.deps()))
     assert f.seen_since == start
-
-
-def test_rem_receives_window_since():
-    from app.cycle import run_cycle_once
-
-    seen = {}
-
-    async def rem(cycle_id, since):
-        seen["args"] = (cycle_id, since)
-        return "compaction-delta:x"
-
-    f = _Fakes(_rows())
-    deps = f.deps()
-    deps.rem_compaction = rem
-    cycle = asyncio.run(run_cycle_once(deps))
-    assert seen["args"] == (cycle.cycle_id, cycle.pressure.since)
-    assert cycle.compaction_delta_id == "compaction-delta:x"
 
 
 # --- write surface -----------------------------------------------------------
@@ -964,53 +946,18 @@ def test_the_carry_step_responder_runs_even_with_new_carries_off(monkeypatch):
     assert started == ["start", "stop", "start", "stop"]  # no bus, no responder
 
 
-# --- readable reverie loop titles ------------------------------------------------
+# --- retired reverie sources --------------------------------------------------
 
 
-def test_reverie_items_read_the_loop_title_not_the_bare_id():
-    from app.replay import candidate_from_compaction_request, candidate_from_resonance
-
-    comp = candidate_from_compaction_request({"request_id": "r1", "theme": "open-loop-968fda08910c",
-                                              "reason": "reverie_chain_max_steps",
-                                              "title": "Harness closure prediction error"})
-    res = candidate_from_resonance({"alert_id": "a1", "theme_key": "open-loop-968fda08910c",
-                                    "violation_count": 3, "title": "Harness closure prediction error"})
-    assert comp.text == "Harness closure prediction error: reverie_chain_max_steps"
-    assert res.text == "a theme reverie kept returning to: Harness closure prediction error"
-    # Identity stays the id: refs, tags and (below) the novelty key.
-    assert comp.tags == ["open-loop-968fda08910c"] and res.tags == ["open-loop-968fda08910c"]
-
-
-def test_reverie_items_fall_back_to_the_id_without_a_title():
-    from app.replay import candidate_from_compaction_request, candidate_from_resonance
-
-    for title in (None, "", "   "):
-        comp = candidate_from_compaction_request({"request_id": "r1", "theme": "open-loop-x", "reason": "",
-                                                  "title": title})
-        res = candidate_from_resonance({"alert_id": "a1", "theme_key": "open-loop-x", "title": title})
-        assert comp.text == "open-loop-x" and res.text.endswith(": open-loop-x")
-
-
-def test_a_title_never_changes_what_counts_as_new():
-    """Titles drift ('Juniper is talking (1 message...)' -> '(2 messages...)'); tiredness must not."""
-    from app.replay import compute_pressure, keyed_candidates, prior_keys
-
-    row = {"request_id": "r1", "theme": "open-loop-x", "reason": "r", "dedupe_key": "open-loop-x"}
-    now_rows = {"compaction_request": [{**row, "title": "Juniper is talking (2 messages)"}]}
-    before = {"compaction_request": [{**row, "request_id": "r0", "title": "Juniper is talking (1 message)"}]}
-    total, _, new = compute_pressure(keyed_candidates(now_rows), prior_keys(before))
-    assert total == 0 and not new.get("compaction_request")
-
-
-def test_reverie_source_queries_join_the_loop_title_by_its_indexed_theme_key():
+def test_reverie_chain_sources_are_retired():
+    """compaction_request and resonance came only from the reverie narration chain (retired 2026-11-24):
+    no source query reads them and no candidate is built from their rows."""
     from app.cycle_store import SOURCE_QUERIES
+    from app.replay import build_candidates
 
-    for kind, col in (("compaction_request", "d.theme"), ("resonance", "d.theme_key")):
-        sql = " ".join(SOURCE_QUERIES[kind].split())
-        assert "LEFT JOIN LATERAL" in sql and "attention_salience_trace a" in sql
-        assert f"a.theme_key = {col}" in sql  # idx_attention_salience_trace_theme, not loop_id
-        assert "t.title" in sql and "LIMIT :limit" in sql
-        assert "a.created_at < :until" in sql  # the title as of the window, not today
+    assert set(SOURCE_QUERIES) == {"metacog", "crystallization"}
+    assert build_candidates({"compaction_request": [{"request_id": "r1", "theme": "t", "reason": "r"}],
+                             "resonance": [{"alert_id": "a1", "theme_key": "t", "violation_count": 3}]}) == []
 
 
 def test_curiosity_compaction_only_after_completed_saved_sleep():
@@ -1118,29 +1065,8 @@ def test_metacog_fragment_carries_its_time_and_evidence():
     assert len(full.text) == TEXT_CAP and "Evidence" not in full.text  # no room: summary only, capped
 
 
-def test_compaction_fragment_carries_what_the_chain_thought():
-    from app.replay import candidate_from_compaction_request
-
-    item = candidate_from_compaction_request({
-        "request_id": "r1", "theme": "open-loop-x", "reason": "reverie_chain_settled",
-        "title": "Orion is reading", "occurred_at": datetime(2026, 11, 17, 22, 45, tzinfo=timezone.utc),
-        "interpretation": "The reading loop is stalling because of a GPU backlog.",
-    })
-    assert item.text == "[11-17 22:45 UTC] Orion is reading: The reading loop is stalling because of a GPU backlog."
-    # No thought (chain missing): the old label, with the time.
-    bare = candidate_from_compaction_request({
-        "request_id": "r1", "theme": "open-loop-x", "reason": "reverie_chain_settled", "title": "Orion is reading",
-        "occurred_at": datetime(2026, 11, 17, 22, 45, tzinfo=timezone.utc), "interpretation": None,
-    })
-    assert bare.text == "[11-17 22:45 UTC] Orion is reading: reverie_chain_settled"
-    assert bare.ref_id == item.ref_id and bare.tags == item.tags  # keys unchanged: novelty and tiredness hold
-
-
 def test_source_queries_read_the_content_behind_the_label():
     from app.cycle_store import SOURCE_QUERIES
 
     meta = " ".join(SOURCE_QUERIES["metacog"].split())
     assert "what_changed->'evidence'" in meta and "AS occurred_at" in meta and "evidence FROM" in meta
-    comp = " ".join(SOURCE_QUERIES["compaction_request"].split())
-    assert "substrate_reverie_chain ch" in comp and "ch.chain_id = d.origin_chain_id" in comp
-    assert "chain_json->'thought_ids'->>-1" in comp and "r.interpretation" in comp

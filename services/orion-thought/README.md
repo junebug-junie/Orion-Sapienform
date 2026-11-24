@@ -95,244 +95,65 @@ Consumer-first rollout: `RpcHealthSnapshotV1` is `extra="forbid"`, so rebuild
 `orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before
 deploying this with channel latency on.
 
-## Reverie semantic lift
+## Reveries that ask (2026-11-24, Patch 1)
 
-Set `ORION_REVERIE_SEMANTIC_LIFT_ENABLED=true` (default `false`) to lift coalition
-`harness_closure:{corr}` pointers into human `ConcernCardV1` text from
-`substrate_turn_referent` before `reverie_narrate`. Requires referent rows from
-unresolved post-turn closures and routes narration through the background/metacog lane.
+Spec: `docs/superpowers/specs/2026-11-18-reverie-questions-design.md`. Code: `app/reverie.py` (the poll),
+`app/reverie_seeds.py` (pure gate, seeds, picker), `app/store.py` (`reverie_question` reads and writes),
+verb `reverie_question` (`orion/cognition/verbs/reverie_question.yaml`, prompt `reverie_question.j2`).
 
-## Reverie perception context
+A reverie runs only when Orion is **quiet**, starts from **one piece of real material**, and leaves **one
+question** for curiosity to dig, or says why there is none.
 
-Set `ORION_REVERIE_PERCEPTION_ENABLED=true` (default `false`) to feed the most
-recent `orion-vision-council` narrative(s) from the `vision_events` table into
-the reverie prompt as ungrounded sensory context — reverie is otherwise 100%
-blind to the camera. `ORION_REVERIE_PERCEPTION_MAX_AGE_SEC` (default `180`)
-bounds staleness; `ORION_REVERIE_PERCEPTION_MAX_EVENTS` (default `3`) caps how
-many recent narratives are included. Read-only (`app/vision_reader.py` never
-writes `vision_events`), fail-open (any DB error degrades to no percepts, never
-raises), and narrative-only — same privacy contract as the situation brief's
-`PerceptionContextV1` (`orion/schemas/situation.py`): no entities, tags,
-embeddings, or anything identity-bearing crosses into the prompt. Does **not**
-widen `evidence_refs` grounding to vision ids; `SpontaneousThoughtV1`'s
-anti-hollow guard stays coalition-only.
-
-First, unverified cut of Movement III in
-`docs/superpowers/specs/2026-08-12-perception-frontier-design.md` — the
-prediction/outcome scorer that design doc also proposes is deliberately not
-built yet ("event substrate first": get a real percept into the trace before
-building a reducer that scores it). Leave this flag off until a live tick has
-been eyeballed for whether the BLIP-base narratives actually add anything
-worth narrating.
-
-## Reverie street context (walkway camera, 2026-10-15)
-
-Reverie also sees what is outside, on the walkway, as its own prompt section
-("OUTSIDE, ON THE WALKWAY (your outdoor camera (walkway), looking over ... --
-your own eye outside the house, public, NOT your room)"), next to the room
-percepts and never merged into them. The camera's name and view come from
-`ORION_CAMERA_DESCRIPTIONS` (context key `street_camera`, set only when there
-is a street section):
-
-- **Captions**: the latest distinct walkway narratives from `vision_events`
-  (`stream_id` in `ORION_REVERIE_STREET_STREAM_IDS`, default `walkway`), newer
-  than `ORION_REVERIE_STREET_MAX_AGE_SEC` (900), at most
-  `ORION_REVERIE_STREET_MAX_EVENTS` (2). Reducer rows (`arrived_as_expected`,
-  `expected_absent`, `attention_worthy`) are not captions and are skipped.
-- **Graded predictions**: met/missed rows from `vision_percept_expectation`
-  scored in the last `ORION_REVERIE_STREET_GRADED_LOOKBACK_HOURS` (24), at most
-  `ORION_REVERIE_STREET_GRADED_MAX` (4), each with the subject's 14-day hit rate
-  when there is one. The rhythm reducer needs >= 5 days of support before it
-  emits an expectation, so this is empty for the camera's first week.
-- **The day so far** (2026-10-23): one line from `vision_rollup` -- today's
-  running day row ("Walkway Fri 23 Oct 2026 (so far, through 10:00): people: at
-  least 1, at most 2 ..."). Today's row only: the writer builds it with today's
-  first hour, so just after midnight there is no line. Shown only through
-  `orion.vision.walkway_rollup.display_line`, so people are a range and an old
-  rules_version 1 row is re-rendered or dropped, never shown with a bare count.
-  Cut at a clause boundary to `ORION_REVERIE_STREET_DAY_MAX_CHARS` (480); a
-  first clause longer than that means no line. Yesterday's row is not "the day
-  so far" and is skipped. Context key `street_day`;
-  `ORION_REVERIE_STREET_DAY_ENABLED=false` turns only this line off. A failed
-  read costs only this line.
-
-Context keys `street_percepts` / `street_predictions` / `street_day` (absent
-when empty: no heading over nothing). The room-only expectation judge never reads them, and the
-prompt says any stated expectation is about the room. Readers:
-`app/vision_reader.py` `read_recent_street_events` / `read_recent_street_graded`
-(fail-open); shared wording in `orion/situational/street_material.py`.
-`ORION_REVERIE_STREET_ENABLED=false` or an empty stream list turns both off
-(no query is made). Log line when present: `reverie_street_context corr=...
-captions=N graded=N rollup=0|1` (`rollup=1`: the day line went in).
-
-## Reverie expectation scoring (Movement III)
-
-The second half of Movement III: score the falsifiable predictions perception
-context makes possible, instead of only generating them. Requires
-`services/orion-sql-db/manual_migration_substrate_reverie_thought_expectation.sql`
-applied (`expectation`/`expectation_checkable_by`/`expectation_verdict`/
-`expectation_scored_at` columns on `substrate_reverie_thought`).
-
-When `ORION_REVERIE_PERCEPTION_ENABLED=true`, `reverie_narrate.j2` may
-optionally have the LLM state one concrete, falsifiable `expectation` about
-the room in `SpontaneousThoughtV1.expectation` — genuinely optional, never
-forced every tick, capped at 200 chars. That alone is inert: nothing checks it
-unless `ORION_REVERIE_EXPECTATION_SCORING_ENABLED=true` (default `false`).
-
-With the flag on, two things happen:
-
-- A tick that narrates a new expectation stamps `expectation_checkable_by =
-  now() + ORION_REVERIE_EXPECTATION_CHECK_WINDOW_SEC` (default `1800`
-  seconds — loosely paced off the perception-context staleness gate's `900`
-  without being the same number, long enough for a plausible next percept).
-- Every tick also spends **at most one** bounded judge-LLM call
-  (`app/store.py::load_pending_expectations(limit=1)`) resolving the single
-  most-overdue expectation whose window has already closed and that has no
-  verdict yet:
-  - The room camera wrote no caption in the expectation's own check window
-    (thought `created_at` to `expectation_checkable_by`) → writes
-    `expectation_verdict="unscored"` directly, no LLM call. Live, 8 days to
-    2026-11-15: 487 of 487 windows held at least one caption.
-  - Otherwise → one call to the `reverie_expectation_judge` verb with every
-    room caption from that window, oldest first, each with its time after the
-    claim (`app/reverie.py::render_window_captions`; a run of the same caption
-    is one line; at most 24 lines / 3,000 chars, dropped evenly past that).
-    Until 2026-11-15 the judge saw one caption from the last 180 s before the
-    scoring tick, which runs a median 11 minutes after the window closes, so
-    most rows found none and were written `unscored` with no judge call
-    (2 real verdicts of 332 in 6 days, #3403).
-    The verb (`orion/cognition/prompts/
-    reverie_expectation_judge.j2`), strict `{"verdict": "confirmed" |
-    "disconfirmed" | "unscored"}` JSON, fail-closed to `unscored` on any
-    ambiguity, LLM error, or parse failure. A pending expectation is never
-    left permanently unresolved by a transient failure — it is stamped
-    `unscored` instead of silently retried forever.
-
-The judge sees the room camera only. Expectations about a sensor reading, the
-street, or Orion's own state cannot be checked, so the narrate prompt now says
-so and asks for null instead; the judge answers `unscored` for one that still
-arrives. They are not routed to the sensor tables: that needs a parser from
-free text to a sensor and a threshold, a larger change than #3403 asked for.
-
-Scoring is fully independent of the current tick's own narration: it can
-never block, delay, or fail narration, and narration succeeding or failing
-has no bearing on whether scoring runs.
-
-Query imagination accuracy directly (no dashboard yet — see the design doc's
-explicit non-goal on this):
-
-```sql
-select expectation_verdict, count(*)
-from substrate_reverie_thought
-where expectation_verdict is not null
-group by expectation_verdict;
+```text
+every ORION_REVERIE_INTERVAL_SEC (60 s):
+  quiet gate   arousal == idle (Redis orion:regulation:latest)
+               AND no attention winner for ORION_REVERIE_QUIET_MIN_CALM_SEC (600 s)
+               AND no reverie_question row since the stretch began (one per quiet stretch)
+               AND fewer than ORION_REVERIE_MAX_PER_DAY rows in 24 h (8)
+  seed         least recently used kind with material:
+                 absence     a named person's walkway routine scored `missed`; clean (no person seen) vs
+                             unrecognised (a person seen, not matched) -- never "did not come"
+                 lost_bet    a self-bet calibration gap: faculty x p-bin, n >= 20, |gap| >= 0.15, > 2 SE
+                 far_memory  newest lived memory + one from centered-cosine ranks ORION_REVERIE_FAR_MEMORY_BAND
+                             (5:25) of orion_lived_memory, live records only (recall's serving gate)
+               a ref used in the last ORION_REVERIE_THREAD_LAPSE_DAYS (14) is spent
+  question     one reverie_question call on the agent lane; sees the seed and Orion's now only
+  check        refs must be the seed's; no near-duplicate (word-set Jaccard >= 0.6) of the pending focus,
+               an open self-question or a reverie question of the lapse window; no machinery words
+  persist      one reverie_question row (question, none_reason, or a refusal with its reason)
+  route        accepted -> curiosity focus slot via Hub's queue_curiosity_focus (invocation_context
+               reverie: origin self, never replaces a pending focus, ORION_REVERIE_FOCUS_MAX_PER_DAY = 3)
+  read back    the question's cites of the now -> POST /temporal-self/now/use (#3499)
 ```
 
-## Reverie chain: a train of thought (2026-10-16)
+A refused agent lane (shed, deadline, outage, timeout) writes no row and does not spend the stretch;
+after 3 refusals in one stretch it is given up. Every poll that writes nothing logs
+`reverie_skipped reason=<why> count=<n>` (reasons: `arousal_not_idle`, `calm_too_short`, `stretch_spent`,
+`daily_cap`, `lane_refused_stretch`, `llm_unavailable`, `no_material`, ...). A written reverie logs
+`reverie_question q=... kind=... accepted=... refused=... routed=...`.
 
-A chain (`app/chain.py::run_reverie_chain`, up to `ORION_REVERIE_CHAIN_MAX_STEPS` steps) is
-one train of thought, not one prompt sampled N times (spec
-`docs/superpowers/specs/2026-07-14-reverie-narration-continuity-design.md` items #2/#3):
+The chronicle reads `reverie_question` as the `reverie_question` experience (orion-durable-runs
+`app/temporal_self_sources.py`); nothing else is published on the bus.
 
-- **Calm means no chain.** When the broadcast attended nothing (no node, no selected loop),
-  no chain starts: no chain row, no `unknown` refractory entry, no LLM call. Log line:
-  `reverie_chain_skipped reason=calm_no_winner count=N` (also `no_broadcast`, `refractory`).
-- **Each step sees the step before.** Step k's prompt carries the last 2 thoughts verbatim and
-  the `next_focus` hint step k-1 wrote (`ChainContinuity`, in memory only). Non-final steps
-  ask for `next_focus`/`drift`; they are parsed onto `SpontaneousThoughtV1`.
-- **A real stop.** The chain ends `settled` when a step returns no `next_focus` or restates
-  the previous thought (word-set Jaccard >= 0.6, `is_repeat_thought`). `pressure_discharged`
-  now only means a later step yielded nothing publishable; there is no pressure reader.
-- **The real signal, not boilerplate.** Each open loop line carries the world-first band,
-  7-day percentile, trend, value, and `world_first_reason` instead of the generic
-  `why_it_matters`. The prompt calls the winner "the signal your attention settled on", not a
-  "coalition" (it is 0-1 node).
-- **Honest verdicts.** `store.load_recent_loop_outcomes` returns the verdict's actor and age
-  and drops verdicts older than `LOOP_VERDICT_MAX_AGE_SEC` (24h: the decay digest's episode
-  boundary). The prompt says who recorded a verdict ("Juniper resolved this 3h ago" vs "the
-  system's automatic decay ... marked this decayed unattended 5h ago") and never labels a
-  `system:*` verdict as human.
+Off switches: `ORION_REVERIE_MAX_PER_DAY=0` (writes nothing), `ORION_REVERIE_FOCUS_MAX_PER_DAY=0` (records
+questions, never sends them), `ORION_REVERIE_ENABLED=false` (no worker).
 
-`ORION_REVERIE_DRIFT_TEMP` was removed (declared, never read).
+Needs `services/orion-sql-db/manual_migration_reverie_question.sql`.
 
-Eval: `evals/test_reverie_chain_continuity_eval.py` replays real recorded chains.
-
-## Reverie chain pacing by arousal (Temporal Self R3 reader 5)
-
-Right before each pause between reverie chains, the chain worker reads Orion's arousal from
-Redis `orion:regulation:latest` (written by orion-durable-runs). While it reads `strained`
-(cabinet hot or GPU queue backed up), the pause is multiplied by
-`ORION_REVERIE_CHAIN_AROUSAL_STRAINED_MULTIPLIER` (2.0: 90 s becomes 180 s), since every chain
-step is a background-lane LLM call. Log line: `reverie_chain_paced reason=arousal_strained`.
-Engaged and idle change nothing. Missing, stale (older than
-`ORION_REGULATION_READER_MAX_AGE_SEC`), unknown, a Redis failure, or
-`ORION_REVERIE_CHAIN_AROUSAL_ENABLED=false` keeps today's interval. Arousal never shortens the
-pause and never touches the theme refractory or the step cap.
-
-## Resonance health monitor (Phase H+)
-
-`ORION_REVERIE_RESONANCE_ALERT_ENABLED` (default `true`) already runs an observation-only
-tripwire (`orion.reverie.resonance.detect_resonance`) after every completed reverie chain,
-persisting a `ResonanceAlertV1` to `substrate_reverie_resonance_alert` whenever a theme
-re-ignites faster than its own refractory bound allows. Until now that alert reached
-Postgres and a Hub debug panel only — nobody got paged.
-
-`app/resonance_monitor.py` closes that gap the same way the field-digester /
-attention-runtime / self-state-runtime health monitors already do (all three merged,
-running in production): an edge-triggered check that pages via `orion-notify`'s
-`POST /attention/request` (surfacing in Hub's existing Pending Attention panel) only on
-a healthy→unhealthy transition, retries a failed delivery until it actually succeeds, and
-checks `orion-notify`'s own pending list before suppressing a first-observation alert (so
-a process restart mid-incident can't go permanently silent).
-
-**"Unhealthy" here is not "an alert exists."** A 2026-07-12 investigation confirmed a real
-historical resonance burst had already self-resolved by the time it was investigated, but
-the detector kept re-reporting the same old `violation_count`/`min_gap_sec` for ~20 hours
-afterward, because those old rows hadn't yet aged out of `detect_resonance`'s 200-row
-lookback window (`ORION_REVERIE_RESONANCE_WINDOW`). Paging on "an alert exists" would have
-paged for ~20 hours about an already-resolved problem. Instead, a theme is only considered
-unhealthy when its `violation_count` strictly **increases** across its last 2 persisted
-samples — i.e. the loop is actually getting worse right now, not just echoing history.
-
-Reuses `NOTIFY_BASE_URL`/`NOTIFY_API_TOKEN` (same values as the other three services'
-health monitors) — no new settings beyond those two.
+**Retired 2026-11-24 (kill means kill).** The coalition-narration reverie (`reverie_narrate`, the 4-step
+chain, theme refractory, EMA salience, no-coalition streak), the resonance monitor and its page, the
+room-camera expectations and their judge (`reverie_expectation_judge`), the semantic-lift concern cards,
+the reverie-scope `AttentionSalienceTraceV1` emit, and the `reverie.chain.v1` / `reverie.thought.v1` /
+compaction-request / resonance-alert publishes. The old `substrate_reverie_*` tables stay for history;
+nothing writes them.
 
 ## Attention salience (GWT-coalition Borda rank-aggregation)
 
 `orion/substrate/attention/salience.py` computes chat-level/open-loop salience by
 Borda rank-aggregating two real, evidence-derived signals (`evidence_strength`,
-`evidence_breadth`) across the loops competing in one tick -- Global Workspace
-Theory / Society-of-Mind coalition formation (Baars 1988, Dehaene 2014), the
-same theory anchor already live for Layer 5's Candidate B. `score_loop()`/
-`derive_salience()` always read this precomputed `loop.salience` -- there is
-exactly one formula, no flag selects between formulas anymore.
-
-2026-07-31 (kill means kill, see `orion/sentience_striving_program/README.md`'s
-2026-07-31 entry): the prior hand-picked `SEED_WEIGHTS` linear blend
-(`recency`/`recurrence`/`dwell`/`novelty_vs_known`/`habituation`, none with a
-real theory anchor) was killed with nothing put back. `ORION_ATTENTION_
-HABITUATION_ENABLED` and `ORION_ATTENTION_SALIENCE_WEIGHTS` (JSON weight
-override) were removed entirely -- no habituation term or combiner weights
-exist to gate/override anymore. **Named, disclosed gap**: habituation was the
-only automatic repeat-suppression mechanism in this scoring path; a loop with
-strong evidence that nobody has explicitly resolved/dismissed can now re-win
-coalition attention indefinitely.
-
-**2026-08-21**: this disclosed gap is real and expected, not a regression to
-chase -- it's exactly why the Hub's pending-attention panel now treats a
-`scope="reverie"` loop as `"chronic_pressure"` rather than a one-off decision
-needing Resolve/Dismiss (see `services/orion-hub/README.md`'s "Pending
-Attention" section). Suppressing this scoring path's re-selection would be
-wrong (the underlying pressure is still live); the fix belongs entirely in how
-the loop is *presented*, not in this file.
-
-`ORION_ATTENTION_SALIENCE_V2_ENABLED` (default-off) is the one remaining flag
-here, narrowed to a single purpose: whether the reverie tick emits
-`AttentionSalienceTraceV1` on `orion:attention:salience:trace` (persisted to
-`attention_salience_trace`) at all. It no longer selects a salience formula.
-
-Migrations (apply before enabling):
-`psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_attention_salience_trace.sql`
+`evidence_breadth`) across the loops competing in one tick. orion-thought no longer emits salience
+traces: the reverie-scope `AttentionSalienceTraceV1` emit went with the narration reverie (2026-11-24);
+chat-scope traces are cortex-exec's.
 
 ## Mind stance enrichment (unified turn)
 
@@ -416,7 +237,7 @@ Logs: `temporal_self_cue corr=... chars=... arcs=... fetch_ms=...`,
 `temporal_self_cue_skipped corr=... reason=stale|wrong_day|fetch_failed|invalid_frame|disabled`,
 `temporal_self_day_citations corr=... label=...`. Kill switch: `TEMPORAL_SELF_STANCE_CUE_ENABLED=false`.
 
-## Personality read-back for stance_react and reverie (personality graph, spec rev 2)
+## Personality read-back for stance_react (personality graph, spec rev 2)
 
 What Orion keeps coming back to, in Orion's own words, read back as a record, not an instruction.
 `app/personality_cue.py` fetches orion-durable-runs `GET /personality/frame` (`PERSONALITY_FRAME_URL`,
@@ -426,14 +247,13 @@ anywhere: the cue only names what recurred, where, and how often.
 
 - Chat: built concurrently with Mind enrichment and the day cue (`PERSONALITY_CUE_TIMEOUT_SEC=0.5`),
   passed as `personality_cue` and rendered as `WHAT I KEEP COMING BACK TO` in `stance_react.j2`.
-- Reverie: one fetch per step alongside reverie's other reads (`ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC`),
-  rendered as `WHAT YOU KEEP COMING BACK TO` in `reverie_narrate.j2` next to `EARLIER TODAY`.
+- Reverie no longer reads it (2026-11-24: reveries that ask see their seed and the now only).
 
 A frame that is missing, invalid, older than `PERSONALITY_CUE_MAX_AGE_SEC=3600`, or empty renders nothing.
 Log (one per build): `personality_cue corr=... rendered=true|false ids=... skip=disabled|fetch_failed|invalid_frame|stale|empty|render_failed`.
 Kill switch: `PERSONALITY_CUE_ENABLED=false`.
 
-## Self-monitor track record for stance_react and reverie (self-monitor spec step 3)
+## Self-monitor track record for stance_react (self-monitor spec step 3)
 
 What Orion is failing at or misjudging right now, from their own settled bets, in plain first-person
 sentences. `app/self_track_record_cue.py` reads Redis `orion:self_monitor:latest` on `ORION_BUS_URL`
@@ -445,7 +265,7 @@ renders it with `orion.self_monitor.cue.project_track_record_cue` (fixed templat
   When room is left, one clause counts faculties that cannot be graded at all yet. Example:
   "My walkway-grade journal runs failed to start 22 of 28 times this week. My guesses about how many
   steps my turns take hold 6% of the time (I say 80%)."
-- **Where:** stance_react (`MY TRACK RECORD`) and reverie's coalition branch (same heading).
+- **Where:** stance_react (`MY TRACK RECORD`). (Reverie's coalition branch read it until 2026-11-24.)
 - **Fail-open:** the turn never waits on Redis; an absent, unparseable, stale (> 3 h) or
   future-stamped state renders nothing (reader contract, `orion/self_monitor/view.py`). Shows nothing
   until orion-durable-runs publishes the key (self-monitor patch 2).
@@ -454,10 +274,10 @@ renders it with `orion.self_monitor.cue.project_track_record_cue` (fixed templat
 - Kill switch: `SELF_TRACK_RECORD_CUE_ENABLED=false` (both prompts exactly as before).
 - Eval: `python evals/run_self_track_record_live_eval.py` renders the cue from the live state.
 
-## Self-readings for stance_react and reverie (self-calibration spec section C)
+## Self-readings for stance_react (self-calibration spec section C)
 
 Orion's body signals, each scored 0-10 against its own last 7 days, shown to the unified turn's
-stance step (`MY BODY RIGHT NOW`) and to reverie's coalition branch (`HOW MY BODY IS DOING`).
+stance step (`MY BODY RIGHT NOW`). (Reverie's coalition branch read it until 2026-11-24.)
 `app/self_readings_cue.py` reads `substrate_node_prediction_error_history` (read-only) into one
 process-wide `NodePeHistoryCache` (7-day seed once, then incremental); `orion/attention/self_readings.py`
 calibrates with the attention seam's own rule (`world_first.judge_candidate`) and renders a fixed
@@ -479,8 +299,7 @@ template, no LLM.
 - Fail-open: `SELF_READINGS_FETCH_TIMEOUT_SEC` (0.5 s) bounds read+render; a miss renders nothing.
   Startup warms the cache in a thread. Logs: `self_readings corr=... purpose=stance|reverie chars=...
   shown=...` or `self_readings_skipped reason=...`.
-- Kill switches: `SELF_READINGS_STANCE_ENABLED=false`, `SELF_READINGS_REVERIE_ENABLED=false` (that
-  prompt byte-identical to before).
+- Kill switch: `SELF_READINGS_STANCE_ENABLED=false` (the prompt byte-identical to before).
 - Eval: `evals/test_self_readings_truth_eval.py` (every number shown resolves to its row);
   live replay `python evals/run_self_readings_live_eval.py`.
 - What it tends to lead to (spec section E): an unusual reading's line gets "; when this is high, my

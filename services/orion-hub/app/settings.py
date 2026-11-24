@@ -1284,6 +1284,14 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_FOCUS_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_FOCUS_ENABLED"
     )
+    # Reveries that ask (2026-11-18 spec, Patch 1): orion-thought's reverie may queue its question
+    # (invocation_context "reverie": origin forced self, never replaces a pending focus) at most this
+    # many times in a rolling 24 h. 0 = refused. Same key and meaning as orion-thought's own cap (it
+    # checks first; Hub holds it). While > 0 every investigate offer row records constants.reverie_focus
+    # = "v1" (the three-arm test's switch moment, #3183); the arm draw and select_priors are untouched.
+    ORION_REVERIE_FOCUS_MAX_PER_DAY: int = Field(
+        default=3, ge=0, alias="ORION_REVERIE_FOCUS_MAX_PER_DAY"
+    )
 
     # --- Orion's Day: the daily letter (living Prime Part 3) -----------------
     # Prime (orion-mind) decides when a letter is written and orders it over HTTP
@@ -2042,12 +2050,9 @@ class Settings(BaseSettings):
     ORION_SITUATION_CURIOSITY_TTL_SECONDS: int = Field(
         default=180, alias="ORION_SITUATION_CURIOSITY_TTL_SECONDS"
     )
-    # 2026-08-30: Orion's most recent dream/reverie interpretations
-    # (`substrate_reverie_thought`, the same table Hub's own reverie cockpit
-    # already renders -- see services/orion-hub/scripts/reverie_routes.py and
-    # orion/situational/reverie_reader.py). SQL-only, not the
-    # orion:reverie:thought/chain bus channels (zero real subscribers today).
-    # Default ON, per Juniper's explicit request.
+    # Orion's most recent reverie questions (`reverie_question`, since 2026-11-24: reveries that ask; the
+    # retired narration table is no longer read) -- see orion/situational/reverie_reader.py and Hub's reverie
+    # tab (scripts/reverie_routes.py). SQL-only. Default ON, per Juniper's explicit request.
     ORION_SITUATION_REVERIE_ENABLED: bool = Field(
         default=True, alias="ORION_SITUATION_REVERIE_ENABLED"
     )

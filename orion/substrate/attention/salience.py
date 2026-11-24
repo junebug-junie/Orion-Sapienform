@@ -5,8 +5,9 @@ which is itself dependency-free -- no `orion.substrate`, no `requests`) so
 the thin `orion-thought` service could import it without dragging the graph
 engine (it deliberately does not -- see `services/orion-thought/app/
 reverie.py`'s own docstring for why it reimplements small helpers locally
-instead). Consumed by coalition selection (`scoring.score_loop`) AND
-reverie (`derive_salience`, indirectly via `loop.salience`).
+instead). Consumed by coalition selection (`scoring.score_loop`). Reverie read
+it too (`derive_salience`, via `loop.salience`) until its coalition-narration
+chain was retired on 2026-11-24 (reveries that ask, Patch 1).
 
 **2026-07-31: killed and replaced (CLAUDE.md Sec 0A, "kill means kill, no
 fallback to the thing being killed").** This module used to be a
@@ -67,11 +68,9 @@ logger = logging.getLogger("orion.substrate.attention.salience")
 _TRUTHY = {"1", "true", "yes", "on"}
 
 # Real, still-live env key. As of this patch it no longer selects between
-# two salience formulas -- there is only one. Its one remaining real
-# dependent is services/orion-thought/app/reverie.py's trace-publish gate
-# (`settings.attention_salience_v2_enabled`, a SEPARATELY defined pydantic
-# field -- that thin service deliberately never imports this module, see
-# reverie.py's own docstring). `salience_v2_enabled()` itself has no call
+# two salience formulas -- there is only one. Its last real dependent,
+# services/orion-thought/app/reverie.py's trace-publish gate, was retired
+# with the reverie narration chain on 2026-11-24. `salience_v2_enabled()` itself has no call
 # site left anywhere in `orion.substrate` after this patch (score_loop() and
 # _apply_voluntary_attention()'s checks were both removed -- see their own
 # comments for why each check's stated rationale evaporated once there was

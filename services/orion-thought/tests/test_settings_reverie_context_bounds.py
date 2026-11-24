@@ -29,7 +29,7 @@ def test_reverie_context_bounds_default_to_positive_values(monkeypatch):
 
     importlib.reload(s)
     assert s.settings.reverie_context_char_limit == 240
-    assert s.settings.reverie_context_max_age_sec == 900.0
+    assert s.settings.reverie_context_max_age_sec == 86400.0  # 2026-11-24: the seed is a reverie question (<= 8 a day)
 
 
 def test_reverie_context_char_limit_rejects_non_positive(monkeypatch):

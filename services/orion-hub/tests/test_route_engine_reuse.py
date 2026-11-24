@@ -153,9 +153,6 @@ KNOWN_ORION_PER_CALL_ENGINES = frozenset(
         ("discussion_window/sql_fetch.py", "fetch_discussion_window"),
         # Built once per cortex-exec runtime (endogenous_runtime.py).
         ("reasoning/calibration_profiles.py", "__init__"),
-        # Real per-tick leak in orion-thought (reverie.py builds one per tick);
-        # not a hub process, left for a separate change.
-        ("reverie/referent_loader.py", "__init__"),
         ("social/scenario_replay.py", "_memory_service"),
         ("substrate/mutation_worker.py", "_acquire_leader_lock"),
     }

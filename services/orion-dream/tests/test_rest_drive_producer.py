@@ -54,7 +54,7 @@ def test_check_id_joins_the_reading_to_its_saved_observation():
 def test_low_pressure_check_is_building_and_empty_window_is_resting():
     from app.cycle import run_cycle_once
 
-    rows = {"compaction_request": [{"request_id": "r1", "theme": "t", "reason": "r"}]}  # weight 0.5
+    rows = {"crystallization": [{"crystallization_id": "r1", "subject": "t", "summary": "r", "salience": 0.5}]}
     deps, published = _with_publisher(_Fakes(rows, last_start=datetime.now(timezone.utc) - timedelta(hours=10)))
     assert asyncio.run(run_cycle_once(deps)) is None
     assert published[0].state == "building" and published[0].level == 0.5

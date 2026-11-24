@@ -257,7 +257,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                         "substrate-runtime restart."
                     ),
                     polarity="higher_is_better",
-                    prompt_sites=("services.orion-thought.app.reverie:build_reverie_context",),
+                    # Shown to reverie until 2026-11-24 (reverie_narrate's context, retired).
+                    prompt_sites=(),
                 ),
             ),
         ),
@@ -270,8 +271,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "listed below."
         ),
         cognition_consumers=(
-            "services.orion-thought.app.broadcast_reader:read_latest_broadcast",
-            "services.orion-thought.app.chain:run_reverie_chain",
+            # Reveries that ask (2026-11-24): the quiet gate reads the log's last tick with a winner;
+            # a winner no longer starts a reverie (the coalition-narration chain was retired).
+            "services.orion-thought.app.store:load_quiet_gate_rows",
         ),
         notes=(
             "Rung 3: the selected coalition of the latest workspace "
@@ -1175,7 +1177,6 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         ),
         cognition_consumers=(
             "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs",
-            "services.orion-thought.app.reverie:build_reverie_context",
         ),
         semantics=(
             # orion/substrate/attention/salience.py:128-178
@@ -1201,9 +1202,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         ),
         notes=(
             "Writers: services/orion-cortex-exec/app/"
-            "chat_attention_salience_trace.py (chat lane) and services/"
-            "orion-thought/app/store.py:284-305 (reverie lane), table "
-            "attention_salience_trace."
+            "chat_attention_salience_trace.py (chat lane), table "
+            "attention_salience_trace. The reverie lane (orion-thought) wrote "
+            "scope='reverie' rows until 2026-11-24, when the narration chain "
+            "that stamped them was retired."
         ),
     ),
     InnerStateSignal(
@@ -1482,8 +1484,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "orion.reverie.baseline:schedule "
             "(strained defers a due visual baseline image by retry_sec; moved from "
             "orion-proposal-runtime 2026-11-05, ladder retirement PR 2)",
-            "services.orion-thought.app.chain:_next_chain_sleep_sec "
-            "(strained doubles the pause between reverie chains)",
+            "services.orion-thought.app.reverie:live_deps "
+            "(the reverie quiet gate: a reverie starts only while the level reads idle)",
             "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> "
             "orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal "
             "(no self-modification proposal while strained)",
@@ -1493,8 +1495,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "the level itself never competes)",
             "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> "
             "orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per "
-            "episode from the arousal_transition rows; read by the chat stance cue, the Day "
-            "letter and the reverie arc block)",
+            "episode from the arousal_transition rows; read by the chat stance cue and the Day "
+            "letter)",
         ),
         notes=(
             "Temporal Self rev 4 (PR #2369) R3. Inputs: E1 Juniper turns "

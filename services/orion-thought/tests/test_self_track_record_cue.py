@@ -1,4 +1,4 @@
-"""The self-monitor track record reaches stance_react and reverie (spec step 3), fail-open."""
+"""The self-monitor track record reaches stance_react (spec step 3), fail-open."""
 from __future__ import annotations
 
 import threading
@@ -10,14 +10,11 @@ from jinja2 import Environment
 
 import app.self_track_record_cue as cue_mod
 from app.bus_listener import build_stance_react_context
-from app.reverie import build_reverie_context
-from orion.schemas.attention_frame import AttentionBroadcastProjectionV1, AttentionFrameV1, OpenLoopV1
 from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1
 from orion.schemas.thought import HubAssociationBundleV1, StanceReactRequestV1
 
 _REPO = Path(__file__).resolve().parents[3]
 _STANCE = _REPO / "orion" / "cognition" / "prompts" / "stance_react.j2"
-_REVERIE = _REPO / "orion" / "cognition" / "prompts" / "reverie_narrate.j2"
 NOW = datetime(2026, 11, 3, 4, 0, tzinfo=timezone.utc)
 _LINE = ("My walkway-grade journal runs (act.actions.journal.make.walkway_grade) failed to start 22 of 28 times "
          "this week.")
@@ -139,10 +136,6 @@ def _request() -> StanceReactRequestV1:
     )
 
 
-def _broadcast() -> AttentionBroadcastProjectionV1:
-    loop = OpenLoopV1(id="ol-1", description="execution spiked", salience=0.7)
-    return AttentionBroadcastProjectionV1(frame=AttentionFrameV1(open_loops=[loop]),
-                                          selected_open_loop_id="ol-1", attended_node_ids=["node:substrate.execution"])
 
 
 def _render(path: Path, **ctx) -> str:
@@ -164,18 +157,6 @@ def test_stance_context_and_prompt_carry_the_cue() -> None:
     assert "MY TRACK RECORD" not in _render(_STANCE, **_STANCE_BASE)
 
 
-def test_reverie_coalition_branch_only() -> None:
-    ctx = build_reverie_context(_broadcast(), self_track_record=_LINE)
-    out = _render(_REVERIE, **ctx)
-    assert "MY TRACK RECORD" in out and _LINE in out
-    assert "MY TRACK RECORD" not in _render(_REVERIE, **build_reverie_context(_broadcast()))
-    from orion.schemas.reverie import ConcernCardV1
-
-    card = ConcernCardV1.from_harness_turn(
-        coalition_ref="harness_closure:c", user_message_excerpt="Will the deploy slip?",
-        stance_imperative="Name the tradeoff.", created_at=NOW)
-    assert "self_track_record" not in build_reverie_context(_broadcast(), concern_cards=[card],
-                                                            self_track_record=_LINE)
 
 
 def test_context_key_is_classified() -> None:

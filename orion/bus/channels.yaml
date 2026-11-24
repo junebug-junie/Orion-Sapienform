@@ -3280,59 +3280,14 @@ channels:
   # table itself is left in place, orphaned, per this change's PR
   # description).
 
-  # --- Reverie: spontaneous-thought mode (Phase A, default-off) ---
-  - name: "orion:reverie:thought"
-    kind: "event"
-    schema_id: "SpontaneousThoughtV1"
-    message_kind: "reverie.thought.v1"
-    producer_services: ["orion-thought"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-07-06"
+  # Retired 2026-11-24 (reveries that ask, Patch 1): orion:reverie:thought, orion:reverie:chain and
+  # orion:dream:compaction-request had their only producer (orion-thought's narration chain) removed.
+  # A reverie now writes one reverie_question row (read by the chronicle); it publishes nothing.
 
-  # --- Reverie chain (Phase C, default-off) ---
-  - name: "orion:reverie:chain"
-    kind: "event"
-    schema_id: "ReverieChainV1"
-    message_kind: "reverie.chain.v1"
-    producer_services: ["orion-thought"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-07-06"
+  # orion:dream:compaction-delta retired 2026-11-24 too: its only producer, orion-dream's REM compaction
+  # pass over the chain's compaction requests, was removed with them (dream_compaction_delta keeps history).
 
-  # --- Compaction request (Phase E, default-off, queue only — no consumer) ---
-  - name: "orion:dream:compaction-request"
-    kind: "event"
-    schema_id: "CompactionRequestV1"
-    message_kind: "dream.compaction.request.v1"
-    producer_services: ["orion-thought"]
-    consumer_services: []
-    stability: "experimental"
-    since: "2026-07-06"
-
-  # --- Compaction delta (Phase F, default-off, staged — applied by nothing) ---
-  # REM narration proposes what sleep *would* do to memory. The hub renders it as
-  # a "what sleep would do" preview; no service applies it (Phase G is gated off).
-  - name: "orion:dream:compaction-delta"
-    kind: "event"
-    schema_id: "MemoryCompactionDeltaV1"
-    message_kind: "dream.compaction.delta.v1"
-    producer_services: ["orion-dream"]
-    consumer_services: []
-    stability: "experimental"
-    since: "2026-07-06"
-
-  # --- Resonance alert (Phase H, default-off, observation — the ouroboros guard) ---
-  # Fires when a theme re-ignites faster than its refractory bound allows. Never
-  # mutates anything; the automated tripwire that licenses turning G's gate on.
-  - name: "orion:reverie:resonance-alert"
-    kind: "event"
-    schema_id: "ResonanceAlertV1"
-    message_kind: "reverie.resonance.alert.v1"
-    producer_services: ["orion-thought"]
-    consumer_services: []
-    stability: "experimental"
-    since: "2026-07-06"
+  # orion:reverie:resonance-alert retired 2026-11-24 with the reverie chain (its only producer).
 
   # --- Computed salience telemetry + human labels (default-off producers) ---
   - name: "orion:attention:salience:trace"
@@ -3368,11 +3323,11 @@ channels:
     kind: "event"
     schema_id: "AttentionSchemaV1"
     message_kind: "attention.schema.v1"
-    producer_services: ["orion-substrate-runtime", "orion-thought", "orion-hub", "orion-cortex-exec"]
+    producer_services: ["orion-substrate-runtime", "orion-hub", "orion-cortex-exec"]
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-06"
-    description: "AttentionSchemaV1 rows from four attending processes (substrate_attention, reverie, curiosity, cortex_turn) -> substrate_attention_schema via orion-sql-writer. cortex_turn covers every unified turn cortex built a stance for, including Orion's own self-initiated turns; those join to their originating lane by correlation_id. docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md"
+    description: "AttentionSchemaV1 rows from three attending processes (substrate_attention, curiosity, cortex_turn) -> substrate_attention_schema via orion-sql-writer. reverie was a fourth until 2026-11-24 (its chain adapter retired with the narration chain; its old rows stay). cortex_turn covers every unified turn cortex built a stance for, including Orion's own self-initiated turns; those join to their originating lane by correlation_id. docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md"
 
   # --- Durable cognition runs (docs/superpowers/specs/2026-09-06-durable-cognition-runs-from-cortex-design.md) ---
   # Hub kicks a curiosity run off THROUGH cortex (orion:cortex:request with

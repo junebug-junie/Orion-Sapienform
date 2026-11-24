@@ -52,8 +52,6 @@ protected_paths:
   - {glob: "services/orion-durable-runs/app/cooling_act.py", organ: "choice (binding bid site: the cooling world act)"}
   # 2026-11-07, Patch D for hub.outreach: every Hub door that composes a message binds here, listed below as bidder.
   - {glob: "services/orion-hub/scripts/outreach_bind.py", organ: "choice (Patch D bid site: Hub outreach binds)"}
-  # 2026-11-11, attention patch 3d: dream compaction apply asks the market's consent gate here, listed below as bidder.
-  - {glob: "services/orion-dream/app/compaction_consent.py", organ: "choice (consent gate bid site: dream compaction apply)"}
   # 2026-11-13, attention patch 4b: every camera ask bids here before its card opens, listed below as bidder.
   - {glob: "services/orion-sql-writer/app/ask_bind.py", organ: "choice (binding bid site: camera asks)"}
   # 2026-11-18, game company patch 2: every look at a person's game screen bids here (only funded looks run), listed
@@ -151,10 +149,6 @@ readers:
     role: bidder
     reason: camera asks' BINDING bid (attention patch 4b) -- every camera opener obeys the market's decision (orion.physiology.binding) before a card opens; held re-bids with a backoff, no deadline (#3285). Reads no regulation or price state of its own.
     note: 2026-11-13, already the Patch D shape
-  - module: services/orion-dream/app/compaction_consent.py
-    role: bidder
-    reason: dream compaction apply's consent ask (attention patch 3d) -- one bid with a consent request per staged delta; approves only on the market's allow verdict (orion.physiology.binding never admits a consent deferral). Reads no regulation or price state of its own.
-    note: 2026-11-11, first consumer of the consent gate (orion/physiology/consent.py)
   - module: services/orion-hub/scripts/endogenous_outreach_decisions.py
     role: bidder
     reason: the Hub daily cap (a veto on optional outreach) counts with the shared exempt lists (orion.physiology.attention_pacing CAP_EXEMPT_SOURCES / CAP_EXEMPT_DOOR_POLICIES) -- constants, not price state; one list for the cap and the attention:juniper line.
@@ -163,9 +157,9 @@ readers:
     role: bidder
     reason: constructs the Hub ArousalReader for the curiosity, outreach and pull vetoes.
     note: pending Patch D (goes with its callers)
-  - module: services/orion-thought/app/chain.py
+  - module: services/orion-thought/app/reverie.py
     role: bidder
-    reason: reverie chain stretches its interval while arousal is strained.
+    reason: reveries that ask (2026-11-24) -- the quiet gate starts a reverie only while arousal reads idle (spec 2026-11-18 "The quiet gate"); it reads the level, never prices, and a shut gate writes nothing. Replaces the retired chain.py entry.
     note: pending Patch D
   - module: services/orion-thought/app/visual_chain.py
     role: bidder

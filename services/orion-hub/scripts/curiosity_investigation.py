@@ -946,6 +946,9 @@ class CuriosityInvestigation:
         hub_url: str = "http://127.0.0.1:8080",
         prior_sample: int = 8,
         prior_coverage_slots: int = 2,
+        # Reveries that ask (Patch 1): "v1" while reverie questions may enter the focus slot; recorded in
+        # every investigate offer row's constants (#3183 switch moment). Never read by the arm draw.
+        reverie_focus_version: Optional[str] = None,
         stale_prior_tests: int = 3,
         max_hops: int = DEFAULT_MAX_HOPS,
         pg_readonly_role: str = "orion_readonly",
@@ -1151,6 +1154,7 @@ class CuriosityInvestigation:
         self.hub_url = hub_url
         self.prior_sample = int(prior_sample)
         self.prior_coverage_slots = int(prior_coverage_slots)
+        self.reverie_focus_version = reverie_focus_version or None
         self.stale_prior_tests = int(stale_prior_tests)
         self.max_hops = int(max_hops)
         self.pg_readonly_role = pg_readonly_role
@@ -1539,6 +1543,7 @@ class CuriosityInvestigation:
                 "prior_coverage_slots": self.prior_coverage_slots,
                 "stale_after": self.stale_prior_tests,
                 "graph_unavailable": view.unavailable_reason,
+                **({"reverie_focus": self.reverie_focus_version} if self.reverie_focus_version else {}),
             },
         )
 

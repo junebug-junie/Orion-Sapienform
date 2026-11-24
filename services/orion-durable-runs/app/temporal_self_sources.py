@@ -84,13 +84,6 @@ SELECT d.run_id, d.turn_started_at, d.decided_at, d.arm, d.offered, o.completed_
 FROM curiosity_run_outcomes o JOIN curiosity_offer_decisions d USING (run_id)
 WHERE o.completed_at >= %(lo)s AND o.completed_at < %(hi)s
 """, slack=timedelta(days=1)),
-    # reverie_chain is read in two steps (chains, then their thoughts): see Reader._reverie.
-    SourceQuery("expectation_verdict", """
-SELECT thought_id, correlation_id, thought_json->>'chain_id' AS chain_id, created_at,
-  expectation_verdict, expectation_scored_at
-FROM substrate_reverie_thought
-WHERE expectation_scored_at >= %(lo)s AND expectation_scored_at < %(hi)s
-"""),
     SourceQuery("visual_run", """
 SELECT c.chain_id, c.created_at, c.theme_key, c.terminal_reason, a.started_at AS attempt_started_at,
   a.result_json->'detail'->>'state' AS thermal_state
@@ -339,6 +332,13 @@ FROM grammar_acts
 WHERE verb = 'infer' AND actor = 'prime' AND opened_at >= %(lo)s
   AND closed_at >= %(lo)s::timestamptz + interval '3 days' AND closed_at < %(hi)s
 """, slack=timedelta(days=3), optional_table="grammar_acts"),
+    # One reverie (reveries that ask, Patch 1): one reverie_question row, available at created_at. The question
+    # text is the label (orion-thought checked it before writing); seed_material is never read here.
+    SourceQuery("reverie_question", """
+SELECT question_id, thread_id, seed_kind, seed_refs, question, none_reason, refused_reason, routed_to,
+  correlation_id, created_at
+FROM reverie_question WHERE created_at >= %(lo)s AND created_at < %(hi)s
+""", optional_table="reverie_question"),
 )
 
 TABLE_EXISTS_SQL = "SELECT to_regclass(%(t)s) IS NOT NULL AS present"
@@ -371,19 +371,6 @@ WHERE a.source_kind IN ('vision_individual', 'vision_story_person') AND a.status
       CASE WHEN jsonb_typeof(s.evidence) = 'array' THEN s.evidence ELSE '[]'::jsonb END) e))
 ORDER BY a.answered_at, a.created_at, a.ask_id
 """
-
-REVERIE_CHAINS_SQL = """
-SELECT chain_id, created_at, theme_key, terminal_reason FROM substrate_reverie_chain
-WHERE created_at >= %(lo)s AND created_at < %(hi)s AND terminal_reason IS NOT NULL AND terminal_reason <> ''
-"""
-# No upper bound: a chain's available time is its LAST thought, so every thought is needed.
-REVERIE_THOUGHTS_SQL = """
-SELECT thought_id, created_at, correlation_id, thought_json->>'chain_id' AS chain_id
-FROM substrate_reverie_thought
-WHERE created_at >= %(since)s AND thought_json->>'chain_id' = ANY(%(ids)s)
-"""
-REVERIE_SLACK = timedelta(hours=6)  # chains run minutes (live max 0.6 min, 3 days to 10-10)
-REVERIE_THOUGHT_LOOKBACK = timedelta(days=1)
 
 BODY_CLUSTER_SQL = """
 SELECT observed_at, chassis_watts FROM orion_biometrics_cluster
@@ -460,8 +447,6 @@ class SourceReader:
                     if q.kind == "street_event" and q.optional_table == "vision_motion_story":
                         rows = await self._street_story_extras(conn, rows)
                     events.extend(ADAPTERS[q.kind](r, self._tz) for r in rows)
-                if want is None or "reverie_chain" in want:
-                    events.extend(await self._reverie(conn, lo, hi))
         kept = [e for e in events if e is not None and lo <= available_at(e) < hi]
         return out_ticks, kept
 
@@ -499,17 +484,6 @@ class SourceReader:
             out.append(dict(r, visit_story_ids=sorted(stories[sid] - {sid}), visit_event_ids=sorted(events[sid]),
                             story_verdict=verdicts.get(sid), story_answers=answers.get(sid, [])))
         return out
-
-    async def _reverie(self, conn: Any, lo: datetime, hi: datetime) -> list[Optional[TemporalSelfEventV1]]:
-        chains = await _fetch(conn, REVERIE_CHAINS_SQL, {"lo": lo - REVERIE_SLACK, "hi": hi})
-        if not chains:
-            return []
-        since = min(as_utc(c["created_at"]) for c in chains) - REVERIE_THOUGHT_LOOKBACK
-        thoughts = await _fetch(conn, REVERIE_THOUGHTS_SQL, {"since": since, "ids": [c["chain_id"] for c in chains]})
-        by_chain: dict[str, list[dict]] = {}
-        for t in thoughts:
-            by_chain.setdefault(t["chain_id"], []).append(t)
-        return [ADAPTERS["reverie_chain"](dict(c, thoughts=by_chain.get(c["chain_id"], [])), self._tz) for c in chains]
 
     async def read_body(self, lo: datetime, hi: datetime) -> dict[str, list[dict]]:
         """Body sensor rows in the closed interval ``[lo, hi]``, each with a UTC ``_t``."""

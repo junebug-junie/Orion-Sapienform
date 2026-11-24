@@ -177,6 +177,22 @@ class DreamHypothesisV1(_Model):
     offered_at: datetime
 
 
+class ReverieQuestionDayV1(_Model):
+    """One question a quiet-stretch reverie left that day (reveries that ask, Patch 1: one
+    ``reverie_question`` row code accepted). ``outcome`` is what the dig found, once Patch 3 writes it."""
+
+    question_id: str
+    thread_id: str | None = None
+    seed_kind: str
+    question: str
+    why: str | None = None
+    routed_to: str = "none"
+    outcome: dict | None = None
+    created_at: datetime
+
+
+# ReverieThoughtV1 / ReverieChainV1: the retired narration path (2026-11-24). Nothing gathers them any
+# more; they stay only so letter rows stored before the retirement still validate (forbid readers).
 class ReverieThoughtV1(_Model):
     thought_id: str
     chain_id: str | None = None
@@ -323,8 +339,13 @@ class OrionDayMaterialV1(_Model):
     reading_journals: list[JournalTextV1] = Field(default_factory=list)
     dream_narratives: list[DreamNarrativeV1] = Field(default_factory=list)
     dream_hypotheses: list[DreamHypothesisV1] = Field(default_factory=list)
+    # Retired 2026-11-24 (reveries that ask): never filled; kept so stored letter rows still validate.
     reverie_thoughts: list[ReverieThoughtV1] = Field(default_factory=list)
     reverie_chains: list[ReverieChainV1] = Field(default_factory=list)
+    # Added 2026-11-24 (reveries that ask, Patch 1): the day's accepted reverie questions. ROLLOUT as
+    # ``juniper_chat``: orion-hub and orion-durable-runs both read it with forbid models; deploy them
+    # together, outside the letter's 08:30 fire window.
+    reverie_questions: list[ReverieQuestionDayV1] = Field(default_factory=list)
     visual_reveries: list[VisualReverieV1] = Field(default_factory=list)
     chat_compactor: JournalTextV1 | None = None
     github_compactor: JournalTextV1 | None = None
@@ -376,7 +397,7 @@ class OrionDayMaterialV1(_Model):
         return not any((
             self.curiosity_runs, self.self_sense, self.readings, self.reading_journals,
             self.dream_narratives, self.dream_hypotheses, self.reverie_thoughts,
-            self.visual_reveries, self.chat_compactor, self.github_compactor,
+            self.reverie_questions, self.visual_reveries, self.chat_compactor, self.github_compactor,
             any(t.prompt.strip() for t in self.juniper_chat),
         ))
 
@@ -396,6 +417,10 @@ class OrionDayCondensationV1(_Model):
     reverie_chains_total: int = 0
     reverie_themes_total: int = 0
     reverie_themes_included: int = 0
+    # Added 2026-11-24 (reveries that ask): the day's accepted reverie questions offered / shown. Same
+    # two-way rollout as OrionDayMaterialV1.reverie_questions.
+    reverie_questions_total: int = 0
+    reverie_questions_included: int = 0
     full_text_items_total: int = 0
     full_text_items_clipped: int = 0
     # Per-item character cap applied to full-text bodies; None = nothing clipped.

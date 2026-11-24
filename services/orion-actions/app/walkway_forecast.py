@@ -6,7 +6,7 @@ world-design.md). The rhythm reducer in orion-sql-writer writes
 scores each one `met` / `missed` / `unscorable` once its window closes. This
 module turns those rows into two journal triggers a night:
 
-  walkway_grade     what was expected today and what happened, in the reverie
+  walkway_grade     what was expected today and what happened, in the old reverie
                     vocabulary (met -> confirmed, missed -> disconfirmed,
                     unscorable -> unscored), plus a 14-day tally per subject.
   walkway_forecast  what I expect tomorrow and which of those I am least sure
@@ -68,9 +68,9 @@ from .vision_pg import fetch_rows
 
 logger = logging.getLogger("orion-actions.walkway_forecast")
 
-# The reducer's scoring words -> the reverie expectation-judge words
-# (orion/schemas/reverie.py `expectation_verdict`), so both prediction loops
-# speak one language. `open` is deliberately NOT mapped: an ungraded window is
+# The reducer's scoring words -> the old reverie expectation-judge words
+# (orion/schemas/reverie.py `expectation_verdict`; the judge was retired 2026-11-24, the words stay
+# so the journal's walkway grade reads as before). `open` is deliberately NOT mapped: an ungraded window is
 # not a miss.
 VERDICT_BY_STATUS: dict[str, str] = {
     "met": "confirmed",

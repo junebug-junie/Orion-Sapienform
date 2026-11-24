@@ -145,7 +145,7 @@ async def test_run_once_pool_refusal_is_a_resource_deferred_chain(tmp_path, monk
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", False)
     monkeypatch.setattr(visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: ("old", 0, 0))
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
     calls: list = []

@@ -80,8 +80,8 @@ async def main() -> int:
         "curiosity_runs": material.curiosity_runs, "curiosity_failed": material.curiosity_failed,
         "self_sense": material.self_sense, "readings": material.readings,
         "reading_journals": material.reading_journals, "dream_narratives": material.dream_narratives,
-        "dream_hypotheses": material.dream_hypotheses, "reverie_thoughts": material.reverie_thoughts,
-        "reverie_chains": material.reverie_chains, "visual_reveries": material.visual_reveries,
+        "dream_hypotheses": material.dream_hypotheses, "reverie_questions": material.reverie_questions,
+        "visual_reveries": material.visual_reveries,
     }
     for name, items in sections.items():
         chars = sum(len(json.dumps(i.model_dump(mode="json"))) for i in items)

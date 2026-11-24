@@ -2415,7 +2415,7 @@ def _fetch_reverie_context(cfg: SituationSettings) -> ReverieContextV1:
 async def _build_reverie_context(
     cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
 ) -> ReverieContextV1:
-    """Orion's most recent dream/reverie interpretations. SQL-only (see
+    """The newest questions Orion's quiet reveries left. SQL-only (see
     `ReverieContextV1`'s docstring for why the bus channels are not used),
     fail-open like every other provider here.
     """
@@ -2711,7 +2711,7 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         )
     if brief.reverie.available and brief.reverie.snippets:
         seeds = "; ".join(f"\"{s.text}\"" for s in brief.reverie.snippets)
-        lines.append(f"Recent reverie/dream threads (background color, not memory to assert): {seeds}")
+        lines.append(f"Questions my quiet reveries left (open questions, not findings or memory to assert): {seeds}")
     relevance = [f"{a.kind}: {a.suggestion}" for a in brief.affordances if a.trigger_relevance == "active"]
     # Ordered most-important-first: whatever the budget cannot fit is
     # dropped from the END (see the append loop below). The affect guard

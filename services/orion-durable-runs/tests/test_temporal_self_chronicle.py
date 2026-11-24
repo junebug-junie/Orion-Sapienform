@@ -54,10 +54,10 @@ def scenario() -> World:
         w.add("field_dominance_run", {"run_id": f"run-{i}", "target_id": "node:x", "target_kind": "node",
                                       "started_at": T0 + timedelta(minutes=a), "ended_at": T0 + timedelta(minutes=b),
                                       "tick_count": 12, "min_streak_at_run": 3, "left_censored": False})
-    w.add("reverie_chain", {"chain_id": "chain-1", "created_at": T0 + timedelta(minutes=3), "theme_key": "t",
-                            "terminal_reason": "settled",
-                            "thoughts": [{"thought_id": "th-1", "created_at": T0 + timedelta(minutes=3), "correlation_id": "c-1"},
-                                         {"thought_id": "th-2", "created_at": T0 + timedelta(minutes=4), "correlation_id": "c-2"}]})
+    # A reverie (reveries that ask): an experience only; it opens no arc.
+    w.add("reverie_question", {"question_id": "q-1", "thread_id": "th-1", "seed_kind": "absence",
+                               "seed_refs": ["vision_percept_expectation:e-1"], "question": "Who passed at 07:10?",
+                               "routed_to": "none", "created_at": T0 + timedelta(minutes=3)})
     w.add("metacog_observation", {"id": "mc-1", "correlation_id": "mcc-1", "severity": "degraded", "trigger_kind": "x",
                                   "timestamp": (T0 + timedelta(minutes=6, seconds=5)).isoformat(),
                                   "trigger_timestamp": (T0 + timedelta(minutes=6)).replace(tzinfo=None)})
@@ -100,7 +100,8 @@ def test_live_steps_reproduce_one_pass_fold():
     run(ch, w, T0 + timedelta(hours=2))
     assert {k: strip_body(v) for k, v in store.arcs.items()} == pure_reference(w, ch.watermark)
     kinds = sorted(json.loads(v)["kind"] for v in store.arcs.values())
-    assert kinds.count("attention") >= 2 and "conversation" in kinds and "reverie" in kinds and "interoception" in kinds
+    assert kinds.count("attention") >= 2 and "conversation" in kinds and "interoception" in kinds
+    assert "reverie" not in kinds  # a reverie_question is an experience, never an arc
     a = next(json.loads(v) for v in store.arcs.values() if json.loads(v)["subject_ref"] == "A")
     assert a["attention_returns"] == 1 and a["interruptions"]          # A -> B -> A
     assert json.loads(store.frame)["skipped_at_or_before_watermark"] == 0

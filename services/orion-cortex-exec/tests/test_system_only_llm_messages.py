@@ -11,7 +11,7 @@ from orion.core.bus.bus_schemas import ChatResponsePayload, ServiceRef
 from orion.schemas.cortex.schemas import ExecutionStep
 
 
-@pytest.mark.parametrize("verb", ["journal.compose", "reverie_narrate", "visual_context_interpret"])
+@pytest.mark.parametrize("verb", ["journal.compose", "reverie_question", "visual_context_interpret"])
 def test_system_only_metacog_verb_sends_user_task_turn(verb):
     step = ExecutionStep(
         step_name="llm_step", verb_name=verb, services=["LLMGatewayService"],

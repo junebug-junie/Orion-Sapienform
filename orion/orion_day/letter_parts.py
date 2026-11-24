@@ -255,7 +255,7 @@ SECTION_PREFIXES: dict[str, tuple[str, ...]] = {
     "conversations": ("chat_compactor:", "correction:"),
     # The walkway day rollup is the world outside the house: it sits with the world news.
     "world_news": ("world_pulse_digest:", "walkway_day:"),
-    "reveries": ("visual_reverie:", "reverie:"),
+    "reveries": ("visual_reverie:", "reverie:", "reverie_question:"),
 }
 
 

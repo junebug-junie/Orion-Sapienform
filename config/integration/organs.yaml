@@ -27,9 +27,14 @@
 
 organs:
   reverie:
-    temporal_sources: [reverie_chain, expectation_verdict]
-    salience_magnitude:
-      reverie_chain: chain_thought_count
+    # Reveries that ask (2026-11-24, docs/superpowers/specs/2026-11-18-reverie-questions-design.md): one
+    # reverie_question experience per reverie (a question, a none_reason or a code refusal). No magnitude
+    # rule yet: salience NULL. reverie_chain and expectation_verdict are RETIRED (no producer since
+    # 2026-11-24; their adapters and readers are deleted). They stay listed only because history rows in
+    # temporal_self_event still carry them and must keep their organ (the now's per-organ split; the
+    # registry has no exemption form for TemporalSourceKind). Each reverie reads the now (app/reverie.py via
+    # app/temporal_self_cue.py) and records its cites (#3499).
+    temporal_sources: [reverie_question, reverie_chain, expectation_verdict]
     families: [thought.reverie]
     reads_now: services/orion-thought/app/temporal_self_cue.py
   painting:

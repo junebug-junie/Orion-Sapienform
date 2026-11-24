@@ -58,7 +58,7 @@ async def fetch_frame(base_url: str, timeout_sec: float) -> dict[str, Any] | Non
 async def fetch_frame_bounded(timeout_sec: float, correlation_id: str = "") -> dict[str, Any] | None:
     """The current frame, or None. Never raises, never takes longer than ``timeout_sec``.
 
-    Shared by the stance cue and reverie's recent-arcs block (``app/reverie.py``)."""
+    Used by the stance cue."""
     try:
         # httpx's timeout is per phase (connect, each read; DNS not covered): bound the whole fetch.
         return await asyncio.wait_for(fetch_frame(settings.temporal_self_frame_url, timeout_sec), timeout_sec)
@@ -93,9 +93,9 @@ async def build_stance_cue(correlation_id: str, *, now: datetime | None = None) 
 # Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, Part A (A3, A4).
 # Reverie reads GET /temporal-self/now?organ=reverie (the few most salient experiences OTHER organs
 # recorded since reverie last looked; never its own) instead of the day frame's closed arcs, cites
-# what it used, and posts the cites to POST /temporal-self/now/use at the thought's close. The
-# server checks every cite against the experience_shown row named by shown_id. Fallback (spec
-# rollback rule): the now off (404) or unreachable -> the old recent-arcs block, logged.
+# what it used, and posts the cites to POST /temporal-self/now/use at the question's close. The
+# server checks every cite against the experience_shown row named by shown_id. The now off (404) or
+# unreachable -> the reverie runs on its seed alone, logged reverie_now_unavailable.
 
 NOW_ROUTE = "/temporal-self/now"
 NOW_USE_ROUTE = "/temporal-self/now/use"

@@ -647,6 +647,8 @@ from orion.schemas.reverie import (
     CompactionRequestV1,
     ResonanceAlertV1,
     ReverieChainV1,
+    ReverieQuestionV1,
+    ReverieSeedV1,
     ReverieRefractoryEntry,
     SpontaneousThoughtV1,
 )
@@ -1715,6 +1717,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DreamCycleV1": DreamCycleV1,
     "DreamPressureObservationV1": DreamPressureObservationV1,
     "ResonanceAlertV1": ResonanceAlertV1,
+    "ReverieSeedV1": ReverieSeedV1,
+    "ReverieQuestionV1": ReverieQuestionV1,
     "VisualActivityV1": VisualActivityV1,
     "ReverieVisualContextV1": ReverieVisualContextV1,
     "VisualContextSelectionV1": VisualContextSelectionV1,
@@ -1989,6 +1993,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=ResonanceAlertV1,
         kind="reverie.resonance.alert.v1",
     ),
+    # Reveries that ask (2026-11-18 spec, Patch 1): the seed a reverie starts from and the one question it leaves
+    # (one reverie_question row). Neither rides a bus channel; registered so every contract is resolvable.
+    "ReverieSeedV1": SchemaRegistration(model=ReverieSeedV1, kind="reverie.seed.v1"),
+    "ReverieQuestionV1": SchemaRegistration(model=ReverieQuestionV1, kind="reverie.question.v1"),
     "StanceReactRequestV1": SchemaRegistration(
         model=StanceReactRequestV1,
         kind="stance.react.request.v1",

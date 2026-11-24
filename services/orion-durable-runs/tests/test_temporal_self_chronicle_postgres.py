@@ -120,7 +120,7 @@ def test_source_sql_reads_exactly_what_the_adapters_read():
         fevents = [e for e in fevents if e.event_id != "visual_deferral:att-1"]
         assert sorted(t.log_id for t in ticks) == sorted(t.log_id for t in fticks) and len(ticks) == 39
         assert sorted(e.model_dump_json() for e in events) == sorted(e.model_dump_json() for e in fevents)
-        assert {e.source_kind for e in events} >= {"chat_turn", "field_dominance_run", "reverie_chain", "metacog_observation"}
+        assert {e.source_kind for e in events} >= {"chat_turn", "field_dominance_run", "reverie_question", "metacog_observation"}
         async with pool.connection() as conn:
             await conn.execute("UPDATE reverie_visual_attempt SET outcome = 'deferred_thermal' WHERE attempt_id = 'att-1'")
         _, events = await SourceReader(pool, TZ).read(lo, hi)

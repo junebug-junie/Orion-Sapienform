@@ -13,9 +13,10 @@ What changed from ``budget.build_llm_view`` (the pile the letter was written fro
   full and is never clipped: it is laid out before any other section takes budget. Orion's
   unsolicited messages to her are listed after, each trimmed (``OUTREACH_CHARS``): she had not
   written first. Corrections from her conversations and the chat digest sit in the same section.
-* **Reveries are sampled across the day's themes, not by top salience.** Salience is prediction
-  error, so a top-salience pick is all alarms. Themes (chain ``theme_key``) take turns, one thought
-  each per round; inside a theme the picks spread over the day. No salience number is shown.
+* **Reveries are the day's questions** (reveries that ask, 2026-11-24): every question a quiet-stretch
+  reverie left and code accepted, in time order, with where it went (sent to curiosity or kept) and, once
+  Patch 3 records it, what the dig found. Each is citable as ``[reverie_question:<id>]``. The retired
+  narration (thoughts in chains) is not shown.
 * **Self-sense answers that repeat are shown once each**: the latest answer per question, with how
   many times it was asked that day.
 * **Curiosity runs are in full** up to ``FULL_TEXT_MAX_CHARS`` together with the self-sense answers;
@@ -50,7 +51,6 @@ from orion.orion_day.budget import (
     _Body,
     _bodies,
     _correction_parts,
-    _norm,
     _render_full,
     _water_fill_cap,
     curiosity_section,
@@ -63,7 +63,7 @@ from orion.schemas.orion_day import (
     OrionDayCondensationV1,
     OrionDayLlmViewV1,
     OrionDayMaterialV1,
-    ReverieThoughtV1,
+    ReverieQuestionDayV1,
     SelfSenseAnswerV1,
 )
 from orion.world_pulse_read.findings import PriorLookup
@@ -75,9 +75,7 @@ OUTREACH_CHARS = 600
 # Curiosity runs and self-sense answers together, before their long bodies are clipped to one shared
 # cap. Live 11-09/11-10: ~100k chars in full, so the day's investigations would be ~65% of the input.
 FULL_TEXT_MAX_CHARS = 60_000
-REVERIE_MAX_CHARS = 14_000
-REVERIE_MAX_THOUGHTS = 48
-REVERIE_PER_CHAIN = 1
+REVERIE_MAX_CHARS = 6_000
 REVERIE_FRAME_CHARS = 200
 TAIL_MAX_CHARS = 16_000
 TAIL_ITEM_CHARS = 280
@@ -240,97 +238,48 @@ def _self_sense_section(material: OrionDayMaterialV1, tz: ZoneInfo) -> tuple[str
             ] for a, n in picked])
 
 
-# --- reveries across themes --------------------------------------------------------------------
+# --- the day's reverie questions --------------------------------------------------------------
 
 
-def _spread_order(n: int) -> list[int]:
-    """Indices 0..n-1 in an order that spreads over the range: middle, then halves, quarters..."""
-    order: list[int] = []
-    spans = [(0, n)]
-    while spans:
-        nxt = []
-        for lo, hi in spans:
-            if lo >= hi:
-                continue
-            mid = (lo + hi) // 2
-            order.append(mid)
-            nxt += [(lo, mid), (mid + 1, hi)]
-        spans = nxt
-    return order
+def reverie_question_ref(q: ReverieQuestionDayV1) -> str:
+    return f"reverie_question:{q.question_id[:12]}"
 
 
-def sample_reveries_by_theme(
+def reverie_question_line(q: ReverieQuestionDayV1, tz: ZoneInfo) -> str:
+    from orion.reverie.questions import SEED_WORDS, outcome_words, routed_words
+
+    row = q.model_dump()
+    text = (f"- [{reverie_question_ref(q)}] {_local(q.created_at, tz)} "
+            f"({SEED_WORDS.get(q.seed_kind, q.seed_kind)}): {q.question.strip()}")
+    if q.why:
+        text += f" Why: {q.why.strip()}"
+    tail = routed_words(row)
+    found = outcome_words(row)
+    text += f" ({tail}; " + (f"the dig: {found})" if found else "not dug yet)")
+    return text
+
+
+def render_reverie_questions(
     material: OrionDayMaterialV1, budget_chars: int, cond: OrionDayCondensationV1, tz: ZoneInfo,
-) -> tuple[str, dict[str, list[ReverieThoughtV1]], dict[str, int]]:
-    """Round-robin over themes (largest first), one thought per theme per round; inside a theme the
-    picks spread over the day. Hollow and repeated thoughts never count; one thought per chain."""
-    thoughts, chains = material.reverie_thoughts, material.reverie_chains
-    cond.reverie_thoughts_total = len(thoughts)
-    cond.reverie_chains_total = len(chains)
-    theme_of = {c.chain_id: (c.theme_key or "unthemed") for c in chains}
-    size: dict[str, int] = defaultdict(int)
-    for t in thoughts:
-        size[theme_of.get(t.chain_id or "", "unthemed")] += 1
-    cond.reverie_themes_total = len(size)
-    seen: set[str] = set()
-    per_chain: dict[str, int] = defaultdict(int)
-    by_theme: dict[str, list[ReverieThoughtV1]] = defaultdict(list)
-    for t in sorted(thoughts, key=lambda t: (t.created_at, t.thought_id)):
-        if t.hollow:
-            cond.reverie_thoughts_hollow_skipped += 1
-            continue
-        key = _norm(t.interpretation)
-        if not key or key in seen:
-            cond.reverie_thoughts_duplicate_skipped += 1
-            continue
-        if t.chain_id and per_chain[t.chain_id] >= REVERIE_PER_CHAIN:
-            cond.reverie_thoughts_chain_capped += 1
-            continue
-        seen.add(key)
-        if t.chain_id:
-            per_chain[t.chain_id] += 1
-        by_theme[theme_of.get(t.chain_id or "", "unthemed")].append(t)
-    queues = {k: [v[i] for i in _spread_order(len(v))] for k, v in by_theme.items()}
-    order = sorted(queues, key=lambda k: (-size[k], k))
-
-    def line(t: ReverieThoughtV1) -> str:
-        text = f"- [reverie:{t.thought_id[:8]}] {_local(t.created_at, tz)}: {t.interpretation.strip()}"
-        if t.expectation:
-            text += f" (expected: {t.expectation.strip()}" + (f"; verdict: {t.expectation_verdict})"
-                                                                 if t.expectation_verdict else ")")
-        return text
-
-    chosen: dict[str, list[ReverieThoughtV1]] = defaultdict(list)
-    spent, count, rnd = REVERIE_FRAME_CHARS, 0, 0  # the section heading and intro line
-    while count < REVERIE_MAX_THOUGHTS and any(rnd < len(q) for q in queues.values()):
-        for k in order:
-            if rnd >= len(queues[k]) or count >= REVERIE_MAX_THOUGHTS:
-                continue
-            t = queues[k][rnd]
-            # A theme heading costs too the first time a theme is shown.
-            cost = len(line(t)) + 1 + (0 if chosen.get(k) else 120)
-            if spent + cost > budget_chars:
-                continue
-            chosen[k].append(t)
-            spent += cost
-            count += 1
-        rnd += 1
-    cond.reverie_thoughts_included = count
-    cond.reverie_themes_included = len(chosen)
-    if count == 0:  # nothing showable: no heading over an empty section (counts stay in cond)
-        return "", {}, dict(size)
-    out = [f"## Reveries ({count} of {len(thoughts)} thoughts, across {len(chosen)} of {len(size)} themes)",
-           "My background reveries, sampled so every theme of the day gets a turn, not the most alarming ones."]
-    for k in order:
-        if not chosen.get(k):
-            continue
-        n_chains = sum(1 for c in chains if (c.theme_key or "unthemed") == k)
-        if n_chains:
-            out.append(f"### [reverie_theme:{k}] {size[k]} thoughts in {n_chains} chains")
-        else:  # thoughts whose chain is not in this day's chains: no theme record to cite
-            out.append(f"### Thoughts outside this day's chains ({size[k]})")
-        out += [line(t) for t in sorted(chosen[k], key=lambda t: (t.created_at, t.thought_id))]
-    return "\n".join(out), dict(chosen), dict(size)
+) -> str:
+    """Every accepted reverie question of the day, in time order, until ``budget_chars``. Counted in
+    ``cond`` (offered / shown). "" when there were none (no heading over an empty section)."""
+    questions = sorted(material.reverie_questions, key=lambda q: (q.created_at, q.question_id))
+    cond.reverie_questions_total = len(questions)
+    lines: list[str] = []
+    spent = REVERIE_FRAME_CHARS
+    for q in questions:
+        line = reverie_question_line(q, tz)
+        if spent + len(line) + 1 > budget_chars:
+            break
+        lines.append(line)
+        spent += len(line) + 1
+    cond.reverie_questions_included = len(lines)
+    if not lines:
+        return ""
+    head = [f"## Reverie questions ({len(lines)} of {len(questions)})",
+            "Questions my quiet-stretch reveries left, each from one piece of real material, and where each went."]
+    return "\n".join(head + lines)
 
 
 # --- the trimmed tail --------------------------------------------------------------------------
@@ -455,7 +404,7 @@ def render_day_input(
     cond.self_sense_answers_total = len(material.self_sense)
     cond.self_sense_answers_shown = len(latest_self_sense(material.self_sense))
     fixed_so_far = sum(len(t) + 2 for _, t in parts)
-    has_reveries = bool(material.reverie_thoughts or material.reverie_chains)
+    has_reveries = bool(material.reverie_questions)
     reserve = (REVERIE_MAX_CHARS if has_reveries else 0) + TAIL_MAX_CHARS
     allowance = max(0, min(FULL_TEXT_MAX_CHARS, budget_chars - fixed_so_far - reserve))
     cap = None
@@ -472,7 +421,7 @@ def render_day_input(
     used = sum(len(t) + 2 for _, t in parts)
     if has_reveries:
         reverie_budget = max(0, min(REVERIE_MAX_CHARS, budget_chars - used - TAIL_MAX_CHARS // 4))
-        reveries, _, _ = sample_reveries_by_theme(material, reverie_budget, cond, tz)
+        reveries = render_reverie_questions(material, reverie_budget, cond, tz)
         if reveries:
             parts.append(("reveries", reveries))
     used = sum(len(t) + 2 for _, t in parts)
@@ -524,4 +473,4 @@ async def build_day_input(
 
 
 __all__ = ["DAY_INPUT_BUDGET_TOKENS", "DREAM_DAY_HEADING", "ROUNDUP_HEADING", "dream_day_line", "ROUNDUP_REPLACES", "DayInput", "build_day_input", "latest_self_sense",
-           "render_day_input", "sample_reveries_by_theme"]
+           "render_day_input", "render_reverie_questions", "reverie_question_line", "reverie_question_ref"]

@@ -19,6 +19,10 @@ labels them `decayed_unattended`.
 compete"), so a decayed loop can still be re-selected by a live reverie tick if the
 underlying pressure is real.
 
+(2026-11-24: the reverie chain that read `substrate_reverie_refractory` was retired with the
+narration path; Hub's pending-attention panel query, services/orion-hub/scripts/attention_loops_store.py,
+is now that table's reader. The history below explains why the scope stayed narrow.)
+
 **Scoped to `scope='chat'` only -- this is deliberate, not an oversight.** This
 script ALSO writes a `substrate_reverie_refractory` suppression (same table/
 mechanism as a human Dismiss, 24h cooldown). Code review (2026-08-21) caught

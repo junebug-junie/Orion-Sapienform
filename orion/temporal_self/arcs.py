@@ -71,6 +71,8 @@ EXCLUSIVE_LANES = ("attention", "interoception", "conversation")
 # Process arcs are born closed from one completed event.
 PROCESS_KINDS = {
     "curiosity_run": "curiosity",
+    # reverie_chain / expectation_verdict: history only; no producer since 2026-11-24 (reveries that ask).
+    # Kept so an older day re-reduces to the same arcs. reverie_question is an experience only: no arc.
     "reverie_chain": "reverie",
     "visual_run": "imagery",
     "dream_cycle": "sleep",

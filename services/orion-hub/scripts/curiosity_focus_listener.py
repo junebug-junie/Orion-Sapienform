@@ -6,8 +6,10 @@ Orion had no way to do it (2026-10-16). This responder is that way: one
 investigate run. Design: docs/superpowers/specs/2026-10-16-orion-queue-curiosity-focus-design.md.
 
 Before anything is written:
-* the request is a chat turn (curiosity runs already carry their own continuation note), or Prime's
-  resident loop (origin self only; it never replaces a pending focus);
+* the request is a chat turn (curiosity runs already carry their own continuation note), Prime's
+  resident loop (origin self only; it never replaces a pending focus), or orion-thought's quiet-stretch
+  reverie (reveries that ask, 2026-11-24: origin forced to self, never replaces a pending focus, at most
+  ORION_REVERIE_FOCUS_MAX_PER_DAY in a rolling 24 h; 0 = refused);
 * the focus queue is on (HUB_CURIOSITY_FOCUS_ENABLED);
 * a pending focus Juniper asked for is never replaced by Orion's own choice.
 
@@ -46,6 +48,15 @@ OPERATION = "queue_curiosity_focus"
 # queues its own between-conversations question here. Origin self only, and it never replaces a
 # pending focus (orion/curiosity/focus.py keep_pending). parent_trace_id is "prime:<thought_id>".
 PRIME_CONTEXT = "prime"
+# Reveries that ask (docs/superpowers/specs/2026-11-18-reverie-questions-design.md, Patch 1): orion-thought's
+# reverie queues the one question a quiet stretch left. parent_trace_id is "reverie:<question_id>", stored as the
+# row's chat_correlation_id, which is how the daily cap counts them.
+REVERIE_CONTEXT = "reverie"
+REVERIE_TRACE_PREFIX = "reverie:"
+REVERIE_COUNT_SQL = (
+    "SELECT count(*) FROM curiosity_focus_request "
+    "WHERE chat_correlation_id LIKE 'reverie:%' AND created_at > now() - interval '24 hours'"
+)
 # Not "not queued": a connection lost after the commit lands here too.
 UNAVAILABLE = "queue_curiosity_focus_unavailable; answer unknown"
 DISABLED = "the curiosity focus queue is switched off (HUB_CURIOSITY_FOCUS_ENABLED=false)"
@@ -112,8 +123,10 @@ class CuriosityFocusListener:
         self, *, pool_provider: Callable[[], Any], source_ref: Any,
         enabled: Callable[[], bool] | bool = True,
         schedule_provider: Optional[Callable[[], Awaitable[dict[str, Any]]]] = None,
+        reverie_daily_cap: int = 0,
     ):
         self.pool_provider = pool_provider
+        self.reverie_daily_cap = max(0, int(reverie_daily_cap))
         self.source_ref = source_ref
         self._enabled = enabled
         self.schedule_provider = schedule_provider
@@ -165,7 +178,8 @@ class CuriosityFocusListener:
     ) -> IntrospectResultV1:
         binding = request.binding
         prime = binding.invocation_context == PRIME_CONTEXT
-        if binding.invocation_context != "unified_chat" and not prime:
+        reverie = binding.invocation_context == REVERIE_CONTEXT
+        if binding.invocation_context != "unified_chat" and not prime and not reverie:
             raise FocusRefused(
                 "a focus is queued from a conversation with Juniper; this is a "
                 f"{binding.invocation_context} turn (a curiosity run already has its continuation note)"
@@ -173,15 +187,27 @@ class CuriosityFocusListener:
         if prime and args.origin != "self":
             # Prime thinks alone: it can never say Juniper asked.
             raise FocusRefused("a question Prime chose alone is origin self, never juniper")
+        origin = "self" if reverie else args.origin  # a reverie is Orion alone: origin is forced, not trusted
         if not self.enabled:
             raise FocusRefused(DISABLED)
+        if reverie and not str(binding.parent_trace_id or "").startswith(REVERIE_TRACE_PREFIX):
+            raise FocusRefused("a reverie focus carries its question id as reverie:<question_id>")
+        if reverie and self.reverie_daily_cap <= 0:
+            raise FocusRefused("reverie questions are switched off for the focus slot (ORION_REVERIE_FOCUS_MAX_PER_DAY=0)")
         pool = self.pool_provider()
         if pool is None:
             raise RuntimeError("no memory pool")
+        if reverie:
+            async with pool.acquire() as conn:
+                queued_today = int(await conn.fetchval(REVERIE_COUNT_SQL) or 0)
+            if queued_today >= self.reverie_daily_cap:
+                raise FocusRefused(
+                    f"the reverie focus cap is reached ({queued_today} of {self.reverie_daily_cap} in 24 h)"
+                )
         chat_corr = binding.parent_trace_id or None
         queued = await queue_focus(
-            pool, question=args.question, why=args.why, origin=args.origin, chat_correlation_id=chat_corr,
-            keep_pending=prime, refs=[r.model_dump(mode="json") for r in args.refs],
+            pool, question=args.question, why=args.why, origin=origin, chat_correlation_id=chat_corr,
+            keep_pending=prime or reverie, refs=[r.model_dump(mode="json") for r in args.refs],
         )
         schedule = None
         if self.schedule_provider is not None:

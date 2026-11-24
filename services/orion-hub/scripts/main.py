@@ -729,6 +729,10 @@ async def startup_event():
                 hub_url=settings.HUB_CURIOSITY_SANDBOX_HUB_URL,
                 prior_sample=settings.HUB_CURIOSITY_PRIOR_SAMPLE,
                 prior_coverage_slots=settings.HUB_CURIOSITY_PRIOR_COVERAGE_SLOTS,
+                reverie_focus_version=(
+                    "v1" if settings.HUB_CURIOSITY_FOCUS_ENABLED and settings.ORION_REVERIE_FOCUS_MAX_PER_DAY > 0
+                    else None
+                ),
                 stale_prior_tests=settings.HUB_CURIOSITY_STALE_PRIOR_TESTS,
                 spend_log_enabled=settings.HUB_CURIOSITY_SPEND_LOG_ENABLED,
                 self_inquiry_outcomes_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED,
@@ -951,6 +955,7 @@ async def startup_event():
                 source_ref=world_pulse_read_pipeline._source_ref,
                 enabled=settings.HUB_CURIOSITY_FOCUS_ENABLED,
                 schedule_provider=read_curiosity_schedule,
+                reverie_daily_cap=settings.ORION_REVERIE_FOCUS_MAX_PER_DAY,
             )
             await curiosity_focus_listener.start(bus)
             # The curiosity replica's focus refusals (orion-mind; design 2026-11-04 section 9): refuse a

@@ -54,7 +54,7 @@ def _decide(route, priority, *, override=None, enabled=True):
 # ------------------------------------------------------------- what gets backgrounded
 
 @pytest.mark.parametrize("verb", [
-    "dream_cycle", "dream_synthesis", "log_orion_metacognition", "reverie_narrate",
+    "dream_cycle", "dream_synthesis", "log_orion_metacognition",
 ])
 def test_orions_background_verbs_are_low_priority(verb):
     """These are _BACKGROUND_VERBS -- Orion dreaming and journalling, nobody waiting on them."""
@@ -67,7 +67,7 @@ def test_introspect_spark_is_low_priority():
 
 
 @pytest.mark.parametrize("verb", [
-    "dream_cycle", "dream_synthesis", "log_orion_metacognition", "reverie_narrate",
+    "dream_cycle", "dream_synthesis", "log_orion_metacognition",
     "introspect_spark",
 ])
 def test_low_priority_quick_work_moves_to_the_background_lane(verb):
@@ -116,7 +116,7 @@ def test_a_none_route_stays_none():
 
 def test_the_flag_off_restores_the_previous_behaviour_exactly():
     """The roadmap's kill gate: one env key, and the fallback is what shipped before."""
-    for verb in ("dream_cycle", "introspect_spark", "reverie_narrate"):
+    for verb in ("dream_cycle", "introspect_spark", "log_orion_metacognition"):
         assert _decide("quick", _priority(verb), enabled=False) == ("quick", False)
 
 

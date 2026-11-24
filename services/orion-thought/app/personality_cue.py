@@ -7,7 +7,7 @@ base URL as the Temporal Self frame), mirroring ``app/temporal_self_cue.py``.
 
 Fail-open and bounded: any failure, an invalid frame, a frame older than
 ``PERSONALITY_CUE_MAX_AGE_SEC``, or no active node renders nothing (``text == ""``). Shown to the
-unified turn's stance step (fetched alongside Mind, so no added serial wait) and to reverie (one
+unified turn's stance step (fetched alongside Mind, so no added serial wait); reverie read it (one
 fetch per reverie step, alongside its other reads). One log line per build:
 ``personality_cue corr=<id> rendered=<bool> ids=<...> skip=<reason>``.
 """

@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from .bus_listener import run_bus_worker
-from .chain import run_reverie_chain_worker
 from .reasoning_activity import run_reasoning_worker
 from .reasoning_activity import store as reasoning_store
 from .reverie import run_reverie_worker
@@ -73,14 +72,9 @@ async def lifespan(app: FastAPI):
         heartbeat_chassis = None
     app.state.bus_stop_event = asyncio.Event()
     app.state.bus_task = asyncio.create_task(run_bus_worker(app.state.bus_stop_event))
-    # Spontaneous-thought mode — no-op unless ORION_REVERIE_ENABLED (default off).
+    # Reveries that ask (app/reverie.py): polls the quiet gate; off with ORION_REVERIE_ENABLED=false.
     app.state.reverie_stop_event = asyncio.Event()
     app.state.reverie_task = asyncio.create_task(run_reverie_worker(app.state.reverie_stop_event))
-    # Reverie chain mode — no-op unless ORION_REVERIE_CHAIN_ENABLED (default off).
-    app.state.reverie_chain_stop_event = asyncio.Event()
-    app.state.reverie_chain_task = asyncio.create_task(
-        run_reverie_chain_worker(app.state.reverie_chain_stop_event)
-    )
     # Reasoning-activity projection — always-on consumer. Harmless (empty
     # projection) when no producer is publishing reasoning_call events.
     app.state.reasoning_stop_event = asyncio.Event()
@@ -119,10 +113,10 @@ async def lifespan(app: FastAPI):
     # kept on app.state -- an unreferenced asyncio task can be
     # garbage-collected mid-execution (see asyncio docs on create_task).
     app.state.pool_warmup_task = asyncio.create_task(warm_pool())
-    # Self-readings (stance_react / reverie): import the calibration modules and seed the 7-day
+    # Self-readings (stance_react): import the calibration modules and seed the 7-day
     # prediction-error window once, off the event loop, so the first turn does not pay for it.
     app.state.self_readings_warm_task = None
-    if settings.self_readings_stance_enabled or settings.self_readings_reverie_enabled:
+    if settings.self_readings_stance_enabled:
         from .self_readings_cue import warm as warm_self_readings
 
         app.state.self_readings_warm_task = asyncio.create_task(asyncio.to_thread(warm_self_readings))
@@ -161,7 +155,6 @@ async def lifespan(app: FastAPI):
         heartbeat_chassis = None
     app.state.bus_stop_event.set()
     app.state.reverie_stop_event.set()
-    app.state.reverie_chain_stop_event.set()
     app.state.reasoning_stop_event.set()
     app.state.visual_chain_stop_event.set()
     app.state.visual_chain_watchdog_stop_event.set()
@@ -175,7 +168,6 @@ async def lifespan(app: FastAPI):
             await app.state.bus_task
     for task in (
         app.state.reverie_task,
-        app.state.reverie_chain_task,
         app.state.reasoning_task,
         app.state.visual_chain_task,
         app.state.visual_chain_watchdog_task,

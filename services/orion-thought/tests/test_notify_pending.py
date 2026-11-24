@@ -40,17 +40,6 @@ def test_lookup_failure_fails_open():
         assert open_alert_reasons(_settings(), log_label="t") == []
 
 
-def test_reverie_monitor_ignores_answered_page():
-    from app.reverie_health_monitor import ReverieMetacogHealthMonitor
-
-    items = [
-        _item("reverie_metacog_timeout", "[Orion reverie] recovered: reverie_metacog_timeout"),
-        _item("reverie_metacog_timeout", "[Orion reverie] metacog timing out"),
-    ]
-    with patch("app.reverie_health_monitor.NotifyClient"), patch(
-        "app.notify_pending.requests.get", return_value=_resp(items)
-    ):
-        assert ReverieMetacogHealthMonitor(_settings())._has_open_alert() is False
 
 
 def test_visual_monitor_ignores_answered_page():

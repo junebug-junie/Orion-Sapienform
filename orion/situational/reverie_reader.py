@@ -1,28 +1,15 @@
-"""Bounded, fail-open read of Orion's most recent reverie/dream
-interpretations for the situation brief.
+"""Bounded, fail-open read of the questions Orion's quiet reveries left, for the situation brief.
 
-Mirrors `perception_reader.py`'s shape exactly: module-level cached engine,
-DSN resolution (own override -> `POSTGRES_URI` -> `DATABASE_URL`), a
-per-connection `statement_timeout` GUC, fail-open, never raises to the
-caller.
+Reveries that ask (2026-11-24, docs/superpowers/specs/2026-11-18-reverie-questions-design.md): a reverie
+no longer narrates; it leaves one question (one ``reverie_question`` row) or nothing. This reader shows the
+newest ACCEPTED questions (not refused, not none; ``orion/reverie/questions.py``) from the last
+``_MAX_AGE_DAYS`` days. The retired narration table (substrate_reverie_thought) is no longer read.
 
-Reads the same `substrate_reverie_thought` table
-`services/orion-hub/scripts/reverie_routes.py`'s `/api/reverie/text/recent`
-route already renders for Juniper's reverie cockpit -- this is a second,
-narrower reader of that same table, not an import of the route handler's own
-`_fetch_text_recent`. `orion/` is shared code services import FROM (see e.g.
-`reverie_routes.py`'s own `from orion.reverie.visual_storage import ...`);
-importing a private, underscore-prefixed function out of a service's route
-script the other way round would invert that dependency direction and tie
-this module to Hub's FastAPI app/settings module being importable at all.
+Mirrors `perception_reader.py`'s shape: module-level cached engine, DSN resolution (own override ->
+`POSTGRES_URI` -> `DATABASE_URL`), a per-connection `statement_timeout` GUC, fail-open, never raises to
+the caller. Read-only; orion-thought is the table's only writer.
 
-Read-only. This module never writes `substrate_reverie_thought`; the
-substrate reverie pipeline is its only writer.
-
-**Privacy.** Selects `interpretation`, `created_at`, `salience` and nothing
-else -- no raw diffusion-prompt internals, no chain linkage, no visual
-artifact references. See `ReverieContextV1`'s docstring for the exposed-field
-contract.
+**Privacy.** Selects the question text and its time, nothing else: no seed material, no refs.
 """
 
 from __future__ import annotations
@@ -86,12 +73,12 @@ class ReverieRow(NamedTuple):
     salience: float | None
 
 
-# Rows read per requested snippet before de-duplication. Reverie repeats one
-# interpretation many times in a row when it fixates, so newest-N without a
-# dedupe filled every slot with the same line (2026-10-06: the "fixated on bus
-# synaptic prediction error" line appeared twice in one reply-writer prompt).
+# Rows read per requested snippet before de-duplication (code already refuses near-duplicate reverie
+# questions, but an exact repeat across threads costs nothing to drop here).
 _OVERFETCH_FACTOR = 5
 _OVERFETCH_CAP = 100
+# Questions older than this are not "recent" for the brief.
+_MAX_AGE_DAYS = 7
 
 
 def _normalize_reverie_text(value: str) -> str:
@@ -99,7 +86,7 @@ def _normalize_reverie_text(value: str) -> str:
 
 
 def fetch_recent_reverie_snippets(limit: int) -> list[ReverieRow]:
-    """Newest `limit` distinct non-empty reverie interpretations, newest first.
+    """Newest `limit` distinct accepted reverie questions of the last `_MAX_AGE_DAYS` days, newest first.
 
     Distinct by normalized text (case, whitespace and trailing punctuation
     ignored); the newest occurrence of a repeated line is the one kept.
@@ -121,12 +108,14 @@ def fetch_recent_reverie_snippets(limit: int) -> list[ReverieRow]:
         with engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    "SELECT interpretation, created_at, salience "
-                    "FROM substrate_reverie_thought "
-                    "WHERE interpretation IS NOT NULL AND interpretation <> '' "
+                    "SELECT question, created_at, NULL::double precision AS salience "
+                    "FROM reverie_question "
+                    "WHERE question IS NOT NULL AND question <> '' "
+                    "AND refused_reason IS NULL AND none_reason IS NULL "
+                    "AND created_at > now() - make_interval(days => :days) "
                     "ORDER BY created_at DESC LIMIT :limit"
                 ),
-                {"limit": min(want * _OVERFETCH_FACTOR, max(want, _OVERFETCH_CAP))},
+                {"limit": min(want * _OVERFETCH_FACTOR, max(want, _OVERFETCH_CAP)), "days": _MAX_AGE_DAYS},
             ).all()
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_reverie_read_failed err=%s", exc)

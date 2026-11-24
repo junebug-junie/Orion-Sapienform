@@ -189,7 +189,7 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "Body signals that are high or unusual for themselves right now: a fixed template (no "
             "LLM) over substrate_node_prediction_error_history, each line scored 0-10 against the "
             "signal's own 7 days and citing [pe:<node>@<observed_at>] ([alarm:...] for an alarm). Set by orion-thought for "
-            "stance_react and reverie (app/self_readings_cue.py, orion/attention/self_readings.py).",
+            "stance_react (app/self_readings_cue.py, orion/attention/self_readings.py).",
         ),
         _entry(
             "self_track_record",
@@ -198,16 +198,8 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "orion/self_monitor/cue.py) over the self-monitor state orion-durable-runs publishes to "
             "Redis orion:self_monitor:latest -- held broken / unreliable / miscalibrated faculties "
             "only, numbers from each faculty's settled bets over 7 days, <= 300 chars; absent or "
-            "stale state renders nothing. Set by orion-thought for stance_react and reverie "
+            "stale state renders nothing. Set by orion-thought for stance_react "
             "(app/self_track_record_cue.py).",
-        ),
-        _entry(
-            "recent_arcs",
-            "derived_summary",
-            "Orion's last few CLOSED arcs of today, most recent first, local time: one line each "
-            "rendered by a fixed template (no LLM) from orion-durable-runs' current Temporal Self "
-            "frame, each citing [arc:<id>]. Set by orion-thought for reverie_narrate only "
-            "(app/reverie.py build_recent_arcs_text; orion/temporal_self/recent_arcs.py).",
         ),
         _entry(
             "orion_now",
@@ -216,7 +208,7 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "organs recorded since reverie last looked, one line each from orion-durable-runs' GET "
             "/temporal-self/now (labels code-written from temporal_self_event rows, no LLM), each citing "
             "[experience:<id>]. Cites are checked against the shown row (POST /temporal-self/now/use). "
-            "Set by orion-thought for reverie_narrate only (app/reverie.py build_reverie_day_cue).",
+            "Set by orion-thought for reverie_question only (app/reverie.py build_reverie_now_cue).",
         ),
         _entry(
             "personality_cue",
@@ -224,7 +216,7 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "What Orion keeps coming back to: a fixed template (no LLM, orion/personality/cue.py) "
             "over orion-durable-runs' personality graph frame (GET /personality/frame), each line an "
             "excerpt of Orion's own words with the lanes and counts behind it. A record, not an "
-            "instruction. Set by orion-thought for stance_react and reverie "
+            "instruction. Set by orion-thought for stance_react "
             "(app/personality_cue.py) and by Hub for curiosity kickoff and outreach.",
         ),
         _entry(

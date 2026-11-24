@@ -50,7 +50,6 @@ def test_chat_turn_copies_no_text():
 def test_incomplete_processes_are_not_emitted():
     assert S.curiosity_run({"run_id": "r", "turn_started_at": T, "completed_at": None}) is None
     assert S.dream_cycle({"cycle_id": "c", "status": "running", "started_at": T, "ended_at": None}) is None
-    assert S.reverie_chain({"chain_id": "c", "created_at": T, "thoughts": [], "terminal_reason": "x"}) is None
 
 
 def test_curiosity_run_carries_offered_priors_and_its_interval():
@@ -59,14 +58,28 @@ def test_curiosity_run_carries_offered_priors_and_its_interval():
     assert e.related_refs == ["a", "b"] and e.ended_at.hour == 16 and e.subject_ref == "r"
 
 
-def test_reverie_chain_window_and_thought_correlations():
-    row = {"chain_id": "c", "created_at": T, "theme_key": "open-loop-x",
-           "thoughts": [{"thought_id": "t2", "created_at": T.replace(minute=2), "correlation_id": "k2"},
-                        {"thought_id": "t1", "created_at": T.replace(minute=1), "correlation_id": "k1"}]}
-    assert S.reverie_chain(row) is None  # still running: no terminal_reason yet
-    e = S.reverie_chain({**row, "terminal_reason": "max_steps"})
-    assert e.occurred_at.minute == 1 and e.ended_at.minute == 2
-    assert e.payload["thought_ids"] == ["t1", "t2"] and e.related_refs == ["k1", "k2"]
+def _rq(**kw):
+    base = {"question_id": "q1", "thread_id": "th1", "seed_kind": "lost_bet", "created_at": T,
+            "seed_refs": ["self_bet_bin:more_steps_than_usual:0.1-0.2"], "question": "Why do I miss long turns?",
+            "none_reason": None, "refused_reason": None, "routed_to": "none", "correlation_id": "c1"}
+    return {**base, **kw}
+
+
+def test_reverie_question_accepted_is_asked_with_the_question_as_label():
+    e = S.reverie_question(_rq(routed_to="focus:f9"))
+    assert e.event_id == "reverie_question:q1" and e.source_table == "reverie_question"
+    assert e.verdict == "asked" and e.label == "Why do I miss long turns?" and e.subject_ref is None
+    assert e.related_refs == ["self_bet_bin:more_steps_than_usual:0.1-0.2", "focus:f9"]
+    assert e.payload == {"seed_kind": "lost_bet", "thread_id": "th1", "routed_to": "focus:f9", "refused_reason": None}
+
+
+def test_reverie_question_none_and_refused():
+    none = S.reverie_question(_rq(question=None, none_reason="the gap is noise"))
+    assert none.verdict == "none" and none.label == "no question: the gap is noise"
+    refused = S.reverie_question(_rq(refused_reason="near_duplicate"))
+    assert refused.verdict == "refused" and refused.label == "refused (near_duplicate)"
+    assert "Why do I" not in refused.label  # a refused question is never shown as a question
+    assert S.reverie_question(_rq(created_at=None)) is None
 
 
 def test_visual_deferral_keeps_the_sources_own_word():
@@ -160,7 +173,8 @@ def test_every_source_kind_has_an_adapter_and_no_dead_kind_is_declared():
 
     from orion.schemas.temporal_self import TemporalSourceKind
 
-    assert set(get_args(TemporalSourceKind)) == set(S.ADAPTERS)
+    assert set(get_args(TemporalSourceKind)) == set(S.ADAPTERS) | S.RETIRED_KINDS
+    assert not (S.RETIRED_KINDS & set(S.ADAPTERS))  # a retired kind has no reader
     for dead in ("town_exchange", "prior_revision", "peer_ask", "situation_revision"):
         assert dead not in S.ADAPTERS
 

@@ -4378,7 +4378,7 @@ async def call_step_services(
                 # sorts every step into chat (priority high), spark (low), background (low) or
                 # agent (normal). `low` is precisely Orion-initiated work -- introspect_spark
                 # plus _BACKGROUND_VERBS (dream_cycle, dream_synthesis,
-                # log_orion_metacognition, reverie_narrate). Inventing a parallel
+                # log_orion_metacognition). Inventing a parallel
                 # "is_autonomous" flag would be a second answer to a question already answered,
                 # and the two would drift.
                 #

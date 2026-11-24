@@ -95,8 +95,10 @@ def _rows():
     return {
         "metacog": [{"id": "m1", "summary": "Recall returned empty for three turns", "severity": "critical",
                      "trigger_kind": "recall_empty", "tags": ["recall"]}],
-        "compaction_request": [{"request_id": "r1", "theme": "sleep schedule", "reason": "recurs"}],
-        "resonance": [{"alert_id": "a1", "theme_key": "being watched", "violation_count": 4}],
+        "crystallization": [{"crystallization_id": "r1", "subject": "sleep schedule", "summary": "recurs",
+                             "salience": 0.5, "tags": ["sleep"]},
+                            {"crystallization_id": "a1", "subject": "being watched", "summary": "comes back",
+                             "salience": 0.7, "tags": ["camera"]}],
     }
 
 

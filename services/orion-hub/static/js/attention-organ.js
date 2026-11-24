@@ -941,6 +941,17 @@
     active.forEach(function (row) {
       host.appendChild(drawRow(row));
     });
+    if (!active.length) {
+      // Empty since 2026-11-24 (#3576): execution, the last domain, was retired.
+      // The confidence below reads unknown, never a made-up 1.0.
+      host.appendChild(
+        el(
+          "div",
+          "text-[11px] text-gray-400",
+          "None live: every domain was retired (execution last, 2026-11-24). prediction_error_confidence reads unknown."
+        )
+      );
+    }
 
     if (inactive.length) {
       host.appendChild(

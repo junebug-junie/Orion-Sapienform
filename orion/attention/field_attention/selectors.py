@@ -49,9 +49,12 @@ ObservationMode = Literal["watch", "inspect", "summarize", "ignore"]
 # successors are not native targets: node:prediction.body_joint is a body signal (no
 # goal, same as node:prediction.body), node:prediction.room_joint a world source that
 # authors goals through the attended-world rule (goal_provenance._goal_eligible_node).
-PREDICTION_ERROR_NATIVE_TARGETS: dict[str, str] = {
-    "node:substrate.execution": "execution_trajectory",
-}
+# node:substrate.execution left 2026-11-24 (retire step 6, #3576; pruned too), the
+# last entry. The map is now EMPTY: no body signal is a native target, so the
+# precision path scores nothing and every goal comes from an attended world source.
+# Its successors are not native targets either: node:prediction.chat_turn is
+# absent between turns, node:prediction.body_joint is a body signal with no goal.
+PREDICTION_ERROR_NATIVE_TARGETS: dict[str, str] = {}
 
 # Same discipline as scripts/analysis/measure_precision_weighted_salience_probe.py's
 # QUALIFYING_MIN_ROWS: below this many real samples, a variance/precision

@@ -87,6 +87,12 @@ PREDICTION_ERROR_MISSING_REASON_KEY = "prediction_error_missing_reason"
 # never near 1, not a forecast. Successors: node:prediction.body_joint and
 # node:prediction.room_joint (family A joint surprise, scored forecasts of every
 # raw body and room reading; the room one is a world source).
+#
+# node:substrate.execution joined 2026-11-24 (retire step 6, #3576), the last of
+# the fake prediction-error nodes: an EWMA z of the mean change in four
+# cortex-exec pressure hints, negatives clipped, /3 -- 59% exact 0 from the
+# clipping, not from calm. Successors: the turn self-bet "more steps than
+# usual" inside node:prediction.chat_turn and node:prediction.body_joint.
 RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
     {
         "node:substrate.harness_closure",
@@ -95,6 +101,7 @@ RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
         "node:substrate.chat",
         "node:substrate.codebase",
         "node:substrate.biometrics",
+        "node:substrate.execution",
     }
 )
 

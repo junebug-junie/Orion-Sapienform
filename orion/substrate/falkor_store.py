@@ -545,9 +545,15 @@ class FalkorSubstrateStore:
         page with only some bad rows, or both texts failing, raises the first
         decode error. The whole page decodes before the cursor check, so a
         page with both faults raises the decode error."""
+        # Sort and limit on the bare id first, then project the page. RETURN
+        # <every property> ... ORDER BY ... LIMIT projects every row past the
+        # cursor before sorting: on orion_substrate_aitown's 202k edges the
+        # first page ran past FalkorDB's 1 s read TIMEOUT ("Query timed out",
+        # #3512, 2026-11-24), and orion_substrate's 80k took ~800 ms. This
+        # form reads the same page in ~540 ms on both.
         query = (f"{match} WHERE {where} AND id({alias}) > $after_id "
-                 f"RETURN {returns}, id({alias}) AS object_id "
-                 "ORDER BY object_id LIMIT $page_size")
+                 f"WITH * ORDER BY id({alias}) LIMIT $page_size "
+                 f"RETURN {returns}, id({alias}) AS object_id ORDER BY object_id")
         bypassed = where in self._plan_cache_bypass
         retried = False
         cursor = -1
@@ -599,9 +605,18 @@ class FalkorSubstrateStore:
                         self._plan_cache_bypass.discard(where)
             if errors:
                 raise errors[0]
+            page_start = cursor
             for row, obj in zip(rows, decoded):
                 object_id = row.get("object_id")
-                if type(object_id) is not int or object_id <= cursor:
+                # Non-decreasing within a page, and past the page's start
+                # cursor. One object read twice in a page is allowed through
+                # (#3512, live 2026-11-24: edge 66265 came back once to its real
+                # target and once through a phantom adjacency entry, so the
+                # scan failed 'nonadvancing' or 'mismatched endpoint' by sort
+                # order). The consumer keeps the copy with valid endpoints and
+                # counts the other; a page that does not move the cursor at all
+                # still fails here, so the scan cannot loop.
+                if type(object_id) is not int or object_id < cursor or object_id <= page_start:
                     raise ValueError("nonadvancing or invalid object cursor")
                 cursor = object_id
                 yield row, obj
@@ -624,6 +639,8 @@ class FalkorSubstrateStore:
         progress = {"pages": 0, "edge_identity_aliases": 0}
         fresh = InMemorySubstrateGraphStore()
         legacy_nodes, legacy_edges = [], []
+        legacy_twins: list[str] = []
+        rows_seen = 0
         node_ids, edge_ids = set(), set()
 
         duplicate_identities: dict[str, int] = {}
@@ -636,6 +653,8 @@ class FalkorSubstrateStore:
                 anomaly_samples.append(f"{kind}:{ref}")
 
         def add_node(row, node):
+            nonlocal rows_seen
+            rows_seen += 1
             if node is None or not node.node_id or node.node_id == "None":
                 raise ValueError("invalid or unsupported durable node")
             if node.node_id in node_ids:
@@ -644,10 +663,14 @@ class FalkorSubstrateStore:
                 # a twin). Keep the row writers still touch (newer observed_at);
                 # edges key on node_id, so both rows' edges still land.
                 note_anomaly("duplicate_node_id", node.node_id)
-                kept = fresh.get_node_by_id(node.node_id)
-                if kept is None or _observed_later(node, kept):
+                if _observed_later(node, fresh.get_node_by_id(node.node_id)):
                     identity = str(row.get("identity_key") or "") or None
+                    previous_id = fresh.get_node_id_by_identity(identity) if identity else None
                     fresh.upsert_node(identity_key=identity, node=node)
+                    if previous_id is not None and previous_id != node.node_id:
+                        # Keep the one canonical rule (smallest node_id) for an
+                        # identity this node shares with another node.
+                        fresh.set_identity_canonical(identity, min(previous_id, node.node_id))
                 return
             identity = str(row.get("identity_key") or "") or None
             previous_id = fresh.get_node_id_by_identity(identity) if identity else None
@@ -667,6 +690,8 @@ class FalkorSubstrateStore:
                 fresh.set_identity_canonical(identity, min(previous_id, node.node_id))
 
         def add_edge(row, edge):
+            nonlocal rows_seen
+            rows_seen += 1
             if edge is None:
                 raise ValueError("invalid durable edge")
             for endpoint in (edge.source, edge.target):
@@ -719,6 +744,15 @@ class FalkorSubstrateStore:
             ):
                 if node.node_kind not in DURABLE_NODE_KINDS:
                     raise ValueError("unsupported legacy node kind")
+                if node.node_id in node_ids:
+                    # A legacy payload row next to a native node with the same
+                    # node_id: the native row is the truth. The stale payload
+                    # must neither win the cache nor be upserted over the
+                    # native node (the 2026-07-18 clobber); it is only deleted.
+                    rows_seen += 1
+                    note_anomaly("legacy_payload_twin", node.node_id)
+                    legacy_twins.append(node.node_id)
+                    continue
                 add_node(row, node)
                 legacy_nodes.append(row)
             def decode_native_edge(row):
@@ -749,9 +783,11 @@ class FalkorSubstrateStore:
             # itself is broken (a poisoned plan shifting columns makes every
             # edge's endpoint kind wrong), and an edgeless cache must not read
             # as a good refresh.
+            # The floor alone would let a small graph whose every edge is bad
+            # pass, so more than half the rows bad also fails.
             anomaly_total = sum(anomalies.values())
-            budget = max(self._INTEGRITY_ANOMALY_FLOOR,
-                         self._INTEGRITY_ANOMALY_FRACTION * (len(node_ids) + len(edge_ids)))
+            budget = max(self._INTEGRITY_ANOMALY_FLOOR, self._INTEGRITY_ANOMALY_FRACTION * rows_seen)
+            budget = min(budget, rows_seen / 2)
             if anomaly_total > budget:
                 raise ValueError(
                     f"integrity anomalies over budget: {anomaly_total} > {budget:.0f} "
@@ -839,6 +875,11 @@ class FalkorSubstrateStore:
         self._record_node_count_gap(skipped["nodes"])
         self._maybe_log_hydrate_stats()
         if not getattr(self._client, "read_only", False):
+            for node_id in legacy_twins:
+                try:
+                    self._delete_orphaned_legacy_node_duplicate(node_id)
+                except Exception as exc:  # noqa: BLE001 - retried on the next refresh
+                    logger.warning("falkor_substrate_legacy_twin_delete_failed node_id=%s error=%s", node_id, exc)
             self._migrate_legacy_payload_nodes(legacy_nodes)
             self._migrate_legacy_payload_edges(legacy_edges)
 

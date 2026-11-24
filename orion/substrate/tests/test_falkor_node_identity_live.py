@@ -96,3 +96,7 @@ def test_legacy_payload_twin_of_a_canonical_node_is_removed_and_a_lone_one_is_co
             "MATCH (n:SubstrateNode {node_id: $node_id}) RETURN n.payload_json IS NULL AS native",
             {"node_id": node_id})
         assert len(rows) == 1, (node_id, rows)
+    # The stale legacy payload never overwrote the native node.
+    assert store.snapshot().nodes["pair"].label == "canonical pair"
+    labels = client.graph_query("MATCH (n:SubstrateNode {node_id: 'pair'}) RETURN n.label AS label")
+    assert "canonical pair" in str(labels) and "legacy pair" not in str(labels)

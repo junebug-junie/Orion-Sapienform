@@ -48,10 +48,13 @@ def run_integrity_cases() -> dict:
     """#3512: the two corruptions seen live 2026-11-24 cost one row each, never
     the whole graph; a scan where most rows are corrupt still fails closed."""
     client = CappedClient(nodes=43, edges=173, cap=17)
-    # One edge read back a second time through a phantom adjacency entry that
-    # points at an unrelated node of another kind (orion_substrate, edge 66265).
-    client._hydrate_edge_rows.append(dict(client._hydrate_edge_rows[0], target_id="node7",
-                                          target_kind="evidence"))
+    for i, row in enumerate(client._hydrate_edge_rows):
+        row["object_id"] = i
+    # One edge object read back a second time (same object id) through a
+    # phantom adjacency entry pointing at an unrelated node of another kind
+    # (orion_substrate, edge 66265).
+    client._hydrate_edge_rows.insert(1, dict(client._hydrate_edge_rows[0], target_id="node7",
+                                             target_kind="evidence"))
     # Two durable rows share one node_id (orion_substrate_aitown 49919/50246).
     client._hydrate_node_rows.append(dict(client._hydrate_node_rows[3],
                                           observed_at="2026-11-24T21:33:43+00:00"))

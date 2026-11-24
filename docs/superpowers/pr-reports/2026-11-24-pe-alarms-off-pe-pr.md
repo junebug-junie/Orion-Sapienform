@@ -110,7 +110,28 @@ Static gates (derived from `.github/workflows/orion-static-gates.yml`): `check_d
 
 ## Review findings fixed
 
-See the review section appended below.
+A code-review subagent read the diff and checked it live (read-only). It found no material findings: no alarm drops out of any live path, the FalkorDB round trip clears the old key, and the SQL compiles with one bind parameter and runs in 82 ms. Minor findings:
+
+- Finding: the retry buffer filled with copies of one failed alarm row (it is re-sampled every tick).
+  - Fix: pending rows are deduped on `(node_id, observed_at)`.
+  - Evidence: `test_a_failed_alarm_row_is_pending_once_and_enters_the_window_when_it_lands`.
+- Finding: a retried alarm row that landed later never reached the sampler's in-memory window.
+  - Fix: `_write_signal_history` returns every row that landed, and the sampler inserts the alarm rows in order.
+  - Evidence: same test (the window holds both readings after the retry).
+- Finding: the migration header listed only orion-substrate-runtime, but four more services now read the table.
+  - Fix: `REQUIRED-BY` now lists attention-runtime, equilibrium, thought and hub. The table is live, so the deploy gate passes.
+  - Evidence: `check_migration_required_by` OK.
+- Finding: `fetch_prediction_error_event_times` and `count_prediction_error_history` had no callers left.
+  - Fix: removed.
+  - Evidence: grep is empty.
+- Finding: the signal-node log line printed `error=`.
+  - Fix: it prints `value=`.
+- Finding: no test compiled the shared SQL.
+  - Fix: a test compiles it through SQLAlchemy and asserts the only bind parameter is `since`.
+- Finding: during the overlap week, a provenance ref names the signal table even when the row came from an old PE row.
+  - Fix: documented in `history_table_for`. The ref names the read-both source the reader read (the primary key is the same).
+- Finding (info only): after deploy, each alarm node has no `signal_value` until its writer next writes it. Cabinet and street write every tick; strain can take up to 300 s. The attention contest is not affected, because it reads history.
+  - Fix: none needed.
 
 ## Restart required
 

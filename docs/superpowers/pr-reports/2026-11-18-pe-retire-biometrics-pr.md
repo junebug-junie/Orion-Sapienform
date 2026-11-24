@@ -1,4 +1,4 @@
-**DO NOT MERGE before #3309's 168 h calm check passes (on/after 2026-11-22 07:00Z) and #3311 is closed.**
+**Gates passed: #3309 (7-day calm check PASS, 2026-11-24, 7.16 days, mean excess -0.009 [-0.053, +0.036]) and #3311 (closed). Ready to merge.**
 
 # PE retire step 6: family A joint surprise (body + room) replaces node:substrate.biometrics
 

@@ -1,7 +1,9 @@
 # orion-vision-window and orion-vision-council: the scene belief tracker, the
 # evidence the window hands the council (detector scores, fixture-only labels),
 # the council's transition gate, and how a council row gets its confidence and
-# its serving model. Neither service had CI before the 2026-11-15 walkway
+# its serving model. Also the office camera's person cut-off and room prop
+# rule (config/vision_profiles.yaml + the window's prop tracker, #3615).
+# Neither service had CI before the 2026-11-15 walkway
 # night-flood fix (#3387): 2,035 belief flips a day reached production unseen.
 name: orion-vision-council-window tests
 on:
@@ -14,6 +16,9 @@ on:
       - 'orion/vision/**'
       - 'orion/gpu_pool/shed_backoff.py'
       - 'config/vision_zones.yaml'
+      - 'config/vision_profiles.yaml'
+      - 'services/orion-vision-host/evals/office_person_cutoff_eval.py'
+      - 'services/orion-vision-host/evals/fixtures/**'
       - '.github/workflows/orion-vision-council-window-tests.yml'
   push:
     branches: [main]
@@ -25,6 +30,9 @@ on:
       - 'orion/vision/**'
       - 'orion/gpu_pool/shed_backoff.py'
       - 'config/vision_zones.yaml'
+      - 'config/vision_profiles.yaml'
+      - 'services/orion-vision-host/evals/office_person_cutoff_eval.py'
+      - 'services/orion-vision-host/evals/fixtures/**'
       - '.github/workflows/orion-vision-council-window-tests.yml'
 jobs:
   tests:
@@ -40,3 +48,5 @@ jobs:
         run: cd services/orion-vision-council && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider
       - name: orion-vision-window
         run: cd services/orion-vision-window && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider
+      - name: office person eval (cut-off + room prop rule)
+        run: python services/orion-vision-host/evals/office_person_cutoff_eval.py

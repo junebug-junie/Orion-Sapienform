@@ -44,15 +44,20 @@ class Settings(BaseSettings):
     # Require an acknowledged immutable expectation before a real hire.
     CURIOSITY_PEER_EPISODES_ENABLED: bool = Field(default=False)
 
-    # ── Claude usage meter (fail-closed) ──────────────────────────────
+    # ── Claude usage meter + limit back-off (#3655) ───────────────────
     # Claude (via orion-room-companion) is the only peer. Before each hire the
     # worker reads Claude Code transcripts under this path
-    # (orion.dev_economics.rate_limit_events.observe) and refuses unless the
-    # meter reads a fresh `clear`. Compose mounts the host tree read-only at
+    # (orion.dev_economics.rate_limit_events.observe). A transcript-observed
+    # `limited` refuses. `unknown` (no Claude Code session in the window, the
+    # account is idle) tries Claude. Compose mounts the host tree read-only at
     # this SAME path so absolute symlinks inside it still resolve.
     CURIOSITY_PEER_CLAUDE_PROJECTS_PATH: str = Field(
         default_factory=lambda: os.path.expanduser("~/.claude/projects")
     )
+    # When Claude answers "you've hit your ... limit" the helper refuses every
+    # hire until the reset Claude named. If Claude named no reset time, it
+    # waits this many seconds instead.
+    CURIOSITY_PEER_CLAUDE_LIMIT_BACKOFF_DEFAULT_SEC: float = Field(default=3600.0, ge=0.0)
 
     # ── Worldview graph (PeerBrief dual-write target) ─────────────────
     ORION_CURIOSITY_GRAPH_HOST: str = Field(default="")

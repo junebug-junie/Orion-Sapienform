@@ -28,8 +28,11 @@ services:
       - CURIOSITY_PEER_ENABLED=${CURIOSITY_PEER_ENABLED:-false}
 
       - CURIOSITY_PEER_EPISODES_ENABLED=${CURIOSITY_PEER_EPISODES_ENABLED:-false}
-      # Claude usage meter root (fail-closed without a fresh `clear` reading).
+      # Claude usage meter root. A transcript-observed `limited` refuses; an
+      # idle (unobserved) meter tries Claude (#3655).
       - CURIOSITY_PEER_CLAUDE_PROJECTS_PATH=${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:?set CURIOSITY_PEER_CLAUDE_PROJECTS_PATH}
+      # Back-off after Claude says "you've hit your limit" with no reset time.
+      - CURIOSITY_PEER_CLAUDE_LIMIT_BACKOFF_DEFAULT_SEC=${CURIOSITY_PEER_CLAUDE_LIMIT_BACKOFF_DEFAULT_SEC:-3600}
 
       - ORION_CURIOSITY_GRAPH_HOST=${ORION_CURIOSITY_GRAPH_HOST:-}
       - ORION_CURIOSITY_GRAPH_PORT=${ORION_CURIOSITY_GRAPH_PORT:-}
@@ -48,8 +51,8 @@ services:
       # limit state is computed; transcript text never leaves this container.
       # Mounted at the SAME path as the host so absolute symlinks inside the
       # tree (cross-project subagent transcripts) still resolve -- same rule
-      # as orion-cocreation-signals. Without this mount every hire is refused
-      # `claude_budget_unobserved` (live 2026-11-14..16).
+      # as orion-cocreation-signals. Without this mount the meter cannot see a
+      # transcript-observed limit (an unobserved meter now tries Claude, #3655).
       - ${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:?set CURIOSITY_PEER_CLAUDE_PROJECTS_PATH in services/orion-curiosity-peer/.env}:${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:?set CURIOSITY_PEER_CLAUDE_PROJECTS_PATH}:ro
     # DELIBERATELY ABSENT: no docker.sock, no SSH/gh mounts, no host network.
     # Credential isolation is the point of this container existing.

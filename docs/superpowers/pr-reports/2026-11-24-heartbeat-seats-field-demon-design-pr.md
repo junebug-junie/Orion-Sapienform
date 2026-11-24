@@ -65,10 +65,10 @@ No restart required.
 ## Risks / concerns
 
 - **Severity:** medium. **Concern:** the audit is partial, and Juniper may know of more dead inputs. **Mitigation:** step 0 starts with a full audit.
-- **Issues opened:** the heartbeat overhaul ticket (linked in the PR). **Issues closed:** none.
+- **Issues opened:** https://github.com/junebug-junie/Orion-Sapienform/issues/3838 (heartbeat overhaul). **Issues closed:** none.
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3837
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

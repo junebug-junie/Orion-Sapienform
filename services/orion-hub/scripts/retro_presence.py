@@ -33,6 +33,9 @@ STATUS_KEY = 'orion:retro:leisure:status'
 LEDGER_KEY = 'orion:retro:leisure:ledger'
 JOURNAL_KEY = 'orion:retro:leisure:journal'
 LOCK_KEY = 'orion:retro:leisure:lock'
+# Saves a leisure run loaded and found frozen (no decision offered, Link never controllable).
+UNPLAYABLE_SAVES_KEY = 'orion:retro:leisure:unplayable_saves'
+UNPLAYABLE_SAVES_MAX = 64
 BROWSER_BEAT_SEC = 5.0
 BROWSER_TTL_SEC = 15
 HUMAN_TTL_SEC = 86400
@@ -110,6 +113,15 @@ class PresenceStore:
         except Exception:  # noqa: BLE001
             return None
 
+    async def unplayable_saves(self) -> set:
+        """Save ids marked unplayable; empty when unreadable (the no-offer watchdog catches a repeat)."""
+        try:
+            raw = _text(await self._op(self.redis.get(UNPLAYABLE_SAVES_KEY)))
+            ids = json.loads(raw) if raw else []
+            return {str(i) for i in ids} if isinstance(ids, list) else set()
+        except Exception:  # noqa: BLE001
+            return set()
+
     async def status(self) -> Optional[dict]:
         try:
             raw = _text(await self._op(self.redis.get(STATUS_KEY)))
@@ -130,6 +142,13 @@ class PresenceStore:
 
     async def write_ledger(self, rows: list) -> None:
         await self._op(self.redis.set(LEDGER_KEY, json.dumps(rows[-LEDGER_MAX:], separators=(',', ':'))))
+
+    async def mark_unplayable_save(self, save_id: str) -> None:
+        raw = _text(await self._op(self.redis.get(UNPLAYABLE_SAVES_KEY)))
+        ids = json.loads(raw) if raw else []
+        ids = [i for i in (ids if isinstance(ids, list) else []) if i != save_id] + [save_id]
+        await self._op(self.redis.set(UNPLAYABLE_SAVES_KEY,
+                                      json.dumps(ids[-UNPLAYABLE_SAVES_MAX:], separators=(',', ':'))))
 
     async def append_journal(self, row: dict) -> None:
         await self._op(self.redis.lpush(JOURNAL_KEY, json.dumps(row, separators=(',', ':'))))

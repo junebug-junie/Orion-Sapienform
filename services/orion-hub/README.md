@@ -4924,6 +4924,18 @@ an exit predicts `reach_room <id>`. It is cleared when the level is known again,
 anywhere, and does nothing while Retro knows the level. Leisure counts every decision Retro
 offers; co-play counts only the decisions it plans. Eval: `evals/zelda_dungeon_bounce_replay.py`.
 
+**Frozen saves (2026-11-24, #3774).** Retro offers a decision only when Link can move, and leisure
+presses buttons only for an accepted goal. So a save taken where the game waits for input (live:
+mid room-exit, mode `0x0C`, waiting for DOWN) froze every run that loaded it: 8 runs, 11-16..23,
+zero decisions, and each skipped its end save, so the next run loaded the same save. Two guards:
+- The end save (and an orphan's save) is taken only when Retro's `status.zelda.observation` reads
+  play with Link controllable. The runner waits up to `SAVE_SETTLE_SEC` (3 s) for a scroll to
+  finish. Otherwise it records `end_save_error=skipped:not_controllable`.
+- A run with no decision offered within `NO_OFFER_SEC` (60 s) ends `no_decision_offered`
+  (journal row of the same name). When Link is also not controllable, the loaded save goes into
+  Redis `orion:retro:leisure:unplayable_saves`, and the next run loads the newest compatible save
+  not in that list. To give a marked save another try, delete that key.
+
 ### Cabinet sonification (live instrument)
 
 In Biometrics → Cabinet, **Listen** starts a quiet magnetic-field tone. Pitch rises

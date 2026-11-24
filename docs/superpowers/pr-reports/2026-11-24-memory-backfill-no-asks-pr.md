@@ -69,8 +69,18 @@ CI: 16/16 checks pass.
 ## Evals run
 
 ```text
-Larger backfill dry run (15 episodes spread over July–September, 40 exchanges, writes nothing):
-running since 2026-11-24 03:25Z. Its referent rate and interval will be added here when it finishes.
+Larger backfill dry run (15 episodes spread over July–September, 66 turns, 40 of Juniper's exchanges,
+writes nothing; 2026-11-24 03:25-03:46Z, run detached):
+  memories 106, rejected by the validator 12, errors 0, dates after their episode 0
+  any referent: 106/106 (100%)                       floor >= 97%   pass
+  referent besides Juniper/Orion: 61/106 (57.5%)     floor >= 68%   FAIL
+    95% range 48.0-66.5% (rows independent), 41.4-73.4% (whole episodes resampled)
+  high-stakes rows that would be written not_asked: 26 of 106
+Live October comparison (47 episodes, 239 distilled rows): besides Juniper/Orion 178/239 (74.5%),
+  95% range 68.6-79.6% (rows), 65.6-82.6% (episodes); lowest live week 68.4%.
+  Gap 16.9 points, 95% range 0.0-34 points.
+Proposed backfill floor (NOT applied, waits on Juniper): 53% besides Juniper/Orion, any-referent stays >= 97%.
+  Basis: lowest live week 68.4% x measured backfill/October ratio 0.773 = 52.9%.
 Earlier 2-episode dry run: 15 memories, 0 rejected, 0 errors; any-referent 100%, other-than-Juniper/Orion 53% (floor 68%).
 ```
 

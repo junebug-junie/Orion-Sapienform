@@ -1,6 +1,6 @@
 # Game company: Orion watches, comments and chats while someone plays
 
-Status: revision 4. Step 0 has run (2026-11-17). Patch 1 is merged and deployed (PR #3627; live proof #3626). Patch 2 is merged and deployed (PR #3727; live proof #3726; no look has run on real play yet). Patch 3 is PR #3745 (live proof #3741). The unscripted note-quality check (patch 2 acceptance) has not run: it runs on the first live notes, and Juniper sets the bar.
+Status: revision 4. Step 0 has run (2026-11-17). Patch 1 is merged and deployed (PR #3627; live proof #3626). Patch 2 is merged and deployed (PR #3727; live proof #3726; no look has run on real play yet). Patch 3 is merged and deployed (PR #3745, live proof #3741; line bids fixed by #3775). Patch 4 (Prime and attention) is built on branch `feat/retro-prime-attention` (report `docs/superpowers/pr-reports/2026-11-24-retro-prime-attention-pr.md`). The unscripted note-quality check (patch 2 acceptance) has not run: it runs on the first live notes, and Juniper sets the bar.
 Date: 2026-11-16. All live numbers were read on 2026-11-16 unless a line says otherwise.
 Ticket: #3500.
 
@@ -600,6 +600,27 @@ Three numbers are new. None is wired before its record is complete.
 5. **Existing mechanism.** `chat_rate_reading` is reused. No new instrument.
 6. **Reversibility.** One candidate function and one reader. Nothing is baked into a schema.
 
+**Re-run on live rows for patch 4 (2026-11-24).** The gate was run again before `world:play` was wired.
+
+1. **Provenance, as built.** `retro_sitting.started_at` and `last_input_at`: the first and newest mask change of a
+   sitting, written by Hub's Retro gateway (`services/orion-hub/scripts/retro_sitting.py` `UPSERT_SQL`, from
+   `orion/retro/sitting.py` `SittingTracker.on_input`), and for the 46 backfilled rows by the patch 1 journal backfill,
+   counted the same way. `orion/attention/world_first.py` `play_minute_times` turns each row into one stamp per whole
+   minute from its first to its newest change. That is "a minute inside a sitting", not "a minute that held a press":
+   a sitting closes after 5 minutes without a change, so a counted minute is at most 5 minutes from a press.
+2. **Independence from `world:chat`, measured.** 20 of Juniper's 60 chat turns in the 7 days to 2026-11-24 fell
+   inside a sitting (33%): she chats while she plays, partly through the game page's chat box. So the two rates are
+   correlated through her. The chain is short and real, so the rule keeps them apart at the ranking: `world:play`
+   yields whenever `world:chat` is eligible, and never counts a chat turn. From `world:reading` it shares nothing.
+3. **Theory anchor.** Unchanged: a rate against its own baseline (Bayesian surprise, Itti and Baldi, 2009).
+4. **Live data, 7 days to 2026-11-24 07:16Z.** 926 minutes held play. Of the 10,081 one-minute points of the
+   7-day grid, 84.6% read 0, and 2.9% read the full 30 of 30. Rest is a true 0: the count of the last 30 minutes
+   returns to 0 thirty minutes after the last input, it does not decay. While a sitting was open, the candidate sat
+   in the top tenth of its own week on 247 of 277 logged broadcast ticks (89%); the other 30 were a sitting's first
+   minutes. Orion's point 10 holds: "top tenth" alone admits almost any open sitting. And "unusual" (top 1%) is
+   unreachable: a full 30 of 30 reads at the 97th percentile, so a rule on that band never fires (0 ticks in the
+   replay). The rule therefore cannot be a band; it is the watch (patch 4 notes below).
+
 ### Screen change (the trigger of a look)
 
 In revision 1 this number was the salience of a look. It is now the trigger of a look, and looks carry no salience.
@@ -925,3 +946,27 @@ Patch 3 is built on branch `feat/retro-lines` (report `docs/superpowers/pr-repor
 - **A line's act opens and closes at delivery** (`hub.retro_commentary say`, produced 1). What the player made of the line (thumb, a reply within 2 min) is stored on its `retro_line` row; wiring it into the family's weight waits for patch 4's receptors.
 - **Game lines are not in the day letter's chat gather**, and a guest's turn is excluded from every "Juniper spoke" rule in `orion/regulation/juniper_turns.py` (dream idle gate, arousal, the act and promise ledgers), beyond the three readers this spec names.
 - **Not built:** the last 6 look notes in every turn's game block (section 5, "What the server adds"; the line turn has them); a cancel listener in orion-thought (#3658: a line cancelled mid-stance lets that one call finish, and nothing it returns is said).
+
+Patch 4 is built on branch `feat/retro-prime-attention` (report `docs/superpowers/pr-reports/2026-11-24-retro-prime-attention-pr.md`). The replay ran first (`scripts/analysis/replay_world_play.py`, 3,048 logged broadcast ticks, 2026-11-17 07:22Z to 2026-11-24 07:16Z, 81 sittings of which 46 backfilled, 135 stored look notes since 2026-11-22 23:39Z). Three eligibility rules, each alone, the same chat yield on all:
+
+| Rule | Play won (ticks) | Reading lost | Curiosity-seeding winners lost | Reading share in sittings, before / after | Curiosity-seeding share in sittings, before / after |
+| --- | --- | --- | --- | --- | --- |
+| top tenth while a sitting is open and the watch is not off | 166 | 4 | 30 | 6.1% / 4.7% | 26.0% / 15.2% |
+| the same, and a look note stored in the last 3 min | 18 | 0 | 5 | 6.1% / 6.1% | 26.0% / 24.2% |
+| top 1% only, watch not off | 0 | 0 | 0 | unchanged | unchanged |
+
+- No sitting of 2 hours or more falls inside the 7 days the broadcast log keeps (the two such sittings, 10-27 and 11-15, are older), so the 2-hour figure the acceptance check names has no data yet. The shares above are over all 277 ticks with an open sitting. A "curiosity-seeding winner" is a winner whose loop carries a `node:` ref (reading and every body or camera node): `orion/substrate/endogenous_curiosity.py` seeds a run only from such a loop, so a `world:play` win costs curiosity a seed.
+- **Chosen: the note rule.** It keeps reading whole (0 ticks lost) and costs curiosity 5 ticks in a week, where the band rule took 136 calm ticks and 30 curiosity seeds. It is also section 7's own definition of watching ("a candidate with no look behind it would win attention with nothing in it"). Since the looks began (11-22 23:39Z) it kept 18 of the band rule's 25 wins: when Orion really looks, play still wins. Games with no calibrated floor (most of them today) get no looks, so they cannot win attention: that is honest, Orion cannot see them.
+
+Choices made while building patch 4, each with its reason:
+
+- **The label carries no count.** Section 7's label "(27 of the last 30 minutes)" would give one sitting a new open-loop id every minute (the loop id is a hash of the label; the `world:chat` lesson, `CHAT_TALKING_LABEL`). The label is "Juniper is playing <title>" or "Someone is playing <title>"; the count and the newest note ride in `evidence`.
+- **30-minute window**, not chat's 15: the section 7 label and the gate record both speak of half hours.
+- **The field contest gets `world:play` too** (orion-attention-runtime), as a channel target like chat, so the two contests cannot disagree.
+- **"Not watching" is a measured state, not absence.** A new optional field, `AttentionCandidateV1.not_eligible_reason`, holds the candidate out with its reason while its reading and band stay in the trace. Absent stays for "`retro_sitting` could not be read". A watch that cannot be read holds it out (fail closed).
+- **Prime's frame line needs the watch state**, which lived only in the gateway's memory. The gateway now publishes it to `orion:retro:watch` (every 15 s, 90 s expiry) beside `orion:retro:sitting`.
+- **The sitting's event want has a family of its own**, `hub.retro_sitting` (tier 2, no lanes, window 6 h, verb `hold`). Tier 2 is a proposal: Juniper decides tiers.
+- **Juniper's engagement uses the same record as outreach**, a `juniper_replied` act graded by the horizon resolver, but only for a line said while "Juniper" was stated. Horizon 300 s; her thumb decides (up 1, down 0), else her reply within 2 minutes (the chat box or any of her chat turns) is 1, else 0. A line to a guest keeps patch 3's act (produced at delivery), so no guest action reaches the weight.
+- **`hub.retro_commentary` hunger now counts from its want's own clock** (`hunger_from: want_opened`), which is section 9's rule ("time since Orion last spoke in this sitting"). It was counting from the family's last act close, which a Juniper line's act now reaches only at its 300 s horizon; without this change lines would come about 5 minutes later.
+- **The cap on Prime thoughts is enforced, not assumed.** A thought whose answer cannot be used keeps its pending changes, so without a cap a third thought could name the sitting. `orion/prime/sitting.py` counts the thoughts that open while a change names the sitting and drops the changes at 2.
+

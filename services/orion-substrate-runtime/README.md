@@ -1365,6 +1365,16 @@ Juniper is busy, and the candidate is absent (not calm) if the journal query fai
 in-memory cache bounds the read path. Set the flag to `false` and restart substrate-runtime to
 disable it.
 
+**Play is the third world candidate (2026-11-24, game company patch 4).** When
+`ATTENTION_WORLD_PLAY_ENABLED=true` (ships on), `world:play` counts the minutes with player input on the
+Retro service (every minute of a `retro_sitting` row, first to newest mask change) in a trailing 30-minute
+window against its own seven-day minute grid (`orion/attention/world_first.py` `play_candidate`; the read is
+`orion/attention/play_read.py`, shared with orion-attention-runtime, cached 30 s). It competes only while Orion
+WATCHES the open sitting: the watch in force is not off and a look note was stored in the last 3 minutes (the rule
+the replay chose, `scripts/analysis/replay_world_play.py`). It yields to `world:chat`; nothing makes reading yield to
+it. An unreadable `retro_sitting` makes it absent, never calm. Its signal carries `retro_sitting:<id>`, and a game
+line said while it holds the workspace answers that loop (`orion/grammar/act_ledger.py`).
+
 **`world:chat` carries what Juniper said (2026-11-12).** The chat candidate's label is the fixed
 text "Juniper is talking", so its open-loop id stays the same through a conversation (it used to
 carry the message count, and each new message gave the conversation a new loop id). When a turn is

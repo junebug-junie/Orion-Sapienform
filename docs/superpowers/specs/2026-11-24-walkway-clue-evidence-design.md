@@ -11,7 +11,7 @@ album match is weak and Orion has to ask.
 
 Juniper already tells Orion how she can tell. The "How could you tell?" box
 (PR #3769) has 7 reasons saved: a white dog, a stroller, a purple puffy jacket,
-shorty shorts, a tight ponytail, tall or short, walking with Addy, leaving the
+shorty shorts, a tight ponytail, tall or short, walking with a usual companion, leaving the
 house after dark. Nothing reads them.
 
 This proposal makes those clues count as evidence, both for a name and against
@@ -101,9 +101,9 @@ alone, it does not ship.
   her answers move it.
 - Cap: the clue term can move a score by at most one band step. Clues alone
   never name anyone with no album match: a white dog is not enough for
-  "probably Addy" if Addy's album says no.
+  "probably X" if X's album says no.
 - The guess carries `clues: [{clue, read, weight}]` so the reason is visible,
-  and the ask card says it: "Back turned, white dog. Is this Addy?"
+  and the ask card says it: "Back turned, white dog. Is this <name>?"
 
 No bus or schema change in patches 1-2 beyond the new table and fact category.
 Patch 3 adds `clues` to the guess dict that the Hub reads.

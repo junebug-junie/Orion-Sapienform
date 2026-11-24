@@ -1,6 +1,6 @@
 # Orion's now: fair ranking for unscored kinds, and what Prime holds comes first (#3783)
 
-Fixes #3783. Refs #3425.
+Fixes #3783. Fixes #3540. Refs #3425.
 
 ## Summary
 
@@ -143,6 +143,8 @@ tests/scripts/test_schema_skew_discovery.py tests/test_gitignore_no_bare_catchal
 ```
 
 New tests: `test_an_unscored_kind_reaches_the_now_past_many_scored_organs`,
+`test_a_sparse_kind_under_twenty_past_events_reaches_the_now` (#3540: a kind with a magnitude rule but under 20
+past events),
 `test_a_row_about_a_held_concern_ranks_first_and_is_marked`, `test_held_matching_is_exact_ids_only`,
 `test_no_held_is_the_same_body_shape_as_before`,
 `test_build_now_caps_two_per_organ_and_twelve_in_all_every_organ_seated_before_any_second`,
@@ -214,7 +216,8 @@ scripts/safe_docker_build.sh orion-mind up -d --build
   pins still lead; the cite count after deploy measures whether this helps.
 - Severity: low. Concern: a held item from the last 24 h repeats in every Prime read while the concern is held.
   Mitigation: at most 3 held rows; a concern lives 24 h unkept.
-- Issues opened: none. Issues closed: #3783 (on merge; `verify-live` evidence still due after deploy).
+- Issues opened: none. Issues closed: #3783 and #3540 (same bug: a kind with fewer than 20 past events has salience
+  None and sorted last), on merge; live evidence still due after deploy. #3498 (cursor advance) is untouched here.
 
 ## PR link
 

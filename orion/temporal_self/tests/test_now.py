@@ -517,3 +517,22 @@ def test_no_pins_is_exactly_the_old_now():
     a = build_now(rows, "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG)
     b = build_now(rows, "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG, pinned=[])
     assert a == b
+
+
+def test_a_sparse_kind_under_twenty_past_events_reaches_the_now():
+    """#3540: a kind WITH a magnitude rule but fewer than 20 past events has salience None. It must reach the now past
+    a full field of scored rows, including ones at 0.00, and still show salience None (never 0)."""
+    hist = [(T - timedelta(days=i + 1), 300.0) for i in range(5)]  # 5 past office visits: too few to score
+    sal = salience_of(600.0, T, hist)
+    assert sal is None
+    rows = [row(f"{k}:{j}", k, sal=s) for k, s in (("gpu_wait", 0.9), ("prediction_surprise", 0.0),
+                                                   ("field_dominance_run", 0.97), ("curiosity_run", 0.0),
+                                                   ("dream_cycle", 0.0), ("metacog_observation", 0.6),
+                                                   ("retro_play", 0.8))
+            for j in range(2)]
+    rows.append(row("office_session:visit", "office_session", sal=sal, at=T - timedelta(hours=2)))
+    now = build_now(rows, "prime", since=T - timedelta(hours=3), as_of=T, shown_id="s", registry=REG)
+    ids = [i.event_id for i in now.items]
+    assert "office_session:visit" in ids
+    assert next(i for i in now.items if i.event_id == "office_session:visit").salience is None
+    assert ids.index("office_session:visit") < ids.index("prediction_surprise:0")

@@ -83,7 +83,11 @@ def test_read_both_sql_unions_both_tables_and_prefers_signal():
 
 def test_migration_matches_module_contract():
     sql = MIGRATION.read_text()
-    assert sql.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime"
+    # Patch 2: every service that reads the shared history source needs the table.
+    assert sql.splitlines()[0] == (
+        "-- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime, orion-attention-runtime, "
+        "orion-equilibrium-service, orion-thought, orion-hub"
+    )
     low = sql.lower()
     assert "create table if not exists substrate_node_signal_history" in low
     for col in ("node_id      text", "observed_at  timestamptz", "value        double precision",

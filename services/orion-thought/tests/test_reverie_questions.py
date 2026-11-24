@@ -313,8 +313,17 @@ def test_plan_request_is_the_reverie_question_verb_on_the_agent_lane_with_seed_a
     assert req.plan.verb_name == "reverie_question"
     assert req.args.extra["llm_route"] == "agent" and req.args.extra["execution_lane"] == "agent"
     assert set(req.context) == {"seed_kind", "seed_material", "seed_refs", "seed_evidence", "user_message",
-                                "mode", "orion_now"}
+                                "mode", "orion_now", "chat_template_kwargs", "max_tokens"}
     assert req.plan.metadata["recall_enabled_default"] == "false"
+
+
+def test_question_call_turns_thinking_off_and_leaves_room_for_the_json():
+    """Regression (live 2026-11-24): the agent lane thinks by default; at the gateway's 512-token default every
+    reverie call ran out mid-reasoning and 7 of 8 were stored as unparseable."""
+    r = rev()
+    req = r.build_question_plan_request(_seed(), correlation_id="c1")
+    assert req.context["chat_template_kwargs"] == {"enable_thinking": False}
+    assert req.context["max_tokens"] >= 1024
 
 
 def test_prompt_renders_the_seed_and_warns_on_unrecognised():

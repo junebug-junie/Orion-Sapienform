@@ -75,6 +75,11 @@ logger = logging.getLogger("orion-thought.reverie")
 VERB = "reverie_question"
 # The lane curiosity's runs use (services/orion-hub/scripts/curiosity_investigation.py: route "agent").
 REVERIE_LLM_ROUTE = "agent"
+# Answer budget for one question (JSON: question <= 300 chars, why <= 200, refs, cites). Live 2026-11-24:
+# with the gateway's default 512 and the agent lane thinking by default, all 28 calls ended at exactly 512
+# completion tokens, the reasoning ate the budget, and 7 of 8 reveries were stored as `unparseable` (the one
+# that worked used 474). Thinking is turned off below, as stance does; this leaves headroom for the JSON.
+REVERIE_QUESTION_MAX_TOKENS = 1024
 FOCUS_RPC_TIMEOUT_SEC = 10.0
 FOCUS_INVOCATION_CONTEXT = "reverie"
 LIVED_MEMORY_COLLECTION = "orion_lived_memory"
@@ -187,6 +192,9 @@ def build_question_plan_request(seed: ReverieSeedV1, *, correlation_id: str, ori
         "seed_evidence": seed.evidence,
         "user_message": None,
         "mode": "reverie",
+        # cortex-exec's executor forwards both to the gateway (see bus_listener.build_stance_react_context).
+        "chat_template_kwargs": {"enable_thinking": False},
+        "max_tokens": REVERIE_QUESTION_MAX_TOKENS,
     }
     if orion_now:
         context["orion_now"] = orion_now

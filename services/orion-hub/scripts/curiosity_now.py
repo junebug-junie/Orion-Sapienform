@@ -4,18 +4,21 @@ Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, 
 A3-A4). The organ registry (``config/integration/organs.yaml``) names this module as curiosity's ``reads_now``.
 
 1. **Kickoff** (``read_for_kickoff``). ``GET /temporal-self/now?organ=curiosity&run_ref=<run_id>`` on
-   orion-durable-runs, with no ``since``: the endpoint then reads from when curiosity last looked (its own
-   cursor, the previous curiosity run's read, either line; 24 h on the first read) and moves that cursor. An
-   explicit ``since`` would make every read an inspection read that never moves it. The endpoint stores
+   orion-durable-runs, with no ``since``: the endpoint then reads from curiosity's own cursor (the cut-off of
+   its last CLOSED read, either line; 24 h when none). The read does not move the cursor; closing it at the
+   turn's end does (#3498). An explicit ``since`` would make every read an inspection read that never moves it. The endpoint stores
    every read as an ``experience_shown`` row and returns its ``shown_id``. The shown_id and the shown event
    ids are kept with the run: in this process, and on the run's decision row
    (``curiosity_offer_decisions.constants.now_shown_id`` / ``now_event_ids``), because the durable turn can
    run in another process attempt, after a Hub restart, hours later. No decision row (the spend log off):
    memory only, and a turn in another process records no cites (logged ``reason=no_shown_id``).
-2. **Turn end** (``record_turn_cites``). The ``[experience:<id>]`` cites in the turn's text, at most 3
-   (``orion.curiosity.now_section.extract_cites``), go to ``POST /temporal-self/now/use`` with the run's
-   shown_id. The endpoint keeps only ids that were shown (``record_use``); the rest are counted there. No
-   cite: nothing is posted (the shown row with no use already says "read the now, cited nothing").
+2. **Turn end** (``record_turn_cites``), only for a turn whose model produced text (the caller,
+   ``curiosity_investigation._schedule_now_cites``, skips a turn with no text: a refusal, a timeout). The
+   ``[experience:<id>]`` cites in the turn's text, at most 3 (``orion.curiosity.now_section.extract_cites``), go
+   to ``POST /temporal-self/now/use`` with the run's shown_id, and that post closes the read, which moves
+   curiosity's cursor past it (#3498). No cite: the post is still sent with no cites, so the shown row reads
+   "read the now, cited nothing", not "never closed". The endpoint keeps only ids that were shown
+   (``record_use``); the rest are counted there.
 
 Never fails or delays a kickoff or a turn: every read is bounded by ``NOW_TIMEOUT_SEC`` and every failure is
 None plus one log line. Flag: ``HUB_CURIOSITY_NOW_ENABLED`` (default true). Off: no read, no section, no post.
@@ -133,13 +136,11 @@ class CuriosityNow:
         return now
 
     async def record_turn_cites(self, run_id: str, text: Optional[str]) -> Optional[dict]:
-        """POST the turn's cites (at most 3) against the run's shown row. The endpoint's verdict, or None
-        when nothing was posted or the post failed. Never raises."""
+        """Close the run's read: POST the turn's cites (at most 3, possibly none) against the run's shown row.
+        Call only when the turn's model produced ``text``. The endpoint's verdict, or None when nothing was
+        posted or the post failed. Never raises."""
         try:
-            if not (self.enabled and self.root and run_id):
-                return None
-            if not extract_cites(text):
-                logger.info("curiosity_now_cites run=%s cites=0", run_id)
+            if not (self.enabled and self.root and run_id and str(text or "").strip()):
                 return None
             shown = await self._load_shown(run_id)
             if not shown:

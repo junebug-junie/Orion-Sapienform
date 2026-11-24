@@ -31,7 +31,9 @@ A line, in order:
    claims the row (running -> delivered) under outreach's send lock; a yielded row refuses, also when the draft
    finished after the yield. Delivered: pushed to every chat socket (the game page shows it in its line strip),
    one chat history row of Orion's own (no prompt), the act ``hub.retro_commentary say``, no notification.
-10. **Cites.** ``[experience:<id>]`` cites in the line go to ``POST /temporal-self/now/use``.
+10. **Cites.** ``[experience:<id>]`` cites in the line go to ``POST /temporal-self/now/use``. Once the model has
+    answered, the read is closed there even with no cite (a pass, a line not said), which moves the play organ's
+    cursor (#3498); a turn that never answered (empty, yielded mid-turn) leaves the read open.
 
 Juniper goes first: any message a person sends on a chat socket while a line turn runs marks the line ``yielded``
 (the row first), then cancels the turn: the Hub task, the motor (``HarnessGovernorClient.cancel``) and the hold.
@@ -584,11 +586,19 @@ class CommentaryService:
             return
         if not str(text or "").strip():
             result.update(outcome="failed", failure=str(debug.get("error") or "empty_generation"))
-            return
+            return  # the model never answered: the now read stays open, so the next line is offered it again
+
+        async def close_now(cites_: list) -> None:
+            """The model answered: close the now read (#3498), with the line's cites when it was said, else none.
+            Closing moves the play organ's cursor; a read never closed is offered again."""
+            if getattr(now_obj, "shown_id", None):
+                await self._record_use(now_obj.shown_id, f"{CITING_PREFIX}:{line_id}", list(cites_))
+
         staged = debug.get("staged_attachment_count")
         if not isinstance(staged, int) or staged < len(refs):
             # The prompt named frames the turn did not carry: neither its words nor its judgments may stand.
             result.update(outcome="failed", failure=f"frames_not_staged:{staged}/{len(refs)}")
+            await close_now([])
             return
         reply = C.parse_reply(text)
         settlements = C.settle(groups, reply.judgments, frame_times)
@@ -602,6 +612,7 @@ class CommentaryService:
         if not reply.line or is_pass_response(reply.line):
             result.update(outcome="passed", failure=None)
             outreach.record_blocked("orion_passed", correlation_id=corr, source=C.SOURCE, extra=meta)
+            await close_now([])
             return
         from orion.curiosity.now_section import extract_cites
 
@@ -627,12 +638,13 @@ class CommentaryService:
             result.update(message_id=sent.get("message_id"))
             await self._publish_act(bus, line_id=line_id, sitting_id=sid, text=reply.line,
                                     player_stated=sitting.get("player_stated"))
-            if cites and getattr(now_obj, "shown_id", None):
-                await self._record_use(now_obj.shown_id, f"{CITING_PREFIX}:{line_id}", cites)
+            await close_now(cites)
         elif sent.get("reason") == "yielded":
             result.update(outcome="yielded", failure="yielded_before_delivery")
+            await close_now([])  # the model wrote it; nothing was said, so nothing is cited
         elif not run.claimed:
             result.update(outcome="failed", failure=str(sent.get("reason") or "not_sent"))
+            await close_now([])
 
     async def _settle(self, settlements: list, line_id: str) -> None:
         if not settlements:
@@ -805,9 +817,10 @@ class CommentaryService:
         return now
 
     async def _default_record_use(self, shown_id: str, citing_ref: str, cites: list) -> Any:
-        """``POST /temporal-self/now/use`` with the line's cites (durable-runs keeps only ids that were shown)."""
+        """``POST /temporal-self/now/use`` with the line's cites, possibly none (durable-runs keeps only ids that were
+        shown). The post closes the read (#3498)."""
         root = self._durable_runs_url()
-        if not (root and shown_id and cites):
+        if not (root and shown_id):
             return None
         import httpx
 

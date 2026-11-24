@@ -1520,9 +1520,12 @@ class PrimeRuntime(MindLoopRuntime):
         self._now_unseen = None
 
     async def _record_now_use(self, *, shown_id: Optional[str], cites: list[str], thought_id: str) -> str:
-        """POST the thought's experience cites (already only shown ones, at most 3) with the now's shown_id.
-        Returns the outcome for the log. A failure is logged, never raised: the thought already happened."""
-        if not shown_id or not cites:
+        """POST the thought's experience cites (already only shown ones, at most 3, possibly none) with the now's
+        shown_id. Called only once the model answered, so the post closes the read (#3498): a closed read with no
+        cite is "read, cited nothing" in the coverage report, not "never closed". Prime reads with since=, so the
+        close never moves a server cursor (Prime keeps its own, ``_now_seen_as_of``). Returns the outcome for the
+        log ("none" when nothing was cited). A failure is logged, never raised: the thought already happened."""
+        if not shown_id:
             return "none"
         url = f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}{NOW_USE_PATH}"
         body = {"shown_id": shown_id, "citing_ref": f"{PRIME_IDENTITY.thought_ref}{thought_id}", "cites": list(cites)}
@@ -1538,7 +1541,7 @@ class PrimeRuntime(MindLoopRuntime):
                     if isinstance(res, dict) else 0)
         logger.info("prime_now_use thought=%s shown_id=%s cited=%s stored=%d rejected=%d", thought_id, shown_id,
                     ",".join(cites), stored, rejected)
-        return f"stored {stored}/{len(cites)}"
+        return f"stored {stored}/{len(cites)}" if cites else "none"
 
     async def _read_curiosity(self) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         """Hub's curiosity dashboard (runs) for settling Prime's questions, with the long timeout. Not read for the

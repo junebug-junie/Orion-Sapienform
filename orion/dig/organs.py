@@ -260,7 +260,8 @@ def build(day: date, rows: Mapping[str, list[Mapping[str, Any]]], registry: Orga
     kinds = {str(r["source_kind"]): _int(r["n"]) for r in rows.get("kinds", [])}
     uses = [(str(r["event_id"]), str(r["source_kind"]), str(r["citing_organ"])) for r in rows.get("uses", [])]
     made = {str(r["citing_organ"]): _int(r["n"]) for r in rows.get("cites_made", [])}
-    reads = {str(r["reader_organ"]): (_int(r["reads"]), _int(r["reads_no_cite"])) for r in rows.get("reads", [])}
+    reads = {str(r["reader_organ"]): (_int(r["reads"]), _int(r["reads_no_cite"]), _int(r.get("reads_unclosed")))
+             for r in rows.get("reads", [])}
     rate = use_rate(kinds, uses, window_start=lo, window_end=hi, registry=registry, cites_made=made)
     per_organ = {o.organ: o for o in rate.organs}
 
@@ -314,7 +315,7 @@ def build(day: date, rows: Mapping[str, list[Mapping[str, Any]]], registry: Orga
         o = per_organ[organ]
         organ_kinds = registry.kinds_of(organ)
         organ_acts = acts.get(organ, [])
-        r_n, r_none = reads.get(organ, (0, 0))
+        r_n, r_none, r_open = reads.get(organ, (0, 0, 0))
         mine = cited_by_organ.get(organ, [])
         if not (o.experiences or organ_acts or r_n or mine or o.used_by_other):
             quiet.append(organ)
@@ -342,7 +343,9 @@ def build(day: date, rows: Mapping[str, list[Mapping[str, Any]]], registry: Orga
             L.append(f"  thoughts by what woke them: {_counts(wakes.items())} "
                      f"(a need counts once Prime writes \"woke: {NEED_PREFIX}<name>\")")
         if spec.get("reads_now"):
-            L.append(f"  read the now {r_n} times; {r_none} of those reads cited nothing; {o.cites_made} valid cites")
+            # #3498: a read the organ never closed is one its model never saw (a refusal, a timeout), not a choice
+            L.append(f"  read the now {r_n} times; {r_none} of those reads cited nothing; {r_open} never closed "
+                     f"(no model call used them); {o.cites_made} valid cites")
         else:
             L.append(f"  did not read the now (registry: {_q(spec.get('exempt_read') or 'no reason given')})")
         for r in mine[:CITED_SHOWN]:

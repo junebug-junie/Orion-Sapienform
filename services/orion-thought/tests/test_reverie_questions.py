@@ -435,6 +435,51 @@ def test_a_refused_lane_writes_no_row_and_three_refusals_give_up_the_stretch(cle
     assert clean_state.REVERIE_SKIP_COUNTS["lane_refused_stretch"] >= 1
 
 
+def test_a_refused_lane_never_closes_the_now_read(clean_state):
+    """#3498: the model never saw the now, so the read stays open and the next reverie is offered it again."""
+    f = Fake(ask_raises=clean_state.ReverieLlmUnavailable("timeout"))
+    assert asyncio.run(clean_state.run_reverie_once(f.deps())) is None
+    assert f.asked == 1 and f.uses == []
+
+
+def test_a_model_answer_with_no_cites_still_closes_the_read(clean_state):
+    """#3498: the model ran and cited nothing: the read is closed with no cites ("read, cited nothing")."""
+    f = Fake(answer={"question": "Why does the substrate keep winning?", "refs": [REF]})
+    q = asyncio.run(clean_state.run_reverie_once(f.deps()))
+    assert q.cites == [] and f.uses == [("s1", [])]
+
+
+def test_a_persist_failure_after_the_answer_still_closes_the_read(clean_state):
+    f = Fake()
+
+    async def no_persist(q):
+        return False
+
+    import dataclasses
+
+    deps = dataclasses.replace(f.deps(), persist=no_persist)
+    assert asyncio.run(clean_state.run_reverie_once(deps)) is None
+    assert f.uses == [("s1", ["e1"])]
+
+
+def test_record_reverie_now_use_posts_an_empty_close(clean_state, monkeypatch):
+    from orion.schemas.reverie import ReverieQuestionV1
+
+    import app.temporal_self_cue as cue_mod
+
+    posted = []
+
+    async def fake_post(shown_id, cites, citing_ref, timeout_sec, *, correlation_id=""):
+        posted.append((shown_id, cites, citing_ref))
+        return {"uses": []}
+
+    monkeypatch.setattr(cue_mod, "post_now_use", fake_post)
+    q = ReverieQuestionV1(question_id="q1", thread_id="t", thread_key="k", seed_kind="lost_bet", none_reason="x")
+    asyncio.run(clean_state.record_reverie_now_use(clean_state.NowCue(shown_id="s9"), q))
+    asyncio.run(clean_state.record_reverie_now_use(clean_state.NowCue(reason="timeout"), q))  # never read: no post
+    assert posted == [("s9", [], "reverie_question:q1")]
+
+
 def test_the_focus_cap_keeps_the_question_but_does_not_route_it(clean_state, monkeypatch):
     monkeypatch.setattr(clean_state.settings, "reverie_focus_max_per_day", 3)
     f = Fake(routes=3)

@@ -54,6 +54,8 @@ MIGRATIONS = (
     REPO / "services/orion-sql-db/manual_migration_vision_office_session_v1.sql",
     # Orion's now (integration patch 1): salience / surprise_nats columns, experience_shown / _use.
     REPO / "services/orion-sql-db/manual_migration_experience_now_v1.sql",
+    # #3498: a read moves its organ's cursor only once closed (experience_shown.closed_at).
+    REPO / "services/orion-sql-db/manual_migration_experience_shown_closed_v1.sql",
     # Reveries that ask (Patch 1): the reverie_question source table.
     REPO / "services/orion-sql-db/manual_migration_reverie_question.sql",
 )

@@ -475,6 +475,29 @@ broadcast still runs with `magnitude=None`.
 3. Rebuild this service.
 4. Only then set the flag.
 
+## Signal history for alarms and camera scene change (2026-11-24, Patch 1, default on)
+
+Design: `docs/superpowers/specs/2026-11-24-pe-retire-perception-and-alarms-design.md` (PR #3781).
+
+Five nodes write into the prediction-error slot but are not forecast misses: the three alarms
+(`node:substrate.cabinet`, `strain`, `street`) and the two camera scene-change scores
+(`node:substrate.perception`, `perception_walkway`). Patch 1 gives them their own table,
+`substrate_node_signal_history` (`kind` = `alarm` or `scene_change`;
+`services/orion-sql-db/manual_migration_node_signal_history_v1.sql`).
+
+When `SUBSTRATE_SIGNAL_HISTORY_ENABLED=true`:
+
+1. Every reading of those five nodes that the PE-history sampler records is also written to the
+   new table (same node_id, observed_at, value). Strain's direct event row is copied too.
+2. The new table is pruned with the PE table, at `SUBSTRATE_PE_HISTORY_RETENTION_HOURS`.
+3. The PE-table writes do not change. Nothing reads the new table yet, so Orion's behavior does
+   not change. Read-both helpers (`orion/substrate/signal_history.py`,
+   `store.fetch_signal_history_read_both` and friends) are ready for the reader switch.
+
+The write fails open: without the migration it logs `substrate_signal_history_write_failed`.
+`scripts/backfill_signal_history_from_pe.py` copies the last 7 days of the five nodes from the
+PE table (dry run by default).
+
 ## Self-tuned prediction expectation (rung 6) -- retired 2026-11-03
 
 From 2026-10-16 to 2026-11-03 this service recorded each execution, chat and

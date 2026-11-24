@@ -580,6 +580,16 @@ so the existing "Is this Juniper?" asks ask the right name, and the office line 
    same-sighting crop pairs (learned each tick) looks like two people and adds
    nothing until she answers. Rows whose answer no longer holds (a rename, a
    split) get `revoked_at`.
+   **Confirmed pictures** (`VISION_PERSON_PICTURE_SAME_POSITIVES`, on;
+   2026-11-24). Each picture she confirmed is the person (a `same` picture
+   verdict: "Yes, that's X" on a walkway story card, or "same person" on a
+   multi-picture "who is this?" card) adds its crop as +1 for the group's
+   name (`picture_same`), even when the group looks like two people. Only the
+   pictures she was shown count, never the rest of an impure group. Skipped:
+   a picture already +1 for that name from another source (no double count),
+   a picture she also said is not that person, a picture whose own name
+   differs from the group's current name (renamed since), and non-person
+   groups. Off = those rows are revoked on the next tick.
 2. Refits the bars (`vision_person_bar`, per person and channel). `accept_at`
    is a conformal false-accept bound at `VISION_PERSON_FALSE_ACCEPT_ALPHA`
    (0.05) over the CLUSTER scores of everyone who is not that person: the

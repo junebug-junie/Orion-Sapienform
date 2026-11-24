@@ -488,6 +488,9 @@ SYNC_PREFIXES = (
     # Stationary-prop rule incl. room cameras (VISION_STATIONARY_ROOM_*,
     # 2026-11-24, #3614): outside every prefix above, so new keys never synced.
     "VISION_STATIONARY_",
+    # Confirmed pictures teach the person model (orion-sql-writer, 2026-11-24):
+    # VISION_PERSON_* matched no prefix, so the new key was never synced.
+    "VISION_PERSON_PICTURE_SAME_",
     # Person graph loop + its sighting refresh (orion-substrate-runtime, 2026-11-03).
     # Neither matched a prefix: the default run visited the .env and added nothing.
     "PERSON_GRAPH_",

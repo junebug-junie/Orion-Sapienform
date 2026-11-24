@@ -65,7 +65,13 @@ async def main_async() -> None:
         return
 
     # Restart must not forget a fresh "you've hit your limit" (#3655).
-    await asyncio.to_thread(seed_claude_limit_memory, settings)
+    # Bounded: a hung graph host must not block heartbeat and consumers.
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(seed_claude_limit_memory, settings), timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        logger.warning("curiosity_peer_limit_seed_skipped reason=timeout")
 
     heartbeat = build_heartbeat_chassis(settings)
     if settings.ORION_BUS_ENABLED:

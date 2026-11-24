@@ -457,10 +457,12 @@ def handle_help_request(
         _persist(brief)
         return brief
 
-    def _record(brief: PeerBriefV1) -> None:
+    def _record(brief: PeerBriefV1, raw_error: str = "") -> None:
+        # raw_error: the unclipped exception text, so a long error that names
+        # the reset late is not cut before the reset is read.
         recorded = memory.record_outcome(
             status=brief.status,
-            text=f"{brief.refusal_reason or ''} {brief.summary or ''}",
+            text=f"{raw_error} {brief.refusal_reason or ''} {brief.summary or ''}",
             at=clock(),
             default_sec=settings.CURIOSITY_PEER_CLAUDE_LIMIT_BACKOFF_DEFAULT_SEC,
         )
@@ -518,7 +520,7 @@ def handle_help_request(
                 "claude_failed",
             ),
         )
-        _record(brief)
+        _record(brief, raw_error=str(claude_exc))
         _persist(brief)
         return brief
 

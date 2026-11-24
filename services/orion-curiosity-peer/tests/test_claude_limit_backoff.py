@@ -219,6 +219,9 @@ def test_default_backoff_setting_is_one_hour(monkeypatch: pytest.MonkeyPatch) ->
          datetime(2026, 11, 24, 9, 0, tzinfo=timezone.utc),
          datetime(2026, 11, 27, 3, 0, tzinfo=timezone.utc)),
         ("You've hit your usage limit", datetime(2026, 11, 24, 9, 0, tzinfo=timezone.utc), None),
+        # Not an IANA zone: no guess (the caller's bounded default applies).
+        ("You've hit your session limit · resets 11pm (PST)",
+         datetime(2026, 11, 24, 20, 0, tzinfo=timezone.utc), None),
     ],
 )
 def test_parse_limit_reset(text: str, at: datetime, want: datetime | None) -> None:
@@ -293,3 +296,74 @@ def test_boot_seed_graph_error_is_best_effort() -> None:
 def test_boot_seed_skips_without_graph_credentials() -> None:
     settings = Settings(_env_file=None, ORION_CURIOSITY_GRAPH_HOST="", ORION_CURIOSITY_GRAPH_PORT="")
     assert seed_claude_limit_memory(settings, memory=ClaudeLimitMemory()) is None
+
+
+def test_reset_read_just_after_it_passed_does_not_hold_a_day() -> None:
+    """Review finding: 'resets 12:10pm' read at 12:10:20 rolls to tomorrow in
+    parse_reset_at. A dateless session reset is never > 5 h away, so use the
+    bounded default instead of a ~24 h hold."""
+    from app.claude_limit_backoff import hold_from_failure
+
+    at = datetime(2026, 11, 24, 12, 10, 20, tzinfo=timezone.utc)
+    hold = hold_from_failure(LIVE_TEXT_1124, at, default_sec=3600)
+    assert hold is not None
+    assert hold.resets_at == at + timedelta(hours=1)
+    assert hold.reset_stated is False
+
+
+def test_weekly_reset_days_away_is_kept() -> None:
+    from app.claude_limit_backoff import hold_from_failure
+
+    at = datetime(2026, 11, 24, 9, 0, tzinfo=timezone.utc)
+    hold = hold_from_failure(
+        "You've hit your weekly limit · resets Nov 27, 3am (UTC)", at, default_sec=3600
+    )
+    assert hold is not None and hold.reset_stated
+    assert hold.resets_at == datetime(2026, 11, 27, 3, 0, tzinfo=timezone.utc)
+
+
+def test_long_error_naming_reset_late_still_reads_the_reset() -> None:
+    """The failed brief's reason is clipped to 200 chars; the hold must read
+    the unclipped exception text."""
+    memory = ClaudeLimitMemory()
+    clock = _Clock(datetime(2026, 11, 24, 9, 12, tzinfo=timezone.utc))
+    claude = _Claude()
+    claude.fail_with = "x" * 400 + " " + LIVE_TEXT_1124
+    _hire(1, claude=claude, meter=_Meter(), memory=memory, clock=clock)
+    hold = memory.active(clock.at)
+    assert hold is not None and hold.reset_stated
+    assert hold.resets_at == datetime(2026, 11, 24, 12, 10, tzinfo=timezone.utc)
+
+
+def test_boot_seed_empty_outcome_clears() -> None:
+    boot = datetime(2026, 11, 24, 15, 0, tzinfo=timezone.utc)
+    memory = ClaudeLimitMemory()
+    rows = [
+        {"written_at": _ms(boot - timedelta(hours=2)), "status": "failed",
+         "refusal_reason": LIVE_TEXT_1124, "summary": ""},
+        {"written_at": _ms(boot - timedelta(hours=1)), "status": "empty",
+         "refusal_reason": None, "summary": ""},
+    ]
+    assert seed_claude_limit_memory(
+        Settings(_env_file=None), graph_client=_Graph(rows), memory=memory, now=boot
+    ) is None
+    assert "'empty'" in RECENT_CLAUDE_OUTCOME_CYPHER
+
+
+def test_default_module_memory_is_the_production_wiring() -> None:
+    """No injected memory: the process-wide MEMORY carries the hold between
+    hires (conftest resets it around each test)."""
+    clock = _Clock(datetime(2026, 11, 24, 9, 12, tzinfo=timezone.utc))
+    claude = _Claude()
+    claude.fail_with = LIVE_TEXT_1124
+    for n in (1, 2):
+        handle_help_request(
+            _help(n),
+            settings=Settings(_env_file=None),
+            claude=claude,
+            observe_claude_limit=lambda: _Meter(),
+            persist=lambda _b: None,
+            now=clock,
+        )
+        clock.at = datetime(2026, 11, 24, 11, 23, tzinfo=timezone.utc)
+    assert claude.calls == 1

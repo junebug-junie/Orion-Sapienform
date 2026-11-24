@@ -29,7 +29,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from orion.dev_economics.rate_limit_events import parse_reset_at
+from orion.dev_economics.rate_limit_events import (
+    _SESSION_LIMIT,
+    _WEEKLY_LIMIT,
+    parse_reset_at,
+)
 
 logger = logging.getLogger("orion-curiosity-peer.claude_limit_backoff")
 
@@ -38,15 +42,19 @@ logger = logging.getLogger("orion-curiosity-peer.claude_limit_backoff")
 SEED_LOOKBACK = timedelta(hours=5)
 
 # Claude's first-party limit phrasings. Lower-cased substring match on a FAILED
-# Claude brief only (never on ok summaries, which may discuss limits).
+# Claude brief only (never on ok summaries, which may discuss limits). The
+# session/weekly phrasings are the transcript meter's own constants.
 _LIMIT_PHRASES = (
-    "hit your session limit",
-    "hit your weekly limit",
+    _SESSION_LIMIT,
+    _WEEKLY_LIMIT,
     "hit your usage limit",
     "usage limit reached",
 )
 
 # "resets 12:10pm (UTC)" / "resets 11pm (America/Denver)"
+# A reset that names a calendar date ("resets Nov 27, 3am") -- weekly limits.
+_DATED_RESET_RE = re.compile(r"resets\s+[A-Z][a-z]{2}\s+\d{1,2},", re.IGNORECASE)
+
 _RESET_TZ_RE = re.compile(
     r"resets\s+[^()\n]*?(?:am|pm)\s*\((?P<tz>[A-Za-z_]+(?:/[A-Za-z_+\-]+)*)\)",
     re.IGNORECASE,
@@ -72,7 +80,9 @@ def parse_limit_reset(text: str, at: datetime) -> Optional[datetime]:
         try:
             zone = ZoneInfo(match.group("tz"))
         except (ZoneInfoNotFoundError, ValueError):
-            zone = timezone.utc
+            # "(PST)" and friends: guessing UTC would be 7-8 h off. Let the
+            # caller fall back to its bounded default instead.
+            return None
     wall = at.astimezone(zone).replace(tzinfo=timezone.utc)
     parsed = parse_reset_at(text or "", wall)
     if parsed is None:
@@ -96,6 +106,16 @@ def hold_from_failure(
         return None
     at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
     resets_at = parse_limit_reset(text, at)
+    if (
+        resets_at is not None
+        and resets_at - at > SEED_LOOKBACK
+        and not _DATED_RESET_RE.search(text)
+    ):
+        # A dateless session reset is always within 5 h. Further out means the
+        # stated time had just passed when we read it (parse_reset_at rolls a
+        # past time to tomorrow), e.g. "resets 12:10pm" read at 12:10:20. Do
+        # not hold for ~24 h on that; use the bounded default.
+        resets_at = None
     stated = resets_at is not None
     if resets_at is None:
         resets_at = at + timedelta(seconds=max(0.0, float(default_sec)))
@@ -133,7 +153,7 @@ class ClaudeLimitMemory:
     def seed_from_rows(
         self, rows: Iterable[dict[str, Any]], *, now: datetime, default_sec: float
     ) -> Optional[ClaudeLimitHold]:
-        """Seed from the newest claude_room ok/failed brief in the last 5 h.
+        """Seed from the newest claude_room ok/failed/empty brief in the last 5 h.
 
         Rows come from `RECENT_CLAUDE_OUTCOME_CYPHER` (written_at = ms epoch).
         Only seeds when nothing was recorded in this process yet.
@@ -170,7 +190,7 @@ class ClaudeLimitMemory:
 # MERGEs (`peer_brief_merge_cypher`, written_at = timestamp() ms on create).
 RECENT_CLAUDE_OUTCOME_CYPHER = (
     "MATCH (b:PeerBrief) "
-    "WHERE b.peer = 'claude_room' AND b.status IN ['ok', 'failed'] "
+    "WHERE b.peer = 'claude_room' AND b.status IN ['ok', 'failed', 'empty'] "
     "AND b.written_at >= $since_ms "
     "RETURN b.written_at AS written_at, b.status AS status, "
     "b.refusal_reason AS refusal_reason, b.summary AS summary "

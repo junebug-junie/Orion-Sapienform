@@ -617,12 +617,12 @@ def apply_batch(
         # with the outdoor rule). A prop gets no asks, attention or "who is
         # around". Room cameras (the office) use the room rule: a person at a
         # desk sits still (2026-11-04), boxes on the floor did 4-5 h (11-16).
-        rule = (StreamRule(stationary_min_sec) if stationary_streams is None
-                else rules.get(str(crop.stream_id or "").strip().lower()))
+        key = str(crop.stream_id or "").strip().lower()
+        rule = rules.get(key) if (stationary_streams is not None or key in rules) else StreamRule(stationary_min_sec)
         if rule is not None:
             advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
                                min_sec=rule.min_sec, max_gap_sec=stationary_max_gap_sec,
-                               room=rule.room, face=crop.face_embedding is not None)
+                               room=rule.room, face=bool(crop.face_embedding))
         crop_stationary[crop.crop_id] = ind.stationary
 
         zone_key = crop.zone or _NO_ZONE

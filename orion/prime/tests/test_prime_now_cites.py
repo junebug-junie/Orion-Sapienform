@@ -127,8 +127,8 @@ def test_the_reply_template_itself_carries_the_experience_cites_when_the_now_is_
         # Refs before the move, never last: as the last key the model dropped the closing brace (6 of 15 live).
         assert template.rstrip().endswith('"id": "..."}]}}')
         # The move's own refs are unchanged (arc/act, or act only in event mode).
-        assert ('"refs": [{"kind": "act", "id": "..."}]},' if events
-                else '"refs": [{"kind": "arc" | "act", "id": "..."}]},') in template
+        assert ('"refs": [{"kind": "act", "id": "..."}]}}' if events
+                else '"refs": [{"kind": "arc" | "act", "id": "..."}]}}') in template
     # No now in the frame: the template offers no experience cite.
     assert "experience" not in _reply_template(system_prompt(None, events=True))
 

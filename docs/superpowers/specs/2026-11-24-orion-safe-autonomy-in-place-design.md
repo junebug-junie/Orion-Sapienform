@@ -207,11 +207,28 @@ Live smoke against the real daemon (a temporary door container on `app-net`, rem
 | A call from `orion-athena-thought` (not an allowed caller) | 403 |
 | Report over the record | 40 calls, 33 passed, 7 refused, each refusal listed |
 
+### Code review of the held build (2026-11-24): must fix before it ships
+
+An independent review found two confirmed ways past the filter. Both were shown with working proof scripts. **The held build must not be pushed until 1-5 are fixed and tested.**
+
+1. **Smuggling with bare line feeds (critical, confirmed).** The door splits header lines only on `\r\n`. Docker's parser also accepts a bare `\n`. So one allowed `GET` can carry a second request, for example a `kill`, that the door never sees. Confirmed against the live daemon (read-only) and through the door; the record showed only the `GET`. Fix: refuse any head with a bare `\n` or a stray `\r`, folded header lines, a version other than `HTTP/1.0`/`HTTP/1.1`, or a method that is not a plain token.
+2. **An `Upgrade` header switches off the forced close (critical, confirmed).** The door keeps the connection open for every exec route that sends `Upgrade`, including `resize` and a detached `start`, which never upgrade. A second request then rides the open connection unchecked. Fix: always send `Connection: close`. Docker decides on an upgrade from the `Upgrade` header alone, and a hijacked stream ignores `close`.
+3. **An exec can ask for privileges (high).** The door checks the target container but not the exec request's own `"Privileged": true`. It also allows an exec when it cannot read the body (chunked, over 1 MB, or no length), which breaks the record too. Fix: refuse `Privileged`, and refuse an exec create whose body is unreadable.
+4. **The host-reach list is too narrow (medium).** Add: extra capabilities (`CapAdd`, for example `SYS_ADMIN`), `Devices`, network/IPC/user namespace `host`, any runtime socket (`containerd.sock`), and binds of `/proc`, `/sys`, `/dev`, `/etc`, `/root`.
+5. **Errors leave connections hanging (medium).** A bad `Content-Length`, a short body, or a full disk on the record write leaves the client open forever. Reads have no timeout, and the caller check runs only after the whole head arrives. Fix: check the caller first, add read timeouts, and close the client in a `finally`.
+6. **The door check blocks the governor (low).** The 0.5 s connection check runs synchronously on every warm-slot turn in the window. Fix: run it off the event loop.
+7. **Encoded paths dodge the attach rule (low).** `%61ttach` reads as "look". Fix: decode the path before classifying.
+8. **The canary is not enforcement (by design).** The governor still holds the socket during the canary, so a turn that points `docker` at the socket directly goes around the door. The canary measures what breaks. Only the swap makes the door a wall.
+
+Test gap behind 1 and 2: the fake daemon in the tests always closes after one request, so the "second request is not forwarded" test passed for the wrong reason. The fix needs a keep-alive fake daemon, plus tests for every case above.
+
+Design lesson: a hand-written HTTP filter is fragile. The rule that makes it safe is simple and must be strict: **parse strictly, one request per connection, always close, and refuse anything the door cannot fully read.**
+
 Not in the canary build (kept for after the swap): the turn-step stream to the record, the `orion_docker_call`/`orion_turn_step` tables and bus channel, `dig record`, tripwires.
 
 ## Recommended next patch
 
-**Patch 1 (built, held): the canary door.** Push `feat/docker-door-canary`, merge, rebuild. The full-day window runs. Read the report.
+**Patch 1 (built, held): the canary door.** Fix review findings 1-7 with tests (keep-alive fake daemon), re-review, then push `feat/docker-door-canary`, merge, rebuild. The full-day window runs. Read the report.
 
 **Patch 1b: the swap and the full record.** Socket mount removed from the governor, GitHub MCP as a binary, canary switch deleted, the turn-step stream to the record, the tables, `dig record`, tripwires. Proves checks 1-7.
 

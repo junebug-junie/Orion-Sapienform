@@ -102,6 +102,6 @@ Live check after deploy (verify-live): self-inquiry rows in curiosity_run_outcom
 
 ## PR link
 
-(filled in on creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3860
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

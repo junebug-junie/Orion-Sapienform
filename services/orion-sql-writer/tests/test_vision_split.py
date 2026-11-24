@@ -1082,3 +1082,158 @@ def test_story_names_do_not_use_up_the_who_is_this_daily_cap(pg) -> None:
         conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, created_at) "
                           "VALUES ('who-real', 'q', 'vision_individual', 'p0', :t)"), {"t": NOW})
         assert conn.execute(text(vi.ASKED_TODAY_SQL), {"d": day, "face": face}).scalar() == 1
+
+
+# --- one answer on a linked person (who-card redesign Patch A, 2026-11-24) ----------------------------
+#
+# The Hub writes one row per camera group of a linked person, built by orion/vision/story_persons.py
+# (the same function this test calls). Orion's question 2: the fan-out is bounded, and what sql-writer
+# does with it matches -- one split per group that got "different" pictures, none for "unsure".
+
+
+def test_story_persons_pair_ref_matches_the_writer() -> None:
+    from orion.vision import story_persons as sp
+
+    assert sp.PAIR_SEP == vi.PAIR_SEP and sp.pair_ref("b", "a") == vi.pair_ref("b", "a")
+    assert (sp.WHO_IS_THIS_KIND, sp.STORY_PERSON_KIND, sp.SAME_PERSON_KIND) == (
+        vi.SOURCE_KIND_INDIVIDUAL, vi.SOURCE_KIND_STORY_PERSON, vi.SOURCE_KIND_SAME)
+
+
+def _person_world(conn, groups: int) -> list:
+    """``groups`` camera groups of one person (each 10 crops, so a 1-picture split is never a majority)."""
+    ids = [f"g{k}" for k in range(groups)]
+    for k, iid in enumerate(ids):
+        _add_individual(conn, iid, n=10, face_n=0, face=None, label="Sasha", labeled_at=NOW - timedelta(days=1))
+        for c in range(10):
+            _add_crop(conn, f"{iid}c{c}", k * 10 + c, member=iid)
+    return ids
+
+
+def _insert_person_answer(conn, ask_id: str, iid: str, spec: dict, minute: int = 0) -> None:
+    import json
+
+    from sqlalchemy import text
+
+    conn.execute(text(
+        "INSERT INTO orion_ask (ask_id, asked_of, question, evidence_refs, image_ref, image_refs, status, answer, "
+        "answered_at, created_at, source_kind, source_ref, answer_detail) VALUES (:a, 'juniper', :q, "
+        "'[]'::jsonb, NULL, '[]'::jsonb, 'answered', :ans, :t, :t, :k, :i, CAST(:d AS jsonb))"),
+        {"a": ask_id, "q": spec["question"], "ans": spec["answer"], "k": spec["kind"], "i": iid,
+         "d": json.dumps(spec["detail"]), "t": NOW - timedelta(minutes=30 - minute)})
+
+
+@needs_pg
+def test_one_no_on_a_linked_person_splits_each_group_once_and_unsure_splits_nothing(pg) -> None:
+    from sqlalchemy import text
+
+    from orion.vision import story_persons as sp
+
+    with pg.begin() as conn:
+        ids = _person_world(conn, 4)
+        # The Hub's fan-out: one row per camera group, each on its own shown picture.
+        for k, iid in enumerate(ids):
+            spec = sp.person_answer(action="someone_else", name="Cora", story_id=STORY,
+                                    picture_crop_ids=[f"{iid}c0"], person_key=ids[0], group_size=len(ids))
+            _insert_person_answer(conn, f"ask-no-{k}", iid, spec)
+        for k, iid in enumerate(ids):
+            spec = sp.person_answer(action="unsure", name="", story_id=STORY, picture_crop_ids=[f"{iid}c1"],
+                                    person_key=ids[0], group_size=len(ids))
+            _insert_person_answer(conn, f"ask-unsure-{k}", iid, spec, minute=1)
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+        out = vs.apply_splits(conn, NOW, CFG)
+    with pg.begin() as conn:
+        asks = conn.execute(text("SELECT count(*) FROM orion_ask WHERE ask_id LIKE 'ask-no-%'")).scalar()
+        splits = conn.execute(text("SELECT ask_id, source_individual_id, status FROM vision_individual_split "
+                                   "ORDER BY ask_id")).fetchall()
+        # One split per group: the writer's count matches the card's rows, never more than four.
+        assert asks == len(splits) == out["splits"] == 4 <= sp.MAX_PICTURES
+        assert [(r[0], r[1], r[2]) for r in splits] == [(f"ask-no-{k}", f"g{k}", "split") for k in range(4)]
+        # "Can't see them": one 'unsure' per group's shown picture, and nothing split for it.
+        unsure = conn.execute(text("SELECT individual_id, crop_id FROM vision_ask_picture_verdict "
+                                   "WHERE verdict = 'unsure' ORDER BY 1")).fetchall()
+        assert [tuple(r) for r in unsure] == [(f"g{k}", f"g{k}c1") for k in range(4)]
+        assert conn.execute(text("SELECT count(*) FROM vision_individual_split WHERE ask_id LIKE 'ask-unsure-%'")).scalar() == 0
+        # A second pass finds nothing pending.
+        assert vs.apply_splits(conn, NOW, CFG) == {"splits": 0, "splits_refused": 0, "splits_skipped": 0}
+
+
+@needs_pg
+def test_a_repeated_story_yes_keeps_one_same_picture_per_crop(pg) -> None:
+    """Orion's question 4, writer side: a yes repeated after a merge keeps no second 'same' picture
+    verdict for the same (group, crop); a who-is-this card outside a story keeps its own as before."""
+    from sqlalchemy import text
+
+    from orion.vision import story_persons as sp
+
+    with pg.begin() as conn:
+        _person_world(conn, 1)
+        for k in range(2):
+            spec = sp.person_answer(action="confirm", name="Sasha", story_id=STORY, picture_crop_ids=["g0c0", "g0c1"])
+            _insert_person_answer(conn, f"ask-yes-{k}", "g0", spec, minute=k)
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        rows = conn.execute(text("SELECT ask_id, crop_id FROM vision_ask_picture_verdict WHERE verdict='same' "
+                                 "ORDER BY 1, 2")).fetchall()
+        assert [tuple(r) for r in rows] == [("ask-yes-0", "g0c0"), ("ask-yes-0", "g0c1")]
+        # Not a story card: its rows are its own (the split reads each ask's 'same' as the keep side).
+        assert vi._record_pictures(conn, [{"ask": "ask-card", "ref": "crop:g0c0", "idx": 0, "ind": "g0", "v": "same",
+                                           "name": "Sasha", "at": NOW, "crop_id": "g0c0"}]) == 1
+
+
+@needs_pg
+def test_not_the_same_person_over_a_typed_name_link_splits_it_and_rederives_copied_names(pg) -> None:
+    """Orion's question 1: "not the same person" on a grouped row is the existing pair answer, no. Written
+    over a typed-name 'same' row it splits the link; a name only copied across it is re-derived."""
+    from sqlalchemy import text
+
+    from orion.vision import story_persons as sp
+
+    with pg.begin() as conn:
+        _add_individual(conn, "a", n=3, face_n=0, face=None, label="Sasha", labeled_at=NOW - timedelta(days=1))
+        _add_individual(conn, "b", n=3, face_n=0, face=None)
+        _add_individual(conn, "c", n=3, face_n=0, face=None)
+        conn.execute(text("UPDATE vision_individual SET label='Sasha', label_copied=true, label_ask_id='ask-name' "
+                          "WHERE individual_id IN ('b', 'c')"))
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                          "decided_at) VALUES ('a', 'b', 'same', 'ask-name', :t), ('b', 'c', 'same', 'ask-name', :t)"),
+                     {"t": NOW - timedelta(days=1)})
+        spec = sp.not_same_answer(a="a", b="b", story_id=STORY, person_key="a")
+        conn.execute(text(
+            "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, answered_at, "
+            "answer_detail) VALUES ('ask-not-same', 'q', :k, :r, 'answered', :ans, :t, CAST(:d AS jsonb))"),
+            {"k": spec["kind"], "r": spec["source_ref"], "ans": spec["answer"], "t": NOW - timedelta(minutes=5),
+             "d": __import__("json").dumps(spec["detail"])})
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert ("a", "b", "different", "ask-not-same") in _pairs(conn)
+        # b and c lost their only typed name: the copies are cleared. a keeps the name she typed.
+        assert _label(conn, "a") == ("Sasha", False, "ask-name")
+        assert _label(conn, "b") == (None, False, None) and _label(conn, "c") == (None, False, None)
+        # Juniper's own card: Orion's "same person?" daily cap does not count it.
+        assert conn.execute(text(vi.CONFIRM_ASKED_TODAY_SQL), {
+            "d": NOW - timedelta(days=1), "same": vi.SOURCE_KIND_SAME, "face": '["rule:face"]'}).scalar() == 0
+
+
+@needs_pg
+def test_a_no_on_an_unlinked_pair_leaves_copied_names_and_their_provenance_alone(pg) -> None:
+    """Review fix: re-deriving copies after a 'different' rewrites only a different name, never the
+    label_ask_id of a copy whose name is unchanged (it keys the person model's pair_same exemplars)."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_individual(conn, "a", n=3, face_n=0, face=None, label="Sasha", labeled_at=NOW - timedelta(days=1))
+        _add_individual(conn, "b", n=3, face_n=0, face=None)
+        _add_individual(conn, "x", n=3, face_n=0, face=None)
+        conn.execute(text("UPDATE vision_individual SET label='sasha', label_copied=true, label_ask_id='ask-pair-1' "
+                          "WHERE individual_id = 'b'"))
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                          "decided_at) VALUES ('a', 'b', 'same', 'ask-pair-1', :t)"), {"t": NOW - timedelta(days=1)})
+        _pair_ask(conn, "ask-no", "b", "x", "no", {})
+    with pg.begin() as conn:
+        vi._apply_answers(conn, NOW)
+    with pg.begin() as conn:
+        assert _label(conn, "b") == ("sasha", True, "ask-pair-1")
+        assert _label(conn, "x") == (None, False, None)

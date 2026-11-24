@@ -298,7 +298,7 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
         boxes.nth(0).locator("[data-person-action='name']").click()
         page.wait_for_function("() => document.querySelector('#walkwayStoriesList [data-story-id] [data-story-sentence]')"
                                ".textContent.startsWith('Theo walked')")
-        assert posts[-1] == (f"{1:032x}", "ind-anon1234567", {"action": "name", "name": "Theo", "why": ""})
+        assert posts[-1] == (f"{1:032x}", "ind-anon1234567", {"action": "name", "name": "Theo", "why": "", "group": False})
         first = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
         assert first.locator("[data-story-person='ind-dog'] [data-person-why-input]").input_value() == "on a red leash"
         assert first.locator("[data-story-person='ind-anon1234567'] [data-person-why-input]").input_value() == ""
@@ -316,7 +316,8 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
             "() => document.querySelectorAll('#walkwayStoriesList [data-story-id]')[1]"
             ".querySelector(\"[data-story-verdict='wrong_name']\").getAttribute('aria-pressed') === 'true'")
         assert posts[-1] == (f"{2:032x}", "ind-alex", {"action": "someone_else", "name": "",
-                                                       "why": "Pushing a stroller; Alex has no young kids."})
+                                                       "why": "Pushing a stroller; Alex has no young kids.",
+                                                       "group": False})
         second = page.locator("#walkwayStoriesList [data-story-id]").nth(1)
         assert second.locator("[data-person-why]").text_content() == (
             "How you could tell: Pushing a stroller; Alex has no young kids.")
@@ -443,9 +444,111 @@ def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_bro
         assert rows.nth(3).locator("[data-person-action='name']").text_content() == "Name them"
         rows.nth(2).locator("[data-person-action='confirm']").click()
         page.wait_for_function("() => !!document.querySelector(\"[data-person-said='confirm']\")")
-        assert posts == [("ind-sasha2", {"action": "confirm", "name": "Sasha", "why": ""})]
+        assert posts == [("ind-sasha2", {"action": "confirm", "name": "Sasha", "why": "", "group": False})]
         assert "Saved: yes, that's Sasha." in page.locator("#walkwayStoriesStatus").text_content()
         assert page.locator("[data-person-said='confirm']").text_content() == "You said yes, this is Sasha."
         assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
         assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
+        browser.close()
+
+
+def test_walkway_story_linked_groups_are_one_person_asked_once_browser_smoke():
+    """Who-card Patch A (2026-11-24): the two "Sasha" camera groups Juniper already linked are ONE row
+    (both groups' pictures, "Seen as 2 camera groups"), a yes is sent once with group=true, and the
+    row offers "not the same person?" for its direct link (Orion's question 1)."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    html = (HUB / "templates" / "index.html").read_text(encoding="utf-8")
+    html = html.replace("{{HUB_CFG}}", "{}")
+    html = re.sub(r"\{\{[A-Z0-9_]+\}\}", "", html)
+    sid = f"{9:032x}"
+
+    def pic(n, crop):
+        return {"story_id": sid, "file": f"crop_{n}.jpg", "t": f"2026-11-22T01:28:3{n}+00:00", "crop_id": crop,
+                "individual_id": "x"}
+
+    sasha = {"person_key": "ind-sasha1", "individual_ids": ["ind-sasha1", "ind-sasha2"], "crop_ids": ["k1", "k3"],
+             "role": "walker", "kind": "person", "label": "Sasha", "label_copied": False, "short_id": "ind-sash",
+             "pictures": [pic(2, "k3"), pic(1, "k1")], "boxes": [{"n": 2, "colour": "blue"}, {"n": 4, "colour": "blue"}],
+             "pictured": True, "asked_ids": ["ind-sasha1", "ind-sasha2"], "story_action": None,
+             "groups": [{"individual_id": "ind-sasha1", "short_id": "ind-sas1", "picture_crop_ids": ["k1"], "asked": True},
+                        {"individual_id": "ind-sasha2", "short_id": "ind-sas2", "picture_crop_ids": ["k3"], "asked": True}],
+             "links": [{"a": "ind-sasha1", "b": "ind-sasha2"}]}
+    anon = {"person_key": "ind-anon", "individual_ids": ["ind-anon"], "crop_ids": ["k4"], "role": "walker",
+            "kind": "person", "label": None, "short_id": "ind-anon", "pictures": [pic(3, "k4")],
+            "boxes": [{"n": 5, "colour": "red"}], "pictured": True, "asked_ids": ["ind-anon"], "story_action": None,
+            "groups": [{"individual_id": "ind-anon", "short_id": "ind-anon", "picture_crop_ids": ["k4"], "asked": True}],
+            "links": []}
+    story = _story(9, sentence="Sasha walked right to left, over 6 s (4 detections).", people=[], persons=[sasha, anon],
+                   evidence_strip={"version": 1, "dark": False,
+                                   "frame": {"file": "frame.jpg", "t": "2026-11-22T01:28:33+00:00", "crop_id": "k1"},
+                                   "crops": [{"crop_id": c, "t": f"2026-11-22T01:28:3{n}+00:00", "file": f"crop_{n}.jpg"}
+                                             for n, c in enumerate(["k0", "k1", "k3", "k4"])]})
+    posts: list[tuple[str, dict]] = []
+
+    def handle(route):
+        url = route.request.url
+        path = url.split("http://hub.test", 1)[1].split("?", 1)[0]
+        if path == "/":
+            return route.fulfill(body=html, content_type="text/html")
+        if path.startswith("/static/"):
+            f = HUB / path.lstrip("/")
+            if f.is_file():
+                ctype = "application/javascript" if f.suffix == ".js" else "text/css" if f.suffix == ".css" else "application/octet-stream"
+                return route.fulfill(body=f.read_bytes(), content_type=ctype)
+            return route.fulfill(status=404, body="")
+        if path == "/api/vision/motion-stories":
+            return route.fulfill(body=json.dumps({"ok": True, "stories": [story], "tally": _tally(1, 1)}),
+                                 content_type="application/json")
+        if route.request.method == "POST":
+            sent = json.loads(route.request.post_data or "{}")
+            posts.append((path, sent))
+            again = dict(story, persons=[dict(sasha, story_action={"action": "confirm", "name": "Sasha"}), anon])
+            return route.fulfill(body=json.dumps({"ok": True, "story": again, "wrong_name_recorded": False,
+                                                  "tally": _tally(1, 1)}), content_type="application/json")
+        if re.fullmatch(r"/api/vision/motion-stories/[0-9a-f]{32}/strip/(crop_[0-3]|frame)\.jpg", path):
+            return route.fulfill(body=PIXEL, content_type="image/gif")
+        return route.fulfill(status=404, body="")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 360, "height": 900})
+        page.route("http://hub.test/**", handle)
+        page.route(re.compile(r"^(?!http://hub\.test).*"), lambda r: r.fulfill(status=204, body=""))
+        page.goto("http://hub.test/")
+        page.wait_for_function("() => !!window.OrionWalkwayStories")
+        page.add_style_tag(content=".hidden{display:none!important}")
+        page.select_option("#visionSource", "walkway-live")
+        page.wait_for_selector("#walkwayStoriesList [data-story-person]")
+        item = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
+        rows = item.locator("[data-story-person]")
+        assert rows.count() == 2                                   # Sasha once, not twice
+        first = rows.nth(0)
+        assert first.locator("[data-person-title]").text_content() == "Sasha"
+        assert first.locator("[data-person-groups]").text_content().startswith("Seen as 2 camera groups")
+        assert [i.get_attribute("src") for i in first.locator("img[data-person-picture]").all()] == [
+            f"/api/vision/motion-stories/{sid}/strip/crop_2.jpg", f"/api/vision/motion-stories/{sid}/strip/crop_1.jpg"]
+        assert first.locator("[data-person-boxes]").get_attribute("data-person-boxes") == "2,4"
+        # Both of Sasha's time crops carry Sasha's letter.
+        assert [c.get_attribute("data-story-crop-person") for c in item.locator("[data-story-crop-person]").all()] == [
+            "A", "A", "B"]
+        assert rows.nth(1).locator("[data-person-not-same]").count() == 0     # one group: nothing to split
+        # "Not the same person?" is hidden until asked for, then names the link.
+        pair = first.locator("[data-person-not-same-pair]")
+        assert not pair.is_visible()
+        first.locator("[data-person-not-same-toggle]").click()
+        assert pair.is_visible() and pair.text_content() == "group ind-sas1 and group ind-sas2 are different people"
+        assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
+        assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
+        first.locator("[data-person-action='confirm']").click()
+        page.wait_for_function("() => !!document.querySelector(\"[data-person-said='confirm']\")")
+        assert posts == [(f"/api/vision/motion-stories/{sid}/people/ind-sasha1",
+                          {"action": "confirm", "name": "Sasha", "why": "", "group": True,
+                           "crop_ids": ["k3", "k1"]})]
+        page.locator("[data-person-not-same-toggle]").first.click()
+        page.locator("[data-person-not-same-pair]").first.click()
+        page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes('not the same person')")
+        assert posts[-1] == (f"/api/vision/motion-stories/{sid}/persons/ind-sasha1/not-same",
+                             {"a": "ind-sasha1", "b": "ind-sasha2"})
         browser.close()

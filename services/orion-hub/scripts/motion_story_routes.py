@@ -76,6 +76,14 @@ free-text ``why``, stored as ``answer_detail.why`` on the same ask row and shown
 back on the card. Nothing reasons over it yet: it is the raw context-clue record
 a later primitive (who someone is from more than their face/build) will read.
 
+**One person per linked group** (2026-11-24, who-card redesign Patch A,
+docs/superpowers/specs/2026-11-24-walkway-who-card-redesign.md). Each listed story
+also carries ``persons``: camera groups joined by 'same' links shown as one person
+(orion/vision/story_persons.py). A person answer with ``group: true`` is written for
+each of its camera groups on that group's shown pictures (at most four rows); a
+repeat of a group's latest answer on the story is skipped. ``POST .../persons/{person_key}/not-same``
+records "these are not the same person" for one direct link.
+
 Same asyncpg pool as the ask card (``app.state.memory_pg_pool``); all DB calls
 are awaited (``scripts/check_async_routes_not_blocking.py``).
 """
@@ -94,6 +102,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from orion.vision import story_persons
 from orion.vision.story_naming import evidence_crops, name_from_crops, rename_subject
 from scripts import ask_routes
 from scripts.ask_routes import _iso, _pool, _raise_store_http, _read_thumb, clean_name
@@ -205,6 +214,13 @@ class PersonBody(BaseModel):
     # How Juniper could tell, in her words (optional, any action): "pushing a stroller,
     # Jason has no young kids, not his build". Stored as answer_detail.why on the ask row.
     why: str = Field(default="", max_length=WHY_MAX_CHARS)
+    # Who-card Patch A (2026-11-24): the answer is for the whole linked person (every camera group
+    # the card showed a picture of), not only ``individual_id``'s group.
+    group: bool = False
+    # The crop ids of the pictures the card SHOWED for this person (group answers). When the
+    # server's pictures for the person differ (a link landed since the card rendered), 409
+    # ``pictures_changed``: never a verdict on a picture she did not see.
+    crop_ids: Optional[list[str]] = Field(default=None, max_length=16)
 
 
 def clean_why(raw: str) -> str:
@@ -535,7 +551,8 @@ async def _handoffs(conn: Any, stories: list[dict[str, Any]]) -> None:
     if not stories:
         return
     try:
-        rows = await conn.fetch(_HANDOFF_SQL, [s["story_id"] for s in stories])
+        async with conn.transaction():   # a savepoint: a missing table never aborts a caller's transaction
+            rows = await conn.fetch(_HANDOFF_SQL, [s["story_id"] for s in stories])
     except Exception as exc:  # noqa: BLE001 - the card still shows the stored story
         logger.debug("motion_story_handoff_lookup_failed error=%s", exc)
         return
@@ -563,45 +580,54 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
         for p in s["people"]:
             attach_pictures(p, s["story_id"], strip, boxes)
         s["display_name"], s["display_sentence"], s["name_source"] = s.get("name_label"), s.get("sentence"), "stored"
+        # Each camera group alone until the links are read (fail-open: a failed read keeps this).
+        s["persons"] = story_persons.group_people(s["people"], {})
     if not stories:
         return
     try:
-        together = sorted({t for s in stories for t in s.get("together_story_ids") or []})
-        partners: dict[str, Any] = {}
-        if together:
-            for r in await conn.fetch(
-                    "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
-                    "WHERE story_id = ANY($1::text[])", together):
-                partners[r["story_id"]] = {"kind": r["kind"], "evidence": _evidence_list(r["evidence"]),
-                                           "strip": _strip_of(r["evidence_strip"])}
-            plinks = await _late_links(conn, [r["evidence"] for r in partners.values()])
-            for r in partners.values():
-                r["evidence"] = fill_late_links(r["evidence"], plinks)
-        for s in stories:
-            seen = {p["individual_id"] for p in s["people"]}
-            for t in s.get("together_story_ids") or []:
-                r = partners.get(t)
-                if r is None:
-                    continue
-                for p in people_in(r["evidence"], "companion", r["kind"] or "person"):
-                    if p["individual_id"] not in seen:
-                        seen.add(p["individual_id"])
-                        p["story_id"] = t
-                        # Their pictures are in the story they walked in; not boxed on this frame.
-                        attach_pictures(p, t, r["strip"], None)
-                        s["people"].append(p)
-        ids = sorted({p["individual_id"] for s in stories for p in s["people"]}
-                     | {e.get("individual_id") for s in stories for e in s.get("evidence") or []
-                        if isinstance(e.get("individual_id"), str)})
-        rows = {r["individual_id"]: r for r in await conn.fetch(_LABELS_SQL, ids)} if ids else {}
-        acts: dict[str, list[dict[str, Any]]] = {}
-        for r in await conn.fetch(_STORY_ACTIONS_SQL, [s["story_id"] for s in stories],
-                                  [WHO_IS_THIS_KIND, STORY_PERSON_KIND]):
-            acts.setdefault(r["story_id"], []).append({
-                "individual_id": r["individual_id"], "action": r["action"], "name": r["name"],
-                "why": r["why"] or None, "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"])})
+        # A savepoint: a failed read never aborts a caller's transaction (fail-open there too).
+        async with conn.transaction():
+            together = sorted({t for s in stories for t in s.get("together_story_ids") or []})
+            partners: dict[str, Any] = {}
+            if together:
+                for r in await conn.fetch(
+                        "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
+                        "WHERE story_id = ANY($1::text[])", together):
+                    partners[r["story_id"]] = {"kind": r["kind"], "evidence": _evidence_list(r["evidence"]),
+                                               "strip": _strip_of(r["evidence_strip"])}
+                plinks = await _late_links(conn, [r["evidence"] for r in partners.values()])
+                for r in partners.values():
+                    r["evidence"] = fill_late_links(r["evidence"], plinks)
+            for s in stories:
+                seen = {p["individual_id"] for p in s["people"]}
+                s["_areas"] = story_persons.crop_areas(
+                    [s.get("evidence") or []] + [partners[t]["evidence"] for t in s.get("together_story_ids") or []
+                                                 if t in partners])
+                for t in s.get("together_story_ids") or []:
+                    r = partners.get(t)
+                    if r is None:
+                        continue
+                    for p in people_in(r["evidence"], "companion", r["kind"] or "person"):
+                        if p["individual_id"] not in seen:
+                            seen.add(p["individual_id"])
+                            p["story_id"] = t
+                            # Their pictures are in the story they walked in; not boxed on this frame.
+                            attach_pictures(p, t, r["strip"], None)
+                            s["people"].append(p)
+            ids = sorted({p["individual_id"] for s in stories for p in s["people"]}
+                         | {e.get("individual_id") for s in stories for e in s.get("evidence") or []
+                            if isinstance(e.get("individual_id"), str)})
+            rows = {r["individual_id"]: r for r in await conn.fetch(_LABELS_SQL, ids)} if ids else {}
+            acts: dict[str, list[dict[str, Any]]] = {}
+            for r in await conn.fetch(_STORY_ACTIONS_SQL, [s["story_id"] for s in stories],
+                                      [WHO_IS_THIS_KIND, STORY_PERSON_KIND]):
+                acts.setdefault(r["story_id"], []).append({
+                    "individual_id": r["individual_id"], "action": r["action"], "name": r["name"],
+                    "why": r["why"] or None, "ask_id": r["ask_id"], "answered_at": _iso(r["answered_at"])})
     except Exception as exc:  # noqa: BLE001 - the card still shows the stored story
         logger.warning("motion_story_people_lookup_failed error=%s", exc)
+        for s in stories:
+            s.pop("_areas", None)
         return
     labels = {iid: (r["label"] or "").strip() for iid, r in rows.items() if (r["label"] or "").strip()}
     for s in stories:
@@ -615,6 +641,72 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
             p["known"] = r is not None
             p["story_action"] = latest.get(p["individual_id"])
         s["display_name"], s["display_sentence"], s["name_source"] = story_display(s, labels, mine)
+    await _persons(conn, stories)
+
+
+# --- one person per linked group (who-card redesign Patch A, 2026-11-24) -----------------------------
+# docs/superpowers/specs/2026-11-24-walkway-who-card-redesign.md. 304 of 313 live "same person" links
+# join two groups with one typed name, and 148 rows on 97 stories repeated an already-linked person
+# ("Sasha", "Sasha"). ``persons`` shows each linked group once (orion/vision/story_persons.py); an
+# answer with ``group: true`` is written for each camera group in it.
+
+# A 'same' row joins two groups unless a newer "same person? no" about that pair is answered and
+# still waiting for sql-writer (which writes it over the row on its next cycle): the card shows
+# the two apart at once, and nothing fans out over a link she just said is wrong.
+_LIVE_SAME = (
+    "v.verdict = 'same' AND NOT EXISTS (SELECT 1 FROM orion_ask q WHERE q.source_kind = 'vision_same_individual' "
+    "AND q.status = 'answered' AND q.source_ref = v.individual_a || '|' || v.individual_b "
+    "AND lower(btrim(q.answer)) IN ('different', 'no') AND q.answered_at > v.decided_at)")
+# Every id reachable from each story person over 'same' links (also through groups not in the story).
+_COMPONENT_SQL = """
+WITH RECURSIVE g(start, id) AS (
+  SELECT x, x FROM unnest($1::text[]) x
+  UNION
+  SELECT g.start, CASE WHEN v.individual_a = g.id THEN v.individual_b ELSE v.individual_a END
+  FROM vision_individual_pair_verdict v JOIN g ON g.id IN (v.individual_a, v.individual_b)
+  WHERE """ + _LIVE_SAME + """)
+SELECT start, id FROM g WHERE start <> id
+"""
+# The same walk with one pair left out: would these two still be joined without that row?
+_COMPONENT_WITHOUT_SQL = """
+WITH RECURSIVE g(start, id) AS (
+  SELECT x, x FROM unnest($1::text[]) x
+  UNION
+  SELECT g.start, CASE WHEN v.individual_a = g.id THEN v.individual_b ELSE v.individual_a END
+  FROM vision_individual_pair_verdict v JOIN g ON g.id IN (v.individual_a, v.individual_b)
+  WHERE """ + _LIVE_SAME + """ AND NOT (v.individual_a = $2 AND v.individual_b = $3))
+SELECT start, id FROM g WHERE start <> id
+"""
+# The direct 'same' rows between two of these people (one "not the same person?" button each).
+_DIRECT_LINKS_SQL = """
+SELECT v.individual_a, v.individual_b FROM vision_individual_pair_verdict v
+WHERE """ + _LIVE_SAME + """ AND v.individual_a = ANY($1::text[]) AND v.individual_b = ANY($1::text[])
+"""
+
+
+async def _link_rows(conn: Any, ids: list[str]) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """(id -> 'same' component root, direct links among ``ids``). Inside a savepoint, so a
+    failure never aborts the caller's transaction; the caller decides what a failure means."""
+    async with conn.transaction():
+        reach = await conn.fetch(_COMPONENT_SQL, ids)
+        direct = await conn.fetch(_DIRECT_LINKS_SQL, ids)
+    roots = story_persons.link_roots([(r["start"], r["id"]) for r in reach])
+    return roots, [(r["individual_a"], r["individual_b"]) for r in direct]
+
+
+async def _persons(conn: Any, stories: list[dict[str, Any]]) -> None:
+    """``persons`` on each story: its people grouped by 'same' links. Fail-open: one camera
+    group per person (today's card) when the links cannot be read."""
+    ids = sorted({p["individual_id"] for s in stories for p in s.get("people") or []})
+    roots: dict[str, str] = {}
+    links: list[tuple[str, str]] = []
+    if ids:
+        try:
+            roots, links = await _link_rows(conn, ids)
+        except Exception as exc:  # noqa: BLE001 - the card still asks each camera group
+            logger.warning("motion_story_links_lookup_failed error=%s", exc)
+    for s in stories:
+        s["persons"] = story_persons.group_people(s.get("people") or [], roots, s.pop("_areas", None), links)
 
 
 def wrong_name_correction(story_name: Optional[str], role: str, action: str, name: str,
@@ -640,10 +732,55 @@ RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
 """
 
 
+async def _single_target(conn: Any, story: Any, story_id: str, individual_id: str) -> Optional[dict[str, Any]]:
+    """One camera group the card listed (walker, else companion), with the pictures it showed."""
+    # The same late links the list shows (_enrich), so a person the card offers can be named.
+    ev = _evidence_list(story["evidence"])
+    ev = fill_late_links(ev, await _late_links(conn, [ev]))
+    person = next((p for p in people_in(ev, "walker", story["kind"])
+                   if p["individual_id"] == individual_id), None)
+    if person is not None:
+        attach_pictures(person, story_id, _strip_of(story["evidence_strip"]), None)
+    if person is None and story["together_story_ids"]:
+        order = {t: i for i, t in enumerate(story["together_story_ids"])}
+        partners = await conn.fetch(
+            "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
+            "WHERE story_id = ANY($1::text[])", list(story["together_story_ids"]))
+        # The list's order (together_story_ids), so the pictures answered are the ones it showed.
+        for r in sorted(partners, key=lambda r: order.get(r["story_id"], len(order))):
+            pev = _evidence_list(r["evidence"])
+            pev = fill_late_links(pev, await _late_links(conn, [pev]))
+            person = next((p for p in people_in(pev, "companion", r["kind"])
+                           if p["individual_id"] == individual_id), None)
+            if person is not None:
+                attach_pictures(person, r["story_id"], _strip_of(r["evidence_strip"]), None)
+                break
+    return person
+
+
+async def _group_targets(conn: Any, story_id: str, individual_id: str) -> tuple[Optional[dict[str, Any]],
+                                                                                list[dict[str, Any]]]:
+    """(the person holding ``individual_id``, its camera groups the card SHOWED a picture of),
+    exactly as the list builds it (``_enrich``), each group with only its shown pictures."""
+    fresh = [_story_dict(r) for r in await conn.fetch(_ONE_STORY_SQL, story_id)]
+    if not fresh:
+        return None, []
+    async with conn.transaction():       # a savepoint: _enrich's fail-open reads never abort the write
+        await _enrich(conn, fresh)
+    person = next((p for p in fresh[0].get("persons") or [] if individual_id in p["individual_ids"]), None)
+    if person is None:
+        return None, []
+    by_id = {p["individual_id"]: p for p in fresh[0].get("people") or []}
+    targets = [dict(by_id[g["individual_id"]], picture_crop_ids=g["picture_crop_ids"])
+               for g in person["groups"] if g["asked"]]
+    return person, targets
+
+
 @router.post("/api/vision/motion-stories/{story_id}/people/{individual_id}")
 async def record_story_person(story_id: str, individual_id: str, body: PersonBody,
                               request: Request) -> dict[str, Any]:
-    """Name / "someone else" / "not sure" for one person on a story (see the module doc)."""
+    """Name / yes / "someone else" / "not sure" for one person on a story (see the module doc).
+    ``group: true``: for every camera group of the linked person that holds ``individual_id``."""
     if not _STORY_ID_RE.fullmatch(story_id or ""):
         raise HTTPException(status_code=400, detail="bad_story_id")
     if not _INDIVIDUAL_ID_RE.fullmatch(individual_id or ""):
@@ -654,8 +791,10 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
     if body.action == "unsure":
         name = ""
     pool = _pool(request)
-    row: Any = None
+    rows: list[Any] = []
+    skipped: list[str] = []
     wrong_name = False
+    person_key: Optional[str] = None
     why = clean_why(body.why)
     try:
         async with pool.acquire() as conn:
@@ -665,88 +804,65 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                     "FROM vision_motion_story WHERE story_id = $1 AND published", story_id)
                 if story is None:
                     raise HTTPException(status_code=404, detail="story_not_found")
-                # The same late links the list shows (_enrich), so a person the card offers can be named.
-                ev = _evidence_list(story["evidence"])
-                ev = fill_late_links(ev, await _late_links(conn, [ev]))
-                person = next((p for p in people_in(ev, "walker", story["kind"])
-                               if p["individual_id"] == individual_id), None)
-                if person is not None:
-                    attach_pictures(person, story_id, _strip_of(story["evidence_strip"]), None)
-                if person is None and story["together_story_ids"]:
-                    order = {t: i for i, t in enumerate(story["together_story_ids"])}
-                    partners = await conn.fetch(
-                        "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
-                        "WHERE story_id = ANY($1::text[])", list(story["together_story_ids"]))
-                    # The list's order (together_story_ids), so the pictures answered are the ones it showed.
-                    for r in sorted(partners, key=lambda r: order.get(r["story_id"], len(order))):
-                        pev = _evidence_list(r["evidence"])
-                        pev = fill_late_links(pev, await _late_links(conn, [pev]))
-                        person = next((p for p in people_in(pev, "companion", r["kind"])
-                                       if p["individual_id"] == individual_id), None)
-                        if person is not None:
-                            attach_pictures(person, r["story_id"], _strip_of(r["evidence_strip"]), None)
-                            break
-                if person is None:
-                    raise HTTPException(status_code=422, detail="individual_not_in_story")
-                if not person["pictured"]:
+                if body.group:
+                    person, targets = await _group_targets(conn, story_id, individual_id)
+                    if person is None:
+                        raise HTTPException(status_code=422, detail="individual_not_in_story")
+                    person_key = person["person_key"]
+                    if body.crop_ids is not None and set(body.crop_ids) != {c["crop_id"] for c in person["pictures"]}:
+                        raise HTTPException(status_code=409, detail="pictures_changed")
+                else:
+                    one = await _single_target(conn, story, story_id, individual_id)
+                    if one is None:
+                        raise HTTPException(status_code=422, detail="individual_not_in_story")
+                    targets = [one] if one["pictured"] else []
+                if not targets:
                     # The card shows no picture of them and does not ask: never a blind answer.
                     raise HTTPException(status_code=422, detail="no_picture_of_person")
-                current = await conn.fetchrow("SELECT label FROM vision_individual WHERE individual_id = $1",
-                                              individual_id)
-                if current is None:
+                ids = [t["individual_id"] for t in targets]
+                current = {r["individual_id"]: r["label"] for r in await conn.fetch(
+                    "SELECT individual_id, label FROM vision_individual WHERE individual_id = ANY($1::text[])", ids)}
+                if any(i not in current for i in ids):
                     raise HTTPException(status_code=404, detail="individual_not_found")
-                if (body.action == "someone_else" and name and current["label"]
-                        and name.casefold() == current["label"].strip().casefold()):
+                labels = {i: clean_name(current[i]) for i in ids}
+                if (body.action == "someone_else" and name
+                        and any(lb and name.casefold() == lb.casefold() for lb in labels.values())):
                     # "Someone else, called <their own name>": contradictory (the split refuses it too).
                     raise HTTPException(status_code=422, detail="someone_else_takes_another_name")
                 if body.action == "confirm":
-                    # "Yes, that's <name>": only for a row that has a name, and only the name the card
-                    # showed her (a rename or relabel since the card rendered must not get her yes).
-                    label = clean_name(current["label"])
-                    if not label:
+                    # "Yes, that's <name>": only for a person that has a name, and only the name the card
+                    # showed her (a rename or relabel since the card rendered must not get her yes). In a
+                    # linked person a camera group with no name yet takes the name; another name refuses.
+                    named = {lb.casefold(): lb for lb in labels.values() if lb}
+                    if not named:
                         raise HTTPException(status_code=422, detail="nothing_to_confirm")
-                    if name.casefold() != label.casefold():
+                    if len(named) != 1 or name.casefold() not in named:
                         raise HTTPException(status_code=409, detail="label_changed")
-                    name = label
-                thumb = f"thumb:{person['thumb']}" if person["thumb"] else None
-                detail: dict[str, Any] = {"story_id": story_id, "action": body.action, "via": "motion_story"}
-                if name:
-                    detail["name"] = name
-                if why:
-                    detail["why"] = why
-                if body.action == "name":
-                    kind, answer = WHO_IS_THIS_KIND, name
-                    question = "Who is this? (named on a walkway story)"
-                elif body.action == "confirm":
-                    # A yes is her own answer to "who is this?": sql-writer applies it as a TYPED label
-                    # (a copied name she said yes to becomes hers; label_copied=false) and records the
-                    # pictures shown as "same" picture verdicts (the multi-picture who-is-this path).
-                    kind, answer = WHO_IS_THIS_KIND, name
-                    question = f"Is this {name}? Yes (said on a walkway story)"
-                    detail["pictures"] = [
-                        {"image_ref": f"crop:{cid}", "index": i, "verdict": "same", "crop_id": cid, "name": name}
-                        for i, cid in enumerate(person["picture_crop_ids"])]
-                else:
-                    # Picture verdicts, one per picture the card SHOWED of this person (the existing
-                    # vision_ask_picture_verdict path: "same" / "different" / "unsure").
-                    kind, answer = STORY_PERSON_KIND, None
-                    question = ("Is this someone else? (said on a walkway story)" if body.action == "someone_else"
-                                else "Not sure who this is (said on a walkway story)")
-                    verdict = "different" if body.action == "someone_else" else "unsure"
-                    detail["pictures"] = [
-                        {"image_ref": f"crop:{cid}", "index": i, "verdict": verdict, "crop_id": cid,
-                         "name": name or None}
-                        for i, cid in enumerate(person["picture_crop_ids"])]
-                refs = [f"motion_story:{story_id}", f"individual:{individual_id}"]
-                if kind == WHO_IS_THIS_KIND:
-                    # Juniper's own card, not an ask Orion made: it opens no vision.ask act and counts in no
-                    # ask statistic (attention patch 4a, orion/grammar/camera_ask_acts.py).
-                    refs.append(JUNIPER_STORY_CARD_REF)
-                row = await conn.fetchrow(
-                    _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}", question, json.dumps(refs),
-                    thumb, json.dumps([thumb] if thumb else []), answer, kind, individual_id, json.dumps(detail))
-                wrong_name = wrong_name_correction(story["name_label"], person["role"], body.action, name,
-                                                   current["label"])
+                    name = named[name.casefold()]
+                latest = {a["individual_id"]: {"action": a["action"], "name": a["name"]}
+                          for a in await conn.fetch(_STORY_ACTIONS_SQL, [story_id],
+                                                    [WHO_IS_THIS_KIND, STORY_PERSON_KIND])}
+                for t in targets:
+                    iid = t["individual_id"]
+                    if story_persons.already_said(latest.get(iid), body.action, name):
+                        # Idempotent (Orion's question 4): the same answer again writes no second row.
+                        skipped.append(iid)
+                        continue
+                    spec = story_persons.person_answer(
+                        action=body.action, name=name, story_id=story_id, picture_crop_ids=t["picture_crop_ids"],
+                        why=why, person_key=person_key, group_size=len(targets))
+                    thumb = f"thumb:{t['thumb']}" if t.get("thumb") else None
+                    refs = [f"motion_story:{story_id}", f"individual:{iid}"]
+                    if spec["kind"] == WHO_IS_THIS_KIND:
+                        # Juniper's own card, not an ask Orion made: it opens no vision.ask act and counts in no
+                        # ask statistic (attention patch 4a, orion/grammar/camera_ask_acts.py).
+                        refs.append(JUNIPER_STORY_CARD_REF)
+                    rows.append(await conn.fetchrow(
+                        _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}", spec["question"], json.dumps(refs),
+                        thumb, json.dumps([thumb] if thumb else []), spec["answer"], spec["kind"], iid,
+                        json.dumps(spec["detail"])))
+                    wrong_name = wrong_name or wrong_name_correction(
+                        story["name_label"], t["role"], body.action, name, current[iid])
                 if wrong_name:
                     # Never over a verdict about something else (wrong motion / wrong other).
                     wrong_name = (await conn.fetchval(
@@ -756,26 +872,112 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
     except Exception as exc:
         _raise_motion_http(exc)
     published = False
-    if row["source_kind"] == WHO_IS_THIS_KIND:
-        # The substrate entity, exactly as a Hub "who is this?" answer writes it. Right after
-        # the commit: a failed read-back below must never lose it.
-        published = await ask_routes._publish_answered(ask_routes._event_from_row(row))
-    stories: list[dict[str, Any]] = []
-    tally: Optional[dict[str, Any]] = None
+    for row in rows:
+        if row["source_kind"] == WHO_IS_THIS_KIND:
+            # The substrate entity, exactly as a Hub "who is this?" answer writes it. Right after
+            # the commit: a failed read-back below must never lose it.
+            published = await ask_routes._publish_answered(ask_routes._event_from_row(row)) or published
+    stories, tally = await _readback(pool, story_id)
+    ask_ids = [r["ask_id"] for r in rows]
+    logger.info("motion_story_person story_id=%s individual_id=%s action=%s group=%s ask_ids=%s skipped=%s "
+                "wrong_name=%s published=%s why_chars=%d",
+                story_id, individual_id, body.action, body.group, ",".join(ask_ids) or "-",
+                ",".join(skipped) or "-", wrong_name, published, len(why))
+    return {"ok": True, "story_id": story_id, "individual_id": individual_id, "action": body.action,
+            "ask_id": ask_ids[0] if ask_ids else None, "ask_ids": ask_ids, "skipped_individual_ids": skipped,
+            "person_key": person_key, "skipped_all": not ask_ids, "wrong_name_recorded": wrong_name,
+            "published": published,
+            "story": stories[0] if stories else None, "tally": tally}
+
+
+async def _readback(pool: Any, story_id: str) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
+    """The story as the list shows it now, and the tally. ([], None) on failure: the answer
+    is saved already, and the card reloads on its next poll."""
     try:
         async with pool.acquire() as conn:
             fresh = [_story_dict(r) for r in await conn.fetch(_ONE_STORY_SQL, story_id)]
             await _enrich(conn, fresh)
-            tally = await _tally(conn)
-            stories = fresh
-    except Exception as exc:  # noqa: BLE001 - saved already; the card reloads on its next poll
+            return fresh, await _tally(conn)
+    except Exception as exc:  # noqa: BLE001
         logger.warning("motion_story_person_readback_failed story_id=%s error=%s", story_id, exc)
-    logger.info("motion_story_person story_id=%s individual_id=%s action=%s ask_id=%s wrong_name=%s "
-                "published=%s why_chars=%d",
-                story_id, individual_id, body.action, row["ask_id"], wrong_name, published, len(why))
-    return {"ok": True, "story_id": story_id, "individual_id": individual_id, "action": body.action,
-            "ask_id": row["ask_id"], "wrong_name_recorded": wrong_name, "published": published,
+        return [], None
+
+
+class NotSameBody(BaseModel):
+    # One direct 'same' link between two camera groups of the person (the card's button names it).
+    a: str = Field(min_length=1, max_length=128)
+    b: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/api/vision/motion-stories/{story_id}/persons/{person_key}/not-same")
+async def record_not_same_person(story_id: str, person_key: str, body: NotSameBody,
+                                 request: Request) -> dict[str, Any]:
+    """"These camera groups are not the same person" on a grouped row (Orion's question 1).
+
+    A wrong 'same' link (most are made by a typed name, ``_link_same_name``) hides once linked
+    groups show as one person. This writes the existing "same person?" answer, ``different``,
+    for one DIRECT link of the person; sql-writer's pair path writes it over the 'same' row,
+    and the two show apart again. Refused (409 ``still_linked``) when the two would stay joined
+    through other 'same' links: one answer must not look like it split them when it did not."""
+    if not _STORY_ID_RE.fullmatch(story_id or ""):
+        raise HTTPException(status_code=400, detail="bad_story_id")
+    for v in (person_key, body.a, body.b):
+        if not _INDIVIDUAL_ID_RE.fullmatch(v or ""):
+            raise HTTPException(status_code=400, detail="bad_individual_id")
+    pool = _pool(request)
+    row: Any = None
+    already = False
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if await conn.fetchval("SELECT 1 FROM vision_motion_story WHERE story_id = $1 AND published",
+                                       story_id) is None:
+                    raise HTTPException(status_code=404, detail="story_not_found")
+                a, b = sorted((body.a, body.b))
+                row = await conn.fetchrow(_PENDING_NOT_SAME_SQL, story_persons.pair_ref(a, b))
+                # A second click before sql-writer applied the first: the same answer, not a new row.
+                already = row is not None
+                if not already:
+                    fresh = [_story_dict(r) for r in await conn.fetch(_ONE_STORY_SQL, story_id)]
+                    if fresh:
+                        async with conn.transaction():
+                            await _enrich(conn, fresh)
+                    person = next((p for p in (fresh[0].get("persons") if fresh else None) or []
+                                   if p["person_key"] == person_key), None)
+                    if person is None:
+                        raise HTTPException(status_code=422, detail="person_not_in_story")
+                    if {"a": a, "b": b} not in person["links"]:
+                        raise HTTPException(status_code=422, detail="not_a_direct_link_of_this_person")
+                    # Would they still be joined without this row? Then the pair answer cannot split them.
+                    rest = [(r["start"], r["id"]) for r in await conn.fetch(_COMPONENT_WITHOUT_SQL, [a], a, b)]
+                    if story_persons.connected(rest, a, b):
+                        raise HTTPException(status_code=409, detail="still_linked")
+                    spec = story_persons.not_same_answer(a=a, b=b, story_id=story_id, person_key=person_key)
+                    refs = [f"motion_story:{story_id}", f"individual:{a}", f"individual:{b}", JUNIPER_STORY_CARD_REF]
+                    row = await conn.fetchrow(
+                        _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}", spec["question"], json.dumps(refs),
+                        None, json.dumps([]), spec["answer"], spec["kind"], spec["source_ref"],
+                        json.dumps(spec["detail"]))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_motion_http(exc)
+    stories, tally = await _readback(pool, story_id)
+    logger.info("motion_story_not_same story_id=%s person_key=%s pair=%s ask_id=%s already=%s",
+                story_id, person_key, row["source_ref"], row["ask_id"], already)
+    return {"ok": True, "story_id": story_id, "person_key": person_key, "ask_id": row["ask_id"],
+            "pair": row["source_ref"], "already_recorded": already,
             "story": stories[0] if stories else None, "tally": tally}
+
+
+# Her "not the same person" for this pair, answered and not yet applied by sql-writer.
+_PENDING_NOT_SAME_SQL = """
+SELECT ask_id, source_ref FROM orion_ask
+WHERE source_kind = 'vision_same_individual' AND status = 'answered' AND applied_at IS NULL
+  AND source_ref = $1 AND lower(btrim(answer)) IN ('different', 'no')
+ORDER BY answered_at DESC LIMIT 1
+"""
+
 
 
 def _strip_dir() -> Path:

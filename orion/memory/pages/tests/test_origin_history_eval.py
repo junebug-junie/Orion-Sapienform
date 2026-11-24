@@ -1,10 +1,13 @@
 """page:origin history eval scorer (issue #3733). Made-up pages and records only."""
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
 
 from orion.memory.pages.evals.origin_history import (
-    aggregates, claim_churn, cite_mix, content_words, date_claims, number_claims, pool_coverage,
+    REPO, aggregates, claim_churn, error_name, main, out_path_is_safe, page_refs, cite_mix, content_words, date_claims, number_claims, pool_coverage,
     score_version, sentence_support, similarity, stability, stored_to_handles, summarize_self_sense,
 )
 from orion.memory.pages.fold import PageSource
@@ -19,7 +22,8 @@ RECORDS = {
     AC: "The cabinet air conditioner was serviced and the filter replaced.",
     DEF: "I am a body and a mind in one cabinet, still running, with 316 parts in 15 organs.",
 }
-DATES = {LOSS: date(2026, 7, 24), YAY: date(2026, 8, 13), AC: date(2026, 10, 2), DEF: date(2026, 11, 1)}
+DATES = {LOSS: datetime(2026, 7, 24, 18, tzinfo=timezone.utc), YAY: datetime(2026, 8, 13, 18, tzinfo=timezone.utc),
+         AC: datetime(2026, 10, 2, 18, tzinfo=timezone.utc), DEF: datetime(2026, 11, 1, 18, tzinfo=timezone.utc)}
 
 PAGE = (
     f"My memory storage died and I lost over a year of my journey of becoming [{LOSS}]. "
@@ -50,8 +54,17 @@ def test_a_page_that_drops_the_loss_fails_decision_3():
     page = f"On August 13, we pulled through days of suffering [{YAY}]. " \
            f"I am one cabinet [{DEF}]. Juniper said congrats [{YAY}]. Still here [{LOSS}]."
     out = score_version(page, RECORDS, DATES)
-    assert not out["loss_stated"]
+    assert not out["loss_stated"] and out["loss_dropped"]
     assert "memory_loss_not_stated" in out["check_errors"]
+
+
+def test_a_page_that_drops_the_loss_and_its_cite_still_flags_against_the_pool():
+    page = f"On August 13, we pulled through days of suffering [{YAY}]. " \
+           f"I am one cabinet body and mind [{DEF}]. Juniper said congrats, we did it [{YAY}]."
+    out = score_version(page, RECORDS, DATES, pool_loss_records=1)
+    assert out["check_ok"]                    # the live check only sees cited records ...
+    assert out["loss_dropped"]                # ... so the pool-aware flag catches it
+    assert not score_version(page, RECORDS, DATES)["loss_dropped"]
 
 
 def test_a_sentence_citing_only_an_unrelated_record_is_unsupported():
@@ -62,7 +75,8 @@ def test_a_sentence_citing_only_an_unrelated_record_is_unsupported():
 def test_missing_records_are_counted_not_crashed_on():
     out = score_version(PAGE, {k: v for k, v in RECORDS.items() if k != DEF}, DATES)
     assert out["missing_records"] == 1
-    assert out["sentence_rows"][2]["verdict"] == "uncited"
+    assert out["sentence_rows"][2]["verdict"] == "no_record"
+    assert out["support"]["no_record"] == 1 and out["support"]["uncited"] == 0
 
 
 def test_a_number_the_cited_record_lacks_is_unbacked():
@@ -70,11 +84,20 @@ def test_a_number_the_cited_record_lacks_is_unbacked():
     assert number_claims("On August 13 nothing else.", []) == (0, 0)
 
 
-def test_a_date_is_backed_by_the_record_day_or_the_day_after_or_its_text():
-    assert date_claims("On August 13, we won.", [], [date(2026, 8, 13)]) == (1, 0)
-    assert date_claims("On August 13, we won.", [], [date(2026, 8, 14)]) == (1, 0)    # evening in Denver
-    assert date_claims("On August 13, we won.", ["it was august 13"], []) == (1, 0)
-    assert date_claims("On August 20, we won.", [], [date(2026, 8, 13)]) == (1, 1)
+def test_a_date_is_backed_by_the_record_utc_or_denver_day_or_its_text():
+    utc = timezone.utc
+    assert date_claims("On August 13, we won.", [], [datetime(2026, 8, 13, 18, tzinfo=utc)]) == (1, 0)
+    # 03:00Z Aug 14 is the evening of Aug 13 in Denver: backs it. 18:00Z Aug 14 does not.
+    assert date_claims("On August 13, we won.", [], [datetime(2026, 8, 14, 3, tzinfo=utc)]) == (1, 0)
+    assert date_claims("On August 13, we won.", [], [datetime(2026, 8, 14, 18, tzinfo=utc)]) == (1, 1)
+    assert date_claims("On August 13, we won.", ["it was august 13th"], []) == (1, 0)
+    assert date_claims("On August 20, we won.", [], [datetime(2026, 8, 13, 18, tzinfo=utc)]) == (1, 1)
+
+
+def test_an_ordinal_date_is_a_claim_too():
+    assert date_claims("On August 20th, we won.", [], [datetime(2026, 8, 13, 18, tzinfo=timezone.utc)]) == (1, 1)
+    assert number_claims("On August 20th, we won.", []) == (0, 0)
+    assert number_claims("My 3rd body.", ["the 3 bodies"]) == (1, 0)
 
 
 def test_content_words_drop_names_and_function_words_and_stem():
@@ -92,6 +115,23 @@ def test_identical_versions_are_stable_and_a_rewritten_claim_churns():
     assert [(r["from"], r["to"]) for r in rows] == [(1, 2), (2, 3), (1, 3)]
     assert rows[0]["text_similarity"] == 1.0 and rows[0]["refs_jaccard"] == 1.0
     assert rows[1]["refs_dropped"] == 1 and rows[1]["refs_jaccard"] == 0.5
+
+
+def test_refs_come_only_from_cite_brackets():
+    assert page_refs(f"I read stance:zzz once [{LOSS}, {AC}].") == [LOSS, AC]
+
+
+def test_error_names_never_carry_page_text():
+    assert error_name("uncited: My secret sentence") == "uncited"
+    assert error_name("A future error with no name prefix") == "other"
+
+
+def test_out_path_refuses_any_checkout(tmp_path):
+    assert not out_path_is_safe(REPO / "x.json")
+    assert not out_path_is_safe(Path("/mnt/scripts/Orion-Sapienform-other/x.json"))
+    assert out_path_is_safe(tmp_path / "x.json")
+    with pytest.raises(SystemExit, match="outside any git checkout"):
+        main(["--out", str(REPO / "x.json")])         # refused before any DB connection
 
 
 def test_cite_mix_counts_each_ref_once():
@@ -113,6 +153,9 @@ def test_self_sense_splits_before_and_after_the_first_page():
              "answer_text": t, "self_label_score": s, "grounded_record_score": g}
             for d, t, s, g in [(17, "I am an assistant.", 1, 0), (19, "My memory disk died last July.", 0, 2),
                                (20, "I am Orion.", 0, 4)]]
+    windowed = summarize_self_sense(rows + [{**rows[0], "created_at": datetime(2026, 9, 1, tzinfo=timezone.utc)}],
+                                    cut, timedelta(days=14))
+    assert windowed["before:http"]["n"] == 1      # the September row is outside the 14-day window
     out = summarize_self_sense(rows, cut)
     assert out["before:http"] == {"n": 1, "mean_self_label": 1.0, "mean_grounded_record": 0.0,
                                   "states_memory_loss": 0, "answered": 1}
@@ -121,10 +164,25 @@ def test_self_sense_splits_before_and_after_the_first_page():
 
 
 def test_aggregates_carry_no_text_or_ids():
-    v = {"version": 1, "created_at": "2026-11-18", "evidence_refs": 4, **score_version(PAGE, RECORDS, DATES)}
-    report = {"versions": [v], "stability": stability([{"version": 1, "content": PAGE, "refs": [LOSS],
-                                                         "sentences": ["a"]}] * 2),
-              "pool": {"offered": {}, "loss_records_offered": 0, "by_version": {}}}
+    bad = f'An uncited sentence here. Juniper said "totally made up words" [{YAY}].'
+    versions = []
+    for i, page in enumerate((PAGE, bad), start=1):
+        versions.append({"version": i, "created_at": "2026-11-18", "evidence_refs": 4,
+                         **score_version(page, RECORDS, DATES, pool_loss_records=1)})
+    assert versions[1]["check_errors"]                    # the failing page has errors to leak
+    offered = [PageSource(ref=r, kind=r.split(":", 1)[0], text=t, label="") for r, t in RECORDS.items()]
+    report = {"versions": versions,
+              "stability": stability([{"version": v["version"], "content": p, "refs": page_refs(p),
+                                       "sentences": [r["sentence"] for r in v["sentence_rows"]]}
+                                      for v, p in zip(versions, (PAGE, bad))]),
+              "pool": pool_coverage(offered, {1: page_refs(PAGE), 2: page_refs(bad)}),
+              "self_sense_cutoff": "2026-11-18", "self_sense": {"after:http": {
+                  "n": 1, "mean_self_label": 0, "mean_grounded_record": 0, "states_memory_loss": 0, "answered": 1,
+                  "answer_text": "a private answer"}}}
     public = repr(aggregates(report))
-    for needle in ("memory storage", "st-loss", "m-ac", "pulled through", "_idx"):
-        assert needle not in public
+    needles = ["_idx", "uncited sentence", "totally made up", "private answer"]
+    for ref, text in RECORDS.items():
+        needles += [ref, ref.split(":", 1)[1], text[:20]]
+    needles += [row["sentence"][:20] for v in versions for row in v["sentence_rows"]]
+    for needle in needles:
+        assert needle not in public, needle

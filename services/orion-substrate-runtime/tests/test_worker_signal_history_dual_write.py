@@ -117,3 +117,26 @@ def test_strain_event_signal_failure_keeps_the_event(monkeypatch):
     w._store.save_signal_history_samples = boom
     w._strain_attention_tick()
     assert [x["error"] for x in w.writes] == [1.0] and len(w.recorded) == 1
+
+
+def test_failed_signal_write_is_retried_with_the_next_write(monkeypatch):
+    """The PE sampler has moved past a reading once its PE row is saved, so a failed signal
+    write is kept and sent again with the next one (review finding, PR #3781 Patch 1)."""
+    worker = _make_worker(monkeypatch, history_enabled=True)
+    worker._store.save_signal_history_samples.side_effect = [RuntimeError("no table"), None]
+    _run_tick(worker, [_pe_node("node:substrate.cabinet", 0.0, OBSERVED)])
+    later = OBSERVED + timedelta(seconds=30)
+    _run_tick(worker, [_pe_node("node:substrate.cabinet", 0.0, later)])
+    retried = worker._store.save_signal_history_samples.call_args.args[0]
+    assert [t for _, t, _, _ in retried] == [OBSERVED, later]
+    assert worker._signal_history_pending == []
+
+
+def test_pending_retry_buffer_is_capped(monkeypatch):
+    worker = _make_worker(monkeypatch, history_enabled=True)
+    worker._store.save_signal_history_samples.side_effect = RuntimeError("no table")
+    cap = worker._SIGNAL_HISTORY_PENDING_MAX
+    worker._signal_history_pending = [("node:substrate.cabinet", OBSERVED, 0.0, "alarm")] * cap
+    _run_tick(worker, [_pe_node("node:substrate.cabinet", 0.0, OBSERVED + timedelta(seconds=30))])
+    assert len(worker._signal_history_pending) == cap
+    assert worker._signal_history_pending[-1][1] == OBSERVED + timedelta(seconds=30)

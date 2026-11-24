@@ -985,7 +985,8 @@ class BiometricsSubstrateStore:
         observed_at), signal table preferred. Oldest first per node."""
         from orion.substrate.signal_history import READ_BOTH_SINCE_SQL, SIGNAL_NODE_IDS
 
-        ids = list(node_ids) if node_ids is not None else list(SIGNAL_NODE_IDS)
+        # Only the five signal nodes, like merge_signal_rows: never other nodes' PE rows.
+        ids = [n for n in (node_ids if node_ids is not None else SIGNAL_NODE_IDS) if n in SIGNAL_NODE_IDS]
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text(READ_BOTH_SINCE_SQL), {"since": since, "node_ids": ids}

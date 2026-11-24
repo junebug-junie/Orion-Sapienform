@@ -42,7 +42,7 @@ class FakeConn:
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
-        if "LEFT JOIN" in sql:
+        if "LEFT JOIN" in sql and "AS wrong_kind" not in sql:
             rows = sorted((n, t, v) for (n, t), v in self.pe.items()
                           if n in params["node_ids"] and t >= params["since"] and (n, t) not in self.sig)
             return _Result(rows[: params["limit"]])
@@ -52,7 +52,8 @@ class FakeConn:
             sig = [(k, v) for k, v in self.sig.items() if k[0] == n and k[1] >= since]
             mism = sum(1 for k, v in pe if k in self.sig and self.sig[k][0] != v)
             wrong = sum(1 for _, (val, kind) in sig if kind != params["kind"])
-            return _Result([(len(pe), len(sig), mism, wrong)])
+            missing = sum(1 for k, _ in pe if k not in self.sig)
+            return _Result([(len(pe), len(sig), mism, wrong, missing)])
         if "INSERT INTO substrate_node_signal_history" in sql:
             assert "ON CONFLICT (node_id, observed_at) DO NOTHING" in sql
             for p in params:
@@ -112,3 +113,15 @@ def test_nan_or_future_rows_are_anomalies_not_copied(tmp_path):
     conn = FakeConn(rows)
     s = bf.run(conn, days=7, apply=True, job_dir=tmp_path, now=NOW, out=io.StringIO())
     assert s["anomalies"] == 2 and list(conn.sig) == [("node:substrate.cabinet", NOW - timedelta(hours=2))]
+
+
+def test_extra_signal_rows_do_not_mask_missing_keys(tmp_path):
+    """Key coverage, not a count: a signal-only row must not hide a PE key with no signal row."""
+    t1, t2 = NOW - timedelta(hours=1), NOW - timedelta(hours=2)
+    conn = FakeConn([("node:substrate.street", t1, 0.0)])
+    conn.sig[("node:substrate.street", t2)] = (0.0, "alarm")  # extra, signal-only
+    # Simulate an apply whose insert silently failed: no commit of the target.
+    conn.execute = (lambda orig: (lambda stmt, params=None: _Result([]) if "INSERT INTO" in str(stmt) else orig(stmt, params)))(conn.execute)
+    s = bf.run(conn, days=7, apply=True, job_dir=tmp_path, now=NOW, out=io.StringIO())
+    assert s["matched"] is False and "MISMATCH" in s["verdict"]
+    assert "missing_keys_after" in (tmp_path / "before_after.csv").read_text()

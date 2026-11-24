@@ -1,4 +1,7 @@
-"""Signal history: the five substrate nodes that are NOT prediction errors (no third-party imports).
+"""Signal history: the five substrate nodes that are NOT prediction errors.
+
+This module imports no third-party package itself, but importing it runs orion/substrate/__init__.py,
+which does (pydantic and more).
 
 Design: docs/superpowers/specs/2026-11-24-pe-retire-perception-and-alarms-design.md (PR #3781).
 

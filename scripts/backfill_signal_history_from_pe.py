@@ -24,8 +24,8 @@ Dry run is the DEFAULT: it reads inside a READ ONLY transaction and writes nothi
 database. ``--apply`` inserts, one commit per batch. Run it AFTER the migration is applied and
 substrate-runtime runs the Patch 1 image (so the dual-write covers everything after the window).
 
-    python3 scripts/backfill_signal_history_from_pe.py            # dry run, 7 days
-    python3 scripts/backfill_signal_history_from_pe.py --apply    # writes
+    .venv/bin/python scripts/backfill_signal_history_from_pe.py            # dry run, 7 days
+    .venv/bin/python scripts/backfill_signal_history_from_pe.py --apply    # writes
 """
 
 from __future__ import annotations
@@ -78,7 +78,11 @@ SELECT
         AND sig.value IS DISTINCT FROM pe.value) AS value_mismatches,
     (SELECT count(*) FROM {SIGNAL_HISTORY_TABLE} sig
       WHERE sig.node_id = :node_id AND sig.observed_at >= :since
-        AND sig.kind IS DISTINCT FROM :kind) AS wrong_kind
+        AND sig.kind IS DISTINCT FROM :kind) AS wrong_kind,
+    (SELECT count(*) FROM {PE_HISTORY_TABLE} pe
+       LEFT JOIN {SIGNAL_HISTORY_TABLE} sig
+         ON sig.node_id = pe.node_id AND sig.observed_at = pe.observed_at
+      WHERE pe.node_id = :node_id AND pe.observed_at >= :since AND sig.node_id IS NULL) AS missing_keys
 """
 
 
@@ -93,7 +97,7 @@ def _per_node(conn: Any, *, since: datetime) -> dict[str, dict[str, int]]:
         ).fetchone()
         out[node_id] = {
             "pe_rows": int(row[0]), "signal_rows": int(row[1]),
-            "value_mismatches": int(row[2]), "wrong_kind": int(row[3]),
+            "value_mismatches": int(row[2]), "wrong_kind": int(row[3]), "missing_keys": int(row[4]),
         }
     return out
 
@@ -134,7 +138,7 @@ def run(conn: Any, *, days: float, apply: bool, job_dir: Path, now: datetime,
         if observed_at.tzinfo is None:
             observed_at = observed_at.replace(tzinfo=timezone.utc)
         if value is None or not (value == value) or observed_at > now + timedelta(minutes=5):
-            anomalies += 1  # NaN / null / future-stamped: snapshotted and reported, never copied
+            anomalies += 1  # NaN / null / future-stamped: counted in the report, never copied
             continue
         targets.append({"node_id": str(node_id), "observed_at": observed_at,
                         "value": float(value), "kind": signal_kind_for(node_id)})
@@ -169,17 +173,16 @@ def run(conn: Any, *, days: float, apply: bool, job_dir: Path, now: datetime,
     with (job_dir / "before_after.csv").open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["node_id", "kind", "pe_rows", "signal_rows_before", "targets",
-                    "signal_rows_after", "value_mismatches_after", "wrong_kind_after"])
+                    "signal_rows_after", "missing_keys_after", "value_mismatches_after", "wrong_kind_after"])
         for node_id in SIGNAL_NODE_IDS:
             b, a = before[node_id], after[node_id]
             w.writerow([node_id, signal_kind_for(node_id), b["pe_rows"], b["signal_rows"],
-                        per_node_targets.get(node_id, 0), a["signal_rows"],
+                        per_node_targets.get(node_id, 0), a["signal_rows"], a["missing_keys"],
                         a["value_mismatches"], a["wrong_kind"]])
-    # Proof the design asks for: over the window, every PE row of the five ids has a signal row
-    # with the same value and the right kind (signal rows may exceed PE rows only via rows the
-    # live dual-write added after the PE prune cut, which does not happen inside the window).
+    # Proof the design asks for: over the window, every PE key of the five ids has a signal row
+    # (key coverage, not a count), with the same value and the right kind.
     matched = all(
-        after[n]["signal_rows"] >= after[n]["pe_rows"]
+        after[n]["missing_keys"] == 0
         and after[n]["value_mismatches"] == 0 and after[n]["wrong_kind"] == 0
         for n in SIGNAL_NODE_IDS
     )
@@ -198,12 +201,13 @@ def run(conn: Any, *, days: float, apply: bool, job_dir: Path, now: datetime,
              f"- window: observed_at >= {since.isoformat()} ({days:g} days)",
              f"- target rows: {len(targets)}; processed: {done}; errors: {errors}; anomalies skipped: {anomalies}",
              f"- needs another pass: {'yes' if (apply and (errors or not matched)) else 'no' if apply else 'run --apply'}",
-             "", "| node | kind | PE rows | signal before | targets | signal after | value mismatches |",
-             "|---|---|---|---|---|---|---|"]
+             "", "| node | kind | PE rows | signal before | targets | signal after | missing keys | value mismatches |",
+             "|---|---|---|---|---|---|---|---|"]
     for node_id in SIGNAL_NODE_IDS:
         b, a = before[node_id], after[node_id]
         lines.append(f"| {node_id} | {signal_kind_for(node_id)} | {b['pe_rows']} | {b['signal_rows']} | "
-                     f"{per_node_targets.get(node_id, 0)} | {a['signal_rows']} | {a['value_mismatches']} |")
+                     f"{per_node_targets.get(node_id, 0)} | {a['signal_rows']} | {a['missing_keys']} | "
+                     f"{a['value_mismatches']} |")
     lines += ["", "Files: " + ", ".join(sorted(p.name for p in job_dir.iterdir()))]
     (job_dir / "report.md").write_text("\n".join(lines) + "\n")
     print(verdict, file=out)

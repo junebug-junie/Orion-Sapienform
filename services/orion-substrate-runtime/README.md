@@ -524,6 +524,30 @@ The write fails open: without the migration it logs `substrate_signal_history_wr
 `scripts/backfill_signal_history_from_pe.py` copies the last 7 days of the five nodes from the
 PE table (dry run by default).
 
+### Patch 2: the alarms leave the prediction-error slot (2026-11-24)
+
+The cabinet, strain and street alarms are no longer prediction errors anywhere:
+
+1. **Writer.** `_write_signal_node` writes the node's value to metadata `signal_value` with
+   `signal_kind: alarm`, and no `prediction_error` key, so the first write after deploy clears the
+   old key on the graph. `_write_prediction_error_node` refuses an alarm id (logs
+   `substrate_prediction_error_write_refused_moved_node`), and the store drops any alarm row
+   handed to the PE table (`substrate_pe_history_moved_node_refused`). The alarms' history rows
+   (sampler and strain's event row) go to `substrate_node_signal_history` only, whatever
+   `SUBSTRATE_SIGNAL_HISTORY_ENABLED` says; the flag now gates only the cameras' dual-write.
+2. **Readers.** Every history reader (this service's seed, attention-runtime, equilibrium,
+   thought's self-readings, the Hub node-history dig tool) reads
+   `orion.prediction.signal_history_sql.HISTORY_WITH_MOVED_SOURCE_SQL`: PE rows for every other
+   node, and a per-node read rule for the moved ones (`HISTORY_READ_MODE_BY_NODE_ID`; the alarms
+   are `read_both` until their old PE rows age out, around 2026-12-01; no DELETE). The strain
+   restart seed reads `fetch_signal_event_times_read_both` / `count_signal_history_read_both`.
+3. **Meaning.** The glossary files the three under `channel: alarm`; world-first attention and
+   self-readings look each node up under its own channel, so all three still compete as triggers.
+4. **Fence.** `scripts/check_pe_alarm_readers.py` fails CI on any producer that writes
+   `prediction_error` for an alarm id.
+
+The cameras stay on the prediction-error slot until Patch 3.
+
 ## Self-tuned prediction expectation (rung 6) -- retired 2026-11-03
 
 From 2026-10-16 to 2026-11-03 this service recorded each execution, chat and

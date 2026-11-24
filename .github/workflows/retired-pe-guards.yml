@@ -26,6 +26,10 @@ on:
       - "services/orion-hub/scripts/attention_organ_routes.py"
       - "services/orion-attention-runtime/**"
       - "tests/test_pe_alarm_refile.py"
+      - "tests/test_pe_alarms_off_pe.py"
+      - "orion/prediction/**"
+      - "orion/introspect/**"
+      - "services/orion-thought/**"
       - ".github/workflows/retired-pe-guards.yml"
   push:
     branches: [main]
@@ -59,12 +63,16 @@ jobs:
           PYTHONPATH=. python -m pytest -q -p no:cacheprovider \
             tests/test_retired_pe_step5_readers.py \
             tests/test_pe_alarm_refile.py \
+            tests/test_pe_alarms_off_pe.py \
             orion/substrate/tests/test_attention_self_model.py \
             orion/mood_arc/tests/test_corpus_enrichment.py
       - name: substrate-runtime producers gone
         run: |
           PYTHONPATH=services/orion-substrate-runtime:. python -m pytest -q -p no:cacheprovider \
             services/orion-substrate-runtime/tests/test_retired_pe_step5.py \
+            services/orion-substrate-runtime/tests/test_alarm_signal_writer.py \
+            services/orion-substrate-runtime/tests/test_strain_news_tick.py \
+            services/orion-substrate-runtime/tests/test_worker_signal_history_dual_write.py \
             services/orion-substrate-runtime/tests/test_prediction_error_domain_map.py \
             services/orion-substrate-runtime/tests/test_prediction_error_receipt_not_gated.py \
             services/orion-substrate-runtime/tests/test_prediction_error_node_write_not_gated.py \

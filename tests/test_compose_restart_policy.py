@@ -5,7 +5,8 @@ down after a host reboot. That is easy to miss among ~90 services: the
 otel collector was found down after the 2026-11-24 planned power outage.
 
 Override files (docker-compose.<variant>.yml) are skipped: they merge into a
-base file that carries the policy. A service that `extends` another service in the same file inherits its
+base file that carries the policy, or (like hecate's vllm variants) are
+started on demand. A service that `extends` another service in the same file inherits its
 policy. Services behind `profiles:` are skipped:
 they are started on purpose, not at boot. A one-shot job opts out by saying
 `restart: "no"` explicitly.
@@ -37,7 +38,7 @@ def _declares_restart(svc: dict, services: dict) -> bool:
     """True if the service, or a same-file service it `extends`, sets restart."""
     seen = set()
     while isinstance(svc, dict):
-        if "restart" in svc:
+        if svc.get("restart") not in (None, ""):
             return True
         ext = svc.get("extends")
         base = ext.get("service") if isinstance(ext, dict) and "file" not in ext else None
@@ -54,7 +55,7 @@ def _missing_restart() -> list[str]:
         doc = yaml.load(path.read_text(), Loader=_Loader) or {}
         services = doc.get("services") or {}
         for name, svc in services.items():
-            if not isinstance(svc, dict) or "profiles" in svc:
+            if not isinstance(svc, dict) or svc.get("profiles"):
                 continue
             if not _declares_restart(svc, services):
                 missing.append(f"{path.relative_to(ROOT)}: {name}")

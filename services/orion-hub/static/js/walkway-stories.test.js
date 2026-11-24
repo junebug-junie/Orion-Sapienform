@@ -75,6 +75,8 @@ test('story people: one row per individual, lettered in order', () => {
     { individual_id: '' }, { individual_id: 'c' }] });
   assert.deepEqual(got.map((e) => [e.person.individual_id, e.letter]), [['a', 'A'], ['b', 'B'], ['c', 'C']]);
   assert.deepEqual(ws.storyPeople({}), []);
+  const many = ws.storyPeople({ people: Array.from({ length: 28 }, (_, i) => ({ individual_id: `p${i}` })) });
+  assert.deepEqual(many.slice(24).map((e) => e.letter), ['Y', 'Z', 'A1', 'B1']);
 });
 
 test('person pictures: only whitelisted strip crops, else their own thumbnail, else none', () => {
@@ -84,8 +86,11 @@ test('person pictures: only whitelisted strip crops, else their own thumbnail, e
   assert.deepEqual(ws.personPictures(p), [{ url: `/api/vision/motion-stories/${sid}/strip/crop_1.jpg`, t: 't1', crop_id: 'c1' }]);
   assert.deepEqual(ws.personPictures({ pictures: [], thumb: H('f'), thumb_crop_id: 'c9' }),
     [{ url: `/api/vision/crop-thumbs/${H('f')}`, t: null, crop_id: 'c9' }]);
-  assert.equal(ws.isPictured({ pictures: [], thumb: 'nope' }), false);
-  assert.equal(ws.isPictured({ pictures: [{ story_id: sid, file: 'crop_0.jpg' }] }), true);
+  assert.equal(ws.isPictured({ pictures: [], thumb: 'nope', pictured: true }), false);
+  assert.equal(ws.isPictured({ pictures: [{ story_id: sid, file: 'crop_0.jpg' }], pictured: true }), true);
+  // The server decides: a thumbnail it could not tie to a crop is shown nowhere as askable.
+  assert.equal(ws.isPictured({ pictures: [], thumb: H('f'), pictured: false }), false);
+  assert.equal(ws.isPictured({ pictures: [{ story_id: sid, file: 'crop_0.jpg' }] }), false);
 });
 
 test('boxes text says which numbered boxes are theirs, or that they are not boxed', () => {

@@ -44,10 +44,14 @@ consumers apply:
   closes their open "who is this?" cards, and links the individual to an
   existing one she typed the same name for. ``OrionAskAnsweredV1`` is published
   so orion-substrate-runtime writes the substrate entity.
-- ``confirm`` ("Yes, that's <name>", 2026-11-24; only on a row that has a name) /
-  ``someone_else`` (optionally with a name for who it really is) / ``unsure``:
+- ``confirm`` ("Yes, that's <name>", 2026-11-24; only on a row that has a name,
+  and only the name the card showed: 409 ``label_changed`` otherwise): the same
+  ``vision_individual`` answer as a typed name (so a copied name she said yes to
+  becomes her typed label), with ``answer_detail.pictures`` = one "same" picture
+  verdict per picture of that individual the card SHOWED.
+- ``someone_else`` (optionally with a name for who it really is) / ``unsure``:
   a ``vision_story_person`` ask whose ``answer_detail.pictures`` holds one
-  picture verdict ("same" / "different" / "unsure") per picture of that
+  picture verdict ("different" / "unsure") per picture of that
   individual the card SHOWED. orion-sql-writer stores them in
   ``vision_ask_picture_verdict``; "someone else" ones are split off by the
   split-on-verdict pass (app/vision_split.py).
@@ -428,9 +432,9 @@ def attach_pictures(person: dict[str, Any], strip_story_id: str, strip: Any,
     frame, or None when this person is not boxed on it (a companion, or no frame)."""
     files = strip_files(strip)
     pics = [{"story_id": strip_story_id, "file": files[cid]["file"], "t": files[cid]["t"], "crop_id": cid}
-            for cid in person.get("crop_ids") or [] if cid in files]
+            for cid in dict.fromkeys(person.get("crop_ids") or []) if cid in files]
     person["pictures"] = pics
-    person["boxes"] = [boxes[cid] for cid in person.get("crop_ids") or [] if boxes and cid in boxes]
+    person["boxes"] = [boxes[cid] for cid in dict.fromkeys(person.get("crop_ids") or []) if boxes and cid in boxes]
     shown = [p["crop_id"] for p in pics]
     if not shown and person.get("thumb") and person.get("thumb_crop_id"):
         shown = [person["thumb_crop_id"]]
@@ -647,9 +651,12 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                 if person is not None:
                     attach_pictures(person, story_id, _strip_of(story["evidence_strip"]), None)
                 if person is None and story["together_story_ids"]:
-                    for r in await conn.fetch(
-                            "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
-                            "WHERE story_id = ANY($1::text[]) ORDER BY story_id", list(story["together_story_ids"])):
+                    order = {t: i for i, t in enumerate(story["together_story_ids"])}
+                    partners = await conn.fetch(
+                        "SELECT story_id, kind, evidence, evidence_strip FROM vision_motion_story "
+                        "WHERE story_id = ANY($1::text[])", list(story["together_story_ids"]))
+                    # The list's order (together_story_ids), so the pictures answered are the ones it showed.
+                    for r in sorted(partners, key=lambda r: order.get(r["story_id"], len(order))):
                         pev = _evidence_list(r["evidence"])
                         pev = fill_late_links(pev, await _late_links(conn, [pev]))
                         person = next((p for p in people_in(pev, "companion", r["kind"])
@@ -671,10 +678,14 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                     # "Someone else, called <their own name>": contradictory (the split refuses it too).
                     raise HTTPException(status_code=422, detail="someone_else_takes_another_name")
                 if body.action == "confirm":
-                    # "Yes, that's <name>": only for a row that has a name, and it is that name.
-                    name = clean_name(current["label"])
-                    if not name:
+                    # "Yes, that's <name>": only for a row that has a name, and only the name the card
+                    # showed her (a rename or relabel since the card rendered must not get her yes).
+                    label = clean_name(current["label"])
+                    if not label:
                         raise HTTPException(status_code=422, detail="nothing_to_confirm")
+                    if name.casefold() != label.casefold():
+                        raise HTTPException(status_code=409, detail="label_changed")
+                    name = label
                 thumb = f"thumb:{person['thumb']}" if person["thumb"] else None
                 detail: dict[str, Any] = {"story_id": story_id, "action": body.action, "via": "motion_story"}
                 if name:
@@ -682,20 +693,28 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                 if body.action == "name":
                     kind, answer = WHO_IS_THIS_KIND, name
                     question = "Who is this? (named on a walkway story)"
+                elif body.action == "confirm":
+                    # A yes is her own answer to "who is this?": sql-writer applies it as a TYPED label
+                    # (a copied name she said yes to becomes hers; label_copied=false) and records the
+                    # pictures shown as "same" picture verdicts (the multi-picture who-is-this path).
+                    kind, answer = WHO_IS_THIS_KIND, name
+                    question = f"Is this {name}? Yes (said on a walkway story)"
+                    detail["pictures"] = [
+                        {"image_ref": f"crop:{cid}", "index": i, "verdict": "same", "crop_id": cid, "name": name}
+                        for i, cid in enumerate(person["picture_crop_ids"])]
                 else:
                     # Picture verdicts, one per picture the card SHOWED of this person (the existing
                     # vision_ask_picture_verdict path: "same" / "different" / "unsure").
                     kind, answer = STORY_PERSON_KIND, None
-                    question = {"confirm": f"Is this {name}? Yes (said on a walkway story)",
-                                "someone_else": "Is this someone else? (said on a walkway story)"}.get(
-                                    body.action, "Not sure who this is (said on a walkway story)")
-                    verdict = {"confirm": "same", "someone_else": "different"}.get(body.action, "unsure")
+                    question = ("Is this someone else? (said on a walkway story)" if body.action == "someone_else"
+                                else "Not sure who this is (said on a walkway story)")
+                    verdict = "different" if body.action == "someone_else" else "unsure"
                     detail["pictures"] = [
                         {"image_ref": f"crop:{cid}", "index": i, "verdict": verdict, "crop_id": cid,
                          "name": name or None}
                         for i, cid in enumerate(person["picture_crop_ids"])]
                 refs = [f"motion_story:{story_id}", f"individual:{individual_id}"]
-                if body.action == "name":
+                if kind == WHO_IS_THIS_KIND:
                     # Juniper's own card, not an ask Orion made: it opens no vision.ask act and counts in no
                     # ask statistic (attention patch 4a, orion/grammar/camera_ask_acts.py).
                     refs.append(JUNIPER_STORY_CARD_REF)
@@ -713,7 +732,7 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
     except Exception as exc:
         _raise_motion_http(exc)
     published = False
-    if body.action == "name":
+    if row["source_kind"] == WHO_IS_THIS_KIND:
         # The substrate entity, exactly as a Hub "who is this?" answer writes it. Right after
         # the commit: a failed read-back below must never lose it.
         published = await ask_routes._publish_answered(ask_routes._event_from_row(row))

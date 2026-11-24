@@ -191,7 +191,8 @@ def test_walkway_stories_card_browser_smoke():
 
 def _person(iid: str, **kw) -> dict:
     base = {"individual_id": iid, "short_id": iid[:8], "role": "walker", "kind": "person", "crop_ids": ["c1"],
-            "thumb": H, "label": None, "label_copied": False, "known": True, "story_action": None}
+            "thumb": H, "thumb_crop_id": "c1", "label": None, "label_copied": False, "known": True,
+            "story_action": None, "pictures": [], "boxes": [], "pictured": True}
     base.update(kw)
     return base
 
@@ -208,7 +209,8 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
     anon = _story(1, sentence="A person walked right to left, over 5 s (3 detections).",
                   display_sentence="A person walked right to left, over 5 s (3 detections).", display_name=None,
                   name_source="rule", people=[_person("ind-anon1234567"),
-                                              _person("ind-dog", role="companion", kind="dog", thumb=None)])
+                                              _person("ind-dog", role="companion", kind="dog", thumb=None,
+                                                      pictured=False)])
     alex = _story(2, name_label="Alex", individual_id="ind-alex", sentence="Alex walked left to right, over 5 s (3 detections).",
                   display_sentence="Alex walked left to right, over 5 s (3 detections).", display_name="Alex",
                   name_source="rule", people=[_person("ind-alex", label="Alex", label_copied=True)])
@@ -430,7 +432,7 @@ def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_bro
         assert rows.nth(3).locator("[data-person-action='name']").text_content() == "Name them"
         rows.nth(2).locator("[data-person-action='confirm']").click()
         page.wait_for_function("() => !!document.querySelector(\"[data-person-said='confirm']\")")
-        assert posts == [("ind-addy2", {"action": "confirm", "name": ""})]
+        assert posts == [("ind-addy2", {"action": "confirm", "name": "Addy"})]
         assert "Saved: yes, that's Addy." in page.locator("#walkwayStoriesStatus").text_content()
         assert page.locator("[data-person-said='confirm']").text_content() == "You said yes, this is Addy."
         assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360

@@ -4868,8 +4868,10 @@ time crops above carry the same letters. Two groups with one name ("Addy",
 "Addy") show their group id. A person with no picture of their own is greyed
 ("No picture of this person - not asked.") and the route refuses an answer about
 them (`no_picture_of_person`). A named row has "Yes, that's <name>" (`action:
-"confirm"`): a `vision_story_person` row whose picture verdicts are "same", the
-existing picture-verdict path. Every picture verdict now covers only the
+"confirm"`, sent with the name the card showed; 409 `label_changed` if it was
+renamed since): the same `vision_individual` answer a typed name is, so a name
+Orion copied over a same-person link becomes her typed label, plus one "same"
+picture verdict per picture shown (the existing picture-verdict path). Every picture verdict now covers only the
 pictures the card showed for that person, never crops she did not see. A yes on
 the walker counts as her answer on the story, like a name.
 

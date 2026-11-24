@@ -183,7 +183,11 @@
       seen.add(p.individual_id);
       out.push(p);
     });
-    return out.map((p, i) => ({ person: p, letter: LETTERS[i % LETTERS.length], chip: CHIP[i % CHIP.length] }));
+    return out.map((p, i) => ({
+      person: p,
+      letter: i < LETTERS.length ? LETTERS[i] : LETTERS[i % LETTERS.length] + Math.floor(i / LETTERS.length),
+      chip: CHIP[i % CHIP.length],
+    }));
   }
 
   // The pictures a person row shows: their own strip crops, else their thumbnail.
@@ -200,9 +204,10 @@
     return out;
   }
 
-  // Is this person askable? Only with a picture of their own on the card.
+  // Is this person askable? Only when the server says it has a picture of them
+  // (the route refuses the rest) and the card can show one.
   function isPictured(p) {
-    return personPictures(p).length > 0;
+    return !!p && p.pictured === true && personPictures(p).length > 0;
   }
 
   // crop_id -> {letter, chip} for the story's time crops.
@@ -234,7 +239,7 @@
   function renderPerson(doc, story, entry, onPerson, hasFrame) {
     const p = entry.person;
     const pics = personPictures(p);
-    const asked = pics.length > 0;
+    const asked = isPictured(p);
     const box = el(doc, "div", "space-y-2 rounded border p-2 " + (asked
       ? "border-gray-700 bg-gray-900/60" : "border-gray-800 bg-gray-900/30 opacity-60"));
     box.setAttribute("data-story-person", p.individual_id);
@@ -533,8 +538,15 @@
         const res = await fetchFn(
           `/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/people/${encodeURIComponent(person.individual_id)}`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action, name: action === "unsure" || action === "confirm" ? "" : name }),
+            // A yes carries the name the card showed: the server refuses it if the name changed since.
+            body: JSON.stringify({ action, name: action === "unsure" ? "" : action === "confirm" ? (person.label || "") : name }),
           });
+        if (res.status === 409) {
+          // The name changed since the card loaded (renamed elsewhere): show the new one, ask again.
+          await load(false);
+          if (status) status.textContent = "That name changed since this card loaded. Showing the new one; nothing saved.";
+          return;
+        }
         if (!res.ok) {
           let detail = "";
           try { detail = (await res.json()).detail || ""; } catch (_) { /* not JSON */ }

@@ -105,3 +105,38 @@ def test_a_question_quoting_a_cited_experience_id_is_refused_with_words_that_say
     assert applied.move is None
     assert "quotes the id of an experience it cites" in (applied.move_refusal or "")
     assert applied.experience_cites == [eid]  # the cite still counts
+
+
+def _reply_template(prompt: str) -> str:
+    """The JSON reply template: from "Reply with ONE JSON object" to the first blank line."""
+    start = prompt.index("Reply with ONE JSON object")
+    end = prompt.find("\n\n", start)
+    return prompt[start:end if end != -1 else len(prompt)]
+
+
+def test_the_reply_template_itself_carries_the_experience_cites_when_the_now_is_shown():
+    """#3425: live 11-16..11-24 Prime cited in 1 of 73 thoughts that were shown a now. The cite instruction was a
+    paragraph after the template, and the template's only "refs" sat inside the move (arc/act only), so the
+    model followed the template. The top-level refs must be IN the template, in arc and event mode alike, with
+    regulate and take-on on (their paragraphs sit between the template and the cite paragraph live)."""
+    for events in (False, True):
+        prompt = system_prompt({"curiosity": ("slow",)}, events=events, take_on=True, experiences=True, needs=True,
+                               evidence_clock=True)
+        template = _reply_template(prompt)
+        assert '"refs": [] | [{"kind": "experience", "id": "<the id after experience:>"}]}' in template
+        assert template.rstrip().endswith("}]}")
+        # The move's own refs are unchanged (arc/act, or act only in event mode).
+        assert ('"refs": [{"kind": "act", "id": "..."}]},' if events
+                else '"refs": [{"kind": "arc" | "act", "id": "..."}]},') in template
+    # No now in the frame: the template offers no experience cite.
+    assert "experience" not in _reply_template(system_prompt(None, events=True))
+
+
+def test_an_answer_written_to_the_new_template_records_its_cites():
+    """An answer shaped exactly like the template (top-level refs after the move) keeps its shown cites."""
+    raw = {"reading": "the closet ran hot after the reading", "pick": "none",
+           "concerns": {"keep": [], "add": [], "drop": []}, "move": None,
+           "refs": [{"kind": "experience", "id": SHOWN[0]}, {"kind": "experience", "id": f"experience:{SHOWN[2]}"}]}
+    applied = _apply(raw)
+    assert applied.experience_cites == [SHOWN[0], SHOWN[2]]
+    assert not applied.warnings

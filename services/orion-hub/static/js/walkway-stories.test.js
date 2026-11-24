@@ -157,3 +157,12 @@ test("tally line counts can't-see answers apart when the server sends them", () 
   assert.match(ws.tallyLine({ checked: 1, person_answers: 10, cant_see: 4 }), /can't see them 4 of 10 person answers$/);
   assert.doesNotMatch(ws.tallyLine({ checked: 1 }), /can't see them/);
 });
+
+test('the cursor is a person: it follows the person, else the first one not yet answered', () => {
+  const e = (k, said) => ({ person: { individual_id: k, story_action: said ? { action: 'unsure' } : null } });
+  const askable = [e('a', true), e('b', false), e('c', false)];
+  assert.equal(ws.cursorIndex(askable, 'c'), 2);
+  assert.equal(ws.cursorIndex(askable, 'gone'), 1);      // left the list: the first unanswered, not a shifted index
+  assert.equal(ws.cursorIndex(askable, undefined), 1);
+  assert.equal(ws.cursorIndex([e('a', true)], 'x'), 0);
+});

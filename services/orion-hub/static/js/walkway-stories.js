@@ -289,6 +289,16 @@
     return chip;
   }
 
+  // Which asked person a story shows: the one the cursor names; else the first she has not
+  // answered on this story; else the first. A person who left the list (no picture after an
+  // answer) never shifts the card onto someone else by index.
+  function cursorIndex(askable, key) {
+    const at = key ? askable.findIndex((e) => e.person.individual_id === key) : -1;
+    if (at >= 0) return at;
+    const open = askable.findIndex((e) => !e.person.story_action);
+    return open >= 0 ? open : 0;
+  }
+
   // The question for one person.
   function questionText(p) {
     const lead = p && p.role === "companion" ? "Walking with them: " : "";
@@ -348,6 +358,7 @@
     head.appendChild(chipEl(doc, entry));
     const q = el(doc, "div", "text-sm font-semibold text-gray-100", questionText(p));
     q.setAttribute("data-person-question", "1");
+    q.setAttribute("tabindex", "-1");
     head.appendChild(q);
     const title = el(doc, "span", "sr-only", personTitle(p));
     title.setAttribute("data-person-title", "1");
@@ -416,6 +427,14 @@
       box.appendChild(line);
     }
 
+    const sending = ctx.flushing && ctx.flushing.story_id === story.story_id && ctx.flushing.person_key === p.individual_id
+      ? ctx.flushing : null;
+    if (sending) {
+      const line = el(doc, "div", "rounded border border-gray-600 px-2 py-1 text-xs text-gray-300",
+        `Saving: ${pendingText(p, sending.spec)} ...`);
+      line.setAttribute("data-person-saving", sending.spec.name);
+      box.appendChild(line);
+    }
     const held = ctx.pending && ctx.pending.story_id === story.story_id && ctx.pending.person_key === p.individual_id
       ? ctx.pending : null;
     if (held) {
@@ -482,7 +501,15 @@
     const dunno = btnEl(doc, "I don't know who", "data-person-action", "dont_know", false);
     dunno.addEventListener("click", () => send(answerSpec(p, "dont_know")));
     picker.appendChild(dunno);
-    no.addEventListener("click", () => picker.classList.toggle("hidden"));
+    const pickerId = `walkway-picker-${String(story.story_id).slice(0, 12)}-${entry.letter}`;
+    picker.setAttribute("id", pickerId);
+    no.setAttribute("aria-controls", pickerId);
+    no.setAttribute("aria-expanded", "false");
+    no.addEventListener("click", () => {
+      const open = picker.classList.contains("hidden");
+      picker.classList.toggle("hidden");
+      no.setAttribute("aria-expanded", open ? "true" : "false");
+    });
     box.appendChild(picker);
     box.appendChild(whyInput);
     if (seenAs) box.appendChild(renderNotSame(doc, story, p, ctx.onNotSame));
@@ -654,7 +681,7 @@
     }
     const c = ctx || {};
     if (typeof c.answer === "function" && askable.length) {
-      const at = Math.min(Math.max(0, Number((c.cursor && c.cursor.get(story.story_id)) || 0)), askable.length - 1);
+      const at = cursorIndex(askable, c.cursor && c.cursor.get(story.story_id));
       const progress = el(doc, "div", "text-[10px] text-gray-400", `Person ${at + 1} of ${askable.length}`);
       progress.setAttribute("data-story-progress", `${at + 1}/${askable.length}`);
       who.appendChild(progress);
@@ -662,17 +689,24 @@
       const nav = el(doc, "div", "flex flex-wrap items-center gap-2");
       if (at > 0) {
         const back = btnEl(doc, "Previous person", "data-story-nav", "back", false);
-        back.addEventListener("click", () => c.go(story, at - 1));
+        back.addEventListener("click", () => c.go(story, askable[at - 1].person.individual_id));
         nav.appendChild(back);
       }
       if (at < askable.length - 1) {
         const next = btnEl(doc, `Next person (${at + 2} of ${askable.length})`, "data-story-nav", "next", true);
-        next.addEventListener("click", () => c.go(story, at + 1));
+        next.addEventListener("click", () => c.go(story, askable[at + 1].person.individual_id));
         nav.appendChild(next);
       } else {
         const done = el(doc, "div", "text-[11px] text-gray-400", "That's everyone in this story.");
         done.setAttribute("data-story-nav-done", "1");
         nav.appendChild(done);
+        const held = c.pending && c.pending.story_id === story.story_id;
+        if (held) {
+          // The last person has no "Next": "Done" sends the held pick.
+          const save = btnEl(doc, "Done", "data-story-nav", "done", true);
+          save.addEventListener("click", () => c.go(story, askable[at].person.individual_id));
+          nav.appendChild(save);
+        }
       }
       who.appendChild(nav);
     }
@@ -738,16 +772,24 @@
     }
 
     // One-at-a-time state: which person each story shows, the one held answer, the known names.
-    const cursor = new Map();
-    let pending = null;
-    let names = [];
-    const ctx = { cursor, names, answer, undo, go, say, onNotSame, get pending() { return pending; } };
+    const cursor = new Map();          // story_id -> the person_key it shows
+    let pending = null;                // a name picked from the list, held for Undo
+    let flushing = null;               // that answer while it is being sent (Undo no longer applies)
+    const names = [];
+    const ctx = { cursor, names, answer, undo, go, say, onNotSame,
+      get pending() { return pending; }, get flushing() { return flushing; } };
 
     function say(text) { if (status) status.textContent = text; }
 
-    function rerender(storyId, fresh) {
+    function rerender(storyId, fresh, focus) {
       const item = list.querySelector(`[data-story-id="${storyId}"]`);
-      if (item && fresh) item.replaceWith(renderStory(doc, fresh, onVerdict, ctx));
+      if (!item || !fresh) return;
+      const next = renderStory(doc, fresh, onVerdict, ctx);
+      item.replaceWith(next);
+      if (focus) {
+        const target = next.querySelector(focus);
+        if (target && typeof target.focus === "function") target.focus();
+      }
     }
 
     function storyOf(storyId) {
@@ -756,38 +798,64 @@
     }
 
     // Send the held answer (a name picked from the list), if any. ``keepalive``: the page is closing.
+    // Returns true when nothing is held any more. A failed send (not a 409: that reloads the card)
+    // puts the answer back, so it is never lost and she can try again or Undo.
     async function flush(keepalive) {
       if (!pending) return true;
       const held = pending;
       pending = null;
-      return send(held.story, held.person, held.spec, null, keepalive);
+      if (keepalive) {
+        send(held.story, held.person, held.spec, null, true);
+        return true;
+      }
+      flushing = held;
+      rerender(held.story_id, storyOf(held.story_id) || held.story);
+      let result = false;
+      try {
+        result = await send(held.story, held.person, held.spec, null, false);
+      } finally {
+        flushing = null;
+      }
+      if (result === false && !pending) {
+        pending = held;
+        rerender(held.story_id, storyOf(held.story_id) || held.story);
+      }
+      return result === true;
     }
 
     function undo(story) {
+      if (!pending || pending.story_id !== story.story_id) {
+        say("Already saving that answer; to change it, answer this person again.");
+        return;
+      }
       pending = null;
       say("Undone: nothing was saved.");
-      rerender(story.story_id, storyOf(story.story_id) || story);
+      rerender(story.story_id, storyOf(story.story_id) || story, "[data-person-question]");
     }
 
-    async function go(story, index) {
-      const ok = await flush(false);
-      if (!ok) return;
-      cursor.set(story.story_id, index);
-      rerender(story.story_id, storyOf(story.story_id) || story);
+    async function go(story, personKey) {
+      if (!(await flush(false))) return;
+      cursor.set(story.story_id, personKey);
+      rerender(story.story_id, storyOf(story.story_id) || story, "[data-person-question]");
     }
 
     async function answer(story, person, spec, box, hold) {
-      if (hold) {
-        // One tap, no confirm (Juniper's answer 1): held as "Changed to X - Undo" until the next person.
-        if (pending && (pending.story.story_id !== story.story_id || pending.person.individual_id !== person.individual_id)) {
-          if (!(await flush(false))) return;
-        }
-        pending = { story, person, spec, story_id: story.story_id, person_key: person.individual_id };
-        say(`${pendingText(person, spec)}. Saved when you go to the next person; Undo until then.`);
-        rerender(story.story_id, storyOf(story.story_id) || story);
+      const samePerson = pending && pending.story_id === story.story_id && pending.person_key === person.individual_id;
+      if (samePerson) {
+        // A new answer about the same person replaces the held pick: never two contradicting rows.
+        pending = null;
+      } else if (pending && !(await flush(false))) {
         return;
       }
-      if (pending && !(await flush(false))) return;
+      if (hold) {
+        // One tap, no confirm (Juniper's answer 1): held as "Changed to X - Undo" until the next person.
+        pending = { story, person, spec, story_id: story.story_id, person_key: person.individual_id };
+        cursor.set(story.story_id, person.individual_id);
+        say(`${pendingText(person, spec)}. Saved when you go to the next person; Undo until then.`);
+        rerender(story.story_id, storyOf(story.story_id) || story, "[data-person-undo]");
+        return;
+      }
+      cursor.set(story.story_id, person.individual_id);
       await send(story, person, spec, box, false);
     }
 
@@ -810,11 +878,11 @@
           // camera group): show the new card, ask again.
           let detail = "";
           try { detail = (await res.json()).detail || ""; } catch (_) { /* not JSON */ }
-          await load(false);
+          await load(false, true);
           say(detail === "pictures_changed"
             ? "Orion's pictures of this person changed since this card loaded. Showing the new ones; nothing saved."
             : "That name changed since this card loaded. Showing the new one; nothing saved.");
-          return false;
+          return "conflict";
         }
         if (!res.ok) {
           let detail = "";
@@ -823,7 +891,8 @@
         }
         const body = await res.json();
         if (body.tally) showTally(body.tally);
-        if (body.story) rerender(story.story_id, body.story);
+        // The server's fresh story; else the one shown (so a replaced held pick leaves the card).
+        rerender(story.story_id, body.story || storyOf(story.story_id) || story);
         let text = spec.action === "name" ? `Saved: ${spec.name}. Orion applies it like any "who is this?" answer.`
           : spec.action === "confirm" ? `Saved: yes, that's ${person.label || "them"}.`
           : spec.action === "someone_else"
@@ -879,7 +948,10 @@
       } catch (_) { /* the list is optional: typing a name still works */ }
     }
 
-    async function load(fromTimer) {
+    async function load(fromTimer, skipFlush) {
+      // The 60 s refresh never runs over an answer held for Undo; anything else sends it first.
+      if (fromTimer === true && (pending || flushing)) return;
+      if (!skipFlush && pending && !(await flush(false))) return;
       if (!fromTimer) await loadNames();
       const unchecked = uncheckedBox && uncheckedBox.checked ? "true" : "false";
       const checkable = !checkableBox || checkableBox.checked ? "true" : "false";
@@ -891,11 +963,10 @@
         showTally(body.tally);
         // The 60 s refresh never wipes a name Juniper is typing, nor an answer held for Undo
         // (a filter change she makes does reload, and sends the held answer first).
-        const typing = fromTimer === true && (!!pending || Array.from(
+        const typing = fromTimer === true && Array.from(
           list.querySelectorAll("[data-person-name-input], [data-person-why-input]"))
-          .some((i) => i.value.trim() || doc.activeElement === i));
+          .some((i) => i.value.trim() || doc.activeElement === i);
         if (typing) return;
-        if (pending) await flush(false);
         list.textContent = "";
         const stories = body.stories || [];
         stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, ctx)));
@@ -925,7 +996,14 @@
     }
 
     // Leaving the page sends the held answer (a keepalive request survives the unload).
-    if (typeof global.addEventListener === "function") global.addEventListener("pagehide", () => { flush(true); });
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("pagehide", () => { flush(true); });
+      // Mobile browsers may never fire pagehide when she switches apps: hidden sends it too.
+      global.addEventListener("pageshow", (ev) => { if (ev && ev.persisted) load(false); });
+    }
+    if (typeof doc.addEventListener === "function") {
+      doc.addEventListener("visibilitychange", () => { if (doc.visibilityState === "hidden") flush(true); });
+    }
     if (select) select.addEventListener("change", sync);
     if (uncheckedBox) uncheckedBox.addEventListener("change", () => load(false));
     if (checkableBox) checkableBox.addEventListener("change", () => load(false));
@@ -936,7 +1014,7 @@
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
                 personTitle, actionLine, whyLine, handoffText, renderStory, mount,
                 storyPeople, personPictures, isPictured, cropOwners, boxesText, groupsText, notSameChoices,
-                questionText, nameChoices, answerSpec, pendingText };
+                questionText, nameChoices, answerSpec, pendingText, cursorIndex };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

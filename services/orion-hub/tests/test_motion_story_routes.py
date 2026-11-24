@@ -1178,6 +1178,14 @@ def test_not_sure_stories_go_back_in_the_unchecked_queue_once() -> None:
             return {s["story_id"]: s["reopened"] for s in r.json()["stories"]}
 
         assert await queue() == {unsure: True}
+        # A "not sure" story whose pictures are gone since (no one left to ask) is not shown: it would stay for ever.
+        gone = await _walk(pool, 3, ["ind-b"], strip=[0], thumbs=())
+        await client.post(f"/api/vision/motion-stories/{gone}/verdict", json={"verdict": "right"})
+        await client.post(f"/api/vision/motion-stories/{gone}/people/ind-b", json={"action": "unsure"})
+        assert await queue() == {unsure: True, gone: True}
+        await pool.execute("UPDATE vision_motion_story SET evidence_strip = evidence_strip || '{\"pruned_at\": \"x\"}'::jsonb "
+                           "WHERE story_id = $1", gone)
+        assert await queue() == {unsure: True}
         # The old list card (a cached page) does not close it; the one-at-a-time card does.
         await client.post(f"/api/vision/motion-stories/{unsure}/people/ind-b", json={"action": "unsure"})
         assert await queue() == {unsure: True}

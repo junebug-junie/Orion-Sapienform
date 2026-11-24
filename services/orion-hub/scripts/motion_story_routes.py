@@ -368,6 +368,10 @@ async def list_motion_stories(
     shown = set(reopened)
     for s in stories:
         s["reopened"] = s["story_id"] in shown and s.get("verdict") is not None
+    if unchecked_only:
+        # A story back only because of "not sure" with no one the card can ask any more (its
+        # pictures pruned, say) would sit in the queue for ever: it is not shown.
+        stories = [s for s in stories if not s["reopened"] or any(p.get("pictured") for p in s.get("persons") or [])]
     return {"ok": True, "stories": [public_story(s) for s in stories], "tally": tally}
 
 

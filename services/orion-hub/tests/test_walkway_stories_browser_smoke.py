@@ -548,3 +548,78 @@ def test_walkway_story_linked_groups_are_one_person_asked_once_browser_smoke():
                              {"action": "unsure", "name": "", "why": "", "group": True, "card": "one_at_a_time",
                               "dont_know": True, "crop_ids": ["k4"]})
         browser.close()
+
+
+def test_walkway_story_held_pick_is_never_lost_nor_doubled_browser_smoke():
+    """Review fixes (Patch B): a held pick that fails to send comes back (not lost); another answer on the
+    same person replaces it (never two rows); the last person's "Done" sends it."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    html = _html()
+    story = _story(3, name_label="Alex", individual_id="ind-alex", sentence="Alex walked.",
+                   persons=[_pp("ind-anon"), _pp("ind-alex", label="Alex")])
+    posts: list[tuple[str, dict]] = []
+    fail = {"next": True}
+
+    def handle(route):
+        url = route.request.url
+        path = url.split("http://hub.test", 1)[1].split("?", 1)[0]
+        if path == "/":
+            return route.fulfill(body=html, content_type="text/html")
+        if path.startswith("/static/"):
+            return _static(route, path)
+        if path == "/api/vision/known-names":
+            return route.fulfill(body=json.dumps(NAMES), content_type="application/json")
+        if path == "/api/vision/motion-stories":
+            return route.fulfill(body=json.dumps({"ok": True, "stories": [story], "tally": _tally(1, 1)}),
+                                 content_type="application/json")
+        m = re.fullmatch(r"/api/vision/motion-stories/([0-9a-f]{32})/people/([^/]+)", path)
+        if m:
+            if fail["next"]:
+                fail["next"] = False
+                return route.fulfill(status=503, body=json.dumps({"detail": "motion_story_store_unavailable"}),
+                                     content_type="application/json")
+            posts.append((m.group(2), json.loads(route.request.post_data or "{}")))
+            return route.fulfill(body=json.dumps({"ok": True, "story": None, "tally": _tally(1, 1)}),
+                                 content_type="application/json")
+        if path == f"/api/vision/crop-thumbs/{H}":
+            return route.fulfill(body=PIXEL, content_type="image/gif")
+        return route.fulfill(status=404, body="")
+
+    with sync_playwright() as p:
+        browser, page = _page(p, html, handle)
+        item = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
+        assert item.locator("[data-person-action='no']").get_attribute("aria-expanded") == "false"
+        item.locator("[data-person-action='no']").click()
+        assert item.locator("[data-person-action='no']").get_attribute("aria-expanded") == "true"
+        item.locator("[data-person-pick='Theo']").click()
+        page.wait_for_selector("[data-person-pending='Theo']")
+        # Next fails (503): the held pick comes back, the card stays on this person.
+        page.locator("[data-story-nav='next']").click()
+        page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes('Could not save')")
+        page.wait_for_selector("[data-person-pending='Theo']")
+        assert page.locator("[data-story-progress]").get_attribute("data-story-progress") == "1/2"
+        assert posts == []
+        # Another answer on the same person replaces the held pick: one row, not two.
+        page.locator("[data-person-action='cant_see']").click()
+        page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes(\"won't ask\")")
+        assert [(k, b["action"]) for k, b in posts] == [("ind-anon", "unsure")]
+        assert page.locator("[data-person-pending]").count() == 0
+        # The last person: a held pick, then "Done" sends it.
+        page.locator("[data-story-nav='next']").click()
+        page.wait_for_function("() => document.querySelector('[data-story-progress]').getAttribute('data-story-progress') === '2/2'")
+        assert page.locator("[data-story-nav='done']").count() == 0          # nothing held: no Done
+        page.locator("[data-person-action='no']").click()
+        page.locator("[data-person-pick='Theo']").click()
+        page.wait_for_selector("[data-story-nav='done']")
+        page.locator("[data-story-nav='done']").click()
+        page.wait_for_function("() => !document.querySelector('[data-person-pending]')")
+        for _ in range(50):
+            if len(posts) == 2:
+                break
+            page.wait_for_timeout(50)
+        assert posts[-1] == ("ind-alex", {"action": "someone_else", "name": "Theo", "why": "", "group": True,
+                                          "card": "one_at_a_time", "dont_know": False, "crop_ids": ["c1"]})
+        assert len(posts) == 2
+        browser.close()

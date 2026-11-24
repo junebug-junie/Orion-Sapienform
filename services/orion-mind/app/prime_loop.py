@@ -210,6 +210,7 @@ from orion.prime.handback import (
     TurnSignalV1,
     fold_turn_signals,
     link_started_turn,
+    note_opened_later,
     signal_from_hop,
     thread_refusal,
     turn_lines,
@@ -1387,6 +1388,8 @@ class PrimeRuntime(MindLoopRuntime):
         if opened_promises and self._handback_on():
             self.turn_record = self.turn_record.model_copy(update={"turn_concerns_opened_at": [
                 *self.turn_record.turn_concerns_opened_at, *([now] * len(opened_promises))]})
+            for cid in opened_promises:
+                self.turn_record = note_opened_later(self.turn_record, cid)
         if rep.seated or rep.displaced or rep.expired:
             logger.info("prime_concern_contest seated=%s displaced=%s expired=%s waiting=%d",
                         ",".join(rep.seated) or "-", ",".join(f"{h}>{b}" for h, b in rep.displaced) or "-",

@@ -355,7 +355,13 @@ Rollout is consumer-first: `orion:prime:state` gains `waiting`, `evidence_salien
 every reader validates it with `extra="forbid"` (orion-hub's Prime block, orion-durable-runs' dream day,
 orion-harness-governor's and orion-room-companion's Claude tools, Orion's `dig` in the FCC sandbox). Rebuild those
 before orion-mind. To roll orion-mind back, first remove `waiting`, every `evidence_salience`, and every
-`concern_record` entry with end `displaced` from `orion:prime:state`.
+`concern_record` entry with end `displaced` from `orion:prime:state`. Setting the flag to false is not a rollback:
+waiting concerns still fill `waiting`, which an older orion-mind image cannot load either.
+
+Two choices beyond the spec, both from the replay: a quiet concern yields only after Prime has thought once since it
+went quiet and since it got its slot (without this the replay displaced concerns at exactly 12.0 h, before Prime could
+act); and a new promise may push out a concern with a question open (ranked last), because #3656 says a promise
+always gets a slot unless every slot holds a promise.
 
 ### Every turn ends back in Prime: the turn hand-back (2026-11-12, living Prime Part 2)
 

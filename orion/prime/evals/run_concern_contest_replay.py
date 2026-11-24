@@ -39,7 +39,8 @@ Checks (exit 1 on any failure):
 * promise_3656  -- ON: the 11-17 21:55Z promise (d391d241) opens at once, displacing a non-promise concern;
 * no_promise_lost -- ON: every promise opens or is still waiting at the end; none is dropped. A promise that waited
                    until its 72 h ran out would be counted as expired and fail this;
-* no_churn      -- ON: no contest displacement of a concern quiet for less than half its life (acceptance check 4);
+* no_churn      -- ON: no contest displacement of a concern quiet for less than half its life, with a question open,
+                   or that Prime had not thought about since it went quiet and got its slot (acceptance check 4);
 * never_a_promise -- ON: no promise is ever displaced (Q3);
 * notes         -- ON: every displacement's close note starts "displaced: by <id>; score <held> held vs <new> new;".
 
@@ -138,6 +139,7 @@ def replay(fx: dict[str, Any], *, contest: bool) -> Run:
             if cid in promise_ids and cid not in before:
                 turns = turns.model_copy(update={"turn_concerns_opened_at": [*turns.turn_concerns_opened_at, at]})
                 run.promise_open[promise_ids[cid]] = "later"
+                turns = hb.note_opened_later(turns, cid)
                 run.log.append(f"{at:%m-%d %H:%MZ} waiting promise {cid} opened")
         for cid in rep.expired:
             run.expired.append(cid)
@@ -154,7 +156,11 @@ def replay(fx: dict[str, Any], *, contest: bool) -> Run:
             run.displaced.append({"concern_id": r.concern_id, "at": at, "note": r.note,
                                   "quiet": at - c.last_evidence_at, "half_life": concern_ttl(c) / 2,
                                   "intake": "a new promise always gets a slot" in r.note,
-                                  "promise": is_promise_concern(c)})
+                                  "promise": is_promise_concern(c),
+                                  "question_open": any(n.concern_id == c.concern_id for n in before.open_nominations),
+                                  "seen": (before.last_thought_at is not None and before.last_thought_at
+                                           >= max(c.last_evidence_at + concern_ttl(c) / 2, c.opened_at)),
+                                  "held_for": at - c.opened_at})
             run.log.append(f"{at:%m-%d %H:%MZ} displaced {r.concern_id} (quiet "
                            f"{(at - c.last_evidence_at).total_seconds() / 3600:.1f} h): {r.note}")
 
@@ -261,7 +267,8 @@ def main() -> int:
         "no_promise_lost": (not (set(on.expired) & promise_cids)
                             and all(how in ("at once", "later") or hb.turn_concern_id(c) in still_waiting
                                     for c, how in on.promise_open.items())),
-        "no_churn": all(d["intake"] or d["quiet"] >= d["half_life"] for d in on.displaced),
+        "no_churn": all(d["intake"] or (d["quiet"] >= d["half_life"] and not d["question_open"] and d["seen"])
+                        for d in on.displaced),
         "never_a_promise": not any(d["promise"] for d in on.displaced),
         "notes": all(d["note"].startswith("displaced: by ") and " held vs " in d["note"] for d in on.displaced),
     }
@@ -278,6 +285,9 @@ def main() -> int:
               f"({sum(1 for h in run.promise_open.values() if h == 'at once')} at once); "
               f"displaced {len(run.displaced)}; faded {len(run.faded)}; waiting expired {len(run.expired)}; "
               f"waiting list max {run.max_waiting}, at end {len(run.final.waiting)}")
+    quick = [d["concern_id"] for d in on.displaced if d["held_for"] < timedelta(hours=1)]
+    print(f"churn watch: {len(quick)} displacement(s) within 1 h of the concern getting its slot: "
+          f"{', '.join(quick) or 'none'} (promise intake has no quiet rule)")
     print(f"cost: {len(cost)} concern(s) the ON arm displaced went on to settle live, after the displacement: "
           f"{', '.join(cost) or 'none'} (Prime asked about each later; the ON arm cannot show what it would have "
           "asked instead)")

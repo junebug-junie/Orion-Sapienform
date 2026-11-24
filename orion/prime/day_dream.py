@@ -34,7 +34,7 @@ from typing import Any, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from orion.prime.slots import queue
+from orion.prime.slots import known_ids, queue
 from orion.prime.state import (
     CONCERN_TEXT_CAP, MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, close_concern, note_outcome,
 )
@@ -147,7 +147,7 @@ def apply_plan(state: PrimeStateV1, day: date, plan: list[DreamDayPlanItemV1], n
             event_ref=f"{DREAM_EVENT_PREFIX}{day.isoformat()}#new{i}", opened_at=now, last_evidence_at=now)
         if len(concerns) >= MAX_CONCERNS:
             # No room: it waits for a slot (orion/prime/slots.py, the concern contest), never forgotten.
-            if cid not in {w.concern_id for w in state.waiting}:
+            if cid not in known_ids(state):
                 state = queue(state, new)
             skipped.append("new: no room, waiting for a slot")
             continue

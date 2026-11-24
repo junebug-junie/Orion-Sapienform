@@ -177,7 +177,7 @@ def standings(held: Sequence[ContestEntry], now: datetime) -> list[Standing]:
             why = "can be displaced: its act already closed"
         elif h.in_flight:
             why = f"protected: {h.in_flight}"
-        elif h.unseen_quiet:
+        elif h.unseen_quiet and quiet >= h.ttl / 2:
             why = "quiet past half its life; it can be displaced after this thought unless I act on it"
         elif quiet >= h.ttl / 2:
             why = f"can be displaced: quiet past half its life ({_hours(h.ttl / 2)})"

@@ -111,8 +111,7 @@ CONCERN_BASIS = (
     "settled produced (its investigate run wrote something), or a unified turn whose prompt cited "
     "prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; "
     "0 when dropped unresolved, "
-    "faded (nothing renewed it for 24h; 72h for a promise concern), displaced (the concern contest gave its slot to "
-    "a waiting concern or a new promise, orion/prime/slots.py) or lapsed. horizon = 2 x the question horizon "
+    "faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon "
     "(one question open at a time: "
     "another concern's question may be open first), 2 x 259200s"
 )

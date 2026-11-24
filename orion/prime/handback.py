@@ -517,6 +517,15 @@ def link_started_turn(turns: PrimeTurnsStateV1, correlation_id: Optional[str], a
     return turns.model_copy(update={"recent": recent})
 
 
+def note_opened_later(turns: PrimeTurnsStateV1, concern_id: str) -> PrimeTurnsStateV1:
+    """A promise that waited for a slot opened later (orion/prime/slots.py ``run_contest``): its turn's record says
+    so, instead of still reading "waiting"."""
+    recent = [t.model_copy(update={"opened_concern_id": concern_id, "thread_refused": None})
+              if turn_concern_id(t.correlation_id) == concern_id and t.opened_concern_id is None else t
+              for t in turns.recent]
+    return turns.model_copy(update={"recent": recent})
+
+
 def turn_lines(turns: PrimeTurnsStateV1, now: datetime, *, limit: int = 5) -> list[str]:
     """Frame lines: the latest finished turns, newest first (shown when Prime thinks; never a wake)."""
     out = []
@@ -552,6 +561,7 @@ __all__ = [
     "classify_who",
     "fold_turn_signals",
     "link_started_turn",
+    "note_opened_later",
     "promise_refs",
     "promise_text",
     "holds_turn_slot",

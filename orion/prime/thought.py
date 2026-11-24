@@ -279,8 +279,9 @@ CONTEST_PROMPT = """
 Your 3 slots are decided by a contest, not by you. A concern you name while all 3 are full waits for a slot. A
 waiting concern takes a held concern's slot only when nothing has touched the held one for half its life (12 h) and
 no question about it is open, and the waiting one's evidence is stronger or newer. A promise you made gets a slot at
-once: it pushes out your weakest concern that is not a promise and not taken on. Each concern line shows its
-standing. Dropping a concern you no longer need is still yours to do."""
+once: it pushes out your weakest concern that is not a promise and not taken on (one with a question open goes
+last, but it can go). Each concern line shows its standing. Dropping a held concern you no longer need is still
+yours to do; a waiting concern cannot be dropped, it leaves when its own life runs out."""
 
 
 def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False,

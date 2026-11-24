@@ -14,7 +14,8 @@ orion/attention/concern_contest.py; this module applies them to ``PrimeStateV1``
   was refused with "already holding 3 concerns" and lost. It now pushes out the weakest held concern that is not a
   promise and was not taken on (``concern_contest.intake_victim``); no quiet rule. A promise never pushes out a
   promise. If every slot holds a promise or something Prime took on, the promise waits, and the turn says so.
-* **Every displacement is a close**: end ``displaced``, the note gives both scores and the reason, and Prime's next
+* **Every displacement is a close** (a concern whose act already closed, settled or lapsed, gets only the frame line):
+  end ``displaced``, the note gives both scores and the reason, and Prime's next
   frame is told (``note_change``). A waiting concern that outlives its own life (24 h; 72 h for a promise) leaves
   the list with a line in the frame; a promise that expires that way is a change that wakes Prime.
 
@@ -80,13 +81,17 @@ def known_ids(state: PrimeStateV1) -> set[str]:
             | {r.concern_id for r in state.concern_record})
 
 
-def entry(c: PrimeConcernV1, state: PrimeStateV1, *, taken_on: frozenset[str] = frozenset()) -> ContestEntry:
+def entry(c: PrimeConcernV1, state: PrimeStateV1, now: datetime, *,
+          taken_on: frozenset[str] = frozenset()) -> ContestEntry:
     never = ("I took it on" if c.concern_id in taken_on
              else "a promise" if is_promise_concern(c) and c.graded is None else None)
     asked = any(n.concern_id == c.concern_id for n in state.open_nominations)
     ttl = concern_ttl(c)
-    went_quiet = c.last_evidence_at + ttl / 2
-    unseen = state.last_thought_at is None or state.last_thought_at < went_quiet
+    # Prime must have thought once after it went quiet AND after it got its slot (a concern seated from the waiting
+    # list with old evidence is new among Prime's concerns). Only set once the concern is quiet.
+    went_quiet = max(c.last_evidence_at + ttl / 2, c.opened_at)
+    is_quiet = now - c.last_evidence_at >= ttl / 2
+    unseen = is_quiet and (state.last_thought_at is None or state.last_thought_at < went_quiet)
     return ContestEntry(concern_id=c.concern_id, last_evidence_at=c.last_evidence_at, ttl=ttl,
                         salience=c.evidence_salience, never_displaced=never,
                         in_flight="a question I asked about it is open" if asked else None,
@@ -144,7 +149,7 @@ def seat_promise(state: PrimeStateV1, promise: PrimeConcernV1, now: datetime, *,
     if len(state.concerns) < MAX_CONCERNS:
         return _seat(state, promise, now), True, None
     if contest:
-        victim = intake_victim([entry(c, state, taken_on=taken_on) for c in state.concerns], now)
+        victim = intake_victim([entry(c, state, now, taken_on=taken_on) for c in state.concerns], now)
         if victim is not None:
             held = next(c for c in state.concerns if c.concern_id == victim.concern_id)
             state = displace(state, held, promise, now=now, held_score=score(victim, now), by_score=None,
@@ -198,7 +203,7 @@ def run_contest(state: PrimeStateV1, now: datetime, *, taken_on: frozenset[str] 
     def ranked_rest() -> list[PrimeConcernV1]:
         rest = [w for w in state.waiting if not is_promise_concern(w)]
         order = {id(w): i for i, w in enumerate(rest)}
-        return sorted(rest, key=lambda w: (strength(entry(w, state), now), -order[id(w)]), reverse=True)
+        return sorted(rest, key=lambda w: (strength(entry(w, state, now), now), -order[id(w)]), reverse=True)
 
     for w in ranked_rest():
         if len(state.concerns) >= MAX_CONCERNS:
@@ -213,8 +218,8 @@ def run_contest(state: PrimeStateV1, now: datetime, *, taken_on: frozenset[str] 
     n = 0
     while n < max(0, int(max_displacements)):
         candidates = [w for w in ranked_rest() if not _group_full(state.concerns, w)]
-        held = [entry(c, state, taken_on=taken_on) for c in state.concerns]
-        found = displacements(held, [entry(w, state) for w in candidates], now, margin=margin, max_n=1)
+        held = [entry(c, state, now, taken_on=taken_on) for c in state.concerns]
+        found = displacements(held, [entry(w, state, now) for w in candidates], now, margin=margin, max_n=1)
         if not found:
             break
         d = found[0]
@@ -231,7 +236,7 @@ def run_contest(state: PrimeStateV1, now: datetime, *, taken_on: frozenset[str] 
 def standing_lines(state: PrimeStateV1, now: datetime, *, taken_on: frozenset[str] = frozenset()) -> dict[str, str]:
     """concern_id -> its standing in the contest, for Prime's frame."""
     out = {}
-    for s in standings([entry(c, state, taken_on=taken_on) for c in state.concerns], now):
+    for s in standings([entry(c, state, now, taken_on=taken_on) for c in state.concerns], now):
         out[s.concern_id] = f"contest: score {score_words(s.score)}, quiet {s.quiet_h:.1f} h, {s.why}"
     return out
 
@@ -241,11 +246,11 @@ def waiting_lines(state: PrimeStateV1, now: datetime) -> list[str]:
     if not state.waiting:
         return ["(nothing is waiting for a slot)"]
     lines = []
-    for w in sorted(state.waiting, key=lambda w: (is_promise_concern(w), strength(entry(w, state), now)),
+    for w in sorted(state.waiting, key=lambda w: (is_promise_concern(w), strength(entry(w, state, now), now)),
                     reverse=True):
         age = max(0.0, (now - w.last_evidence_at).total_seconds() / 3600.0)
         kind = "a promise, it opens as soon as a slot can be freed" if is_promise_concern(w) else "waiting"
-        lines.append(f"- {w.concern_id}: {w.text[:200]} ({kind}; score {score_words(score(entry(w, state), now))}, "
+        lines.append(f"- {w.concern_id}: {w.text[:200]} ({kind}; score {score_words(score(entry(w, state, now), now))}, "
                      f"evidence {age:.1f} h ago)")
     return lines
 

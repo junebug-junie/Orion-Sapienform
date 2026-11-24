@@ -162,3 +162,27 @@ def test_the_frame_shows_each_standing_and_the_waiting_list():
     assert "WAITING FOR A SLOT" not in build_frame(st, FrameInputs(now=NOW))
     assert "decided by a contest" in system_prompt(None, contest=True)
     assert "decided by a contest" not in system_prompt(None)
+
+
+def test_a_fresh_concern_reads_protected_not_about_to_be_displaced():
+    # Review finding: before, a concern 1 h old read "it can be displaced after this thought".
+    st = PrimeStateV1(concerns=[_c("aaaaaaaaaaaaaaaa", 1)], last_thought_at=NOW - timedelta(minutes=5))
+    assert slots.standing_lines(st, NOW)["aaaaaaaaaaaaaaaa"].endswith("protected until quiet 12.0 h")
+
+
+def test_a_concern_seated_from_the_waiting_list_needs_one_thought_before_it_can_lose_its_slot():
+    old = _c("dddddddddddddddd", 14).model_copy(update={"opened_at": NOW - timedelta(minutes=1)})  # seated a minute ago
+    st = PrimeStateV1(concerns=[old], last_thought_at=NOW - timedelta(minutes=30))
+    assert slots.entry(old, st, NOW).unseen_quiet is True
+    after = st.model_copy(update={"last_thought_at": NOW})
+    assert slots.entry(old, after, NOW).unseen_quiet is False
+
+
+def test_a_waiting_promise_that_opens_later_updates_its_turn_record():
+    from orion.prime import handback as hb
+    cid = hb.turn_concern_id("t9")
+    turns = hb.PrimeTurnsStateV1(recent=[hb.PrimeTurnV1(correlation_id="t9", who="chat_juniper", gist="g",
+                                                        started_at=NOW, finished_at=NOW,
+                                                        thread_refused="waiting: x")])
+    turns = hb.note_opened_later(turns, cid)
+    assert turns.recent[0].opened_concern_id == cid and turns.recent[0].thread_refused is None

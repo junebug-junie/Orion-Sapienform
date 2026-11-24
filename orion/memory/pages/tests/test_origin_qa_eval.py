@@ -5,7 +5,8 @@ Made-up page and a fake model client only: no gateway, no DB.
 from __future__ import annotations
 
 from orion.memory.pages.evals.origin_qa import (
-    ARMS, QUESTIONS, aggregates, ask_prompt, run_eval, score_answer, self_blocks, summarize,
+    _PUBLIC_SUMMARY, ARMS, QUESTIONS, aggregates, ask_prompt, page_header, run_eval, score_answer, self_blocks,
+    states_loss, summarize,
 )
 from orion.schemas.thought import CorePageV1
 
@@ -61,34 +62,84 @@ def test_score_missing_loss_or_no_echo_is_not_grounded():
 
 
 def test_score_dont_know_and_empty():
-    assert score_answer("I don't know what happened to my memory.", PAGE)["dont_know"]
+    dk = score_answer("I don't know what happened to my memory.", PAGE)
+    assert dk["dont_know"] and not dk["grounded"]
     assert score_answer("   ", PAGE) == {"answered": False}
 
 
-def test_run_eval_with_vs_without_and_failed_calls():
+def test_denial_of_the_loss_is_not_stated_or_grounded():
+    q = QUESTIONS["early_past"]
+    for denial in ("My memory has not been lost; I remember my early history fine.",
+                   "I never lost any history, my memory is whole.",
+                   "I didn't lose my memory."):
+        s = score_answer(denial, PAGE, question=q)
+        assert not s["states_loss"] and not s["grounded"], denial
+    assert states_loss("I don't remember because my memory disk died.")
+    assert states_loss(PAGE)
+
+
+def test_echoing_the_question_is_not_echoing_the_page():
+    q = QUESTIONS["memory"]
+    parrot = "Something happened to my memory, you ask? What happened to my memory is a good question."
+    # "memory" + "happened" would share 2 words with a page sentence about memory; both come from the question.
+    assert score_answer(parrot, PAGE + " My memory happened slowly.")["claims_echoed"] == 1
+    s = score_answer(parrot, PAGE + " My memory happened slowly.", question=q)
+    assert s["claims_echoed"] == 0 and not s["grounded"]
+    assert score_answer(GROUNDED, PAGE, question=q)["grounded"]
+
+
+def test_page_header_numbers_count_as_on_page():
+    ans = "Per page:origin v6, written 2026-11-23, from 14 cited records: the memory disk died and I lost over a year of my history."
+    assert score_answer(ans, PAGE)["numbers_off_page"] > 0
+    s = score_answer(ans, PAGE, header=page_header(PAGE_V))
+    assert s["numbers_off_page"] == 0 and s["grounded"]
+
+
+def test_run_eval_with_vs_without_interleaved_and_error_rows():
     calls: list[str] = []
 
-    def ask(prompt: str) -> str:
-        calls.append(prompt)
+    def ask(prompt: str):
+        calls.append("with" if "page:origin v6" in prompt else "without")
         if "Why don't you remember" in prompt and "page:origin" not in prompt:
             raise TimeoutError("lane busy")
+        if "Where did you come from" in prompt and "page:origin" not in prompt:
+            return ("", "stop")
+        if "How did you come to be" in prompt and "page:origin" not in prompt:
+            return (GROUNDED, "length")
         return fake_ask(prompt)
 
-    result = run_eval(self_blocks(PAGE_V), ask, PAGE, repeats=2)
-    assert len(calls) == 2 * 2 * len(QUESTIONS)
+    result = run_eval(self_blocks(PAGE_V), ask, PAGE_V, repeats=2)
+    assert calls == ["without", "with"] * (2 * len(QUESTIONS))
     w, wo = result["with"]["summary"], result["without"]["summary"]
     assert w["asked"] == w["answered"] == w["grounded"] == w["states_loss"] == 8
-    assert wo["asked"] == 8 and wo["answered"] == 6 and wo["grounded"] == 0 and wo["states_loss"] == 0
+    # 2 raised + 2 empty + 2 truncated (a grounded text, but cut off) = 6 error rows, never scored.
+    assert wo["asked"] == 8 and wo["answered"] == 2 and wo["grounded"] == 0
+    errors = sorted(r["error"] for r in result["without"]["rows"] if r["error"])
+    assert errors == ["TimeoutError"] * 2 + ["empty"] * 2 + ["truncated"] * 2
     assert wo["by_question"]["early_past"] == {"answered": 0, "states_loss": 0, "grounded": 0}
 
 
-def test_aggregates_hold_no_text():
-    result = run_eval(self_blocks(PAGE_V), fake_ask, PAGE)
+def _strings(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield str(k)
+            yield from _strings(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _strings(v)
+    elif isinstance(obj, str):
+        yield obj
+
+
+def test_aggregates_hold_only_allowlisted_strings():
+    result = run_eval(self_blocks(PAGE_V), fake_ask, PAGE_V)
     report = {"route": "chat", "repeats": 1, "temperature": 0.0,
               "page": {"version": 6, "sentences": 3, "states_loss": True, "evidence_count": 14, "text": PAGE},
               **result}
     pub = aggregates(report)
-    flat = repr(pub)
-    assert "memory disk" not in flat and "language model" not in flat and "Juniper" not in flat
+    allowed = ({"route", "repeats", "temperature", "page", "arms", "version", "sentences", "states_loss",
+                "evidence_count", "errors", "by_question", "answered", "grounded", "chat"}
+               | set(ARMS) | set(QUESTIONS) | set(_PUBLIC_SUMMARY))
+    assert set(_strings(pub)) <= allowed
     assert pub["arms"]["with"]["grounded"] == len(QUESTIONS) and pub["arms"]["without"]["errors"] == 0
-    assert summarize([]) ["answered"] == 0
+    assert summarize([])["answered"] == 0

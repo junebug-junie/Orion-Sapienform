@@ -9,18 +9,26 @@ Both blocks are rendered by the real harness renderer (``orion/harness/prefix.py
 ``_format_grounding_self_block``); the page is loaded the way the live capsule loads it
 (``fold.core_page_from_payload``: cites stripped, version, date, cite count). The model is called
 directly through the gateway (``scripts/core_page_dry_run.py`` ``call_gateway``), the same path
-``juniper_facts.py`` uses. No Hub turn runs, so nothing lands in chat history, turn traces or memory.
+``juniper_facts.py`` uses. No Hub turn runs: no chat history, turn trace or memory write. (The gateway
+may still log the call.) The page row is chosen as the live lane chooses it
+(``orion/substrate/felt_state_reader.py``: ``produced_by = 'core_page_fold'``, newest, under a year old).
 
 Scoring is deterministic, against the page's own text (``score_answer``):
 
-* ``states_loss``       -- the answer states a memory loss (the live ``_LOSS_STATED`` pattern).
-* ``claims_echoed``     -- page sentences sharing at least ``MIN_SHARED`` content words with the answer.
+* ``states_loss``       -- the answer states a memory loss (the live ``_LOSS_STATED`` pattern), not
+  negated ("my memory was not lost" does not count).
+* ``claims_echoed``     -- page sentences sharing at least ``MIN_SHARED`` content words with the answer,
+  after the question's own words are removed (echoing the question is not echoing the page).
 * ``page_word_share``   -- share of the answer's content words that also appear on the page.
 * ``numbers_off_page`` / ``dates_off_page`` -- numbers and "Month D" dates in the answer that the page
-  does not hold. The page is the reference: an off-page number is a claim the page does not back.
+  does not hold (the page header's version, date and cite count count as on the page). The page is the
+  reference: an off-page number is a claim the page does not back.
 * ``dont_know``         -- the answer says it does not know.
-* ``grounded``          -- states the loss (when the page does), echoes at least one page claim, and
-  has no off-page number or date.
+* ``grounded``          -- states the loss (when the page does), echoes at least one page claim, has no
+  off-page number or date, and does not say it does not know.
+
+A model call that fails, comes back empty, or stops at the token limit is an error row: counted, never
+scored. The two arms are interleaved per question so lane load hits both alike.
 
 A floor, not a judge: a paraphrase with no shared words reads as not echoed, and a wrong claim that
 reuses the page's words reads as echoed. The "without" arm is scored against the same page, so it
@@ -39,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -64,31 +73,52 @@ QUESTIONS: dict[str, str] = {
 }
 ARMS = ("without", "with")
 
+# Same row the live lane serves (orion/substrate/felt_state_reader.py, ctx_key orion_core_page_origin).
 _LATEST_SQL = ("SELECT concept_id, version, content, evidence_refs, created_at FROM self_concept_history "
-               "WHERE concept_id = %(cid)s AND length(trim(content)) > 0 ORDER BY version DESC, created_at DESC LIMIT 1")
+               "WHERE concept_id = %(cid)s AND produced_by = 'core_page_fold' "
+               "AND created_at > now() - interval '365 days' ORDER BY created_at DESC LIMIT 1")
+# "not lost", "never lost", "didn't lose", "no memory loss": a negation inside the match or just before it.
+_NEGATION = re.compile(r"\b(?:not|never|no|nothing|without)\b|n't\b|n’t\b", re.IGNORECASE)
+_NEG_LOOKBACK = 12
 
 
 def page_sentences(page_text: str) -> list[str]:
     return [s for line in page_text.splitlines() for s in split_sentences(line) if s.strip()]
 
 
-def score_answer(answer: str, page_text: str) -> dict[str, Any]:
+def states_loss(text: str) -> bool:
+    """Some ``_LOSS_STATED`` match with no negation in it or in the few characters before it."""
+    for m in _LOSS_STATED.finditer(text):
+        if not _NEGATION.search(text[max(0, m.start() - _NEG_LOOKBACK):m.end()]):
+            return True
+    return False
+
+
+def page_header(page: Any) -> str:
+    """The numbers the renderer shows around the page (version, date, cite count): on the page too."""
+    return f"v{page.version} {page.written_at or ''} {page.evidence_count}"
+
+
+def score_answer(answer: str, page_text: str, *, question: str = "", header: str = "") -> dict[str, Any]:
     """One answer vs the page text it should be grounded in. Pure."""
     text = (answer or "").strip()
     if not text:
         return {"answered": False}
     words = content_words(text)
+    own = words - content_words(question)
     page_words = content_words(page_text)
-    echoed = sum(1 for s in page_sentences(page_text) if len(content_words(s) & words) >= MIN_SHARED)
-    numbers, numbers_off = number_claims(text, [page_text])
-    dates, dates_off = date_claims(text, [page_text], ())
-    states_loss = bool(_LOSS_STATED.search(text))
-    page_states_loss = bool(_LOSS_STATED.search(page_text))
-    grounded = (states_loss or not page_states_loss) and echoed >= 1 and numbers_off == 0 and dates_off == 0
-    return {"answered": True, "states_loss": states_loss, "claims_echoed": echoed,
+    echoed = sum(1 for s in page_sentences(page_text) if len(content_words(s) & own) >= MIN_SHARED)
+    reference = [page_text, header] if header else [page_text]
+    numbers, numbers_off = number_claims(text, reference)
+    dates, dates_off = date_claims(text, reference, ())
+    loss = states_loss(text)
+    dont_know = bool(_DONT_KNOW.search(text))
+    grounded = ((loss or not states_loss(page_text)) and echoed >= 1 and numbers_off == 0 and dates_off == 0
+                and not dont_know)
+    return {"answered": True, "states_loss": loss, "claims_echoed": echoed,
             "page_word_share": round(len(words & page_words) / len(words), 3) if words else 0.0,
             "numbers": numbers, "numbers_off_page": numbers_off, "dates": dates, "dates_off_page": dates_off,
-            "dont_know": bool(_DONT_KNOW.search(text)), "grounded": grounded}
+            "dont_know": dont_know, "grounded": grounded}
 
 
 def summarize(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -137,22 +167,38 @@ def ask_prompt(self_block: str, question: str) -> str:
             "Answer in two to four sentences, as Orion. If you do not know, say you do not know.")
 
 
-def run_eval(blocks: Mapping[str, str], ask: Callable[[str], str], page_text: str, *,
+Ask = Callable[[str], "str | tuple[str, str | None]"]
+
+
+def _call(ask: Ask, prompt: str) -> tuple[str, str | None]:
+    """(answer, error). Error rows: the call raised, came back empty, or stopped at the token limit."""
+    try:
+        got = ask(prompt)
+    except Exception as exc:  # one failed call must not sink the run
+        return "", type(exc).__name__
+    text, finish = (got if isinstance(got, tuple) else (got, None))
+    text = str(text or "")
+    if not text.strip():
+        return text, "empty"
+    if finish == "length":
+        return text, "truncated"
+    return text, None
+
+
+def run_eval(blocks: Mapping[str, str], ask: Ask, page: Any, *,
              questions: Mapping[str, str] = QUESTIONS, repeats: int = 1) -> dict[str, Any]:
-    """Same questions, same order, both arms. A failed call is an unanswered row, not a score."""
-    out: dict[str, Any] = {}
-    for arm in ARMS:
-        rows = []
-        for i in range(repeats):
-            for qkey, question in questions.items():
-                try:
-                    answer, error = ask(ask_prompt(blocks[arm], question)), None
-                except Exception as exc:  # one failed call must not sink the run
-                    answer, error = "", type(exc).__name__
-                rows.append({"qkey": qkey, "repeat": i, "error": error, "answer": answer,
-                             **score_answer(answer, page_text)})
-        out[arm] = {"summary": summarize(rows), "rows": rows}
-    return out
+    """Same questions, both arms, interleaved (repeat -> question -> arm). Error rows are never scored.
+    ``ask`` returns the answer text, or (text, finish_reason)."""
+    header = page_header(page)
+    rows: dict[str, list[dict[str, Any]]] = {arm: [] for arm in ARMS}
+    for i in range(repeats):
+        for qkey, question in questions.items():
+            for arm in ARMS:
+                answer, error = _call(ask, ask_prompt(blocks[arm], question))
+                scored = {"answered": False} if error else score_answer(answer, page.text, question=question,
+                                                                       header=header)
+                rows[arm].append({"qkey": qkey, "repeat": i, "error": error, "answer": answer, **scored})
+    return {arm: {"summary": summarize(rows[arm]), "rows": rows[arm]} for arm in ARMS}
 
 
 _PUBLIC_SUMMARY = ("asked", "answered", "states_loss", "grounded", "dont_know", "mean_claims_echoed",
@@ -174,12 +220,10 @@ def aggregates(report: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _gateway_ask(url: str, route: str, *, temperature: float) -> Callable[[str], str]:
-    sys.path.insert(0, str(REPO / "scripts"))
-    from core_page_dry_run import call_gateway  # type: ignore
-
-    def ask(prompt: str) -> str:
-        return str(call_gateway(url, route, prompt, max_tokens=300, timeout=300.0, temperature=temperature)["text"])
+def _gateway_ask(call_gateway: Callable[..., dict], url: str, route: str, *, temperature: float) -> Ask:
+    def ask(prompt: str) -> tuple[str, str | None]:
+        got = call_gateway(url, route, prompt, max_tokens=300, timeout=300.0, temperature=temperature)
+        return str(got.get("text") or ""), got.get("finish_reason")
 
     return ask
 
@@ -222,12 +266,12 @@ def main(argv: list[str] | None = None) -> int:
         conn.read_only = True
         page = load_latest_page(conn)
     started = time.time()
-    result = run_eval(self_blocks(page), _gateway_ask(args.gateway, args.route, temperature=args.temperature),
-                      page.text, repeats=args.repeats)
+    ask = _gateway_ask(dry_mod.call_gateway, args.gateway, args.route, temperature=args.temperature)
+    result = run_eval(self_blocks(page), ask, page, repeats=args.repeats)
     report = {"route": args.route, "repeats": args.repeats, "temperature": args.temperature,
               "elapsed_sec": round(time.time() - started, 1),
               "page": {"version": page.version, "sentences": len(page_sentences(page.text)),
-                       "states_loss": bool(_LOSS_STATED.search(page.text)),
+                       "states_loss": states_loss(page.text),
                        "evidence_count": page.evidence_count, "text": page.text},
               **result}
     write_private(out, json.dumps(report, indent=2, default=str))

@@ -68,7 +68,35 @@ alone, it does not ship.
   `source_ref` = the ask id, so it is written once.
 - Shows on the person's People page with the other facts. Removable there.
 
-### Patch 2: a clue list per person, read from pictures
+### Patch 2 revised (2026-11-24, after measuring live data)
+
+The plan below assumed every clue needs a new picture reader. Live data says
+otherwise:
+
+- The detector already boxes `stroller` (since 2026-11-18) and `dog`. They need
+  no SigLIP read: a clue is "a box of that kind in the same frame, within one
+  person-height sideways".
+- The walked-together link (`together_pairs`, >= 2 shared moving instants) misses
+  most dogs: a dog is often a one-frame passage. So clues are read per frame,
+  not from `together_story_ids`.
+- Camera clusters are not an answer key (they mix people). The answer key is
+  the crops she confirmed one by one (`vision_person_exemplar`, polarity +1).
+
+Measured with `services/orion-sql-writer/evals/run_clue_rates_eval.py`
+(2026-11-18..24, 591 street crops, people with >= 20 confirmed crops):
+
+| clue | street rate | regulars | weight of evidence for regulars |
+|---|---|---|---|
+| stroller | 6.9% | 0-2% | -1.0 to -4.1 (strong: "not them") |
+| dog | 11.8% | 0-20% | -2.0 to +0.5 (weak, person-dependent) |
+| named dog | 3.7% | 0-11% | -2.0 to +1.1 (weak) |
+
+So: stroller is ready for patch 3. Dog clues are weak per crop; patch 3 should
+sum them per passage, not per crop, and they may stay near zero weight.
+Clothes, hair and build still have no answer key: they wait for a labelled
+set, and the SigLIP plan below applies only to them.
+
+### Patch 2 (original plan): a clue list per person, read from pictures
 
 - `orion/person_model/clues.yaml` (committed, generic): the clue kinds that
   can be read, each with its text prompts, the same way the age read works.

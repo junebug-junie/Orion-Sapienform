@@ -154,3 +154,7 @@ scripts/safe_docker_build.sh orion-mind up -d --build
   Mitigation: they wait, not lost; #3777 asks Juniper whether a promise should bypass the guard.
 - Severity: low. Concern: deploy order. Mitigation: consumer-first rebuild above; rollback note in the README.
 - Issues opened: #3777 (needs-juniper), #3778 (verify-live), #3779 (follow-up). Closed: #3656 (by this PR).
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/3788

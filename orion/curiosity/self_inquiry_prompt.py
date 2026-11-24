@@ -31,6 +31,7 @@ from orion.curiosity.kickoff_prompt import (
     _peer_briefs_section,
     _priors_section,
     _role_and_help_section,
+    prior_testing_lines,
 )
 from orion.curiosity.self_inquiry import (
     LABEL_LIVED_ANSWER,
@@ -387,6 +388,12 @@ def _self_write_section(
         '      p.last_tested_at = "<iso timestamp>", p.run_id = "<RUN_ID>", '
         'p.why = "<one sentence>"',
         "",
+        "  A SELF-PRIOR YOU ALREADY HOLD (the list above) is tested with the "
+        "command below, not with the MERGE: on an existing id that MERGE writes "
+        "nothing. Without last_run_id in the same SET, your test is not counted "
+        "as this run's.",
+        "",
+        *prior_testing_lines(),
     ]
     if family == "lived":
         lines += [

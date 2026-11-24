@@ -404,3 +404,12 @@ def test_held_refs_bring_a_concerns_reading_from_before_the_window_first_and_mar
     plain = client.get("/temporal-self/now", params={"organ": "prime", "since": since}).json()
     assert r.event_id not in [i["event_id"] for i in plain["items"]]  # outside the window and not held
     assert all("held_refs" not in i for i in plain["items"])
+
+
+def test_the_now_route_can_be_called_directly_without_held(routes):
+    """test_experience_now_postgres.py calls the route function directly (no FastAPI), so ``held`` must default to
+    None, not to a Query object (CI caught `'Query' object is not iterable`)."""
+    import inspect
+
+    main, _client = routes
+    assert inspect.signature(main.temporal_self_now).parameters["held"].default is None

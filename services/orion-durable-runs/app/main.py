@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
@@ -1263,7 +1263,8 @@ NOW_HELD_LOOKBACK_HOURS = 24.0  # held-concern rows (#3783) are read from the la
 
 @app.get("/temporal-self/now")
 async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Optional[str] = None,
-                            include: Optional[str] = None, held: Optional[list[str]] = Query(default=None)):
+                            include: Optional[str] = None,
+                            held: Annotated[Optional[list[str]], Query()] = None):
     """Orion's now for one reading organ: at most 12 experiences of OTHER organs recorded since ``since``
     (default: when this organ last looked, else 24 h), at most 2 per organ, every organ a seat before any gets a
     second (orion.temporal_self.now.build_now). Every call stores one ``experience_shown`` row; its ``shown_id`` is

@@ -175,6 +175,6 @@ scripts/rebuild_services_from_git_diff.sh
 
 ## PR link
 
-(see PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3865
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

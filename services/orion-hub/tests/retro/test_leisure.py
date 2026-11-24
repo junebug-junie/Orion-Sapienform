@@ -47,6 +47,12 @@ class Clock:
     async def sleep(self, s): self.t += s; await asyncio.sleep(0)
 
 
+# Retro's status.zelda.observation (runtime.py status()): normal play, Link controllable.
+PLAYING = dict(status='observed', mode='play', level=0, room=119, link=dict(controllable=True))
+# A save taken mid room-exit (live 2026-11-16, mode 0x0C): frozen until someone holds DOWN.
+FROZEN = dict(status='observed', mode='transition', level=0, room=73, link=dict(controllable=False))
+
+
 def zelda_decision(n):
     # Shape of Retro's scripted[].cognition.attempt (services/orion-retro/app/zelda/navigate.py offer()).
     return dict(decision_id=f'5:{n}', port=0, expected_epoch=5, supported_goals=['exit', 'wait'],
@@ -62,6 +68,8 @@ class FakeRetro:
         self.lag_after_grant = 0   # GETs after a scripted start that still serve the pre-grant snapshot
         self.status_lag = 0
         self.atlas_record = dict(rooms_new=2, deaths=0)   # no controller counts yet
+        self.observation = PLAYING
+        self.offer_decisions = True   # False: Retro never offers (the game never reaches control)
     async def call(self, method, path, body=None):
         self.calls.append((method, path, body))
         if self.fail_gets and method == 'GET' and path.startswith('sessions/') and path.count('/') == 1:
@@ -72,7 +80,8 @@ class FakeRetro:
         if method == 'POST' and path == 'sessions':
             self.session = dict(session_id='s' * 36, generation='g' * 36, state='running', game_id=body['game_id'],
                                 scripted=[], loaded_save=body.get('save_id'),
-                                zelda=dict(atlas=dict(lineage_id='lin-9', session=self.atlas_record)))
+                                zelda=dict(atlas=dict(lineage_id='lin-9', session=self.atlas_record),
+                                           observation=dict(self.observation)))
             return 200, dict(self.session)
         sid, _, op = path[len('sessions/'):].partition('/')
         if not self.session or sid != self.session['session_id']: return 409, {'detail': 'unknown_session'}
@@ -85,7 +94,9 @@ class FakeRetro:
                 return 200, dict(self.session, scripted=[])
             # Real Retro drops a leisure policy after two unanswered 30 s offers and the game
             # pauses for no_controller (services/orion-retro/app/scripted.py leisure_sponsor_lost).
-            if (self.session['scripted'] and self.offered_at is not None
+            # Only an unanswered offer times out: with no offer at all (a frozen game) the policy
+            # stays (live 2026-11-16..23: 30-minute runs with no offer, #3774).
+            if (self.session['scripted'] and self.offered_at is not None and self.offer_decisions
                     and self.clock.t - self.offered_at >= 60):
                 self.session['scripted'] = []; self.session['state'] = 'paused'
             return 200, dict(self.session)
@@ -103,7 +114,8 @@ class FakeRetro:
             if body['action'] == 'start':
                 assert body['expected_epoch'] == self.lease_epoch
                 self.session['scripted'] = [dict(port=body['port'], epoch=5, policy_id='zelda-navigator-v1',
-                                                 cognition=dict(policy_id='zelda-navigator-v1', attempt=zelda_decision(0),
+                                                 cognition=dict(policy_id='zelda-navigator-v1',
+                                                                attempt=zelda_decision(0) if self.offer_decisions else None,
                                                                 goal=None, last_finished=None))]
                 self.offered_at = self.clock.t
                 self.status_lag = self.lag_after_grant
@@ -442,7 +454,11 @@ def test_non_200_status_is_a_transport_problem_not_a_finished_game(world):
     out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
     assert out.ended.end_reason == 'retro_unreachable:503'
     ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
-    assert ops[-3:] == ['scripted', 'save', 'stop']            # still releases the port
+    assert ops[-2:] == ['scripted', 'stop']                    # still releases the port
+    # Status unreadable: control cannot be confirmed, so no save (a frozen screen must never be
+    # the newest save, #3774).
+    assert 'save' not in ops
+    assert out.ended.end_save_error == 'skipped:not_controllable'
 
 
 def test_cancellation_during_start_still_closes_out(world):
@@ -572,7 +588,7 @@ def orphan_world(world, frames=None, ledger_end=1.0, state='paused', scripted=()
         record['frames_by_controller'] = frames
     world.retro.session = dict(session_id=ORPHAN_SID, generation='h' * 36, state=state, game_id='the-legend-of-zelda',
                                scripted=list(scripted), frame=3616,
-                               zelda=dict(atlas=dict(lineage_id='lin-9', session=record)))
+                               zelda=dict(atlas=dict(lineage_id='lin-9', session=record), observation=dict(PLAYING)))
     row = dict(leisure_id='old', session_id=ORPHAN_SID if in_ledger else 'x' * 36,
                started_at=world.clock.t - started_ago, ended_at=ledger_end, seconds=1.0)
     if end_reason is not None:
@@ -704,3 +720,90 @@ def test_a_store_without_the_lock_read_fails_closed(world):
     async def broken(): raise AttributeError('lock_free')
     world.deps.store.lock_free = broken
     assert asyncio.run(L.should_start(config(RETRO_LEISURE_MIN_GAP_SEC=0), deps=world.deps)) == 'retro_session_active'
+
+
+# --- a save that never reaches control (#3774) --------------------------------------------------
+
+def test_a_frozen_save_gets_no_offer_ends_the_run_and_is_never_loaded_again(world):
+    # Live 2026-11-16..23: save 6f1b49c6 was taken mid room-exit; Retro offered nothing for 8 runs.
+    world.retro.saves = [dict(save_id='bad', compatible=True), dict(save_id='good', compatible=True)]
+    world.retro.offer_decisions = False
+    world.retro.observation = FROZEN
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'no_decision_offered'
+    assert out.ended.loaded_save_id == 'bad' and out.ended.decisions_planned == 0
+    assert world.clock.t - out.ended.started_at < 120                      # not a 30-minute stall
+    row = next(r for r in journal(world) if r['event'] == 'no_decision_offered')
+    assert row['save_marked_unplayable'] is True and row['observation']['mode'] == 'transition'
+    ops = [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+    assert 'save' not in ops                                               # the frozen state is not re-saved
+    assert asyncio.run(world.deps.store.unplayable_saves()) == {'bad'}
+    # The next run skips the marked save and loads the newest playable one.
+    world.retro.offer_decisions = True; world.retro.observation = PLAYING; world.retro.session = None
+    world.clock.t += 20000; L._running_here = False
+    out2 = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=90), deps=world.deps))
+    assert out2.ended.loaded_save_id == 'good' and out2.ended.decisions_planned > 0
+
+
+def test_no_offer_with_link_controllable_does_not_blame_the_save(world):
+    world.retro.saves = [dict(save_id='s1', compatible=True)]
+    world.retro.offer_decisions = False                                    # a Retro fault, not the save
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'no_decision_offered'
+    assert asyncio.run(world.deps.store.unplayable_saves()) == set()
+
+
+def test_end_save_is_skipped_when_link_is_not_controllable(world):
+    world.retro.saves = [dict(save_id='s1', compatible=True)]
+    def freeze_near_cap(r):
+        if world.clock.t - 1_000_000 > 80: r.session['zelda']['observation'] = dict(FROZEN)
+    world.retro.on_tick = freeze_near_cap
+    out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=90), deps=world.deps))
+    assert out.ended.end_reason == 'session_cap' and out.ended.decisions_planned > 0
+    assert out.ended.end_save_error == 'skipped:not_controllable' and out.ended.end_save_id is None
+    assert 'save' not in [p.rsplit('/', 1)[-1] for m, p, _ in world.retro.calls if m == 'POST']
+
+
+def test_end_save_waits_out_a_scroll_then_saves(world):
+    world.retro.saves = [dict(save_id='s1', compatible=True)]
+    state = dict(stop_at=None, seen=0)
+    def scroll_after_stop(r):
+        for m, p, b in r.calls[state['seen']:]:
+            if state['stop_at'] is None and p.endswith('/scripted') and (b or {}).get('action') == 'stop':
+                state['stop_at'] = world.clock.t
+        state['seen'] = len(r.calls)
+        scrolling = state['stop_at'] is not None and world.clock.t - state['stop_at'] < 1.0
+        # Real Retro: controllable only in play or cave (observe.py), never mid-scroll.
+        r.session['zelda']['observation'] = (dict(PLAYING, mode='scroll', link=dict(controllable=False))
+                                             if scrolling else dict(PLAYING))
+    world.retro.on_tick = scroll_after_stop
+    out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=90), deps=world.deps))
+    assert state['stop_at'] is not None                                    # the scroll really was waited out
+    assert out.ended.end_reason == 'session_cap' and out.ended.end_save_id == 'f' * 32
+
+
+def test_an_unreadable_game_ends_the_run_but_never_marks_the_save(world):
+    # Retro cannot decode RAM (unsupported core/ROM): no offer for any save. Marking would walk the
+    # whole lineage back one save per run.
+    world.retro.saves = [dict(save_id='s1', compatible=True)]
+    world.retro.offer_decisions = False
+    world.retro.observation = dict(status='unknown', reason='ram_unavailable')
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'no_decision_offered'
+    assert asyncio.run(world.deps.store.unplayable_saves()) == set()
+
+
+def test_a_save_in_a_cave_counts_as_controllable(world):
+    # Link stands in a cave at the cap: Retro offers there, so the end save is kept.
+    world.retro.saves = [dict(save_id='s1', compatible=True)]
+    world.retro.observation = dict(PLAYING, mode='cave')
+    out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=90), deps=world.deps))
+    assert out.ended.end_reason == 'session_cap' and out.ended.end_save_id == 'f' * 32
+
+
+def test_the_start_journal_counts_skipped_unplayable_saves(world):
+    world.retro.saves = [dict(save_id='bad', compatible=True), dict(save_id='good', compatible=True)]
+    asyncio.run(world.deps.store.mark_unplayable_save('bad'))
+    asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=5), deps=world.deps))
+    row = next(r for r in journal(world) if r['event'] == 'started')
+    assert row['loaded_save_id'] == 'good' and row['unplayable_skipped'] == 1

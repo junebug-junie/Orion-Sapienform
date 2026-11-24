@@ -251,8 +251,9 @@ a naive fold does not; the rhythm forecast is calibrated. Open, for Juniper:
    `metadata["prediction_error"]`. Without this, the scan drops both cameras the moment the old
    key is cleared. The camera bars move from `LEGACY_BAR` 0.55 to **2.0 nats of excess**, the
    #3821 rule (calm crossing <= 5% by math): for independent frames P(excess >= 2.0) = e^-3 =
-   4.98%; Sidak over dependent frames is lower. `seed_strength` maps 2.0 -> 0.55 and the cap
-   (ln of the window size minus 1, about 7.6 nats at 2 h of walkway frames) -> 1.0.
+   4.98%; Sidak over dependent frames is lower. `seed_strength` maps 2.0 -> 0.55 and 5.0 nats
+   -> 1.0 (the replay's tick maximum was 4.6 room / 4.9 walkway: Sidak multiplies the smallest
+   frame p by about k, so a tick cannot reach the single-frame cap of ln(n + 1) - 1).
    Replayed on the new tick values (30 s ticks, 29 h): room crosses on **5.0%** of ticks, walkway
    **2.8%**. That is about twice today's 2.7% / 1.2%; the bar follows the #3821 rule rather than
    today's rate. Evidence text says "unusual scene change". Acceptance check below.

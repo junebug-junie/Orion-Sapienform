@@ -34,7 +34,18 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
-from orion.attention.world_first import event_fade
+
+def event_fade(age_sec: float, window_sec: float, grace_sec: float) -> float:
+    """1.0 through the grace period, then linear to 0 at the window: orion/attention/world_first.py ``event_fade``,
+    the same rule. Copied, not imported: world_first pulls orion.substrate (and ``requests``), which orion-mind's image
+    does not ship. A test pins the two together (orion/attention/tests/test_concern_contest.py)."""
+    grace = max(0.0, min(grace_sec, window_sec))
+    if age_sec <= grace:
+        return 1.0
+    if window_sec <= grace:
+        return 0.0
+    return max(0.0, 1.0 - (age_sec - grace) / (window_sec - grace))
+
 
 # The score margin a scored candidate needs over a scored incumbent. A bracketed default (design: "a knob to grade on
 # live data, not a finding"); PRIME_CONCERN_CONTEST_MARGIN overrides it.

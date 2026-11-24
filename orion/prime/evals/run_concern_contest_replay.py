@@ -10,8 +10,8 @@ concern slots in the window:
 * the 3 concerns held at the start (two 11-13 letter threads, one 11-16 thread);
 * every promise the hand-back folded that we have a record of: the 3 it opened (``concern_record``), the 11-17 21:55Z
   refusal (#3656) and the 6 refusals of 11-23 (orion-mind log ``prime_turn_handback``). orion-mind's log before
-  11-22 22:47Z is gone, so a promise refused 11-18..11-22 is missing (hub.promise acts show 4 chat promises on
-  11-19/20 that opened no concern; whether the hand-back saw them is unknown, so they are left out);
+  11-22 22:47Z is gone, so a promise refused 11-18..11-22 is missing (4 chat promises on 11-19/20 opened no concern;
+  whether the hand-back saw them is unknown, so they are left out);
 * every day letter (``orion:prime:day_letter`` done; all had 5 threads), dream concern and concern Prime named
   (``concern_record``; the two event-want concerns carry their want's ``salience`` from ``want_ledger``; for
   a20521a9 the event_ref is the one its thought woke on, inferred);

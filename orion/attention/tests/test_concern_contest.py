@@ -23,6 +23,26 @@ def test_score_is_salience_times_the_fade_full_until_half_the_life_then_linear_t
     assert cc.score(_e("a", 3), NOW) is None  # unscored, never 0
 
 
+def test_the_fade_is_world_firsts():
+    import pytest
+
+    pytest.importorskip("requests")  # world_first imports orion.substrate; orion-mind's image has no requests
+    from orion.attention.world_first import event_fade
+
+    for age, window, grace in [(0, 100, 50), (50, 100, 50), (75, 100, 50), (100, 100, 50), (200, 100, 50),
+                               (10, 100, 0), (10, 100, 150)]:
+        assert cc.event_fade(age, window, grace) == event_fade(age, window, grace)
+
+
+def test_slots_never_import_world_first():
+    import subprocess
+    import sys
+
+    code = "import sys, orion.prime.slots, orion.prime.thought; print('orion.attention.world_first' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False"
+
+
 def test_a_concern_quiet_for_less_than_half_its_life_is_never_displaced_whatever_the_score():
     held = [_e("h", 11.9, sal=0.0)]
     assert not cc.displaceable(held[0], NOW)

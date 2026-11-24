@@ -55,10 +55,6 @@ def test_failed_boot_does_not_mark_empty_cache_fresh():
 
 
 @pytest.mark.parametrize("mutation,reason", [
-    (lambda c: c._hydrate_node_rows.append(dict(c._hydrate_node_rows[0])), "duplicate node_id"),
-    (lambda c: c._hydrate_edge_rows.append(dict(c._hydrate_edge_rows[0])), "duplicate edge_id"),
-    (lambda c: c._hydrate_edge_rows[0].update(source_id="missing"), "endpoint"),
-    (lambda c: c._hydrate_edge_rows[0].update(source_kind="entity"), "endpoint"),
     (lambda c: c._hydrate_node_rows[0].update(node_id=None), "invalid"),
     (lambda c: c._hydrate_node_rows[0].update(anchor_scope="invalid"), "validation"),
     (lambda c: c._hydrate_edge_rows[0].update(edge_id=None), "invalid"),
@@ -231,18 +227,21 @@ def test_failed_refresh_stops_journaling():
     assert store.hydrate_failed_total >= 1
 
 
-def test_detected_external_insertion_with_missing_endpoint_rejects_scan():
+def test_detected_external_insertion_with_missing_endpoint_skips_the_edge_not_the_scan():
+    """An edge written after the node pass read its endpoint is skipped and
+    counted; the next refresh picks it up. Before #3512 it failed the scan."""
     client = CappedClient()
     store = build(client)
     original = client.graph_query
     def query(cypher, params=None):
         if "RETURN e.edge_id" in cypher:
-            client._hydrate_edge_rows = [edge_row(0, target="inserted-after-node-scan")]
+            client._hydrate_edge_rows = [edge_row(0, target="inserted-after-node-scan"), edge_row(1)]
         return original(cypher, params)
     client.graph_query = query
-    previous = store._cache
     store._hydrate_from_durable()
-    assert store._cache is previous and not store.last_hydrate_ok
+    assert store.last_hydrate_ok
+    assert set(store._cache.snapshot().edges) == {"edge1"}
+    assert store.last_scan_receipt.integrity_anomalies == {"bad_endpoint_edge": 1}
 
 
 def test_read_only_legacy_scan_decodes_without_rewriting():
@@ -333,3 +332,75 @@ def test_replayed_edge_with_missing_endpoint_is_not_cached():
     state = store.snapshot()
     assert state.scan_receipt.complete
     assert "dangling" not in state.edges
+
+
+# ── #3512: corrupt durable rows are skipped and counted, never fatal ─────────
+
+@pytest.mark.parametrize("mutation,kind", [
+    (lambda c: c._hydrate_node_rows.append(dict(c._hydrate_node_rows[0])), "duplicate_node_id"),
+    (lambda c: c._hydrate_edge_rows.append(dict(c._hydrate_edge_rows[0])), "duplicate_edge_id"),
+    (lambda c: c._hydrate_edge_rows[0].update(source_id="missing"), "bad_endpoint_edge"),
+    (lambda c: c._hydrate_edge_rows[0].update(source_kind="entity"), "bad_endpoint_edge"),
+])
+def test_a_corrupt_row_is_skipped_and_counted_and_the_rest_hydrates(mutation, kind):
+    client = CappedClient()
+    mutation(client)
+    store = build(client)
+    state = store.snapshot()
+    assert store.last_hydrate_ok and state.scan_receipt.complete
+    assert len(state.nodes) == 7
+    assert len(state.edges) == (10 if kind == "bad_endpoint_edge" else 11)
+    assert state.scan_receipt.integrity_anomalies == {kind: 1}
+    assert store.hydrate_integrity_anomalies == {kind: 1}
+
+
+@pytest.mark.parametrize("phantom_first", [True, False])
+def test_3512_one_edge_read_back_through_a_phantom_adjacency_entry(phantom_first):
+    """Live 2026-11-24, orion_substrate: edge object 66265 (observed_in, entity ->
+    evidence) came back twice from one scan, once to its real evidence target and
+    once to an unrelated Concept node. Hub logged 'missing or mismatched
+    endpoint: sub-concept-wp-read-8b7af82ab1ff79e8' and held 0 of 19,142 nodes.
+    The real copy hydrates; the phantom is counted, in either scan order."""
+    client = CappedClient()
+    real = client._hydrate_edge_rows[0]
+    phantom = dict(real, target_id="node5", target_kind="evidence")
+    rows = client._hydrate_edge_rows
+    rows.insert(0, phantom) if phantom_first else rows.insert(1, phantom)
+    store = build(client)
+    state = store.snapshot()
+    assert store.last_hydrate_ok and len(state.nodes) == 7 and len(state.edges) == 11
+    edge = state.edges["edge0"]
+    assert (edge.source.node_id, edge.target.node_id) == ("node0", "node1")
+    assert state.scan_receipt.integrity_anomalies == {"bad_endpoint_edge": 1}
+
+
+def test_3512_two_durable_rows_with_one_node_id_keep_the_newer_row_and_both_edge_sets():
+    """Live 2026-11-24, orion_substrate_aitown: two Concept rows held
+    sub-concept-topicfoundry-...-33 (object ids 49919 and 50246). Hub logged
+    'duplicate node_id' and held 0 of 52,160 nodes. The row writers still touch
+    (newer observed_at) wins; edges to either row stay attached by node_id."""
+    client = CappedClient()
+    older = client._hydrate_node_rows[1]
+    newer = dict(older, label="newer copy", observed_at="2026-11-24T21:33:43+00:00")
+    client._hydrate_node_rows.insert(0, newer)  # scan order must not decide
+    store = build(client)
+    state = store.snapshot()
+    assert store.last_hydrate_ok and len(state.nodes) == 7 and len(state.edges) == 11
+    assert state.nodes["node1"].label == "newer copy"
+    assert state.scan_receipt.integrity_anomalies == {"duplicate_node_id": 1}
+    assert state.scan_receipt.duplicate_node_identities == 0
+
+
+def test_many_corrupt_rows_mean_a_broken_scan_and_keep_the_last_good_cache():
+    """A poisoned plan that shifts every edge's endpoint kind must not swap in
+    an edgeless graph as a good refresh."""
+    client = CappedClient(edges=80)
+    store = build(client)
+    cache = store._cache
+    for row in client._hydrate_edge_rows:
+        row["target_kind"] = "evidence"
+    store._write_generation += 1
+    state = store.snapshot()
+    assert store._cache is cache and not store.last_hydrate_ok
+    assert "integrity anomalies over budget" in state.scan_receipt.reason
+    assert state.scan_receipt.integrity_anomalies == {"bad_endpoint_edge": 80}

@@ -110,5 +110,5 @@ test('crop owners: each time crop gets the letter of the person it belongs to', 
 });
 
 test('a yes on a named row reads back as a yes', () => {
-  assert.equal(ws.actionLine({ action: 'confirm', name: 'Addy' }), 'You said yes, this is Addy.');
+  assert.equal(ws.actionLine({ action: 'confirm', name: 'Sasha' }), 'You said yes, this is Sasha.');
 });

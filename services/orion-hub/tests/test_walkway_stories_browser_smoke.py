@@ -338,7 +338,7 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
 
 
 def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_browser_smoke():
-    """Juniper's story c486f5d8... (2026-11-22, doorbell): Juniper, Addy, Addy, an unnamed person and two
+    """Juniper's story c486f5d8... (2026-11-22, doorbell): Juniper, Sasha, Sasha, an unnamed person and two
     companions, one picture with no link to its row (2026-11-24: "how the f would i know which is which").
     Each row now shows ITS OWN crops, a letter that also tags the time crops, its box numbers, and a
     named row says "Yes, that's <name>"; a person without a picture of their own is not asked."""
@@ -356,9 +356,9 @@ def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_bro
     people = [
         _person("ind-jun", label="Juniper", crop_ids=["k0"], thumb=None, pictures=[pic(sid, 0, "k0")],
                 boxes=[{"n": 1, "colour": "green"}], pictured=True),
-        _person("ind-addy1", label="Addy", crop_ids=["k1", "k2"], thumb=None, pictures=[pic(sid, 1, "k1")],
+        _person("ind-sasha1", label="Sasha", crop_ids=["k1", "k2"], thumb=None, pictures=[pic(sid, 1, "k1")],
                 boxes=[{"n": 2, "colour": "blue"}, {"n": 3, "colour": "blue"}], pictured=True),
-        _person("ind-addy2", label="Addy", crop_ids=["k3"], thumb=None, pictures=[pic(sid, 2, "k3")],
+        _person("ind-sasha2", label="Sasha", crop_ids=["k3"], thumb=None, pictures=[pic(sid, 2, "k3")],
                 boxes=[{"n": 4, "colour": "blue"}], pictured=True),
         _person("ind-anon38e1", crop_ids=["k4"], thumb=None, pictures=[pic(sid, 3, "k4")],
                 boxes=[{"n": 5, "colour": "red"}], pictured=True),
@@ -394,8 +394,8 @@ def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_bro
         if m:
             sent = json.loads(route.request.post_data or "{}")
             posts.append((m.group(2), sent))
-            again = dict(story, people=[dict(p, story_action={"action": "confirm", "name": "Addy"})
-                                        if p["individual_id"] == "ind-addy2" else p for p in people])
+            again = dict(story, people=[dict(p, story_action={"action": "confirm", "name": "Sasha"})
+                                        if p["individual_id"] == "ind-sasha2" else p for p in people])
             return route.fulfill(body=json.dumps({"ok": True, "story": again, "wrong_name_recorded": False,
                                                   "tally": _tally(1, 1)}), content_type="application/json")
         if re.fullmatch(r"/api/vision/motion-stories/[0-9a-f]{32}/strip/(crop_[0-3]|frame)\.jpg", path):
@@ -424,11 +424,11 @@ def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_bro
                         f"/api/vision/motion-stories/{sid}/strip/crop_3.jpg",
                         f"/api/vision/motion-stories/{partner}/strip/crop_0.jpg"]
         assert rows.nth(0).locator("img[data-person-picture]").get_attribute("alt").startswith("Person A (Juniper)")
-        # The two "Addy" rows are told apart by their box numbers and group ids.
+        # The two "Sasha" rows are told apart by their box numbers and group ids.
         assert rows.nth(1).get_attribute("data-person-letter") == "B"
         assert rows.nth(1).locator("[data-person-boxes]").get_attribute("data-person-boxes") == "2,3"
         assert rows.nth(2).locator("[data-person-boxes]").get_attribute("data-person-boxes") == "4"
-        assert "group ind-addy" in rows.nth(1).text_content() and "group ind-addy" in rows.nth(2).text_content()
+        assert "group ind-sash" in rows.nth(1).text_content() and "group ind-sash" in rows.nth(2).text_content()
         assert "text-red-400" in rows.nth(3).locator("[data-person-box='5']").get_attribute("class")
         assert "they walked alongside" in rows.nth(4).text_content()
         # The time crops above carry the same letters.
@@ -443,9 +443,9 @@ def test_walkway_story_each_person_shows_their_own_pictures_and_yes_confirms_bro
         assert rows.nth(3).locator("[data-person-action='name']").text_content() == "Name them"
         rows.nth(2).locator("[data-person-action='confirm']").click()
         page.wait_for_function("() => !!document.querySelector(\"[data-person-said='confirm']\")")
-        assert posts == [("ind-addy2", {"action": "confirm", "name": "Addy", "why": ""})]
-        assert "Saved: yes, that's Addy." in page.locator("#walkwayStoriesStatus").text_content()
-        assert page.locator("[data-person-said='confirm']").text_content() == "You said yes, this is Addy."
+        assert posts == [("ind-sasha2", {"action": "confirm", "name": "Sasha", "why": ""})]
+        assert "Saved: yes, that's Sasha." in page.locator("#walkwayStoriesStatus").text_content()
+        assert page.locator("[data-person-said='confirm']").text_content() == "You said yes, this is Sasha."
         assert page.evaluate("() => document.getElementById('walkwayStoriesCard').scrollWidth") <= 360
         assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
         browser.close()

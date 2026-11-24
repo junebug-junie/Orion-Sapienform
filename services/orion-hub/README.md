@@ -4859,13 +4859,13 @@ else. The sentence shown is re-derived on read: Juniper's latest name or
 as "Orion first wrote: ..." when it differs.
 
 **Each person's own pictures (2026-11-24).** Juniper could not tell which row
-was which ("how the f would i know which is which, alice or addy?"). Now each
+was which ("how the f would i know which is which, [name] or [name]?"). Now each
 person gets a letter (A, B, ...). Their row shows only their own pictures: the
 story-strip crops whose crop_id is theirs (a companion's come from the story they
 walked in), else vision-host's thumbnail of one of their crops. The row says which
 numbered boxes on the big picture are theirs, coloured like the drawn box, and the
-time crops above carry the same letters. Two groups with one name ("Addy",
-"Addy") show their group id. A person with no picture of their own is greyed
+time crops above carry the same letters. Two groups with one name ("Sasha",
+"Sasha") show their group id. A person with no picture of their own is greyed
 ("No picture of this person - not asked.") and the route refuses an answer about
 them (`no_picture_of_person`). A named row has "Yes, that's <name>" (`action:
 "confirm"`, sent with the name the card showed; 409 `label_changed` if it was

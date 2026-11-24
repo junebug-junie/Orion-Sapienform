@@ -725,7 +725,7 @@ def test_the_juniper_card_marker_is_the_shared_one() -> None:
 
 # --- each person's own pictures (2026-11-24) -----------------------------------------------------------
 # Juniper, on story c486f5d8... (doorbell, 2026-11-22 01:28:30Z): six "who is this?" rows (Juniper,
-# Addy, Addy, unnamed 38e112de, two companions) and one unlabelled picture. "how the f would i know
+# Sasha, Sasha, unnamed 38e112de, two companions) and one unlabelled picture. "how the f would i know
 # which is which". Each row now carries the pictures of its own individual and its box numbers.
 
 
@@ -740,8 +740,8 @@ def test_box_numbers_follow_the_order_sql_writer_drew_them() -> None:
 
 def test_attach_pictures_gives_each_person_only_their_own_crops() -> None:
     ev = [{"crop_id": "c0", "individual_id": "jun", "thumb": None, "box": [1, 2, 3, 4]},
-          {"crop_id": "c1", "individual_id": "addy", "thumb": THUMB, "box": [1, 2, 3, 4]},
-          {"crop_id": "c2", "individual_id": "addy", "thumb": None, "box": [1, 2, 3, 4]},
+          {"crop_id": "c1", "individual_id": "sasha", "thumb": THUMB, "box": [1, 2, 3, 4]},
+          {"crop_id": "c2", "individual_id": "sasha", "thumb": None, "box": [1, 2, 3, 4]},
           {"crop_id": "c3", "individual_id": "thumbonly", "thumb": THUMB, "box": [1, 2, 3, 4]},
           {"crop_id": "c4", "individual_id": "nopic", "thumb": None, "box": [1, 2, 3, 4]}]
     strip = {"frame": {"file": "frame.jpg"}, "crops": [
@@ -751,8 +751,8 @@ def test_attach_pictures_gives_each_person_only_their_own_crops() -> None:
     people = {p["individual_id"]: msr.attach_pictures(p, "s" * 32, strip, boxes)
               for p in msr.people_in(ev, "walker", "person")}
     assert people["jun"]["pictures"] == [{"story_id": "s" * 32, "file": "crop_0.jpg", "t": "t0", "crop_id": "c0"}]
-    assert [b["n"] for b in people["addy"]["boxes"]] == [2, 3]
-    assert people["addy"]["picture_crop_ids"] == ["c1"]          # c2 was never shown
+    assert [b["n"] for b in people["sasha"]["boxes"]] == [2, 3]
+    assert people["sasha"]["picture_crop_ids"] == ["c1"]          # c2 was never shown
     # No strip crop, but vision-host's thumbnail of c3: that is a picture of them.
     assert people["thumbonly"]["pictures"] == [] and people["thumbonly"]["picture_crop_ids"] == ["c3"]
     assert people["thumbonly"]["pictured"] is True
@@ -767,22 +767,22 @@ def test_attach_pictures_gives_each_person_only_their_own_crops() -> None:
 @needs_pg
 def test_list_gives_every_person_their_own_pictures_boxes_and_companions_their_own_story() -> None:
     async def body(pool, client):
-        for iid, label in (("ind-jun", "Juniper"), ("ind-addy1", "Addy"), ("ind-addy2", "Addy"), ("ind-anon", None),
+        for iid, label in (("ind-jun", "Juniper"), ("ind-sasha1", "Sasha"), ("ind-sasha2", "Sasha"), ("ind-anon", None),
                            ("ind-c1", None), ("ind-c2", None)):
             await _individual(pool, iid, label)
         # The companions' story (not listed: it is a companion story) has its own strip.
         partner = await _walk(pool, 2, ["ind-c1", "ind-c2", "ind-c2"], published=False, strip=[0, 1], thumbs=())
-        sid = await _walk(pool, 1, ["ind-jun", "ind-addy1", "ind-addy1", "ind-addy2", "ind-anon"],
+        sid = await _walk(pool, 1, ["ind-jun", "ind-sasha1", "ind-sasha1", "ind-sasha2", "ind-anon"],
                           together=[partner], strip=[0, 1, 3, 4], thumbs=())
         r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
         assert r.status_code == 200, r.text
         story = next(s for s in r.json()["stories"] if s["story_id"] == sid)
         got = {p["individual_id"]: p for p in story["people"]}
-        assert list(got) == ["ind-jun", "ind-addy1", "ind-addy2", "ind-anon", "ind-c1", "ind-c2"]
+        assert list(got) == ["ind-jun", "ind-sasha1", "ind-sasha2", "ind-anon", "ind-c1", "ind-c2"]
         assert [(c["story_id"], c["file"]) for c in got["ind-jun"]["pictures"]] == [(sid, "crop_0.jpg")]
-        assert [(c["story_id"], c["file"]) for c in got["ind-addy1"]["pictures"]] == [(sid, "crop_1.jpg")]
-        assert [b["n"] for b in got["ind-addy1"]["boxes"]] == [2, 3]
-        assert [(c["file"], b["n"]) for c, b in zip(got["ind-addy2"]["pictures"], got["ind-addy2"]["boxes"])] == [
+        assert [(c["story_id"], c["file"]) for c in got["ind-sasha1"]["pictures"]] == [(sid, "crop_1.jpg")]
+        assert [b["n"] for b in got["ind-sasha1"]["boxes"]] == [2, 3]
+        assert [(c["file"], b["n"]) for c, b in zip(got["ind-sasha2"]["pictures"], got["ind-sasha2"]["boxes"])] == [
             ("crop_2.jpg", 4)]
         assert got["ind-anon"]["boxes"] == [{"n": 5, "colour": "red"}]
         # Companions: their own crops, from the story they walked in; not boxed on this frame.
@@ -799,38 +799,38 @@ def test_yes_thats_them_is_her_answer_with_same_pictures_for_the_pictures_shown(
     published: list = []
 
     async def body(pool, client):
-        await _individual(pool, "ind-addy", "Addy")
+        await _individual(pool, "ind-sasha", "Sasha")
         await _individual(pool, "ind-anon")
-        sid = await _walk(pool, 1, ["ind-addy", "ind-addy", "ind-anon"], name="Addy", strip=[0, 2], thumbs=())
-        await client.post(f"/api/vision/motion-stories/{sid}/people/ind-addy", json={"action": "someone_else"})
-        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-addy",
-                              json={"action": "confirm", "name": "addy"})
+        sid = await _walk(pool, 1, ["ind-sasha", "ind-sasha", "ind-anon"], name="Sasha", strip=[0, 2], thumbs=())
+        await client.post(f"/api/vision/motion-stories/{sid}/people/ind-sasha", json={"action": "someone_else"})
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-sasha",
+                              json={"action": "confirm", "name": "sasha"})
         assert r.status_code == 200, r.text
         out = r.json()
         row = await pool.fetchrow("SELECT * FROM orion_ask WHERE ask_id = $1", out["ask_id"])
         # Her own "who is this?" answer: sql-writer makes the name a typed label (a copied one becomes hers).
         assert (row["source_kind"], row["source_ref"], row["status"], row["answer"]) == (
-            "vision_individual", "ind-addy", "answered", "Addy")
+            "vision_individual", "ind-sasha", "answered", "Sasha")
         assert "rule:juniper_story_naming" in json.loads(row["evidence_refs"])
         detail = json.loads(row["answer_detail"])
-        assert (detail["action"], detail["name"], detail["story_id"]) == ("confirm", "Addy", sid)
+        assert (detail["action"], detail["name"], detail["story_id"]) == ("confirm", "Sasha", sid)
         # One "same" picture per picture the card showed (s1c1 has no picture: no answer about it).
-        assert [(p["crop_id"], p["verdict"], p["name"]) for p in detail["pictures"]] == [("s1c0", "same", "Addy")]
-        assert row["question"] == "Is this Addy? Yes (said on a walkway story)"
+        assert [(p["crop_id"], p["verdict"], p["name"]) for p in detail["pictures"]] == [("s1c0", "same", "Sasha")]
+        assert row["question"] == "Is this Sasha? Yes (said on a walkway story)"
         # Not a name correction; the substrate entity event like any typed name.
         assert out["wrong_name_recorded"] is False
-        assert [(e.source_kind, e.answer) for e in published] == [("vision_individual", "Addy")]
+        assert [(e.source_kind, e.answer) for e in published] == [("vision_individual", "Sasha")]
         # Her latest answer on this story wins: the yes undoes the earlier "someone else".
-        assert out["story"]["display_sentence"].startswith("Addy walked") and out["story"]["name_source"] == "juniper"
-        person = next(p for p in out["story"]["people"] if p["individual_id"] == "ind-addy")
+        assert out["story"]["display_sentence"].startswith("Sasha walked") and out["story"]["name_source"] == "juniper"
+        person = next(p for p in out["story"]["people"] if p["individual_id"] == "ind-sasha")
         assert person["story_action"]["action"] == "confirm"
-        # Renamed elsewhere after the card rendered: her yes to "Addy" is refused, nothing written.
-        await pool.execute("UPDATE vision_individual SET label = 'Alice' WHERE individual_id = 'ind-addy'")
+        # Renamed elsewhere after the card rendered: her yes to "Sasha" is refused, nothing written.
+        await pool.execute("UPDATE vision_individual SET label = 'Alice' WHERE individual_id = 'ind-sasha'")
         before = await pool.fetchval("SELECT count(*) FROM orion_ask")
-        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-addy",
-                              json={"action": "confirm", "name": "Addy"})
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-sasha",
+                              json={"action": "confirm", "name": "Sasha"})
         assert (r.status_code, r.json()["detail"]) == (409, "label_changed")
-        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-addy", json={"action": "confirm"})
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-sasha", json={"action": "confirm"})
         assert r.status_code == 409
         assert await pool.fetchval("SELECT count(*) FROM orion_ask") == before
 
@@ -876,9 +876,9 @@ def test_sql_writer_records_a_story_yes_as_its_same_picture_verdict() -> None:
         sys.modules.pop(spec.name, None)
     assert mod.SOURCE_KIND_STORY_PERSON == msr.STORY_PERSON_KIND
     detail = {"pictures": [{"image_ref": "crop:s1c0", "index": 0, "verdict": "same", "crop_id": "s1c0",
-                            "name": "Addy"}]}
-    rows = mod.picture_rows("ask-1", "ind-addy", detail, None)
-    assert [(r["v"], r["name"], r["crop_id"]) for r in rows] == [("same", "Addy", "s1c0")]
+                            "name": "Sasha"}]}
+    rows = mod.picture_rows("ask-1", "ind-sasha", detail, None)
+    assert [(r["v"], r["name"], r["crop_id"]) for r in rows] == [("same", "Sasha", "s1c0")]
 
 
 def test_box_numbers_match_what_sql_writer_actually_draws(tmp_path, monkeypatch) -> None:

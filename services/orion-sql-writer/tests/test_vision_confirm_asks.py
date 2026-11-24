@@ -866,15 +866,15 @@ def test_a_yes_on_a_walkway_story_card_makes_a_copied_name_hers_and_records_same
     with pg.begin() as conn:
         conn.execute(text(
             "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, first_seen_at, last_seen_at, "
-            "label, label_copied) VALUES ('cpy', 'walkway', 'person', '{1}', :t, :t, 'Addy', true)"), {"t": NOW})
-        detail = {"story_id": "a" * 32, "action": "confirm", "via": "motion_story", "name": "Addy",
+            "label, label_copied) VALUES ('cpy', 'walkway', 'person', '{1}', :t, :t, 'Sasha', true)"), {"t": NOW})
+        detail = {"story_id": "a" * 32, "action": "confirm", "via": "motion_story", "name": "Sasha",
                   "pictures": [{"image_ref": "crop:c1", "index": 0, "verdict": "same", "crop_id": "c1",
-                                "name": "Addy"}]}
-        _ask(conn, "story-yes", "vision_individual", "cpy", status="answered", answer="Addy", detail=detail)
+                                "name": "Sasha"}]}
+        _ask(conn, "story-yes", "vision_individual", "cpy", status="answered", answer="Sasha", detail=detail)
         assert vi._apply_answers(conn, NOW) == 1
         row = conn.execute(text("SELECT label, label_copied, label_ask_id FROM vision_individual "
                                 "WHERE individual_id='cpy'")).fetchone()
-        assert tuple(row) == ("Addy", False, "story-yes")
+        assert tuple(row) == ("Sasha", False, "story-yes")
         pics = conn.execute(text("SELECT image_ref, verdict, name, crop_id FROM vision_ask_picture_verdict "
                                  "WHERE ask_id='story-yes'")).fetchall()
-        assert [tuple(p) for p in pics] == [("crop:c1", "same", "Addy", "c1")]
+        assert [tuple(p) for p in pics] == [("crop:c1", "same", "Sasha", "c1")]

@@ -29,7 +29,7 @@
   // wrote, that is shown too.
   //
   // One person at a time (2026-11-24, Juniper: "how the f would i know which is
-  // which, alice or addy?"). Each person gets a letter (A, B, ...). Their row
+  // which, [name] or [name]?"). Each person gets a letter (A, B, ...). Their row
   // shows THEIR OWN pictures (the strip crops that are theirs, by crop_id; else
   // vision-host's thumbnail of one of their crops), and says which numbered
   // boxes on the big picture are theirs, in the colour that box was drawn. The
@@ -258,7 +258,7 @@
     title.setAttribute("data-person-title", "1");
     head.appendChild(title);
     if (p.label) {
-      // Two groups can carry one name (two "Addy"s): the group id tells them apart.
+      // Two groups can carry one name (two "Sasha"s): the group id tells them apart.
       head.appendChild(el(doc, "span", "text-[10px] text-gray-500", `group ${String(p.short_id || "").slice(0, 8)}`));
     }
     box.appendChild(head);

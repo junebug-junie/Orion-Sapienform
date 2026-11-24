@@ -210,3 +210,20 @@ def test_block_stability_refuses_modes_that_change_every_block():
 def test_block_stability_needs_two_blocks():
     rng = np.random.default_rng(15)
     assert wbs.block_stability(rng.normal(size=(DAY + 10, 4)), DAY, 2, rng=rng) is None
+
+
+def test_block_stability_chance_floor_refuses_few_channel_noise():
+    """With 2 channels, both modes always match at >= 0.707, even in pure noise.
+
+    The 0.7 bar alone passes it; only the chance floor stops it.
+    """
+    rng = np.random.default_rng(16)
+    st = wbs.block_stability(rng.normal(size=(6 * DAY, 2)), DAY, 2, rng=rng)
+    assert st.median_by_rank.min() >= wbs.STABLE_SIMILARITY
+    assert st.stable_ranks == []
+
+
+def test_block_stability_without_room_for_a_null_has_no_verdict():
+    rng = np.random.default_rng(17)
+    st = wbs.block_stability(rng.normal(size=(25, 20)), 10, 2, rng=rng)  # 15 rows of room, 20 channels
+    assert st.pairs == 1 and st.chance_max_by_rank is None and st.stable_ranks is None

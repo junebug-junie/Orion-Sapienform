@@ -316,6 +316,7 @@ class BlockStability:
     median_by_rank: np.ndarray
     chance_median_by_rank: np.ndarray | None  # None: no room for a shifted copy this long
     chance_max_by_rank: np.ndarray | None
+    null_min_gap: int | None  # closest two channels in any shifted copy, in rows
 
     @property
     def stable_ranks(self) -> list[int] | None:
@@ -330,20 +331,31 @@ def block_stability(x: np.ndarray, block: int, k: int, *, rng: np.random.Generat
                     n_null: int = 20) -> BlockStability | None:
     """Match each block's top ``k`` modes to the next block's; None when fewer than 2 blocks fit.
 
-    Chance: the same match between two shifted copies of length ``block`` (every channel from a
-    different time, so neither holds a real mode). Few channels give a high chance floor, so a
-    fixed bar alone can pass noise.
+    Chance is the same statistic on shifted copies (every channel from a different time): each of
+    ``n_null`` draws is the median match over ``pairs`` independent pairs of copies, so the real
+    median and the chance median are averaged over the same number of matches. Few channels give
+    a high chance floor, so a fixed bar alone can pass noise. With long blocks the copies overlap
+    in time and can keep slow shared structure, which makes the floor conservative; the closest
+    channel gap is returned so the caller can report it.
     """
     starts = list(range(0, len(x) - block + 1, block))
     if len(starts) < 2:
         return None
     vecs = [top_modes(correlation(x[s:s + block]), k)[1] for s in starts]
     sims = np.array([match_modes(vecs[i - 1], vecs[i]) for i in range(1, len(vecs))])
-    try:
-        null = np.array([match_modes(*(top_modes(correlation(shifted_null_window(
-            x, block, null_starts(len(x), block, x.shape[1], rng=rng)[0])), k)[1] for _ in range(2)))
-            for _ in range(n_null)])
-        c_med, c_max = np.median(null, axis=0), null.max(axis=0)
-    except ValueError:
-        c_med = c_max = None
-    return BlockStability(len(sims), np.median(sims, axis=0), c_med, c_max)
+    pairs = len(sims)
+    if len(x) - block < x.shape[1]:  # no room for shifted copies this long
+        return BlockStability(pairs, np.median(sims, axis=0), None, None, None)
+    gaps, null = [], []
+    for _ in range(n_null):
+        draw = []
+        for _ in range(pairs):
+            copies = []
+            for _ in range(2):
+                st, gap = null_starts(len(x), block, x.shape[1], rng=rng)
+                gaps.append(gap)
+                copies.append(top_modes(correlation(shifted_null_window(x, block, st)), k)[1])
+            draw.append(match_modes(*copies))
+        null.append(np.median(draw, axis=0))
+    null = np.array(null)
+    return BlockStability(pairs, np.median(sims, axis=0), np.median(null, axis=0), null.max(axis=0), min(gaps))

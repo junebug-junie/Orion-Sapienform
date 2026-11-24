@@ -133,9 +133,11 @@ def test_field_digester_prunes_the_same_ids() -> None:
     assert RETIRED_PREDICTION_ERROR_NODE_IDS <= keys
 
 
-def test_host_targets_would_admit_an_unpruned_retired_node() -> None:
-    """Why the field-side prune matters (Trap A): select_host_targets treats
-    any node_vectors key outside PREDICTION_ERROR_NATIVE_TARGETS as a host."""
+def test_host_targets_skip_an_unpruned_retired_node() -> None:
+    """Trap A: select_host_targets treated any node_vectors key outside
+    PREDICTION_ERROR_NATIVE_TARGETS as a host, so only the field-side prune kept a
+    retired node out. Since 2026-11-24 (#3576 review) it also skips retired PE ids
+    itself, so a deploy that reaches attention before the digester is safe."""
     from orion.attention.field_attention.policy import load_attention_policy
     from orion.attention.field_attention.selectors import select_host_targets
     from orion.schemas.field_state import FieldStateV1
@@ -147,4 +149,4 @@ def test_host_targets_would_admit_an_unpruned_retired_node() -> None:
         node_vectors={"node:athena": {"cpu_pressure": 0.5}, "node:substrate.route": {"prediction_error": 0.5}},
     )
     ids = {t.target_id for t in select_host_targets(field, policy, None)}
-    assert "node:substrate.route" in ids  # hence RETIRED_PSEUDO_NODES must prune it
+    assert ids == {"node:athena"}  # the digester prune (RETIRED_PSEUDO_NODES) is the second fence

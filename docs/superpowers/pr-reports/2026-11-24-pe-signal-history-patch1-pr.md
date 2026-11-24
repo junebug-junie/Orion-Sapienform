@@ -151,6 +151,6 @@ select node_id, kind, count(*), max(observed_at) from substrate_node_signal_hist
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3800
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

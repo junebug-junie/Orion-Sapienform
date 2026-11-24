@@ -27,6 +27,11 @@ REF_SEP = "|"
 VOICE_ASK_ANSWER = "ask_answer"
 VOICE_AUTHORED = "authored_profile"
 VOICE_HUB_EDIT = "hub_edit"
+# "How could you tell?" on a walkway story (2026-11-24): her reason, verbatim.
+VOICE_STORY_REASON = "story_reason"
+CATEGORY_HOW_YOU_COULD_TELL = "how_you_could_tell"
+STORY_REASON_FACT_PREFIX = "why-"
+STORY_REASON_NOT_THEM_PREFIX = "A sighting that was NOT them: "
 ROLE_INTERLOCUTOR = "interlocutor"
 ROLE_SELF = "self"
 

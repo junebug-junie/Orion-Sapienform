@@ -48,3 +48,10 @@ categories:
     about_other: "Is there anything else I should know about {name}?"
     about_you: "Is there anything else about you I should know?"
     sensitive: false
+  # Never asked (both null). Filled from her "How could you tell?" reasons on
+  # walkway stories (services/orion-sql-writer/app/person_record.py,
+  # apply_story_reasons). Read by the clue list (design 2026-11-24, patch 2).
+  - key: how_you_could_tell
+    about_other: null
+    about_you: null
+    sensitive: false

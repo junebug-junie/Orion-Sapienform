@@ -10,6 +10,16 @@ linked the same tick. Each call:
    ``orion/person_model/record.py``). Conflicts are logged, never merged.
 2. Stated pronouns from ``config/person_model/people.yaml`` become facts.
 3. Answered "person_fact" asks become ``person_fact`` rows, her words verbatim.
+3b. "How could you tell?" reasons from walkway story answers
+   (``orion_ask.answer_detail.why``) become ``how_you_could_tell`` facts on the
+   person that camera cluster is linked to (docs/superpowers/specs/2026-11-24-walkway-clue-evidence-design.md,
+   patch 1). For "someone else" that is the person Orion had guessed: the reason
+   is about them, and the fact says it was a time it was NOT them (other readers
+   of person_fact -- recall, core pages -- must not read it as a clue for them).
+   "Not sure" reasons are skipped: they say nothing about the person. A cluster
+   with no person yet is retried next pass. Written once, to the person linked
+   at that moment: a later relink does not move it (the rename on the same story
+   is applied earlier in the same tick).
 4. New "person_fact" asks open, under their own daily cap: one open question
    per person, people asked about least so far first, then the most-seen.
    Each question shows the person's best camera picture when there is one.
@@ -142,6 +152,56 @@ def apply_fact_answers(conn, now: datetime) -> int:
     return applied
 
 
+# Story reasons not yet stored as a fact (stored once per ask, even if she later removes it).
+_STORY_REASONS_SQL = """
+SELECT a.ask_id, a.source_ref, a.answer_detail->>'why' AS why, a.answer_detail->>'action' AS action, i.kind
+FROM orion_ask a LEFT JOIN vision_individual i ON i.individual_id = a.source_ref
+WHERE a.status = 'answered' AND a.answer_detail->>'via' = 'motion_story'
+  AND coalesce(a.answer_detail->>'why', '') <> ''
+  AND coalesce(a.answer_detail->>'action', '') <> 'unsure'
+  AND NOT EXISTS (SELECT 1 FROM person_fact f WHERE f.fact_id = :prefix || a.ask_id)
+ORDER BY a.answered_at, a.ask_id
+"""
+
+_INSERT_STORY_REASON_SQL = """
+INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, source_ref)
+SELECT :f, coalesce(p.merged_into, p.person_id), :c, :v, :voice, :src
+FROM person_link l JOIN person p ON p.person_id = l.person_id
+WHERE l.source_kind = :lk AND l.source_ref = :i AND l.revoked_at IS NULL
+ORDER BY l.created_at DESC
+LIMIT 1
+ON CONFLICT DO NOTHING
+"""
+
+
+def story_reason_value(action: str | None, why: str | None) -> str:
+    """The fact text: her words verbatim; a "someone else" reason says it was not them."""
+    value = str(why or "").strip()
+    return f"{pf.STORY_REASON_NOT_THEM_PREFIX}{value}" if action == "someone_else" and value else value
+
+
+def apply_story_reasons(conn) -> Tuple[int, int, int]:
+    """Walkway story reasons -> ``how_you_could_tell`` facts. Returns (stored, waiting, skipped):
+    waiting = a person-kind cluster not linked to a person yet (retried next pass);
+    skipped = a dog or other non-person cluster (never gets a person record), or a cluster since deleted."""
+    from sqlalchemy import text
+
+    stored = waiting = skipped = 0
+    for ask_id, individual_id, why, action, kind in conn.execute(
+            text(_STORY_REASONS_SQL), {"prefix": pf.STORY_REASON_FACT_PREFIX}).fetchall():
+        if kind not in pr.PERSON_KINDS:
+            skipped += 1
+            continue
+        value = story_reason_value(action, why)
+        n = conn.execute(text(_INSERT_STORY_REASON_SQL), {
+            "f": f"{pf.STORY_REASON_FACT_PREFIX}{ask_id}", "c": pf.CATEGORY_HOW_YOU_COULD_TELL, "v": value,
+            "voice": pf.VOICE_STORY_REASON, "src": f"ask:{ask_id}", "lk": pr.SOURCE_INDIVIDUAL,
+            "i": individual_id}).rowcount or 0
+        stored += n
+        waiting += 0 if n else 1
+    return stored, waiting, skipped
+
+
 # People Orion may ask about, least asked-about first, then the most-seen on camera.
 _ASK_CANDIDATES_SQL = """
 SELECT p.person_id, p.display_name, p.role,
@@ -265,6 +325,14 @@ def run_person_record(conn, now: datetime, cfg: PersonRecordConfig) -> Tuple[Dic
     _plan, summary = sync_links(conn, people)
     summary["facts_seeded"] = seed_stated_facts(conn, people)
     summary["facts_applied"] = apply_fact_answers(conn, now)
+    # Its own savepoint: a failing reason never rolls back the links and answers above.
+    try:
+        with conn.begin_nested():
+            (summary["story_reasons_stored"], summary["story_reasons_waiting"],
+             summary["story_reasons_skipped"]) = apply_story_reasons(conn)
+    except Exception as exc:
+        logger.warning("story_reasons_failed error=%s", exc)
+        summary["story_reasons_error"] = str(exc)[:200]
     # A savepoint: a failing question never rolls back the links and answers above.
     try:
         with conn.begin_nested():

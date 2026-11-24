@@ -69,7 +69,7 @@ def test_schema_is_registered_in_both_registries() -> None:
 def test_calm_body_and_quiet_world_is_an_explicit_no_winner() -> None:
     ranking = rank_candidates(
         [
-            body("node:substrate.biometrics", 0.6),
+            body("node:prediction.body_joint", 0.6),
             body("node:substrate.execution", 0.0),
             world(0.0),
         ]
@@ -82,13 +82,13 @@ def test_calm_body_and_quiet_world_is_an_explicit_no_winner() -> None:
 
 @pytest.mark.parametrize("pct", [0.0, 0.49, 0.5, 0.89, 0.8999])
 def test_internal_below_high_cannot_enter(pct: float) -> None:
-    v = judge_candidate(body("node:substrate.biometrics", pct))
+    v = judge_candidate(body("node:prediction.body_joint", pct))
     assert not v.eligible
 
 
 @pytest.mark.parametrize("pct", [0.9, 0.95, 0.99, 1.0])
 def test_internal_at_high_or_unusual_enters(pct: float) -> None:
-    v = judge_candidate(body("node:substrate.biometrics", pct))
+    v = judge_candidate(body("node:prediction.body_joint", pct))
     assert v.eligible and v.band in {"high", "unusual"}
 
 
@@ -118,7 +118,7 @@ def test_tiny_nonzero_camera_reading_on_a_zero_heavy_week_is_not_eligible() -> N
 
 
 def test_world_beats_a_usual_body_but_an_unusual_body_interrupts() -> None:
-    usual_body = body("node:substrate.biometrics", 0.85)
+    usual_body = body("node:prediction.body_joint", 0.85)
     busy_world = world(0.93)
     assert rank_candidates([usual_body, busy_world]).winner.candidate.source_id == WORLD_CHAT_SOURCE_ID
     alarm = body("node:substrate.execution", 0.995)
@@ -186,7 +186,7 @@ def test_stale_internal_reading_cannot_interrupt() -> None:
 
 
 def test_polarity_and_value_kind_come_from_the_semantic_layer() -> None:
-    assert node_prediction_error_semantics("node:substrate.biometrics") == ("level", "higher_is_worse")
+    assert node_prediction_error_semantics("node:substrate.execution") == ("level", "higher_is_worse")
     # A trigger has no polarity in the semantic layer; firing is the event.
     assert node_prediction_error_semantics("node:substrate.cabinet") == ("trigger", None)
     # harness_closure was retired 2026-11-11: no glossary entry, so no value_kind.
@@ -199,7 +199,7 @@ def test_trigger_fires_into_eligibility() -> None:
 
 @pytest.mark.parametrize("kind", ["placeholder", "bucket"])
 def test_placeholder_is_never_a_measurement(kind) -> None:
-    c = body("node:substrate.biometrics", 1.0).model_copy(update={"value_kind": kind})
+    c = body("node:prediction.body_joint", 1.0).model_copy(update={"value_kind": kind})
     v = judge_candidate(c)
     assert not v.eligible and kind in v.reason
 
@@ -212,26 +212,26 @@ def test_internal_node_without_glossary_entry_is_never_a_measurement() -> None:
 
 
 def test_higher_is_better_inverts_the_bad_direction() -> None:
-    good_high = body("node:substrate.biometrics", 0.98).model_copy(update={"polarity": "higher_is_better"})
+    good_high = body("node:prediction.body_joint", 0.98).model_copy(update={"polarity": "higher_is_better"})
     assert not judge_candidate(good_high).eligible
-    bad_low = body("node:substrate.biometrics", 0.02).model_copy(update={"polarity": "higher_is_better"})
+    bad_low = body("node:prediction.body_joint", 0.02).model_copy(update={"polarity": "higher_is_better"})
     assert judge_candidate(bad_low).eligible
 
 
 def test_no_declared_polarity_cannot_interrupt() -> None:
-    c = body("node:substrate.biometrics", 0.99).model_copy(update={"polarity": None, "value_kind": "level"})
+    c = body("node:prediction.body_joint", 0.99).model_copy(update={"polarity": None, "value_kind": "level"})
     v = judge_candidate(c)
     assert not v.eligible and "polarity" in v.reason
 
 
 def test_rank_is_by_own_percentile_borda_only_breaks_ties() -> None:
     a = body("node:substrate.execution", 0.95)
-    # route retired 2026-11 (#3201); biometrics is a live level measurement
-    b = body("node:substrate.biometrics", 0.95)
+    # route retired 2026-11 (#3201); biometrics 2026-11-18 (#3575): its successor body_joint is a live measurement
+    b = body("node:prediction.body_joint", 0.95)
     c = body("node:prediction.body", 0.97)
-    r = rank_candidates([a, b, c], tie_break={"node:substrate.biometrics": 0.9, "node:substrate.execution": 0.1})
+    r = rank_candidates([a, b, c], tie_break={"node:prediction.body_joint": 0.9, "node:substrate.execution": 0.1})
     assert [v.candidate.source_id for v in r.eligible] == [
-        "node:prediction.body", "node:substrate.biometrics", "node:substrate.execution",
+        "node:prediction.body", "node:prediction.body_joint", "node:substrate.execution",
     ]
 
 
@@ -290,7 +290,7 @@ def test_all_zero_history_with_current_zero_is_still_rest() -> None:
     m = PredictionErrorMagnitudeV1(value=0.0, age_sec=1, percentile_now=0.0, n_readings_7d=500, band="quiet")
     # a live measurement (route, the original case, was retired 2026-11): refused for being at rest,
     # not for being an unknown kind
-    c = node_candidate(node_id="node:substrate.biometrics", label="r", magnitude=m, observed_at=NOW, now=NOW,
+    c = node_candidate(node_id="node:prediction.body_joint", label="r", magnitude=m, observed_at=NOW, now=NOW,
                        history_values=[0.0] * 500)
     v = judge_candidate(c)
     assert not v.eligible and "not a measurement" not in v.reason
@@ -313,7 +313,7 @@ def test_glossary_failure_is_not_cached(monkeypatch) -> None:
 
 
 def test_trace_lists_absent_sources_so_failure_is_not_calm() -> None:
-    r = rank_candidates([chat_candidate(None, now=NOW), body("node:substrate.biometrics", 0.1)])
+    r = rank_candidates([chat_candidate(None, now=NOW), body("node:prediction.body_joint", 0.1)])
     assert r.no_winner and r.trace()["absent_sources"] == [WORLD_CHAT_SOURCE_ID]
 
 

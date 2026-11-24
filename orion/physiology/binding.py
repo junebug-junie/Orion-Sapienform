@@ -46,8 +46,8 @@ BINDING_PRODUCERS = frozenset({
     # Game company patch 2 (hub.retro_watch, 2026-11-18), services/orion-hub/scripts/retro_watch.py. Stricter than
     # bind_verdict: only ``funded`` runs a look; a deferral or no answer skips it.
     "orion-hub.retro_watch.binding",
-    # Game company patch 3 (hub.retro_commentary, 2026-11-18), services/orion-hub/scripts/retro_commentary.py. Stricter
-    # than bind_verdict: only ``funded`` runs a line; a deferral or no answer skips it (a late line is stale).
+    # Game company patch 3 (hub.retro_commentary, 2026-11-18), services/orion-hub/scripts/retro_commentary.py. A line runs
+    # on ``funded`` or ``queued_at_pool`` (bind_verdict); every other deferral and no answer skip it (a late line is stale).
     "orion-hub.retro_commentary.binding",
 })
 # The market could not decide: these are "no answer", not deferrals.

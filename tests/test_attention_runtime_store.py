@@ -315,7 +315,18 @@ def test_advance_node_prediction_error_baseline_degrades_to_cold_start_on_error(
 # version is read from the table, v3 since 2026-11-12). A baseline built on older numbers
 # must restart, and receipts the old producer wrote must not seed the new one.
 
-_LIVE_BIO = prediction_error_definition_version("node_biometrics")
+# node_biometrics left the version table 2026-11-18 (#3575: node:substrate.biometrics retired) and no
+# live domain is above v1 any more, so the reset mechanism is tested on a test-only reducer key
+# ("node_biometrics" kept as the vehicle name, its v3 history is the realistic case) put back in the
+# table by the autouse fixture below.
+_LIVE_BIO = 3
+
+
+@pytest.fixture(autouse=True)
+def _versioned_vehicle(monkeypatch):
+    from orion.schemas import prediction_error_definitions as ped
+
+    monkeypatch.setitem(ped.PREDICTION_ERROR_DEFINITION_VERSIONS, "node_biometrics", _LIVE_BIO)
 
 _CURSOR = datetime(2026, 9, 25, 5, 0, tzinfo=timezone.utc)
 _V1_ROUTE_ROW = {

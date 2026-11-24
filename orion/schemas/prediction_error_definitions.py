@@ -44,9 +44,10 @@ UNSTAMPED_DEFINITION_VERSION = 1
 # node_biometrics v3 (2026-11-12): athena's room-sensor hints (``cabinet_*``: proximity,
 #   vibration, ambient audio, climate, EM, UV, staleness) are left out of the mean.
 #   They read the room, not the machines (orion/substrate/biometrics_loop/room_hints.py).
-PREDICTION_ERROR_DEFINITION_VERSIONS: dict[str, int] = {
-    "node_biometrics": 3,
-}
+#   Removed 2026-11-18 (#3575): biometrics_prediction_error and node:substrate.biometrics
+#   were retired (PE suite rebuild step 6); nothing writes a node_biometrics
+#   prediction-error receipt any more (the biometrics reducers' own receipts stay).
+PREDICTION_ERROR_DEFINITION_VERSIONS: dict[str, int] = {}
 
 
 def prediction_error_definition_version(reducer_key: str) -> int:

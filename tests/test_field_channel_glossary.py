@@ -66,7 +66,10 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     # - node:substrate.codebase prediction_error entry removed with the node (PE suite
     #   rebuild, 2026-11-13, #3314): 60 -> 59. (node:substrate.chat was swapped 1:1 for
     #   node:prediction.chat_turn the same day, no count change.)
-    assert len(entries) == 59
+    # - node:substrate.biometrics removed, + node:prediction.body_joint / .room_joint added
+    #   (family A joint surprise, 2026-11-18, #3575): 59 -> 60.
+    assert len(entries) == 60
+    assert not any(e.node == "node:substrate.biometrics" for e in entries)
     assert not any(e.node == "node:substrate.codebase" for e in entries)
     assert not any(e.node == "node:substrate.harness_closure" for e in entries)
     names = {e.channel for e in entries}

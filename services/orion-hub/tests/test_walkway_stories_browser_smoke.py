@@ -243,7 +243,8 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
             else:
                 story = dict(alex, verdict="wrong_name", display_sentence="A person walked left to right, over 5 s (3 detections).",
                              display_name=None, name_source="juniper",
-                             people=[_person("ind-alex", label="Alex", story_action={"action": "someone_else", "name": None})])
+                             people=[_person("ind-alex", label="Alex", story_action={"action": "someone_else", "name": None,
+                                                                    "why": sent.get("why") or None})])
                 body = {"ok": True, "story": story, "wrong_name_recorded": True, "tally": _tally(2, 1, wrong_name=1)}
             return route.fulfill(body=json.dumps(body), content_type="application/json")
         if path == f"/api/vision/crop-thumbs/{H}" or re.fullmatch(r"/api/vision/motion-stories/[0-9a-f]{32}/strip/.*", path):
@@ -281,25 +282,34 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
         boxes.nth(0).locator("[data-person-action='name']").click()
         assert "Type a name first" in page.locator("#walkwayStoriesStatus").text_content()
         assert posts == []
+        # Half-typed text in the dog's box survives the walker's save re-rendering the story.
+        boxes.nth(1).locator("[data-person-why-input]").fill("on a red leash")
         boxes.nth(0).locator("[data-person-name-input]").fill("  Theo  ")
         boxes.nth(0).locator("[data-person-action='name']").click()
         page.wait_for_function("() => document.querySelector('#walkwayStoriesList [data-story-id] [data-story-sentence]')"
                                ".textContent.startsWith('Theo walked')")
-        assert posts[-1] == (f"{1:032x}", "ind-anon1234567", {"action": "name", "name": "Theo"})
+        assert posts[-1] == (f"{1:032x}", "ind-anon1234567", {"action": "name", "name": "Theo", "why": ""})
         first = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
+        assert first.locator("[data-story-person='ind-dog'] [data-person-why-input]").input_value() == "on a red leash"
+        assert first.locator("[data-story-person='ind-anon1234567'] [data-person-why-input]").input_value() == ""
         assert "Orion first wrote: A person walked" in first.locator("[data-story-first-written]").text_content()
         assert first.locator("[data-person-said='name']").text_content() == "You named them Theo on this story."
         assert "named by you" in first.text_content()
         assert 'Saved: Theo' in page.locator("#walkwayStoriesStatus").text_content()
 
         # "Someone else" on the story's named walker: the story loses the name and gets "Wrong name".
+        # With how she could tell (2026-11-24): the reason goes with the answer and shows back.
         second = page.locator("#walkwayStoriesList [data-story-id]").nth(1)
+        second.locator("[data-person-why-input]").fill("  Pushing a stroller; Alex has no young kids.  ")
         second.locator("[data-person-action='someone_else']").click()
         page.wait_for_function(
             "() => document.querySelectorAll('#walkwayStoriesList [data-story-id]')[1]"
             ".querySelector(\"[data-story-verdict='wrong_name']\").getAttribute('aria-pressed') === 'true'")
-        assert posts[-1] == (f"{2:032x}", "ind-alex", {"action": "someone_else", "name": ""})
+        assert posts[-1] == (f"{2:032x}", "ind-alex", {"action": "someone_else", "name": "",
+                                                       "why": "Pushing a stroller; Alex has no young kids."})
         second = page.locator("#walkwayStoriesList [data-story-id]").nth(1)
+        assert second.locator("[data-person-why]").text_content() == (
+            "How you could tell: Pushing a stroller; Alex has no young kids.")
         assert second.locator("[data-story-sentence]").text_content().startswith("A person walked")
         assert "Recorded as a wrong name" in page.locator("#walkwayStoriesStatus").text_content()
         assert "wrong names 1" in page.locator("#walkwayStoriesTally").text_content()

@@ -485,7 +485,7 @@ def _records(conn, stream: str, lo: datetime, hi: datetime) -> Tuple[List[Record
 
     rows = conn.execute(text(
         "SELECT s.individual_id, s.sighting_id, s.started_at, s.ended_at, s.stationary AS s_stat, "
-        "i.label, i.stationary AS i_stat "
+        "i.label "
         "FROM vision_individual_sighting s JOIN vision_individual i USING (individual_id) "
         "WHERE s.stream_id = :s AND s.started_at <= :hi AND s.ended_at >= :lo AND i.kind = ANY(:k) "
         "ORDER BY s.started_at"), {"s": stream, "lo": lo, "hi": hi, "k": list(PEOPLE_KINDS)}).fetchall()
@@ -493,7 +493,12 @@ def _records(conn, stream: str, lo: datetime, hi: datetime) -> Tuple[List[Record
     stationary: set[str] = set()
     sightings: Dict[str, List[Tuple]] = {}
     for r in rows:
-        if r.s_stat or r.i_stat:
+        # The sighting's own flag only. The individual's flag is its state as of
+        # its newest crop: on a room camera it stays True after a person who sat
+        # still leaves, until they are seen again, and would drop their whole
+        # visit (#3614 review). became_stationary already back-flags the
+        # sightings a prop run covered.
+        if r.s_stat:
             stationary.add(r.individual_id)
             continue
         moving.setdefault(r.individual_id, r.label)

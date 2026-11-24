@@ -24,8 +24,16 @@ select -> issue -> score loop, as one multivariate series, on the service's own 
   each joint row gets d^2 on the readings that arrived (whitened by the run's covariance), the static
   and the adaptive conformal p, and excess = -ln p - calm point. Too few readings -> ``missing``.
 
-No substrate node, no bus event, no consumer: that is the next patch, gated on the 7-day calm check
-(``evals/run_family_a_calm_live_eval.py``).
+**Joint groups** (#3575 / #3580): beside the blended joint row, each horizon gets one joint row per group
+(``family_a_body``, ``family_a_room``; every input's ``group`` in config/prediction/family_a.v1.yaml), scored
+the same way on the group's own readings with the group's own covariance, calibration tails and hour-before
+difficulty (all fit at select time on the same residuals, stored under ``metrics[h]["groups"]``). A group
+whose calibration pool is under ``MIN_CAL`` is left out of that run (logged in ``groups_skipped``), never
+scored on a thin pool. Scored group rows with the adaptive p and a target in the last ``EVENT_MAX_AGE`` are
+queued as ``prediction.joint_surprise.v1`` events (``take_pending_events``; app/main.py publishes them);
+substrate-runtime folds them into ``node:prediction.body_joint`` / ``node:prediction.room_joint``, the
+successor of ``node:substrate.biometrics``. The blended row is still stored (its calm check, #3309) and is
+never published.
 """
 from __future__ import annotations
 
@@ -67,6 +75,13 @@ K10, K90 = QUANTILES.index(0.1), QUANTILES.index(0.9)
 TOP_SHARES = 5
 BLAS_THREADS = 4
 DUE_LIMIT = 2000                    # joint rows scored per pass (~3.5 days of backlog per pass)
+# Joint groups (#3575 / #3580): group -> its family value in prediction_joint_surprise.
+GROUP_FAMILIES: dict[str, str] = {g: f"{FAMILY}_{g}" for g in fa.GROUPS}
+GROUP_OF_FAMILY: dict[str, str] = {v: k for k, v in GROUP_FAMILIES.items()}
+# A scored group row becomes an event only while its target is this recent: a backlog scored after an
+# outage is the record (in the table), never published as now. Same as the substrate node's window.
+EVENT_MAX_AGE = timedelta(minutes=30)
+PENDING_EVENTS_MAX = 64             # bus down: keep the newest, drop the rest (the table is the record)
 
 Loader = Callable[[datetime, datetime], "tuple[pd.DataFrame, dict[str, datetime | None]]"]
 
@@ -104,11 +119,19 @@ def _finite(obj: Any) -> Any:
 
 
 @dataclass
+class GroupCal:
+    """One joint group's scoring yardstick: its targets (a subset of the run's) and its own calibration."""
+    targets: list[str]
+    cal: fa.JointCal
+
+
+@dataclass
 class ServedHorizon:
     fit: fa.HorizonFit
     rung: str
     cal: fa.JointCal
     q_offsets: np.ndarray            # (len(QUANTILES), m) standardised residual offsets, validation rows
+    groups: dict[str, GroupCal] = field(default_factory=dict)
 
 
 @dataclass
@@ -129,6 +152,7 @@ class RunInfo:
     targets: list[str]
     std: dict[str, float]
     cal: fa.JointCal
+    groups: dict[str, GroupCal] = field(default_factory=dict)
 
 
 class SelectRefused(RuntimeError):
@@ -141,7 +165,9 @@ class State:
     last_issue: dict = field(default_factory=dict)
     last_score: dict = field(default_factory=dict)
     counts: dict = field(default_factory=lambda: {"issued": 0, "refused": 0, "late_horizons": 0,
-                                                  "scored": 0, "missing": 0, "shadow_failed": 0})
+                                                  "scored": 0, "missing": 0, "shadow_failed": 0,
+                                                  "group_scored": 0, "group_missing": 0,
+                                                  "events_queued": 0, "events_dropped_full": 0})
     errors: dict = field(default_factory=dict)
 
 
@@ -149,7 +175,7 @@ class FamilyALive:
     def __init__(self, store: Any, config: fa.FamilyAConfig, loader: Loader, *, settle_sec: float = 60.0,
                  select_interval_sec: float = 21600.0, clock: Callable[[], datetime] = utcnow,
                  seeds: tuple[int, ...] = SELECT_SEEDS, train_days: float = TRAIN_DAYS,
-                 adaptive_intervals: bool = True):
+                 adaptive_intervals: bool = True, events_enabled: bool = True):
         self.store = store
         self.cfg = config
         self.loader = loader
@@ -168,6 +194,8 @@ class FamilyALive:
         self.next_prune: datetime | None = None
         self._runs: dict[tuple[str, int], RunInfo | None] = {}
         self.state = State()
+        self.events_enabled = events_enabled
+        self._pending_events: list[dict] = []
 
     # --- clock ------------------------------------------------------------------------------------
     def latest_complete(self, now: datetime) -> datetime:
@@ -226,6 +254,7 @@ class FamilyALive:
         n = len(frame)
         backtest: dict[int, dict] = {}
         horizons: dict[int, ServedHorizon] = {}
+        groups_skipped: dict[str, dict[str, str]] = {}
         for h in self.cfg.horizons_min:
             k = h // g
             seeds = []
@@ -243,17 +272,15 @@ class FamilyALive:
             hf = fa.fit_horizon(frame, targets, inputs, k, np.arange(n - k))
             pr = hf.predict(frame)
             resid = pr["y"] - pr[rung]
-            cal0 = fa.joint_calibration(resid[hf.fit_rows], resid[hf.val_rows])
-            d2, dof, _t, _s = fa.joint_d2(resid, cal0)
-            with np.errstate(invalid="ignore", divide="ignore"):
-                ratio = np.where(dof > 0, d2 / np.maximum(dof, 1), np.nan)
-            diff = fa.difficulty_rows(ratio, k)
-            cal = fa.joint_calibration(resid[hf.fit_rows], resid[hf.val_rows], diff[hf.val_rows])
+            cal = _calibrate(resid, hf, k)
             if len(cal.cal_tail) < fa.MIN_CAL:
                 raise SelectRefused(f"{h} min: calibration pool {len(cal.cal_tail)} rows < {fa.MIN_CAL}")
-            # Score with exactly what is stored (6 significant digits), before and after a restart.
-            cal = fa.JointCal.from_json(cal.to_json())
-            horizons[h] = ServedHorizon(fit=hf, rung=rung, cal=cal, q_offsets=residual_quantiles(resid[hf.val_rows]))
+            groups, skipped = self._group_calibrations(hf, resid, k)
+            if skipped:
+                groups_skipped[str(h)] = skipped
+                logger.warning("family_a_groups_skipped h=%d %s", h, skipped)
+            horizons[h] = ServedHorizon(fit=hf, rung=rung, cal=cal, q_offsets=residual_quantiles(resid[hf.val_rows]),
+                                        groups=groups)
             backtest[h] = {"rung": rung, "seeds": seeds}
         selection_id, run_id = str(uuid.uuid4()), str(uuid.uuid4())
         first = horizons[self.cfg.horizons_min[0]].fit
@@ -277,7 +304,9 @@ class FamilyALive:
                 "standardizer": {t: s.fit.standardizer[t] for t in s.fit.targets},
                 "alphas": s.fit.alphas, "joint": s.cal.to_json(),
                 "n_fit_rows": int(len(s.fit.fit_rows)), "n_val_rows": int(len(s.fit.val_rows)),
-                "backtest": backtest[h]["seeds"]}
+                "backtest": backtest[h]["seeds"],
+                "groups": {g: {"targets": gc.targets, "joint": gc.cal.to_json()} for g, gc in s.groups.items()},
+                "groups_skipped": groups_skipped.get(str(h), {})}
         rows.append({**common, "run_id": run_id, "kind": "champion_blend", "model": "family_a_blend",
                      "metrics": _finite(champ_metrics),
                      "assignment": {str(h): s.rung for h, s in horizons.items()},
@@ -294,24 +323,45 @@ class FamilyALive:
         for h, s in horizons.items():
             self._runs[(run_id, h)] = RunInfo(targets=s.fit.targets,
                                               std={t: s.fit.standardizer[t]["std"] for t in s.fit.targets},
-                                              cal=s.cal)
+                                              cal=s.cal, groups=dict(s.groups))
         summary = {"at": now, "ok": True, "run_id": run_id, "seconds": round(seconds, 1),
                    "window": [start, end], "n_targets": len(targets), "n_covariates": len(covs),
                    "refused_inputs": refused, "rung": {str(h): s.rung for h, s in horizons.items()},
                    "fit_refused_targets": {str(h): s.fit.refused_targets for h, s in horizons.items()
-                                           if s.fit.refused_targets}}
+                                           if s.fit.refused_targets},
+                   "groups": {str(h): {g: len(gc.targets) for g, gc in s.groups.items()} for h, s in horizons.items()},
+                   "groups_skipped": groups_skipped}
         self.state.last_select = summary
         logger.info("family_a_selected run_id=%s rung=%s targets=%d covariates=%d refused=%s seconds=%.1f",
                     run_id, summary["rung"], len(targets), len(covs), sorted(refused), seconds)
         return summary
 
+    def _group_calibrations(self, hf: fa.HorizonFit, resid: np.ndarray, k: int) -> tuple[dict[str, GroupCal], dict[str, str]]:
+        """Per joint group: the group's own calibration on its own residual columns (same fit / validation
+        rows as the blend). Marginal of the residuals, so a group's d^2 never borrows another group's misses.
+        A group with no target this run, or a calibration pool under MIN_CAL, is skipped with the reason."""
+        groups: dict[str, GroupCal] = {}
+        skipped: dict[str, str] = {}
+        for g in fa.GROUPS:
+            cols = [j for j, t in enumerate(hf.targets) if self.cfg.group_of(t) == g]
+            if not cols:
+                skipped[g] = "no_targets"
+                continue
+            cal = _calibrate(resid[:, cols], hf, k)
+            if len(cal.cal_tail) < fa.MIN_CAL or len(cal.cal_tail_adaptive) < fa.MIN_CAL:
+                skipped[g] = (f"calibration pool static {len(cal.cal_tail)} / adaptive "
+                              f"{len(cal.cal_tail_adaptive)} rows < {fa.MIN_CAL}")
+                continue
+            groups[g] = GroupCal(targets=[hf.targets[j] for j in cols], cal=cal)
+        return groups, skipped
+
     # --- issue ------------------------------------------------------------------------------------
-    def current_difficulty(self, origin: datetime) -> dict[int, float | None]:
-        """Per horizon: mean d^2 / dof of the scored joint rows whose target fell in the hour up to
-        ``origin`` (rows (origin - 1 h, origin]), None under MIN_DIFFICULTY_N -- the backtest's
-        ``difficulty_rows`` on stored rows."""
+    def current_difficulty(self, origin: datetime, family: str = FAMILY) -> dict[int, float | None]:
+        """Per horizon: mean d^2 / dof of the scored joint rows (of ``family``: the blend or one group) whose
+        target fell in the hour up to ``origin`` (rows (origin - 1 h, origin]), None under MIN_DIFFICULTY_N --
+        the backtest's ``difficulty_rows`` on stored rows."""
         window = self.grain * fa.DIFFICULTY_ROWS
-        rows = self.store.family_recent_scored(FAMILY, origin - window)
+        rows = self.store.family_recent_scored(family, origin - window)
         out: dict[int, float | None] = {}
         for h in self.cfg.horizons_min:
             ratios = [float(r["d2"]) / int(r["n_observed"]) for r in rows
@@ -364,9 +414,10 @@ class FamilyALive:
             fa.gate_named_inputs(served.named, frame, self.cfg.hygiene, last_seen, now,
                                  bands=served.bands, floors=served.floors, flat_ceilings=served.flat_ceilings)
         except fa.HygieneRefused as exc:
-            joints = [{**base, "horizon_min": h, "target_ts": origin + timedelta(minutes=h), "status": "refused",
-                       "refusal": exc.refusals, "n_forecast": 0, "difficulty": None}
-                      for h in served.horizons]
+            joints = [{**base, "family": fam, "horizon_min": h, "target_ts": origin + timedelta(minutes=h),
+                       "status": "refused", "refusal": exc.refusals, "n_forecast": 0, "difficulty": None}
+                      for h, sh in served.horizons.items()
+                      for fam in (FAMILY, *(GROUP_FAMILIES[g] for g in sh.groups))]
             self.store.insert_family_issue([], joints)
             self.last_origin = origin
             self.state.counts["refused"] += 1
@@ -374,6 +425,8 @@ class FamilyALive:
             logger.warning("family_a_issue_refused origin=%s reasons=%s", origin.isoformat(), exc.refusals)
             return {"refused": exc.refusals}
         diffs = self.current_difficulty(origin)
+        group_diffs = {g: self.current_difficulty(origin, GROUP_FAMILIES[g])
+                       for g in sorted({g for sh in served.horizons.values() for g in sh.groups})}
         adapt = self.adaptive_ranges(origin, served)
         n_adaptive = 0
         forecasts, shadows, joints = [], [], []
@@ -388,6 +441,7 @@ class FamilyALive:
             other = "ar" if sh.rung == "ridge_var" else "ridge_var"
             row = {**base, "horizon_min": h, "target_ts": target}
             n_f = 0
+            forecast_targets: set[str] = set()
             for j, t in enumerate(sh.fit.targets):
                 zt, dz = pr["z"][i, j], pr[sh.rung][i, j]
                 offs = sh.q_offsets[:, j]
@@ -411,12 +465,17 @@ class FamilyALive:
                 forecasts.append({**row, "series_id": PREFIX + t, "model": sh.rung, "role": "champion",
                                   "point": point, "interval_source": source, "quantiles": quantiles})
                 n_f += 1
+                forecast_targets.add(t)
                 dz2 = pr[other][i, j]
                 if np.isfinite(dz2):
                     shadows.append({**row, "series_id": PREFIX + t, "model": other,
                                     "point": float(mu + sd * (zt + dz2))})
             n_by_h[h] = n_f
             joints.append({**row, "status": "issued", "refusal": None, "n_forecast": n_f, "difficulty": diffs.get(h)})
+            for g, gc in sh.groups.items():
+                joints.append({**row, "family": GROUP_FAMILIES[g], "status": "issued", "refusal": None,
+                               "n_forecast": len(forecast_targets.intersection(gc.targets)),
+                               "difficulty": group_diffs[g].get(h)})
         if joints:
             self.store.insert_family_issue(forecasts, joints)
             self.state.counts["issued"] += 1
@@ -439,12 +498,22 @@ class FamilyALive:
             m = ((row or {}).get("metrics") or {}).get(str(horizon_min))
             self._runs[key] = None if not m else RunInfo(
                 targets=list(m["targets"]), std={t: float(v["std"]) for t, v in m["standardizer"].items()},
-                cal=fa.JointCal.from_json(m["joint"]))
+                cal=fa.JointCal.from_json(m["joint"]),
+                groups={g: GroupCal(targets=list(v["targets"]), cal=fa.JointCal.from_json(v["joint"]))
+                        for g, v in (m.get("groups") or {}).items()})
         return self._runs[key]
 
     def score(self, now: datetime) -> dict:
         cutoff = self.latest_complete(now) + self.grain
         joints, readings = self.store.family_due(FAMILY, PREFIX, cutoff, limit=self.due_limit)
+        # Group rows score in the same pass as the blended row of their bucket, from the same readings (they
+        # are always issued together). A group row whose blended row is not taken this pass (a backlog past
+        # the limit) waits with it: taking it alone would score its readings without the blended row.
+        blend_keys = {(str(j["run_id"]), j["origin_ts"], int(j["horizon_min"])) for j in joints}
+        groups = [j for j in self.store.family_due_joints(list(GROUP_FAMILIES.values()),
+                                                         sorted({j["origin_ts"] for j in joints}))
+                  if (str(j["run_id"]), j["origin_ts"], int(j["horizon_min"])) in blend_keys]
+        joints = [{**j, "family": FAMILY} for j in joints] + groups
         # Only the readings of the joint rows taken this pass: a joint row scores from readings scored in
         # the same pass, so a reading scored without its joint (a backlog past the joint limit) would
         # leave that joint with nothing to score from later. The rest wait for the next pass.
@@ -477,43 +546,32 @@ class FamilyALive:
                              "in_95": q[q_key(0.025)] <= v <= q[q_key(0.975)]})
             key = (str(r["run_id"]), r["origin_ts"], int(r["horizon_min"]))
             by_key.setdefault(key, []).append((r["series_id"][len(PREFIX):], v, float(r["point"])))
-        j_scores = []
+        j_scores, events = [], []
+        n_group_ok = n_group = 0
         for jr in joints:
             h = int(jr["horizon_min"])
             info = self.run_info(jr["run_id"], h)
             got = by_key.get((str(jr["run_id"]), jr["origin_ts"], h), [])
-            base = {"joint_id": jr["joint_id"], "scored_at": now, "n_observed": len(got)}
+            group = GROUP_OF_FAMILY.get(jr["family"])
             if info is None:
-                j_scores.append({**base, "status": "missing", "calibration": "no_run"})
-                continue
-            col = {t: j for j, t in enumerate(info.targets)}
-            r = np.full((1, len(info.targets)), np.nan)
-            for t, v, point in got:
-                if t in col and info.std.get(t):
-                    r[0, col[t]] = (v - point) / info.std[t]
-            diff = jr.get("difficulty")
-            sc = fa.score_joint(r, info.cal, np.array([np.nan if diff is None else float(diff)]))
-            if not np.isfinite(sc.d2[0]):
-                j_scores.append({**base, "status": "missing", "calibration": "too_few_readings"})
-                continue
-            p_s, p_a = float(sc.p_static[0]), float(sc.p_adaptive[0])
-            if not np.isfinite(p_s):
-                j_scores.append({**base, "status": "missing", "calibration": "no_calibration"})
-                continue
-            if SERVED_CALIBRATION == fa.ADAPTIVE and np.isfinite(p_a):
-                p, calib, n_cal = p_a, fa.ADAPTIVE, len(info.cal.cal_tail_adaptive)
+                sc_row = {"joint_id": jr["joint_id"], "scored_at": now, "n_observed": len(got),
+                          "status": "missing", "calibration": "no_run"}
+            elif group is not None and group not in info.groups:
+                sc_row = {"joint_id": jr["joint_id"], "scored_at": now, "n_observed": len(got),
+                          "status": "missing", "calibration": "no_group"}
             else:
-                p, n_cal = p_s, len(info.cal.cal_tail)
-                calib = fa.STATIC if SERVED_CALIBRATION == fa.STATIC else "static:no_difficulty"
-            calm = fa.calm_point(n_cal)
-            shares = sc.shares[0]
-            top = np.argsort(np.nan_to_num(shares, nan=-np.inf))[::-1][:TOP_SHARES]
-            j_scores.append({**base, "status": "scored", "n_observed": int(sc.dof[0]), "d2": float(sc.d2[0]),
-                             "p_static": p_s, "p_adaptive": p_a if np.isfinite(p_a) else None, "p": p,
-                             "calibration": calib, "calm_point": calm, "excess": float(-math.log(p) - calm),
-                             "top_shares": {info.targets[t]: round(float(shares[t]), 4) for t in top
-                                            if np.isfinite(shares[t])}})
+                gc = info.groups[group] if group is not None else GroupCal(targets=info.targets, cal=info.cal)
+                sc_row = _score_joint_row(jr["joint_id"], gc, info.std, got, jr.get("difficulty"), now)
+            j_scores.append(sc_row)
+            if group is None:
+                continue
+            n_group += 1
+            n_group_ok += sc_row["status"] == "scored"
+            if (sc_row["status"] == "scored" and sc_row["calibration"] == fa.ADAPTIVE
+                    and jr["target_ts"] >= now - EVENT_MAX_AGE):
+                events.append(_event(jr, group, sc_row, len(info.groups[group].cal.cal_tail_adaptive)))
         self.store.write_family_scores(r_scores, j_scores)
+        self._queue_events(events)
         s_scores = []
         for s in shadows:
             v = actual(s["target_ts"], s["series_id"])
@@ -522,12 +580,34 @@ class FamilyALive:
                              "abs_error": abs(v - float(s["point"])) if np.isfinite(v) else None})
         if s_scores:
             self.store.write_family_shadow_scores(s_scores)
-        n_ok = sum(1 for s in j_scores if s["status"] == "scored")
+        n_ok = sum(1 for s in j_scores if s["status"] == "scored") - n_group_ok
+        n_blend = len(j_scores) - n_group
         self.state.counts["scored"] += n_ok
-        self.state.counts["missing"] += len(j_scores) - n_ok
-        self.state.last_score = {"at": now, "readings": len(r_scores), "joint": len(j_scores), "joint_scored": n_ok,
+        self.state.counts["missing"] += n_blend - n_ok
+        self.state.counts["group_scored"] += n_group_ok
+        self.state.counts["group_missing"] += n_group - n_group_ok
+        self.state.last_score = {"at": now, "readings": len(r_scores), "joint": n_blend, "joint_scored": n_ok,
+                                 "group": n_group, "group_scored": n_group_ok, "events": len(events),
                                  "shadow": len(s_scores)}
-        return {"scored": len(r_scores), "joint": len(j_scores), "joint_scored": n_ok}
+        return {"scored": len(r_scores), "joint": n_blend, "joint_scored": n_ok, "group_scored": n_group_ok,
+                "events": len(events)}
+
+    # --- events -----------------------------------------------------------------------------------
+    def _queue_events(self, events: list[dict]) -> None:
+        if not (self.events_enabled and events):
+            return
+        self._pending_events.extend(events)
+        self.state.counts["events_queued"] += len(events)
+        over = len(self._pending_events) - PENDING_EVENTS_MAX
+        if over > 0:   # keep the newest: an old score published late would read as now
+            self._pending_events = self._pending_events[over:]
+            self.state.counts["events_dropped_full"] += over
+
+    def take_pending_events(self) -> list[dict]:
+        """The ``prediction.joint_surprise.v1`` payloads queued by the last score passes, oldest first;
+        clears the queue. Called by app/main.py after each tick (same task, never concurrent with it)."""
+        out, self._pending_events = self._pending_events, []
+        return out
 
     # --- health -----------------------------------------------------------------------------------
     def health(self) -> dict:
@@ -540,7 +620,64 @@ class FamilyALive:
             "next_select": self.next_select.isoformat() if self.next_select else None,
             "last_select": _iso(self.state.last_select), "last_issue": _iso(self.state.last_issue),
             "last_score": _iso(self.state.last_score), "counts": dict(self.state.counts),
+            "groups": None if s is None else {str(h): sorted(x.groups) for h, x in s.horizons.items()},
+            "events_enabled": self.events_enabled, "events_pending": len(self._pending_events),
             "errors": dict(self.state.errors)})
+
+
+def _calibrate(resid: np.ndarray, hf: fa.HorizonFit, k: int) -> fa.JointCal:
+    """Static then adaptive calibration of one joint (the blend or one group's columns): covariance on the
+    fit rows, tails on the validation rows, each validation row scaled by its own hour-before difficulty.
+    Returned exactly as stored (6 significant digits), so a row scores the same before and after a restart."""
+    cal0 = fa.joint_calibration(resid[hf.fit_rows], resid[hf.val_rows])
+    d2, dof, _t, _s = fa.joint_d2(resid, cal0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = np.where(dof > 0, d2 / np.maximum(dof, 1), np.nan)
+    diff = fa.difficulty_rows(ratio, k)
+    cal = fa.joint_calibration(resid[hf.fit_rows], resid[hf.val_rows], diff[hf.val_rows])
+    return fa.JointCal.from_json(cal.to_json())
+
+
+def _score_joint_row(joint_id: Any, gc: GroupCal, std: Mapping[str, float], got: list, difficulty: Any,
+                     now: datetime) -> dict:
+    """Score one joint row (blend or group) from the readings that arrived: d^2 on the joint's own targets,
+    static and adaptive conformal p, excess = -ln p - calm point, top shares. Too few readings -> missing."""
+    base = {"joint_id": joint_id, "scored_at": now, "n_observed": len(got)}
+    col = {t: j for j, t in enumerate(gc.targets)}
+    r = np.full((1, len(gc.targets)), np.nan)
+    n_in = 0
+    for t, v, point in got:
+        if t in col and std.get(t):
+            r[0, col[t]] = (v - point) / std[t]
+            n_in += 1
+    base["n_observed"] = n_in
+    sc = fa.score_joint(r, gc.cal, np.array([np.nan if difficulty is None else float(difficulty)]))
+    if not np.isfinite(sc.d2[0]):
+        return {**base, "status": "missing", "calibration": "too_few_readings"}
+    p_s, p_a = float(sc.p_static[0]), float(sc.p_adaptive[0])
+    if not np.isfinite(p_s):
+        return {**base, "status": "missing", "calibration": "no_calibration"}
+    if SERVED_CALIBRATION == fa.ADAPTIVE and np.isfinite(p_a):
+        p, calib, n_cal = p_a, fa.ADAPTIVE, len(gc.cal.cal_tail_adaptive)
+    else:
+        p, n_cal = p_s, len(gc.cal.cal_tail)
+        calib = fa.STATIC if SERVED_CALIBRATION == fa.STATIC else "static:no_difficulty"
+    calm = fa.calm_point(n_cal)
+    shares = sc.shares[0]
+    top = np.argsort(np.nan_to_num(shares, nan=-np.inf))[::-1][:TOP_SHARES]
+    return {**base, "status": "scored", "n_observed": int(sc.dof[0]), "d2": float(sc.d2[0]),
+            "p_static": p_s, "p_adaptive": p_a if np.isfinite(p_a) else None, "p": p,
+            "calibration": calib, "calm_point": calm, "excess": float(-math.log(p) - calm),
+            "top_shares": {gc.targets[t]: round(float(shares[t]), 4) for t in top if np.isfinite(shares[t])}}
+
+
+def _event(jr: Mapping, group: str, sc: Mapping, n_cal: int) -> dict:
+    """``PredictionJointSurpriseV1`` payload (orion/schemas/prediction.py) for one scored group row."""
+    return {"joint_id": str(jr["joint_id"]), "family": FAMILY, "group": group, "run_id": str(jr["run_id"]),
+            "horizon_min": int(jr["horizon_min"]), "origin_ts": jr["origin_ts"], "target_ts": jr["target_ts"],
+            "scored_at": sc["scored_at"], "calibration": sc["calibration"], "n_observed": int(sc["n_observed"]),
+            "n_cal": int(n_cal), "d2": float(sc["d2"]), "p": float(sc["p"]), "calm_point": float(sc["calm_point"]),
+            "excess": float(sc["excess"]), "top_shares": dict(sc.get("top_shares") or {})}
 
 
 def _iso(d: Mapping) -> dict:
@@ -602,6 +739,10 @@ class MemoryStore:
         f = [r for r in self.forecasts if r["series_id"].startswith(prefix) and r["scored_at"] is None
              and r["target_ts"] < before]
         return j[:limit], f[:limit * 100]
+
+    def family_due_joints(self, families: list[str], origins: list[datetime]) -> list[dict]:
+        fams, ors = set(families), set(origins)
+        return [r for r in self.joints if r["family"] in fams and r["status"] == "issued" and r["origin_ts"] in ors]
 
     def family_due_shadow(self, prefix: str, before: datetime, limit: int = 200000) -> list[dict]:
         return [r for r in self.shadows if r["series_id"].startswith(prefix) and r["scored_at"] is None

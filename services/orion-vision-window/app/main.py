@@ -51,14 +51,15 @@ def _source_ref() -> ServiceRef:
     return ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
 
 
-def _person_boxes(items: List[Tuple[VisionArtifactPayload, float]]) -> List[Tuple[float, List[List[float]]]]:
-    """(artifact time, [person box, ...]) per artifact, for app/fixtures.py."""
-    out: List[Tuple[float, List[List[float]]]] = []
+def _person_boxes(items: List[Tuple[VisionArtifactPayload, float]]) -> List[Tuple[float, List[List[float]], List[bool]]]:
+    """(artifact time, [person box, ...], [has a face, ...]) per artifact, for
+    app/fixtures.py. A face restarts a prop run on a room camera."""
+    out: List[Tuple[float, List[List[float]], List[bool]]] = []
     for art, ts in items:
         objs = (art.outputs.objects or []) if art.outputs else []
-        boxes = [[float(v) for v in o.box_xyxy] for o in objs
-                 if str(o.label or "").strip().lower() == "person" and len(o.box_xyxy or []) == 4]
-        out.append((float(ts), boxes))
+        people = [o for o in objs if str(o.label or "").strip().lower() == "person" and len(o.box_xyxy or []) == 4]
+        out.append((float(ts), [[float(v) for v in o.box_xyxy] for o in people],
+                    [o.face_score is not None or bool(o.face_embedding) for o in people]))
     return out
 
 
@@ -167,6 +168,8 @@ class WindowService:
             min_sec=settings.VISION_STATIONARY_MIN_SEC,
             iou=settings.VISION_STATIONARY_IOU,
             max_gap_sec=settings.VISION_STATIONARY_MAX_GAP_SEC,
+            room_streams=settings.VISION_STATIONARY_ROOM_STREAMS,
+            room_min_sec=settings.VISION_STATIONARY_ROOM_MIN_SEC,
         )
         self._caption_gate = CaptionGate(
             streams=settings.WINDOW_CAPTION_GATE_STREAMS,
@@ -177,6 +180,8 @@ class WindowService:
             stationary_iou=settings.VISION_STATIONARY_IOU,
             stationary_max_gap_sec=settings.VISION_STATIONARY_MAX_GAP_SEC,
             stationary_streams=settings.WINDOW_STATIONARY_STREAMS,
+            stationary_room_streams=settings.VISION_STATIONARY_ROOM_STREAMS,
+            stationary_room_min_sec=settings.VISION_STATIONARY_ROOM_MIN_SEC,
         )
         self._presence_registry = PresenceRegistry(
             grace_sec=settings.WINDOW_PRESENCE_GRACE_SEC,

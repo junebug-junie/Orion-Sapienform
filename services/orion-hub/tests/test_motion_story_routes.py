@@ -551,9 +551,22 @@ def test_correcting_the_written_name_records_wrong_name_and_someone_else_records
             ("s1c0", "different", "Cora", 0), ("s1c1", "different", "Cora", 1), ("s1c2", "different", "Cora", 2)]
         assert out["story"]["display_sentence"].startswith("Cora walked")
         assert len(published) == 1                     # only the name was an entity event
-        # "Someone else" with no name: the story says "A person".
-        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "someone_else"})
+        assert "why" not in detail                     # no reason typed: none stored
+        # "Someone else" with no name, and how she could tell: the reason rides on the same ask row
+        # (answer_detail.why) and comes back on the card.
+        why = "  Back turned, but pushing a stroller.\n\n  Maya has no young kids;   not her build. "
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya",
+                              json={"action": "someone_else", "why": why})
         assert r.json()["story"]["display_sentence"].startswith("A person walked")
+        cleaned = "Back turned, but pushing a stroller.\nMaya has no young kids; not her build."
+        row = await pool.fetchrow("SELECT answer_detail FROM orion_ask WHERE ask_id = $1", r.json()["ask_id"])
+        assert json.loads(row["answer_detail"])["why"] == cleaned
+        person = next(p for p in r.json()["story"]["people"] if p["individual_id"] == "ind-maya")
+        assert person["story_action"]["why"] == cleaned
+        # Too long a reason is refused, not cut silently.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya",
+                              json={"action": "unsure", "why": "x" * 1001})
+        assert r.status_code == 422
         # "Not sure": recorded, the latest direct answer still holds for the story.
         r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya",
                               json={"action": "unsure", "name": "ignored"})
@@ -688,3 +701,9 @@ def test_the_juniper_card_marker_is_the_shared_one() -> None:
     from orion.grammar.camera_ask_acts import JUNIPER_STORY_CARD_REF
 
     assert msr.JUNIPER_STORY_CARD_REF == JUNIPER_STORY_CARD_REF
+
+
+def test_clean_why_trims_spaces_and_blank_lines_but_keeps_line_breaks() -> None:
+    assert msr.clean_why("  a  b \r\n\n\t c ") == "a b\nc"
+    assert msr.clean_why("") == "" and msr.clean_why("   \n ") == ""
+    assert msr.clean_why("no\x00 kids\x07") == "no kids"   # NUL would break the jsonb insert

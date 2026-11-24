@@ -227,12 +227,67 @@ def test_office_person_at_a_desk_is_never_a_prop() -> None:
     assert any(res.crop_stationary.values())
 
 
-def test_stationary_streams_default_leaves_the_office_camera_out() -> None:
+def test_stationary_streams_default_makes_the_office_a_room() -> None:
     from app.settings import Settings
     from app.vision_individuals_loop import individuals_config
 
     cfg = individuals_config(Settings())
     assert cfg.stationary_streams == ("walkway", "doorbell")
+    assert cfg.stationary_room_streams == ("cam0",)
+    assert cfg.stationary_room_min_sec == 7200.0
+
+
+# --- room cameras (the office, #3614) -----------------------------------------
+
+OFFICE_BOX = (1096.0, 798.0, 1297.0, 921.0)
+
+
+def _office(n: int, start_min: float = 0.0, face_at: set = frozenset(), prefix: str = "o"):
+    import dataclasses
+
+    base = _crop("x", T0, APP_A, box=OFFICE_BOX, zone="office")
+    return [dataclasses.replace(base, crop_id=f"{prefix}{k}", observation_id=f"obs-{prefix}{k}", stream_id="cam0",
+                                observed_at=T0 + timedelta(minutes=start_min + k),
+                                face_embedding=FACE_A if k in face_at else None)
+            for k in range(n)]
+
+
+def _room_batch(crops, inds=()):
+    return _batch(crops, list(inds), stationary_streams={"walkway", "doorbell"},
+                  stationary_room_streams=("cam0",), stationary_room_min_sec=7200,
+                  new_id=iter(f"id{k}" for k in range(1000)).__next__)
+
+
+def test_office_box_pile_becomes_a_prop_past_the_room_hold() -> None:
+    """2026-11-15..16: a pile of boxes read as `person` in one box for 4-5 h."""
+    res = _room_batch(_office(4 * 60))
+    assert not res.crop_stationary["o110"] and res.crop_stationary["o239"]
+
+
+def test_office_person_who_sat_still_is_a_person_after_leaving() -> None:
+    """The #3616 review lifecycle: sit still 2.5 h (marked), leave an hour,
+    come back to the same box. On a room camera the gap ends the run."""
+    res = _room_batch(_office(150))
+    assert res.crop_stationary["o149"]
+    ind = res.individuals[res.crop_individual["o149"]]
+    back = _room_batch(_office(5, start_min=150 + 60, prefix="b"), inds=[ind])
+    assert not any(back.crop_stationary.values())
+
+
+def test_office_face_restarts_the_run() -> None:
+    res = _room_batch(_office(150, face_at={140}))
+    assert res.crop_stationary["o139"] and not res.crop_stationary["o140"] and not res.crop_stationary["o149"]
+
+
+def test_walkway_prop_still_survives_a_gap() -> None:
+    import dataclasses
+
+    res = _room_batch(_skeleton_crops())
+    assert any(res.crop_stationary.values())
+    ind = res.individuals[res.crop_individual[_skeleton_crops()[-1].crop_id]]
+    later = dataclasses.replace(_skeleton_crops()[-1], crop_id="later", observation_id="obs-later",
+                                observed_at=_skeleton_crops()[-1].observed_at + timedelta(hours=1))
+    assert _room_batch([later], inds=[ind]).crop_stationary["later"]
 
 
 def test_stationary_rule_can_be_disabled() -> None:

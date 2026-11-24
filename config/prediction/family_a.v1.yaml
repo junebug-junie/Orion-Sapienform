@@ -2,7 +2,16 @@
 # Spec: docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, "A. Neural forecaster".
 # Loaded by services/orion-prediction/app/family_a.py (parse_config). Read by the live loop
 # (app/family_a_live.py, PREDICTION_FAMILY_A_CONFIG_PATH; selects, issues and scores every 5 min) and by
-# evals/run_family_a_baselines_eval.py. Nothing is published on the bus yet.
+# evals/run_family_a_baselines_eval.py.
+#
+# group (#3575 / #3580, Juniper 2026-11-17): every input belongs to ONE joint group, scored as its own
+# joint surprise beside the blended one (prediction_joint_surprise family family_a_body / family_a_room)
+# and published as prediction.joint_surprise.v1 -> node:prediction.body_joint / node:prediction.room_joint.
+# Classified by CAUSE: body = Orion's machines, cabinet, closet (circe/hecate exhaust) and the cabinet AC,
+# plus office temp (mixed: Orion's exhaust + house heat + weather; stays body until family C measures
+# Orion's share of it). room = office eCO2/TVOC, PM2.5, lux, humidity, and sound once fixed (people, windows, time of day,
+# weather), a WORLD source. none = in the blend only (office sound until #3581 fixes the meter). Covariates
+# feed every forecast whatever their group; groups only split scoring.
 #
 # Raw readings in real units only. app/family_a.py refuses any source outside the five raw tables
 # below and any key that names a hint channel (*_pressure, prediction_error*, action_warrant, ...).
@@ -43,54 +52,56 @@ hygiene:
   flat_margin: 0.5
 inputs:
   # --- athena: cabinet sensors (Nano ESP32 in the cabinet) ---
-  - {id: athena.cabinet_temp_c, unit: C, source: {table: biometrics, node: athena, key: cabinet_temp_c}}
-  - {id: athena.cabinet_humidity_pct, unit: "%", source: {table: biometrics, node: athena, key: cabinet_humidity_pct}}
-  - {id: athena.cabinet_baro_hpa, unit: hPa, source: {table: biometrics, node: athena, key: cabinet_pressure_hpa}}
-  - {id: athena.cabinet_light_raw, unit: counts, source: {table: biometrics, node: athena, key: cabinet_als_raw}}
-  - {id: athena.cabinet_sound_rms, unit: counts, source: {table: biometrics, node: athena, key: cabinet_ambient_rms}}
-  - {id: athena.cabinet_vibration_g, unit: g, source: {table: biometrics, node: athena, key: cabinet_vibration_g}}
-  - {id: athena.cabinet_lidar_mm, unit: mm, source: {table: biometrics, node: athena, key: cabinet_lidar_mm}}
+  - {id: athena.cabinet_temp_c, group: body, unit: C, source: {table: biometrics, node: athena, key: cabinet_temp_c}}
+  - {id: athena.cabinet_humidity_pct, group: body, unit: "%", source: {table: biometrics, node: athena, key: cabinet_humidity_pct}}
+  - {id: athena.cabinet_baro_hpa, group: body, unit: hPa, source: {table: biometrics, node: athena, key: cabinet_pressure_hpa}}
+  - {id: athena.cabinet_light_raw, group: body, unit: counts, source: {table: biometrics, node: athena, key: cabinet_als_raw}}
+  - {id: athena.cabinet_sound_rms, group: body, unit: counts, source: {table: biometrics, node: athena, key: cabinet_ambient_rms}}
+  - {id: athena.cabinet_vibration_g, group: body, unit: g, source: {table: biometrics, node: athena, key: cabinet_vibration_g}}
+  - {id: athena.cabinet_lidar_mm, group: body, unit: mm, source: {table: biometrics, node: athena, key: cabinet_lidar_mm}}
   # --- athena: machine ---
-  - {id: athena.chassis_watts, unit: W, source: {table: biometrics, node: athena, key: chassis_watts}}
-  - {id: athena.cpu_watts, unit: W, source: {table: biometrics, node: athena, key: cpu_watts_total}}
-  - {id: athena.gpu0_watts, unit: W, source: {table: biometrics, node: athena, key: gpu0_watts}}
-  - {id: athena.gpu1_watts, unit: W, source: {table: biometrics, node: athena, key: gpu1_watts}}
-  - {id: athena.gpu0_temp_c, unit: C, source: {table: biometrics, node: athena, key: gpu0_temp_c}}
-  - {id: athena.gpu1_temp_c, unit: C, source: {table: biometrics, node: athena, key: gpu1_temp_c}}
-  - {id: athena.board_temp_c, unit: C, source: {table: biometrics, node: athena, key: board_temp_c_max}}
-  - {id: athena.cpu_temp_c_max, unit: C, source: {table: biometrics, node: athena, key: temp_c_max}}
-  - {id: athena.fan_pct, unit: "%", source: {table: biometrics, node: athena, key: fan_pct_max}}
-  - {id: athena.load_1m, unit: runnable, source: {table: biometrics, node: athena, key: load_1m}}
-  - {id: athena.net_bytes_s, unit: B/s, source: {table: biometrics, node: athena, key: net_bytes_per_sec}}
-  - {id: athena.disk_bytes_s, unit: B/s, source: {table: biometrics, node: athena, key: disk_bytes_per_sec}}
+  - {id: athena.chassis_watts, group: body, unit: W, source: {table: biometrics, node: athena, key: chassis_watts}}
+  - {id: athena.cpu_watts, group: body, unit: W, source: {table: biometrics, node: athena, key: cpu_watts_total}}
+  - {id: athena.gpu0_watts, group: body, unit: W, source: {table: biometrics, node: athena, key: gpu0_watts}}
+  - {id: athena.gpu1_watts, group: body, unit: W, source: {table: biometrics, node: athena, key: gpu1_watts}}
+  - {id: athena.gpu0_temp_c, group: body, unit: C, source: {table: biometrics, node: athena, key: gpu0_temp_c}}
+  - {id: athena.gpu1_temp_c, group: body, unit: C, source: {table: biometrics, node: athena, key: gpu1_temp_c}}
+  - {id: athena.board_temp_c, group: body, unit: C, source: {table: biometrics, node: athena, key: board_temp_c_max}}
+  - {id: athena.cpu_temp_c_max, group: body, unit: C, source: {table: biometrics, node: athena, key: temp_c_max}}
+  - {id: athena.fan_pct, group: body, unit: "%", source: {table: biometrics, node: athena, key: fan_pct_max}}
+  - {id: athena.load_1m, group: body, unit: runnable, source: {table: biometrics, node: athena, key: load_1m}}
+  - {id: athena.net_bytes_s, group: body, unit: B/s, source: {table: biometrics, node: athena, key: net_bytes_per_sec}}
+  - {id: athena.disk_bytes_s, group: body, unit: B/s, source: {table: biometrics, node: athena, key: disk_bytes_per_sec}}
   # --- circe ---
-  - {id: circe.chassis_watts, unit: W, source: {table: biometrics, node: circe, key: chassis_watts}}
-  - {id: circe.cpu_watts, unit: W, source: {table: biometrics, node: circe, key: cpu_watts_total}}
-  - {id: circe.gpu0_watts, unit: W, source: {table: biometrics, node: circe, key: gpu0_watts}}
-  - {id: circe.gpu1_watts, unit: W, source: {table: biometrics, node: circe, key: gpu1_watts}}
-  - {id: circe.gpu2_watts, unit: W, source: {table: biometrics, node: circe, key: gpu2_watts}}
-  - {id: circe.gpu3_watts, unit: W, source: {table: biometrics, node: circe, key: gpu3_watts}}
-  - {id: circe.gpu0_temp_c, unit: C, source: {table: biometrics, node: circe, key: gpu0_temp_c}}
-  - {id: circe.gpu1_temp_c, unit: C, source: {table: biometrics, node: circe, key: gpu1_temp_c}}
-  - {id: circe.gpu2_temp_c, unit: C, source: {table: biometrics, node: circe, key: gpu2_temp_c}}
-  - {id: circe.gpu3_temp_c, unit: C, source: {table: biometrics, node: circe, key: gpu3_temp_c}}
-  - {id: circe.board_temp_c, unit: C, source: {table: biometrics, node: circe, key: board_temp_c_max}}
-  - {id: circe.cpu_temp_c_max, unit: C, source: {table: biometrics, node: circe, key: temp_c_max}}
-  - {id: circe.fan_pct, unit: "%", source: {table: biometrics, node: circe, key: fan_pct_max}}
-  - {id: circe.load_1m, unit: runnable, source: {table: biometrics, node: circe, key: load_1m}}
+  - {id: circe.chassis_watts, group: body, unit: W, source: {table: biometrics, node: circe, key: chassis_watts}}
+  - {id: circe.cpu_watts, group: body, unit: W, source: {table: biometrics, node: circe, key: cpu_watts_total}}
+  - {id: circe.gpu0_watts, group: body, unit: W, source: {table: biometrics, node: circe, key: gpu0_watts}}
+  - {id: circe.gpu1_watts, group: body, unit: W, source: {table: biometrics, node: circe, key: gpu1_watts}}
+  - {id: circe.gpu2_watts, group: body, unit: W, source: {table: biometrics, node: circe, key: gpu2_watts}}
+  - {id: circe.gpu3_watts, group: body, unit: W, source: {table: biometrics, node: circe, key: gpu3_watts}}
+  - {id: circe.gpu0_temp_c, group: body, unit: C, source: {table: biometrics, node: circe, key: gpu0_temp_c}}
+  - {id: circe.gpu1_temp_c, group: body, unit: C, source: {table: biometrics, node: circe, key: gpu1_temp_c}}
+  - {id: circe.gpu2_temp_c, group: body, unit: C, source: {table: biometrics, node: circe, key: gpu2_temp_c}}
+  - {id: circe.gpu3_temp_c, group: body, unit: C, source: {table: biometrics, node: circe, key: gpu3_temp_c}}
+  - {id: circe.board_temp_c, group: body, unit: C, source: {table: biometrics, node: circe, key: board_temp_c_max}}
+  - {id: circe.cpu_temp_c_max, group: body, unit: C, source: {table: biometrics, node: circe, key: temp_c_max}}
+  - {id: circe.fan_pct, group: body, unit: "%", source: {table: biometrics, node: circe, key: fan_pct_max}}
+  - {id: circe.load_1m, group: body, unit: runnable, source: {table: biometrics, node: circe, key: load_1m}}
   # --- hecate (on demand; BMC read remotely by athena; orion_biometrics_cluster keeps 30 days) ---
-  - {id: hecate.chassis_watts, unit: W, source: {table: cluster, node: hecate, key: chassis_watts}}
+  - {id: hecate.chassis_watts, group: body, unit: W, source: {table: cluster, node: hecate, key: chassis_watts}}
   # --- cabinet portable AC (Shelly plug) ---
-  - {id: athena.cabinet_cooling_watts, unit: W, source: {table: cooling, role: cabinet_cooling}}
+  - {id: athena.cabinet_cooling_watts, group: body, unit: W, source: {table: cooling, role: cabinet_cooling}}
   # --- office (pan-1: SHT40, CCS811, PMS, light, sound meter) ---
-  - {id: office.temp_c, unit: C, source: {table: office_env, node: pan-1, key: office_temp_c}}
-  - {id: office.humidity_pct, unit: "%", source: {table: office_env, node: pan-1, key: office_humidity_pct}}
-  - {id: office.eco2_ppm, unit: ppm, source: {table: office_env, node: pan-1, key: office_eco2_ppm}}
-  - {id: office.tvoc_ppb, unit: ppb, source: {table: office_env, node: pan-1, key: office_tvoc_ppb}}
-  - {id: office.pm25_ug_m3, unit: ug/m3, source: {table: office_env, node: pan-1, key: office_pm25_ug_m3}}
-  - {id: office.lux, unit: lux, source: {table: office_env, node: pan-1, key: office_lux}}
-  - {id: office.sound_dba, unit: dBA, source: {table: office_env, node: pan-1, key: office_sound_dba}}
+  - {id: office.temp_c, group: body, unit: C, source: {table: office_env, node: pan-1, key: office_temp_c}}
+  - {id: office.humidity_pct, group: room, unit: "%", source: {table: office_env, node: pan-1, key: office_humidity_pct}}
+  - {id: office.eco2_ppm, group: room, unit: ppm, source: {table: office_env, node: pan-1, key: office_eco2_ppm}}
+  - {id: office.tvoc_ppb, group: room, unit: ppb, source: {table: office_env, node: pan-1, key: office_tvoc_ppb}}
+  - {id: office.pm25_ug_m3, group: room, unit: ug/m3, source: {table: office_env, node: pan-1, key: office_pm25_ug_m3}}
+  - {id: office.lux, group: room, unit: lux, source: {table: office_env, node: pan-1, key: office_lux}}
+  # group none until #3581: the meter reads 75-81 dBA in a quiet office. Scored in the blend only; it joins
+  # room when the meter is fixed (Juniper, #3575 scope, 2026-11-17).
+  - {id: office.sound_dba, group: none, unit: dBA, source: {table: office_env, node: pan-1, key: office_sound_dba}}
   # --- server closet (pan-1: SCD40, real CO2) ---
-  - {id: closet.co2_ppm, unit: ppm, source: {table: closet_env, node: pan-1, key: closet_co2_ppm}}
-  - {id: closet.temp_c, unit: C, source: {table: closet_env, node: pan-1, key: closet_temp_c}}
-  - {id: closet.humidity_pct, unit: "%", source: {table: closet_env, node: pan-1, key: closet_humidity_pct}}
+  - {id: closet.co2_ppm, group: body, unit: ppm, source: {table: closet_env, node: pan-1, key: closet_co2_ppm}}
+  - {id: closet.temp_c, group: body, unit: C, source: {table: closet_env, node: pan-1, key: closet_temp_c}}
+  - {id: closet.humidity_pct, group: body, unit: "%", source: {table: closet_env, node: pan-1, key: closet_humidity_pct}}

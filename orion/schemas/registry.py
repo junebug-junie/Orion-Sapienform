@@ -694,9 +694,11 @@ from orion.schemas.prediction import (
     PREDICTION_FORECAST_KIND,
     PREDICTION_SURPRISE_KIND,
     PREDICTION_TURN_SURPRISE_KIND,
+    PREDICTION_JOINT_SURPRISE_KIND,
     PredictionForecastV1,
     PredictionSurpriseV1,
     PredictionTurnSurpriseV1,
+    PredictionJointSurpriseV1,
 )
 from orion.schemas.compactor_digest_run import CompactorDigestResultV1, CompactorDigestRunBriefV1
 from orion.schemas.durable_run import (
@@ -1145,6 +1147,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "PredictionForecastV1": PredictionForecastV1,
     "PredictionSurpriseV1": PredictionSurpriseV1,
     "PredictionTurnSurpriseV1": PredictionTurnSurpriseV1,
+    "PredictionJointSurpriseV1": PredictionJointSurpriseV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,
     "PeerBriefConsumedV1": PeerBriefConsumedV1,
@@ -2167,6 +2170,7 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PredictionForecastV1": SchemaRegistration(model=PredictionForecastV1, kind=PREDICTION_FORECAST_KIND),
     "PredictionSurpriseV1": SchemaRegistration(model=PredictionSurpriseV1, kind=PREDICTION_SURPRISE_KIND),
     "PredictionTurnSurpriseV1": SchemaRegistration(model=PredictionTurnSurpriseV1, kind=PREDICTION_TURN_SURPRISE_KIND),
+    "PredictionJointSurpriseV1": SchemaRegistration(model=PredictionJointSurpriseV1, kind=PREDICTION_JOINT_SURPRISE_KIND),
     "HelpRequestV1": SchemaRegistration(
         model=HelpRequestV1,
         kind="curiosity.help.request.v1",

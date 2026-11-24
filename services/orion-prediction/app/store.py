@@ -488,6 +488,17 @@ class PostgresStore:
             "AND target_ts < %s ORDER BY target_ts LIMIT %s", (prefix, before, limit * 100))
         return joints, readings
 
+    def family_due_joints(self, families: list[str], origins: list[datetime]) -> list[dict]:
+        """Joint-group rows (family_a_body / family_a_room) still 'issued' at these origins: the origins of the
+        blended rows taken this scoring pass. They score from the same reading rows as their blended row.
+        Served by the (family, origin_ts, horizon_min) unique index; bounded by the blended pass limit."""
+        if not origins:
+            return []
+        return self._all(
+            "SELECT joint_id, family, run_id, horizon_min, origin_ts, target_ts, difficulty FROM prediction_joint_surprise "
+            "WHERE family = ANY(%s) AND origin_ts = ANY(%s) AND status = 'issued'",
+            (list(families), list(origins)))
+
     def write_family_scores(self, reading_scores: list[dict], joint_scores: list[dict]) -> None:
         r_sql = ("UPDATE prediction_forecast SET scored_at = %s, score_status = %s, actual = %s, abs_error = %s, "
                  "in_80 = %s, in_95 = %s WHERE forecast_id = %s AND scored_at IS NULL")

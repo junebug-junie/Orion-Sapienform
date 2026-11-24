@@ -460,6 +460,8 @@ SYNC_PREFIXES = (
     "SUBSTRATE_PREDICTION_SURPRISE_",
     # Chat-turn surprise -> node:prediction.chat_turn (substrate-runtime, 2026-11-13).
     "SUBSTRATE_PREDICTION_TURN_SURPRISE_",
+    # Family A joint surprise -> node:prediction.body_joint / .room_joint (substrate-runtime, 2026-11-18).
+    "SUBSTRATE_PREDICTION_JOINT_SURPRISE_",
     # Camera perception in the situation brief (Hub + cortex-exec, 2026-10-07).
     "ORION_SITUATION_PERCEPTION_",
     "ORION_SITUATION_STREET_",
@@ -480,6 +482,9 @@ SYNC_PREFIXES = (
     "DREAM_DAY_",
     # Hourly frame samples (orion-sql-writer, 2026-10-29).
     "VISION_HOURLY_FRAMES_",
+    # Stationary-prop rule incl. room cameras (VISION_STATIONARY_ROOM_*,
+    # 2026-11-24, #3614): outside every prefix above, so new keys never synced.
+    "VISION_STATIONARY_",
     # Person graph loop + its sighting refresh (orion-substrate-runtime, 2026-11-03).
     # Neither matched a prefix: the default run visited the .env and added nothing.
     "PERSON_GRAPH_",

@@ -196,3 +196,39 @@ def test_a_sentence_about_something_else_dying_does_not_state_the_loss():
     good = check_origin_page(f"My disk melted in July and my memory was lost [{num['stance:st-disk']}]." + rest,
                              handles)
     assert good.ok, good.errors
+
+
+def test_a_kept_sentence_whose_cite_moved_off_its_number_is_refused():
+    """#3776 (v2/v5/v7 of the live page): the fold kept an old sentence with a count in it and re-pointed
+    its cite at whichever self-definition the new sample offered nearest. The new record does not hold
+    the count, so the sentence is refused; cited to the record that holds it, it passes."""
+    defs = [{"entry_id": f"e{v}", "version": v, "created_at": _t(9, 1 + v),
+             "content": "I am Orion. I am made of 342 parts." if v == 10 else f"I am Orion, in my own words ({v})."}
+            for v in range(1, 21)]
+    for held, ok in (("e10", True), ("e11", False)):
+        handles = handle_map(sources_from_rows(STANCE, EPISODES, [d for d in defs if d["entry_id"] in ("e1", held)]))
+        num = {s.ref: h for h, s in handles.items()}
+        page = (f"My memory storage died and we lost over a year [{num['stance:st-loss']}]. "
+                f"I am Orion [{num['self_concept_history:e1']}]. "
+                f"I am made of 342 parts [{num['self_concept_history:' + held]}].")
+        check = check_origin_page(page, handles)
+        assert check.ok is ok, check.errors
+        if not ok:
+            assert [e.split(":")[0] for e in check.errors] == ["unbacked_number"]
+            assert check.errors[0].startswith("unbacked_number: 342 in: I am made of 342 parts")
+
+
+def test_a_number_backed_by_any_cited_record_passes_and_dates_are_not_numbers():
+    loss, yay = _num("stance:st-loss"), _num("stance:st-yay")
+    # "a year" is a word and "August 13" is a date (its own check lives in the eval): neither is checked.
+    # The record says "two years", so a digit 2 is not backed until a cited record holds the digit.
+    view = _num("episode_memory:m-view")
+    page = (f"My memory storage died and we lost over a year [{loss}]. "
+            f"On August 13 we pulled through [{yay}]. "
+            f"My memory sits inside Juniper's last 2 years [{view}, {yay}].")
+    errors = check_origin_page(page, _handles()).errors
+    assert [e for e in errors if e.startswith("unbacked_number")] == [
+        "unbacked_number: 2 in: My memory sits inside Juniper's last 2 years"]
+    handles = _handles()
+    handles[view] = handles[view].__class__(**{**handles[view].__dict__, "text": "my memory is in her last 2 years"})
+    assert check_origin_page(page, handles).ok

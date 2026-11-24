@@ -53,7 +53,8 @@ from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from orion.memory.pages.fold import (
-    EPISODE_MEMORY_KIND, REF_KINDS, SELF_CONCEPT_KIND, STANCE_KIND, PageSource, _norm, render_text,
+    _MONTHS, _ORD, DATE_MENTION as _DATE, EPISODE_MEMORY_KIND, REF_KINDS, SELF_CONCEPT_KIND, STANCE_KIND, PageSource,
+    _norm, render_text, sentence_numbers, unbacked_numbers,
 )
 from orion.memory.pages.origin import _LOSS_STATED, PAGE_ORIGIN, check_origin_page, memory_loss_refs
 
@@ -129,13 +130,6 @@ def cite_mix(refs: Iterable[str]) -> dict[str, int]:
                                                                     EPISODE_MEMORY_KIND))}
 
 
-_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
-           "november", "december")
-_ORD = r"(?:st|nd|rd|th)?"
-_DATE = re.compile(rf"\b({'|'.join(m.capitalize() for m in _MONTHS)})\s+(\d{{1,2}}){_ORD}\b")
-_NUMBER = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?:st|nd|rd|th)?(?![\w])")
-
-
 def record_days(when: datetime | date) -> set[tuple[int, int]]:
     """(month, day) of a record in UTC and in Denver: an evening message in Denver is next day in UTC."""
     if isinstance(when, datetime):
@@ -163,13 +157,9 @@ def date_claims(sentence: str, cited_texts: Sequence[str],
 
 
 def number_claims(sentence: str, cited_texts: Sequence[str]) -> tuple[int, int]:
-    """(numbers in the sentence outside "Month D" dates, how many appear in no cited record's text)."""
-    def bare(n: str) -> str:
-        return re.sub(r"(?:st|nd|rd|th)$", "", n)
-
-    nums = [bare(n) for n in _NUMBER.findall(_DATE.sub(" ", sentence))]
-    pool = {bare(n) for n in _NUMBER.findall(" ".join(cited_texts))}
-    return len(nums), sum(1 for n in nums if n not in pool)
+    """(numbers in the sentence outside "Month D" dates, how many appear in no cited record's text).
+    Same rule as the live ``check_page`` (``fold.unbacked_numbers``)."""
+    return len(sentence_numbers(sentence)), len(unbacked_numbers(sentence, cited_texts))
 
 
 def sentence_support(sentence: str, cited_texts: Mapping[str, str],

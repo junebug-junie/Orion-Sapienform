@@ -84,6 +84,10 @@ MAX_ATTEMPTS = 4          # episode_distill_graph.EPISODE_DISTILL_MIN_ATTEMPTS
 # Spec band (core-memory-pages design, "Pair detection"; #3537 comments): live weeks since 10-05.
 BAND_ANY_MIN = 0.97
 BAND_OTHER_MIN = 0.68
+# Juniper, 2026-11-24 (#3537): a floor for the July-September backfill only. That chat names fewer
+# people and things besides Juniper/Orion than live October chat (dry run 61/106 = 57.5% vs October
+# 178/239 = 74.5%). Lowest live week 68.4% x measured ratio 0.773 = 52.9%. Live floors are unchanged.
+BACKFILL_OTHER_MIN = 0.53
 GATE_MIN_WEEK_ROWS = 10   # a smaller week is reported, and pooled into the overall check
 SELF_KEYS = frozenset({"person:juniper", "person:orion"})   # orion.memory.referents.resolve
 SMOKE_SESSION = re.compile(r"smoke|deploy-check", re.IGNORECASE)
@@ -406,26 +410,39 @@ def referent_coverage(memories: Iterable[Any]) -> dict[str, Any]:
             "any_rate": (any_ref / n) if n else None, "other_rate": (other / n) if n else None}
 
 
-def gate_verdict(weeks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Per-week rows {week, n, any_ref, other_ref} -> pass/fail against the live band. Every week with
-    at least GATE_MIN_WEEK_ROWS rows must be in band, and so must the pooled total."""
-    failures = []
+def gate_verdict(weeks: list[dict[str, Any]], *, other_min: float = BAND_OTHER_MIN) -> dict[str, Any]:
+    """Per-week rows {week, n, any_ref, other_ref} -> pass/fail against the band (``other_min`` = the
+    floor for "a referent besides Juniper/Orion"). Every week with at least GATE_MIN_WEEK_ROWS rows
+    must be in band, and so must the pooled total. A smaller week below the floor does not fail the
+    gate alone, but it is listed in ``small_weeks_below`` so it is never passed silently."""
+    failures, small_below = [], []
     for w in weeks:
         n = int(w["n"])
-        if n < GATE_MIN_WEEK_ROWS:
+        if n == 0:
             continue
         a, o = int(w["any_ref"]) / n, int(w["other_ref"]) / n
-        if a < BAND_ANY_MIN or o < BAND_OTHER_MIN:
+        if n < GATE_MIN_WEEK_ROWS:
+            if a < BAND_ANY_MIN or o < other_min:
+                small_below.append({"week": str(w["week"]), "n": n, "any_rate": round(a, 3),
+                                    "other_rate": round(o, 3)})
+            continue
+        if a < BAND_ANY_MIN or o < other_min:
             failures.append({"week": str(w["week"]), "n": n, "any_rate": round(a, 3), "other_rate": round(o, 3)})
     total = sum(int(w["n"]) for w in weeks)
     pooled_any = sum(int(w["any_ref"]) for w in weeks) / total if total else None
     pooled_other = sum(int(w["other_ref"]) for w in weeks) / total if total else None
-    pooled_ok = total > 0 and pooled_any >= BAND_ANY_MIN and pooled_other >= BAND_OTHER_MIN
+    pooled_ok = total > 0 and pooled_any >= BAND_ANY_MIN and pooled_other >= other_min
     return {"pass": bool(pooled_ok and not failures), "rows": total,
             "pooled_any_rate": None if pooled_any is None else round(pooled_any, 3),
             "pooled_other_rate": None if pooled_other is None else round(pooled_other, 3),
-            "week_failures": failures,
+            "other_min": other_min, "week_failures": failures, "small_weeks_below": small_below,
             "small_weeks": [str(w["week"]) for w in weeks if int(w["n"]) < GATE_MIN_WEEK_ROWS]}
+
+
+def week_below(w: dict[str, Any], other_min: float) -> bool:
+    """One week's rates under either floor (any referent, or besides Juniper/Orion)."""
+    n = int(w["n"])
+    return bool(n) and (int(w["any_ref"]) / n < BAND_ANY_MIN or int(w["other_ref"]) / n < other_min)
 
 
 def occurred_after_episode(memories: Iterable[Any], ended_at: datetime, slack: timedelta = timedelta(days=1)) -> int:
@@ -912,10 +929,12 @@ async def _coverage_weeks(pool: OneShotPool) -> list[dict[str, Any]]:
 def cmd_gate(args: argparse.Namespace) -> int:
     pool = OneShotPool(args.dsn)
     weeks = asyncio.run(_coverage_weeks(pool))
-    verdict = gate_verdict(weeks)
+    other_min = args.other_min if args.other_min is not None else BACKFILL_OTHER_MIN
+    verdict = gate_verdict(weeks, other_min=other_min)
     out = {"weeks": [{"week": str(w["week"]), "n": w["n"], "any_ref": w["any_ref"], "other_ref": w["other_ref"]}
                      for w in weeks], **verdict,
-           "band": {"any_min": BAND_ANY_MIN, "other_min": BAND_OTHER_MIN, "min_week_rows": GATE_MIN_WEEK_ROWS}}
+           "band": {"any_min": BAND_ANY_MIN, "other_min": other_min, "live_other_min": BAND_OTHER_MIN,
+                    "min_week_rows": GATE_MIN_WEEK_ROWS}}
     write_private(OUT / "referent_gate.json", json.dumps(out, indent=1, default=str))
     print(json.dumps(out, indent=1, default=str))
     return 0 if verdict["pass"] else 1
@@ -1013,10 +1032,14 @@ def cmd_report(args: argparse.Namespace) -> int:
              f"| {k} | {before.get(k)} | {after.get(k)} |" for k in COUNTS_SQL] + [
              "", "## Referent coverage gate (per week, by episode time)", "",
              f"- pass: {gate.get('pass')}; rows {gate.get('rows')}; pooled any {gate.get('pooled_any_rate')}, "
-             f"non-self {gate.get('pooled_other_rate')}; band any >= {BAND_ANY_MIN}, non-self >= {BAND_OTHER_MIN}",
-             f"- weeks below band: {gate.get('week_failures')}", f"- weeks under {GATE_MIN_WEEK_ROWS} rows: "
-             f"{gate.get('small_weeks')}", "", "| week | rows | any | non-self |", "|---|---|---|---|"] + [
-             f"| {w['week']} | {w['n']} | {w['any_ref']} | {w['other_ref']} |" for w in gate.get("weeks", [])] + [
+             f"non-self {gate.get('pooled_other_rate')}; band any >= {BAND_ANY_MIN}, non-self >= "
+             f"{(gate.get('band') or {}).get('other_min')} (backfill floor; live floor {BAND_OTHER_MIN})",
+             f"- weeks below band: {gate.get('week_failures')}",
+             f"- small weeks below band (flagged, pooled): {gate.get('small_weeks_below')}", f"- weeks under {GATE_MIN_WEEK_ROWS} rows: "
+             f"{gate.get('small_weeks')}", "", "| week | rows | any | non-self | below floor |", "|---|---|---|---|---|"] + [
+             f"| {w['week']} | {w['n']} | {w['any_ref']} | {w['other_ref']} | "
+             f"{'BELOW' if week_below(w, (gate.get('band') or {}).get('other_min', BACKFILL_OTHER_MIN)) else ''} |"
+             for w in gate.get("weeks", [])] + [
              "", "## Errors", "", f"- error records: {len(errors)}; episodes that failed: {len(failed)}"] + [
              f"  - {e}" for e in failed] + [
              "", "## Supersede pass dry run (nothing applied)", "",
@@ -1053,7 +1076,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     r.add_argument("--limit", type=int, default=0)
     r.add_argument("--confirmation-asks", action="store_true",
                    help="write high-stakes rows pending_confirmation (the asker queues them). Default: not_asked")
-    sub.add_parser("gate")
+    g = sub.add_parser("gate")
+    g.add_argument("--other-min", type=float, default=None,
+                   help=f"floor for a referent besides Juniper/Orion (default: backfill floor {BACKFILL_OTHER_MIN})")
     c = sub.add_parser("counts")
     c.add_argument("--label", choices=("before", "after"), required=True)
     sub.add_parser("report")

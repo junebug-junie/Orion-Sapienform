@@ -10,6 +10,7 @@ Replaces: the earlier draft in this PR (a separate container per project, "works
 > "I want Orion to take a new project ... where they can do shit but safely ... left fairly open ended for them."
 > "Implement it in shadow ... there are too many reasons why we want Orion to have access to root things."
 > "Ideally we could do this in Orion proper. I'm fine with Orion not bringing up containers at this time. Maybe someday."
+> "Let's build this next door like a canary. We schedule a time to swap over to this canary and run in realtime in the new setup and see what breaks. Then we can swap back to normal current state while we sort the build. This way we don't break Orion."
 
 ## Arsonist summary
 
@@ -166,9 +167,53 @@ Patch 1 (door + record), in the governor after deploy:
 
 Patch 3 (projects): Orion opens a project with `dig project open`; one step runs as a governor turn in its folder and closes `produced = 1` with a commit, or `produced = 0, "no lasting trace"`.
 
+## Rollout: canary, then swap
+
+The door ships as a canary. It does not replace the socket on day one.
+
+- **The door runs all the time,** but Orion's turns use it only inside a scheduled window: governor env `ORION_DOCKER_DOOR_CANARY_WINDOWS`, a comma list of `START/END` in UTC.
+- **Inside a window,** each new turn sets `DOCKER_HOST` to the door (`tcp://orion-athena-docker-door:2375`). Cold turns and resumed turns get it through the spawn env. Warm chat slots get it per turn through their `CLAUDE_ENV_FILE`, which every Bash call re-reads.
+- **When the window ends,** the next turn uses the socket again. No restart. A warm slot that served a canary turn gets `DOCKER_HOST` reset on its next turn.
+- **If the door does not answer** (a 0.5 s connection check), the turn keeps the socket and the governor logs `DOCKER_DOOR_CANARY ... door=unreachable`. Orion is never cut off.
+- **The socket stays mounted in the governor during the canary.** The canary tests what breaks, not whether Orion can get around the door. Removing the mount is the swap step below.
+- **The GitHub MCP server stays on the real socket** (`DOCKER_HOST` pinned in `orion/fcc/fcc_claude_mcp.template.json`). It starts a container every turn, which the door refuses. It is harness code, not Orion's shell. Moving it to a binary is part of the swap.
+- **What broke:** `python3 services/orion-docker-door/app/report.py --since <start> --until <end>` reads the door's record and lists every refused call. The governor log has one `DOCKER_DOOR_CANARY` line per turn.
+
+**First window (Juniper, 2026-11-24): a full day, 2026-11-25 00:00Z to 2026-11-26 00:00Z.** Set in the live governor `.env`. It takes effect only once the build branch is merged and the governor is rebuilt.
+
+**Swap, after a clean window:** remove the socket mount from the governor, set `DOCKER_HOST` for the whole container, move the GitHub MCP server to the binary, and delete the canary switch (kill means kill: no leftover window code).
+
+### Build status (2026-11-24)
+
+Built on local branch `feat/docker-door-canary` (commit `bad427158`, worktree `../Orion-Sapienform-docker-door-canary`). **Not pushed. Not deployed.** It is held until this design is approved.
+
+- `services/orion-docker-door/`: the door (`app/door.py`, stdlib only), the report (`app/report.py`), compose, `.env_example`, README, tests.
+- `orion/harness/docker_door_canary.py` + `fcc_motor._build_subprocess_env(docker_door=...)` + the warm pool's per-turn env file: the canary switch.
+- Governor `.env_example`: `ORION_DOCKER_DOOR_CANARY_WINDOWS=` (empty) and `ORION_DOCKER_DOOR_URL`. Local `.env` synced.
+- The rebuild planner already picks up the new service (`rebuild_affected_services.py --plan` lists `orion-docker-door build`).
+
+Tests: 44 door + canary tests, 125 passed across the touched door, canary, MCP and warm-pool tests.
+
+Live smoke against the real daemon (a temporary door container on `app-net`, removed afterwards), commands run inside the governor:
+
+| Command | Result |
+|---|---|
+| `docker ps`, `docker logs`, `docker inspect` | work |
+| `docker exec orion-athena-thought python -c ...` | works (`exec-ok`) |
+| `docker exec -i ... python -` with stdin | works (`stdin-ok`) |
+| `docker exec -i orion-athena-sql-db psql -U orion_readonly` (dig's path) | works (`1`) |
+| `docker restart`, `docker run hello-world` | refused: "changing containers is off" |
+| `docker exec` into hub, biometrics, the door | refused: "leads back to the host" |
+| A call from `orion-athena-thought` (not an allowed caller) | 403 |
+| Report over the record | 40 calls, 33 passed, 7 refused, each refusal listed |
+
+Not in the canary build (kept for after the swap): the turn-step stream to the record, the `orion_docker_call`/`orion_turn_step` tables and bus channel, `dig record`, tripwires.
+
 ## Recommended next patch
 
-**Patch 1: the Docker door and the record.** New service, governor switched to it, GitHub MCP as a binary, the two JSONL streams, the bus channel and tables, `dig record`, tripwires. Proves checks 1-7.
+**Patch 1 (built, held): the canary door.** Push `feat/docker-door-canary`, merge, rebuild. The full-day window runs. Read the report.
+
+**Patch 1b: the swap and the full record.** Socket mount removed from the governor, GitHub MCP as a binary, canary switch deleted, the turn-step stream to the record, the tables, `dig record`, tripwires. Proves checks 1-7.
 
 **Patch 2: Hub turns to the governor.**
 

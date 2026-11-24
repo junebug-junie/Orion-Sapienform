@@ -107,6 +107,9 @@ services:
     # Image digest for reproducibility (pair with tag): sha256:d2da12c4336a79758826700be9e21ecf4a9f7d945b7f8a58ba55ee3fa45427c8
     image: otel/opentelemetry-collector-contrib:0.115.1
     command: ["--config=/etc/otel/collector-config.yaml"]
+    # Without this the collector stays down after every host reboot
+    # (found after the 2026-11-24 planned power outage).
+    restart: unless-stopped
     volumes:
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-signal-gateway/otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
     ports:

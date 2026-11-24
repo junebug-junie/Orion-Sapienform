@@ -115,10 +115,10 @@ No restart required.
 - **Severity:** medium. **Concern:** the whole-body rest test rests on only 3 quiet nights. **Mitigation:** re-run when more history exists; #3795 tracks the coupling floor.
 - **Severity:** low. **Concern:** the field demon's horizon ("first step where skill reaches 0") saturates on slow modes even though the useful foresight is gone by about 45 min. **Mitigation:** raised on #3296 as a spec question. The cost curve and skill half-life are reported instead.
 - **Issues opened:** #3794 (trace the spark signal), #3795 (the coupling floor at rest).
-- **Issues closed:** this PR says `Fixes #3290` (the replay and results are committed, and every feature has a verdict).
+- **Issues closed:** Fixes #3290 (the replay and results are committed, and every feature has a verdict).
 
 ## PR link
 
-(filled after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3796
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

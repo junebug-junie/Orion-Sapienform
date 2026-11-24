@@ -125,8 +125,24 @@ Store each as a row in a new table `vision_motion_story_part_verdict
 gate's existing verdict is derived, so the gate and the 260 old verdicts keep
 working:
 
-- all parts yes -> `right`; people no -> `wrong_name`; direction or place no
-  -> `wrong_motion`; any other no -> `wrong_other`; any can't tell -> can't tell.
+- The story verdict is re-derived from all its part rows after every part answer:
+  - nothing is written until every part the sentence has is answered (a half-graded
+    story stays in the unchecked queue);
+  - all parts yes -> `right`;
+  - several parts no -> the first in this order wins: people no -> `wrong_name`,
+    then direction or place no -> `wrong_motion`, then any other no ->
+    `wrong_other`. People first because the gate's strictest rule is zero wrong
+    names, so a wrong name must never hide behind a wrong motion;
+  - no part no, at least one can't tell -> can't tell.
+- A part-derived verdict replaces the story's verdict unconditionally, the same as
+  pressing a verdict button today (`_UPSERT_VERDICT`): both are her explicit
+  grade of this sentence. The automatic `wrong_name` from a person correction
+  (`_WRONG_NAME_VERDICT`) keeps its own narrower rule (only over no verdict,
+  `right`, `wrong_name`, or can't tell). After parts exist it also writes
+  "Right people? = no" as a part row, so the next re-derivation keeps it unless
+  she answers that part herself.
+- "Yes, that's X" on the walker is a person answer, not a sentence grade: it does
+  not fill "Right people?" unless Juniper chooses that (question 2 below).
 
 "Wrong other" disappears from the card. The 2 old `wrong_other` rows stay.
 
@@ -139,13 +155,27 @@ working:
   side. Yes writes a `vision_same_individual` answer (the existing "same
   person?" path, `_apply_pair_answer`), which creates the `same` link.
 - **Undo, mirroring the split undo:** add `scripts/undo_vision_link.py
-  <ask_id>` and a Hub "Undo" next to "Linked as the same person" for 7 days. It
-  deletes the `same` pair verdict that ask made and re-runs the label copy so a
-  `label_copied` name the link gave is removed. It refuses when a later answer
-  built on the link (a name typed after it, or a split whose `linked_pair` names
-  it), and says which one. The pair-verdict row already carries `ask_id`, so no
-  new audit table is needed; the undo writes one `[VISION_LINK_UNDONE]` log line
-  and sets `orion_ask.answer_detail.undone_at`.
+  <ask_id>` and a Hub "Undo" next to "Linked as the same person".
+  - **Scope:** only links made by this card's "Same person?" answer
+    (`vision_same_individual` asks with `answer_detail.via = 'motion_story'`).
+    Live 'same' links today by origin: 202 from story-card typed names
+    (`_link_same_name`), 78 from "Is this <name>?", 44 from "same person?"
+    cards, 6 other typed names. The 208 typed-name links already have an undo:
+    retyping the name drops them (`_unlink_old_name`). The undo does not reach them.
+  - **Window:** 7 days from the pair row's `decided_at`.
+  - **Dependents are found BEFORE the pair row is deleted,** inside the
+    individuals cycle's lock (the split undo's lock): (a) a split whose
+    `linked_pair` contains the pair; (b) a `vision_individual` answer (typed
+    name) on any individual in the linked group, answered after `decided_at`.
+    Either one refuses the undo and names the ask or split.
+  - **Labels are re-derived, not reverted:** after the delete, every
+    `label_copied = true` individual in the old group gets its copy recomputed
+    from its remaining group (`_propagate_label` with `replace_copied`), or
+    cleared when no typed name is left in its group. A typed name
+    (`label_copied = false`) is never touched. Live: 0 individuals carry a
+    copied label today.
+  - The undo writes one `[VISION_LINK_UNDONE]` log line and sets
+    `orion_ask.answer_detail.undone_at`; no new audit table.
 - No crop merge. Groups stay separate; links join them. This keeps every merge
   reversible.
 
@@ -173,6 +203,13 @@ taught the person model. Proposal:
    doorbell): ask on the card, or let Orion link them without asking, as it
    already does when you type a name?
 5. Re-ask the 124 "not sure only" stories, or leave them closed?
+6. Should a "Yes, that's X" picture also become a positive training example for
+   the person model? Today it is audit-only in effect: the model learns
+   positives from whole named groups (`cluster_label`, 5,824 live examples) and
+   skips a group that looks like two people. A per-picture positive would let a
+   yes teach even an impure group. Recommendation: yes, as a new exemplar source
+   for the pictures shown only. It is a behavior change in recognition, so it
+   waits for your go.
 
 ## Proposed schema / API changes
 
@@ -246,8 +283,11 @@ Numbers are from the live database on 2026-11-24. Re-measure 14 days after deplo
 3. **Fewer "not sure":** story-card `unsure` share drops from 748 / 879 (85%) to
    under 40%.
 4. **Fewer questions per story:** asked persons per story drop from 3.7 rows
-   (1,656 / 448) to under 2.5, because linked groups are asked once and unpictured
-   rows are skipped (21% today).
+   (1,656 / 448) to at most 2.55. Measured on the same 30 days: skipping
+   unpictured rows gives 2.93 (1,311 / 448); also asking each linked group once
+   gives 2.53 (1,134 / 448). The two cuts overlap, so subtracting them
+   separately (2.60) is not exact. Going below 2.5 would need something this
+   design does not propose (for example not asking companions).
 5. **Repeat rows gone:** 0 stories show the same linked person twice (148 rows on
    97 stories today).
 6. **Gate still moves:** the existing tally reads the same before and after for
@@ -261,7 +301,13 @@ Numbers are from the live database on 2026-11-24. Re-measure 14 days after deplo
 ## Recommended next patch
 
 Patch A (small, no schema): group already-linked camera groups into one person
-row on the current list card, ask once, and write the answer to each group. This
+row on the current list card, ask once, and write the answer to each group.
+The route adds `persons` next to `people` in Patch A and the card switches to
+it; `people` is removed one release later (Patch B). A grouped row shows the
+pictures of every camera group in it (up to 4, spread over the passage like the
+strip), with each group's box numbers; its first picture is the largest strip
+crop. Each group's answer covers only that group's shown pictures, so the
+no-blind-answers rule holds per group. This
 removes the "Sasha, Sasha" double ask today (148 rows on 97 stories) without the
 one-at-a-time layout. Patch B: the one-at-a-time card and "No, it's ...". Patch
 C: sentence parts table and derived verdict. Patch D: link undo.

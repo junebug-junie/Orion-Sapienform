@@ -140,6 +140,11 @@ class PrimeConcernV1(BaseModel):
     # still holds it ("settled" or "lapsed"; None = still open). Defaults keep old persisted state loading.
     act_opened_at: Optional[AwareDatetime] = None
     graded: Optional[Literal["settled", "lapsed"]] = None
+    # The concern contest (orion/attention/concern_contest.py, PRIME_CONCERN_CONTEST_ENABLED, 2026-11-24): the
+    # freshest evidence's place in its own source's history (0..1). Set at open from a funded event want's own
+    # ``salience`` (orion/physiology/event_wants.py source_salience). None = unscored, never 0. Left out of the saved
+    # state when None; same rollback rule as event_family (rebuild Hub and durable-runs before orion-mind).
+    evidence_salience: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
@@ -151,7 +156,7 @@ class PrimeConcernV1(BaseModel):
     def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A concern with no event saves byte-for-byte as before (a rollback still loads the state).
         out = handler(self)
-        for key in ("event_ref", "event_family", "event_care_promoted", "promise_text"):
+        for key in ("event_ref", "event_family", "event_care_promoted", "promise_text", "evidence_salience"):
             if out.get(key, 0) is None:
                 del out[key]
         return out
@@ -186,7 +191,10 @@ def _ttl_words(ttl: timedelta) -> str:
     return "a day" if days == 1 else f"{days:g} days"
 
 
-ConcernEnd = Literal["settled", "dropped", "faded", "lapsed"]
+# ``displaced``: the concern contest (orion/prime/slots.py) pushed it out of its slot for a waiting candidate or a new
+# promise; the note gives both scores and the reason. A record with it cannot be read by an image built before it
+# (extra="forbid"): rebuild Hub and orion-durable-runs before orion-mind.
+ConcernEnd = Literal["settled", "dropped", "faded", "lapsed", "displaced"]
 
 
 class PrimeConcernRecordV1(BaseModel):
@@ -314,6 +322,11 @@ class PrimeStateV1(BaseModel):
     # need history saves byte-for-byte as before. A state that HAS it cannot be read by an orion-mind or Hub built
     # before it (extra="forbid"): rebuild Hub before orion-mind; drop the key before rolling mind back.
     needs: PrimeNeedsStateV1 = Field(default_factory=PrimeNeedsStateV1)
+    # Concerns with no slot yet (orion/prime/slots.py, the concern contest): letter threads, dream concerns and concerns
+    # Prime named while all 3 slots were full, and promises that found every slot held by a promise or by something
+    # Prime took on. No act is open for a waiting concern; it opens when the concern gets a slot. At most
+    # ``WAITING_MAX``. Left out of the saved state while empty (same rollback rule as ``needs``).
+    waiting: list[PrimeConcernV1] = Field(default_factory=list)
     # Game sittings Prime has seen (game company patch 4, orion/prime/sitting.py): which of the two wakes fired and
     # how many thoughts named each. Left out of the saved state while empty (an older reader reads a state without it);
     # a state that HAS it is unreadable to a Hub, orion-durable-runs (dream_day_store) or orion-mind built before it
@@ -334,6 +347,8 @@ class PrimeStateV1(BaseModel):
             del out["last_thought_id"]
         if self.needs.is_empty():
             out.pop("needs", None)
+        if not self.waiting:
+            out.pop("waiting", None)
         if not self.sittings:
             out.pop("sittings", None)
         return out
@@ -437,13 +452,15 @@ def track_record(state: PrimeStateV1) -> str:
     recs = state.concern_record[-MAX_CONCERN_RECORD:]
     if not recs:
         return "(no concern has ended yet)"
-    n = {k: sum(1 for r in recs if r.end == k) for k in ("settled", "dropped", "faded", "lapsed")}
+    n = {k: sum(1 for r in recs if r.end == k) for k in ("settled", "dropped", "faded", "lapsed", "displaced")}
     quick = sum(1 for r in recs if r.end == "dropped" and r.closed_at - r.opened_at <= QUICK_DROP)
     return (f"last {len(recs)} concerns: {n['settled']} settled (a question about it got a run that wrote "
             f"something), {n['dropped']} dropped ({quick} of them within an hour of opening), "
             f"{n['faded']} faded (nothing renewed it for a day, or 3 days for a promise), {n['lapsed']} lapsed "
             f"(held past the horizon with no "
-            f"question about it settling)")
+            f"question about it settling)"
+            + (f", {n['displaced']} displaced (a waiting concern or a new promise took its slot)"
+               if n["displaced"] else ""))
 
 
 def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeStateV1:

@@ -23,7 +23,19 @@ if str(REPO_ROOT) not in sys.path:
 if str(SUBSTRATE_ROOT) not in sys.path:
     sys.path.insert(0, str(SUBSTRATE_ROOT))
 
+import pytest
+
 from app.worker import BiometricsSubstrateWorker
+
+
+@pytest.fixture(autouse=True)
+def _probe_domain(monkeypatch):
+    """No live domain is left since node:substrate.execution was retired 2026-11-24 (#3576):
+    the reader is exercised on a test-only "probe" domain."""
+    # Patch the globals the methods actually read (another test can re-import `app`).
+    g = BiometricsSubstrateWorker._brain_frame_prediction_error_and_evidence_by_domain.__globals__
+    monkeypatch.setitem(g, "_PREDICTION_ERROR_DOMAIN_NODE_IDS",
+                        {**g["_PREDICTION_ERROR_DOMAIN_NODE_IDS"], "node:substrate.probe": "probe"})
 
 
 def _node(node_id: str, metadata: dict) -> SimpleNamespace:
@@ -42,13 +54,27 @@ def test_reads_evidence_off_known_domain_nodes() -> None:
             {"prediction_error": 0.4, "prediction_error_evidence_event_ids": ["gev_1", "gev_2"]},
         ),
         _node(
-            "node:substrate.execution",
+            "node:substrate.probe",
             {"prediction_error": 0.0, "prediction_error_evidence_event_ids": ["gev_3"]},
+        ),
+        _node(
+            "node:substrate.execution",
+            {"prediction_error": 0.7, "prediction_error_evidence_event_ids": ["gev_4"]},
         ),
     ]
     out = worker._brain_frame_prediction_error_evidence_by_domain(nodes)
-    # node:substrate.biometrics was retired 2026-11-18 (#3575): a lingering node is not a domain.
-    assert out == {"execution": ["gev_3"]}
+    # node:substrate.biometrics (2026-11-18, #3575) and node:substrate.execution (2026-11-24,
+    # #3576) were retired: a lingering node is not a domain.
+    assert out == {"probe": ["gev_3"]}
+
+
+def test_the_real_map_is_empty_so_a_lingering_execution_node_reads_nothing(monkeypatch) -> None:
+    monkeypatch.undo()
+    g = BiometricsSubstrateWorker._brain_frame_prediction_error_and_evidence_by_domain.__globals__
+    assert g["_PREDICTION_ERROR_DOMAIN_NODE_IDS"] == {}
+    nodes = [_node("node:substrate.execution",
+                   {"prediction_error": 0.7, "prediction_error_evidence_event_ids": ["gev_4"]})]
+    assert _make_worker()._brain_frame_prediction_error_and_evidence_by_domain(nodes) == ({}, {})
 
 
 def test_skips_unknown_node_ids() -> None:
@@ -72,7 +98,7 @@ def test_skips_empty_evidence_list() -> None:
     worker = _make_worker()
     nodes = [
         _node(
-            "node:substrate.execution",
+            "node:substrate.probe",
             {"prediction_error": 0.0, "prediction_error_evidence_event_ids": []},
         ),
     ]
@@ -86,7 +112,7 @@ def test_tolerates_malformed_evidence_value() -> None:
     worker = _make_worker()
     nodes = [
         _node(
-            "node:substrate.execution",
+            "node:substrate.probe",
             {"prediction_error": 0.1, "prediction_error_evidence_event_ids": "not-a-list"},
         ),
     ]
@@ -109,7 +135,7 @@ class TestCombinedSinglePassHelper:
         worker = _make_worker()
         nodes = [
             _node(
-                "node:substrate.execution",
+                "node:substrate.probe",
                 {
                     "prediction_error": 0.4,
                     "prediction_error_evidence_event_ids": ["gev_1", "gev_2"],
@@ -118,6 +144,8 @@ class TestCombinedSinglePassHelper:
             # Retired 2026-11 (PE step 5; chat and biometrics step 6): never read as a domain.
             _node("node:substrate.route", {"prediction_error": 0.9}),
             _node("node:substrate.chat", {"prediction_error": 0.7}),
+            _node("node:substrate.execution", {"prediction_error": 0.6,
+                                               "prediction_error_evidence_event_ids": ["gev_8"]}),
             _node("node:substrate.biometrics", {"prediction_error": 0.2,
                                                 "prediction_error_evidence_event_ids": ["gev_9"]}),
         ]
@@ -126,8 +154,8 @@ class TestCombinedSinglePassHelper:
             worker._brain_frame_prediction_error_and_evidence_by_domain(nodes)
         )
 
-        assert pe_by_domain == {"execution": 0.4}
-        assert evidence_by_domain == {"execution": ["gev_1", "gev_2"]}
+        assert pe_by_domain == {"probe": 0.4}
+        assert evidence_by_domain == {"probe": ["gev_1", "gev_2"]}
 
     def test_individual_methods_delegate_to_the_same_single_pass(self) -> None:
         """The two individually-named methods must still return exactly what
@@ -136,7 +164,7 @@ class TestCombinedSinglePassHelper:
         worker = _make_worker()
         nodes = [
             _node(
-                "node:substrate.execution",
+                "node:substrate.probe",
                 {
                     "prediction_error": 0.1,
                     "prediction_error_evidence_event_ids": ["gev_3"],

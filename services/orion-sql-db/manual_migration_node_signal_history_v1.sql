@@ -17,7 +17,8 @@
 --   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 \
 --     < services/orion-sql-db/manual_migration_node_signal_history_v1.sql
 -- Check: python3 scripts/check_sql_migrations_applied.py --file manual_migration_node_signal_history_v1.sql
--- No GRANT: the postgres role's default privileges already give orion_readonly SELECT on new tables.
+-- orion_readonly SELECT: scripts/sql/2026-11-24_grant_orion_readonly_node_signal_history.sql (kept out of this
+-- file so it stays auto-applicable; the postgres default privileges already cover it live).
 -- Additive and idempotent; re-running is safe.
 
 CREATE TABLE IF NOT EXISTS substrate_node_signal_history (

@@ -27,6 +27,26 @@ from orion.schemas.attention_candidate import AttentionCandidateV1
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
 from orion.schemas.registry import resolve
 
+
+# node:substrate.execution was retired 2026-11-24 (#3576). Its role here (a live event-written level
+# body node) is played by the test-only EVENT_BODY probe from tests/fixtures/self_readings_history.py.
+import importlib.util as _probe_ilu  # noqa: E402
+from pathlib import Path as _ProbePath  # noqa: E402
+
+_probe_spec = _probe_ilu.spec_from_file_location(
+    "self_readings_history_probe_test_attention_world_first",
+    _ProbePath(__file__).resolve().parents[1] / "tests" / "fixtures" / "self_readings_history.py",
+)
+_probe_fx = _probe_ilu.module_from_spec(_probe_spec)
+_probe_spec.loader.exec_module(_probe_fx)
+EVENT_BODY = _probe_fx.EVENT_BODY
+
+
+@pytest.fixture(autouse=True)
+def _install_probe_glossary(monkeypatch):
+    _probe_fx.install_probe_glossary(monkeypatch)
+
+
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
 
 
@@ -70,7 +90,7 @@ def test_calm_body_and_quiet_world_is_an_explicit_no_winner() -> None:
     ranking = rank_candidates(
         [
             body("node:prediction.body_joint", 0.6),
-            body("node:substrate.execution", 0.0),
+            body(EVENT_BODY, 0.0),
             world(0.0),
         ]
     )
@@ -121,8 +141,8 @@ def test_world_beats_a_usual_body_but_an_unusual_body_interrupts() -> None:
     usual_body = body("node:prediction.body_joint", 0.85)
     busy_world = world(0.93)
     assert rank_candidates([usual_body, busy_world]).winner.candidate.source_id == WORLD_CHAT_SOURCE_ID
-    alarm = body("node:substrate.execution", 0.995)
-    assert rank_candidates([alarm, busy_world]).winner.candidate.source_id == "node:substrate.execution"
+    alarm = body(EVENT_BODY, 0.995)
+    assert rank_candidates([alarm, busy_world]).winner.candidate.source_id == EVENT_BODY
 
 
 def test_absent_is_not_calm() -> None:
@@ -177,16 +197,16 @@ def test_one_definition_of_camera_absence() -> None:
 
 def test_insufficient_history_never_enters() -> None:
     assert not judge_candidate(world(0.99, band="insufficient_history")).eligible
-    assert not judge_candidate(body("node:substrate.execution", None)).eligible
+    assert not judge_candidate(body(EVENT_BODY, None)).eligible
 
 
 def test_stale_internal_reading_cannot_interrupt() -> None:
-    v = judge_candidate(body("node:substrate.execution", 0.999, age=1801.0))
+    v = judge_candidate(body(EVENT_BODY, 0.999, age=1801.0))
     assert not v.eligible and v.reason.startswith("stale")
 
 
 def test_polarity_and_value_kind_come_from_the_semantic_layer() -> None:
-    assert node_prediction_error_semantics("node:substrate.execution") == ("level", "higher_is_worse")
+    assert node_prediction_error_semantics(EVENT_BODY) == ("level", "higher_is_worse")
     # A trigger has no polarity in the semantic layer; firing is the event.
     assert node_prediction_error_semantics("node:substrate.cabinet") == ("trigger", None)
     # harness_closure was retired 2026-11-11: no glossary entry, so no value_kind.
@@ -225,13 +245,13 @@ def test_no_declared_polarity_cannot_interrupt() -> None:
 
 
 def test_rank_is_by_own_percentile_borda_only_breaks_ties() -> None:
-    a = body("node:substrate.execution", 0.95)
+    a = body(EVENT_BODY, 0.95)
     # route retired 2026-11 (#3201); biometrics 2026-11-18 (#3575): its successor body_joint is a live measurement
     b = body("node:prediction.body_joint", 0.95)
     c = body("node:prediction.body", 0.97)
-    r = rank_candidates([a, b, c], tie_break={"node:prediction.body_joint": 0.9, "node:substrate.execution": 0.1})
+    r = rank_candidates([a, b, c], tie_break={"node:prediction.body_joint": 0.9, EVENT_BODY: 0.1})
     assert [v.candidate.source_id for v in r.eligible] == [
-        "node:prediction.body", "node:prediction.body_joint", "node:substrate.execution",
+        "node:prediction.body", "node:prediction.body_joint", EVENT_BODY,
     ]
 
 
@@ -275,13 +295,13 @@ def test_ceiling_ties_rank_by_mid_rank_not_strict_below() -> None:
         value=1.0, age_sec=10, percentile_now=0.965, n_readings_7d=1000, band="high", trend="flat"
     )
     execution = node_candidate(
-        node_id="node:substrate.execution", label="x", magnitude=m, observed_at=NOW, now=NOW,
+        node_id=EVENT_BODY, label="x", magnitude=m, observed_at=NOW, now=NOW,
         history_values=history,
     )
     assert execution.rank_percentile == pytest.approx(midrank_percentile(1.0, history))
     cabinet = body("node:substrate.cabinet", 0.975)
     ranking = rank_candidates([cabinet, execution])
-    assert ranking.winner.candidate.source_id == "node:substrate.execution"
+    assert ranking.winner.candidate.source_id == EVENT_BODY
     assert judge_candidate(execution).band == "high"  # eligibility still strict-below
 
 

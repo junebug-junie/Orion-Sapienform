@@ -72,6 +72,9 @@ def test_recorded_tick_sequences_replay_identically():
     shows a now).
     Re-recorded again 2026-11-24 (#3425 follow-up: the experience refs line moved before "move", so the template keeps
     its own closing): same check, same result (1 part changed, 0 after mapping).
+    Re-recorded 2026-11-24 (#3425: a dropped cite's id is named early in the act note): with " | 1 cite(s) not shown:
+    gpu_wait:not-shown" removed, every part equals the previous golden (checked by script; 2 parts changed,
+    now_section_and_one_cite.logs and .published, 0 after mapping).
     Re-recorded 2026-11-24 (game company patch 4: hub.retro_watch and hub.retro_commentary declare slow and quicken):
     with the two new "ORGANS YOU CAN SIGNAL" lines removed, every part of every scenario equals the previous golden
     (checked by script; 1 part changed, 0 after mapping: regulate_and_settle.llm_calls, the only scenario that shows

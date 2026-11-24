@@ -14,6 +14,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 _MODULE_PATH = Path(__file__).resolve().parents[1] / "measure_ast_hot_reducer.py"
 _spec = importlib.util.spec_from_file_location("measure_ast_hot_reducer", _MODULE_PATH)
 mod = importlib.util.module_from_spec(_spec)
@@ -50,6 +52,24 @@ def _field_payload(ts: datetime) -> dict:
     return frame.model_dump(mode="json")
 
 
+@pytest.fixture
+def probe_domain(monkeypatch):
+    """No live domain is left since execution was retired (2026-11-24, #3576): the harness's domain
+    map and the reducer's ACTIVE_INFERENCE_DOMAINS are both empty. Tests of the replay mechanics
+    use one TEST-ONLY domain, "probe", in execution's old place."""
+    import orion.substrate.attention_self_model as asm
+
+    monkeypatch.setattr(mod, "PREDICTION_ERROR_DOMAIN_NODES", {"probe": "node:substrate.probe"})
+    monkeypatch.setattr(asm, "ACTIVE_INFERENCE_DOMAINS", frozenset({"probe"}))
+
+
+def test_harness_domain_map_matches_the_empty_live_reducer() -> None:
+    import orion.substrate.attention_self_model as asm
+
+    assert mod.PREDICTION_ERROR_DOMAIN_NODES == {}
+    assert set(mod.PREDICTION_ERROR_DOMAIN_NODES) == set(asm.ACTIVE_INFERENCE_DOMAINS)
+
+
 def _field_state_payload(ts: datetime, **prediction_errors: float) -> dict:
     """Minimal FieldStateV1-shaped dict -- only the node_vectors keys this
     script's extract_prediction_error_by_domain() actually reads, since the
@@ -81,14 +101,16 @@ def _broadcast_payload(
 
 
 class TestExtractPredictionErrorByDomain:
-    def test_extracts_present_domains_only(self) -> None:
-        payload = _field_state_payload(BASE, execution=0.1)
+    def test_extracts_present_domains_only(self, probe_domain) -> None:
+        payload = _field_state_payload(BASE, probe=0.1)
+        payload["node_vectors"]["node:substrate.execution"] = {"prediction_error": 0.4}  # retired
         out = mod.extract_prediction_error_by_domain(payload)
-        assert out == {"execution": 0.1}
+        assert out == {"probe": 0.1}
 
     def test_retired_domains_are_not_extracted(self) -> None:
         # 2026-11: route and bus_synaptic retired (PE suite rebuild step 5);
-        # (biometrics retired 2026-11-18, #3575).
+        # (biometrics retired 2026-11-18, #3575; execution 2026-11-24, #3576).
+        assert "execution" not in mod.PREDICTION_ERROR_DOMAIN_NODES
         assert "bus_synaptic" not in mod.PREDICTION_ERROR_DOMAIN_NODES
         assert "route" not in mod.PREDICTION_ERROR_DOMAIN_NODES
         assert "biometrics" not in mod.PREDICTION_ERROR_DOMAIN_NODES
@@ -150,13 +172,13 @@ class TestComputePredictionErrorTrend:
         assert mod.compute_prediction_error_trend([{"biometrics": 0.1}]) == {}
 
 
-def test_replay_reducer_joins_field_state_by_nearest_preceding_timestamp() -> None:
+def test_replay_reducer_joins_field_state_by_nearest_preceding_timestamp(probe_domain) -> None:
     field_rows = [
         (BASE, _field_payload(BASE)),
         (BASE + timedelta(seconds=10), _field_payload(BASE + timedelta(seconds=10))),
     ]
     field_state_rows = [
-        (BASE - timedelta(seconds=1), _field_state_payload(BASE - timedelta(seconds=1), execution=0.2)),
+        (BASE - timedelta(seconds=1), _field_state_payload(BASE - timedelta(seconds=1), probe=0.2)),
     ]
 
     ticks, field_skipped, fs_skipped, bc_skipped = mod.replay_reducer(field_rows, [], field_state_rows)
@@ -244,14 +266,14 @@ def test_replay_reducer_joins_broadcast_by_nearest_preceding_timestamp_per_tick(
     assert "loop-late" in ticks[1].reason_narrative
 
 
-def test_replay_reducer_predicted_shift_tracks_rolling_trend_window() -> None:
+def test_replay_reducer_predicted_shift_tracks_rolling_trend_window(probe_domain) -> None:
     """A domain whose prediction_error climbs steadily across field_state
     ticks should surface as the named predicted_shift once enough ticks
     have accumulated to compute a trend (>=2) -- predicting reversion
     (falling), the empirically-validated direction, not naive continuation.
     """
     field_state_rows = [
-        (BASE + timedelta(seconds=i), _field_state_payload(BASE + timedelta(seconds=i), execution=0.01 * i))
+        (BASE + timedelta(seconds=i), _field_state_payload(BASE + timedelta(seconds=i), probe=0.01 * i))
         for i in range(1, 6)
     ]
     field_rows = [(BASE + timedelta(seconds=6), _field_payload(BASE + timedelta(seconds=6)))]
@@ -261,7 +283,7 @@ def test_replay_reducer_predicted_shift_tracks_rolling_trend_window() -> None:
     assert fs_skipped == 0
     assert len(ticks) == 1
     assert ticks[0].predicted_shift is not None
-    assert "execution" in ticks[0].predicted_shift
+    assert "probe" in ticks[0].predicted_shift
     assert "falling" in ticks[0].predicted_shift
 
 

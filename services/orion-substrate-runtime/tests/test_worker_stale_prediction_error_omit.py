@@ -26,21 +26,22 @@ from app.worker import BiometricsSubstrateWorker
 from orion.substrate.attention_self_model import reduce_attention_self_model
 
 NOW = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
-# execution is the last live Active-Inference domain since biometrics was retired 2026-11-18
-# (#3575). The omit rule is about a stale domain BESIDE a fresh one, so these tests add a
-# test-only second domain, "probe", to both the worker's map and the reducer's domain set.
-DOMAINS = ["execution", "probe"]
-# Retired 2026-11 (PE suite rebuild step 5; chat and biometrics step 6): present in
+# No live Active-Inference domain is left since execution was retired 2026-11-24 (#3576). The
+# omit rule is about a stale domain BESIDE a fresh one, so these tests add two test-only
+# domains, "fresh" and "probe", to both the worker's map and the reducer's domain set.
+DOMAINS = ["fresh", "probe"]
+# Retired 2026-11 (PE suite rebuild step 5; chat, biometrics and execution step 6): present in
 # the inputs below to prove the reader ignores them, never counted as a domain.
-RETIRED = ["route", "bus_synaptic", "chat", "biometrics"]
+RETIRED = ["route", "bus_synaptic", "chat", "biometrics", "execution"]
 
 
 @pytest.fixture(autouse=True)
 def _probe_domain(monkeypatch):
     monkeypatch.setattr(worker_module, "_PREDICTION_ERROR_DOMAIN_NODE_IDS",
-                        {**worker_module._PREDICTION_ERROR_DOMAIN_NODE_IDS, "node:substrate.probe": "probe"})
+                        {**worker_module._PREDICTION_ERROR_DOMAIN_NODE_IDS,
+                         "node:substrate.fresh": "fresh", "node:substrate.probe": "probe"})
     monkeypatch.setattr(self_model_module, "ACTIVE_INFERENCE_DOMAINS",
-                        frozenset(self_model_module.ACTIVE_INFERENCE_DOMAINS | {"probe"}))
+                        frozenset(self_model_module.ACTIVE_INFERENCE_DOMAINS | {"fresh", "probe"}))
 
 
 def _node(domain, value, age_sec, *, with_temporal=True):
@@ -58,8 +59,8 @@ def _worker(*, omit=True):
 
 def _nodes(stale_age=7200, **kw):
     # probe is the domain whose reading goes stale in these tests.
-    vals = {"execution": 0.1, "probe": 0.834, "chat": 0.2, "route": 0.0, "bus_synaptic": 0.3,
-            "biometrics": 0.5}
+    vals = {"fresh": 0.1, "probe": 0.834, "chat": 0.2, "route": 0.0, "bus_synaptic": 0.3,
+            "biometrics": 0.5, "execution": 0.6}
     return [_node(d, v, stale_age if d == "probe" else 5, **kw) for d, v in vals.items()]
 
 
@@ -72,7 +73,7 @@ def _conf(pe, omitted=None):
 
 def test_stale_domain_omitted_and_mean_is_the_fresh_domains_mean():
     pe, ev, omitted = _worker()._fresh_prediction_error_and_evidence_by_domain(_nodes(), now=NOW)
-    assert "probe" not in pe and set(pe) == {"execution"}
+    assert "probe" not in pe and set(pe) == {"fresh"}
     assert omitted == {"probe": pytest.approx(7200)}
     m = _conf(pe, omitted)
     assert m.prediction_error_confidence == pytest.approx(1 - 0.1, abs=1e-4)
@@ -148,7 +149,7 @@ def test_trend_buffer_not_reappended_with_stale_value(monkeypatch):
     w._attention_self_model_trend_buffer = deque(maxlen=4)
     fresh = datetime.now(timezone.utc)
     nodes = {}
-    for d, v, age in [("execution", 0.4, 1), ("probe", 0.834, 7200)]:
+    for d, v, age in [("fresh", 0.4, 1), ("probe", 0.834, 7200)]:
         nodes[f"node:substrate.{d}"] = SimpleNamespace(
             node_id=f"node:substrate.{d}", metadata={"prediction_error": v},
             temporal=SimpleNamespace(observed_at=fresh - timedelta(seconds=age)),

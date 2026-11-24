@@ -15,6 +15,11 @@ What it pins (live numbers, see the PR report):
   the honest result for a week of data;
 - forcing min_hours down to 1 still renders nothing a recount cannot back;
 - circular pairs stay excluded; chat (event-written, never sustained) has no high hour.
+
+2026-11-24 (#3576): node:substrate.execution was retired, the last prediction-error body signal in
+this week's rows. Its rows stay in the fixture and are fenced; the cabinet alarm is the only body
+signal left. CIRCULAR_PAIRS is empty (both pairs named execution), so the circular-exclusion check
+runs on a test-only pair over the cabinet's real rows.
 """
 
 from __future__ import annotations
@@ -44,11 +49,19 @@ def _ts(x: float) -> datetime:
     return datetime.fromtimestamp(float(x), tz=timezone.utc)
 
 
-@pytest.fixture(scope="module")
-def replay():
+def _load_hist() -> dict[str, list]:
     hist: dict[str, list] = {}
     for node, t, v in rows_from_csv(PE):
         hist.setdefault(node, []).append((_ts(t), float(v)))
+    return hist
+
+
+@pytest.fixture(scope="module")
+def replay():
+    return _build(_load_hist())
+
+
+def _build(hist: dict[str, list]):
     turns, rpc = [], []
     for line in OUT.read_text().splitlines():
         r = json.loads(line)
@@ -85,10 +98,10 @@ def test_replay_covers_the_week_and_only_body_signals(replay) -> None:
     # retired 2026-11 (PE suite rebuild steps 5 and 6) and are not body signals.
     # codebase followed 2026-11-13 (a churn z, not a forecast). The cabinet stays:
     # an alarm, read here as on/off hours, never as a size.
-    # biometrics retired 2026-11-18 (#3575): its fixture rows are fenced too.
-    assert set(signals) == {
-        "node:substrate.cabinet", "node:substrate.execution",
-    }
+    # biometrics retired 2026-11-18 (#3575) and execution 2026-11-24 (#3576): their fixture
+    # rows are fenced too.
+    assert set(signals) == {"node:substrate.cabinet"}
+    assert "node:substrate.execution" not in signals
     assert "node:substrate.chat" not in signals
 
 
@@ -104,23 +117,39 @@ def test_every_association_recounts_from_the_hour_rows(replay) -> None:
     rows = replay[0]
     for min_hours in (24, 1):
         assocs = sso.associate_all(rows, computed_at=COMPUTED, min_hours=min_hours)
-        assert len(assocs) == 2 * 3  # 2 body signals x 3 outcomes (biometrics retired, #3575)
+        assert len(assocs) == 1 * 3  # 1 body signal x 3 outcomes (biometrics #3575, execution #3576 retired)
         fails = [f for a in assocs for f in check_association(a, rows)]
         by_id = {a.association_id: a for a in assocs}
         fails += [f for a in assocs if a.clause for f in check_clause(a.clause, by_id)]
         assert fails == []
 
 
-def test_this_week_nothing_clears_so_nothing_renders(replay) -> None:
+def test_this_week_nothing_clears_so_nothing_renders(replay, monkeypatch) -> None:
+    # Test-only circular pair over real rows: the exclusion must still win over every other verdict.
+    monkeypatch.setattr(sso, "CIRCULAR_PAIRS", {("node:substrate.cabinet", "turn_failed"): "test-only pair"})
     assocs = sso.associate_all(replay[0], computed_at=COMPUTED, min_hours=24)
     assert [a for a in assocs if a.clause] == []
     verdicts = {(a.signal_id.removeprefix("node:substrate."), a.outcome): a.verdict for a in assocs}
-    assert verdicts[("execution", "turn_failed")] == "excluded_circular"
+    assert verdicts[("cabinet", "turn_failed")] == "excluded_circular"
     assert all(v in ("below_min_n", "excluded_circular", "no_clear_difference") for v in verdicts.values())
 
 
-def test_checker_has_teeth(replay) -> None:
-    rows = replay[0]
+def test_checker_has_teeth(monkeypatch) -> None:
+    # The cabinet alone has no association with both high and normal hours this week. The
+    # retired execution rows are real, so they are replayed under the test-only event-written
+    # probe (its old shape) to give the checker a non-trivial association to catch.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "self_readings_history_replay_eval", REPO / "tests" / "fixtures" / "self_readings_history.py"
+    )
+    fx = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fx)  # type: ignore[union-attr]
+    fx.install_probe_glossary(monkeypatch)
+    hist = _load_hist()
+    hist[fx.EVENT_BODY] = hist.pop("node:substrate.execution")
+    rows, signals, _, _ = _build(hist)
+    assert fx.EVENT_BODY in signals
     a = next(x for x in sso.associate_all(rows, computed_at=COMPUTED) if x.n_high and x.n_normal)
     assert check_association(a.model_copy(update={"events_high": a.events_high + 1}), rows)
     assert check_association(a.model_copy(update={"verdict": "tends_more", "clause": "x"}), rows)

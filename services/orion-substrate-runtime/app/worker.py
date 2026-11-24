@@ -72,7 +72,6 @@ from orion.substrate.prediction_error import (
     perception_prediction_error,
     vision_channel_staleness_pressure,
     codebase_prediction_error,
-    execution_prediction_error,
 )
 from orion.substrate.transport_loop.pipeline import (
     empty_transport_projection,
@@ -135,7 +134,6 @@ from .reducer_health import (
 from .settings import Settings, get_settings
 from .store import BiometricsSubstrateStore
 from .world_model_features import (
-    ExecutionContextScalars,
     WorldModelFeatureDims,
     assemble_world_model_trajectory_step,
 )
@@ -188,9 +186,12 @@ _DRIVE_STATE_MAX_AGE_SEC = 300.0
 # of pressure hints / 0.30, not a forecast. Its successors, node:prediction.
 # body_joint / .room_joint (family A joint surprise), are written per scored
 # 5-min bucket and go stale between, so they are not self-model domains either.
-_PREDICTION_ERROR_DOMAIN_NODE_IDS = {
-    "node:substrate.execution": "execution",
-}
+# node:substrate.execution left 2026-11-24 (retire step 6, #3576), the last one:
+# a clipped EWMA z of cortex-exec pressure-hint change, not a forecast. The map
+# is now EMPTY (it still equals ACTIVE_INFERENCE_DOMAINS, also empty), so the
+# self-model tick passes no prediction_error_by_domain and its PE confidence
+# reads unknown.
+_PREDICTION_ERROR_DOMAIN_NODE_IDS: dict[str, str] = {}
 
 
 def _prediction_error_nodes_enabled() -> bool:
@@ -508,11 +509,11 @@ def _prediction_error_label(node_id: str) -> str:
 
     These nodes render in the Concept Atlas alongside organically-discovered
     topics, so their label is read by a person. It used to be
-    ``f"substrate:{node_id}"``, i.e. ``substrate:node:substrate.execution``
+    ``f"substrate:{node_id}"``, i.e. ``substrate:node:substrate.perception``
     -- a non-empty string that is not a label, just the id said twice. See
     docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
 
-    ``node:substrate.execution`` -> ``"Execution prediction error"``.
+    ``node:substrate.perception`` -> ``"Perception prediction error"``.
     Falls back to the raw node_id if it does not match the expected shape --
     never returns an empty label (the schema requires one) and never invents a
     domain name that is not in the id.
@@ -655,14 +656,11 @@ class BiometricsSubstrateWorker:
         # on different threads. Built here, not lazily, so the two first callers
         # cannot each build their own lock (review 2026-10-21).
         self._perception_room_score_lock = threading.Lock()
-        # World-model publish tick (world_model_features.py): real per-domain
-        # prediction-error scalars cached by their own _*_tick() methods
-        # below, read by _world_model_publish_tick's execution_context group
-        # assembly. `transport` is deliberately NOT cached here -- see
-        # world_model_features.py's module docstring for why wiring the
-        # retired transport_prediction_error() into a brand-new consumer
-        # would repeat CLAUDE.md 0A's own documented mistake.
-        self._last_execution_prediction_error: float | None = None
+        # World-model publish tick: the execution prediction-error scalar it
+        # used to cache here (_last_execution_prediction_error) was retired
+        # 2026-11-24 with node:substrate.execution (#3576). The
+        # execution_context group is now zero-filled and flagged
+        # (world_model_features.py).
         self._world_reading_link_events_cache: list[tuple[datetime, str, str]] | None = None
         self._world_reading_link_events_cache_at: datetime | None = None
         # RPC delivery bridge (orion/substrate/rpc_delivery.py): the listener
@@ -2684,14 +2682,10 @@ class BiometricsSubstrateWorker:
                 temporal=self._settings.world_model_dim_temporal,
                 vision_embedding=self._settings.world_model_dim_vision_embedding,
             )
-            scalars = ExecutionContextScalars(
-                execution=self._last_execution_prediction_error,
-            )
             step, meta = assemble_world_model_trajectory_step(
                 now=now,
                 process_started_at=self._process_started_at,
                 dims=dims,
-                execution_context=scalars,
                 vision_embedding_vector=self._last_perception_embedding_vector,
                 # Staleness floor (review finding): checking dim alone let a
                 # P2 listener outage keep publishing vision_source="real" off
@@ -4859,8 +4853,6 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_execution_trajectory(EXECUTION_TRAJECTORY_PROJECTION_ID)
             return loaded or empty_execution_projection(now=now)
 
-        prev_projection = load_projection()
-
         def process_batch(batch: list[GrammarEventV1]) -> None:
             process_execution_grammar_events(
                 events=batch,
@@ -4872,63 +4864,19 @@ class BiometricsSubstrateWorker:
                 max_age_sec=self._settings.execution_trajectory_max_age_sec,
             )
 
-        quarantined: list[str] = []
-        last_id = self._process_events_with_poison_isolation(
+        # node:substrate.execution (execution_prediction_error, its receipt and
+        # node write) was retired 2026-11-24, PE suite rebuild retire step 6
+        # (#3576): a clipped EWMA z of cortex-exec pressure-hint change, not a
+        # forecast. This tick now only reduces execution grammar into the
+        # trajectory projection (/projections/execution_trajectory and the Hub
+        # chat-turn trace read it). Its successors are scored forecasts written
+        # elsewhere: node:prediction.chat_turn (the "more steps than usual" turn
+        # self-bet) and node:prediction.body_joint.
+        return self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
-            quarantined_out=quarantined,
         )
-
-        if last_id is not None:
-            curr_projection = load_projection()
-            error = execution_prediction_error(prev_projection, curr_projection)
-            # execution_prediction_error mutates curr_projection's EWMA baseline
-            # fields in place (prediction_error_baseline_ewma/_var/_n) -- persist
-            # that regardless of whether error > 0.0 this tick, or the baseline
-            # never survives past this process's lifetime and every tick after a
-            # restart re-cold-starts at n=0. Cheap: save_execution_trajectory is
-            # the same upsert process_batch already calls above.
-            self._store.save_execution_trajectory(curr_projection)
-            # Cached for the world-model publish tick's execution_context
-            # group (world_model_features.py) -- a real reading regardless of
-            # whether it is > 0.0 this tick, same "confirmed calm is still a
-            # real value" reasoning as every other _last_* cache in this file.
-            self._last_execution_prediction_error = error
-            evidence_event_ids = _prediction_error_evidence_event_ids(
-                events, quarantined_event_ids=quarantined
-            )
-            self._store.save_receipt(
-                _prediction_error_receipt(
-                    reducer_key="execution_trajectory",
-                    node_id="node:substrate.execution",
-                    prediction_error=error,
-                    now=now,
-                    caused_by_event_ids=evidence_event_ids,
-                )
-            )
-            # Write the node on every tick, not just when error > 0.0 -- the
-            # same fix already applied to bus_synaptic (2026-07-30), extended
-            # here after `route` was found frozen at a stale 0.00025 while its
-            # tick kept running: a categorical/quiet domain returns error == 0.0
-            # on most ticks, so gating the node write left the node holding its
-            # last NON-ZERO value indefinitely. Consumers that poll this node's
-            # raw current value (orion-equilibrium-service, AST/HOT's
-            # prediction_error_by_domain) then read a stale high-water mark as
-            # if it were a current reading -- a value that can rise but never
-            # come back down to a genuine calm 0.0. The receipt above is
-            # likewise written every tick -- see the comment on
-            # _prediction_error_receipt for why it is not an audit-only write.
-            self._write_prediction_error_node(
-                node_id="node:substrate.execution",
-                error=error,
-                now=now,
-                reducer_key="execution_trajectory",
-                contributing_id=last_id,
-                evidence_event_ids=evidence_event_ids,
-            )
-
-        return last_id
 
     def _chat_tick(self) -> str | None:
         spec = REDUCER_SPECS[3]

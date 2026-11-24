@@ -117,12 +117,11 @@ MAX_ROWS: int = 200_000
 # live reducer computes, so including a domain the live reducer no longer reads
 # is itself the thumb on the scale: `_aggregate_prediction_error_confidence`
 # would average 6 values here against 5 in production, for the same tick.
-PREDICTION_ERROR_DOMAIN_NODES: dict[str, str] = {
-    "execution": "node:substrate.execution",
-    # route and bus_synaptic removed 2026-11 with their producers (PE suite
-    # rebuild step 5), chat 2026-11-13 and biometrics 2026-11-18 (step 6) --
-    # same reasoning as transport above.
-}
+# route and bus_synaptic removed 2026-11 with their producers (PE suite rebuild
+# step 5), chat 2026-11-13, biometrics 2026-11-18 and execution 2026-11-24
+# (step 6, #3576) -- same reasoning as transport above. EMPTY now, matching the
+# live reducer's empty ACTIVE_INFERENCE_DOMAINS.
+PREDICTION_ERROR_DOMAIN_NODES: dict[str, str] = {}
 
 # Trend window, in field_state ticks, split into two equal halves (recent vs
 # prior) for the mean-delta trend computation. Sized to the live ~2s
@@ -762,7 +761,8 @@ def render_report(
         "### `prediction_error_confidence` (2026-07-24, unconditional, ACTIVE_INFERENCE_DOMAINS only)",
         "",
         "Closes the branch-starvation gap above: computed regardless of attention_reason, "
-        "restricted to ACTIVE_INFERENCE_DOMAINS: execution (chat, route, bus_synaptic and biometrics retired 2026-11). "
+        "restricted to ACTIVE_INFERENCE_DOMAINS: none since 2026-11-24 (chat, route, bus_synaptic, biometrics "
+        "and execution all retired 2026-11), so it reads unknown on every tick. "
         "(This line said 'execution/biometrics/chat/route' until 2026-07-31 -- stale since "
         "bus_synaptic was added 2026-07-25, so the harness printed a 4-domain claim next to a "
         "5-domain number. transport was excluded 2026-07-24 after reading exactly 0.0 for 100% "

@@ -137,13 +137,31 @@ DEFAULT_BROADCAST_STALE_THRESHOLD_SEC = 60.0
 # **2026-11-18: `biometrics` retired** (retire step 6, #3575). Its successors,
 # node:prediction.body_joint / .room_joint (family A joint surprise), are written
 # once per scored 5-min bucket and stale between outages, so they are not
-# averaged in either. Execution is the last domain (retire step 6 continues, #3576).
+# averaged in either.
+#
+# **2026-11-24: `execution` retired** (retire step 6, #3576), the last domain.
+# It was a clipped EWMA z of cortex-exec pressure-hint change, not a forecast.
+# Its successors (node:prediction.chat_turn's "more steps than usual" bet and
+# node:prediction.body_joint) are event-shaped scored forecasts, absent between
+# turns/buckets, so neither is an always-on domain. The set is now EMPTY:
+# `prediction_error_confidence` and `predicted_shift` read unknown (None) on
+# every tick, with `prediction_error_confidence_basis` saying why
+# (NO_ACTIVE_INFERENCE_DOMAINS_BASIS). Never a fabricated 1.0 or 0.0.
 #
 # This constant does NOT affect the pre-existing branch-gated
 # `confidence`/`confidence_basis` fields below, which keep their original
 # (unfiltered, all-domains) formula unchanged -- additive only. It DOES now
 # gate `predicted_shift` (2026-07-31), which was previously unfiltered.
-ACTIVE_INFERENCE_DOMAINS = frozenset({"execution"})
+ACTIVE_INFERENCE_DOMAINS: frozenset[str] = frozenset()
+
+# Basis string for the unconditional confidence when ACTIVE_INFERENCE_DOMAINS is
+# empty: the reading is unknown because no always-on domain exists, not because a
+# reading went stale. Readers (Hub attention organ, equilibrium insight gate,
+# brain-frame honesty region) already treat a None confidence as absent.
+NO_ACTIVE_INFERENCE_DOMAINS_BASIS = (
+    "unknown: no Active-Inference prediction-error domain is live "
+    "(execution, the last, retired 2026-11-24, #3576)"
+)
 
 
 def _round_or_none(value: float | None, digits: int = 4) -> float | None:
@@ -628,6 +646,8 @@ def reduce_attention_self_model(
     if pe_confidence is None and omit_note:
         # Unknown, not calm and not 1.0: confidence stays None, basis says why.
         model.prediction_error_confidence_basis = "no current reading" + omit_note
+    elif pe_confidence is None and not ACTIVE_INFERENCE_DOMAINS:
+        model.prediction_error_confidence_basis = NO_ACTIVE_INFERENCE_DOMAINS_BASIS
     if pe_confidence is not None:
         model.prediction_error_confidence = _round_or_none(pe_confidence)
         model.prediction_error_confidence_basis = pe_confidence_basis + omit_note

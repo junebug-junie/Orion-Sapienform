@@ -10,6 +10,18 @@ from orion.attention.field_attention.goal_provenance import (
 from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 
+import pytest
+
+# node:substrate.execution, the last native target, was retired 2026-11-24 (#3576): the real
+# map is empty (no body signal authors a goal). The goal logic is tested on a test-only native
+# target, EXEC_PROBE, put in the shared map for each test (and restored after).
+EXEC_PROBE = "node:substrate.probe_event"
+
+
+@pytest.fixture(autouse=True)
+def _exec_probe_native(monkeypatch):
+    monkeypatch.setitem(PREDICTION_ERROR_NATIVE_TARGETS, EXEC_PROBE, "probe_event")
+
 
 def _target(
     target_id: str, salience: float, kind: str = "node", *, confidence: float = 1.0
@@ -80,7 +92,7 @@ def test_top_node_substrate_target_accepts_sole_high_confidence_competitor():
     # Same shape (sole real competitor, salience pinned to 1.0), but with
     # observation_count >= QUALIFYING_MIN_ROWS this time -- a real, trustworthy
     # signal, not the thin one above. Must still be selectable.
-    real_domain = "node:substrate.execution"
+    real_domain = EXEC_PROBE
     frame = _frame([_target(real_domain, 1.0, confidence=1.0)])
     winner = top_node_substrate_target(frame)
     assert winner is not None
@@ -92,27 +104,27 @@ def test_top_node_substrate_target_prefers_confident_over_higher_salience_but_th
     # still lose to a confident, lower-salience real competitor -- confidence
     # is a hard gate, not another factor blended into the ranking.
     thin = _target("node:substrate.chat", 1.0, confidence=0.1)
-    confident = _target("node:substrate.execution", 0.4, confidence=1.0)
+    confident = _target(EXEC_PROBE, 0.4, confidence=1.0)
     frame = _frame([thin, confident])
     winner = top_node_substrate_target(frame)
     assert winner is not None
-    assert winner.target_id == "node:substrate.execution"
+    assert winner.target_id == EXEC_PROBE
 
 
 def test_top_node_substrate_target_boundary_at_min_confidence():
     just_under = _target(
-        "node:substrate.execution", 0.9, confidence=MIN_CONFIDENCE_FOR_GOAL_PROVENANCE - 0.01
+        EXEC_PROBE, 0.9, confidence=MIN_CONFIDENCE_FOR_GOAL_PROVENANCE - 0.01
     )
     frame_under = _frame([just_under])
     assert top_node_substrate_target(frame_under) is None
 
     exactly_at = _target(
-        "node:substrate.execution", 0.9, confidence=MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
+        EXEC_PROBE, 0.9, confidence=MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
     )
     frame_at = _frame([exactly_at])
     winner = top_node_substrate_target(frame_at)
     assert winner is not None
-    assert winner.target_id == "node:substrate.execution"
+    assert winner.target_id == EXEC_PROBE
 
 
 def test_dominance_streak_resets_on_target_change():
@@ -161,9 +173,9 @@ def test_dominance_streak_flip_flop_never_emits():
 
 # --- the one bridge: competition-aware target choice (2026-09-06) --------------
 
-# execution is the last live native target since node:substrate.biometrics was retired 2026-11-18
-# (#3575). The bridge chooses between two QUALIFIED targets, so these tests add a test-only native
-# target, node:substrate.probe, the same way the retired one used to sit beside execution.
+# No live native target is left (biometrics retired 2026-11-18, #3575; execution 2026-11-24,
+# #3576). The bridge chooses between two QUALIFIED targets, so these tests add a second test-only
+# native target, node:substrate.probe, beside EXEC_PROBE.
 import pytest as _pytest
 
 
@@ -200,8 +212,8 @@ def _bridge_frame(targets):
 def test_bridge_prefers_the_candidate_the_competition_can_see(probe_native):
     from orion.attention.field_attention.goal_provenance import top_node_substrate_target
 
-    frame = _bridge_frame([_bridge_target("node:substrate.execution", 0.9), _bridge_target("node:substrate.probe", 0.6)])
-    assert top_node_substrate_target(frame).target_id == "node:substrate.execution"
+    frame = _bridge_frame([_bridge_target(EXEC_PROBE, 0.9), _bridge_target("node:substrate.probe", 0.6)])
+    assert top_node_substrate_target(frame).target_id == EXEC_PROBE
     chosen = top_node_substrate_target(frame, competing={"node:substrate.probe", "node:substrate.chat"})
     assert chosen.target_id == "node:substrate.probe"
 
@@ -210,28 +222,28 @@ def test_bridge_falls_back_to_top1_when_nothing_qualified_is_competing(probe_nat
     """Must never make the producer fire less than before."""
     from orion.attention.field_attention.goal_provenance import top_node_substrate_target
 
-    frame = _bridge_frame([_bridge_target("node:substrate.execution", 0.9), _bridge_target("node:substrate.probe", 0.6)])
-    assert top_node_substrate_target(frame, competing={"node:substrate.chat"}).target_id == "node:substrate.execution"
-    assert top_node_substrate_target(frame, competing=set()).target_id == "node:substrate.execution"
-    assert top_node_substrate_target(frame, competing=None).target_id == "node:substrate.execution"
+    frame = _bridge_frame([_bridge_target(EXEC_PROBE, 0.9), _bridge_target("node:substrate.probe", 0.6)])
+    assert top_node_substrate_target(frame, competing={"node:substrate.chat"}).target_id == EXEC_PROBE
+    assert top_node_substrate_target(frame, competing=set()).target_id == EXEC_PROBE
+    assert top_node_substrate_target(frame, competing=None).target_id == EXEC_PROBE
 
 
 def test_bridge_still_returns_none_when_no_candidate_qualifies():
     from orion.attention.field_attention.goal_provenance import top_node_substrate_target
 
-    thin = _bridge_target("node:substrate.execution", 0.9)
+    thin = _bridge_target(EXEC_PROBE, 0.9)
     thin = thin.model_copy(update={"confidence_score": 0.2})
-    assert top_node_substrate_target(_bridge_frame([thin]), competing={"node:substrate.execution"}) is None
+    assert top_node_substrate_target(_bridge_frame([thin]), competing={EXEC_PROBE}) is None
 
 
 def test_bridge_hysteresis_keeps_the_current_target_on_unknown_or_empty_reads(probe_native):
     from orion.attention.field_attention.goal_provenance import top_node_substrate_target
 
-    frame = _bridge_frame([_bridge_target("node:substrate.execution", 0.9), _bridge_target("node:substrate.probe", 0.6)])
+    frame = _bridge_frame([_bridge_target(EXEC_PROBE, 0.9), _bridge_target("node:substrate.probe", 0.6)])
     cur = "node:substrate.probe"
     assert top_node_substrate_target(frame, competing=None, current=cur).target_id == cur
     assert top_node_substrate_target(frame, competing=set(), current=cur).target_id == cur
     # a competing read naming a different qualified target still moves it
-    assert top_node_substrate_target(frame, competing={"node:substrate.execution"}, current=cur).target_id == "node:substrate.execution"
+    assert top_node_substrate_target(frame, competing={EXEC_PROBE}, current=cur).target_id == EXEC_PROBE
     # a current target that is no longer qualified does not stick
-    assert top_node_substrate_target(frame, competing=None, current="node:substrate.chat").target_id == "node:substrate.execution"
+    assert top_node_substrate_target(frame, competing=None, current="node:substrate.chat").target_id == EXEC_PROBE

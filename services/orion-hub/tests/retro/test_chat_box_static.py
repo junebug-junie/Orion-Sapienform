@@ -15,7 +15,7 @@ JS = (HUB / 'static/js/retro-panel.js').read_text()
 
 
 def test_template_loads_the_asset_and_the_chat_box_is_inside_the_stage():
-    assert '<script src="/static/js/retro-panel.js?v=21" defer></script>' in HTML
+    assert '<script src="/static/js/retro-panel.js?v=22" defer></script>' in HTML
     start = HTML.index('id="stage"')
     stage = HTML[start:HTML.index('</canvas>', start)]   # fullscreen shows only #stage
     for marker in ('id="chatToggle"', 'id="chatPanel" hidden', 'id="chatStrip" hidden', 'id="chatStripText"',

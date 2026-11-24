@@ -16,6 +16,27 @@ from orion.schemas.field_state import FieldStateV1
 
 from app.store import AttentionRuntimeStore
 from app.worker import AttentionRuntimeWorker, _camera_absent_reason
+import pytest
+
+
+# node:substrate.execution was retired 2026-11-24 (#3576). Its role here (a live event-written level
+# body node) is played by the test-only EVENT_BODY probe from tests/fixtures/self_readings_history.py.
+import importlib.util as _probe_ilu  # noqa: E402
+from pathlib import Path as _ProbePath  # noqa: E402
+
+_probe_spec = _probe_ilu.spec_from_file_location(
+    "self_readings_history_probe_test_world_first_worker",
+    _ProbePath(__file__).resolve().parents[3] / "tests" / "fixtures" / "self_readings_history.py",
+)
+_probe_fx = _probe_ilu.module_from_spec(_probe_spec)
+_probe_spec.loader.exec_module(_probe_fx)
+EVENT_BODY = _probe_fx.EVENT_BODY
+
+
+@pytest.fixture(autouse=True)
+def _install_probe_glossary(monkeypatch):
+    _probe_fx.install_probe_glossary(monkeypatch)
+
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
@@ -49,7 +70,7 @@ def _worker(*, pe_rows=None, pe_error=None, turns=None, chat_error=None) -> Atte
 
 
 def _field(staleness: float | None = 0.0) -> FieldStateV1:
-    vectors = {"node:substrate.execution": {"prediction_error": 0.9}}
+    vectors = {EVENT_BODY: {"prediction_error": 0.9}}
     if staleness is not None:
         vectors["node:substrate.vision_organ"] = {"vision_frame_staleness": staleness}
     return FieldStateV1(tick_id="t", generated_at=NOW, node_vectors=vectors)
@@ -61,13 +82,13 @@ def _by_id(cands):
 
 def test_candidates_cover_every_stored_node_plus_chat() -> None:
     # (biometrics retired 2026-11-18, #3575: its lingering rows build no candidate; the body joint does.)
-    rows = (_history("node:substrate.execution", 0.0, 0.9) + _history("node:prediction.body_joint", 0.0, 0.0)
+    rows = (_history(EVENT_BODY, 0.0, 0.9) + _history("node:prediction.body_joint", 0.0, 0.0)
             + _history("node:substrate.biometrics", 0.02, 0.02))
     cands = _by_id(_worker(pe_rows=rows)._world_first_candidates(_field(), NOW))
     assert set(cands) == {
-        "node:substrate.execution", "node:prediction.body_joint", "world:chat", "world:reading"
+        EVENT_BODY, "node:prediction.body_joint", "world:chat", "world:reading"
     }
-    ex = cands["node:substrate.execution"]
+    ex = cands[EVENT_BODY]
     assert ex.source_kind == "internal" and ex.unusualness.band == "unusual"
     assert cands["node:prediction.body_joint"].source_kind == "internal"
     assert cands["node:prediction.body_joint"].unusualness.percentile_now == 0.0
@@ -75,7 +96,7 @@ def test_candidates_cover_every_stored_node_plus_chat() -> None:
 
 def test_unreadable_history_makes_body_nodes_absent_not_calm() -> None:
     cands = _by_id(_worker(pe_error=RuntimeError("db down"))._world_first_candidates(_field(), NOW))
-    ex = cands["node:substrate.execution"]
+    ex = cands[EVENT_BODY]
     assert ex.absent and "unreadable" in ex.absent_reason
 
 
@@ -116,7 +137,7 @@ def test_tick_saves_a_world_first_frame_and_logs_no_winner(monkeypatch) -> None:
 
     from orion.attention.field_attention.policy import load_attention_policy
 
-    w = _worker(pe_rows=_history("node:substrate.execution", 0.0, 0.0))
+    w = _worker(pe_rows=_history(EVENT_BODY, 0.0, 0.0))
     w._settings = SimpleNamespace(
         attention_world_first_enabled=True, enable_attention_runtime=True,
         prediction_error_history_limit=200, enable_goal_provenance_producer=False,
@@ -146,12 +167,12 @@ def test_event_decay_setting_reaches_the_candidates() -> None:
     from orion.attention.world_first import EVENT_ORIENTING_WINDOW_SEC
 
     assert Settings.model_fields["attention_event_decay_enabled"].default is True
-    rows = _history("node:substrate.execution", 0.0, 0.9) + _history("node:prediction.body_joint", 0.0, 0.0)
+    rows = _history(EVENT_BODY, 0.0, 0.9) + _history("node:prediction.body_joint", 0.0, 0.0)
     for flag, expected in ((True, EVENT_ORIENTING_WINDOW_SEC), (False, None)):
         w = _worker(pe_rows=rows)
         w._settings = SimpleNamespace(attention_world_first_enabled=True, attention_event_decay_enabled=flag)
         cands = _by_id(w._world_first_candidates(_field(), NOW))
-        assert cands["node:substrate.execution"].event_window_sec == expected
+        assert cands[EVENT_BODY].event_window_sec == expected
         assert cands["node:prediction.body_joint"].event_window_sec is None
 
 
@@ -163,7 +184,7 @@ def test_walkway_bids_as_world_and_wins_only_in_its_own_p99_band() -> None:
     walkway = "node:substrate.perception_walkway"
     field = _field()
     field = field.model_copy(update={"node_vectors": {**field.node_vectors, walkway: {"prediction_error": 1.0}}})
-    rows = _history(walkway, 0.0, 1.0) + _history("node:substrate.execution", 0.0, 0.9)
+    rows = _history(walkway, 0.0, 1.0) + _history(EVENT_BODY, 0.0, 0.9)
     cand = _by_id(_worker(pe_rows=rows)._world_first_candidates(field, NOW))[walkway]
     assert cand.source_kind == "external" and not cand.absent
     verdict = judge_candidate(cand)

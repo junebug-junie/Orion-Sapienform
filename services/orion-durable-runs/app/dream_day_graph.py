@@ -49,17 +49,20 @@ from app.admitted_graph import (
     resource_nodes, retry_wait_node, taken_back,
 )
 from app.graph import attempt_timeout_sec
+from app.dream_day_receipts import NOTE_MARKER
 from app.harness_step import (
     TURN_REPLY_GRACE_SEC, HarnessStepFailed, RunTurn, harness_step_correlation_id, run_harness_step,
 )
+from orion.harness.cut_short import CUT_SHORT_CODES, CUT_SHORT_MARKER
 from orion.memory.dream_day import (
     ParsedAnswer, answer_refs, apply_grounding, build_memories, check_answer, day_window, experience_cites,
-    grounding_summary, judge_memories, parse_answer,
+    grounding_summary, judge_memories, parse_answer, totals_ref, totals_resolved,
 )
 from orion.memory.episode.validate import ValidationResult
 from orion.schemas.dream_day import (
-    DREAM_DAY_MAX_MEMORIES, DREAM_DAY_MAX_NEW_CONCERNS, DREAM_DAY_SESSION_ID, DREAM_DAY_SOURCE_TAG,
-    DREAM_DAY_STEP_KEY, DREAM_DAY_TEXT_MAX, DreamDayAnswerV1, DreamDayBriefV1, DreamDayMaterialV1, DreamDayReadV1,
+    DREAM_DAY_MAX_MEMORIES, DREAM_DAY_MAX_NEW_CONCERNS, DREAM_DAY_MIN_ATTEMPT_SEC, DREAM_DAY_READ_REF_KIND,
+    DREAM_DAY_SESSION_ID, DREAM_DAY_SOURCE_TAG, DREAM_DAY_STEP_KEY, DREAM_DAY_TEXT_MAX, DreamDayAnswerV1,
+    DreamDayBriefV1, DreamDayMaterialV1, DreamDayReadV1, DreamDayTotalsV1,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +111,7 @@ class DreamDayState(TypedDict, total=False):
     grounding: list[dict[str, Any]] | None   # one verdict per checked memory (None: gate off for this run)
     grounding_enabled: bool
     read: dict[str, Any] | None      # DreamDayReadV1
+    read_totals: dict[str, Any] | None   # DreamDayTotalsV1 of this read (the dream_day_read:<day> ref), or None
     persisted: bool
     persist_outcome: str | None      # written | already_written
     existing_run_id: str | None
@@ -142,6 +146,9 @@ class DreamDayDeps:
     # (canonical refs) -> {canonical ref: the record's FULL text} for the judge (short text + detail). None: the
     # judge reads ``resolve_refs``' text.
     resolve_ref_texts: Optional[Callable[[list[str]], Awaitable[dict[str, str]]]] = None
+    # (day) -> the count lines `dig dream-day` left beside its receipt (DreamDayTotalsV1), or None. None = no totals
+    # ref can resolve (``dream_day_read:<day>`` items are dropped like any unresolved ref).
+    read_totals: Optional[Callable[[date], Awaitable[Optional[DreamDayTotalsV1]]]] = None
 
 
 # --------------------------------------------------------------------------- the prompt
@@ -192,36 +199,76 @@ def material_lines(m: DreamDayMaterialV1) -> list[str]:
     return lines
 
 
-def build_prompt(brief: DreamDayBriefV1, material: DreamDayMaterialV1) -> str:
-    """The spec's short prompt, the commands spelled out, the material code laid out, and the answer shape."""
+ANSWER_SHAPE = [
+    "```json",
+    '{"memories": [{"statement": "<one sentence, in your own voice>", "purpose": "happened|orion_view|about_juniper",'
+    ' "refs": ["experience:<id>"]}],',
+    ' "plan": [{"concern_id": "<id>", "action": "keep|drop", "reason": "<why>", "refs": []},',
+    '          {"action": "new", "gist": "<what to carry>", "reason": "<why>", "refs": ["<kind>:<id>"]}],',
+    ' "day": {"text": "<one paragraph: what the day was>", "refs": ["<kind>:<id>"]}}',
+    "```",
+]
+# The extra digs a turn may run after the day page. Live 2026-11-20 and 11-23: 7 of 14 turns ran 41-80 steps and hit
+# the motor's budget (fcc_timeout) before writing any answer; every turn that answered did so in at most ~350 s.
+PROMPT_EXTRA_DIGS = 3
+
+
+RETRY_CAUSES = (
+    ("dream_day_cut_short", "ran out of time before it wrote the answer block"),
+    ("dream_day_not_read", "did not run the dream-day command this attempt (code found no fresh read receipt)"),
+    ("dream_day_no_answer", "ended without an answer block code could read"),
+)
+
+
+def retry_cause(last_error: Optional[str]) -> str:
+    err = str(last_error or "")
+    return next((why for key, why in RETRY_CAUSES if key in err), "saved nothing")
+
+
+def build_prompt(brief: DreamDayBriefV1, material: DreamDayMaterialV1, *, attempt: int = 0,
+                 last_error: Optional[str] = None) -> str:
+    """The answer shape and the facts rule FIRST (code reads only the block; the judge reads only the cited records),
+    then the steps, the material code laid out, and the shape reminder last. A retry says why the last attempt
+    saved nothing (a retry resumes the same claude session, so what it read is still there)."""
     day = brief.day.isoformat()
+    retry = [] if attempt <= 0 else [
+        f"Attempt {attempt + 1}: your last attempt {retry_cause(last_error)}, so it saved nothing. What you read is "
+        f"still in this session. Run `{DIG} dream-day {day}` again (code checks a fresh "
+        "read), dig nothing more, and write the answer block right away.", ""]
     return "\n".join([
-        f"This is your day, {day}. Read it. Dig into anything you want to look at more closely. Then tell me, in "
-        "the shape below: what you want to remember from it (at most 5, each with the records it comes from), what "
+        *retry,
+        f"This is your day, {day}. Read it. Then tell me, in the answer block: what you want to remember from it, what "
         "you carry into tomorrow and what you let go (each with a reason), and in one paragraph, what the day was.",
         "",
-        "Do exactly this:",
+        "YOUR ANSWER: end your reply with ONE ```json block in exactly this shape (code reads only that block):",
+        *ANSWER_SHAPE,
+        "",
+        "How code checks it:",
+        "- Every specific fact in a memory (a number, a count, a person, an object, an event, a time) must be stated "
+        "in a record that memory cites. A judge reads ONLY the cited records; one fact they do not state gets the "
+        "whole memory refused. How you felt or what you think is yours and is not checked.",
+        "- So prefer fewer, smaller memories: one or two facts each, each fact in a record you cite. Do not add a "
+        "detail you did not see in the cited record.",
+        f"- A day's totals (how many gpu waits, experiences, runs or digs) are stated only in your read of the day: "
+        f"cite \"{totals_ref(day)}\". One record (one gpu wait, one run) never shows a total.",
+        "- A ref is `kind:id` with kind one of experience, act, dream_cycle, dream_hypothesis, harness_turn_trace, "
+        f"chat_turn, {DREAM_DAY_READ_REF_KIND}, exactly as the pages print it (an [experience:<id>] line -> "
+        "\"experience:<id>\"; a dig's [harness_turn_trace:<id>] or [chat:<id>] -> the same). An item with a ref "
+        f"that does not resolve is dropped. At most {DREAM_DAY_MAX_MEMORIES} memories, each with at least one ref. "
+        f"Plan: keep or drop only the concern_ids below, each with a reason; at most {DREAM_DAY_MAX_NEW_CONCERNS} "
+        f"new, with a ref. The day paragraph: at most {DREAM_DAY_TEXT_MAX} characters. Remembering nothing is "
+        "allowed: an empty memories list is an honest answer.",
+        "",
+        "Steps (your time is short; a turn that runs out of time saves nothing):",
         f"1. Run `{DIG} dream-day {day}` FIRST. It prints what each of your organs did that day and every dig you "
         "ran, and leaves a read receipt code checks; a dream that skips it is not saved.",
-        f"2. Dig further if you want: `{DIG} act <id>`, `{DIG} arc <id>`, `{DIG} turn-steps <chat>`, the full "
-        "files it names. A few calls, not many.",
-        "3. End your reply with ONE ```json block in exactly this shape (no other JSON after it):",
-        "```json",
-        '{"memories": [{"statement": "<one sentence, in your own voice>", "purpose": "happened|orion_view|about_juniper",'
-        ' "refs": ["experience:<id>", "act:<id>"]}],',
-        ' "plan": [{"concern_id": "<id>", "action": "keep|drop", "reason": "<why>", "refs": []},',
-        '          {"action": "new", "gist": "<what to carry>", "reason": "<why>", "refs": ["<kind>:<id>"]}],',
-        ' "day": {"text": "<one paragraph: what the day was>", "refs": ["<kind>:<id>"]}}',
-        "```",
-        f"Rules code checks: every ref is `kind:id` with kind one of experience, act, dream_cycle, dream_hypothesis, "
-        "harness_turn_trace, chat_turn, exactly as the pages print them (an [experience:<id>] line -> "
-        "\"experience:<id>\"; a dig's [harness_turn_trace:<id>] or [chat:<id>] -> the same). An item with a ref that "
-        f"does not resolve is dropped. At most {DREAM_DAY_MAX_MEMORIES} memories, each with at least one ref. Plan: "
-        f"keep or drop only the concern_ids below, each with a reason; at most {DREAM_DAY_MAX_NEW_CONCERNS} new, "
-        f"with a ref. The day paragraph: at most {DREAM_DAY_TEXT_MAX} characters. Remembering nothing is allowed: "
-        "an empty memories list is an honest answer.",
+        f"2. Dig further only where a memory needs a record: at most {PROMPT_EXTRA_DIGS} more commands "
+        f"(`{DIG} act <id>`, `{DIG} arc <id>`, `{DIG} turn-steps <chat>`).",
+        "3. Write the answer block.",
         "",
         *material_lines(material),
+        "",
+        "Remember: end your reply with the ```json answer block in the shape above.",
     ])
 
 
@@ -240,7 +287,20 @@ def check_receipt(receipt: Optional[DreamDayReadV1], attempt_started: datetime) 
     return receipt
 
 
-def check_reply(text: str) -> ParsedAnswer:
+def is_cut_short_text(text: str) -> bool:
+    """The motor's cut-short draft (orion/harness/cut_short.py): it starts with the marker, any case or dash."""
+    return (text or "").lstrip().lower().startswith(CUT_SHORT_MARKER[:10].lower())
+
+
+def check_reply(text: str, record: Optional[dict[str, Any]] = None) -> ParsedAnswer:
+    """The answer the reply ends with. A turn the motor cut short (time ran out mid-dig) has no answer, only the tool
+    results it saw: its own failed attempt, named as such, never parsed (a JSON fragment in a tool result, such as
+    the read receipt, must never read as the answer)."""
+    status = ((record or {}).get("debug") or {}).get("harness_grounding_status")
+    if status in CUT_SHORT_CODES or is_cut_short_text(text):
+        steps = ((record or {}).get("debug") or {}).get("harness_step_count")
+        raise HarnessStepFailed(f"dream_day_cut_short: {status or 'cut_short'} after {steps} steps, before the "
+                                f"answer block (reply_len={len((text or '').strip())})")
     parsed = parse_answer(text)
     if parsed is None:
         raise HarnessStepFailed(f"dream_day_no_answer: no answer block (reply_len={len((text or '').strip())})")
@@ -248,6 +308,23 @@ def check_reply(text: str) -> ParsedAnswer:
 
 
 # --------------------------------------------------------------------------- persist
+
+
+def stored_read(state: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """The row's ``read``: the receipt, plus the count lines it read (``totals``, ``totals_read_at``) when the run has
+    them, so a stored night's ``dream_day_read:<day>`` resolves from the row (RESOLVE_SQL) exactly as the run did."""
+    read = state.get("read")
+    totals = state.get("read_totals") or {}
+    if read is None or not totals.get("text"):
+        return read
+    return {**read, "totals": totals["text"], "totals_read_at": totals.get("read_at")}
+
+
+def retry_attempt_sec(timeout_sec: float) -> float:
+    """How much of the night a retry needs: the shorter of the brief's attempt and ``DREAM_DAY_MIN_ATTEMPT_SEC``. A
+    retry with less than this left could not finish (``retry_skipped_insufficient_time``); with more it runs on a
+    window clamped to the deadline, instead of being skipped for not fitting a whole (longer) brief attempt."""
+    return min(float(timeout_sec), DREAM_DAY_MIN_ATTEMPT_SEC)
 
 
 def row_fields(state: dict[str, Any], brief: DreamDayBriefV1, check, now: datetime,
@@ -268,7 +345,7 @@ def row_fields(state: dict[str, Any], brief: DreamDayBriefV1, check, now: dateti
         "day_text": check.day_text,
         "day_refs": check.day_refs,
         "material": material,
-        "read": state.get("read"),
+        "read": stored_read(state),
         "now_shown_id": material.get("now_shown_id"),
         "turn_correlation_id": step.get("turn_correlation_id"),
         "created_at": now,
@@ -321,8 +398,22 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
         material = await deps.gather(brief, state["run_id"])
         return {"material": material.model_dump(mode="json"), "status": "running"}
 
+    async def read_totals_for(read: DreamDayReadV1) -> Optional[dict[str, Any]]:
+        """THIS read's count lines: the totals file `dig dream-day` left beside the receipt, only when it carries the
+        receipt's own read_at (an older or a later read's copy is not this attempt's). Never fails the attempt."""
+        if deps.read_totals is None:
+            return None
+        try:
+            totals = await deps.read_totals(read.day)
+        except Exception:  # noqa: BLE001 -- no totals: the dream_day_read ref simply does not resolve
+            logger.warning("dream_day_totals_read_failed day=%s", read.day, exc_info=True)
+            return None
+        if totals is None or totals.day != read.day or totals.read_at != read.read_at:
+            return None
+        return totals.model_dump(mode="json")
+
     async def ground(held: dict[str, Any], parsed: ParsedAnswer, material: DreamDayMaterialV1,
-                     attempt_end: datetime) -> list[dict[str, Any]]:
+                     attempt_end: datetime, totals: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
         """The grounding gate, under the hold: every checked memory's verdict. A resolve failure leaves every
         memory unjudged (never written); it never fails the attempt (the turn's answer is kept)."""
         deadline = attempt_end - timedelta(seconds=GROUNDING_MARGIN_SEC)
@@ -334,6 +425,7 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             resolve = deps.resolve_ref_texts or deps.resolve_refs
             # Bounded: a hung read here must not outlast the attempt (that would re-run the turn).
             resolved = await asyncio.wait_for(resolve(answer_refs(parsed.answer)), timeout=max(1.0, time_left()))
+            resolved.update(totals_resolved(material.day, totals, full=True))
         except Exception as exc:  # noqa: BLE001 -- includes the timeout: every memory unjudged
             logger.warning("dream_day_grounding_resolve_failed run=%s", held.get("run_id"), exc_info=True)
             return [{"statement": " ".join(m.statement.split()), "purpose": m.purpose, "refs": list(m.refs),
@@ -346,6 +438,9 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             return await asyncio.wait_for(deps.judge(prompt, held, timeout), timeout=timeout + 5.0)
 
         verdicts = await judge_memories(check.memories, resolved, ask, time_left=time_left)
+        for v in verdicts:   # the partition: a reminiscence note's words never reach the row through the judge's raw
+            if any(NOTE_MARKER in str(resolved.get(r) or "") for r in v["refs"]):
+                v["raw"] = None
         logger.info("dream_day_grounding run=%s %s", held.get("run_id"),
                     {k: v for k, v in grounding_summary(verdicts, enabled=True).items() if k != "verdicts"})
         return verdicts
@@ -365,19 +460,22 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
         async def operation(held: dict[str, Any]) -> dict[str, Any]:
             attempt_started = admission.now()
             record = await run_harness_step(
-                deps.run_turn, held, step_key=DREAM_DAY_STEP_KEY, prompt=build_prompt(brief, material),
+                deps.run_turn, held, step_key=DREAM_DAY_STEP_KEY,
+                prompt=build_prompt(brief, material, attempt=int(state.get("attempt") or 0),
+                                   last_error=state.get("last_error")),
                 correlation_id=correlation_id, timeout_sec=turn_timeout, source_tag=DREAM_DAY_SOURCE_TAG,
                 session_id=DREAM_DAY_SESSION_ID, retrieval_query=f"my day {brief.day.isoformat()}",
                 require_lookup=False)
             # Inside the attempt, under the hold: a turn that did not read the day, or gave no answer, is a
             # failed attempt, never a checkpointed one.
             read = check_receipt(await deps.read_receipt(brief.day), attempt_started)
-            parsed = check_reply(record["text"])
+            parsed = check_reply(record["text"], record)
+            totals = await read_totals_for(read)
             grounding = None
             if deps.judge is not None:
-                grounding = await ground(held, parsed, material, attempt_started + timedelta(seconds=window))
+                grounding = await ground(held, parsed, material, attempt_started + timedelta(seconds=window), totals)
             return {"record": record, "answer": parsed.answer.model_dump(mode="json"), "malformed": parsed.malformed,
-                    "read": read.model_dump(mode="json"), "grounding": grounding}
+                    "read": read.model_dump(mode="json"), "grounding": grounding, "totals": totals}
 
         try:
             result = await admission.execute({**state, "step_correlation_id": correlation_id}, operation)
@@ -397,11 +495,13 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             if replay is not None:
                 return {**replay, "harness_turn_meta": turn_meta}
             return await failed_attempt(admission, state, exc, waiting={"status": "retrying", "retry_node": None},
-                                        extra={"harness_turn_meta": turn_meta}, attempt_sec=brief.timeout_sec)
+                                        extra={"harness_turn_meta": turn_meta},
+                                        attempt_sec=retry_attempt_sec(brief.timeout_sec))
         record = result["record"]
         record["attempts"] = int(state.get("attempt") or 0) + 1
         update = {"steps": {**(state.get("steps") or {}), DREAM_DAY_STEP_KEY: record}, "answer": result["answer"],
                   "answer_malformed": int(result["malformed"]), "read": result["read"],
+                  "read_totals": result.get("totals"),
                   "grounding": result.get("grounding"), "grounding_enabled": deps.judge is not None,
                   "harness_turn_meta": turn_meta, "status": "running", "attempt": 0, "retry_at": None,
                   "retry_node": None, "last_error": None}
@@ -422,6 +522,7 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             try:
                 answer = DreamDayAnswerV1.model_validate(state["answer"])
                 resolved = await deps.resolve_refs(answer_refs(answer))
+                resolved.update(totals_resolved(brief.day, state.get("read_totals"), full=False))
                 check = check_answer(ParsedAnswer(answer, int(state.get("answer_malformed") or 0)), resolved,
                                      [c.concern_id for c in material.concerns])
                 checked = len(check.memories)

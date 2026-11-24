@@ -22,8 +22,10 @@ the "2026-07-29/30 update" section for this patch's own numbers, and the PR
 description for this patch):
 
 1. `substrate_field_state`'s `prediction_error` node vectors for
-   `node:substrate.execution` (and `node:substrate.biometrics` until it was retired
-   2026-11-18, #3575) -- real-time
+   `node:substrate.execution` and `node:substrate.biometrics` until they were
+   retired (2026-11-24, #3576 and 2026-11-18, #3575; neither was a forecast).
+   No node is read today: `PREDICTION_ERROR_NODE_IDS` is empty, so the cue's
+   prediction-error half reads nothing and only source 2 below feeds it. They were real-time
    "surprise" scores, 0-1 range, ~2s write cadence. `prediction_error` was
    removed from every domain's decay set 2026-07-26
    (`services/orion-field-digester/app/digestion/decay.py::NODE_DECAY_CHANNELS`)
@@ -60,9 +62,11 @@ from orion.substrate.prediction_error_freshness import PE_STALENESS_HORIZON_SEC 
 # node:substrate.biometrics left 2026-11-18 (PE suite rebuild retire step 6, #3575):
 # not a forecast. Its successor (node:prediction.body_joint) is a surprise_excess
 # node, not a level this cue's trend math was written for; not added here.
-PREDICTION_ERROR_NODE_IDS: tuple[str, ...] = (
-    "node:substrate.execution",
-)
+# node:substrate.execution left 2026-11-24 (retire step 6, #3576), the last one.
+# Its successors (node:prediction.chat_turn, node:prediction.body_joint) are
+# surprise_excess nodes too, so the tuple is EMPTY: latest_node_prediction_errors
+# returns {} and the cue carries only the biometrics-induction half.
+PREDICTION_ERROR_NODE_IDS: tuple[str, ...] = ()
 
 
 def latest_node_prediction_errors(

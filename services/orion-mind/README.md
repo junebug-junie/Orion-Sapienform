@@ -330,6 +330,40 @@ false = a keep renews, as before. No state migration: the field keeps its name a
 the live state): `python orion/prime/evals/run_concern_evidence_clock_replay.py`. Spec:
 docs/superpowers/specs/2026-11-17-prime-concerns-decided-by-attention-design.md (patch 1).
 
+### Prime's concern contest (2026-11-24, #3574 patch 2, #3656)
+
+`PRIME_CONCERN_CONTEST_ENABLED` (default true) and `PRIME_CONCERN_CONTEST_MARGIN` (default 0.1). Prime still holds
+at most 3 concerns, but nothing is lost for lack of room any more:
+
+- A letter thread, a dream concern, or a concern Prime names while all 3 slots are full goes to a waiting list
+  (`waiting` in `orion:prime:state`, at most 10). It takes a free slot on the next tick (a letter at most 2).
+- The contest runs on Prime's tick (`orion/prime/slots.py`, rules in `orion/attention/concern_contest.py`). A
+  waiting concern takes the slot of a held one only when nothing touched the held one for half its life (12 h) and
+  no question about it is open, and the waiting one wins: score = own-source salience x fade, unscored ranks
+  below scored, newer evidence breaks an unscored tie, a tie keeps the incumbent. At most 2 per tick.
+- A new promise always gets a slot: it pushes out the weakest held concern that is not a promise and not taken on.
+  A promise never pushes out a promise. If every slot holds a promise or something Prime took on, the promise waits;
+  a promise the hand-back's loop guard holds back (1 turn concern held, 4 a day) also waits. The turn record says
+  `waiting: ...`.
+- Every push-out closes the concern with end `displaced`; the note gives both scores and the reason.
+- Prime's frame shows a `contest:` line under each concern and a WAITING FOR A SLOT section.
+
+false = no displacement; waiting concerns still take free slots. Today almost every concern is unscored (only event
+want concerns carry a salience), so the contest is mostly recency. Replay (11-17..11-24 on the live record):
+`python orion/prime/evals/run_concern_contest_replay.py`.
+
+Rollout is consumer-first: `orion:prime:state` gains `waiting`, `evidence_salience` and the `displaced` end, and
+every reader validates it with `extra="forbid"` (orion-hub's Prime block, orion-durable-runs' dream day,
+orion-harness-governor's and orion-room-companion's Claude tools, Orion's `dig` in the FCC sandbox). Rebuild those
+before orion-mind. To roll orion-mind back, first remove `waiting`, every `evidence_salience`, and every
+`concern_record` entry with end `displaced` from `orion:prime:state`. Setting the flag to false is not a rollback:
+waiting concerns still fill `waiting`, which an older orion-mind image cannot load either.
+
+Two choices beyond the spec, both from the replay: a quiet concern yields only after Prime has thought once since it
+went quiet and since it got its slot (without this the replay displaced concerns at exactly 12.0 h, before Prime could
+act); and a new promise may push out a concern with a question open (ranked last), because #3656 says a promise
+always gets a slot unless every slot holds a promise.
+
 ### Every turn ends back in Prime: the turn hand-back (2026-11-12, living Prime Part 2)
 
 `PRIME_TURN_HANDBACK_ENABLED` (default true). Prime listens to `orion:cockpit:hop`, the hops Hub already

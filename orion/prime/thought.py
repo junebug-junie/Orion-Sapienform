@@ -727,6 +727,11 @@ class Applied:
     refs: list[RefV1] = field(default_factory=list)
     # Event ids of experiences this thought cited that the frame showed (at most NOW_MAX_CITES, in cite order).
     experience_cites: list[str] = field(default_factory=list)
+    # Experience ids the answer cited that this frame did not show (dropped, never recorded). Named early in the
+    # act note: 2026-11-20 one cite was dropped and the 500-char note cut the warning before its id (#3425).
+    experience_unshown: list[str] = field(default_factory=list)
+    # True when the now was not read this thought (every cite is unchecked rather than unshown).
+    experience_unread: bool = False
 
 
 EXPERIENCE_KIND = "experience"
@@ -1003,8 +1008,10 @@ def apply_answer(
         new_state = queue(new_state, concern)
     experience_cites, cite_warnings = shown_cites(cited, shown_experience)
     warnings.extend(cite_warnings)
+    allowed = set(shown_experience or ())
+    unshown = [c for c in cited if c not in allowed]
     return Applied(new_state, added, dropped, sorted(kept_ids), warnings, None if refusal else move, refusal,
-                   [] if refusal else refs, experience_cites)
+                   [] if refusal else refs, experience_cites, unshown, shown_experience is None and bool(cited))
 
 
 WOKE_NOTE_CAP = 160
@@ -1022,6 +1029,11 @@ def summary_note(applied: Applied, *, now_use: Optional[str] = None) -> str:
     # Most important first: the act note is cut at 500 chars (orion/grammar/acts.py) after a ~170-char
     # "woke:" prefix, so the move goes before the unbounded drop reasons and warnings.
     parts = [f"concerns +{len(applied.added)} -{len(applied.dropped)} kept {len(applied.kept)}"]
+    if applied.experience_unshown:
+        # Second, before the move (a refusal or refs list has no cap), so the 500-char cut keeps the id (#3425).
+        label = "cite(s) unchecked, the now was not read" if applied.experience_unread else "cite(s) not shown"
+        parts.append(f"{len(applied.experience_unshown)} {label}: "
+                     + ", ".join(u[:60] for u in applied.experience_unshown[:2]))
     if isinstance(applied.move, RegulateMoveV1):
         m = applied.move
         parts.append(f"move regulate {m.direction} {m.family} for {m.hours:g} h: {m.why[:120]!r}")

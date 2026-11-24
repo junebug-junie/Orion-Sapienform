@@ -2,7 +2,7 @@
 
 Targeted coverage for the specific addition (pool_warmup_task creation at
 startup, cancellation at shutdown) -- not an attempt to close the pre-existing
-gap that the other four lifespan workers (bus/reverie/reverie_chain/reasoning)
+gap that the other four lifespan workers (bus/reverie/reasoning)
 have no direct test coverage either; that's a broader, separate concern.
 """
 from __future__ import annotations
@@ -21,7 +21,6 @@ async def test_lifespan_creates_and_cancels_pool_warmup_task(monkeypatch) -> Non
     # exercises the pool-warmup wiring, not real bus/redis connections.
     monkeypatch.setattr(settings, "orion_bus_enabled", False)
     monkeypatch.setattr(settings, "reverie_enabled", False)
-    monkeypatch.setattr(settings, "reverie_chain_enabled", False)
 
     warmed: list[bool] = []
 

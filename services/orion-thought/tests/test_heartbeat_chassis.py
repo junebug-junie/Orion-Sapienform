@@ -8,8 +8,8 @@ also fixes a pre-existing bug found while wiring: `ORION_BUS_URL` in both `app/s
 `.env_example` was the literal placeholder `100.x.x.x`, not the real tailscale node IP --
 corrected to `100.92.216.81` (same class of bug PR #1350 fixed for harness-governor).
 
-The other four lifespan workers (bus/reverie/reverie_chain/reasoning) are disabled here via
-`orion_bus_enabled=False`/`reverie_enabled=False`/`reverie_chain_enabled=False`, matching
+The other four lifespan workers (bus/reverie/reasoning) are disabled here via
+`orion_bus_enabled=False`/`reverie_enabled=False`, matching
 test_main_lifespan.py's existing convention, so this test exercises only the new heartbeat
 wiring without opening a real bus connection.
 """
@@ -49,7 +49,6 @@ def test_orion_bus_url_is_not_placeholder() -> None:
 async def test_lifespan_starts_and_stops_heartbeat_chassis(monkeypatch) -> None:
     monkeypatch.setattr(settings, "orion_bus_enabled", False)
     monkeypatch.setattr(settings, "reverie_enabled", False)
-    monkeypatch.setattr(settings, "reverie_chain_enabled", False)
 
     async def _fake_warm_pool() -> None:
         return None
@@ -74,7 +73,6 @@ async def test_lifespan_survives_heartbeat_start_failure(monkeypatch) -> None:
     """Heartbeat startup failure must not prevent the rest of orion-thought's boot."""
     monkeypatch.setattr(settings, "orion_bus_enabled", False)
     monkeypatch.setattr(settings, "reverie_enabled", False)
-    monkeypatch.setattr(settings, "reverie_chain_enabled", False)
 
     async def _fake_warm_pool() -> None:
         return None

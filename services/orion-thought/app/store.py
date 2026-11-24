@@ -128,7 +128,7 @@ async def warm_pool() -> None:
 def persist_reverie_visual_chain(chain) -> bool:
     """Insert one visual-chain readout. Never raises; idempotent on chain_id.
 
-    Unlike `persist_reverie_chain` above, `ReverieVisualChainV1` has its OWN
+    Unlike the retired reverie-chain writer, `ReverieVisualChainV1` has its OWN
     `chain_json: dict` field (the run's small prompt/artifact/description
     side-channel -- see `orion.schemas.reverie_visual`'s docstring) -- write
     THAT into the `chain_json` column, not the full model dump. The text
@@ -564,7 +564,7 @@ def load_latest_reverie_interpretation(
     "already reaches the same Hub Reverie tab" (`reverie_routes.py`'s
     `text_recent`) -- only holds for a thought that is actually reachable
     there, which requires its ENCLOSING CHAIN to have settled and persisted
-    (`chain.py`'s `persist_reverie_chain`, called once at chain end, not per
+    (the retired chain writer, called once at chain end, not per
     thought). `substrate_reverie_thought` rows are written immediately on
     generation (`reverie.py::run_reverie_once`), well before that -- and if
     `ORION_REVERIE_CHAIN_ENABLED=false` while `ORION_REVERIE_ENABLED=true`

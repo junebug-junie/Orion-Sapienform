@@ -593,7 +593,10 @@ async def run_reverie_worker(stop_event: asyncio.Event | None = None) -> None:
         while True:
             if stop_event is not None and stop_event.is_set():
                 break
-            await run_reverie_once(deps)
+            try:
+                await run_reverie_once(deps)
+            except Exception:  # noqa: BLE001 -- run_reverie_once never raises; defense in depth
+                logger.exception("unhandled reverie poll error")
             fold_bus(bus)  # per poll: this worker bus lives for the process (app/rpc_health.py)
             try:
                 if stop_event is not None:

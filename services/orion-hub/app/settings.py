@@ -1284,6 +1284,14 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_FOCUS_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_FOCUS_ENABLED"
     )
+    # Reveries that ask (2026-11-18 spec, Patch 1): orion-thought's reverie may queue its question
+    # (invocation_context "reverie": origin forced self, never replaces a pending focus) at most this
+    # many times in a rolling 24 h. 0 = refused. Same key and meaning as orion-thought's own cap (it
+    # checks first; Hub holds it). While > 0 every investigate offer row records constants.reverie_focus
+    # = "v1" (the three-arm test's switch moment, #3183); the arm draw and select_priors are untouched.
+    ORION_REVERIE_FOCUS_MAX_PER_DAY: int = Field(
+        default=3, ge=0, alias="ORION_REVERIE_FOCUS_MAX_PER_DAY"
+    )
 
     # --- Orion's Day: the daily letter (living Prime Part 3) -----------------
     # Prime (orion-mind) decides when a letter is written and orders it over HTTP

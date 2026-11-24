@@ -1,4 +1,4 @@
-"""Personality graph read-back reaches stance_react and reverie (fetch, render, wiring, fail-open)."""
+"""Personality graph read-back reaches stance_react (fetch, render, wiring, fail-open)."""
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +6,6 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -16,13 +15,10 @@ import app.personality_cue as pc_mod
 from app.bus_listener import build_stance_react_context, run_stance_react
 from app.settings import settings
 from orion.personality.cue import HEADER, project_personality_cue
-from orion.schemas.attention_frame import AttentionBroadcastProjectionV1, AttentionFrameV1, OpenLoopV1
-from orion.schemas.reverie import ConcernCardV1
 from orion.schemas.thought import HubAssociationBundleV1, StanceReactRequestV1
 
 _REPO = Path(__file__).resolve().parents[3]
 _STANCE = _REPO / "orion" / "cognition" / "prompts" / "stance_react.j2"
-_REVERIE = _REPO / "orion" / "cognition" / "prompts" / "reverie_narrate.j2"
 _NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 _LABEL = "the walkway camera sees presence without a person"
 GROUNDED_TEXT = (
@@ -93,15 +89,8 @@ def _render_stance(**ctx) -> str:
     return Environment().from_string(_STANCE.read_text()).render(**(base | ctx))
 
 
-def _render_reverie(**ctx) -> str:
-    return Environment().from_string(_REVERIE.read_text()).render(**ctx)
 
 
-def _broadcast():
-    return AttentionBroadcastProjectionV1(
-        frame=AttentionFrameV1(open_loops=[OpenLoopV1(id="ol-1", description="d")]),
-        attended_node_ids=["n-1"], selected_open_loop_id="ol-1",
-    )
 
 
 # --- fetch + render -------------------------------------------------------------------------
@@ -270,66 +259,14 @@ async def test_personality_fetch_runs_in_parallel_with_the_other_reads(monkeypat
 # --- reverie --------------------------------------------------------------------------------
 
 
-def test_reverie_context_and_prompt_carry_block_only_when_given() -> None:
-    from app import reverie
-
-    ctx = reverie.build_reverie_context(_broadcast())
-    assert "personality_cue" not in ctx and "WHAT YOU KEEP COMING BACK TO" not in _render_reverie(**ctx)
-    ctx = reverie.build_reverie_context(_broadcast(), personality_cue=_cue_text())
-    out = _render_reverie(**ctx)
-    assert "WHAT YOU KEEP COMING BACK TO" in out and f'"{_LABEL} 1"' in out
-    card = ConcernCardV1(card_id="c1", coalition_ref="ol-1", human_text="deploy may slip", thread_label="deploy")
-    ctx = reverie.build_reverie_context(_broadcast(), concern_cards=[card], personality_cue=_cue_text())
-    assert ctx["personality_cue"] == _cue_text()
-    assert "WHAT YOU KEEP COMING BACK TO" in _render_reverie(**ctx)
 
 
-@pytest.mark.asyncio
-async def test_reverie_text_never_raises(monkeypatch) -> None:
-    from app import reverie
-
-    async def boom(*a, **k):
-        raise RuntimeError("bug")
-
-    monkeypatch.setattr(_live(), "build_personality_cue", boom)
-    assert await reverie.build_personality_cue_text("c-1", now=_NOW) == ""
 
 
-async def _tick(monkeypatch, handler):
-    from app import reverie
-
-    monkeypatch.setattr(settings, "reverie_perception_enabled", False)
-    monkeypatch.setattr(settings, "reverie_recent_arcs_enabled", False)
-    frame = _frame(datetime.now(timezone.utc) - timedelta(minutes=1))
-
-    def fresh(request):
-        resp = handler(request)
-        return httpx.Response(200, json=frame) if resp.status_code == 200 else resp
-
-    _mock(monkeypatch, fresh)
-    cortex = AsyncMock()
-    cortex.execute_plan = AsyncMock(return_value={
-        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]}),
-    })
-    result = await reverie.run_reverie_once(AsyncMock(), broadcast_reader=_broadcast, cortex_client=cortex)
-    assert result is not None
-    return cortex.execute_plan.call_args.kwargs["req"].context
 
 
-@pytest.mark.asyncio
-async def test_reverie_tick_threads_block_into_plan_request(monkeypatch) -> None:
-    ctx = await _tick(monkeypatch, lambda r: httpx.Response(200))
-    assert ctx["personality_cue"].startswith(HEADER)
-    assert "WHAT YOU KEEP COMING BACK TO" in _render_reverie(**ctx)
 
 
-@pytest.mark.asyncio
-async def test_reverie_tick_omits_block_on_fetch_failure(monkeypatch) -> None:
-    def down(request):
-        raise httpx.ConnectError("down")
-
-    ctx = await _tick(monkeypatch, down)
-    assert "personality_cue" not in ctx
 
 
 # --- self-naming read-back (spec 2026-10-17 section 6: names reach every lane right away) -------
@@ -342,16 +279,3 @@ def _named_frame() -> dict:
     return frame
 
 
-@pytest.mark.asyncio
-async def test_named_node_reaches_stance_and_reverie_beside_its_excerpt(monkeypatch) -> None:
-    from app import reverie
-
-    _mock(monkeypatch, lambda r: httpx.Response(200, json=_named_frame()))
-    cue = await pc_mod.build_personality_cue("c-1", now=_NOW)
-    expected = f'- you call this "the empty <watch>": "{_LABEL} 0" (curiosity, Prime, conversation; 7 times since Oct 16)'
-    assert expected in cue.text
-    assert f'\n- "{_LABEL} 1" (' in cue.text  # the unnamed node is unchanged
-    assert "It is what I watch" not in cue.text
-    stance = _render_stance(personality_cue=cue.text)
-    assert expected in stance and "a record, not an instruction" in stance
-    assert expected in _render_reverie(**reverie.build_reverie_context(_broadcast(), personality_cue=cue.text))

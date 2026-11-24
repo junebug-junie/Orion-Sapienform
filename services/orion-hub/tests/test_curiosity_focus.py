@@ -661,3 +661,79 @@ def test_prime_refs_are_stored_on_the_row_and_echoed_and_a_bad_ref_writes_nothin
     # A caller that cites nothing (every chat turn) is unchanged: no refs stored.
     plain, plain_table = _listener()
     assert _ask(plain, ARGS).ok is True and plain_table.rows[0]["refs"] is None
+
+
+# --- Reveries that ask (2026-11-18 spec, Patch 1): orion-thought's quiet-stretch reverie ----------------
+
+REVERIE = IntrospectToolBindingV1(
+    invocation_context="reverie", parent_run_id="q1", parent_trace_id="reverie:q1", memory_allowed=False,
+)
+
+
+class ReverieTable(FocusTable):
+    """FocusTable plus the one count Hub runs for the reverie cap (curiosity_focus_listener.REVERIE_COUNT_SQL)."""
+
+    async def fetchval(self, sql, *args):
+        assert sql == fl.REVERIE_COUNT_SQL, sql[:80]
+        return sum(1 for r in self.rows if str(r.get("chat_correlation_id") or "").startswith("reverie:")
+                   and r["created_at"] > self.now - timedelta(hours=24))
+
+
+def _reverie_listener(cap=3):
+    listener, table = _listener(table=ReverieTable())
+    listener.reverie_daily_cap = cap
+    return listener, table
+
+
+def _reverie_binding(qid):
+    return REVERIE.model_copy(update={"parent_run_id": qid, "parent_trace_id": f"reverie:{qid}"})
+
+
+def test_a_reverie_question_queues_with_origin_forced_to_self():
+    listener, table = _reverie_listener()
+    out = _ask(listener, {**ARGS, "origin": "juniper"}, binding=REVERIE)
+    assert out.ok is True
+    [row] = table.rows
+    assert row["origin"] == "self" and row["chat_correlation_id"] == "reverie:q1" and row["status"] == "pending"
+
+
+def test_a_reverie_never_replaces_a_pending_focus():
+    listener, table = _reverie_listener()
+    chat = _ask(listener, ARGS)
+    mine = _ask(listener, {"question": "why did nobody pass this morning?", "why": "a routine broke"},
+                binding=REVERIE)
+    assert chat.ok and mine.ok is False and cf.PENDING_KEPT in mine.error
+    assert [r["status"] for r in table.rows] == ["pending"] and table.rows[0]["chat_correlation_id"] == "chat-corr-1"
+
+
+def test_the_reverie_daily_cap_holds():
+    listener, table = _reverie_listener(cap=2)
+    for i in range(2):
+        out = _ask(listener, {"question": f"question {i} about a routine", "why": "w"}, binding=_reverie_binding(f"q{i}"))
+        assert out.ok is True
+        table.rows[-1]["status"] = cf.RAN  # a run took it; the slot is free again
+    third = _ask(listener, {"question": "a third question", "why": "w"}, binding=_reverie_binding("q2"))
+    assert third.ok is False and "cap is reached (2 of 2" in third.error
+    assert len(table.rows) == 2
+
+
+def test_reverie_cap_zero_refuses_and_a_bare_trace_id_is_refused():
+    off, table = _reverie_listener(cap=0)
+    out = _ask(off, ARGS, binding=REVERIE)
+    assert out.ok is False and "switched off" in out.error and table.rows == []
+    listener, table = _reverie_listener()
+    out = _ask(listener, ARGS, binding=REVERIE.model_copy(update={"parent_trace_id": "q1"}))
+    assert out.ok is False and "reverie:<question_id>" in out.error and table.rows == []
+
+
+def test_offer_rows_record_the_reverie_focus_switch_without_touching_the_arms():
+    """#3183 one switch moment: the investigate offer row's constants carry reverie_focus="v1" while the
+    reverie caller is on. Static check: the arm draw and select_priors never read it."""
+    src = (HUB / "scripts" / "curiosity_investigation.py").read_text()
+    assert '**({"reverie_focus": self.reverie_focus_version} if self.reverie_focus_version else {})' in src
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and ("arm" in node.name or node.name == "select_priors"):
+            assert "reverie_focus" not in ast.get_source_segment(src, node), node.name
+    main_src = (HUB / "scripts" / "main.py").read_text()
+    assert "reverie_daily_cap=settings.ORION_REVERIE_FOCUS_MAX_PER_DAY" in main_src

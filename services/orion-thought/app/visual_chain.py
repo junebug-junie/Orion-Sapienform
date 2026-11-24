@@ -164,8 +164,7 @@ chain's ladder — there is no coalition/pressure signal to climb here.
 
 Single-flight, no backlog (design doc §4): achieved structurally by
 `run_visual_chain_worker`'s own sequential loop (run, then sleep, then run
-again -- the same shape `chain.py`'s `run_reverie_chain_worker` and
-`reverie.py`'s `run_reverie_worker` already use), not by a persisted
+again -- the same shape `reverie.py`'s `run_reverie_worker` already uses), not by a persisted
 `running_since` marker. A trigger literally cannot exist while a run is in
 flight, since there is no separate scheduler event outside this loop. On top
 of that structural guarantee, `run_visual_chain_once` also holds a

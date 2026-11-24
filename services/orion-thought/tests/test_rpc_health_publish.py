@@ -58,7 +58,7 @@ def _plan_request():
     from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest
 
     return PlanExecutionRequest(
-        plan=ExecutionPlan(verb_name="reverie_narrate", steps=[]),
+        plan=ExecutionPlan(verb_name="reverie_question", steps=[]),
         args=PlanExecutionArgs(request_id="r1"),
         context={},
     )
@@ -223,8 +223,8 @@ async def test_long_lived_reverie_worker_folds_every_tick(monkeypatch) -> None:
 
     monkeypatch.setattr(reverie, "OrionBusAsync", _Bus)
     monkeypatch.setattr(reverie, "run_reverie_once", _once)
+    monkeypatch.setattr(reverie, "live_deps", lambda bus: bus)  # the poll gets the worker's bus as its deps
     monkeypatch.setattr(reverie.settings, "reverie_enabled", True)
-    monkeypatch.setattr(reverie.settings, "reverie_chain_enabled", False)
     monkeypatch.setattr(reverie.settings, "orion_bus_enabled", True)
     monkeypatch.setattr(reverie.settings, "reverie_interval_sec", 0.01)
 
@@ -251,7 +251,6 @@ async def test_lifespan_starts_and_stops_publisher(monkeypatch) -> None:
     for name in (
         "run_bus_worker",
         "run_reverie_worker",
-        "run_reverie_chain_worker",
         "run_reasoning_worker",
         "run_visual_chain_worker",
         "run_visual_chain_watchdog",

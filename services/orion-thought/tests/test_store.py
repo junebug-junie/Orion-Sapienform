@@ -185,7 +185,7 @@ async def test_warm_pool_outer_except_covers_non_timeout_wrapper_failure(monkeyp
 
 
 def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> None:
-    """Regression guard (review finding): unlike `persist_reverie_chain`
+    """Regression guard (review finding): unlike the retired reverie-chain writer
     (whose `ReverieChainV1` has no `chain_json` field of its own, so a full
     `model_dump()` IS the right thing to store), `ReverieVisualChainV1` has
     its own small `chain_json: dict` field. Writing the full model dump here
@@ -368,71 +368,14 @@ def test_load_latest_visual_chain_continuity_state_never_raises_on_db_failure() 
 # "the one latest row" (this service runs many themes' chains at once).
 
 
-def test_load_latest_no_coalition_streak_reads_the_value() -> None:
-    store = _fresh_store()
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        store,
-        "_get_engine",
-        lambda: _connect_result_engine({"chain_json": {"no_coalition_streak": 2}}),
-    )
-    try:
-        assert store.load_latest_no_coalition_streak("ol-1") == 2
-    finally:
-        monkeypatch.undo()
 
 
-def test_load_latest_no_coalition_streak_zero_on_missing_key() -> None:
-    """A pre-this-patch row has no no_coalition_streak key at all -- degrades
-    to 0 (the honest 'nothing recorded yet' answer), never raises."""
-    store = _fresh_store()
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        store,
-        "_get_engine",
-        lambda: _connect_result_engine({"chain_json": {"terminal_reason": "no_coalition"}}),
-    )
-    try:
-        assert store.load_latest_no_coalition_streak("ol-1") == 0
-    finally:
-        monkeypatch.undo()
 
 
-def test_load_latest_no_coalition_streak_zero_on_non_dict_chain_json() -> None:
-    store = _fresh_store()
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        store, "_get_engine", lambda: _connect_result_engine({"chain_json": "not a dict"})
-    )
-    try:
-        assert store.load_latest_no_coalition_streak("ol-1") == 0
-    finally:
-        monkeypatch.undo()
 
 
-def test_load_latest_no_coalition_streak_zero_when_theme_has_no_rows() -> None:
-    store = _fresh_store()
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(store, "_get_engine", lambda: _connect_result_engine(None))
-    try:
-        assert store.load_latest_no_coalition_streak("ol-1") == 0
-    finally:
-        monkeypatch.undo()
 
 
-def test_load_latest_no_coalition_streak_never_raises_on_db_failure() -> None:
-    store = _fresh_store()
-
-    class _FakeEngine:
-        def connect(self):
-            raise RuntimeError("connection refused")
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
-    try:
-        assert store.load_latest_no_coalition_streak("ol-1") == 0
-    finally:
-        monkeypatch.undo()
 
 
 # --- load_latest_reverie_interpretation: Patch 3 context-seed ---------------
@@ -1175,31 +1118,6 @@ def test_get_engine_sets_statement_timeout_and_connect_timeout() -> None:
     )
 
 
-def test_get_expectation_read_engine_sets_connect_timeout_too() -> None:
-    """Review finding: this engine already set statement_timeout but not
-    connect_timeout (a stuck TCP handshake before any query runs isn't
-    bounded by a GUC statement_timeout)."""
-    store = _fresh_store()
-    captured = {}
-
-    class _FakeEngine:
-        pass
-
-    def _fake_create_engine(*_args, **kwargs):
-        captured.update(kwargs)
-        return _FakeEngine()
-
-    import sqlalchemy
-
-    original = sqlalchemy.create_engine
-    sqlalchemy.create_engine = _fake_create_engine
-    try:
-        store._get_expectation_read_engine()
-    finally:
-        sqlalchemy.create_engine = original
-
-    connect_args = captured.get("connect_args") or {}
-    assert connect_args.get("connect_timeout") == store._EXPECTATION_ENGINE_CONNECT_TIMEOUT_SEC
 
 
 # --- visual_chain_age_minutes ---
@@ -1314,118 +1232,18 @@ def _cooldown_write_engine(captured: dict):
     return _FakeEngine()
 
 
-def test_resonance_alert_cooldown_active_false_when_no_row() -> None:
-    from datetime import datetime, timezone
-
-    store = _fresh_store()
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(store, "_get_engine", lambda: _cooldown_read_engine(None))
-    try:
-        assert store.resonance_alert_cooldown_active("k", 3600.0, datetime.now(timezone.utc)) is False
-    finally:
-        monkeypatch.undo()
 
 
-def test_resonance_alert_cooldown_active_true_within_window() -> None:
-    from datetime import datetime, timedelta, timezone
-
-    store = _fresh_store()
-    now = datetime.now(timezone.utc)
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        store,
-        "_get_engine",
-        lambda: _cooldown_read_engine({"last_alerted_at": now - timedelta(seconds=100)}),
-    )
-    try:
-        assert store.resonance_alert_cooldown_active("k", 3600.0, now) is True
-    finally:
-        monkeypatch.undo()
 
 
-def test_resonance_alert_cooldown_active_false_once_window_elapsed() -> None:
-    from datetime import datetime, timedelta, timezone
-
-    store = _fresh_store()
-    now = datetime.now(timezone.utc)
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        store,
-        "_get_engine",
-        lambda: _cooldown_read_engine({"last_alerted_at": now - timedelta(seconds=4000)}),
-    )
-    try:
-        assert store.resonance_alert_cooldown_active("k", 3600.0, now) is False
-    finally:
-        monkeypatch.undo()
 
 
-def test_resonance_alert_cooldown_active_false_when_cooldown_sec_not_positive() -> None:
-    from datetime import datetime, timezone
-
-    store = _fresh_store()
-    # Never even reaches the DB when the cooldown is disabled (<= 0).
-    monkeypatch = pytest.MonkeyPatch()
-
-    class _ExplodingEngine:
-        def connect(self):
-            raise AssertionError("should not query when cooldown_sec <= 0")
-
-    monkeypatch.setattr(store, "_get_engine", lambda: _ExplodingEngine())
-    try:
-        assert store.resonance_alert_cooldown_active("k", 0.0, datetime.now(timezone.utc)) is False
-    finally:
-        monkeypatch.undo()
 
 
-def test_resonance_alert_cooldown_active_never_raises_on_db_failure() -> None:
-    from datetime import datetime, timezone
-
-    store = _fresh_store()
-
-    class _FakeEngine:
-        def connect(self):
-            raise RuntimeError("connection refused")
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
-    try:
-        assert store.resonance_alert_cooldown_active("k", 3600.0, datetime.now(timezone.utc)) is False
-    finally:
-        monkeypatch.undo()
 
 
-def test_resonance_alert_cooldown_mark_upserts_check_key_and_now() -> None:
-    from datetime import datetime, timezone
-
-    store = _fresh_store()
-    now = datetime.now(timezone.utc)
-    captured: dict = {}
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(store, "_get_engine", lambda: _cooldown_write_engine(captured))
-    try:
-        assert store.resonance_alert_cooldown_mark("reverie_resonance_worsening:t1", now) is True
-    finally:
-        monkeypatch.undo()
-    assert "ON CONFLICT (check_key)" in captured["stmt"]
-    assert captured["params"] == {"k": "reverie_resonance_worsening:t1", "now": now}
 
 
-def test_resonance_alert_cooldown_mark_never_raises_on_db_failure() -> None:
-    from datetime import datetime, timezone
-
-    store = _fresh_store()
-
-    class _FakeEngine:
-        def begin(self):
-            raise RuntimeError("connection refused")
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
-    try:
-        assert store.resonance_alert_cooldown_mark("k", datetime.now(timezone.utc)) is False
-    finally:
-        monkeypatch.undo()
 
 
 def test_visual_context_preserves_full_producer_evidence_bound():

@@ -402,7 +402,6 @@ async def test_lifespan_starts_and_stops_painting_gap_task(monkeypatch):
     for name in (
         "run_bus_worker",
         "run_reverie_worker",
-        "run_reverie_chain_worker",
         "run_reasoning_worker",
         "run_visual_chain_worker",
         "run_visual_chain_watchdog",

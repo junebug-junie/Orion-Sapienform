@@ -42,7 +42,7 @@ _engine_lock = threading.Lock()
 # worker in the process-wide thread pool. Confirmed live 2026-09-04: this is
 # exactly how `persist_reverie_visual_chain` wedged `visual_chain.py`'s
 # worker for 24+ hours with zero errors logged anywhere (the abandoned
-# thread never raised, it just never returned). `_get_expectation_read_engine`
+# thread never raised, it just never returned). a dedicated read engine
 # below and `vision_reader.py`'s engine already set `statement_timeout` this
 # same way; `connect_timeout` closes the other half (a stuck TCP handshake,
 # before any statement even runs) that neither of those two set either.
@@ -116,254 +116,6 @@ async def warm_pool() -> None:
         logger.warning("pool_warmup_timeout")
     except Exception as exc:  # noqa: BLE001 — best-effort warm-up, never fail boot
         logger.warning("pool_warmup_wrapper_failed err=%s", exc)
-
-
-def persist_reverie_thought(thought: "SpontaneousThoughtV1") -> bool:
-    """Insert one spontaneous thought. Returns True on write, False on any miss.
-
-    Never raises — a persistence failure must not break the tick.
-
-    `expectation`/`expectation_checkable_by` are written as real columns (not
-    just inside `thought_json`) so `load_pending_expectations` below can scan
-    them directly. `expectation_verdict`/`expectation_scored_at` are always
-    NULL at insert time -- they are only ever written later, in place, by
-    `persist_expectation_verdict`.
-    """
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO substrate_reverie_thought
-                        (thought_id, correlation_id, created_at, salience,
-                         interpretation, thought_json, expectation, expectation_checkable_by)
-                    VALUES
-                        (:thought_id, :correlation_id, :created_at, :salience,
-                         :interpretation, CAST(:thought_json AS jsonb),
-                         :expectation, :expectation_checkable_by)
-                    ON CONFLICT (thought_id) DO NOTHING
-                    """
-                ),
-                {
-                    "thought_id": thought.thought_id,
-                    "correlation_id": thought.correlation_id,
-                    "created_at": thought.created_at,
-                    "salience": float(thought.salience),
-                    "interpretation": thought.interpretation,
-                    "thought_json": json.dumps(thought.model_dump(mode="json")),
-                    "expectation": thought.expectation,
-                    "expectation_checkable_by": thought.expectation_checkable_by,
-                },
-            )
-        return True
-    except Exception as exc:
-        logger.warning("reverie thought persist failed id=%s err=%s", thought.thought_id, exc)
-        return False
-
-
-# --- Movement III: expectation scoring (default-off; ORION_REVERIE_EXPECTATION_
-# SCORING_ENABLED) -----------------------------------------------------------
-
-# Matches vision_reader.py's bound: a slow database must degrade to "no pending
-# expectations" rather than stall the reverie tick's shared event loop. A
-# dedicated engine, not the shared `_get_engine()` write pool above --
-# vision_reader.py's own docstring explains why this module doesn't reuse a
-# single lazily-built engine across readers with different timeout
-# requirements: statement_timeout only takes effect on first-use engine
-# construction for a given DSN, so sharing one would silently let whichever
-# caller constructs it first decide the GUC for both.
-# Review finding (2026-09-04, same pass that added _ENGINE_CONNECT_TIMEOUT_SEC
-# to _get_engine() above): this engine already bounded query execution but not
-# a stuck TCP handshake before any query runs. Same value as _get_engine()'s --
-# not a per-caller tuning knob, just closing the other half of the same gap.
-_EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS = 1500
-_EXPECTATION_ENGINE_CONNECT_TIMEOUT_SEC = 5
-_expectation_read_engine = None
-_expectation_read_engine_url: str | None = None
-
-
-def _get_expectation_read_engine():
-    global _expectation_read_engine, _expectation_read_engine_url
-    url = _database_url()
-    if _expectation_read_engine is None or _expectation_read_engine_url != url:
-        from sqlalchemy import create_engine
-
-        _expectation_read_engine = create_engine(
-            url,
-            pool_pre_ping=True,
-            connect_args={
-                "options": f"-c statement_timeout={_EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS}",
-                "connect_timeout": _EXPECTATION_ENGINE_CONNECT_TIMEOUT_SEC,
-            },
-        )
-        _expectation_read_engine_url = url
-    return _expectation_read_engine
-
-
-def load_pending_expectations(limit: int = 1) -> list[dict[str, Any]]:
-    """Most-overdue-first thoughts with an open, closed-window expectation.
-
-    Bounded (default 1 -- score at most one per tick, same boundedness
-    discipline as `MAX_FINALIZE_LOOP_RETRIES` in `orion/harness/finalize.py`).
-    Fail-open: [] on any error or non-positive limit, so a lookup failure never
-    breaks a reverie tick. All filtering (non-null expectation, unresolved
-    verdict, window closed) lives in the SQL WHERE clause before LIMIT/ORDER BY
-    -- nothing is re-filtered in Python after the row set comes back.
-
-    Returns [{"thought_id": str, "expectation": str, "expectation_checkable_by":
-    datetime, "created_at": datetime}] (``created_at`` opens the check window the
-    judge reads captions from, #3403), ordered `expectation_checkable_by ASC` -- the row whose window
-    closed longest ago (most overdue) sorts first.
-    """
-    limit = max(0, int(limit))
-    if limit == 0:
-        return []
-    try:
-        from sqlalchemy import text
-
-        engine = _get_expectation_read_engine()
-        with engine.connect() as conn:
-            rows = (
-                conn.execute(
-                    text(
-                        "SELECT thought_id, expectation, expectation_checkable_by, created_at "
-                        "FROM substrate_reverie_thought "
-                        "WHERE expectation IS NOT NULL "
-                        "AND expectation_verdict IS NULL "
-                        "AND expectation_checkable_by IS NOT NULL "
-                        "AND expectation_checkable_by <= now() "
-                        "ORDER BY expectation_checkable_by ASC "
-                        "LIMIT :limit"
-                    ),
-                    {"limit": limit},
-                )
-                .mappings()
-                .all()
-            )
-        return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.debug("pending expectation load failed: %s", exc)
-        return []
-
-
-def persist_expectation_verdict(thought_id: str, verdict: str, scored_at: datetime) -> None:
-    """Update-in-place: stamp one reverie thought's scoring verdict.
-
-    Fail-open — logs and swallows any failure, never raises into the reverie
-    tick. No-op (but never raises) on an empty thought_id.
-    """
-    if not thought_id:
-        return
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    UPDATE substrate_reverie_thought
-                    SET expectation_verdict = :verdict,
-                        expectation_scored_at = :scored_at
-                    WHERE thought_id = :thought_id
-                    """
-                ),
-                {"thought_id": thought_id, "verdict": verdict, "scored_at": scored_at},
-            )
-    except Exception as exc:
-        logger.warning(
-            "expectation verdict persist failed id=%s verdict=%s err=%s",
-            thought_id,
-            verdict,
-            exc,
-        )
-
-
-def persist_salience_trace(trace) -> bool:
-    """Persist one salience trace row. Never raises; idempotent on trace_id.
-
-    Requires services/orion-sql-db/manual_migration_attention_salience_trace.sql
-    applied (adds why_it_matters/target_type, 2026-08-21) -- if this service is
-    redeployed before the migration runs, EVERY insert here raises "column ...
-    does not exist" and the except-block below swallows it as a WARNING,
-    silently dropping ALL reverie-scope attention_salience_trace writes (not
-    just the two new columns) until someone reads the logs and runs the
-    migration. Apply the migration BEFORE deploying this file's changes.
-    """
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO attention_salience_trace
-                        (trace_id, loop_id, theme_key, description, why_it_matters, target_type,
-                         correlation_id, salience, weights_version, scope, features, created_at)
-                    VALUES
-                        (:trace_id, :loop_id, :theme_key, :description, :why_it_matters, :target_type,
-                         :correlation_id, :salience, :weights_version, :scope, CAST(:features AS jsonb), :created_at)
-                    ON CONFLICT (trace_id) DO NOTHING
-                    """
-                ),
-                {
-                    "trace_id": trace.trace_id,
-                    "loop_id": trace.loop_id,
-                    "theme_key": trace.theme_key,
-                    "description": trace.description,
-                    "why_it_matters": getattr(trace, "why_it_matters", "") or "",
-                    "target_type": getattr(trace, "target_type", "other") or "other",
-                    "correlation_id": trace.correlation_id,
-                    "salience": float(trace.salience),
-                    "weights_version": trace.weights_version,
-                    "scope": trace.scope,
-                    "features": json.dumps(trace.features),
-                    "created_at": trace.created_at,
-                },
-            )
-        return True
-    except Exception as exc:
-        logger.warning("salience trace persist failed id=%s err=%s", trace.trace_id, exc)
-        return False
-
-
-def persist_reverie_chain(chain) -> bool:
-    """Insert one reverie chain readout. Never raises; idempotent on chain_id."""
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO substrate_reverie_chain
-                        (chain_id, created_at, theme_key, terminal_reason,
-                         ema_salience, committed_proposal_id, chain_json)
-                    VALUES
-                        (:chain_id, :created_at, :theme_key, :terminal_reason,
-                         :ema_salience, :committed_proposal_id, CAST(:chain_json AS jsonb))
-                    ON CONFLICT (chain_id) DO NOTHING
-                    """
-                ),
-                {
-                    "chain_id": chain.chain_id,
-                    "created_at": chain.created_at,
-                    "theme_key": chain.theme_key,
-                    "terminal_reason": chain.terminal_reason,
-                    "ema_salience": float(chain.ema_salience),
-                    "committed_proposal_id": chain.committed_proposal_id,
-                    "chain_json": json.dumps(chain.model_dump(mode="json")),
-                },
-            )
-        return True
-    except Exception as exc:
-        logger.warning("reverie chain persist failed id=%s err=%s", chain.chain_id, exc)
-        return False
 
 
 # --- Reverie VISUAL chain (Patch 2 of docs/superpowers/specs/2026-08-20-
@@ -1254,408 +1006,6 @@ def load_latest_memory_crystallization(
         return None
 
 
-def persist_compaction_request(request) -> bool:
-    """Enqueue one compaction request (Phase E). Never raises; idempotent."""
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO dream_compaction_request_queue
-                        (request_id, theme, op_hint, reason, origin_chain_id,
-                         created_at, request_json)
-                    VALUES
-                        (:request_id, :theme, :op_hint, :reason, :origin_chain_id,
-                         :created_at, CAST(:request_json AS jsonb))
-                    ON CONFLICT (request_id) DO NOTHING
-                    """
-                ),
-                {
-                    "request_id": request.request_id,
-                    "theme": request.theme,
-                    "op_hint": request.op_hint,
-                    "reason": request.reason,
-                    "origin_chain_id": request.origin_chain_id,
-                    "created_at": request.created_at,
-                    "request_json": json.dumps(request.model_dump(mode="json")),
-                },
-            )
-        return True
-    except Exception as exc:
-        logger.warning("compaction request persist failed id=%s err=%s", request.request_id, exc)
-        return False
-
-
-def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object, str]]:
-    """Recent (theme_key, created_at, terminal_reason) chain rows for the
-    resonance detector.
-
-    Read-only, best-effort — returns [] on any miss so the tripwire degrades to
-    "no evidence" rather than raising. Skips null/unknown themes."""
-    limit = max(0, int(limit))
-    if limit == 0:
-        return []
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.connect() as conn:
-            rows = (
-                conn.execute(
-                    text(
-                        "SELECT theme_key, created_at, terminal_reason FROM substrate_reverie_chain "
-                        "WHERE theme_key IS NOT NULL AND theme_key <> 'unknown' "
-                        "ORDER BY created_at DESC LIMIT :limit"
-                    ),
-                    {"limit": limit},
-                )
-                .mappings()
-                .all()
-            )
-        return [
-            (str(r["theme_key"]), r["created_at"], str(r.get("terminal_reason") or ""))
-            for r in rows
-            if r.get("created_at")
-        ]
-    except Exception as exc:
-        logger.debug("resonance chain-event load failed: %s", exc)
-        return []
-
-
-def load_latest_no_coalition_streak(theme_key: str) -> int:
-    """This theme's most recent chain row's own `chain_json.
-    no_coalition_streak` -- how many CONSECUTIVE prior chains for this theme
-    also ended `"no_coalition"` (never got a first grounded thought), a
-    counter this service itself writes on every chain
-    (`chain.py::resolve_reverie_chain_stuck_loop`). Same shape as
-    `load_latest_visual_chain_continuity_state`'s `continuity_streak` read
-    (visual_chain.py Patch 4): missing/unparsable on an older pre-this-patch
-    row degrades to 0 -- "no streak recorded yet", under-count never
-    over-count, so a bad read costs one extra un-suppressed retry at worst,
-    never gets stuck skipping the forced cooldown forever.
-
-    Read-only, best-effort: 0 on any error or no rows for this theme.
-    """
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        "SELECT chain_json FROM substrate_reverie_chain "
-                        "WHERE theme_key = :theme_key "
-                        "ORDER BY created_at DESC LIMIT 1"
-                    ),
-                    {"theme_key": theme_key},
-                )
-                .mappings()
-                .first()
-            )
-        if not row:
-            return 0
-        cj = row.get("chain_json")
-        if not isinstance(cj, dict):
-            return 0
-        try:
-            return max(0, int(cj.get("no_coalition_streak") or 0))
-        except (TypeError, ValueError):
-            return 0
-    except Exception as exc:
-        logger.debug("no_coalition streak load failed theme=%s err=%s", theme_key, exc)
-        return 0
-
-
-def persist_resonance_alert(alert) -> bool:
-    """Persist one resonance alert. Never raises; idempotent on alert_id."""
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO substrate_reverie_resonance_alert
-                        (alert_id, theme_key, violation_count, refractory_sec,
-                         min_gap_sec, occurrences, created_at, alert_json)
-                    VALUES
-                        (:alert_id, :theme_key, :violation_count, :refractory_sec,
-                         :min_gap_sec, :occurrences, :created_at, CAST(:alert_json AS jsonb))
-                    ON CONFLICT (alert_id) DO NOTHING
-                    """
-                ),
-                {
-                    "alert_id": alert.alert_id,
-                    "theme_key": alert.theme_key,
-                    "violation_count": int(alert.violation_count),
-                    "refractory_sec": float(alert.refractory_sec),
-                    "min_gap_sec": float(alert.min_gap_sec),
-                    "occurrences": int(alert.occurrences),
-                    "created_at": alert.created_at,
-                    "alert_json": json.dumps(alert.model_dump(mode="json")),
-                },
-            )
-        return True
-    except Exception as exc:
-        logger.warning("resonance alert persist failed id=%s err=%s", alert.alert_id, exc)
-        return False
-
-
-def load_recent_resonance_alerts(theme_key: str, limit: int = 2) -> list[dict]:
-    """Most recent persisted resonance alerts for one theme, newest first.
-
-    Read-only, best-effort — returns [] on any miss. Used by the health monitor
-    to compare violation_count across the last 2 samples (is this theme's
-    resonance getting worse, or is a new alert just re-reporting the same
-    historical burst still inside the detector's lookback window?).
-    """
-    limit = max(0, int(limit))
-    if limit == 0 or not theme_key:
-        return []
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.connect() as conn:
-            rows = (
-                conn.execute(
-                    text(
-                        "SELECT theme_key, violation_count, refractory_sec, min_gap_sec, "
-                        "occurrences, created_at FROM substrate_reverie_resonance_alert "
-                        "WHERE theme_key = :theme_key "
-                        "ORDER BY created_at DESC LIMIT :limit"
-                    ),
-                    {"theme_key": theme_key, "limit": limit},
-                )
-                .mappings()
-                .all()
-            )
-        return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.debug("resonance alert history load failed theme=%s err=%s", theme_key, exc)
-        return []
-
-
-def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
-    """True if the theme is currently suppressed. Best-effort (False on error)."""
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        "SELECT suppressed_until FROM substrate_reverie_refractory "
-                        "WHERE theme_key = :k"
-                    ),
-                    {"k": theme_key},
-                )
-                .mappings()
-                .first()
-            )
-        if not row:
-            return False
-        until = row.get("suppressed_until")
-        return until is not None and until > now
-    except Exception:
-        return False
-
-
-# A loop verdict older than this is not shown to reverie at all.
-#
-# Loop ids hash the loop's label (orion/substrate/attention/scoring.py), so the
-# same id comes back on every later spike of the same signal: an old verdict is
-# about an earlier episode, not about today's spike. 24h matches the decay
-# digest's own episode boundary (it calls a loop finished after 24h of silence,
-# orion/substrate/attention/implicit_outcome.py DEFAULT_MIN_SILENCE).
-#
-# In practice this bound acts on system:implicit_decay verdicts. A human
-# resolve/dismiss already keeps that loop out of the live coalition for 48h
-# (orion/substrate/attention/verdicts.py VERDICT_EXCLUSION_TTL_HOURS), so a
-# human verdict under 24h can only appear here on a non-selected open loop.
-#
-# Live 2026-10-16: of the 753 thoughts in the prior 7 days whose loop carried a
-# verdict, every one carried a system:implicit_decay verdict 17-37 days old
-# (p50 20.7d), which the old prompt called human ground truth ("unattended 22
-# days"). Over 60 days no human verdict was narrated within 24h (p10 6.3 days).
-LOOP_VERDICT_MAX_AGE_SEC = 24 * 3600.0
-
-
-def load_recent_loop_outcomes(
-    loop_ids: list[str], *, max_age_sec: float = LOOP_VERDICT_MAX_AGE_SEC
-) -> dict[str, dict[str, Any]]:
-    """Most recent, still-current `attention_loop_outcome` verdict per loop_id
-    (orion-hub table; read directly, no orion-hub import).
-
-    Writers: a human's Resolve/Dismiss in the Hub (actor = the person),
-    `scripts/attention_loop_decay_digest.py` (actor = `system:implicit_decay`),
-    and Orion's own non-final `acted` (excluded here). The actor is returned so
-    the prompt can say who recorded the verdict; a `system:*` verdict must never
-    be presented as a human's.
-
-    Verdicts older than `max_age_sec` are dropped (see LOOP_VERDICT_MAX_AGE_SEC):
-    a stale verdict is about an earlier episode of a reused loop id and must not
-    reach the prompt as current ground truth.
-
-    Read-only, best-effort -- returns {} on any miss or empty input, so a lookup
-    failure never breaks a reverie tick. Keyed by the *bare* loop id, matching
-    `attention_loops_store.suppress_loop`'s write format.
-
-    Returns {loop_id: {"verdict", "note", "actor", "age_sec"}} -- age is
-    computed here (deterministic code), never left for the LLM to infer.
-    """
-    ids = [str(i) for i in (loop_ids or []) if i]
-    if not ids:
-        return {}
-    try:
-        from sqlalchemy import bindparam, text
-
-        engine = _get_engine()
-        stmt = text(
-            """
-            SELECT DISTINCT ON (loop_id) loop_id, verdict, note, actor, created_at
-            FROM attention_loop_outcome
-            WHERE loop_id IN :ids
-              AND verdict <> 'acted'   -- Orion's non-final verdict never hides a human one
-            ORDER BY loop_id, created_at DESC
-            """
-        ).bindparams(bindparam("ids", expanding=True))
-        with engine.connect() as conn:
-            rows = conn.execute(stmt, {"ids": ids}).mappings().all()
-        return loop_outcomes_from_rows(rows, now=datetime.now(timezone.utc), max_age_sec=max_age_sec)
-    except Exception as exc:
-        logger.debug("loop outcome load failed ids=%s err=%s", ids, exc)
-        return {}
-
-
-def loop_outcomes_from_rows(
-    rows: Any, *, now: datetime, max_age_sec: float = LOOP_VERDICT_MAX_AGE_SEC
-) -> dict[str, dict[str, Any]]:
-    """Pure half of `load_recent_loop_outcomes`: age + staleness filter.
-
-    A row with an unreadable `created_at` is dropped: an undated verdict cannot
-    be shown as current.
-    """
-    out: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        created = r.get("created_at")
-        if not isinstance(created, datetime):
-            continue
-        c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
-        age_sec = max(0.0, (now - c).total_seconds())
-        if age_sec > max_age_sec:
-            continue
-        out[str(r["loop_id"])] = {
-            "verdict": str(r.get("verdict") or ""),
-            "note": str(r.get("note") or ""),
-            "actor": str(r.get("actor") or ""),
-            "age_sec": age_sec,
-        }
-    return out
-
-
-def reverie_refractory_suppress(theme_key: str, until) -> bool:
-    """Upsert a refractory suppression window. Never raises."""
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO substrate_reverie_refractory (theme_key, suppressed_until)
-                    VALUES (:k, :until)
-                    ON CONFLICT (theme_key)
-                    DO UPDATE SET suppressed_until = EXCLUDED.suppressed_until,
-                                  updated_at = now()
-                    """
-                ),
-                {"k": theme_key, "until": until},
-            )
-        return True
-    except Exception as exc:
-        logger.warning("reverie refractory suppress failed theme=%s err=%s", theme_key, exc)
-        return False
-
-
-def resonance_alert_cooldown_active(check_key: str, cooldown_sec: float, now) -> bool:
-    """True if a resonance-health "worsening" page for this check key was
-    already sent within the last `cooldown_sec` seconds.
-
-    Real dedupe, unlike `NotificationRequest.dedupe_key`/`dedupe_window_seconds`
-    -- those fields are accepted by orion-notify and stored on the row, but
-    nothing there ever reads them back to suppress a repeat (confirmed by
-    search; `BusFallbackAlertState`'s docstring documents the same finding
-    for its own caller). This durable per-key timestamp is the actual gate,
-    same pattern as `reverie_refractory_is_suppressed` above and
-    `BusFallbackAlertState` in orion-sql-writer.
-
-    Fail-open (False on any error): prefer a possibly-duplicate page over
-    silently swallowing a real, worsening incident -- same rationale as
-    `ResonanceHealthMonitor._has_open_alert`.
-    """
-    if cooldown_sec <= 0:
-        return False
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        "SELECT last_alerted_at FROM substrate_reverie_resonance_alert_cooldown "
-                        "WHERE check_key = :k"
-                    ),
-                    {"k": check_key},
-                )
-                .mappings()
-                .first()
-            )
-        if not row:
-            return False
-        last_alerted_at = row.get("last_alerted_at")
-        if last_alerted_at is None:
-            return False
-        return (now - last_alerted_at).total_seconds() < cooldown_sec
-    except Exception as exc:
-        logger.debug("resonance alert cooldown lookup failed key=%s err=%s", check_key, exc)
-        return False
-
-
-def resonance_alert_cooldown_mark(check_key: str, now) -> bool:
-    """Upsert `now` as the last time a "worsening" page fired for this check
-    key. Never raises."""
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO substrate_reverie_resonance_alert_cooldown (check_key, last_alerted_at)
-                    VALUES (:k, :now)
-                    ON CONFLICT (check_key)
-                    DO UPDATE SET last_alerted_at = EXCLUDED.last_alerted_at,
-                                  updated_at = now()
-                    """
-                ),
-                {"k": check_key, "now": now},
-            )
-        return True
-    except Exception as exc:
-        logger.warning("resonance alert cooldown mark failed key=%s err=%s", check_key, exc)
-        return False
-
-
 def acknowledge_visual_production(chain, artifact):
     """Verify stored bytes and atomically acknowledge this run, including hash reuse.
 
@@ -2185,4 +1535,167 @@ def persist_visual_execution_receipt(chain_id, receipt):
         return True
     except Exception:
         logger.exception("visual execution receipt persistence failed chain=%s", chain_id)
+        return False
+
+
+# --- Reveries that ask (Patch 1): the reverie_question table ----------------------------------------
+# services/orion-sql-db/manual_migration_reverie_question.sql. Every function below runs on the shared,
+# statement-bounded engine through asyncio.to_thread in app/reverie.py. Reads raise (the caller decides
+# what an unreadable table means: the gate stays shut); the writes return False on a miss and never raise.
+
+
+def _rows(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    from sqlalchemy import text
+
+    with _get_engine().connect() as conn:
+        return [dict(r) for r in conn.execute(text(sql), params or {}).mappings().all()]
+
+
+def load_quiet_gate_rows(stretch_start: datetime | None) -> dict[str, Any]:
+    """The broadcast's last winner and newest tick, and how many reverie_question rows exist since the
+    stretch began and in the last 24 h. ``stretch_start`` None = read the winner first (two reads)."""
+    from .reverie_seeds import LAST_WINNER_SQL, LATEST_TICK_SQL, stretch_start_for
+
+    last_winner = (_rows(LAST_WINNER_SQL) or [{}])[0].get("last_winner_at")
+    latest_tick = (_rows(LATEST_TICK_SQL) or [{}])[0].get("latest_tick_at")
+    now = datetime.now(timezone.utc)
+    start = stretch_start or stretch_start_for(now, last_winner)
+    counts = _rows(
+        "SELECT count(*) FILTER (WHERE created_at >= :start) AS since_stretch, "
+        "count(*) FILTER (WHERE created_at > now() - interval '24 hours') AS last_24h "
+        "FROM reverie_question WHERE created_at > now() - interval '25 hours' OR created_at >= :start",
+        {"start": start},
+    )[0]
+    return {
+        "last_winner_at": last_winner,
+        "latest_tick_at": latest_tick,
+        "rows_since_stretch": int(counts.get("since_stretch") or 0),
+        "rows_last_24h": int(counts.get("last_24h") or 0),
+    }
+
+
+def load_reverie_seed_state(lapse_days: float) -> dict[str, Any]:
+    """What the seed picker needs: when each kind was last used, which refs are spent (used by a
+    reverie in the lapse window), and the thread_id of each thread_key in that window."""
+    rows = _rows(
+        "SELECT seed_kind, seed_refs, thread_key, thread_id, created_at FROM reverie_question "
+        "WHERE created_at > now() - make_interval(secs => :secs) ORDER BY created_at",
+        {"secs": float(lapse_days) * 86400.0},
+    )
+    last_used: dict[str, datetime] = {}
+    spent: set[str] = set()
+    threads: dict[str, str] = {}
+    for r in rows:
+        last_used[str(r["seed_kind"])] = r["created_at"]
+        spent.update(str(x) for x in (r.get("seed_refs") or []))
+        threads[str(r["thread_key"])] = str(r["thread_id"])
+    # Last used is read over all time, not only the lapse window: a kind unused for 3 weeks is older
+    # than one used 2 weeks ago.
+    for r in _rows("SELECT seed_kind, max(created_at) AS at FROM reverie_question GROUP BY 1"):
+        last_used.setdefault(str(r["seed_kind"]), r["at"])
+    return {"last_used": last_used, "spent_refs": spent, "threads": threads}
+
+
+def load_open_question_texts(lapse_days: float) -> list[str]:
+    """Texts a new reverie question must not repeat: the pending curiosity focus, open self-questions,
+    and every reverie question written in the lapse window. A table that cannot be read raises."""
+    out: list[str] = []
+    out += [str(r["question"]) for r in _rows(
+        "SELECT question FROM curiosity_focus_request WHERE status = 'pending' AND expires_at > now()")]
+    out += [str(r["text"]) for r in _rows("SELECT text FROM curiosity_self_questions WHERE status = 'open'")]
+    out += [str(r["question"]) for r in _rows(
+        "SELECT question FROM reverie_question WHERE question IS NOT NULL "
+        "AND created_at > now() - make_interval(secs => :secs)", {"secs": float(lapse_days) * 86400.0})]
+    return out
+
+
+def count_reverie_focus_routes_24h() -> int:
+    rows = _rows("SELECT count(*) AS n FROM reverie_question WHERE routed_to LIKE 'focus:%' "
+                 "AND created_at > now() - interval '24 hours'")
+    return int(rows[0]["n"]) if rows else 0
+
+
+def load_absence_rows() -> list[dict[str, Any]]:
+    from .reverie_seeds import ABSENCE_SQL
+
+    return _rows(ABSENCE_SQL)
+
+
+def load_lost_bet_rows() -> list[dict[str, Any]]:
+    from .reverie_seeds import LOST_BET_SQL
+
+    return _rows(LOST_BET_SQL)
+
+
+async def load_live_lived_memory() -> list[Any]:
+    """Every servable lived-memory record, through the ONE serving gate orion-recall uses
+    (orion.memory.lived_memory.fetch_live_records: superseded, rejected, expired or removed records are
+    never returned). That function speaks asyncpg (``conn.fetch(sql, *args)``); this adapter runs the
+    same SQL on the shared psycopg2 engine in a thread. Only the whole-snapshot form is used (no ids,
+    so no ``$n`` placeholders)."""
+    from orion.memory.lived_memory import fetch_live_records
+
+    class _Conn:
+        async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+            if args:
+                raise ValueError("reverie reads the whole live snapshot only")
+            return await asyncio.to_thread(_raw_rows, sql)
+
+    return await fetch_live_records(_Conn())
+
+
+def _raw_rows(sql: str) -> list[dict[str, Any]]:
+    # exec_driver_sql: the lived-memory SQL is plain text with no bind params, and must not be parsed
+    # for ":name" binds (it may contain '::' casts).
+    with _get_engine().connect() as conn:
+        return [dict(r) for r in conn.exec_driver_sql(sql).mappings().all()]
+
+
+def persist_reverie_question(question: Any) -> bool:
+    """Insert one ReverieQuestionV1 (idempotent on question_id). False on a miss; never raises."""
+    try:
+        from sqlalchemy import text
+
+        q = question
+        with _get_engine().begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO reverie_question (question_id, thread_id, thread_key, seed_kind, seed_refs, "
+                    "seed_material, question, why, refs, cites, none_reason, refused_reason, refused_detail, "
+                    "routed_to, route_note, correlation_id, model_id, question_json, created_at) VALUES "
+                    "(:question_id, :thread_id, :thread_key, :seed_kind, :seed_refs, :seed_material, :question, "
+                    ":why, :refs, :cites, :none_reason, :refused_reason, :refused_detail, :routed_to, "
+                    ":route_note, :correlation_id, :model_id, CAST(:question_json AS jsonb), :created_at) "
+                    "ON CONFLICT (question_id) DO NOTHING"
+                ),
+                {
+                    "question_id": q.question_id, "thread_id": q.thread_id, "thread_key": q.thread_key,
+                    "seed_kind": q.seed_kind, "seed_refs": list(q.seed_refs), "seed_material": q.seed_material,
+                    "question": q.question, "why": q.why, "refs": list(q.refs), "cites": list(q.cites),
+                    "none_reason": q.none_reason, "refused_reason": q.refused_reason,
+                    "refused_detail": q.refused_detail, "routed_to": q.routed_to, "route_note": q.route_note,
+                    "correlation_id": q.correlation_id, "model_id": q.model_id,
+                    "question_json": json.dumps(q.model_dump(mode="json")), "created_at": q.created_at,
+                },
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reverie_question persist failed id=%s err=%s", getattr(question, "question_id", "?"), exc)
+        return False
+
+
+def update_reverie_question_route(question_id: str, routed_to: str, route_note: str | None) -> bool:
+    try:
+        from sqlalchemy import text
+
+        with _get_engine().begin() as conn:
+            conn.execute(
+                text("UPDATE reverie_question SET routed_to = :r, route_note = :n, "
+                     "question_json = question_json || jsonb_build_object('routed_to', CAST(:r AS text), "
+                     "'route_note', CAST(:n AS text)) WHERE question_id = :id"),
+                {"r": routed_to, "n": route_note, "id": question_id},
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reverie_question route update failed id=%s err=%s", question_id, exc)
         return False

@@ -1,0 +1,37 @@
+name: reverie_question
+label: Reverie Question
+description: >
+  Reveries that ask (docs/superpowers/specs/2026-11-18-reverie-questions-design.md). In a quiet stretch,
+  Orion turns over ONE piece of real material picked by code (a routine that did not happen, a bet it keeps
+  losing, an old memory beside a new one) and leaves one question for curiosity to dig, or says why there is
+  none. Output is ReverieQuestionV1's model half (question, why, refs, cites, none_reason); code checks it
+  (services/orion-thought/app/reverie.py check_question) before it is stored and routed. Read-only.
+
+category: ExecutiveControl
+priority: normal
+
+requires_gpu: true
+requires_memory: false
+# The reverie sees its seed and Orion's now, nothing else: no recall.
+recall_enabled: false
+timeout_ms: 300000
+
+services:
+  - LLMGatewayService
+
+prompt_template: reverie_question.j2
+
+steps:
+  - name: llm_reverie_question
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: reverie_question.j2
+    requires_gpu: true
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 2
+  family: thought.reverie
+  lanes: [agent]
+  deferrable_window_s: 900

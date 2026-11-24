@@ -431,13 +431,11 @@ def test_images_are_transcoded_inline_and_cid_refs_match_attachments(tmp_path):
     visuals.append(VisualReverieV1(sha256="ff" * 32, chain_id="vc-x", created_at=fx._t(20),
                                    path=str(tmp_path / "gone.png"), description="missing caption"))
     material = _material()
-    chains = [c.model_copy(update={"chain_id": f"vc-{i}", "ema_salience": i / 10}) for i, c in
-              enumerate(material.reverie_chains[:8])]
-    letter = _letter(material=material.model_copy(update={"visual_reveries": visuals, "reverie_chains": chains}))
+    letter = _letter(material=material.model_copy(update={"visual_reveries": visuals}))
     images = email.load_inline_images(letter, storage_dir=str(tmp_path), max_images=6, max_bytes=200_000)
-    assert len(images) == 6
-    # Most salient chains first: vc-7..vc-2, shown in time order.
-    assert [img.reverie.chain_id for img in images] == [f"vc-{i}" for i in range(2, 8)]
+    # The newest 6 are picked (vc-x, vc-7..vc-3); vc-x's file is gone, so 5 load, in time order.
+    assert len(images) == 5
+    assert [img.reverie.chain_id for img in images] == [f"vc-{i}" for i in range(3, 8)]
     from PIL import Image
 
     for img in images:
@@ -446,9 +444,10 @@ def test_images_are_transcoded_inline_and_cid_refs_match_attachments(tmp_path):
             assert im.format == "JPEG" and max(im.size) <= 1024
     req = email.build_notification(letter, images)
     cids = set(re.findall(r'src="cid:([^"]+)"', req.body_html))
-    assert cids == {a.content_id for a in req.attachments} == {f"reverie{n}@orion" for n in range(1, 7)}
+    assert cids == {a.content_id for a in req.attachments} == {f"reverie{n}@orion" for n in range(1, 6)}
     assert all(a.mime_type == "image/jpeg" for a in req.attachments)
     assert "missing caption" in req.body_html and "image caption 0" in req.body_html
+    assert 'data-section="reveries"' in req.body_html
     assert req.title == "Orion's Day — 2026-09-29"
     assert req.channels_requested == ["email"]
 

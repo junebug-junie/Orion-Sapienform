@@ -42,15 +42,15 @@ def test_every_source_is_read_at_full_length():
     assert material.reading_journals[0].entry_id == "8c62d21d"
     assert material.dream_narratives[0].themes == ["archive"]
     assert material.dream_hypotheses[0].hypothesis_id == "dh-1a69e4d982ac"
-    assert len(material.reverie_thoughts) == len(fx.REVERIE_THOUGHTS)  # every thought kept in material
-    assert material.reverie_thoughts[0].interpretation == fx.REVERIE_THOUGHTS[0]["interpretation"]
-    assert len(material.reverie_chains) == 100
+    assert [q.question for q in material.reverie_questions] == [r["question"] for r in fx.REVERIE_QUESTIONS]
+    assert material.reverie_questions[0].outcome == {"disposition": "explored", "finding": "operational"}
+    assert material.reverie_thoughts == [] and material.reverie_chains == []  # the retired narration is not read
     assert material.visual_reveries[0].path.endswith("a550.png")
     assert material.chat_compactor.entry_id == "d5f4c123"
     assert material.github_compactor is None
     assert [i.title for i in material.world_pulse_digest.items] == ["Fuel standards rolled back"]
     assert material.sources["github_compactor"].status == "empty"
-    assert material.sources["reverie_thoughts"].count == len(fx.REVERIE_THOUGHTS)
+    assert material.sources["reverie_questions"].count == len(fx.REVERIE_QUESTIONS)
     assert all(s.status in ("ok", "empty") for s in material.sources.values())
 
 
@@ -60,10 +60,10 @@ def test_self_sense_run_is_not_listed_as_a_curiosity_run():
 
 
 def test_one_failing_source_names_its_gap_and_the_rest_still_gathers():
-    material = _gather(fx.FakeConn(fail={"reverie_thoughts", "world_pulse_digest"}))
-    assert material.sources["reverie_thoughts"].status == "error"
-    assert "does not exist" in material.sources["reverie_thoughts"].error
-    assert material.reverie_thoughts == []
+    material = _gather(fx.FakeConn(fail={"reverie_questions", "world_pulse_digest"}))
+    assert material.sources["reverie_questions"].status == "error"
+    assert "does not exist" in material.sources["reverie_questions"].error
+    assert material.reverie_questions == []
     assert material.world_pulse_digest is None and material.sources["world_pulse_digest"].status == "error"
     assert material.curiosity_runs and material.readings  # untouched
 

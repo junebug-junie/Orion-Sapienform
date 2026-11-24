@@ -8,8 +8,8 @@ Pure. Shared by every producer whose bid binds, so they all obey the same rule:
 * orion-hub outreach (``scripts.outreach_bind``: hub.outreach), before a door composes a message;
 * orion-sql-writer camera asks (``app.ask_bind``: vision.ask, attention patch 4b), before a card opens. A held
   ask keeps bidding with no deadline (issue #3285), so it passes a rolling ``end`` that never arrives;
-* orion-dream's compaction applier (``app.compaction_consent``, attention patch 3d), with the hold ending now:
-  it is one-shot, so only consent decides; a consent block is never admitted;
+* (until 2026-11-24) orion-dream's compaction applier (``app.compaction_consent``, attention patch 3d), removed
+  with the reverie chain it compacted; a one-shot consent bid with the hold ending now stays supported here;
 * orion-durable-runs' cooling world act (``app.cooling_act``, via ``orion.autonomy.shed_act.shed_verdict``),
   which is stricter: only ``funded`` sheds, and "no answer" or the window's end never does.
 

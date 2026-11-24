@@ -1,6 +1,7 @@
 """Re-export shared substrate felt-state reader for cortex-exec."""
 
 from orion.substrate.felt_state_reader import (  # noqa: F401
+    LATEST_REVERIE_QUESTION_CTX_KEY,
     LIVED_ANSWERS_CTX_KEY,
     LaneSpec,
     SubstrateFeltStateReader,

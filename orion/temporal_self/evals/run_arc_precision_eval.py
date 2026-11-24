@@ -37,7 +37,12 @@ from orion.temporal_self import ReducerConfig, advance_clock, drain_closed_days,
 from orion.temporal_self.body import NO_BODY_KINDS, body_window, summarize_body  # noqa: E402
 from orion.temporal_self.broadcast import tick_from_log_row  # noqa: E402
 from orion.temporal_self.day import as_utc, day_window  # noqa: E402
+from orion.temporal_self.history_sources import HISTORY_ADAPTERS  # noqa: E402
 from orion.temporal_self.sources import ADAPTERS  # noqa: E402
+
+# The fixture day predates the reverie retirement (2026-11-24): its reverie_chain / expectation_verdict rows
+# replay through the history-only adapters, so the frozen day reduces to the same arcs it always did.
+REPLAY_ADAPTERS = {**ADAPTERS, **HISTORY_ADAPTERS}
 
 HERE = Path(__file__).resolve().parent
 FIXTURE = HERE / "fixtures" / "day_2026-10-09.jsonl.gz"
@@ -57,10 +62,12 @@ def load(path: Path = FIXTURE) -> dict[str, list[dict]]:
     return rows
 
 
-def build_inputs(rows: dict[str, list[dict]]):
+def build_inputs(rows: dict[str, list[dict]], adapters=None):
+    """``adapters`` None = REPLAY_ADAPTERS (live + history-only). The live-path replay passes the live set
+    (``ADAPTERS``) because the live SourceReader can no longer emit a retired kind."""
     ticks = [tick_from_log_row(r) for r in rows["broadcast"]]  # the real extraction path
     events = []
-    for kind, adapter in ADAPTERS.items():
+    for kind, adapter in (REPLAY_ADAPTERS if adapters is None else adapters).items():
         for r in rows.get(kind, []):
             e = adapter(r)
             if e is not None:
@@ -124,7 +131,7 @@ def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
     return score(cfg, rows, ticks, day, identical)
 
 
-def score(cfg: ReducerConfig, rows, ticks, day, identical: bool) -> dict:
+def score(cfg: ReducerConfig, rows, ticks, day, identical: bool, *, with_history: bool = True) -> dict:
     """Every gate on one closed day. The patch-3 live replay
     (services/orion-durable-runs/evals/temporal_self_live_replay.py) scores the day the live
     driver persisted with this same function."""
@@ -163,7 +170,9 @@ def score(cfg: ReducerConfig, rows, ticks, day, identical: bool) -> dict:
         "sleep": {r["cycle_id"] for r in rows["dream_cycle"] if r["status"] == "completed" and in_day(r["ended_at"])},
         "curiosity": {r["run_id"] for r in rows["curiosity_run"] if r.get("completed_at") and in_day(r["completed_at"])},
         "imagery": {r["chain_id"] for r in rows["visual_run"] if in_day(r["created_at"])},
-        "reverie": {r["chain_id"] for r in rows["reverie_chain"] if r.get("thoughts") and avail_reverie(r) and d0 <= avail_reverie(r) < d1},
+        # Without the history-only adapters (the live path) no reverie_chain event exists: no reverie arc is expected.
+        "reverie": {r["chain_id"] for r in rows["reverie_chain"] if r.get("thoughts") and avail_reverie(r) and d0 <= avail_reverie(r) < d1}
+        if with_history else set(),
     }
     recall = {}
     for kind, want in expected.items():

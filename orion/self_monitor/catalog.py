@@ -11,11 +11,8 @@ from __future__ import annotations
 from orion.self_monitor.record import Ungradeable
 
 UNGRADEABLE: tuple[Ungradeable, ...] = (
-    Ungradeable(
-        "reverie.expectation", "substrate_reverie_thought", "ungradeable:never_settled",
-        "984 of 988 expectations went unscored in 7 days (10-20) and none states a confidence; "
-        "the claims are near-tautological ('the laptop will still be on the desk')",
-    ),
+    # "reverie.expectation" (room-camera claims, never settled) left 2026-11-24: the expectations were
+    # retired with the reverie narration chain (reveries that ask, Patch 1), so the faculty is gone.
     Ungradeable(
         "dream.hypothesis", "dream_hypothesis", "ungradeable:self_graded",
         "graded only by whether Orion later adopts it (dream vs random-control arm); no confidence stored",

@@ -106,9 +106,8 @@ def _full_rows():
         "metacog": [{"id": f"m{i}", "summary": f"degraded thing {i}", "severity": "critical",
                      "trigger_kind": f"kind_{i}", "trigger_reason": f"reason {i}", "tags": [f"t{i}"]}
                     for i in range(8)],
-        "compaction_request": [{"request_id": f"r{i}", "theme": f"theme {i}", "reason": "recurs"}
-                               for i in range(8)],
-        "resonance": [{"alert_id": f"a{i}", "theme_key": f"res {i}", "violation_count": 9} for i in range(8)],
+        "crystallization": [{"crystallization_id": f"c{i}", "subject": f"theme {i}", "summary": "recurs",
+                             "salience": 0.9, "tags": [f"c{i}"]} for i in range(16)],
     }
 
 

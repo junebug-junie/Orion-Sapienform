@@ -145,10 +145,14 @@ def _rows():
             {"id": "m2", "summary": "Latency spike on the chat lane", "severity": "degraded",
              "trigger_kind": "latency", "tags": ["latency"]},
         ],
-        "compaction_request": [{"request_id": "r1", "theme": "juniper's sleep schedule", "reason": "recurs"}],
-        "resonance": [{"alert_id": "a1", "theme_key": "being watched", "violation_count": 4}],
+        # compaction_request / resonance retired 2026-11-24 with the reverie chain; crystallizations at
+        # their weights keep this fixture's pressure (3.6) and candidate count.
         "crystallization": [{"crystallization_id": "c1", "subject": "Juniper prefers plain English",
-                             "summary": "dense answers get re-asked", "salience": 0.8, "tags": ["style"]}],
+                             "summary": "dense answers get re-asked", "salience": 0.8, "tags": ["style"]},
+                            {"crystallization_id": "r1", "subject": "juniper's sleep schedule",
+                             "summary": "recurs", "salience": 0.5, "tags": ["sleep"]},
+                            {"crystallization_id": "a1", "subject": "being watched",
+                             "summary": "comes back", "salience": 0.7, "tags": ["camera"]}],
     }
 
 
@@ -329,7 +333,9 @@ def test_source_caps_only_tighten_and_default_is_unchanged():
 
 def _many_existing():
     rows = _rows()
-    rows["compaction_request"] = [{"request_id": f"r{i}", "theme": f"theme {i}", "reason": "recurs"} for i in range(10)]
+    rows["crystallization"] = rows["crystallization"] + [
+        {"crystallization_id": f"x{i}", "subject": f"theme {i}", "summary": "recurs", "salience": 0.5, "tags": [f"x{i}"]}
+        for i in range(10)]
     return rows
 
 

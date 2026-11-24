@@ -203,11 +203,11 @@ def test_section_names_match_the_tool_contract_and_cover_every_record_but_themes
     material = _material()
     covered = {ref for name in SECTION_PREFIXES for ref, _ in section_records(material, name)}
     rest = set(material_ref_records(material)) - covered
-    assert rest and all(ref.startswith("reverie_theme:") for ref in rest)
+    assert all(ref.startswith("reverie_theme:") for ref in rest)  # stored letters only (retired chains)
     curiosity = [ref for ref, _ in section_records(material, "curiosity")]
     assert curiosity[0] == f"curiosity:{material.curiosity_runs[0].run_id}"
     assert any(ref.startswith("curiosity_failed:") for ref in curiosity)
-    assert all(ref.startswith("reverie:") or ref.startswith("visual_reverie:")
+    assert all(ref.startswith(("reverie:", "visual_reverie:", "reverie_question:"))
                for ref, _ in section_records(material, "reveries"))
 
 

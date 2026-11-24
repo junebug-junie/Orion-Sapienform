@@ -96,14 +96,8 @@ class _FakeConn:
             return _FakeResult(rows)
         if "FROM reverie_visual_artifact" in sql:
             return _FakeResult(self.table_rows.get("reverie_visual_artifact", []))
-        if "FROM substrate_reverie_chain" in sql:
-            return _FakeResult(self.table_rows.get("substrate_reverie_chain", []))
-        if "FROM substrate_reverie_thought" in sql:
-            return _FakeResult(self.table_rows.get("substrate_reverie_thought", []))
-        if "FROM dream_compaction_request_queue" in sql:
-            return _FakeResult(self.table_rows.get("dream_compaction_request_queue", []))
-        if "FROM substrate_reverie_resonance_alert" in sql:
-            return _FakeResult(self.table_rows.get("substrate_reverie_resonance_alert", []))
+        if "FROM reverie_question" in sql:
+            return _FakeResult(self.table_rows.get("reverie_question", []))
         raise AssertionError(f"unexpected query in fake conn: {sql}")
 
 
@@ -376,58 +370,31 @@ def test_visual_image_404_when_row_missing(client, monkeypatch):
 # --- text/recent --------------------------------------------------------
 
 
-def test_text_recent_extracts_thoughts_from_chain_json_and_downstream_flags(client, monkeypatch):
-    _set_tables(
-        monkeypatch,
-        substrate_reverie_chain=[
-            {
-                "chain_id": "tc1",
-                "created_at": NOW,
-                "theme_key": "ol-1",
-                "terminal_reason": "pressure_discharged",
-                "ema_salience": 0.7,
-                "committed_proposal_id": None,
-                "chain_json": {"thought_ids": ["th-1", "th-2"]},
-            }
-        ],
-        substrate_reverie_thought=[
-            {"thought_id": "th-1", "created_at": NOW, "salience": 0.6, "interpretation": "first"},
-            {"thought_id": "th-2", "created_at": NOW, "salience": 0.8, "interpretation": "second"},
-        ],
-        dream_compaction_request_queue=[{"origin_chain_id": "tc1"}],
-        substrate_reverie_resonance_alert=[{"theme_key": "ol-1", "n": 2}],
-    )
-    resp = client.get("/api/reverie/text/recent")
+def _q(**kw):
+    base = {"question_id": "q1", "thread_id": "t1", "seed_kind": "lost_bet", "seed_refs": ["self_bet_bin:f:0.1-0.2"],
+            "seed_material": "material", "question": None, "why": None, "none_reason": None,
+            "refused_reason": None, "refused_detail": None, "routed_to": "none", "route_note": None,
+            "outcome": None, "created_at": NOW}
+    base.update(kw)
+    return base
+
+
+def test_questions_recent_shows_asked_none_and_refused_apart(client, monkeypatch):
+    _set_tables(monkeypatch, reverie_question=[
+        _q(question_id="a", question="Which turns run long?", routed_to="focus:f1", route_note="queued"),
+        _q(question_id="n", none_reason="too thin"),
+        _q(question_id="r", question="Why does the substrate win?", refused_reason="machinery_words"),
+    ])
+    resp = client.get("/api/reverie/questions/recent")
     assert resp.status_code == 200
-    chain = resp.json()["chains"][0]
-    assert [t["thought_id"] for t in chain["thoughts"]] == ["th-1", "th-2"]
-    assert chain["downstream"]["compaction_queued"] is True
-    assert chain["downstream"]["theme_resonance_alert_count"] == 2
+    by_id = {q["question_id"]: q for q in resp.json()["questions"]}
+    assert by_id["a"]["state"] == "asked" and by_id["a"]["routed_to"] == "focus:f1"
+    assert by_id["n"]["state"] == "none" and by_id["n"]["question"] is None
+    assert by_id["r"]["state"] == "refused" and by_id["r"]["refused_reason"] == "machinery_words"
 
 
-def test_text_recent_no_downstream_effect_when_nothing_queued(client, monkeypatch):
-    _set_tables(
-        monkeypatch,
-        substrate_reverie_chain=[
-            {
-                "chain_id": "tc2",
-                "created_at": NOW,
-                "theme_key": "unknown",
-                "terminal_reason": "no_coalition",
-                "ema_salience": 0.0,
-                "committed_proposal_id": None,
-                "chain_json": {},
-            }
-        ],
-        substrate_reverie_thought=[],
-        dream_compaction_request_queue=[],
-        substrate_reverie_resonance_alert=[],
-    )
-    resp = client.get("/api/reverie/text/recent")
-    chain = resp.json()["chains"][0]
-    assert chain["thoughts"] == []
-    assert chain["downstream"]["compaction_queued"] is False
-    assert chain["downstream"]["theme_resonance_alert_count"] == 0
+def test_the_retired_text_chain_endpoint_is_gone(client):
+    assert client.get("/api/reverie/text/recent").status_code == 404
 
 
 def test_router_registered_on_api_routes():
@@ -436,4 +403,4 @@ def test_router_registered_on_api_routes():
 
     paths = {r.path for r in api_routes.router.routes}
     assert "/api/reverie/visual/recent" in paths
-    assert "/api/reverie/text/recent" in paths
+    assert "/api/reverie/questions/recent" in paths

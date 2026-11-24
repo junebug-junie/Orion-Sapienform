@@ -19,15 +19,15 @@ on:
       - "services/orion-thought/app/personality_cue.py"
       - "services/orion-thought/app/reverie.py"
       - "services/orion-thought/tests/test_personality_cue.py"
-      - "services/orion-thought/tests/test_reverie_orion_now.py"
+      - "services/orion-thought/app/reverie_seeds.py"
       - "orion/integration/**"
       - "orion/prime/**"
       - "orion/curiosity/now_section.py"
-      - "services/orion-thought/tests/test_reverie_recent_arcs.py"
+      - "services/orion-thought/tests/test_reverie_questions.py"
       - "orion/schemas/reverie.py"
       - "orion/personality/**"
       - "orion/schemas/personality.py"
-      - "orion/cognition/prompts/reverie_narrate.j2"
+      - "orion/cognition/prompts/reverie_question.j2"
       - "services/orion-hub/scripts/chat_turn_trace_routes.py"
       - "services/orion-hub/static/js/thought-process.js"
       - "services/orion-hub/scripts/orion_day_introspect.py"
@@ -73,7 +73,7 @@ jobs:
       - name: orion-thought cue fetch, stance wiring, and reverie's read of Orion's now
         run: |
           cd services/orion-thought && python -m pytest -q -p no:cacheprovider tests/test_stance_temporal_self_cue.py tests/test_personality_cue.py \
-          tests/test_reverie_orion_now.py tests/test_reverie_recent_arcs.py
+          tests/test_reverie_questions.py
       - name: Hub turn trace (route + rendered panel, node) and letter closed-day block
         run: |
           cd services/orion-hub && python -m pytest -q -p no:cacheprovider \

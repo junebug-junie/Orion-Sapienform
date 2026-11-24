@@ -12,6 +12,7 @@ from typing import Any
 
 from orion.dream import introspect_sql
 from orion.orion_day import gather
+from orion.reverie.questions import ACCEPTED_SQL_ASYNCPG
 from orion.world_pulse_read import introspect as wp_introspect
 from orion.world_pulse_read import findings as wp_findings
 from orion.world_pulse_read.resonance_findings import RESONANCE_FINDINGS_SQL
@@ -111,6 +112,20 @@ REVERIE_CHAINS = [
      "thought_count": 3}
     for j in range(100)
 ]
+# The day's accepted reverie questions (reveries that ask; orion/reverie/questions.py ACCEPTED_SQL_ASYNCPG).
+REVERIE_QUESTIONS = [
+    {"question_id": f"rq-{i:02d}-cccccccccccc", "thread_id": f"thr-{i}", "seed_kind": kind,
+     "seed_refs": [ref], "question": q, "why": "It is in my own records and I can check it.",
+     "none_reason": None, "refused_reason": None, "routed_to": routed, "outcome": outcome,
+     "created_at": _t(200 + 60 * i)}
+    for i, (kind, ref, q, routed, outcome) in enumerate([
+        ("lost_bet", "self_bet_bin:more_steps_than_usual:0.1-0.2",
+         "Why do turns I call unlikely to run long run long 37% of the time?", "focus:f-1",
+         {"disposition": "explored", "finding": "operational"}),
+        ("far_memory", "episode_memory:abc",
+         "What links the flashing-disk evening to the older GPU limits memory?", "none", None),
+    ])
+]
 VISUAL_REVERIES = [
     {"sha256": "a550f6957904e7ec" + "0" * 48, "chain_id": "vchain-1", "step_index": 0, "created_at": _t(7),
      "mime": "image/png", "width": 1024, "height": 1024, "bytes": 123456,
@@ -180,8 +195,7 @@ class FakeConn:
             gather.JOURNALS_BY_PREFIX_SQL: ("reading_journals", READING_JOURNALS),
             introspect_sql.NARRATIVE_WINDOW_SQL: ("dream_narratives", DREAM_NARRATIVES),
             gather.DREAM_HYPOTHESES_SEEN_SQL: ("dream_hypotheses", DREAM_HYPOTHESES),
-            gather.REVERIE_THOUGHTS_SQL: ("reverie_thoughts", REVERIE_THOUGHTS),
-            gather.REVERIE_CHAINS_SQL: ("reverie_chains", REVERIE_CHAINS),
+            ACCEPTED_SQL_ASYNCPG: ("reverie_questions", REVERIE_QUESTIONS),
             gather.VISUAL_REVERIES_SQL: ("visual_reveries", VISUAL_REVERIES),
             gather.CORRECTIONS_SQL: ("corrections", corrections or []),
             RESONANCE_FINDINGS_SQL: ("reading_resonance", []),
@@ -273,10 +287,12 @@ REREAD_CARRY = """Threads for tomorrow:
 
 
 def reread_letter(*, letter_date: date = LETTER_DATE, material=None, created_at: datetime | None = None):
-    """An ``OrionDayLetterV1`` over the fixture day with REREAD_NOTE / REREAD_CARRY."""
+    """An ``OrionDayLetterV1`` over the fixture day with REREAD_NOTE / REREAD_CARRY. A STORED letter from
+    before 2026-11-24: its material still carries the retired narration's thoughts and chains, which a
+    reread must keep resolving."""
     import asyncio
 
-    from orion.schemas.orion_day import OrionDayLetterSourcesV1, OrionDayLetterV1
+    from orion.schemas.orion_day import OrionDayLetterSourcesV1, OrionDayLetterV1, ReverieChainV1, ReverieThoughtV1
 
     if material is None:
         material = asyncio.run(gather.gather_orion_day(
@@ -285,7 +301,11 @@ def reread_letter(*, letter_date: date = LETTER_DATE, material=None, created_at:
         first = material.curiosity_runs[0].model_copy(update={
             "run_id": REREAD_RUN_ID, "journal_title": "Dream organ gap", "journal_body": REREAD_RUN_BODY,
         })
-        material = material.model_copy(update={"curiosity_runs": [first, *material.curiosity_runs[1:]]})
+        material = material.model_copy(update={
+            "curiosity_runs": [first, *material.curiosity_runs[1:]],
+            "reverie_thoughts": [ReverieThoughtV1(**t) for t in REVERIE_THOUGHTS],
+            "reverie_chains": [ReverieChainV1(**c) for c in REVERIE_CHAINS],
+        })
     if letter_date != material.letter_date:
         material = material.model_copy(update={"letter_date": letter_date})
     created = created_at or (material.window_end + timedelta(hours=10))

@@ -1,7 +1,8 @@
 """Dream cycle v2 store. Reads four producer tables; writes only v2 cycle/observation tables.
 
-Read-only on every source (orion_metacog, dream_compaction_request_queue, temporal_self_arc,
-substrate_reverie_resonance_alert, memory_crystallizations, chat_history_log).
+Read-only on every source (orion_metacog, temporal_self_arc, memory_crystallizations, chat_history_log).
+dream_compaction_request_queue and substrate_reverie_resonance_alert were sources until 2026-11-24 (their
+producer, the reverie narration chain, was retired).
 Writes exactly CYCLE_WRITE_TABLES -- a test pins that no canonical memory
 table ever appears in a write statement here.
 
@@ -32,11 +33,6 @@ CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis", "d
 #                    by the producer (`transport:rpc_timeout:<channel>`). Not
 #                    `summary`: model prose, reworded per row for one event.
 #                    No reason -> the row id (counts as its own thing).
-#   compaction       the theme.   resonance  the theme_key.
-#                    Both are bare open-loop ids (`open-loop-968fda08910c`). `title` is the
-#                    loop's latest human description from attention_salience_trace
-#                    (theme_key == loop id, indexed), for replay text only: the key
-#                    stays the id, so tiredness and novelty are unchanged.
 #   crystallization  activation events (auto_activate / approve), NOT
 #                    updated_at: recall rewrites updated_at on all ~100
 #                    rendered crystallizations per retrieval (retriever.py
@@ -45,28 +41,6 @@ CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis", "d
 # timestamptz. Cast only well-formed values so one bad row cannot fail the read
 # (CASE, not AND: Postgres does not promise AND short-circuits).
 METACOG_KEY_RE = r"[0-9a-f]{8,}|-?[0-9]+(\.[0-9]+)?"
-
-def _title_join(theme_col: str) -> str:
-    """The open loop's latest non-empty human description before the window's end."""
-    return (
-        "\n        LEFT JOIN LATERAL (SELECT a.description AS title FROM attention_salience_trace a"
-        f" WHERE a.theme_key = {theme_col} AND coalesce(a.description, '') <> ''"
-        # As described when the window closed, not today's (titles drift: "1 message" -> "2").
-        " AND a.created_at < :until"
-        " ORDER BY a.created_at DESC LIMIT 1) t ON true"
-    )
-
-
-def _chain_thought_join(chain_col: str) -> str:
-    """What the reverie chain behind a compaction request last thought, in its own words (primary
-    keys on both tables). The request's own `reason` is only how the chain ended
-    ("reverie_chain_settled"), which gives the recombine model nothing to link (#3412)."""
-    return (
-        "\n        LEFT JOIN LATERAL (SELECT th.interpretation FROM substrate_reverie_chain ch"
-        " JOIN substrate_reverie_thought th ON th.thought_id = ch.chain_json->'thought_ids'->>-1"
-        f" WHERE ch.chain_id = {chain_col} LIMIT 1) r ON true"
-    )
-
 
 SOURCE_QUERIES: dict[str, str] = {
     "metacog": f"""
@@ -87,29 +61,6 @@ SOURCE_QUERIES: dict[str, str] = {
           ) m WHERE ts > :since AND ts < :until
           ORDER BY dedupe_key, (severity = 'critical') DESC, ts DESC
         ) d ORDER BY ts DESC LIMIT :limit
-    """,
-    "compaction_request": f"""
-        SELECT d.request_id, d.theme, d.reason, d.dedupe_key, t.title,
-               d.created_at AS occurred_at, r.interpretation FROM (
-          SELECT request_id, theme, reason, dedupe_key, created_at, origin_chain_id FROM (
-            SELECT DISTINCT ON (lower(theme)) request_id, theme, reason, lower(theme) AS dedupe_key, created_at,
-                   origin_chain_id
-              FROM dream_compaction_request_queue
-             WHERE created_at > :since AND created_at < :until
-             ORDER BY lower(theme), created_at DESC
-          ) k ORDER BY created_at DESC LIMIT :limit
-        ) d{_title_join('d.theme')}{_chain_thought_join('d.origin_chain_id')} ORDER BY d.created_at DESC
-    """,
-    "resonance": f"""
-        SELECT d.alert_id, d.theme_key, d.violation_count, d.dedupe_key, t.title, d.created_at AS occurred_at FROM (
-          SELECT alert_id, theme_key, violation_count, dedupe_key, created_at FROM (
-            SELECT DISTINCT ON (lower(theme_key)) alert_id, theme_key, violation_count,
-                   lower(theme_key) AS dedupe_key, created_at
-              FROM substrate_reverie_resonance_alert
-             WHERE created_at > :since AND created_at < :until
-             ORDER BY lower(theme_key), violation_count DESC, created_at DESC
-          ) k ORDER BY created_at DESC LIMIT :limit
-        ) d{_title_join('d.theme_key')} ORDER BY d.created_at DESC
     """,
     "crystallization": """
         SELECT crystallization_id, subject, summary, salience, tags, dedupe_key, created_at AS occurred_at FROM (

@@ -62,7 +62,7 @@ def test_env_overrides_and_bad_env_falls_back() -> None:
     assert camera_descriptions("") == DEFAULT_CAMERA_DESCRIPTIONS
 
 
-@pytest.mark.parametrize("service", ["orion-cortex-exec", "orion-hub", "orion-thought"])
+@pytest.mark.parametrize("service", ["orion-cortex-exec", "orion-hub"])
 def test_env_example_matches_code_default(service: str) -> None:
     lines = (REPO / "services" / service / ".env_example").read_text().splitlines()
     (value,) = [ln.split("=", 1)[1] for ln in lines if ln.startswith(f"{camera_eyes.ENV_KEY}=")]

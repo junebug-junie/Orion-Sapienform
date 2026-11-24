@@ -30,7 +30,6 @@ import base64
 import io
 import logging
 import re
-from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -182,16 +181,11 @@ class InlineImage:
 
 
 def select_images(letter: OrionDayLetterV1, max_images: int) -> list[VisualReverieV1]:
-    """Most salient first (the chain's EMA salience), newest breaking ties; shown in time order."""
+    """The newest ``max_images`` images, shown in time order. (Until 2026-11-24 the narration chain's EMA
+    salience ranked them; that chain is retired and was never the painting's own chain.)"""
     if max_images <= 0:
         return []
-    salience = {c.chain_id: c.ema_salience for c in letter.material.reverie_chains}
-
-    def key(v: VisualReverieV1):
-        s = salience.get(v.chain_id or "")
-        return (s if s is not None else -1.0, v.created_at)
-
-    picked = sorted(letter.material.visual_reveries, key=key, reverse=True)[:max_images]
+    picked = sorted(letter.material.visual_reveries, key=lambda v: v.created_at, reverse=True)[:max_images]
     return sorted(picked, key=lambda v: v.created_at)
 
 
@@ -285,18 +279,17 @@ def _outcome_line(o: dict[str, Any] | None) -> str:
 
 
 def reverie_counts(letter: OrionDayLetterV1) -> dict[str, Any]:
+    """The day's reverie questions (reveries that ask), each with where it went and what the dig found,
+    plus the image count. Letters stored before 2026-11-24 carry no questions: their narration counts
+    are not shown any more."""
+    from orion.reverie.questions import SEED_WORDS, outcome_words, routed_words
+
     m = letter.material
-    themes = Counter(c.theme_key for c in m.reverie_chains if c.theme_key)
-    verdicts = Counter(t.expectation_verdict for t in m.reverie_thoughts if t.expectation_verdict)
-    return {
-        "thoughts": len(m.reverie_thoughts),
-        "hollow": sum(1 for t in m.reverie_thoughts if t.hollow),
-        "chains": len(m.reverie_chains),
-        "themes": len(themes),
-        "top_themes": themes.most_common(8),
-        "verdicts": sorted(verdicts.items()),
-        "images": len(m.visual_reveries),
-    }
+    questions = [{
+        "question": q.question, "why": q.why, "seed": SEED_WORDS.get(q.seed_kind, q.seed_kind),
+        "routed": routed_words(q.model_dump()), "found": outcome_words(q.model_dump()),
+    } for q in sorted(m.reverie_questions, key=lambda q: q.created_at)]
+    return {"questions": questions, "images": len(m.visual_reveries)}
 
 
 def what_i_read(material: Any) -> list[dict[str, Any]]:
@@ -565,10 +558,12 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
                        + (f": {i.summary}" if i.summary and i.summary != i.title else "")
                        + (f" Why it matters: {i.why_it_matters}" if i.why_it_matters and i.why_it_matters not in (i.title, i.summary) else ""))
     rc = reverie_counts(letter)
-    out += ["", "## Reveries (counts)",
-            f"{rc['thoughts']} thoughts ({rc['hollow']} hollow) across {rc['chains']} chains, {rc['themes']} themes."]
-    if rc["top_themes"]:
-        out.append("Most frequent themes: " + ", ".join(f"{t} ({n})" for t, n in rc["top_themes"]))
+    out += ["", f"## Reverie questions ({len(rc['questions'])})"]
+    if not rc["questions"]:
+        out.append("No reverie left a question today.")
+    for q in rc["questions"]:
+        out.append(f"- ({q['seed']}) {q['question']} ({q['routed']}; "
+                   + (f"the dig: {q['found']})" if q["found"] else "not dug yet)"))
     return "\n".join(out).rstrip() + "\n"
 
 

@@ -19,8 +19,9 @@ Sources:
   moved while naming the read, recorded before the window ends.
 * dreams -- narrative dreams and OFFERED hypotheses only (orion/dream/introspect_sql.py,
   the blind rule).
-* reveries -- substrate_reverie_thought / substrate_reverie_chain (text) and
-  reverie_visual_artifact (image references; no bytes).
+* reveries -- the day's accepted reverie questions (``reverie_question``, reveries that ask Patch 1;
+  orion/reverie/questions.py) and reverie_visual_artifact (image references; no bytes). The retired
+  narration tables (substrate_reverie_thought / _chain) are no longer read.
 * compactors -- the chat and GitHub compactor journal entries for the day, by their
   stable ids (or their stable source_ref), full length.
 * world pulse -- the day's world_pulse_digest, if any.
@@ -74,8 +75,7 @@ from orion.schemas.orion_day import (
     OrionDaySourceStatusV1,
     OrganRoundupV1,
     ReadingItemV1,
-    ReverieChainV1,
-    ReverieThoughtV1,
+    ReverieQuestionDayV1,
     SelfSenseAnswerV1,
     VisualReverieV1,
     WalkwayDayV1,
@@ -168,23 +168,9 @@ ORDER BY h.offered_at, h.hypothesis_id
 """
 READINGS_LIMIT = 2000
 
-REVERIE_THOUGHTS_SQL = """
-SELECT thought_id, created_at, salience, interpretation, expectation, expectation_verdict,
-       thought_json->>'chain_id' AS chain_id,
-       COALESCE(thought_json->'hollow' = 'true'::jsonb, false) AS hollow
-FROM substrate_reverie_thought
-WHERE created_at >= $1 AND created_at < $2
-ORDER BY created_at, thought_id
-"""
-
-REVERIE_CHAINS_SQL = """
-SELECT chain_id, created_at, theme_key, terminal_reason, ema_salience,
-       CASE WHEN jsonb_typeof(chain_json->'thought_ids') = 'array'
-            THEN jsonb_array_length(chain_json->'thought_ids') ELSE 0 END AS thought_count
-FROM substrate_reverie_chain
-WHERE created_at >= $1 AND created_at < $2
-ORDER BY created_at, chain_id
-"""
+# The day's accepted reverie questions (orion/reverie/questions.py ACCEPTED_SQL_ASYNCPG: not refused, not
+# none). Bounded: a day holds at most ORION_REVERIE_MAX_PER_DAY (8) by design.
+REVERIE_QUESTIONS_LIMIT = 200
 
 VISUAL_REVERIES_SQL = """
 SELECT a.sha256, a.chain_id, a.step_index, a.created_at, a.mime, a.width, a.height,
@@ -448,20 +434,16 @@ async def gather_dream_hypotheses(conn: Any, start: datetime, end: datetime) -> 
     ) for r in await conn.fetch(DREAM_HYPOTHESES_SEEN_SQL, start, end)]
 
 
-async def gather_reverie_thoughts(conn: Any, start: datetime, end: datetime) -> list[ReverieThoughtV1]:
-    return [ReverieThoughtV1(
-        thought_id=str(r["thought_id"]), chain_id=r["chain_id"], created_at=_aware(r["created_at"]),
-        salience=r["salience"], interpretation=r["interpretation"] or "", expectation=r["expectation"],
-        expectation_verdict=r["expectation_verdict"], hollow=bool(r["hollow"]),
-    ) for r in await conn.fetch(REVERIE_THOUGHTS_SQL, start, end)]
+async def gather_reverie_questions(conn: Any, start: datetime, end: datetime) -> list[ReverieQuestionDayV1]:
+    from orion.reverie.questions import ACCEPTED_SQL_ASYNCPG
 
-
-async def gather_reverie_chains(conn: Any, start: datetime, end: datetime) -> list[ReverieChainV1]:
-    return [ReverieChainV1(
-        chain_id=str(r["chain_id"]), created_at=_aware(r["created_at"]), theme_key=r["theme_key"],
-        terminal_reason=r["terminal_reason"], ema_salience=r["ema_salience"],
-        thought_count=int(r["thought_count"] or 0),
-    ) for r in await conn.fetch(REVERIE_CHAINS_SQL, start, end)]
+    rows = await conn.fetch(ACCEPTED_SQL_ASYNCPG, start, end, REVERIE_QUESTIONS_LIMIT)
+    return [ReverieQuestionDayV1(
+        question_id=str(r["question_id"]), thread_id=r["thread_id"], seed_kind=str(r["seed_kind"]),
+        question=str(r["question"]), why=r["why"], routed_to=str(r["routed_to"] or "none"),
+        outcome=_obj(r["outcome"]) if isinstance(_obj(r["outcome"]), dict) else None,
+        created_at=_aware(r["created_at"]),
+    ) for r in sorted(rows, key=lambda r: (r["created_at"], str(r["question_id"])))]
 
 
 async def gather_visual_reveries(conn: Any, start: datetime, end: datetime) -> list[VisualReverieV1]:
@@ -655,8 +637,7 @@ async def gather_orion_day(
         lambda: gather_journals_by_prefix(conn, start, end, "world_pulse_read_stage2:"), [])
     narratives = await _read(sources, "dream_narratives", lambda: gather_dream_narratives(conn, start, end), [])
     hypotheses = await _read(sources, "dream_hypotheses", lambda: gather_dream_hypotheses(conn, start, end), [])
-    thoughts = await _read(sources, "reverie_thoughts", lambda: gather_reverie_thoughts(conn, start, end), [])
-    chains = await _read(sources, "reverie_chains", lambda: gather_reverie_chains(conn, start, end), [])
+    questions = await _read(sources, "reverie_questions", lambda: gather_reverie_questions(conn, start, end), [])
     visuals = await _read(sources, "visual_reveries", lambda: gather_visual_reveries(conn, start, end), [])
     chat = await _read(sources, "chat_compactor", lambda: gather_chat_compactor(conn, letter_date, end), None)
     github = await _read(sources, "github_compactor", lambda: gather_github_compactor(conn, letter_date, github_repo, end), None)
@@ -689,8 +670,7 @@ async def gather_orion_day(
         reading_journals=reading_journals,
         dream_narratives=narratives,
         dream_hypotheses=hypotheses,
-        reverie_thoughts=thoughts,
-        reverie_chains=chains,
+        reverie_questions=questions,
         visual_reveries=visuals,
         chat_compactor=chat,
         github_compactor=github,

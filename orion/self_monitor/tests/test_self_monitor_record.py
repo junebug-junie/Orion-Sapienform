@@ -159,9 +159,9 @@ def test_old_failures_fade_so_a_healed_faculty_recovers() -> None:
 
 
 def test_each_bet_counts_once_and_catalog_entries_yield_to_real_bets() -> None:
-    bet = _bet(1, "upheld", faculty="reverie.expectation")
+    bet = _bet(1, "upheld", faculty="curiosity.hypothesis")
     records = reduce_bets([bet, bet], now=NOW, ungradeable=UNGRADEABLE)
-    rev = next(r for r in records if r.faculty == "reverie.expectation")
+    rev = next(r for r in records if r.faculty == "curiosity.hypothesis")
     assert rev.n_bets == 1 and rev.sources == ["test"]
     dream = next(r for r in records if r.faculty == "dream.hypothesis")
     assert dream.gradeability == "ungradeable:self_graded" and dream.unlock

@@ -8,7 +8,8 @@ _BACKGROUND_VERBS = frozenset(
         "dream_cycle",
         "dream_synthesis",
         "log_orion_metacognition",
-        "reverie_narrate",
+        # reverie_narrate was here until 2026-11-24 (retired). Its successor reverie_question is NOT:
+        # it asks for the agent lane explicitly (llm_route=agent, execution_lane=agent).
     }
 )
 

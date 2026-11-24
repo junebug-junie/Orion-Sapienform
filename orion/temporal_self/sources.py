@@ -9,9 +9,8 @@ Source drift found live on 2026-10-10 (recorded in the PR report):
 * ``reverie_visual_attempt.outcome`` adds ``abandoned`` (31 rows in 30 days, the only
   deferral word in the last 7) to the spec's ``deferred_thermal`` / ``deferred_resource`` /
   ``failed``. Any non-``produced`` outcome is a constraint, kept in the source's own word.
-* Reverie thoughts link to chains by ``thought_json.chain_id``, not ``correlation_id``.
-  Reverie attention rows carry the *thought's* ``correlation_id``, so the chain adapter
-  carries those ids in ``related_refs`` for rule 8.
+* (Retired 2026-11-24: the reverie_chain and expectation_verdict adapters went with the narration
+  reverie. A reverie is now one ``reverie_question`` row, an experience only.)
 * Curiosity attention rows carry a uuid5 ``correlation_id`` that matches no ``run_id``
   (0 of 41 over 3 days), so they bind to curiosity arcs by time, labelled co-occurrence.
 * ``vision_events.entities`` is non-empty on 74 of 1,806 room rows in 7 days; rows with no
@@ -146,30 +145,6 @@ def curiosity_run(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | 
     )
 
 
-def reverie_chain(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
-    """substrate_reverie_chain plus its thoughts (``row['thoughts']``: thought_id, created_at,
-    correlation_id; linked by thought_json.chain_id). Emitted only once ``terminal_reason`` is
-    set. A chain with no thoughts has no content and is not an arc. Time: first thought .. max(last thought, chain created_at)."""
-    if not row.get("terminal_reason"):
-        return None  # still running: emitting now would freeze a partial chain into a closed arc
-    thoughts = sorted(
-        (t for t in (row.get("thoughts") or []) if t.get("thought_id") and t.get("created_at")),
-        key=lambda t: (as_utc(t["created_at"]), str(t["thought_id"])),
-    )
-    if not thoughts:
-        return None
-    first = as_utc(thoughts[0]["created_at"])
-    last = max(as_utc(thoughts[-1]["created_at"]), as_utc(row.get("created_at")) or first)
-    return _event(
-        kind="reverie_chain", table="substrate_reverie_chain", ref=row.get("chain_id"), at=first,
-        ended=last, tz_name=tz_name, subject_ref=str(row.get("chain_id")),
-        related_refs=sorted({str(t["correlation_id"]) for t in thoughts if t.get("correlation_id")}),
-        label=clip(row.get("theme_key")),
-        payload={"terminal_reason": row.get("terminal_reason"),
-                 "thought_ids": [str(t["thought_id"]) for t in thoughts]},
-    )
-
-
 def visual_run(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
     """reverie_visual_chain (created_at is stamped at the END of the run) joined to the
     attempt whose result_json.chain_id matches (``row['attempt_started_at']``,
@@ -239,21 +214,6 @@ def dream_hypothesis(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1
         payload={"arm": row.get("arm"),
                  "expires_at": _iso(row.get("expires_at")), "offered_at": _iso(row.get("offered_at")),
                  "offered_run_id": row.get("offered_run_id")},
-    )
-
-
-def expectation_verdict(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
-    """substrate_reverie_thought once scored. Time: expectation_scored_at. Attaches to its
-    reverie arc by chain id (``row['chain_id']`` = thought_json.chain_id)."""
-    if row.get("expectation_scored_at") is None or not row.get("expectation_verdict"):
-        return None
-    chain = row.get("chain_id")
-    return _event(
-        kind="expectation_verdict", table="substrate_reverie_thought", ref=row.get("thought_id"),
-        at=row.get("expectation_scored_at"), tz_name=tz_name, verdict=str(row["expectation_verdict"]),
-        related_refs=[str(chain)] if chain else [],
-        correlation_id=row.get("correlation_id") or None,
-        payload={"committed_at": _iso(row.get("created_at"))},
     )
 
 
@@ -1095,16 +1055,41 @@ def dream_day(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None
     )
 
 
+def reverie_question(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One reverie (orion-thought, reveries that ask Patch 1): a ``reverie_question`` row. Time: created_at.
+    No subject (experience only). related_refs: the seed's refs (walkway expectation, self-bet bin, lived
+    memory doc ids), plus ``focus:<id>`` when the question was sent to curiosity. Label: the question when
+    code let it through, else why there was none, else why code refused it. Verdict: asked | none | refused."""
+    qid = row.get("question_id")
+    refs = [str(r) for r in (row.get("seed_refs") or []) if r]
+    routed = str(row.get("routed_to") or "none")
+    if routed.startswith("focus:"):
+        refs.append(routed)
+    refused, none_reason = row.get("refused_reason"), row.get("none_reason")
+    question = " ".join(str(row.get("question") or "").split())
+    if refused:
+        verdict, label = "refused", f"refused ({refused})"
+    elif none_reason or not question:
+        verdict, label = "none", f"no question: {none_reason or ''}".strip()
+    else:
+        verdict, label = "asked", question
+    return _event(
+        kind="reverie_question", table="reverie_question", ref=qid, at=row.get("created_at"), tz_name=tz_name,
+        subject_ref=None, related_refs=refs, label=clip(label), verdict=verdict,
+        correlation_id=row.get("correlation_id") or None,
+        payload={"seed_kind": row.get("seed_kind"), "thread_id": row.get("thread_id"), "routed_to": routed,
+                 "refused_reason": refused},
+    )
+
+
 ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "chat_turn": chat_turn,
     "curiosity_run": curiosity_run,
-    "reverie_chain": reverie_chain,
     "visual_run": visual_run,
     "visual_deferral": visual_deferral,
     "gpu_wait": gpu_wait,
     "dream_cycle": dream_cycle,
     "dream_hypothesis": dream_hypothesis,
-    "expectation_verdict": expectation_verdict,
     "action_outcome": action_outcome,
     "metacog_observation": metacog_observation,
     "consolidation_window_close": consolidation_window_close,
@@ -1127,15 +1112,21 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "prime_thought": prime_thought,
     "experiment_result": experiment_result,
     "dream_day": dream_day,
+    "reverie_question": reverie_question,
 }
+
+
+# Kinds with no producer and no adapter any more (reveries that ask, Patch 1, 2026-11-24). They stay in
+# TemporalSourceKind only so history rows in temporal_self_event still parse; no reader emits them.
+RETIRED_KINDS = frozenset({"reverie_chain", "expectation_verdict"})
 
 
 # Orion's now: kinds that are experiences only (no arc folds them), and the tables their events name.
 # A row of these tables is never arc evidence (orion-sql-writer act_downstream_use ARC_SOURCE_TABLES).
 EXPERIENCE_ONLY_KINDS = frozenset({"reading_turn", "prediction_surprise", "prime_thought", "experiment_result",
-                                   "dream_day"})
+                                   "dream_day", "reverie_question"})
 EXPERIENCE_ONLY_TABLES = frozenset({"grammar_acts", "prediction_exceedance", "prediction_effect_estimate",
-                                    "dream_day"})
+                                    "dream_day", "reverie_question"})
 
 
 def adapt(kind: str, rows: Iterable[Row], tz_name: str = DEFAULT_TZ) -> list[TemporalSelfEventV1]:

@@ -235,11 +235,11 @@
 </td></tr>
 {% endif %}
 
-{{ heading("Reveries (counts)") }}
+{{ heading("Reverie questions") }}
 <tr><td style="padding:0 28px 8px 28px;" data-section="reveries">
-<p style="margin:0 0 8px 0;">{{ reveries.thoughts }} thoughts ({{ reveries.hollow }} hollow) across {{ reveries.chains }} chains and {{ reveries.themes }} themes; {{ reveries.images }} images.</p>
-{% if reveries.top_themes %}<p style="margin:0 0 8px 0;font-size:14px;">Most frequent themes: {% for t, n in reveries.top_themes %}{{ t }} ({{ n }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
-{% if reveries.verdicts %}<p style="margin:0 0 8px 0;font-size:14px;">Expectation verdicts: {% for v, n in reveries.verdicts %}{{ v }} {{ n }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
+{% if reveries.questions %}<ul style="margin:0 0 12px 0;padding-left:22px;">
+{% for q in reveries.questions %}<li style="margin:0 0 8px 0;line-height:1.5;"><span style="font-size:12px;color:{{ muted }};">{{ q.seed }}</span> &middot; {{ q.question }}<br><span style="font-size:13px;color:{{ muted }};">{{ q.routed }}; {% if q.found %}the dig: {{ q.found }}{% else %}not dug yet{% endif %}</span></li>
+{% endfor %}</ul>{% else %}<p style="margin:0 0 8px 0;">No reverie left a question today.</p>{% endif %}
 </td></tr>
 
 <!-- footer: honesty about what was read and what the note was written from -->

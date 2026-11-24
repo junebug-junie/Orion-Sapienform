@@ -4,7 +4,7 @@
 For each date, gathers the day READ-ONLY from Postgres once, then builds:
 
 * old -- ``budget.build_llm_view`` (the pile the letter was written from until this patch);
-* new -- ``day_input.render_day_input`` (Juniper protected, reveries by theme, self-sense once,
+* new -- ``day_input.render_day_input`` (Juniper protected, the day's reverie questions, self-sense once,
   readings and news as a trimmed tail, the temporal core).
 
 Prints, per date and side by side: total size, the share each source got, how much of Juniper's
@@ -121,12 +121,13 @@ def report(material: OrionDayMaterialV1, dump: Path | None = None) -> bool:
     unprompted = sum(1 for t in material.juniper_chat if not t.prompt)
     print(f"  Juniper's own words   {jo:>5,} of {total:,} chars | {jn:>5,} of {total:,} chars "
           f"({talks} turns she wrote, {unprompted} messages I sent unprompted)")
-    ro, rn = reverie_spread(material, old.digest_md), reverie_spread(material, new.digest_md)
-    print(f"  reveries shown        {ro['shown']:>9} | {rn['shown']:>9}   (of {len(material.reverie_thoughts)} thoughts)")
-    print(f"  reverie themes shown  {ro['themes_shown']:>5} of {ro['themes_total']:<3}| {rn['themes_shown']:>5} of {rn['themes_total']}")
-    print(f"  largest theme share   {ro['largest_theme_pct']:>8}% | {rn['largest_theme_pct']:>8}%")
-    print(f"  'prediction error'    {ro['prediction_error_pct']:>8}% | {rn['prediction_error_pct']:>8}%   "
-          "(shown reveries naming it; review aid only)")
+    # Old side: the retired narration (stored letters before 2026-11-24). New side: the day's reverie questions.
+    ro = reverie_spread(material, old.digest_md)
+    rn = len(set(re.findall(r"\[reverie_question:[^\]\s]+\]", new.digest_md)))
+    print(f"  reveries shown        {ro['shown']:>9} | {rn:>9}   (old: of {len(material.reverie_thoughts)} narrated "
+          f"thoughts; new: of {len(material.reverie_questions)} questions)")
+    print(f"  old reverie themes    {ro['themes_shown']:>5} of {ro['themes_total']:<3}; largest theme "
+          f"{ro['largest_theme_pct']}%, 'prediction error' {ro['prediction_error_pct']}% (review aid only)")
     so, sn = self_sense_shown(old.digest_md), self_sense_shown(new.digest_md)
     print(f"  self-sense answers    {sum(so.values()):>9} | {sum(sn.values()):>9}   "
           f"({len(material.self_sense)} answers, {len({a.question_key for a in material.self_sense})} questions)")

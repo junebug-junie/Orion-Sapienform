@@ -248,7 +248,7 @@ ends 3 days after you made it, even if you kept it. One move per thought:
 EXPERIENCE_PROMPT = """
 
 WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT lists what Orion's other organs recorded since then (readings,
-curiosity runs, camera sightings, prediction surprises, reveries ...), highest salience first, each with its
+curiosity runs, camera sightings, prediction surprises, questions your reveries left ...), highest salience first, each with its
 [experience:<id>]. When one of them shaped this thought, cite it: add "refs" to your JSON object,
 "refs": [{"kind": "experience", "id": "<the id after experience:>"}], at most 3, only ones you actually used.
 Citing nothing is a normal answer. Copy ids exactly; an id the section did not list is not recorded.

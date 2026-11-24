@@ -4,9 +4,6 @@ Candidates are what the day left unprocessed since the last cycle:
 
   metacog            Orion's own self-observations flagged degraded/critical
                      (surprise: it noticed something going wrong).
-  compaction_request themes reverie asked sleep to consolidate (unresolved).
-  resonance          themes reverie kept re-igniting faster than its refractory
-                     bound allows (emotional charge / rumination).
   crystallization    active memory crystallizations touched since the last
                      cycle, weighted by their own salience.
   arc                closed Temporal Self arcs since the last sleep (bottom of
@@ -16,9 +13,13 @@ Candidates are what the day left unprocessed since the last cycle:
 
 Weights are declared heuristics, stated here once.
 
+compaction_request and resonance (themes the old reverie chain asked sleep to consolidate, or kept
+re-igniting) were sources until 2026-11-24: their only producer, orion-thought's narration chain, was
+retired (reveries that ask, Patch 1). Their old replay rows keep their source_kind.
+
 Each candidate has a KEY naming the thing it is about, not the row it came
 from: metacog's normalized `trigger_reason` (its `summary` is model prose,
-reworded every time for the same event), the reverie theme, or the
+reworded every time for the same event), or the
 crystallization id. Rows sharing a key are one candidate at their highest
 weight, so 222 copies of one gateway timeout are one item to replay.
 
@@ -38,9 +39,6 @@ from typing import Any, Iterable, Mapping, Optional
 from orion.schemas.dream_cycle import MAX_REPLAY_ITEMS, ReplayItemV1
 
 SEVERITY_WEIGHT = {"critical": 1.0, "degraded": 0.6}
-COMPACTION_REQUEST_WEIGHT = 0.5
-RESONANCE_BASE = 0.3
-RESONANCE_PER_VIOLATION = 0.1
 TEXT_CAP = 600
 
 
@@ -70,8 +68,6 @@ def row_key(kind: str, row: dict[str, Any]) -> Optional[str]:
     if not key:
         fallback = {
             "metacog": row.get("id"),
-            "compaction_request": row.get("theme"),
-            "resonance": row.get("theme_key"),
             "crystallization": row.get("crystallization_id"),
         }.get(kind)
         key = " ".join(str(fallback or "").split()).lower()
@@ -124,53 +120,6 @@ def candidate_from_metacog(row: dict[str, Any]) -> Optional[ReplayItemV1]:
     )
 
 
-def _loop_name(row: dict[str, Any], theme: str) -> str:
-    """What the dream reads for a reverie theme: the open loop's human title when the
-    source query found one (cycle_store _title_join), else the bare id. Text only:
-    ref_id, tags and the novelty key keep the id."""
-    return _clip(row.get("title"), 200) or theme
-
-
-def candidate_from_compaction_request(row: dict[str, Any]) -> Optional[ReplayItemV1]:
-    rid = str(row.get("request_id") or "").strip()
-    theme = _clip(row.get("theme"), 200)
-    if not rid or not theme:
-        return None
-    reason_text = _clip(row.get("reason"), 400)
-    name = _loop_name(row, theme)
-    # What the chain actually thought beats how it ended ("reverie_chain_settled").
-    thought = _clip(row.get("interpretation"), 450)
-    body = f"{name}: {thought or reason_text}" if (thought or reason_text) else name
-    text = _clip(f"{_when(row.get('occurred_at'))}{body}")
-    return ReplayItemV1(
-        ref_id=f"compaction_request:{rid}",
-        source_kind="compaction_request",
-        text=text,
-        weight=COMPACTION_REQUEST_WEIGHT,
-        reason=f"reverie asked sleep to consolidate {theme!r}",
-        tags=[theme.lower()],
-        occurred_at=_as_utc(row.get("occurred_at")),
-    )
-
-
-def candidate_from_resonance(row: dict[str, Any]) -> Optional[ReplayItemV1]:
-    aid = str(row.get("alert_id") or "").strip()
-    theme = _clip(row.get("theme_key"), 200)
-    if not aid or not theme:
-        return None
-    violations = int(row.get("violation_count") or 0)
-    weight = min(1.0, RESONANCE_BASE + RESONANCE_PER_VIOLATION * max(0, violations))
-    return ReplayItemV1(
-        ref_id=f"resonance:{aid}",
-        source_kind="resonance",
-        text=f"a theme reverie kept returning to: {_loop_name(row, theme)}",
-        weight=weight,
-        reason=f"reverie re-ignited {theme!r} past its refractory bound ({violations} violations)",
-        tags=[theme.lower()],
-        occurred_at=_as_utc(row.get("occurred_at")),
-    )
-
-
 def candidate_from_crystallization(row: dict[str, Any]) -> Optional[ReplayItemV1]:
     cid = str(row.get("crystallization_id") or "").strip()
     subject = _clip(row.get("subject"), 160)
@@ -193,8 +142,6 @@ def candidate_from_crystallization(row: dict[str, Any]) -> Optional[ReplayItemV1
 
 _BUILDERS = {
     "metacog": candidate_from_metacog,
-    "compaction_request": candidate_from_compaction_request,
-    "resonance": candidate_from_resonance,
     "crystallization": candidate_from_crystallization,
 }
 

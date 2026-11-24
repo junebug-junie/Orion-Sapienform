@@ -34,7 +34,6 @@ from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, Reas
 from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompiler
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.text_fit import fit_to_budget
-from orion.schemas.reverie import SpontaneousThoughtV1
 from orion.memory.voice_render import VoicedMemory, render_memory
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
@@ -1624,30 +1623,21 @@ def _project_context_provenance_hazard(ctx: Dict[str, Any]) -> str | None:
     )
 
 
+REVERIE_GLIMPSE_PREFIX = "a question I was left with in a quiet moment: "
+_REVERIE_GLIMPSE_MAX_CHARS = 300
+
+
 def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
-    """Projection helper: surface the latest fresh, non-hollow reverie thought.
+    """Projection helper: the newest question a quiet-stretch reverie left (reveries that ask, 2026-11-24).
 
-    Reads ``ctx['latest_reverie_thought']`` (the ``thought_json`` payload hydrated
-    by ``felt_state_reader``'s ``latest_reverie_thought`` lane, already age-gated
-    there). Extracts ONLY the ``interpretation`` narration string -- never
-    ``evidence_refs``/``coalition``/``chain_id`` or any other field, since those
-    are internal grounding/audit data, not narration meant to be read.
+    Reads ``ctx['latest_reverie_question']`` (felt_state_reader's lane over ``reverie_question``: accepted
+    questions only, age-gated there). Extracts ONLY the question text and its time -- never the seed
+    material, refs or routing, which are internal records, not something to say.
 
-    Gates on BOTH the stored ``hollow`` flag AND an independent re-derivation
-    via ``SpontaneousThoughtV1.is_hollow()`` -- rejecting if either says
-    hollow. The stored flag alone isn't trusted (it could be stale/wrong if
-    the row predates a schema or guard change), and the re-derivation alone
-    isn't trusted either (it can't see ``extra_grounding`` widening the
-    semantic-lift path may have applied at write time, so a thought the
-    producer explicitly marked hollow must never be surfaced just because a
-    simpler re-check happens to pass it).
-
-    Fail-open: returns None on anything missing, malformed, or unparsable
-    (including a payload that no longer validates as ``SpontaneousThoughtV1``
-    at all). Never raises.
+    Fail-open: returns None on anything missing, malformed, or empty. Never raises.
     """
     try:
-        raw = ctx.get("latest_reverie_thought")
+        raw = ctx.get("latest_reverie_question")
         if raw is None:
             return None
         if isinstance(raw, str):
@@ -1660,18 +1650,18 @@ def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
             return None
         if not isinstance(payload, dict):
             return None
-
-        thought = SpontaneousThoughtV1.model_validate(payload)
-        if thought.hollow or thought.is_hollow():
+        question = " ".join(str(payload.get("question") or "").split())[:_REVERIE_GLIMPSE_MAX_CHARS]
+        if not question:
             return None
-        interpretation = thought.interpretation.strip()
-        if not interpretation:
-            return None
-        # Source monitoring: a reverie is Orion's own private thought. The
-        # shared renderer labels it so, never as something Juniper said or
-        # the two of them discussed (memory redesign rev 3, section 7).
+        when = payload.get("created_at")
+        if isinstance(when, str):
+            when = datetime.fromisoformat(when.replace("Z", "+00:00"))
+        if not isinstance(when, datetime):
+            when = None
+        # Source monitoring: a reverie is Orion's own private thought. The shared renderer labels it so,
+        # never as something Juniper said or the two of them discussed (memory redesign rev 3, section 7).
         return render_memory(VoicedMemory(
-            voice="orion_thought", channel="reverie", statement=interpretation, when=thought.created_at))
+            voice="orion_thought", channel="reverie", statement=REVERIE_GLIMPSE_PREFIX + question, when=when))
     except Exception:
         logger.debug("reverie_glimpse_projection_failed", exc_info=True)
         return None

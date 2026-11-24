@@ -2050,12 +2050,9 @@ class Settings(BaseSettings):
     ORION_SITUATION_CURIOSITY_TTL_SECONDS: int = Field(
         default=180, alias="ORION_SITUATION_CURIOSITY_TTL_SECONDS"
     )
-    # 2026-08-30: Orion's most recent dream/reverie interpretations
-    # (`substrate_reverie_thought`, the same table Hub's own reverie cockpit
-    # already renders -- see services/orion-hub/scripts/reverie_routes.py and
-    # orion/situational/reverie_reader.py). SQL-only, not the
-    # orion:reverie:thought/chain bus channels (zero real subscribers today).
-    # Default ON, per Juniper's explicit request.
+    # Orion's most recent reverie questions (`reverie_question`, since 2026-11-24: reveries that ask; the
+    # retired narration table is no longer read) -- see orion/situational/reverie_reader.py and Hub's reverie
+    # tab (scripts/reverie_routes.py). SQL-only. Default ON, per Juniper's explicit request.
     ORION_SITUATION_REVERIE_ENABLED: bool = Field(
         default=True, alias="ORION_SITUATION_REVERIE_ENABLED"
     )

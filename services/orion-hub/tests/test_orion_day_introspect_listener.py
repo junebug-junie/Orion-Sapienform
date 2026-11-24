@@ -167,7 +167,7 @@ def test_list_is_the_most_recent_letters_outline_with_counts(caplog):
     assert sections.kind == "orion_day_record" and sections.epistemic_status == "record"
     counts = sections.extra["section_counts"]
     assert counts["curiosity"] == 4 and counts["dreams"] == 2 and counts["conversations"] == 1
-    assert counts["reveries"] == 302  # 301 thoughts + 1 visual reverie
+    assert counts["reveries"] == 304  # 301 stored narration thoughts + 1 visual reverie + 2 questions
     assert all(ro for ro in pool.conn.readonly_flags) and pool.conn.readonly_flags
     assert "orion_day_introspect_answered" in caplog.text and "part=list" in caplog.text and "items=3" in caplog.text
 

@@ -25,7 +25,6 @@ from orion.curiosity.attention_schema import (
     to_attention_schema as curiosity_to_attention_schema,
 )
 from orion.curiosity.worldview import TurnOutcome
-from orion.reverie.attention_schema import to_attention_schema as reverie_to_attention_schema
 from orion.schemas.attention_frame import (
     AttentionFrameV1,
     CuriosityCandidateActionV1,
@@ -43,8 +42,6 @@ from orion.schemas.attention_schema import (
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.registry import SCHEMA_REGISTRY, resolve
-from orion.schemas.reverie import ReverieChainTriggerV1, ReverieChainV1, SpontaneousThoughtV1
-from orion.schemas.thought import CoalitionSnapshotV1
 from orion.substrate.attention_frame import to_attention_schema as cortex_to_attention_schema
 from orion.substrate.attention_self_model import to_attention_schema as substrate_to_attention_schema
 
@@ -60,7 +57,7 @@ def test_schema_resolves_in_both_registry_maps() -> None:
     assert SCHEMA_REGISTRY["AttentionSchemaV1"].kind == ATTENTION_SCHEMA_KIND
 
 
-def test_channel_is_catalogued_with_four_producers_and_the_sql_writer() -> None:
+def test_channel_is_catalogued_with_three_producers_and_the_sql_writer() -> None:
     catalog = yaml.safe_load((REPO_ROOT / "orion" / "bus" / "channels.yaml").read_text())
     entries = [c for c in catalog["channels"] if c.get("name") == ATTENTION_SCHEMA_CHANNEL]
     assert len(entries) == 1
@@ -69,7 +66,6 @@ def test_channel_is_catalogued_with_four_producers_and_the_sql_writer() -> None:
     assert entry["message_kind"] == ATTENTION_SCHEMA_KIND
     assert set(entry["producer_services"]) == {
         "orion-substrate-runtime",
-        "orion-thought",
         "orion-hub",
         "orion-cortex-exec",
     }
@@ -263,66 +259,9 @@ def test_cortex_two_legs_of_one_turn_do_not_collide() -> None:
 
 
 # --- reverie -------------------------------------------------------------------
-
-
-def _thought(idx: int, *, interpretation: str = "the loop keeps recurring", hollow: bool = False, next_focus: str | None = None) -> SpontaneousThoughtV1:
-    return SpontaneousThoughtV1(
-        thought_id=f"th-{idx}",
-        correlation_id="corr-r",
-        coalition=CoalitionSnapshotV1(
-            attended_node_ids=["n-1"], selected_open_loop_id="ol-1", open_loop_ids=["ol-1"], generated_at=NOW
-        ),
-        interpretation=interpretation,
-        salience=0.6,
-        hollow=hollow,
-        next_focus=next_focus,
-    )
-
-
-def _chain(**over) -> ReverieChainV1:
-    base = dict(chain_id="chain-1", created_at=NOW, theme_key="ol-1", thought_ids=["th-0", "th-1"],
-                ema_salience=0.55, ema_summary="2 steps on ol-1; ema_salience=0.550", terminal_reason="max_steps")
-    base.update(over)
-    return ReverieChainV1(**base)
-
-
-def test_reverie_projection_is_a_self_report_from_the_first_real_thought() -> None:
-    thoughts = [_thought(0, interpretation="", hollow=True), _thought(1, interpretation="strained by an unresolved error", next_focus="the codebase anomaly")]
-    row = reverie_to_attention_schema(_chain(), thoughts)
-    assert row.process == "reverie"
-    assert row.entry_id == "reverie-chain-1"
-    assert row.correlation_id == "corr-r"
-    assert row.attended_id == "ol-1"
-    assert row.attended_label == "ol-1"
-    assert row.attention_reason == "coalition_broadcast"
-    assert row.reason_narrative == "strained by an unresolved error"
-    assert row.narrative_kind == "self_report"
-    assert row.confidence == pytest.approx(0.55)
-    assert "ended max_steps" in (row.confidence_basis or "")
-    assert row.predicted_next == "the codebase anomaly"
-
-
-def test_reverie_projection_falls_back_to_the_computed_summary_when_no_thought_narrates() -> None:
-    row = reverie_to_attention_schema(_chain(), [_thought(0, interpretation="")])
-    assert row.reason_narrative == "2 steps on ol-1; ema_salience=0.550"
-    assert row.narrative_kind == "computed"
-    assert row.predicted_next is None
-
-
-def test_reverie_projection_no_coalition_and_trigger_vocabulary() -> None:
-    empty = reverie_to_attention_schema(_chain(theme_key="unknown", thought_ids=[]), [])
-    assert empty.attended_id is None and empty.attention_reason == "no_coalition"
-    assert empty.narrative_kind == "computed"
-
-    triggered = reverie_to_attention_schema(
-        _chain(trigger=ReverieChainTriggerV1(pressure_kind="prediction_error", magnitude=0.4)), [_thought(0)]
-    )
-    assert triggered.attention_reason == "trigger:prediction_error"
-
-
-def test_reverie_projection_clips_a_long_interpretation_instead_of_failing() -> None:
-    row = reverie_to_attention_schema(_chain(), [_thought(0, interpretation="x" * (MAX_NARRATIVE_CHARS + 500))])
-    assert len(row.reason_narrative) == MAX_NARRATIVE_CHARS
+# The reverie adapter (orion/reverie/attention_schema.py, chain -> AttentionSchemaV1) was retired
+# 2026-11-24 with the narration chain (reveries that ask, Patch 1). "reverie" stays a valid process
+# value so the rows already in substrate_attention_schema still parse.
 
 
 # --- curiosity -----------------------------------------------------------------

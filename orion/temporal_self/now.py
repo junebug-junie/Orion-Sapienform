@@ -152,8 +152,6 @@ def _sum_present(*vals: Any) -> Optional[float]:
 _SEVERITY = {"degraded": 1.0, "critical": 2.0}
 
 MAGNITUDE_RULES: dict[str, Callable[[Mapping[str, Any]], Optional[float]]] = {
-    # reverie: thoughts in the finished chain (payload.thought_ids, sources.reverie_chain)
-    "chain_thought_count": lambda r: _len((r.get("payload") or {}).get("thought_ids")),
     # dream: hypotheses the cycle formed (dream_cycle.hypothesis_count)
     "dream_hypothesis_count": lambda r: _num((r.get("payload") or {}).get("hypothesis_count")),
     # curiosity: priors the run moved plus priors it formed (curiosity_run_outcomes)

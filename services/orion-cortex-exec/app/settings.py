@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     exec_lane: str = Field("legacy", alias="EXEC_LANE")
     # ROADMAP A3. When true, a step the lane resolver already classifies as low-priority
     # (Orion's own initiative: introspect_spark, dream_cycle, dream_synthesis,
-    # log_orion_metacognition, reverie_narrate) that would otherwise route to `quick` goes to
+    # log_orion_metacognition) that would otherwise route to `quick` goes to
     # `quick_background` instead -- same upstream and model, but behind the gateway's
     # background admission gate, so Orion waits rather than Juniper.
     #
@@ -260,7 +260,8 @@ class Settings(BaseSettings):
     orion_situation_curiosity_ttl_seconds: int = Field(
         180, alias="ORION_SITUATION_CURIOSITY_TTL_SECONDS"
     )
-    # 2026-08-30: Orion's most recent dream/reverie interpretations. Default
+    # The newest questions Orion's quiet reveries left (reverie_question, accepted only; until
+    # 2026-11-24 the retired narration's interpretations). Default
     # ON -- reuses the POSTGRES_URI this process already reads for
     # orion/situational/perception_reader.py, via
     # orion/situational/reverie_reader.py's identical DSN resolution.

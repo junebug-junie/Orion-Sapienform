@@ -70,6 +70,7 @@ TemporalSourceKind = Literal[
     # process boundaries
     "chat_turn",
     "curiosity_run",
+    # retired 2026-11-24 (reveries that ask, Patch 1): no producer; kept so history rows still parse
     "reverie_chain",
     "visual_run",
     "dream_cycle",
@@ -78,6 +79,7 @@ TemporalSourceKind = Literal[
     "attention_loop_verdict",
     # expectations and self-change
     "dream_hypothesis",
+    # retired 2026-11-24 with the room-camera expectations: no producer; kept so history rows still parse
     "expectation_verdict",
     "action_outcome",
     # constraints
@@ -128,6 +130,11 @@ TemporalSourceKind = Literal[
     # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
     # orion-prediction) before orion-durable-runs writes the first dream_day row (~01:00 Denver).
     "dream_day",
+    # one reverie (orion-thought, reveries that ask Patch 1): a reverie_question row -- the question it left,
+    # or why there was none, or why code refused it. Experience only (no arc folds it).
+    # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
+    # orion-prediction) before orion-durable-runs writes the first reverie_question event.
+    "reverie_question",
 ]
 
 ArcKind = Literal[

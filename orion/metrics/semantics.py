@@ -110,7 +110,6 @@ PROMPT_INVENTORY_URNS: frozenset[str] = frozenset(
         # Chat-turn surprise (2026-11-13), successor of node:substrate.chat.
         "metric://field_channel/orion-substrate-runtime/node:prediction.chat_turn.prediction_error",
         "metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score",
-        "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score",
         "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience",
         # Self-signal outcome association (spec 2026-10-07 section E): the "tends to" clause.
         "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ratio",

@@ -48,7 +48,7 @@ VERB = "make"
 SOURCE_SERVICE = "orion-dream"
 SOURCE_COMPONENT = "dream_cycle.act"
 
-# REM compaction runs inside the sleep with no LLM call; this is its slack on top of the
+# The persist and DB reads run inside the sleep with no LLM call; this is their slack on top of the
 # recombination calls. Live 30 d (n=81 non-empty cycles, measured 2026-10-23): wall time
 # p50 5.5 s, p90 9.7 s, max 190 s, so the horizon below is never the binding constraint
 # for a healthy cycle; it is "the deadline the cycle already gives itself".
@@ -88,7 +88,7 @@ def _basis(horizon: float) -> str:
     return (
         f"artifact_produced (a persisted, completed sleep with >= 1 hypothesis) by {horizon:.0f}s: "
         "upper bound from the cycle's configured pairs, one sequential LLM call per pair x "
-        f"DREAM_LLM_TIMEOUT_SEC, + {_REM_AND_PERSIST_SLACK_SEC:.0f}s slack for REM compaction, the "
+        f"DREAM_LLM_TIMEOUT_SEC, + {_REM_AND_PERSIST_SLACK_SEC:.0f}s slack for the cycle's persist, the "
         "arc/walkway reads and persistence (those DB reads have no deadline of their own); live 30d "
         "wall time p90 9.7s, max 190s (n=81, measured 2026-10-23)"
     )

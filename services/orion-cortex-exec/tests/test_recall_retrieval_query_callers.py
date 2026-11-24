@@ -114,7 +114,7 @@ def test_run_recall_step_explicit_retrieval_query_beats_ctx(capture):
 
 
 def test_run_recall_step_context_only_mode_needs_no_fragment(capture):
-    step, _, _ = _run({"verb": "reverie_narrate", "user_message": None}, recall_cfg={"query_mode": "context_only"})
+    step, _, _ = _run({"verb": "reverie_question", "user_message": None}, recall_cfg={"query_mode": "context_only"})
 
     assert step.status == "success"
     req = capture.sent[-1]
@@ -207,20 +207,29 @@ def test_stance_grounding_phase3_query_equals_phase01_query(capture, monkeypatch
     assert all(r.deadline_ms for r in capture.sent)
 
 
-def test_reverie_verb_yamls_declare_context_only():
-    for verb in ("reverie_narrate", "reverie_expectation_judge"):
-        assert build_plan_for_verb(verb).metadata["recall_query_mode_default"] == "context_only"
+def _context_only_plan():
+    """A plan whose verb YAML declares ``recall_query_mode: context_only``. No live verb does since the
+    reverie narration verbs were retired (2026-11-24); the router seam stays and is tested on chat_general's
+    plan with the metadata the YAML key would set (orion/cognition/plan_loader.py)."""
+    plan = build_plan_for_verb("chat_general", mode="brain")
+    plan.metadata["recall_query_mode_default"] = "context_only"
+    return plan
+
+
+def test_reverie_question_runs_without_recall():
+    """Reveries that ask: the reverie sees its seed and Orion's now, nothing else."""
+    meta = build_plan_for_verb("reverie_question").metadata
+    assert meta["recall_enabled_default"] == "false"
+    assert meta["recall_query_mode_default"] == ""
     assert build_plan_for_verb("chat_general").metadata["recall_query_mode_default"] == ""
 
 
-@pytest.mark.parametrize("verb", ["reverie_narrate", "reverie_expectation_judge"])
-def test_router_sends_context_only_for_reverie_verbs(capture, monkeypatch, verb):
-    """The live log showed `verb=reverie_narrate recall_enabled=True recall_cfg={}`: the
-    router pre-recall runs for reverie. It must now send mode=context_only, not an
-    empty-query search."""
+def test_router_sends_context_only_for_a_context_only_verb(capture, monkeypatch):
+    """The live log once showed `verb=reverie_narrate recall_enabled=True recall_cfg={}`: the router
+    pre-recall ran an empty-query search. A context_only verb must send mode=context_only."""
     fake_llm = StepExecutionResult(
         status="success",
-        verb_name=verb,
+        verb_name="chat_general",
         step_name="llm",
         order=0,
         result={"LLMGatewayService": {"content": "{}"}},
@@ -233,7 +242,7 @@ def test_router_sends_context_only_for_reverie_verbs(capture, monkeypatch, verb)
     monkeypatch.setattr(router, "prepare_brain_reply_context", AsyncMock(return_value=None))
     ctx = {"user_message": None, "mode": "reverie", "metadata": {"mode": "reverie"}}
     req = PlanExecutionRequest(
-        plan=build_plan_for_verb(verb, mode="brain"),
+        plan=_context_only_plan(),
         args=PlanExecutionArgs(request_id="rq", extra={"mode": "brain"}),
         context=ctx,
     )
@@ -247,14 +256,14 @@ def test_router_sends_context_only_for_reverie_verbs(capture, monkeypatch, verb)
 
 def _run_reverie_plan(monkeypatch, *, extra):
     fake_llm = StepExecutionResult(
-        status="success", verb_name="reverie_narrate", step_name="llm", order=0,
+        status="success", verb_name="chat_general", step_name="llm", order=0,
         result={"LLMGatewayService": {"content": "{}"}}, latency_ms=1, node="n", logs=[], error=None,
     )
     monkeypatch.setattr(router, "call_step_services", AsyncMock(return_value=fake_llm))
     monkeypatch.setattr(router, "prepare_brain_reply_context", AsyncMock(return_value=None))
     ctx = {"user_message": None, "mode": "reverie"}
     req = PlanExecutionRequest(
-        plan=build_plan_for_verb("reverie_narrate", mode="brain"),
+        plan=_context_only_plan(),
         args=PlanExecutionArgs(request_id="rq", extra=extra),
         context=ctx,
     )

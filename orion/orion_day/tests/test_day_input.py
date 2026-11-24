@@ -19,6 +19,7 @@ from orion.schemas.orion_day import (
     OrionDayMaterialV1,
     ReadingItemV1,
     ReverieChainV1,
+    ReverieQuestionDayV1,
     ReverieThoughtV1,
     SelfSenseAnswerV1,
 )
@@ -93,49 +94,44 @@ def test_a_day_without_juniper_says_so_and_never_invents_a_turn():
     assert not _bare(juniper_chat=[JuniperChatTurnV1(turn_id="x2", at=fx.T0, prompt="hi")]).is_empty()
 
 
-# --- reveries: across themes, not by salience ----------------------------------------------------
+# --- reveries: the day's questions (reveries that ask) ------------------------------------------
 
 
-def _reverie_day() -> OrionDayMaterialV1:
-    chains, thoughts = [], []
-    # Theme "alarm": 60 chains, every thought at salience 0.99. Themes "quiet" and "juniper": low salience.
-    for theme, n, sal in (("alarm", 60, 0.99), ("quiet", 6, 0.1), ("juniper", 3, 0.2)):
-        for i in range(n):
-            cid = f"{theme}-chain-{i:03d}"
-            chains.append(ReverieChainV1(chain_id=cid, created_at=fx.T0, theme_key=theme, thought_count=1))
-            thoughts.append(ReverieThoughtV1(
-                thought_id=f"{theme[:2]}{i:06d}", chain_id=cid, created_at=fx.T0 + timedelta(minutes=10 * i),
-                salience=sal, interpretation=f"{theme} thought number {i} about something distinct {i * 7}"))
-    return _bare(reverie_chains=chains, reverie_thoughts=thoughts)
+def _question(i: int, **kw) -> ReverieQuestionDayV1:
+    base = dict(question_id=f"q{i:02d}-aaaaaaaaaaaa", seed_kind="lost_bet", created_at=fx.T0 + timedelta(hours=i),
+                question=f"Question number {i} about a bet I keep losing?", why="I can check it.", routed_to="none")
+    base.update(kw)
+    return ReverieQuestionDayV1(**base)
 
 
-def test_reveries_sample_every_theme_even_when_one_theme_is_all_alarms():
-    view = render_day_input(_reverie_day())
-    for theme in ("alarm", "quiet", "juniper"):
-        assert f"[reverie_theme:{theme}]" in view.digest_md
-    shown = re.findall(r"\[reverie:(\w{2})", view.digest_md)
-    assert shown.count("al") < len(shown)  # the salient theme does not take every slot
-    assert shown.count("ju") == 3 and shown.count("qu") == 6  # small themes are shown whole
-    assert view.condensed.reverie_themes_included == view.condensed.reverie_themes_total == 3
-    assert "salience" not in view.digest_md.split("## Reveries", 1)[1]
+def test_the_days_reverie_questions_are_shown_with_where_they_went():
+    qs = [_question(1, routed_to="focus:f-1", outcome={"disposition": "explored", "finding": "operational"}),
+          _question(2, seed_kind="far_memory")]
+    view = render_day_input(_bare(reverie_questions=qs))
+    section = view.digest_md.split("## Reverie questions", 1)[1]
+    assert "Question number 1" in section and "Question number 2" in section
+    assert "sent to curiosity; the dig: explored; operational" in section
+    assert "kept, not sent; not dug yet" in section
+    assert "an old memory beside a new one" in section
+    assert {f"reverie_question:{q.question_id[:12]}" for q in qs} <= set(view.included_refs)
+    assert set(view.included_refs) <= material_refs(_bare(reverie_questions=qs))
+    assert view.condensed.reverie_questions_total == view.condensed.reverie_questions_included == 2
 
 
-def test_reverie_picks_inside_a_theme_spread_over_the_day():
-    m = _reverie_day()
+def test_retired_narration_thoughts_are_never_shown():
+    old = [ReverieThoughtV1(thought_id="old00001", created_at=fx.T0, interpretation="the coalition keeps circling")]
+    view = render_day_input(_bare(reverie_thoughts=old, reverie_chains=[ReverieChainV1(chain_id="c", created_at=fx.T0)],
+                                  juniper_chat=[JuniperChatTurnV1(turn_id="t1", at=fx.T0, prompt="hi", response="hello")]))
+    assert "coalition keeps circling" not in view.digest_md
+    assert "## Reverie" not in view.digest_md
+
+
+def test_reverie_questions_stop_at_their_budget_and_count_it():
+    qs = [_question(i) for i in range(200)]
     cond = di.OrionDayCondensationV1()
-    _, chosen, _ = di.sample_reveries_by_theme(m, 10_000, cond, di.ZoneInfo(m.timezone))
-    times = sorted(t.created_at for t in chosen["alarm"])
-    all_alarm = sorted(t.created_at for t in m.reverie_thoughts if t.chain_id.startswith("alarm"))
-    assert times[0] - all_alarm[0] < all_alarm[-1] - all_alarm[0]  # not just the first hour
-    assert times[-1] - times[0] > (all_alarm[-1] - all_alarm[0]) / 2  # spans most of the day
-
-
-def test_spread_order_visits_every_index_once():
-    for n in range(0, 40):
-        order = di._spread_order(n)
-        assert sorted(order) == list(range(n))
-        if n > 2:
-            assert order[0] == n // 2
+    text = di.render_reverie_questions(_bare(reverie_questions=qs), 2_000, cond, di.ZoneInfo("America/Denver"))
+    assert len(text) <= 2_000
+    assert 0 < cond.reverie_questions_included < cond.reverie_questions_total == 200
 
 
 # --- self-sense: once each, latest -------------------------------------------------------------
@@ -321,14 +317,6 @@ def test_tail_cuts_and_self_sense_dedupe_are_counted_for_the_email():
     assert f"({c.tail_items_left_out} more trimmed items left out to fit" in view.digest_md
     assert c.self_sense_answers_total == len(m.self_sense) and c.self_sense_answers_shown == 1
     assert view.source_chars["readings"] <= di.TAIL_MAX_CHARS
-
-
-def test_no_reverie_heading_when_nothing_is_showable():
-    hollow = [ReverieThoughtV1(thought_id="h0000001", created_at=fx.T0, interpretation="x", hollow=True)]
-    view = render_day_input(_bare(reverie_thoughts=hollow, juniper_chat=[
-        JuniperChatTurnV1(turn_id="t1", at=fx.T0, prompt="hi", response="hello")]))
-    assert "## Reveries" not in view.digest_md
-    assert view.condensed.reverie_thoughts_hollow_skipped == 1
 
 
 def test_a_ref_pasted_into_chat_is_not_a_citation():

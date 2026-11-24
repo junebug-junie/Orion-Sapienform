@@ -25,8 +25,19 @@ def test_same_material_gives_the_same_view_byte_for_byte():
     assert build_llm_view(reparsed).digest_md == a.digest_md
 
 
+def _stored_material():
+    """A letter row stored before 2026-11-24 still carries the retired narration's thoughts and chains:
+    build_llm_view (replay only) still condenses them."""
+    from orion.schemas.orion_day import ReverieChainV1, ReverieThoughtV1
+
+    return _material().model_copy(update={
+        "reverie_thoughts": [ReverieThoughtV1(**t) for t in fx.REVERIE_THOUGHTS],
+        "reverie_chains": [ReverieChainV1(**c) for c in fx.REVERIE_CHAINS],
+    })
+
+
 def test_reveries_are_condensed_and_every_other_section_is_full():
-    material = _material()
+    material = _stored_material()
     view = build_llm_view(material)
     c = view.condensed
     assert c.reverie_thoughts_total == len(fx.REVERIE_THOUGHTS)
@@ -49,7 +60,7 @@ def test_reveries_are_condensed_and_every_other_section_is_full():
 
 
 def test_hollow_thoughts_are_never_sampled():
-    material = _material()
+    material = _stored_material()
     view = build_llm_view(material)
     hollow_texts = {t.interpretation for t in material.reverie_thoughts if t.hollow}
     assert hollow_texts  # the fixture has some

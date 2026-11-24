@@ -71,6 +71,9 @@ ROLLBACK;"""
 
 # Mirrors services/orion-dream/app/cycle_store.py SOURCE_QUERIES (key rule and
 # filters). tests/test_regulation_measurements.py fails if those drift apart.
+# compaction_request and resonance left the service on 2026-11-24 (the reverie chain that produced them
+# was retired), so they left this export too: a replay of a window before that date reads lower
+# pressure than the service did then.
 METACOG_KEY_RE = r"[0-9a-f]{8,}|-?[0-9]+(\.[0-9]+)?"
 
 
@@ -85,16 +88,6 @@ def source_export_sql(lo, hi):
           CASE WHEN timestamp ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}T' THEN CAST(timestamp AS timestamptz) END AS ts
      FROM orion_metacog WHERE severity IN ('degraded', 'critical')
  ) m WHERE ts > '{lo}'::timestamptz AND ts < '{hi}'::timestamptz
- UNION ALL
- SELECT 'source', 'compaction_request', created_at, request_id::text, NULL, NULL,
-        md5(lower(theme)), btrim(coalesce(theme, '')) <> ''
-   FROM dream_compaction_request_queue
-  WHERE created_at > '{lo}'::timestamptz AND created_at < '{hi}'::timestamptz AND theme IS NOT NULL
- UNION ALL
- SELECT 'source', 'resonance', created_at, alert_id::text, violation_count::text, NULL,
-        md5(lower(theme_key)), btrim(coalesce(theme_key, '')) <> ''
-   FROM substrate_reverie_resonance_alert
-  WHERE created_at > '{lo}'::timestamptz AND created_at < '{hi}'::timestamptz AND theme_key IS NOT NULL
  UNION ALL
  SELECT 'source', 'crystallization', h.created_at, c.crystallization_id::text, c.salience::text, NULL,
         md5(c.crystallization_id::text),
@@ -276,11 +269,8 @@ def prepare_items(source_rows):
         if kind == "metacog":
             row.update(id=r["id"], severity=r["severity"], summary=text, trigger_kind=r.get("trigger_kind"))
             rank = int(r["severity"] == "critical")
-        elif kind == "compaction_request":
-            row.update(request_id=r["id"], theme=text)
-        elif kind == "resonance":
-            row.update(alert_id=r["id"], theme_key=text, violation_count=int(r["severity"] or 0))
-            rank = int(r["severity"] or 0)
+        elif kind in ("compaction_request", "resonance"):
+            continue  # retired sources (2026-11-24): the service no longer builds them
         elif kind == "crystallization":
             row.update(crystallization_id=r["id"], subject=text, summary=text,
                        salience=float(r["severity"]) if r["severity"] is not None else None)

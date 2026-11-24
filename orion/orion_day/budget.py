@@ -58,7 +58,7 @@ REVERIE_FRAME_CHARS = 400
 MIN_CLIP_CHARS = 400
 
 _REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_offered|"
-                     r"chat_compactor|github_compactor|world_pulse_digest|walkway_day|visual_reverie|reverie|reverie_theme|correction|"
+                     r"chat_compactor|github_compactor|world_pulse_digest|walkway_day|visual_reverie|reverie|reverie_theme|reverie_question|correction|"
                      r"arc|day|event|juniper_chat|experience|act|dream_day)"
                      r":[^\]\s]+)\]")
 
@@ -281,6 +281,8 @@ def _norm(text: str) -> str:
 
 
 def _render_reveries(material: OrionDayMaterialV1, budget_chars: int, cond: OrionDayCondensationV1) -> str:
+    """REPLAY ONLY (with build_llm_view): the retired narration's thoughts and chains, as stored in letter
+    rows from before 2026-11-24. New material never carries them."""
     thoughts, chains = material.reverie_thoughts, material.reverie_chains
     cond.reverie_thoughts_total = len(thoughts)
     cond.reverie_chains_total = len(chains)
@@ -428,7 +430,8 @@ def material_ref_records(material: OrionDayMaterialV1) -> dict[str, dict[str, An
     if material.walkway_day is not None:
         records[f"walkway_day:{material.walkway_day.day.isoformat()}"] = dump(material.walkway_day)
     records |= {f"visual_reverie:{v.sha256[:16]}": dump(v) for v in material.visual_reveries}
-    records |= {f"reverie:{t.thought_id[:8]}": dump(t) for t in material.reverie_thoughts}
+    records |= {f"reverie:{t.thought_id[:8]}": dump(t) for t in material.reverie_thoughts}  # stored letters only
+    records |= {f"reverie_question:{q.question_id[:12]}": dump(q) for q in material.reverie_questions}
     records |= {f"correction:{c.correction_id}": dump(c) for c in material.corrections}
     records |= {f"juniper_chat:{juniper_chat_ref(t.turn_id)}": dump(t) for t in material.juniper_chat}
     if material.temporal_core is not None:

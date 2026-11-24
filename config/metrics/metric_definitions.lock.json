@@ -1,12 +1,21 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 749,
+  "metric_count": 744,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 2,
+    "change_count": 11,
+    "high_severity_count": 11,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-agent-council/orion:exec:request:LLMGatewayService (all_producers: \u2026nd', 'orion-vision-counc\u2026 -> \u2026nd', 'orion-recall', 'orion-vision-counc\u2026)",
-      "high   routing_changed metric://bus_channel/orion-llm-gateway/orion:exec:result:LLMGatewayService:* (declared_consumers: \u2026nsolidation'] -> \u2026nsolidation', 'orion-recall'])"
+      "high   removed metric://bus_channel/orion-dream/orion:dream:compaction-delta",
+      "high   removed metric://bus_channel/orion-thought/orion:dream:compaction-request",
+      "high   removed metric://bus_channel/orion-thought/orion:reverie:chain",
+      "high   removed metric://bus_channel/orion-thought/orion:reverie:resonance-alert",
+      "high   removed metric://bus_channel/orion-thought/orion:reverie:thought",
+      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:attention:schema (all_producers: \u2026ate-runtime', 'orion-thought'] -> \u2026ate-runtime'])",
+      "high   routing_changed metric://inner_state/orion-cortex-exec/attention_salience_trace.v1 (declared_consumers: \u2026ance_inputs', 'services.orion-thought.app.reverie:build_rev\u2026 -> \u2026ance_inputs'])",
+      "high   routing_changed metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience (declared_consumers: \u2026ance_inputs', 'services.orion-thought.app.reverie:build_rev\u2026 -> \u2026ance_inputs'])",
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026t stance cue, the Day letter and the reverie arc block)', '\u2026 -> \u2026t stance cue and the Day letter)', 'services.orion-hub.scri\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1 (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'])",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score (declared_consumers: \u2026thought.app.broadcast_reader:read_latest_broadcast', 'servi\u2026 -> \u2026thought.app.store:load_quiet_gate_rows'], prompt_sites: ['services.orion-thought.app.reverie:build_reverie_context'] -> -)"
     ]
   },
   "definitions": {
@@ -698,8 +707,7 @@
       "all_producers": [
         "orion-cortex-exec",
         "orion-hub",
-        "orion-substrate-runtime",
-        "orion-thought"
+        "orion-substrate-runtime"
       ],
       "declared_consumers": [
         "orion-sql-writer"
@@ -1196,14 +1204,6 @@
         "orion-durable-runs"
       ],
       "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-dream/orion:dream:compaction-delta": {
-      "schema_id": "MemoryCompactionDeltaV1",
-      "all_producers": [
-        "orion-dream"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-dream/orion:dream:trigger": {
@@ -3532,14 +3532,6 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-thought/orion:dream:compaction-request": {
-      "schema_id": "CompactionRequestV1",
-      "all_producers": [
-        "orion-thought"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-thought/orion:exec:request:VisionHostService:circe-vl": {
       "schema_id": "VisionTaskRequestPayload",
       "all_producers": [
@@ -3550,36 +3542,6 @@
         "orion-vision-host"
       ],
       "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-thought/orion:reverie:chain": {
-      "schema_id": "ReverieChainV1",
-      "all_producers": [
-        "orion-thought"
-      ],
-      "declared_consumers": [
-        "*"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-thought/orion:reverie:resonance-alert": {
-      "schema_id": "ResonanceAlertV1",
-      "all_producers": [
-        "orion-thought"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-thought/orion:reverie:thought": {
-      "schema_id": "SpontaneousThoughtV1",
-      "all_producers": [
-        "orion-thought"
-      ],
-      "declared_consumers": [
-        "*"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-thought/orion:reverie:visual:step:reply:*": {
@@ -4891,8 +4853,7 @@
     "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1": {
       "schema_id": "AttentionSalienceTraceV1",
       "declared_consumers": [
-        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs",
-        "services.orion-thought.app.reverie:build_reverie_context"
+        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs"
       ],
       "notes": "cadence=event_gated composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"
@@ -4904,8 +4865,7 @@
       "sparsity": "event_gated",
       "absent_means": "no row when no loop was scored (one row per scored loop).",
       "declared_consumers": [
-        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs",
-        "services.orion-thought.app.reverie:build_reverie_context"
+        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs"
       ],
       "prompt_sites": [
         "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs"
@@ -5051,15 +5011,15 @@
       "absent_means": "Redis orion:regulation:latest expired (TTL 360 s, three ticks) or arousal_level unknown (a stale input, or ORION_REGULATION_AROUSAL_ENABLED=false): arousal unavailable, and every reader keeps its pre-arousal behaviour. Never read as idle.",
       "declared_consumers": [
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
-        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per episode from the arousal_transition rows; read by the chat stance cue, the Day letter and the reverie arc block)",
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per episode from the arousal_transition rows; read by the chat stance cue and the Day letter)",
         "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal (no self-modification proposal while strained)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (engaged doubles the cooldown; strain no longer holds it since 2026-11-07, its durable-runs bid decides)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._strain_report_once -> scripts.strain_report (strain loop part 3: a strained episode >= 60 min may pass the strained refusal with ONE grounded report, once per episode and once per local day; reads since, reasons, cabinet_temp_c, gpu_queue_depth)",
         "services.orion-substrate-runtime.app.worker:BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news (strained -> rare budgeted news events on node:substrate.strain for attention; the level itself never competes)",
-        "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)",
-        "services.orion-thought.app.painting_self_start:arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec; moved from orion-proposal-runtime 2026-11-05, ladder retirement PR 2)"
+        "services.orion-thought.app.painting_self_start:arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec; moved from orion-proposal-runtime 2026-11-05, ladder retirement PR 2)",
+        "services.orion-thought.app.reverie:live_deps (the reverie quiet gate: a reverie starts only while the level reads idle)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"
@@ -5802,8 +5762,7 @@
     "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1": {
       "schema_id": "AttentionBroadcastProjectionV1",
       "declared_consumers": [
-        "services.orion-thought.app.broadcast_reader:read_latest_broadcast",
-        "services.orion-thought.app.chain:run_reverie_chain"
+        "services.orion-thought.app.store:load_quiet_gate_rows"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"
@@ -5816,11 +5775,7 @@
       "absent_means": "dwell history is in-process, so it resets to 0.3 on a substrate-runtime restart.",
       "polarity": "higher_is_better",
       "declared_consumers": [
-        "services.orion-thought.app.broadcast_reader:read_latest_broadcast",
-        "services.orion-thought.app.chain:run_reverie_chain"
-      ],
-      "prompt_sites": [
-        "services.orion-thought.app.reverie:build_reverie_context"
+        "services.orion-thought.app.store:load_quiet_gate_rows"
       ],
       "upstream": [
         "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1"

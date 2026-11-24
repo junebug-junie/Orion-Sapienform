@@ -10,7 +10,9 @@ Reverse mappings that are not one-to-one (stated so a mismatch is never a surpri
 
 * ``chat_turn``: ``has_prompt`` -> ``prompt`` 'x' or ''; ``unsolicited`` -> ``client_meta``.
 * ``reverie_chain`` thoughts, ``oracle_thought_chain`` and ``expectation_verdict`` rows are merged
-  by ``thought_id`` into ``substrate_reverie_thought`` (``thought_json.chain_id``).
+  by ``thought_id`` into ``substrate_reverie_thought`` (``thought_json.chain_id``). History only: no
+  reader reads those tables since 2026-11-24 (reveries that ask); old exports still load.
+* ``reverie_question`` rows load as they are; ``seed_refs`` is a Postgres text[] (``PgArray``).
 * ``visual_run``'s joined attempt becomes a ``produced`` attempt carrying ``result_json.chain_id``.
 * ``attention_loop_raised.chat_turn`` was an EXISTS over the whole live table. When it is true and
   no exported chat row has that correlation id, a stub chat row dated 2000-01-01 (never inside a
@@ -52,6 +54,8 @@ MIGRATIONS = (
     REPO / "services/orion-sql-db/manual_migration_vision_office_session_v1.sql",
     # Orion's now (integration patch 1): salience / surprise_nats columns, experience_shown / _use.
     REPO / "services/orion-sql-db/manual_migration_experience_now_v1.sql",
+    # Reveries that ask (Patch 1): the reverie_question source table.
+    REPO / "services/orion-sql-db/manual_migration_reverie_question.sql",
 )
 
 
@@ -80,7 +84,13 @@ async def create_schema(conn: Any) -> None:
             await conn.execute(stmt, prepare=False)
 
 
+class PgArray(list):
+    """A list that goes in as a Postgres array, not as jsonb (``_v``)."""
+
+
 def _v(value: Any) -> Any:
+    if isinstance(value, PgArray):
+        return list(value)
     return Jsonb(value) if isinstance(value, (dict, list)) else value
 
 
@@ -184,6 +194,11 @@ def table_rows(rows: dict[str, list[dict]]) -> dict[str, list[dict]]:
         out["orion_biometrics_summary"].append({"node": "athena", "timestamp": r["timestamp"],
                                                 "measurements": {"cabinet_temp_c": r.get("cabinet_temp_c")}})
     out["cabinet_ambient_spike"].extend(dict(r) for r in rows.get("body_spike", []))
+    for r in rows.get("reverie_question", []):
+        out["reverie_question"].append(dict(r, seed_refs=PgArray(r.get("seed_refs") or []),
+                                            thread_key=r.get("thread_key") or f"fixture:{r['question_id']}",
+                                            thread_id=r.get("thread_id") or r["question_id"],
+                                            seed_kind=r.get("seed_kind") or "absence"))
     return out
 
 

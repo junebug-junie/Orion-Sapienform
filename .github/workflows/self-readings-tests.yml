@@ -12,7 +12,6 @@ on:
       - "orion/schemas/attention_candidate.py"
       - "orion/substrate/prediction_error_magnitude.py"
       - "orion/cognition/prompts/stance_react.j2"
-      - "orion/cognition/prompts/reverie_narrate.j2"
       - "config/field/field_channel_glossary.v1.yaml"
       - "services/orion-thought/app/**"
       - "services/orion-thought/tests/test_stance_self_readings.py"

@@ -16,7 +16,6 @@ a test pins the worst case.
 from __future__ import annotations
 
 import json
-from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -197,10 +196,9 @@ def outline_items(
     unresolved = [c.ref for c in cites if not c.resolved]
     counts = section_counts(letter)
     m = letter.material
-    themes = Counter(c.theme_key for c in m.reverie_chains if c.theme_key)
     counts_text, counts_cut = clip_json_text(
         "\n".join(f"{name}: {n} record(s)" for name, n in counts.items())
-        + f"\nreverie chains: {len(m.reverie_chains)} ({len(themes)} themes)",
+        + f"\nreverie questions: {len(m.reverie_questions)}",
         OUTLINE_JSON_BUDGET,
     )
     return [
@@ -222,7 +220,7 @@ def outline_items(
             id=f"{date} sections", occurred_at=when, kind=RECORD_KIND, epistemic_status="record",
             text=counts_text, truncated=counts_cut,
             extra={"letter_date": date, "part": "section", "section_counts": counts,
-                   "reverie_chains": len(m.reverie_chains), "reverie_themes": len(themes),
+                   "reverie_questions": len(m.reverie_questions),
                    "emailed": letter.emailed_at is not None},
         ),
     ]

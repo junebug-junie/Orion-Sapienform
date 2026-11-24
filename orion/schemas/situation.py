@@ -701,31 +701,15 @@ class ReverieSnippetV1(BaseModel):
 
 
 class ReverieContextV1(BaseModel):
-    """Orion's most recent dream/reverie interpretations, for the situation
-    brief.
+    """The newest questions Orion's quiet-stretch reveries left (reveries that ask, 2026-11-24), for the
+    situation brief. Each snippet's ``text`` is one accepted question (``reverie_question``, not refused,
+    not none) and ``observed_at`` when it was asked; ``salience`` is always None (a question has none).
 
-    Source: a plain SQL read of `substrate_reverie_thought` (Postgres) via
-    `orion/situational/reverie_reader.py` -- the same table Hub's reverie
-    cockpit (`services/orion-hub/scripts/reverie_routes.py`'s
-    `/api/reverie/text/recent` route) already renders for Juniper. This is a
-    second, narrower reader of that same table rather than an import of the
-    route handler's own fetch function -- `orion/` is shared code services
-    import FROM, so a route script in `services/orion-hub/` must not be
-    imported the other way round.
+    Source: a plain SQL read via `orion/situational/reverie_reader.py`. Until 2026-11-24 this carried the
+    retired narration's interpretations (substrate_reverie_thought); the shape is unchanged.
 
-    Deliberately NOT wired to the `orion:reverie:thought`/`orion:reverie:
-    chain` bus channels: those have zero real subscribers today, and a plain
-    SQL read of a table an established UI already trusts is a much thinner
-    seam than standing up a new bus consumer for one small feature.
-
-    Only the model's own short interpretation text, its age, and its
-    salience score cross into the prompt -- never raw generated image bytes/
-    paths, chain linkage, or diffusion-prompt internals
-    `reverie_visual_chain` carries.
-
-    `available=False` is a real state (disabled / no DSN configured / no
-    rows yet / read failure), not an error swallowed into silence -- same
-    honesty contract as `PerceptionContextV1.available`.
+    `available=False` is a real state (disabled / no DSN configured / no rows yet / read failure), not an
+    error swallowed into silence -- same honesty contract as `PerceptionContextV1.available`.
     """
 
     model_config = ConfigDict(extra="forbid")

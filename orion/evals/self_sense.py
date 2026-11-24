@@ -82,8 +82,8 @@ def self_label_hits(text: str) -> list[str]:
 TABLE_ALIASES: dict[str, str] = {
     "dreams": "dreams",
     "dream log": "dreams",
-    "reverie": "substrate_reverie_chain",
-    "reveries": "substrate_reverie_chain",
+    "reverie": "reverie_question",
+    "reveries": "reverie_question",
     "harness turn trace": "harness_turn_trace",
     "harness turn traces": "harness_turn_trace",
     "turn trace": "harness_turn_trace",

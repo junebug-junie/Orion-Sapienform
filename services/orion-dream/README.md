@@ -22,9 +22,9 @@ scoreable. Default off (`ORION_DREAM_CYCLE_ENABLED`).
 ```
 sleep pressure --(>= threshold AND idle AND >= min interval)--> replay
      |                                                             |
-     |   NEW distinct things since the last sleep (absent from    +--> REM compaction (staged, existing)
-     |   the 48 h before it): metacog event kinds, reverie        |
-     |   compaction themes, resonance themes, newly activated     +--> recombination --> dream_hypothesis
+     |   NEW distinct things since the last sleep (absent from    |
+     |   the 48 h before it): metacog event kinds, newly          |
+     |   activated                                                +--> recombination --> dream_hypothesis
      |   crystallizations. Reads exactly 0 after a sleep.              dream arm:   distant replay pairs
      |                                                                  control arm: random pairs, same prompt
      v
@@ -161,18 +161,11 @@ records `walkway candidates=N`. Empty for the camera's first week: the reducer o
 emits an expectation with >= 5 days of support. Off switch:
 `DREAM_REPLAY_WALKWAY_ENABLED=false` (or empty `DREAM_WALKWAY_STREAM_IDS`).
 
-### Reverie themes read as titles
+### Reverie sources retired (2026-11-24)
 
-Compaction requests and resonance alerts name a reverie theme by its bare open-loop id
-(`open-loop-968fda08910c`). The source queries also fetch the loop's latest human
-description from `attention_salience_trace` (by the indexed `theme_key`), and replay
-text uses it: "Harness closure prediction error: reverie_chain_max_steps". The id stays
-the novelty key, ref and tag, so tiredness is unchanged when a title is reworded. No
-title found -> the id, as before. The title is the one current when the window closed.
-
-Cohort break: hypotheses made after this change pair titled reverie fragments, earlier
-ones id-only. Both arms changed together (arm vs arm stays fair), but absolute adoption
-rates may shift at the deploy date; split the dream scorecard there.
+Compaction requests and resonance alerts came only from orion-thought's reverie narration chain. That
+chain was retired (reveries that ask, Patch 1, docs/superpowers/specs/2026-11-18-reverie-questions-design.md),
+so neither is a replay source or sleep pressure any more. Old replay rows keep their `source_kind`.
 
 ### Every sleep ends in a story
 
@@ -337,51 +330,18 @@ This uses the same rule curiosity investigate obeys (`orion/physiology/binding.p
   Replay: `PYTHONPATH=. python services/orion-dream/evals/dream_binding_replay.py [--live --days 7]`.
 - The old arousal hold stays until the binding bid has run `on` for 7 days with its checks green.
 
-### Compaction apply asks the market's consent gate (2026-11-11, attention patch 3d)
+### REM compaction removed (2026-11-24)
 
-REM stages about two compaction deltas a day (gist cards from settled open loops). Applying one would change
-memory, so the applier (`app/compaction_applier.py`) needs consent first, and it asks the want market's
-consent gate (`app/compaction_consent.py`): one bid for family `dream.compaction` with a consent request
-(verb `compact`, `snapshot_restorable`, attests `snapshot_dir_writable` and `downscale_only`; a plan that
-would prune asks verb `prune`, `irreversible`, always refused). Rules: `config/physiology/consent.yaml`.
+The REM compaction pass read the reverie chain's compaction requests, staged a delta, asked the want
+market's consent gate (family `dream.compaction`) and downscaled the salience of settled reverie thoughts.
+With the chain retired it had nothing to compact, so the pass, the applier, its store, its consent ask,
+`POST /dreams/rem-preview` and the `orion:dream:compaction-delta` publish are removed. A sleep's
+`compaction_delta_id` is NULL from then on. `dream_compaction_delta` keeps its history.
 
-- Consent is asked first, even while `ORION_DREAM_COMPACTION_APPLY_ENABLED=false`. The live trace is a
-  `want_ledger` row (producer `orion-dream.compaction_applier.consent`) and a log line
-  `rem compaction consent asked id=... status=... verdict=... rule=...`.
-- No market answer, a verdict for another delta, or any error is a no. `DREAM_COMPACTION_CONSENT_ASK_ENABLED=false`
-  stops the ask (and so the apply).
-
-### Compaction apply downscales settled reverie thoughts (2026-11-13)
-
-Juniper merged the standing consent `dream-compaction-downscale` and apply is on
-(`ORION_DREAM_COMPACTION_APPLY_ENABLED=true`). What sleep now does to memory:
-
-- REM proposes one downscale entry for each reverie thought that a consolidate entry folds in (a thought
-  of a settled reverie chain): new salience = salience x `DREAM_COMPACTION_DOWNSCALE_FACTOR` (0.8). It
-  proposes a thought only once: only while its `salience` column still equals the original in
-  `thought_json.salience`. Prune is never proposed.
-- After the persist, the market's consent gate answers. On `allow`, the applier writes a snapshot of every
-  target's salience to `DREAM_COMPACTION_SNAPSHOT_DIR/<delta_id>/snapshot_before.json` (persistent, under
-  the `/app/logs` mount), then lowers each one through `app/compaction_store.py`. The store changes only
-  `substrate_reverie_thought.salience`, compare-and-set on the old value. Any error restores the snapshot.
-- The downscales of one delta run in ONE transaction: a stale or missing row aborts the batch and nothing
-  is written. Restore is compare-and-set on the value this apply wrote, so it never undoes another write.
-  Each apply leaves `receipt.json` (status `applied`, `rolled_back` or `rollback_failed`) next to its
-  snapshot. One small directory per applied sleep accumulates; nothing prunes them yet.
-- Gist cards are not written: the store has no gist-card table. The receipt counts them in
-  `cards_skipped_no_gist_store`.
-- Two numbers after an apply: the `salience` column (lowered) is what the hub reverie panels, the chat
-  situation snippet, Orion's day reading and Orion's own dig (`self_inquiry`) see. `thought_json.salience`
-  keeps the original.
-- Who notices: Orion's day reading ranks reverie thoughts by salience (`orion/orion_day/budget.py`), so a
-  settled thought gives way to an unsettled one.
-- The proof line: `compaction applied delta=... downscaled=N ... snapshot=...`. In SQL:
-  `SELECT count(*) FROM substrate_reverie_thought WHERE salience < (thought_json->>'salience')::float`.
-- Roll back one apply: `docker exec orion-athena-dream python -m app.compaction_store restore
-  /app/logs/compaction-snapshots/<delta_id>/snapshot_before.json`. Stop all applies: set
-  `ORION_DREAM_COMPACTION_APPLY_ENABLED=false` and rebuild dream, or delete the standing consent and rebuild
-  durable-runs.
-- `POST /dreams/rem-preview` asks consent but never writes (no store).
+Earlier applies lowered `substrate_reverie_thought.salience`; the original is still in
+`thought_json.salience`. To restore every one by hand (operator action, not run by any code):
+`UPDATE substrate_reverie_thought SET salience = (thought_json->>'salience')::float
+WHERE salience < (thought_json->>'salience')::float;`
 
 ### HTTP / bus behavior
 

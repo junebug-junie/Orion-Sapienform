@@ -159,7 +159,9 @@ def main() -> int:
         print("ORION_ADMISSION_TEST_DSN (a disposable database) is required", file=sys.stderr)
         return 2
     rows = pure.load()
-    ticks, events = pure.build_inputs(rows)
+    # The live SourceReader reads only live kinds (reverie_chain / expectation_verdict retired 2026-11-24), so the
+    # pure reference folds the same set and the score expects no reverie arc.
+    ticks, events = pure.build_inputs(rows, adapters=pure.ADAPTERS)
     rc = ReducerConfig()
     pure_day, _ = pure.run(rc, rows, ticks, events)
     restart_at = datetime(2026, 10, 9, 19, 3, tzinfo=timezone.utc)   # mid-afternoon, mid-arc
@@ -172,7 +174,7 @@ def main() -> int:
     # Canonical JSON: temporal_self_day.day_json is jsonb, which stores object keys in its own order,
     # so dict-valued fields (rows_by_lane, source_cursors, ...) come back reordered. Same content.
     identical = _canon(_strip_bodies(day)) == _canon(pure_day)
-    report = pure.score(rc, rows, ticks, day, identical)
+    report = pure.score(rc, rows, ticks, day, identical, with_history=False)
     want = expected_bodies(rows, day)
     outside = []
     if args.source_dsn:
@@ -184,7 +186,7 @@ def main() -> int:
             want.pop(k)
     body_mismatch = [a.arc_id for a in day.arcs if a.arc_id in want and a.body != want[a.arc_id]]
     body_missing = [a.arc_id for a in day.arcs if a.kind not in NO_BODY_KINDS and a.body is None]
-    pure_report = pure.score(rc, rows, ticks, pure_day, True)
+    pure_report = pure.score(rc, rows, ticks, pure_day, True, with_history=False)
     same_numbers = all(report[k] == pure_report[k] for k in ("arcs_by_kind", "evidence", "process_recall", "returns",
                                                              "dwell_sec", "rest", "frame_at_close", "label_failures"))
     summary = {

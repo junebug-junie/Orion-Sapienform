@@ -13,8 +13,9 @@ Checks, each PASS/FAIL:
                    self-sense question, Juniper's turns, corrections, the chat digest) is referenced.
 3. full_text    -- Juniper's turns always appear verbatim; unless the view reports clipping, so do
                    the curiosity write-ups and the latest self-sense answers.
-4. condensation -- reveries are condensed (shown <= total, hollow never shown, one per chain) and
-                   every theme with a showable thought gets one, unless the thought cap was hit.
+4. reveries    -- the day's accepted reverie questions are shown (shown <= total, every shown ref
+                   resolves to a question of the day, and every question is shown unless the
+                   section budget ran out); no retired narration thought is shown.
 5. blind        -- no dream-hypothesis id (the scorecard's formed_from join key) in the view.
 6. budget       -- approx_tokens <= budget_tokens; the turn's minimum context (record, frame, the
                    unified turn's harness prefix and the letter's completion) fits the agent lane's 131k.
@@ -38,7 +39,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from orion.orion_day.budget import _Body, extract_refs, juniper_chat_ref, material_refs  # noqa: E402
-from orion.orion_day.day_input import REVERIE_MAX_THOUGHTS, latest_self_sense, render_day_input  # noqa: E402
+from orion.orion_day.day_input import latest_self_sense, render_day_input  # noqa: E402
 from orion.orion_day.gather import gather_orion_day  # noqa: E402
 from orion.orion_day.brief import brief_from_material, minimum_context_tokens  # noqa: E402
 from orion.orion_day.letter_turn import THREADS_HEADING, WRITING_INSTRUCTIONS, build_letter_prompt  # noqa: E402
@@ -97,21 +98,13 @@ def evaluate(material: OrionDayMaterialV1) -> list[tuple[str, bool, str]]:
                                            f"({view.condensed.full_text_items_clipped} items) -- reported"))
 
     c = view.condensed
-    shown = [r for r in refs if r.startswith("reverie:")]
-    hollow_shown = [t.thought_id for t in material.reverie_thoughts
-                    if t.hollow and t.interpretation.strip() and t.interpretation.strip() in view.digest_md]
-    by_prefix = {}
-    for t in material.reverie_thoughts:
-        by_prefix.setdefault(t.thought_id[:8], t.chain_id)
-    chains = [by_prefix.get(r.split(":", 1)[1]) for r in shown]
-    theme_of = {ch.chain_id: ch.theme_key or "unthemed" for ch in material.reverie_chains}
-    showable = {theme_of.get(t.chain_id or "", "unthemed") for t in material.reverie_thoughts
-                if not t.hollow and t.interpretation.strip()}
-    spread = c.reverie_themes_included == len(showable) or c.reverie_thoughts_included >= REVERIE_MAX_THOUGHTS
-    ok = (c.reverie_thoughts_included <= c.reverie_thoughts_total and not hollow_shown and spread
-          and len([x for x in chains if x]) == len({x for x in chains if x}))
-    results.append(("condensation", ok, f"shown {c.reverie_thoughts_included}/{c.reverie_thoughts_total}, "
-                                        f"themes {c.reverie_themes_included}/{c.reverie_themes_total}, hollow_shown={len(hollow_shown)}"))
+    shown = [r for r in refs if r.startswith("reverie_question:")]
+    known = {f"reverie_question:{q.question_id[:12]}" for q in material.reverie_questions}
+    narration = [r for r in refs if r.startswith("reverie:")]
+    ok = (c.reverie_questions_included <= c.reverie_questions_total and set(shown) <= known and not narration
+          and (c.reverie_questions_included == c.reverie_questions_total or c.reverie_questions_included > 0))
+    results.append(("reveries", ok, f"shown {c.reverie_questions_included}/{c.reverie_questions_total}, "
+                                    f"unknown refs={sorted(set(shown) - known)[:3]}, narration refs={len(narration)}"))
 
     need = minimum_context_tokens(brief)
     ok = view.approx_tokens <= view.budget_tokens and need < AGENT_CONTEXT_TOKENS

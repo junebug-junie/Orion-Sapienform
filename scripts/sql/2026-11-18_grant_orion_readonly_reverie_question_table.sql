@@ -1,5 +1,5 @@
--- NOT APPLIED. Relayed to the Patch 1 build by the orchestrator as approved by Juniper 2026-11-18, together
--- with the question-trace grant (scripts/sql/2026-11-18_grant_orion_readonly_reverie_question_trace.sql).
+-- NOT APPLIED YET. Approved by Juniper 2026-11-18, together with the question-trace grant
+-- (scripts/sql/2026-11-18_grant_orion_readonly_reverie_question_trace.sql, applied live that day).
 -- Apply only after services/orion-sql-db/manual_migration_reverie_question.sql has created the table.
 --
 -- Let Orion's read-only sandbox role read its own reverie questions (reveries that ask, Patch 1,

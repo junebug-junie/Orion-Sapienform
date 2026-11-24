@@ -309,10 +309,12 @@ class ResonanceAlertV1(BaseModel):
 
 # --- Reveries that ask (docs/superpowers/specs/2026-11-18-reverie-questions-design.md) -------------
 #
-# A reverie starts, in a quiet stretch, from ONE piece of real material (a seed) and leaves one question
-# for curiosity to dig, or a reason there is none. One `reverie_question` row per reverie
+# In a quiet stretch, a reverie starts from ONE piece of real material (a seed, picked by code) and leaves
+# one question for curiosity to dig, or a reason there is none. One `reverie_question` row per reverie
 # (services/orion-sql-db/manual_migration_reverie_question.sql); the chronicle reads that table as the
-# `reverie_question` experience (orion/temporal_self/sources.py).
+# `reverie_question` experience (orion/temporal_self/sources.py). The old narration path (SpontaneousThoughtV1,
+# ReverieChainV1, CompactionRequestV1, ResonanceAlertV1 above) is retired: those models stay only so the
+# history in substrate_reverie_* still parses.
 
 ReverieSeedKind = Literal["absence", "lost_bet", "far_memory"]
 # Patch 1 builds the three world seeds. Rehearse, body change and contradiction are Patch 2.
@@ -339,8 +341,9 @@ class ReverieSeedV1(BaseModel):
 
     ``thread_key`` names what the seed is about (a person's routine, a bet template and probability bin, a
     memory pair). Two reveries on the same thread_key within ORION_REVERIE_THREAD_LAPSE_DAYS share a
-    ``thread_id``. Every ref resolves to a stored row: ``vision_percept_expectation:<id>``,
-    ``self_bet_bin:<faculty>:<bin>``, ``episode_memory:<id>`` / ``stance:<id>`` / ``person_fact:<id>``.
+    ``thread_id``. Every ref resolves to a stored row: ``vision_percept_expectation:<expectation_id>``,
+    ``self_bet_bin:<faculty>:<lo>-<hi>`` (prediction_turn_self_bet, faculty x stated-p bin),
+    ``episode_memory:<id>`` / ``stance:<id>`` / ``person_fact:<id>`` (orion/memory/lived_memory.py doc ids).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -351,6 +354,9 @@ class ReverieSeedV1(BaseModel):
     refs: list[str] = Field(min_length=1, max_length=MAX_REVERIE_SEED_REFS)
     thread_key: str = Field(min_length=1, max_length=300)
     thread_id: str | None = None
+    # Absence only: "clean" (the raw census saw no person in the window) or "unrecognised" (a person was
+    # detected but not attributed to the named individual). An unrecognised miss is never "did not come".
+    evidence: Literal["clean", "unrecognised"] | None = None
 
 
 class ReverieQuestionV1(BaseModel):

@@ -333,13 +333,16 @@ Then run `python scripts/sync_local_env_from_example.py`.
 3. Retire the room-camera expectations entirely. The lost-bet seed takes over. [default: yes]
 4. Absence seeds name walkway people (public street, already in people records). Juniper's own cadence is used
    for rehearse. [default: allowed; no privacy boundary between Juniper and Orion]
-5. **Let Orion read the trace of its own questions.** This needs Juniper's yes; there is no default.
+5. **Let Orion read the trace of its own questions.** **Answered yes (Juniper, 2026-11-18).** The grant below
+   was applied live that day.
    - Orion asked for this on this PR. Today `orion_readonly` cannot read three tables:
      - `curiosity_focus_request` (was my question dug?)
      - `curiosity_finding_register` (did the dig find anything?)
      - `prediction_turn_self_bet` (the lost-bet seed's own material)
-   - The proposed grant is `scripts/sql/2026-11-18_grant_orion_readonly_reverie_question_trace.sql`. It is **not
-     applied**. Patch 1 adds `reverie_question` to it.
+   - The grant is `scripts/sql/2026-11-18_grant_orion_readonly_reverie_question_trace.sql`. It was **applied live
+     2026-11-18** after Juniper approved. The `reverie_question` table's own grant is a separate file
+     (`scripts/sql/2026-11-18_grant_orion_readonly_reverie_question_table.sql`), approved, applied by hand after
+     Patch 1's migration.
    - **Run ids.** The first two tables carry curiosity run ids, and #3685 shows the test arm can be re-derived
      from a run id. Orion's role already reads those run ids through `orion_scope.temporal_self_event`: 94
      `curiosity_run` rows in 7 days, checked with `SET ROLE orion_readonly`. So this grant does not widen the

@@ -1,6 +1,5 @@
--- APPLIED live 2026-11-18 (design PR #3736, missing question 5). Checked read-only on 2026-11-18:
--- has_table_privilege('orion_readonly', ...) is true for all three tables. The approval was relayed to
--- the Patch 1 build by the orchestrator as Juniper's yes; the build did not apply it.
+-- APPLIED live 2026-11-18 after Juniper approved (design PR #3736, missing question 5). Checked read-only on
+-- 2026-11-18: has_table_privilege('orion_readonly', ...) is true for all three tables.
 --
 -- Let Orion's read-only sandbox role read the trace of its own reverie questions:
 --   curiosity_focus_request    -- was the question queued, offered, taken, refused; the run's disposition

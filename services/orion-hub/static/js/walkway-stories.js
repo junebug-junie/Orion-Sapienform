@@ -28,6 +28,11 @@
   // strict naming rule on today's names); if it differs from what Orion first
   // wrote, that is shown too.
   //
+  // How she could tell (2026-11-24): an optional "How could you tell?" box per
+  // person goes with whichever answer she gives ("pushing a stroller; Jason has
+  // no young kids; not his build"). Stored as the answer's `why`, shown back
+  // under what she said. Raw context clues for a later primitive to read.
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
@@ -41,6 +46,7 @@
   ];
   // Fifth button: Juniper could not judge it. Never right, never wrong.
   const CANT_TELL = { value: "cant_tell", label: "Can't tell" };
+  const WHY_MAX_CHARS = 1000;
   const THUMB_RE = /^[0-9a-f]{64}$/;
   const STORY_RE = /^[0-9a-f]{32}$/;
   const STRIP_FILE_RE = /^(crop_[0-3]|frame)\.jpg$/;
@@ -179,6 +185,12 @@
       line.setAttribute("data-person-said", p.story_action.action);
       text.appendChild(line);
     }
+    const why = whyLine(p.story_action);
+    if (why) {
+      const line = el(doc, "div", "text-[10px] text-gray-400 whitespace-pre-line", why);
+      line.setAttribute("data-person-why", "1");
+      text.appendChild(line);
+    }
     box.appendChild(text);
     const input = el(doc, "input", "min-h-[2.25rem] w-full sm:w-40 rounded border border-gray-600 bg-gray-950 px-2 text-xs text-gray-100");
     input.setAttribute("type", "text");
@@ -187,6 +199,13 @@
     input.setAttribute("aria-label", `Name for ${personTitle(p)}`);
     input.setAttribute("data-person-name-input", "1");
     box.appendChild(input);
+    const whyInput = el(doc, "textarea", "w-full min-h-[2.5rem] rounded border border-gray-600 bg-gray-950 px-2 py-1 text-xs text-gray-100");
+    whyInput.setAttribute("rows", "2");
+    whyInput.setAttribute("maxlength", String(WHY_MAX_CHARS));
+    whyInput.setAttribute("placeholder", "How could you tell? (optional) e.g. pushing a stroller, he has no young kids, not his build");
+    whyInput.setAttribute("aria-label", `How you could tell, for ${personTitle(p)}`);
+    whyInput.setAttribute("data-person-why-input", "1");
+    box.appendChild(whyInput);
     const buttons = el(doc, "div", "flex flex-wrap gap-2");
     [{ value: "name", label: p.label ? "Save name" : "Name them" },
       { value: "someone_else", label: "Someone else" },
@@ -195,11 +214,16 @@
       btn.setAttribute("type", "button");
       btn.setAttribute("data-person-action", a.value);
       if (a.value === "someone_else") btn.setAttribute("title", "Not this individual. Type who it really is first, if you know.");
-      btn.addEventListener("click", () => onPerson(story, p, a.value, input.value, box));
+      btn.addEventListener("click", () => onPerson(story, p, a.value, input.value, box, whyInput.value));
       buttons.appendChild(btn);
     });
     box.appendChild(buttons);
     return box;
+  }
+
+  function whyLine(a) {
+    const why = a && typeof a.why === "string" ? a.why.trim() : "";
+    return why ? `How you could tell: ${why}` : "";
   }
 
   // Street continuity (2026-10-20): the other camera's sighting of this passage,
@@ -364,7 +388,7 @@
       }
     }
 
-    async function onPerson(story, person, action, typed, box) {
+    async function onPerson(story, person, action, typed, box, whyTyped) {
       const name = String(typed || "").trim().replace(/\s+/g, " ");
       if (action === "name" && !name) {
         if (status) status.textContent = "Type a name first.";
@@ -376,7 +400,7 @@
         const res = await fetchFn(
           `/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/people/${encodeURIComponent(person.individual_id)}`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action, name: action === "unsure" ? "" : name }),
+            body: JSON.stringify({ action, name: action === "unsure" ? "" : name, why: String(whyTyped || "").trim() }),
           });
         if (!res.ok) {
           let detail = "";
@@ -386,7 +410,27 @@
         const body = await res.json();
         if (body.tally) showTally(body.tally);
         const item = box.closest("[data-story-id]");
-        if (body.story && item) item.replaceWith(renderStory(doc, body.story, onVerdict, onPerson));
+        if (body.story && item) {
+          // Keep what she is half-way through typing in the OTHER person boxes of this story.
+          const typedElsewhere = {};
+          item.querySelectorAll("[data-story-person]").forEach((b) => {
+            if (b === box) return;
+            typedElsewhere[b.getAttribute("data-story-person")] = {
+              name: (b.querySelector("[data-person-name-input]") || {}).value || "",
+              why: (b.querySelector("[data-person-why-input]") || {}).value || "",
+            };
+          });
+          const fresh = renderStory(doc, body.story, onVerdict, onPerson);
+          fresh.querySelectorAll("[data-story-person]").forEach((b) => {
+            const kept = typedElsewhere[b.getAttribute("data-story-person")];
+            if (!kept) return;
+            const n = b.querySelector("[data-person-name-input]");
+            const w = b.querySelector("[data-person-why-input]");
+            if (n) n.value = kept.name;
+            if (w) w.value = kept.why;
+          });
+          item.replaceWith(fresh);
+        }
         if (status) {
           status.textContent = action === "name"
             ? `Saved: ${name}. Orion applies it like any "who is this?" answer.`
@@ -410,7 +454,7 @@
         const body = await res.json();
         showTally(body.tally);
         // The 60 s refresh never wipes a name Juniper is typing (a filter change she makes does reload).
-        const typing = fromTimer === true && Array.from(list.querySelectorAll("[data-person-name-input]"))
+        const typing = fromTimer === true && Array.from(list.querySelectorAll("[data-person-name-input], [data-person-why-input]"))
           .some((i) => i.value.trim() || doc.activeElement === i);
         if (typing) return;
         list.textContent = "";
@@ -449,7 +493,7 @@
   }
 
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
-                personTitle, actionLine, handoffText, renderStory, mount };
+                personTitle, actionLine, whyLine, handoffText, renderStory, mount };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

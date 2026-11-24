@@ -360,7 +360,8 @@ FROM (
 # (orion.temporal_self.now.held_lookup), newest first. Exact equality only; build_now re-checks which ref matched.
 NOW_HELD_SQL = """
 SELECT e.event_id, e.source_kind, e.occurred_at, e.label, e.verdict, e.related_refs, e.payload_json,
-  e.salience, e.surprise_nats, e.source_ref, e.correlation_id, e.subject_ref
+  e.salience, e.surprise_nats, e.source_ref, e.correlation_id, e.subject_ref,
+  e.ingested_at <= %(window_lo)s AS before_window
 FROM temporal_self_event e
 WHERE e.ingested_at > %(lo)s AND e.ingested_at <= %(as_of)s AND e.source_kind <> ALL(%(own)s)
   AND (e.event_id = ANY(%(keys)s) OR e.source_ref = ANY(%(keys)s) OR e.correlation_id = ANY(%(keys)s)
@@ -468,8 +469,9 @@ class ExperienceStore:
         return {str(r["arc_id"]): str(r["subject_ref"]) for r in rows if r["subject_ref"]}
 
     async def held_candidates(self, *, keys: Iterable[str], lo: datetime, as_of: datetime, own_kinds: Iterable[str],
-                              limit: int = 50) -> list[dict]:
-        """Other organs' rows in ``(lo, as_of]`` whose own ids equal one of ``keys`` (#3783), newest first."""
+                              window_lo: Optional[datetime] = None, limit: int = 50) -> list[dict]:
+        """Other organs' rows in ``(lo, as_of]`` whose own ids equal one of ``keys`` (#3783), newest first; each
+        says whether it landed before the read's own window (``before_window``: ingested at or before ``window_lo``)."""
         ks = sorted({str(k) for k in keys if str(k).strip()})
         if not ks:
             return []
@@ -477,8 +479,9 @@ class ExperienceStore:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
                 rows = await (await conn.execute(NOW_HELD_SQL, {
-                    "keys": ks, "lo": lo, "as_of": as_of, "own": sorted(own_kinds), "limit": int(limit)})).fetchall()
-        return [_now_row(r) for r in rows]
+                    "keys": ks, "lo": lo, "as_of": as_of, "own": sorted(own_kinds), "limit": int(limit),
+                    "window_lo": window_lo or lo})).fetchall()
+        return [{**_now_row(r), "before_window": bool(r["before_window"])} for r in rows]
 
     async def by_id(self, event_ids: Iterable[str], *, own_kinds: Iterable[str]) -> list[dict]:
         """Rows by event id (other organs' kinds only), in the candidates' shape: a reader's pinned items."""

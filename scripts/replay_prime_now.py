@@ -3,7 +3,9 @@
 
 For each stored ``experience_shown`` row of the ``prime`` organ, this reads the same candidate rows the endpoint
 reads (the store's own SQL), builds the now again with ``orion.temporal_self.now.build_now`` and prints what was
-shown then next to what would be shown now. ``--held`` gives the refs Prime held at the time (a concern's
+shown then next to what would be shown now. Not like-for-like in one way: hunger pins (``include=``) are not
+rebuilt, so a live read that pinned a row shows it first and the replay does not. Rows shown live that are not
+candidates any more are fetched by id for display only. ``--held`` gives the refs Prime held at the time (a concern's
 event_ref, ``arc:<id>``, ``prime_concern:<id>``); without it, the replay shows the fair ranking alone.
 
 It never writes: it runs SELECTs through ``docker exec <db container> psql`` (no experience_shown row, unlike a GET).
@@ -61,6 +63,7 @@ def _rows(raw: list[dict]) -> list[dict]:
         r["occurred_at"] = datetime.fromisoformat(r["occurred_at"])
         r["payload"] = r.pop("payload_json", None) or {}
         r["related_refs"] = r.get("related_refs") or []
+        r.pop("before_window", None)
         if "kind_total" in r:
             r["kind_total"] = int(r["kind_total"])
         out.append(r)
@@ -79,7 +82,7 @@ def replay(container: str, shown: dict, held: list[str]) -> dict:
     if held:
         rows += _rows(query(container, NOW_HELD_SQL, {"keys": sorted(held_lookup(held, arcs)),
                                                        "lo": min(lo, as_of - HELD_LOOKBACK), "as_of": as_of,
-                                                       "own": sorted(own), "limit": 50}))
+                                                       "own": sorted(own), "limit": 50, "window_lo": lo}))
     before_ids = list(shown["event_ids"])
     by_id = {r["event_id"]: r for r in rows}
     missing = [i for i in before_ids if i not in by_id]

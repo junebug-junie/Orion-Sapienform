@@ -278,40 +278,65 @@ def held_ref_keys(ref: str) -> set[str]:
     return keys
 
 
+_NOT_AN_ID = {"", "None", "null"}  # a source that wrote str(None) stored no id
+
+
 def row_ids(c: Mapping[str, Any]) -> set[str]:
     """A candidate row's own ids: its event id, source ref, correlation id, subject ref and related refs."""
     ids = {str(c.get(k) or "").strip() for k in ("event_id", "source_ref", "correlation_id", "subject_ref")}
     ids.update(str(r).strip() for r in (c.get("related_refs") or []))
-    return ids - {""}
+    return ids - _NOT_AN_ID
 
 
-def held_lookup(held: Sequence[str], arc_subjects: Optional[Mapping[str, str]] = None) -> dict[str, list[str]]:
-    """key -> the held refs it came from. ``arc_subjects``: arc_id -> the arc's subject_ref, so an ``arc:<id>`` ref
-    also matches every row on that arc's subject (the caller reads the arc table; this stays pure)."""
-    out: dict[str, list[str]] = {}
+# A match is DIRECT when a row id equals the ref, the ref without its #fragment, or its tail id; it is through an
+# ARC SUBJECT when it equals the subject of a held arc. Arc subjects are often broad (``orion:body:energy`` had 40
+# rows in a day), so a direct match always wins a held seat over a subject match.
+TIER_DIRECT, TIER_ARC_SUBJECT = 0, 1
+
+
+def held_lookup(held: Sequence[str],
+                arc_subjects: Optional[Mapping[str, str]] = None) -> dict[str, list[tuple[str, int]]]:
+    """key -> [(held ref, tier)], in the reader's order. ``arc_subjects``: arc_id -> the arc's subject_ref, so an
+    ``arc:<id>`` ref also matches every row on that arc's subject (the caller reads the arc table; this stays pure)."""
+    out: dict[str, list[tuple[str, int]]] = {}
+
+    def add(key: str, ref: str, tier: int) -> None:
+        hits = out.setdefault(key, [])
+        if all(r != ref for r, _ in hits):
+            hits.append((ref, tier))
+
     for ref in list(dict.fromkeys(str(h).strip() for h in held if str(h or "").strip()))[:NOW_MAX_HELD_REFS]:
-        keys = held_ref_keys(ref)
+        for k in held_ref_keys(ref):
+            add(k, ref, TIER_DIRECT)
         if ref.startswith(ARC_REF_PREFIX):
-            subject = (arc_subjects or {}).get(ref[len(ARC_REF_PREFIX):])
-            if subject:
-                keys.add(subject)
-        for k in keys:
-            out.setdefault(k, [])
-            if ref not in out[k]:
-                out[k].append(ref)
+            subject = str((arc_subjects or {}).get(ref[len(ARC_REF_PREFIX):]) or "").strip()
+            if subject not in _NOT_AN_ID:
+                add(subject, ref, TIER_ARC_SUBJECT)
     return out
 
 
-def held_refs_of(c: Mapping[str, Any], lookup: Mapping[str, list[str]]) -> list[str]:
-    """The held refs one row is about (in the reader's order), or []."""
+def _held_hits(c: Mapping[str, Any], lookup: Mapping[str, list[tuple[str, int]]]) -> dict[str, int]:
+    """held ref -> its best (lowest) tier for this row."""
+    hits: dict[str, int] = {}
+    for i in row_ids(c):
+        for ref, tier in lookup.get(i, ()):
+            hits[ref] = min(tier, hits.get(ref, tier))
+    return hits
+
+
+def held_refs_of(c: Mapping[str, Any], lookup: Mapping[str, list[tuple[str, int]]]) -> list[str]:
+    """The held refs one row is about, in the reader's order, or []."""
     if not lookup:
         return []
-    hit: list[str] = []
-    for i in sorted(row_ids(c)):
-        for ref in lookup.get(i, ()):
-            if ref not in hit:
-                hit.append(ref)
-    return hit
+    hits = _held_hits(c, lookup)
+    order = list(dict.fromkeys(ref for refs in lookup.values() for ref, _ in refs))
+    return sorted(hits, key=order.index)
+
+
+def held_tier(c: Mapping[str, Any], lookup: Mapping[str, list[tuple[str, int]]]) -> Optional[int]:
+    """The row's strongest match (TIER_DIRECT or TIER_ARC_SUBJECT), or None when it is about nothing held."""
+    hits = _held_hits(c, lookup) if lookup else {}
+    return min(hits.values()) if hits else None
 
 
 def _kind_key(c: Mapping[str, Any]) -> tuple:
@@ -330,12 +355,14 @@ def _standing(c: Mapping[str, Any]) -> float:
 
 
 def _fair_order(pool: Sequence[Mapping[str, Any]], registry: OrganRegistry,
-                held: Mapping[str, list[str]]) -> list[tuple[Mapping[str, Any], int, bool]]:
+                held: Mapping[str, list[tuple[str, int]]],
+                max_per_organ: int) -> list[tuple[Mapping[str, Any], int, bool]]:
     """(row, its place among its organ's rows, about a held ref), best first.
 
     Fair ranking (#3783): no kind loses because it has no salience score.
 
-    1. Rows about a held ref come first, at most NOW_MAX_HELD of them (newest first).
+    1. Rows about a held ref come first, at most NOW_MAX_HELD of them: direct matches before arc-subject matches,
+       then newest. A held seat is only spent on a row its organ's cap lets through.
     2. Every organ gets a seat before any organ gets a second (``place``), so an organ whose kinds have no magnitude
        (reading, chat, memory, painting, reverie) is never crowded out by organs whose kinds do.
     3. Inside an organ, every kind's best row comes before any kind's second row.
@@ -355,10 +382,19 @@ def _fair_order(pool: Sequence[Mapping[str, Any]], registry: OrganRegistry,
         kind_count[kind] = max(totals) if totals else len(rows)
         for i, r in enumerate(sorted(rows, key=_kind_key)):
             kind_rank[str(r["event_id"])] = i
-    is_held: dict[str, bool] = {}
-    for c in sorted(pool, key=lambda r: (-r["occurred_at"].timestamp(), str(r["event_id"]))):  # newest held first
-        eid = str(c["event_id"])
-        is_held[eid] = bool(held_refs_of(c, held)) and sum(is_held.values()) < NOW_MAX_HELD
+    is_held: dict[str, bool] = {str(c["event_id"]): False for c in pool}
+    tiers = {str(c["event_id"]): held_tier(c, held) for c in pool}
+    held_per_organ: dict[str, int] = {}
+    seats = 0
+    for c in sorted((c for c in pool if tiers[str(c["event_id"])] is not None),
+                    key=lambda r: (tiers[str(r["event_id"])], -r["occurred_at"].timestamp(), str(r["event_id"]))):
+        organ = registry.organ_of[c["source_kind"]]
+        if seats >= NOW_MAX_HELD:
+            break
+        if held_per_organ.get(organ, 0) < max_per_organ:  # held rows lead their organ, so this is their place
+            held_per_organ[organ] = held_per_organ.get(organ, 0) + 1
+            is_held[str(c["event_id"])] = True
+            seats += 1
 
     def key(c: Mapping[str, Any]) -> tuple:
         eid = str(c["event_id"])
@@ -423,7 +459,7 @@ def build_now(
             pool.append(c)
     # The organ cap first (over every candidate), then the total cap over what is left: both counts
     # are then independent of where the cut falls.
-    ordered = _fair_order(pool, registry, lookup)
+    ordered = _fair_order(pool, registry, lookup, max_per_organ)
     within = [c for c, place, _ in ordered if place < max_per_organ]
     picked = within[:max_items]
     dropped_organ, dropped_total = len(pool) - len(within), len(within) - len(picked)

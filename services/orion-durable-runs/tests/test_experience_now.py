@@ -142,7 +142,7 @@ class MemDB(FakeStore):
                             "surprise_nats": m["surprise_nats"]})
         return out, len(rows)
 
-    async def held_candidates(self, *, keys, lo, as_of, own_kinds, limit=50):
+    async def held_candidates(self, *, keys, lo, as_of, own_kinds, window_lo=None, limit=50):
         import json
 
         ks = set(keys)
@@ -152,7 +152,8 @@ class MemDB(FakeStore):
         return [{"event_id": m["event_id"], "source_kind": m["source_kind"], "occurred_at": m["occurred_at"],
                  "label": m["label"], "verdict": m["verdict"], "related_refs": m["related_refs"],
                  "payload": json.loads(m["payload"]), "salience": m["salience"], "surprise_nats": m["surprise_nats"],
-                 "source_ref": m["source_ref"], "correlation_id": m["correlation_id"], "subject_ref": m["subject_ref"]}
+                 "source_ref": m["source_ref"], "correlation_id": m["correlation_id"], "subject_ref": m["subject_ref"],
+                 "before_window": m["ingested_at"] <= (window_lo or lo)}
                 for m in rows[:limit]]
 
     async def arc_subjects(self, arc_ids):
@@ -396,6 +397,9 @@ def test_held_refs_bring_a_concerns_reading_from_before_the_window_first_and_mar
                                                     ("held", "prime_concern:520a5a9f8d084495")]).json()
     assert got["items"][0]["event_id"] == r.event_id and got["items"][0]["held_refs"] == [held]
     assert got["items"][0]["salience"] is None
+    # the reading from before the window is counted as a candidate: shown + dropped never exceeds candidates
+    assert got["candidates"] == 13
+    assert len(got["items"]) + got["dropped_by_organ_cap"] + got["dropped_by_total_cap"] <= got["candidates"]
     assert db.shown_rows[got["shown_id"]]["event_ids"][0] == r.event_id  # so a cite of it is valid
     plain = client.get("/temporal-self/now", params={"organ": "prime", "since": since}).json()
     assert r.event_id not in [i["event_id"] for i in plain["items"]]  # outside the window and not held

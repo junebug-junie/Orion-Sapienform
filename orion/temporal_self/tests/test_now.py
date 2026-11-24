@@ -213,13 +213,79 @@ def test_held_matching_is_exact_ids_only():
     assert now.items[NOW_MAX_HELD].event_id.startswith("gpu_wait")
 
 
+def _pre_held_models():
+    """TemporalNowV1 as an image built before #3783 has it: the same fields minus held_refs, extra="forbid"."""
+    from pydantic import ConfigDict, create_model
+
+    from orion.schemas.temporal_self import TemporalNowItemV1
+
+    item_fields = {k: (f.annotation, f) for k, f in TemporalNowItemV1.model_fields.items() if k != "held_refs"}
+    OldItem = create_model("OldItem", __config__=ConfigDict(extra="forbid"), **item_fields)
+    now_fields = {k: (f.annotation, f) for k, f in TemporalNowV1.model_fields.items() if k != "items"}
+    return create_model("OldNow", __config__=ConfigDict(extra="forbid"), items=(list[OldItem], []), **now_fields)
+
+
 def test_no_held_is_the_same_body_shape_as_before():
+    from pydantic import ValidationError
+
     rows = [row("reading_turn:b", "reading_turn", sal=0.1), row("chat_turn:c", "chat_turn")]
     a = build_now(rows, "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG)
     b = build_now(rows, "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG, held=[])
     assert a == b and all("held_refs" not in i for i in a.model_dump(mode="json")["items"])
-    # an image built before held_refs (extra="forbid") still validates the body
-    TemporalNowV1.model_validate(a.model_dump(mode="json"))
+    OldNow = _pre_held_models()
+    # A reader that sends no held (reverie, curiosity, the thought service, dream day) on an old image still parses.
+    OldNow.model_validate(a.model_dump(mode="json"))
+    # A held match is only ever sent to the reader that asked (Prime, which reads the body as a dict); an old
+    # forbid model would refuse it, which is why no other reader sends held.
+    c = dict(rows[0], correlation_id="c" * 20)
+    held_body = build_now([c], "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG,
+                          held=["seed:" + "c" * 20]).model_dump(mode="json")
+    with pytest.raises(ValidationError):
+        OldNow.model_validate(held_body)
+
+
+def test_a_direct_match_takes_a_held_seat_before_rows_that_only_share_a_held_arcs_subject():
+    """An arc's subject is often broad (orion:body:energy: 40 rows in a day). Its rows must not push the concern's
+    own event out of the held seats."""
+    from orion.temporal_self.now import NOW_MAX_HELD
+
+    subject_rows = [dict(row(f"body_binding:{j}", "body_binding", at=T - timedelta(minutes=j)),
+                         subject_ref="orion:body:energy") for j in range(5)]
+    own_event = dict(row("reading_turn:own", "reading_turn", at=T - timedelta(hours=8)), correlation_id="c" * 20)
+    now = build_now([*subject_rows, own_event], "prime", since=T - timedelta(hours=9), as_of=T, shown_id="s",
+                    registry=REG, held=["seed:" + "c" * 20, "arc:00112233aabbccdd"],
+                    arc_subjects={"00112233aabbccdd": "orion:body:energy"}, max_per_organ=12)
+    assert now.items[0].event_id == "reading_turn:own"
+    assert [i.event_id for i in now.items[1:NOW_MAX_HELD]] == ["body_binding:0", "body_binding:1"]
+    assert now.items[1].held_refs == ["arc:00112233aabbccdd"]
+    # a stored "None" subject is not an id: an arc whose subject reads "None" matches nothing
+    look_none = build_now([dict(row("x:1", "body_binding"), subject_ref="None")], "prime", since=T, as_of=T,
+                          shown_id="s", registry=REG, held=["arc:00112233aabbccdd"],
+                          arc_subjects={"00112233aabbccdd": "None"})
+    assert look_none.items[0].held_refs == []
+
+
+def test_a_held_seat_is_never_spent_on_a_row_its_organ_cap_drops():
+    from orion.temporal_self.now import NOW_MAX_HELD
+
+    key = "c" * 20
+    readings = [dict(row(f"reading_turn:{j}", "reading_turn", at=T - timedelta(minutes=j)), correlation_id=key)
+                for j in range(3)]
+    old_chat = dict(row("chat_turn:old", "chat_turn", at=T - timedelta(hours=5)), correlation_id=key)
+    fillers = [row(f"gpu_wait:{j}", "gpu_wait", sal=0.99) for j in range(2)]
+    now = build_now([*readings, old_chat, *fillers], "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s",
+                    registry=REG, held=["seed:" + key])
+    ids = [i.event_id for i in now.items]
+    assert set(ids[:NOW_MAX_HELD]) == {"reading_turn:0", "reading_turn:1", "chat_turn:old"}
+    assert "reading_turn:2" not in ids  # the organ cap (2) drops it, and it took no held seat
+
+
+def test_held_refs_are_named_in_the_readers_order():
+    from orion.temporal_self.now import held_lookup, held_refs_of
+
+    look = held_lookup(["z:" + "a" * 16, "a:" + "b" * 16])
+    assert held_refs_of({"event_id": "e", "related_refs": ["a" * 16, "b" * 16]}, look) == ["z:" + "a" * 16,
+                                                                                           "a:" + "b" * 16]
 
 
 def test_build_now_refuses_an_unregistered_reader_and_never_shows_an_unregistered_kind():

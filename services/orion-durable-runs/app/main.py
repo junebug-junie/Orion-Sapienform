@@ -1311,9 +1311,13 @@ async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Op
         # A held concern's evidence may predate this read's window (the concern opened on it): look back a day,
         # a concern's own life unkept (orion/prime/state.py CONCERN_TTL).
         held_lo = min(lo, as_of - timedelta(hours=NOW_HELD_LOOKBACK_HOURS))
-        rows = rows + await _now_read(store.held_candidates(
-            keys=held_lookup(held_refs, arc_subjects), lo=held_lo, as_of=as_of,
-            own_kinds=registry.kinds_of(organ)))
+        in_window = {str(r["event_id"]) for r in rows}
+        extra = [r for r in await _now_read(store.held_candidates(
+            keys=held_lookup(held_refs, arc_subjects), lo=held_lo, as_of=as_of, window_lo=lo,
+            own_kinds=registry.kinds_of(organ))) if str(r["event_id"]) not in in_window]
+        # A held row from before the window is a candidate too: ``candidates`` counts it, so shown + dropped
+        # never exceeds it. (A held row inside the window but past the per-kind cut is already in ``total``.)
+        rows, total = rows + extra, total + sum(1 for r in extra if r.get("before_window", True))
     now = build_now(rows, organ, since=lo, as_of=as_of, shown_id=uuid4().hex, registry=registry,
                     reader_run_ref=(run_ref or None) and run_ref[:300], candidates_total=total, pinned=pinned,
                     held=held_refs, arc_subjects=arc_subjects)

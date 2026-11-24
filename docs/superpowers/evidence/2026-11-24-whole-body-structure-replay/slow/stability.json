@@ -1,0 +1,321 @@
+{
+  "generated_at": "2026-11-24T08:52:34.383221+00:00",
+  "since": "2026-10-25T08:00:00+00:00",
+  "source_rows": {
+    "orion_biometrics_summary": 82989,
+    "bus_traffic_rollup_5m": 3224,
+    "attention_salience_trace": 17131,
+    "grammar_acts": 6584,
+    "cockpit_turn_sighting": 6804,
+    "curiosity_run_outcomes": 296,
+    "chat_message(user)": 213,
+    "vision_events": 56811,
+    "hub_attention_minute": 1372,
+    "home_cooling_sample": 514087
+  },
+  "seed": 3290,
+  "whole_body": {
+    "channels": 55,
+    "days": 8.2,
+    "first_block_start": "2026-11-16T04:00:00+00:00",
+    "null_draws": 20,
+    "by_block_length": {
+      "1d": {
+        "pairs": 7,
+        "median_similarity_by_rank": [
+          0.556,
+          0.63,
+          0.473,
+          0.512,
+          0.52,
+          0.426,
+          0.509,
+          0.252
+        ],
+        "chance_median_by_rank": [
+          0.249,
+          0.228,
+          0.242,
+          0.225,
+          0.223,
+          0.237,
+          0.2,
+          0.197
+        ],
+        "chance_max_by_rank": [
+          0.328,
+          0.328,
+          0.309,
+          0.311,
+          0.334,
+          0.295,
+          0.262,
+          0.271
+        ],
+        "stable_ranks": [],
+        "null_min_gap_buckets": 20
+      },
+      "2d": {
+        "pairs": 3,
+        "median_similarity_by_rank": [
+          0.688,
+          0.147,
+          0.708,
+          0.65,
+          0.634,
+          0.527,
+          0.577,
+          0.496
+        ],
+        "chance_median_by_rank": [
+          0.286,
+          0.267,
+          0.252,
+          0.228,
+          0.191,
+          0.236,
+          0.208,
+          0.176
+        ],
+        "chance_max_by_rank": [
+          0.359,
+          0.389,
+          0.37,
+          0.303,
+          0.334,
+          0.328,
+          0.308,
+          0.307
+        ],
+        "stable_ranks": [
+          3
+        ],
+        "null_min_gap_buckets": 17
+      },
+      "4d": {
+        "pairs": 1,
+        "median_similarity_by_rank": [
+          0.868,
+          0.547,
+          0.538,
+          0.543,
+          0.648,
+          0.338,
+          0.008,
+          0.082
+        ],
+        "chance_median_by_rank": [
+          0.354,
+          0.259,
+          0.283,
+          0.275,
+          0.254,
+          0.231,
+          0.23,
+          0.211
+        ],
+        "chance_max_by_rank": [
+          0.646,
+          0.597,
+          0.504,
+          0.407,
+          0.414,
+          0.356,
+          0.368,
+          0.371
+        ],
+        "stable_ranks": [
+          1
+        ],
+        "null_min_gap_buckets": 12
+      }
+    }
+  },
+  "body_only": {
+    "channels": 16,
+    "days": 27.0,
+    "first_block_start": "2026-10-28T08:00:00+00:00",
+    "null_draws": 20,
+    "by_block_length": {
+      "1d": {
+        "pairs": 26,
+        "median_similarity_by_rank": [
+          0.558,
+          0.59,
+          0.436,
+          0.56,
+          0.525,
+          0.556,
+          0.531,
+          0.449
+        ],
+        "chance_median_by_rank": [
+          0.398,
+          0.39,
+          0.424,
+          0.46,
+          0.454,
+          0.49,
+          0.507,
+          0.475
+        ],
+        "chance_max_by_rank": [
+          0.455,
+          0.46,
+          0.457,
+          0.534,
+          0.511,
+          0.555,
+          0.582,
+          0.522
+        ],
+        "stable_ranks": [],
+        "null_min_gap_buckets": 235
+      },
+      "2d": {
+        "pairs": 12,
+        "median_similarity_by_rank": [
+          0.646,
+          0.696,
+          0.357,
+          0.554,
+          0.565,
+          0.476,
+          0.513,
+          0.489
+        ],
+        "chance_median_by_rank": [
+          0.412,
+          0.383,
+          0.42,
+          0.47,
+          0.478,
+          0.495,
+          0.499,
+          0.496
+        ],
+        "chance_max_by_rank": [
+          0.521,
+          0.507,
+          0.487,
+          0.535,
+          0.537,
+          0.591,
+          0.581,
+          0.607
+        ],
+        "stable_ranks": [],
+        "null_min_gap_buckets": 226
+      },
+      "3d": {
+        "pairs": 8,
+        "median_similarity_by_rank": [
+          0.65,
+          0.718,
+          0.419,
+          0.433,
+          0.55,
+          0.58,
+          0.639,
+          0.541
+        ],
+        "chance_median_by_rank": [
+          0.426,
+          0.418,
+          0.416,
+          0.438,
+          0.427,
+          0.501,
+          0.472,
+          0.503
+        ],
+        "chance_max_by_rank": [
+          0.661,
+          0.543,
+          0.519,
+          0.626,
+          0.571,
+          0.563,
+          0.595,
+          0.62
+        ],
+        "stable_ranks": [
+          2
+        ],
+        "null_min_gap_buckets": 217
+      },
+      "5d": {
+        "pairs": 4,
+        "median_similarity_by_rank": [
+          0.743,
+          0.599,
+          0.516,
+          0.518,
+          0.682,
+          0.52,
+          0.516,
+          0.344
+        ],
+        "chance_median_by_rank": [
+          0.428,
+          0.389,
+          0.408,
+          0.432,
+          0.455,
+          0.508,
+          0.498,
+          0.484
+        ],
+        "chance_max_by_rank": [
+          0.679,
+          0.588,
+          0.61,
+          0.542,
+          0.564,
+          0.638,
+          0.61,
+          0.632
+        ],
+        "stable_ranks": [
+          1
+        ],
+        "null_min_gap_buckets": 199
+      },
+      "7d": {
+        "pairs": 2,
+        "median_similarity_by_rank": [
+          0.691,
+          0.519,
+          0.458,
+          0.463,
+          0.266,
+          0.629,
+          0.51,
+          0.417
+        ],
+        "chance_median_by_rank": [
+          0.385,
+          0.334,
+          0.413,
+          0.434,
+          0.494,
+          0.441,
+          0.524,
+          0.523
+        ],
+        "chance_max_by_rank": [
+          0.633,
+          0.636,
+          0.591,
+          0.569,
+          0.698,
+          0.619,
+          0.7,
+          0.657
+        ],
+        "stable_ranks": [],
+        "null_min_gap_buckets": 181
+      }
+    }
+  }
+}

@@ -52,7 +52,7 @@ STEP = wbs.BUCKETS_PER_HOUR
 N_NULL = 20
 NIGHT_UTC = (7, 13)  # 00:00-06:00 Mountain (MST, UTC-7)
 TOP_MODES = 8
-STABLE_SIMILARITY = 0.7
+STABLE_SIMILARITY = wbs.STABLE_SIMILARITY
 PREVIEW_MODES = 6
 MAX_ORGANS = 8
 
@@ -281,6 +281,21 @@ def daily_stability(x: np.ndarray, day_starts: list[int]) -> dict:
     }
 
 
+def stability_by_timescale(x: np.ndarray, lengths_days: list[int], rng) -> dict:
+    """The slow test: mode stability when blocks are L days long, not 1, against a chance floor."""
+    out = {}
+    for L in lengths_days:
+        st = wbs.block_stability(x, L * WINDOW, TOP_MODES, rng=rng, n_null=N_NULL)
+        if st is None:
+            continue
+        r3 = lambda a: None if a is None else [round(float(v), 3) for v in a]  # noqa: E731
+        out[f"{L}d"] = {"pairs": st.pairs, "median_similarity_by_rank": r3(st.median_by_rank),
+                        "chance_median_by_rank": r3(st.chance_median_by_rank),
+                        "chance_max_by_rank": r3(st.chance_max_by_rank), "stable_ranks": st.stable_ranks,
+                        "null_min_gap_buckets": st.null_min_gap}
+    return out
+
+
 def organs(x: np.ndarray, names: list[str], stable_by_rank: list[float]) -> tuple[np.ndarray, list[dict], bool]:
     """Organ series: residual scores on the full-period modes that stay recognisable day to day.
 
@@ -403,6 +418,18 @@ def run_block(label: str, x: np.ndarray, idx: np.ndarray, names: list[str], grou
     }
 
 
+def _body_block(res: np.ndarray, idx: np.ndarray, names: list[str], group: dict, full: bool = False):
+    """The body-only block: body channels over the span where any body residual exists."""
+    body_cols = [j for j, n in enumerate(names) if group[n] == "body"]
+    b_rows = np.flatnonzero(np.isfinite(res[:, body_cols]).any(axis=1))
+    blo, bhi = int(b_rows.min()), int(b_rows.max()) + 1
+    bsel = [body_cols[j] for j in wbs.select_channels(res[blo:bhi][:, body_cols])]
+    xb, nb, new_group, merge = _merge(res[blo:bhi][:, bsel], [names[j] for j in bsel], group)
+    if full:
+        return xb, nb, new_group, idx[blo:bhi], merge, blo, bhi
+    return xb, nb, idx[blo:bhi]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--postgres-uri", default=DEFAULT_POSTGRES_URI)
@@ -410,6 +437,8 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=3290)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--skip-layer1", action="store_true")
+    ap.add_argument("--stability-only", action="store_true",
+                    help="run only the slow test (mode stability by block length) and write stability.json")
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
     since = (datetime.now(timezone.utc) - timedelta(days=args.days)).replace(minute=0, second=0, microsecond=0)
@@ -428,6 +457,20 @@ def main() -> int:
     sel = [int(j) for j in wbs.select_channels(res[lo:hi]) if _active(raw[lo:hi, j], names[j])]
     x_all, names_all, group, merge_info = _merge(res[lo:hi][:, sel], [names[j] for j in sel], group)
     idx_all = idx[lo:hi]
+    if args.stability_only:
+        xb, _, idx_b = _body_block(res, idx, names, group)
+
+        def block_info(xx: np.ndarray, ii: np.ndarray, lengths: list[int]) -> dict:
+            return {"channels": xx.shape[1], "days": round(len(xx) / WINDOW, 1),
+                    "first_block_start": datetime.fromtimestamp(int(ii[0]) * BUCKET, timezone.utc).isoformat(),
+                    "null_draws": N_NULL, "by_block_length": stability_by_timescale(xx, lengths, rng)}
+
+        report["whole_body"] = block_info(x_all, idx_all, [1, 2, 4])
+        report["body_only"] = block_info(xb, idx_b, [1, 2, 3, 5, 7])
+        args.out.mkdir(parents=True, exist_ok=True)
+        (args.out / "stability.json").write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps({k: report[k] for k in ("whole_body", "body_only")}, indent=1))
+        return 0
     if len(quiet_cols) != 2:
         raise SystemExit("quiet-night test needs world:juniper_messages and world:hub_attention_beats")
     whole = run_block("whole_body", x_all, idx_all, names_all, group, rng, raw[lo:hi][:, quiet_cols].sum(axis=1))
@@ -471,12 +514,8 @@ def main() -> int:
     report["whole_body"] = whole
 
     # Body only, the full --days window (the spec's 30 days of body data).
-    body_cols = [j for j, n in enumerate(names) if group[n] == "body"]
-    b_rows = np.flatnonzero(np.isfinite(res[:, body_cols]).any(axis=1))
-    blo, bhi = int(b_rows.min()), int(b_rows.max()) + 1
-    bsel = [body_cols[j] for j in wbs.select_channels(res[blo:bhi][:, body_cols])]
-    xb, nb, group, body_merge = _merge(res[blo:bhi][:, bsel], [names[j] for j in bsel], group)
-    body = run_block("body_only", xb, idx[blo:bhi], nb, group, rng, raw[blo:bhi][:, quiet_cols].sum(axis=1))
+    xb, nb, group, idx_b, body_merge, blo, bhi = _body_block(res, idx, names, group, full=True)
+    body = run_block("body_only", xb, idx_b, nb, group, rng, raw[blo:bhi][:, quiet_cols].sum(axis=1))
     body["merged_copies"] = body_merge
     body.pop("_starts")
     report["body_only"] = body

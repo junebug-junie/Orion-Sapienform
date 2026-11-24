@@ -223,23 +223,36 @@ _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "augu
 _ORD = r"(?:st|nd|rd|th)?"
 # "August 13" / "August 13th": a date, checked against a record's day, not as a number.
 DATE_MENTION = re.compile(rf"\b({'|'.join(m.capitalize() for m in _MONTHS)})\s+(\d{{1,2}}){_ORD}\b")
-_NUMBER = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?:st|nd|rd|th)?(?![\w])")
+# A digit number: "1,400,000" (thousands commas), "2.5", "13th", "1990s", "10pm". Not "S12" or "v2" (a
+# letter or dot right before it), so cite handles and version tags are not numbers.
+_NUMBER = re.compile(r"(?<![\w.])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?[a-zA-Z]*(?![\w])")
 
 
 def _bare_number(n: str) -> str:
-    """"13th" -> "13", "1,400" -> "1400" (a thousands comma is not part of the number)."""
-    return re.sub(r",(?=\d{3}$)", "", re.sub(r"(?:st|nd|rd|th)$", "", n))
+    """One written form per value: "13th" -> "13", "1990s" -> "1990", "1,400" -> "1400", "08" -> "8",
+    "2.50" -> "2.5", "2.0" -> "2". A sign is not part of the match, so "-5" is backed by "5"."""
+    n = re.sub(r"[a-zA-Z]+$", "", n).replace(",", "")
+    whole, _, frac = n.partition(".")
+    whole = str(int(whole)) if whole else "0"
+    frac = frac.rstrip("0")
+    return f"{whole}.{frac}" if frac else whole
+
+
+def date_parts(when: date | None) -> str:
+    """A record's date as the numbers a page may say about it ("2026 11 20"): the prompt shows every
+    record's date, and a page may write it as "2026-11-20", "Nov 20" or "the 20th"."""
+    return f"{when.year} {when.month} {when.day}" if when else ""
 
 
 def sentence_numbers(sentence: str) -> list[str]:
-    """Digit numbers in a sentence, outside "Month D" dates, bare ("13th" -> "13")."""
+    """Digit numbers in a sentence, outside "Month D" dates, bare (``_bare_number``)."""
     return [_bare_number(n) for n in _NUMBER.findall(DATE_MENTION.sub(" ", sentence))]
 
 
 def unbacked_numbers(sentence: str, cited_texts: Sequence[str]) -> list[str]:
-    """The sentence's numbers (``sentence_numbers``) that appear in none of the cited records' raw
-    texts. Digits only: "5" is not backed by "five". Shared by ``check_page`` and the page:origin
-    history eval (issue #3776)."""
+    """The sentence's numbers (``sentence_numbers``) that appear in none of the cited texts. Digits
+    only: "5" is not backed by "five". Shared by ``check_page`` and the page:origin history eval
+    (issue #3776). ``check_page`` adds each cited record's date (``date_parts``) to its texts."""
     pool = {_bare_number(n) for n in _NUMBER.findall(" ".join(cited_texts))}
     return [n for n in sentence_numbers(sentence) if n not in pool]
 
@@ -342,7 +355,7 @@ def check_page(raw: str, handles: Mapping[str, PageSource], *, word_cap: int = W
                 errors.append(f"unresolvable_cite: {handle}")
                 continue
             cited_texts.append(_norm(src.text))
-            raw_texts.append(src.text)
+            raw_texts.append(f"{src.text} {date_parts(src.when)}")
             if src.ref not in refs:
                 refs.append(src.ref)
         if not cites:

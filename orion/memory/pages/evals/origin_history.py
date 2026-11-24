@@ -54,7 +54,7 @@ from zoneinfo import ZoneInfo
 
 from orion.memory.pages.fold import (
     _MONTHS, _ORD, DATE_MENTION as _DATE, EPISODE_MEMORY_KIND, REF_KINDS, SELF_CONCEPT_KIND, STANCE_KIND, PageSource,
-    _norm, render_text, sentence_numbers, unbacked_numbers,
+    _as_date, _norm, date_parts, render_text, sentence_numbers, unbacked_numbers,
 )
 from orion.memory.pages.origin import _LOSS_STATED, PAGE_ORIGIN, check_origin_page, memory_loss_refs
 
@@ -167,8 +167,11 @@ def sentence_support(sentence: str, cited_texts: Mapping[str, str],
     """One sentence vs the records it cites (ref -> record text, found records only). ``cited_refs``:
     how many refs the sentence cites, found or not (default: the found ones)."""
     words = content_words(sentence)
+    cited_dates = list(cited_dates)
     dates, bad_dates = date_claims(sentence, list(cited_texts.values()), cited_dates)
-    numbers, bad_numbers = number_claims(sentence, list(cited_texts.values()))
+    # Same pool as the live check: the cited records' texts plus their dates (fold.date_parts).
+    numbers, bad_numbers = number_claims(
+        sentence, [*cited_texts.values(), *(date_parts(_as_date(d)) for d in cited_dates)])
     per_cite = {ref: len(words & content_words(text)) for ref, text in cited_texts.items()}
     union: set[str] = set()
     for text in cited_texts.values():

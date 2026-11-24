@@ -102,10 +102,9 @@ class CorePageFolder:
         # The Denver date this process last published a page. orion-sql-writer writes the row
         # asynchronously; a slow or rejecting writer must not make the next tick fold again.
         self._folded_on: date | None = None
-        # The last real attempt today was over the cap: the next attempt's prompt says the word count
-        # and asks for a shorter page (fold.retry_note). Replaced by the next real reject (cleared when
-        # that one is not over the cap), cleared on a fold, ignored on another Denver day; dry runs
-        # never set it.
+        # The last real attempt today was over the cap or used a number no cited record holds: the next
+        # attempt's prompt says so (fold.retry_note). Replaced by the next real reject (cleared when that
+        # one has no such error), cleared on a fold, ignored on another Denver day; dry runs never set it.
         self._retry_note: tuple[date, str] | None = None
         # Shared by every page's folder (main.py passes one lock), so the nightly loop and a manual
         # trigger for another page never hold the fold seat at the same time.

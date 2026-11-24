@@ -79,20 +79,27 @@ otherwise:
 - The walked-together link (`together_pairs`, >= 2 shared moving instants) misses
   most dogs: a dog is often a one-frame passage. So clues are read per frame,
   not from `together_story_ids`.
-- Camera clusters are not an answer key (they mix people). The answer key is
-  the crops she confirmed one by one (`vision_person_exemplar`, polarity +1).
+- Answer key: the person album (`vision_person_exemplar` +1, not also -1).
+  That is ~99.8% crops of clusters she named that passed the album purity
+  check, not pictures confirmed one by one. Good enough to measure; not perfect.
+- Unit: a passage (one cluster, one stream, one minute). Frames of one walk
+  past are not independent; per-crop counts overstated the evidence ~2x.
 
 Measured with `services/orion-sql-writer/evals/run_clue_rates_eval.py`
-(2026-11-18..24, 591 street crops, people with >= 20 confirmed crops):
+(2026-11-18..24, 372 street passages; all stroller boxes fall in ~23 minutes,
+so this is about 20 street stroller events in one week):
 
-| clue | street rate | regulars | weight of evidence for regulars |
+| clue | street rate | regulars (>= 10 passages) | weight of evidence |
 |---|---|---|---|
-| stroller | 6.9% | 0-2% | -1.0 to -4.1 (strong: "not them") |
-| dog | 11.8% | 0-20% | -2.0 to +0.5 (weak, person-dependent) |
-| named dog | 3.7% | 0-11% | -2.0 to +1.1 (weak) |
+| stroller | 7.8% | 0-4% | -3.4 for the most-seen regular; -0.5 to -1.4 for the rest (thin) |
+| dog | 11.3% | 0-27% | -1.7 to +0.9 (person-dependent, positive for some) |
+| named dog | 4.0% | 0-17% | -0.7 to +1.5 (weak) |
 
-So: stroller is ready for patch 3. Dog clues are weak per crop; patch 3 should
-sum them per passage, not per crop, and they may stay near zero weight.
+Street includes regulars not named yet, which shrinks weights toward 0.
+
+So: stroller is evidence "not them" in direction, but the size rests on ~20
+events; patch 3 must learn it per person from passages, not take these
+numbers as fixed. Dog clues can point either way and stay low weight.
 Clothes, hair and build still have no answer key: they wait for a labelled
 set, and the SigLIP plan below applies only to them.
 

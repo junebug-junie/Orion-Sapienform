@@ -55,7 +55,7 @@ def test_concerns_tally_reads_each_end_from_the_close():
             {"verb": "predict", "outcome_value": 0.0, "outcome_source": "expired", "outcome_note": ""},
             {"verb": "predict"}, {"verb": "infer", "outcome_value": 1.0}]
     assert rpt.concerns(acts) == {"opened": 6, "open": 1, "settled": 1, "dropped": 1, "faded": 1, "lapsed": 1,
-                                  "expired": 1, "other": 0}
+                                  "displaced": 0, "expired": 1, "other": 0}
 
 
 def test_regulation_counts_changes_and_starts_per_signal_hour_per_arm():

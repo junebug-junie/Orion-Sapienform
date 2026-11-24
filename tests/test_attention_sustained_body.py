@@ -57,7 +57,7 @@ def test_no_live_glossary_node_is_continuous_today(monkeypatch) -> None:
         monkeypatch.setattr(wf, name, {})
     nodes = {e.node for e in cg.load_glossary()["entries"] if e.channel == "prediction_error" and e.node}
     assert {n for n in nodes if wf.node_prediction_error_continuous(n)} == set()
-EXE = "node:substrate.execution"
+EXE = fx.EVENT_BODY  # event-written probe (node:substrate.execution retired 2026-11-24, #3576)
 PER = "node:substrate.perception"
 CAB = "node:substrate.cabinet"
 

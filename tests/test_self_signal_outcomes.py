@@ -8,6 +8,9 @@ import math
 
 import pytest
 
+import importlib.util
+from pathlib import Path
+
 import orion.attention.self_signal_outcomes as sso
 from orion.schemas.self_signal_outcome import (
     OutcomeHourV1,
@@ -19,11 +22,33 @@ from orion.schemas.self_signal_outcome import (
 T0 = datetime(2026, 10, 1, 0, tzinfo=timezone.utc)
 NOW = T0 + timedelta(days=30)
 BIO = "node:prediction.body_joint"  # live body vehicle (biometrics retired 2026-11-18, #3575)
-EXE = "node:substrate.execution"
 CAB = "node:substrate.cabinet"
-# classify_signal_hours judges a level signal by its own week: execution is the last live level body
-# signal (biometrics, the old vehicle, retired 2026-11-18, #3575).
+
+_spec = importlib.util.spec_from_file_location(
+    "self_readings_history_outcomes", Path(__file__).parent / "fixtures" / "self_readings_history.py"
+)
+fx = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fx)
+
+# classify_signal_hours judges a level signal by its own week. No live level body signal is left
+# (biometrics retired 2026-11-18, #3575; execution, the last, 2026-11-24, #3576), so the vehicle is
+# the TEST-ONLY event-written probe in execution's old shape (fixtures/self_readings_history.py).
+EXE = fx.EVENT_BODY
 LEVEL = EXE
+
+# A test-only circular pair in place of the retired execution x turn_failed / response_repair
+# entries: the circular rule is still live code (CIRCULAR_PAIRS is empty today).
+_PROBE_CIRCULAR = {
+    (EXE, "turn_failed"): (
+        "probe surprise shares the harness runs that grade turn_failed "
+        "(orion/attention/self_signal_outcomes.py test-only pair)"
+    ),
+}
+
+
+@pytest.fixture(autouse=True)
+def _probe_glossary(monkeypatch):
+    fx.install_probe_glossary(monkeypatch)
 
 
 def _hours(conds: list[str], events: list[int], *, signal: str = BIO, outcome: str = "turn_failed",
@@ -224,8 +249,9 @@ def test_less_often_is_a_verdict_too() -> None:
     assert a.verdict == "tends_less" and "0.1x as often" in a.clause
 
 
-@pytest.mark.parametrize("pair", sorted(sso.CIRCULAR_PAIRS))
-def test_circular_pairs_never_render_however_strong(pair) -> None:
+@pytest.mark.parametrize("pair", sorted(_PROBE_CIRCULAR))
+def test_circular_pairs_never_render_however_strong(pair, monkeypatch) -> None:
+    monkeypatch.setattr(sso, "CIRCULAR_PAIRS", dict(_PROBE_CIRCULAR))
     signal, outcome = pair
     conds, events = _pattern(n_high=40, n_normal=60, hit_after_high=0.9, hit_after_normal=0.05)
     a = sso.associate(_hours(conds, events, signal=signal, outcome=outcome), signal, outcome,
@@ -236,8 +262,6 @@ def test_circular_pairs_never_render_however_strong(pair) -> None:
 
 
 def test_circular_pairs_cite_real_code() -> None:
-    from pathlib import Path
-
     root = Path(__file__).resolve().parents[1]
     for reason in sso.CIRCULAR_PAIRS.values():
         path = reason.split("(")[1].split()[0]
@@ -392,11 +416,16 @@ def test_bonferroni_widens_the_interval_for_the_whole_family() -> None:
     assert one.verdict == "tends_more" and fam.verdict == "no_clear_difference"
 
 
-def test_associate_all_counts_every_renderable_pair_as_one_family() -> None:
+def test_associate_all_counts_every_renderable_pair_as_one_family(monkeypatch) -> None:
     conds, events = _pattern(n_high=30, n_normal=60, hit_after_high=0.6, hit_after_normal=0.1)
     out = sso.associate_all(_hours(conds, events, signal=EXE), computed_at=NOW)
-    # execution x turn_failed / response_repair are circular: one renderable pair (rpc_timeout).
-    assert {a.n_comparisons for a in out} == {1}
+    # No circular pair is live: every outcome of the one signal is renderable, one family.
+    n_all = {a.n_comparisons for a in out}
+    assert len(n_all) == 1
+    # A circular pair leaves the family: one fewer comparison.
+    monkeypatch.setattr(sso, "CIRCULAR_PAIRS", dict(_PROBE_CIRCULAR))
+    out2 = sso.associate_all(_hours(conds, events, signal=EXE), computed_at=NOW)
+    assert {a.n_comparisons for a in out2} == {next(iter(n_all)) - 1}
 
 
 def test_busy_next_hours_alone_do_not_make_an_association() -> None:
@@ -441,7 +470,7 @@ def test_never_is_said_plainly_not_as_zero_x() -> None:
 
 def test_one_event_on_the_poll_grid_is_not_a_high_hour() -> None:
     """The seam drops an event at age >= 300 s: one hot event must not fill 11 polls (330 s)."""
-    chat = "node:substrate.execution"   # an event-written body signal (chat, then codebase, both retired)
+    chat = EXE   # an event-written body signal (chat, codebase, then execution, all retired; now a probe)
     h = T0 + timedelta(days=8)
     hist = [(T0 + timedelta(minutes=15 * k), 0.0 if k % 3 else 0.1 + (k % 9) / 10.0)
             for k in range(int(8 * 24 * 4))]
@@ -479,12 +508,13 @@ def test_associate_all_skips_a_retired_signal_and_its_comparisons() -> None:
     interval (25 comparisons instead of 13)."""
     conds, events = _pattern(n_high=30, n_normal=60, hit_after_high=0.6, hit_after_normal=0.1)
     out = sso.associate_all(_two_signal_hours(conds, events, other=RETIRED_SIG), computed_at=NOW)
+    # 3 outcomes, none circular since CIRCULAR_PAIRS emptied (execution retired 2026-11-24, #3576).
     assert {a.signal_id for a in out} == {EXE}
-    assert {a.n_comparisons for a in out} == {1}
+    assert {a.n_comparisons for a in out} == {3}
     # Control: a live second signal is still associated and still counts.
     live = sso.associate_all(_two_signal_hours(conds, events, other=BIO), computed_at=NOW)
     assert {a.signal_id for a in live} == {EXE, BIO}
-    assert {a.n_comparisons for a in live} == {4}
+    assert {a.n_comparisons for a in live} == {6}
 
 
 def test_associate_all_skips_a_signal_that_became_a_world_source() -> None:
@@ -495,7 +525,7 @@ def test_associate_all_skips_a_signal_that_became_a_world_source() -> None:
         _two_signal_hours(conds, events, other="node:substrate.perception_walkway"), computed_at=NOW
     )
     assert {a.signal_id for a in out} == {EXE}
-    assert {a.n_comparisons for a in out} == {1}
+    assert {a.n_comparisons for a in out} == {3}
 
 
 def test_held_rows_of_a_retired_signal_never_render() -> None:

@@ -38,6 +38,7 @@ def database(monkeypatch):
             "manual_migration_episode_memory_v1.sql",
             "manual_migration_reverie_visual_chain.sql",
             "manual_migration_reverie_visual_attempt.sql",
+            "manual_migration_reverie_question.sql",
         ):
             conn.execute(text((root / "services/orion-sql-db" / filename).read_text()))
     monkeypatch.setattr(store, "_get_engine", lambda: engine)
@@ -313,35 +314,32 @@ async def test_http_thermal_retry_production_and_replay_keep_identity(database, 
     assert store.load_visual_activity().last_success_chain_id == result['chain_id']
 
 
-def test_settled_source_identity_is_preserved_and_full_thought_revalidated(database):
+def test_painting_reverie_seed_is_the_newest_accepted_reverie_question(database):
+    """Kill means kill (review of #3814): the painting's reverie seed reads reverie_question, never the
+    retired narration table. Refused and none rows are never a seed; age and char limits hold."""
     store, engine = database
-    from orion.schemas.reverie import SpontaneousThoughtV1
-    from orion.schemas.thought import CoalitionSnapshotV1
     now = datetime.now(timezone.utc)
-    coalition = CoalitionSnapshotV1(attended_node_ids=['real-node'], open_loop_ids=['real-loop'],
-        selected_open_loop_id='real-loop', generated_at=now)
-    thought = SpontaneousThoughtV1(thought_id='real-thought', correlation_id='real-correlation',
-        created_at=now, coalition=coalition, interpretation='A grounded thought about the real mesh and its changing connections.',
-        evidence_refs=['real-loop'])
+    insert = text(
+        "INSERT INTO reverie_question (question_id, thread_id, thread_key, seed_kind, question, none_reason, "
+        "refused_reason, refs, correlation_id, created_at) VALUES (:id, :th, 'k', 'lost_bet', :q, :none, :ref, "
+        ":refs, :corr, :at)")
     with engine.begin() as conn:
-        conn.execute(text('CREATE TABLE substrate_reverie_thought (thought_id text, created_at timestamptz, interpretation text, thought_json jsonb)'))
-        conn.execute(text('CREATE TABLE substrate_reverie_chain (chain_id text, created_at timestamptz, chain_json jsonb)'))
-        conn.execute(text('INSERT INTO substrate_reverie_thought VALUES (:id,:at,:interpretation,CAST(:payload AS jsonb))'),
-            {'id':thought.thought_id,'at':now,'interpretation':thought.interpretation,'payload':thought.model_dump_json()})
-    assert store.load_latest_reverie_interpretation(max_age_sec=900) is None
+        conn.execute(insert, {"id": "refused", "th": "t0", "q": "Why does the substrate win?", "none": None,
+                              "ref": "machinery_words", "refs": [], "corr": None, "at": now})
+        conn.execute(insert, {"id": "none", "th": "t0", "q": None, "none": "too thin", "ref": None, "refs": [],
+                              "corr": None, "at": now})
+    assert store.load_latest_reverie_question_context(max_age_sec=86400) is None
     with engine.begin() as conn:
-        conn.execute(text('INSERT INTO substrate_reverie_chain VALUES (:id,:at,CAST(:payload AS jsonb))'),
-            {'id':'verified-settled-chain','at':now,'payload':'{"thought_ids":["real-thought"]}'})
-    context = store.load_latest_reverie_interpretation(max_age_sec=900, char_limit=18)
-    assert context.thought_id == 'real-thought'
-    assert context.text_chain_id == 'verified-settled-chain'
-    assert context.thought_correlation_id == 'real-correlation'
-    assert context.coalition == coalition
-    assert len(context.text) <= 18
-    # Original valid thought is checked before shortening; short context remains valid.
+        conn.execute(insert, {"id": "q1", "th": "t1", "q": "Which turns do I call short that run long?",
+                              "none": None, "ref": None, "refs": ["self_bet_bin:f:0.1-0.2"], "corr": "c1",
+                              "at": now - timedelta(minutes=5)})
+    context = store.load_latest_reverie_question_context(max_age_sec=86400, char_limit=18)
+    assert context.thought_id == "reverie_question:q1" and context.text_chain_id == "reverie_thread:t1"
+    assert context.thought_correlation_id == "c1" and context.evidence_refs == ["self_bet_bin:f:0.1-0.2"]
+    assert len(context.text) <= 19 and context.coalition.attended_node_ids == []
     with engine.begin() as conn:
-        conn.execute(text("UPDATE substrate_reverie_thought SET created_at=now()-interval '2 days'"))
-    assert store.load_latest_reverie_interpretation(max_age_sec=900) is None
+        conn.execute(text("UPDATE reverie_question SET created_at = now() - interval '2 days'"))
+    assert store.load_latest_reverie_question_context(max_age_sec=86400) is None
 
 
 @pytest.mark.asyncio
@@ -356,7 +354,7 @@ async def test_only_selected_source_is_credited_and_store_restores_selection(dat
             selected_open_loop_id='loop', generated_at=NOW), evidence_refs=['loop'])
     rotation = [0]
     monkeypatch.setattr(vc, 'load_latest_visual_chain_continuity_state', lambda **kw: ('previous scene', 0, rotation[0], 'prior-chain-id'))
-    monkeypatch.setattr(vc, 'load_latest_reverie_interpretation', lambda **kw: context)
+    monkeypatch.setattr(vc, 'load_latest_reverie_question_context', lambda **kw: context)
     monkeypatch.setattr(vc, 'load_latest_self_study_reflection', lambda **kw: VisualSourceV1(source_id='entry-id', text='Observed traffic changed.'))
     monkeypatch.setattr(vc, 'load_episode_memory_seed', lambda **kw: VisualSourceV1(source_id='episode-memory-id', text='A reviewed memory.'))
     monkeypatch.setattr(vc.settings, 'visual_chain_interpretation_enabled', False)

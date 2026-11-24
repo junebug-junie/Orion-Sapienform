@@ -24,7 +24,14 @@ _spec = importlib.util.spec_from_file_location(
 )
 fx = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fx)  # type: ignore[union-attr]
-_BLOCK = "- surprise in how my task execution is going: 10/10 for me (now 1.00; higher than 97% of my last 7 days) [pe:execution@2026-10-14T03:29:30Z]\nNothing else I can read is unusual right now."
+
+
+# node:substrate.execution, the event-written body vehicle here, was retired 2026-11-24 (#3576).
+# Its shape lives on as the TEST-ONLY probe fx.EVENT_BODY, which needs the probe glossary.
+@pytest.fixture(autouse=True)
+def _probe_glossary(monkeypatch):
+    fx.install_probe_glossary(monkeypatch)
+_BLOCK = "- probe_event: 10/10 for me (now 1.00; higher than 97% of my last 7 days) [pe:probe_event@2026-10-14T03:29:30Z]\nNothing else I can read is unusual right now."
 _COLORING = {"attention_frontier": [{"label": "x", "summary": "y", "score": 0.7}], "reflective_themes": [],
              "curiosity_threads": [], "self_relevance": None, "juniper_relevance": None,
              "identity_salience": None}
@@ -118,11 +125,9 @@ def test_context_carries_readings_and_estimate_label() -> None:
 def test_stance_prompt_renders_block_and_labels_mind_numbers() -> None:
     out = _render(_STANCE.read_text(), **_STANCE_BASE, self_readings=_BLOCK, mind_coloring=_COLORING,
                   self_readings_label_estimates=True)
-    assert "MY BODY RIGHT NOW" in out and "[pe:execution@2026-10-14T03:29:30Z]" in out
+    assert "MY BODY RIGHT NOW" in out and "[pe:probe_event@2026-10-14T03:29:30Z]" in out
     assert "the task wins" in out and "not evidence_refs" in out
     assert "Oríon's own estimates from Mind, not measurements" in out
-
-
 
 
 
@@ -177,7 +182,7 @@ async def test_real_rows_render_a_block(monkeypatch) -> None:
     monkeypatch.setattr(cue_mod, "fetch_since", lambda since: [r for r in rows if r[1] >= since])
     monkeypatch.setattr(cue_mod.settings, "self_readings_fetch_timeout_sec", 5.0)
     block = await cue_mod.build_self_readings_block("c-1", purpose="stance", enabled=True, now=fx.NOW)
-    assert "[pe:execution@2026-10-14T03:29:30Z]" in block.text
+    assert "[pe:probe_event@2026-10-14T03:29:30Z]" in block.text
     assert len(block.text) <= 600
 
 
@@ -197,7 +202,7 @@ class _CapturingClient:
 async def test_run_stance_react_passes_the_block(monkeypatch) -> None:
     async def fixed(corr, *, purpose, enabled, now=None):
         assert purpose == "stance" and enabled is True
-        return SelfReadingsBlockV1(rendered_at=fx.NOW, text=_BLOCK, shown=["node:substrate.execution"])
+        return SelfReadingsBlockV1(rendered_at=fx.NOW, text=_BLOCK, shown=[fx.EVENT_BODY])
 
     monkeypatch.setitem(run_stance_react.__globals__, "build_self_readings_block", fixed)
     client = _CapturingClient()
@@ -233,7 +238,7 @@ def test_importing_the_cue_does_not_load_substrate() -> None:
 # --- "tends to" clauses (spec section E) ---------------------------------------------------------
 
 _ASSOC_ROW = {
-    "association_id": "ssa-0123456789", "computed_at": fx.NOW, "signal_id": "node:substrate.execution",
+    "association_id": "ssa-0123456789", "computed_at": fx.NOW, "signal_id": fx.EVENT_BODY,
     "outcome": "rpc_timeout", "window_start": None, "window_end": None, "n_high": 42, "events_high": 13,
     "n_normal": 120, "events_normal": 12, "rate_high": 13 / 42, "rate_normal": 0.1, "ratio": 3.0952,
     "ci_low": 1.6, "ci_high": 6.0, "ci_method": "katz_log_rr_95", "min_hours": 24, "verdict": "tends_more",
@@ -274,7 +279,7 @@ async def _block_with(monkeypatch, *, enabled: bool, assoc_rows):
 @pytest.mark.asyncio
 async def test_flag_on_renders_the_cited_clause(monkeypatch) -> None:
     block = await _block_with(monkeypatch, enabled=True, assoc_rows=_held(_ASSOC_ROW))
-    assert "[pe:execution@2026-10-14T03:29:30Z]; when this is high" in block.text
+    assert "[pe:probe_event@2026-10-14T03:29:30Z]; when this is high" in block.text
     assert "[assoc:ssa-0123456789]" in block.text
 
 
@@ -398,4 +403,4 @@ def test_a_stale_index_never_reads_on_the_callers_thread(monkeypatch) -> None:
             break
         time.sleep(0.02)
     got = cue_mod._associations(fx.NOW)
-    assert got is not None and got["node:substrate.execution"].association_id == "ssa-0123456789"
+    assert got is not None and got[fx.EVENT_BODY].association_id == "ssa-0123456789"

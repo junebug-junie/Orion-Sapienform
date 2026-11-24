@@ -86,7 +86,7 @@
       title: "1 · Continuity + context inputs",
       desc:
         "The previous run's own caption (reverie_visual_chain.prior_description), Orion's own " +
-        "most recent real reverie-thought interpretation (context_text), a real quantified " +
+        "newest accepted reverie question (context_text), a real quantified " +
         "self-study observation (self_study_text), a governed episode memory (memory_text), " +
         "how many consecutive runs have used continuity so far (continuity_streak), and which " +
         "context-seed's turn it is next (context_slot_rotation).",
@@ -94,7 +94,7 @@
         'Fixed seed only when NONE of prior_description/context_text/self_study_text/memory_text ' +
         'exist (fresh install, no history yet): "a calm orion, soft abstract light, dreaming". ' +
         "Every later run reads all these from Postgres, concurrently.",
-      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_interpretation, load_latest_self_study_reflection, load_episode_memory_seed",
+      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_question_context, load_latest_self_study_reflection, load_episode_memory_seed",
     },
     {
       id: "continuity-cap",
@@ -122,7 +122,7 @@
         "observing, or remembering.",
       detail:
         "Patch 3 (shipped): a deliberately narrow first context-seed slice -- Orion's own " +
-        "reverie-thought interpretation, already surfaced by this tab's Text sub-view (no new " +
+        "reverie question (since 2026-11-24), already surfaced by this tab's Questions sub-view (no new " +
         "privacy surface). Patch 5 (shipped): a second, richer context-seed from the self-study " +
         "analysis system's real quantified self-observation. Patch 6 (shipped): a third, from " +
         "the Recall system's memory_crystallizations table -- real shared-life content, " +

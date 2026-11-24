@@ -11,6 +11,19 @@ from orion.attention.field_attention.candidate_precision_weighted import (
 from orion.attention.field_attention.policy import load_attention_policy
 from orion.schemas.field_state import FieldStateV1
 
+import pytest
+
+from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
+
+# node:substrate.execution, the last native target, was retired 2026-11-24 (#3576): the real map
+# is empty. The builder is tested on a test-only native target put in the shared map per test.
+EXEC_PROBE = "node:substrate.probe_event"
+
+
+@pytest.fixture(autouse=True)
+def _exec_probe_native(monkeypatch):
+    monkeypatch.setitem(PREDICTION_ERROR_NATIVE_TARGETS, EXEC_PROBE, "probe_event")
+
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_attention_policy(REPO / "config" / "attention" / "field_attention_policy.v1.yaml")
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
@@ -32,7 +45,7 @@ def _synthetic_field() -> FieldStateV1:
                 "reasoning_load": 0.35,
                 "availability": 1.0,
             },
-            "node:substrate.execution": {"prediction_error": 0.9},
+            EXEC_PROBE: {"prediction_error": 0.9},
         },
         capability_vectors={
             "capability:orchestration": {
@@ -58,7 +71,7 @@ def _baselines() -> dict[str, PrecisionEwmaBaseline]:
     # Calm history (small, real variance) then a real spike on the current
     # tick -- a genuine, non-degenerate precision-weighted-salience case.
     return {
-        "node:substrate.execution": _baseline([0.05, 0.06, 0.04, 0.05, 0.9]),
+        EXEC_PROBE: _baseline([0.05, 0.06, 0.04, 0.05, 0.9]),
     }
 
 
@@ -70,7 +83,7 @@ def test_builder_selects_only_prediction_error_native_targets() -> None:
     # The physical host node (node:athena) has no real prediction-error
     # history and is NOT a candidate-A target -- it must not appear, even
     # though its old hand-weighted vector would have scored it highly.
-    assert node_ids == {"node:substrate.execution"}
+    assert node_ids == {EXEC_PROBE}
     # Capability attention is killed outright -- always empty.
     assert frame.capability_targets == []
 
@@ -88,7 +101,7 @@ def test_dominant_channels_present() -> None:
     frame = build_attention_frame(
         field=_synthetic_field(), policy=POLICY, prediction_error_baselines=_baselines(), now=NOW
     )
-    execution = next(t for t in frame.node_targets if t.target_id == "node:substrate.execution")
+    execution = next(t for t in frame.node_targets if t.target_id == EXEC_PROBE)
     assert "prediction_error" in execution.dominant_channels
 
 

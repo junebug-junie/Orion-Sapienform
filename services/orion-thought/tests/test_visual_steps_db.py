@@ -57,7 +57,7 @@ def db(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "visual_chain_enabled", False)
     monkeypatch.setattr(settings, "visual_chain_interpretation_enabled", False)
     monkeypatch.setattr(settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real thought")
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: "a real thought")
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
     renders = []
@@ -154,7 +154,7 @@ async def test_full_run_writes_one_production_row_keyed_by_attempt(db):
 async def test_replayed_prepare_keeps_the_frozen_plan(db, monkeypatch):
     first = await _step(db, "prepare")
     frozen = _attempt(db.engine, first.attempt_id)["stage_json"]["plan"]
-    monkeypatch.setattr(db.vc, "load_latest_reverie_interpretation", lambda **kw: "a different thought")
+    monkeypatch.setattr(db.vc, "load_latest_reverie_question_context", lambda **kw: "a different thought")
     replay = await _step(db, "prepare", at=NOW + timedelta(minutes=5))
     assert replay.attempt_id == first.attempt_id
     assert _attempt(db.engine, first.attempt_id)["stage_json"]["plan"] == frozen

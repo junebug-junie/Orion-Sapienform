@@ -24,11 +24,12 @@ T0 = datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc)
 
 
 def test_staleness_replay_moves_top1_off_a_stale_reading(tmp_path, monkeypatch) -> None:
-    # The replay reads native targets only; execution is the last live one since biometrics was retired
-    # 2026-11-18 (#3575), so a test-only native target stands in for the stale competitor.
+    # The replay reads native targets only, and none is live since execution was retired 2026-11-24
+    # (#3576; biometrics 2026-11-18, #3575), so two test-only native targets stand in.
     from orion.attention.field_attention import selectors
 
     monkeypatch.setitem(selectors.PREDICTION_ERROR_NATIVE_TARGETS, "node:substrate.probe", "probe")
+    monkeypatch.setitem(selectors.PREDICTION_ERROR_NATIVE_TARGETS, "node:substrate.probe_event", "probe_event")
     rows = []
     for i in range(3):
         gen = T0 + timedelta(minutes=i)
@@ -37,14 +38,14 @@ def test_staleness_replay_moves_top1_off_a_stale_reading(tmp_path, monkeypatch) 
             f"{(T0 - timedelta(hours=1)).isoformat()}"
         )
         rows.append(
-            f"{gen.isoformat()}\tnode:substrate.execution\t0.3\tprecision-weighted ... (current error 0.3000, precision 10.00, n=300)\t"
+            f"{gen.isoformat()}\tnode:substrate.probe_event\t0.3\tprecision-weighted ... (current error 0.3000, precision 10.00, n=300)\t"
             f"{gen.isoformat()}"
         )
     path = tmp_path / "frames.tsv"
     path.write_text("\n".join(rows) + "\n")
     r = fade.replay(fade.load(path))
     assert r["before"]["node:substrate.probe"] == 3 and r["before_stale"]["node:substrate.probe"] == 3
-    assert r["after"]["node:substrate.execution"] == 3 and r["changed"] == 3
+    assert r["after"]["node:substrate.probe_event"] == 3 and r["changed"] == 3
 
 
 def _event(i: int, start: datetime, summary: str, role: str = "llm_inference_window_observed") -> dict:

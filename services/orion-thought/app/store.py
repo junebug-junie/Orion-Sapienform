@@ -1,14 +1,13 @@
-"""Reverie thought persistence (Phase A store).
+"""orion-thought's Postgres store: reverie questions, the visual (painting) chain, and its context seeds.
 
-Best-effort writer for `SpontaneousThoughtV1` into `substrate_reverie_thought`
-(migration `manual_migration_substrate_reverie_thought.sql`). Backs the hub
-`_reverie_section` panel. Uses a direct sqlalchemy DSN (see `_database_url`) —
-never the heavy `orion.substrate` package this thin service does not ship.
+Reveries that ask (2026-11-24) write one `reverie_question` row per reverie (migration
+`manual_migration_reverie_question.sql`); the retired narration tables (`substrate_reverie_*`) are no longer
+read or written here. Uses a direct sqlalchemy DSN (see `_database_url`) -- never the heavy `orion.substrate`
+package this thin service does not ship.
 
-Discipline: persistence is best-effort. A DB failure degrades to a logged miss
-(returns False) and never breaks the reverie tick. Idempotent on `thought_id`.
+Discipline: writes are best-effort. A DB failure degrades to a logged miss (returns False) and never breaks
+the reverie poll or a painting run.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 logger = logging.getLogger("orion-thought.store")
 
 if TYPE_CHECKING:
-    from orion.schemas.reverie import SpontaneousThoughtV1
+    from orion.schemas.reverie_visual import ReverieVisualContextV1
 
 _engine = None
 # Guards the check-then-create-then-assign below. Without it, two threads
@@ -511,169 +510,64 @@ def load_latest_visual_chain_continuity_state(*, with_identity: bool = False):
 # than hardcoding a second, driftable 240.
 MAX_REVERIE_CONTEXT_CHARS = 240
 
-# How many recent chain-linked candidates to pull before Python-side
-# hollow re-validation (below) picks the first real one. Not 1: the SQL
-# WHERE clause only filters on interpretation<>'' and chain-linkage -- the
-# hollow re-check happens after fetch (review finding), so a small batch is
-# needed in case the single most-recent candidate turns out stale-hollow.
-_REVERIE_CONTEXT_CANDIDATE_LIMIT = 10
-
-
-def load_latest_reverie_interpretation(
+def load_latest_reverie_question_context(
     *, char_limit: int | None = None, max_age_sec: float | None = None
-) -> ReverieVisualContextV1 | None:
-    """Most recent real (non-hollow, non-empty) text-chain thought's
-    interpretation, already linked into a SETTLED chain -- the visual
-    chain's context-seed (design doc §8: "which specific recent-activity/
-    chat/dream sources feed a step", Patch 3).
+) -> "ReverieVisualContextV1 | None":
+    """The painting's reverie context-seed: the newest ACCEPTED reverie question (reveries that ask,
+    2026-11-24; replaces the retired narrated-thought seed, which read substrate_reverie_thought).
 
-    `char_limit`: overrides MAX_REVERIE_CONTEXT_CHARS when given (visual_chain
-    passes settings.reverie_context_char_limit, env-configurable like every
-    other tunable in that file -- this was a bare module constant until now).
+    Only a question code let through is used (not refused, not a none_reason), word-boundary truncated to
+    ``char_limit`` (default MAX_REVERIE_CONTEXT_CHARS) and, with ``max_age_sec``, no older than that. The
+    question is already shown on Hub's reverie tab, so this opens no new privacy surface.
 
-    `max_age_sec`: if given, only candidates within this age are considered
-    (added review finding, post-Patch-3): without it, a stalled or disabled
-    text-reverie worker (chain.py) leaves the same old thought answering
-    every future call, and it keeps being woven into the visual prompt and
-    shown in the cockpit as "Orion is currently thinking" long after it
-    stopped being current -- the fetch LIMIT above bounds candidate COUNT,
-    not age, so this is a real gap the count bound alone doesn't close. This
-    only bounds THIS function's callers (currently just visual_chain.py) --
-    it does NOT bound the Hub's separate Text sub-view (`reverie_routes.py`
-    ::`text_recent`), which has no staleness filter of its own; nor does it
-    give any consumer a way to tell "producer genuinely quiet" from
-    "producer stalled/dead" -- both look identical here as "no fresh row",
-    since there is no liveness/heartbeat signal from chain.py itself to
-    check instead (a real gap, not fixed by this patch).
-
-    Both `char_limit`/`max_age_sec` default to None, preserving the exact
-    prior unbounded/uncapped behavior for any OTHER caller of this function
-    that doesn't pass them (review finding, deliberate choice not an
-    oversight: this docstring already names `_project_reverie_glimpse` as
-    a consumer of this same underlying table via a different code path
-    (`felt_state_reader.py`'s own reader, not this function) -- changing
-    this function's own default behavior for hypothetical future callers
-    of THIS specific function, rather than leaving it opt-in, is a bigger
-    change than this patch's scope; every current, real caller (just
-    visual_chain.py) does pass both).
-
-    Deliberately the text chain's own narration, not raw chat: it is already
-    the summary layer the coalition-grounding + hollow guard
-    (orion/schemas/reverie.py's `SpontaneousThoughtV1.is_hollow`) produce
-    before a row is ever written. The privacy claim this rests on --
-    "already reaches the same Hub Reverie tab" (`reverie_routes.py`'s
-    `text_recent`) -- only holds for a thought that is actually reachable
-    there, which requires its ENCLOSING CHAIN to have settled and persisted
-    (the retired chain writer, called once at chain end, not per
-    thought). `substrate_reverie_thought` rows are written immediately on
-    generation (`reverie.py::run_reverie_once`), well before that -- and if
-    `ORION_REVERIE_CHAIN_ENABLED=false` while `ORION_REVERIE_ENABLED=true`
-    (independent settings.py flags), a thought's chain never settles at all.
-    Reading the thought table directly would source content `text_recent`
-    might never surface, contradicting the "no new privacy surface" claim
-    (review finding). The `EXISTS` clause below closes that gap: a thought
-    only qualifies once some settled `substrate_reverie_chain` row's
-    `chain_json.thought_ids` already lists it -- the exact set `text_recent`
-    can already show, no earlier and no wider.
-
-    Widening the source set to raw chat/dream content is a separate, later
-    change that must redo this same privacy check, not something this
-    function does.
-
-    Hollow re-validation happens in Python, not SQL (review finding): a raw
-    `thought_json->>'hollow'` cast trusts a flag stamped at write time, which
-    `services/orion-cortex-exec/app/chat_stance.py::_project_reverie_glimpse`
-    -- the other real consumer of this same table -- explicitly does NOT do,
-    re-deriving via `SpontaneousThoughtV1.is_hollow()` because a stored flag
-    can go stale if the hollow-guard logic changes after the row was
-    written. Same discipline here: gate on BOTH the stored flag and a fresh
-    `is_hollow()` re-check.
-
-    Read-only, best-effort: None on any error, empty table, a table with no
-    chain-linked/non-hollow rows, or a row that no longer validates as
-    `SpontaneousThoughtV1` -- degrades to the fixed seed prompt exactly like
-    an absent prior_description does (visual_chain.build_visual_prompt).
-    """
+    Mapped onto the existing ReverieVisualContextV1 shape (a forbid model stored in chain_json) without a
+    schema change: ``thought_id`` = ``reverie_question:<id>``, ``text_chain_id`` = ``reverie_thread:<thread_id>``,
+    ``coalition`` = an empty snapshot (a question has no coalition), ``evidence_refs`` = the question's seed
+    refs. The prefixes make a question seed unmistakable from an old narrated-thought seed in history.
+    Read-only, best-effort: None on any error or when there is no fresh accepted question."""
     try:
         from sqlalchemy import text
 
         from orion.cognition.compactor.truncate import truncate_at_word_boundary
-        from orion.schemas.reverie import SpontaneousThoughtV1
         from orion.schemas.reverie_visual import ReverieVisualContextV1
+        from orion.schemas.thought import CoalitionSnapshotV1
 
         where_sql = (
-            "t.interpretation <> '' "
-            "AND EXISTS ("
-            "  SELECT 1 FROM substrate_reverie_chain c "
-            "  WHERE c.chain_json -> 'thought_ids' ? t.thought_id"
-            ")"
+            "question IS NOT NULL AND btrim(question) <> '' AND refused_reason IS NULL AND none_reason IS NULL"
         )
-        params: dict[str, Any] = {"limit": _REVERIE_CONTEXT_CANDIDATE_LIMIT}
+        params: dict[str, Any] = {}
         if max_age_sec is not None:
-            # `now() - make_interval(secs => :x)` freshness idiom (review
-            # finding: at least 6 other repo call sites already hand-roll
-            # this same shape -- vision_reader.py, orion-hub's
-            # curiosity_hint.py/chat_history_rehydrate.py/
-            # tension_outreach_trigger.py, orion-sql-writer's
-            # vision_object_permanence.py, orion-field-digester's store.py).
-            # Not extracted into a shared helper here: doing that well means
-            # touching multiple services' modules, a bigger change than this
-            # small additive patch's scope -- a real repo-wide cleanup
-            # candidate, not something to half-do as a side effect of one
-            # new call site.
-            where_sql += " AND t.created_at > now() - make_interval(secs => :max_age_sec)"
+            where_sql += " AND created_at > now() - make_interval(secs => :max_age_sec)"
             params["max_age_sec"] = float(max_age_sec)
-
-        engine = _get_engine()
-        with engine.connect() as conn:
-            rows = (
-                conn.execute(
-                    text(
-                        "SELECT thought_json, (SELECT c.chain_id FROM substrate_reverie_chain c "
-                        "WHERE c.chain_json -> 'thought_ids' ? t.thought_id "
-                        "ORDER BY c.created_at DESC, c.chain_id LIMIT 1) AS text_chain_id "
-                        "FROM substrate_reverie_thought t "
-                        f"WHERE {where_sql} "
-                        "ORDER BY t.created_at DESC LIMIT :limit"
-                    ),
-                    params,
-                )
-                .mappings()
-                .all()
-            )
-        for row in rows:
-            payload = row.get("thought_json")
-            if not isinstance(payload, dict):
-                continue
-            try:
-                thought = SpontaneousThoughtV1.model_validate(payload)
-            except Exception:
-                continue
-            if thought.hollow or thought.is_hollow():
-                continue
-            value = thought.interpretation.strip()
-            if value:
-                # Word-boundary truncation (review finding), not a raw slice
-                # -- same helper chat_history_compactor/github_compactor use
-                # for the identical "cap free-form narration for a
-                # downstream reader" problem, so a 240-char cut degrades to
-                # a coherent prefix instead of a mid-word fragment baked
-                # into the diffusion prompt and rendered verbatim in the Hub
-                # Reverie tab.
-                limit_chars = MAX_REVERIE_CONTEXT_CHARS if char_limit is None else char_limit
-                trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
-                if not trimmed or not row.get("text_chain_id"):
-                    continue
-                return ReverieVisualContextV1(
-                    text=trimmed, thought_id=thought.thought_id,
-                    thought_correlation_id=thought.correlation_id,
-                    thought_created_at=thought.created_at,
-                    text_chain_id=row["text_chain_id"], coalition=thought.coalition,
-                    evidence_refs=thought.evidence_refs,
-                )
-        return None
+        with _get_engine().connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT question_id, thread_id, question, refs, correlation_id, created_at "
+                    f"FROM reverie_question WHERE {where_sql} ORDER BY created_at DESC LIMIT 1"
+                ),
+                params,
+            ).mappings().first()
+        if not row:
+            return None
+        limit_chars = MAX_REVERIE_CONTEXT_CHARS if char_limit is None else char_limit
+        trimmed, _truncated = truncate_at_word_boundary(str(row["question"]).strip(), limit_chars)
+        if not trimmed:
+            return None
+        created = row["created_at"]
+        if isinstance(created, datetime) and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return ReverieVisualContextV1(
+            text=trimmed,
+            thought_id=f"reverie_question:{row['question_id']}",
+            thought_correlation_id=str(row.get("correlation_id") or row["question_id"]),
+            thought_created_at=created,
+            text_chain_id=f"reverie_thread:{row['thread_id']}",
+            coalition=CoalitionSnapshotV1(attended_node_ids=[], selected_open_loop_id=None, open_loop_ids=[],
+                                          generated_at=created),
+            evidence_refs=[str(r) for r in (row.get("refs") or [])][:50],
+        )
     except Exception as exc:
-        logger.debug("reverie context-seed load failed: %s", exc)
+        logger.debug("reverie question context-seed load failed: %s", exc)
         return None
 
 
@@ -722,13 +616,13 @@ def load_latest_self_study_reflection(
     *, char_limit: int | None = None, max_age_sec: float | None = None, with_identity: bool = False
 ) -> str | None:
     """Most recent self-study answer -- a second, richer context-seed for the visual chain
-    alongside `load_latest_reverie_interpretation` (design doc §16).
+    alongside `load_latest_reverie_question_context` (design doc §16).
 
     Source: curiosity's self-inquiry answer of record, the newest `self_concept_history` row with
     `produced_by = 'curiosity_self_inquiry'` (see the comment above for why this, and why it moved
     from the retired analysis rows). `with_identity` returns its `entry_id` as the source id.
 
-    `char_limit`/`max_age_sec` follow `load_latest_reverie_interpretation`'s own contract
+    `char_limit`/`max_age_sec` follow `load_latest_reverie_question_context`'s own contract
     (None = MAX_SELF_STUDY_CONTEXT_CHARS / unbounded). The visual chain passes
     `settings.self_study_context_max_age_sec`; the `created_at` index keeps the read under 1 ms
     (live EXPLAIN ANALYZE, 2026-11-07: 0.31 ms over 8,913 rows).
@@ -1554,12 +1448,13 @@ def _rows(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]
 def load_quiet_gate_rows(stretch_start: datetime | None) -> dict[str, Any]:
     """The broadcast's last winner and newest tick, and how many reverie_question rows exist since the
     stretch began and in the last 24 h. ``stretch_start`` None = read the winner first (two reads)."""
-    from .reverie_seeds import LAST_WINNER_SQL, LATEST_TICK_SQL, stretch_start_for
+    from .reverie_seeds import LAST_WINNER_SQL, LATEST_TICK_SQL, OLDEST_TICK_SQL, stretch_start_for
 
     last_winner = (_rows(LAST_WINNER_SQL) or [{}])[0].get("last_winner_at")
     latest_tick = (_rows(LATEST_TICK_SQL) or [{}])[0].get("latest_tick_at")
+    oldest_tick = (_rows(OLDEST_TICK_SQL) or [{}])[0].get("oldest_tick_at") if last_winner is None else None
     now = datetime.now(timezone.utc)
-    start = stretch_start or stretch_start_for(now, last_winner)
+    start = stretch_start or stretch_start_for(now, last_winner, oldest_tick)
     counts = _rows(
         "SELECT count(*) FILTER (WHERE created_at >= :start) AS since_stretch, "
         "count(*) FILTER (WHERE created_at > now() - interval '24 hours') AS last_24h "
@@ -1569,6 +1464,7 @@ def load_quiet_gate_rows(stretch_start: datetime | None) -> dict[str, Any]:
     return {
         "last_winner_at": last_winner,
         "latest_tick_at": latest_tick,
+        "oldest_tick_at": oldest_tick,
         "rows_since_stretch": int(counts.get("since_stretch") or 0),
         "rows_last_24h": int(counts.get("last_24h") or 0),
     }

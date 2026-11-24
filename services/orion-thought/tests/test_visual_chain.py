@@ -347,7 +347,7 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
 
@@ -412,7 +412,7 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: ("old description", 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
 
@@ -455,7 +455,7 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: ("old description", 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
     monkeypatch.setattr(
@@ -505,7 +505,7 @@ async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(
-        visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
+        visual_chain, "load_latest_reverie_question_context", lambda **kw: "a real reverie thought"
     )
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
@@ -548,7 +548,7 @@ async def test_run_visual_chain_once_generation_failure_records_context_text(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(
-        visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
+        visual_chain, "load_latest_reverie_question_context", lambda **kw: "a real reverie thought"
     )
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
@@ -593,7 +593,7 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
 
@@ -650,7 +650,7 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain.settings, "visual_chain_continuity_max_runs", 2)
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: "context")
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: "context")
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
 
@@ -734,7 +734,7 @@ async def test_continuity_reset_survives_a_failed_generation(tmp_path, monkeypat
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
     # streak already AT the cap -- this run must reset.
@@ -776,7 +776,7 @@ async def test_continuity_reset_survives_a_failed_reobservation(tmp_path, monkey
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
     monkeypatch.setattr(
@@ -827,7 +827,7 @@ async def test_run_visual_chain_once_uses_self_study_text_in_prompt_and_chain_js
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain,
         "load_latest_self_study_reflection",
@@ -863,7 +863,7 @@ async def test_run_visual_chain_once_generation_failure_records_self_study_text(
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain,
         "load_latest_self_study_reflection",
@@ -904,7 +904,7 @@ async def test_run_visual_chain_once_uses_memory_text_in_prompt_and_chain_json(
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain,
@@ -947,7 +947,7 @@ async def test_run_visual_chain_once_generation_failure_records_memory_text(
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain,
@@ -990,7 +990,7 @@ async def test_compute_visual_plan_can_roll_back_to_legacy_crystallization(monke
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain,
@@ -1029,7 +1029,7 @@ async def test_run_visual_chain_once_uses_only_one_context_seed_per_run_when_all
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
     monkeypatch.setattr(
-        visual_chain, "load_latest_reverie_interpretation", lambda **kw: "the coalition narration"
+        visual_chain, "load_latest_reverie_question_context", lambda **kw: "the coalition narration"
     )
     monkeypatch.setattr(
         visual_chain, "load_latest_self_study_reflection", lambda **kw: "the self-study finding"
@@ -1073,7 +1073,7 @@ async def test_context_slot_rotation_advances_across_successive_runs(tmp_path, m
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_reverie_interpretation", lambda **kw: "the coalition narration"
+        visual_chain, "load_latest_reverie_question_context", lambda **kw: "the coalition narration"
     )
     monkeypatch.setattr(
         visual_chain, "load_latest_self_study_reflection", lambda **kw: "the self-study finding"
@@ -1236,7 +1236,7 @@ async def test_run_visual_chain_once_uses_interpreted_text_in_prompt(tmp_path, m
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain,
@@ -1282,7 +1282,7 @@ async def test_run_visual_chain_once_falls_back_to_raw_slot_text_on_interpretati
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain, "load_episode_memory_seed", lambda **kw: "the raw clause"
@@ -1315,7 +1315,7 @@ async def test_run_visual_chain_once_skips_interpretation_when_disabled(tmp_path
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain, "load_episode_memory_seed", lambda **kw: "the raw clause"
@@ -1347,7 +1347,7 @@ async def test_run_visual_chain_once_skips_interpretation_when_no_slot_available
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: (None, 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
@@ -1476,7 +1476,7 @@ async def test_resource_deferral_writes_no_failure_or_image(tmp_path, monkeypatc
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda **kw: ("old description", 0, 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_question_context", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
 

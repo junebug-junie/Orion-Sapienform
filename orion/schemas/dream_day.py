@@ -37,15 +37,26 @@ DREAM_DAY_RUN_PREFIX = "dream-day-"
 DREAM_DAY_SESSION_ID = "dream_day"
 DREAM_DAY_SOURCE_TAG = "dream_day"
 DREAM_DAY_STEP_KEY = "dream_day"
-DREAM_DAY_PROMPT_VERSION = "dream_day.v1"
+# v2 (2026-11-24): the facts rule, the totals ref and the answer shape first (PR dream-day-citable-facts).
+DREAM_DAY_PROMPT_VERSION = "dream_day.v2"
 # The turn's reply is graded against these (Juniper took the bracketed defaults 2026-11-17).
 DREAM_DAY_MAX_MEMORIES = 5
 DREAM_DAY_MAX_NEW_CONCERNS = 1
 DREAM_DAY_TEXT_MAX = 1200
+# The least night a dream.day attempt can use (app/dream_day_graph.py ``retry_attempt_sec``, and the tick's "is there
+# still time to submit" check): Hub keeps 330 s of a held turn for finalize
+# (HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC),
+# durable-runs 30 s of reply grace and up to 180 s for the grounding gate, which leaves the motor 360 s. Live
+# 2026-11-18..23: every turn that answered did so in 298-346 s of motor time.
+DREAM_DAY_MIN_ATTEMPT_SEC = 900.0
 # Ref kinds a memory, a plan item or the day paragraph may cite (spec Patch 2 "Persist"). ``chat`` is the
-# kind `dig digs` prints for a chat turn; it resolves exactly like ``chat_turn``.
+# kind `dig digs` prints for a chat turn; it resolves exactly like ``chat_turn``. ``dream_day_read:<day>`` is the
+# night's own `dig dream-day <day>` read: the organ roundup's counts as the turn read them (the totals file
+# below), the one citable home for a day's totals ("75 gpu waits", "2,507 experiences").
 DREAM_DAY_REF_KINDS: tuple[str, ...] = (
-    "experience", "act", "dream_cycle", "dream_hypothesis", "harness_turn_trace", "chat_turn", "chat")
+    "experience", "act", "dream_cycle", "dream_hypothesis", "harness_turn_trace", "chat_turn", "chat",
+    "dream_day_read")
+DREAM_DAY_READ_REF_KIND = "dream_day_read"
 REF_RE = re.compile(r"^\[?\s*(?P<kind>[a-z_]+):(?P<id>[^\s\]]{1,300})\s*\]?$")
 # Purposes a dream memory may take. ``follow_up`` is left out on purpose: carrying something into tomorrow is
 # the plan's job, and a follow_up memory with no due date would never come due.
@@ -53,6 +64,9 @@ DREAM_DAY_PURPOSES: tuple[str, ...] = ("happened", "orion_view", "about_juniper"
 # Where the dig writes its read receipt, under the dig's self dir ($ORION_DIG_HOME/self, the same host dir
 # orion-durable-runs mounts for the field-note and reminiscence ledgers): <self>/dream_day/<day>.json.
 DREAM_DAY_RECEIPT_DIR = "dream_day"
+# Beside the receipt, the same command leaves the roundup's count lines it printed: <self>/dream_day/<day>.totals.json
+# (``DreamDayTotalsV1``), stamped with the receipt's own ``read_at`` so code takes only THIS read's copy.
+DREAM_DAY_TOTALS_SUFFIX = ".totals.json"
 
 
 def base_run_id(day: date | str) -> str:
@@ -170,6 +184,17 @@ class DreamDayReadV1(BaseModel):
     digs_background: int = Field(ge=0)
     # part name -> why it could not be read (the dig's own UNREAD tail). Empty = the whole day was read.
     unread: dict[str, str] = Field(default_factory=dict)
+
+
+class DreamDayTotalsV1(BaseModel):
+    """The count lines `dig dream-day <day>` printed (orion/memory/dream_day.py ``totals_text``), written beside the
+    read receipt with the receipt's ``read_at``. A memory cites them as ``dream_day_read:<day>``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    day: date
+    read_at: AwareDatetime
+    text: str = Field(max_length=20000)
 
 
 class DreamDayMemoryV1(BaseModel):

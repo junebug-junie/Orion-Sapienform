@@ -173,7 +173,7 @@ def test_cli_prompt_semantics_gate_passes():
     "node_id,kind",
     [
         ("node:substrate.cabinet", "trigger"),
-        ("node:substrate.execution", "level"),
+        ("node:substrate.perception", "level"),
     ],
 )
 def test_node_qualified_prediction_error_entries_carry_semantics(node_id, kind):
@@ -225,7 +225,7 @@ def test_trigger_gets_no_polarity():
     assert derived_channel_polarity("prediction_error", "trigger") is None
     nodes = {n.name: n for n in resolve_field_channels()}
     assert nodes["node:substrate.cabinet.prediction_error"].polarity is None
-    assert nodes["node:substrate.execution.prediction_error"].polarity == "higher_is_worse"
+    assert nodes["node:substrate.perception.prediction_error"].polarity == "higher_is_worse"
 
 
 def test_glossary_entry_declaring_polarity_is_rejected(tmp_path):

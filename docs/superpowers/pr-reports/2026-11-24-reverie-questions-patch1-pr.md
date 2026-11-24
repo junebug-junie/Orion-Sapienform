@@ -41,6 +41,7 @@ Reverie stops narrating gauges (88% of 1,337 thoughts in 7 days) and starts prod
 - `orion/bus/channels.yaml`, `config/physiology/contract.yaml`, `config/metrics/metric_definitions.lock.json`, `orion/metrics/semantics.py`: contract registries re-locked.
 - `services/orion-dream/*`: REM compaction retirement.
 - `scripts/smoke_reverie_seeds.py`: live read-only smoke.
+- `services/orion-thought/app/{store,visual_chain}.py`: painting's reverie seed reads `reverie_question` (review fix).
 - `scripts/sql/2026-11-18_grant_orion_readonly_reverie_question_{trace,table}.sql`: headers (trace grant APPLIED live 2026-11-18 after Juniper approved; table grant approved, applied after the migration).
 
 ## Schema / bus / API changes
@@ -53,7 +54,7 @@ Reverie stops narrating gauges (88% of 1,337 thoughts in 7 days) and starts prod
 ## Env/config changes
 
 - Added keys (orion-thought): `ORION_REVERIE_QUIET_MIN_CALM_SEC=600`, `ORION_REVERIE_MAX_PER_DAY=8`, `ORION_REVERIE_FOCUS_MAX_PER_DAY=3`, `ORION_REVERIE_FAR_MEMORY_BAND=5:25`, `ORION_REVERIE_THREAD_LAPSE_DAYS=14`, `ORION_REVERIE_FAR_MEMORY_CHROMA_URL`, `ORION_REVERIE_TIMEZONE`. (orion-hub): `ORION_REVERIE_FOCUS_MAX_PER_DAY=3`.
-- Changed: `ORION_REVERIE_INTERVAL_SEC=60` (was 90), `ORION_REVERIE_ENABLED` defaults on.
+- Changed: `ORION_REVERIE_INTERVAL_SEC=60` (was 90), `ORION_REVERIE_ENABLED` defaults on, `ORION_REVERIE_CONTEXT_MAX_AGE_SEC=86400` (was 900; the painting seed is now a reverie question; local `.env` set by hand).
 - Removed (orion-thought): `ORION_REVERIE_MIN_SALIENCE`, `CHANNEL_REVERIE_THOUGHT`, semantic-lift, metacog-background, perception, street, expectation, chain, refractory, no-coalition, chain-arousal, ground-episodes, compaction-request, resonance keys, `ORION_ATTENTION_SALIENCE_V2_ENABLED`, `CHANNEL_ATTENTION_SALIENCE_TRACE`, `SELF_READINGS_REVERIE_ENABLED`, recent-arcs keys, `ORION_VISION_EVENTS_LEGACY_CUTOFF`, `ORION_CAMERA_DESCRIPTIONS`. (orion-dream): REM and compaction-apply keys.
 - `.env_example` updated: yes. Local `.env` synced with `python scripts/sync_local_env_from_example.py`: yes (8 keys added); `ORION_REVERIE_INTERVAL_SEC` set 90 → 60 by hand (the sync reported it diverged). Retired keys left in local `.env` are inert.
 - Skipped keys requiring operator action: none.
@@ -95,7 +96,26 @@ Static gates (`.github/workflows/orion-static-gates.yml`, every step run locally
 
 ## Review findings fixed
 
-Code review not run by this build; the orchestrator runs it.
+- Finding: with no attention winner in 24 h the stretch start was `now - 24 h`, a new key every poll, so the 3-refusal limit never held and the no-material memo never matched (Chroma re-read every minute).
+  - Fix: the stretch then starts at the oldest broadcast row (`OLDEST_TICK_SQL`, index-backed), a stable key (`reverie_seeds.stretch_start_for`).
+  - Evidence: `test_no_winner_in_a_day_gives_a_stable_stretch_and_gives_up_after_three_refusals` (6 polls, clock moving, 3 asks), `test_stretch_start_falls_back_to_the_oldest_tick_not_the_moving_lookback`.
+- Finding: `created_at` was taken after the model call, so a winner landing mid-call made the row spend the next stretch.
+  - Fix: the row is stamped with the gate's clock.
+  - Evidence: `test_a_winner_during_a_slow_call_does_not_spend_the_next_stretch`.
+- Finding: a non-success plan that was not a pool refusal (gateway capacity reject, upstream 500, failed step) was stored as `unparseable` and spent the stretch.
+  - Fix: any non-success plan raises `ReverieLlmUnavailable` with its reason; no row, counts toward the 3 refusals.
+  - Evidence: `test_every_non_success_plan_is_a_lane_refusal_not_an_unparseable_row` (5 cases), `test_a_failed_plan_counts_toward_the_three_refusals_and_writes_no_row`.
+- Finding: a thrown `RuntimeError("Exec RPC failed")` from `cortex_client` skipped the refusal count.
+  - Fix: mapped to `ReverieLlmUnavailable("exec_rpc:...")`, logged as a skip without a traceback.
+  - Evidence: `test_a_thrown_exec_rpc_error_is_a_lane_refusal`.
+- Finding: painting still read the retired narration table (`load_latest_reverie_interpretation`).
+  - Fix: the slot reads the newest accepted `reverie_question` (`store.load_latest_reverie_question_context`); the old loader is deleted. `ORION_REVERIE_CONTEXT_MAX_AGE_SEC` 900 -> 86400 (questions come at most 8 a day; `.env_example` and local `.env` updated). Fixes #3813.
+  - Evidence: `tests/test_store.py` question-context tests (+ `test_the_narrated_thought_loader_is_gone`), `tests/test_visual_activity.py::test_painting_reverie_seed_is_the_newest_accepted_reverie_question` (real Postgres; runs in CI with `ORION_VISUAL_TEST_DATABASE_URL`).
+- Finding: the migration header named one consumer.
+  - Fix: `REQUIRED-BY: orion-thought, orion-hub, orion-cortex-exec, orion-durable-runs`; still CREATE TABLE/INDEX only.
+  - Evidence: `scripts/check_migration_required_by.py` OK; static gates.
+- Finding: refusal counters live in memory.
+  - Fix: comment at `_STRETCH_REFUSALS`: a restart gives the stretch 3 more tries; accepted.
 
 ## Restart required
 
@@ -109,13 +129,13 @@ Deploy order: orion-hub, orion-mind, orion-prediction, orion-cortex-exec, orion-
 
 ## Risks / concerns
 
-- Severity: medium. Concern: the agent-lane call from orion-thought has never run live; if the gateway refuses `agent` without a pool hold, every reverie is a lane refusal (logged `reverie_skipped reason=llm_unavailable` / `lane_refused_stretch`, no rows). Mitigation: Orion checks `lane_refused_stretch` live; UNVERIFIED.
-- Severity: medium. Concern: the visual (painting) chain still reads the latest narrated reverie interpretation as a context seed (`services/orion-thought/app/store.py load_latest_reverie_interpretation`). Painting was out of scope, so that read is left on the old table; with no new rows it will age out and the slot goes empty. Mitigation: ticket #3813.
+- Severity: medium. Concern: the agent lane uses per-call leases, not curiosity's durable hold. After deploy, watch the `reverie_skipped reason=llm_unavailable` / `lane_refused_stretch` counts in orion-thought's log: if curiosity's holds starve the lane, that is the cause. The agent-lane call from orion-thought has never run live; if the gateway refuses `agent` without a pool hold, every reverie is a lane refusal (logged `reverie_skipped reason=llm_unavailable` / `lane_refused_stretch`, no rows). Mitigation: Orion checks `lane_refused_stretch` live; UNVERIFIED.
+- Severity: low. Concern: the painting's reverie seed is now a reverie question (fixed in review, #3813); paintings will see at most a day-old question, often none in a busy day.
 - Severity: low. Concern: the reverie-scope `AttentionSalienceTraceV1` emit stopped with the narration tick; chat-scope traces continue. Readers that split by scope see no new reverie rows.
 - Severity: low. Concern: `config/physiology/consent.yaml` still carries Juniper's standing consent for dream compaction downscale; its only bidder (the applier) is retired. Left as granted; removing a grant is her call.
 - Severity: low. Concern: far-memory anchor deviates from the spec (newest kept episode memory, not "the most salient item in the now", which has no vector). Documented in `reverie_seeds.pick_anchor`.
 - Severity: low. Concern: the near-duplicate matcher is the reverie organ's own word-set Jaccard ≥ 0.6 (the inquiry manager's embedding matcher is design-only); a ref used in the last 14 days is "spent", so a standing gap is not re-asked daily (spec relied on the duplicate refusal for that).
-- Issues: closes #3414 (resonance monitor retired). Opened: #3813 (painting context seed).
+- Issues: closes #3414 (resonance monitor retired). Fixes #3813 (painting context seed).
 
 ## PR link
 

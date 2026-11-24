@@ -98,9 +98,10 @@ router = APIRouter(prefix="/api/attention-organ", tags=["attention-organ"])
 # prediction-error domains and are skipped below (ALARM_NODE_IDS).
 # `biometrics` REMOVED 2026-11-18 (step 6, #3575); successors
 # node:prediction.body_joint / .room_joint (family A joint surprise).
-KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
-    "execution",
-)
+# `execution` REMOVED 2026-11-24 (step 6, #3576), the last one; successors
+# node:prediction.chat_turn (more-steps bet) / node:prediction.body_joint. The
+# tuple is EMPTY: the panel shows no domain bars and the confidence reads unknown.
+KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = ()
 
 _NODE_ID_PREFIX = "node:substrate."
 
@@ -363,7 +364,7 @@ def build_domain_rows(
     return out
 
 
-# How much the active-domain mean (3 domains since 2026-11) can move if exactly ONE active domain traverses
+# How much the active-domain mean (no domains since 2026-11-24, #3576) can move if exactly ONE active domain traverses
 # its full [0, 1] range between the row's write and this module's graph read:
 # 1.0 / len(ACTIVE_INFERENCE_DOMAINS). Confirmed live 2026-07-30 that this is
 # not hypothetical -- `execution` and `bus_synaptic` both swing between ~0 and

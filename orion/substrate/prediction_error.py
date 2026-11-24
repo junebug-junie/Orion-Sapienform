@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from orion.bus.ewma import compute_ewma_update
-from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.structural_mass.git_delta import GitChurnDelta
 from orion.structural_mass.graph_delta import GraphStructuralDelta
@@ -23,41 +22,10 @@ from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
 # CLAUDE.md's "kill means kill": a retired constant that still exists is one a
 # future patch reintroduces by accident.
 
-# 2026-07-28: execution_prediction_error's own EWMA baseline calibration. alpha=0.2
-# reuses services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update's own
-# alpha (via the shared orion/bus/ewma.py copy) rather than inventing a new number --
-# both update per real observation (a real edge/a real execution-tick batch), not on
-# a fixed wall-clock cadence like orion-field-digester's alpha=0.02 (which runs once
-# per RECEIPT_POLL_INTERVAL_SEC tick regardless of traffic). Saturation reuses the
-# z>=3.0 "anomalous" convention of services/orion-hub/scripts/
-# bus_synaptic_graph_routes.py's anomalies() route.
-_EXECUTION_PREDICTION_ERROR_EWMA_ALPHA = 0.2
-_EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
-
-# 2026-07-28: domain-specific variance floor for compute_ewma_update, replacing
-# that function's own default (_MIN_VARIANCE=1e-6, calibrated for orion-bus-
-# mirror's real-time-gap-in-seconds domain). Live-confirmed via
-# orion/bus/ewma.py's own unit test data reproduced here: replaying this
-# domain's real historical raw-delta sequence (120 real `substrate.execution_
-# trajectory` receipts, 2026-07-28) through the shared default floor left the
-# EWMA's real per-tick variance settling around 4.2e-11 once warmed up -- five
-# orders of magnitude below 1e-6, so the shared floor dominated every real
-# z-score computed (max ever: 0.045, saturating error at only 0.015 across the
-# full history) instead of this domain's real spread. Set one order of
-# magnitude below that smallest real warmed-up variance -- low enough that
-# genuine signal drives the z-score rather than the floor, still nonzero to
-# guard the first non-cold-start tick's div-by-zero (prev_variance exactly
-# 0.0). Replaying the same 120-receipt history through this floor instead
-# gives a healthy, non-degenerate spread (max error 0.97, mean 0.12, no
-# saturation) -- not re-tuned per this domain's future drift, so revisit if
-# execution's real delta scale ever shifts by orders of magnitude.
-_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE = 1e-10
-
-
 
 # 2026-07-30: codebase_prediction_error's EWMA baseline calibration (Phase 1 contract
 # patch, docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md). alpha=0.2
-# reuses execution_prediction_error's own alpha for all three sub-domains rather than
+# reuses the retired execution_prediction_error's alpha (0.2) for all three sub-domains rather than
 # inventing three new numbers -- each sub-domain, like execution, updates per real
 # observation (a real producer tick), not a fixed wall-clock cadence.
 _CODEBASE_PREDICTION_ERROR_EWMA_ALPHA = 0.2
@@ -334,180 +302,20 @@ def codebase_prediction_error(
     return CodebasePredictionErrorResult(score=score, baseline=new_baseline)
 
 
-def _mean(values: list[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
-
-
-def _latest_run(runs) -> Any:
-    """Return the run with the most recent ``last_updated_at`` in a mapping of runs,
-    or ``None`` if the mapping is empty."""
-    best = None
-    for run in runs.values():
-        if best is None or run.last_updated_at > best.last_updated_at:
-            best = run
-    return best
-
-
-def _touched_runs(prev_runs, curr_runs) -> list[tuple[str, Any]]:
-    """Runs in ``curr_runs`` that the batch between ``prev``/``curr`` actually
-    wrote: new trace_ids, plus existing ones whose state changed at all. The
-    reducer stamps the tick's clock into ``last_updated_at`` on every run/turn it
-    creates or merges, so a written run always differs from its ``prev`` copy;
-    comparing the whole run (not just the timestamp) also catches a revision that
-    somehow kept its timestamp. Runs the batch left alone are identical and are
-    excluded, rather than scored 0.0 against themselves (the retired
-    route_prediction_error's v1 dilution defect)."""
-    touched: list[tuple[str, Any]] = []
-    for trace_id, curr_run in curr_runs.items():
-        prev_run = prev_runs.get(trace_id)
-        if prev_run is None or prev_run != curr_run:
-            touched.append((trace_id, curr_run))
-    return touched
-
-
-def _score_and_update_ewma_prediction_error(
-    prev: Any,
-    curr: Any,
-    *,
-    raw_mean_delta: float,
-    alpha: float,
-    min_variance: float,
-    zscore_saturation: float,
-) -> float:
-    """Shared EWMA-baseline scoring + update, factored out 2026-08-19 (code
-    review, rule-of-three): `execution_prediction_error`'s 2026-07-28 fix and
-    `chat_prediction_error`'s 2026-08-19 fix (retired 2026-11-13) had each independently hand-copied
-    this exact "score this tick's raw delta as a z-score against a live EWMA
-    baseline, then update that baseline" sequence, with no shared helper.
-    (`biometrics_prediction_error`, which kept a fixed 0.30 divisor, was
-    retired 2026-11-18 rather than migrated: #3575.)
-
-    `prev`/`curr` are duck-typed: any object exposing
-    `prediction_error_baseline_ewma`/`_var`/`_n` float/int attributes (every
-    projection using this pattern shares those exact field names -- see
-    `ExecutionTrajectoryProjectionV1`/`ChatSessionProjectionV1`'s matching
-    docstrings). Mutates `curr`'s three baseline fields in place -- same
-    contract every caller of this pattern already had before this extraction;
-    **callers remain responsible for persisting `curr` afterward** (this
-    function has no I/O of its own, matching this whole module's "pure
-    function" design) -- see each tick's own `worker.py` wiring for the
-    corresponding save call.
-    """
-    update = compute_ewma_update(
-        prev_ewma=prev.prediction_error_baseline_ewma,
-        prev_variance=prev.prediction_error_baseline_ewma_var,
-        prev_count=prev.prediction_error_baseline_ewma_n,
-        value=raw_mean_delta,
-        alpha=alpha,
-        min_variance=min_variance,
-    )
-    curr.prediction_error_baseline_ewma = update.ewma
-    curr.prediction_error_baseline_ewma_var = update.variance
-    curr.prediction_error_baseline_ewma_n = prev.prediction_error_baseline_ewma_n + 1
-    if update.zscore is None:
-        return 0.0
-    return min(1.0, max(0.0, update.zscore) / zscore_saturation)
-
-
-def execution_prediction_error(
-    prev: ExecutionTrajectoryProjectionV1,
-    curr: ExecutionTrajectoryProjectionV1,
-) -> float:
-    """0-1 surprise score: how much did execution pressure hints change this batch?
-
-    Diffs a ``curr`` run against the ``prev`` run sharing its ``trace_id`` where that
-    identity persists across polls (a run genuinely revised in place). Confirmed live
-    2026-07-21 against 26 real ``execution_trajectory_reducer`` receipts: every one was
-    ``operation: "create"`` with a unique ``target_id`` -- real cortex-exec runs observed
-    here are single-shot (created once, never revised), so an exact ``trace_id`` match
-    structurally never occurs for this workload shape. Falling back to "no matching prev
-    run -> contributes nothing" (the original behavior) made this instrument permanently
-    return ``0.0`` regardless of real execution volume -- not a data-scarcity gap, a wrong
-    comparison key. When no trace_id match exists, diff against ``prev``'s most-recently-
-    updated run instead (by ``last_updated_at``) -- the best available "what did we expect"
-    reference, equivalent to comparing this tick's freshest execution snapshot against last
-    tick's freshest one. A run that genuinely does get revised in place still prefers its
-    own exact match, so this is additive, not a behavior change for that (currently
-    unobserved, but schema-legal) case.
-
-    **2026-07-28 baseline fix.** Same disease as ``recent_perturbations``' old
-    fixed ``/20.0`` cap and ``bus_synaptic_prediction_error``'s pre-2026-07-26 calm
-    floor: this used to saturate via a fixed ``_mean(deltas) / _THRESHOLD`` (0.30)
-    divisor. Live-confirmed 2026-07-28 against 118 real ``substrate.execution_
-    trajectory`` receipts: mean error 0.0001, max ever observed 0.0009 -- real
-    cortex-exec pressure-hint deltas run about three orders of magnitude below
-    ``_THRESHOLD``, so this instrument reads ~0 essentially always regardless of
-    real execution turbulence. Not a calibration nit -- it is structurally
-    incapable of ever reading "surprised," the mirror-image failure of bus_
-    synaptic's old floor bug (that one couldn't read "calm"; this one can't read
-    "surprised"). Root cause is the same in both cases: a hand-picked constant
-    standing in for a self-calibrating baseline.
-
-    Fixed the same way ``recent_perturbations`` was: track this domain's own
-    EWMA mean/variance of the raw per-tick ``_mean(deltas)`` (persisted on the
-    projection itself -- ``prediction_error_baseline_ewma``/``_var``/``_n``, see
-    ``ExecutionTrajectoryProjectionV1``'s docstring) via ``orion.bus.ewma.
-    compute_ewma_update``, then score *this* tick's raw delta as a z-score against
-    that live baseline instead of dividing by a fixed constant. Passes its own
-    ``_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE`` rather than that function's
-    default -- see that constant's own comment: this domain's real variance is
-    five orders of magnitude below the shared default, which would otherwise
-    silently reintroduce a milder version of this same bug one layer down.
-    Unlike bus_
-    synaptic_prediction_error, no calm-floor subtraction is needed here: bus_
-    synaptic's floor exists because it averages ``|z|`` (already-signed z-scores
-    folded to their absolute value) across many edges every tick, and
-    ``mean(|Z|)`` for a calm, zero-mean population has a strictly positive
-    expected value (``sqrt(2/pi)``) by construction. This function instead
-    produces exactly one raw z-score per tick from ``compute_ewma_update`` --
-    a single signed value, not a mean of absolutes -- so it can genuinely rest
-    at (or below) zero when calm with no bias to correct for. A below-baseline
-    tick (execution unusually *calmer* than its own recent normal) is clamped to
-    0.0 rather than reported as negative surprise, since "surprising" here means
-    "more turbulent than usual," not "different from usual" in either direction.
-
-    Returns 0.0 (not the old raw/``_THRESHOLD`` score) on the first tick with any
-    real deltas -- ``compute_ewma_update`` returns no z-score until a baseline
-    exists (``prev_count == 0``), and reporting a value here would misrepresent
-    "no baseline yet" as "measured, not anomalous" (this repo's "no empty-shell
-    cognition" rule). The baseline absorbs that tick's value regardless, so the
-    very next tick already has one observation to compare against.
-    """
-    raw = execution_raw_reading(prev, curr)
-    if raw is None:
-        return 0.0
-    return _score_and_update_ewma_prediction_error(
-        prev,
-        curr,
-        raw_mean_delta=raw,
-        alpha=_EXECUTION_PREDICTION_ERROR_EWMA_ALPHA,
-        min_variance=_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE,
-        zscore_saturation=_EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION,
-    )
-
-
-def execution_raw_reading(
-    prev: ExecutionTrajectoryProjectionV1,
-    curr: ExecutionTrajectoryProjectionV1,
-) -> float | None:
-    """The raw per-tick value ``execution_prediction_error`` scores: the mean
-    absolute change in pressure hints. ``None`` when nothing comparable moved
-    (no reading this tick). Pure."""
-    deltas: list[float] = []
-    prev_fallback = _latest_run(prev.runs)
-    for trace_id, curr_run in curr.runs.items():
-        prev_run = prev.runs.get(trace_id)
-        if prev_run is None:
-            prev_run = prev_fallback
-        if prev_run is None:
-            continue
-        for key in ("cortex_exec_step_load", "execution_friction", "failure_pressure", "reasoning_load"):
-            pv = prev_run.pressure_hints.get(key, 0.0)
-            cv = curr_run.pressure_hints.get(key, 0.0)
-            deltas.append(abs(cv - pv))
-    if not deltas:
-        return None
-    return _mean(deltas)
+# execution_prediction_error(), execution_raw_reading() and their helpers (_mean,
+# _latest_run, _touched_runs, _score_and_update_ewma_prediction_error and the
+# _EXECUTION_PREDICTION_ERROR_* calibration constants) were DELETED 2026-11-24 (PE suite
+# rebuild retire step 6, #3576) -- the last fake prediction-error node. Not a forecast:
+# an EWMA z of the mean change in four cortex-exec pressure hints between two execution
+# batches, negatives clipped, /3 -- 59% exact 0 (clipping, not calm) and 22 of 45 spikes
+# to 1.0 followed three zeros (spec audit). Its successors are scored forecasts: the turn
+# self-bet "more steps than usual" inside node:prediction.chat_turn
+# (services/orion-prediction/app/turn_surprise.py) and family A's body joint surprise
+# (node:prediction.body_joint). node:substrate.execution is on
+# orion.substrate.prediction_error_freshness.RETIRED_PREDICTION_ERROR_NODE_IDS. The
+# execution trajectory reducer and projection (orion/substrate/execution_loop/) stay:
+# /projections/execution_trajectory and the chat-turn trace route read them. Git history
+# keeps the function and its 2026-07-28 calibration notes.
 
 
 # transport_prediction_error() DELETED 2026-07-31.

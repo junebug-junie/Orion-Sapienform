@@ -70,16 +70,24 @@ def test_daily_volume(result):
     # forecast) left the fixture's readers and took its episodes with it --
     # 32 opens over 7.03 days = 4.55/day without it. The band is a sanity
     # range on volume, not a target.
-    assert 4.0 <= total / _days(result) <= 15.0, total
+    # Floor 1.0 since 2026-11-24 (#3576): node:substrate.execution, the last
+    # non-alarm body signal in the fixture, was retired. Only the cabinet and
+    # strain alarms open episodes now: 12 opens over 7.03 days = 1.7/day. The
+    # scored-forecast successors (node:prediction.*) are not observed by the
+    # gate at all (#3801).
+    assert 1.0 <= total / _days(result) <= 15.0, total
+    assert "node:substrate.execution" not in result["per_signal"]
     assert max(per_day.values()) <= 15, per_day
 
 
 def test_without_the_dwell_every_signal_opens_constantly(rows, result):
     no_dwell = replay(rows, open_dwell_sec=0.0)
     # >100/day while bus_synaptic was in the fixture; ~68/day without the
-    # retired nodes (2026-11); ~30/day once biometrics left too (2026-11-18, #3575).
-    assert len(no_dwell["episodes"]) / _days(no_dwell) > 20
-    assert len(no_dwell["episodes"]) > 5 * len(result["episodes"])  # 7x after biometrics left (#3575)
+    # retired nodes (2026-11); ~30/day once biometrics left too (2026-11-18, #3575);
+    # 21 opens (3.0/day) vs 12 with the dwell once execution left (2026-11-24, #3576):
+    # only the alarms remain, and they already fire in runs.
+    assert len(no_dwell["episodes"]) / _days(no_dwell) > 2.5
+    assert len(no_dwell["episodes"]) > 1.5 * len(result["episodes"])
 
 
 def test_retired_nodes_are_not_replayed_at_all(rows, result):

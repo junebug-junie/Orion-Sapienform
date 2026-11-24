@@ -13,6 +13,11 @@ and codebase the same day (a churn z, no successor). The continuous body source 
 2026-11-18 (#3575) and no live glossary node is continuous any more, so the rule is tested on
 a TEST-ONLY probe node (``CONTINUOUS_BODY``) that a test registers in the glossary with
 ``install_probe_glossary(monkeypatch)``: a per-tick level body signal shaped like biometrics was.
+
+2026-11-24 (#3576): node:substrate.execution, the last event-written level body node, was retired
+too. Its shape lives on as a second TEST-ONLY probe, ``EVENT_BODY`` (same installer): written only
+when a batch arrives, ~73% exact zeros, spikes to 1.0. No live glossary node has that shape now
+(the node:prediction.* successors are surprise_excess), so tests of the event-written rules use it.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 NOW = datetime(2026, 10, 14, 3, 30, tzinfo=timezone.utc)
 CONTINUOUS_BODY = "node:substrate.probe"
+EVENT_BODY = "node:substrate.probe_event"
 Row = tuple[str, datetime, float]
 
 # The retired biometrics entry's semantics, minus the metacog prompt site (biometrics retired
@@ -35,9 +41,25 @@ PROBE_SEMANTICS = {
 }
 
 
+# The retired execution entry's semantics (retired 2026-11-24, #3576), minus the metacog prompt
+# site: an event-written level body signal that reaches the self-readings prompt.
+EVENT_SEMANTICS = {
+    "value_kind": "level",
+    "rest": "0.0 = change at or below its usual (test-only probe). Mostly zero by design.",
+    "rest_range": [0.0, 0.0],
+    "sparsity": "designed_sparse",
+    "absent_means": (
+        "only written when a batch carried events; between batches the last value is carried "
+        "forward in node_vectors (test-only probe)."
+    ),
+    "prompt_sites": ["orion.attention.self_readings:render_self_readings"],
+}
+
+
 def install_probe_glossary(monkeypatch) -> None:
-    """Add a glossary entry for ``CONTINUOUS_BODY`` (test only) and clear every cache that read the
-    glossary, so world-first, self-readings and the episode gate see one continuous body node."""
+    """Add glossary entries for ``CONTINUOUS_BODY`` and ``EVENT_BODY`` (test only) and clear every
+    cache that read the glossary, so world-first, self-readings and the episode gate see one
+    continuous and one event-written body node."""
     import orion.attention.self_readings as sr
     import orion.attention.world_first as wf
     import orion.field.channel_glossary as cg
@@ -48,7 +70,12 @@ def install_probe_glossary(monkeypatch) -> None:
         meaning="TEST-ONLY per-tick level body signal (stands in for the retired node:substrate.biometrics)",
         node=CONTINUOUS_BODY, semantics=cg._freeze_semantics(PROBE_SEMANTICS),
     )
-    patched = {**real, "entries": tuple(real["entries"]) + (probe,)}
+    event = cg.FieldChannelGlossaryEntry(
+        channel="prediction_error", level=("node",), category="self_monitoring",
+        meaning="TEST-ONLY event-written level body signal (stands in for the retired node:substrate.execution)",
+        node=EVENT_BODY, semantics=cg._freeze_semantics(EVENT_SEMANTICS),
+    )
+    patched = {**real, "entries": tuple(real["entries"]) + (probe, event)}
     real_load = cg.load_glossary
     monkeypatch.setattr(cg, "load_glossary", lambda path=None: patched if path is None else real_load(path))
     for name in ("_SEMANTICS_CACHE", "_EVENT_WRITTEN_CACHE", "_CONTINUOUS_CACHE"):
@@ -71,7 +98,7 @@ def calm_rows(now: datetime = NOW) -> list[Row]:
     """Every node in its usual range; event-written nodes' last event long past."""
     rows: list[Row] = []
     rows += _series(CONTINUOUS_BODY, 5, lambda k: 0.005 + (k * 37 % 100) / 1400.0, now=now)
-    rows += _series("node:substrate.execution", 10, lambda k: 0.0 if k % 4 else 0.2 + (k % 7) / 10.0, now=now)
+    rows += _series(EVENT_BODY, 10, lambda k: 0.0 if k % 4 else 0.2 + (k % 7) / 10.0, now=now)
     # chat-turn surprise (node:prediction.chat_turn, 2026-11-13; replaced node:substrate.chat): one
     # write per settled chat turn, ~80% exact 0.0 (live replay shape).
     rows += _series("node:prediction.chat_turn", 15, lambda k: 0.0 if k % 5 else (k * 23 % 100) / 120.0, now=now)
@@ -93,7 +120,7 @@ def calm_rows(now: datetime = NOW) -> list[Row]:
 
 
 def busy_body_rows(now: datetime = NOW) -> list[Row]:
-    """Calm history, then: an execution spike 30 s ago, biometrics at its week's top for the
+    """Calm history, then: an event-body (execution-shaped) spike 30 s ago, biometrics at its week's top for the
     last ~9 minutes (biometrics reads every tick, so one hot reading is not enough: it must be
     sustained, orion/attention/sustained.py), and the cabinet warming alarm going off twice in
     the last hour (30 s cadence, like live)."""
@@ -105,7 +132,7 @@ def busy_body_rows(now: datetime = NOW) -> list[Row]:
         if not (r[0] == "node:substrate.cabinet" and r[1] > hour_ago)
         and not (r[0] == CONTINUOUS_BODY and r[1] > ten_min_ago)
     ]
-    rows.append(("node:substrate.execution", now - timedelta(seconds=30), 1.0))
+    rows.append((EVENT_BODY, now - timedelta(seconds=30), 1.0))
     # biometrics at a ~60 s cadence: hot from 560 s ago to now (> 300 s of the last 600).
     for s in range(560, 0, -60):
         rows.append((CONTINUOUS_BODY, now - timedelta(seconds=s - 20), 0.2))

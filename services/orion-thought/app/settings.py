@@ -414,8 +414,10 @@ class ThoughtSettings(BaseSettings):
     reverie_context_char_limit: int = Field(
         _MAX_REVERIE_CONTEXT_CHARS, alias="ORION_REVERIE_CONTEXT_CHAR_LIMIT", gt=0
     )
+    # 2026-11-24: the seed is now the newest accepted reverie question (at most 8 a day, only in quiet
+    # stretches), so the window is a day, not the narration chain's 15 minutes.
     reverie_context_max_age_sec: float = Field(
-        900.0, alias="ORION_REVERIE_CONTEXT_MAX_AGE_SEC", gt=0
+        86400.0, alias="ORION_REVERIE_CONTEXT_MAX_AGE_SEC", gt=0
     )
     # Patch 4 (design doc §15): live 2026-08-27, `prior_description`
     # continuity can lock onto one visual attractor indefinitely (confirmed

@@ -10,6 +10,18 @@ from orion.attention.field_attention.goal_provenance import DominanceStreak
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_goal import FieldGoalProvenanceV1
 
+# node:substrate.execution, the last native (goal-eligible body) target, was retired 2026-11-24
+# (#3576): the real map is empty. The producer is tested on a test-only native target put in the
+# shared map per test (restored after).
+EXEC_PROBE = "node:substrate.probe_event"
+
+
+@pytest.fixture(autouse=True)
+def _exec_probe_native(monkeypatch):
+    from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
+
+    monkeypatch.setitem(PREDICTION_ERROR_NATIVE_TARGETS, EXEC_PROBE, "probe_event")
+
 
 def _target(target_id: str, salience: float, kind: str = "node") -> FieldAttentionTargetV1:
     return FieldAttentionTargetV1(
@@ -58,7 +70,7 @@ def _make_worker(
 
 def test_maybe_build_goal_returns_none_when_producer_disabled(monkeypatch):
     worker = _make_worker(monkeypatch, producer_enabled=False)
-    real_domain = "node:substrate.execution"
+    real_domain = EXEC_PROBE
     frame = _frame([_target(real_domain, 0.9)])
 
     goal = worker._maybe_build_goal(frame)
@@ -68,7 +80,7 @@ def test_maybe_build_goal_returns_none_when_producer_disabled(monkeypatch):
 def test_maybe_build_goal_returns_none_when_bus_absent(monkeypatch):
     worker = _make_worker(monkeypatch)
     worker._bus = None
-    real_domain = "node:substrate.execution"
+    real_domain = EXEC_PROBE
     frame = _frame([_target(real_domain, 0.9)])
 
     goal = worker._maybe_build_goal(frame)
@@ -77,7 +89,7 @@ def test_maybe_build_goal_returns_none_when_bus_absent(monkeypatch):
 
 def test_maybe_build_goal_returns_none_before_streak_threshold(monkeypatch):
     worker = _make_worker(monkeypatch, min_streak=3)
-    real_domain = "node:substrate.execution"
+    real_domain = EXEC_PROBE
     frame = _frame([_target(real_domain, 0.9)])
 
     goal = worker._maybe_build_goal(frame)  # streak=1
@@ -89,7 +101,7 @@ def test_maybe_build_goal_returns_none_before_streak_threshold(monkeypatch):
 
 def test_maybe_build_goal_returns_real_goal_at_streak_threshold(monkeypatch):
     worker = _make_worker(monkeypatch, min_streak=3)
-    real_domain = "node:substrate.execution"
+    real_domain = EXEC_PROBE
     frame = _frame([_target(real_domain, 0.77)])
 
     worker._maybe_build_goal(frame)  # streak=1
@@ -126,9 +138,9 @@ def test_maybe_build_goal_lazy_loads_streak_from_store_once(monkeypatch):
     every tick, since the in-memory value is authoritative once loaded."""
     worker = _make_worker(monkeypatch, min_streak=5)
     worker._node_streak = None
-    persisted = DominanceStreak(target_id="node:substrate.execution", count=2)
+    persisted = DominanceStreak(target_id=EXEC_PROBE, count=2)
     worker._store.load_node_dominance_streak.return_value = persisted
-    real_domain = "node:substrate.execution"
+    real_domain = EXEC_PROBE
     frame = _frame([_target(real_domain, 0.9)])
 
     worker._maybe_build_goal(frame)  # loads persisted count=2, advances to 3
@@ -140,7 +152,7 @@ def test_maybe_build_goal_lazy_loads_streak_from_store_once(monkeypatch):
 
 def test_maybe_build_goal_persists_streak_every_tick(monkeypatch):
     worker = _make_worker(monkeypatch, min_streak=3)
-    real_domain = "node:substrate.execution"
+    real_domain = EXEC_PROBE
     frame = _frame([_target(real_domain, 0.9)])
 
     worker._maybe_build_goal(frame)
@@ -157,9 +169,9 @@ async def test_publish_goal_calls_publish_with_reconnect(monkeypatch):
     goal = FieldGoalProvenanceV1(
         subject="attention",
         model_layer="field_attention",
-        entity_id="node:substrate.execution",
+        entity_id=EXEC_PROBE,
         kind="memory.field_goals.proposed.v1",
-        field_target_id="node:substrate.execution",
+        field_target_id=EXEC_PROBE,
         target_kind="node",
         salience_score=0.8,
         source_field_tick_id="tick-1",
@@ -187,9 +199,9 @@ async def test_publish_goal_noop_when_bus_absent(monkeypatch):
     goal = FieldGoalProvenanceV1(
         subject="attention",
         model_layer="field_attention",
-        entity_id="node:substrate.execution",
+        entity_id=EXEC_PROBE,
         kind="memory.field_goals.proposed.v1",
-        field_target_id="node:substrate.execution",
+        field_target_id=EXEC_PROBE,
         target_kind="node",
         salience_score=0.8,
         source_field_tick_id="tick-1",
@@ -315,8 +327,9 @@ from app.store import AttentionRuntimeStore
 
 
 def _probe(monkeypatch):
-    """The bridge needs TWO goal-eligible candidates. execution is the last native prediction-error
-    target since biometrics was retired 2026-11-18 (#3575), so these tests add a test-only one."""
+    """The bridge needs TWO goal-eligible candidates. No native prediction-error target is live
+    (biometrics retired 2026-11-18, #3575; execution 2026-11-24, #3576), so these tests add a second
+    test-only one beside EXEC_PROBE."""
     from orion.attention.field_attention import goal_provenance
 
     monkeypatch.setattr(goal_provenance, "PREDICTION_ERROR_NATIVE_TARGETS",
@@ -346,7 +359,7 @@ def _receipt(caplog) -> str:
 
 
 def _two_candidates():
-    return _frame([_target("node:substrate.execution", 0.9), _target("node:substrate.probe", 0.6)])
+    return _frame([_target(EXEC_PROBE, 0.9), _target("node:substrate.probe", 0.6)])
 
 
 def test_bridge_goal_targets_the_competing_candidate_and_says_so(monkeypatch, caplog):
@@ -364,7 +377,7 @@ def test_bridge_falls_back_and_records_not_in_competition(monkeypatch, caplog):
     caplog.set_level(logging.INFO)
     worker = _bridge_worker(monkeypatch, competing={"node:substrate.chat"})
     goal = _emit_twice(worker, _two_candidates())
-    assert goal.field_target_id == "node:substrate.execution"
+    assert goal.field_target_id == EXEC_PROBE
     assert _receipt(caplog) == "not_in_competition"
 
 
@@ -379,7 +392,7 @@ def test_bridge_kill_switch_never_reads_the_store(monkeypatch, caplog):
     caplog.set_level(logging.INFO)
     worker = _bridge_worker(monkeypatch, competing={"node:substrate.probe"}, reads_competition=False)
     goal = _emit_twice(worker, _two_candidates())
-    assert goal.field_target_id == "node:substrate.execution"  # pre-bridge behaviour exactly
+    assert goal.field_target_id == EXEC_PROBE  # pre-bridge behaviour exactly
     assert _receipt(caplog) == "unavailable"
     worker._store.load_competing_loop_refs.assert_not_called()
 
@@ -388,8 +401,8 @@ def test_bridge_skips_the_read_when_it_cannot_matter(monkeypatch):
     """With fewer than two qualified candidates no competition set can change
     the answer, so the cross-service read is not made (review finding)."""
     worker = _bridge_worker(monkeypatch, competing={"node:substrate.probe"})
-    goal = _emit_twice(worker, _frame([_target("node:substrate.execution", 0.9)]))
-    assert goal is not None and goal.field_target_id == "node:substrate.execution"
+    goal = _emit_twice(worker, _frame([_target(EXEC_PROBE, 0.9)]))
+    assert goal is not None and goal.field_target_id == EXEC_PROBE
     worker._store.load_competing_loop_refs.assert_not_called()
 
 
@@ -442,8 +455,8 @@ def _store_with(row):
 
 
 def test_store_reader_returns_node_refs_from_a_fresh_projection():
-    store = _store_with({"loops_type": "array", "refs": ["node:substrate.execution", "node:substrate.biometrics"]})
-    assert store.load_competing_loop_refs(max_age_sec=120.0) == {"node:substrate.execution", "node:substrate.biometrics"}
+    store = _store_with({"loops_type": "array", "refs": [EXEC_PROBE, "node:substrate.biometrics"]})
+    assert store.load_competing_loop_refs(max_age_sec=120.0) == {EXEC_PROBE, "node:substrate.biometrics"}
 
 
 def test_store_reader_distinguishes_unknown_from_empty():

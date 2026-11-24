@@ -433,8 +433,12 @@ class AdmissionRuntime:
             gather=lambda brief, run_id: store.gather_material(
                 self.pool, lambda key: runner._bus.redis.get(key), brief, run_id, now=self.now()),
             read_receipt=lambda day: store.read_receipt(self_dir, day),
+            read_totals=lambda day: store.read_totals(self_dir, day),
             resolve_refs=lambda refs: store.resolve_refs(self.pool, refs),
-            resolve_ref_texts=lambda refs: store.resolve_refs(self.pool, refs, full=True),
+            # The judge's read: + detail, and a reminiscence receipt reads as its saved note (the ledger dir, #3739).
+            resolve_ref_texts=lambda refs: store.resolve_refs(
+                self.pool, refs, full=True,
+                self_dir=getattr(self.settings, "reminiscence_ledger_dir", "/mnt/orion-fcc/self")),
             known_referents=lambda: store.known_referents(self.pool),
             persist=lambda fields, result, route: store.persist_dream_day(self.pool, fields, result, route),
             record_cites=lambda shown_id, cites, ref: store.record_cites(shown_id, cites, ref),

@@ -30,6 +30,26 @@ from orion.substrate.street_attention import (
     street_handoff_raw_reading,
 )
 
+
+# node:substrate.execution was retired 2026-11-24 (#3576). Its role here (a live event-written level
+# body node) is played by the test-only EVENT_BODY probe from tests/fixtures/self_readings_history.py.
+import importlib.util as _probe_ilu  # noqa: E402
+from pathlib import Path as _ProbePath  # noqa: E402
+
+_probe_spec = _probe_ilu.spec_from_file_location(
+    "self_readings_history_probe_test_street_attention",
+    _ProbePath(__file__).resolve().parents[3] / "tests" / "fixtures" / "self_readings_history.py",
+)
+_probe_fx = _probe_ilu.module_from_spec(_probe_spec)
+_probe_spec.loader.exec_module(_probe_fx)
+EVENT_BODY = _probe_fx.EVENT_BODY
+
+
+@pytest.fixture(autouse=True)
+def _install_probe_glossary(monkeypatch):
+    _probe_fx.install_probe_glossary(monkeypatch)
+
+
 NOW = datetime(2026, 10, 20, 18, 0, 0, tzinfo=timezone.utc)
 T = NOW.timestamp()
 UP = {"walkway": T - 5.0, "doorbell": T - 30.0}
@@ -213,10 +233,10 @@ def test_a_ring_beats_busy_perception_and_a_high_body_node() -> None:
     r = random.Random(3)
     street = _street_candidate(1.0)
     perception = _cand("node:substrate.perception", 0.9, [r.random() * 0.5 for _ in range(1960)] + [0.95] * 40)
-    body = _cand("node:substrate.execution", 0.8, [r.random() * 0.5 for _ in range(1900)] + [0.85] * 100)
+    body = _cand(EVENT_BODY, 0.8, [r.random() * 0.5 for _ in range(1900)] + [0.85] * 100)
     ranking = rank_candidates([perception, body, street])
     assert [v.candidate.source_id for v in ranking.eligible] == [
-        STREET_NODE_ID, "node:substrate.perception", "node:substrate.execution",
+        STREET_NODE_ID, "node:substrate.perception", EVENT_BODY,
     ]
 
 

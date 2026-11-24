@@ -1,4 +1,4 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-thought
+-- ORION-MIGRATION-REQUIRED-BY: orion-thought, orion-hub, orion-cortex-exec, orion-durable-runs
 -- Reveries that ask, Patch 1 (docs/superpowers/specs/2026-11-18-reverie-questions-design.md).
 -- Contract: orion/schemas/reverie.py (ReverieQuestionV1 is one row of this table).
 --
@@ -6,10 +6,11 @@
 -- was none), why code refused it if it did, and where it was routed. Single writer:
 -- services/orion-thought/app/store.py persist_reverie_question (INSERT ... ON CONFLICT (question_id) DO
 -- NOTHING, then one UPDATE of routed_to/route_note after the route). `outcome` is filled by Patch 3 when
--- the dig ends. Readers: orion-thought (quiet gate: a row since the stretch began spends it; seed picker:
--- least recently used kind and spent refs; near-duplicate refusal), the chronicle (orion-durable-runs
--- temporal_self_sources.py, source kind reverie_question), Hub's reverie surfaces, the situation brief,
--- Prime's frame and the day letter.
+-- the dig ends. Readers (all listed in REQUIRED-BY): orion-thought (quiet gate, seed picker, near-duplicate
+-- refusal, the painting's reverie seed), orion-hub (reverie tab, observability panel, the day letter's
+-- gather), orion-cortex-exec (situation brief and the chat-stance glimpse lane), orion-durable-runs (the
+-- chronicle, source kind reverie_question). Each degrades to "no rows" while the table is missing, but
+-- the deploy gate keeps them from starting before it exists.
 --
 -- Additive and idempotent (post-pull auto-apply allowlist: create table / create index only).
 -- The orion_readonly grant is a separate file, applied by hand after this:

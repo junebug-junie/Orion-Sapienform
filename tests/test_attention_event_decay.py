@@ -29,10 +29,30 @@ from orion.attention.world_first import (
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
 from orion.substrate.prediction_error_magnitude import compute_prediction_error_magnitude
 
+
+# node:substrate.execution was retired 2026-11-24 (#3576). Its role here (a live event-written level
+# body node) is played by the test-only EVENT_BODY probe from tests/fixtures/self_readings_history.py.
+import importlib.util as _probe_ilu  # noqa: E402
+from pathlib import Path as _ProbePath  # noqa: E402
+
+_probe_spec = _probe_ilu.spec_from_file_location(
+    "self_readings_history_probe_test_attention_event_decay",
+    _ProbePath(__file__).resolve().parents[1] / "tests" / "fixtures" / "self_readings_history.py",
+)
+_probe_fx = _probe_ilu.module_from_spec(_probe_spec)
+_probe_spec.loader.exec_module(_probe_fx)
+EVENT_BODY = _probe_fx.EVENT_BODY
+
+
+@pytest.fixture(autouse=True)
+def _install_probe_glossary(monkeypatch):
+    _probe_fx.install_probe_glossary(monkeypatch)
+
+
 NOW = datetime(2026, 10, 10, 5, 51, 3, tzinfo=timezone.utc)
-# The live case was node:substrate.codebase (retired 2026-11-13); execution is the
+# The live case was node:substrate.codebase (retired 2026-11-13), then execution (retired 2026-11-24); the probe is the
 # same event-written level shape ("only written when a batch carried ...").
-CODEBASE = "node:substrate.execution"
+CODEBASE = EVENT_BODY
 BIOMETRICS = "node:prediction.body_joint"  # per-tick body rival (biometrics retired 2026-11-18, #3575)
 
 # A codebase-shaped week: written every 15 min, 91% exact zeros.
@@ -63,7 +83,10 @@ def _level(node_id: str, pct: float, *, age: float = 20.0, value: float = 0.3):
 
 def test_event_written_set_comes_from_glossary_semantics() -> None:
     expected = {
-        "node:substrate.execution": True,   # designed_sparse, "only written when a batch carried..."
+        # Test-only probes (installed by the autouse fixture): node:substrate.execution's shape
+        # (retired 2026-11-24, #3576) and biometrics' per-tick shape (retired 2026-11-18, #3575).
+        EVENT_BODY: True,   # designed_sparse, "only written when a batch carried..."
+        _probe_fx.CONTINUOUS_BODY: False,  # per_tick, carried forward between samples
         # event_gated: one write per settled chat turn (2026-11-13; replaced node:substrate.chat).
         "node:prediction.chat_turn": True,
         # designed_sparse, "only written as 1.0 at a strain news event, then carried unwritten"
@@ -175,11 +198,11 @@ def test_a_fresh_event_is_not_penalised_against_a_per_tick_rival() -> None:
     m = PredictionErrorMagnitudeV1(
         value=1.0, age_sec=30, percentile_now=0.965, n_readings_7d=1000, band="high", trend="flat"
     )
-    ex = node_candidate(node_id="node:substrate.execution", label="x", magnitude=m, observed_at=NOW, now=NOW,
+    ex = node_candidate(node_id=EVENT_BODY, label="x", magnitude=m, observed_at=NOW, now=NOW,
                         history_values=[0.0] * 900 + [0.5] * 65 + [1.0] * 35)
     rival = _level(BIOMETRICS, 0.975)   # a live per-tick level (bus_synaptic retired 2026-11, #3201)
     assert judge_candidate(rival).eligible   # the rival really competes
-    assert rank_candidates([rival, ex]).winner.candidate.source_id == "node:substrate.execution"
+    assert rank_candidates([rival, ex]).winner.candidate.source_id == EVENT_BODY
 
 
 def test_a_fading_event_yields_to_a_fresh_body_alarm() -> None:
@@ -212,7 +235,7 @@ def test_a_storm_that_keeps_writing_stays_eligible() -> None:
         for probe in (5, 70, 134):
             now = t + timedelta(seconds=probe)
             m = compute_prediction_error_magnitude(value=1.0, observed_at=t, history=hist, now=now)
-            c = node_candidate(node_id="node:substrate.execution", label="e", magnitude=m,
+            c = node_candidate(node_id=EVENT_BODY, label="e", magnitude=m,
                                observed_at=t, now=now, history_values=[v for _, v in hist])
             assert judge_candidate(c).eligible, (k, probe)
         t += timedelta(seconds=135)
@@ -233,7 +256,7 @@ def test_a_storm_still_wins_against_a_per_tick_rival_after_every_write() -> None
         for probe in range(5, 135, 10):
             now = t + timedelta(seconds=probe)
             m = compute_prediction_error_magnitude(value=1.0, observed_at=t, history=hist, now=now)
-            c = node_candidate(node_id="node:substrate.execution", label="e", magnitude=m,
+            c = node_candidate(node_id=EVENT_BODY, label="e", magnitude=m,
                                observed_at=t, now=now, history_values=[v for _, v in hist])
             r = rank_candidates([c, rival])
             assert any(v.candidate is c for v in r.eligible)

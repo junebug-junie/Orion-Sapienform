@@ -16,8 +16,9 @@ fixed seed prompt for the very first run), not a fabricated stand-in for the
 context-seeding that patch did not own.
 
 Patch 3 (shipped 2026-08-26): real context-seeding. `build_visual_prompt` now
-also takes `context_text` -- the text reverie chain's own most recent, real
-(non-hollow) narration (`store.load_latest_reverie_interpretation`), a
+also takes `context_text` -- since 2026-11-24 the newest accepted reverie
+question (`store.load_latest_reverie_question_context`; the narrated-thought
+seed it replaced was retired with the narration chain), a
 deliberately narrow first slice of the design doc's full "recent activity /
 chat / dream" list (§1): already-summarized content that already reaches the
 same Hub Reverie tab this feeds, so no new privacy surface (see that store
@@ -243,7 +244,7 @@ from .store import (
     acknowledge_visual_production,
     load_episode_memory_seed,
     load_latest_memory_crystallization,
-    load_latest_reverie_interpretation,
+    load_latest_reverie_question_context,
     load_latest_self_study_reflection,
     load_latest_visual_chain_continuity_state,
     persist_reverie_visual_chain,
@@ -1029,7 +1030,7 @@ async def compute_visual_plan(
     ) = await asyncio.gather(
         asyncio.to_thread(load_latest_visual_chain_continuity_state, with_identity=True),
         asyncio.to_thread(
-            load_latest_reverie_interpretation,
+            load_latest_reverie_question_context,
             char_limit=settings.reverie_context_char_limit,
             max_age_sec=settings.reverie_context_max_age_sec,
         ),

@@ -81,7 +81,7 @@ LIVED_MEMORY_COLLECTION = "orion_lived_memory"
 
 
 class ReverieLlmUnavailable(RuntimeError):
-    """The agent lane refused the question call (``gpu_pool_unavailable[:<reason>]``, or a timeout).
+    """The question call got no answer: a pool refusal, any non-success plan, a thrown exec RPC error, or a timeout.
 
     The model was never asked (or never answered), so this says nothing about the seed: no row is written
     and the stretch is not spent (spec "A refused lane does not spend the stretch")."""
@@ -110,6 +110,8 @@ def _count_skip(reason: str, **fields: Any) -> None:
 
 # Per stretch (keyed by its start): lane refusals so far, and "no seed had material" (so a stretch with
 # nothing to think about is not re-read every poll). Bounded: only the last few stretches are kept.
+# In memory on purpose: a restart of orion-thought gives the current stretch 3 more tries (and one more
+# material read). That is acceptable: restarts are rare and a stretch still writes at most one row.
 _STRETCH_REFUSALS: dict[str, int] = {}
 _STRETCH_NO_MATERIAL: dict[str, bool] = {}
 _STRETCH_MEMORY = 8
@@ -291,10 +293,17 @@ async def ask_model(
                                            timeout_sec=settings.stance_react_timeout_sec)
     except asyncio.TimeoutError as exc:
         raise ReverieLlmUnavailable("timeout") from exc
+    except RuntimeError as exc:  # cortex_client: "Exec RPC failed: ..." / non-dict payload
+        raise ReverieLlmUnavailable(f"exec_rpc:{str(exc)[:160]}") from exc
     ok = isinstance(result, dict) and result.get("status") == "success"
-    failure = None if ok else exec_failure_reason(result)
-    if failure is not None and is_gpu_pool_refusal(failure):
-        raise ReverieLlmUnavailable(failure)
+    if not ok:
+        # Any plan that did not succeed is "the model never answered", not an answer: a pool refusal, a
+        # gateway capacity reject, an upstream 500, a failed step. None of them spends the stretch; each
+        # counts toward the 3 refusals (review of #3814). Pool refusals keep their shed reason.
+        failure = exec_failure_reason(result) if isinstance(result, dict) else None
+        reason = failure or f"exec_status:{(result or {}).get('status') if isinstance(result, dict) else 'none'}"
+        raise ReverieLlmUnavailable(reason if is_gpu_pool_refusal(reason) or reason.startswith("exec_") else
+                                    f"exec_failed:{reason}"[:300])
     payload = extract_stance_react_payload(result)
     model_id = None
     if isinstance(payload, dict) and payload.get("model_id"):
@@ -424,8 +433,12 @@ async def _run(deps: ReverieDeps) -> ReverieQuestionV1 | None:
     except Exception as exc:  # noqa: BLE001 -- an unreadable gate is a shut gate
         _count_skip("gate_unreadable", err=type(exc).__name__)
         return None
-    inputs = QuietGateInputs(now=deps.now(), arousal_level=level, last_winner_at=rows.get("last_winner_at"),
+    # The gate's clock. The row is stamped with it (not with the clock after the model call), so a winner
+    # that lands during a slow call starts a NEW stretch the row does not spend (review of #3814).
+    gate_now = deps.now()
+    inputs = QuietGateInputs(now=gate_now, arousal_level=level, last_winner_at=rows.get("last_winner_at"),
                              latest_tick_at=rows.get("latest_tick_at"),
+                             oldest_tick_at=rows.get("oldest_tick_at"),
                              rows_since_stretch=int(rows.get("rows_since_stretch") or 0),
                              rows_last_24h=int(rows.get("rows_last_24h") or 0))
     gate = dict(min_calm_sec=settings.reverie_quiet_min_calm_sec, max_per_day=settings.reverie_max_per_day)
@@ -475,7 +488,7 @@ async def _run(deps: ReverieDeps) -> ReverieQuestionV1 | None:
     question = ReverieQuestionV1(
         question_id=question_id, thread_id=thread_id, thread_key=seed.thread_key, seed_kind=seed.kind,
         seed_refs=list(seed.refs), seed_material=seed.material, correlation_id=correlation_id,
-        model_id=model_id, created_at=deps.now(), **fields,
+        model_id=model_id, created_at=gate_now, **fields,
     )
     if not await deps.persist(question):
         _count_skip("persist_failed", q=question_id)

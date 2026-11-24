@@ -4,6 +4,7 @@ open row carries the association only when one renders, settings/flag wiring."""
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+import pytest  # noqa: E402
 
 import orion.attention.self_signal_outcomes as sso  # noqa: E402
 from app.pe_history_reader import NodePeHistoryReadError  # noqa: E402
@@ -30,7 +33,22 @@ from orion.schemas.attention_frame import PredictionErrorMagnitudeV1  # noqa: E4
 from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1  # noqa: E402
 
 NOW = datetime(2026, 10, 14, 5, 20, tzinfo=timezone.utc)
-BIO = "node:substrate.execution"  # live per-tick body vehicle (biometrics retired 2026-11-18, #3575)
+_REPO = Path(__file__).resolve().parents[3]
+_spec = importlib.util.spec_from_file_location(
+    "self_readings_history_outcome_rollup", _REPO / "tests" / "fixtures" / "self_readings_history.py"
+)
+fx = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fx)  # type: ignore[union-attr]
+
+# Self-signals are node:substrate.* body nodes only. No live one is a per-tick level any more
+# (biometrics retired 2026-11-18, #3575) or event-written level (execution retired 2026-11-24,
+# #3576), so the vehicles are the fixture's test-only probes.
+BIO = fx.CONTINUOUS_BODY
+
+
+@pytest.fixture(autouse=True)
+def _probe_glossary(monkeypatch):
+    fx.install_probe_glossary(monkeypatch)
 
 
 class FakeReader:
@@ -234,7 +252,7 @@ def test_a_restart_seeds_the_run_from_persisted_rows_and_cycles_extend_it() -> N
 # --- the episode open row ------------------------------------------------------------------------
 
 T0 = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
-BUS = "node:substrate.execution"  # any live PE node; bus_synaptic and biometrics retired 2026-11 (#3575)
+BUS = fx.EVENT_BODY  # test-only probe; bus_synaptic, biometrics and execution retired 2026-11
 HOT = PredictionErrorMagnitudeV1(value=0.12, age_sec=5.0, percentile_now=0.97, n_readings_7d=5000,
                                  band="high", p50_7d=0.03, p90_7d=0.06)
 

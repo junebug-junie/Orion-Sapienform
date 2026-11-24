@@ -53,13 +53,10 @@ enforces this at startup. If they drift, images 404 with "artifact file
 missing on disk" even though the DB rows are fine.
 
 **Privacy note** (design doc §7, revisited for Patch 3 as this comment
-required): the prompt now also includes Orion's own reverie-thought
-interpretation (`orion-thought`'s `store.load_latest_reverie_interpretation`)
-as a context-seed. This crosses no NEW privacy boundary: interpretation text
-is the text chain's own narration, already gated by the coalition-grounding +
-hollow guard (`orion/schemas/reverie.py`) before a row is ever written, and
-already surfaced verbatim by this same tab's sibling `text_recent` endpoint
-below -- a second consumer of an already-exposed field, not a new exposure.
+required; updated 2026-11-24): the prompt also includes Orion's newest accepted reverie question
+(`orion-thought`'s `store.load_latest_reverie_question_context`) as a context-seed. This crosses no
+NEW privacy boundary: the question is already shown verbatim by this tab's sibling
+`questions_recent` endpoint below -- a second consumer of an already-exposed field.
 No raw chat/dream content reaches the prompt (still a deliberately narrow
 first slice of design doc §1's full "recent activity, chats, dreams" list) --
 widening the source set further is a separate, later change that must redo

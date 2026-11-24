@@ -18,6 +18,17 @@ _spec = importlib.util.spec_from_file_location(
 fx = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fx)  # type: ignore[union-attr]
 NOW = fx.NOW
+# node:substrate.execution was retired 2026-11-24 (#3576). Its role in these tests (an
+# event-written level body signal that reaches the prompt) is played by the test-only EVENT_BODY
+# probe; the glossary probes are installed for every test except the one pinning the real list.
+EVENT_BODY = fx.EVENT_BODY
+_REAL_GLOSSARY_TESTS = {"test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_placeholder"}
+
+
+@pytest.fixture(autouse=True)
+def _install_probe_glossary(request, monkeypatch):
+    if request.function.__name__ not in _REAL_GLOSSARY_TESTS:
+        fx.install_probe_glossary(monkeypatch)
 
 
 def _cache(rows, now=NOW) -> NodePeHistoryCache:
@@ -34,7 +45,6 @@ def test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_plac
     nodes = sr.prompt_reaching_nodes()
     assert nodes == sorted([
         "node:substrate.cabinet",
-        "node:substrate.execution",
         "node:substrate.strain",
         # forecast surprise (value_kind surprise_excess, 2026-11-11): a measurement, the body.
         "node:prediction.body", "node:prediction.room",
@@ -46,6 +56,7 @@ def test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_plac
     ])
     assert "node:prediction.room_joint" not in nodes
     assert "node:substrate.biometrics" not in nodes
+    assert "node:substrate.execution" not in nodes  # retired 2026-11-24 (#3576)
     # bus_synaptic and route retired 2026-11 (PE suite rebuild step 5), chat 2026-11-13 (step 6).
     assert "node:substrate.bus_synaptic" not in nodes and "node:substrate.route" not in nodes
     assert "node:substrate.chat" not in nodes
@@ -80,12 +91,12 @@ def test_a_real_high_signal_renders_with_its_row_ref() -> None:
     block = sr.project_self_readings(_cache(fx.busy_body_rows()), now=NOW)
     assert block.skip_reason is None
     by = _by_id(block.readings)
-    ex = by["node:substrate.execution"]
+    ex = by[EVENT_BODY]
     assert ex.unusual and ex.state == "live" and ex.value == 1.0
-    assert ex.ref == "pe:execution@2026-10-14T03:29:30Z"
-    assert ex.source_ref.startswith("substrate_node_prediction_error_history:node:substrate.execution@")
+    assert ex.ref == "pe:probe_event@2026-10-14T03:29:30Z"
+    assert ex.source_ref.startswith("substrate_node_prediction_error_history:node:substrate.probe_event@")
     assert f"[{ex.ref}]" in block.text
-    assert "node:substrate.execution" in block.shown
+    assert EVENT_BODY in block.shown
     assert block.text.endswith("Nothing else I can read is unusual right now.")
 
 
@@ -172,9 +183,9 @@ def test_caps_on_count_and_chars() -> None:
 
 
 def test_event_reading_past_its_orienting_window_is_not_news() -> None:
-    later = NOW + timedelta(seconds=400)  # execution's spike is now 430 s old
+    later = NOW + timedelta(seconds=400)  # the event probe's spike is now 430 s old
     readings = _by_id(sr.build_self_readings(_cache(fx.busy_body_rows()), now=later))
-    ex = readings["node:substrate.execution"]
+    ex = readings[EVENT_BODY]
     assert ex.state == "live" and not ex.unusual
     assert "orienting window" in ex.reason
 
@@ -199,12 +210,12 @@ def test_unreadable_glossary_renders_nothing(monkeypatch) -> None:
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
 def test_non_finite_latest_value_is_no_reading_never_a_measurement(bad) -> None:
-    rows = fx.busy_body_rows() + [("node:substrate.execution", NOW - timedelta(seconds=3), bad)]
+    rows = fx.busy_body_rows() + [(EVENT_BODY, NOW - timedelta(seconds=3), bad)]
     block = sr.project_self_readings(_cache(rows), now=NOW)
-    execution = _by_id(block.readings)["node:substrate.execution"]
+    execution = _by_id(block.readings)[EVENT_BODY]
     assert execution.state == "no_reading" and execution.value is None and not execution.unusual
     assert "inf" not in block.text and "nan" not in block.text
-    assert "execution (no reading)" in block.text
+    assert "probe_event (no reading)" in block.text
 
 
 def test_calm_with_unread_signals_is_not_logged_all_calm(monkeypatch) -> None:
@@ -268,12 +279,12 @@ def test_no_association_is_byte_identical_to_before() -> None:
 
 
 def test_an_unusual_reading_gets_its_cited_clause() -> None:
-    exe = "node:substrate.execution"
+    exe = EVENT_BODY
     readings = sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW, associations={exe: _assoc(exe)})
     # Two readings shown leave room for the clause under the 600-char cap (three do not: see below).
     block = sr.render_self_readings(readings, now=NOW, max_shown=2)
-    line = next(ln for ln in block.text.splitlines() if "task execution" in ln)
-    assert line.endswith("[pe:execution@2026-10-14T03:29:30Z]; " + _CLAUSE)
+    line = next(ln for ln in block.text.splitlines() if "probe_event signal" in ln)
+    assert line.endswith("[pe:probe_event@2026-10-14T03:29:30Z]; " + _CLAUSE)
     r = _by_id(block.readings)[exe]
     assert r.tends_to == _CLAUSE and r.outcome_association_id == "ssa-0123456789"
 
@@ -288,12 +299,17 @@ def test_a_clause_never_attaches_to_a_calm_or_unread_signal() -> None:
 
 def test_the_clause_is_dropped_before_a_reading_would_be(monkeypatch) -> None:
     fx.install_probe_glossary(monkeypatch)  # continuous body probe (biometrics retired, #3575)
-    nodes = ["node:substrate.execution", fx.CONTINUOUS_BODY, "node:substrate.cabinet"]
+    nodes = [EVENT_BODY, fx.CONTINUOUS_BODY, "node:substrate.cabinet"]
     readings = sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW,
                                       associations={n: _assoc(n) for n in nodes})
     plain = sr.render_self_readings(sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW), now=NOW)
-    block = sr.render_self_readings(readings, now=NOW)
-    assert len(block.text) <= 600
+    # The probes' short labels leave room under the real 600-char cap that execution's long label
+    # did not (retired 2026-11-24, #3576), so the cap is set just above the clause-free block: three
+    # readings fit, no clause does.
+    cap = len(plain.text) + 20
+    assert cap <= 600
+    block = sr.render_self_readings(readings, now=NOW, max_chars=cap)
+    assert len(block.text) <= cap
     assert block.shown == plain.shown  # every reading still shown
     assert block.text == plain.text  # three readings fill the cap: every clause gave way
 

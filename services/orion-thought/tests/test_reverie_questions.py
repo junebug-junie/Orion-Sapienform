@@ -486,3 +486,108 @@ def test_far_memory_anchor_prefers_orions_own_memories():
     }
     assert s.pick_anchor(docs, set(docs)).doc_id == "episode_memory:e"
     assert s.pick_anchor({"person_fact:p": docs["person_fact:p"]}, {"person_fact:p"}).doc_id == "person_fact:p"
+
+
+# --- review of #3814: stable stretches, the gate clock, every exec failure is a refusal ---------------
+
+
+class Clock:
+    def __init__(self, at):
+        self.at = at
+
+    def __call__(self):
+        return self.at
+
+
+def test_no_winner_in_a_day_gives_a_stable_stretch_and_gives_up_after_three_refusals(clean_state):
+    """No attention winner in 24 h: the stretch is keyed by the oldest broadcast row, not by now - 24 h, so
+    the 3-refusal limit holds while the clock moves on every poll."""
+    f = Fake(ask_raises=clean_state.ReverieLlmUnavailable("gpu_pool_unavailable:shed:cabinet_hot"))
+    clock = Clock(NOW)
+    deps = f.deps()
+    oldest = NOW - timedelta(days=3)
+
+    async def gate_rows():
+        return {"last_winner_at": None, "oldest_tick_at": oldest, "latest_tick_at": clock.at,
+                "rows_since_stretch": 0, "rows_last_24h": 0}
+
+    deps.gate_rows, deps.now = gate_rows, clock
+    for _ in range(6):
+        assert asyncio.run(clean_state.run_reverie_once(deps)) is None
+        clock.at += timedelta(minutes=1)
+    assert f.asked == 3 and f.persisted == []
+
+
+def test_stretch_start_falls_back_to_the_oldest_tick_not_the_moving_lookback():
+    s = seeds()
+    oldest = NOW - timedelta(days=3)
+    assert s.stretch_start_for(NOW, None, oldest) == oldest
+    assert s.stretch_start_for(NOW + timedelta(minutes=5), None, oldest) == oldest
+    assert s.stretch_start_for(NOW, NOW - timedelta(minutes=20), oldest) == NOW - timedelta(minutes=20)
+
+
+def test_a_winner_during_a_slow_call_does_not_spend_the_next_stretch(clean_state):
+    """The row is stamped with the gate's clock. A winner that lands while the model thinks starts a new
+    stretch; the row belongs to the old one, so the new stretch is still open once it is calm enough."""
+    f = Fake()
+    clock = Clock(NOW)
+    deps = f.deps()
+    state = {"winner": NOW - timedelta(minutes=30)}
+
+    async def gate_rows():
+        since = sum(1 for q in f.persisted if q.created_at >= state["winner"])
+        return {"last_winner_at": state["winner"], "latest_tick_at": clock.at,
+                "rows_since_stretch": since, "rows_last_24h": len(f.persisted)}
+
+    slow_ask = deps.ask
+
+    async def ask(seed, corr, now_block):
+        clock.at += timedelta(minutes=5)  # the model thinks for 5 minutes...
+        state["winner"] = clock.at - timedelta(minutes=2)  # ...and something won attention meanwhile
+        return await slow_ask(seed, corr, now_block)
+
+    deps.gate_rows, deps.now, deps.ask = gate_rows, clock, ask
+    first = asyncio.run(clean_state.run_reverie_once(deps))
+    assert first is not None and first.created_at == NOW  # the gate's clock, not the clock after the call
+    clock.at += timedelta(minutes=11)  # the new stretch has been calm for 13 minutes
+    second = asyncio.run(clean_state.run_reverie_once(deps))
+    assert second is not None and len(f.persisted) == 2
+
+
+class _Client:
+    def __init__(self, result=None, raises=None):
+        self.result, self.raises = result, raises
+
+    async def execute_plan(self, **kw):
+        if self.raises:
+            raise self.raises
+        return self.result
+
+
+@pytest.mark.parametrize("result,reason_part", [
+    ({"status": "fail", "error": "gateway_capacity_rejected:capacity_wait_budget_exhausted"}, "gateway_capacity_rejected"),
+    ({"status": "fail", "error": "upstream HTTP 500"}, "upstream HTTP 500"),
+    ({"status": "fail", "steps": [{"status": "fail", "error": "step blew up"}]}, "step blew up"),
+    ({"status": "fail"}, "exec_status:fail"),
+    ({"status": "fail", "error": "gpu_pool_unavailable:shed:cabinet_hot"}, "gpu_pool_unavailable"),
+])
+def test_every_non_success_plan_is_a_lane_refusal_not_an_unparseable_row(result, reason_part):
+    r = rev()
+    with pytest.raises(r.ReverieLlmUnavailable) as err:
+        asyncio.run(r.ask_model(object(), _seed(), correlation_id="c", orion_now="", client=_Client(result)))
+    assert reason_part in err.value.reason
+
+
+def test_a_thrown_exec_rpc_error_is_a_lane_refusal():
+    r = rev()
+    with pytest.raises(r.ReverieLlmUnavailable) as err:
+        asyncio.run(r.ask_model(object(), _seed(), correlation_id="c", orion_now="",
+                                client=_Client(raises=RuntimeError("Exec RPC failed: boom"))))
+    assert err.value.reason.startswith("exec_rpc")
+
+
+def test_a_failed_plan_counts_toward_the_three_refusals_and_writes_no_row(clean_state):
+    f = Fake(ask_raises=clean_state.ReverieLlmUnavailable("exec_failed:upstream HTTP 500"))
+    for _ in range(4):
+        assert asyncio.run(clean_state.run_reverie_once(f.deps())) is None
+    assert f.asked == 3 and f.persisted == []

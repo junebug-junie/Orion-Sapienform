@@ -52,11 +52,16 @@ def test_new_opens_one_concern_like_a_letter_thread_and_replays_open_nothing_twi
     assert len(again.concerns) == len(st.concerns) and done2.opened == []
 
 
-def test_new_without_room_is_counted_never_displaces():
+def test_new_without_room_waits_for_a_slot_never_displaces_here():
     full = _state(*[f"c{i}" for i in range(MAX_CONCERNS)])
     st, done = dd.apply_plan(full, DAY, _plan({"action": "new", "gist": "x"}), NOW)
     assert [c.concern_id for c in st.concerns] == [c.concern_id for c in full.concerns]
-    assert done.skipped == ["new: no room"] and done.opened == []
+    assert done.skipped == ["new: no room, waiting for a slot"] and done.opened == []
+    # #3610 patch 2: it waits (the contest on Prime's tick decides), never forgotten; applied twice, queued once.
+    assert [w.concern_id for w in st.waiting] == [dd.dream_concern_id(DAY, 0)]
+    assert st.waiting[0].event_ref == "dream_day:2026-11-17#new0" and st.waiting[0].act_opened_at is None
+    again, _ = dd.apply_plan(st, DAY, _plan({"action": "new", "gist": "x"}), NOW)
+    assert len(again.waiting) == 1
 
 
 def test_a_drop_frees_room_for_the_new_in_the_same_plan():

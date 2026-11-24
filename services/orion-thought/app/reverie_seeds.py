@@ -52,6 +52,10 @@ class QuietGateInputs:
     rows_since_stretch: int  # reverie_question rows created at or after the stretch start
     rows_last_24h: int
     lane_refusals_this_stretch: int = 0
+    # Oldest broadcast row still in the log. When nothing won attention inside STRETCH_LOOKBACK, the stretch
+    # starts here: a STABLE key (review of #3814: "now - 24 h" moved every poll, so the 3-refusal limit and
+    # the no-material memo never matched). Moves only when the log's retention prunes its tail.
+    oldest_tick_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -62,8 +66,17 @@ class QuietGateDecision:
     calm_sec: float
 
 
-def stretch_start_for(now: datetime, last_winner_at: datetime | None) -> datetime:
-    return last_winner_at if last_winner_at is not None else now - STRETCH_LOOKBACK
+def stretch_start_for(
+    now: datetime, last_winner_at: datetime | None, oldest_tick_at: datetime | None = None
+) -> datetime:
+    """The quiet stretch's start: the last tick with a winner; with no winner inside STRETCH_LOOKBACK, the
+    oldest broadcast row (stable across polls); with no broadcast rows at all, now - STRETCH_LOOKBACK (the
+    gate is shut then anyway: broadcast_stale)."""
+    if last_winner_at is not None:
+        return last_winner_at
+    if oldest_tick_at is not None:
+        return oldest_tick_at
+    return now - STRETCH_LOOKBACK
 
 
 def quiet_gate(
@@ -75,7 +88,7 @@ def quiet_gate(
     max_lane_refusals: int = MAX_LANE_REFUSALS,
 ) -> QuietGateDecision:
     """Whether a reverie may start now, and why not. Pure; the order of checks is the order of cost."""
-    start = stretch_start_for(i.now, i.last_winner_at)
+    start = stretch_start_for(i.now, i.last_winner_at, i.oldest_tick_at)
     calm = max(0.0, (i.now - start).total_seconds())
 
     def shut(reason: str) -> QuietGateDecision:
@@ -108,6 +121,8 @@ WHERE generated_at > now() - interval '24 hours'
        OR coalesce(projection_json->>'selected_open_loop_id', '') <> '')
 """
 LATEST_TICK_SQL = "SELECT max(generated_at) AS latest_tick_at FROM substrate_attention_broadcast_log"
+# Index-backed (idx_attention_broadcast_log_generated); read only when no winner in 24 h.
+OLDEST_TICK_SQL = "SELECT min(generated_at) AS oldest_tick_at FROM substrate_attention_broadcast_log"
 
 
 # --- seed picker -----------------------------------------------------------------------------------

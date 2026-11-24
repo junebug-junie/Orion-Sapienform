@@ -658,6 +658,10 @@ class BiometricsSubstrateWorker:
         # on different threads. Built here, not lazily, so the two first callers
         # cannot each build their own lock (review 2026-10-21).
         self._perception_room_score_lock = threading.Lock()
+        # Camera scene change (PE retire Patch 3): one scorer per camera node, shared by the frame
+        # listener (stage 1) and the tick (stage 2). Built here for the same reason as the lock above.
+        self._scene_change_scorer_lock = threading.Lock()
+        self._scene_change_scorers: dict[str, Any] = {}
         # World-model publish tick: the execution prediction-error scalar it
         # used to cache here (_last_execution_prediction_error) was retired
         # 2026-11-24 with node:substrate.execution (#3576). The
@@ -2397,16 +2401,19 @@ class BiometricsSubstrateWorker:
         hiccup at boot never overwrites 24 h of saved values), and saves it when a value is added.
         """
         with self._scene_change_lock():
+            needs_restore = not self._scene_change_scorer_for(node_id).restored
+        if needs_restore:
+            # The DB read happens outside the lock: the frame listener never waits on Postgres.
+            try:
+                payload = self._store.load_scene_change_stage2(node_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("substrate_scene_change_stage2_load_failed node_id=%s err=%s", node_id, exc)
+                payload = False
+        with self._scene_change_lock():
             scorer = self._scene_change_scorer_for(node_id)
-            if not scorer.restored:
-                try:
-                    payload = self._store.load_scene_change_stage2(node_id)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("substrate_scene_change_stage2_load_failed node_id=%s err=%s", node_id, exc)
-                    payload = False
-                if payload is not False:
-                    n = scorer.restore_stage2(payload, now=now)
-                    logger.info("substrate_scene_change_stage2_restored node_id=%s values=%d", node_id, n)
+            if needs_restore and payload is not False and not scorer.restored:
+                n = scorer.restore_stage2(payload, now=now)
+                logger.info("substrate_scene_change_stage2_restored node_id=%s values=%d", node_id, n)
             reading, sampled = scorer.tick(now)
             snapshot = scorer.stage2_to_json() if sampled and scorer.restored else None
         if snapshot is not None:

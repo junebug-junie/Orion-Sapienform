@@ -45,10 +45,10 @@ doorbell 2, Maeve 2). So "merge" is mostly a display problem, not a data problem
     (`right | wrong_name | wrong_motion | wrong_other`, or "can't tell") to
     `vision_motion_story_verdict`. The gate needs 50 checked, 80% right, 0 wrong names.
   - `POST .../{story_id}/people/{individual_id}` writes an already-answered
-    `orion_ask` row: a name is a `vision_individual` answer; "yes" (PR 1),
+    `orion_ask` row: a name, and "yes" (PR 1), are `vision_individual` answers
+    (a yes also carries one `same` picture verdict per picture shown);
     "someone else" and "not sure" are `vision_story_person` rows whose
-    `answer_detail.pictures` hold one picture verdict (`same | different | unsure`)
-    per picture shown.
+    `answer_detail.pictures` hold one `different | unsure` verdict per picture shown.
 - **Writer:** `services/orion-sql-writer/app/vision_individuals.py`
   (`_apply_answers` -> `_apply_typed_name` / `_record_pictures` into
   `vision_ask_picture_verdict`), then `app/vision_split.py` splits on
@@ -95,7 +95,8 @@ The card shows one person, not a list. A person here is one linked group
   and the big picture with only their box numbers called out.
 - Question: "Is this Addy?" when the group has a name; "Who is this?" when not.
 - Three answers:
-  - **Yes, that's Addy** -> `same` picture verdicts on the pictures shown (PR 1 path).
+  - **Yes, that's Addy** -> PR 1's yes: a `vision_individual` answer with the
+    name shown, plus `same` picture verdicts on the pictures shown.
   - **No, it's ...** -> opens a short list: the names Orion knows (most seen first)
     plus "someone not listed" (type a name) and "I don't know who". Picking a name
     writes `different` with that name; "I don't know who" writes `different`

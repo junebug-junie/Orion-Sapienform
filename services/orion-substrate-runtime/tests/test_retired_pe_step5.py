@@ -56,7 +56,8 @@ def test_worker_source_writes_neither_retired_node() -> None:
 
 
 def test_active_inference_domains_match_the_worker_domain_map() -> None:
-    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution"}   # biometrics retired 2026-11-18 (#3575)
+    # biometrics retired 2026-11-18 (#3575), execution 2026-11-24 (#3576): none left.
+    assert set(ACTIVE_INFERENCE_DOMAINS) == set()
     assert set(worker_module._PREDICTION_ERROR_DOMAIN_NODE_IDS.values()) == set(
         ACTIVE_INFERENCE_DOMAINS
     )
@@ -83,7 +84,8 @@ def test_pe_magnitudes_skip_retired_nodes_and_their_history(monkeypatch) -> None
         ("node:substrate.bus_synaptic", NOW - timedelta(hours=1), 0.9),
         ("node:substrate.route", NOW - timedelta(hours=1), 0.5),
         ("node:substrate.chat", NOW - timedelta(hours=1), 0.7),
-        ("node:substrate.execution", NOW - timedelta(hours=1), 0.1),
+        ("node:substrate.execution", NOW - timedelta(hours=1), 0.6),  # retired 2026-11-24
+        ("node:substrate.perception", NOW - timedelta(hours=1), 0.1),
     ]
     worker._store.prune_prediction_error_history.return_value = 0
 
@@ -91,14 +93,15 @@ def test_pe_magnitudes_skip_retired_nodes_and_their_history(monkeypatch) -> None
         _node("node:substrate.bus_synaptic", 0.9),
         _node("node:substrate.route", 0.5),
         _node("node:substrate.chat", 0.7),
-        _node("node:substrate.execution", 0.2),
+        _node("node:substrate.execution", 0.8),
+        _node("node:substrate.perception", 0.2),
     ]
     magnitudes = worker._prediction_error_magnitudes(nodes=nodes, now=NOW)
 
-    assert set(magnitudes) == {"node:substrate.execution"}
-    assert set(worker._pe_history_cache) == {"node:substrate.execution"}
+    assert set(magnitudes) == {"node:substrate.perception"}
+    assert set(worker._pe_history_cache) == {"node:substrate.perception"}
     saved = worker._store.save_prediction_error_history_samples.call_args.args[0]
-    assert [n for n, _, _ in saved] == ["node:substrate.execution"]
+    assert [n for n, _, _ in saved] == ["node:substrate.perception"]
     settings_mod._settings = None
 
 

@@ -23,6 +23,31 @@ from orion.attention.world_first import (
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
+import pytest
+
+
+# node:substrate.execution was retired 2026-11-24 (#3576). Its role here (a live event-written level
+# body node) is played by the test-only EVENT_BODY probe from tests/fixtures/self_readings_history.py.
+import importlib.util as _probe_ilu  # noqa: E402
+from pathlib import Path as _ProbePath  # noqa: E402
+
+_probe_spec = _probe_ilu.spec_from_file_location(
+    "self_readings_history_probe_test_attention_world_first_field_frame",
+    _ProbePath(__file__).resolve().parents[1] / "tests" / "fixtures" / "self_readings_history.py",
+)
+_probe_fx = _probe_ilu.module_from_spec(_probe_spec)
+_probe_spec.loader.exec_module(_probe_fx)
+EVENT_BODY = _probe_fx.EVENT_BODY
+
+
+@pytest.fixture(autouse=True)
+def _install_probe_glossary(monkeypatch):
+    _probe_fx.install_probe_glossary(monkeypatch)
+    # execution was also the last native (goal-eligible) target; the probe stands in there too.
+    from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
+
+    monkeypatch.setitem(PREDICTION_ERROR_NATIVE_TARGETS, EVENT_BODY, "probe_event")
+
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY = load_attention_policy(REPO / "config" / "attention" / "field_attention_policy.v1.yaml")
@@ -35,7 +60,7 @@ def _field(tick: str = "tick_wf") -> FieldStateV1:
         tick_id=tick,
         node_vectors={
             "node:athena": {"cortex_exec_step_load": 0.9},
-            "node:substrate.execution": {"prediction_error": 0.6},
+            EVENT_BODY: {"prediction_error": 0.6},
             "node:substrate.vision_organ": {"vision_frame_staleness": 0.0},
         },
         capability_vectors={"capability:orchestration": {"execution_pressure": 0.8}},
@@ -61,13 +86,13 @@ def _frame(cands, previous=None, tick="tick_wf") -> FieldAttentionFrameV1:
 
 
 def test_calm_tick_is_an_explicit_no_winner_frame() -> None:
-    frame = _frame([_node("node:substrate.biometrics", 0.4, 0.02), _node("node:substrate.execution", 0.7)])
+    frame = _frame([_node("node:substrate.biometrics", 0.4, 0.02), _node(EVENT_BODY, 0.7)])
     assert frame.dominant_targets == [] and frame.node_targets == []
     assert frame.overall_salience == 0.0
     assert frame.warnings == ["world_first_no_winner"]
     # Every candidate is still traced, with its side of the seam.
     ids = {t.target_id for t in frame.suppressed_targets}
-    assert {"node:substrate.biometrics", "node:substrate.execution"} <= ids
+    assert {"node:substrate.biometrics", EVENT_BODY} <= ids
     assert all(field_target_source_kind(t) == "internal" for t in frame.suppressed_targets)
 
 
@@ -80,9 +105,9 @@ def test_old_hardcoded_winner_at_one_is_gone() -> None:
 
 
 def test_body_alarm_wins_with_its_own_percentile_as_salience() -> None:
-    frame = _frame([_node("node:substrate.execution", 0.995, 0.9), _node("node:substrate.biometrics", 0.6)])
+    frame = _frame([_node(EVENT_BODY, 0.995, 0.9), _node("node:substrate.biometrics", 0.6)])
     top = frame.dominant_targets[0]
-    assert top.target_id == "node:substrate.execution"
+    assert top.target_id == EVENT_BODY
     assert top.salience_score == 0.995
     assert field_target_source_kind(top) == "internal"
     assert frame.node_targets == [top]
@@ -100,25 +125,25 @@ def test_busy_chat_wins_over_a_usual_body() -> None:
 
 
 def test_host_and_capability_novelty_is_observed_not_attended() -> None:
-    first = _frame([_node("node:substrate.execution", 0.2)], tick="t1")
-    second = _frame([_node("node:substrate.execution", 0.2)], previous=first, tick="t2")
+    first = _frame([_node(EVENT_BODY, 0.2)], tick="t1")
+    second = _frame([_node(EVENT_BODY, 0.2)], previous=first, tick="t2")
     assert second.capability_targets == [] and second.system_targets == []
     sup = {t.target_id: t for t in second.suppressed_targets}
     assert "node:athena" in sup and "capability:orchestration" in sup
     assert field_target_source_kind(sup["node:athena"]) == "internal"
     # Not double-counted: a candidate node is not ALSO scored as a host target.
-    assert [t.target_id for t in second.suppressed_targets].count("node:substrate.execution") == 1
+    assert [t.target_id for t in second.suppressed_targets].count(EVENT_BODY) == 1
 
 
 def test_goal_provenance_names_an_attended_world_winner() -> None:
     """Decision 1 (2026-11-08): a world winner may emit a goal. It outranks a
     body node here on its own-week percentile, so it names the goal."""
     frame = _frame(
-        [_node(PERCEPTION_NODE_ID, 0.999, 0.9), _node("node:substrate.execution", 0.95)]
+        [_node(PERCEPTION_NODE_ID, 0.999, 0.9), _node(EVENT_BODY, 0.95)]
     )
     assert frame.dominant_targets[0].target_id == PERCEPTION_NODE_ID
     q = qualified_node_targets(frame)
-    assert {t.target_id for t in q} == {PERCEPTION_NODE_ID, "node:substrate.execution"}
+    assert {t.target_id for t in q} == {PERCEPTION_NODE_ID, EVENT_BODY}
     assert top_node_substrate_target(frame).target_id == PERCEPTION_NODE_ID
 
 
@@ -134,7 +159,7 @@ def test_busy_chat_names_the_goal() -> None:
 def _chat_and_body_frame():
     turns = [NOW.replace(day=d) for d in range(3, 9)] + [NOW.replace(minute=0) for _ in range(1)]
     turns = [t.replace(hour=11, minute=50) for t in turns]
-    return _frame([chat_candidate(turns, now=NOW), _node("node:substrate.execution", 0.995, 0.9)])
+    return _frame([chat_candidate(turns, now=NOW), _node(EVENT_BODY, 0.995, 0.9)])
 
 
 def test_competition_precedence_keeps_a_world_goal_it_holds() -> None:
@@ -142,9 +167,9 @@ def test_competition_precedence_keeps_a_world_goal_it_holds() -> None:
     node in the competition beats an attended chat on every tick."""
     frame = _chat_and_body_frame()
     assert {t.target_id for t in qualified_node_targets(frame)} == {
-        WORLD_CHAT_SOURCE_ID, "node:substrate.execution"
+        WORLD_CHAT_SOURCE_ID, EVENT_BODY
     }
-    both = {WORLD_CHAT_SOURCE_ID, "node:substrate.execution"}
+    both = {WORLD_CHAT_SOURCE_ID, EVENT_BODY}
     assert top_node_substrate_target(frame, competing=both).target_id in both
     assert top_node_substrate_target(
         frame, competing={WORLD_CHAT_SOURCE_ID}
@@ -158,10 +183,10 @@ def test_world_streak_is_held_when_competition_read_is_unknown() -> None:
 
 
 def test_goal_provenance_handles_a_no_winner_frame() -> None:
-    frame = _frame([_node("node:substrate.execution", 0.2)])
+    frame = _frame([_node(EVENT_BODY, 0.2)])
     assert qualified_node_targets(frame) == []
     assert top_node_substrate_target(frame) is None
-    streak, emit = update_dominance_streak(DominanceStreak("node:substrate.execution", 5), None, min_streak=3)
+    streak, emit = update_dominance_streak(DominanceStreak(EVENT_BODY, 5), None, min_streak=3)
     assert streak.target_id is None and streak.count == 0 and not emit
 
 
@@ -191,7 +216,7 @@ def test_goal_set_is_not_widened_beyond_the_native_five() -> None:
 def test_goal_refuses_a_native_id_marked_external() -> None:
     """Defense in depth: the internal marker is checked, not just the id list."""
     t = FieldAttentionTargetV1(
-        target_id="node:substrate.execution", target_kind="node", salience_score=0.99,
+        target_id=EVENT_BODY, target_kind="node", salience_score=0.99,
         pressure_score=0.9, novelty_score=0.0, urgency_score=0.99, confidence_score=1.0,
         evidence_refs=["source_kind:external"],
     )

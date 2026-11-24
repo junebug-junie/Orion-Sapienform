@@ -23,6 +23,26 @@ from orion.attention.world_first import (
 )
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
 
+
+# node:substrate.execution was retired 2026-11-24 (#3576). Its role here (a live event-written level
+# body node) is played by the test-only EVENT_BODY probe from tests/fixtures/self_readings_history.py.
+import importlib.util as _probe_ilu  # noqa: E402
+from pathlib import Path as _ProbePath  # noqa: E402
+
+_probe_spec = _probe_ilu.spec_from_file_location(
+    "self_readings_history_probe_test_attention_broadcast_world_first",
+    _ProbePath(__file__).resolve().parents[3] / "tests" / "fixtures" / "self_readings_history.py",
+)
+_probe_fx = _probe_ilu.module_from_spec(_probe_spec)
+_probe_spec.loader.exec_module(_probe_fx)
+EVENT_BODY = _probe_fx.EVENT_BODY
+
+
+@pytest.fixture(autouse=True)
+def _install_probe_glossary(monkeypatch):
+    _probe_fx.install_probe_glossary(monkeypatch)
+
+
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
 
 
@@ -64,8 +84,8 @@ def _frame(nodes, mags, external=None):
 
 
 def test_calm_tick_has_no_winner() -> None:
-    nodes = [_node("node:substrate.execution", "Execution PE"), _node("node:prediction.body_joint", "Body joint PE")]
-    frame = _frame(nodes, {"node:substrate.execution": _mag(0.7), "node:prediction.body_joint": _mag(0.3)})
+    nodes = [_node(EVENT_BODY, "Execution PE"), _node("node:prediction.body_joint", "Body joint PE")]
+    frame = _frame(nodes, {EVENT_BODY: _mag(0.7), "node:prediction.body_joint": _mag(0.3)})
     assert frame.open_loops == []
     assert frame.selected_action.action_type == "none"
     wf = frame.debug["world_first"]
@@ -75,14 +95,14 @@ def test_calm_tick_has_no_winner() -> None:
 
 
 def test_magnitude_now_decides_who_wins() -> None:
-    """Pressure says the body joint (biometrics retired 2026-11-18, #3575); its own history says execution is the alarm."""
+    """Pressure says the body joint (biometrics retired 2026-11-18, #3575); its own history says the event-written probe (was execution, retired 2026-11-24, #3576) is the alarm."""
     nodes = [
-        _node("node:substrate.execution", "Execution PE", pressure=0.06),
+        _node(EVENT_BODY, "Execution PE", pressure=0.06),
         _node("node:prediction.body_joint", "Body joint PE", pressure=0.9),
     ]
-    frame = _frame(nodes, {"node:substrate.execution": _mag(0.995), "node:prediction.body_joint": _mag(0.6)})
+    frame = _frame(nodes, {EVENT_BODY: _mag(0.995), "node:prediction.body_joint": _mag(0.6)})
     proj = ab.broadcast_projection_from_frame(frame)
-    assert proj.attended_node_ids == ["node:substrate.execution"]
+    assert proj.attended_node_ids == [EVENT_BODY]
     loop = frame.open_loops[0]
     assert loop.salience == 0.995 and loop.provenance["source_kind"] == "internal"
     assert "borda_salience" in loop.provenance
@@ -217,14 +237,14 @@ def test_uncalibrated_graph_nodes_are_traced_not_attended() -> None:
 
 
 def test_body_node_without_magnitude_is_absent_not_calm() -> None:
-    frame = _frame([_node("node:substrate.execution", "Execution PE")], {})
+    frame = _frame([_node(EVENT_BODY, "Execution PE")], {})
     (c,) = frame.debug["world_first"]["candidates"]
     assert c["absent"] is True and c["eligible"] is False
 
 
 def test_empty_coalition_never_activates_or_dwells() -> None:
     """Two no-winner ticks used to 'activate' a size-0 coalition."""
-    calm = _frame([_node("node:substrate.execution", "Execution PE")], {"node:substrate.execution": _mag(0.2)})
+    calm = _frame([_node(EVENT_BODY, "Execution PE")], {EVENT_BODY: _mag(0.2)})
     for _ in range(4):
         proj = ab.broadcast_projection_from_frame(calm)
     assert proj.dwell_ticks == 0
@@ -232,8 +252,8 @@ def test_empty_coalition_never_activates_or_dwells() -> None:
 
 
 def test_real_coalition_still_activates_and_decays_across_empty_ticks() -> None:
-    hot = _frame([_node("node:substrate.execution", "Execution PE")], {"node:substrate.execution": _mag(0.995)})
-    calm = _frame([_node("node:substrate.execution", "Execution PE")], {"node:substrate.execution": _mag(0.2)})
+    hot = _frame([_node(EVENT_BODY, "Execution PE")], {EVENT_BODY: _mag(0.995)})
+    calm = _frame([_node(EVENT_BODY, "Execution PE")], {EVENT_BODY: _mag(0.2)})
     ab.broadcast_projection_from_frame(hot)
     proj = ab.broadcast_projection_from_frame(hot)
     assert proj.dwell_ticks == 1 and proj.coalition_history[-1]["event"] == "activated"
@@ -248,18 +268,18 @@ def test_camera_noise_at_its_median_does_not_win() -> None:
 
 
 def test_mid_rank_breaks_a_ceiling_tie_in_the_broadcast() -> None:
-    nodes = [_node("node:substrate.execution", "Execution PE"), _node("node:substrate.codebase", "Codebase PE")]
+    nodes = [_node(EVENT_BODY, "Execution PE"), _node("node:substrate.codebase", "Codebase PE")]
     frame = ab.build_substrate_attention_frame(
         nodes=nodes, now=NOW, world_first=True,
-        magnitude_by_node_id={"node:substrate.execution": _mag(0.965), "node:substrate.codebase": _mag(0.97)},
-        rank_percentile_by_node_id={"node:substrate.execution": 0.982},
+        magnitude_by_node_id={EVENT_BODY: _mag(0.965), "node:substrate.codebase": _mag(0.97)},
+        rank_percentile_by_node_id={EVENT_BODY: 0.982},
     )
-    assert ab.broadcast_projection_from_frame(frame).attended_node_ids == ["node:substrate.execution"]
+    assert ab.broadcast_projection_from_frame(frame).attended_node_ids == [EVENT_BODY]
 
 
 def test_no_winner_tick_reports_no_dwell_while_the_old_coalition_decays() -> None:
-    hot = _frame([_node("node:substrate.execution", "Execution PE")], {"node:substrate.execution": _mag(0.995)})
-    calm = _frame([_node("node:substrate.execution", "Execution PE")], {"node:substrate.execution": _mag(0.2)})
+    hot = _frame([_node(EVENT_BODY, "Execution PE")], {EVENT_BODY: _mag(0.995)})
+    calm = _frame([_node(EVENT_BODY, "Execution PE")], {EVENT_BODY: _mag(0.2)})
     ab.broadcast_projection_from_frame(hot)
     ab.broadcast_projection_from_frame(hot)
     proj = ab.broadcast_projection_from_frame(calm)
@@ -268,8 +288,8 @@ def test_no_winner_tick_reports_no_dwell_while_the_old_coalition_decays() -> Non
 
 
 def test_unreadable_sources_are_named_in_the_trace() -> None:
-    frame = _frame([_node("node:substrate.execution", "Execution PE")], {})
-    assert frame.debug["world_first"]["absent_sources"] == ["node:substrate.execution"]
+    frame = _frame([_node(EVENT_BODY, "Execution PE")], {})
+    assert frame.debug["world_first"]["absent_sources"] == [EVENT_BODY]
 
 
 def test_walkway_wins_only_in_its_own_p99_band() -> None:

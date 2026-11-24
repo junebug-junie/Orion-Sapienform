@@ -401,12 +401,12 @@ def test_lingering_harness_closure_node_never_seeds_curiosity() -> None:
     seeds = endogenous_curiosity_candidates(
         nodes=[
             _node("node:substrate.harness_closure", 0.65, observed_at=_NOW),
-            _node("node:substrate.execution", 0.8, observed_at=_NOW),
+            _node("node:prediction.body", 0.8, observed_at=_NOW),
         ],
         config=_enabled(budget=8),
         now=_NOW,
     )
-    assert [s.focal_node_refs for s in seeds] == [["node:substrate.execution"]]
+    assert [s.focal_node_refs for s in seeds] == [["node:prediction.body"]]
 
 
 def test_unreadable_glossary_fails_closed_for_prediction_error_only(monkeypatch) -> None:

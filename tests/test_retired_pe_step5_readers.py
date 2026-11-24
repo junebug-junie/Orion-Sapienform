@@ -1,6 +1,7 @@
 """PE suite rebuild step 5 (2026-11): node:substrate.bus_synaptic and
 node:substrate.route are retired prediction-error nodes; step 6 (2026-11-13):
-node:substrate.chat (successor node:prediction.chat_turn).
+node:substrate.chat (successor node:prediction.chat_turn); then biometrics (2026-11-18,
+#3575) and execution (2026-11-24, #3576), the last of them.
 
 Killing the producer is not enough: the FalkorDB node keeps its last value
 (and can be re-touched by the materializer), and history rows linger 7 days.
@@ -30,7 +31,7 @@ from orion.substrate.prediction_error_freshness import (
 REPO = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
 RETIRED = sorted(RETIRED_PREDICTION_ERROR_NODE_IDS)
-LIVE = "node:substrate.execution"
+LIVE = "node:prediction.body"  # a live scored-forecast node (execution retired 2026-11-24, #3576)
 
 
 def test_deny_list_is_exactly_the_retired_nodes() -> None:
@@ -39,14 +40,17 @@ def test_deny_list_is_exactly_the_retired_nodes() -> None:
         "node:substrate.codebase",  # 2026-11-13: churn z, not a forecast
         "node:substrate.harness_closure",  # 2026-11-16: fixed 0.65 placeholder
         "node:substrate.biometrics",  # (biometrics retired 2026-11-18, #3575)
+        "node:substrate.execution",  # 2026-11-24 (#3576): the last fake PE node
     }
     assert not is_retired_prediction_error_node(LIVE)
     assert not is_retired_prediction_error_node("node:prediction.chat_turn")
     assert not is_retired_prediction_error_node(None)
 
 
-def test_active_inference_domains_are_the_live_one() -> None:
-    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution"}  # (biometrics retired 2026-11-18, #3575)
+def test_no_active_inference_domain_is_left() -> None:
+    # biometrics retired 2026-11-18 (#3575), execution 2026-11-24 (#3576): none left.
+    assert set(ACTIVE_INFERENCE_DOMAINS) == set()
+    assert PREDICTION_ERROR_NATIVE_TARGETS == {}
 
 
 @pytest.mark.parametrize("node_id", RETIRED)

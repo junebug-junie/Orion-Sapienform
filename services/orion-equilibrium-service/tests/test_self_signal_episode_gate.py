@@ -3,6 +3,7 @@ open budget, close-row outbox, persistence, flag wiring."""
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,7 +24,22 @@ from orion.metacog.evidence_map import map_trigger  # noqa: E402
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1  # noqa: E402
 
 T0 = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
-BUS = "node:prediction.body"  # any live PE node; bus_synaptic retired 2026-11, execution 2026-11-24 (#3576)
+_REPO = Path(__file__).resolve().parents[3]
+_spec = importlib.util.spec_from_file_location(
+    "self_readings_history_episode_gate", _REPO / "tests" / "fixtures" / "self_readings_history.py"
+)
+fx = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fx)  # type: ignore[union-attr]
+
+# The episode gate observes node:substrate.* body nodes only, and no live one has the
+# event-written level shape since node:substrate.execution was retired 2026-11-24 (#3576;
+# bus_synaptic 2026-11 before it). BUS is the test-only probe with that shape.
+BUS = fx.EVENT_BODY
+
+
+@pytest.fixture(autouse=True)
+def _probe_glossary(monkeypatch):
+    fx.install_probe_glossary(monkeypatch)
 BIO = "node:substrate.cabinet"  # second live body node (biometrics retired 2026-11-18, #3575)
 
 

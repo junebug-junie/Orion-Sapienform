@@ -22,6 +22,18 @@ from orion.field.pressure import RECENT_PERTURBATION_EWMA_MIN_SAMPLES
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
 
+# node:substrate.execution, the last native target, was retired 2026-11-24 (#3576): the real map
+# is empty. The precision path is tested on a test-only native target, EXEC_PROBE, put in the
+# shared map for each test (restored after) -- except the test that pins the real map.
+EXEC_PROBE = "node:substrate.probe_event"
+_REAL_MAP_TESTS = {"test_select_node_targets_only_covers_the_confirmed_live_reducers"}
+
+
+@pytest.fixture(autouse=True)
+def _exec_probe_native(request, monkeypatch):
+    if request.function.__name__ not in _REAL_MAP_TESTS:
+        monkeypatch.setitem(PREDICTION_ERROR_NATIVE_TARGETS, EXEC_PROBE, "probe_event")
+
 
 def _baseline(values: list[float]) -> PrecisionEwmaBaseline:
     """Test helper: build a PrecisionEwmaBaseline the same way the live worker
@@ -131,10 +143,10 @@ _FIELD_FOR_NODE_TESTS = FieldStateV1(
 
 
 def test_select_node_targets_scores_only_prediction_error_native_ids() -> None:
-    baselines = {"node:substrate.execution": _baseline([0.05, 0.06, 0.04, 0.05, 0.9])}
+    baselines = {EXEC_PROBE: _baseline([0.05, 0.06, 0.04, 0.05, 0.9])}
     targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines)
     target_ids = {t.target_id for t in targets}
-    assert target_ids == {"node:substrate.execution"}
+    assert target_ids == {EXEC_PROBE}
     assert "node:athena" not in target_ids  # never scored, not zero-scored
 
 
@@ -144,19 +156,19 @@ def test_select_node_targets_excludes_targets_with_no_real_history() -> None:
 
 
 def test_select_node_targets_excludes_targets_with_empty_history_list() -> None:
-    baselines = {"node:substrate.execution": _baseline([])}
+    baselines = {EXEC_PROBE: _baseline([])}
     targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines)
     assert targets == []
 
 
 def test_select_node_targets_confidence_scales_with_sample_count() -> None:
     few = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": _baseline([0.1, 0.2])}
+        _FIELD_FOR_NODE_TESTS, POLICY, {EXEC_PROBE: _baseline([0.1, 0.2])}
     )[0]
     many = select_node_targets(
         _FIELD_FOR_NODE_TESTS,
         POLICY,
-        {"node:substrate.execution": _baseline([0.1] * 25 + [0.9])},
+        {EXEC_PROBE: _baseline([0.1] * 25 + [0.9])},
     )[0]
     assert few.confidence_score < many.confidence_score
     assert many.confidence_score == 1.0  # clamped at QUALIFYING_MIN_ROWS=20
@@ -179,7 +191,7 @@ def test_select_node_targets_observation_count_survives_a_pruned_window() -> Non
         min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
     )
     targets = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": baseline}
+        _FIELD_FOR_NODE_TESTS, POLICY, {EXEC_PROBE: baseline}
     )
     assert len(targets) == 1
     assert targets[0].confidence_score == 1.0  # 20 real observations total, fully qualified
@@ -196,10 +208,10 @@ def test_select_node_targets_only_covers_the_confirmed_live_reducers() -> None:
     # earlier draft's inclusion of it here was a real bug this test would
     # have caught, and now does. route and bus_synaptic were retired 2026-11
     # (PE suite rebuild step 5) the same way, and chat 2026-11-13 (step 6).
-    # biometrics retired 2026-11-18 (#3575; successors are not native targets).
-    assert set(PREDICTION_ERROR_NATIVE_TARGETS.keys()) == {
-        "node:substrate.execution",
-    }
+    # biometrics retired 2026-11-18 (#3575; successors are not native targets), and
+    # execution, the last one, 2026-11-24 (#3576): the map is empty.
+    assert PREDICTION_ERROR_NATIVE_TARGETS == {}
+    assert "node:substrate.execution" not in PREDICTION_ERROR_NATIVE_TARGETS
     assert "node:substrate.transport" not in PREDICTION_ERROR_NATIVE_TARGETS
 
 
@@ -220,7 +232,7 @@ def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max
     # exactly 0.0, the higher to exactly 1.0.
     histories = {
         "node:substrate.probe": [0.01, 0.01, 0.02, 0.01, 0.02],
-        "node:substrate.execution": [0.02, 0.03, 0.02, 0.03, 0.95],
+        EXEC_PROBE: [0.02, 0.03, 0.02, 0.03, 0.95],
     }
     from orion.attention.field_attention.candidate_precision_weighted import (
         cross_domain_variance_floor,
@@ -263,13 +275,13 @@ def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max
 
 def test_select_node_targets_min_samples_boundary_at_qualifying_min_rows() -> None:
     just_under = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": _baseline([0.1] * 19)}
+        _FIELD_FOR_NODE_TESTS, POLICY, {EXEC_PROBE: _baseline([0.1] * 19)}
     )[0]
     exactly_at = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": _baseline([0.1] * 20)}
+        _FIELD_FOR_NODE_TESTS, POLICY, {EXEC_PROBE: _baseline([0.1] * 20)}
     )[0]
     over = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": _baseline([0.1] * 25)}
+        _FIELD_FOR_NODE_TESTS, POLICY, {EXEC_PROBE: _baseline([0.1] * 25)}
     )[0]
     assert just_under.confidence_score < 1.0
     assert exactly_at.confidence_score == 1.0
@@ -282,7 +294,7 @@ def test_select_node_targets_surfaces_variance_floored_in_reasons() -> None:
     # silently absorbed into a plain-looking salience number.
     near_constant = _baseline([0.5] * 25)
     targets = select_node_targets(
-        _FIELD_FOR_NODE_TESTS, POLICY, {"node:substrate.execution": near_constant}
+        _FIELD_FOR_NODE_TESTS, POLICY, {EXEC_PROBE: near_constant}
     )
     assert len(targets) == 1
     joined_reasons = " ".join(targets[0].reasons)
@@ -350,7 +362,7 @@ def test_select_host_targets_excludes_prediction_error_native_ids() -> None:
         tick_id="tick_host_test",
         node_vectors={
             "node:athena": {"cpu_pressure": 0.5},
-            "node:substrate.execution": {"prediction_error": 0.9},
+            EXEC_PROBE: {"prediction_error": 0.9},
         },
     )
     targets = select_host_targets(field, POLICY, None)
@@ -648,11 +660,11 @@ def test_a_quiet_domain_stops_winning_on_its_last_reading(probe_native) -> None:
         ewma=0.1, variance=0.02, observation_count=300, last_value=0.2,
         last_observed_at=now - timedelta(seconds=5),
     )
-    baselines = {"node:substrate.probe": stale_chat, "node:substrate.execution": fresh_exec}
+    baselines = {"node:substrate.probe": stale_chat, EXEC_PROBE: fresh_exec}
     unaged = {t.target_id: t for t in select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines)}
     assert unaged["node:substrate.probe"].salience_score == 1.0  # the old behaviour
     aged = {t.target_id: t for t in select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines, now=now)}
-    assert aged["node:substrate.execution"].salience_score == 1.0
+    assert aged[EXEC_PROBE].salience_score == 1.0
     assert aged["node:substrate.probe"].salience_score == 0.0
     assert aged["node:substrate.probe"].dominant_channels == {"prediction_error": 0.0}
     assert any("stale reading" in r and "45 min old" in r for r in aged["node:substrate.probe"].reasons)
@@ -688,14 +700,15 @@ def test_a_fully_faded_set_reads_zero_salience_not_a_tie_at_the_top(probe_native
         ewma=0.1, variance=0.02, observation_count=300, last_value=0.8,
         last_observed_at=now - timedelta(minutes=45),
     )
-    baselines = {"node:substrate.probe": faded, "node:substrate.execution": faded}
+    baselines = {"node:substrate.probe": faded, EXEC_PROBE: faded}
     targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines, now=now)
     assert {t.target_id for t in targets} == set(baselines)
     assert all(t.salience_score == 0.0 for t in targets)
 
 
-# execution is the last live native target since node:substrate.biometrics was retired 2026-11-18
-# (#3575). Multi-target competition needs two, so these tests add a test-only native target.
+# No live native target is left (biometrics retired 2026-11-18, #3575; execution 2026-11-24, #3576).
+# Multi-target competition needs two, so these tests add a second test-only native target beside
+# EXEC_PROBE.
 @pytest.fixture
 def probe_native(monkeypatch):
     from orion.attention.field_attention import selectors

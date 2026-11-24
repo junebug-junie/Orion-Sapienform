@@ -158,5 +158,12 @@ def test_a_dropped_cite_names_its_id_before_the_drop_reasons_and_warnings():
     note = summary_note(applied, now_use="stored 1/1")
     assert "1 cite(s) not shown: curiosity_run:b23f79951e7a" in note[:200]
     assert note.index("not shown: curiosity_run") < note.index("dropped c1") < note.index("warnings:")
-    # No now read: every cite is unshown and named.
-    assert _apply(raw, shown=None).experience_unshown == [SHOWN[0], "curiosity_run:b23f79951e7a"]
+    # A long move refusal (no cap) comes after the id, so the 500-char cut cannot hide it.
+    applied.move_refusal = "r" * 600
+    note = summary_note(applied)
+    assert note.index("not shown: curiosity_run") < note.index("move refused")
+    assert "curiosity_run:b23f79951e7a" in note[:300]
+    # No now read: every cite is unchecked and named as such.
+    unread = _apply(raw, shown=None)
+    assert unread.experience_unshown == [SHOWN[0], "curiosity_run:b23f79951e7a"] and unread.experience_unread
+    assert "2 cite(s) unchecked, the now was not read: reading_turn:r1" in summary_note(unread)

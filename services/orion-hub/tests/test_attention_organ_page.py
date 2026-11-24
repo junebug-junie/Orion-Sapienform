@@ -173,11 +173,52 @@ def test_summarize_history_survives_json_strings_and_junk_rows() -> None:
 NOW = datetime(2026, 7, 30, 20, 0, tzinfo=timezone.utc)
 
 
-def test_build_domain_rows_marks_active_inference_membership() -> None:
+def _patch_domains(monkeypatch, *extra: str) -> None:
+    """Add test-only domains to the sets the functions under test read.
+
+    No live Active-Inference domain is left since node:substrate.execution was retired
+    2026-11-24 (#3576), so the panel's logic is exercised on probe domains. Patch the
+    globals the functions actually read: in the full hub folder another test can re-import
+    the `scripts` package, so a module looked up by name may be a different copy."""
+    g = reconcile_confidence.__globals__
+    assert build_domain_rows.__globals__ is g
+    domains = frozenset(g["ACTIVE_INFERENCE_DOMAINS"] | set(extra))
+    monkeypatch.setitem(g, "ACTIVE_INFERENCE_DOMAINS", domains)
+    monkeypatch.setitem(g, "KNOWN_PREDICTION_ERROR_DOMAINS", (*g["KNOWN_PREDICTION_ERROR_DOMAINS"], *extra))
+    monkeypatch.setitem(g, "_SINGLE_DOMAIN_SWING", 1.0 / len(domains))
+
+
+@pytest.fixture
+def one_live_domain(monkeypatch):
+    _patch_domains(monkeypatch, "probe")
+
+
+@pytest.fixture
+def two_live_domains(monkeypatch):
+    """The divergence rule is about MORE than one domain moving, so these tests need two."""
+    _patch_domains(monkeypatch, "probe", "probe2")
+
+
+def test_no_live_domain_is_left_and_the_panel_reads_unknown() -> None:
+    """2026-11-24 (#3576): execution, the last domain, was retired. A lingering graph node
+    is not listed, and the reconciliation says unknown instead of inventing a verdict."""
+    g = reconcile_confidence.__globals__
+    assert g["ACTIVE_INFERENCE_DOMAINS"] == frozenset()
+    assert g["KNOWN_PREDICTION_ERROR_DOMAINS"] == ()
+    rows = build_domain_rows(
+        [{"node_id": "node:substrate.execution", "prediction_error": 0.4}], now=NOW
+    )
+    assert rows == []
+    out = reconcile_confidence(rows, None, row_age_sec=1.0)
+    assert out["verdict"] == "unknown"
+    assert out["domains_used"] == 0
+
+
+def test_build_domain_rows_marks_active_inference_membership(one_live_domain) -> None:
     rows = build_domain_rows(
         [
             {
-                "node_id": "node:substrate.execution",
+                "node_id": "node:substrate.probe",
                 "prediction_error": 0.4,
                 "observed_at": "2026-07-30T19:59:00+00:00",
                 "activation": 0.9,
@@ -193,35 +234,35 @@ def test_build_domain_rows_marks_active_inference_membership() -> None:
     )
     by_domain = {r["domain"]: r for r in rows}
 
-    assert by_domain["execution"]["active"] is True
-    assert by_domain["execution"]["prediction_error"] == 0.4
-    assert by_domain["execution"]["observed_age_sec"] == 60.0
+    assert by_domain["probe"]["active"] is True
+    assert by_domain["probe"]["prediction_error"] == 0.4
+    assert by_domain["probe"]["observed_age_sec"] == 60.0
     # transport is a confirmed-dead instrument excluded from the aggregate --
     # still returned so it stays visible rather than hiding.
     assert by_domain["transport"]["active"] is False
     assert by_domain["transport"]["present"] is True
 
 
-def test_build_domain_rows_flags_ceiling_and_floor_pins() -> None:
+def test_build_domain_rows_flags_ceiling_and_floor_pins(one_live_domain) -> None:
     """Both directions have real incident history (bus_synaptic frozen at 1.0,
     PR #1449; route decayed toward 0.0 by a generic staleness loop -- both
     nodes since retired) -- neither may render as an ordinary value."""
-    # (biometrics retired 2026-11-18, #3575: execution is the one live domain, read twice.)
     top = {r["domain"]: r for r in build_domain_rows(
-        [{"node_id": "node:substrate.execution", "prediction_error": 1.0}], now=NOW)}
+        [{"node_id": "node:substrate.probe", "prediction_error": 1.0}], now=NOW)}
     bottom = {r["domain"]: r for r in build_domain_rows(
-        [{"node_id": "node:substrate.execution", "prediction_error": 0.0}], now=NOW)}
+        [{"node_id": "node:substrate.probe", "prediction_error": 0.0}], now=NOW)}
 
-    assert top["execution"]["at_ceiling"] is True
-    assert top["execution"]["at_floor"] is False
-    assert bottom["execution"]["at_floor"] is True
-    assert bottom["execution"]["at_ceiling"] is False
+    assert top["probe"]["at_ceiling"] is True
+    assert top["probe"]["at_floor"] is False
+    assert bottom["probe"]["at_floor"] is True
+    assert bottom["probe"]["at_ceiling"] is False
 
 
-def test_build_domain_rows_drops_retired_pe_nodes() -> None:
+def test_build_domain_rows_drops_retired_pe_nodes(one_live_domain) -> None:
     """bus_synaptic and route were retired 2026-11 (PE suite rebuild step 5), chat
-    and codebase 2026-11-13. A lingering graph node is not listed, as known or
-    unknown domain. Alarms (cabinet, strain, street) are not PE domains either."""
+    and codebase 2026-11-13, biometrics 2026-11-18, execution 2026-11-24. A lingering
+    graph node is not listed, as known or unknown domain. Alarms (cabinet, strain,
+    street) are not PE domains either."""
     rows = build_domain_rows(
         [
             {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
@@ -231,28 +272,27 @@ def test_build_domain_rows_drops_retired_pe_nodes() -> None:
             {"node_id": "node:substrate.cabinet", "prediction_error": 0.7},
             {"node_id": "node:substrate.strain", "prediction_error": 1.0},
             {"node_id": "node:substrate.street", "prediction_error": 1.0},
-            # (biometrics retired 2026-11-18, #3575)
             {"node_id": "node:substrate.biometrics", "prediction_error": 0.3},
             {"node_id": "node:substrate.execution", "prediction_error": 0.1},
+            {"node_id": "node:substrate.probe", "prediction_error": 0.1},
         ],
         now=NOW,
     )
     domains = {r["domain"] for r in rows}
-    assert domains == {"execution"}
+    assert domains == {"probe"}
 
 
-def test_build_domain_rows_distinguishes_missing_node_from_zero_reading() -> None:
-    # (biometrics retired 2026-11-18, #3575: execution is the one known domain, read both ways.)
+def test_build_domain_rows_distinguishes_missing_node_from_zero_reading(one_live_domain) -> None:
     zero = {r["domain"]: r for r in build_domain_rows(
-        [{"node_id": "node:substrate.execution", "prediction_error": 0.0}], now=NOW)}
-    assert zero["execution"]["present"] is True
-    assert zero["execution"]["prediction_error"] == 0.0
+        [{"node_id": "node:substrate.probe", "prediction_error": 0.0}], now=NOW)}
+    assert zero["probe"]["present"] is True
+    assert zero["probe"]["prediction_error"] == 0.0
     # A known domain whose node does not exist at all is a louder failure than
     # one reading zero, and must not be rendered as "0.0".
     by_domain = {r["domain"]: r for r in build_domain_rows([], now=NOW)}
-    assert by_domain["execution"]["present"] is False
-    assert by_domain["execution"]["prediction_error"] is None
-    assert by_domain["execution"]["at_floor"] is False
+    assert by_domain["probe"]["present"] is False
+    assert by_domain["probe"]["prediction_error"] is None
+    assert by_domain["probe"]["at_floor"] is False
 
 
 def test_build_domain_rows_keeps_unknown_domains_instead_of_dropping_them() -> None:
@@ -262,11 +302,11 @@ def test_build_domain_rows_keeps_unknown_domains_instead_of_dropping_them() -> N
     assert any(r["domain"] == "brand_new_domain" for r in rows)
 
 
-def test_build_domain_rows_tolerates_unparsable_values_and_timestamps() -> None:
+def test_build_domain_rows_tolerates_unparsable_values_and_timestamps(one_live_domain) -> None:
     rows = build_domain_rows(
         [
             {
-                "node_id": "node:substrate.execution",
+                "node_id": "node:substrate.probe",
                 "prediction_error": "not-a-number",
                 "observed_at": "definitely not a timestamp",
                 "activation": "nope",
@@ -274,7 +314,7 @@ def test_build_domain_rows_tolerates_unparsable_values_and_timestamps() -> None:
         ],
         now=NOW,
     )
-    row = {r["domain"]: r for r in rows}["execution"]
+    row = {r["domain"]: r for r in rows}["probe"]
     assert row["prediction_error"] is None
     assert row["observed_age_sec"] is None
     assert row["activation"] is None
@@ -285,17 +325,17 @@ def test_build_domain_rows_tolerates_unparsable_values_and_timestamps() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_reconcile_confidence_matches_the_reducers_own_formula() -> None:
+def test_reconcile_confidence_matches_the_reducers_own_formula(one_live_domain) -> None:
     """`1 - mean(prediction_error over ACTIVE_INFERENCE_DOMAINS)` is exactly
     what `_unconditional_prediction_error_confidence()` computes; verified
     live 2026-07-30 that the then-five live domain values reproduce the
-    persisted value exactly (two domains since 2026-11-13). If this ever stops
-    reconciling, the panel is showing two numbers that no longer describe the
-    same thing."""
+    persisted value exactly. If this ever stops reconciling, the panel is
+    showing two numbers that no longer describe the same thing."""
     domain_rows = build_domain_rows(
         [
-            {"node_id": "node:substrate.execution", "prediction_error": 0.2},
-            # Retired 2026-11 (biometrics 2026-11-18, #3575): never averaged in.
+            {"node_id": "node:substrate.probe", "prediction_error": 0.2},
+            # Retired 2026-11: never averaged in.
+            {"node_id": "node:substrate.execution", "prediction_error": 0.7},
             {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
             {"node_id": "node:substrate.chat", "prediction_error": 0.9},
             {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
@@ -315,26 +355,11 @@ def test_reconcile_confidence_matches_the_reducers_own_formula() -> None:
     assert out["verdict"] == "exact"
 
 
-@pytest.fixture
-def two_live_domains(monkeypatch):
-    """execution is the one live domain since biometrics was retired 2026-11-18 (#3575), and with
-    one domain any delta is within one domain's full swing. The divergence rule is about MORE than
-    one domain moving, so these tests add a test-only second domain, "probe"."""
-    # Patch the globals the functions under test actually read: in the full hub folder another test
-    # can re-import the `scripts` package, so a module looked up by name may be a different copy.
-    g = reconcile_confidence.__globals__
-    assert build_domain_rows.__globals__ is g
-    domains = frozenset(g["ACTIVE_INFERENCE_DOMAINS"] | {"probe"})
-    monkeypatch.setitem(g, "ACTIVE_INFERENCE_DOMAINS", domains)
-    monkeypatch.setitem(g, "KNOWN_PREDICTION_ERROR_DOMAINS", (*g["KNOWN_PREDICTION_ERROR_DOMAINS"], "probe"))
-    monkeypatch.setitem(g, "_SINGLE_DOMAIN_SWING", 1.0 / len(domains))
-
-
 def test_reconcile_confidence_flags_structural_divergence(two_live_domains) -> None:
     domain_rows = build_domain_rows(
         [
-            {"node_id": "node:substrate.execution", "prediction_error": 1.0},
             {"node_id": "node:substrate.probe", "prediction_error": 1.0},
+            {"node_id": "node:substrate.probe2", "prediction_error": 1.0},
             {"node_id": "node:substrate.chat", "prediction_error": 1.0},
         ],
         now=NOW,
@@ -345,9 +370,9 @@ def test_reconcile_confidence_flags_structural_divergence(two_live_domains) -> N
     assert "more than one domain" in out["basis"]
 
 
-def test_reconcile_confidence_reports_unknown_rather_than_a_fake_zero() -> None:
+def test_reconcile_confidence_reports_unknown_rather_than_a_fake_zero(one_live_domain) -> None:
     assert reconcile_confidence([], 0.5)["verdict"] == "unknown"
-    rows = build_domain_rows([{"node_id": "node:substrate.execution", "prediction_error": 0.2}], now=NOW)
+    rows = build_domain_rows([{"node_id": "node:substrate.probe", "prediction_error": 0.2}], now=NOW)
     assert reconcile_confidence(rows, None)["verdict"] == "unknown"
 
 
@@ -355,16 +380,15 @@ def test_reconcile_confidence_does_not_cry_divergence_on_ordinary_sampling_skew(
     """The first version of this check used a flat 0.05 tolerance, and live
     data immediately showed it reporting "divergent" purely as a function of
     when the operator happened to poll: the row is written on a ~30s tick
-    while the graph read happens now, and two of the five domains genuinely
-    swing across their full range between ticks. A check that fires on its own
-    sampling schedule is noise."""
+    while the graph read happens now, and domains genuinely swing across
+    their full range between ticks. A check that fires on its own sampling
+    schedule is noise."""
     rows = build_domain_rows(
         [
             # One domain has fully flipped since the row was written; the other
-            # is unchanged. Aggregate moves by 1/2 (two live domains since
-            # 2026-11-13) -- entirely explicable by timing, not a source mismatch.
-            {"node_id": "node:substrate.execution", "prediction_error": 1.0},
-            {"node_id": "node:substrate.probe", "prediction_error": 0.0},
+            # is unchanged. Aggregate moves by 1/2 -- explicable by timing.
+            {"node_id": "node:substrate.probe", "prediction_error": 1.0},
+            {"node_id": "node:substrate.probe2", "prediction_error": 0.0},
         ],
         now=NOW,
     )
@@ -373,12 +397,12 @@ def test_reconcile_confidence_does_not_cry_divergence_on_ordinary_sampling_skew(
     assert out["verdict"] == "within_drift"
 
 
-def test_reconcile_confidence_withholds_a_verdict_on_a_stale_row() -> None:
+def test_reconcile_confidence_withholds_a_verdict_on_a_stale_row(one_live_domain) -> None:
     """Past a point the two readings are too far apart in time for the
     comparison to carry information, and asserting either way would be
     manufacturing a verdict."""
     rows = build_domain_rows(
-        [{"node_id": "node:substrate.execution", "prediction_error": 1.0}], now=NOW
+        [{"node_id": "node:substrate.probe", "prediction_error": 1.0}], now=NOW
     )
     out = reconcile_confidence(rows, 0.1, row_age_sec=3600.0)
     assert out["verdict"] == "unknown"
@@ -681,13 +705,15 @@ _GOOD_ROW = {
     },
 }
 _GOOD_DOMAINS = [
-    {"node_id": "node:substrate.execution", "prediction_error": 0.3719},
-    # (biometrics retired 2026-11-18, #3575): a lingering node is not averaged in.
+    # A test-only live domain (no real one is left since execution was retired 2026-11-24, #3576).
+    {"node_id": "node:substrate.probe", "prediction_error": 0.3719},
+    # Retired (biometrics 2026-11-18, execution 2026-11-24): lingering nodes are not averaged in.
     {"node_id": "node:substrate.biometrics", "prediction_error": 0.102157},
+    {"node_id": "node:substrate.execution", "prediction_error": 0.5},
 ]
 
 
-def test_snapshot_happy_path_reports_all_three_sources_healthy(stub_backends) -> None:
+def test_snapshot_happy_path_reports_all_three_sources_healthy(stub_backends, one_live_domain) -> None:
     stub_backends["heartbeat"](_GOOD_H1, _GOOD_HEALTH)
     stub_backends["self_model"]([_GOOD_ROW])
     stub_backends["domains"](_GOOD_DOMAINS)
@@ -702,7 +728,7 @@ def test_snapshot_happy_path_reports_all_three_sources_healthy(stub_backends) ->
     assert out["link"]["live_tick_count"] == 99
 
 
-def test_snapshot_degrades_each_source_independently(stub_backends) -> None:
+def test_snapshot_degrades_each_source_independently(stub_backends, one_live_domain) -> None:
     """snapshot()'s core contract: one backend being down must not blank the
     other two, which are served by entirely different systems and are still
     perfectly valid."""

@@ -157,7 +157,7 @@ def test_the_camera_nodes_stay_off_the_lattice() -> None:
     lattice = load_lattice(REPO / "config" / "field" / "orion_field_topology.v1.yaml")
     assert ROOM not in lattice.nodes
     assert WALKWAY not in lattice.nodes
-    assert "node:substrate.execution" not in lattice.nodes  # the hold test below relies on it
+    assert "node:substrate.perception" not in lattice.nodes  # the hold test below relies on it
 
 
 def test_missing_stays_absent_through_a_full_tick() -> None:
@@ -186,9 +186,11 @@ def test_a_stopped_producer_expires_instead_of_holding_the_last_spike() -> None:
 
 
 def test_node_scoped_expiry_leaves_other_nodes_prediction_error_alone() -> None:
-    # node:substrate.execution writes on its own cadence (per grammar batch); it must hold.
-    # (Was node:substrate.route, then node:substrate.chat, until each was retired, 2026-11.)
-    route = "node:substrate.execution"
+    # A node with no expiry entry must hold. No live prediction-error node in the field lacks
+    # one since node:substrate.execution was retired (2026-11-24, #3576), so this uses a
+    # test-only probe id (was route, chat, then execution until each was retired, 2026-11).
+    route = "node:substrate.probe"
+    assert (route, "prediction_error") not in EXPIRING_NODE_CHANNELS_BY_NODE
     field = _Field()
     route_delta = _delta(T0, value=0.3).model_copy(
         update={"target_id": route, "after": {"node_id": route, "pressure_hints": {"prediction_error": 0.3}}}

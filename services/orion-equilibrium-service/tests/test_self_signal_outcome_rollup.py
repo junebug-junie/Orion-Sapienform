@@ -30,7 +30,7 @@ from orion.schemas.attention_frame import PredictionErrorMagnitudeV1  # noqa: E4
 from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1  # noqa: E402
 
 NOW = datetime(2026, 10, 14, 5, 20, tzinfo=timezone.utc)
-BIO = "node:substrate.execution"  # live per-tick body vehicle (biometrics retired 2026-11-18, #3575)
+BIO = "node:prediction.body"  # live body vehicle (biometrics retired 2026-11-18, #3575; execution 2026-11-24, #3576)
 
 
 class FakeReader:
@@ -234,7 +234,7 @@ def test_a_restart_seeds_the_run_from_persisted_rows_and_cycles_extend_it() -> N
 # --- the episode open row ------------------------------------------------------------------------
 
 T0 = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
-BUS = "node:substrate.execution"  # any live PE node; bus_synaptic and biometrics retired 2026-11 (#3575)
+BUS = "node:prediction.body"  # any live PE node; bus_synaptic, biometrics and execution retired 2026-11
 HOT = PredictionErrorMagnitudeV1(value=0.12, age_sec=5.0, percentile_now=0.97, n_readings_7d=5000,
                                  band="high", p50_7d=0.03, p90_7d=0.06)
 

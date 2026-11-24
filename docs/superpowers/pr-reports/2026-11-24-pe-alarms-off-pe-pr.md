@@ -152,10 +152,10 @@ scripts/safe_docker_build.sh orion-substrate-runtime up -d --build
 - Severity: medium. Concern: a reader that was not rebuilt keeps the old PE-only query and sees the alarms' history thin out over 7 days. Mitigation: the restart list above. The verify query checks zero new PE rows for the alarms.
 - Severity: low. Concern: rollback by revert brings back PE-only readers, which would miss the signal-only rows written during cutover. Mitigation: rows are not deleted, and a revert writes PE rows again from the next tick.
 - Severity: low. Concern: the evidence list key on alarm nodes keeps its old name (`prediction_error_evidence_event_ids`). It is attribution only, not read for alarms, and not shown to Orion.
-- Issues opened: see the PR link section. Issues closed: none.
+- Issues opened: #3830 (verify-live: zero new PE rows, signal rows by kind, strain win share vs 0.772, strain news after restart, dig-tool wording); #3831 (follow-up: flip the alarms to signal_only and drop the read-both union after ~2026-12-01). Issues closed: none.
 
 ## PR link
 
-(filled in after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3829
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

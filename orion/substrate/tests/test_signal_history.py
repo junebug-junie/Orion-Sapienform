@@ -95,3 +95,20 @@ def test_migration_matches_module_contract():
     # Additive only (post-pull auto-apply): no DO block, no GRANT, no DELETE/DROP.
     for banned in ("do $$", "grant ", "delete ", "drop "):
         assert banned not in "\n".join(l for l in low.splitlines() if not l.startswith("--"))
+
+
+def test_orion_readonly_grant_file_opens_the_table():
+    """Orion's node-history dig tool will read this table as orion_readonly (design #3781 Q12).
+    The grant lives in scripts/sql/, not the migration, so the migration stays auto-applicable."""
+    grant = REPO / "scripts/sql/2026-11-24_grant_orion_readonly_node_signal_history.sql"
+    body = "\n".join(l.split("--", 1)[0] for l in grant.read_text().splitlines())
+    assert re.search(r"GRANT\s+SELECT\s+ON\s+public\.substrate_node_signal_history\s+TO\s+orion_readonly", body)
+    assert "grant" not in "\n".join(l.split("--", 1)[0] for l in MIGRATION.read_text().lower().splitlines())
+
+
+def test_read_both_count_and_event_times_count_each_key_once():
+    """Design #3781 Q2: a reading in both tables must count once, or the strain warm-up count and
+    restart-seed event times double. Count and event-time SQL wrap the deduped union."""
+    for sql in (READ_BOTH_COUNT_SQL, READ_BOTH_EVENT_TIMES_SQL):
+        inner = sql.split("FROM (", 1)[1]
+        assert inner.lstrip().startswith("SELECT DISTINCT ON (node_id, observed_at)")

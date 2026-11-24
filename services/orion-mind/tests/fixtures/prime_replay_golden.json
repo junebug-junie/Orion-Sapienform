@@ -3404,7 +3404,7 @@
   "logs": [
    "orion-mind.prime INFO prime_now_read shown_id=shown-1 items=5 candidates=5",
    "orion-mind.prime INFO prime_now_use thought=0000011700004000 shown_id=shown-1 cited=curiosity_run:run1 stored=1 rejected=0",
-   "orion-mind.prime INFO prime_thought thought=0000011700004000 route=prime need=- choice=no_concerns now_use=stored 1/1 concerns +0 -0 kept 0 | no move | proposed 1 experience cite(s), now_use stored 1/1 | 1 cite(s) not shown: gpu_wait:not-shown | warnings: experience cite(s) not shown in this frame, not recorded: gpu_wait:not-shown reading='the reading was about heat'"
+   "orion-mind.prime INFO prime_thought thought=0000011700004000 route=prime need=- choice=no_concerns now_use=stored 1/1 concerns +0 -0 kept 0 | 1 cite(s) not shown: gpu_wait:not-shown | no move | proposed 1 experience cite(s), now_use stored 1/1 | warnings: experience cite(s) not shown in this frame, not recorded: gpu_wait:not-shown reading='the reading was about heat'"
   ],
   "now_use_posts": [
    [
@@ -3525,7 +3525,7 @@
        "level": "deliberate",
        "object_ref": "prime_thought:0000011700004000",
        "outcome": {
-        "note": "woke: first wake: I have not thought yet | concerns +0 -0 kept 0 | no move | proposed 1 experience cite(s), now_use stored 1/1 | 1 cite(s) not shown: gpu_wait:not-shown | warnings: experience cite(s) not shown in this frame, not recorded: gpu_wait:not-shown",
+        "note": "woke: first wake: I have not thought yet | concerns +0 -0 kept 0 | 1 cite(s) not shown: gpu_wait:not-shown | no move | proposed 1 experience cite(s), now_use stored 1/1 | warnings: experience cite(s) not shown in this frame, not recorded: gpu_wait:not-shown",
         "observed_at": "<wallclock>",
         "source": "producer",
         "value": 1.0

@@ -111,7 +111,7 @@ def sitting_label(row: Mapping[str, Any]) -> str:
     start, last = _ts(row.get("started_at")), _ts(row.get("last_input_at"))
     minutes = int(round((last - start).total_seconds() / 60.0)) if start and last else None
     span = f" for {minutes} min" if minutes is not None else ""
-    when = f", ended {last.strftime('%Y-%m-%d %H:%M')}Z" if last else ""
+    when = f", ended {last.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M')}Z" if last else ""
     return f"a game sitting: {who} played {title}{span}{when}"[:300]
 
 

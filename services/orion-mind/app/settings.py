@@ -212,15 +212,15 @@ class Settings(BaseSettings):
     # derive from it). 3600 (#3354): a dig-style promise on the agent lane needed ~1,757 s of FCC work live.
     PRIME_INTENTION_TURN_TIMEOUT_SEC: float = Field(default=3600.0, ge=60.0, le=3600.0,
                                                     alias="PRIME_INTENTION_TURN_TIMEOUT_SEC")
+    # Game company patch 4 (orion/prime/sitting.py): a game sitting wakes Prime twice at most (open past 3 min, end),
+    # at most 2 thoughts name one sitting, and the frame shows one line while someone plays. false = no wake, no line.
+    PRIME_SITTING_WAKE_ENABLED: bool = Field(default=True, alias="PRIME_SITTING_WAKE_ENABLED")
     # Prime hunger (integration design Part B, orion/prime/hunger.py): needs with content (a concern near its horizon,
     # an uncited surprise, Juniper's silence past her usual gap) wake Prime when the strongest damped need reaches
     # PRIME_HUNGER_THRESHOLD, at most PRIME_HUNGER_DAILY_BUDGET thoughts in any 24 h (past that only a change wakes).
     # Surprise and connection are read from durable-runs GET /temporal-self/hunger every PRIME_HUNGER_READ_SEC.
     # false = no needs, no frame section, no salience on the bid: Prime wakes on changes only. The 6-hour quiet
     # floor is deleted, not restored by false. Shipped ON.
-    # Game company patch 4 (orion/prime/sitting.py): a game sitting wakes Prime twice at most (open past 3 min, end),
-    # at most 2 thoughts name one sitting, and the frame shows one line while someone plays. false = no wake, no line.
-    PRIME_SITTING_WAKE_ENABLED: bool = Field(default=True, alias="PRIME_SITTING_WAKE_ENABLED")
     PRIME_HUNGER_NEEDS_ENABLED: bool = Field(default=True, alias="PRIME_HUNGER_NEEDS_ENABLED")
     PRIME_HUNGER_THRESHOLD: float = Field(default=0.5, gt=0.0, le=1.0, alias="PRIME_HUNGER_THRESHOLD")
     PRIME_HUNGER_DAILY_BUDGET: int = Field(default=24, ge=1, alias="PRIME_HUNGER_DAILY_BUDGET")

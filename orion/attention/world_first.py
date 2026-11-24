@@ -1255,7 +1255,9 @@ CHAT_LATEST_TURN_SQL = (
 # changes like the live counter) are the week's baseline; they are never "open".
 #
 # Eligible only while Orion is WATCHING (``play_watch_reason``): a sitting is open, the watch in force is not
-# off, and (rule ``note``) a look note was stored in the last 3 minutes. The rule was chosen from the replay
+# off, and (rule ``note``) a look note was stored in the last 3 minutes. The mode is computed here from
+# ``retro_watch_preference`` with the game page's rule; the gateway copies Orion's ``dig watch`` acts into that table
+# before its next bid, so the two can disagree for at most that copy interval (about a minute). The rule was chosen from the replay
 # (scripts/analysis/replay_world_play.py; numbers in docs/superpowers/pr-reports/2026-11-24-retro-prime-attention-pr.md).
 # Yields to Juniper (YIELDS_TO_CHAT). Absent only when the sitting table cannot be read; a watch that cannot be
 # read holds the candidate out (fail closed), it does not make it absent.

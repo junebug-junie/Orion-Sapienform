@@ -117,11 +117,17 @@ UPDATE retro_line SET replied_at = now(), replied_by = $2
 WHERE sitting_id = $1 AND outcome = 'delivered' AND replied_at IS NULL
   AND finished_at >= now() - make_interval(secs => $3)
 """
-# The thumb (scripts/retro_routes.py, the gateway): only a delivered line has one; the newest thumb wins.
+# The thumb (scripts/retro_routes.py, the gateway): only a delivered line has one; the newest thumb wins, except that
+# a guest's thumb never replaces Juniper's (game company patch 4: her thumb is the family weight's engagement grade,
+# orion/grammar/line_engagement.py). Returns who holds the line's thumb now; NULL when the line was not delivered.
 THUMB_SQL = """
-UPDATE retro_line SET thumb = $2, thumb_by = $3, thumb_at = now()
-WHERE line_id = $1 AND outcome = 'delivered'
-RETURNING thumb_by
+WITH u AS (
+    UPDATE retro_line SET thumb = $2, thumb_by = $3, thumb_at = now()
+    WHERE line_id = $1 AND outcome = 'delivered' AND (coalesce(thumb_by, '') <> 'juniper' OR $3 = 'juniper')
+    RETURNING thumb_by
+)
+SELECT coalesce((SELECT thumb_by FROM u),
+                (SELECT thumb_by FROM retro_line WHERE line_id = $1 AND outcome = 'delivered'))
 """
 
 

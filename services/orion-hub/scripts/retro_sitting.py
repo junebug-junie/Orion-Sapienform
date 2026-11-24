@@ -197,10 +197,13 @@ EVENT_VERB = "hold"
 EVENT_TIER = 2
 EVENT_PREFIX = "retro_sitting:"
 # Minutes of the OTHER sittings that ended in the 30 days before this one (backfilled ones too: they are the
-# baseline patch 1 wrote for exactly this).
+# baseline patch 1 wrote for exactly this), counting only the ones long enough to post a want themselves
+# (HUB_RETRO_SITTING_MIN_SEC): a row is written for every sitting at its open, so the table also holds the short
+# ones, which would lower the baseline and reach the 20-sitting minimum too early (review finding).
 EVENT_HISTORY_SQL = """
 SELECT extract(epoch FROM (last_input_at - started_at)) / 60.0 AS minutes FROM retro_sitting
 WHERE sitting_id <> $1 AND coalesce(ended_at, last_input_at) >= $2 AND coalesce(ended_at, last_input_at) < $3
+  AND last_input_at - started_at >= make_interval(secs => $4)
 """
 
 
@@ -434,7 +437,8 @@ class SittingService:
             from orion.physiology.event_wants import SOURCE_HISTORY, event_want, source_salience
 
             ended = _ts(s.ended_at if s.ended_at is not None else s.last_input_at)
-            rows = await self._db("fetch", EVENT_HISTORY_SQL, s.sitting_id, ended - SOURCE_HISTORY, ended)
+            rows = await self._db("fetch", EVENT_HISTORY_SQL, s.sitting_id, ended - SOURCE_HISTORY, ended,
+                                  float(self.min_sec))
             history = [float(r["minutes"]) for r in rows if r["minutes"] is not None]
             salience = source_salience(s.duration_sec / 60.0, history)
             if salience is None:

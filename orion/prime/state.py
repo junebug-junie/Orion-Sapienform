@@ -315,8 +315,9 @@ class PrimeStateV1(BaseModel):
     # before it (extra="forbid"): rebuild Hub before orion-mind; drop the key before rolling mind back.
     needs: PrimeNeedsStateV1 = Field(default_factory=PrimeNeedsStateV1)
     # Game sittings Prime has seen (game company patch 4, orion/prime/sitting.py): which of the two wakes fired and
-    # how many thoughts named each. Left out of the saved state while empty (an older Hub or orion-mind reads a state
-    # without it); a state that HAS it needs both rebuilt (extra="forbid"), the same rule as ``needs``.
+    # how many thoughts named each. Left out of the saved state while empty (an older reader reads a state without it);
+    # a state that HAS it is unreadable to a Hub, orion-durable-runs (dream_day_store) or orion-mind built before it
+    # (extra="forbid"): rebuild Hub and durable-runs before orion-mind, the same rule as ``needs``.
     sittings: dict[str, PrimeSittingSeenV1] = Field(default_factory=dict)
 
     @classmethod

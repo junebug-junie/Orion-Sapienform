@@ -19,6 +19,11 @@ WATCH_KEY), on the bus Redis orion-mind already holds (services/orion-mind/app/p
 failed read changes nothing: an unread sitting is never "closed". ``sitting_frame_line`` is the one line Prime's
 frame shows while a sitting is open.
 
+Known limits (review, 2026-11-24): the gateway refreshes its sitting copy every 15 s with a 180 s expiry, so a gateway
+stalled past 180 s reads as "ended" (the closed wake fires once; the sitting's flags stop any third wake when the copy
+comes back). A thought that reaches the model and is then preempted keeps its pending changes, so its retry counts as
+the second thought and the closed wake can then be dropped by the cap: "at most twice" holds, the end can go unseen.
+
 Pure: no I/O, no clock of its own.
 """
 from __future__ import annotations
@@ -35,6 +40,7 @@ OPEN_WAKE_AFTER_SEC = 180.0
 MAX_THOUGHTS_PER_SITTING = 2
 MAX_TRACKED = 20
 NOTE_CHARS = 200
+UNREAD_PREFIX = "(the game sitting could not be read"
 
 
 class PrimeSittingV1(BaseModel):
@@ -163,7 +169,7 @@ def sitting_frame_line(sitting: Optional[PrimeSittingV1], watch: Optional[Mappin
     """The one line Prime's frame shows while a sitting is open (spec section 6 part 7): who plays what as stated, for
     how long, the watch mode and who set it, the look counts, the newest note. None when nobody plays."""
     if read_error:
-        return f"(the game sitting could not be read: {read_error})"
+        return f"{UNREAD_PREFIX}: {read_error})"
     if sitting is None:
         return None
     minutes = int(max(0.0, sitting.last_input_at - sitting.started_at) // 60)

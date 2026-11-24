@@ -118,3 +118,15 @@ def test_the_frame_line_says_who_what_how_long_the_watch_and_the_newest_note():
     assert "Your watch: unknown" in sw.sitting_frame_line(s, {**w, "sitting_id": "S9"}, now=T0)
     assert sw.sitting_frame_line(None, None, now=T0) is None
     assert "could not be read" in sw.sitting_frame_line(None, None, now=T0, read_error="redis down")
+
+
+def test_an_unread_sitting_is_never_shown_under_the_open_header():
+    from orion.prime.thought import FrameInputs, build_frame
+
+    unread = sw.sitting_frame_line(None, None, now=T0, read_error="redis down")
+    frame = build_frame(PrimeStateV1(), FrameInputs(now=T0, sitting_line=unread))
+    assert "GAME SITTING (unknown):\n(the game sitting could not be read: redis down)" in frame
+    assert "A GAME SITTING IS OPEN" not in frame
+    open_line = sw.sitting_frame_line(sit(5.0), None, now=T0)
+    assert "A GAME SITTING IS OPEN" in build_frame(PrimeStateV1(), FrameInputs(now=T0, sitting_line=open_line))
+    assert "GAME SITTING" not in build_frame(PrimeStateV1(), FrameInputs(now=T0))

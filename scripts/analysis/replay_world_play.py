@@ -158,9 +158,10 @@ def replay(frames, sittings, looks, prefs, rule: str) -> dict:
     first_look = min((v[0][0] for v in look_times.values()), default=None)
     long_ids = {r["sitting_id"] for r in sittings
                 if r["last_input_at"] - r["started_at"] >= LONG_SITTING}
+    backfilled_ids = {r["sitting_id"] for r in sittings if r.get("backfilled")}
 
     n = stored_match = 0
-    open_ticks = open_ticks_since_looks = 0
+    open_ticks = open_ticks_since_looks = open_ticks_backfilled = 0
     band_when_open: Counter = Counter()
     eligible = won = yielded = 0
     lost_reading = lost_seed = 0
@@ -185,6 +186,7 @@ def replay(frames, sittings, looks, prefs, rule: str) -> dict:
         v = judge_candidate(cand)
         if sitting is not None:
             open_ticks += 1
+            open_ticks_backfilled += sitting.sitting_id in backfilled_ids
             band_when_open[v.band] += 1
             if first_look is not None and t >= first_look:
                 open_ticks_since_looks += 1
@@ -226,6 +228,8 @@ def replay(frames, sittings, looks, prefs, rule: str) -> dict:
         "span": [frames[0][0].isoformat(timespec="minutes"), frames[-1][0].isoformat(timespec="minutes")],
         "stored_winner_reproduced": stored_match,
         "ticks_with_open_sitting": open_ticks,
+        # Of those, ticks whose open sitting is a backfilled row (counted as if live; it has no look notes).
+        "open_ticks_backfilled": open_ticks_backfilled,
         "play_band_when_open": dict(band_when_open),
         "play_eligible_ticks": eligible,
         "yielded_to_chat": yielded,

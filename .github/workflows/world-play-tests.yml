@@ -20,6 +20,7 @@ on:
       - "scripts/analysis/replay_world_play.py"
       - "scripts/analysis/tests/test_replay_world_play.py"
       - "tests/test_world_play_attention.py"
+      - "tests/test_line_engagement.py"
       - "services/orion-substrate-runtime/app/worker.py"
       - "services/orion-substrate-runtime/app/store.py"
       - ".github/workflows/world-play-tests.yml"
@@ -39,6 +40,7 @@ on:
       - "scripts/analysis/replay_world_play.py"
       - "scripts/analysis/tests/test_replay_world_play.py"
       - "tests/test_world_play_attention.py"
+      - "tests/test_line_engagement.py"
       - "services/orion-substrate-runtime/app/worker.py"
       - "services/orion-substrate-runtime/app/store.py"
       - ".github/workflows/world-play-tests.yml"
@@ -66,6 +68,7 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/test_world_play_attention.py \
+            tests/test_line_engagement.py \
             tests/test_attention_world_first.py \
             tests/test_attention_world_chat_evidence.py \
             scripts/analysis/tests/test_replay_world_play.py

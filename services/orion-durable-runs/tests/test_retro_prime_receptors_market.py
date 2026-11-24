@@ -102,3 +102,38 @@ def test_a_shadow_look_bid_is_never_charged():
 
 def test_the_signal_key_is_the_one_prime_writes():
     assert pc.key(W) == "orion:prime:regulate:hub.retro_watch"
+
+
+def _line(opened_at, i):
+    return WantV1(want_id=f"line{i}", family=L, producer="orion-hub.retro_commentary.binding", verb="say", tier=1,
+                  object_ref="retro_sitting:s1", opened_at=opened_at, lanes=["chat"])
+
+
+def _first_funded_line(chat_price: float):
+    """The line producer rebids every 15 s (retro_commentary.TICK_SEC) with the sitting's want clock (opened_at) and no
+    intensity of its own: seconds from the clock's start to the first funded bid, and the bids it took."""
+    r = Redis(_chat_state().model_dump_json())
+    m = market(r)
+    for i in range(80):
+        at = NOW + timedelta(seconds=15 * i)
+        st = _chat_state(at)
+        st = st.model_copy(update={"constraints": [
+            c.model_copy(update={"price": c.price.model_copy(update={
+                "value": chat_price, "bind_state": "binding" if chat_price else "slack"})})
+            if c.constraint == "lane:chat" else c for c in st.constraints]})
+        r.state_raw = st.model_dump_json()
+        d = asyncio.run(m.bid(_line(NOW, i), at))
+        if d.outcome == "funded":
+            return 15 * i, i + 1, d
+    return None, 80, None
+
+
+def test_line_hunger_counts_from_the_sittings_want_clock():
+    """Patch 4 moved hub.retro_commentary to hunger_from want_opened (the time since Orion last spoke in this sitting,
+    spec section 9). The rank is the want's own age: 0 at the clock's start, so the first bid of a sitting is "sated",
+    and the next one (15 s later) funds on a slack chat lane. On a priced lane the line waits until its hunger beats
+    the price. Numbers recorded in docs/superpowers/pr-reports/2026-11-24-retro-prime-attention-pr.md."""
+    sec, bids, d = _first_funded_line(0.0)
+    assert (sec, bids) == (15, 2) and "want_opened" in (d.value_basis or "")
+    sec_priced, bids_priced, _ = _first_funded_line(0.3)
+    assert sec_priced is not None and sec_priced > sec

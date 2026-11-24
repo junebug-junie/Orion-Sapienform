@@ -42,6 +42,9 @@ def test_play_inputs_and_event_history_read_the_real_tables():
             await conn.execute(m.read_text())
         rows = [(f"b{d}", now - timedelta(days=d, hours=3), now - timedelta(days=d, hours=2), True, None)
                 for d in range(1, 26)]
+        # Short sittings (under HUB_RETRO_SITTING_MIN_SEC) are rows too: they must stay out of the want's baseline.
+        rows += [(f"short{k}", now - timedelta(days=2, minutes=k), now - timedelta(days=2, minutes=k) + timedelta(seconds=40),
+                  False, None) for k in range(30)]
         rows.append(("S1", now - timedelta(minutes=25), now - timedelta(seconds=20), False, None))
         for sid, start, last, backfilled, ended in rows:
             await conn.execute(
@@ -69,7 +72,7 @@ def test_play_inputs_and_event_history_read_the_real_tables():
         engine = sqlalchemy.create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
         sittings, watch, absent = read_play_inputs(engine, now=now)
         # Only the sittings that can still speak into the 7-day grid (6 of the 25 backfilled ones, and S1).
-        assert absent is None and len(sittings) == 7
+        assert absent is None and len(sittings) == 37
         # Orion's standing "off" for the game, and the newest STORED note (not the newer unclear one).
         assert (watch.mode, watch.set_by, watch.why) == ("off", "orion", "not tonight")
         assert watch.newest_note == "A hero walks east."
@@ -94,7 +97,7 @@ def test_play_inputs_and_event_history_read_the_real_tables():
                 cfg = SimpleNamespace(HUB_RETRO_SITTING_ENABLED=True, HUB_RETRO_SITTING_MIN_SEC=120,
                                       HUB_RETRO_SITTING_EVENT_WANT_ENABLED=True)
                 svc = retro_sitting.SittingService(cfg, pool_provider=lambda: pool, bid=bid)
-                s = Sitting(sitting_id="S1", retro_session_id="r", started_at=(now - timedelta(minutes=90)).timestamp(),
+                s = Sitting(sitting_id="S1", retro_session_id="r", started_at=(now - timedelta(minutes=30)).timestamp(),
                             last_input_at=now.timestamp(), ended_at=now.timestamp(), game_id="crystalis")
                 out = await svc._post_event_want(s)
                 return out, bids
@@ -102,7 +105,9 @@ def test_play_inputs_and_event_history_read_the_real_tables():
                 await pool.close()
 
         out, bids = asyncio.run(history())
-        # 25 backfilled hour-long sittings in the 30 days before; S1 itself is never its own history.
-        assert out == "funded" and len(bids) == 1 and bids[0].salience == 1.0
+        # 25 backfilled hour-long sittings in the 30 days before, and a 30-minute S1: shorter than all of them, salience
+        # 0. S1 itself is never its own history, and the 30 sittings of 40 s are not either (with them S1 would beat 30
+        # of 55 rows and read 0.55).
+        assert out == "funded" and len(bids) == 1 and bids[0].salience == 0.0
     finally:
         asyncio.run(teardown())

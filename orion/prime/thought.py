@@ -50,6 +50,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import CONCERN_HORIZON_SEC, clamp_hours, describe_effects
 from orion.prime.intention import can_take_on
+from orion.prime.sitting import UNREAD_PREFIX as SITTING_UNREAD_PREFIX
 from orion.prime.state import (
     CONCERN_TEXT_CAP,
     MAX_CONCERNS,
@@ -667,8 +668,10 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
         "CURIOSITY (whether a question waits for its next run):\n" + "\n".join(_curiosity_lines(inputs)),
     ]
     if inputs.sitting_line:
-        sections.append("A GAME SITTING IS OPEN (a person plays on your Retro service; the play is theirs):\n"
-                        + inputs.sitting_line)
+        # An unread sitting is not an open one: it gets its own header (review finding).
+        head = ("GAME SITTING (unknown):" if inputs.sitting_line.startswith(SITTING_UNREAD_PREFIX)
+                else "A GAME SITTING IS OPEN (a person plays on your Retro service; the play is theirs):")
+        sections.append(head + "\n" + inputs.sitting_line)
     if shows_now(inputs):
         sections.append("WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT (other organs, highest salience first; cite "
                         "the ones you use):\n" + "\n".join(_now_lines(inputs)))

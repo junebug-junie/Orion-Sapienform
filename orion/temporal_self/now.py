@@ -7,8 +7,10 @@ Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, 
   in the 30 days before it that were strictly smaller, by the kind's declared magnitude
   (``MAGNITUDE_RULES``; the rule itself is ``orion.physiology.event_wants.source_salience``). Under 20
   past events, or a kind with no magnitude: salience is None, never 0. Use never feeds salience.
-* ``build_now`` picks at most 12 items, at most 2 per organ, never the reader's own organ, highest
-  salience first (None last), newest first on ties.
+* ``build_now`` picks at most 12 items, at most 2 per organ, never the reader's own organ. Fair ranking (#3783):
+  every organ gets a seat before any gets a second; inside an organ every kind's best row comes before any kind's
+  second; then salience (an unscored row stands at 0.5, its expected place in its own history, never 0), fewer rows
+  of the kind in the window, newest. Rows about what the reader holds (``held`` refs, exact id match) come first.
 * ``record_use`` checks a reader's cites against what it was shown (the rule of
   ``orion/temporal_self/citations.py``: only a shown id counts; anything else is removed and counted)
   and returns the rows to store. At most 3 count per run.
@@ -30,6 +32,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, get_arg
 from orion.curiosity.value import ARM_SELF_INQUIRY
 from orion.physiology.event_wants import MIN_SOURCE_HISTORY, SOURCE_HISTORY, source_salience
 from orion.schemas.temporal_self import (
+    NOW_HELD_REFS_CAP,
     NOW_LABEL_MAX,
     NOW_MAX_CITES,
     NOW_MAX_ITEMS,
@@ -50,11 +53,16 @@ EXPERIENCE_PREFIX = "experience:"
 
 __all__ = [
     "MAGNITUDE_RULES",
+    "NOW_MAX_HELD",
+    "NOW_MAX_HELD_REFS",
     "NOW_MAX_PINNED",
     "MIN_SOURCE_HISTORY",
     "SOURCE_HISTORY",
     "OrganRegistry",
     "build_now",
+    "held_lookup",
+    "held_ref_keys",
+    "held_refs_of",
     "magnitude",
     "now_label",
     "parse_organs",
@@ -246,9 +254,123 @@ def now_label(source_kind: str, label: Optional[str], verdict: Optional[str], pa
 # --------------------------------------------------------------------------- the now
 
 
-def _sort_key(c: Mapping[str, Any]) -> tuple:
+# Held-concern relevance (#3783). A reader passes the refs of what it holds (Prime: each concern's event_ref,
+# ``arc:<arc_id>`` and ``prime_concern:<concern_id>``). A row is about a held ref when one of its own ids equals one
+# of the ref's keys. Exact id equality only: no text, no word list.
+NOW_MAX_HELD = 3  # held-concern rows that rank first (more of them compete as ordinary rows)
+NOW_MAX_HELD_REFS = 12  # refs a reader may pass (Prime: 3 slots x event_ref, arc, concern id; with room)
+HELD_TAIL_MIN = 12  # a ref's last ":" segment is a key only when at least this long (no "2026-11-23"-size ids)
+ARC_REF_PREFIX = "arc:"
+
+
+def held_ref_keys(ref: str) -> set[str]:
+    """The ids one held ref matches: the ref itself, the ref without a ``#fragment`` (a letter thread or a dream's
+    concern names a part of one event), and its last ``:`` segment when that is a long id, not a path
+    (``world_pulse_read_seed:reading:<uuid>`` -> ``<uuid>``, the reading turn's correlation id)."""
+    r = str(ref or "").strip()
+    if not r:
+        return set()
+    base = r.split("#", 1)[0]
+    keys = {r, base} - {""}
+    tail = base.rsplit(":", 1)[-1]
+    if tail != base and len(tail) >= HELD_TAIL_MIN and "/" not in tail:
+        keys.add(tail)
+    return keys
+
+
+def row_ids(c: Mapping[str, Any]) -> set[str]:
+    """A candidate row's own ids: its event id, source ref, correlation id, subject ref and related refs."""
+    ids = {str(c.get(k) or "").strip() for k in ("event_id", "source_ref", "correlation_id", "subject_ref")}
+    ids.update(str(r).strip() for r in (c.get("related_refs") or []))
+    return ids - {""}
+
+
+def held_lookup(held: Sequence[str], arc_subjects: Optional[Mapping[str, str]] = None) -> dict[str, list[str]]:
+    """key -> the held refs it came from. ``arc_subjects``: arc_id -> the arc's subject_ref, so an ``arc:<id>`` ref
+    also matches every row on that arc's subject (the caller reads the arc table; this stays pure)."""
+    out: dict[str, list[str]] = {}
+    for ref in list(dict.fromkeys(str(h).strip() for h in held if str(h or "").strip()))[:NOW_MAX_HELD_REFS]:
+        keys = held_ref_keys(ref)
+        if ref.startswith(ARC_REF_PREFIX):
+            subject = (arc_subjects or {}).get(ref[len(ARC_REF_PREFIX):])
+            if subject:
+                keys.add(subject)
+        for k in keys:
+            out.setdefault(k, [])
+            if ref not in out[k]:
+                out[k].append(ref)
+    return out
+
+
+def held_refs_of(c: Mapping[str, Any], lookup: Mapping[str, list[str]]) -> list[str]:
+    """The held refs one row is about (in the reader's order), or []."""
+    if not lookup:
+        return []
+    hit: list[str] = []
+    for i in sorted(row_ids(c)):
+        for ref in lookup.get(i, ()):
+            if ref not in hit:
+                hit.append(ref)
+    return hit
+
+
+def _kind_key(c: Mapping[str, Any]) -> tuple:
+    """Order inside ONE source kind: salience high to low where the kind scores it, then newest. Salience is only
+    ever compared with the same kind's salience (it is a place in that kind's own history)."""
     sal = c.get("salience")
     return (0 if sal is not None else 1, -(sal or 0.0), -c["occurred_at"].timestamp(), str(c["event_id"]))
+
+
+UNSCORED_STANDING = 0.5  # an unscored row's expected place in its own kind's history (module docstring of _fair_order)
+
+
+def _standing(c: Mapping[str, Any]) -> float:
+    sal = c.get("salience")
+    return float(sal) if sal is not None else UNSCORED_STANDING
+
+
+def _fair_order(pool: Sequence[Mapping[str, Any]], registry: OrganRegistry,
+                held: Mapping[str, list[str]]) -> list[tuple[Mapping[str, Any], int, bool]]:
+    """(row, its place among its organ's rows, about a held ref), best first.
+
+    Fair ranking (#3783): no kind loses because it has no salience score.
+
+    1. Rows about a held ref come first, at most NOW_MAX_HELD of them (newest first).
+    2. Every organ gets a seat before any organ gets a second (``place``), so an organ whose kinds have no magnitude
+       (reading, chat, memory, painting, reverie) is never crowded out by organs whose kinds do.
+    3. Inside an organ, every kind's best row comes before any kind's second row.
+    4. Between rows at the same step: standing high to low, then the kind with fewer rows in the window (a busy
+       kind's row is not news because the kind is busy: the relative-rate rule), then newest. Standing is the
+       row's salience, its place in its OWN kind's 30-day history; an unscored row stands at 0.5, the expected
+       place of a row drawn from its own history (a percentile is uniform under no information). It is never 0:
+       a top-decile gpu_wait still goes before it, a prediction surprise at 0.00 (the smallest of its kind) after.
+       The item still shows salience None."""
+    by_kind: dict[str, list[Mapping[str, Any]]] = {}
+    for c in pool:
+        by_kind.setdefault(str(c["source_kind"]), []).append(c)
+    kind_rank: dict[str, int] = {}
+    kind_count: dict[str, int] = {}
+    for kind, rows in by_kind.items():
+        totals = [int(r["kind_total"]) for r in rows if isinstance(r.get("kind_total"), int)]
+        kind_count[kind] = max(totals) if totals else len(rows)
+        for i, r in enumerate(sorted(rows, key=_kind_key)):
+            kind_rank[str(r["event_id"])] = i
+    is_held: dict[str, bool] = {}
+    for c in sorted(pool, key=lambda r: (-r["occurred_at"].timestamp(), str(r["event_id"]))):  # newest held first
+        eid = str(c["event_id"])
+        is_held[eid] = bool(held_refs_of(c, held)) and sum(is_held.values()) < NOW_MAX_HELD
+
+    def key(c: Mapping[str, Any]) -> tuple:
+        eid = str(c["event_id"])
+        return (0 if is_held[eid] else 1, kind_rank[eid], -_standing(c), kind_count[str(c["source_kind"])],
+                -c["occurred_at"].timestamp(), eid)
+
+    by_organ: dict[str, list[Mapping[str, Any]]] = {}
+    for c in sorted(pool, key=key):
+        by_organ.setdefault(registry.organ_of[c["source_kind"]], []).append(c)
+    placed = [(c, place, is_held[str(c["event_id"])]) for rows in by_organ.values() for place, c in enumerate(rows)]
+    placed.sort(key=lambda t: (0 if t[2] else 1, t[1], *key(t[0])[1:]))
+    return placed
 
 
 def build_now(
@@ -264,18 +386,25 @@ def build_now(
     max_per_organ: int = NOW_MAX_PER_ORGAN,
     candidates_total: Optional[int] = None,
     pinned: Sequence[Mapping[str, Any]] = (),
+    held: Sequence[str] = (),
+    arc_subjects: Optional[Mapping[str, str]] = None,
 ) -> TemporalNowV1:
     """Pick the now from candidate rows (stored shape: event_id, source_kind, occurred_at, label, verdict,
-    payload, related_refs, salience, surprise_nats). ``candidates_total``: how many rows the caller's
-    query matched before its own per-kind cut (defaults to ``len(candidates)``).
+    payload, related_refs, salience, surprise_nats; optional source_ref, correlation_id, subject_ref, kind_total).
+    ``candidates_total``: how many rows the caller's query matched before its own per-kind cut (defaults to
+    ``len(candidates)``). The order is ``_fair_order``'s.
 
     ``pinned`` (Prime hunger, integration Part B): rows the reader is about to show anyway as a need's content
     (at most ``NOW_MAX_PINNED``, other organs only, same row shape), so a cite of one is valid against this shown
-    row. They come first, outside the per-organ cap, and take slots from the total cap."""
+    row. They come first, outside the per-organ cap, and take slots from the total cap.
+
+    ``held`` (#3783): refs of what the reader holds (Prime's concerns). A row whose own ids match one ranks first
+    (inside the organ cap) and its item names the refs (``held_refs``). No ``held``: no item carries the field."""
     if reader_organ not in registry.organs:
         raise ValueError(f"unknown organ {reader_organ!r}; registered: {', '.join(registry.organs)}")
     max_items = max(0, min(int(max_items), NOW_MAX_ITEMS))
     max_per_organ = max(1, int(max_per_organ))
+    lookup = held_lookup(held, arc_subjects)
     unregistered = sorted({str(c["source_kind"]) for c in candidates if c["source_kind"] not in registry.organ_of})
     pins: list[Mapping[str, Any]] = []
     for c in pinned:
@@ -284,29 +413,31 @@ def build_now(
             pins.append(c)
     pin_ids = {str(p["event_id"]) for p in pins}
     max_items = max(0, max_items - len(pins))
-    pool = [c for c in candidates
-            if c["source_kind"] in registry.organ_of and registry.organ_of[c["source_kind"]] != reader_organ
-            and str(c["event_id"]) not in pin_ids]
+    pool: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    for c in candidates:
+        eid = str(c["event_id"])
+        if (c["source_kind"] in registry.organ_of and registry.organ_of[c["source_kind"]] != reader_organ
+                and eid not in pin_ids and eid not in seen):
+            seen.add(eid)
+            pool.append(c)
     # The organ cap first (over every candidate), then the total cap over what is left: both counts
     # are then independent of where the cut falls.
-    per_organ: dict[str, int] = {}
-    within: list[Mapping[str, Any]] = []
-    for c in sorted(pool, key=_sort_key):
-        organ = registry.organ_of[c["source_kind"]]
-        if per_organ.get(organ, 0) < max_per_organ:
-            per_organ[organ] = per_organ.get(organ, 0) + 1
-            within.append(c)
+    ordered = _fair_order(pool, registry, lookup)
+    within = [c for c, place, _ in ordered if place < max_per_organ]
     picked = within[:max_items]
     dropped_organ, dropped_total = len(pool) - len(within), len(within) - len(picked)
-    items = [
-        TemporalNowItemV1(
+
+    def item(c: Mapping[str, Any]) -> TemporalNowItemV1:
+        return TemporalNowItemV1(
             event_id=str(c["event_id"]), organ=registry.organ_of[c["source_kind"]], source_kind=c["source_kind"],
             label=now_label(c["source_kind"], c.get("label"), c.get("verdict"), c.get("payload") or {}),
             occurred_at=c["occurred_at"], salience=c.get("salience"), surprise_nats=_num(c.get("surprise_nats")),
             related_refs=[str(r) for r in (c.get("related_refs") or [])][:NOW_RELATED_REFS_CAP],
+            held_refs=held_refs_of(c, lookup)[:NOW_HELD_REFS_CAP],
         )
-        for c in [*pins, *picked]
-    ]
+
+    items = [item(c) for c in [*pins, *picked]]
     total = len(pool) if candidates_total is None else int(candidates_total)
     return TemporalNowV1(
         shown_id=shown_id, reader_organ=reader_organ, reader_run_ref=reader_run_ref, since=since, as_of=as_of,

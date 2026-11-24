@@ -124,7 +124,7 @@ def test_build_now_excludes_the_readers_own_organ():
     assert all(i.organ != "prime" for i in now.items)
 
 
-def test_build_now_caps_two_per_organ_and_twelve_in_all_highest_salience_first():
+def test_build_now_caps_two_per_organ_and_twelve_in_all_every_organ_seated_before_any_second():
     rows = []
     for organ_kind in ("reverie_chain", "curiosity_run", "reading_turn", "prediction_surprise", "dream_cycle",
                        "vision_percept", "gpu_wait", "metacog_observation", "memory_episode", "chat_turn"):
@@ -134,17 +134,92 @@ def test_build_now_caps_two_per_organ_and_twelve_in_all_highest_salience_first()
     assert len(now.items) == 12
     organs = [i.organ for i in now.items]
     assert max(organs.count(o) for o in set(organs)) == 2
-    sal = [i.salience for i in now.items]
-    assert sal == sorted(sal, reverse=True)
+    # Round one: all 10 organs, each with its own best row; only then two second rows.
+    assert len(set(organs[:10])) == 10
+    first = now.items[:10]
+    assert all(i.event_id.endswith(":2") for i in first)  # each kind's own highest salience
+    assert [i.salience for i in first] == sorted((i.salience for i in first), reverse=True)
     assert now.dropped_by_organ_cap == 10 and now.dropped_by_total_cap == 8 and now.candidates == 30
 
 
-def test_unknown_salience_ranks_after_known_and_newest_first_on_ties():
+def test_an_unscored_kind_reaches_the_now_past_many_scored_organs():
+    """#3783: reading_turn has no magnitude rule. Before, any scored row (even 0.00) ranked above it, so with 12 or
+    more scored rows a reading never reached a reader."""
+    rows = [row(f"{k}:{j}", k, sal=s) for k, s in (("gpu_wait", 0.9), ("prediction_surprise", 0.0),
+                                                   ("field_dominance_run", 0.97), ("curiosity_run", 0.0),
+                                                   ("dream_cycle", 0.0), ("metacog_observation", 0.6))
+            for j in range(2)]
+    rows.append(row("reading_turn:memonce", "reading_turn", at=T - timedelta(hours=1)))
+    now = build_now(rows, "prime", since=T - timedelta(hours=3), as_of=T, shown_id="s", registry=REG)
+    ids = [i.event_id for i in now.items]
+    assert "reading_turn:memonce" in ids
+    reading = next(i for i in now.items if i.event_id == "reading_turn:memonce")
+    assert reading.salience is None  # still shown as unknown, never 0
+    # It stands at 0.5 (its expected place in its own history): after a 0.9, before a 0.00.
+    assert ids.index("gpu_wait:0") < ids.index("reading_turn:memonce") < ids.index("prediction_surprise:0")
+
+
+def test_unscored_rows_of_one_kind_are_newest_first_and_a_quiet_kind_goes_before_a_busy_one():
     rows = [row("chat_turn:old", "chat_turn", at=T - timedelta(hours=2)),
             row("chat_turn:new", "chat_turn", at=T - timedelta(hours=1)),
-            row("gpu_wait:z", "gpu_wait", sal=0.0)]
+            *[dict(row(f"attention_row:{j}", "attention_row", at=T - timedelta(minutes=j)), kind_total=60)
+              for j in range(2)],
+            dict(row("faculty_status_changed:x", "faculty_status_changed", at=T - timedelta(hours=3)), kind_total=1)]
     now = build_now(rows, "prime", since=T - timedelta(hours=3), as_of=T, shown_id="s", registry=REG)
-    assert [i.event_id for i in now.items] == ["gpu_wait:z", "chat_turn:new", "chat_turn:old"]
+    ids = [i.event_id for i in now.items]
+    assert ids.index("chat_turn:new") < ids.index("chat_turn:old")
+    # metacognition: the kind with 1 row in the window goes before the kind with 60, though it is older.
+    assert ids.index("faculty_status_changed:x") < ids.index("attention_row:0")
+
+
+def test_a_row_about_a_held_concern_ranks_first_and_is_marked():
+    seed = "world_pulse_read_seed:reading:50753c3f-d556-5a6f-bfa7-b02b95254905"
+    rows = [row(f"gpu_wait:{j}", "gpu_wait", sal=0.99) for j in range(2)]
+    rows += [row(f"field_dominance_run:{j}", "field_dominance_run", sal=1.0) for j in range(2)]
+    about = dict(row("reading_turn:act_48c", "reading_turn", at=T - timedelta(hours=5)),
+                 correlation_id="50753c3f-d556-5a6f-bfa7-b02b95254905",
+                 related_refs=["act:act_48c", "https://github.com/Clare-Nie/MemOnce"])
+    other = dict(row("reading_turn:act_hf", "reading_turn"), correlation_id="ee32b4c4-d556-5a6f-bfa7-b02b95254905")
+    rows += [other, about]
+    now = build_now(rows, "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG,
+                    held=[seed, "prime_concern:520a5a9f8d084495"])
+    assert now.items[0].event_id == "reading_turn:act_48c" and now.items[0].held_refs == [seed]
+    assert all(i.held_refs == [] for i in now.items[1:])  # a different reading's seed is not a match
+    body = now.model_dump(mode="json")
+    assert body["items"][0]["held_refs"] == [seed] and "held_refs" not in body["items"][1]
+
+
+def test_held_matching_is_exact_ids_only():
+    from orion.temporal_self.now import NOW_MAX_HELD, held_lookup, held_ref_keys, held_refs_of
+
+    # a #fragment names part of one event; a long last segment is an id; a short one (a date) and a path are not.
+    assert held_ref_keys("dream_day:2026-11-23#new1") == {"dream_day:2026-11-23#new1", "dream_day:2026-11-23"}
+    assert held_ref_keys("turn:fc22c1a0-4cb6-5292-bf3e-ffa202172e04") == {
+        "turn:fc22c1a0-4cb6-5292-bf3e-ffa202172e04", "fc22c1a0-4cb6-5292-bf3e-ffa202172e04"}
+    assert held_ref_keys("https://github.com/Clare-Nie/MemOnce") == {"https://github.com/Clare-Nie/MemOnce"}
+    assert held_ref_keys("  ") == set()
+    look = held_lookup(["dream_day:2026-11-23#new1", "arc:00112233aabbccdd"], {"00112233aabbccdd": "node:circe"})
+    assert held_refs_of({"event_id": "dream_day:2026-11-23"}, look) == ["dream_day:2026-11-23#new1"]
+    assert held_refs_of({"event_id": "x", "source_ref": "2026-11-23"}, look) == []  # a date alone is not an id
+    assert held_refs_of({"event_id": "body_binding:1", "subject_ref": "node:circe"}, look) == ["arc:00112233aabbccdd"]
+    assert held_refs_of({"event_id": "x", "label": "MemOnce dream_day:2026-11-23"}, look) == []  # never text
+    # At most NOW_MAX_HELD rows rank first; the rest compete as ordinary rows (still marked).
+    rows = [dict(row(f"reading_turn:{j}", "reading_turn", at=T - timedelta(minutes=j)), correlation_id="c" * 20)
+            for j in range(NOW_MAX_HELD + 2)]
+    rows += [row(f"gpu_wait:{j}", "gpu_wait", sal=0.9) for j in range(2)]
+    now = build_now(rows, "prime", since=T - timedelta(hours=1), as_of=T, shown_id="s", registry=REG,
+                    held=["seed:" + "c" * 20], max_per_organ=12)
+    assert [i.event_id for i in now.items[:NOW_MAX_HELD]] == [f"reading_turn:{j}" for j in range(NOW_MAX_HELD)]
+    assert now.items[NOW_MAX_HELD].event_id.startswith("gpu_wait")
+
+
+def test_no_held_is_the_same_body_shape_as_before():
+    rows = [row("reading_turn:b", "reading_turn", sal=0.1), row("chat_turn:c", "chat_turn")]
+    a = build_now(rows, "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG)
+    b = build_now(rows, "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG, held=[])
+    assert a == b and all("held_refs" not in i for i in a.model_dump(mode="json")["items"])
+    # an image built before held_refs (extra="forbid") still validates the body
+    TemporalNowV1.model_validate(a.model_dump(mode="json"))
 
 
 def test_build_now_refuses_an_unregistered_reader_and_never_shows_an_unregistered_kind():

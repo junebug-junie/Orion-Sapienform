@@ -1258,16 +1258,20 @@ NOW_MAX_LOOKBACK_DAYS = 30  # temporal_self_event retention
 # next read there) means such rows are read next time instead of never. Commits are bounded by a 30 s
 # statement timeout; 120 s covers the FOR UPDATE wait as well.
 NOW_COMMIT_MARGIN_SEC = 120.0
+NOW_HELD_LOOKBACK_HOURS = 24.0  # held-concern rows (#3783) are read from the last day, not only since the last read
 
 
 @app.get("/temporal-self/now")
 async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Optional[str] = None,
-                            include: Optional[str] = None):
+                            include: Optional[str] = None, held: Optional[list[str]] = Query(default=None)):
     """Orion's now for one reading organ: at most 12 experiences of OTHER organs recorded since ``since``
-    (default: when this organ last looked, else 24 h), at most 2 per organ, highest salience first.
-    Every call stores one ``experience_shown`` row; its ``shown_id`` is what cites are checked against.
-    ``include``: comma-separated event ids the reader shows anyway as a need's content (Prime hunger, at most 3,
-    other organs only); they are pinned first, so citing one is valid."""
+    (default: when this organ last looked, else 24 h), at most 2 per organ, every organ a seat before any gets a
+    second (orion.temporal_self.now.build_now). Every call stores one ``experience_shown`` row; its ``shown_id`` is
+    what cites are checked against. ``include``: comma-separated event ids the reader shows anyway as a need's
+    content (Prime hunger, at most 3, other organs only); they are pinned first, so citing one is valid.
+    ``held`` (repeatable, #3783): refs of what the reader holds (Prime: each concern's event_ref, ``arc:<id>``,
+    ``prime_concern:<id>``). Rows of the last 24 h whose own ids match one exactly rank first and name the ref
+    (``held_refs``). No ``held``: the body is exactly the old one."""
     from datetime import datetime, timedelta, timezone
     from uuid import uuid4
 
@@ -1297,8 +1301,22 @@ async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Op
     pin_ids = [i.strip() for i in (include or "").split(",") if i.strip()][:NOW_MAX_PINNED]
     pinned = await _now_read(store.by_id(pin_ids, own_kinds=registry.kinds_of(organ))) if pin_ids else []
     pinned.sort(key=lambda r: pin_ids.index(str(r["event_id"])) if str(r["event_id"]) in pin_ids else len(pin_ids))
+    from orion.temporal_self.now import ARC_REF_PREFIX, NOW_MAX_HELD_REFS, held_lookup
+
+    held_refs = [h.strip()[:500] for h in (held or []) if h and h.strip()][:NOW_MAX_HELD_REFS]
+    arc_subjects: dict[str, str] = {}
+    if held_refs:
+        arc_ids = [h[len(ARC_REF_PREFIX):] for h in held_refs if h.startswith(ARC_REF_PREFIX)]
+        arc_subjects = await _now_read(store.arc_subjects(arc_ids)) if arc_ids else {}
+        # A held concern's evidence may predate this read's window (the concern opened on it): look back a day,
+        # a concern's own life unkept (orion/prime/state.py CONCERN_TTL).
+        held_lo = min(lo, as_of - timedelta(hours=NOW_HELD_LOOKBACK_HOURS))
+        rows = rows + await _now_read(store.held_candidates(
+            keys=held_lookup(held_refs, arc_subjects), lo=held_lo, as_of=as_of,
+            own_kinds=registry.kinds_of(organ)))
     now = build_now(rows, organ, since=lo, as_of=as_of, shown_id=uuid4().hex, registry=registry,
-                    reader_run_ref=(run_ref or None) and run_ref[:300], candidates_total=total, pinned=pinned)
+                    reader_run_ref=(run_ref or None) and run_ref[:300], candidates_total=total, pinned=pinned,
+                    held=held_refs, arc_subjects=arc_subjects)
     # An explicit since= is an inspection read: stored (every read is), but it never moves the organ's cursor.
     await _now_read(store.insert_shown(shown_id=now.shown_id, reader_organ=organ, reader_run_ref=now.reader_run_ref,
                                        event_ids=[i.event_id for i in now.items], since=lo, shown_at=as_of,

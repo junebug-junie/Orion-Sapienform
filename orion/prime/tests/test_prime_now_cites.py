@@ -143,3 +143,20 @@ def test_an_answer_written_to_the_new_template_records_its_cites():
     applied = _apply(raw)
     assert applied.experience_cites == [SHOWN[0], SHOWN[2]]
     assert not applied.warnings
+
+
+def test_a_dropped_cite_names_its_id_before_the_drop_reasons_and_warnings():
+    """2026-11-20 09:29Z live: a Prime cite was dropped as not shown, and the 500-char act note cut the warning before
+    the id, so the mismatch could not be read back. The unshown id now comes right after the cite count."""
+    state = PrimeStateV1(concerns=[])
+    raw = {"reading": "r", "refs": [{"kind": "experience", "id": SHOWN[0]},
+                                    {"kind": "experience", "id": "curiosity_run:b23f79951e7a"}]}
+    applied = _apply(raw)
+    assert applied.experience_cites == [SHOWN[0]]
+    assert applied.experience_unshown == ["curiosity_run:b23f79951e7a"]
+    applied.dropped = ["c1 (" + "x" * 400 + ")"]
+    note = summary_note(applied, now_use="stored 1/1")
+    assert "1 cite(s) not shown: curiosity_run:b23f79951e7a" in note[:200]
+    assert note.index("not shown: curiosity_run") < note.index("dropped c1") < note.index("warnings:")
+    # No now read: every cite is unshown and named.
+    assert _apply(raw, shown=None).experience_unshown == [SHOWN[0], "curiosity_run:b23f79951e7a"]

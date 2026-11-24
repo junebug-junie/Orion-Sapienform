@@ -700,6 +700,9 @@ class Applied:
     refs: list[RefV1] = field(default_factory=list)
     # Event ids of experiences this thought cited that the frame showed (at most NOW_MAX_CITES, in cite order).
     experience_cites: list[str] = field(default_factory=list)
+    # Experience ids the answer cited that this frame did not show (dropped, never recorded). Named early in the
+    # act note: 2026-11-20 one cite was dropped and the 500-char note cut the warning before its id (#3425).
+    experience_unshown: list[str] = field(default_factory=list)
 
 
 EXPERIENCE_KIND = "experience"
@@ -952,8 +955,9 @@ def apply_answer(
     })
     experience_cites, cite_warnings = shown_cites(cited, shown_experience)
     warnings.extend(cite_warnings)
+    unshown = [c for c in cited if shown_experience is None or c not in set(shown_experience)]
     return Applied(new_state, added, dropped, sorted(kept_ids), warnings, None if refusal else move, refusal,
-                   [] if refusal else refs, experience_cites)
+                   [] if refusal else refs, experience_cites, unshown)
 
 
 WOKE_NOTE_CAP = 160
@@ -988,6 +992,10 @@ def summary_note(applied: Applied, *, now_use: Optional[str] = None) -> str:
     if applied.experience_cites:
         parts.append(f"proposed {len(applied.experience_cites)} experience cite(s)"
                      + (f", now_use {now_use}" if now_use else ""))
+    if applied.experience_unshown:
+        # Before the drop reasons and warnings, so the note's 500-char cut never hides which id did not match.
+        parts.append(f"{len(applied.experience_unshown)} cite(s) not shown: "
+                     + ", ".join(u[:60] for u in applied.experience_unshown[:2]))
     if applied.dropped:
         parts.append("dropped " + "; ".join(applied.dropped))
     if applied.warnings:

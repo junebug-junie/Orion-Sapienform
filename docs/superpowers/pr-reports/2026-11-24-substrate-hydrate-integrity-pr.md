@@ -17,7 +17,7 @@ Read-only replay of this branch's hydrate against the live graphs (`GRAPH.RO_QUE
 | graph | before (Hub log) | this branch |
 |---|---|---|
 | `orion_substrate` | failed, 0 of 19,142 nodes cached | ok: 19,146 nodes, 79,975 edges, node gap 0, 1 anomaly (`bad_endpoint_edge`) |
-| `orion_substrate_aitown` | failed, 0 of 52,160 nodes cached | see "Live replay" below |
+| `orion_substrate_aitown` | failed, 0 of 52,160 nodes cached | ok: 52,159 nodes, 202,718 edges, node gap 1 (the twin), anomalies `duplicate_node_id: 1`, `duplicate_edge_id: 425` |
 
 ## Cause, with evidence
 
@@ -91,8 +91,8 @@ None.
 ```text
 pytest orion/substrate/tests/test_complete_hydration.py                  51 passed
 ORION_TEST_FALKOR_URI=<throwaway falkordb 4.18.11> pytest orion/substrate/tests/test_falkor_node_identity_live.py   3 passed
-pytest orion/substrate/tests (full)                                       see PR comment / CI; the only local failure
-  (test_felt_state_lived_answers) also fails on main
+pytest orion/substrate/tests + recall + repair tests                       1304 passed, 53 skipped, 1 failed
+  (test_felt_state_lived_answers -- also fails on clean main)
 pytest services/orion-recall/tests/test_recall_no_full_graph_hydration.py passed
 pytest tests/test_repair_substrate_duplicate_identities.py               passed (live part skipped locally; CI runs it)
 ```
@@ -114,7 +114,8 @@ python -m orion.substrate.evals.run_complete_hydration_eval
 ### Live replay
 
 - `orion_substrate`: ok. 19,146 nodes, 79,975 edges, gap 0, `{bad_endpoint_edge: 1}`.
-- `orion_substrate_aitown`: see the PR comment for the final replay with the new page query.
+- `orion_substrate_aitown`: ok. 52,159 nodes, 202,718 edges, `{duplicate_node_id: 1, duplicate_edge_id: 425}`, 253 s from the host. The 425 duplicate edge ids are fallout from the twin. `upsert_edge`'s endpoint MERGE matches both twin rows, so each topic-foundry edge was written onto both (50246 has 425 edges). The repair below removes them.
+- Before the page-query change, the same replay failed `Query timed out` on the first aitown edge page.
 
 ## Review findings fixed
 
@@ -153,7 +154,7 @@ $F "MATCH (old) WHERE id(old) = 49919 AND old.node_id = '$N' MATCH (keep) WHERE 
 $F "MATCH (old) WHERE id(old) = 49919 AND old.node_id = '$N' DETACH DELETE old"
 ```
 
-These statements were verified on a throwaway FalkorDB 4.18.11 with a simulated twin. Edges were re-pointed, the keeper's own edges won, a re-run created 0 edges, and the delete removed the old node and its edges. Check afterwards: `MATCH (n:SubstrateNode {node_id:'<N>'}) RETURN count(n)` returns 1.
+These statements were verified on a throwaway FalkorDB 4.18.11 with a simulated twin. Edges were re-pointed, the keeper's own edges won, a re-run created 0 edges, and the delete removed the old node and its edges. Check afterwards: `MATCH (n:SubstrateNode {node_id:'<N>'}) RETURN count(n)` returns 1. The next Hub hydrate should log neither `duplicate_node_id` nor `duplicate_edge_id` for aitown.
 
 **`orion_substrate` phantom edge 66265.** No repair is recommended. The phantom lives in FalkorDB's adjacency matrix, and the real edge shares its id, so deleting by id risks losing the real edge too. Hydrate now costs it one counted anomaly. If it ever matters, the fix is a graph rebuild, which is out of scope here.
 

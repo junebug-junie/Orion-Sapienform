@@ -54,8 +54,7 @@ def main() -> int:
             "SELECT DISTINCT ON (date_trunc('hour', observed_at)) observed_at "
             "FROM substrate_node_prediction_error_history "
             "WHERE observed_at > now() - interval '24 hours' AND node_id = ANY(:nodes) "
-            "AND ((node_id = 'node:substrate.execution' "
-            "AND value >= 0.9) "
+            "AND ((node_id = 'node:prediction.body_joint' AND value >= 0.55) "
             "OR (node_id = 'node:substrate.cabinet' AND value > 0) "
             "OR (node_id = 'node:prediction.chat_turn' AND value >= 0.55)) "
             "ORDER BY date_trunc('hour', observed_at) DESC, observed_at DESC LIMIT :k"),

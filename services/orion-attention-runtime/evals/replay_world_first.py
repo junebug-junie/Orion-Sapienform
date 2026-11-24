@@ -269,13 +269,14 @@ def main() -> None:
         "world_first_replay": replay(pe, turns, st, start=start, end=end, step=timedelta(seconds=a.step_sec),
                                      event_decay=decay, sustain=not a.no_sustain),
         "body_spikes": [
-            spike_check(pe, turns, st, start=start, end=end, node_id="node:substrate.execution", min_value=0.9,
+            # node:substrate.execution retired 2026-11-24 (#3576); its turn successor is chat-turn surprise.
+            spike_check(pe, turns, st, start=start, end=end, node_id="node:prediction.chat_turn", min_value=0.55,
                         event_decay=decay),
             # node:substrate.biometrics retired 2026-11-18 (#3575); its successor is the body joint surprise.
             spike_check(pe, turns, st, start=start, end=end, node_id="node:prediction.body_joint", min_value=0.55,
                         event_decay=decay),
         ],
-        "synthetic_storm": storm_check(pe, turns, st, node_id="node:substrate.execution",
+        "synthetic_storm": storm_check(pe, turns, st, node_id="node:prediction.body_joint",
                                        storm_start=end - timedelta(hours=5), event_decay=decay),
     }
     text_out = json.dumps(report, indent=1, default=str)

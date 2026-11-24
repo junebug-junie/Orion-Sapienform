@@ -1,14 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 751,
+  "metric_count": 750,
   "_last_change": {
-    "change_count": 4,
-    "high_severity_count": 1,
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error",
-      "medium added metric://bus_channel/orion-prediction/orion:prediction:joint_surprise",
-      "medium added metric://field_channel/orion-substrate-runtime/node:prediction.body_joint.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:prediction.room_joint.prediction_error"
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error",
+      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#prediction_error_confidence (absent_means: \u2026ness.py:26). -> \u2026ness.py:26). Since 2026-11-24 ACTIVE_INFERENCE_DOMAINS is e\u2026)"
     ]
   },
   "definitions": {
@@ -4792,29 +4790,6 @@
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error": {
-      "meaning": "How much more execution pressure changed this batch than it usually does: z-score of the mean change in 4 execution pressure hints versus its own running average, negatives clipped, 3 sigma = 1.0.",
-      "value_kind": "level",
-      "rest": "0.0 = change at or below its usual (negative z clipped), or no baseline yet. Mostly zero by design (72% live).",
-      "rest_range": [
-        0.0,
-        0.0
-      ],
-      "sparsity": "designed_sparse",
-      "absent_means": "only written when a batch carried execution events; between batches the last value is carried forward in node_vectors, and the self-model drops the domain after 1800 s.",
-      "polarity": "higher_is_worse",
-      "declared_consumers": [
-        "orion.attention.field_attention.selectors:select_node_targets",
-        "orion.substrate.endogenous_curiosity:_prediction_error_candidates",
-        "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
-      ],
-      "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings",
-        "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
-      ],
-      "notes": "category=self_monitoring level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
     "metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error": {
       "meaning": "How surprising the room camera's latest frame is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. One reading per tick (~30 s), from a frame that arrived since the previous reading.",
       "value_kind": "level",
@@ -5980,7 +5955,7 @@
       "value_kind": "level",
       "rest": "about 0.97-0.99: near-ceiling because most domain prediction errors rest at or near 0. 1 - mean error, so only a broad surprise moves it.",
       "sparsity": "per_tick",
-      "absent_means": "None when no active domain has a fresh reading (each drops after 1800 s, orion/substrate/prediction_error_freshness.py:26).",
+      "absent_means": "None when no active domain has a fresh reading (each drops after 1800 s, orion/substrate/prediction_error_freshness.py:26). Since 2026-11-24 ACTIVE_INFERENCE_DOMAINS is empty (execution retired, #3576), so it is None on every tick.",
       "polarity": "higher_is_better",
       "declared_consumers": [
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"

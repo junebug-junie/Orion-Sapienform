@@ -45,10 +45,10 @@ from orion.substrate.prediction_error_magnitude import (  # noqa: E402
 # bus_synaptic and route removed 2026-11 (PE suite rebuild step 5); chat and
 # codebase 2026-11-13 (no history after retirement). cabinet stays: an alarm,
 # not a prediction error, but attention still judges it from this history.
+# biometrics (2026-11-18, #3575) and execution (2026-11-24, #3576) removed: retired, no history.
 EXPECTED_NODES = tuple(
     f"node:substrate.{d}"
     for d in (
-        "execution", "biometrics",
         "perception", "cabinet",
     )
 )

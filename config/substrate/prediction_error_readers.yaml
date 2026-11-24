@@ -41,7 +41,7 @@ files:
   services/orion-substrate-runtime/app/worker.py:
     class: alarm_aware
     reason: writes the alarm nodes and samples history for the contest; labels via ALARM_LABELS; self-model
-      PE domains are the explicit _PREDICTION_ERROR_DOMAIN_NODE_IDS (empty since 2026-11-24: execution, the last, retired)
+      PE domains are the explicit _PREDICTION_ERROR_DOMAIN_NODE_IDS (empty since 2026-11-24, when execution, the last, retired)
   orion/attention/field_attention/selectors.py:
     class: alarm_aware
     reason: precision path reads only PREDICTION_ERROR_NATIVE_TARGETS (empty since 2026-11-24); world-first

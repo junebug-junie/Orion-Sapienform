@@ -41,7 +41,7 @@ docker_ok() { docker info >/dev/null 2>&1; }
 snapshot() {
   # name <TAB> restart policy <TAB> compose project ("-" if none) <TAB> image
   docker ps -q | xargs -r docker inspect --format \
-    '{{.Name}}	{{.HostConfig.RestartPolicy.Name}}	{{with index .Config.Labels "com.docker.compose.project"}}{{.}}{{else}}-{{end}}	{{.Config.Image}}' \
+    '{{.Name}}	{{or .HostConfig.RestartPolicy.Name "no"}}	{{with index .Config.Labels "com.docker.compose.project"}}{{.}}{{else}}-{{end}}	{{.Config.Image}}' \
     | sed 's#^/##' | sort
 }
 
@@ -55,6 +55,9 @@ cmd_down() {
     esac
   done
   docker_ok || die "cannot talk to Docker (are you in the docker group?)"
+  # Ask for the sudo password now, not after the checkpoints: a poweroff that
+  # silently fails leaves the host to be hard-crashed by the outage.
+  if [ "$dry" != 1 ]; then sudo -v || die "sudo failed; nothing was done"; fi
 
   mkdir -p "$SNAP_DIR"
   local snap="${SNAP_DIR}/running-${HOST}-$(date -u +%Y%m%dT%H%M%SZ).tsv"
@@ -72,7 +75,7 @@ cmd_down() {
   local pg
   for pg in $(awk -F'\t' '$4 ~ /postgres|timescale|pgvector|postgis/ {print $1}' "$snap"); do
     if [ "$dry" = 1 ]; then echo "  would CHECKPOINT $pg"; continue; fi
-    if timeout 120 docker exec "$pg" sh -c \
+    if timeout -k 10 120 docker exec "$pg" sh -c \
         'psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}" -c CHECKPOINT' >/dev/null 2>&1; then
       echo "  ok   $pg"
     else
@@ -91,7 +94,7 @@ cmd_down() {
   fi
   sync
   echo "Powering off ${HOST}. After boot run: $0 up"
-  sudo systemctl poweroff
+  sudo systemctl poweroff || die "poweroff FAILED: ${HOST} is still up. Run: sudo systemctl poweroff"
 }
 
 cmd_up() {
@@ -122,16 +125,22 @@ cmd_up() {
     fi
   done < "$LATEST"
 
+  restart_count() { docker inspect --format '{{.RestartCount}} {{.State.StartedAt}}' "$1" 2>/dev/null || echo missing; }
+  declare -A before_rc=()
+  while IFS=$'\t' read -r name _; do before_rc["$name"]="$(restart_count "$name")"; done < "$LATEST"
+
   echo
   echo "Waiting 60 s, then checking for crash loops..."
   sleep 60
-  now="$(snapshot | cut -f1)"
   while IFS=$'\t' read -r name restart project _; do
     [ "$restart" = "no" ] && [ "$project" = "-" ] && continue
     local state
     state="$(docker inspect --format '{{.State.Status}}{{with .State.Health}} {{.Status}}{{end}}' "$name" 2>/dev/null || echo missing)"
     case "$state" in
-      "running"|"running healthy"|"running starting") ;;
+      "running"|"running healthy"|"running starting")
+        if [ "$(restart_count "$name")" != "${before_rc[$name]:-}" ]; then
+          echo "  LOOP  $name: restarted during the 60 s wait"; missing=$((missing + 1))
+        fi ;;
       *) echo "  DOWN  $name: $state"; missing=$((missing + 1)) ;;
     esac
   done < "$LATEST"

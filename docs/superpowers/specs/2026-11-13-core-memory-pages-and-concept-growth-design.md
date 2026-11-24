@@ -860,6 +860,11 @@ Follow-up: #3553.
   faithfulness floor (content-word overlap per sentence and per cite, dates and numbers the cited
   records must hold). Counts to stdout; sentences and record text only to a local file under
   `~/.orion/evals/`.
+- **`page:origin` Q&A eval (#3789, 2026-11-24).** `orion/memory/pages/evals/origin_qa.py` asks four fixed
+  origin questions with and without the latest `page:origin` in WHO YOU ARE (real renderer, gateway called
+  directly, no Hub turn) and scores each answer against the page text: states the loss, page sentences
+  echoed, numbers and dates the page does not hold. First live run (chat lane, v7, 12 answers per arm):
+  grounded 0/12 without the page, 11/12 with it; states the loss 1/12 vs 11/12.
 - **`page:lately` built (#3463, 2026-11-18), ahead of the `matters` gate (#3590).** Third page in the
   same nightly tick, after `page:origin`. Reads the last 14 days of `episode_memory` plus active
   `follow_up` rows up to 45 days old (no follow-up can be closed yet, #3758), through the lived-memory

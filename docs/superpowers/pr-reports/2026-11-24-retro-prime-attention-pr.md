@@ -31,7 +31,7 @@ After (once deployed): every attention tick traces `world:play` with its value a
 | **the same, and a look note in the last 3 min (chosen)** | **18** | **0** | **5** | **6.1% / 6.1%** | **26.0% / 24.2%** |
 | top 1% only, watch not off | 0 | 0 | 0 | unchanged | unchanged |
 
-- 277 ticks had an open sitting. On 247 of them (89%) play sat in the top tenth of its own week: Orion's point 10 holds.
+- 277 ticks had an open sitting, all of them live sittings (0 from backfilled rows). On 247 of them (89%) play sat in the top tenth of its own week: Orion's point 10 holds.
 - The band rule won 166 ticks: 136 were ticks with no winner at all, the rest were camera, room, execution, strain and 4 reading ticks.
 - Top 1% never fires: 30 of 30 minutes reads at the 97th percentile, because 2.9% of the week's minutes are full.
 - Since the looks began, the note rule kept 18 of the band rule's 25 wins: when Orion really looks, play still wins.
@@ -102,13 +102,61 @@ Also recorded in the spec's "Metric quality gate records".
 ## Tests run
 
 ```text
-TESTS_PLACEHOLDER
+orion/prime orion/physiology/tests tests/test_world_play_attention.py tests/test_line_engagement.py
+  scripts/analysis/tests/test_replay_world_play.py                                       768 passed
+orion/physiology orion/prime orion/attention tests/retro orion/grammar orion/substrate orion/schemas
+  (before the review fixes)                                                               2383 passed, 1 failed
+  (the failure, orion/substrate/tests/test_felt_state_lived_answers.py, fails the same on main)
+services/orion-mind tests (incl. the new sitting-wake loop tests; replay golden re-recorded)   449 passed
+services/orion-durable-runs tests (full, before the review fixes)                         1081 passed, 156 skipped
+  after the fixes: test_retro_prime_receptors_market, test_retro_sitting_event_menu,
+  test_event_wants_menu, test_prime_charge_market                                         35 passed
+services/orion-hub tests (full, before the review fixes; 4 env-bound files excluded that fail the same on main:
+  test_check_async_routes_not_blocking, test_attention_loops_ui_smoke, test_fcc_model_labels_api,
+  test_consult_belief_store_sql)                                                          5226 passed, 195 skipped
+  after the fixes: test_retro_prime_attention_pg, test_retro_line_pg, test_retro_prime_attention_hub,
+  test_retro_commentary_service                                                           47 passed
+services/orion-sql-writer tests (full, with Postgres)                                     1435 passed, 165 skipped
+  after the fixes: test_retro_line_engagement_integration, test_act_workspace_binding_integration,
+  test_act_ledger_integration                                                             47 passed
+services/orion-attention-runtime tests + the four root attention-runtime files            118 passed, 8 skipped
+services/orion-substrate-runtime tests/test_worker_world_first_broadcast.py               12 passed
+Postgres tests ran on a throwaway Postgres 16 container (127.0.0.1:55991), stopped after.
+
+Static gates (all steps of .github/workflows/orion-static-gates.yml that this touches, run locally):
+  check_integration_seam --require-base OK (16 organs, 49 families, 31 source kinds); body economy contract OK;
+  verb physiology OK; settings defaults orion-hub OK; metric lineage, prompt semantics, definition drift PASS;
+  inner-state registry OK; pe alarm readers OK; env key single source OK; env template parity PASS (88 services);
+  migration REQUIRED-BY OK (no new migration); chat route poacher PASS; async routes OK; the gate pytest files
+  (personal terms, env sync, settings defaults, schema registry, grammar producer catalog, integration seam,
+  body economy, verb physiology, family lanes, salience parity, metric semantics, deploy migration gate) 294 passed.
+
+Mutation check (each gate removed by hand, its test must fail): 21 of 21 killed.
+  not-watching gate, play yields to chat, backfilled never open, note freshness, watch off, sitting thought cap
+  (pure and loop), 3-minute open wake, unread is not closed, guest thumb, 2-minute reply window, act pairing,
+  receptors in families.yaml, engagement only for Juniper, event want no_history, event want backfilled,
+  line hunger_from, broadcast sitting ref, field channel, event-want baseline skips short sittings,
+  a guest thumb never replaces Juniper's.
 ```
 
 ## Evals run
 
 ```text
-EVALS_PLACEHOLDER
+python scripts/analysis/replay_world_play.py frames.jsonl sittings.jsonl looks.jsonl prefs.jsonl
+  (live exports, read-only; numbers in "The replay" above; stored winner reproduced 3048 of 3048)
+
+Prime slow over one hour of look bids, through the real market
+(services/orion-durable-runs/tests/test_retro_prime_receptors_market.py):
+  no signal: 40 looks funded in 60 bids; slow signal (magnitude 0.5): 30 funded;
+  the market's record for Prime: 10 held, 30 outbid, 20 unchanged. A held look is exactly a look that did not happen.
+
+Line hunger from the sitting's want clock (same file), first funded line after the clock starts, bids every 15 s:
+  chat price 0.0: 15 s (2 bids); 0.1: 45 s; 0.3: 120 s; 0.5: 210 s.
+
+orion/prime/evals/run_prime_frame_eval.py (through tests/test_prime_evals.py): PASS, with the regulate check
+  extended to the two new receptor families.
+
+No GPU eval: nothing here calls a model.
 ```
 
 ## Docker/build/smoke checks
@@ -120,7 +168,28 @@ ran against a throwaway Postgres 16 (127.0.0.1:55991, stopped after).
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A read-only review ran in a subagent on `origin/main...HEAD`: 1 must-fix, 7 should-fix, 5 nits. All material ones fixed.
+
+- Finding (must-fix): the only test of Juniper's engagement grade (the sql-writer integration file) ran in no workflow, and `line_grade` had no pure test.
+  - Fix: the file joins the act-ledger "must not skip" step in `.github/workflows/orion-sql-writer-tests.yml`; new pure `tests/test_line_engagement.py` (guest thumb, thumb outside the horizon, guest reply, reply after 120 s, missing row) runs in `world-play-tests.yml`.
+  - Evidence: 8 passed; the guest-thumb and reply-window mutants fail it.
+- Finding: the sitting event want's 30-day baseline included the sittings under 2 minutes (a row is written at every open).
+  - Fix: `EVENT_HISTORY_SQL` keeps only sittings of `HUB_RETRO_SITTING_MIN_SEC` or more.
+  - Evidence: `test_retro_prime_attention_pg.py` adds 30 rows of 40 s; with the filter removed it fails (salience 0.55 instead of 0).
+- Finding: `hunger_from: want_opened` changes when lines bid, and nothing measured it.
+  - Fix: a market test measures it (see Evals: 15 s on an idle lane, 2 min at price 0.3). Kept the change: it is section 9's own rule, and without it a Juniper line's act (closed at its 300 s engagement horizon) would push every next line about 5 minutes later. Recorded as a risk below.
+- Finding: deploy order for `PrimeStateV1.sittings` named Hub and mind but not orion-durable-runs (`dream_day_store`).
+  - Fix: the comment names all three and the order (Hub and durable-runs before mind); Restart section says so.
+- Finding: an unread sitting was shown under "A GAME SITTING IS OPEN".
+  - Fix: its own header, "GAME SITTING (unknown):". Evidence: `test_an_unread_sitting_is_never_shown_under_the_open_header`.
+- Finding: if hub-app deploys before sql-writer, the old resolver grades the new line acts by any Juniper turn in 300 s.
+  - Fix: Restart section states the order (sql-writer before hub-app). The post-pull rebuild rebuilds both in one run, so the window is minutes.
+- Finding: a guest's thumb could overwrite Juniper's on the same line, and so change her grade.
+  - Fix: `THUMB_SQL` never lets a guest thumb replace Juniper's; it returns who holds the thumb now.
+  - Evidence: `test_retro_line_pg.py`; the mutant without the guard fails it.
+- Finding: the menu label printed the session timezone's clock with a "Z".
+  - Fix: `astimezone(timezone.utc)` before formatting.
+- Nits fixed: the settings comment moved out of the hunger block; the replay reports how many open ticks came from backfilled rows (0 of 277); the two known limits of the wake (a gateway stalled past 180 s reads as "ended"; a preempted thought's retry uses the cap) and the mode's copy interval are documented in the code.
 
 ## Restart required
 
@@ -128,11 +197,24 @@ REVIEW_PLACEHOLDER
 No manual restart: the post-pull rebuild rebuilds orion-hub (hub-app and the Retro gateway), orion-mind,
 orion-substrate-runtime, orion-attention-runtime, orion-durable-runs and orion-sql-writer (their images hold the
 changed orion/ code and config). No migration and no grant.
+
+Order, if anything is rebuilt by hand: orion-sql-writer before orion-hub (the resolver must know Juniper line acts
+before hub-app says one), and orion-hub and orion-durable-runs before orion-mind (they read Prime's state, which gains
+"sittings" after the first sitting wake).
 ```
 
 ## Risks / concerns
 
-RISKS_PLACEHOLDER
+- Severity: medium. Concern: lines can come sooner than before when the chat lane is idle. With the sitting's want clock, a line funds 15 s after the clock starts on an idle lane, so the line rate is set by the gate (a new note and 2 minutes since the last line or chat exchange), not by hunger. Spec decision 7 was "about once every 5 to 8 minutes to start". Mitigation: Prime can now `slow` the family; `HUB_RETRO_LINE_MIN_GAP_SEC` is the direct knob. The live check (#3816) measures the gap between lines.
+- Severity: medium. Concern: most line acts will not carry the play loop's id. Binding needs a broadcast row at most 90 s old, and the log is written about every 220 s; `hub.chat_reply` bound 9 of 60 acts in 7 days. Mitigation: none here, existing limit; ticket #3817.
+- Severity: low. Concern: no sitting of 2 hours or more is inside the replay window, so the acceptance check's 2-hour share has no data. Mitigation: re-run in #3816 after a long sitting.
+- Severity: low. Concern: deploy order. `PrimeStateV1` (`extra="forbid"`) gains `sittings` after the first sitting wake: Hub and durable-runs must run the new code before orion-mind writes it. The new line acts need the new sql-writer resolver before hub-app says a Juniper line. Mitigation: one post-pull rebuild run rebuilds all of them; the key appears only after a sitting passes 3 minutes.
+- Severity: low. Concern: `world:play` counts minutes of a sitting (first to newest input), not minutes that held a press. Mitigation: a counted minute is at most 5 minutes from a press (the close rule); recorded in the gate record.
+- Severity: low. Concern: 33% of Juniper's chat turns fall inside sittings, so `world:play` and `world:chat` are correlated through her. Mitigation: play yields whenever chat is eligible.
+- Severity: low. Concern: `hub.retro_sitting` is tier 2 by proposal. Mitigation: Juniper decides tiers; it is shadow (nothing obeys it but Prime's menu).
+- Pre-existing failures seen, not caused here: `orion/substrate/tests/test_felt_state_lived_answers.py` (fails on main); four Hub test files that need the repo root, `~/.fcc/.env` or their own database.
+- Departures from spec, stated in the spec's patch 4 notes: no count in the label; a 30-minute window; `world:play` in the field contest too; "not watching" as a measured hold-out, not absence; the watch state published to Redis for Prime; the sitting's own event-want family; engagement only for Juniper-stated lines, horizon 300 s; `hunger_from: want_opened` for lines.
+- Issues opened: #3816 (verify-live, needs-juniper), #3817 (follow-up). Issues closed: none.
 
 ## PR link
 

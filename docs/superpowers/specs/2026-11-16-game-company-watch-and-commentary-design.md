@@ -970,3 +970,5 @@ Choices made while building patch 4, each with its reason:
 - **`hub.retro_commentary` hunger now counts from its want's own clock** (`hunger_from: want_opened`), which is section 9's rule ("time since Orion last spoke in this sitting"). It was counting from the family's last act close, which a Juniper line's act now reaches only at its 300 s horizon; without this change lines would come about 5 minutes later.
 - **The cap on Prime thoughts is enforced, not assumed.** A thought whose answer cannot be used keeps its pending changes, so without a cap a third thought could name the sitting. `orion/prime/sitting.py` counts the thoughts that open while a change names the sitting and drops the changes at 2.
 
+- **A guest's thumb never replaces Juniper's** on the same line (`THUMB_SQL`): her thumb is her engagement grade, and the newest-thumb-wins rule of patch 3 would let a guest change it.
+- **The sitting's salience counts only sittings long enough to post a want** (2 minutes or more) in its 30-day baseline. A row is written at every sitting's open, so the table also holds the short ones.

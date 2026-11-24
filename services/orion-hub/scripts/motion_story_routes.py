@@ -195,8 +195,11 @@ class PersonBody(BaseModel):
 
 
 def clean_why(raw: str) -> str:
-    """Her reason as typed, trimmed; blank lines and runs of spaces collapsed, line breaks kept."""
-    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in str(raw or "").replace("\r", "").split("\n")]
+    """Her reason as typed, trimmed; blank lines and runs of spaces collapsed, line breaks kept.
+    Control characters are dropped (a NUL would make the jsonb insert fail). The length cap is
+    PersonBody's; the slice only guards a direct caller."""
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", str(raw or "").replace("\r", ""))
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.split("\n")]
     return "\n".join(ln for ln in lines if ln)[:WHY_MAX_CHARS]
 
 
@@ -567,6 +570,7 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
     pool = _pool(request)
     row: Any = None
     wrong_name = False
+    why = clean_why(body.why)
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -604,7 +608,6 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                 detail: dict[str, Any] = {"story_id": story_id, "action": body.action, "via": "motion_story"}
                 if name:
                     detail["name"] = name
-                why = clean_why(body.why)
                 if why:
                     detail["why"] = why
                 if body.action == "name":
@@ -654,7 +657,7 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
         logger.warning("motion_story_person_readback_failed story_id=%s error=%s", story_id, exc)
     logger.info("motion_story_person story_id=%s individual_id=%s action=%s ask_id=%s wrong_name=%s "
                 "published=%s why_chars=%d",
-                story_id, individual_id, body.action, row["ask_id"], wrong_name, published, len(clean_why(body.why)))
+                story_id, individual_id, body.action, row["ask_id"], wrong_name, published, len(why))
     return {"ok": True, "story_id": story_id, "individual_id": individual_id, "action": body.action,
             "ask_id": row["ask_id"], "wrong_name_recorded": wrong_name, "published": published,
             "story": stories[0] if stories else None, "tally": tally}

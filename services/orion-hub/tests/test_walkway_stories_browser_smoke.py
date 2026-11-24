@@ -282,12 +282,16 @@ def test_walkway_story_people_can_be_named_or_corrected_browser_smoke():
         boxes.nth(0).locator("[data-person-action='name']").click()
         assert "Type a name first" in page.locator("#walkwayStoriesStatus").text_content()
         assert posts == []
+        # Half-typed text in the dog's box survives the walker's save re-rendering the story.
+        boxes.nth(1).locator("[data-person-why-input]").fill("on a red leash")
         boxes.nth(0).locator("[data-person-name-input]").fill("  Theo  ")
         boxes.nth(0).locator("[data-person-action='name']").click()
         page.wait_for_function("() => document.querySelector('#walkwayStoriesList [data-story-id] [data-story-sentence]')"
                                ".textContent.startsWith('Theo walked')")
         assert posts[-1] == (f"{1:032x}", "ind-anon1234567", {"action": "name", "name": "Theo", "why": ""})
         first = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
+        assert first.locator("[data-story-person='ind-dog'] [data-person-why-input]").input_value() == "on a red leash"
+        assert first.locator("[data-story-person='ind-anon1234567'] [data-person-why-input]").input_value() == ""
         assert "Orion first wrote: A person walked" in first.locator("[data-story-first-written]").text_content()
         assert first.locator("[data-person-said='name']").text_content() == "You named them Theo on this story."
         assert "named by you" in first.text_content()

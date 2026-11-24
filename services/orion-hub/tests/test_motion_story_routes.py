@@ -706,3 +706,4 @@ def test_the_juniper_card_marker_is_the_shared_one() -> None:
 def test_clean_why_trims_spaces_and_blank_lines_but_keeps_line_breaks() -> None:
     assert msr.clean_why("  a  b \r\n\n\t c ") == "a b\nc"
     assert msr.clean_why("") == "" and msr.clean_why("   \n ") == ""
+    assert msr.clean_why("no\x00 kids\x07") == "no kids"   # NUL would break the jsonb insert

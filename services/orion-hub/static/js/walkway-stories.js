@@ -410,7 +410,27 @@
         const body = await res.json();
         if (body.tally) showTally(body.tally);
         const item = box.closest("[data-story-id]");
-        if (body.story && item) item.replaceWith(renderStory(doc, body.story, onVerdict, onPerson));
+        if (body.story && item) {
+          // Keep what she is half-way through typing in the OTHER person boxes of this story.
+          const typedElsewhere = {};
+          item.querySelectorAll("[data-story-person]").forEach((b) => {
+            if (b === box) return;
+            typedElsewhere[b.getAttribute("data-story-person")] = {
+              name: (b.querySelector("[data-person-name-input]") || {}).value || "",
+              why: (b.querySelector("[data-person-why-input]") || {}).value || "",
+            };
+          });
+          const fresh = renderStory(doc, body.story, onVerdict, onPerson);
+          fresh.querySelectorAll("[data-story-person]").forEach((b) => {
+            const kept = typedElsewhere[b.getAttribute("data-story-person")];
+            if (!kept) return;
+            const n = b.querySelector("[data-person-name-input]");
+            const w = b.querySelector("[data-person-why-input]");
+            if (n) n.value = kept.name;
+            if (w) w.value = kept.why;
+          });
+          item.replaceWith(fresh);
+        }
         if (status) {
           status.textContent = action === "name"
             ? `Saved: ${name}. Orion applies it like any "who is this?" answer.`

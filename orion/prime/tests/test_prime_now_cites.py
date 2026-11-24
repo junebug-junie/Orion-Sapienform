@@ -123,8 +123,9 @@ def test_the_reply_template_itself_carries_the_experience_cites_when_the_now_is_
         prompt = system_prompt({"curiosity": ("slow",)}, events=events, take_on=True, experiences=True, needs=True,
                                evidence_clock=True)
         template = _reply_template(prompt)
-        assert '"refs": [] | [{"kind": "experience", "id": "<the id after experience:>"}]}' in template
-        assert template.rstrip().endswith("}]}")
+        assert '\n "refs": [] | [{"kind": "experience", "id": "<the id after experience:>"}],\n "move": null |' in template
+        # Refs before the move, never last: as the last key the model dropped the closing brace (6 of 15 live).
+        assert template.rstrip().endswith('"id": "..."}]}}')
         # The move's own refs are unchanged (arc/act, or act only in event mode).
         assert ('"refs": [{"kind": "act", "id": "..."}]},' if events
                 else '"refs": [{"kind": "arc" | "act", "id": "..."}]},') in template
@@ -133,11 +134,12 @@ def test_the_reply_template_itself_carries_the_experience_cites_when_the_now_is_
 
 
 def test_an_answer_written_to_the_new_template_records_its_cites():
-    """An answer shaped exactly like the template (top-level refs after the move) keeps its shown cites.
+    """An answer shaped exactly like the template (top-level refs before the move) keeps its shown cites.
     Characterization, not the regression: the parser already accepted top-level refs before #3425."""
     raw = {"reading": "the closet ran hot after the reading", "pick": "none",
-           "concerns": {"keep": [], "add": [], "drop": []}, "move": None,
-           "refs": [{"kind": "experience", "id": SHOWN[0]}, {"kind": "experience", "id": f"experience:{SHOWN[2]}"}]}
+           "concerns": {"keep": [], "add": [], "drop": []},
+           "refs": [{"kind": "experience", "id": SHOWN[0]}, {"kind": "experience", "id": f"experience:{SHOWN[2]}"}],
+           "move": None}
     applied = _apply(raw)
     assert applied.experience_cites == [SHOWN[0], SHOWN[2]]
     assert not applied.warnings

@@ -54,7 +54,9 @@ Not applicable. This is a CI change only.
 
 ## Review findings fixed
 
-- Covered in the PR thread.
+- Finding: only the one fixture CSV triggered the workflow; a new fixture file would be missed.
+  - Fix: trigger on `services/orion-vision-host/evals/fixtures/**`.
+  - Evidence: review found no other problems (step exits 1 on FAIL, paths cover every file the eval reads).
 
 ## Restart required
 

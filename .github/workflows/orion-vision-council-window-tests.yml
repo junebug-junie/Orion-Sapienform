@@ -18,7 +18,7 @@ on:
       - 'config/vision_zones.yaml'
       - 'config/vision_profiles.yaml'
       - 'services/orion-vision-host/evals/office_person_cutoff_eval.py'
-      - 'services/orion-vision-host/evals/fixtures/office_person_boxes.csv'
+      - 'services/orion-vision-host/evals/fixtures/**'
       - '.github/workflows/orion-vision-council-window-tests.yml'
   push:
     branches: [main]
@@ -32,7 +32,7 @@ on:
       - 'config/vision_zones.yaml'
       - 'config/vision_profiles.yaml'
       - 'services/orion-vision-host/evals/office_person_cutoff_eval.py'
-      - 'services/orion-vision-host/evals/fixtures/office_person_boxes.csv'
+      - 'services/orion-vision-host/evals/fixtures/**'
       - '.github/workflows/orion-vision-council-window-tests.yml'
 jobs:
   tests:

@@ -123,7 +123,34 @@ set, and the SigLIP plan below applies only to them.
 - Two clues need no picture read: `with:<person>` (from `together_story_ids`)
   and `at:<camera>/<hours>` (from the sighting's stream and time).
 
-### Patch 3: clues as evidence in the guess
+### Patch 3 as shipped (#3862, 2026-11-25): a veto, not a clue term
+
+What shipped is narrower than the plan below. The guess is chosen exactly as
+before; then the guessed name's clue log-odds (once per clue) is checked, and at
+<= -2.3 an unsure guess is dropped (no "Is this X?") and an accept becomes unsure.
+It never changes the name or raises a band, so it CANNOT raise a right-name rate:
+the acceptance check below does not apply to it. Its own gate
+(`evals/run_clue_veto_replay_eval.py`, her answered "Is this X?" questions):
+dropped questions she said "yes" to <= 10% of her yeses, and the share of "no"
+among dropped questions above her overall "no" share. Result: 3 dropped of 222,
+all "no", 0 "yes" lost. Shipped on because it can only remove questions and the
+replay lost no right one.
+
+How thin it is (2026-11-25, per-camera start, #this PR): 10 (person, clue) cells
+clear 10 album passages; only one can veto on a single sighting (a regular never
+seen with a stroller, 0/58; llr -3.08). Dog cells run -1.95 to +1.06 per sighting,
+so a dog alone never reaches -2.3; dog stays in the set because two clues can add.
+A neighbour pushing a stroller within one person-height in the same frame does
+attach to the regular's crop; the worst case is one dropped question for that cluster.
+
+Box quality: 31 of 31 recent stroller boxes checked by eye (2026-11-25), at least
+29 clearly strollers, 2 too dark/small to judge. Stored boxes are already the
+detector's own (score >= 0.35); no extra confidence cut.
+
+Record: the veto stores nothing; vetoed guesses leave no row (log line and cycle
+counters only). Her yes-rate before/after is measurable from `orion_ask` alone.
+
+### Patch 3 (original plan): clues as evidence in the guess
 
 - In `attribute()`: each person's score gets a clue term, added in log-odds
   (weights of evidence), after the album score and before banding:

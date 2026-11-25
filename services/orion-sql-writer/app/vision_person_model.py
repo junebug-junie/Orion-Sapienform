@@ -870,17 +870,22 @@ def street_pools(conn, now: datetime, cfg: PersonModelConfig, tz: ZoneInfo
 # in the same frame (services/orion-sql-writer/evals/run_clue_rates_eval.py measured it).
 CLUE_NEAR_HEIGHTS = 1.0
 
-_CLUE_STARTS_SQL = ("SELECT label, min(observed_at) FROM vision_crop_observation "
-                    "WHERE label = ANY(:kinds) GROUP BY label")
+# Per camera: the walkway boxed strollers from 2026-11-18, the doorbell only from
+# 2026-11-24, the office never. A camera that has not boxed a kind yet must not count
+# its passages as "no <kind>".
+_CLUE_STARTS_SQL = ("SELECT label, stream_id, min(observed_at) FROM vision_crop_observation "
+                    "WHERE label = ANY(:kinds) GROUP BY label, stream_id")
 
 _CROP_CLUES_SQL = """
 WITH starts AS (
-  SELECT label, since FROM unnest(CAST(:start_kinds AS text[]), CAST(:start_at AS timestamptz[])) AS s(label, since))
+  SELECT label, stream_id, since FROM unnest(CAST(:start_kinds AS text[]), CAST(:start_streams AS text[]),
+                                             CAST(:start_at AS timestamptz[])) AS s(label, stream_id, since))
 SELECT c.crop_id,
        c.stream_id || '|' || coalesce(c.individual_id, c.crop_id) || '|'
          || to_char(date_trunc('minute', c.observed_at), 'YYYY-MM-DD"T"HH24:MI') AS passage,
        coalesce(array_agg(DISTINCT o.label) FILTER (WHERE o.label IS NOT NULL), '{}') AS clues,
-       coalesce((SELECT array_agg(s.label) FROM starts s WHERE s.since <= c.observed_at), '{}') AS eligible
+       coalesce((SELECT array_agg(s.label) FROM starts s
+                 WHERE s.stream_id = c.stream_id AND s.since <= c.observed_at), '{}') AS eligible
 FROM vision_crop_observation c
 LEFT JOIN vision_crop_observation o ON o.stream_id = c.stream_id AND o.observed_at = c.observed_at
   AND o.label = ANY(:kinds) AND cardinality(c.box_xyxy) = 4 AND cardinality(o.box_xyxy) = 4
@@ -893,17 +898,18 @@ GROUP BY c.crop_id, passage
 
 def load_crop_clues(conn, crop_ids: Iterable[str], kinds: Sequence[str]) -> Dict[str, ClueObs]:
     """crop_id -> (passage key, clue kinds boxed next to the person in that frame,
-    clue kinds the detector had started boxing by then)."""
+    clue kinds the detector had started boxing ON THAT CAMERA by then)."""
     from sqlalchemy import text
 
     ids = sorted(set(crop_ids))
     if not ids or not kinds:
         return {}
-    # When the detector first boxed each kind: one scan per cycle, not one per crop.
+    # When the detector first boxed each kind on each camera: one scan per cycle, not one per crop.
     starts = conn.execute(text(_CLUE_STARTS_SQL), {"kinds": list(kinds)}).fetchall()
     return {r[0]: (r[1], frozenset(r[2] or ()), frozenset(r[3] or ())) for r in conn.execute(
         text(_CROP_CLUES_SQL), {"ids": ids, "kinds": list(kinds), "near": CLUE_NEAR_HEIGHTS,
-                                "start_kinds": [s[0] for s in starts], "start_at": [s[1] for s in starts]}).fetchall()}
+                                "start_kinds": [s[0] for s in starts], "start_streams": [s[1] for s in starts],
+                                "start_at": [s[2] for s in starts]}).fetchall()}
 
 
 def clue_inputs(album: Dict[str, Dict[int, List[Crop]]], street: Dict[str, List[Crop]],

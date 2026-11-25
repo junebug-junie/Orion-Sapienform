@@ -653,7 +653,7 @@ so the existing "Is this Juniper?" asks ask the right name, and the office line 
    The guess is chosen exactly as without it; then `clue_llr` for the guessed
    name sums ln(P(clue | their album passages) / P(clue | street passages)),
    once per clue the cluster shows (add-0.5 smoothing; a person needs 10+
-   album passages; only passages after the detector started boxing that kind
+   album passages; only passages after the detector started boxing that kind on that camera
    count). At or below -2.3 (10:1 against) an `unsure` guess is dropped (no
    question) and an `accept` becomes `unsure`. It never changes the name or
    raises a band. A walk past crossing a minute boundary counts as two passages. Exempt on a camera with a prior. Nothing

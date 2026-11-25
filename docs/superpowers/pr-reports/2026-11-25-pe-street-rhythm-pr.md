@@ -179,6 +179,6 @@ The calm gate, 7 days after deploy: #3950 (verify-live, needs-juniper, project b
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3961
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -13,11 +13,15 @@ Input: the raw per-frame magnitude ``1 - cos(frame, stream EWMA)`` (``Perception
 Stage 1, per frame, per stream. p1 = (1 + #{past >= x}) / (n + 1) over the same stream's frames in
 the last ``STAGE1_WINDOW_SEC`` (2 h of time, so a frame-rate change does not move the window).
 A stream is ready once it holds ``STAGE1_MIN_FRAMES`` frames spanning ``STAGE1_MIN_SPAN_SEC``.
+Within the window's top ``STAGE1_TAIL_Q`` frames p1 follows an exponential tail fitted to those
+frames, so a change beyond the 2 h maximum keeps its size order instead of tying at 1/(n+1).
 
-Stage 2, per node, every tick. m = the smallest p1 over the node's frames in the trailing
-``STAGE2_INTERVAL_SEC`` (5 min). p2 = (1 + #{past m <= m}) / (n + 1) against the node's own m
-values from the last 24 h, sampled once every 5 min (at most ``STAGE2_MAX_VALUES`` = 288).
-Value = excess = max(0, -ln p2 - 1), in nats.
+Stage 2, per node, every tick. m = the smallest p1 over the node's k frames in the trailing
+``STAGE2_INTERVAL_SEC`` (5 min), Sidak-corrected to 1 - (1 - min)^k so the frame count does not
+set the scale. p2 = (1 + #{past m <= m}) / (n + 1) against the node's own m values from the last
+24 h, sampled once every 5 min (at most ``STAGE2_MAX_VALUES`` = 288), excluding samples whose
+window overlaps the current one. Value = excess = max(0, -ln p2 - 1), in nats. Stage 2 is a rank,
+so its calm calibration holds whatever monotone transform stage 1 applies (review 2026-11-24).
 
 Why the trailing 5 min: the history sampler and the attention contest read the node about every
 4-5 min. A value that covered only the last 30 s missed 86-92% of short changes in replay.
@@ -52,6 +56,15 @@ STAGE2_MIN_VALUES = 48
 # The stage-2 window "holds 24 h" once its oldest value is this old (one 5-min sample of slack,
 # so the 288th sample counts).
 STAGE2_FULL_SPAN_SEC = STAGE2_WINDOW_SEC - STAGE2_INTERVAL_SEC
+# Stage 1's tail: a frame among the window's top STAGE1_TAIL_Q gets an exponential (peaks-over-
+# threshold) tail p instead of the rank, so changes beyond the 2 h maximum keep their order (review
+# 2026-11-24: with the plain rank every new 2 h maximum tied at p = 1/(n+1), and a huge change read
+# ~2 nats, ordered by frame-count noise). Stage 2 ranks a monotone function of these p, so its
+# calibration does not depend on this tail being exact.
+STAGE1_TAIL_Q = 10
+_P_FLOOR = 1e-300
+# A stage-2 sample at least this full (count) besides spanning 24 h reads 'v2'.
+STAGE2_FULL_MIN_VALUES = int(0.9 * 288)
 # Largest reachable value: p2 = 1 / (288 + 1).
 SCENE_CHANGE_CAP_NATS = math.log(STAGE2_MAX_VALUES + 1) - 1.0
 
@@ -94,15 +107,28 @@ class Stage1Window:
         return (now - self._frames[0][0]).total_seconds() >= STAGE1_MIN_SPAN_SEC
 
     def observe(self, ts: datetime, raw: float) -> float | None:
-        """Rank ``raw`` against the window (before adding it); None while not ready."""
+        """Rank ``raw`` against the window (before adding it); None while not ready, and for a
+        non-finite input (never added: a NaN would corrupt the sorted window for good)."""
         ts = _aware(ts)
         raw = float(raw)
+        if not math.isfinite(raw):
+            return None
         self._prune(ts)
         p: float | None = None
         if self.ready(ts):
             n = len(self._sorted)
             at_or_above = n - bisect.bisect_left(self._sorted, raw)
             p = (1.0 + at_or_above) / (n + 1.0)
+            q = STAGE1_TAIL_Q
+            if n > q and at_or_above < q:
+                # Exponential tail over the top q: P(X > x) ~ (q / (n + 1)) exp(-(x - u) / sigma),
+                # u the q-th largest value, sigma the mean excess of the top q over u.
+                u = self._sorted[n - q - 1]
+                top = self._sorted[n - q:]
+                sigma = sum(v - u for v in top) / q
+                if sigma > 0.0:
+                    tail = (q / (n + 1.0)) * math.exp(-(raw - u) / sigma)
+                    p = max(_P_FLOOR, min(p, tail))
         self._frames.append((ts, raw))
         bisect.insort(self._sorted, raw)
         return p
@@ -146,6 +172,8 @@ class SceneChangeScorer:
         return p
 
     def stage1_ready(self, now: datetime) -> bool:
+        for w in self.streams.values():
+            w._prune(now)  # a stream that went quiet hours ago is not ready
         return any(w.ready(now) for w in self.streams.values())
 
     def _prune(self, now: datetime) -> None:
@@ -159,7 +187,10 @@ class SceneChangeScorer:
             self.stage2.popleft()
 
     def stage2_scale(self, now: datetime) -> str:
-        if self.stage2 and (now - self.stage2[0][0]).total_seconds() >= STAGE2_FULL_SPAN_SEC:
+        if (
+            len(self.stage2) >= STAGE2_FULL_MIN_VALUES
+            and (now - self.stage2[0][0]).total_seconds() >= STAGE2_FULL_SPAN_SEC
+        ):
             return SCALE_V2
         return SCALE_V2_PARTIAL
 
@@ -173,18 +204,27 @@ class SceneChangeScorer:
             warm = self.stage1_ready(now) and len(self.stage2) >= STAGE2_MIN_VALUES
             reason = MISSING_NO_FRAME if warm else MISSING_WARMING
             return SceneChangeReading(None, reason, None, n_stage2=len(self.stage2)), False
-        m = min(p for _, p in self.recent)
-        n2 = len(self.stage2)
+        k = len(self.recent)
+        # Sidak: the smallest of k p-values, put back on a uniform scale (1 - (1 - min)^k), so a
+        # busy hour (more frames per 5 min) is not rarer than a quiet one by frame count alone.
+        m = -math.expm1(k * math.log1p(-min(p for _, p in self.recent)))
+        m = max(_P_FLOOR, min(1.0, m))
+        # Rank only against past samples whose 5-min window does not overlap this one: the
+        # latest sample shares frames with every tick of the next 5 min (review 2026-11-24).
+        horizon = now - timedelta(seconds=STAGE2_INTERVAL_SEC)
+        past = [v for t, v in self.stage2 if t <= horizon]
+        n2 = len(past)
         p2: float | None = None
         value: float | None = None
         if n2 >= STAGE2_MIN_VALUES:
-            at_or_below = sum(1 for _, past in self.stage2 if past <= m)
+            at_or_below = sum(1 for v in past if v <= m)
             p2 = (1.0 + at_or_below) / (n2 + 1.0)
             value = excess_nats(p2)
         scale = self.stage2_scale(now)
         sampled = False
         if self.last_stage2_at is None or (now - self.last_stage2_at).total_seconds() >= STAGE2_INTERVAL_SEC:
-            # Ranked above before it joins the window: never against itself.
+            # Ranked above before it joins the window, and kept out of the ranking until its
+            # window no longer overlaps: never ranked against itself.
             self.stage2.append((now, m))
             self.last_stage2_at = now
             self._prune(now)

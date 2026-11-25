@@ -39,7 +39,12 @@ from orion.schemas.attention_candidate import (
     world_first_fenced,
 )
 from orion.substrate.prediction_error_freshness import is_alarm_node, missing_input_reason
-from orion.substrate.signal_history import SIGNAL_VALUE_KEY, node_signal_value
+from orion.substrate.signal_history import (
+    SIGNAL_KIND_SCENE_CHANGE,
+    SIGNAL_VALUE_KEY,
+    node_signal_value,
+    signal_kind_for,
+)
 from orion.substrate.attention.common import compact, stable_id
 from orion.substrate.attention.policy import select_actions
 from orion.substrate.attention.scoring import build_open_loops, merge_signals
@@ -160,6 +165,9 @@ def substrate_pressure_signals(
             if kind == "prediction_error" and is_alarm_node(node_id):
                 # Same rule as world_first_signals: an alarm's seed is a firing.
                 kind = "alarm"
+            elif kind == "prediction_error" and signal_kind_for(node_id) == SIGNAL_KIND_SCENE_CHANGE:
+                # A camera's seed is camera scene change, not a prediction error (PE retire Patch 3).
+                kind = "scene_change"
             label = compact(str(getattr(node, "label", "") or node_id), 120)
             if not label:
                 continue
@@ -175,7 +183,9 @@ def substrate_pressure_signals(
                     signal_id=stable_id("substrate-signal", f"{node_id}|{kind}"),
                     source="substrate_broadcast",
                     target_text=label,
-                    target_type_hint="anomaly" if kind in ("prediction_error", "alarm") else "concept",
+                    target_type_hint=(
+                        "anomaly" if kind in ("prediction_error", "alarm", "scene_change") else "concept"
+                    ),
                     signal_kind=f"substrate_{kind}",
                     salience=salience,
                     confidence=confidence,
@@ -448,6 +458,8 @@ def world_first_signals(
         driver = (
             "world_activity" if node is None
             else "alarm" if is_alarm_node(cand.source_id)
+            # A camera competes on its scene change, not as a prediction error (PE retire Patch 3).
+            else "scene_change" if signal_kind_for(cand.source_id) == SIGNAL_KIND_SCENE_CHANGE
             else "prediction_error"
         )
         world_evidence = getattr(cand, "evidence", None)

@@ -209,6 +209,15 @@ def test_both_cameras_produce_contest_candidates() -> None:
     for nid in CAMERAS:
         assert cands[nid]["source_kind"] == "external" and not cands[nid]["absent"]
         assert cands[nid]["eligible"], cands[nid]
+    # The winning signals say scene change, not prediction error (review 2026-11-24).
+    signals = {sig.evidence_refs[0]: sig for sig in ab.world_first_signals(
+        nodes, now=NOW, magnitude_by_node_id={nid: _magnitude(0.995, value=3.2) for nid in CAMERAS},
+        external_candidates=[], min_salience=0.0,
+    )[0]}
+    assert set(signals) == set(CAMERAS)
+    for nid, sig in signals.items():
+        assert sig.signal_kind == "substrate_scene_change"
+        assert sig.provenance["signal_driver"] == "scene_change"
 
 
 def test_walkway_keeps_its_own_p99_floor() -> None:

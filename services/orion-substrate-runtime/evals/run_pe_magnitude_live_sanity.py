@@ -46,6 +46,8 @@ from orion.substrate.prediction_error_magnitude import (  # noqa: E402
 # codebase 2026-11-13 (no history after retirement). cabinet stays: an alarm,
 # not a prediction error, but attention still judges it from this history.
 # biometrics (2026-11-18, #3575) and execution (2026-11-24, #3576) removed: retired, no history.
+# perception reads camera scene change since 2026-11-24 (PE retire Patch 3): current-scale rows
+# from the signal table, empty for ~4 h after the first deploy.
 EXPECTED_NODES = tuple(
     f"node:substrate.{d}"
     for d in (
@@ -112,11 +114,15 @@ def evaluate(
 def _fetch(uri: str, since: datetime) -> list[tuple[str, datetime, float]]:
     from sqlalchemy import create_engine, text
 
+    from orion.prediction.signal_history_sql import HISTORY_WITH_MOVED_SOURCE_SQL
+
     engine = create_engine(uri)
     with engine.connect() as conn:
+        # The shared history source (PE retire Patch 2/3): the alarms read from both tables,
+        # the cameras from the signal table, current scale only.
         rows = conn.execute(
             text(
-                "SELECT node_id, observed_at, value FROM substrate_node_prediction_error_history "
+                f"SELECT node_id, observed_at, value FROM {HISTORY_WITH_MOVED_SOURCE_SQL} "
                 "WHERE observed_at >= :since ORDER BY node_id, observed_at"
             ),
             {"since": since},

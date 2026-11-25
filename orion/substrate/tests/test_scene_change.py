@@ -105,22 +105,63 @@ def test_calm_rests_at_theory_at_the_sampler_cadence() -> None:
     assert max(values) <= sc.SCENE_CHANGE_CAP_NATS + 1e-9
 
 
-def test_a_real_change_crosses_the_bar_and_ties_at_the_stage1_floor_limit_it() -> None:
-    """A change bigger than anything in the last 2 h reaches the stage-1 floor p = 1 / (n + 1).
-    Stage 2 ranks with ties counted (p2 = (1 + #{past <= m}) / (n + 1)), so the value is limited by
-    how many past 5-min intervals also hit that floor (a new 2-h maximum): about 4 % of calm
-    intervals at 60 frames per interval against ~1,440 in the window. Measured, not hidden."""
-    rng = random.Random(3)
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("fps", [0.4, 0.2, 0.15])
+def test_a_change_far_beyond_the_window_reads_above_3_nats_on_every_seed(seed: int, fps: float) -> None:
+    """Review 2026-11-24: with a plain rank every new 2-h maximum tied at p1 = 1/(n+1), so a huge
+    change read ~2 nats (sometimes below the bar). The stage-1 tail keeps its size order."""
+    rng = random.Random(seed)
     scorer = sc.SceneChangeScorer()
-    _feed(scorer, T0, 26 * 3600, fps=0.2, rng=rng)  # warm, full stage 2
+    _feed(scorer, T0, 26 * 3600, fps=fps, rng=rng)
     start = T0 + timedelta(hours=26)
-    for i in range(12):
-        scorer.observe("cam0", start + timedelta(seconds=5 * i), 5.0 + i)
-    reading, _ = scorer.tick(start + timedelta(seconds=60))
+    scorer.observe("cam0", start + timedelta(seconds=5), 10.0)  # 10x the window maximum
+    reading, _ = scorer.tick(start + timedelta(seconds=30))
     assert reading.scale == "v2"
-    assert reading.value is not None and reading.value > 2.0  # crosses the curiosity bar
-    ties = sum(1 for _, m in list(scorer.stage2)[:-1] if m <= reading.m)
-    assert reading.p2 == pytest.approx((1 + ties) / (reading.n_stage2 + 1))
+    assert reading.value is not None and reading.value > 3.0, reading
+    assert reading.value <= sc.SCENE_CHANGE_CAP_NATS + 1e-9
+
+
+def test_a_bigger_change_reads_at_least_as_high() -> None:
+    values = []
+    for size in (1.5, 3.0, 30.0):
+        rng = random.Random(9)
+        scorer = sc.SceneChangeScorer()
+        _feed(scorer, T0, 26 * 3600, fps=0.2, rng=rng)
+        start = T0 + timedelta(hours=26)
+        scorer.observe("cam0", start + timedelta(seconds=5), size)
+        values.append(scorer.tick(start + timedelta(seconds=30))[0].value)
+    assert values == sorted(values)
+
+
+def test_the_reading_is_not_ranked_against_its_own_sample_in_the_next_ticks() -> None:
+    rng = random.Random(4)
+    scorer = sc.SceneChangeScorer()
+    _feed(scorer, T0, 26 * 3600, fps=0.2, rng=rng)
+    start = T0 + timedelta(hours=26)
+    scorer.last_stage2_at = start - timedelta(minutes=6)  # the next tick samples
+    scorer.observe("cam0", start + timedelta(seconds=1), 2.0)
+    first, sampled = scorer.tick(start + timedelta(seconds=10))
+    assert sampled
+    again, sampled_again = scorer.tick(start + timedelta(seconds=40))  # same trailing minimum
+    assert not sampled_again
+    assert again.p2 == pytest.approx(first.p2)
+
+
+def test_non_finite_frames_are_ignored() -> None:
+    w = sc.Stage1Window()
+    for i in range(250):
+        w.observe(T0 + timedelta(seconds=9 * i), 0.1 * (i % 7))
+    ts = T0 + timedelta(seconds=9 * 250)
+    assert w.observe(ts, float("nan")) is None and w.observe(ts, float("inf")) is None
+    assert len(w) == 250
+    assert all(a <= b for a, b in zip(w._sorted, w._sorted[1:]))
+
+
+def test_a_stream_quiet_for_hours_is_warming_again() -> None:
+    rng = random.Random(6)
+    scorer = sc.SceneChangeScorer()
+    _feed(scorer, T0, 6 * 3600, fps=0.2, rng=rng)
+    assert not scorer.stage1_ready(T0 + timedelta(hours=12))
 
 
 def test_scale_is_partial_until_stage2_spans_24h() -> None:
@@ -129,6 +170,10 @@ def test_scale_is_partial_until_stage2_spans_24h() -> None:
     scorer.stage2.extend((now - timedelta(minutes=5 * i), 0.5) for i in range(120, 0, -1))
     assert scorer.stage2_scale(now) == "v2_partial"
     scorer.stage2.appendleft((now - timedelta(hours=23, minutes=56), 0.5))
+    # spans 24 h but holds far fewer than 288 values (a long gap): still partial
+    assert scorer.stage2_scale(now) == "v2_partial"
+    scorer.stage2.extend((now - timedelta(hours=10) + timedelta(minutes=5 * i), 0.5) for i in range(1, 140))
+    assert len(scorer.stage2) >= sc.STAGE2_FULL_MIN_VALUES
     assert scorer.stage2_scale(now) == "v2"
 
 
@@ -149,6 +194,8 @@ def test_stage2_never_ranks_a_value_against_itself_and_keeps_at_most_288() -> No
     scorer.recent.append((now - timedelta(seconds=10), 0.001))  # rarer than every past minimum
     reading, sampled = scorer.tick(now)
     assert sampled and len(scorer.stage2) <= sc.STAGE2_MAX_VALUES
+    assert reading.n_stage2 <= sc.STAGE2_MAX_VALUES
+    # the sample taken 5 min ago overlaps this window: excluded from the rank
     assert reading.n_stage2 <= sc.STAGE2_MAX_VALUES
     assert reading.p2 == pytest.approx(1.0 / (reading.n_stage2 + 1))
     assert reading.value <= sc.SCENE_CHANGE_CAP_NATS + 1e-9

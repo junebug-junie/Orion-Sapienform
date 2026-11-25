@@ -220,3 +220,9 @@ test('result line says why a story is can\'t tell', () => {
     "This story counts as can't tell (you said can't tell for: Right number of people?).");
   assert.equal(ws.resultLine({ verdict: null, parts: { answers: {} } }, ['people']), null);
 });
+
+test('a verdict from the old buttons shows while parts are still open', () => {
+  const story = { verdict: 'right', parts: { answers: { people: { verdict: 'yes' } } } };
+  assert.equal(ws.resultLine(story, ['people', 'direction']),
+    'Counted as right so far; answering every part replaces it.');
+});

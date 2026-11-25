@@ -829,9 +829,8 @@
     if (parts && parts.length && ctx && typeof ctx.onPart === "function") {
       item.appendChild(renderParts(doc, story, parts, ctx));
     }
-    const row = el(doc, "div", "flex flex-wrap gap-2");
-    // "Can't tell" on every story: an unclear daylight picture must not be forced into "wrong".
-    // With the parts recorded, it is the only whole-story button; without, the old four stay.
+    // With the parts recorded there is no whole-story button, only a result line (below);
+    // without them the old four stay, plus "Can't tell" (an unclear picture is never forced into "wrong").
     const graded = parts && parts.length && ctx && typeof ctx.onPart === "function";
     if (graded) {
       const line = resultLine(story, parts);
@@ -842,6 +841,7 @@
       }
       return item;
     }
+    const row = el(doc, "div", "flex flex-wrap gap-2");
     const buttons = VERDICTS.concat([CANT_TELL]);
     buttons.forEach((v) => {
       const btn = el(doc, "button", "", v.label);
@@ -861,7 +861,8 @@
     box.setAttribute("data-story-parts", parts.join(","));
     // Orion's own sentence is graded, not the one her answers renamed (2026-11-25).
     const head = el(doc, "div", "text-[11px] font-semibold text-gray-300",
-      `Orion wrote: "${story.sentence}" Is that right? One part at a time:`);
+      story.sentence ? `Orion wrote: "${story.sentence}" Is that right? One part at a time:`
+        : "Is the sentence right? One part at a time:");
     head.setAttribute("data-story-parts-sentence", "1");
     box.appendChild(head);
     const answers = (story.parts && story.parts.answers) || {};
@@ -927,8 +928,9 @@
   function resultLine(story, parts) {
     const answers = (story.parts && story.parts.answers) || {};
     const left = parts.filter((p) => !answers[p]);
-    if (left.length) return null;
     if (!story.verdict) return null;
+    // A verdict from the old buttons, parts still open: say it, so the story never looks ungraded.
+    if (left.length) return `Counted as ${VERDICT_WORDS[story.verdict] || story.verdict} so far; answering every part replaces it.`;
     const unsure = parts.filter((p) => answers[p] && answers[p].verdict === "cant_tell");
     const why = story.verdict === "cant_tell" && unsure.length
       ? ` (you said can't tell for: ${unsure.map((p) => partQuestion(story, p)).join(", ")})` : "";

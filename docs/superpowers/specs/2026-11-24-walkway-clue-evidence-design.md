@@ -103,6 +103,27 @@ numbers as fixed. Dog clues can point either way and stay low weight.
 Clothes, hair and build still have no answer key: they wait for a labelled
 set, and the SigLIP plan below applies only to them.
 
+### Clothes and hair, measured (2026-11-25): not usable yet
+
+`services/orion-sql-writer/evals/run_clothing_clue_eval.py` scores six generic phrases
+from her reasons (puffy purple jacket, red hair, tight ponytail, blue denim shirt,
+tights, shorts) against the SigLIP vectors already stored for every crop (minus a
+neutral "a photo of a person"), per passage, person album vs street (AUC; 0.5 =
+nothing). Answer key = the album, no new labels. Height and build are not
+readable from one crop vector and were not tested.
+
+Live, last 30 days (2,375 street passages, 14 people with >= 10 passages):
+
+- A person's own stated phrases point the right way but weakly: the best case,
+  three phrases combined, reaches AUC 0.67 (rank 1 of 14; next 0.59) over 30 days
+  and ties (0.64) over 14 days. Another stated set reaches 0.61-0.70 and ranks 2nd.
+- A summer phrase in November scores 0.33 for its person: clothes clues are seasonal.
+- A decoration scores 0.70 on "red hair": part of the read is light / camera, not person.
+
+For comparison the stroller clue is ~30:1 against a regular per sighting. So
+clothes and hair are NOT wired into guesses. Re-run the eval as albums grow or the
+season changes; a phrase needs a clear per-person lead before it is considered.
+
 ### Patch 2 (original plan): a clue list per person, read from pictures
 
 - `orion/person_model/clues.yaml` (committed, generic): the clue kinds that

@@ -70,7 +70,10 @@ ORDER BY m.created_at
 KEYS_SQL = "SELECT DISTINCT referent_key FROM episode_memory_referent"
 UPDATE_SQL = """
 UPDATE episode_memory
-SET stakes = 'high', stakes_reason = %s, confirmation_state = 'pending_confirmation', updated_at = %s
+SET stakes = 'high', stakes_reason = %s,
+    -- Orion's own thought is never asked (issue #3840; validate.initial_confirmation_state).
+    confirmation_state = CASE WHEN voice = 'orion_thought' THEN 'own_thought' ELSE 'pending_confirmation' END,
+    updated_at = %s
 WHERE memory_id = %s::uuid AND status = 'active' AND stakes = 'low' AND confirmation_state = 'auto'
 """
 EVENT_SQL = """

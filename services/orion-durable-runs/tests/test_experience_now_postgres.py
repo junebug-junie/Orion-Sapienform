@@ -170,12 +170,31 @@ def test_lifecycle_on_postgres(monkeypatch):
         async with pool.connection() as conn:
             shown = await (await conn.execute("SELECT reader_organ, event_ids FROM experience_shown")).fetchall()
         assert shown == [{"reader_organ": "prime", "event_ids": [i["event_id"] for i in now["items"]]}]
-        # an explicit since= never moves the cursor; the first default read starts 24 h back and sees them,
-        # the next default read right away sees nothing new
+        # an explicit since= never moves the cursor; the first default read starts 24 h back and sees them.
+        # #3498: a read nobody closes moves nothing, so the next read offers the same rows again; once the
+        # reader closes it (no cites), the next default read starts at its cut-off and sees nothing new.
         first = await main.temporal_self_now(organ="prime")
         assert first["items"] and first["items"][0]["event_id"] == surprising
+        unclosed = await main.temporal_self_now(organ="prime")  # first was never closed: offered again
+        assert unclosed["items"][0]["event_id"] == surprising
+        # closing the newer read moves the cursor to its cut-off; the next default read sees nothing new
+        closed = await main.temporal_self_now_use({"shown_id": unclosed["shown_id"],
+                                                   "citing_ref": "prime_thought:t1", "cites": []})
+        assert closed["uses"] == []
         again = await main.temporal_self_now(organ="prime")
-        assert again["items"] == [] and again["since"] == first["as_of"]
+        assert again["items"] == [] and again["since"] == unclosed["as_of"]
+        # the older read closing late never moves the cursor backwards (max over closed reads)
+        await main.temporal_self_now_use({"shown_id": first["shown_id"], "citing_ref": "prime_thought:t0",
+                                          "cites": []})
+        assert (await main.temporal_self_now(organ="prime"))["since"] == unclosed["as_of"]
+        # coverage's split (orion/integration/coverage.py NOW_READS_SQL): closed with no cite vs never closed
+        from orion.integration.coverage import NOW_READS_SQL
+
+        async with pool.connection() as conn:
+            reads = await (await conn.execute(NOW_READS_SQL, {"lo": real_now - timedelta(days=2),
+                                                              "hi": real_now + timedelta(hours=1)})).fetchone()
+        # 5 reads so far: the since= read (unclosed), first + unclosed (closed, no cite), again + the last (unclosed)
+        assert (reads["reads"], reads["reads_no_cite"], reads["reads_unclosed"]) == (5, 2, 3)
 
         before = await main.temporal_self_integration(hours=6)
         assert before["rate"] == 0.0 and before["closed_organs"] == []

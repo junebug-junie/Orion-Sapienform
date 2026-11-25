@@ -5,7 +5,8 @@ Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, 
 report". For every organ in ``config/integration/organs.yaml``, over the last ``--hours`` (default 24):
 
 * experiences recorded (``temporal_self_event`` rows of its kinds, by when they happened);
-* now reads (``experience_shown`` rows it was shown) and how many were followed by no cite;
+* now reads (``experience_shown`` rows it was shown), split (#3498): closed with no cite (its model ran and cited
+  nothing) and never closed (its model never saw the read);
 * valid cites it made (``experience_use`` by ``citing_organ``);
 * valid cites it received from OTHER organs (distinct experiences, within 24 h of each);
 * closed: yes when another organ used at least one of its experiences.
@@ -45,14 +46,16 @@ from orion.temporal_self.now import OrganRegistry, use_rate  # noqa: E402
 
 
 def build_report(*, kind_counts: Mapping[str, int], uses: list[tuple[str, str, str]], cites_made: Mapping[str, int],
-                 reads: Mapping[str, tuple[int, int]], lo: datetime, hi: datetime, registry: OrganRegistry,
+                 reads: Mapping[str, tuple[int, ...]], lo: datetime, hi: datetime, registry: OrganRegistry,
                  missing_tables: list[str]) -> dict[str, Any]:
-    """Pure: the report from the four reads. ``reads``: organ -> (now reads, reads followed by no cite)."""
+    """Pure: the report from the four reads. ``reads``: organ -> (now reads, closed reads with no cite, reads never
+    closed); a missing count reads as 0."""
     rate = use_rate(kind_counts, uses, window_start=lo, window_end=hi, registry=registry, cites_made=cites_made)
     organs = []
     for o in rate.organs:
-        r, r0 = reads.get(o.organ, (0, 0))
+        r, r0, ru = (tuple(reads.get(o.organ, ())) + (0, 0, 0))[:3]
         organs.append({"organ": o.organ, "experiences": o.experiences, "now_reads": r, "reads_no_cite": r0,
+                       "reads_unclosed": ru,
                        "cites_made": o.cites_made, "cites_received": o.used_by_other,
                        "closed": o.used_by_other > 0, "rate": o.rate})
     return {"window_start": lo.isoformat(), "window_end": hi.isoformat(), "experiences": rate.experiences,
@@ -64,9 +67,10 @@ def build_report(*, kind_counts: Mapping[str, int], uses: list[tuple[str, str, s
 
 def render(rep: Mapping[str, Any]) -> str:
     lines = [f"Integration coverage {rep['window_start'][:16]}Z .. {rep['window_end'][:16]}Z"]
-    lines.append(f"{'organ':<14}{'lived':>8}{'reads':>7}{'no-cite':>9}{'cites':>7}{'used-by':>9}  closed")
+    lines.append(f"{'organ':<14}{'lived':>8}{'reads':>7}{'no-cite':>9}{'unclosed':>10}{'cites':>7}{'used-by':>9}  closed")
     for o in rep["organs"]:
         lines.append(f"{o['organ']:<14}{o['experiences']:>8}{o['now_reads']:>7}{o['reads_no_cite']:>9}"
+                     f"{o['reads_unclosed']:>10}"
                      f"{o['cites_made']:>7}{o['cites_received']:>9}  {'yes' if o['closed'] else 'no'}")
     rate = rep["experience_use_rate"]
     lines.append(f"experience use rate: {rep['used_by_other']} / {rep['experiences']} = "
@@ -100,7 +104,7 @@ def read_live(dsn: str, hours: float, now: Optional[datetime] = None) -> dict[st
                         for r in conn.execute(RATE_USES_SQL, params).fetchall()]
                 made = {r["citing_organ"]: int(r["n"]) for r in conn.execute(RATE_CITES_MADE_SQL, params).fetchall()}
             if not missing:
-                reads = {r["reader_organ"]: (int(r["reads"]), int(r["reads_no_cite"]))
+                reads = {r["reader_organ"]: (int(r["reads"]), int(r["reads_no_cite"]), int(r["reads_unclosed"]))
                          for r in conn.execute(NOW_READS_SQL, params).fetchall()}
     return build_report(kind_counts=kinds, uses=uses, cites_made=made, reads=reads, lo=lo, hi=hi,
                         registry=load_organs(), missing_tables=missing)

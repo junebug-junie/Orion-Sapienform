@@ -612,7 +612,9 @@ class TemporalNowV1(_Forbid):
 
 
 class ExperienceCitesV1(_Forbid):
-    """A reader's cites at its run's close (``POST /temporal-self/now/use``). At most 3 count."""
+    """A reader's cites at its run's close (``POST /temporal-self/now/use``). At most 3 count. ``cites`` may be
+    empty: every post closes the shown read, and only a closed read moves the organ's cursor (#3498). A reader
+    posts once its model call ran, never for a read the model never saw."""
 
     shown_id: str = Field(min_length=1)
     citing_ref: str = Field(min_length=1, max_length=300)  # the citing run's own output ref

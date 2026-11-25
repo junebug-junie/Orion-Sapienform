@@ -168,7 +168,7 @@ def make_outreach(monkeypatch):
 
 
 def make_service(monkeypatch, *, looks=None, bid_outcome="funded", frames=FRAMES, compose=None, sitting=SITTING,
-                 bid_reason="ok", bid_net=None):
+                 bid_reason="ok", bid_net=None, now_obj=None):
     db = Table(looks if looks is not None else [look(1, NOW - 600, "Link enters a cave by the well."),
                                                  look(2, NOW - 15, "Link walks down a dark corridor.")])
     outreach, queue, history, notified, rows = make_outreach(monkeypatch)
@@ -193,7 +193,11 @@ def make_service(monkeypatch, *, looks=None, bid_outcome="funded", frames=FRAMES
         return 200, {"watch": {"mode": "on", "looking": False}}
 
     async def read_now(line_id):
-        return None
+        return now_obj
+
+    async def record_use(shown_id, citing_ref, cites):
+        calls["uses"].append((shown_id, citing_ref, list(cites)))
+        return 200
 
     async def publish_act(bus, **kw):
         calls["acts"].append(kw)
@@ -213,7 +217,8 @@ def make_service(monkeypatch, *, looks=None, bid_outcome="funded", frames=FRAMES
     svc = CommentaryService(SimpleNamespace(HUB_RETRO_COMMENTARY_ENABLED=True, HUB_RETRO_LINE_MIN_GAP_SEC=120.0),
                             bus_provider=lambda: bus, pool_provider=lambda: db, outreach_provider=lambda: outreach,
                             clock=lambda: NOW, bid=bid, release=release, seat=seat, gateway_get=gateway_get,
-                            read_now=read_now, publish_act=publish_act, cancel_motor=cancel_motor)
+                            read_now=read_now, publish_act=publish_act, cancel_motor=cancel_motor,
+                            record_use=record_use)
     return SimpleNamespace(svc=svc, db=db, outreach=outreach, queue=queue, history=history, notified=notified,
                            rows=rows, calls=calls, log=log, bus=bus)
 
@@ -708,3 +713,44 @@ def test_a_new_sitting_starts_a_new_want_clock(monkeypatch):
     t.svc._sitting_id = "old-sitting"
     asyncio.run(t.svc.tick())
     assert "old-sitting" not in t.svc._wanted_since
+
+
+# --- #3498: the play organ's now read is closed once the model answered, never before ---------------------
+
+def _now(*ids):
+    return SimpleNamespace(shown_id="shown-play", items=[SimpleNamespace(event_id=i, organ="body", label="hot")
+                                                        for i in ids])
+
+
+def test_a_delivered_line_closes_the_now_read_with_its_cites(monkeypatch):
+    def compose(calls, log):
+        async def f(prompt, corr, **kw):
+            return ("The cave again [experience:gpu_wait:a].\nCHECKS:\nN2: holds", {"staged_attachment_count": 4})
+        return f
+    t = make_service(monkeypatch, compose=compose, now_obj=_now("gpu_wait:a", "gpu_wait:b"))
+    asyncio.run(t.svc.tick())
+    (row,) = t.db.lines.values()
+    assert row["outcome"] == "delivered"
+    assert [(s, c) for s, _ref, c in t.calls["uses"]] == [("shown-play", ["gpu_wait:a"])]
+
+
+def test_a_pass_still_closes_the_now_read_with_no_cites(monkeypatch):
+    def compose(calls, log):
+        async def f(prompt, corr, **kw):
+            return "PASS\nCHECKS:\nN2: holds", {"staged_attachment_count": 4}
+        return f
+    t = make_service(monkeypatch, compose=compose, now_obj=_now("gpu_wait:a"))
+    asyncio.run(t.svc.tick())
+    (row,) = t.db.lines.values()
+    assert row["outcome"] == "passed" and [(s, c) for s, _ref, c in t.calls["uses"]] == [("shown-play", [])]
+
+
+def test_a_turn_that_never_answered_leaves_the_now_read_open(monkeypatch):
+    def compose(calls, log):
+        async def f(prompt, corr, **kw):
+            return "", {"error": "timeout"}
+        return f
+    t = make_service(monkeypatch, compose=compose, now_obj=_now("gpu_wait:a"))
+    asyncio.run(t.svc.tick())
+    (row,) = t.db.lines.values()
+    assert row["outcome"] == "failed" and t.calls["uses"] == []

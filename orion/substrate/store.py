@@ -36,6 +36,10 @@ class CompleteScanReceipt:
     durable_node_count: int | None = None
     node_count_gap: int | None = None
     plan_cache_retries: int = 0
+    # #3512: durable rows a scan skipped as corrupt, by kind
+    # (duplicate_node_id, bad_endpoint_edge, duplicate_edge_id). Nonzero =
+    # the durable graph needs repair; over budget = the scan failed.
+    integrity_anomalies: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -141,6 +141,36 @@ def test_high_stakes_from_the_distiller_means_pending_confirmation():
     assert (r.memories[0].stakes, r.memories[0].confirmation_state) == ("high", "pending_confirmation")
 
 
+@pytest.mark.parametrize("channel", ["chat", "reverie", "dream", "curiosity"])
+def test_high_stakes_own_thought_is_never_pending_confirmation(channel):
+    """Issue #3840: Orion's own thought is never put to Juniper, whatever its channel or stakes."""
+    r = _run(_mem(voice="orion_thought", channel=channel, stakes="high", stakes_reason="orion_relationship",
+                  statement="I kept turning over what being away from home means for Juniper.",
+                  evidence=[{"turn": "t2", "field": "response", "quote": "I'll be here when you're back"}]))
+    m = r.memories[0]
+    assert (m.voice, m.stakes, m.confirmation_state) == ("orion_thought", "high", "own_thought")
+
+
+def test_voice_downgraded_to_own_thought_is_not_asked_either():
+    """juniper_said backed only by Orion's words is downgraded to orion_thought, so it is not asked."""
+    r = _run(_mem(stakes="high", stakes_reason="family_relationships",
+                  statement="Juniper told me she will be back home on Wednesday.",
+                  evidence=[{"turn": "t2", "field": "response", "quote": "I'll be here when you're back"}]))
+    m = r.memories[0]
+    assert (m.voice, m.confirmation_state) == ("orion_thought", "own_thought")
+
+
+@pytest.mark.parametrize("stakes, voice, state", [
+    ("low", "orion_thought", "auto"), ("low", "juniper_said", "auto"),
+    ("high", "orion_thought", "own_thought"), ("high", "juniper_said", "pending_confirmation"),
+    ("high", "worked_out_together", "pending_confirmation"),
+])
+def test_initial_confirmation_state(stakes, voice, state):
+    from orion.memory.episode.validate import initial_confirmation_state
+
+    assert initial_confirmation_state(stakes, voice) == state
+
+
 @pytest.mark.parametrize("raw, key", [
     ("event: Austin AI/ML offsite 2026-09", "event:austin-ai-ml-offsite-2026-09"),
     ("Service:orion_durable_runs", "service:orion-durable-runs"),

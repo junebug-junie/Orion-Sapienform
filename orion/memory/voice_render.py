@@ -19,6 +19,8 @@ than what the writer would have kept:
   says: an informed prior, never something Juniper said or discussed.
 * Everything else falls back to "My own note…, not Juniper's words".
 * A memory Juniper rejected or corrected never renders as current truth.
+* An ``own_thought`` memory (Orion's own thought, never put to Juniper: issue #3840) renders as
+  "My own thought ..., not checked with Juniper", never as "Unconfirmed, check with Juniper".
 
 Callers: the daily episode report (``orion/memory/episode/report.py``, live)
 and the legacy ``chat_general`` stance's reverie glimpse
@@ -47,7 +49,8 @@ class VoicedMemory:
     has_verified_orion_quote: bool = False
     # auto | pending_confirmation | unconfirmed (asked, no answer in 7 days; set by
     # orion/memory/episode/confirmation.py) | not_asked (high stakes, never to be asked: the
-    # July-September backfill, #3537) | confirmed | corrected | rejected
+    # July-September backfill, #3537) | own_thought (Orion's own thought, never asked: issue
+    # #3840) | confirmed | corrected | rejected
     confirmation_state: str = "auto"
 
 
@@ -86,6 +89,11 @@ def render_memory(item: VoicedMemory) -> str:
     if item.confirmation_state == "corrected":
         return f"Something I had remembered ({when}) that Juniper corrected, superseded: {statement}"
     who = speaker(item)
+    if item.confirmation_state == "own_thought":
+        # Orion's own thought is Orion's own view, never a fact about Juniper waiting for her check.
+        if who == "orion_to_juniper":
+            return f"My own thought, which I told Juniper ({when}); not checked with her: {statement}"
+        return f"My own thought ({item.channel or 'unknown source'}, {when}), not checked with Juniper: {statement}"
     if who == "juniper":
         line = f"Juniper told me ({when}): {statement}"
     elif who == "together":

@@ -226,6 +226,7 @@ Pair 1 (biometrics–execution) is inverted in both builds, as in September. Tha
 ## Tests run
 
 ```text
+CI: all checks pass, including the new 'orion-heartbeat tests' workflow
 PYTHONPATH=. pytest services/orion-heartbeat/tests -q        -> 178 passed
 PYTHONPATH=. pytest services/orion-hub/tests/test_attention_organ_page.py services/orion-hub/tests/test_field_attention_operator_panel.py -q -> passed
 ```
@@ -280,6 +281,9 @@ The review was run in a subagent. It found no blockers.
   - **Fix:** it now counts them.
 - **Finding:** the audit was one-directional.
   - **Fix:** added a `SKIP_NOW_VARIES` flag and a test for it.
+- **Finding (CI, static gates):** the deleted `bus_synaptic.py` was still registered in `config/substrate/prediction_error_readers.yaml`.
+  - **Fix:** removed the stale entry.
+  - **Evidence:** `check_pe_alarm_readers: OK`; Static repo gates now pass.
 - **Finding, noted and not changed:** the second bus tick after a restart saturates to level 1.0. This is a transient in the emitter. It is now documented on the level function.
 
 ## Restart required

@@ -191,7 +191,7 @@ def test_pr_create_with_a_spec_sends_the_spec_text_and_the_code_diff_and_prints_
     assert msg["session_id"] == "sess-A" and msg["pr_number"] == 3456 and msg["branch"] == "feat/thing"
     assert msg["pr_url"] == "https://github.com/o/r/pull/3456" and msg["title"] == "feat: thing"
     assert msg["worktree"] == str(world["repo"]) and msg["session_name"] == "wt"
-    spec, diff = msg["spec"]
+    diff, spec = msg["spec"]   # the diff first: Hub's spec-file cap can never drop it
     assert spec == {"path": SPEC_PATH, "text": SPEC_TEXT}   # the text itself, not a path Orion cannot read
     # The diff: the code file only. The spec is attached whole above; the lock file is named, not shown.
     assert diff["kind"] == "diff" and diff["path"] == "1 file(s)" and "+x = 1" in diff["text"]
@@ -215,9 +215,29 @@ def test_a_code_only_pr_sends_its_diff(world, hub):
     assert "Hub receipt:" in json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
 
 
-def test_a_pr_with_no_spec_and_no_readable_diff_and_a_command_that_is_not_pr_create_send_nothing(world, hub):
+def test_a_pr_whose_diff_gh_cannot_give_still_gets_a_thread_naming_its_files(world, hub):
+    # Without a thread the draft gate could never let the PR leave draft (review finding 4).
     _pr(world, files=("services/orion-hub/scripts/x.py", "docs/other/notes.md"))
-    proc, _ = _run(SEND_HOOK, world, hub.url, _bash("gh pr create --fill"))   # gh pr diff fails: no diff file
+    proc, _ = _run(SEND_HOOK, world, hub.url, _bash("gh pr create --fill --draft"))   # gh pr diff fails
+    assert proc.returncode == 0, proc.stderr
+    [msg] = hub.posts()
+    assert msg["spec"] == [] and "diff could not be attached" in msg["body"]
+    assert "services/orion-hub/scripts/x.py" in msg["body"] and "gh pr diff 3456" in msg["body"]
+
+
+def test_a_pr_create_on_a_branch_that_already_has_a_pr_sends_nothing(world, hub):
+    _pr(world)
+    world["diff"].write_text(DIFF)
+    payload = _bash("gh pr create --fill --draft",
+                    response="a pull request for branch \"feat/thing\" into branch \"main\" already exists:\n"
+                             "https://github.com/o/r/pull/3456\n")
+    proc, _ = _run(SEND_HOOK, world, hub.url, payload)
+    assert proc.returncode == 0 and proc.stdout == "" and hub.posts() == []
+
+
+def test_a_pr_with_nothing_to_send_and_a_command_that_is_not_pr_create_send_nothing(world, hub):
+    _pr(world, files=())
+    proc, _ = _run(SEND_HOOK, world, hub.url, _bash("gh pr create --fill --draft"))
     assert proc.returncode == 0 and proc.stdout == "" and hub.calls == []
     _pr(world)
     world["gh_log"].unlink()
@@ -296,16 +316,17 @@ def test_cli_send_reply_and_pending_use_the_same_calls(world, hub):
     proc, _ = _run(CLI, world, hub.url, args=["send", "--note", "A note with no PR."])
     assert proc.returncode == 0, proc.stderr
     sent, reply, note = hub.posts()
-    assert sent["session_id"] == "sess-CLI" and sent["body"] == "Please look at section 3." and sent["spec"][0]["text"] == SPEC_TEXT
+    assert sent["session_id"] == "sess-CLI" and sent["body"].startswith("Please look at section 3.") and sent["spec"][0]["text"] == SPEC_TEXT
+    assert "diff could not be attached" in sent["body"]   # the stand-in gh gives no diff here
     assert reply["thread_id"] == "abc123" and reply["body"] == "Hourly is Juniper's rule." and reply["session_id"] == "manual"
     assert "pr_number" not in note and note["title"] == "A note with no PR."
     hub.pending = [{"turn_id": "u1", "thread_id": "abc123", "title": "feat: thing", "body": "1. Why?", "meta": {}}]
     proc, _ = _run(CLI, world, hub.url, args=["pending"])
     assert "1. Why?" in proc.stdout and hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["u1"]}]
-    # No spec and no note: nothing is sent, and it says why. Hub down: one plain line, exit 1.
-    _pr(world, files=("x.py",))
+    # A PR with no files at all: nothing is sent, and it says why. Hub down: one plain line, exit 1.
+    _pr(world, files=())
     proc, _ = _run(CLI, world, hub.url, args=["send", "--pr", "3456"])
-    assert proc.returncode == 2 and "no spec file" in proc.stderr and len(hub.posts()) == 3
+    assert proc.returncode == 2 and "no spec file and no code diff" in proc.stderr and len(hub.posts()) == 3
     proc, _ = _run(CLI, world, "http://127.0.0.1:9", args=["send", "--note", "x"])
     assert proc.returncode == 1 and "Could not reach Hub" in proc.stderr
 
@@ -590,9 +611,54 @@ def _denied(proc):
     ("gh pr create --help", False),
     ("echo 'gh pr create'", False),
     ("gh pr view 12", False),
+    # Text in a body, a title or a heredoc is never a flag (review finding 2).
+    ("gh pr create --title x --body \"use --help to see\"", True),
+    ("gh pr create --title \"fix -d flag\" --body y", True),
+    ("gh pr create --title x --body \"$(cat <<'EOF'\nfoo -d bar --draft\nEOF\n)\"", True),
+    ("gh pr create -t x -b y && git log -d", True),
+    ("gh pr create -t x -b y; echo --draft", True),
+    ("gh -R o/r pr create --fill", True),
+    ("/usr/bin/gh pr create --fill", True),
+    ("(gh pr create --fill)", True),
+    ("git push &&\ngh pr create --fill", True),
 ])
 def test_pull_requests_open_as_drafts(command, refused):
     assert gate.undrafted_create(command) is refused
+
+
+@pytest.mark.parametrize("command,ready", [
+    # A heredoc or a quoted message that mentions gh pr ready is text, not a command (review finding 1).
+    ("gh pr create --draft --title x --body \"$(cat <<'EOF'\nThen run:\ngh pr ready <n>\nEOF\n)\"", []),
+    ("git commit -m \"$(cat <<'EOF'\ngh pr ready is gated\nEOF\n)\"", []),
+    ("git commit -m 'gh pr ready 12 later'", []),
+    ("gh pr ready 12", ["12"]),
+    ("gh -R o/r pr ready 12", ["12"]),
+    ("(gh pr ready 12)", ["12"]),
+    ("cd /wt && rtk gh pr ready", [""]),
+])
+def test_only_real_gh_pr_ready_commands_are_gated(command, ready):
+    assert [gate.ready_target(c["args"]) for c in gate.gh_pr_commands(command) if c["verb"] == "ready"] == ready
+
+
+def test_the_override_is_a_leading_env_assignment_only_and_cd_and_repo_are_read():
+    [c] = gate.gh_pr_commands("ORION_ALLOW_PR_READY=1 gh pr ready 12")
+    assert c["env"] == {"ORION_ALLOW_PR_READY": "1"}
+    [c] = gate.gh_pr_commands("gh pr ready 12 # ORION_ALLOW_PR_READY=1")
+    assert c["env"] == {}
+    [c] = gate.gh_pr_commands("cd /wt/a && gh -R o/r pr ready 12")
+    assert c["cd"] == "/wt/a" and c["repo"] == "o/r"
+
+
+def test_the_diff_keeps_files_whose_path_it_cannot_read_and_follows_renames():
+    diff = ("diff --git a/uv.lock b/uv.lock\n--- a/uv.lock\n+++ b/uv.lock\n+lock\n"
+            "diff --git a/my notes.py b/my notes.py\n--- a/my notes.py\n+++ b/my notes.py\n+spaced = 1\n"
+            "diff --git \"a/caf\\303\\251.py\" \"b/caf\\303\\251.py\"\n+quoted = 1\n"
+            "diff --git a/old.py b/new.py\nrename from old.py\nrename to new.py\n"
+            "diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n-x\n")
+    kept, skipped = lib.filter_diff(diff)
+    assert skipped == ["uv.lock"] and "+spaced = 1" in kept and "+quoted = 1" in kept
+    assert "rename to new.py" in kept and "-x" in kept and "+lock" not in kept
+    assert lib.diff_path("diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n") == "gone.py"
 
 
 def _orion_turn(seq, *, no_questions=False, closing=False, requeued=False):
@@ -621,6 +687,9 @@ def test_ready_waits_for_the_answer_to_orions_first_review():
     assert gate.ready_verdict(fresh, asked, now=now)[0] is False
     assert gate.ready_verdict(old, asked, now=now)[0] is False   # the wait never excuses unanswered questions
     assert gate.ready_verdict(fresh, [*asked, _session_turn(5)], now=now)[0] is True
+    # A re-send of the PR (spec/diff attached again) is not an answer (review finding 7).
+    resend = {"speaker": "session", "seq": 5, "meta": {"spec": [{"path": "1 file(s)", "kind": "diff"}]}}
+    assert gate.ready_verdict(fresh, [*asked, resend], now=now)[0] is False
     # NO QUESTIONS first: nothing to answer.
     assert gate.ready_verdict(fresh, [_session_turn(1), _orion_turn(3, no_questions=True)], now=now)[0] is True
 

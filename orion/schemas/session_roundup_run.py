@@ -1,9 +1,9 @@
-"""session_roundup.orion_turn: Orion's hourly read of the messages coding sessions sent, as one durable run.
+"""session_roundup.orion_turn: Orion's periodic read (every 15 min) of the messages coding sessions sent, as one durable run.
 
 Hub's round-up loop (services/orion-hub/scripts/session_roundup_loop.py) holds every message a coding
-session sends for the hour. Once an hour, when at least one thread is held, it submits ONE run of this
+session sends for the bucket. Once a bucket (15 min), when at least one thread is held, it submits ONE run of this
 workflow: one harness turn whose prompt holds every held thread, and whose reply is Orion's questions
-per thread. Run id ``session-roundup-<utc hour>``: one per hour, so a Hub restart cannot submit twice.
+per thread. Run id ``session-roundup-<utc bucket start, YYYYmmddTHHMM>``: one per bucket, so a Hub restart cannot submit twice.
 
 The graph is the single-step harness graph consult.orion_turn uses
 (services/orion-durable-runs/app/harness_smoke_graph.py); Hub reads the step's full text back from
@@ -33,7 +33,7 @@ SESSION_ROUNDUP_PROMPT_MAX_CHARS = 120000
 
 
 def session_roundup_run_id(bucket_start: datetime) -> str:
-    """Deterministic: one durable run per round-up bucket (an hour by default). ``bucket_start`` is the
+    """Deterministic: one durable run per round-up bucket (15 minutes by default). ``bucket_start`` is the
     UTC start of the bucket the round belongs to."""
     return "session-roundup-" + bucket_start.astimezone(timezone.utc).strftime("%Y%m%dT%H%M")
 

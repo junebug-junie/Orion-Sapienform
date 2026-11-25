@@ -36,7 +36,9 @@ WIRE_DIFF_MAX_CHARS = 200000
 # Files whose diff is noise for a reviewer: generated, vendored, lock files. Listed, never shown.
 DIFF_SKIP_RE = re.compile(r"(^|/)(graphify-out|node_modules|__pycache__)/|(^|/)(package-lock\.json|poetry\.lock|"
                           r"uv\.lock|yarn\.lock)$|\.(min\.js|map|png|jpe?g|gif|ico|pdf|parquet|bin)$")
-_DIFF_FILE_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)", re.MULTILINE)
+_DIFF_START_RE = re.compile(r"^diff --git ", re.MULTILINE)
+_DIFF_HEADER_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
+_DIFF_PATH_RE = re.compile(r"^(?:\+\+\+ b/|rename to |--- a/)(.+?)\t?$", re.MULTILINE)
 # Hub cuts at 40,000 characters and says so; the wire cap only keeps one request small.
 WIRE_SPEC_MAX_CHARS = 200000
 LOG_PATH = Path(os.environ.get("ORION_SESSION_THREADS_LOG", "~/.orion/session_threads_hooks.log")).expanduser()
@@ -102,6 +104,11 @@ def session_name(worktree: str) -> str:
 def _run(args: list[str], *, cwd: str | Path, timeout: float) -> str | None:
     try:
         proc = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, timeout=timeout, check=False)
+    except TimeoutError:
+        # The hook's own SIGALRM budget, not gh's timeout: never swallow it, or the hook would go on
+        # with no time left and silently drop a spec or the diff.
+        log(f"run_budget_spent args={' '.join(args[:3])}")
+        raise
     except Exception:  # noqa: BLE001 -- no gh / no git / timeout
         return None
     return proc.stdout if proc.returncode == 0 else None
@@ -122,9 +129,11 @@ def worktree_for_branch(branch: str, *, repo: Path = REPO_ROOT) -> str:
 # --- the pull request ---------------------------------------------------------------------------
 
 
-def pr_info(ref: str, *, cwd: str | Path = REPO_ROOT, timeout: float = 10.0) -> dict[str, Any] | None:
-    """``gh pr view`` for a PR number, URL or branch. None when there is no PR (or no gh)."""
-    args = ["gh", "pr", "view"] + ([ref] if ref else []) + ["--json", "number,url,title,files,headRefName"]
+def pr_info(ref: str, *, cwd: str | Path = REPO_ROOT, timeout: float = 10.0, repo: str = "") -> dict[str, Any] | None:
+    """``gh pr view`` for a PR number, URL or branch (``repo``: ``-R owner/name``). None when there is no
+    PR (or no gh)."""
+    args = (["gh", "pr", "view"] + ([ref] if ref else []) + (["-R", repo] if repo else [])
+            + ["--json", "number,url,title,files,headRefName"])
     out = _run(args, cwd=cwd, timeout=timeout)
     if not out:
         return None
@@ -170,11 +179,13 @@ def code_paths(pr: dict[str, Any]) -> list[str]:
 def filter_diff(diff: str) -> tuple[str, list[str]]:
     """``diff`` (``gh pr diff`` output) without design-spec files (sent whole as specs) and without
     noise files (``DIFF_SKIP_RE``). Returns the kept diff and the skipped noise paths."""
-    starts = [m.start() for m in _DIFF_FILE_RE.finditer(diff)] + [len(diff)]
-    kept, skipped = [], []
-    for a, b in zip(starts, starts[1:]):
-        m = _DIFF_FILE_RE.match(diff, a)
-        path = m.group(2) if m else ""
+    starts = [m.start() for m in _DIFF_START_RE.finditer(diff)]
+    kept, skipped = ([diff[:starts[0]]] if starts and diff[:starts[0]].strip() else []), []
+    for a, b in zip(starts, starts[1:] + [len(diff)]):
+        path = diff_path(diff[a:b])
+        if not path:
+            kept.append(diff[a:b])   # a path Hub cannot read (spaces, git's quoted form): kept, never lost
+            continue
         if SPEC_GLOB_RE.match(path):
             continue
         if DIFF_SKIP_RE.search(path):
@@ -182,6 +193,18 @@ def filter_diff(diff: str) -> tuple[str, list[str]]:
             continue
         kept.append(diff[a:b])
     return "".join(kept), skipped
+
+
+def diff_path(chunk: str) -> str:
+    """The new path of one file's diff chunk: the ``+++ b/`` line, else ``rename to``, else (a deletion)
+    ``--- a/``, else the header. '' when no plain path can be read (git quotes unusual paths)."""
+    for m in _DIFF_PATH_RE.finditer(chunk):
+        path = m.group(1)
+        if path != "/dev/null" and not path.startswith('"'):
+            return path
+    first = chunk.split("\n", 1)[0]
+    m = _DIFF_HEADER_RE.match(first)
+    return m.group(2) if m else ""
 
 
 def pr_diff(number: int, *, cwd: str | Path = REPO_ROOT, timeout: float = 10.0) -> str | None:
@@ -213,20 +236,27 @@ def build_pr_message(pr: dict[str, Any], *, session_id: str, worktree: str = "",
         if text and text.strip():
             specs.append({"path": path, "text": text})
     number = int(pr["number"])
-    diff = pr_diff(number, cwd=worktree or repo, timeout=diff_timeout) if code_paths(pr) else None
+    code = code_paths(pr)
+    diff = pr_diff(number, cwd=worktree or repo, timeout=diff_timeout) if code else None
     note = (note or "").strip()
-    if not specs and not diff and not note:
+    if not specs and not diff and not note and not code:
         return None
-    attachments = list(specs)
-    if diff:
-        attachments.append({"path": f"{len(code_paths(pr))} file(s)", "text": diff, "kind": "diff"})
+    # The diff goes first: Hub keeps at most core.MAX_SPECS spec files, and the diff must never be the one cut.
+    attachments = ([{"path": f"{len(code)} file(s)", "text": diff, "kind": "diff"}] if diff else []) + specs
     parts = []
     if specs:
         parts.append(f"{len(specs)} design spec file(s)")
     if diff:
-        parts.append(f"a code diff of {len(code_paths(pr))} file(s)")
-    body = note or (f"Pull request #{number} was opened with {' and '.join(parts) or 'no files'}. "
+        parts.append(f"a code diff of {len(code)} file(s)")
+    body = note or (f"Pull request #{number} was opened with {' and '.join(parts)}. "
                     "The text is attached. Please read it and ask what you want to ask.")
+    if code and not diff:
+        # gh gave no diff (too large for GitHub, a timeout, or only generated/lock/binary files). Orion still
+        # gets a thread naming the files, so the PR is reviewed and the draft gate has a thread to read.
+        listed = ", ".join(code[:50]) + (f" and {len(code) - 50} more" if len(code) > 50 else "")
+        body += (f"\n\nPull request #{number} changes {len(code)} file(s) whose diff could not be attached "
+                 f"(too large, a gh timeout, or only generated, lock or binary files): {listed}. "
+                 f"Read it with your tools if you need it: gh pr diff {number}.")
     return {
         "session_id": session_id, "session_name": session_name(worktree), "worktree": worktree, "branch": branch,
         "pr_number": number, "pr_url": str(pr.get("url") or ""), "title": str(pr.get("title") or f"PR #{number}"),

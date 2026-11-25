@@ -1,7 +1,7 @@
 """Session threads: coding sessions write to Orion; Orion asks questions at each round-up (15 min).
 
 Design: docs/superpowers/specs/2026-11-15-session-threads-design.md.
-Pure rules (caps, the hour bucket, receipt, prompt, parser, PR comment text): ``orion/session_threads/core.py``.
+Pure rules (caps, the round-up bucket, receipt, prompt, parser, PR comment text): ``orion/session_threads/core.py``.
 
 1. **Intake** (``SessionRoundupLoop.intake``, called by ``POST /api/session-threads/message``): a
    coding session sends a message, usually a pull request's design spec and/or code diff (an
@@ -10,17 +10,17 @@ Pure rules (caps, the hour bucket, receipt, prompt, parser, PR comment text): ``
    is Hub's, never Orion's, and says Orion has NOT read the message. No GPU.
 2. **The round-up** (``tick``): every bucket (``HUB_SESSION_ROUNDUP_INTERVAL_SEC``, 15 min by default) Hub takes every held thread
    whose message arrived before the bucket started and submits ONE durable run
-   (``session_roundup.orion_turn``, run id ``session-roundup-<utc hour>``) whose prompt holds them
+   (``session_roundup.orion_turn``, run id ``session-roundup-<utc bucket start>``) whose prompt holds them
    all. No held thread: nothing is submitted. The threads are marked ``reading`` BEFORE the submit,
-   so a Hub restart finds the round and never submits a second one for the same hour.
+   so a Hub restart finds the round and never submits a second one for the same bucket.
 3. **Orion's reply** is cut into one section per thread by code and stored as an ``orion`` turn on
    each thread. A reply with no usable section for a thread is marked ``unparsed`` and ``requeued``:
-   it is sent nowhere, it does NOT use the thread's one question round, and the thread is read again
-   next hour (a parse accident is not Orion's silence). The whole reply is stored on the thread only
+   it is sent nowhere, it does NOT use one of the thread's question rounds, and the thread is read again
+   next round-up (a parse accident is not Orion's silence). The whole reply is stored on the thread only
    in a round of one thread; in a larger round it holds other threads' sections, so it stays only on
    the round's durable run. It counts as a
    failure toward the cap below. Empty text, a cut-short turn or a failed run fails the round: the
-   threads go back to ``held`` for the next hour, and after 3 failures in a row a thread stays
+   threads go back to ``held`` for the next round-up, and after 3 failures in a row a thread stays
    ``failed`` until a new session message re-holds it. A run the body never gave a turn in time
    (``core.is_body_refusal``: past its admission deadline before any turn, or still waiting for the
    pool 30 min after it) is not a failure: the threads are held again with their count unchanged,
@@ -639,7 +639,11 @@ class SessionRoundupLoop:
         if body_cut:
             notes.append(f"Hub cut the message to {core.BODY_MAX_CHARS} characters.")
         specs: List[Dict[str, Any]] = []
-        for item in list(spec or [])[: core.MAX_SPECS]:
+        # A pull request's code diff never counts toward core.MAX_SPECS: only spec files are dropped.
+        items = list(spec or [])
+        diffs = [i for i in items if (i or {}).get("kind") == core.ATTACHMENT_DIFF][:1]
+        spec_items = [i for i in items if (i or {}).get("kind") != core.ATTACHMENT_DIFF]
+        for item in diffs + spec_items[: core.MAX_SPECS]:
             text = str((item or {}).get("text") or "").strip()
             path = core.one_line((item or {}).get("path"), 500)
             if not text:
@@ -658,7 +662,7 @@ class SessionRoundupLoop:
                 notes.append(f"Hub cut the spec {path} to at most {core.SPEC_MAX_CHARS} characters "
                              "(its last line says where, and where the full text is).")
             specs.append({"path": path, "text": text, "cut": cut})
-        if len(list(spec or [])) > core.MAX_SPECS:
+        if len(spec_items) > core.MAX_SPECS:
             notes.append(f"Hub kept the first {core.MAX_SPECS} spec files and dropped the rest.")
         if not body_text and not specs:
             raise IntakeRefused("empty_message")
@@ -711,7 +715,7 @@ class SessionRoundupLoop:
     # -- the tick -------------------------------------------------------------------------------
 
     async def tick(self) -> Dict[str, Any]:
-        """Advance the round in flight, or start this hour's round. One thing per tick."""
+        """Advance the round in flight, or start this bucket's round. One thing per tick."""
         pool = self._pool_provider()
         if pool is None:
             self.last_tick = {"at": self._clock().isoformat(), "skipped": "no_pool"}
@@ -730,7 +734,7 @@ class SessionRoundupLoop:
             self.budget_chars, self._budget_cut_at = self.prompt_max_chars, None
         reading = await threads_with_status(pool, core.STATUS_READING)
         if reading:
-            # One round at a time: the next hour's round waits for this one to end.
+            # One round at a time: the next bucket's round waits for this one to end.
             roundup_id = sorted({t["last_roundup_id"] or "" for t in reading})[0]
             return await self._poll(pool, roundup_id)
         held = await threads_with_status(pool, core.STATUS_HELD)
@@ -738,7 +742,7 @@ class SessionRoundupLoop:
             return {"skipped": "nothing_held"}
         turns = await thread_turns(pool, [t["thread_id"] for t in held])
         # The clock is taken AFTER the read: a message stored while the read ran is newer than a
-        # clock taken before it, and "arrived before this hour started" would be judged on a stale now.
+        # clock taken before it, and "arrived before this bucket started" would be judged on a stale now.
         now = self._clock()
         start = core.bucket_start(now, self.interval_sec)
         due = [c for c in self._candidates(held, turns) if c[1] and c[1][0]["created_at"] < start]

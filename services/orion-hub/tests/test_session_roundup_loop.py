@@ -953,6 +953,20 @@ def test_orion_writes_on_a_pull_request_at_most_three_times(mode, monkeypatch):
 
 
 @pytest.mark.parametrize("mode", BOTH)
+def test_a_diff_never_counts_toward_the_spec_file_cap(mode, monkeypatch):
+    async def scenario(w):
+        specs = [{"path": f"docs/superpowers/specs/{i}.md", "text": f"# spec {i}"} for i in range(6)]
+        got = await w.loop.intake(session_id="s", title="t", body="b", pr_number=78,
+                                  spec=specs + [{"path": "3 file(s)", "text": "diff --git a/x b/x", "kind": "diff"}])
+        _, turns = await state(w, got["thread"]["thread_id"])
+        kept = turns[0]["meta"]["spec"]
+        assert [a.get("kind") for a in kept].count("diff") == 1 and len(kept) == core.MAX_SPECS + 1
+        assert "kept the first 5 spec files" in got["receipt"]["body"]
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
 def test_a_code_diff_is_kept_cut_with_the_gh_command_and_shown_as_a_diff(mode, monkeypatch):
     async def scenario(w):
         diff = "diff --git a/x.py b/x.py\n" + "+x = 1\n" * 10000

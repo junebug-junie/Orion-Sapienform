@@ -53,6 +53,11 @@ def main() -> None:
         if not found:
             lib.log(f"pr_spec_hook no_pr_url_in_output session={session_id}")
             return
+        if "already exists" in json.dumps(payload.get("tool_response") or ""):
+            # `gh pr create` on a branch that already has a PR: nothing new was opened. A re-send would add a
+            # session turn (spending one of Orion's rounds) with nothing new in it.
+            lib.log(f"pr_spec_hook pr_already_exists session={session_id}")
+            return
         ref = found.group(1)
         pr = lib.pr_info(ref, cwd=ident["worktree"] or lib.REPO_ROOT, timeout=8.0)
         if pr is None:

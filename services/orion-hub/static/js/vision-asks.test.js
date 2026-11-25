@@ -101,7 +101,7 @@ test('mount renders open asks and Answer posts then refreshes', async () => {
   const card = doc.byId.visionAsksList.children[0];
   assert.equal(card.attrs['data-ask-id'], 'a1');
   assert.ok(find(card, (n) => n.textContent === 'Picture: /mnt/x.jpg'));
-  const input = find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'a1');
+  const input = find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'a1' && !n.attrs['data-ask-why']);
   input.value = 'the mail carrier';
   const answerBtn = find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'answer');
   await answerBtn.listeners.click();
@@ -139,7 +139,7 @@ test('poll is suppressed while an answer is being typed', async () => {
   await handle.refresh();
   assert.equal(handle.isTyping(), false);
   const card = doc.byId.visionAsksList.children[0];
-  const input = find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'a1');
+  const input = find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'a1' && !n.attrs['data-ask-why']);
   input.value = 'half-typ';
   assert.equal(handle.isTyping(), true);
   input.value = '';
@@ -433,7 +433,7 @@ test('a who-is-this card with three pictures asks about pictures 2 and 3', async
   selects[1].listeners.change();
   assert.equal(thirdWrap.hidden, false);
   third.value = ' Other kid ';
-  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'w3' && n.attrs.placeholder).value = 'Theo';
+  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'w3' && n.attrs.placeholder && !n.attrs['data-ask-why']).value = 'Theo';
   await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'answer').listeners.click();
   assert.deepEqual(calls, [['w3', 'answer', 'Theo', { pictures: [
     { image_ref: b, verdict: 'same' },
@@ -447,7 +447,7 @@ test('a who-is-this card with one picture sends no picture list', async () => {
   const card = asks.renderAsk(doc, { ask_id: 'w1', question: 'Who?', source_kind: 'vision_individual',
     image_refs: ['thumb:' + 'a3'.repeat(32)] }, (id, action, text, _n, _r, extra) => { calls.push(extra); });
   assert.equal(find(card, (n) => n.tagName === 'select'), null);
-  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'w1').value = 'Theo';
+  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'w1' && !n.attrs['data-ask-why']).value = 'Theo';
   await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'answer').listeners.click();
   assert.deepEqual(calls, [undefined]);
 });
@@ -573,4 +573,52 @@ test('an empty Answer on a who-is-this card points at I don\'t know', async () =
   assert.equal(posted, false);
   assert.match(card.children[card.children.length - 1].textContent, /press I don't know/);
   handle.stop();
+});
+
+// "How could you tell?" (2026-11-25).
+const whyBox = (card) => find(card, (n) => n.attrs && n.attrs['data-ask-why']);
+
+test('a who-is-this card sends its "How could you tell?" with the answer', async () => {
+  const doc = fakeDoc();
+  const calls = [];
+  const card = asks.renderAsk(doc, { ask_id: 'w1', question: 'Who?', source_kind: 'vision_individual',
+    image_refs: ['thumb:' + 'a3'.repeat(32)] }, (id, action, text, _n, _r, extra) => { calls.push([action, extra]); });
+  assert.equal(whyBox(card).tagName, 'textarea');
+  assert.equal(whyBox(card).attrs['data-ask-input'], 'w1'); // the poll leaves it alone while typed in
+  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'w1' && !n.attrs['data-ask-why']).value = 'Theo';
+  whyBox(card).value = '  his red cap ';
+  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'answer').listeners.click();
+  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'dismiss').listeners.click();
+  assert.deepEqual(calls, [['answer', { why: 'his red cap' }], ['dismiss', undefined]]);
+});
+
+test('an is-this card sends the reason with yes/no, never with Can\'t tell', async () => {
+  const doc = fakeDoc();
+  const calls = [];
+  const card = asks.renderAsk(doc, { ask_id: 'c1', question: 'Is this Sam?', source_kind: 'vision_person_confirm',
+    source_ref: 'ind-1|Sam', image_refs: ['thumb:' + 'a4'.repeat(32)] },
+  (id, action, text, _n, _r, extra) => { calls.push([action, text, extra]); });
+  whyBox(card).value = 'Sam never wears a hat';
+  const radio = (v) => find(card, (n) => n.attrs && n.attrs['data-ask-choice'] === v);
+  const send = find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'send');
+  radio('no').listeners.change();
+  await send.listeners.click();
+  radio('unsure').listeners.change();
+  await send.listeners.click();
+  assert.deepEqual(calls, [['answer', 'no', { why: 'Sam never wears a hat' }], ['dismiss', '', null]]);
+});
+
+test('a same-person card has no "How could you tell?" box', () => {
+  const doc = fakeDoc();
+  const card = asks.renderAsk(doc, { ask_id: 'p1', question: 'Same?', source_kind: 'vision_same_individual',
+    source_ref: 'a|b', image_refs: ['thumb:' + 'a5'.repeat(32), 'thumb:' + 'a6'.repeat(32)] }, () => {});
+  assert.equal(whyBox(card), null);
+});
+
+test('submitAction carries a non-blank why only', async () => {
+  const bodies = [];
+  const fetchFn = async (url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, status: 200, json: async () => ({}) }; };
+  await asks.submitAction(fetchFn, 'w', 'answer', 'Theo', undefined, { why: ' red cap ' });
+  await asks.submitAction(fetchFn, 'w', 'answer', 'Theo', undefined, { why: '  ' });
+  assert.deepEqual(bodies, [{ answer: 'Theo', why: 'red cap' }, { answer: 'Theo' }]);
 });

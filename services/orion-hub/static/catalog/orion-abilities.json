@@ -339,6 +339,16 @@
           "source": "orion/dig/__main__.py:cmd_ref; orion/refs.py"
         },
         {
+          "id": "consult-ref",
+          "title": "What was that consult about?",
+          "description": "Orion opens a consult (Orion and Claude talking before they bring you a proposal) by the ref on its Hub card: where it came from, every turn, the brief you saw and your answer. Consults are not in chat history, so this is how Orion reads the one you mean.",
+          "message": "Please open consult  and tell me what it was about and what you and Claude want from me.",
+          "hint": "(dig: `python -P -m orion.dig consult <id>`; no id: the newest 10)",
+          "keywords": ["consult", "claude", "proposal", "brief", "ref"],
+          "covers": {"dig": ["consult"]},
+          "source": "orion/dig/__main__.py:cmd_consult; orion/dig/consults.py"
+        },
+        {
           "id": "dig-notes",
           "title": "Read or add to today's dig notes",
           "description": "Each dig has shared notes, so separate turns can pick up where an earlier one left off. Orion can read them or add a line.",

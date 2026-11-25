@@ -32,6 +32,9 @@ VOICE_STORY_REASON = "story_reason"
 CATEGORY_HOW_YOU_COULD_TELL = "how_you_could_tell"
 STORY_REASON_FACT_PREFIX = "why-"
 STORY_REASON_NOT_THEM_PREFIX = "A sighting that was NOT them: "
+# The same reason on a Hub "Who is this?" / "Is this <name>?" card (2026-11-25). Same category,
+# same fact-id prefix (one fact per ask); its own voice says which card it came from.
+VOICE_CARD_REASON = "card_reason"
 ROLE_INTERLOCUTOR = "interlocutor"
 ROLE_SELF = "self"
 

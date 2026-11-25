@@ -1043,11 +1043,42 @@ async def lifespan(app: FastAPI):
     # retention path, not two.
     task: asyncio.Task | None = None
     write_health_task: asyncio.Task | None = None
+    gpu_pool_event_stream_task: asyncio.Task | None = None
+    gpu_pool_event_queue = None
     if settings.orion_bus_enabled:
         svc = build_hunter()
         logger.info("🚀 starting Hunter")
         logger.info("🧲 sql-writer subscribing to channels: %s", settings.effective_subscribe_channels)
         task = asyncio.create_task(svc.start())
+        # #3920: gpu_pool_events from the durable stream, not pub/sub (app/durable_stream_intake.py).
+        if settings.gpu_pool_event_stream_enabled:
+            from app.durable_stream_intake import DurableStreamIntake
+            from app.worker import handle_envelope as _handle_envelope
+            from orion.core.bus.work_queue import RedisStreamWorkQueue
+
+            # RedisStreamWorkQueue logs every read and ack at INFO; ~33k pool events a day.
+            _quiet = logging.getLogger("sql-writer.durable_stream_intake.queue")
+            _quiet.setLevel(logging.WARNING)
+            gpu_pool_event_queue = RedisStreamWorkQueue(settings.orion_bus_url, logger_=_quiet)
+
+            async def _gpu_pool_event_handler(env):
+                await _handle_envelope(env, bus=svc.bus)
+
+            gpu_pool_event_intake = DurableStreamIntake(
+                queue=gpu_pool_event_queue,
+                stream=settings.gpu_pool_event_stream_key,
+                group=settings.gpu_pool_event_stream_group,
+                consumer=f"sql-writer-{settings.node_name or 'athena'}",
+                dlq_stream=settings.gpu_pool_event_stream_dlq,
+                handler=_gpu_pool_event_handler,
+                dlq_after_sec=settings.gpu_pool_event_stream_dlq_after_sec,
+            )
+            gpu_pool_event_stream_task = asyncio.create_task(gpu_pool_event_intake.run_forever())
+            logger.info("gpu_pool_event stream intake ON stream=%s group=%s",
+                        settings.gpu_pool_event_stream_key, settings.gpu_pool_event_stream_group)
+        else:
+            logger.info("gpu_pool_event stream intake OFF: pub/sub orion:gpu_pool:event "
+                        "(SQL_WRITER_GPU_POOL_EVENT_STREAM_ENABLED=false)")
         # Storage-write organ: the writer's own per-window write outcomes on
         # orion:grammar:event (app/write_health.py). Publishes through the
         # Hunter's own bus connection; a window published before it connects is
@@ -1260,7 +1291,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         pending = [
-            t for t in (task, write_health_task, watch_task, retention_task, drain_task, vision_permanence_task,
+            t for t in (task, gpu_pool_event_stream_task, write_health_task, watch_task, retention_task, drain_task, vision_permanence_task,
                         vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task, world_settlement_task,
                         vision_motion_task, vision_rollup_task, vision_handoff_task, orion_energy_rollup_task,
                         orion_energy_attribution_task, vision_hourly_frames_task,
@@ -1277,6 +1308,11 @@ async def lifespan(app: FastAPI):
             # re-raised out of the loop and the SECOND task was never cancelled
             # at all -- left pending at loop close, possibly mid-DB-query.
             await asyncio.gather(*pending, return_exceptions=True)
+        if gpu_pool_event_queue is not None:
+            try:
+                await gpu_pool_event_queue.close()
+            except Exception:  # noqa: BLE001 -- shutdown best-effort
+                logger.warning("gpu_pool_event stream queue close failed", exc_info=True)
 
 
 app = FastAPI(

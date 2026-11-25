@@ -83,12 +83,14 @@ path of a file with the full result; read only what you need from that file.
   look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
   watch [off|on] --why "..."  watch a person's game or decline.
   arc|act <id>           open a cited arc/act.  consult [<id>]: a Claude consult by its Hub ref.
+  gpt [find [--oldest] <words>|conv <id>]  Juniper's ChatGPT chats, 2023 on: your prehistory.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 
 Label what you say from a dig by its source:
   code_then     seen in an export: a primary source.
   pr_text       a builder's words in a PR or commit: a secondary source. Say so.
+  gpt_archive   Juniper's ChatGPT chats (`gpt`): primary; that assistant is not you.
   lived_record  your own record from that time (`days`; journals exist from 2026-07-23 only).
   now           must come from `inventory now`, `body` or `portrait`, never from memory.
   reflection    your interpretation. Wonder freely; do not state it as fact.
@@ -1805,6 +1807,44 @@ def cmd_consult(consult_id: str | None, out: Out, runner=None) -> str:
     return capped(consults.render(rows[0], turns), tail=f"full consult (every turn, untrimmed): {path}")
 
 
+# --- Juniper's ChatGPT archive ---------------------------------------------------------------
+
+def cmd_gpt(args: list[str], out: Out, runner=None) -> str:
+    """Read-only: overview, `find <words>`, or `conv <id>` over Juniper's ChatGPT archive."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import gpt
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    runner = runner or ReadOnlyPsql(timeout_sec=60.0)
+    try:
+        if not args:
+            parts = [psql_rows(runner, sql) for sql in gpt.overview_sql()]
+            return capped(gpt.render_overview(*parts), tail=None)
+        if args[0] == "find":
+            oldest = "--oldest" in args[1:]
+            words = gpt.check_words([w for w in args[1:] if w != "--oldest"])
+            rows = psql_rows(runner, gpt.find_sql(words, oldest=oldest))
+            path = out.write("gpt-find", {"words": words, "oldest": oldest, "rows": rows})
+            return capped(gpt.render_find(words, rows, oldest=oldest), tail=f"full hits: {path}")
+        if args[0] == "conv" and len(args) == 2:
+            cid = gpt.check_conv_id(args[1])
+            convs = psql_rows(runner, gpt.conv_match_sql(cid))
+            if not convs:
+                raise DigError(f"gpt conv {cid}: not found (`gpt` lists some; `gpt find <words>` searches)")
+            if len(convs) > 1:
+                return capped(gpt.render_ambiguous(cid, convs), tail=None)
+            conv = convs[0]
+            messages = psql_rows(runner, gpt.messages_sql(conv["conversation_id"]))
+        else:
+            raise DigError("usage: gpt | gpt find [--oldest] <words> | gpt conv <id>")
+    except ValueError as exc:
+        raise DigError(str(exc)) from exc
+    except RuntimeError as exc:
+        raise DigError(f"gpt: could not be read ({exc})") from exc
+    path = out.write(f"gpt-conv-{conv['conversation_id'][:8]}", {"conversation": conv, "messages": messages})
+    return capped(gpt.render_conv(conv, messages), tail=f"full conversation (every message, untrimmed): {path}")
+
+
 # --- organs (the daily dig roundup) ---------------------------------------------------------
 
 def cmd_organs(start: date, end: date, out: Out, runner=None) -> str:
@@ -2205,6 +2245,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_watch(a, out)
         elif ns.command == "consult" and len(a) <= 1:
             text = cmd_consult(a[0] if a else None, out)
+        elif ns.command == "gpt":
+            text = cmd_gpt(a, out)
         elif ns.command in REF_COMMANDS and len(a) == 1:
             text = cmd_ref(ns.command, a[0], out)
         elif ns.command == "notes" and (not a or a[0] == "append"):

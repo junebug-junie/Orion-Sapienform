@@ -86,7 +86,11 @@ def test_recorded_tick_sequences_replay_identically():
     from the now URLs in log lines, and the now section's header and the experience prompt's order words ("what is
     about your concerns first ...") mapped back to "highest salience first", every part of every scenario equals
     the previous golden (checked by script; 5 parts changed, 0 after mapping). No scenario's now item carries
-    held_refs, so no line is marked."""
+    held_refs, so no line is marked.
+    Re-recorded 2026-11-25 (choice-as-EFE Step 2a, the attention schema line): one scenario added, recorded last
+    (``attention_schema_fresh_then_stale``: a fresh row shows YOUR ATTENTION SCHEMA's line, a row past 10 min shows
+    absent). Every older scenario is byte-identical to the previous golden (checked by script: 0 parts changed). No
+    older scenario turns the line on (the flag is absent from the fake settings)."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

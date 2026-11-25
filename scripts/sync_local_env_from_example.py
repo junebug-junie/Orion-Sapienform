@@ -262,6 +262,8 @@ SYNC_PREFIXES = (
     "TRANSPORT_SUBSTRATE_",
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
+    # gpu_pool_events durable stream intake (orion-sql-writer, #3920). No generic SQL_WRITER_ prefix.
+    "SQL_WRITER_GPU_POOL_EVENT_STREAM_",
     # storage-write organ (2026-10-02): sql-writer emitter, substrate reducer,
     # field-digester gate. None matched an existing prefix.
     "SQL_WRITER_WRITE_HEALTH_",

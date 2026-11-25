@@ -2578,11 +2578,12 @@ channels:
     #
     # orion-sql-writer: removed 2026-07-18 because it had no code for this
     # channel; re-added 2026-11-25 (#3924) with a real consumer -- route
-    # memory.field_goals.proposed.v1 -> FieldGoalProvenanceLogSQL, insert-only
-    # table field_goal_provenance_log (PK artifact_id, full payload in
-    # payload_json; services/orion-sql-db/
-    # manual_migration_field_goal_provenance_log_v1.sql). Before this the
-    # producer's log line was the only record of a goal.
+    # memory.field_goals.proposed.v1 -> FieldGoalEpisodeSQL: one row per goal
+    # episode (a run of the same target; repeats folded into repeat_count,
+    # re-delivered artifact_ids skipped), table field_goal_episode
+    # (services/orion-sql-writer/app/field_goal_episode.py; services/orion-sql-db/
+    # manual_migration_field_goal_episode_v1.sql). Before this the producer's
+    # log line was the only record of a goal.
     producer_services: ["orion-attention-runtime"]
     # orion-spark-concept-induction and orion-world-pulse added 2026-07-30 (SSP §6
     # Objective 6): both now run orion.autonomy.goal_state_listener so
@@ -3424,10 +3425,36 @@ channels:
     schema_id: "GpuPoolEventV1"
     message_kind: "gpu_pool.event.v1"
     producer_services: ["orion-gpu-pool"]
-    consumer_services: ["orion-llm-gateway", "orion-durable-runs", "orion-world-model", "orion-thought", "orion-hub", "orion-sql-writer", "orion-mesh-guardian"]
+    consumer_services: ["orion-llm-gateway", "orion-durable-runs", "orion-world-model", "orion-thought", "orion-hub", "orion-mesh-guardian"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Lease lifecycle facts (admitted, queued, granted w/ waited_ms, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, unavailable), swap requests, lend/unlend, discovery confirm/mismatch, actuation_paused/actuation_resumed (stage 5.7 emergency stop; sql-writer must be redeployed before a pool that emits them). Callers wake on 'granted'; sql-writer persists."
+    description: "Lease lifecycle facts (admitted, queued, granted w/ waited_ms, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, unavailable), swap requests, lend/unlend, discovery confirm/mismatch, actuation_paused/actuation_resumed (stage 5.7 emergency stop; sql-writer must be redeployed before a pool that emits them). Callers wake on 'granted'. sql-writer persists from the durable stream orion:stream:gpu_pool:event, not from this pub/sub channel (#3920)."
+
+  # Durable Redis Stream mirror of orion:gpu_pool:event (#3920). Same GpuPoolEventV1 envelope, written
+  # by XADD (RedisStreamWorkQueue, MAXLEN ~GPU_POOL_EVENT_STREAM_MAXLEN), not bus.publish. Pub/sub kept
+  # nothing while sql-writer restarted: 68 of 69 lease grants missing from gpu_pool_events on 11-24/25
+  # fell inside sql-writer up -d --build windows. sql-writer reads this through consumer group
+  # cg:sql-writer, so events published while it is down are written when it returns (insert-only on
+  # event_id, so a redelivery is a duplicate skip).
+  - name: "orion:stream:gpu_pool:event"
+    kind: "stream"
+    schema_id: "GpuPoolEventV1"
+    message_kind: "gpu_pool.event.v1"
+    producer_services: ["orion-gpu-pool"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-11-25"
+
+  # Dead-letter stream for gpu pool stream entries sql-writer could not decode, or could not write
+  # after SQL_WRITER max attempts (the row write AND its bus_fallback_log write both failed).
+  - name: "orion:stream:gpu_pool:event:dlq"
+    kind: "stream"
+    schema_id: "GpuPoolEventV1"
+    message_kind: "gpu_pool.event.v1"
+    producer_services: ["orion-sql-writer"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-11-25"
 
   - name: "orion:gpu_pool:state:reply:*"
     kind: "result"

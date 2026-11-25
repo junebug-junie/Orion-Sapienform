@@ -181,7 +181,8 @@ SELECT
     JOIN vision_motion_story s ON s.story_id = pv.story_id
     LEFT JOIN vision_motion_story_verdict_source src ON src.story_id = pv.story_id
     WHERE s.published AND s.clean AND s.rules_version = $1 AND pv.source = 'juniper'
-      AND coalesce(src.source, '') <> 'parts') AS half_graded
+      AND coalesce(src.source, '') <> 'parts'
+      AND NOT EXISTS (SELECT 1 FROM vision_motion_story_verdict v WHERE v.story_id = pv.story_id)) AS half_graded
 """
 
 
@@ -883,15 +884,43 @@ async def _story_parts(conn: Any, stories: list[dict[str, Any]]) -> None:
         s["parts"] = parts_view(by.get(s["story_id"]))
 
 
+async def _undo_correction(conn: Any, story_id: str, rules_version: int) -> None:
+    """Her correction is undone: its automatic "people = no" goes, and so does the verdict it made --
+    a 'name_correction' verdict is removed (the story is unchecked again); a 'parts' verdict is
+    re-derived, and removed when the parts are no longer complete."""
+    if (await conn.execute(_DROP_AUTO_PEOPLE_NO_SQL, story_id)) == "DELETE 0":
+        return
+    source = await conn.fetchval("SELECT source FROM vision_motion_story_verdict_source WHERE story_id = $1",
+                                 story_id)
+    if source == "parts" and await _rederive(conn, story_id, rules_version) is not None:
+        return
+    if source in ("name_correction", "parts"):
+        await conn.execute("DELETE FROM vision_motion_story_verdict WHERE story_id = $1", story_id)
+        await conn.execute("DELETE FROM vision_motion_story_verdict_source WHERE story_id = $1", story_id)
+
+
+# A wrong name that only an old button or an old (unflagged) correction recorded: no source row.
+_OLD_WRONG_NAME_SQL = """
+SELECT 1 FROM vision_motion_story_verdict v
+WHERE v.story_id = $1 AND v.verdict = 'wrong_name'
+  AND NOT EXISTS (SELECT 1 FROM vision_motion_story_verdict_source s WHERE s.story_id = v.story_id)
+"""
+
+
 async def _rederive(conn: Any, story_id: str, rules_version: int) -> Optional[str]:
     """Re-derive the story verdict from its part answers; write it only when every stated part is
-    answered (then it replaces the story's verdict, like a button press). Returns what it wrote."""
+    answered (then it replaces the story's verdict, like a button press). Returns what it wrote.
+    Never over a wrong name recorded before Patch C (no source row): those corrections carry no
+    ledger mark, so their verdict is the only thing that keeps them in the gate."""
     row = (await conn.fetch(_PARTS_SQL, [story_id]) or [None])[0]
     view = parts_view(row)
     if view["stated"] is None:
         return None
     verdict = derive_story_verdict(view["stated"], {k: v["verdict"] for k, v in view["answers"].items()})
     if verdict is None:
+        return None
+    if verdict != "wrong_name" and await conn.fetchval(_OLD_WRONG_NAME_SQL, story_id) is not None:
+        logger.info("motion_story_part_kept_old_wrong_name story_id=%s derived=%s", story_id, verdict)
         return None
     await conn.execute(_UPSERT_VERDICT, story_id, None if verdict == CANT_TELL else verdict, rules_version,
                        verdict == CANT_TELL)
@@ -914,8 +943,10 @@ async def record_story_part(story_id: str, body: PartBody, request: Request) -> 
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # FOR UPDATE: two quick part clicks on one story derive one after the other.
                 version = await conn.fetchval(
-                    "SELECT rules_version FROM vision_motion_story WHERE story_id = $1 AND published", story_id)
+                    "SELECT rules_version FROM vision_motion_story WHERE story_id = $1 AND published FOR UPDATE",
+                    story_id)
                 if version is None:
                     raise HTTPException(status_code=404, detail="story_not_found")
                 stated = await conn.fetchval("SELECT parts FROM vision_motion_story_parts WHERE story_id = $1",
@@ -1030,7 +1061,7 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
             async with conn.transaction():
                 story = await conn.fetchrow(
                     "SELECT story_id, kind, name_label, rules_version, evidence, together_story_ids, evidence_strip "
-                    "FROM vision_motion_story WHERE story_id = $1 AND published", story_id)
+                    "FROM vision_motion_story WHERE story_id = $1 AND published FOR UPDATE", story_id)
                 if story is None:
                     raise HTTPException(status_code=404, detail="story_not_found")
                 if body.group:
@@ -1113,7 +1144,7 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                     # Her correction is undone (her latest answer no longer corrects the name): its
                     # automatic "people = no" goes; her own part answers stay.
                     if await conn.fetchval(_STORY_CORRECTED_SQL, story_id) is None:
-                        await conn.execute(_DROP_AUTO_PEOPLE_NO_SQL, story_id)
+                        await _undo_correction(conn, story_id, story["rules_version"])
     except HTTPException:
         raise
     except Exception as exc:

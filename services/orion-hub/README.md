@@ -4908,6 +4908,24 @@ answer was "not sure" (130 live on 2026-11-24) are back in the unchecked queue
 until her first answer there (`reopened: true` on the story). The tally adds
 `person_answers` and `cant_see`, shown as "can't see them N of M person answers".
 
+**The sentence graded in parts (2026-11-24, who-card redesign Patch C).** Under
+the sentence: "Right people?", "Right direction?", "Right place?" (Juniper: no
+length), each Yes / No / Can't tell, and only the parts this sentence states.
+Which parts it states is recorded by orion-sql-writer when it writes the sentence
+(`vision_motion_story_parts`; older stories derived once from their stored facts),
+never read from the words. `POST /api/vision/motion-stories/{story_id}/parts
+{part, verdict}`. The story verdict is made only when every stated part is answered
+(people no -> wrong name first, then direction/place no -> wrong motion); until
+then the story stays unchecked. The old four buttons stay only for a story whose
+parts are not recorded. A name correction also writes "Right people? = no"
+(unless she answered it), marks its ask `corrects_story_name`, and undoing it
+takes both back. The gate (`orion/vision/motion_story_gate.gate_verdicts_sql`,
+also used by the walkway rollups and the street line) counts a story under an
+active correction as a wrong name whatever its verdict says. The tally adds
+`by_source` (old buttons / parts / name corrections), `half_graded` and
+`wrong_name_from_corrections`. Migration:
+`services/orion-sql-db/manual_migration_vision_motion_story_parts_v1.sql`.
+
 ## Retro browser play
 
 `/retro` offers native NES viewing/control without an additional access code through a

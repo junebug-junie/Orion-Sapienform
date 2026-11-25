@@ -806,19 +806,26 @@ def test_crop_insert_with_and_without_the_frame_columns(pg) -> None:
 
 # RULES_VERSION -> fingerprint of everything that decides what a sentence claims. Changing any of it
 # without bumping RULES_VERSION fails here: bump it (a new tally starts) and add the new fingerprint.
-SENTENCE_FINGERPRINTS = {1: "fafc5b7a73bd698996f9a3d6ecafb848eaa12bc5e3c59467ebf6eef8a205a8f5"}
+SENTENCE_FINGERPRINTS = {1: "4a8ff7a643f9604187cde941e591a30f33cdbedd0f62956d32dcd47e4d9f9fa0"}
 
 
 def _sentence_fingerprint() -> str:
+    """What the composer SAYS over a fixed grid of facts (sentence and parts), hashed. A comment or a
+    refactor changes nothing here; a changed word or part does."""
     import hashlib
-    import inspect
+    import itertools
     import json
 
-    src = "".join(inspect.getsource(f) for f in (vm.sentence_for, vm.sentence_parts, vm.companion_phrase,
-                                                   vm.direction_phrase, vm.zone_phrase))
-    src += json.dumps([sorted(vm.VERBS.items()), sorted(vm.NOUNS.items()), sorted(vm.PLURALS.items()),
-                       sorted(vm.STILL_CLASSES), vm.OUTSIDE, list(vm.SENTENCE_PARTS)])
-    return hashlib.sha256(src.encode()).hexdigest()
+    out = []
+    for kind, sc, (lat, dep), zp, comp, together, name in itertools.product(
+            ("person", "dog", "stroller"), (None, "walking", "standing", "running", "walked"),
+            ((0, 0), (1, 0), (-1, 1), (0, -1)), ([], ["walkway"], ["porch", "walkway"], [vm.OUTSIDE],
+                                                 ["walkway", "porch", "walkway", "porch"], ["a", "b", "c"]),
+            ([], ["dog"], ["dog", "dog", "stroller"]), (0, 1, 2), (None, "Sasha")):
+        out.append([vm.sentence_for(kind=kind, sc=sc, lat=lat, dep=dep, zp=zp, dur=6.2, n=4, name=name,
+                                    companions=comp, people_together=together),
+                    list(vm.sentence_parts(kind=kind, sc=sc, lat=lat, dep=dep, zp=zp))])
+    return hashlib.sha256(json.dumps(out).encode()).hexdigest()
 
 
 def test_changing_what_a_sentence_claims_bumps_the_rules_version() -> None:
@@ -884,3 +891,26 @@ def test_the_cycle_stores_parts_when_it_writes_a_story_and_derives_older_ones_on
         got = conn.execute(text("SELECT parts, source FROM vision_motion_story_parts WHERE story_id='old'")).one()
         assert (list(got[0]), got[1]) == (["people", "place"], "derived")   # standing: no direction said
         assert conn.execute(text("SELECT count(*) FROM vision_motion_story_parts WHERE story_id='older-rules'")).scalar() == 0
+
+
+@needs_pg
+def test_the_shared_gate_count_reads_the_correction_ledger_through_sqlalchemy(pg) -> None:
+    """The rollups and the street line run gate_verdicts_sql(":v") through SQLAlchemy: a story with no
+    verdict but an active name correction counts as a checked wrong name."""
+    from sqlalchemy import text
+
+    from orion.vision.motion_story_gate import gate_verdicts_sql
+
+    with pg.begin() as conn:
+        conn.execute(text("DELETE FROM orion_ask WHERE ask_id LIKE 'ask-gate-%'"))
+        conn.execute(text(
+            "INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, detection_count, "
+            "published, clean, sentence, crop_ids, evidence, rules_version, name_label) VALUES ('g1', 'walkway', "
+            "'person', :t, :t, 3, true, true, 'Maya walked.', ARRAY['x'], '[]'::jsonb, 1, 'Maya')"), {"t": T0})
+        conn.execute(text(
+            "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answered_at, answer_detail) "
+            "VALUES ('ask-gate-1', 'q', 'vision_story_person', 'ind-maya', 'answered', :t, "
+            "'{\"story_id\": \"g1\", \"action\": \"someone_else\", \"corrects_story_name\": true}'::jsonb)"), {"t": T0})
+        rows = conn.execute(text(gate_verdicts_sql(":v")), {"v": 1}).fetchall()
+        assert [(r[0], r[1], r[2]) for r in rows] == [("wrong_name", 1, 1)]
+        conn.execute(text("DELETE FROM orion_ask WHERE ask_id LIKE 'ask-gate-%'"))

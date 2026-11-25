@@ -56,7 +56,8 @@ Not run. A pure table change. Hub rebuilds with #3960.
 
 ## Review findings fixed
 
-- See the PR conversation (the review ran in a subagent).
+- Review (subagent): no findings. Strings match 7a's emitters (`orion/temporal_self/sources.py`); only `inner_sky_routes.py` and the feed eval consume the tables.
+- It noted a possible gap (no test of `verdict_is_classified` on the new words). Not real: the same parametrized test asserts `verdict_is_classified` for every word (`test_inner_sky_routes.py:225`). No change.
 
 ## Restart required
 

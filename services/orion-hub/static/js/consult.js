@@ -17,6 +17,11 @@
   //
   // Everything is rendered with textContent, never innerHTML: the text comes
   // from two models.
+  //
+  // Ref id (2026-11-25, Juniper: "why don't we have an id ref number so I can
+  // talk to orion in chat about what the hell this is about"): every brief and
+  // summary line shows "ref consult <id>". Orion opens it in chat with
+  // `python -P -m orion.dig consult <id>` (orion/dig/consults.py).
 
   const shownBriefs = new Set();
   const shownSummaries = new Set();
@@ -38,6 +43,18 @@
     el.className = "text-sm text-white";
     el.style.whiteSpace = "pre-wrap";
     el.textContent = String(text || "");
+    return el;
+  }
+
+  function refText(consultId) {
+    return "ref consult " + consultId + " · in chat: \"open consult " + consultId + "\"";
+  }
+
+  function refLine(doc, consultId) {
+    const el = doc.createElement("div");
+    el.className = "text-[11px] text-slate-400 select-all";
+    el.dataset.consultRef = consultId;
+    el.textContent = refText(consultId);
     return el;
   }
 
@@ -98,6 +115,7 @@
     div.dataset.role = "consult-brief";
     div.dataset.consultId = consultId;
     div.appendChild(label(doc, "Orion & Claude → Juniper", "text-amber-300"));
+    div.appendChild(refLine(doc, consultId));
     div.appendChild(body(doc, text));
 
     const status = doc.createElement("div");
@@ -215,7 +233,7 @@
     div.dataset.role = "consult-summary";
     div.dataset.consultId = consultId;
     const question = String(c.question || "").replace(/\s+/g, " ");
-    const line = button(doc, "Consult · " + String(c.status || "") + " · " +
+    const line = button(doc, "Consult " + consultId + " · " + String(c.status || "") + " · " +
       (question.length > 100 ? question.slice(0, 100) + "…" : question), null);
     line.className = "text-left text-xs text-slate-400 hover:text-slate-200";
     const detail = doc.createElement("div");
@@ -226,6 +244,7 @@
       detail.style.display = "";
       if (loaded) return;
       loaded = true;
+      detail.appendChild(refLine(doc, consultId));
       detail.appendChild(label(doc, statusText(c), "text-slate-300"));
       if (c.brief_text) detail.appendChild(body(doc, c.brief_text));
       try {
@@ -275,7 +294,7 @@
   }
 
   global.OrionConsult = { onFrame: onFrame, renderTurn: renderTurn, renderBrief: renderBrief, renderSummary: renderSummary,
-    statusText: statusText, loadRecentConsults: loadRecentConsults };
+    statusText: statusText, refText: refText, loadRecentConsults: loadRecentConsults };
   if (global.document && global.document.addEventListener) {
     global.document.addEventListener("DOMContentLoaded", function () { loadRecentConsults(); });
   }

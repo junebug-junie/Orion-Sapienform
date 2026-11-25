@@ -937,3 +937,41 @@ def test_picture_index_is_the_first_position_shown():
     assert [(p["index"], p["verdict"]) for p in out["pictures"]] == [(0, "same"), (1, "different")]
     with pytest.raises(ask_routes.HTTPException):  # the repeat of picture 1 is picture 1, the answer
         ask_routes.picture_answer_detail("Theo", refs, [ask_routes.PictureAnswer(image_ref=refs[2], verdict="unsure")])
+
+
+# "How could you tell?" on picture cards (2026-11-25): stored as answer_detail.why.
+def test_who_is_this_answer_keeps_how_she_could_tell(env):
+    client, rows, published = env
+    r = client.post("/api/asks/a2/answer", json={"answer": "Sam", "why": "  red cap,\r\n\n\n  his   dog\x00 "})
+    assert r.status_code == 200, r.text
+    assert rows["a2"]["answer"] == "Sam"
+    assert rows["a2"]["answer_detail"] == {"why": "red cap,\nhis dog"}
+
+
+def test_is_this_answer_keeps_how_she_could_tell(env):
+    client, rows, _pub = env
+    rows["c1"] = _confirm_row("c1")
+    r = client.post("/api/asks/c1/answer", json={"answer": "no", "why": "Juniper never wears a pony"})
+    assert r.status_code == 200, r.text
+    assert rows["c1"]["answer_detail"] == {"why": "Juniper never wears a pony"}
+
+
+def test_why_is_refused_on_cards_it_does_not_belong_to(env):
+    client, rows, published = env
+    rows["p2"] = _pair_row("p2")
+    r = client.post("/api/asks/p2/answer", json={"answer": "yes", "why": "same coat"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "why_only_on_who_is_this_and_is_this_cards"
+    assert rows["p2"]["status"] == "open" and published == []
+
+
+def test_blank_why_stores_no_detail(env):
+    client, rows, _pub = env
+    assert client.post("/api/asks/a2/answer", json={"answer": "Sam", "why": " \n "}).status_code == 200
+    assert rows["a2"].get("answer_detail") is None
+
+
+def test_why_too_long_is_refused(env):
+    client, rows, _pub = env
+    assert client.post("/api/asks/a2/answer", json={"answer": "Sam", "why": "x" * 1001}).status_code == 422
+    assert rows["a2"]["status"] == "open"

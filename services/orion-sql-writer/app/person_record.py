@@ -20,6 +20,10 @@ linked the same tick. Each call:
    with no person yet is retried next pass. Written once, to the person linked
    at that moment: a later relink does not move it (the rename on the same story
    is applied earlier in the same tick).
+3c. The same reason on a Hub "Who is this?" card (on the person the named
+   cluster is linked to) or an "Is this <name>?" card (on the person with that
+   name; "no" says it was NOT them). An "Is this" card answered both ways picture
+   by picture is skipped: the reason could be about either (2026-11-25).
 4. New "person_fact" asks open, under their own daily cap: one open question
    per person, people asked about least so far first, then the most-seen.
    Each question shows the person's best camera picture when there is one.
@@ -35,7 +39,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from orion.person_model import facts as pf
@@ -202,6 +206,74 @@ def apply_story_reasons(conn) -> Tuple[int, int, int]:
     return stored, waiting, skipped
 
 
+# Hub picture-card reasons ("Who is this?", "Is this <name>?") not yet stored as a fact.
+# Story-card answers (via motion_story) are apply_story_reasons'.
+_CARD_REASONS_SQL = """
+SELECT a.ask_id, a.source_kind, a.source_ref, a.answer, a.answer_detail -> 'pictures' AS pictures,
+       a.answer_detail->>'why' AS why, i.kind
+FROM orion_ask a LEFT JOIN vision_individual i ON i.individual_id = split_part(a.source_ref, '|', 1)
+WHERE a.status = 'answered' AND a.source_kind IN ('vision_individual', 'vision_person_confirm')
+  AND coalesce(a.answer_detail->>'via', '') <> 'motion_story'
+  AND coalesce(a.answer_detail->>'why', '') <> ''
+  AND coalesce(a.answer, '') <> ''
+  AND NOT EXISTS (SELECT 1 FROM person_fact f WHERE f.fact_id = :prefix || a.ask_id)
+ORDER BY a.answered_at, a.ask_id
+"""
+
+# "Is this <name>?": the person with that name, only when exactly one active person has it.
+_INSERT_REASON_BY_NAME_SQL = """
+INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, source_ref)
+SELECT :f, p.person_id, :c, :v, :voice, :src
+FROM person p
+WHERE lower(btrim(p.display_name)) = lower(btrim(:name)) AND p.status = 'active' AND p.merged_into IS NULL
+  AND (SELECT count(*) FROM person q WHERE lower(btrim(q.display_name)) = lower(btrim(:name))
+       AND q.status = 'active' AND q.merged_into IS NULL) = 1
+ON CONFLICT DO NOTHING
+"""
+
+
+def card_reason_plan(source_kind: str, source_ref: str, answer: str, pictures: Any, why: str
+                     ) -> Optional[Tuple[str, str, str]]:
+    """Pure. (target kind "cluster" | "name", target, fact text), or None to skip.
+    "Who is this?": the named cluster. "Is this <name>?": that name; "no" is a time it was NOT them.
+    Answered both ways picture by picture: None (the reason could be about either)."""
+    value = str(why or "").strip()
+    if not value:
+        return None
+    if source_kind == "vision_individual":
+        return ("cluster", source_ref, value)
+    iid, _, name = str(source_ref or "").partition("|")
+    verdicts = {str(p.get("verdict")) for p in (pictures or []) if isinstance(p, dict)}
+    if not iid or not name.strip() or answer not in ("yes", "no") or {"same", "different"} <= verdicts:
+        return None
+    return ("name", name, value if answer == "yes" else f"{pf.STORY_REASON_NOT_THEM_PREFIX}{value}")
+
+
+def apply_card_reasons(conn) -> Tuple[int, int, int]:
+    """Hub card reasons -> ``how_you_could_tell`` facts. Returns (stored, waiting, skipped), as
+    apply_story_reasons: waiting = no single person to put it on yet (retried next pass)."""
+    from sqlalchemy import text
+
+    stored = waiting = skipped = 0
+    for ask_id, kind, ref, answer, pictures, why, cluster_kind in conn.execute(
+            text(_CARD_REASONS_SQL), {"prefix": pf.STORY_REASON_FACT_PREFIX}).fetchall():
+        plan = card_reason_plan(kind, ref, answer, pictures, why)
+        if plan is None or cluster_kind not in pr.PERSON_KINDS:
+            skipped += 1
+            continue
+        target_kind, target, value = plan
+        params = {"f": f"{pf.STORY_REASON_FACT_PREFIX}{ask_id}", "c": pf.CATEGORY_HOW_YOU_COULD_TELL, "v": value,
+                  "voice": pf.VOICE_CARD_REASON, "src": f"ask:{ask_id}"}
+        if target_kind == "cluster":
+            n = conn.execute(text(_INSERT_STORY_REASON_SQL),
+                             {**params, "lk": pr.SOURCE_INDIVIDUAL, "i": target}).rowcount or 0
+        else:
+            n = conn.execute(text(_INSERT_REASON_BY_NAME_SQL), {**params, "name": target}).rowcount or 0
+        stored += n
+        waiting += 0 if n else 1
+    return stored, waiting, skipped
+
+
 # People Orion may ask about, least asked-about first, then the most-seen on camera.
 _ASK_CANDIDATES_SQL = """
 SELECT p.person_id, p.display_name, p.role,
@@ -330,6 +402,8 @@ def run_person_record(conn, now: datetime, cfg: PersonRecordConfig) -> Tuple[Dic
         with conn.begin_nested():
             (summary["story_reasons_stored"], summary["story_reasons_waiting"],
              summary["story_reasons_skipped"]) = apply_story_reasons(conn)
+            (summary["card_reasons_stored"], summary["card_reasons_waiting"],
+             summary["card_reasons_skipped"]) = apply_card_reasons(conn)
     except Exception as exc:
         logger.warning("story_reasons_failed error=%s", exc)
         summary["story_reasons_error"] = str(exc)[:200]

@@ -36,7 +36,15 @@
   // (POST /dismiss {reason: "dont_know"}): no name is stored, and Orion may ask
   // again after the cooldown. Plain Dismiss still means "never ask again".
   // There is no word list on typed answers: the button is the fix.
+  //
+  // "How could you tell?" (2026-11-25, Juniper: "why doesnt the orion is asking
+  // me have the clarifier of how did you know like we have on walkway cam?"):
+  // "Who is this?" and "Is this <name>?" cards get the same optional box as the
+  // walkway who-card. It rides along with the answer as {why} (never with Can't
+  // tell / Dismiss) and becomes a how_you_could_tell fact on the person
+  // (scripts/ask_routes.py WHY_KINDS; sql-writer person_record apply_card_reasons).
   const RESOLVABLE_KINDS = ["memory_confirmation", "open_question"];
+  const WHY_MAX_CHARS = 1000;
 
   function isResolvable(ask) {
     return !!ask && RESOLVABLE_KINDS.indexOf(String(ask.source_kind || "")) >= 0;
@@ -345,6 +353,33 @@
     return { wrap: wrap, input: input };
   }
 
+  // The optional "How could you tell?" box. data-ask-input keeps the 60 s poll
+  // from re-rendering the card while she is typing in it.
+  function whyField(doc, askId) {
+    const wrap = el(doc, "div", "space-y-1");
+    const id = nextId("ask-why");
+    const label = el(doc, "label", "block text-[11px] text-gray-400", "How could you tell? (optional)");
+    label.setAttribute("for", id);
+    const input = el(doc, "textarea", "w-full min-h-[2.5rem] bg-gray-900 text-gray-100 text-xs rounded px-2 py-1 border border-gray-700");
+    setStyle(input, { width: "100%", boxSizing: "border-box", minWidth: "0" });
+    input.setAttribute("id", id);
+    input.setAttribute("rows", "2");
+    input.setAttribute("maxlength", String(WHY_MAX_CHARS));
+    input.setAttribute("placeholder", "e.g. her red coat; he has no dog; not his build");
+    input.setAttribute("data-ask-input", askId);
+    input.setAttribute("data-ask-why", askId);
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    return { wrap: wrap, input: input };
+  }
+
+  // Adds {why} to an answer's extra; a blank box adds nothing.
+  function withWhy(extra, whyText) {
+    const why = String(whyText || "").trim();
+    if (!why) return extra;
+    return Object.assign({}, extra || {}, { why: why });
+  }
+
   function showNode(node, on) {
     node.hidden = !on;
     if (node.classList) {
@@ -493,6 +528,8 @@
       group.appendChild(label);
     });
     card.appendChild(group);
+    const why = whyField(doc, vm.askId);
+    card.appendChild(why.wrap);
 
     const sendBtn = el(doc, "button", "text-xs rounded px-3 py-1 bg-sky-700 hover:bg-sky-600 text-white", "Send");
     sendBtn.setAttribute("type", "button");
@@ -500,6 +537,7 @@
     const note = el(doc, "div", "text-[11px] text-amber-300 hidden");
     sendBtn.addEventListener("click", function () {
       const sub = personConfirmSubmission(choice);
+      if (sub && sub.action === "answer") sub.extra = withWhy(sub.extra, why.input.value);
       if (!sub) {
         note.textContent = errorLine(422, "pick_an_answer");
         note.classList.remove("hidden");
@@ -549,6 +587,8 @@
       return wrap;
     }));
     if (vm.askedAt) card.appendChild(el(doc, "div", "text-[11px] text-gray-500", "Asked " + vm.askedAt));
+    const why = whyField(doc, vm.askId);
+    card.appendChild(why.wrap);
     const sendBtn = el(doc, "button", "text-xs rounded px-3 py-1 bg-sky-700 hover:bg-sky-600 text-white", "Send");
     sendBtn.setAttribute("type", "button");
     sendBtn.setAttribute("data-ask-action", "send");
@@ -571,6 +611,7 @@
         note.classList.remove("hidden");
         return;
       }
+      sub.extra = withWhy(sub.extra, why.input.value);
       return run(sub);
     });
     cantTellBtn.addEventListener("click", function () { return run(personConfirmSubmission("unsure")); });
@@ -676,11 +717,13 @@
         buttons.forEach(function (b) { b.disabled = false; });
       });
     }
+    const why = vm.whoIsThis ? whyField(doc, vm.askId) : null;
     answerBtn.addEventListener("click", function () {
-      if (!multi) return run("answer", input.value);
+      const whyText = why ? why.input.value : "";
+      if (!multi) return run("answer", input.value, withWhy(undefined, whyText));
       const names = {};
       Object.keys(pictureNames).forEach(function (k) { names[k] = pictureNames[k].value; });
-      return run("answer", input.value, { pictures: pictureSubmission(vm.images, choices, names) });
+      return run("answer", input.value, withWhy({ pictures: pictureSubmission(vm.images, choices, names) }, whyText));
     });
     dismissBtn.addEventListener("click", function () {
       return run("dismiss", "");
@@ -695,12 +738,13 @@
     row.appendChild(answerBtn);
     if (dontKnowBtn) row.appendChild(dontKnowBtn);
     row.appendChild(dismissBtn);
+    if (why) card.appendChild(why.wrap);
     card.appendChild(row);
     card.appendChild(note);
     return card;
   }
 
-  // extra: optional {names} / {pictures} sent with an answer.
+  // extra: optional {names} / {pictures} / {why} sent with an answer.
   async function submitAction(fetchFn, askId, action, answerText, resolution, extra) {
     const url = "/api/asks/" + encodeURIComponent(askId) + "/" + action;
     const init = { method: "POST", headers: { "Content-Type": "application/json" } };
@@ -708,6 +752,7 @@
       const body = { answer: String(answerText || "").trim() };
       if (extra && extra.names && Object.keys(extra.names).length) body.names = extra.names;
       if (extra && Array.isArray(extra.pictures) && extra.pictures.length) body.pictures = extra.pictures;
+      if (extra && typeof extra.why === "string" && extra.why.trim()) body.why = extra.why.trim();
       init.body = JSON.stringify(body);
     }
     if (action === "resolve") {

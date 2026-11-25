@@ -82,7 +82,7 @@ path of a file with the full result; read only what you need from that file.
   know <words>           your lived memories matching <words>; run it before saying you don't remember.
   look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
   watch [off|on] --why "..."  watch a person's game or decline.
-  arc|act <id>           open a cited arc/act.
+  arc|act <id>           open a cited arc/act.  consult [<id>]: a Claude consult by its Hub ref.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 
@@ -1779,6 +1779,32 @@ def cmd_days(start: date, end: date, out: Out, runner=None, get_json=None) -> st
     return capped(days.render(read), tail=f"full record (bodies, every entry and chat): {path}")
 
 
+# --- consults (Orion + Claude -> Juniper) --------------------------------------------------
+
+def cmd_consult(consult_id: str | None, out: Out, runner=None) -> str:
+    """Read-only: one consult by the id on its Hub card, or the newest few."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import consults
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    runner = runner or ReadOnlyPsql(timeout_sec=60.0)
+    try:
+        if consult_id is None:
+            rows = psql_rows(runner, consults.recent_sql())
+            return capped(consults.render_recent(rows), tail=None)
+        cid = consults.check_id(consult_id)
+        rows = psql_rows(runner, consults.consult_sql(cid))
+        if not rows:
+            raise DigError(f"consult {cid}: not found (newest ones: `consult` with no id)")
+        turns = psql_rows(runner, consults.turns_sql(cid))
+    except ValueError as exc:
+        raise DigError(str(exc)) from exc
+    except RuntimeError as exc:
+        raise DigError(f"consult: could not be read ({exc})") from exc
+    path = out.write(f"consult-{cid}", {"consult": rows[0], "turns": turns})
+    return capped(consults.render(rows[0], turns), tail=f"full consult (every turn, untrimmed): {path}")
+
+
 # --- organs (the daily dig roundup) ---------------------------------------------------------
 
 def cmd_organs(start: date, end: date, out: Out, runner=None) -> str:
@@ -2177,6 +2203,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_look(a[0] if a else None, out)
         elif ns.command == "watch":
             text = cmd_watch(a, out)
+        elif ns.command == "consult" and len(a) <= 1:
+            text = cmd_consult(a[0] if a else None, out)
         elif ns.command in REF_COMMANDS and len(a) == 1:
             text = cmd_ref(ns.command, a[0], out)
         elif ns.command == "notes" and (not a or a[0] == "append"):

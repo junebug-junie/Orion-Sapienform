@@ -127,7 +127,7 @@ def test_other_recent_consults_are_one_collapsed_line_each_and_open_on_click():
     rows, line, closed, texts, reclosed = got
     # Oldest first (the API is newest first); the undecided brief keeps its full card and buttons.
     assert rows == [["consult-summary", "c7"], ["consult-summary", "c8"], ["consult-brief", "c9"]]
-    assert line == "Consult · failed · why does x stall?" and closed == "none"
+    assert line == "Consult c8 · failed · why does x stall?" and closed == "none"
     assert "Failed: orion_run_failed:timeout." in texts and "hi" in texts and "why?" in texts
     assert reclosed == "none"
 
@@ -180,3 +180,13 @@ def test_a_live_brief_replaces_the_consults_summary_line():
       return conv.children.map(c => c.dataset.role);
     """)
     assert got == ["consult-brief"]
+
+
+def test_brief_shows_its_ref_id_so_juniper_can_name_it_in_chat():
+    got = _node("""
+      api.renderBrief("f1842fa5ab10", "@Juniper -- brief", doc, fetchFn);
+      const ref = all(conv).find(n => n.dataset && n.dataset.consultRef);
+      return [ref.dataset.consultRef, ref.textContent];
+    """)
+    assert got[0] == "f1842fa5ab10"
+    assert got[1] == 'ref consult f1842fa5ab10 · in chat: "open consult f1842fa5ab10"'

@@ -348,6 +348,7 @@ def test_story_reasons_become_how_you_could_tell_facts_on_the_linked_person(pg) 
         _story_answer(conn, "ask-dog", "vision_individual", "dog-1",
                       dict(story, action="name", name="Biscuit", why="Fluffy, green leash."))
         _story_answer(conn, "ask-nowhy", "vision_story_person", "sam-1", dict(story, action="unsure"))
+        # A card answer with no answer text is not a card reason either (apply_card_reasons needs one).
         _story_answer(conn, "ask-card", "vision_individual", "sam-1", {"why": "not a story answer"})
     summary, _ = _run(pg)
     assert (summary["story_reasons_stored"], summary["story_reasons_waiting"],
@@ -372,6 +373,57 @@ def test_story_reasons_become_how_you_could_tell_facts_on_the_linked_person(pg) 
         conn.execute(text("UPDATE vision_individual SET label = 'Kit' WHERE individual_id = 'anon-1'"))
     summary3, _ = _run(pg, NOW + timedelta(minutes=2))
     assert (summary3["story_reasons_stored"], summary3["story_reasons_waiting"]) == (1, 0)
+
+
+def _card_answer(conn, ask_id, kind, ref, answer, detail, at=NOW - timedelta(minutes=30)):
+    import json
+
+    from sqlalchemy import text
+
+    conn.execute(text(
+        "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, answered_at, created_at, "
+        "answer_detail) VALUES (:a, 'q', :k, :r, 'answered', :ans, :t, :t, CAST(:d AS jsonb))"),
+        {"a": ask_id, "k": kind, "r": ref, "ans": answer, "t": at, "d": json.dumps(detail)})
+
+
+@needs_pg
+def test_card_reasons_land_on_the_named_person_and_a_no_says_not_them(pg) -> None:
+    """2026-11-25: "How could you tell?" on Hub "Who is this?" / "Is this <name>?" cards."""
+    with pg.begin() as conn:
+        _cluster(conn, "sam-1", "Sam")
+        _cluster(conn, "robin-1", "Robin")
+        _cluster(conn, "anon-1", None)
+        _card_answer(conn, "c-who", "vision_individual", "robin-1", "Robin", {"why": "Green leash."})
+        _card_answer(conn, "c-yes", "vision_person_confirm", "anon-1|Sam", "yes", {"why": "His red cap."})
+        _card_answer(conn, "c-no", "vision_person_confirm", "anon-1|Robin", "no", {"why": "Robin has no stroller."})
+        _card_answer(conn, "c-mixed", "vision_person_confirm", "anon-1|Sam", "yes",
+                     {"why": "one of them", "pictures": [{"verdict": "same"}, {"verdict": "different"}]})
+        _card_answer(conn, "c-nobody", "vision_person_confirm", "anon-1|Nobody", "no", {"why": "no such person"})
+    summary, _ = _run(pg)
+    assert (summary["card_reasons_stored"], summary["card_reasons_waiting"],
+            summary["card_reasons_skipped"]) == (3, 1, 1)
+    persons = dict(_rows(pg, "SELECT display_name, person_id FROM person"))
+    assert _rows(pg, "SELECT fact_id, person_id, category, value_text, voice, source_ref FROM person_fact "
+                     "WHERE voice = 'card_reason' ORDER BY fact_id") == [
+        ("why-c-no", persons["Robin"], "how_you_could_tell", "A sighting that was NOT them: Robin has no stroller.",
+         "card_reason", "ask:c-no"),
+        ("why-c-who", persons["Robin"], "how_you_could_tell", "Green leash.", "card_reason", "ask:c-who"),
+        ("why-c-yes", persons["Sam"], "how_you_could_tell", "His red cap.", "card_reason", "ask:c-yes")]
+    summary2, _ = _run(pg, NOW + timedelta(minutes=1))
+    assert (summary2["card_reasons_stored"], summary2["card_reasons_waiting"]) == (0, 1)
+
+
+def test_card_reason_plan_is_pure_and_skips_what_it_cannot_place() -> None:
+    from app.person_record import card_reason_plan
+
+    assert card_reason_plan("vision_individual", "i1", "Sam", None, " x ") == ("cluster", "i1", "x")
+    assert card_reason_plan("vision_person_confirm", "i1|Sam", "no", None, "y") == (
+        "name", "Sam", "A sighting that was NOT them: y")
+    assert card_reason_plan("vision_person_confirm", "i1|Sam", "yes", [{"verdict": "same"}], "y") == ("name", "Sam", "y")
+    assert card_reason_plan("vision_person_confirm", "i1|Sam", "yes",
+                            [{"verdict": "same"}, {"verdict": "different"}], "y") is None
+    assert card_reason_plan("vision_person_confirm", "i1", "yes", None, "y") is None
+    assert card_reason_plan("vision_individual", "i1", "Sam", None, "  ") is None
 
 
 @needs_pg

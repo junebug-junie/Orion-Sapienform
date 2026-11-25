@@ -145,6 +145,11 @@ PAIR_SEP = "|"
 # would be cut there, so it is refused here.
 MAX_NAME_CHARS = 120
 MAX_PICTURES = 4
+# "How could you tell?" (2026-11-24 walkway who-card; 2026-11-25 on these picture cards too):
+# Juniper's reason, stored as ``answer_detail.why``. sql-writer's person_record turns it into a
+# ``how_you_could_tell`` fact on the person. Only cards whose answer says who it is take one.
+WHY_MAX_CHARS = 1000
+WHY_KINDS = (WHO_IS_THIS_KIND, PERSON_CONFIRM_KIND)
 
 
 # Explicit ::text casts: Postgres cannot infer $3's type from "$3 IS NULL"
@@ -192,6 +197,17 @@ class AskAnswerBody(BaseModel):
     names: dict[str, Annotated[str, Field(max_length=MAX_ANSWER_CHARS)]] = Field(default_factory=dict)
     # Multi-picture "who is this?" cards only: one entry per picture.
     pictures: list[PictureAnswer] = Field(default_factory=list, max_length=MAX_PICTURES)
+    # "Who is this?" and "Is this <name>?" cards only: how she could tell (optional).
+    why: str = Field(default="", max_length=WHY_MAX_CHARS)
+
+
+def clean_why(raw: str) -> str:
+    """Her reason as typed, trimmed; blank lines and runs of spaces collapsed, line breaks kept.
+    Control characters are dropped (a NUL would make the jsonb insert fail). The length cap is
+    the request model's; the slice only guards a direct caller."""
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", str(raw or "").replace("\r", ""))
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.split("\n")]
+    return "\n".join(ln for ln in lines if ln)[:WHY_MAX_CHARS]
 
 
 def clean_name(value: Any) -> str:
@@ -467,11 +483,13 @@ def _event_from_row(row: Any, names: Optional[dict[str, str]] = None) -> OrionAs
 
 
 async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: dict[str, str],
-                         pictures: list[PictureAnswer], dont_know: bool = False) -> Optional[dict[str, Any]]:
+                         pictures: list[PictureAnswer], dont_know: bool = False,
+                         why: str = "") -> Optional[dict[str, Any]]:
     """Validate typed names against the card (locks the row) and build ``answer_detail``.
-    Raises 422 for names on a card that cannot take them, or "I don't know" on a
-    card that is not "who is this?"; None when nothing was typed."""
-    if not names and not pictures and not dont_know:
+    Raises 422 for names on a card that cannot take them, "I don't know" on a
+    card that is not "who is this?", or a reason on a card not in WHY_KINDS;
+    None when nothing was typed."""
+    if not names and not pictures and not dont_know and not why:
         return None
     card = await conn.fetchrow(
         "SELECT source_kind, source_ref, image_ref, image_refs, status, expires_at FROM orion_ask "
@@ -484,6 +502,10 @@ async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: d
     if card is None or card["status"] != "open" or (expires is not None and expires <= datetime.now(timezone.utc)):
         return None  # CLOSE_ASK_SQL moves nothing either: the usual 404 / 409 below
     detail: dict[str, Any] = {}
+    if why:
+        if card["source_kind"] not in WHY_KINDS:
+            raise HTTPException(status_code=422, detail="why_only_on_who_is_this_and_is_this_cards")
+        detail["why"] = why
     if dont_know:
         if card["source_kind"] != WHO_IS_THIS_KIND:
             raise HTTPException(status_code=422, detail="dont_know_only_on_who_is_this_cards")
@@ -513,6 +535,7 @@ async def _close_ask(
     names: Optional[dict[str, str]] = None,
     pictures: Optional[list[PictureAnswer]] = None,
     dont_know: bool = False,
+    why: str = "",
 ) -> dict[str, Any]:
     pool = _pool(request)
     row: Any = None
@@ -522,7 +545,7 @@ async def _close_ask(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                detail = await _answer_detail(conn, ask_id, answer, names or {}, pictures or [], dont_know)
+                detail = await _answer_detail(conn, ask_id, answer, names or {}, pictures or [], dont_know, why)
                 row = await conn.fetchrow(
                     CLOSE_ASK_SQL,
                     ask_id,
@@ -564,7 +587,7 @@ async def _close_ask(
     published = await _publish_answered(event)
     logger.info(
         "ask_closed ask_id=%s status=%s source_kind=%s source_ref=%s names=%d pictures=%d dont_know=%s "
-        "published=%s",
+        "why_chars=%d published=%s",
         event.ask_id,
         event.status,
         event.source_kind,
@@ -572,6 +595,7 @@ async def _close_ask(
         len(event.names),
         len((detail or {}).get("pictures") or []),
         bool((detail or {}).get("dont_know")),
+        len((detail or {}).get("why") or ""),
         published,
     )
     closed_ids = []
@@ -594,7 +618,7 @@ async def answer_ask(request: Request, ask_id: str, body: AskAnswerBody) -> dict
     if len(body.names) > 2:
         raise HTTPException(status_code=422, detail="name_for_unknown_individual")
     return await _close_ask(request, ask_id, new_status="answered", answer=answer,
-                            names=body.names, pictures=body.pictures)
+                            names=body.names, pictures=body.pictures, why=clean_why(body.why))
 
 
 @router.post("/api/asks/{ask_id}/dismiss")

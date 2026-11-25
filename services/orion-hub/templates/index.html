@@ -273,7 +273,11 @@
         <div id="runtimeMarquee" role="button" tabindex="0" title="What is running right now -- click for details" aria-haspopup="dialog" aria-controls="runtimeActivityModal">
           <div class="ra-marquee-track"><span class="ra-chip ra-chip--idle">connecting…</span></div>
         </div>
-        <span id="hubUiBuildLabel" class="text-[10px] uppercase tracking-wide text-gray-500">UI {{HUB_UI_ASSET_VERSION}}</span>
+        <div class="flex flex-col items-end leading-tight">
+          <span id="hubUiBuildLabel" class="text-[10px] uppercase tracking-wide text-gray-500">UI {{HUB_UI_ASSET_VERSION}}</span>
+          <!-- Time now in UTC / Denver (MST or MDT). static/js/hub-clock.js. -->
+          <span id="hubClock" class="text-[11px] tabular-nums text-gray-300" title="Time now: UTC / Mountain (Denver)"></span>
+        </div>
       </div>
     </div>
     <div id="runtimeActivityModal" role="dialog" aria-modal="true" aria-labelledby="runtimeActivityTitle" hidden>
@@ -4885,6 +4889,7 @@
   <script src="/static/js/walkway-history.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/vision-asks.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/consult.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/hub-clock.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/session-threads.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/people.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

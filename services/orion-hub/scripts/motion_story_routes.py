@@ -105,7 +105,7 @@ from pydantic import BaseModel, Field
 from orion.vision import story_persons
 from orion.vision.story_naming import evidence_crops, name_from_crops, rename_subject
 from scripts import ask_routes
-from scripts.ask_routes import _iso, _pool, _raise_store_http, _read_thumb, clean_name
+from scripts.ask_routes import WHY_MAX_CHARS, _iso, _pool, _raise_store_http, _read_thumb, clean_name, clean_why
 
 
 def _raise_motion_http(exc: BaseException) -> None:
@@ -201,7 +201,6 @@ WHO_IS_THIS_KIND = ask_routes.WHO_IS_THIS_KIND        # "vision_individual"
 STORY_PERSON_KIND = "vision_story_person"
 JUNIPER_STORY_CARD_REF = "rule:juniper_story_naming"   # == orion.grammar.camera_ask_acts (a test pins it)
 PERSON_ACTIONS = ("name", "confirm", "someone_else", "unsure")
-WHY_MAX_CHARS = 1000
 _INDIVIDUAL_ID_RE = re.compile(r"[0-9A-Za-z_.:-]{1,128}")
 _THUMB_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -221,15 +220,6 @@ class PersonBody(BaseModel):
     # server's pictures for the person differ (a link landed since the card rendered), 409
     # ``pictures_changed``: never a verdict on a picture she did not see.
     crop_ids: Optional[list[str]] = Field(default=None, max_length=16)
-
-
-def clean_why(raw: str) -> str:
-    """Her reason as typed, trimmed; blank lines and runs of spaces collapsed, line breaks kept.
-    Control characters are dropped (a NUL would make the jsonb insert fail). The length cap is
-    PersonBody's; the slice only guards a direct caller."""
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", str(raw or "").replace("\r", ""))
-    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.split("\n")]
-    return "\n".join(ln for ln in lines if ln)[:WHY_MAX_CHARS]
 
 
 def tally_from_counts(counts: dict[str, int], named_checked: int, rules_version: int | None) -> dict[str, Any]:

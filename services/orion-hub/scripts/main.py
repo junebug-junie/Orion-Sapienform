@@ -38,6 +38,7 @@ from scripts.graph_workbench_routes import router as graph_workbench_router
 from scripts.world_pulse_read_routes import page_router as reading_page_router, router as world_pulse_read_router
 from scripts.exo_exploration_routes import router as exo_exploration_router
 from scripts.self_brain_routes import router as self_brain_router
+from scripts.inner_sky_routes import router as inner_sky_router
 from scripts.chat_attachments import router as chat_attachments_router
 from scripts.hub_surface_routes import router as hub_surface_router, page_router as hub_surface_page_router
 from scripts.hub_surface_routes import _engine as hub_surface_engine
@@ -2104,6 +2105,7 @@ app.include_router(world_pulse_read_router)
 app.include_router(reading_page_router)
 app.include_router(exo_exploration_router)
 app.include_router(self_brain_router)
+app.include_router(inner_sky_router)
 app.include_router(chat_attachments_router)
 app.include_router(hub_surface_router)
 app.include_router(hub_surface_page_router)

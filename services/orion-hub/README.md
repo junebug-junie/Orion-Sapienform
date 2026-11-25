@@ -3595,6 +3595,32 @@ fed the prompt. Today that's only `prior_description` (a prior caption) or a fix
 no private chat/dream content reaches the prompt yet. This tab must be revisited before Patch 3
 (real context-seeding) ships, not after.
 
+## Inner Sky (the Cognitive EKG drawer, 2026-11-25)
+
+The drawer beside chat, and the full page at `/static/inner-sky.html`, draw Orion's last 12 hours from
+stored rows. Every light is one row; nothing is a fused score.
+
+| On screen | Source | Route |
+|-----------|--------|-------|
+| Comet flying into the center | one `temporal_self_event` experience, labelled by `orion.temporal_self.now.now_label` (the same words Orion is shown) | `GET /api/inner-sky/events` |
+| Gold arc between two parts | one `experience_use` row: one organ cited another organ's experience | same |
+| Size of a part on the ring | its experience count in the last 30 minutes | same |
+| Outer stars | services in the bus synaptic graph (`orion_bus_synapse`); dim = no publish in the last hour | `GET /api/inner-sky/state` |
+| Blue pulses on links | `CAUSALLY_FOLLOWED_BY` links seen in 24 h; pulse rate = log of the count delta between two polls (real msgs/s) | same |
+| "Attending to" | the open attention arc in durable-runs' `/temporal-self/frame` (none = none) | same |
+
+Live by default; **Replay 12 h** scrubs the window at 60/240/960×. `?embed=1` is the compact drawer view.
+Pure helpers: `static/js/inner-sky-core.js` (tested by `inner-sky-core.test.js`).
+
+The page never calls `GET /temporal-self/now`: that stores an `experience_shown` row, so a debug view would
+register as Orion seeing something. Uses existing settings only (`POSTGRES_URI`, `FALKORDB_URI`,
+`FALKORDB_BUS_GRAPH`, `HUB_CURIOSITY_DURABLE_RUNS_URL`).
+
+Eval (live Hub): `python services/orion-hub/evals/run_inner_sky_feed_eval.py --hub http://127.0.0.1:8080`
+fails on blank labels, unregistered kinds, or a part that cannot be read.
+
+Replaced the `/spark/ui` synthwave page (orion-vector-host, three dials bending a wave), retired the same day.
+
 ## Bus synaptic graph debug routes
 
 Read-only view into `services/orion-bus-mirror`'s live FalkorDB graph (`orion_bus_synapse`) —

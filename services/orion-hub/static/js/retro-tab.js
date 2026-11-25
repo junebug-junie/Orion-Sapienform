@@ -21,7 +21,7 @@
       button.classList.toggle("border-gray-700", !isActive);
     }
 
-    // Hub's other embedded pages (e.g. the /spark/ui WebGL visualizer) keep rendering
+    // Hub's other embedded pages (e.g. the Inner Sky WebGL drawer, static/inner-sky.html) keep rendering
     // while hidden and share this tab's main thread with the game. Live 2026-10-20:
     // the visualizer took ~22% of the thread and controller replies queued ~600 ms.
     // Unload them while Retro is open; restore on exit.

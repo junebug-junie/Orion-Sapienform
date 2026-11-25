@@ -94,7 +94,6 @@ import numpy as np
 
 from orion.spark.orion_tissue import OrionTissue
 
-from .conn_manager import manager
 from .settings import settings
 
 logger = logging.getLogger("orion-vector-host.tissue")
@@ -156,10 +155,7 @@ def get_phi_stats() -> Dict[str, float]:
 async def feed_tissue(
     embedding: Any,
     *,
-    doc_id: str = "",
     channel_key: str = "chat",
-    correlation_id: str = "",
-    broadcast: bool = True,
 ) -> Dict[str, float]:
     """Feed one real embedding into TISSUE.propagate() and return phi_stats.
 
@@ -216,32 +212,4 @@ async def feed_tissue(
 
     phi_stats = get_phi_stats()
 
-    if broadcast:
-        try:
-            await manager.broadcast(
-                {
-                    "type": "tissue.update",
-                    "correlation_id": correlation_id or doc_id,
-                    "timestamp": _now_iso(),
-                    "stats": {
-                        "embedding_similarity": phi_stats.get("embedding_similarity", 0.0),
-                        "novelty_zscore": phi_stats.get("novelty_zscore", 0.0),
-                        "polarity_diff": phi_stats.get("polarity_diff", 0.0),
-                        "mean_abs_activation": phi_stats.get("mean_abs_activation", 0.0),
-                    },
-                    "metadata": {
-                        "doc_id": doc_id,
-                        "channel_key": channel_key,
-                    },
-                }
-            )
-        except Exception as exc:
-            logger.warning("tissue ws broadcast failed doc_id=%s error=%s", doc_id, exc)
-
     return phi_stats
-
-
-def _now_iso() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).isoformat()

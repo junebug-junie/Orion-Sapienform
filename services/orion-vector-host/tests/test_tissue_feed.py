@@ -31,7 +31,7 @@ def _reset_tissue_state():
 
 def test_feed_tissue_returns_real_phi_stats():
     stats = asyncio.run(
-        tissue_feed.feed_tissue(_rand_embedding(seed=1), doc_id="doc-1", broadcast=False)
+        tissue_feed.feed_tissue(_rand_embedding(seed=1))
     )
     assert set(stats.keys()) == {"polarity_diff", "mean_abs_activation", "embedding_similarity", "novelty_zscore"}
     assert all(isinstance(v, float) for v in stats.values())
@@ -42,7 +42,7 @@ def test_feed_tissue_first_call_is_maximally_novel():
     the same "no reference yet, treat as new" convention the old
     OrionTissue.calculate_novelty used for an empty expectation."""
     stats = asyncio.run(
-        tissue_feed.feed_tissue(_rand_embedding(seed=2), doc_id="doc-1", broadcast=False)
+        tissue_feed.feed_tissue(_rand_embedding(seed=2))
     )
     # calculate_novelty() ran (not dead/never-called, the bug this module's
     # docstring documents fixing) -- mean_abs_activation/novelty_zscore must
@@ -61,7 +61,7 @@ def test_feed_tissue_seeds_ema_from_persisted_tissue_expectation():
     tissue_feed.TISSUE.embedding_expectations["chat"] = persisted.astype(np.float32)
 
     assert "chat" not in tissue_feed._EMBEDDING_EMA
-    asyncio.run(tissue_feed.feed_tissue(emb, doc_id="doc-seed", broadcast=False))
+    asyncio.run(tissue_feed.feed_tissue(emb))
 
     # Same embedding as the "persisted prior" -> delta should be ~0, i.e. the
     # EMA moved only slightly from the seed, not from a zero/empty start.
@@ -77,7 +77,7 @@ def test_feed_tissue_repeated_identical_embedding_reduces_novelty_signal():
     magnitudes = []
     for _ in range(8):
         prior_ema = tissue_feed._EMBEDDING_EMA.get("chat")
-        asyncio.run(tissue_feed.feed_tissue(emb, doc_id="doc-repeat", broadcast=False))
+        asyncio.run(tissue_feed.feed_tissue(emb))
         new_ema = tissue_feed._EMBEDDING_EMA["chat"]
         if prior_ema is not None:
             magnitudes.append(float(np.linalg.norm(new_ema - prior_ema)))
@@ -99,13 +99,13 @@ def test_feed_tissue_distinct_embeddings_produce_distinct_stimulus_direction():
 
 def test_feed_tissue_zero_embedding_does_not_crash():
     stats = asyncio.run(
-        tissue_feed.feed_tissue(np.zeros(16, dtype=np.float32), doc_id="doc-zero", broadcast=False)
+        tissue_feed.feed_tissue(np.zeros(16, dtype=np.float32))
     )
     assert set(stats.keys()) == {"polarity_diff", "mean_abs_activation", "embedding_similarity", "novelty_zscore"}
 
 
 def test_feed_tissue_empty_embedding_short_circuits():
-    stats = asyncio.run(tissue_feed.feed_tissue([], doc_id="doc-empty", broadcast=False))
+    stats = asyncio.run(tissue_feed.feed_tissue([]))
     assert set(stats.keys()) == {"polarity_diff", "mean_abs_activation", "embedding_similarity", "novelty_zscore"}
     assert "chat" not in tissue_feed._EMBEDDING_EMA or tissue_feed._EMBEDDING_EMA.get("chat") is None
 
@@ -117,7 +117,7 @@ def test_projection_matrix_is_deterministic_for_same_dim():
 
 
 def test_get_phi_stats_matches_tissue_phi():
-    asyncio.run(tissue_feed.feed_tissue(_rand_embedding(seed=5), doc_id="doc-5", broadcast=False))
+    asyncio.run(tissue_feed.feed_tissue(_rand_embedding(seed=5)))
     assert tissue_feed.get_phi_stats() == {
         k: float(v) for k, v in tissue_feed.TISSUE.phi().items()
     }

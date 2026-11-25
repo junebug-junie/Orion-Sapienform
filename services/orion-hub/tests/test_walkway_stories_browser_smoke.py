@@ -623,3 +623,59 @@ def test_walkway_story_held_pick_is_never_lost_nor_doubled_browser_smoke():
                                           "card": "one_at_a_time", "dont_know": False, "crop_ids": ["c1"]})
         assert len(posts) == 2
         browser.close()
+
+
+def test_walkway_story_sentence_graded_in_parts_browser_smoke():
+    """Who-card Patch C: only the parts the story's record states are asked ("Right people?", "Right
+    direction?"); Yes / No / Can't tell POSTs the part; the old four buttons give way to "Can't tell";
+    the tally says where verdicts came from. A story with no record keeps the old buttons."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    html = _html()
+    graded = _story(4, persons=[_pp("ind-a")], parts={"stated": ["people", "direction"], "answers": {}})
+    bare = _story(5, persons=[_pp("ind-b")], parts={"stated": None, "answers": {}})
+    posts: list[tuple[str, dict]] = []
+    tally = dict(_tally(3, 2), by_source={"button": {"right": 2}, "parts": {"wrong_motion": 1}}, half_graded=1)
+
+    def handle(route):
+        url = route.request.url
+        path = url.split("http://hub.test", 1)[1].split("?", 1)[0]
+        if path == "/":
+            return route.fulfill(body=html, content_type="text/html")
+        if path.startswith("/static/"):
+            return _static(route, path)
+        if path == "/api/vision/known-names":
+            return route.fulfill(body=json.dumps(NAMES), content_type="application/json")
+        if path == "/api/vision/motion-stories":
+            return route.fulfill(body=json.dumps({"ok": True, "stories": [graded, bare], "tally": tally}),
+                                 content_type="application/json")
+        if path.endswith("/parts"):
+            sent = json.loads(route.request.post_data or "{}")
+            posts.append((path, sent))
+            again = dict(graded, parts={"stated": ["people", "direction"],
+                                        "answers": {"people": {"verdict": "yes", "source": "juniper"}}})
+            return route.fulfill(body=json.dumps({"ok": True, "story": again, "story_verdict": None, "tally": tally}),
+                                 content_type="application/json")
+        if path == f"/api/vision/crop-thumbs/{H}":
+            return route.fulfill(body=PIXEL, content_type="image/gif")
+        return route.fulfill(status=404, body="")
+
+    with sync_playwright() as p:
+        browser, page = _page(p, html, handle)
+        items = page.locator("#walkwayStoriesList [data-story-id]")
+        first = items.nth(0)
+        assert [r.get_attribute("data-story-part") for r in first.locator("[data-story-part]").all()] == [
+            "people", "direction"]
+        assert "Right people?" in first.text_content() and "Right place?" not in first.text_content()
+        assert [b.get_attribute("data-story-verdict") for b in first.locator("[data-story-verdict]").all()] == ["cant_tell"]
+        assert items.nth(1).locator("[data-story-part]").count() == 0
+        assert items.nth(1).locator("[data-story-verdict]").count() == 5          # no record: the old buttons
+        assert "from parts 1, from the old buttons 2" in page.locator("#walkwayStoriesTally").text_content()
+        assert "half-graded 1 (not counted yet)" in page.locator("#walkwayStoriesTally").text_content()
+        _fits(page)
+        first.locator("[data-story-part='people'] [data-part-verdict='yes']").click()
+        page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes('1 more part')")
+        assert posts == [(f"/api/vision/motion-stories/{4:032x}/parts", {"part": "people", "verdict": "yes"})]
+        assert page.locator("[data-story-part='people'] [data-part-verdict='yes']").get_attribute("aria-pressed") == "true"
+        browser.close()

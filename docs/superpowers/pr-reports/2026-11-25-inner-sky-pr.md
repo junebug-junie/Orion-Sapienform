@@ -129,7 +129,7 @@ scripts/safe_docker_build.sh orion-vector-host up -d --build
   - **Mitigation:** this is by design: no rate is guessed.
 - **Severity: low.**
   - **Concern:** labels for `attention_loop_raised` and `visual_run` are only the kind's word (`now_label` has no template for them). The eval reports these and does not fail on them.
-- **Issues opened/closed:** see PR comment.
+- **Issues opened:** #3891 (verify-live: drawer draws real rows after deploy), #3892 (follow-up: no `now_label` template for `attention_loop_raised` and `visual_run`). **Closed:** none.
 
 ## PR link
 

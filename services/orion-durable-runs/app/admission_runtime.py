@@ -54,6 +54,7 @@ from app.pr_field_note_ledger import FieldNoteLedger
 from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_STEP_KEY, PR_FIELD_NOTE_WORKFLOW
 from app.reminiscence_graph import build_reminiscence_graph, finish_detail as reminiscence_finish_detail, pending_step
 from app.reminiscence_ledger import ReminiscenceLedger
+from app.reminiscence_now import ReminiscenceNow
 from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW
 from app.dream_day_graph import DreamDayDeps, build_dream_day_graph, finish_detail as dream_day_finish_detail
 from orion.schemas.dream_day import DREAM_DAY_STEP_KEY, DREAM_DAY_WORKFLOW
@@ -309,7 +310,9 @@ class AdmissionRuntime:
             # Daily reminiscence Patch 2: six steps on the same seam, each checked against Orion's ledger.
             REMINISCENCE_WORKFLOW: build_reminiscence_graph(
                 lambda request: runner._run_turn(request), admission_deps, runner._checkpointer,
-                ledger=ReminiscenceLedger(getattr(settings, "reminiscence_ledger_dir", "/mnt/orion-fcc/self"))),
+                ledger=ReminiscenceLedger(getattr(settings, "reminiscence_ledger_dir", "/mnt/orion-fcc/self")),
+                # Integration patch 7b: the memory organ reads Orion's now in the where_i_am_now hop.
+                now=ReminiscenceNow(enabled=bool(getattr(settings, "reminiscence_now_enabled", True)))),
             # The day dream Patch 2: one turn that reads the closed Denver day; code keeps what it remembers.
             DREAM_DAY_WORKFLOW: build_dream_day_graph(self._dream_day_deps(runner), admission_deps,
                                                       runner._checkpointer),

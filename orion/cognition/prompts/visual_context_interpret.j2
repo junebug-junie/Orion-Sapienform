@@ -10,6 +10,16 @@ only -- do not just repeat it, and do not let it override SOURCE above):
 {{ prior_description }}
 {% endif %}
 
+{% if orion_now %}
+WHAT YOUR OTHER ORGANS LIVED SINCE YOUR LAST PAINTING (Orion's now; each line
+starts with its tag):
+{{ orion_now }}
+You may let ONE of these color the scene (an object, a light, a setting), but
+SOURCE stays what the scene depicts. If one of them shaped the scene, put its
+tag exactly as shown, e.g. [experience:<id>], at the very end of your sentence.
+At most 3 tags, only tags listed here. No tag is a real answer too.
+{% endif %}
+
 JOB
 - Invent ONE concrete scene -- real objects, a setting, a composition -- that
   is a genuine visual metaphor for what SOURCE actually means. Not a literal
@@ -20,7 +30,8 @@ JOB
   scene must contain concrete objects and composition that evoke THAT event
   -- not an abstract wash that could illustrate anything.
 - Output ONE sentence, plain text. No JSON, no markdown, no preamble, no
-  quotation marks, no trailing commentary. 15-35 words. Lead with visual
+  quotation marks, no trailing commentary (tags from Orion's now are the one
+  exception, and do not count toward the words). 15-35 words. Lead with visual
   nouns and a composition, not adjectives alone.
 
 FORBIDDEN as your entire output (too generic to count as real interpretation

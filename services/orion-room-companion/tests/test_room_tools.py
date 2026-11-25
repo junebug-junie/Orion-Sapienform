@@ -209,3 +209,9 @@ def test_turn_files_are_removed_even_when_the_turn_raises(settings):
         with pytest.raises(RuntimeError):
             run_turn(settings, _request())
     assert list(Path(settings.ROOM_COMPANION_TOOLS_STATE_DIR).iterdir()) == []
+
+
+def test_tools_clause_names_every_registered_tool():
+    from orion.claude_tools.registry import TOOLS
+
+    assert all(name in TOOLS_CLAUSE for name in TOOLS) and "consults" in TOOLS_CLAUSE

@@ -127,6 +127,6 @@ Optional, needs Juniper's yes: `scripts/sql/2026-11-25_grant_orion_readonly_reve
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3997
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -22,7 +22,13 @@ function fakeStorage(init) {
 }
 function fakeWin(origin) {
   const h = {};
-  return { location: { origin }, addEventListener: (e, f) => { h[e] = f; }, h };
+  return { location: { origin }, addEventListener: (e, f) => { h[e] = f; }, matchMedia: () => ({ matches: false }), h };
+}
+function withSkyFrame(f) {
+  const sent = [];
+  const frame = { contentWindow: { postMessage: (m, o) => sent.push([m, o]) }, addEventListener: () => {} };
+  f.doc.getElementById('ekgDrawer').querySelector = () => frame;
+  return { frame, sent };
 }
 
 test('drawer starts open, collapses on toggle, reopens from the rail, and remembers', () => {
@@ -67,14 +73,31 @@ test('a remembered wide state is restored on load', () => {
   assert.equal(f.classes.has('is-wide'), true);
 });
 
-test('the sky can ask to be widened, but only from the same origin', () => {
+test('the sky can ask to be widened, but only from its own frame on the same origin', () => {
   const f = fakeDoc();
+  const sky = withSkyFrame(f);
   const w = fakeWin('https://hub.local');
   drawer.mount(f.doc, fakeStorage(), w);
-  w.h.message({ origin: 'https://evil.example', data: { type: drawer.WIDEN_MESSAGE } });
+  const src = sky.frame.contentWindow;
+  w.h.message({ origin: 'https://evil.example', source: src, data: { type: drawer.WIDEN_MESSAGE } });
   assert.equal(f.classes.has('is-wide'), false);
-  w.h.message({ origin: 'https://hub.local', data: { type: 'something-else' } });
+  w.h.message({ origin: 'https://hub.local', source: {}, data: { type: drawer.WIDEN_MESSAGE } }); // another same-origin frame
   assert.equal(f.classes.has('is-wide'), false);
-  w.h.message({ origin: 'https://hub.local', data: { type: drawer.WIDEN_MESSAGE } });
+  w.h.message({ origin: 'https://hub.local', source: src, data: { type: 'something-else' } });
+  assert.equal(f.classes.has('is-wide'), false);
+  w.h.message({ origin: 'https://hub.local', source: src, data: { type: drawer.WIDEN_MESSAGE } });
   assert.equal(f.classes.has('is-wide'), true);
+});
+
+test('the drawer tells the sky its state on every change and when the sky asks', () => {
+  const f = fakeDoc();
+  const sky = withSkyFrame(f);
+  const w = fakeWin('https://hub.local');
+  drawer.mount(f.doc, fakeStorage(), w);
+  assert.deepEqual(sky.sent.at(-1), [{ type: drawer.STATE_MESSAGE, state: 'open', phone: false }, 'https://hub.local']);
+  f.handlers.widen();
+  assert.equal(sky.sent.at(-1)[0].state, 'wide');
+  const before = sky.sent.length;
+  w.h.message({ origin: 'https://hub.local', source: sky.frame.contentWindow, data: { type: drawer.STATE_MESSAGE + '?' } });
+  assert.equal(sky.sent.length, before + 1);
 });

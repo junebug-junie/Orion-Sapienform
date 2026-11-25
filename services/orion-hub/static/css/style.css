@@ -486,10 +486,12 @@ input[type=range]::-moz-range-thumb {
   .hub-ekg-drawer { width: 50%; flex: 0 0 auto; transition: width 260ms ease, padding 260ms ease; }
   .hub-chat-card { flex: 1 1 0; width: auto; }
   .hub-ekg-drawer.is-collapsed { width: 3rem; padding-left: 0; padding-right: 0; cursor: pointer; }
+  /* Wide: the Inner Sky takes the whole row and the chat card steps out until ◀ brings it back. */
   .hub-ekg-drawer.is-wide { width: 100%; }
+  .hub-ekg-drawer.is-wide ~ .hub-chat-card { display: none; }
 }
-/* Wide: the Inner Sky takes the whole row and the chat card steps out until ◀ brings it back. */
-.hub-ekg-drawer.is-wide ~ .hub-chat-card { display: none; }
+/* Below md the drawer is already full width (stacked above chat): there is nothing to widen. */
+@media (max-width: 767px) { #ekgDrawerWiden { display: none; } }
 .hub-ekg-drawer.is-collapsed > :not(.hub-ekg-drawer__rail) { display: none; }
 .hub-ekg-drawer.is-collapsed .hub-ekg-drawer__rail {
   display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 0.75rem;

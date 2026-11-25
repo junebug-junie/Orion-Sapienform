@@ -129,12 +129,23 @@ body.embed .label { font-size: 10px; }
 <div id="err" hidden></div>
 
 <script>
-  // Compact below 1100 px wide (the Hub drawer when open); full layout when widened or opened on its own.
+  // Layout: in the Hub drawer the Hub says which state it is in (compact unless wide; the widen link only
+  // where widening does something). Opened on its own, or before the Hub answers, it goes by width.
   (function () {
-    var framed = window.parent !== window;
-    document.body.classList.toggle('framed', framed);
-    var fit = function () { document.body.classList.toggle('embed', innerWidth < 1100); };
+    var framed = window.parent !== window, drawerState = null, phone = false;
+    var fit = function () {
+      var compact = drawerState ? drawerState !== 'wide' : innerWidth < 1100;
+      document.body.classList.toggle('embed', compact);
+      document.body.classList.toggle('framed', framed && drawerState !== 'wide' && !phone);
+    };
     fit(); addEventListener('resize', fit);
+    if (framed) {
+      addEventListener('message', function (ev) {
+        if (ev.origin !== location.origin || ev.source !== window.parent || !ev.data || ev.data.type !== 'orion-inner-sky-drawer') return;
+        drawerState = ev.data.state; phone = !!ev.data.phone; fit();
+      });
+      window.parent.postMessage({ type: 'orion-inner-sky-drawer?' }, location.origin);
+    }
     document.getElementById('openFull').addEventListener('click', function (ev) {
       if (!framed) return; // on its own the link simply opens the full page
       ev.preventDefault();

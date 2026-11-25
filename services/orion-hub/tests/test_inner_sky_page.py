@@ -29,7 +29,8 @@ def test_page_reads_only_the_inner_sky_routes():
 
 
 def test_compact_mode_follows_width_and_widen_asks_the_hub_drawer():
-    assert "innerWidth < 1100" in PAGE and "body.embed #bar" in PAGE
+    assert "drawerState !== 'wide'" in PAGE and "innerWidth < 1100" in PAGE and "body.embed #bar" in PAGE
+    assert "ev.source !== window.parent" in PAGE
     # the overlay turns pointer events off for .hud; the widen link is itself .hud, so it must turn them back on
     assert re.search(r"#openFull \{[^}]*pointer-events: auto", PAGE)
     assert "type: 'orion-inner-sky-widen'" in PAGE
@@ -40,7 +41,9 @@ def test_compact_mode_follows_width_and_widen_asks_the_hub_drawer():
 def test_drawer_has_a_widen_button_and_wide_hides_chat():
     assert 'id="ekgDrawerWiden"' in INDEX
     css = (HUB / "static" / "css" / "style.css").read_text()
-    assert ".hub-ekg-drawer.is-wide ~ .hub-chat-card { display: none; }" in css
+    md = css[css.index("@media (min-width: 768px)"):]
+    md = md[: md.index("\n}\n")]
+    assert ".hub-ekg-drawer.is-wide ~ .hub-chat-card { display: none; }" in md  # never on phones
 
 
 def test_vector_host_no_longer_serves_the_old_page_or_its_socket():

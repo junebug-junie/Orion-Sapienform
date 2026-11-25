@@ -35,7 +35,8 @@ renderer.setSize(innerWidth, innerHeight);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05060d);
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 500);
-const placeCamera = () => camera.position.set(0, isCompact() ? 18 : 15, isCompact() ? 42 : 34);
+let placedCompact = null; // re-place only when the layout flips, so a resize keeps the viewer's zoom and turn
+const placeCamera = () => { const c = isCompact(); if (c === placedCompact) return; placedCompact = c; camera.position.set(0, c ? 18 : 15, c ? 42 : 34); };
 placeCamera();
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true; controls.autoRotate = !REDUCED; controls.autoRotateSpeed = 0.35;
@@ -341,6 +342,7 @@ const sExp = document.getElementById('sExp'), sBind = document.getElementById('s
 function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clk.getDelta(), 0.1), now = clk.elapsedTime;
+  placeCamera(); // no-op unless the layout flipped (the Hub can flip it by message, with no resize)
   if (booted) step(dt);
 
   let si = 0;

@@ -659,6 +659,42 @@ def test_confirmed_pictures_of_an_impure_group_teach_and_the_flag_takes_them_bac
 
 
 @needs_pg
+def test_her_newest_answer_on_a_picture_wins(pg) -> None:
+    """Issue #3854, the live shape: "someone else" then, 22 seconds later, "yes, that's
+    Juniper" on the same picture: a +1, no -1. The reverse order: a -1, no +1."""
+    from sqlalchemy import text
+
+    t0 = NOW - timedelta(minutes=5)
+
+    def at(conn, ask, crop, iid, verdict, secs, name=None):
+        conn.execute(text(
+            "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
+            "crop_id, answered_at) VALUES (:a, :r, 0, :i, :v, :n, :c, :t)"),
+            {"a": ask, "r": f"crop:{crop}", "i": iid, "v": verdict, "n": name, "c": crop,
+             "t": t0 + timedelta(seconds=secs)})
+
+    with pg.begin() as conn:
+        _world(conn)
+        for iid in ("jun1", "jun2", "jun3", "p1d0", "p2d0", "p3d0", "p4d0"):
+            conn.execute(text(
+                "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, started_at, "
+                "ended_at, dwell_sec, observation_count) SELECT 's-' || :i, :i, 'walkway', min(observed_at), "
+                "max(observed_at), 0, count(*) FROM vision_crop_observation WHERE individual_id=:i"), {"i": iid})
+        mixed = [_vec(1, 0.01 * i) for i in range(3)] + [_vec(0, 0, 0, 0, 0, 1, 0.01 * i) for i in range(3)]
+        _add_cluster(conn, "mixed", "Juniper", mixed, day=9)
+        at(conn, "no-1", "mixed-0", "mixed", "different", 0)
+        at(conn, "yes-1", "mixed-0", "mixed", "same", 22, "Juniper")
+        at(conn, "yes-2", "mixed-1", "mixed", "same", 0, "Juniper")
+        at(conn, "no-2", "mixed-1", "mixed", "different", 22)
+        at(conn, "maybe", "mixed-1", "mixed", "unsure", 40)          # unsure never replaces a firm answer
+        pm.run_person_model(conn, NOW, CFG)
+        got = {(r[0], r[1], r[2]) for r in conn.execute(text(
+            "SELECT crop_id, polarity, source FROM vision_person_exemplar WHERE revoked_at IS NULL "
+            "AND crop_id IN ('mixed-0', 'mixed-1')"))}
+    assert got == {("mixed-0", 1, "picture_same"), ("mixed-1", -1, "picture_different")}
+
+
+@needs_pg
 def test_flag_off_writes_nothing(pg) -> None:
     from sqlalchemy import text
 

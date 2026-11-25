@@ -590,6 +590,13 @@ so the existing "Is this Juniper?" asks ask the right name, and the office line 
    a picture she also said is not that person, a picture whose own name
    differs from the group's current name (renamed since), and non-person
    groups. Off = those rows are revoked on the next tick.
+   **Her newest answer on a picture wins** (2026-11-25, #3854). When she
+   answered the same picture twice for the same person ("someone else", then
+   "yes, that's her", or the reverse), only the newer firm answer counts;
+   "not sure" never replaces one. Same rule in the split on "someone else"
+   pictures (a corrected picture stays put) and in the People panel pictures
+   (`orion/person_model/picture_verdicts.py`). A split that already ran is
+   not undone (`scripts/undo_vision_split.py` reverses one by hand).
 2. Refits the bars (`vision_person_bar`, per person and channel). `accept_at`
    is a conformal false-accept bound at `VISION_PERSON_FALSE_ACCEPT_ALPHA`
    (0.05) over the CLUSTER scores of everyone who is not that person: the

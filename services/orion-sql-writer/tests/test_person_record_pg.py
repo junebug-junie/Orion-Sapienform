@@ -450,3 +450,26 @@ def test_a_failing_story_reason_never_rolls_back_the_links(pg, monkeypatch) -> N
     summary, _ = _run(pg)
     assert "story_reasons_error" in summary
     assert _rows(pg, "SELECT count(*) FROM person_link WHERE source_ref = 'sam-1' AND revoked_at IS NULL") == [(1,)]
+
+
+@needs_pg
+def test_a_picture_she_corrected_from_someone_else_to_them_shows(pg) -> None:
+    """Issue #3854: her newest answer on a picture wins. "Someone else", then 22 seconds
+    later "yes, that's Sam" on the same picture: it shows. The reverse order hides it."""
+    from sqlalchemy import text
+
+    t0 = NOW - timedelta(hours=2)
+    with pg.begin() as conn:
+        _cluster(conn, "sam-1", "Sam", days=5, thumb=True)
+        _who_is_this(conn, "sam-1", "Sam", [THUMB_NAMED])
+        for ask, ref, verdict, name, at in (
+                ("card-a", THUMB_OTHER, "different", None, t0), ("card-b", THUMB_OTHER, "same", "Sam",
+                                                                 t0 + timedelta(seconds=22)),
+                ("card-c", THUMB_PICKED, "same", "Sam", t0), ("card-d", THUMB_PICKED, "different", None,
+                                                              t0 + timedelta(seconds=22))):
+            conn.execute(text(
+                "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, "
+                "name, answered_at) VALUES (:a, :r, 0, 'sam-1', :v, :n, :t)"),
+                {"a": ask, "r": ref, "v": verdict, "n": name, "t": at})
+    _summary, opened = _run(pg)
+    assert sorted(opened[0]["image_refs"]) == sorted([THUMB_OTHER, THUMB_NAMED])

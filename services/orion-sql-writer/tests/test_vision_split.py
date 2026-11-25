@@ -1237,3 +1237,69 @@ def test_a_no_on_an_unlinked_pair_leaves_copied_names_and_their_provenance_alone
     with pg.begin() as conn:
         assert _label(conn, "b") == ("sasha", True, "ask-pair-1")
         assert _label(conn, "x") == (None, False, None)
+
+
+def _verdict_at(conn, ask: str, crop_id: str, verdict: str, at, name=None, iid="src") -> None:
+    from sqlalchemy import text
+
+    conn.execute(text(
+        "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
+        "crop_id, answered_at) VALUES (:a, :r, 0, :ind, :v, :n, :c, :t)"),
+        {"a": ask, "r": f"crop:{crop_id}", "ind": iid, "v": verdict, "n": name, "c": crop_id, "t": at})
+
+
+@needs_pg
+def test_someone_else_corrected_22_seconds_later_never_splits(pg) -> None:
+    """Issue #3854, live 2026-11-24: "someone else" at 05:28:13, "yes, that's her" on the same
+    picture at 05:28:36, and the split still moved it at 05:28:51. Her newest answer wins."""
+    from sqlalchemy import text
+
+    t0 = NOW - timedelta(minutes=5)
+    with pg.begin() as conn:
+        _world(conn)
+        conn.execute(text("DELETE FROM vision_ask_picture_verdict"))
+        _verdict_at(conn, "ask-no", "m0", "different", t0)
+        _verdict_at(conn, "ask-yes", "m0", "same", t0 + timedelta(seconds=22), name="Alder")
+    with pg.begin() as conn:
+        assert vs.pending_split_groups(conn) == []
+        assert vs.apply_splits(conn, NOW, CFG) == {"splits": 0, "splits_refused": 0, "splits_skipped": 0}
+        assert conn.execute(text("SELECT individual_id FROM vision_crop_observation WHERE crop_id='m0'")).scalar() == "src"
+
+
+@needs_pg
+def test_a_corrected_picture_stays_while_the_rest_of_its_card_splits(pg) -> None:
+    from sqlalchemy import text
+
+    t0 = NOW - timedelta(minutes=5)
+    with pg.begin() as conn:
+        _world(conn)
+        conn.execute(text("DELETE FROM vision_ask_picture_verdict"))
+        # One card: m0 and b2 "someone else, Cora"; then a newer "yes, that's Alder" on b2 only.
+        _verdict_at(conn, ASK, "m0", "different", t0, name="Cora")
+        conn.execute(text(
+            "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
+            "crop_id, answered_at) VALUES (:a, 'crop:b2', 1, 'src', 'different', 'Cora', 'b2', :t)"),
+            {"a": ASK, "t": t0})
+        _verdict_at(conn, "ask-yes", "b2", "same", t0 + timedelta(seconds=22), name="Alder")
+    with pg.begin() as conn:
+        assert vs.apply_splits(conn, NOW, CFG)["splits"] == 1
+        moved = {r[0]: r[1] for r in conn.execute(text(
+            "SELECT crop_id, individual_id FROM vision_crop_observation WHERE crop_id IN ('m0', 'b2')"))}
+    assert moved["m0"] != "src" and moved["b2"] == "src"
+
+
+@needs_pg
+def test_no_then_yes_then_no_again_splits(pg) -> None:
+    from sqlalchemy import text
+
+    t0 = NOW - timedelta(minutes=5)
+    with pg.begin() as conn:
+        _world(conn)
+        conn.execute(text("DELETE FROM vision_ask_picture_verdict"))
+        _verdict_at(conn, "ask-no", "m0", "different", t0, name="Cora")
+        _verdict_at(conn, "ask-yes", "m0", "same", t0 + timedelta(seconds=22), name="Alder")
+        _verdict_at(conn, "ask-no-again", "m0", "different", t0 + timedelta(seconds=40), name="Cora")
+    with pg.begin() as conn:
+        assert [g[0] for g in vs.pending_split_groups(conn)] == ["ask-no-again"]
+        assert vs.apply_splits(conn, NOW, CFG)["splits"] == 1
+        assert conn.execute(text("SELECT individual_id FROM vision_crop_observation WHERE crop_id='m0'")).scalar() != "src"

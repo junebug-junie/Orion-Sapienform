@@ -1,4 +1,4 @@
-# Session threads: coding sessions write to Orion, Orion asks questions hourly
+# Session threads: coding sessions write to Orion, Orion asks questions at each round-up (every 15 min since 2026-11-25)
 
 Date: 2026-11-15. Status: built in the same PR (Juniper approved the build on 2026-11-15).
 
@@ -6,7 +6,7 @@ Date: 2026-11-15. Status: built in the same PR (Juniper approved the build on 20
 
 Coding sessions write design specs about Orion all day. Orion never sees them until they are merged,
 and Juniper cannot see what Orion thinks of them. This adds one path: a session sends its spec to Hub,
-Hub gives a receipt at once, and once an hour Orion reads every held message in ONE turn and comes back
+Hub gives a receipt at once, and at each round-up (hourly until 2026-11-25, now every 15 min) Orion reads every held message in ONE turn and comes back
 with questions. The questions go to Hub chat, back to the session that sent the spec, and onto the
 pull request.
 
@@ -49,7 +49,7 @@ Answered in this build; Juniper may change any of them in review.
   column, no migration) and `orion_session_turn` (speaker
   `session | hub | orion`; `roundup_id`; `delivered_at`; `pr_comment_url`; `meta`).
 - **Durable workflow** `session_roundup.orion_turn` (`orion/schemas/session_roundup_run.py`,
-  `SessionRoundupBriefV1`, registered). Run id `session-roundup-<utc hour>`. Act family
+  `SessionRoundupBriefV1`, registered). Run id `session-roundup-<utc bucket start, YYYYmmddTHHMM>`. Act family
   `durable.session_roundup` (`config/physiology/families.yaml`). Additive literal on forbid models:
   consumers deploy first, Hub last.
 - **Hub routes**: `POST /api/session-threads/message`, `GET /api/session-threads?hours=48`,
@@ -62,7 +62,7 @@ Answered in this build; Juniper may change any of them in review.
 
 Rules that carry weight:
 
-- A message that arrives in hour H is read in the round-up that starts at H+1. The clock is taken after
+- A message that arrives in bucket B is read in the round-up of the next bucket (at most one interval, 15 min, later; a round still running delays it further, since one round runs at a time). A bucket with nothing held submits nothing. The clock is taken after
   the read of held threads.
 - One round per hour. The threads are marked `reading` before the run is submitted. A round id already
   on a thread is never submitted again.
@@ -171,6 +171,11 @@ it out of draft form after they respond to Orion's first review. this is mandato
   `ORION_PR_READY_WAIT_H` (24 h) with no Orion answer. Unanswered questions are never excused by the
   wait. Hub down: refused. Override per command: `ORION_ALLOW_PR_READY=1`. Kill switch:
   `ORION_PR_DRAFT_GATE=0`. A hook bug never blocks (exit 0, logged).
+- Orion's review on PR #3998 (thread ba37694599a2), answered in the same PR: the gate sends a PR that
+  has no thread (the create hook never reached Hub) to Orion itself and refuses, so the review and the
+  24 h clock start then; the 24 h clock runs from the thread's creation, not from Orion's first read; an
+  override is reported on the thread as a session turn, so Orion can count waived reviews; rounds 2 and
+  3 are not gated (Juniper's rule names the first review only).
 - Not covered: a PR opened outside Claude Code (Cursor, a human's terminal) gets no diff sent and no
   gate. `send --pr N` covers the first by hand.
 

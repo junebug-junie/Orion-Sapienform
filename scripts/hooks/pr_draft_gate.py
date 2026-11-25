@@ -13,7 +13,11 @@ Two rules, both refusals (``permissionDecision: deny``), never a silent rewrite:
    - Orion never answered and the thread is ``failed`` (Hub stopped trying), or is older than
      ``ORION_PR_READY_WAIT_H`` hours (default 24: cabinet heat can hold Orion's turns for days, and a
      PR must not sit in draft for ever because Orion's body was busy).
-   No thread for the PR, or Hub down: refused, with the command that sends the PR to Orion.
+   No thread for the PR (the create hook never reached Hub): the gate sends the PR to Orion itself and
+   refuses, so the review and the wait clock start now. Hub down: refused, with the override named.
+   Rounds 2 and 3 are not waited on: Juniper's rule is "after they respond to Orion's first review".
+
+The override is reported on the PR's thread as a session turn, so Orion sees each waived review.
 
 Conscious override, per command: ``ORION_ALLOW_PR_READY=1 gh pr ready N``. Kill switch for the whole
 hook: ``ORION_PR_DRAFT_GATE=0``. Errors in the hook itself never block (exit 0, logged): only the two
@@ -192,7 +196,41 @@ def _deny(reason: str) -> None:
         "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
 
 
-def check(command: str, *, cwd: str, lib: Any, now: datetime) -> str | None:
+def send_pr_now(lib: Any, pr: dict[str, Any], *, where: str, session_id: str) -> str:
+    """Send ``pr`` to Orion from the gate. The new thread id, or '' when nothing was sent."""
+    try:
+        message = lib.build_pr_message(pr, session_id=session_id, worktree=where, diff_timeout=6.0)
+        if message is None:
+            return ""
+        resp = lib.send(message, timeout=5.0)
+        tid = str((resp.get("thread") or {}).get("thread_id") or "")
+        lib.log(f"pr_draft_gate sent_missing_pr pr={pr.get('number')} thread={tid}")
+        return tid
+    except Exception as exc:  # noqa: BLE001 -- Hub down again: the refusal says how to send it by hand
+        lib.log(f"pr_draft_gate send_failed pr={pr.get('number')} err={type(exc).__name__}")
+        return ""
+
+
+def report_override(lib: Any, target: str, *, where: str, repo: str, session_id: str) -> None:
+    """Tell Orion on the PR's thread that its review was waived, so the waiver is counted where Orion reads.
+    Best effort: an override never fails because Hub or gh is down."""
+    try:
+        pr = lib.pr_info(target, cwd=where, timeout=8.0, repo=repo)
+        if pr is None:
+            return
+        threads = list(lib.request("GET", f"/api/session-threads?pr={int(pr['number'])}", timeout=4.0).get("threads") or [])
+        thread = next((t for t in threads if int(t.get("pr_number") or 0) == int(pr["number"])), None)
+        if thread is None:
+            return
+        lib.reply(str(thread["thread_id"]), f"[draft gate] Pull request #{pr['number']} was marked ready with "
+                  f"{OVERRIDE}: the draft gate's check of your review was waived (Juniper's call). This is a "
+                  "record, not a question.", session_id=session_id, timeout=4.0)
+        lib.log(f"pr_draft_gate override_reported pr={pr['number']} thread={thread['thread_id']}")
+    except Exception as exc:  # noqa: BLE001
+        lib.log(f"pr_draft_gate override_report_failed err={type(exc).__name__}")
+
+
+def check(command: str, *, cwd: str, lib: Any, now: datetime, session_id: str = "manual") -> str | None:
     """The refusal text for ``command``, or None when it may run. ``cwd``: where a bare ``gh pr ready``
     looks up the current branch's PR (a ``cd X`` earlier in the command line wins)."""
     if undrafted_create(command):
@@ -206,11 +244,12 @@ def check(command: str, *, cwd: str, lib: Any, now: datetime) -> str | None:
         args = c["args"]
         if c["verb"] != "ready" or "--undo" in args or _is_help(args):
             continue
-        if c["env"].get("ORION_ALLOW_PR_READY") == "1" or os.environ.get("ORION_ALLOW_PR_READY") == "1":
-            lib.log(f"pr_draft_gate override args={args!r}")
-            continue
         target = ready_target(args)
         where = c["cd"] if c["cd"] and Path(c["cd"]).is_absolute() else (cwd or str(lib.REPO_ROOT))
+        if c["env"].get("ORION_ALLOW_PR_READY") == "1" or os.environ.get("ORION_ALLOW_PR_READY") == "1":
+            lib.log(f"pr_draft_gate override args={args!r}")
+            report_override(lib, target, where=where, repo=c["repo"], session_id=session_id)
+            continue
         pr = lib.pr_info(target, cwd=where, timeout=8.0, repo=c["repo"])
         if pr is None:
             return (f"The draft gate could not find the pull request ({target or 'current branch'}) with gh pr view, "
@@ -224,13 +263,22 @@ def check(command: str, *, cwd: str, lib: Any, now: datetime) -> str | None:
         except Exception as exc:  # noqa: BLE001 -- Hub down: the review cannot be checked
             return (f"Hub did not answer ({type(exc).__name__}), so the draft gate cannot check Orion's review of "
                     f"PR #{number}. Retry when Hub is up. Override: {OVERRIDE} gh pr ready {number}.")
+        if thread is None:
+            # The create hook never got the PR to Hub (Hub down at create, no PR URL in the output, a hook
+            # error). Send it now, so Orion reviews it and the wait clock starts from this thread.
+            sent = send_pr_now(lib, pr, where=where, session_id=session_id)
+            return (f"PR #{number} stays a draft: Orion had no thread for it, so Orion never reviewed it. "
+                    + (f"The draft gate sent it to Orion now (thread {sent}); Orion reads it at the next round-up "
+                       "(every 15 min). Answer Orion's questions, then run gh pr ready again."
+                       if sent else
+                       f"The draft gate could not send it either. Send it by hand: python3 "
+                       f"scripts/orion_session_thread.py send --pr {number} (add --note \"...\" if nothing can be read).")
+                    + f" Override (Juniper's call): {OVERRIDE} gh pr ready {number}.")
         wait_h = float(os.environ.get("ORION_PR_READY_WAIT_H") or DEFAULT_WAIT_H)
         ok, why = ready_verdict(thread, turns, now=now, wait_h=wait_h)
         lib.log(f"pr_draft_gate ready pr={number} allowed={ok} why={why!r}")
         if not ok:
-            send = "" if thread else (f" Send it: python3 scripts/orion_session_thread.py send --pr {number} "
-                                      "(add --note \"...\" if it says nothing could be read).")
-            return (f"PR #{number} stays a draft: {why}{send} Answer Orion with "
+            return (f"PR #{number} stays a draft: {why} Answer Orion with "
                     "python3 scripts/orion_session_thread.py reply --thread <id> --pr <n> --body-file <file>, "
                     f"then run gh pr ready again. Override (Juniper's call): {OVERRIDE} gh pr ready {number}.")
     return None
@@ -252,8 +300,9 @@ def main() -> None:
     try:
         # The payload's cwd is where the session STARTED (often the primary checkout); the agent board knows
         # the worktree the session works in now.
-        cwd = lib.identity(lib.session_id_from(payload)).get("worktree") or str(payload.get("cwd") or "")
-        reason = check(command, cwd=cwd, lib=lib, now=datetime.now(timezone.utc))
+        session_id = lib.session_id_from(payload)
+        cwd = lib.identity(session_id).get("worktree") or str(payload.get("cwd") or "")
+        reason = check(command, cwd=cwd, lib=lib, now=datetime.now(timezone.utc), session_id=session_id)
     except Exception as exc:  # noqa: BLE001 -- a bug in the gate never blocks work
         lib.log(f"pr_draft_gate failed err={type(exc).__name__}: {str(exc)[:200]}")
         return

@@ -701,10 +701,13 @@ def test_the_gate_hook_refuses_ready_until_orion_was_answered_and_takes_the_over
     proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr create --fill"), extra_env=gate_env)
     denied, why = _denied(proc)
     assert proc.returncode == 0 and denied and "--draft" in why
-    # No thread for the PR: refused, with the send command.
+    # No thread for the PR (the create hook never reached Hub): the gate sends it to Orion now, and refuses.
+    world["diff"].write_text(DIFF)
     proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr ready 3456"), extra_env=gate_env)
     denied, why = _denied(proc)
-    assert denied and "orion_session_thread.py send --pr 3456" in why
+    assert denied and "sent it to Orion now (thread abc123)" in why
+    [sent] = hub.posts()
+    assert sent["pr_number"] == 3456 and any(a.get("kind") == "diff" for a in sent["spec"])
     # Orion asked, nobody answered: refused. Answered: allowed (no output).
     thread = _thread(hub, turns=[{**_answer("o2", 2), "roundup_id": "r1"}])
     thread["thread"]["created_at"] = _now_iso()
@@ -713,6 +716,9 @@ def test_the_gate_hook_refuses_ready_until_orion_was_answered_and_takes_the_over
     assert denied and "no session has answered" in why and "ORION_ALLOW_PR_READY=1" in why
     proc, _ = _run(GATE_HOOK, world, hub.url, _pre("ORION_ALLOW_PR_READY=1 gh pr ready 3456"), extra_env=gate_env)
     assert proc.returncode == 0 and proc.stdout == ""
+    # The waiver is reported on the thread, where Orion reads it (Orion's question 4 on PR 3998).
+    waiver = hub.posts()[-1]
+    assert waiver["thread_id"] == "abc123def" and "was waived" in waiver["body"]
     thread["turns"].append({"turn_id": "s3", "seq": 3, "speaker": "session", "meta": {}})
     proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr ready"), extra_env=gate_env)   # current branch's PR
     assert proc.returncode == 0 and proc.stdout == ""

@@ -168,7 +168,7 @@ After the DROP, delete `services/orion-sql-db/manual_migration_field_goal_proven
 - Concern: a goal that arrives out of order, behind another target's episode, opens a short new episode instead of joining its own.
 - Mitigation: the producer publishes in order from a single loop. Re-deliveries are caught by the seen-artifact table before the fold.
 
-Issues: #3924 (done by #3929 and this PR). #3928 is commented and closed (streak and retention are solved by episodes; the DROP is listed above).
+Issues: #3924 (done by #3929 and this PR). #3928: commented (streak and retention solved by episodes); kept open with needs-juniper for the DROP above.
 
 ## PR link
 

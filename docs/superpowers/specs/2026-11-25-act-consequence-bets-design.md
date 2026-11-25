@@ -104,6 +104,11 @@ No new ledger, no new store, no new status words.
     **Day one switches look only** (say keeps `juniper_replied`, Juniper's default). make, ask, infer
     and sense switch when their own organ's experiences carry the act's `correlation_id`: that is
     integration patch 7's work (painting, curiosity, metacognition emits), not this patch's.
+  - Production vs use (Orion, #3994 Q3): a producer's nothing-made close stays a graded 0, so P(used) is
+    unconditional: P(produced) x P(used | produced). For look, 7 d: about 77 of 460 closes are producer
+    zeros, mostly fetch failures (`no_read_evidence:http_error` 28, `no_read_evidence` 26). Used is ~4%,
+    so the posterior is dominated by "not used", not by production. The Patch 1b report shows both
+    factors (the zeros keep their producer notes), so a production regression cannot pass for a use drop.
   - Horizon (Q5): `output_used` acts open with Juniper's 24 h horizon, not the producer's own. Live,
     look acts' horizon is 3,600 s, but `hub.world_pulse_read`'s 19 observed uses (14 d) land at median
     2,019 s, p90 4,308 s: a 1 h horizon would grade some real uses as 0. All 19 land inside 24 h.
@@ -117,9 +122,9 @@ No new ledger, no new store, no new status words.
   the effect posterior updates as it does today.
 - **Consumer-first.** `ActSignal` is a Literal on `extra=forbid` models read by orion-sql-writer and
   substrate-runtime (`grammar_events`). Ship the new value to readers first (#3994). Producers switch in
-  Patch 1b, one family at a time, listed in `config/grammar/output_used_families.yaml` (family,
-  switched_at). That one file is read by the producers' `act_signal_for`, the self-monitor (series
-  break, below) and the report; it replaces the env flag, so producers and readers cannot disagree.
+  Patch 1b, one family at a time, listed in `config/grammar/output_used_families.yaml` (family names
+  only). Producers' `act_signal_for` reads it, and it also sets the 24 h horizon for a switched family,
+  so a family cannot switch without the horizon. It replaces the env flag.
 - **Writer sweep (review Q2).** `"artifact_produced"` is written by 17 non-test source files (prime acts,
   durable-runs `run_acts.py`, Hub `act_emit.py`, curiosity replica, dig look, consent/intention/
   day_letter, town sessions). Patch 1b does NOT edit each call site's literal. It adds one helper,
@@ -132,11 +137,10 @@ No new ledger, no new store, no new status words.
 - **Series break (review Q1).** The self-monitor keys a belief on
   `grammar_acts:{verb}|{actor}|{signal_id}` (`orion/self_monitor/adapters.py:140`). A switch is a new
   claim, so a new key is correct: "my looks get used" is not "my looks finish". But the old key's
-  grade must not silently vanish from the act gate and consults. Patch 1b: (a) the series break is the
-  `switched_at` entry in `config/grammar/output_used_families.yaml`, not a table (Q7: no such table
-  exists, and this spec adds no store); old key = `...|artifact_produced`, new key = `...|output_used`;
-  (b) the act gate reads the old key's grade until the new key has n >= 30 settled observable acts;
-  (c) a test pins (b).
+  grade must not silently vanish from the act gate and consults. The break is built by the shared bet
+  primitives spec (#3989), in `reduce_bets`: it is derived from data (the first `opened_at` of a new
+  `belief_key` inside a faculty), and the gated grade keeps the old key's bets until the new key has
+  n >= 30 graded bets. No row, no switch timestamp to drift. Patch 1b waits on that change.
 - **Retire, don't keep:** a family that switches stops opening `artifact_produced`. Families that
   already bet on Juniper (`juniper_replied`, `juniper_answered`, `promise_kept`) keep their signal.
   Those already are consequences.
@@ -266,7 +270,7 @@ ANSWERED 2026-11-25: Juniper took all three defaults (24 h horizon everywhere; 3
   Additive-DDL migration with a REQUIRED-BY header.
 - `FieldGoalProvenanceV1` += optional `failure_discount` (consumer-first). `proposal_status` is NOT
   given verdicts.
-- `config/grammar/output_used_families.yaml`: switched families + `switched_at` (the series break).
+- `config/grammar/output_used_families.yaml`: switched family names (sets signal and the 24 h horizon).
 - No bus channel added: episode verdicts reach the producer through the now, not a new channel.
 
 ## Files likely to touch
@@ -309,7 +313,9 @@ the self-inquiry seed picker, each act producer's open call (per family, Patch 1
 
 ## Acceptance checks (live)
 
-1. After Patch 1b: per switched family, surprise is not flat. The 7-day spread of `surprise_nats`
+1. After Patch 1b AND #3989's act-surprise switch (posterior KL -> `-ln p(outcome)`; the KL shrinks as a
+   posterior ages, mean 0.0022 nats, so without that switch these bets inherit a dead surprise):
+   per switched family, surprise is not flat. The 7-day spread of `surprise_nats`
    has IQR > 0.05 nats (today every family is 0.0000-0.004). Mean surprise alone is not the check,
    because at P(used) ~ 3% one graded-0 close already gives -ln 0.97 ~ 0.03, so base rate alone would
    pass a mean bar (review Q3).
@@ -322,7 +328,7 @@ the self-inquiry seed picker, each act producer's open call (per family, Patch 1
    construction. Patch 1 adds no per-act conditioning. The per-act check (AUC >= 0.60, p < 0.05, Brier
    skill >= 0.02 vs the family base rate) belongs to the learned chooser (#3433), which conditions on
    object and hour, and is listed there.
-3b. Self-monitor: no switched family's act-gate grade flips except through its `switched_at` entry.
+3b. Self-monitor: no switched family's act-gate grade flips before its new key has 30 graded bets (#3989).
 4. After Patch 2: `field_goal_episode` rows with a verdict exist, and both `completed` and `failed`
    appear. The goal producer's `record_use` rows for `goal_episode` exist. A failed target carries a
    `failure_discount` > 0 in a live announcement, with its `priority` unchanged.

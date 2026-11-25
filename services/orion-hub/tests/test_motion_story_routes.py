@@ -1199,7 +1199,7 @@ def test_not_sure_stories_go_back_in_the_unchecked_queue_once() -> None:
         assert await queue() == {}
         assert await pool.fetchval("SELECT verdict FROM vision_motion_story_verdict WHERE story_id = $1", unsure) == "right"
 
-    _run(body)
+    _run(body, [])     # the name answer publishes: captured, never the real bus
 
 
 @needs_pg

@@ -170,6 +170,7 @@ def group_people(people: Sequence[Mapping[str, Any]], roots: Mapping[str, str],
             "kind": members[0].get("kind") or "person",
             "label": named.get("label") if named else None,
             "label_copied": bool(named and named.get("label_copied")),
+            "known": all(m.get("known", True) for m in members),
             "short_id": members[0].get("short_id"),
             "story_id": members[0].get("story_id"),
             "pictures": shown,
@@ -183,13 +184,17 @@ def group_people(people: Sequence[Mapping[str, Any]], roots: Mapping[str, str],
     return out
 
 
-def already_said(latest: Optional[Mapping[str, Any]], action: str, name: str) -> bool:
+def already_said(latest: Optional[Mapping[str, Any]], action: str, name: str, *, card: Optional[str] = None) -> bool:
     """Would this answer repeat what this camera group's latest answer on the story says?
 
     A name and a yes are both a ``vision_individual`` answer: a second one with the same
     name would be a second who-is-this answer (and duplicate "same" pictures) for one
     (story, individual), so it is skipped (Orion's question 4)."""
     if not latest or not latest.get("action"):
+        return False
+    if (latest.get("card") or None) != (card or None):
+        # The one-at-a-time card re-asks a "not sure" story once (Patch B): its answer is new
+        # even when the list card said the same before.
         return False
     said, said_name = latest["action"], _fold(latest.get("name"))
     if action in ("name", "confirm") and said in ("name", "confirm"):
@@ -198,7 +203,8 @@ def already_said(latest: Optional[Mapping[str, Any]], action: str, name: str) ->
 
 
 def person_answer(*, action: str, name: str, story_id: str, picture_crop_ids: Sequence[str], why: str = "",
-                  person_key: Optional[str] = None, group_size: int = 1) -> dict[str, Any]:
+                  person_key: Optional[str] = None, group_size: int = 1, dont_know: bool = False,
+                  card: Optional[str] = None) -> dict[str, Any]:
     """The ``orion_ask`` row for one camera group: ``{kind, answer, question, detail}``.
 
     ``name``: the typed / confirmed name ("" for none). ``picture_crop_ids``: the pictures of
@@ -213,6 +219,11 @@ def person_answer(*, action: str, name: str, story_id: str, picture_crop_ids: Se
     if person_key and group_size > 1:
         detail["person_key"] = person_key
         detail["group_size"] = int(group_size)
+    if card:
+        detail["card"] = card
+    if dont_know and action == "unsure":
+        # "I don't know who" (Patch B): she can see them and does not know them; still "unsure".
+        detail["dont_know"] = True
     if action == "name":
         return {"kind": WHO_IS_THIS_KIND, "answer": name, "question": "Who is this? (named on a walkway story)",
                 "detail": detail}

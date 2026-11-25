@@ -131,3 +131,38 @@ test('linked persons: one row per person, "seen as N camera groups", one not-sam
   // An older server (people only): one row per camera group, never `grouped`.
   assert.deepEqual(ws.storyPeople({ people: [{ individual_id: 'g1' }] }).map((e) => e.person.grouped), [undefined]);
 });
+
+test('one at a time: the question, the names offered, and what each answer sends', () => {
+  assert.equal(ws.questionText({ label: 'Alex' }), 'Is this Alex?');
+  assert.equal(ws.questionText({ label: null }), 'Who is this?');
+  assert.equal(ws.questionText({ label: null, role: 'companion' }), 'Walking with them: Who is this?');
+  const names = [{ name: 'Theo' }, { name: 'alex' }, { name: ' Sasha ' }, { name: 'theo' }, { name: '' }];
+  // Never the person's own name (that is "yes"); one per name; only for people.
+  assert.deepEqual(ws.nameChoices({ label: 'Alex', kind: 'person' }, names), ['Theo', 'Sasha']);
+  assert.deepEqual(ws.nameChoices({ label: null, kind: 'dog' }, names), []);
+  assert.deepEqual(ws.nameChoices({ label: null }, Array.from({ length: 20 }, (_, i) => ({ name: `n${i}` }))).length, 8);
+  const alex = { label: 'Alex' };
+  const anon = { label: null };
+  assert.deepEqual(ws.answerSpec(alex, 'yes'), { action: 'confirm', name: 'Alex' });
+  assert.deepEqual(ws.answerSpec(alex, 'pick', 'Cora'), { action: 'someone_else', name: 'Cora' });
+  assert.deepEqual(ws.answerSpec(anon, 'pick', ' Theo  Ray '), { action: 'name', name: 'Theo Ray' });
+  assert.deepEqual(ws.answerSpec(alex, 'dont_know'), { action: 'someone_else', name: '' });
+  assert.deepEqual(ws.answerSpec(anon, 'dont_know'), { action: 'unsure', name: '', dontKnow: true });
+  assert.deepEqual(ws.answerSpec(anon, 'cant_see'), { action: 'unsure', name: '' });
+  assert.equal(ws.pendingText(alex, { name: 'Cora' }), 'Changed to Cora (not Alex)');
+  assert.equal(ws.pendingText(anon, { name: 'Theo' }), 'Named Theo');
+});
+
+test("tally line counts can't-see answers apart when the server sends them", () => {
+  assert.match(ws.tallyLine({ checked: 1, person_answers: 10, cant_see: 4 }), /can't see them 4 of 10 person answers$/);
+  assert.doesNotMatch(ws.tallyLine({ checked: 1 }), /can't see them/);
+});
+
+test('the cursor is a person: it follows the person, else the first one not yet answered', () => {
+  const e = (k, said) => ({ person: { individual_id: k, story_action: said ? { action: 'unsure' } : null } });
+  const askable = [e('a', true), e('b', false), e('c', false)];
+  assert.equal(ws.cursorIndex(askable, 'c'), 2);
+  assert.equal(ws.cursorIndex(askable, 'gone'), 1);      // left the list: the first unanswered, not a shifted index
+  assert.equal(ws.cursorIndex(askable, undefined), 1);
+  assert.equal(ws.cursorIndex([e('a', true)], 'x'), 0);
+});

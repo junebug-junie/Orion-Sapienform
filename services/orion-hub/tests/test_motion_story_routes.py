@@ -57,7 +57,8 @@ def test_routes_are_mounted_on_the_hub_app() -> None:
     assert paths == {"/api/vision/motion-stories", "/api/vision/motion-stories/{story_id}/verdict",
                      "/api/vision/motion-stories/{story_id}/strip/{name}",
                      "/api/vision/motion-stories/{story_id}/people/{individual_id}",
-                     "/api/vision/motion-stories/{story_id}/persons/{person_key}/not-same"}
+                     "/api/vision/motion-stories/{story_id}/persons/{person_key}/not-same",
+                     "/api/vision/known-names"}
 
 
 def test_cant_tell_never_counts_toward_the_gate() -> None:
@@ -120,6 +121,15 @@ def test_template_mounts_the_card_under_the_live_picture_and_loads_the_script() 
 
 
 # --- real Postgres -------------------------------------------------------------------------------------
+
+
+def _people(story: dict) -> list[dict]:
+    """The card's persons as one entry per person, with its first camera group's id (Patch B
+    dropped ``people``; these tests' stories have one camera group per person unless linked)."""
+    return [dict(p, individual_id=p["individual_ids"][0],
+                 picture_crop_ids=[c for g in p["groups"] for c in g["picture_crop_ids"]],
+                 thumb=next((c.get("thumb") for c in p["pictures"] if c.get("thumb")), None))
+            for p in story["persons"]]
 
 
 def _statements(sql: str) -> list[str]:
@@ -380,7 +390,7 @@ def test_a_story_frozen_before_its_crops_were_linked_still_shows_and_names_the_p
         r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
         assert r.status_code == 200, r.text
         story = next(s for s in r.json()["stories"] if s["story_id"] == sid)
-        assert [(p["individual_id"], p["label"], p["crop_ids"]) for p in story["people"]] == [
+        assert [(p["individual_id"], p["label"], p["crop_ids"]) for p in _people(story)] == [
             ("ind-juniper", "Juniper", ["s1c0", "s1c1", "s1c2"])]
         assert story["display_sentence"].startswith("Juniper walked") and story["name_source"] == "rule"
         # The naming button the card now shows works on the late link too.
@@ -482,10 +492,10 @@ def test_list_shows_who_each_story_is_about_with_todays_names() -> None:
         # Named after the story was written: the rule names it now; what was written is kept.
         assert got[a]["display_sentence"].startswith("Maya walked right to left")
         assert got[a]["sentence"].startswith("A person walked") and got[a]["name_source"] == "rule"
-        assert [(p["individual_id"], p["role"], p["label"], p["kind"]) for p in got[a]["people"]] == [
+        assert [(p["individual_id"], p["role"], p["label"], p["kind"]) for p in _people(got[a])] == [
             ("ind-maya", "walker", "Maya", "person"), ("ind-dog", "companion", None, "dog")]
-        assert got[a]["people"][1]["story_id"] == dog and got[a]["people"][0]["thumb"] == THUMB
-        anon = got[b]["people"][0]
+        assert _people(got[a])[1]["story_id"] == dog and _people(got[a])[0]["thumb"] == THUMB
+        anon = _people(got[b])[0]
         assert (anon["label"], anon["short_id"], anon["known"], anon["story_action"]) == (None, "ind-anon", True, None)
         assert got[b]["display_sentence"] == got[b]["sentence"]
 
@@ -524,7 +534,7 @@ def test_naming_a_person_is_a_who_is_this_answer_and_renames_the_story() -> None
         # Her answer on this story wins even though another unnamed id is in it.
         assert out["story"]["display_sentence"].startswith("Theo walked right to left")
         assert out["story"]["name_source"] == "juniper"
-        person = next(p for p in out["story"]["people"] if p["individual_id"] == "ind-anon")
+        person = next(p for p in _people(out["story"]) if p["individual_id"] == "ind-anon")
         assert person["story_action"]["action"] == "name" and person["story_action"]["name"] == "Theo"
         assert out["wrong_name_recorded"] is False     # nothing was named before: not a correction
         assert await pool.fetchval("SELECT count(*) FROM vision_motion_story_verdict") == 0
@@ -574,7 +584,7 @@ def test_correcting_the_written_name_records_wrong_name_and_someone_else_records
         cleaned = "Back turned, but pushing a stroller.\nMaya has no young kids; not her build."
         row = await pool.fetchrow("SELECT answer_detail FROM orion_ask WHERE ask_id = $1", r.json()["ask_id"])
         assert json.loads(row["answer_detail"])["why"] == cleaned
-        person = next(p for p in r.json()["story"]["people"] if p["individual_id"] == "ind-maya")
+        person = next(p for p in _people(r.json()["story"]) if p["individual_id"] == "ind-maya")
         assert person["story_action"]["why"] == cleaned
         # Too long a reason is refused, not cut silently.
         r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya",
@@ -586,7 +596,7 @@ def test_correcting_the_written_name_records_wrong_name_and_someone_else_records
         assert r.status_code == 200
         d = json.loads(await pool.fetchval("SELECT answer_detail FROM orion_ask WHERE ask_id=$1", r.json()["ask_id"]))
         assert {p["verdict"] for p in d["pictures"]} == {"unsure"} and "name" not in d
-        assert r.json()["story"]["people"][0]["story_action"]["action"] == "unsure"
+        assert _people(r.json()["story"])[0]["story_action"]["action"] == "unsure"
         assert r.json()["story"]["display_sentence"].startswith("A person walked")   # "someone else" still holds
         r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
         assert r.json()["stories"][0]["display_sentence"].startswith("A person walked")
@@ -676,7 +686,7 @@ def test_a_companion_from_a_story_walked_together_can_be_named_there() -> None:
         r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-friend", json={"action": "name", "name": "Ash"})
         assert r.status_code == 200, r.text
         story = r.json()["story"]
-        assert [(p["individual_id"], p["role"]) for p in story["people"]] == [
+        assert [(p["individual_id"], p["role"]) for p in _people(story)] == [
             ("ind-walker", "walker"), ("ind-friend", "companion")]
         # A companion's name is not the walker's: the sentence keeps "A person".
         assert story["display_sentence"].startswith("A person walked") and story["name_source"] == "rule"
@@ -779,7 +789,7 @@ def test_list_gives_every_person_their_own_pictures_boxes_and_companions_their_o
         r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
         assert r.status_code == 200, r.text
         story = next(s for s in r.json()["stories"] if s["story_id"] == sid)
-        got = {p["individual_id"]: p for p in story["people"]}
+        got = {p["individual_id"]: p for p in _people(story)}
         assert list(got) == ["ind-jun", "ind-sasha1", "ind-sasha2", "ind-anon", "ind-c1", "ind-c2"]
         assert [(c["story_id"], c["file"]) for c in got["ind-jun"]["pictures"]] == [(sid, "crop_0.jpg")]
         assert [(c["story_id"], c["file"]) for c in got["ind-sasha1"]["pictures"]] == [(sid, "crop_1.jpg")]
@@ -824,7 +834,7 @@ def test_yes_thats_them_is_her_answer_with_same_pictures_for_the_pictures_shown(
         assert [(e.source_kind, e.answer) for e in published] == [("vision_individual", "Sasha")]
         # Her latest answer on this story wins: the yes undoes the earlier "someone else".
         assert out["story"]["display_sentence"].startswith("Sasha walked") and out["story"]["name_source"] == "juniper"
-        person = next(p for p in out["story"]["people"] if p["individual_id"] == "ind-sasha")
+        person = next(p for p in _people(out["story"]) if p["individual_id"] == "ind-sasha")
         assert person["story_action"]["action"] == "confirm"
         # Renamed elsewhere after the card rendered: her yes to "Sasha" is refused, nothing written.
         await pool.execute("UPDATE vision_individual SET label = 'Alice' WHERE individual_id = 'ind-sasha'")
@@ -851,7 +861,7 @@ def test_a_companion_in_two_stories_is_answered_on_the_pictures_the_list_showed(
         sid = await _walk(pool, 1, ["ind-walker"], together=[late, early], strip=[0], thumbs=())
         r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
         friend = next(p for s in r.json()["stories"] if s["story_id"] == sid
-                      for p in s["people"] if p["individual_id"] == "ind-friend")
+                      for p in _people(s) if p["individual_id"] == "ind-friend")
         assert friend["pictures"][0]["story_id"] == late and friend["picture_crop_ids"] == ["s12c0"]
         r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-friend", json={"action": "unsure"})
         assert r.status_code == 200, r.text
@@ -964,7 +974,7 @@ def test_list_shows_linked_camera_groups_as_one_person_with_each_groups_pictures
         r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
         assert r.status_code == 200, r.text
         story = next(s for s in r.json()["stories"] if s["story_id"] == sid)
-        assert len(story["people"]) == 5                                   # kept one more release
+        assert "people" not in story                                       # dropped in Patch B: persons only
         persons = story["persons"]
         assert [p["individual_ids"] for p in persons] == [["ind-sasha1", "ind-sasha2"], ["ind-anon"], ["ind-ann"],
                                                           ["ind-bea"]]
@@ -1121,6 +1131,83 @@ def test_not_the_same_person_writes_her_pair_answer_for_one_direct_link() -> Non
         r = await client.post(url, json={"a": "ind-a", "b": "ind-b"})
         assert (r.status_code, r.json()["detail"]) == (409, "still_linked")
         assert await pool.fetchval("SELECT count(*) FROM orion_ask") == before
+
+    _run(body)
+
+
+# --- the one-at-a-time card (who-card redesign Patch B, 2026-11-24) -----------------------------------
+
+
+@needs_pg
+def test_known_names_are_typed_names_most_seen_first_one_per_name() -> None:
+    async def body(pool, client):
+        await _individual(pool, "ind-a", "Sasha")
+        await _individual(pool, "ind-b", "sasha")
+        await _individual(pool, "ind-c", "Theo")
+        await _individual(pool, "ind-d", "Copied")
+        await _individual(pool, "ind-dog", "Rex", kind="dog")
+        await pool.execute("UPDATE vision_individual SET sighting_count = 5 WHERE individual_id = 'ind-c'")
+        await pool.execute("UPDATE vision_individual SET label_copied = true WHERE individual_id = 'ind-d'")
+        r = await client.get("/api/vision/known-names")
+        assert r.status_code == 200, r.text
+        assert r.json()["names"] == [{"name": "Theo", "seen": 5}, {"name": "Sasha", "seen": 2}]
+        assert [n["name"] for n in (await client.get("/api/vision/known-names", params={"kind": "dog"})).json()["names"]] == ["Rex"]
+        assert (await client.get("/api/vision/known-names", params={"kind": "x;drop"})).status_code == 422
+
+    _run(body)
+
+
+@needs_pg
+def test_not_sure_stories_go_back_in_the_unchecked_queue_once() -> None:
+    """Juniper's answer 5: a story whose person she could only answer "not sure" on is unchecked again,
+    once: the first answer from the one-at-a-time card closes it (its old verdict stays)."""
+    async def body(pool, client):
+        await _individual(pool, "ind-a")
+        await _individual(pool, "ind-b")
+        unsure = await _walk(pool, 1, ["ind-a", "ind-b"], strip=[0, 1], thumbs=())
+        named = await _walk(pool, 2, ["ind-a"], strip=[0], thumbs=())
+        for sid in (unsure, named):
+            await client.post(f"/api/vision/motion-stories/{sid}/verdict", json={"verdict": "right"})
+        await client.post(f"/api/vision/motion-stories/{unsure}/people/ind-a", json={"action": "unsure"})
+        await client.post(f"/api/vision/motion-stories/{named}/people/ind-a", json={"action": "unsure"})
+        # A later real answer on the same group: no longer a "not sure" story.
+        await client.post(f"/api/vision/motion-stories/{named}/people/ind-a", json={"action": "name", "name": "Ann"})
+
+        async def queue():
+            r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false", "unchecked_only": "true"})
+            return {s["story_id"]: s["reopened"] for s in r.json()["stories"]}
+
+        assert await queue() == {unsure: True}
+        # A "not sure" story whose pictures are gone since (no one left to ask) is not shown: it would stay for ever.
+        gone = await _walk(pool, 3, ["ind-b"], strip=[0], thumbs=())
+        await client.post(f"/api/vision/motion-stories/{gone}/verdict", json={"verdict": "right"})
+        await client.post(f"/api/vision/motion-stories/{gone}/people/ind-b", json={"action": "unsure"})
+        assert await queue() == {unsure: True, gone: True}
+        await pool.execute("UPDATE vision_motion_story SET evidence_strip = evidence_strip || '{\"pruned_at\": \"x\"}'::jsonb "
+                           "WHERE story_id = $1", gone)
+        assert await queue() == {unsure: True}
+        # The old list card (a cached page) does not close it; the one-at-a-time card does.
+        await client.post(f"/api/vision/motion-stories/{unsure}/people/ind-b", json={"action": "unsure"})
+        assert await queue() == {unsure: True}
+        r = await client.post(f"/api/vision/motion-stories/{unsure}/people/ind-b",
+                              json={"action": "unsure", "card": "one_at_a_time", "dont_know": True, "group": True})
+        assert r.status_code == 200, r.text
+        d = json.loads(await pool.fetchval("SELECT answer_detail FROM orion_ask WHERE ask_id = $1", r.json()["ask_id"]))
+        assert (d["card"], d["dont_know"], d["action"]) == ("one_at_a_time", True, "unsure")
+        assert await queue() == {}
+        assert await pool.fetchval("SELECT verdict FROM vision_motion_story_verdict WHERE story_id = $1", unsure) == "right"
+
+    _run(body, [])     # the name answer publishes: captured, never the real bus
+
+
+@needs_pg
+def test_tally_counts_cant_see_answers_apart() -> None:
+    async def body(pool, client):
+        await _individual(pool, "ind-a")
+        sid = await _walk(pool, 1, ["ind-a"], strip=[0], thumbs=())
+        await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a", json={"action": "unsure"})
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a", json={"action": "someone_else"})
+        assert (r.json()["tally"]["person_answers"], r.json()["tally"]["cant_see"]) == (2, 1)
 
     _run(body)
 

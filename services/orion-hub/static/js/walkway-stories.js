@@ -50,6 +50,17 @@
   // row also offers "These are N camera groups - not the same person?", which
   // records her "same person? no" for one direct link (scripts/motion_story_routes.py).
   //
+  // One person at a time (2026-11-24, who-card redesign Patch B). The card asks
+  // about ONE person: their pictures, "Is this Sasha?" (or "Who is this?"), and
+  // three answers: "Yes, that's Sasha", "No, it's ..." and "Can't see them".
+  // "No, it's ..." opens a short list of the names Orion knows (most seen first),
+  // "Someone not listed" (type a name) and "I don't know who". A name picked from
+  // the list is one tap with no confirm step, so it is held as "Changed to X - Undo"
+  // and only sent when she moves to the next person (or leaves the page). Then
+  // "Next person (2 of 4)". A person with no picture of their own is never asked.
+  // Answers carry `card: "one_at_a_time"`: a "not sure" story the server put back
+  // in the unchecked queue leaves it on her first answer here.
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
@@ -64,6 +75,8 @@
   // Fifth button: Juniper could not judge it. Never right, never wrong.
   const CANT_TELL = { value: "cant_tell", label: "Can't tell" };
   const WHY_MAX_CHARS = 1000;
+  const CARD = "one_at_a_time";
+  const NAMES_LIMIT = 8;
   const THUMB_RE = /^[0-9a-f]{64}$/;
   const STORY_RE = /^[0-9a-f]{32}$/;
   const STRIP_FILE_RE = /^(crop_[0-3]|frame)\.jpg$/;
@@ -82,7 +95,10 @@
     return (
       `Checked ${checked} of ${gate.min_checked} · right ${t.right || 0} (${pct}, need ` +
       `${Math.round(gate.min_right * 100)}%) · wrong names ${t.wrong_name || 0} (must be ${gate.max_wrong_names}) · ` +
-      `named stories checked ${t.named_checked || 0} · can't tell ${t.cant_tell || 0} (not counted)`
+      `named stories checked ${t.named_checked || 0} · can't tell ${t.cant_tell || 0} (not counted)` +
+      // "Can't see them" answers apart: a rising share means the pictures are too small or dark.
+      (typeof t.person_answers === "number"
+        ? ` · can't see them ${t.cant_see || 0} of ${t.person_answers} person answers` : "")
     );
   }
 
@@ -177,7 +193,7 @@
     if (a.action === "confirm") return `You said yes, this is ${a.name || "them"}.`;
     if (a.action === "someone_else") return a.name
       ? `You said this is someone else: ${a.name}.` : "You said this is someone else.";
-    if (a.action === "unsure") return "You said you are not sure.";
+    if (a.action === "unsure") return a.dont_know ? "You said you don't know who this is." : "You said you can't see them.";
     return "";
   }
 
@@ -273,19 +289,78 @@
     return chip;
   }
 
-  function renderPerson(doc, story, entry, onPerson, hasFrame, onNotSame) {
+  // Which asked person a story shows: the one the cursor names; else the first she has not
+  // answered on this story; else the first. A person who left the list (no picture after an
+  // answer) never shifts the card onto someone else by index.
+  function cursorIndex(askable, key) {
+    const at = key ? askable.findIndex((e) => e.person.individual_id === key) : -1;
+    if (at >= 0) return at;
+    const open = askable.findIndex((e) => !e.person.story_action);
+    return open >= 0 ? open : 0;
+  }
+
+  // The question for one person.
+  function questionText(p) {
+    const lead = p && p.role === "companion" ? "Walking with them: " : "";
+    return p && p.label ? `${lead}Is this ${p.label}?` : `${lead}Who is this?`;
+  }
+
+  // The names offered under "No, it's ...": Orion's known names, most seen first, never
+  // the name this person already has (that would be "yes"), only for people.
+  function nameChoices(p, names) {
+    if (p && p.kind && p.kind !== "person") return [];
+    const own = String((p && p.label) || "").trim().toLowerCase();
+    const seen = new Set();
+    const out = [];
+    (Array.isArray(names) ? names : []).forEach((n) => {
+      const name = String((n && n.name) || "").trim();
+      const key = name.toLowerCase();
+      if (!name || key === own || seen.has(key)) return;
+      seen.add(key);
+      out.push(name);
+    });
+    return out.slice(0, NAMES_LIMIT);
+  }
+
+  // What one answer sends, from what she pressed. A picked or typed name on a named person
+  // is "someone else, called X" (those pictures are not them); on an unnamed person it names them.
+  function answerSpec(p, choice, name) {
+    const named = !!(p && p.label);
+    if (choice === "yes") return { action: "confirm", name: (p && p.label) || "" };
+    if (choice === "cant_see") return { action: "unsure", name: "" };
+    if (choice === "dont_know") return named ? { action: "someone_else", name: "" } : { action: "unsure", name: "", dontKnow: true };
+    return { action: named ? "someone_else" : "name", name: String(name || "").trim().replace(/\s+/g, " ") };
+  }
+
+  function pendingText(p, spec) {
+    return p && p.label ? `Changed to ${spec.name} (not ${p.label})` : `Named ${spec.name}`;
+  }
+
+  function btnEl(doc, label, attr, value, primary) {
+    const btn = el(doc, "button", "min-h-[2.25rem] rounded-lg border px-3 py-1 text-xs " + (primary
+      ? "border-emerald-500 bg-emerald-800 text-white hover:bg-emerald-700"
+      : "border-gray-600 bg-gray-900 text-gray-200 hover:bg-gray-700"), label);
+    btn.setAttribute("type", "button");
+    btn.setAttribute(attr, value);
+    return btn;
+  }
+
+  // One person, asked. ``ctx``: {answer(story, p, spec, box, held), undo(story), pending, names, onNotSame}.
+  function renderAsk(doc, story, entry, hasFrame, ctx) {
     const p = entry.person;
     const pics = personPictures(p);
-    const asked = isPictured(p);
-    const box = el(doc, "div", "space-y-2 rounded border p-2 " + (asked
-      ? "border-gray-700 bg-gray-900/60" : "border-gray-800 bg-gray-900/30 opacity-60"));
+    const box = el(doc, "div", "space-y-2 rounded border border-gray-700 bg-gray-900/60 p-2");
     box.setAttribute("data-story-person", p.individual_id);
     box.setAttribute("data-person-letter", entry.letter);
-    box.setAttribute("data-person-asked", asked ? "1" : "0");
+    box.setAttribute("data-person-asked", "1");
 
     const head = el(doc, "div", "flex flex-wrap items-center gap-2");
     head.appendChild(chipEl(doc, entry));
-    const title = el(doc, "div", "text-xs text-gray-100", personTitle(p));
+    const q = el(doc, "div", "text-sm font-semibold text-gray-100", questionText(p));
+    q.setAttribute("data-person-question", "1");
+    q.setAttribute("tabindex", "-1");
+    head.appendChild(q);
+    const title = el(doc, "span", "sr-only", personTitle(p));
     title.setAttribute("data-person-title", "1");
     head.appendChild(title);
     if (p.label) {
@@ -293,13 +368,30 @@
       head.appendChild(el(doc, "span", "text-[10px] text-gray-500", `group ${String(p.short_id || "").slice(0, 8)}`));
     }
     box.appendChild(head);
+
+    // Their pictures: the first (largest box) big, the rest small.
+    const row = el(doc, "div", "flex flex-wrap items-end gap-2");
+    pics.forEach((c, i) => {
+      const cell = el(doc, "div", "flex flex-col items-center");
+      const img = el(doc, "img", (i === 0 ? "h-36 max-w-[8rem]" : "h-20 max-w-[4rem]") +
+        " w-auto object-contain rounded border-2 border-gray-500");
+      img.setAttribute("src", c.url);
+      img.setAttribute("alt", `Person ${entry.letter} (${personTitle(p)})${c.t ? ` at ${shortTime(c.t)}` : ""}`);
+      img.setAttribute("loading", "lazy");
+      img.setAttribute("data-person-picture", c.crop_id || "1");
+      img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
+      cell.appendChild(img);
+      if (c.t) cell.appendChild(el(doc, "span", "text-[10px] text-gray-500", shortTime(c.t)));
+      row.appendChild(cell);
+    });
+    box.appendChild(row);
+
     const seenAs = groupsText(p);
     if (seenAs) {
       const line = el(doc, "div", "text-[10px] text-sky-300", seenAs);
       line.setAttribute("data-person-groups", String(p.individual_ids.length));
       box.appendChild(line);
     }
-
     const boxLine = boxesText(p, hasFrame);
     if (boxLine) {
       const line = el(doc, "div", "text-[10px] text-gray-400");
@@ -319,29 +411,6 @@
       line.setAttribute("data-person-boxes", boxes.map((b) => b.n).join(","));
       box.appendChild(line);
     }
-
-    if (!asked) {
-      const why = el(doc, "div", "text-[11px] text-gray-500", "No picture of this person - not asked.");
-      why.setAttribute("data-person-not-asked", "1");
-      box.appendChild(why);
-      return box;
-    }
-
-    const row = el(doc, "div", "flex flex-wrap items-start gap-2");
-    pics.forEach((c) => {
-      const cell = el(doc, "div", "flex flex-col items-center");
-      const img = el(doc, "img", "h-24 w-auto max-w-[5rem] object-contain rounded border-2 border-gray-500");
-      img.setAttribute("src", c.url);
-      img.setAttribute("alt", `Person ${entry.letter} (${personTitle(p)})${c.t ? ` at ${shortTime(c.t)}` : ""}`);
-      img.setAttribute("loading", "lazy");
-      img.setAttribute("data-person-picture", c.crop_id || "1");
-      img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
-      cell.appendChild(img);
-      if (c.t) cell.appendChild(el(doc, "span", "text-[10px] text-gray-500", shortTime(c.t)));
-      row.appendChild(cell);
-    });
-    box.appendChild(row);
-
     if (p.label && p.label_copied) {
       box.appendChild(el(doc, "div", "text-[10px] text-gray-500", "Name carried over from a same-person answer."));
     }
@@ -357,49 +426,93 @@
       line.setAttribute("data-person-why", "1");
       box.appendChild(line);
     }
-    const input = el(doc, "input", "min-h-[2.25rem] w-full sm:w-40 rounded border border-gray-600 bg-gray-950 px-2 text-xs text-gray-100");
-    input.setAttribute("type", "text");
-    input.setAttribute("maxlength", "120");
-    input.setAttribute("placeholder", p.label ? "Or type the right name" : "Who is this?");
-    input.setAttribute("aria-label", `Name for person ${entry.letter}`);
-    input.setAttribute("data-person-name-input", "1");
-    // How she could tell (optional), sent with whichever answer she gives.
+
+    const sending = ctx.flushing && ctx.flushing.story_id === story.story_id && ctx.flushing.person_key === p.individual_id
+      ? ctx.flushing : null;
+    if (sending) {
+      const line = el(doc, "div", "rounded border border-gray-600 px-2 py-1 text-xs text-gray-300",
+        `Saving: ${pendingText(p, sending.spec)} ...`);
+      line.setAttribute("data-person-saving", sending.spec.name);
+      box.appendChild(line);
+    }
+    const held = ctx.pending && ctx.pending.story_id === story.story_id && ctx.pending.person_key === p.individual_id
+      ? ctx.pending : null;
+    if (held) {
+      // A name picked from the list: one tap, held until the next person, undoable until then.
+      const line = el(doc, "div", "flex flex-wrap items-center gap-2 rounded border border-amber-500/60 bg-amber-900/20 px-2 py-1 text-xs text-amber-200");
+      line.setAttribute("data-person-pending", held.spec.name);
+      line.appendChild(el(doc, "span", "", `${pendingText(p, held.spec)}. Saved when you go to the next person.`));
+      const undo = btnEl(doc, "Undo", "data-person-undo", "1", false);
+      undo.addEventListener("click", () => ctx.undo(story));
+      line.appendChild(undo);
+      box.appendChild(line);
+    }
+
     const whyInput = el(doc, "textarea", "w-full min-h-[2.5rem] rounded border border-gray-600 bg-gray-950 px-2 py-1 text-xs text-gray-100");
     whyInput.setAttribute("rows", "2");
     whyInput.setAttribute("maxlength", String(WHY_MAX_CHARS));
     whyInput.setAttribute("placeholder", "How could you tell? (optional) e.g. pushing a stroller, he has no young kids, not his build");
     whyInput.setAttribute("aria-label", `How you could tell, for person ${entry.letter}`);
     whyInput.setAttribute("data-person-why-input", "1");
-    box.appendChild(whyInput);
+    const send = (spec) => ctx.answer(story, p, Object.assign({ why: whyInput.value }, spec), box);
+
     const buttons = el(doc, "div", "flex flex-wrap items-center gap-2");
-    const actions = p.label
-      ? [{ value: "confirm", label: `Yes, that's ${p.label}`, primary: true },
-        { value: "someone_else", label: `No, not ${p.label}`,
-          title: "These pictures are not them. Type who it really is first, if you know." },
-        { value: "unsure", label: "Not sure" },
-        { value: "name", label: "Save typed name" }]
-      : [{ value: "name", label: "Name them", primary: true },
-        { value: "someone_else", label: "Someone else",
-          title: "These pictures are not this unnamed person. Type who it really is first, if you know." },
-        { value: "unsure", label: "Not sure" }];
-    // A named row: the yes / no / not sure line, then the name box on its own line.
-    // An unnamed row: the name box first, then its buttons.
-    const fix = p.label ? el(doc, "div", "flex flex-wrap items-center gap-2") : buttons;
-    if (!p.label) buttons.appendChild(input);
-    else fix.appendChild(input);
-    actions.forEach((a) => {
-      const btn = el(doc, "button", "min-h-[2.25rem] rounded-lg border px-3 py-1 text-xs " + (a.primary
-        ? "border-emerald-500 bg-emerald-800 text-white hover:bg-emerald-700"
-        : "border-gray-600 bg-gray-900 text-gray-200 hover:bg-gray-700"), a.label);
-      btn.setAttribute("type", "button");
-      btn.setAttribute("data-person-action", a.value);
-      if (a.title) btn.setAttribute("title", a.title);
-      btn.addEventListener("click", () => onPerson(story, p, a.value, input.value, box, whyInput.value));
-      (p.label && a.value === "name" ? fix : buttons).appendChild(btn);
-    });
+    if (p.label) {
+      const yes = btnEl(doc, `Yes, that's ${p.label}`, "data-person-action", "yes", true);
+      yes.addEventListener("click", () => send(answerSpec(p, "yes")));
+      buttons.appendChild(yes);
+    }
+    const no = btnEl(doc, p.label ? "No, it's ..." : "It's ...", "data-person-action", "no", !p.label);
+    buttons.appendChild(no);
+    const cant = btnEl(doc, "Can't see them", "data-person-action", "cant_see", false);
+    cant.setAttribute("title", "Too small, too dark or turned away. Orion won't ask about these pictures again.");
+    cant.addEventListener("click", () => send(answerSpec(p, "cant_see")));
+    buttons.appendChild(cant);
     box.appendChild(buttons);
-    if (fix !== buttons) box.appendChild(fix);
-    if (seenAs) box.appendChild(renderNotSame(doc, story, p, onNotSame));
+
+    // "No, it's ...": the names Orion knows, someone not listed, I don't know who.
+    const picker = el(doc, "div", "hidden space-y-2 rounded border border-gray-700 p-2");
+    picker.setAttribute("data-person-picker", "1");
+    const known = el(doc, "div", "flex flex-wrap gap-2");
+    nameChoices(p, ctx.names).forEach((name) => {
+      const b = btnEl(doc, name, "data-person-pick", name, false);
+      b.addEventListener("click", () => {
+        ctx.answer(story, p, Object.assign({ why: whyInput.value }, answerSpec(p, "pick", name)), box, true);
+      });
+      known.appendChild(b);
+    });
+    if (known.children.length) picker.appendChild(known);
+    const other = el(doc, "div", "flex flex-wrap items-center gap-2");
+    const input = el(doc, "input", "min-h-[2.25rem] w-full sm:w-40 rounded border border-gray-600 bg-gray-950 px-2 text-xs text-gray-100");
+    input.setAttribute("type", "text");
+    input.setAttribute("maxlength", "120");
+    input.setAttribute("placeholder", "Someone not listed: type a name");
+    input.setAttribute("aria-label", `Name for person ${entry.letter}`);
+    input.setAttribute("data-person-name-input", "1");
+    other.appendChild(input);
+    const save = btnEl(doc, "Save name", "data-person-action", "typed", false);
+    save.addEventListener("click", () => {
+      const spec = answerSpec(p, "typed", input.value);
+      if (!spec.name) { ctx.say("Type a name first."); return; }
+      send(spec);
+    });
+    other.appendChild(save);
+    picker.appendChild(other);
+    const dunno = btnEl(doc, "I don't know who", "data-person-action", "dont_know", false);
+    dunno.addEventListener("click", () => send(answerSpec(p, "dont_know")));
+    picker.appendChild(dunno);
+    const pickerId = `walkway-picker-${String(story.story_id).slice(0, 12)}-${entry.letter}`;
+    picker.setAttribute("id", pickerId);
+    no.setAttribute("aria-controls", pickerId);
+    no.setAttribute("aria-expanded", "false");
+    no.addEventListener("click", () => {
+      const open = picker.classList.contains("hidden");
+      picker.classList.toggle("hidden");
+      no.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    box.appendChild(picker);
+    box.appendChild(whyInput);
+    if (seenAs) box.appendChild(renderNotSame(doc, story, p, ctx.onNotSame));
     return box;
   }
 
@@ -449,9 +562,11 @@
     return "";
   }
 
-  function renderStory(doc, story, onVerdict, onPerson, onNotSame) {
+  // ``ctx`` (the mounted card's state and actions): {answer, undo, go, say, onNotSame, cursor, pending, names}.
+  function renderStory(doc, story, onVerdict, ctx) {
     const item = el(doc, "div", "rounded-lg border border-gray-700 bg-gray-800/60 p-3 space-y-2");
     item.setAttribute("data-story-id", story.story_id);
+    item.__story = story;
     const shown = story.display_sentence || story.sentence;
     const sentence = el(doc, "div", "text-sm text-gray-100", shown);
     sentence.setAttribute("data-story-sentence", "1");
@@ -460,6 +575,13 @@
       const was = el(doc, "div", "text-[10px] text-gray-500", `Orion first wrote: ${story.sentence}`);
       was.setAttribute("data-story-first-written", "1");
       item.appendChild(was);
+    }
+    if (story.reopened) {
+      // Juniper's answer 5: a story she could only answer "not sure" on is asked again, once.
+      const again = el(doc, "div", "text-[11px] text-amber-300",
+        "Back for one more look: last time you could only say \"not sure\" here.");
+      again.setAttribute("data-story-reopened", "1");
+      item.appendChild(again);
     }
     const handoff = handoffText(story.handoff);
     if (handoff) {
@@ -544,18 +666,49 @@
 
     const who = el(doc, "div", "space-y-1");
     who.setAttribute("data-story-people", String(entries.length));
-    const askable = entries.filter((e) => isPictured(e.person)).length;
+    const askable = entries.filter((e) => isPictured(e.person));
     who.appendChild(el(doc, "div", "text-[11px] font-semibold text-gray-300",
       entries.length
-        ? `Who is in this story? ${entries.length} ${entries.length === 1 ? "person" : "people"} by Orion's count; ` +
-          "check each one against their own pictures."
+        ? `Who is in this story? ${entries.length} ${entries.length === 1 ? "person" : "people"} by Orion's count, ` +
+          "one at a time."
         : "No individual linked to these boxes yet."));
-    if (entries.length && askable < entries.length) {
-      who.appendChild(el(doc, "div", "text-[10px] text-gray-500",
-        `${entries.length - askable} without a picture of their own ${entries.length - askable === 1 ? "is" : "are"} not asked.`));
+    if (entries.length && askable.length < entries.length) {
+      const skipped = entries.length - askable.length;
+      const line = el(doc, "div", "text-[10px] text-gray-500",
+        `${skipped} without a picture of their own ${skipped === 1 ? "is" : "are"} not asked.`);
+      line.setAttribute("data-story-not-asked", String(skipped));
+      who.appendChild(line);
     }
-    if (typeof onPerson === "function") {
-      entries.forEach((e) => who.appendChild(renderPerson(doc, story, e, onPerson, !!model.frame, onNotSame)));
+    const c = ctx || {};
+    if (typeof c.answer === "function" && askable.length) {
+      const at = cursorIndex(askable, c.cursor && c.cursor.get(story.story_id));
+      const progress = el(doc, "div", "text-[10px] text-gray-400", `Person ${at + 1} of ${askable.length}`);
+      progress.setAttribute("data-story-progress", `${at + 1}/${askable.length}`);
+      who.appendChild(progress);
+      who.appendChild(renderAsk(doc, story, askable[at], !!model.frame, c));
+      const nav = el(doc, "div", "flex flex-wrap items-center gap-2");
+      if (at > 0) {
+        const back = btnEl(doc, "Previous person", "data-story-nav", "back", false);
+        back.addEventListener("click", () => c.go(story, askable[at - 1].person.individual_id));
+        nav.appendChild(back);
+      }
+      if (at < askable.length - 1) {
+        const next = btnEl(doc, `Next person (${at + 2} of ${askable.length})`, "data-story-nav", "next", true);
+        next.addEventListener("click", () => c.go(story, askable[at + 1].person.individual_id));
+        nav.appendChild(next);
+      } else {
+        const done = el(doc, "div", "text-[11px] text-gray-400", "That's everyone in this story.");
+        done.setAttribute("data-story-nav-done", "1");
+        nav.appendChild(done);
+        const held = c.pending && c.pending.story_id === story.story_id;
+        if (held) {
+          // The last person has no "Next": "Done" sends the held pick.
+          const save = btnEl(doc, "Done", "data-story-nav", "done", true);
+          save.addEventListener("click", () => c.go(story, askable[at].person.individual_id));
+          nav.appendChild(save);
+        }
+      }
+      who.appendChild(nav);
     }
     item.appendChild(who);
 
@@ -618,36 +771,118 @@
       }
     }
 
-    async function onPerson(story, person, action, typed, box, whyTyped) {
-      const name = String(typed || "").trim().replace(/\s+/g, " ");
-      if (action === "name" && !name) {
-        if (status) status.textContent = "Type a name first.";
+    // One-at-a-time state: which person each story shows, the one held answer, the known names.
+    const cursor = new Map();          // story_id -> the person_key it shows
+    let pending = null;                // a name picked from the list, held for Undo
+    let flushing = null;               // that answer while it is being sent (Undo no longer applies)
+    const names = [];
+    const ctx = { cursor, names, answer, undo, go, say, onNotSame,
+      get pending() { return pending; }, get flushing() { return flushing; } };
+
+    function say(text) { if (status) status.textContent = text; }
+
+    function rerender(storyId, fresh, focus) {
+      const item = list.querySelector(`[data-story-id="${storyId}"]`);
+      if (!item || !fresh) return;
+      const next = renderStory(doc, fresh, onVerdict, ctx);
+      item.replaceWith(next);
+      if (focus) {
+        const target = next.querySelector(focus);
+        if (target && typeof target.focus === "function") target.focus();
+      }
+    }
+
+    function storyOf(storyId) {
+      const item = list.querySelector(`[data-story-id="${storyId}"]`);
+      return item && item.__story ? item.__story : null;
+    }
+
+    // Send the held answer (a name picked from the list), if any. ``keepalive``: the page is closing.
+    // Returns true when nothing is held any more. A failed send (not a 409: that reloads the card)
+    // puts the answer back, so it is never lost and she can try again or Undo.
+    async function flush(keepalive) {
+      if (!pending) return true;
+      const held = pending;
+      pending = null;
+      if (keepalive) {
+        send(held.story, held.person, held.spec, null, true);
+        return true;
+      }
+      flushing = held;
+      rerender(held.story_id, storyOf(held.story_id) || held.story);
+      let result = false;
+      try {
+        result = await send(held.story, held.person, held.spec, null, false);
+      } finally {
+        flushing = null;
+      }
+      if (result === false && !pending) {
+        pending = held;
+        rerender(held.story_id, storyOf(held.story_id) || held.story);
+      }
+      return result === true;
+    }
+
+    function undo(story) {
+      if (!pending || pending.story_id !== story.story_id) {
+        say("Already saving that answer; to change it, answer this person again.");
         return;
       }
-      const buttons = box.querySelectorAll("[data-person-action]");
+      pending = null;
+      say("Undone: nothing was saved.");
+      rerender(story.story_id, storyOf(story.story_id) || story, "[data-person-question]");
+    }
+
+    async function go(story, personKey) {
+      if (!(await flush(false))) return;
+      cursor.set(story.story_id, personKey);
+      rerender(story.story_id, storyOf(story.story_id) || story, "[data-person-question]");
+    }
+
+    async function answer(story, person, spec, box, hold) {
+      const samePerson = pending && pending.story_id === story.story_id && pending.person_key === person.individual_id;
+      if (samePerson) {
+        // A new answer about the same person replaces the held pick: never two contradicting rows.
+        pending = null;
+      } else if (pending && !(await flush(false))) {
+        return;
+      }
+      if (hold) {
+        // One tap, no confirm (Juniper's answer 1): held as "Changed to X - Undo" until the next person.
+        pending = { story, person, spec, story_id: story.story_id, person_key: person.individual_id };
+        cursor.set(story.story_id, person.individual_id);
+        say(`${pendingText(person, spec)}. Saved when you go to the next person; Undo until then.`);
+        rerender(story.story_id, storyOf(story.story_id) || story, "[data-person-undo]");
+        return;
+      }
+      cursor.set(story.story_id, person.individual_id);
+      await send(story, person, spec, box, false);
+    }
+
+    async function send(story, person, spec, box, keepalive) {
+      const buttons = box ? box.querySelectorAll("[data-person-action], [data-person-pick]") : [];
       buttons.forEach((b) => { b.disabled = true; });
       try {
         const res = await fetchFn(
           `/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/people/${encodeURIComponent(person.individual_id)}`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
+            method: "POST", headers: { "Content-Type": "application/json" }, keepalive: !!keepalive,
             // A yes carries the name the card showed: the server refuses it if the name changed since.
-            // A linked person (`grouped`) is answered for each of its camera groups.
-            body: JSON.stringify({ action, name: action === "unsure" ? "" : action === "confirm" ? (person.label || "") : name,
-              why: String(whyTyped || "").trim(), group: !!person.grouped,
+            // A linked person (`grouped`) is answered for each of its camera groups, on the pictures shown.
+            body: JSON.stringify({ action: spec.action, name: spec.name || "", why: String(spec.why || "").trim(),
+              group: !!person.grouped, card: CARD, dont_know: !!spec.dontKnow,
               crop_ids: person.grouped ? personPictures(person).map((c) => c.crop_id).filter(Boolean) : undefined }),
           });
+        if (keepalive) return true;
         if (res.status === 409) {
           // The name or the pictures changed since the card loaded (renamed, or linked to another
           // camera group): show the new card, ask again.
           let detail = "";
           try { detail = (await res.json()).detail || ""; } catch (_) { /* not JSON */ }
-          await load(false);
-          if (status) {
-            status.textContent = detail === "pictures_changed"
-              ? "Orion's pictures of this person changed since this card loaded. Showing the new ones; nothing saved."
-              : "That name changed since this card loaded. Showing the new one; nothing saved.";
-          }
-          return;
+          await load(false, true);
+          say(detail === "pictures_changed"
+            ? "Orion's pictures of this person changed since this card loaded. Showing the new ones; nothing saved."
+            : "That name changed since this card loaded. Showing the new one; nothing saved.");
+          return "conflict";
         }
         if (!res.ok) {
           let detail = "";
@@ -656,40 +891,22 @@
         }
         const body = await res.json();
         if (body.tally) showTally(body.tally);
-        const item = box.closest("[data-story-id]");
-        if (body.story && item) {
-          // Keep what she is half-way through typing in the OTHER person boxes of this story.
-          const typedElsewhere = {};
-          item.querySelectorAll("[data-story-person]").forEach((b) => {
-            if (b === box) return;
-            typedElsewhere[b.getAttribute("data-story-person")] = {
-              name: (b.querySelector("[data-person-name-input]") || {}).value || "",
-              why: (b.querySelector("[data-person-why-input]") || {}).value || "",
-            };
-          });
-          const fresh = renderStory(doc, body.story, onVerdict, onPerson, onNotSame);
-          fresh.querySelectorAll("[data-story-person]").forEach((b) => {
-            const kept = typedElsewhere[b.getAttribute("data-story-person")];
-            if (!kept) return;
-            const n = b.querySelector("[data-person-name-input]");
-            const w = b.querySelector("[data-person-why-input]");
-            if (n) n.value = kept.name;
-            if (w) w.value = kept.why;
-          });
-          item.replaceWith(fresh);
-        }
-        if (status) {
-          status.textContent = action === "name"
-            ? `Saved: ${name}. Orion applies it like any "who is this?" answer.`
-            : action === "confirm" ? `Saved: yes, that's ${person.label || "them"}.`
-            : action === "someone_else" ? "Saved: someone else. Orion will try to split those pictures off that individual."
-              : "Saved: not sure.";
-          if (body.skipped_all) status.textContent = "Already recorded: you said the same before. Nothing new saved.";
-          if (body.wrong_name_recorded) status.textContent += " Recorded as a wrong name for this story.";
-        }
+        // The server's fresh story; else the one shown (so a replaced held pick leaves the card).
+        rerender(story.story_id, body.story || storyOf(story.story_id) || story);
+        let text = spec.action === "name" ? `Saved: ${spec.name}. Orion applies it like any "who is this?" answer.`
+          : spec.action === "confirm" ? `Saved: yes, that's ${person.label || "them"}.`
+          : spec.action === "someone_else"
+            ? `Saved: not ${person.label || "them"}${spec.name ? `, it's ${spec.name}` : ""}. Orion will split those pictures off.`
+          : spec.dontKnow ? "Saved: you don't know who this is."
+          : "Saved: can't see them. Orion won't ask about these pictures again.";
+        if (body.skipped_all) text = "Already recorded: you said the same before. Nothing new saved.";
+        if (body.wrong_name_recorded) text += " Recorded as a wrong name for this story.";
+        say(text);
+        return true;
       } catch (err) {
-        if (status) status.textContent = `Could not save that (${err.message}). Try again.`;
+        say(`Could not save that (${err.message}). Try again.`);
         buttons.forEach((b) => { b.disabled = false; });
+        return false;
       }
     }
 
@@ -714,7 +931,7 @@
         }
         const body = await res.json();
         const item = wrap.closest("[data-story-id]");
-        if (body.story && item) item.replaceWith(renderStory(doc, body.story, onVerdict, onPerson, onNotSame));
+        if (body.story && item) item.replaceWith(renderStory(doc, body.story, onVerdict, ctx));
         if (status) status.textContent = "Saved: not the same person. Orion unlinks them on its next pass; they then show as two people.";
       } catch (err) {
         if (status) status.textContent = `Could not save that (${err.message}). Try again.`;
@@ -722,7 +939,20 @@
       }
     }
 
-    async function load(fromTimer) {
+    async function loadNames() {
+      try {
+        const res = await fetchFn(`/api/vision/known-names?limit=${NAMES_LIMIT}`);
+        if (!res.ok) return;
+        const body = await res.json();
+        names.splice(0, names.length, ...(Array.isArray(body.names) ? body.names : []));
+      } catch (_) { /* the list is optional: typing a name still works */ }
+    }
+
+    async function load(fromTimer, skipFlush) {
+      // The 60 s refresh never runs over an answer held for Undo; anything else sends it first.
+      if (fromTimer === true && (pending || flushing)) return;
+      if (!skipFlush && pending && !(await flush(false))) return;
+      if (!fromTimer) await loadNames();
       const unchecked = uncheckedBox && uncheckedBox.checked ? "true" : "false";
       const checkable = !checkableBox || checkableBox.checked ? "true" : "false";
       try {
@@ -731,13 +961,15 @@
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = await res.json();
         showTally(body.tally);
-        // The 60 s refresh never wipes a name Juniper is typing (a filter change she makes does reload).
-        const typing = fromTimer === true && Array.from(list.querySelectorAll("[data-person-name-input], [data-person-why-input]"))
+        // The 60 s refresh never wipes a name Juniper is typing, nor an answer held for Undo
+        // (a filter change she makes does reload, and sends the held answer first).
+        const typing = fromTimer === true && Array.from(
+          list.querySelectorAll("[data-person-name-input], [data-person-why-input]"))
           .some((i) => i.value.trim() || doc.activeElement === i);
         if (typing) return;
         list.textContent = "";
         const stories = body.stories || [];
-        stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, onPerson, onNotSame)));
+        stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, ctx)));
         if (status) {
           const which = checkable === "true" ? "checkable: daylight, with a picture" : "all, including dark or no picture";
           status.textContent = stories.length
@@ -763,16 +995,26 @@
       }
     }
 
+    // Leaving the page sends the held answer (a keepalive request survives the unload).
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("pagehide", () => { flush(true); });
+      // Mobile browsers may never fire pagehide when she switches apps: hidden sends it too.
+      global.addEventListener("pageshow", (ev) => { if (ev && ev.persisted) load(false); });
+    }
+    if (typeof doc.addEventListener === "function") {
+      doc.addEventListener("visibilitychange", () => { if (doc.visibilityState === "hidden") flush(true); });
+    }
     if (select) select.addEventListener("change", sync);
     if (uncheckedBox) uncheckedBox.addEventListener("change", () => load(false));
     if (checkableBox) checkableBox.addEventListener("change", () => load(false));
     sync();
-    return { load, sync };
+    return { load, sync, flush };
   }
 
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
                 personTitle, actionLine, whyLine, handoffText, renderStory, mount,
-                storyPeople, personPictures, isPictured, cropOwners, boxesText, groupsText, notSameChoices };
+                storyPeople, personPictures, isPictured, cropOwners, boxesText, groupsText, notSameChoices,
+                questionText, nameChoices, answerSpec, pendingText, cursorIndex };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

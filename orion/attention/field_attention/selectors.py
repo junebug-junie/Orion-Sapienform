@@ -520,6 +520,14 @@ def field_target_source_kind(target: FieldAttentionTargetV1) -> str | None:
     return None
 
 
+def _percentile_basis(source_id: str) -> str:
+    """What the shown percentile is measured against (#3917: a forecast-surprise node is banded on
+    its calm theory, not its own 7 days)."""
+    from orion.substrate.calm_band import band_rule, has_calm_band
+
+    return f"of calm theory ({band_rule(source_id)})" if has_calm_band(source_id) else "of own 7d"
+
+
 def world_first_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
@@ -573,7 +581,7 @@ def world_first_targets(
                 f"{WORLD_FIRST_ATTENDED_REASON if verdict.eligible else 'world-first: not attended'}"
                 f" -- {verdict.reason}; {cand.label}; value {value:.4f}, "
                 f"percentile {mag.percentile_now if mag.percentile_now is not None else 'n/a'} "
-                f"of own 7d (n={mag.n_readings_7d}), band {verdict.band}, trend {mag.trend}"
+                f"{_percentile_basis(cand.source_id)} (n={mag.n_readings_7d}), band {verdict.band}, trend {mag.trend}"
             ],
             evidence_refs=[
                 f"{SOURCE_KIND_REF_PREFIX}{cand.source_kind}",

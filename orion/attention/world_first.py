@@ -96,6 +96,7 @@ from orion.schemas.attention_candidate import (
     is_world_source_id,
 )
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
+from orion.substrate.calm_band import calm_percentiles
 from orion.substrate.prediction_error_freshness import PE_STALENESS_HORIZON_SEC
 from orion.substrate.prediction_error_magnitude import (
     DEFAULT_BAND_CUTS,
@@ -685,6 +686,16 @@ def midrank_percentile(value: float, values: Sequence[float]) -> float | None:
     return (below + 0.5 * equal) / len(values)
 
 
+def node_rank_percentile(node_id: str, value: float, values: Sequence[float]) -> float | None:
+    """The ranking key for one node's reading: the calm-theory mid-rank for a node with a calm
+    theory (``orion.substrate.calm_band``, #3917; no history needed), else ``midrank_percentile``
+    over its own 7 days. Pairs with ``compute_prediction_error_magnitude(node_id=...)``."""
+    calm = calm_percentiles(node_id, value)
+    if calm is not None:
+        return calm[1]
+    return midrank_percentile(value, values)
+
+
 def perception_absent_reason(
     *,
     embedding_staleness: float | None = None,
@@ -969,7 +980,7 @@ def node_candidate(
         rank_percentile=(
             rank_percentile
             if rank_percentile is not None or magnitude is None or not history_values
-            else midrank_percentile(float(magnitude.value), history_values)
+            else node_rank_percentile(node_id, float(magnitude.value), history_values)
         ),
         observed_at=observed_at,
         absent=absent_reason is not None,

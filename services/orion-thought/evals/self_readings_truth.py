@@ -20,19 +20,33 @@ from typing import Any, Mapping, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "analysis"))
 from self_signal_outcome_truth import _get, check_clause as _check_clause  # noqa: E402
 
+
+def _load_calm_band():
+    """orion/substrate/calm_band.py by path: stdlib only, and orion.substrate's package init is heavy."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[3] / "orion" / "substrate" / "calm_band.py"
+    spec = importlib.util.spec_from_file_location("_truth_calm_band", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+calm_percentiles = _load_calm_band().calm_percentiles
+
 Row = tuple[str, datetime, float]
 WEEK = timedelta(days=7)
 HOUR = timedelta(hours=1)
 PREFIX = "node:substrate."
 
-_REF = r"\[(?:pe|alarm):(?P<name>[a-z_]+)@(?P<ts>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]"
+_REF = r"\[(?:pe|alarm):(?P<name>[a-z_]+(?:\.[a-z_]+)?)@(?P<ts>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]"
 _TREND = r"(?:, (?:rising|settling))?"
 # Optional "tends to" clause (spec section E), checked against its association row by
 # scripts/analysis/self_signal_outcome_truth.py:check_clause.
 _TENDS = r"(?:; (?P<tends>when this is high, .+))?"
 LEVEL_RE = re.compile(
     r"^- (?P<label>.+?): (?P<score>\d+)/10 for me \(now (?P<value>\d+\.\d\d); higher than "
-    rf"(?P<pct>\d+)% of my last 7 days{_TREND}\) {_REF}{_TENDS}$"
+    rf"(?P<pct>\d+)% (?P<basis>of my last 7 days|of calm, well-predicted stretches){_TREND}\) {_REF}{_TENDS}$"
 )
 RATE_RE = re.compile(
     r"^- (?P<label>.+?): (?P<score>\d+)/10 for me \(went off (?P<n>\d+) times? in the last hour; "
@@ -102,7 +116,8 @@ def check_block(
         if m is None:
             failures.append(f"unparseable line (a number with no row behind it?): {line!r}")
             continue
-        node = PREFIX + m["name"]
+        # "prediction.room" -> node:prediction.room (forecast-surprise nodes keep their family).
+        node = ("node:" if "." in m["name"] else PREFIX) + m["name"]
         if m["tends"]:
             failures += _check_clause(m["tends"], associations or {})
             row = (associations or {}).get(m["tends"].rsplit("[assoc:", 1)[-1].rstrip("]"))
@@ -122,7 +137,13 @@ def check_block(
             shown = float(m["value"])
             if abs(round(row[1], 2) - shown) > 0.0051:
                 failures.append(f"{node}: shows {shown}, row holds {row[1]}")
-            pct = sum(1 for v in week if v < row[1]) / len(week)
+            calm = calm_percentiles(node, row[1])
+            want_basis = "of calm, well-predicted stretches" if calm is not None else "of my last 7 days"
+            if m["basis"] != want_basis:
+                failures.append(f"{node}: says {m['basis']!r}, its band is {want_basis!r}")
+            # A calm-theory node (#3917) is ranked on its producer's calm tail, re-derived from the
+            # value alone; every other node on its own week.
+            pct = calm[0] if calm is not None else sum(1 for v in week if v < row[1]) / len(week)
         else:
             fires, prev = [], False
             for t, v in rows_n:  # off->on transitions, re-derived here, not imported

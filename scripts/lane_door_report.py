@@ -29,7 +29,9 @@ row, each day present in the log (a missing day is unknown, never zero) with:
   also overflowed writes a row with ``outcome = 'context_overflow'`` on that lane; every other overflowed
   lease is an extra with no row. Per lane-day: overflow extras = overflowed leases the door saw minus the
   lane's ``context_overflow`` rows (never below 0), and the gap compares distinct leases with gateway rows
-  plus those extras (column ``overflow``). An under-count only leaves a gap, so the netting fails safe.
+  plus those extras (column ``overflow``). An under-count only leaves a gap. An over-count is bounded by lost
+  gateway rows of overflowed requests (a dropped usage row, or a final overflow whose row closes after 00:00Z):
+  each one is a pool-verified gateway lease, never a bypass.
   Counting distinct ids also hides a caller replaying a real lease id; the door guards against accidental
   bypass, not an adversary. Calls an enforcing door
   already refused are listed, not counted against the lane (they never reached the engine).

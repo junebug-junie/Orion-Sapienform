@@ -159,8 +159,8 @@ def test_an_overflow_re_lease_reads_a_zero_gap():
 
 
 def test_a_final_overflow_has_its_own_row_and_is_not_an_extra():
-    """Live 2026-11-20 agent-gpu2: the overflowed lease ended its request, so the gateway wrote a
-    context_overflow row for it. Netting it again would hide a real extra lease."""
+    """Live 2026-11-20 agent-gpu2: an overflowed lease that ended its request has its own context_overflow
+    row, so it is not an extra; a second, unexplained lease stays visible as a gap."""
     report = _joined_with_overflow(extra_overflowed=1, overflow_rows=1)
     day = report["chat"]["2026-11-17"]
     assert rep.overflow_extras(day) == 0
@@ -224,3 +224,26 @@ def test_join_db_reads_overflow_releases_and_overflow_rows(monkeypatch):
     rep.join_db(report, "postgresql://fake")
     day = report["chat"]["2026-11-17"]
     assert (day.unmatched_leases, day.overflow_leases) == (1, 0)   # a made-up id is never an overflow
+
+
+def test_an_overflow_on_one_lane_served_on_another_reads_zero_on_both():
+    """The common live shape (2026-11-12 06:25Z): a metacog lease overflowed, the re-lease was served on agent.
+    Lane A: one overflowed lease, no row. Lane B: its own lease and the served row."""
+    report, _ = rep.aggregate([_line("2026-11-17", lane="fast", lease="A-main"),
+                               _line("2026-11-17", lane="fast", lease="A-over"),
+                               _line("2026-11-17", lane="chat", lease="B-served")])
+    a, b = report["fast"]["2026-11-17"], report["chat"]["2026-11-17"]
+    a.unmatched_leases, a.gateway_calls, a.overflow_leases, a.overflow_rows = 0, 1, 1, 0
+    b.unmatched_leases, b.gateway_calls, b.overflow_leases, b.overflow_rows = 0, 1, 0, 0
+    assert rep.overflow_extras(a) == 1 and rep.overflow_extras(b) == 0
+    assert rep.gap_pct(a) == 0.0 and rep.gap_pct(b) == 0.0
+
+
+def test_more_overflow_rows_than_overflowed_leases_never_goes_negative():
+    """A grant after the deadline on the re-lease returns the overflow with lane B's role: a context_overflow
+    row with no overflowed lease on B. The floor keeps extras at 0 and the gap visible."""
+    report = _joined_with_overflow(extra_overflowed=0, overflow_rows=1)
+    day = report["chat"]["2026-11-17"]
+    assert rep.overflow_extras(day) == 0
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert not ok and "2 distinct leases" in why and "gateway sent 1 (" in why

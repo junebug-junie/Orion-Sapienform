@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -218,3 +219,58 @@ async def post_now_use(
         logger.warning("temporal_self_now_use_failed corr=%s shown_id=%s err=%s",
                        correlation_id, shown_id, type(exc).__name__)
         return None
+
+
+# --- Orion's now for the painting (integration patch 7b) ------------------------------------------
+# A waking painting's one model step is the interpret call (app/visual_chain.py interpret_context_for_visual,
+# verb visual_context_interpret): it turns the run's selected context clause into one paintable scene. Before
+# that call the painting reads GET /temporal-self/now?organ=painting (read_painting_now); the items go into the
+# call's prompt with their [experience:<id>] tags. The sentence the model writes may carry tags; those are taken
+# out (painting_cites) before the diffusion prompt, and posted to POST /temporal-self/now/use
+# (close_painting_now), which closes the read even with no tags. A read whose interpret call returned nothing is
+# never closed, so the next painting is offered the same experiences (#3498, the reverie's rule).
+
+PAINTING_ORGAN = "painting"
+_LOOSE_TAG_RE = re.compile(r"\[\s*experience\s*:[^\]]*\]", re.IGNORECASE)
+_BARE_TAG_RE = re.compile(r"\bexperience\s*:\s*\S+", re.IGNORECASE)
+
+
+async def read_painting_now(run_ref: str, *, correlation_id: str = "") -> NowRead:
+    """GET /temporal-self/now?organ=painting, or a reason it is not there. Off -> ``disabled``. Never raises."""
+    if not settings.painting_now_enabled:
+        return NowRead(reason="disabled")
+    read = await fetch_now_bounded(settings.painting_now_fetch_timeout_sec, organ=PAINTING_ORGAN,
+                                   run_ref=run_ref, correlation_id=correlation_id)
+    if read.ok and read.now is not None:
+        logger.info("painting_now corr=%s shown_id=%s items=%d", correlation_id, read.now.shown_id,
+                    len(read.now.items))
+    else:
+        logger.info("painting_now_unavailable corr=%s reason=%s", correlation_id, read.reason)
+    return read
+
+
+def painting_cites(text: str, shown_event_ids: Iterable[str]) -> tuple[str, list[str]]:
+    """(the sentence with every ``[experience:...]`` tag removed, the shown ids it cited, at most NOW_MAX_CITES).
+    A tag of an id that was not shown is removed from the sentence and not kept (the diffusion prompt never
+    carries a tag)."""
+    from orion.curiosity.now_section import CITE_RE
+
+    raw = [m.group(1) for m in CITE_RE.finditer(text or "")]
+    cites = shown_cites(raw, shown_event_ids)
+    # Strip more loosely than cites are read: a malformed tag ("[experience: a b]", "[experience:a, experience:b]",
+    # the prompt's own "[experience:<id>]", a bare "experience:x") must not reach the diffusion prompt either.
+    clean = _LOOSE_TAG_RE.sub("", text or "")
+    clean = _BARE_TAG_RE.sub("", clean)
+    clean = " ".join(clean.split())
+    clean = re.sub(r"\s+([,.;:!?])", r"\1", clean)
+    clean = re.sub(r"[,;:]+(?=[.!?]|$)", "", clean).strip()
+    return clean, cites
+
+
+async def close_painting_now(shown_id: str, cites: list[str], chain_id: str, *, correlation_id: str = "") -> None:
+    """Post the painting's cites (possibly none) against the now it was shown; this closes the read. Never raises."""
+    result = await post_now_use(shown_id, cites, f"visual_run:{chain_id}", settings.painting_now_fetch_timeout_sec,
+                                correlation_id=correlation_id)
+    if result is not None:
+        logger.info("painting_now_use chain=%s shown_id=%s cited=%d stored=%d not_shown=%d", chain_id, shown_id,
+                    len(cites), len(result.get("uses") or []), len(result.get("rejected_not_shown") or []))

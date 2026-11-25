@@ -489,6 +489,10 @@ class Settings(BaseSettings):
     # One step attempt's hard time bound, the same 900 s the field-note turn needs (Hub keeps a 330 s
     # finalize reserve out of it: 900 -> 540 s of motor, PR #3114). A cap, not a cost.
     reminiscence_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="REMINISCENCE_TURN_TIMEOUT_SEC")
+    # Integration patch 7b (app/reminiscence_now.py): the where_i_am_now hop reads GET /temporal-self/now?organ=memory
+    # on this service, shows the items in its prompt, and posts the reply's [experience:<id>] tags to
+    # POST /temporal-self/now/use. The memory organ's read-back. false -> the hop as before (no read, no post).
+    reminiscence_now_enabled: bool = Field(True, alias="REMINISCENCE_NOW_ENABLED")
     # The day dream, Patch 2 (docs/superpowers/specs/2026-11-17-nightly-day-dream-design.md): inside the Denver
     # window [DREAM_DAY_START_HOUR_LOCAL, DREAM_DAY_END_HOUR_LOCAL), submit one dream.day run for the Denver day that
     # just closed (one turn on DREAM_DAY_ROUTE that reads the day and writes up to 5 memories, channel 'dream').

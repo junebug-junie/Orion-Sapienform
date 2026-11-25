@@ -618,6 +618,18 @@ class ThoughtSettings(BaseSettings):
         2.0, gt=0.0, le=5.0, alias="ORION_REVERIE_NOW_FETCH_TIMEOUT_SEC"
     )
 
+    # --- Integration patch 7b: the painting reads Orion's now (app/visual_chain.py compute_visual_plan) ---
+    # Before the interpret call (visual_context_interpret, the painting's one model step) a waking painting
+    # reads GET /temporal-self/now?organ=painting on TEMPORAL_SELF_FRAME_URL, shows the items to that call,
+    # and posts the [experience:<id>] tags it wrote to POST /temporal-self/now/use (the tags are stripped
+    # before the diffusion prompt). No interpret call this run (no context slot, interpretation off) -> no
+    # read. Dream hop pictures never read. Same fail-open rules and timeout shape as the reverie's read.
+    # Kill switch: false = the painting as before (no read, no tags asked for).
+    painting_now_enabled: bool = Field(True, alias="ORION_PAINTING_NOW_ENABLED")
+    painting_now_fetch_timeout_sec: float = Field(
+        2.0, gt=0.0, le=5.0, alias="ORION_PAINTING_NOW_FETCH_TIMEOUT_SEC"
+    )
+
     # --- Reasoning activity projection (always-on consumer; harmless when idle) ---
     # Consume per-call ReasoningCallV1 telemetry and materialize a rolling-window
     # ReasoningActivityV1 for φ. The buffer is capped (max_calls) so memory is

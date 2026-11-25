@@ -351,6 +351,10 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
     if _dream_hop_mismatch(req, frozen["stage_json"]):
         # A concurrent prepare for this dispatch froze a plan for a different hop.
         return step.terminal("failed", "dispatch_request_mismatch")
+    if plan.now_shown_id and (frozen["stage_json"].get("plan") or {}).get("now_shown_id") == plan.now_shown_id:
+        # Integration patch 7b: this call's plan is the frozen one, so its cites are the painting's. A concurrent
+        # prepare that lost the freeze posts nothing; its read stays open (the next painting is offered it again).
+        await vc.close_plan_now(plan, attempt_id)
     return step.result("done", attempt_id=attempt_id,
                        elapsed_sec=float(frozen["stage_json"].get("prepare_elapsed_sec") or elapsed))
 

@@ -49,6 +49,7 @@ from app.graph import attempt_timeout_sec
 from app.harness_step import (
     TURN_REPLY_GRACE_SEC, HarnessStepFailed, RunTurn, harness_step_correlation_id, run_harness_step, step_detail,
 )
+from app.reminiscence_now import HOP as NOW_HOP, render as render_now
 from orion.schemas.reminiscence_run import (
     CROSS_READ_DONE, CROSS_READ_STEP, RECEIPT_RE, REMINISCENCE_FIRST_DAY, REMINISCENCE_HOPS,
     REMINISCENCE_LIVED_RECORDS_FROM as LIVED_RECORDS_FROM,
@@ -246,8 +247,11 @@ def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_reminiscence_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any, *, ledger: Any):
-    """``ledger``: app.reminiscence_ledger.ReminiscenceLedger (hop_ids, receipt_ok, rewrite_ok)."""
+def build_reminiscence_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any, *, ledger: Any,
+                             now: Any = None):
+    """``ledger``: app.reminiscence_ledger.ReminiscenceLedger (hop_ids, receipt_ok, rewrite_ok). ``now``:
+    app.reminiscence_now.ReminiscenceNow, the memory organ's read of Orion's now in the ``where_i_am_now`` hop
+    (integration patch 7b); None = no read."""
     from langgraph.graph import END, START, StateGraph
 
     resource_request, resource_wait, after_wait = resource_nodes(admission)
@@ -307,10 +311,31 @@ def build_reminiscence_graph(run_turn: RunTurn, admission: AdmissionDeps, checkp
         turn_meta = {"turn_correlation_id": correlation_id, "step_key": step_key}
 
         async def operation(held: dict[str, Any]) -> dict[str, Any]:
+            prompt = build_prompt(brief, step_key)
+            # Integration patch 7b: the hop about the present is shown Orion's now (app/reminiscence_now.py).
+            shown = await now.read(state["run_id"]) if (now is not None and hop == NOW_HOP) else None
+            block = render_now(shown)
+            if block:
+                prompt = f"{prompt}\n\n{block}"
             record = await run_harness_step(
-                run_turn, held, step_key=step_key, prompt=build_prompt(brief, step_key),
+                run_turn, held, step_key=step_key, prompt=prompt,
                 correlation_id=correlation_id, timeout_sec=turn_timeout, source_tag=step_tag(step_key),
                 session_id=REMINISCENCE_SESSION_ID)
+            # The turn answered, so its read is closed below either way. Cites are taken from the reply now, before
+            # its words are dropped from the record, and posted only once the receipt is proven.
+            cites = now.cites_in(shown, record["text"]) if shown is not None else []
+            try:
+                proven = await _verify(record)
+            except Exception:
+                if shown is not None:
+                    await now.close(state["run_id"], shown, [])
+                raise
+            if shown is not None:
+                record["now_shown_id"] = shown.shown_id
+                record["now_cites"] = await now.close(state["run_id"], shown, cites)
+            return proven
+
+        async def _verify(record: dict[str, Any]) -> dict[str, Any]:
             # Verified under the hold, before anything is checkpointed: a reply without a receipt the
             # ledger backs is a failed attempt, never a completed step.
             if hop is not None:

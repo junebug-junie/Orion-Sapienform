@@ -69,7 +69,9 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     # - node:substrate.biometrics removed, + node:prediction.body_joint / .room_joint added
     #   (family A joint surprise, 2026-11-18, #3575): 59 -> 60.
     # - node:substrate.execution removed (retire step 6, 2026-11-24, #3576): 60 -> 59.
-    assert len(entries) == 59
+    # + node:prediction.street_rhythm (walkway rhythm forecast surprise, PE retire Patch 4,
+    #   2026-11-25): 59 -> 60.
+    assert len(entries) == 60
     assert not any(e.node == "node:substrate.biometrics" for e in entries)
     assert not any(e.node == "node:substrate.execution" for e in entries)
     assert not any(e.node == "node:substrate.codebase" for e in entries)

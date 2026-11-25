@@ -259,6 +259,8 @@ def test_forecast_bars_unchanged_by_the_camera_patch() -> None:
         csb.ROOM_NODE_ID: round(FORECAST_BAR, 6), csb.BODY_NODE_ID: round(FORECAST_BAR, 6),
         csb.ROOM_JOINT_NODE_ID: round(FORECAST_BAR, 6), csb.BODY_JOINT_NODE_ID: round(FORECAST_BAR, 6),
         csb.CHAT_TURN_NODE_ID: round(CHAT_BAR, 6),
+        # PE retire Patch 4 (2026-11-25): walkway rhythm surprise, chat-turn shape, z >= 1.8 (calm 4.3 %).
+        csb.STREET_RHYTHM_NODE_ID: round(1.8 / 3.0, 6),
     }
     assert set(csb.CURIOSITY_SEED_CEILING_BY_NODE_ID) == set(CAMERAS)
 

@@ -88,6 +88,7 @@ from orion.schemas.attention_candidate import (
     ATTENTION_MIN_BAND_BY_NODE_ID,
     PERCEPTION_NODE_ID,
     ROOM_JOINT_NODE_ID,
+    STREET_RHYTHM_NODE_ID,
     WORLD_CHAT_SOURCE_ID,
     WORLD_PLAY_SOURCE_ID,
     WORLD_READING_SOURCE_ID,
@@ -144,7 +145,10 @@ PERCEPTION_MAX_AGE_SEC: float = 180.0
 # intervals. node:prediction.room_joint (family A room joint surprise, #3575) is written once per scored
 # 5-min bucket; at 180 s it would read absent for 2 of every 5 minutes. 600 s = two buckets: a missed
 # bucket is tolerated, two in a row read absent. Never longer than the 1800 s PE staleness horizon.
-EXTERNAL_MAX_AGE_SEC_BY_NODE: dict[str, float] = {ROOM_JOINT_NODE_ID: 600.0}
+# node:prediction.street_rhythm (walkway rhythm forecast surprise, orion/substrate/prediction_street_rhythm.py)
+# is written per scored outcome; the rhythm learner scores in passes ~15 min apart while windows close, so
+# 600 s keeps one pass's reading current and lets it go before the next.
+EXTERNAL_MAX_AGE_SEC_BY_NODE: dict[str, float] = {ROOM_JOINT_NODE_ID: 600.0, STREET_RHYTHM_NODE_ID: 600.0}
 
 
 def external_max_age_sec(node_id: str) -> float:

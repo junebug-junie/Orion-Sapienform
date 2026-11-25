@@ -184,6 +184,19 @@ class Settings(BaseSettings):
     prediction_joint_surprise_channel: str = Field(
         "orion:prediction:joint_surprise", alias="SUBSTRATE_PREDICTION_JOINT_SURPRISE_CHANNEL"
     )
+    # Street rhythm surprise -> node:prediction.street_rhythm (PE retire design rev 4, item 5): how
+    # surprised the walkway rhythm forecast was by who did or didn't appear, over the last 30 min of
+    # scored outcomes (orion/substrate/prediction_street_rhythm.py). Subscribes to
+    # orion:prediction:street_rhythm_surprise; writes on outcomes only. World node, SHADOW until its
+    # 7-day calm check passes (orion/schemas/attention_candidate.py STREET_RHYTHM_SHADOW): written and
+    # recorded, fenced from attention and curiosity. false = kill switch (no listener, no writes).
+    # Producer side: PREDICTION_STREET_RHYTHM_EVENTS_ENABLED.
+    prediction_street_rhythm_node_enabled: bool = Field(
+        True, alias="SUBSTRATE_PREDICTION_STREET_RHYTHM_NODE_ENABLED"
+    )
+    prediction_street_rhythm_channel: str = Field(
+        "orion:prediction:street_rhythm_surprise", alias="SUBSTRATE_PREDICTION_STREET_RHYTHM_CHANNEL"
+    )
     street_events_channel: str = Field(
         "orion:vision:street:events", alias="SUBSTRATE_STREET_EVENTS_CHANNEL"
     )

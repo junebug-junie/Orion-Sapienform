@@ -105,7 +105,12 @@ organs:
     # orion:prediction:joint_surprise (#3575, 2026-11-18): family A body / room joint-group surprise, folded by
     # substrate-runtime into node:prediction.body_joint / .room_joint (attention, curiosity, self-readings read
     # those nodes). Not yet a temporal-self kind of its own: big joint spikes as experience items is a follow-up.
-    channels: ["orion:prediction:joint_surprise"]
+    # orion:prediction:street_rhythm_surprise (PE retire rev 4 item 5, 2026-11-25): walkway rhythm forecast
+    # surprise per scored expectation, folded by substrate-runtime into node:prediction.street_rhythm (a world
+    # node, SHADOW until its 7-day calm check: written, not yet read by attention or curiosity). Emits through
+    # no temporal-self kind yet, same as joint surprise: the source rows (vision_percept_expectation) are the
+    # sql-writer rhythm learner's, and an experience item per street forecast is the same follow-up.
+    channels: ["orion:prediction:joint_surprise", "orion:prediction:street_rhythm_surprise"]
     reads_now: null
     exempt_read: "orion-prediction forecasts sensor series; no forecast reads experiences yet (design call, #3457). The experiment runner (prediction.experiment) must not read experience: a randomised arm that depends on Orion's state is no longer randomised; its stop rules read sensors and the pool only"
   metacognition:

@@ -25,6 +25,8 @@ FIVE = sorted(ALARM_NODE_IDS | sql.CAMERA_NODE_IDS)
 POST_CUTOVER_PE_NODES = {
     "node:prediction.room", "node:prediction.body", "node:prediction.room_joint",
     "node:prediction.body_joint", "node:prediction.chat_turn",
+    # Walkway rhythm forecast surprise (PE retire Patch 4, 2026-11-25): a real forecast miss, in shadow.
+    "node:prediction.street_rhythm",
 }
 _PE_PHRASE = re.compile(r"prediction[ -]error", re.IGNORECASE)
 
@@ -277,7 +279,8 @@ def test_marker_line_is_generated_from_the_glossary_and_dated() -> None:
 
     assert pe_lane_marker_line(NOW) == (
         "Since 2026-11-24, my prediction-error lane holds only forecast misses "
-        "(room, body, room_joint, body_joint, chat_turn). Camera change and alarms are separate signals now."
+        "(room, body, room_joint, body_joint, chat_turn, street_rhythm (recorded, not yet attended)). "
+        "Camera change and alarms are separate signals now."
     )
     assert pe_lane_marker_line(datetime(2026, 11, 23, tzinfo=timezone.utc)) is None
     assert pe_lane_marker_line(datetime(2026, 12, 8, 0, 0, 1, tzinfo=timezone.utc)) is None

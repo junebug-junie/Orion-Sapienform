@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     # false = rows are still stored, nothing is published (both nodes age to stale = absent, never calm).
     joint_surprise_events_enabled: bool = Field(True, alias="PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED")
 
+    # Street rhythm surprise (app/street_rhythm.py; PE retire design rev 4, item 5): every tick, read the
+    # walkway rhythm expectations orion-sql-writer scored (vision_percept_expectation, read-only), score the
+    # raw stated p and publish prediction.street_rhythm_surprise.v1 (orion:prediction:street_rhythm_surprise)
+    # per scored outcome. substrate-runtime folds it into node:prediction.street_rhythm (shadow until its
+    # 7-day calm check passes). false = kill switch: no loop, the node ages to absent, never calm.
+    street_rhythm_events_enabled: bool = Field(True, alias="PREDICTION_STREET_RHYTHM_EVENTS_ENABLED")
+    street_rhythm_tick_sec: float = Field(60.0, ge=10, alias="PREDICTION_STREET_RHYTHM_TICK_SEC")
+
     # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
     weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")
     weather_refresh_sec: float = Field(3600.0, ge=300, alias="PREDICTION_WEATHER_REFRESH_SEC")

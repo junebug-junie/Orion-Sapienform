@@ -96,3 +96,7 @@ Merge, then pull on the primary checkout. The post-pull run auto-applies `manual
 - Severity: low. Concern: more chat-lane GPU use, one look a minute during no-floor play. Mitigation: it goes through the same body-economy bid and GPU pool, chat wins, the heat reflex applies, and setting the key to 0 turns it off.
 - Severity: low. Concern: a floor game whose stored note repeats a stored note across an unclear or failed look in between is no longer a new note for a line. Mitigation: this is rare and arguably right.
 - Issues: live proof belongs on #3726 (verify-live, the look). No new issue opened.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/3906

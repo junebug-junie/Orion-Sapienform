@@ -625,3 +625,19 @@ def test_patch7a_labels_fall_back_to_plain_words_without_a_stored_label():
     assert now_label("personality_choice", "", "chose", {}) == "Prime made a choice [chose]"
     assert now_label("personality_choice", "", "chose", {"alternatives": 4}) == "Prime chose one of 4 options"  # verdict word already in it
 
+
+
+def test_a_first_of_kind_patch7a_row_takes_a_seat_against_twelve_busy_organs():
+    # Orion's question on #3960: salience is None until a kind has 20 past events, and the day letter writes ~1 a
+    # day. Fair ranking stands an unscored row at 0.5 and, at equal standing, seats the kind with fewer rows in the
+    # window first, so a lone first-of-kind row reaches the now even when every other organ has rows waiting.
+    busy = ("reverie_question", "visual_run", "dream_cycle", "curiosity_run", "reading_turn", "vision_percept",
+            "body_binding", "prediction_surprise", "metacog_observation", "memory_episode", "chat_turn", "retro_play")
+    rows = [dict(row(f"{k}:{j}", k, at=T - timedelta(minutes=j)), kind_total=200) for k in busy for j in range(3)]
+    lone = [dict(row(f"{k}:first", k, at=T - timedelta(hours=5)), kind_total=1)
+            for k in ("day_letter", "intention_close", "personality_choice")]
+    now = build_now([*rows, *lone], "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG)
+    ids = [i.event_id for i in now.items]
+    assert len(ids) == 12
+    assert {"day_letter:first", "intention_close:first", "personality_choice:first"} <= set(ids)
+    assert all(i.salience is None for i in now.items if i.event_id.endswith(":first"))

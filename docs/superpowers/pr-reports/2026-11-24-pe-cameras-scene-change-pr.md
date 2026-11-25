@@ -234,6 +234,6 @@ select stream_id, generated_at, jsonb_array_length(baseline_json->'values') from
 
 ## PR link
 
-https://github.com/junebug-junie/Orion-Sapienform/pulls (filled in after opening)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3874
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

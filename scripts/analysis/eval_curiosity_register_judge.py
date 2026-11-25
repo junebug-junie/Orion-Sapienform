@@ -12,17 +12,20 @@ specified for the live patch"). A local lane may judge live findings only when, 
 The input is assembled exactly as the live register loop assembles it
 (``orion.curiosity.register.run_question_and_answer`` on the finish row, the outcome row's
 ``per_prior``, the self-question texts and the graph's prior claims), and the prompt is the pinned
-``JUDGE_PROMPT_V2``. Each lane is called on its llama.cpp ``/v1/chat/completions`` with temperature 0
-and thinking off. This is an offline eval (263 short calls); a LIVE judge must call orion-llm-gateway by
-route, and note that the gpu-pool classes ``metacog`` and ``fast`` spill to the agent roles under load
-(config/gpu_pool.yaml ``classes``), i.e. to the seats that write curiosity findings, so a live judge must
-check the served model on every reply.
+``JUDGE_PROMPT_V2``. Each lane is called with temperature 0 and thinking off. This is an offline eval
+(263 short calls). Every call goes through orion/evals/leased_llm.py: one GPU pool operator hold per
+``--lane`` (an OPERATOR_LANES name), each call POSTed to orion-llm-gateway under that hold, so the lane
+door counts it as leased. There is no direct-URL mode (#3921: a judge run that posted straight to the
+agent seat sent 239 unleased calls on 2026-11-25). One hold has one slot, so the calls on a lane run one
+at a time. A LIVE judge must call orion-llm-gateway by route, and note that the gpu-pool classes
+``metacog`` and ``fast`` spill to the agent roles under load (config/gpu_pool.yaml ``classes``), i.e. to
+the seats that write curiosity findings, so a live judge must check the served model on every reply.
 
 Run:
 
+    ORION_BUS_URL=redis://<tailnet-ip>:6379/0 \\
     /mnt/scripts/Orion-Sapienform/.venv/bin/python scripts/analysis/eval_curiosity_register_judge.py \\
-        --lane metacog=<metacog lane base url> --lane quick=<quick lane base url> \\
-        --out /tmp/curiosity_register_judge
+        --lane metacog --lane fast --out /tmp/curiosity_register_judge
 
 Needs ``docker exec`` on the SQL container (SELECT only) and FalkorDB on localhost:6380 (RO query).
 
@@ -52,7 +55,6 @@ write curiosity findings, so they are excluded; hecate (agent-deep) was offline.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import subprocess
 import sys
@@ -64,6 +66,10 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from orion.curiosity.register import judge_messages, parse_judge_reply, run_question_and_answer  # noqa: E402
+from orion.evals.leased_llm import (EXIT_RECALLED, EXIT_UNAVAILABLE, OPERATOR_LANES, LaneCallError,  # noqa: E402
+                                    LaneRecalled, LaneUnavailable, operator_lane_sync)
+
+HOLDER = "operator:eval-curiosity-register-judge"
 
 LABELS = REPO / "scripts/analysis/fixtures/curiosity_register/reference_labels_2026-10-20.jsonl"
 WINNERS = ("2bf28e16", "987448e7", "8998e10d", "91241b6d", "1f7b1157", "a9ba948f")
@@ -126,29 +132,28 @@ def items() -> list[dict]:
     return out
 
 
-async def judge_all(url: str, its: list[dict], concurrency: int, thinking: bool = False) -> list[dict]:
-    import httpx
+def judge_one(lane, it: dict, thinking: bool = False) -> dict:
+    """One judged row. ``lane`` is an orion.evals.leased_llm.OperatorLane (``chat(body, timeout_sec)``).
+    A failed call is a row error; a recall (LaneRecalled) propagates so the run stops."""
+    if it.get("missing") or not it.get("answer"):
+        return {**it, "label": None, "error": "no_input"}
+    try:
+        body = lane.chat({
+            "messages": judge_messages(it["question"], it["answer"]), "temperature": 0,
+            "max_tokens": 2048 if thinking else 400,
+            "chat_template_kwargs": {"enable_thinking": thinking}}, timeout_sec=300)
+        text = body["choices"][0]["message"].get("content") or ""
+        model = body.get("model")
+    except LaneCallError as exc:
+        return {**it, "label": None, "error": f"call: {exc}"[:200]}
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        return {**it, "label": None, "error": f"call: bad reply {exc!r}"[:200]}
+    reg, reason, err = parse_judge_reply(text)
+    return {**it, "label": reg, "reason": reason, "error": err, "model": model}
 
-    sem = asyncio.Semaphore(concurrency)
-    async with httpx.AsyncClient(timeout=300) as client:
-        async def one(it: dict) -> dict:
-            if it.get("missing") or not it.get("answer"):
-                return {**it, "label": None, "error": "no_input"}
-            async with sem:
-                try:
-                    r = await client.post(f"{url}/v1/chat/completions", json={
-                        "messages": judge_messages(it["question"], it["answer"]), "temperature": 0,
-                        "max_tokens": 2048 if thinking else 400,
-                        "chat_template_kwargs": {"enable_thinking": thinking}})
-                    r.raise_for_status()
-                    body = r.json()
-                    text = body["choices"][0]["message"].get("content") or ""
-                    model = body.get("model")
-                except Exception as exc:  # noqa: BLE001
-                    return {**it, "label": None, "error": f"call: {exc}"[:200]}
-            reg, reason, err = parse_judge_reply(text)
-            return {**it, "label": reg, "reason": reason, "error": err, "model": model}
-        return await asyncio.gather(*(one(i) for i in its))
+
+def judge_all(lane, its: list[dict], thinking: bool = False) -> list[dict]:
+    return [judge_one(lane, it, thinking) for it in its]
 
 
 def report(name: str, res: list[dict]) -> dict:
@@ -171,24 +176,32 @@ def report(name: str, res: list[dict]) -> dict:
     return out
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--lane", action="append", required=True, help="name=base_url (llama.cpp server)")
+    ap.add_argument("--lane", action="append", required=True, choices=sorted(OPERATOR_LANES),
+                    help="operator lane to judge on (one GPU pool hold each, through the gateway)")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--concurrency", type=int, default=2)
     ap.add_argument("--thinking", action="store_true", help="thinking on (more tokens per label)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     its = items()
     (args.out / "inputs.jsonl").write_text("".join(json.dumps(i) + "\n" for i in its))
     print(f"reference runs: {len(its)}  missing finish rows: {sum(1 for i in its if i.get('missing'))}")
-    for spec in args.lane:
-        name, _, url = spec.partition("=")
-        res = asyncio.run(judge_all(url.rstrip("/"), its, args.concurrency, args.thinking))
+    for name in args.lane:
+        try:
+            with operator_lane_sync(name, holder=HOLDER) as lane:
+                res = judge_all(lane, its, args.thinking)
+                seat = lane.summary()
+        except LaneRecalled as exc:
+            print(f"RECALLED on {name}: {exc}", file=sys.stderr)
+            return EXIT_RECALLED
+        except LaneUnavailable as exc:
+            print(f"REFUSED on {name}: {exc}", file=sys.stderr)
+            return EXIT_UNAVAILABLE
         (args.out / f"labels_{name}.jsonl").write_text("".join(json.dumps(
             {k: r.get(k) for k in ("run_id", "judge_sonnet", "rater_haiku", "label", "reason", "error", "model")}) + "\n"
             for r in res))
-        print(json.dumps(report(name, res), indent=1))
+        print(json.dumps({**report(name, res), "seat": seat}, indent=1))
     return 0
 
 

@@ -86,6 +86,7 @@ MIN_EVIDENCED = 10
 MAX_DRIFT_PER_DAY = 0.1
 EVIDENCE_WINDOW = timedelta(days=30)
 ENGAGEMENT_SIGNAL = "juniper_replied"
+OUTPUT_USED_SIGNAL = "output_used"  # orion/grammar/output_used.py; not imported: this module stays light
 RESOLVER_SOURCE = "resolver"
 PRODUCER_SOURCE = "producer"
 SELF_GRADE_MODES = ("all", "world_only", "half")
@@ -243,6 +244,10 @@ def reliability_grades(family: str, acts: Sequence[ActRecord], *, since: datetim
     for a in acts:
         if (a.family != family or a.closed_at is None or not since <= a.closed_at < until
                 or a.outcome_source == RESOLVER_SOURCE):
+            continue
+        # An output_used act is graded on downstream use: source (a) already counts that fact, and its hits
+        # close by the resolver (skipped above) while its misses do not, so here it would count only misses.
+        if a.signal_id == OUTPUT_USED_SIGNAL:
             continue
         self_graded = a.outcome_source == PRODUCER_SOURCE
         if self_graded and self_grades == "world_only":

@@ -160,6 +160,8 @@ jobs:
       - name: Run act ledger Postgres integration tests (must not skip)
         env:
           ORION_SQL_WRITER_TEST_DATABASE_URI: postgresql://postgres:postgres@localhost:5432/conjourney
+          # test_act_downstream_use_pg.py reads this name (it skipped in CI until output_used changed its window).
+          ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/conjourney
         run: |
           set -o pipefail
           PYTHONPATH=.:services/orion-sql-writer:services/orion-sql-writer/tests python -m pytest -q -rs -m integration \
@@ -172,7 +174,8 @@ jobs:
             services/orion-sql-writer/tests/test_promise_acts_integration.py \
             services/orion-sql-writer/tests/test_retro_line_engagement_integration.py \
             services/orion-sql-writer/tests/test_field_goal_episode_integration.py \
-            services/orion-sql-writer/tests/test_output_used_acts_integration.py | tee /tmp/act_ledger.log
+            services/orion-sql-writer/tests/test_output_used_acts_integration.py \
+            services/orion-sql-writer/tests/test_act_downstream_use_pg.py | tee /tmp/act_ledger.log
           if grep -q "SKIPPED" /tmp/act_ledger.log; then echo "act ledger integration tests skipped"; exit 1; fi
       # Attention patch 4a: every mutant of the camera-ask guards (Juniper's own cards excluded, the grade
       # mapping, the Laplace prior) must fail the tests.

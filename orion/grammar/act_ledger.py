@@ -77,12 +77,13 @@ from orion.grammar.promise_acts import (
 from orion.grammar.output_used import (
     ANY_OPEN_OUTPUT_USED_SQL,
     DUE_OUTPUT_USED_SQL,
-    NO_OUTPUT_NOTE,
     OUTPUT_USED_SIGNAL,
     UNOBSERVABLE_NOTE,
     UseEvidence,
+    act_output_kinds,
     output_used_grade,
     producer_close_disposition,
+    producer_close_note,
 )
 from orion.grammar.line_engagement import LINE_ACTOR, LINE_REPLY_WINDOW_SEC, line_grade, line_id_of
 from orion.grammar.reply_base_rate import ReplyBaseRate, juniper_reply_base_rate
@@ -593,9 +594,20 @@ def close_act(
         # grade (orion/grammar/output_used.py): an "I made it" close leaves the act open; "nothing made"
         # is a real 0, graded now.
         if producer_close_disposition(value) == "defer":
+            # Keep what the close knows: its cost (wall time to the producer's close, GPU, energy) and its
+            # correlation_id (the experience link path). The resolver's later close starts from these.
+            deferred_cost = fill_close_cost(conn, act, opened_at=opened_at_row, closed_at=observed_at,
+                                            correlation_id=correlation_id, source="producer", stored=stored_cost)
+            conn.execute(
+                text("UPDATE grammar_acts SET correlation_id = COALESCE(correlation_id, :cid), "
+                     "cost_json = COALESCE(CAST(:cost_json AS jsonb), cost_json), updated_at = :now "
+                     "WHERE act_id = :a AND closed_at IS NULL"),
+                {"cid": correlation_id,
+                 "cost_json": json.dumps(deferred_cost.model_dump(mode="json")) if deferred_cost is not None else None,
+                 "now": _utc_now(), "a": act.act_id})
             return CloseResult(act.act_id, False, "awaiting_use")
         value = 0.0
-        note = f"{NO_OUTPUT_NOTE} {note}".strip()
+        note = producer_close_note(note)
     horizon_at = None if row is None or row[3] is None else _aware(row[3])
     if horizon_at is not None and observed_at > horizon_at and value == 1.0:
         # The expectation is "by the horizon". A success reported after it is a miss,
@@ -710,7 +722,10 @@ def close_act(
 
     # A promise costs nothing of its own: its GPU and energy are the promising reply's, already on the
     # reply's act (same correlation id), and its wall time is days of waiting, not work.
-    cost = None if (exp is not None and exp.signal_id == PROMISE_SIGNAL) else fill_close_cost(
+    # An output_used act's cost was filled when its producer closed (the deferral above); the resolver's
+    # close is a day later, and a fill now would charge GPU leases out to the horizon. Keep the stored cost.
+    resolver_close_of_used = signal_at_open == OUTPUT_USED_SIGNAL and outcome.source != "producer"
+    cost = None if (exp is not None and exp.signal_id == PROMISE_SIGNAL) else None if resolver_close_of_used else fill_close_cost(
         conn, act, opened_at=opened_at_row, closed_at=observed_at,
         correlation_id=correlation_id, source=outcome.source, stored=stored_cost)
     conn.execute(
@@ -950,6 +965,8 @@ class ResolveSummary:
     closed_output_used: int = 0
     closed_output_unused: int = 0
     closed_output_unobservable: int = 0
+    closed_output_no_output: int = 0
+    output_used_registry_unread: int = 0
 
 
 # A camera ask's act is graded from its orion_ask row (orion/grammar/camera_ask_acts.py ask_grade):
@@ -1100,20 +1117,37 @@ def _one_close(conn: Any, commit: Any, event: GrammarEventV1 | None, act: ActV1,
 
 def _resolve_output_used(conn: Any, *, now: datetime, limit: int, commit: Any) -> dict[str, int]:
     """Close open ``output_used`` acts that another organ used, or whose horizon (+ grace) passed."""
-    counts = {"examined": 0, "used": 0, "unused": 0, "unobservable": 0}
+    counts = {"examined": 0, "used": 0, "unused": 0, "unobservable": 0, "no_output": 0, "registry_unread": 0}
     # Cheap gate on grammar_acts alone: no open output_used act (every sweep until a family switches in
     # Patch 1b) means the experience joins never run.
     if conn.execute(ANY_OPEN_OUTPUT_USED_SQL).first() is None:
         return counts
+    try:
+        from orion.integration.organs import load_organs
+
+        registry = load_organs()
+        kinds = act_output_kinds(registry.raw, registry.organ_of)
+    except Exception:  # noqa: BLE001 -- without the registry no act can be matched to its output: grade nothing
+        logger.exception("output_used_registry_unread")
+        counts["registry_unread"] = 1
+        return counts
     rows = conn.execute(
-        DUE_OUTPUT_USED_SQL, {"expired_before": now - timedelta(seconds=EXPIRY_GRACE_SEC), "limit": limit}
+        DUE_OUTPUT_USED_SQL,
+        {"expired_before": now - timedelta(seconds=EXPIRY_GRACE_SEC), "limit": limit, **kinds.params()},
     ).mappings().all()
     for row in rows:
         counts["examined"] += 1
+        # A producer nothing-made close that lost its lock fight is still in grammar_events: grade it as
+        # the producer said, before any expiry reads it as unused or unobservable.
+        persisted = _persisted_close(conn, row["act_id"])
+        if persisted is not None and persisted.act.outcome.value < 1.0:
+            if _one_close(conn, commit, persisted, persisted.act, persisted.act.outcome, persisted.event_id):
+                counts["no_output"] += 1
+            continue
         first = row["first_use_at"]
         evidence = UseEvidence(first_use_at=_aware(first) if first is not None else None,
                                use_site=row["use_site"], observable=bool(row["observable"]))
-        outcome = output_used_grade(evidence, horizon_at=_aware(row["horizon_at"]), now=now,
+        outcome = output_used_grade(evidence, horizon_at=_aware(row["due_at"]), now=now,
                                     grace_sec=EXPIRY_GRACE_SEC)
         if outcome is None:
             continue
@@ -1246,7 +1280,9 @@ def resolve_due_acts(
                           promise_condition_unread=unread.get("condition", 0),
                           closed_output_used=used_counts["used"],
                           closed_output_unused=used_counts["unused"],
-                          closed_output_unobservable=used_counts["unobservable"])
+                          closed_output_unobservable=used_counts["unobservable"],
+                          closed_output_no_output=used_counts["no_output"],
+                          output_used_registry_unread=used_counts["registry_unread"])
 
 
 # --- late cost fill (attention patch 3a, "reading's real cost") ------------------------------------

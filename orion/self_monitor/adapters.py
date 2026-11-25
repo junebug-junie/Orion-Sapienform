@@ -134,7 +134,8 @@ def grammar_act(row: Row) -> Optional[SettledBetV1]:
     outcome = act_outcome(row)
     source = (row.get("outcome_source") or "").strip()
     # An expired act is a real 0 (the deadline passed with no artifact): the world answered.
-    settled_by = "juniper" if source == "resolver" else "world"
+    # A resolver close is Juniper's reply/answer, except output_used: another organ's use is the world's.
+    settled_by = "juniper" if source == "resolver" and row.get("signal_id") != "output_used" else "world"
     actor = str(row.get("actor") or "unknown")
     verb = str(row.get("verb") or "unknown")
     return SettledBetV1(

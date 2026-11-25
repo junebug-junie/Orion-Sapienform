@@ -121,7 +121,7 @@ def _experience(session, corr, *, kind="visual_run"):
     return eid
 
 
-def _cite(session, event_id, *, at, organ="reverie"):
+def _cite(session, event_id, *, at, organ="reverie"):  # thought.painting's organ is "painting"
     session.execute(text("INSERT INTO experience_use (use_id, event_id, citing_organ, citing_ref, shown_id, cited_at) "
                          "VALUES (:u, :e, :o, 'r', 's', :at)"),
                     {"u": uuid.uuid4().hex, "e": event_id, "o": organ, "at": at})
@@ -205,3 +205,78 @@ def test_output_used_acts_never_reach_the_generic_expiry(session):
     summary = resolve_due_acts(session)
     assert summary.closed_expired == 0 and summary.closed_output_unobservable == 1
     assert _row(session, act.act_id)["outcome_note"] == UNOBSERVABLE_NOTE
+
+
+def test_turn_rows_of_other_organs_neither_credit_nor_make_observable(session):
+    # One turn's correlation_id also carries attention/body rows. A cite of those is not a use of the
+    # painting, and their presence does not make the painting observable.
+    t0 = datetime.now(timezone.utc) - timedelta(seconds=HORIZON + EXPIRY_GRACE_SEC + 60)
+    act = _open(session, "turn", at=t0, corr="c-turn")
+    _cite(session, _experience(session, "c-turn", kind="attention_row"), at=t0 + timedelta(minutes=1))
+    _experience(session, "c-turn", kind="gpu_wait")
+    summary = resolve_due_acts(session)
+    assert summary.closed_output_used == 0 and summary.closed_output_unobservable == 1
+    assert _row(session, act.act_id)["outcome_note"] == UNOBSERVABLE_NOTE
+
+
+def test_a_cite_by_the_acts_own_organ_is_not_a_use(session):
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=10)
+    act = _open(session, "self", at=t0, corr="c-self")
+    _cite(session, _experience(session, "c-self"), at=t0 + timedelta(minutes=1), organ="painting")
+    assert resolve_due_acts(session).closed_output_used == 0
+    assert _row(session, act.act_id)["closed_at"] is None
+
+
+def test_failed_producer_close_keeps_its_failure_note(session):
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=10)
+    act = _open(session, "failed", at=t0, corr="c-failed")
+    ev = act_closed_event(act, produced=False, source_service="orion-thought", source_component="t",
+                          at=t0 + timedelta(seconds=30), correlation_id="c-failed", note="failed: llm timeout")
+    apply_grammar_trace_batch(session, [ev])
+    assert _row(session, act.act_id)["outcome_note"] == "failed: llm timeout"
+
+
+def test_deferred_close_keeps_cost_and_correlation_id(session):
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=10)
+    act = _open(session, "cost", at=t0, corr=None)
+    _producer_close(session, act, produced=True, at=t0 + timedelta(seconds=90), corr="c-late")
+    row = _row(session, act.act_id)
+    assert row["closed_at"] is None and row["correlation_id"] == "c-late"
+    assert row["cost_json"]["seconds"] == pytest.approx(90.0, abs=1.0)
+    # The resolver's close keeps that cost instead of re-filling it out to the horizon.
+    _cite(session, _experience(session, "c-late"), at=t0 + timedelta(minutes=5))
+    resolve_due_acts(session)
+    row = _row(session, act.act_id)
+    assert row["outcome_value"] == 1.0 and row["cost_json"]["seconds"] == pytest.approx(90.0, abs=1.0)
+
+
+def test_close_before_an_open_that_never_arrives_still_closes(session):
+    old = datetime.now(timezone.utc) - timedelta(seconds=HORIZON + EXPIRY_GRACE_SEC + 600)
+    act = build_act(actor="thought.painting", verb="make", key="orphan", signal_id="output_used",
+                    horizon_sec=HORIZON, basis="24 h use window")
+    apply_grammar_trace_batch(session, [act_closed_event(act, produced=True, source_service="orion-thought",
+                                                         source_component="t", at=old, correlation_id=None)])
+    session.execute(text("UPDATE grammar_acts SET created_at = :t WHERE act_id = :a"), {"t": old, "a": act.act_id})
+    row = _row(session, act.act_id)
+    assert row["opened_at"] is None and row["closed_at"] is None
+    assert resolve_due_acts(session).closed_output_unobservable == 1
+
+
+def test_persisted_nothing_made_close_is_recovered_not_expired(session):
+    # The producer's 0 close reached grammar_events but its act-ledger write was lost (lock fight).
+    t0 = datetime.now(timezone.utc) - timedelta(seconds=HORIZON + EXPIRY_GRACE_SEC + 60)
+    act = _open(session, "lost", at=t0, corr="c-lost")
+    ev = act_closed_event(act, produced=False, source_service="orion-thought", source_component="t",
+                          at=t0 + timedelta(seconds=30), correlation_id="c-lost")
+    import orion.grammar.ledger as ledger
+
+    ledger.configure_act_ledger(False)
+    try:
+        apply_grammar_trace_batch(session, [ev])
+    finally:
+        ledger.configure_act_ledger(True)
+    assert _row(session, act.act_id)["closed_at"] is None
+    summary = resolve_due_acts(session)
+    assert summary.closed_output_no_output == 1
+    row = _row(session, act.act_id)
+    assert row["outcome_source"] == "producer" and row["outcome_value"] == 0.0

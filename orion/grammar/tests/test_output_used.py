@@ -62,3 +62,49 @@ def test_promise_void_is_also_ungraded_by_shared_act_outcome():
     # Pre-existing gap fixed with Patch 1a: a censored promise void read as "refuted" in reliability weights.
     from orion.grammar.promise_acts import VOID_NOTE
     assert act_outcome({"outcome_source": "expired", "outcome_note": VOID_NOTE, "outcome_value": 0.0}) is None
+
+
+def test_act_output_kinds_maps_actor_to_own_organ_kinds_never_action_outcome():
+    from orion.grammar.output_used import act_output_kinds
+    raw = {"painting": {"families": ["thought.painting"]},
+           "prediction": {"families": ["prediction.experiment"]},
+           "body": {"families": None}}
+    organ_of = {"visual_run": "painting", "visual_deferral": "painting", "action_outcome": "prediction",
+                "experiment_result": "prediction", "gpu_wait": "body"}
+    k = act_output_kinds(raw, organ_of)
+    pairs = set(zip(k.kind_actors, k.kinds))
+    assert ("thought.painting", "visual_run") in pairs and ("thought.painting", "visual_deferral") in pairs
+    assert ("prediction.experiment", "experiment_result") in pairs
+    assert all(kind != "action_outcome" for kind in k.kinds)
+    assert all(kind != "gpu_wait" for actor, kind in pairs if actor == "thought.painting")
+    assert dict(zip(k.actors, k.organs)) == {"thought.painting": "painting", "prediction.experiment": "prediction"}
+
+
+def test_live_registry_loads_and_names_every_switchable_family():
+    from orion.grammar.output_used import act_output_kinds
+    from orion.integration.organs import load_organs
+    reg = load_organs()
+    k = act_output_kinds(reg.raw, reg.organ_of)
+    for actor in ("thought.painting", "hub.world_pulse_read", "vision.ask", "durable.curiosity_investigate",
+                  "durable.self_sense_eval", "hub.chat_reply"):
+        assert actor in k.kind_actors, actor
+
+
+def test_producer_nothing_made_note_keeps_execution_failure_readable():
+    from orion.grammar.output_used import NO_OUTPUT_NOTE, producer_close_note
+    note = producer_close_note("failed: llm timeout")
+    assert note == "failed: llm timeout"
+    assert act_outcome({"outcome_source": "producer", "outcome_note": note, "outcome_value": 0.0}) == "failed_to_execute"
+    assert act_outcome({"outcome_source": "producer", "outcome_note": producer_close_note("no_planner_decisions"),
+                        "outcome_value": 0.0}) == "failed_to_execute"
+    assert producer_close_note("  ") == NO_OUTPUT_NOTE
+
+
+def test_output_used_resolver_close_is_settled_by_the_world_not_juniper():
+    from datetime import datetime, timezone
+    from orion.self_monitor.adapters import grammar_act
+    t = datetime(2026, 11, 25, tzinfo=timezone.utc)
+    base = {"act_id": "a1", "actor": "thought.painting", "verb": "make", "object_ref": "", "opened_at": t,
+            "closed_at": t, "outcome_source": "resolver", "outcome_value": 1.0, "outcome_note": "used", "predicted": 0.1}
+    assert grammar_act({**base, "signal_id": "output_used"}).settled_by == "world"
+    assert grammar_act({**base, "signal_id": "juniper_replied"}).settled_by == "juniper"

@@ -1364,6 +1364,8 @@ def test_undoing_a_name_correction_removes_the_automatic_people_no() -> None:
         assert r.status_code == 200, r.text
         assert await pool.fetchval("SELECT count(*) FROM vision_motion_story_part_verdict") == 0
         assert r.json()["tally"]["wrong_name_from_corrections"] == 0
+        # ...and the wrong-name verdict the correction made is taken back: the gate sees no wrong name.
+        assert r.json()["tally"]["wrong_name"] == 0 and r.json()["story"]["verdict"] is None
         # Her own people answer is never removed by an undo.
         await client.post(f"/api/vision/motion-stories/{sid}/parts", json={"part": "people", "verdict": "no"})
         await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "unsure"})
@@ -1378,3 +1380,41 @@ def test_parts_migration_passes_the_post_pull_auto_apply_filter() -> None:
     sql = PARTS_MIGRATION.read_text()
     assert auto_apply_refusals(sql) == []
     assert sql.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-hub"
+
+
+@needs_pg
+def test_part_grading_never_erases_a_wrong_name_recorded_before_parts_existed() -> None:
+    """Review fix (Q5/Q6): a wrong name from before Patch C carries no ledger mark; grading every part
+    "yes" must not turn it into "right" and silently open the gate."""
+    async def body(pool, client):
+        await _individual(pool, "ind-a")
+        sid = await _walk(pool, 1, ["ind-a"], strip=[0], thumbs=())
+        await pool.execute("INSERT INTO vision_motion_story_verdict (story_id, verdict, rules_version) "
+                           "VALUES ($1, 'wrong_name', 1)", sid)       # an old one: no source row
+        await _parts(pool, sid, ["people"])
+        r = await client.post(f"/api/vision/motion-stories/{sid}/parts", json={"part": "people", "verdict": "yes"})
+        assert r.json()["story_verdict"] is None and r.json()["story"]["verdict"] == "wrong_name"
+        assert r.json()["tally"]["wrong_name"] == 1 and r.json()["tally"]["by_source"] == {"button": {"wrong_name": 1}}
+
+    _run(body)
+
+
+@needs_pg
+def test_a_correction_on_a_linked_person_is_undone_for_every_camera_group() -> None:
+    """Review fix (ledger per camera group): a correction on a linked person writes one row per group; a
+    yes on the person undoes it for each, so no group keeps the story a wrong name."""
+    async def body(pool, client):
+        await _individual(pool, "ind-a", "Maya")
+        await _individual(pool, "ind-b", "Maya")
+        await _same(pool, "ind-a", "ind-b")
+        sid = await _walk(pool, 1, ["ind-a", "ind-b"], name="Maya", strip=[0, 1], thumbs=())
+        await _parts(pool, sid, ["people"])
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
+                              json={"action": "someone_else", "group": True})
+        assert len(r.json()["ask_ids"]) == 2 and r.json()["tally"]["wrong_name_from_corrections"] == 1
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-b",
+                              json={"action": "confirm", "name": "Maya", "group": True})
+        t = r.json()["tally"]
+        assert (t["wrong_name_from_corrections"], t["wrong_name"]) == (0, 0)
+
+    _run(body, [])

@@ -341,14 +341,14 @@ PARTS_INSERT_SQL = (
 PARTS_BACKFILL_MAX = 2000
 PARTS_BACKFILL_SQL = (
     "SELECT s.story_id, s.kind, s.speed_class, s.dir_lateral, s.dir_depth, s.zone_path, s.rules_version "
-    "FROM vision_motion_story s WHERE s.published AND NOT EXISTS "
+    "FROM vision_motion_story s WHERE s.published AND s.rules_version = :v AND NOT EXISTS "
     "(SELECT 1 FROM vision_motion_story_parts p WHERE p.story_id = s.story_id) "
     "ORDER BY s.started_at DESC LIMIT :n"
 )
-PARTS_PRUNE_SQL = (
-    "DELETE FROM vision_motion_story_parts p WHERE NOT EXISTS "
-    "(SELECT 1 FROM vision_motion_story s WHERE s.story_id = p.story_id)"
-)
+# Story retention removes the story row; its parts, part answers and verdict source go with it.
+PARTS_PRUNE_SQLS = tuple(
+    f"DELETE FROM {t} x WHERE NOT EXISTS (SELECT 1 FROM vision_motion_story s WHERE s.story_id = x.story_id)"
+    for t in ("vision_motion_story_parts", "vision_motion_story_part_verdict", "vision_motion_story_verdict_source"))
 
 
 def parts_table_present(conn) -> bool:
@@ -364,16 +364,14 @@ def backfill_story_parts(conn, *, limit: int = PARTS_BACKFILL_MAX) -> int:
 
     from app.vision_motion import sentence_parts
 
-    rows = conn.execute(text(PARTS_BACKFILL_SQL), {"n": int(limit)}).fetchall()
-    n = 0
-    for r in rows:
-        if int(r.rules_version or 0) != RULES_VERSION:
-            continue
-        parts = sentence_parts(kind=r.kind, sc=r.speed_class, lat=int(r.dir_lateral or 0),
-                               dep=int(r.dir_depth or 0), zp=list(r.zone_path or []))
-        n += conn.execute(text(PARTS_INSERT_SQL), {"story_id": r.story_id, "parts": list(parts),
-                                                  "rules_version": RULES_VERSION, "source": "derived"}).rowcount or 0
-    return n
+    rows = conn.execute(text(PARTS_BACKFILL_SQL), {"n": int(limit), "v": RULES_VERSION}).fetchall()
+    batch = [{"story_id": r.story_id, "rules_version": RULES_VERSION, "source": "derived",
+              "parts": list(sentence_parts(kind=r.kind, sc=r.speed_class, lat=int(r.dir_lateral or 0),
+                                           dep=int(r.dir_depth or 0), zp=list(r.zone_path or [])))}
+             for r in rows]
+    if batch:
+        conn.execute(text(PARTS_INSERT_SQL), batch)      # one executemany
+    return len(batch)
 
 
 def _check_tables(conn) -> None:
@@ -826,7 +824,8 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
                     summary["pruned"] = conn.execute(text(story_prune_sql(cfg, strip_columns=not missing)),
                         {"cut": ts - timedelta(days=cfg.retention_days)}).rowcount or 0
                     if parts_on and summary["pruned"]:
-                        conn.execute(text(PARTS_PRUNE_SQL))
+                        for sql in PARTS_PRUNE_SQLS:
+                            conn.execute(text(sql))
             except Exception as exc:
                 logger.warning("motion_story_prune_failed error=%s", exc)
     finally:

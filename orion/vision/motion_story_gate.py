@@ -86,7 +86,9 @@ def derive_story_verdict(parts: Sequence[str], answers: Mapping[str, str]) -> Op
 # --- the person-correction ledger, read at gate time (Orion's question 6) ------------------------------
 # A story whose written name Juniper corrected on the story card ("someone else" on the named walker, or
 # another name) counts as a WRONG NAME at gate time while that correction is her latest answer about that
-# camera group on that story -- whatever the story's verdict says (a later "right people? yes", a
+# camera group (one vision_individual, the ask's source_ref; a linked person's answer writes one row per
+# group, so undoing it on the person undoes it for every group) on that story -- whatever the story's
+# verdict says (a later "right people? yes", a
 # re-derived verdict, a button). Hub marks such an answer answer_detail.corrects_story_name = true when
 # it writes it. Corrections before that mark carry their automatic 'wrong_name' verdict.
 ACTIVE_CORRECTIONS_SQL = """

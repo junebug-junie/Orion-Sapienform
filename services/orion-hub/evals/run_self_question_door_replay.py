@@ -9,16 +9,16 @@ Design: docs/superpowers/specs/2026-11-25-orion-self-reflection-drift-design.md 
   demoted / unjudged question is ever picked; Juniper's questions are still picked; with the door off
   every Orion question is pickable; no judge error admits or routes; three failed judgements make
   ``unjudged``; only an operational self-inquiry finding demotes.
-* ``--live --judge-url <Orion's local seat>``: every Orion-written question in ``curiosity_self_questions``
+* ``--live [--lane agent]``: every Orion-written question in ``curiosity_self_questions``
   (SELECT only) is judged once with the door's input (``register.QUESTION_LINE`` + the question text,
-  prompt v2, temperature 0, thinking off; compute-only calls to the local seat, no outside model) and
+  prompt v2, temperature 0, thinking off; one operator lease on Orion's seat through the gateway, no outside model) and
   given the door that reply would produce (one try). Then every labelled self-inquiry finding in
   ``curiosity_finding_register`` is joined to its question: the philosophical share of findings with
   and without the door, and how often an operational question produced a philosophical finding. No gate:
   it is a measurement. Writes ``/tmp/self-question-door-replay/<date>/``.
 
     PYTHONPATH=. python services/orion-hub/evals/run_self_question_door_replay.py
-    PYTHONPATH=. python services/orion-hub/evals/run_self_question_door_replay.py --live --judge-url http://<ip>:8015
+    PYTHONPATH=. python services/orion-hub/evals/run_self_question_door_replay.py --live [--lane agent]
 """
 from __future__ import annotations
 
@@ -101,20 +101,20 @@ def fixture() -> dict:
     return {"picks": dict(picks.most_common()), "blocked_picked": blocked, "gates": gates}
 
 
-def live(judge_url: str, out_dir: Path) -> dict:
-    import httpx
+def live(lane_name: str, out_dir: Path) -> dict:
+    from orion.evals.leased_llm import operator_lane_sync
     from reflection_register_sources import Item, ORGAN_LINES, judge_one, psql_json, wilson
 
     qs = psql_json("SELECT json_build_object('id', question_id, 'text', text, 'minted_by', minted_by, 'status', status) "
                    "FROM curiosity_self_questions")
     doors: dict[str, str] = {}
     judged = []
-    with httpx.Client(timeout=300) as client:
+    with operator_lane_sync(lane_name, holder="operator:self-question-door-replay") as lane:
         for q in qs:
             if q["minted_by"] != "orion":
                 continue
-            label, reason, err, model = judge_one(client, judge_url, Item("orion_question", q["id"],
-                                                                         ORGAN_LINES["orion_question"], q["text"]))
+            label, reason, err, model = judge_one(lane, Item("orion_question", q["id"],
+                                                             ORGAN_LINES["orion_question"], q["text"]))
             v = door_verdict(JudgeResult(label, reason, err, model), attempts=0, max_attempts=3)
             doors[q["id"]] = v.door
             judged.append({"question_id": q["id"], "label": label, "error": err, "model": model, "door": v.door,
@@ -155,14 +155,12 @@ def live(judge_url: str, out_dir: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--live", action="store_true")
-    ap.add_argument("--judge-url", default="")
+    ap.add_argument("--lane", default="agent", help="operator lane for --live (one GPU pool hold, through the gateway)")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args(argv)
     if args.live:
-        if not args.judge_url:
-            ap.error("--live needs --judge-url (Orion's local seat)")
         out = args.out or Path("/tmp/self-question-door-replay") / datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        print(json.dumps(live(args.judge_url, out), indent=2, default=str))
+        print(json.dumps(live(args.lane, out), indent=2, default=str))
         return 0
     res = fixture()
     print(json.dumps(res["gates"], indent=2))

@@ -27,7 +27,7 @@ def check_id(consult_id: str) -> str:
     value = str(consult_id or "").strip().lower()
     if not CONSULT_ID_RE.fullmatch(value):
         raise ValueError(f"consult id must be 12 hex characters (the 'ref consult ...' on the Hub card), "
-                         f"got {consult_id[:40]!r}")
+                         f"got {str(consult_id or '')[:40]!r}")
     return value
 
 

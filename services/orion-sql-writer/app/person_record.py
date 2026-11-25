@@ -207,7 +207,10 @@ def apply_story_reasons(conn) -> Tuple[int, int, int]:
 
 
 # Hub picture-card reasons ("Who is this?", "Is this <name>?") not yet stored as a fact.
-# Story-card answers (via motion_story) are apply_story_reasons'.
+# Story-card answers (via motion_story) are apply_story_reasons'. Rows that can never become a
+# fact are filtered here, not skipped in Python, so they are not read again every pass: a
+# non-person cluster (a vehicle), a "Who is this?" with a picture marked someone else, an
+# "Is this" answered both ways (the reason could be about either person; review 2026-11-25).
 _CARD_REASONS_SQL = """
 SELECT a.ask_id, a.source_kind, a.source_ref, a.answer, a.answer_detail -> 'pictures' AS pictures,
        a.answer_detail->>'why' AS why, i.kind
@@ -216,6 +219,10 @@ WHERE a.status = 'answered' AND a.source_kind IN ('vision_individual', 'vision_p
   AND coalesce(a.answer_detail->>'via', '') <> 'motion_story'
   AND coalesce(a.answer_detail->>'why', '') <> ''
   AND coalesce(a.answer, '') <> ''
+  AND i.kind = ANY(:person_kinds)
+  AND NOT (coalesce(a.answer_detail -> 'pictures' @> '[{"verdict": "different"}]', false)
+           AND (a.source_kind = 'vision_individual'
+                OR coalesce(a.answer_detail -> 'pictures' @> '[{"verdict": "same"}]', false)))
   AND NOT EXISTS (SELECT 1 FROM person_fact f WHERE f.fact_id = :prefix || a.ask_id)
 ORDER BY a.answered_at, a.ask_id
 """
@@ -236,14 +243,15 @@ def card_reason_plan(source_kind: str, source_ref: str, answer: str, pictures: A
                      ) -> Optional[Tuple[str, str, str]]:
     """Pure. (target kind "cluster" | "name", target, fact text), or None to skip.
     "Who is this?": the named cluster. "Is this <name>?": that name; "no" is a time it was NOT them.
-    Answered both ways picture by picture: None (the reason could be about either)."""
+    A second person on the card (a who-card picture marked someone else, an is-this answered both
+    ways): None, the reason could be about either. _CARD_REASONS_SQL filters the same rows."""
     value = str(why or "").strip()
     if not value:
         return None
-    if source_kind == "vision_individual":
-        return ("cluster", source_ref, value)
-    iid, _, name = str(source_ref or "").partition("|")
     verdicts = {str(p.get("verdict")) for p in (pictures or []) if isinstance(p, dict)}
+    if source_kind == "vision_individual":
+        return None if "different" in verdicts else ("cluster", source_ref, value)
+    iid, _, name = str(source_ref or "").partition("|")
     if not iid or not name.strip() or answer not in ("yes", "no") or {"same", "different"} <= verdicts:
         return None
     return ("name", name, value if answer == "yes" else f"{pf.STORY_REASON_NOT_THEM_PREFIX}{value}")
@@ -251,14 +259,16 @@ def card_reason_plan(source_kind: str, source_ref: str, answer: str, pictures: A
 
 def apply_card_reasons(conn) -> Tuple[int, int, int]:
     """Hub card reasons -> ``how_you_could_tell`` facts. Returns (stored, waiting, skipped), as
-    apply_story_reasons: waiting = no single person to put it on yet (retried next pass)."""
+    apply_story_reasons: waiting = no single person to put it on yet (retried next pass); skipped =
+    a row the SQL let through that the plan refuses (a malformed "Is this" ref)."""
     from sqlalchemy import text
 
     stored = waiting = skipped = 0
     for ask_id, kind, ref, answer, pictures, why, cluster_kind in conn.execute(
-            text(_CARD_REASONS_SQL), {"prefix": pf.STORY_REASON_FACT_PREFIX}).fetchall():
+            text(_CARD_REASONS_SQL),
+            {"prefix": pf.STORY_REASON_FACT_PREFIX, "person_kinds": sorted(pr.PERSON_KINDS)}).fetchall():
         plan = card_reason_plan(kind, ref, answer, pictures, why)
-        if plan is None or cluster_kind not in pr.PERSON_KINDS:
+        if plan is None:
             skipped += 1
             continue
         target_kind, target, value = plan

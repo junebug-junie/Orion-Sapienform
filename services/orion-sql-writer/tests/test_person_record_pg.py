@@ -399,7 +399,15 @@ def test_card_reasons_land_on_the_named_person_and_a_no_says_not_them(pg) -> Non
         _card_answer(conn, "c-mixed", "vision_person_confirm", "anon-1|Sam", "yes",
                      {"why": "one of them", "pictures": [{"verdict": "same"}, {"verdict": "different"}]})
         _card_answer(conn, "c-nobody", "vision_person_confirm", "anon-1|Nobody", "no", {"why": "no such person"})
+        # Review 2026-11-25: a who-card with a picture marked someone else names two people.
+        _card_answer(conn, "c-two", "vision_individual", "robin-1", "Robin",
+                     {"why": "the one with the dog is Jacob",
+                      "pictures": [{"verdict": "same"}, {"verdict": "different", "name": "Jacob"}]})
+        _cluster(conn, "car-1", "Blue van", kind="vehicle")
+        _card_answer(conn, "c-car", "vision_individual", "car-1", "Blue van", {"why": "the roof rack"})
+        _card_answer(conn, "c-bad", "vision_person_confirm", "anon-1", "yes", {"why": "no name in the ref"})
     summary, _ = _run(pg)
+    # Mixed, two-person and vehicle rows never reach Python (not re-read every pass); c-bad does.
     assert (summary["card_reasons_stored"], summary["card_reasons_waiting"],
             summary["card_reasons_skipped"]) == (3, 1, 1)
     persons = dict(_rows(pg, "SELECT display_name, person_id FROM person"))
@@ -424,6 +432,8 @@ def test_card_reason_plan_is_pure_and_skips_what_it_cannot_place() -> None:
                             [{"verdict": "same"}, {"verdict": "different"}], "y") is None
     assert card_reason_plan("vision_person_confirm", "i1", "yes", None, "y") is None
     assert card_reason_plan("vision_individual", "i1", "Sam", None, "  ") is None
+    assert card_reason_plan("vision_individual", "i1", "Sam",
+                            [{"verdict": "same"}, {"verdict": "different"}], "y") is None
 
 
 @needs_pg

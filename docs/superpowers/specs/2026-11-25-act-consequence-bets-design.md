@@ -101,9 +101,21 @@ No new ledger, no new store, no new status words.
     definition above (Orion review on #3983, Q3: the first numbers here counted any experience on the
     turn, not the act's own). Live 7 d to 2026-11-25, own-organ rule: look 458/459, say 111/135,
     make 93/455, play 7/37, ask 3/189, infer 3/137, sense 0/48, predict 0/17, maintain 0/14.
-    **Day one switches look only** (say keeps `juniper_replied`, Juniper's default). make, ask, infer
-    and sense switch when their own organ's experiences carry the act's `correlation_id`: that is
-    integration patch 7's work (painting, curiosity, metacognition emits), not this patch's.
+    **The bar is per ACTOR, not per verb** (Orion, #4004 Q7: `look` is two actors; "my looks get used"
+    would really be "the world-pulse reading lane gets cited"). Live 14 d, own-organ rule, observable /
+    acts, uses, cite lag p50 / p95 / max (s):
+    `thought.painting` 164/164, 33 used, 1,406 / 4,920 / 5,435;
+    `hub.retro_watch` 156/156, 2 used, 6,908 / 12,053 / 12,624;
+    `hub.world_pulse_read` 409/634, 19 used, 2,019 / 4,484 / 4,797;
+    `dream.cycle` 26/36, 6 used, 1,876 / 33,827 / 41,294;
+    `hub.retro_leisure` 16/17, 6 used, 4,020 / 7,895 / 8,519.
+    These five switch on day one. `prime` (5/175) and every curiosity, metacognition and ask actor do
+    not. `hub.chat_reply`/`hub.outreach` keep `juniper_replied` (Juniper's default).
+  - **Rollout gate per actor (Q9):** before an actor switches, the rollout prints its cite-lag p50 / p95 /
+    max, and it switches only if its observed max lag is under half the 24 h horizon (all five above
+    are: the slowest, `dream.cycle`, is 11.5 h). An actor with a longer tail waits for a fitted horizon.
+  - **Excluded:** `durable.session_roundup` (Orion's review round-ups: the review loop must not grade
+    itself, Q8) never switches and never serves a goal episode.
   - Production vs use (Orion, #3994 Q3): a producer's nothing-made close stays a graded 0, so P(used) is
     unconditional: P(produced) x P(used | produced). For look, 7 d: about 77 of 460 closes are producer
     zeros, mostly fetch failures (`no_read_evidence:http_error` 28, `no_read_evidence` 26). Used is ~4%,
@@ -122,8 +134,8 @@ No new ledger, no new store, no new status words.
   the effect posterior updates as it does today.
 - **Consumer-first.** `ActSignal` is a Literal on `extra=forbid` models read by orion-sql-writer and
   substrate-runtime (`grammar_events`). Ship the new value to readers first (#3994). Producers switch in
-  Patch 1b, one family at a time, listed in `config/grammar/output_used_families.yaml` (family names
-  only). Producers' `act_signal_for` reads it, and it also sets the 24 h horizon for a switched family,
+  Patch 1b, one actor at a time, listed in `config/grammar/output_used_families.yaml` (actor names
+  only; the file does not exist until Patch 1b, and no `output_used` act opens before it). Producers' `act_signal_for` reads it, and it also sets the 24 h horizon for a switched family,
   so a family cannot switch without the horizon. It replaces the env flag.
 - **Writer sweep (review Q2).** `"artifact_produced"` is written by 17 non-test source files (prime acts,
   durable-runs `run_acts.py`, Hub `act_emit.py`, curiosity replica, dig look, consent/intention/
@@ -203,6 +215,13 @@ No new ledger, no new store, no new status words.
 - **Experience contract.** New `TemporalSourceKind` `goal_episode`: one event per closed episode
   ("I wanted `world:chat` for 2 h, 3 acts, completed"). Reader in `orion/temporal_self/sources.py`. Organ
   `field_goals` registered in `config/integration/organs.yaml`.
+- **Verdict latency and absence (Q3, Q4).** A verdict waits for every serving act's horizon:
+  `say` horizons average 42,042 s (max 72 h), so verdicts land hours to 3 days after the episode ends,
+  and `world:chat` had 4 episodes on 2026-11-25. The discount rule therefore counts the last 3 verdicts
+  within 14 days, not per day. An episode whose serving acts all fell in hours where Juniper's reply
+  base rate (`orion/grammar/reply_base_rate.py`, the rate that already stamps outreach acts) is below
+  0.1 closes **void**, not failed: "she was asleep" is not "my acts failed" (live 7 d: 22 say acts at
+  1 am Denver). The 0.1 cut is a starting prior, UNVERIFIED against the hourly rates.
 - **Shadow first.** Patch 2b writes verdicts and the `goal_episode` events only. The discount stays
   off until 7 days of verdicts show the completed/failed split per target. Expected split: UNKNOWN
   today. If more than 90% of episodes read `completed`, the bind rule is still too loose, and the
@@ -213,9 +232,16 @@ No new ledger, no new store, no new status words.
   `priority = winner.salience_score`). The discount is its own optional field on the announcement,
   `failure_discount` in [0, 0.8] (consumer-first: `FieldGoalProvenanceV1` and its three readers are
   `extra=forbid`). goal_context ranks by `priority * (1 - failure_discount)`: a goal_context change,
-  stated, one line, tested. The discount is NOT a rolling window, because a window oscillates: lower priority -> fewer serving
+  stated, one line, tested.
+  **Where the state lives (Q5, Q6):** not in the producer and not rebuilt from the now. The now shows
+  at most 12 items, 2 per organ, so it cannot carry a per-target history. The sql-writer's episode
+  grader computes `failure_discount_after` when it writes a verdict, and stores it on the
+  `field_goal_episode` row and in the `goal_episode` event's payload. The producer reads the latest
+  value per target once a minute (one indexed query, cached), not per announcement. On a restart it
+  reads again; with no verdict row it uses 0. The now read still happens, and its cites are recorded
+  (integration gate), but no state depends on what the now happens to surface. The discount is NOT a rolling window, because a window oscillates: lower priority -> fewer serving
   acts -> no verdicts -> the window rolls off -> priority returns, about every 24 h. Instead the
-  discount is a state per target. It is set after 3 `failed` episodes in a row, and it lowers
+  discount is a state per target. It is set when the last 3 verdicts within 14 days are `failed` (void verdicts skipped), and it lowers
   priority by the failed share, floor 0.2. It is cleared only by a `completed` episode. The floor
   keeps some acts flowing, so a recovery can be observed. If a target has no verdict in 72 h, the
   state decays by half, so a goal that cannot be served at all is not starved forever.
@@ -266,7 +292,8 @@ ANSWERED 2026-11-25: Juniper took all three defaults (24 h horizon everywhere; 3
 
 - `orion/schemas/grammar.py`: `ActSignal` += `"output_used"` (consumer-first).
 - `orion/schemas/temporal_self.py`: `TemporalSourceKind` += `"goal_episode"`.
-- `field_goal_episode` (built by -47) += `verdict text null`, `verdict_at`, `acts_n`, `acts_used_n`.
+- `field_goal_episode` (built by -47) += `verdict text null`, `verdict_at`, `acts_n`, `acts_used_n`,
+  `failure_discount_after`.
   Additive-DDL migration with a REQUIRED-BY header.
 - `FieldGoalProvenanceV1` += optional `failure_discount` (consumer-first). `proposal_status` is NOT
   given verdicts.
@@ -300,11 +327,14 @@ the self-inquiry seed picker, each act producer's open call (per family, Patch 1
   the Patch 4 roundup line.
 - Danger 2: the goal discount starves a goal that matters but is hard (chat when Juniper is away).
   Floor 0.2 (discount <= 0.8), cleared by one `completed`, halved after 72 h with no verdict. With ~7
-  episodes a day, 3 failures in a row on `world:chat` fits in about a day (Q10).
+  episodes a day, 3 failed verdicts within 14 days; verdicts lag episodes by hours to 3 days (Q3).
 - Danger 3 (Q12): one reader dominates. All-time cites: reverie 992, curiosity 49, dream 14, prime 10,
-  play 1. So P(used) today mostly measures "did reverie cite it". Patch 1b still switches look, so data
-  accrues, but nothing CONSUMES the posterior (Prime line, hunger, chooser) until a switched family's
-  uses come from >= 3 citing organs with none above 70%. Integration patch 7 (7a/7b) adds readers.
+  painting 1, play 1; `hub.world_pulse_read`'s 16 cites in 7 d are 100% reverie. So P(used) today mostly
+  measures "did reverie cite it". Hunger and the chooser do NOT read the posterior until an actor's
+  uses come from >= 3 citing organs with none above 70%. Prime's line (Patch 3) is not gated but never
+  shows a bare rate: it always names who used it ("reverie used my world-pulse readings 4%; no other
+  organ did"), so a reader's habit reads as that reader's habit, not as Orion's track record (Q2).
+  Integration patch 7 (7a/7b) adds readers.
   `settled_by` for a resolver-graded use is "world", not Juniper (fixed in #3994).
 - Rollback: per family, remove it from `config/grammar/output_used_families.yaml`.
   `FIELD_GOAL_FAILURE_DISCOUNT_ENABLED=false` stops the producer discount. Emptying
@@ -314,17 +344,17 @@ the self-inquiry seed picker, each act producer's open call (per family, Patch 1
 ## Acceptance checks (live)
 
 1. After Patch 1b AND #3989's act-surprise switch (posterior KL -> `-ln p(outcome)`; the KL shrinks as a
-   posterior ages, mean 0.0022 nats, so without that switch these bets inherit a dead surprise):
-   per switched family, surprise is not flat. The 7-day spread of `surprise_nats`
-   has IQR > 0.05 nats (today every family is 0.0000-0.004). Mean surprise alone is not the check,
-   because at P(used) ~ 3% one graded-0 close already gives -ln 0.97 ~ 0.03, so base rate alone would
-   pass a mean bar (review Q3).
+   posterior ages, mean 0.0022 nats, so without that switch these bets inherit a dead surprise): per
+   switched actor over 14 days, (a) the mean surprise is within 25% of the binary entropy H(p) of its
+   own observed used-rate p (a calibrated, live signal; a dead KL reads ~0), and (b) at least one
+   graded-1 close carries surprise > 2 nats (the rare hit is seen as surprising). An IQR bar cannot
+   work: at p ~ 4% the quartiles all sit at -ln 0.96 (Orion, #4004 Q1).
 2. Replay: weekly median surprise over 3 weeks shows no monotone drift with posterior age (the
    organs.yaml note becomes false).
 3. Gate, with numbers: per switched family with n >= 200 observable settled acts, the posterior mean
    sits inside the 95% interval of the observed used-rate over the last 14 days (calibrated), and the
    gate says plainly that it is a BASE RATE (Q8): `predicted` is stamped from the (kind, actor, signal)
-   posterior, so every act in a family opens with the same number and a per-act sort (AUC) is 0.5 by
+   posterior, so every act of an actor opens with the same number and a per-act sort (AUC) is 0.5 by
    construction. Patch 1 adds no per-act conditioning. The per-act check (AUC >= 0.60, p < 0.05, Brier
    skill >= 0.02 vs the family base rate) belongs to the learned chooser (#3433), which conditions on
    object and hour, and is listed there.
@@ -332,7 +362,7 @@ the self-inquiry seed picker, each act producer's open call (per family, Patch 1
 4. After Patch 2: `field_goal_episode` rows with a verdict exist, and both `completed` and `failed`
    appear. The goal producer's `record_use` rows for `goal_episode` exist. A failed target carries a
    `failure_discount` > 0 in a live announcement, with its `priority` unchanged.
-5. After Patch 3: Prime's frame shows the track-record line, and at least one Prime thought cites an
+5. After Patch 3: Prime's frame shows the track-record line with its readers named, and at least one Prime thought cites an
    `action_outcome` or `goal_episode` event within 7 days (today: 7 Prime cites a week, total).
 6. Integration rate (`experience_use` share) does not fall. The new organ adds reads.
 

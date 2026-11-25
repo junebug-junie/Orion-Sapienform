@@ -123,10 +123,11 @@ The hooks take effect for new Claude Code sessions in the primary checkout once 
 
 - Severity: low. Concern: about 1,500 more characters in every round-up prompt (the template). Mitigation: the budget is 100,000 characters.
 - Severity: medium. Concern: about 5-6x more threads per day on Orion's agent lane. Mitigation: one round at a time, background priority, and heat refusals are not strikes.
+- Issues opened: #3999 (verify-live: first live code-only review and the draft gate). Closed: none.
 - Severity: low. Concern: PRs opened outside Claude Code get no diff and no gate. Mitigation: `send --pr N` by hand.
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3998
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

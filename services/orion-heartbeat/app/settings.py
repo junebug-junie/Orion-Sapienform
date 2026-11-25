@@ -120,10 +120,13 @@ class Settings(BaseSettings):
     # (scripts/demon_network_replay.py): grammar_events keeps only ~3 days.
     seat_rollup_enabled: bool = Field(True, alias="HEARTBEAT_SEAT_ROLLUP_ENABLED")
     # A silence on orion:grammar:event longer than this marks the buckets it
-    # spans partial (read as missing). Bus atoms arrive every ~11 s.
+    # spans partial (read as missing). A backstop for a hung subscription;
+    # bus and biometrics really pause together for 30-60 s a few times a
+    # day, and those pauses are data, not blindness (app/seat_rollup.py).
     seat_rollup_silence_gap_sec: float = Field(60.0, gt=0, alias="HEARTBEAT_SEAT_ROLLUP_SILENCE_GAP_SEC")
     # A bucket is published this long after it ends, so an atom stamped just
-    # before the boundary still lands in its own bucket.
-    seat_rollup_flush_grace_sec: float = Field(30.0, ge=0, alias="HEARTBEAT_SEAT_ROLLUP_FLUSH_GRACE_SEC")
+    # before the boundary (cross-host clock skew, a slow publish) still lands
+    # in its own bucket. Nothing reads the table within minutes.
+    seat_rollup_flush_grace_sec: float = Field(120.0, ge=0, alias="HEARTBEAT_SEAT_ROLLUP_FLUSH_GRACE_SEC")
 
 settings = Settings()

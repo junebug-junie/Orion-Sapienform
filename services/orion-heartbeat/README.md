@@ -159,13 +159,17 @@ heartbeat also keeps a running sum per seat per 5-minute bucket
   the seat's atoms its input rule skipped. Sums use `math.fsum`, so they do
   not depend on arrival order.
 - Absence reads as unknown, never zero. A bucket the heartbeat did not hear
-  has no rows. The start bucket, and every bucket a silence of more than
+  has no rows. The start bucket, every bucket between losing and regaining
+  the subscription, and every bucket a silence of more than
   `HEARTBEAT_SEAT_ROLLUP_SILENCE_GAP_SEC` touches, is `partial=true`. The
   replay treats partial buckets as missing. A seat with no atoms in a
   complete bucket gets a real 0 row.
 - An atom stamped in an already-published bucket is dropped and counted
-  (`seat_rollup.late_atoms_dropped` on `/health`), as are atoms stamped more
-  than one bucket ahead and repeated event ids.
+  (`seat_rollup.late_atoms_dropped` and `late_by_bucket` on `/health`), as
+  are atoms stamped more than one bucket ahead and repeated event ids.
+- Every row carries `routing_version`, a hash of the routing rules and level
+  code (`routing.routing_version()`). The replay does not mix sums made under
+  other rules with today's recompute.
 - The replay reads the rollup first and `grammar_events` only for buckets
   with no rollup rows; it labels each bucket's source in `results.json`.
 - Exact-match check: `evals/seat_rollup_match.py --mode replay` (any time)
@@ -357,8 +361,8 @@ deploying a change):
 | `HEARTBEAT_VERDICT_ATOMS_ENABLED` | `true` | Publish the `heartbeat.h1:` grammar trace (see "What heartbeat emits"). |
 | `HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC` | `3600.0` | Summary atom cadence. |
 | `HEARTBEAT_SEAT_ROLLUP_ENABLED` | `true` | Publish the 5-minute seat rollup (see "Seat rollup"). |
-| `HEARTBEAT_SEAT_ROLLUP_SILENCE_GAP_SEC` | `60.0` | A silence on `orion:grammar:event` longer than this marks the buckets it touches partial. Bus atoms arrive every ~11 s. |
-| `HEARTBEAT_SEAT_ROLLUP_FLUSH_GRACE_SEC` | `30.0` | A bucket is published this long after it ends. |
+| `HEARTBEAT_SEAT_ROLLUP_SILENCE_GAP_SEC` | `60.0` | A silence on `orion:grammar:event` longer than this marks the buckets it touches partial. A backstop for a hung subscription: bus and biometrics really pause together for 30-60 s a few times a day, and those pauses are data. |
+| `HEARTBEAT_SEAT_ROLLUP_FLUSH_GRACE_SEC` | `120.0` | A bucket is published this long after it ends. A later atom for it is dropped and counted (`late_atoms_dropped`, `late_by_bucket`). |
 
 **Verdict bands** (`app/substrate/reconstruction.py`) are percentiles of
 heartbeat's own 48 h output (2026-09-01). On 7 days of live AST/HOT samples

@@ -38,7 +38,7 @@ def test_rollup_schema_registered_and_resolves() -> None:
 
 def test_rollup_rejects_naive_timestamps_negative_sums_and_extra_fields() -> None:
     base = dict(rollup_id="x", node="athena", seat="orion-hub", site_index=0, level_sum=0.0, atom_count=0,
-                bucket_start="2026-11-25T00:00:00Z", bucket_end="2026-11-25T00:05:00Z")
+                bucket_start="2026-11-25T00:00:00Z", bucket_end="2026-11-25T00:05:00Z", routing_version="abc")
     HeartbeatSeatRollupV1(**base)
     with pytest.raises(ValidationError):
         HeartbeatSeatRollupV1(**{**base, "bucket_start": datetime(2026, 11, 25)})
@@ -46,3 +46,5 @@ def test_rollup_rejects_naive_timestamps_negative_sums_and_extra_fields() -> Non
         HeartbeatSeatRollupV1(**{**base, "level_sum": -0.1})
     with pytest.raises(ValidationError):
         HeartbeatSeatRollupV1(**{**base, "surprise": 1})
+    with pytest.raises(ValidationError):
+        HeartbeatSeatRollupV1(**{k: v for k, v in base.items() if k != "routing_version"})

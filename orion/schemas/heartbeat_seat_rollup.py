@@ -52,10 +52,14 @@ class HeartbeatSeatRollupV1(BaseModel):
     atom_count: int = Field(ge=0)
     # Atoms from this seat's services that the input rule skipped (clockwork, duplicate, floor, ...).
     skipped_count: int = Field(default=0, ge=0)
-    # True when the heartbeat was not listening for part of the bucket (process start, or a
-    # silence on orion:grammar:event longer than its gap threshold). The sums are an undercount,
-    # not a quiet seat: readers treat the bucket as missing.
+    # True when the heartbeat was not listening for part of the bucket (process start, a
+    # resubscribe after a bus drop, or a silence on orion:grammar:event longer than its gap
+    # threshold). The sums are an undercount, not a quiet seat: readers treat the bucket as missing.
     partial: bool = False
+    # services/orion-heartbeat/app/substrate/routing.py::routing_version(): a hash of the rules
+    # that produced level_sum. Sums made under different rules mean different things; readers
+    # must not mix them.
+    routing_version: str = Field(min_length=1)
 
     @field_validator("bucket_start", "bucket_end")
     @classmethod
@@ -77,4 +81,5 @@ HEARTBEAT_SEAT_ROLLUP_SQL_COLUMNS: tuple[str, ...] = (
     "atom_count",
     "skipped_count",
     "partial",
+    "routing_version",
 )

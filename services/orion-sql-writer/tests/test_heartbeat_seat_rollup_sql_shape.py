@@ -47,6 +47,7 @@ def _rollup(**overrides) -> HeartbeatSeatRollupV1:
         level_sum=1.234567890123,
         atom_count=27,
         skipped_count=135,
+        routing_version="95931cd5f497",
     )
     defaults.update(overrides)
     return HeartbeatSeatRollupV1(**defaults)
@@ -121,6 +122,7 @@ def test_real_write_row_path_from_a_bus_json_payload(monkeypatch) -> None:
         assert row.level_sum == 1.234567890123
         assert row.partial is True
         assert row.seat == "orion-bus" and row.site_index == 3
+        assert row.routing_version == "95931cd5f497"
         assert row.bucket_start.replace(tzinfo=timezone.utc) == START
     finally:
         sess.close()

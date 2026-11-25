@@ -28,7 +28,7 @@ assert T0 % 300 == 0
 
 
 def _acc(started: float = T0, **kw) -> SeatRollupAccumulator:
-    return SeatRollupAccumulator(node="athena", seats=SEAT_ORDER, started_at_epoch=started, **kw)
+    return SeatRollupAccumulator(node="athena", seats=SEAT_ORDER, started_at_epoch=started, routing_version="v1", **kw)
 
 
 def _by_seat(events: list[HeartbeatSeatRollupV1]) -> dict[tuple[int, str], HeartbeatSeatRollupV1]:
@@ -190,7 +190,9 @@ def svc(monkeypatch):
     clock = {"now": float(T0 + 1)}
     monkeypatch.setattr(service_mod.time, "time", lambda: clock["now"])
     s = service_mod.HeartbeatService()
-    s.seat_rollup = SeatRollupAccumulator(node="athena", seats=SEAT_ORDER, started_at_epoch=float(T0))
+    s.seat_rollup = SeatRollupAccumulator(
+        node="athena", seats=SEAT_ORDER, started_at_epoch=float(T0), routing_version=s.routing_version
+    )
     s._clock = clock
     return s
 
@@ -257,9 +259,9 @@ class _FakeBus:
 def test_flush_publishes_one_envelope_per_seat_and_retries_after_failure(svc) -> None:
     svc.bus = _FakeBus(fail=1)
     asyncio.run(svc._handle_grammar_message(_payload("orion-hub", "user_utterance", T0 + 1, "p1")))
-    assert asyncio.run(svc._flush_seat_rollup_once(T0 + 400)) == 0
+    assert asyncio.run(svc._flush_seat_rollup_once(T0 + 500)) == 0
     assert svc.seat_rollup_publish_failed == 1 and len(svc._seat_rollup_pending) == 5
-    assert asyncio.run(svc._flush_seat_rollup_once(T0 + 410)) == 5
+    assert asyncio.run(svc._flush_seat_rollup_once(T0 + 510)) == 5
     assert len(svc._seat_rollup_pending) == 0
     channels = {c for c, _ in svc.bus.sent}
     assert channels == {HEARTBEAT_SEAT_ROLLUP_CHANNEL}
@@ -334,48 +336,163 @@ def test_replay_aggregate_equals_service_rollup_on_the_same_atoms(replay, svc) -
     assert len(want) >= 20
 
 
-def _rows(b, levels, *, partial=False, node="athena", seats=range(5)):
-    return [(str(b), node, str(s), str(levels[s]), "3", "t" if partial else "f") for s in seats]
+V = "cur"
 
 
-def test_build_series_prefers_rollup_and_labels_sources(replay) -> None:
+def _rows(b, levels, *, partial=False, node="athena", seats=range(5), version=V):
+    return [(str(b), node, str(s), str(levels[s]), "3", "t" if partial else "f", version) for s in seats]
+
+
+def _series(replay, grammar, rollup, **kw):
+    return replay.build_series(grammar, rollup, current_version=V, **kw)
+
+
+def test_build_series_prefers_rollup_refills_from_ledger_and_labels_sources(replay) -> None:
     b = T0 // 300
-    grammar = {(b + t, s): (1.0, 2) for t in range(0, 8) for s in range(5)}
+    grammar = {(b + t, s): (1.0, 2) for t in range(0, 9) for s in range(5)}
     rollup = (
-        _rows(b - 2, [9.0] * 5)  # rollup history older than the ledger
+        _rows(b - 5, [9.0] * 5)  # rollup history older than the ledger
+        + _rows(b - 4, [9.0] * 5, partial=True)  # partial, ledger gone: missing
+        + _rows(b - 3, [9.0] * 5, version="old")  # other rules, ledger gone: missing
         + _rows(b + 2, [7.0] * 5)  # overlaps the ledger: rollup wins
-        + _rows(b + 3, [7.0] * 5, partial=True)  # partial: missing, no refill
-        + _rows(b + 4, [7.0] * 5, seats=range(4))  # a seat row missing: partial
+        + _rows(b + 3, [7.0] * 5, partial=True)  # partial inside the ledger: ledger refills
+        + _rows(b + 4, [7.0] * 5, seats=range(4))  # a seat row missing: ledger refills
+        + _rows(b + 5, [7.0] * 5) + _rows(b + 5, [7.0] * 5, node="circe")  # two nodes: ledger refills
+        + _rows(b + 6, [7.0] * 5, version="old")  # other rules inside the ledger: ledger refills
     )
-    level, count, idx, source, stats = replay.build_series(grammar, rollup)
-    assert idx[0] == b - 2 and idx[-1] == b + 7
-    lab = dict(zip(idx.tolist(), source.tolist()))
-    assert lab[b - 2] == "rollup" and lab[b - 1] == "none"
-    assert lab[b] == "grammar_events" and lab[b + 1] == "grammar_events"
-    assert lab[b + 2] == "rollup" and lab[b + 3] == "rollup_partial" and lab[b + 4] == "rollup_partial"
+    level, count, idx, source, stats = _series(replay, grammar, rollup)
     t = {int(v): i for i, v in enumerate(idx)}
-    assert level[t[b - 2]].tolist() == [9.0] * 5
-    assert np.isnan(level[t[b - 1]]).all()  # no source: missing, not zero
-    assert np.isnan(level[t[b]]).all()  # first ledger bucket: partial
+    lab = {k: source[i] for k, i in t.items()}
+    assert idx[0] == b - 5 and idx[-1] == b + 8
+    assert [lab[b - 5], lab[b - 4], lab[b - 3], lab[b - 2], lab[b - 1]] == [
+        "rollup", "rollup_partial", "rollup_other_routing", "none", "none"]
+    assert level[t[b - 5]].tolist() == [9.0] * 5
+    for k in (b - 4, b - 3, b - 2, b - 1):
+        assert np.isnan(level[t[k]]).all()  # missing, never zero
+    assert lab[b] == "grammar_events" and np.isnan(level[t[b]]).all()  # first ledger bucket: partial
     assert level[t[b + 1]].tolist() == [1.0] * 5
-    assert level[t[b + 2]].tolist() == [7.0] * 5
-    assert np.isnan(level[t[b + 3]]).all() and np.isnan(level[t[b + 4]]).all()
-    assert np.isnan(level[t[b + 7]]).all()  # last ledger bucket: still filling
-    assert stats["source_buckets"] == {"rollup": 2, "rollup_partial": 2, "grammar_events": 5, "none": 1}
-    assert [s["source"] for s in stats["source_spans"]][:3] == ["rollup", "none", "grammar_events"]
+    assert lab[b + 2] == "rollup" and level[t[b + 2]].tolist() == [7.0] * 5
+    for k in (b + 3, b + 4, b + 5, b + 6):
+        assert lab[k] == "grammar_events" and level[t[k]].tolist() == [1.0] * 5
+    assert np.isnan(level[t[b + 8]]).all()  # last ledger bucket: still filling
+    assert stats["rollup_refilled_from_ledger"] == 4
+    assert stats["multi_node_buckets"] == 1
+    assert stats["source_buckets"] == {
+        "rollup": 2, "grammar_events": 8, "rollup_partial": 1, "rollup_other_routing": 1, "none": 2}
+    assert stats["holes_inside_span"] == 5  # b-4..b-1 and the first ledger bucket
+    assert [s["source"] for s in stats["source_spans"]][:3] == ["rollup", "rollup_partial", "rollup_other_routing"]
+
+
+def test_build_series_any_version_accepts_older_rules(replay) -> None:
+    b = T0 // 300
+    level, _c, _i, source, stats = _series(replay, {}, _rows(b, [2.0] * 5, version="old"), any_version=True)
+    assert source.tolist() == ["rollup"] and level[0].tolist() == [2.0] * 5
+    assert stats["rollup_versions"] == {"old": 5}
 
 
 def test_build_series_marks_clockwork_outage_missing_for_rollup_rows(replay) -> None:
     b = T0 // 300
-    rows = [(str(b), "athena", str(s), "1.0", "0" if s == 3 else "4", "f") for s in range(5)]
-    level, _count, _idx, source, stats = replay.build_series({}, rows)
+    rows = [(str(b), "athena", str(s), "1.0", "0" if s == 3 else "4", "f", V) for s in range(5)]
+    level, _count, _idx, source, stats = _series(replay, {}, rows)
     assert source.tolist() == ["rollup"] and np.isnan(level).all() and stats["outage_buckets"] == 1
 
 
-def test_build_series_refuses_rows_from_two_nodes(replay) -> None:
+def test_build_series_two_nodes_outside_the_ledger_is_missing_not_fatal(replay) -> None:
     b = T0 // 300
-    with pytest.raises(SystemExit, match="more than one node"):
-        replay.build_series({}, _rows(b, [1.0] * 5) + _rows(b, [1.0] * 5, node="circe"))
+    level, _c, _i, source, stats = _series(replay, {}, _rows(b, [1.0] * 5) + _rows(b, [1.0] * 5, node="circe"))
+    assert source.tolist() == ["rollup_partial"] and np.isnan(level).all() and stats["multi_node_buckets"] == 1
+
+
+# --- resubscribe, routing version ---------------------------------------------------------------
+
+
+def test_mark_blind_marks_every_touched_bucket_but_not_published_ones() -> None:
+    acc = _acc()
+    _listen(acc, T0 + 5, T0 + 330)
+    acc.flush_closed(T0 + 330, grace_sec=30)  # bucket 0 published
+    acc.mark_blind(T0 + 100, T0 + 610)  # a 510 s outage reaching back into a published bucket
+    _listen(acc, T0 + 611, T0 + 1300)
+    parts = {int(e.bucket_start.timestamp()) - T0: e.partial for e in acc.flush_closed(T0 + 1300)}
+    assert parts == {300: True, 600: True, 900: False}
+
+
+def test_resubscribe_after_a_short_drop_marks_the_bucket_partial(svc, monkeypatch) -> None:
+    """The chassis restarts _run after a bus drop. A drop shorter than the silence gap must
+    still leave the bucket partial: messages published while unsubscribed are lost."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_subscribe(*_a, **_k):
+        yield object()
+
+    async def iter_once(_pubsub):
+        svc._stop.set()
+        if False:
+            yield None
+
+    monkeypatch.setattr(svc.bus, "subscribe", fake_subscribe)
+    monkeypatch.setattr(svc.bus, "iter_messages", iter_once)
+    _listen(svc.seat_rollup, T0 + 1, T0 + 100, step=5)
+    # The first subscribe happened at T0 + 1 (construction at T0 + 1 too): the bucket starts partial.
+    svc.seat_rollup._partial_starts.clear()
+    svc._rollup_subscribed = True
+    svc._clock["now"] = float(T0 + 100)
+    svc._stop.clear()
+    asyncio.run(svc._run())  # first _run ends (the drop) at T0 + 100
+    assert svc._rollup_unsubscribed_at == T0 + 100
+    svc._clock["now"] = float(T0 + 108)  # back 8 s later: shorter than the 60 s gap
+    svc._stop.clear()
+    asyncio.run(svc._run())
+    _listen(svc.seat_rollup, T0 + 108, T0 + 700, step=5)
+    parts = {int(e.bucket_start.timestamp()) - T0: e.partial for e in svc.seat_rollup.flush_closed(T0 + 700)}
+    assert parts[0] is True and parts[300] is False
+
+
+def test_rows_carry_the_routing_version(svc) -> None:
+    from app.substrate.routing import routing_version
+
+    asyncio.run(svc._handle_grammar_message(_payload("orion-hub", "user_utterance", T0 + 1, "rv")))
+    rows = svc.seat_rollup.flush_closed(T0 + 900)
+    assert {r.routing_version for r in rows} == {routing_version()}
+
+
+def test_routing_version_tracks_rules_not_reasons(monkeypatch) -> None:
+    base = routing.routing_version()
+    assert len(base) == 12 and routing.routing_version() == base
+    key = ("orion-hub", "user_utterance")
+    monkeypatch.setitem(routing.ROLE_RULES, key, routing.InputRule("presence", "reworded reason only"))
+    assert routing.routing_version() == base
+    monkeypatch.setitem(routing.ROLE_RULES, key, routing.InputRule("skip", "now skipped"))
+    assert routing.routing_version() != base
+    monkeypatch.undo()
+    monkeypatch.setattr(routing, "PRESENCE_LEVEL", 0.4)
+    assert routing.routing_version() != base
+
+
+def test_publish_timeout_counts_as_failure_and_keeps_the_row(svc, monkeypatch) -> None:
+    from app import service as service_mod
+
+    class _Hung:
+        async def publish(self, *_a):
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(service_mod, "SEAT_ROLLUP_PUBLISH_TIMEOUT_SEC", 0.01)
+    svc.bus = _Hung()
+    asyncio.run(svc._handle_grammar_message(_payload("orion-hub", "user_utterance", T0 + 1, "h1")))
+    assert asyncio.run(svc._flush_seat_rollup_once(T0 + 900)) == 0
+    assert svc.seat_rollup_publish_failed == 1 and len(svc._seat_rollup_pending) == 5
+
+
+def test_late_atoms_are_counted_per_bucket(svc) -> None:
+    acc = svc.seat_rollup
+    acc.observe_atom(site_index=0, level=0.5, emitted_epoch=T0 + 1, now_epoch=T0 + 1)
+    acc.flush_closed(T0 + 500, grace_sec=120)
+    svc._clock["now"] = float(T0 + 501)
+    asyncio.run(svc._handle_grammar_message(_payload("orion-hub", "user_utterance", T0 + 2, "late1")))
+    asyncio.run(svc._handle_grammar_message(_payload("orion-hub", "user_utterance", T0 + 3, "late2")))
+    stats = svc._seat_rollup_stats()
+    assert stats["late_atoms_dropped"] == 2
+    assert stats["late_by_bucket"] == {_iso(T0): 2}
 
 
 def test_routing_seat_order_matches_schema_site_index() -> None:

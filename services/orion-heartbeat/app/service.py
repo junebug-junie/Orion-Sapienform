@@ -37,6 +37,7 @@ from .substrate.routing import (
     catalog_grammar_producers,
     input_rule,
     route_atom,
+    routing_version,
 )
 from .substrate.verdict_atoms import (
     MEAN_RATIO_MEANING,
@@ -59,6 +60,7 @@ _MAX_COUNTER_KEYS = 64  # bound on the per-reason / per-role input counters
 # publishes (12 buckets x 5 seats = 1 h).
 SEAT_ROLLUP_FLUSH_CHECK_SEC = 10.0
 SEAT_ROLLUP_MAX_PENDING = 12 * 5
+SEAT_ROLLUP_PUBLISH_TIMEOUT_SEC = 5.0
 
 
 def _bump(counter: dict[str, int], key: str, limit: int = _MAX_COUNTER_KEYS) -> None:
@@ -175,16 +177,24 @@ class HeartbeatService(BaseChassis):
         self.verdict_atoms_publish_failed = 0
         self.last_verdict_atom: dict[str, Any] | None = None
         # Five-minute per-seat rollup (issue #3886). None when disabled.
+        now = time.time()
+        self.routing_version = routing_version()
         self.seat_rollup: Optional[SeatRollupAccumulator] = (
             SeatRollupAccumulator(
                 node=settings.node_name or "unknown",
                 seats=SEAT_ORDER,
-                started_at_epoch=time.time(),
+                started_at_epoch=now,
+                routing_version=self.routing_version,
                 silence_gap_sec=settings.seat_rollup_silence_gap_sec,
             )
             if settings.seat_rollup_enabled
             else None
         )
+        # When the heartbeat last stopped hearing orion:grammar:event: construction, or the end of
+        # the previous _run (the chassis restarts _run after a bus drop). Every bucket from here
+        # to the next subscribe is partial.
+        self._rollup_unsubscribed_at: float = now
+        self._rollup_subscribed = False
         self._seat_rollup_pending: deque[HeartbeatSeatRollupV1] = deque(maxlen=SEAT_ROLLUP_MAX_PENDING)
         self.seat_rollup_published = 0
         self.seat_rollup_publish_failed = 0
@@ -404,13 +414,34 @@ class HeartbeatService(BaseChassis):
             event_id = atom.get("_event_id")
             event_id = str(event_id) if event_id else None
             if level is None:
-                rollup.observe_skip(site_index=site_index, emitted_epoch=emitted, now_epoch=now, event_id=event_id)
+                outcome = rollup.observe_skip(
+                    site_index=site_index, emitted_epoch=emitted, now_epoch=now, event_id=event_id
+                )
             else:
-                rollup.observe_atom(
+                outcome = rollup.observe_atom(
                     site_index=site_index, level=level, emitted_epoch=emitted, now_epoch=now, event_id=event_id
                 )
+            if outcome == "late":
+                bucket = int(emitted // 300) * 300
+                if rollup.late_by_bucket.get(bucket) == 1:  # once per bucket
+                    logger.warning(
+                        "heartbeat_seat_rollup_late_atom bucket_start=%s lag_sec=%.1f -- the stored row for "
+                        "this bucket undercounts it",
+                        datetime.fromtimestamp(bucket, timezone.utc).isoformat(), now - emitted,
+                    )
         except Exception as exc:  # noqa: BLE001 - the rollup never blocks routing
             logger.warning("heartbeat_seat_rollup_observe_failed err=%s", exc)
+
+    def _rollup_mark_subscribed(self) -> None:
+        """Called once the subscription is open: the span since the heartbeat last stopped hearing
+        the channel was blind, so its buckets are partial. Fail-open."""
+        self._rollup_subscribed = True
+        if self.seat_rollup is None:
+            return
+        try:
+            self.seat_rollup.mark_blind(self._rollup_unsubscribed_at, time.time())
+        except Exception as exc:  # noqa: BLE001 - the rollup never blocks the subscriber
+            logger.warning("heartbeat_seat_rollup_mark_blind_failed err=%s", exc)
 
     def _seat_rollup_stats(self) -> dict[str, Any]:
         rollup = self.seat_rollup
@@ -425,9 +456,15 @@ class HeartbeatService(BaseChassis):
             # Atoms stamped in an already-published bucket (or before start), more than one
             # bucket in the future, or repeated in a bucket: not added to any row.
             "late_atoms_dropped": rollup.late if rollup is not None else 0,
+            "late_by_bucket": (
+                {datetime.fromtimestamp(b, timezone.utc).isoformat(): n for b, n in sorted(rollup.late_by_bucket.items())}
+                if rollup is not None
+                else {}
+            ),
             "future_atoms_dropped": rollup.future if rollup is not None else 0,
             "duplicate_atoms_ignored": rollup.duplicates if rollup is not None else 0,
             "emitted_at_fallback": self.seat_rollup_emitted_at_fallback,
+            "routing_version": self.routing_version,
             "last": self.last_seat_rollup,
         }
 
@@ -458,8 +495,11 @@ class HeartbeatService(BaseChassis):
         while pending:
             event = pending[0]
             try:
-                await self.bus.publish(HEARTBEAT_SEAT_ROLLUP_CHANNEL, self._seat_rollup_envelope(event))
-            except Exception as exc:  # noqa: BLE001 - retried on the next tick
+                await asyncio.wait_for(
+                    self.bus.publish(HEARTBEAT_SEAT_ROLLUP_CHANNEL, self._seat_rollup_envelope(event)),
+                    timeout=SEAT_ROLLUP_PUBLISH_TIMEOUT_SEC,
+                )
+            except Exception as exc:  # noqa: BLE001 - incl. timeout; retried on the next tick
                 self.seat_rollup_publish_failed += 1
                 logger.warning(
                     "heartbeat_seat_rollup_publish_failed rollup_id=%s pending=%d err=%s",
@@ -662,6 +702,7 @@ class HeartbeatService(BaseChassis):
             tasks.append(asyncio.create_task(self._seat_rollup_loop(), name="heartbeat-seat-rollup"))
         try:
             async with self.bus.subscribe(settings.channel_grammar_event) as pubsub:
+                self._rollup_mark_subscribed()
                 async for msg in self.bus.iter_messages(pubsub):
                     if self._stop.is_set():
                         break
@@ -685,6 +726,11 @@ class HeartbeatService(BaseChassis):
                     except Exception as exc:  # noqa: BLE001 - one bad event must not kill the subscriber
                         logger.warning("heartbeat_handle_failed err=%s", exc)
         finally:
+            # Only a real subscription's end starts a new blind span; a failed subscribe attempt
+            # must not move the start of the span that is already running.
+            if self._rollup_subscribed:
+                self._rollup_subscribed = False
+                self._rollup_unsubscribed_at = time.time()
             # Drain whatever's already queued before cancelling the absorb
             # worker -- correct shutdown behavior (finish absorbing real
             # events already accepted rather than silently dropping them),

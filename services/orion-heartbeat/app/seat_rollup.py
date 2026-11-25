@@ -13,6 +13,8 @@ What counts as missing (absence must read as unknown, never as zero):
 
 - A bucket the heartbeat never heard a message in has no rows at all.
 - The bucket the process started in is ``partial``.
+- Every bucket between losing the orion:grammar:event subscription and getting it back (the
+  chassis restarts ``_run`` after a bus drop) is ``partial`` (``mark_blind``).
 - A silence on orion:grammar:event longer than ``silence_gap_sec`` marks every bucket from the
   last message to the next one ``partial``. A bucket flushed while that silence is still going on
   (nothing heard within ``silence_gap_sec`` of its end) is ``partial`` too. The channel carries bus atoms every ~11 s and
@@ -23,7 +25,8 @@ A seat with no atoms in a complete bucket gets a row with level 0 and count 0: t
 listening and that seat was quiet.
 
 An atom stamped in a bucket that was already published (or before the process started) cannot be
-added without rewriting a stored row, so it is dropped and counted as ``late``. An atom stamped more
+added without rewriting a stored row, so it is dropped and counted as ``late`` (also per bucket in
+``late_by_bucket``, so a stored row that disagrees with grammar_events can be traced). An atom stamped more
 than one bucket in the future (clock skew) is dropped and counted as ``future``. A repeated
 ``event_id`` in the same bucket is counted once (the ledger dedupes on event_id too).
 """
@@ -39,7 +42,13 @@ from orion.schemas.heartbeat_seat_rollup import (
     HeartbeatSeatRollupV1,
 )
 
+# Backstop for a subscription that hangs without an error (a resubscribe is caught by mark_blind).
+# The channel's 99.99th-percentile gap is ~11 s, but bus and biometrics pause together for 30-60 s
+# a few times a day (46 s on 2026-11-25 02:28:48). The ledger shows those pauses too, so they are
+# real data: 30 s would mark them missing and cut the replay's scored run. 60 s does not.
 DEFAULT_SILENCE_GAP_SEC = 60.0
+# Buckets kept in late_by_bucket (4 h).
+LATE_BY_BUCKET_MAX = 48
 
 Outcome = Literal["counted", "duplicate", "late", "future"]
 
@@ -69,10 +78,12 @@ class SeatRollupAccumulator:
         node: str,
         seats: Sequence[str],
         started_at_epoch: float,
+        routing_version: str,
         bucket_sec: int = HEARTBEAT_SEAT_ROLLUP_BUCKET_SEC,
         silence_gap_sec: float = DEFAULT_SILENCE_GAP_SEC,
     ) -> None:
         self._node = node
+        self._routing_version = routing_version
         self._seats = tuple(seats)
         self._bucket_sec = bucket_sec
         self._silence_gap_sec = silence_gap_sec
@@ -85,6 +96,7 @@ class SeatRollupAccumulator:
             self._partial_starts.add(start)
         self._last_receipt_epoch = float(started_at_epoch)
         self.late = 0
+        self.late_by_bucket: dict[int, int] = {}
         self.future = 0
         self.duplicates = 0
 
@@ -97,14 +109,19 @@ class SeatRollupAccumulator:
             bucket = self._buckets[start] = _Bucket(n_seats=len(self._seats))
         return bucket
 
+    def mark_blind(self, from_epoch: float, to_epoch: float) -> None:
+        """The heartbeat was not subscribed from ``from_epoch`` to ``to_epoch``: every bucket that
+        span touches is partial. Buckets already published are not touched."""
+        first = max(bucket_start_epoch(from_epoch, self._bucket_sec), self._open_from)
+        end = bucket_start_epoch(to_epoch, self._bucket_sec)
+        for start in range(first, end + 1, self._bucket_sec):
+            self._partial_starts.add(start)
+
     def observe_receipt(self, now_epoch: float) -> None:
         """Any message received on orion:grammar:event. Opens the bucket and detects blind gaps."""
         last = self._last_receipt_epoch
         if now_epoch - last > self._silence_gap_sec:
-            first = max(bucket_start_epoch(last, self._bucket_sec), self._open_from)
-            end = bucket_start_epoch(now_epoch, self._bucket_sec)
-            for start in range(first, end + 1, self._bucket_sec):
-                self._partial_starts.add(start)
+            self.mark_blind(last, now_epoch)
         if now_epoch > last:
             self._last_receipt_epoch = now_epoch
         start = bucket_start_epoch(now_epoch, self._bucket_sec)
@@ -115,6 +132,9 @@ class SeatRollupAccumulator:
         start = bucket_start_epoch(emitted_epoch, self._bucket_sec)
         if start < self._open_from:
             self.late += 1
+            self.late_by_bucket[start] = self.late_by_bucket.get(start, 0) + 1
+            while len(self.late_by_bucket) > LATE_BY_BUCKET_MAX:
+                self.late_by_bucket.pop(min(self.late_by_bucket))
             return "late", None
         if start > bucket_start_epoch(now_epoch, self._bucket_sec) + self._bucket_sec:
             self.future += 1
@@ -176,6 +196,7 @@ class SeatRollupAccumulator:
                 atom_count=bucket.counts[i],
                 skipped_count=bucket.skipped[i],
                 partial=partial,
+                routing_version=self._routing_version,
             )
             for i, seat in enumerate(self._seats)
         ]

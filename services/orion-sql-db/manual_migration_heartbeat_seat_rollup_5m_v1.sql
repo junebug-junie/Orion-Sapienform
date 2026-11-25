@@ -8,7 +8,8 @@
 -- seat's atoms whose emitted_at falls in the bucket (the value scripts/demon_network_replay.py
 -- recomputes from grammar_events); atom_count = those atoms; skipped_count = the seat's atoms the
 -- input rule skipped. partial = the heartbeat was not listening for part of the bucket; readers
--- treat it as missing. A bucket with no rows is unknown, never zero.
+-- treat it as missing. A bucket with no rows is unknown, never zero. routing_version = hash of
+-- the heartbeat routing rules that produced level_sum; readers do not mix versions.
 -- Reader: scripts/demon_network_replay.py. grammar_events keeps ~3 days; this table is kept.
 -- sql-writer's create_all makes the same table at boot (index name matches SQLAlchemy's
 -- index=True default); this file is the operator contract. Additive only.
@@ -17,15 +18,16 @@
 -- Rollback: DROP TABLE heartbeat_seat_rollup_5m;  (loses the stored history)
 
 CREATE TABLE IF NOT EXISTS heartbeat_seat_rollup_5m (
-    rollup_id      text PRIMARY KEY,
-    node           text NOT NULL,
-    seat           text NOT NULL,
-    site_index     integer NOT NULL,
-    bucket_start   timestamptz NOT NULL,
-    bucket_end     timestamptz NOT NULL,
-    level_sum      double precision NOT NULL,
-    atom_count     integer NOT NULL,
-    skipped_count  integer NOT NULL,
-    partial        boolean NOT NULL DEFAULT false
+    rollup_id        text PRIMARY KEY,
+    node             text NOT NULL,
+    seat             text NOT NULL,
+    site_index       integer NOT NULL,
+    bucket_start     timestamptz NOT NULL,
+    bucket_end       timestamptz NOT NULL,
+    level_sum        double precision NOT NULL,
+    atom_count       integer NOT NULL,
+    skipped_count    integer NOT NULL,
+    partial          boolean NOT NULL DEFAULT false,
+    routing_version  text NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_heartbeat_seat_rollup_5m_bucket_start ON heartbeat_seat_rollup_5m (bucket_start);

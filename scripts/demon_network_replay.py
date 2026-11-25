@@ -18,10 +18,13 @@ same per-seat value for every closed 5-minute bucket to ``heartbeat_seat_rollup_
 seat per bucket, kept). The replay reads the rollup first and uses ``grammar_events`` only for
 buckets the rollup has no rows for. Each bucket is labelled with its source:
 
-- ``rollup``: all 5 seats from complete rollup rows;
-- ``rollup_partial``: the rollup has rows, but the heartbeat was not listening for the whole bucket
-  (or a seat row is missing). Read as missing, not as zero, and not refilled from grammar_events;
-- ``grammar_events``: no rollup rows; recomputed from the ledger;
+- ``rollup``: all 5 seats from complete rollup rows of one node, made under today's routing rules;
+- ``grammar_events``: recomputed from the ledger, because the rollup has no usable rows for it
+  (none, partial, a seat missing, two nodes, or other routing rules) and the ledger still has it;
+- ``rollup_partial``: rollup rows exist, but the heartbeat was not listening for the whole bucket
+  (or a seat row is missing, or two nodes wrote it), and the ledger no longer has it. Missing;
+- ``rollup_other_routing``: complete rollup rows made under other routing rules
+  (``routing_version``), and the ledger no longer has it. Missing unless --any-routing-version;
 - ``none``: neither source covers the bucket. Missing.
 
 Reads both tables with ``docker exec orion-athena-sql-db psql``. Writes results.json to --out and
@@ -65,7 +68,7 @@ TRAIN_FRACTION = 2 / 3
 PIPELINE = [[0, 2, 3, 4], [1]]  # hub, exec, bus, harness | biometrics (#3795)
 DB_CONTAINER = "orion-athena-sql-db"
 ROLLUP_TABLE = "heartbeat_seat_rollup_5m"
-SOURCES = ("rollup", "rollup_partial", "grammar_events", "none")
+SOURCES = ("rollup", "grammar_events", "rollup_partial", "rollup_other_routing", "none")
 # Clockwork seats: biometrics (site 1) and bus (site 3) tick every ~11-16 s.
 CLOCKWORK_SITES = (1, 3)
 
@@ -132,13 +135,13 @@ def aggregate_grammar_rows(rows) -> tuple[dict[tuple[int, int], tuple[float, int
 
 
 def _rollup_rows() -> list[list[str]]:
-    """(bucket, node, site_index, level_sum, atom_count, partial) per stored rollup row. Empty when
+    """(bucket, node, site_index, level_sum, atom_count, partial, routing_version) per stored row. Empty when
     the table does not exist yet (before the first deploy)."""
     if _psql(f"select to_regclass('{ROLLUP_TABLE}') is not null") != [["t"]]:
         return []
     return _psql(
         "select floor(extract(epoch from bucket_start) / 300)::bigint, node, site_index, "
-        f"level_sum, atom_count, partial from {ROLLUP_TABLE}"
+        f"level_sum, atom_count, partial, routing_version from {ROLLUP_TABLE}"
     )
 
 
@@ -146,20 +149,23 @@ def build_series(
     grammar: dict[tuple[int, int], tuple[float, int]],
     rollup_rows,
     n_seats: int = len(routing.SEAT_ORDER),
+    *,
+    current_version: str | None = None,
+    any_version: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
     """Merge the two sources onto one 5-minute grid. Returns level, count, bucket index, the source
-    label per bucket (see module docstring), and stats. Missing buckets are NaN, never 0."""
-    rollup: dict[int, dict[int, tuple[float, int, bool]]] = {}
-    nodes: dict[tuple[int, int], set[str]] = {}
-    for b, node, site, level_sum, atom_count, partial in rollup_rows:
-        b, site = int(b), int(site)
-        nodes.setdefault((b, site), set()).add(str(node))
-        rollup.setdefault(b, {})[site] = (float(level_sum), int(atom_count), str(partial) in ("t", "true", "True", "1"))
-    clash = {k: v for k, v in nodes.items() if len(v) > 1}
-    if clash:
-        k = min(clash)
-        raise SystemExit(f"demon_network_replay: {len(clash)} rollup bucket/seat cells come from more than one "
-                         f"node (first: bucket {k[0]} site {k[1]}: {sorted(clash[k])}); refusing to sum them")
+    label per bucket (see module docstring), and stats. Missing buckets are NaN, never 0.
+
+    A rollup bucket is usable when all seats have one complete row from one node, made under the
+    current routing rules (``current_version``; ``any_version`` accepts older rules). An unusable
+    bucket inside the ledger's range takes the ledger recompute instead; outside it, it is missing
+    and labelled with why."""
+    current_version = current_version or routing.routing_version()
+    rollup: dict[int, dict[int, list[tuple[str, float, int, bool, str]]]] = {}
+    for b, node, site, level_sum, atom_count, partial, version in rollup_rows:
+        rollup.setdefault(int(b), {}).setdefault(int(site), []).append(
+            (str(node), float(level_sum), int(atom_count), str(partial) in ("t", "true", "True", "1"), str(version))
+        )
     g_buckets = sorted({b for b, _ in grammar})
     all_buckets = g_buckets + sorted(rollup)
     if not all_buckets:
@@ -170,17 +176,31 @@ def build_series(
     level = np.full((n, n_seats), np.nan)
     count = np.zeros((n, n_seats))
     source = np.full(n, "none", dtype=object)
+    stats = {"multi_node_buckets": 0, "rollup_refilled_from_ledger": 0, "rollup_versions": {}}
     for t in range(n):
         b = b0 + t
         r = rollup.get(b)
+        unusable = None
         if r is not None:
-            complete = len(r) == n_seats and not any(p for _, _, p in r.values())
-            source[t] = "rollup" if complete else "rollup_partial"
-            for site, (lv, c, _p) in r.items():
-                count[t, site] = c
-                if complete:
-                    level[t, site] = lv
-        elif g0 is not None and g0 <= b <= g1:
+            for rows in r.values():
+                for row in rows:
+                    stats["rollup_versions"][row[4]] = stats["rollup_versions"].get(row[4], 0) + 1
+            if any(len(rows) > 1 for rows in r.values()):
+                stats["multi_node_buckets"] += 1
+                unusable = "rollup_partial"
+            elif len(r) != n_seats or any(rows[0][3] for rows in r.values()):
+                unusable = "rollup_partial"
+            elif not any_version and any(rows[0][4] != current_version for rows in r.values()):
+                unusable = "rollup_other_routing"
+            if unusable is None:
+                source[t] = "rollup"
+                for site, rows in r.items():
+                    _node, lv, c, _p, _v = rows[0]
+                    level[t, site], count[t, site] = lv, c
+                continue
+        if g0 is not None and g0 <= b <= g1:
+            if unusable is not None:
+                stats["rollup_refilled_from_ledger"] += 1
             source[t] = "grammar_events"
             for site in range(n_seats):
                 lv, c = grammar.get((b, site), (0.0, 0))
@@ -188,6 +208,8 @@ def build_series(
             # The first and last ledger buckets are partial (retention cut, still filling).
             if b in (g0, g1):
                 level[t] = np.nan
+        elif unusable is not None:
+            source[t] = unusable
     # A bucket with no biometrics or no bus atom at all is an outage of the ledger or the
     # emitter, not calm: mark the whole bucket missing (both sources).
     outage = np.zeros(n, dtype=bool)
@@ -196,12 +218,17 @@ def build_series(
     outage &= (source == "rollup") | (source == "grammar_events")
     level[outage] = np.nan
     idx = np.arange(b0, b1 + 1)
-    stats = {
+    finite = np.all(np.isfinite(level), axis=1)
+    inside = np.flatnonzero(finite)
+    stats.update({
         "buckets": int(n),
         "outage_buckets": int(outage.sum()),
         "source_buckets": {k: int((source == k).sum()) for k in SOURCES},
+        # Missing buckets between the first and last usable one: each one cuts the scored run
+        # (the replay scores the longest finite run).
+        "holes_inside_span": int((~finite[inside[0]:inside[-1] + 1]).sum()) if len(inside) else 0,
         "source_spans": source_spans(source, idx),
-    }
+    })
     return level, count, idx, source, stats
 
 
@@ -221,13 +248,17 @@ def _iso(bucket: int) -> str:
     return datetime.fromtimestamp(int(bucket) * BUCKET, timezone.utc).isoformat()
 
 
-def load() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+def load(any_version: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
     grammar, gstats = aggregate_grammar_rows(_psql(grammar_sql()))
     rows = _rollup_rows()
-    level, count, idx, source, stats = build_series(grammar, rows)
-    stats = {**gstats, "rollup_rows_read": len(rows), **stats}
-    stats["counts_per_bucket_median"] = dict(zip(routing.SEAT_ORDER, np.median(count, axis=0).tolist()))
-    stats["count_cv"] = dict(zip(routing.SEAT_ORDER, (count.std(0) / np.maximum(count.mean(0), 1e-9)).round(3).tolist()))
+    version = routing.routing_version()
+    level, count, idx, source, stats = build_series(grammar, rows, current_version=version, any_version=any_version)
+    stats = {**gstats, "rollup_rows_read": len(rows), "routing_version": version, **stats}
+    # Over usable buckets only: missing and partial buckets would pull these down.
+    used = count[np.all(np.isfinite(level), axis=1)]
+    if len(used):
+        stats["counts_per_bucket_median"] = dict(zip(routing.SEAT_ORDER, np.median(used, axis=0).tolist()))
+        stats["count_cv"] = dict(zip(routing.SEAT_ORDER, (used.std(0) / np.maximum(used.mean(0), 1e-9)).round(3).tolist()))
     return level, count, idx, source, stats
 
 
@@ -253,11 +284,13 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--seed", type=int, default=3837)
     ap.add_argument("--n-null", type=int, default=N_NULL)
+    ap.add_argument("--any-routing-version", action="store_true",
+                    help="also use rollup rows made under other heartbeat routing rules (labelled in stats)")
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
     t0 = time.time()
     names = list(routing.SEAT_ORDER)
-    raw, count, idx, source, stats = load()
+    raw, count, idx, source, stats = load(any_version=args.any_routing_version)
     res = wbs.tod_residuals(raw, idx, min_days=1)
     lo, hi = longest_finite_run(res)
     if hi - lo < 2:

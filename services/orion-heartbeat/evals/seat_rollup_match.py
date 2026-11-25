@@ -84,7 +84,9 @@ def via_service(replay, start: int, end: int) -> tuple[dict[tuple[int, int], tup
     )
     svc = HeartbeatService()
     # Started exactly on the window's first boundary, so the first bucket is complete.
-    svc.seat_rollup = SeatRollupAccumulator(node="eval", seats=SEAT_ORDER, started_at_epoch=float(start))
+    svc.seat_rollup = SeatRollupAccumulator(
+        node="eval", seats=SEAT_ORDER, started_at_epoch=float(start), routing_version=svc.routing_version
+    )
     clock = {"now": float(start)}
 
     async def feed() -> None:
@@ -119,18 +121,35 @@ def via_service(replay, start: int, end: int) -> tuple[dict[tuple[int, int], tup
     return out, info
 
 
+def _health_late() -> dict | str:
+    """Late atoms per bucket from the running heartbeat, to explain a stored-row mismatch."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("http://localhost:7251/health", timeout=3) as resp:
+            return json.load(resp).get("seat_rollup", {}).get("late_by_bucket", {})
+    except Exception as exc:  # noqa: BLE001 - optional context only
+        return f"unavailable: {exc}"
+
+
 def from_table(replay, start: int, end: int) -> tuple[dict[tuple[int, int], tuple[float, int]], dict]:
+    version = replay.routing.routing_version()
     rows = replay._psql(
-        "select floor(extract(epoch from bucket_start) / 300)::bigint, site_index, level_sum, atom_count, partial "
-        f"from {replay.ROLLUP_TABLE} where bucket_start >= to_timestamp({start}) and bucket_start < to_timestamp({end})"
+        "select floor(extract(epoch from bucket_start) / 300)::bigint, site_index, level_sum, atom_count, partial, "
+        f"routing_version from {replay.ROLLUP_TABLE} "
+        f"where bucket_start >= to_timestamp({start}) and bucket_start < to_timestamp({end})"
     )
-    out, partial = {}, 0
-    for b, site, level_sum, atom_count, p in rows:
+    out, partial, other = {}, 0, 0
+    for b, site, level_sum, atom_count, p, v in rows:
         if p == "t":
             partial += 1
             continue
+        if v != version:  # made under other routing rules: not comparable with today's recompute
+            other += 1
+            continue
         out[(int(b), int(site))] = (float(level_sum), int(atom_count))
-    return out, {"rows_read": len(rows), "partial_rows": partial}
+    return out, {"rows_read": len(rows), "partial_rows": partial, "other_routing_rows": other,
+                 "routing_version": version, "late_by_bucket_on_health": _health_late()}
 
 
 def compare(rollup, ledger, start: int, end: int, n_seats: int) -> dict:

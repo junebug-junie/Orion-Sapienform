@@ -27,3 +27,5 @@ class HeartbeatSeatRollupSQL(Base):
     skipped_count = Column(Integer, nullable=False)
     # Heartbeat was not listening for part of the bucket: an undercount, read as missing.
     partial = Column(Boolean, nullable=False, default=False)
+    # Hash of the heartbeat routing rules that produced level_sum (routing.routing_version()).
+    routing_version = Column(String, nullable=False)

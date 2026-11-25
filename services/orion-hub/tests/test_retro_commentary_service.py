@@ -754,3 +754,39 @@ def test_a_turn_that_never_answered_leaves_the_now_read_open(monkeypatch):
     asyncio.run(t.svc.tick())
     (row,) = t.db.lines.values()
     assert row["outcome"] == "failed" and t.calls["uses"] == []
+
+
+def test_a_claimed_line_whose_delivery_then_fails_still_closes_the_now_read(monkeypatch):
+    """Review of #3866: claimed, then not sent (a send error after the claim). The model ran: close it empty."""
+    t = make_service(monkeypatch, now_obj=_now("gpu_wait:a"))
+
+    async def claim_then_fail(**kw):
+        assert await kw["claim"]()
+        return {"reason": "push_failed"}
+    monkeypatch.setattr(t.outreach, "deliver_line", claim_then_fail)
+    asyncio.run(t.svc.tick())
+    assert [(s, c) for s, _ref, c in t.calls["uses"]] == [("shown-play", [])]
+
+
+def test_a_turn_that_answered_in_a_race_with_the_yield_closes_the_now_read(monkeypatch):
+    """Review of #3866: the yield lands while the turn returns its text: the model ran, so the read closes empty."""
+    def compose(calls, log):
+        async def f(prompt, corr, **kw):
+            t.svc.running.yielded = True
+            return "A finished draft.\nCHECKS:\nN2: holds", {"staged_attachment_count": 4}
+        return f
+    t = make_service(monkeypatch, compose=compose, now_obj=_now("gpu_wait:a"))
+    asyncio.run(t.svc.tick())
+    (row,) = t.db.lines.values()
+    assert row["outcome"] == "yielded" and [(s, c) for s, _ref, c in t.calls["uses"]] == [("shown-play", [])]
+
+
+def test_a_yield_before_any_answer_leaves_the_now_read_open(monkeypatch):
+    def compose(calls, log):
+        async def f(prompt, corr, **kw):
+            t.svc.running.yielded = True
+            return "", {}
+        return f
+    t = make_service(monkeypatch, compose=compose, now_obj=_now("gpu_wait:a"))
+    asyncio.run(t.svc.tick())
+    assert t.calls["uses"] == []

@@ -32,7 +32,9 @@ The night tick (app/dream_day_poll.py) and POST /dream-day/run submit these runs
   persist a day wins). ``produced`` = at least one memory row written and read back. The now's ``experience:``
   cites go to ``POST /temporal-self/now/use`` (record_use keeps only shown ids). The post is sent even with no
   cite: it closes the now read, which moves the dream organ's cursor (#3498). An attempt that never reaches
-  persist (no answer, a refusal) closes nothing, so its retry's fresh read is offered the same rows.
+  persist (no answer, a refusal) closes nothing: the run reads the now once, so its retries reuse that read,
+  and if the run fails the next run's read is offered the same rows. A run whose persist gives up after its
+  retries closes the read empty (the model did answer).
 
 The act (app/run_acts.py, actor ``dream.cycle``, verb make) closes with ``produced``, so a night with no memory
 grades 0 with the note "no lasting trace".
@@ -543,6 +545,13 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
                 attempts["persist"] = attempts.get("persist", 0) + 1
                 error = f"{type(exc).__name__}: {exc}"[:500]
                 if attempts["persist"] >= admission.max_attempts:
+                    # The model did answer: close the now read (best effort, no cites; #3498), as reverie does
+                    # on a persist failure, so the read counts as "read, cited nothing" and is not re-offered.
+                    if material.now_shown_id and not state.get("now_closed"):
+                        try:
+                            await deps.record_cites(material.now_shown_id, [], f"dream_day:{brief.day.isoformat()}")
+                        except Exception:  # noqa: BLE001 -- the run fails on persist, never on this close
+                            logger.warning("dream_day_now_close_failed day=%s", brief.day.isoformat(), exc_info=True)
                     return {"status": "failed", "tail_attempts": attempts, "last_error": error}
                 return {"status": "retrying", "tail_attempts": attempts, "last_error": error,
                         "retry_node": "persist", "retry_at": backoff(attempts["persist"])}

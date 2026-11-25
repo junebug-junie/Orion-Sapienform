@@ -131,7 +131,9 @@ No image build: no dependency, Dockerfile or compose change. Live path UNVERIFIE
 
 ## Review findings fixed
 
-(filled after review)
+The review finished after this PR merged. It found no blockers. Its 2 should-fix findings and 6 nits are fixed
+in the follow-up PR `fix/now-close-followups`. The details are in
+`docs/superpowers/pr-reports/2026-11-25-now-close-review-followups-pr.md`.
 
 ## Restart required
 
@@ -161,10 +163,10 @@ scripts/safe_docker_build.sh orion-mind up -d --build
   FILTER (WHERE closed_at IS NOT NULL), count(*) FILTER (WHERE closed_at IS NULL) FROM experience_shown
   WHERE shown_at > now() - interval '6 hours' GROUP BY 1;` should show closed rows for reverie, curiosity,
   prime; and a reverie refusal in the log followed by a read whose `since` equals the previous one.
-- Issues opened: (filled after filing). Issues closed: #3498.
+- Issues opened: none. Issues closed: #3498.
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3866
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

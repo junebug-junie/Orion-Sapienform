@@ -27,9 +27,10 @@ SELECT citing_organ, count(*) AS n FROM experience_use
 WHERE cited_at >= %(lo)s AND cited_at < %(hi)s GROUP BY citing_organ
 """
 # Now reads per reader organ in the window, split three ways (#3498): cited (a valid use), closed with no cite
-# ("read the now and cited nothing": the reader's model ran and used none of it), and never closed (the model never
-# saw it: a refusal, a timeout, a preempted turn; or a reader that does not close). A row with a use counts as
-# cited even if it predates closed_at.
+# ("read the now and cited nothing": the reader's model ran and used none of it), and not closed (the model never
+# saw it: a refusal, a timeout, a preempted turn; a reader that does not close; or a turn still running at report
+# time). A row with a use counts as cited even if it predates closed_at. Reads stored before closed_at existed
+# (deployed 2026-11-24) read as not closed, so the first day's reports overstate that column.
 NOW_READS_SQL = """
 SELECT s.reader_organ, count(*) AS reads,
   count(*) FILTER (WHERE s.closed_at IS NOT NULL

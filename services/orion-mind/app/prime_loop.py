@@ -1522,8 +1522,10 @@ class PrimeRuntime(MindLoopRuntime):
     async def _record_now_use(self, *, shown_id: Optional[str], cites: list[str], thought_id: str) -> str:
         """POST the thought's experience cites (already only shown ones, at most 3, possibly none) with the now's
         shown_id. Called only once the model answered, so the post closes the read (#3498): a closed read with no
-        cite is "read, cited nothing" in the coverage report, not "never closed". Prime reads with since=, so the
-        close never moves a server cursor (Prime keeps its own, ``_now_seen_as_of``). Returns the outcome for the
+        cite is "read, cited nothing" in the coverage report, not "never closed". Prime keeps its own cursor
+        (``_now_seen_as_of``) and reads with since=, whose close never moves the server cursor; only its first
+        read after a restart with no last thought has no since=, and that close moves a server cursor Prime never
+        reads. Returns the outcome for the
         log ("none" when nothing was cited). A failure is logged, never raised: the thought already happened."""
         if not shown_id:
             return "none"

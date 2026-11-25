@@ -67,9 +67,9 @@ No new ledger, no new store, no new status words.
   (`orion/substrate/attention/goal_context.py`, `_ACTIVE_STATES = proposed/active/planned/executing`),
   `capability_policy`, and `goal_state_listener`. `proposal_status` is always `proposed`: nothing
   writes past it. Re-announced ~1,700/h (streak > 400 on `world:chat`, 11-25).
-  Persisted per message in `field_goal_provenance_log` (#3929, live). Episode table
-  `field_goal_episode` (PK `episode_id`, assigned by the writer; new episode on target change or a
-  10-min gap) is built by orion-sapienform-47 in PR #3940 (`feat/goal-episodes`, merge after #3941). It is a sink: nothing
+  Persisted as episodes in `field_goal_episode` (PK `episode_id`, assigned by the writer; new episode
+  on target change or a 10-min gap; PR #3940, live 2026-11-25). The per-message table
+  `field_goal_provenance_log` (#3929) was retired and dropped on 2026-11-25. It is a sink: nothing
   reads it.
 - **Prime** sees acts only as refs it may cite. It has no line for "how my acts have gone".
   orion-sapienform-87 is adding one attention-schema line to the same frame (Step 2a).

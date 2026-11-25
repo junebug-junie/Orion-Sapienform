@@ -327,7 +327,8 @@ async def lived_know_endpoint(body: LivedKnowRequestBody):
                                                           else f"error:{type(exc).__name__}"}))
     hits = [
         {"strength": strength, "kind": s.rec.kind, "purpose": s.rec.purpose, "id": s.rec.doc_id,
-         "date": s.rec.date, "text": s.rec.text, "fit": round(float(s.fit), 4)}
+         "date": s.rec.date, "text": s.rec.text, "fit": round(float(s.fit), 4),
+         "ended": s.rec.ended_at.date().isoformat() if s.rec.ended_at is not None else None}
         for strength, group in (("strong", result.strong), ("weak", result.weak))
         for s in group
     ]

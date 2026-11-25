@@ -165,3 +165,16 @@ def test_render_skipped_short_carries_the_not_no_memory_sentence():
     text = "\n".join(know.render("the a", {"status": "skipped_short", "hits": []}))
     assert "nothing was searched" in text and "This is NOT the same as having no memory of it" in text
     assert "use names, places, things" in text
+
+
+def test_a_hit_past_its_end_date_says_so():
+    ended = {**HIT, "id": "episode_memory:trip", "date": "2026-09-28", "ended": "2026-10-01"}
+    text = "\n".join(know.render("trip", {"status": "ok", "backend": "hybrid", "hits": [ended]}))
+    assert "(episode_memory/about_juniper · episode_memory:trip · 2026-09-28 · true then, not now: ended 2026-10-01)" in text
+
+
+def test_weak_hits_are_named_stored_memories_never_absence():
+    """corr 8297d0c3: the reply used 1 of 8 weak hits and called the rest "not in my records"."""
+    text = "\n".join(know.render("trip", {"status": "below_bar", "backend": "hybrid", "hits": [WEAK]}))
+    assert "Weak (stored memories" in text and "never call it not recorded" in text
+    assert "use every hit that bears on it, weak ones too" in DIG_BRIEF_LINE

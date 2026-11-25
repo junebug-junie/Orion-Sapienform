@@ -256,6 +256,12 @@ def _tool_result_body_text(body: Any) -> str:
     return ""
 
 
+#: Appended to a tool_result receipt cut at its cap. The finalize judge and the repair read
+#: receipts, not the full result the motor read: what a cut receipt does not show is unknown to
+#: them, never evidence that the draft invented it (harness_finalize_reflect.j2, orion_response_repair.j2).
+TOOL_RESULT_CUT_MARK = "[receipt cut: first {shown} of {total} chars shown; the motor read the full result]"
+
+
 def _summarize_content_blocks(
     content: Any,
     *,
@@ -288,7 +294,13 @@ def _summarize_content_blocks(
             text = _tool_result_body_text(block.get("content"))
             err = " [error]" if block.get("is_error") else ""
             size = f" ({len(text)} chars)" if text else ""
-            snippet = f": {text.strip()[:tool_result_cap]}" if text.strip() else ""
+            body = text.strip()
+            snippet = f": {body[:tool_result_cap]}" if body else ""
+            if len(body) > tool_result_cap:
+                # Live 2026-11-25 (corr 8297d0c3): a memory lookup returned 1,822 chars, the judge saw
+                # the first 600 with no sign of a cut, called the draft's facts from the rest
+                # "unsupported", and the repair turned a right answer into "not in my records".
+                snippet += f" {TOOL_RESULT_CUT_MARK.format(shown=tool_result_cap, total=len(body))}"
             parts.append(f"tool_result{err}{size}{snippet}")
     return " | ".join(p for p in parts if p)
 

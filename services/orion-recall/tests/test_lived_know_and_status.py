@@ -253,6 +253,7 @@ def test_know_endpoint_returns_hits_and_logs_the_turn(monkeypatch, no_dense):
     assert body["status"] == "ok" and body["corr_id"] == "turn-123"
     assert body["hits"][0]["id"] == "episode_memory:p1" and body["hits"][0]["strength"] == "strong"
     assert {"kind", "purpose", "date", "text", "fit"} <= set(body["hits"][0])
+    assert body["hits"][0]["ended"] is None  # set only for a memory past its stated end date
     (d,) = persisted
     assert (d.corr_id, d.verb) == ("turn-123", "dig.know")
     strong = [h["id"] for h in body["hits"] if h["strength"] == "strong"]

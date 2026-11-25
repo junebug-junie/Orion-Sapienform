@@ -25,7 +25,9 @@ Pipeline, once per chat turn (PCR continuity phase):
    names and rare words are not lost; a query word that is a name (capitalized mid-sentence, or
    a known person's name) counts ``NAME_WEIGHT`` times. All lists merge by reciprocal-rank fusion.
 2. **Gate.** Every candidate must be in the current live snapshot (Postgres, not Chroma): a
-   superseded, rejected, expired or removed record is never served, whatever Chroma still holds.
+   superseded, rejected or removed record is never served, whatever Chroma still holds. An
+   episode memory past its stated end date stays in the snapshot, labelled with the day it ended
+   (``EPISODE_ENDED_SQL``): the trip ended, the memory of it did not. An expired follow-up is gone.
 3. **Link-following** (step 2, ``app/lived_links.py``). Memories that share a referent with the
    top candidates, or with a name in the message, join as extra candidates (two-hop personalized
    PageRank over ``episode_memory_referent``). They only ever reach the prompt through the rerank.
@@ -321,6 +323,8 @@ def render_line(rec: LivedRecord, tz: str = DEFAULT_TZ) -> str:
     when = rec.date
     if rec.invalid_at is not None:
         when += f" · {AS_OF_LABEL}: changed {rec.invalid_at.astimezone(local_zone(tz)).date().isoformat()}"
+    elif rec.ended_at is not None:
+        when += f" · {AS_OF_LABEL}: ended {rec.ended_at.astimezone(local_zone(tz)).date().isoformat()}"
     return f"- ({label} · {rec.doc_id} · {when}) {text}"
 
 
@@ -450,7 +454,7 @@ class LivedMemoryRecall:
     async def snapshot(self, *, force: bool = False) -> List[LivedRecord]:
         async with self._lock:
             if force or not self._snapshot or time.monotonic() - self._loaded_at > SNAPSHOT_TTL_SEC:
-                recs = await fetch_live_records(self.pool)
+                recs = await fetch_live_records(self.pool, include_ended=True)
                 self._snapshot = recs
                 self._by_doc = {r.doc_id: r for r in recs}
                 self._bm25 = BM25([r.text for r in recs])
@@ -1002,7 +1006,8 @@ class LivedMemoryRecall:
             else:
                 ids_by_kind.setdefault(s.rec.kind, []).append(s.rec.record_id)
         still_live = {r.doc_id for r in await fetch_live_records(self.pool, kinds=list(ids_by_kind),
-                                                                  ids_by_kind=ids_by_kind)} if ids_by_kind else set()
+                                                                  ids_by_kind=ids_by_kind,
+                                                                  include_ended=True)} if ids_by_kind else set()
         reread: Dict[str, LivedRecord] = {}
         if as_of_ids and window is not None:
             try:
@@ -1232,9 +1237,10 @@ async def run_index_pass(pool: Any, cfg: SearchConfig, *, client: httpx.AsyncCli
                          batch: int) -> LivedIndexPass:
     """Make the index mirror what may be served: embed and upsert live records Chroma lacks or
     holds stale text for (up to ``batch``), and delete docs whose record is no longer servable
-    (superseded, rejected, expired, removed). Postgres keeps every row; only the index entry, and
-    the private text copied into it, goes. Serving re-gates every hit anyway."""
-    recs = await fetch_live_records(pool)
+    (superseded, rejected, removed, an expired follow-up). Postgres keeps every row; only the index
+    entry, and the private text copied into it, goes. Serving re-gates every hit anyway. A memory
+    past its stated end date is still served (labelled), so it stays indexed."""
+    recs = await fetch_live_records(pool, include_ended=True)
     docs = [index_doc(r) for r in recs]
     result: IndexPass = await index_docs(docs, cfg, client=client, bus=bus, source=source,
                                          doc_prefix="lived-memory", batch=batch, hash_keys=("occurred_ts",))

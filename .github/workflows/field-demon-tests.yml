@@ -2,12 +2,16 @@ name: field-demon-tests
 
 # Field demon core (docs/superpowers/specs/2026-09-30-field-demon-forecaster-design.md, rev 2):
 # VAR(1) transition model, out-of-sample horizon, per-cut horizon cost, lag-k model for the
-# integration rung (#3296). Synthetic systems with known answers; pure numpy, ~4 s.
+# integration rung (#3296). Rev 3 adds the trained network (Born machine on an MPS) beside the
+# VAR(1): docs/superpowers/specs/2026-11-24-heartbeat-seats-field-demon-design.md. Synthetic
+# systems with known answers; pure numpy, ~10 s.
 on:
   pull_request:
     paths:
       - "orion/substrate/demon.py"
+      - "orion/substrate/born_machine.py"
       - "orion/substrate/tests/test_demon.py"
+      - "orion/substrate/tests/test_demon_network.py"
       - "orion/substrate/whole_body_structure.py"
       - "orion/substrate/tests/test_whole_body_structure.py"
       - "services/orion-field-digester/requirements.txt"
@@ -17,7 +21,9 @@ on:
     branches: [main]
     paths:
       - "orion/substrate/demon.py"
+      - "orion/substrate/born_machine.py"
       - "orion/substrate/tests/test_demon.py"
+      - "orion/substrate/tests/test_demon_network.py"
       - "orion/substrate/whole_body_structure.py"
       - "orion/substrate/tests/test_whole_body_structure.py"
       - "services/orion-field-digester/requirements.txt"
@@ -40,5 +46,7 @@ jobs:
           # numpy-only imports are not enough. Same deps as causal-geometry-tests.yml.
           python -m pip install -r services/orion-field-digester/requirements.txt
           python -m pip install -r requirements-dev.txt
-      - name: Demon core + whole-body structure
-        run: python -m pytest -q -p no:cacheprovider orion/substrate/tests/test_demon.py orion/substrate/tests/test_whole_body_structure.py
+      - name: Demon core + network + whole-body structure
+        env:
+          OPENBLAS_NUM_THREADS: "1"  # the chains are tiny; BLAS threads only add handoff cost
+        run: python -m pytest -q -p no:cacheprovider orion/substrate/tests/test_demon.py orion/substrate/tests/test_demon_network.py orion/substrate/tests/test_whole_body_structure.py

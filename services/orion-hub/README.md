@@ -402,9 +402,12 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
 
 ### 4.0b Session threads — coding sessions write to Orion (`scripts/session_roundup_loop.py`)
 
-A coding session (a Claude Code agent working in this repo) sends Orion a message, usually the design
-spec of a pull request it just opened. Hub holds the message. Once an hour Orion reads every held
-message in one turn and comes back with questions for each. Juniper sees all of it in Hub chat.
+A coding session (a Claude Code agent working in this repo) sends Orion every pull request it opens:
+the design spec, the code diff (the PR's non-spec files), or both. Hub holds the message. Every 15
+minutes Orion reads every held message in one turn and comes back with questions for each. A code diff
+is reviewed against a short template in the prompt (`core.CODE_REVIEW_TEMPLATE`). Sessions open pull
+requests as drafts and may mark them ready only after answering Orion's first review
+(`scripts/hooks/pr_draft_gate.py`). Juniper sees all of it in Hub chat.
 Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
 
 - **Intake.** `POST /api/session-threads/message` stores the message as a `session` turn and Hub's
@@ -413,8 +416,8 @@ Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
   40,000 characters is cut, and the stored text and the receipt both say so. The same message sent
   twice is stored once (`duplicate: true`). The route has no login, so it is bounded: at most 50 threads
   waiting and 20 unread messages on one thread (HTTP 429 past that).
-- **The hourly round-up.** Each UTC hour (`HUB_SESSION_ROUNDUP_INTERVAL_SEC`) Hub takes every `held`
-  thread whose message arrived before the hour started. It submits ONE durable run
+- **The round-up.** Each bucket (`HUB_SESSION_ROUNDUP_INTERVAL_SEC`, 15 min) Hub takes every `held`
+  thread whose message arrived before the bucket started. One round runs at a time. It submits ONE durable run
   (`session_roundup.orion_turn`, run id `session-roundup-<utc hour>`, agent lane, background priority,
   act family `durable.session_roundup`). No held thread means no run and no GPU. The threads are marked
   `reading` before the submit, so a Hub restart cannot submit a second run for the same hour. Threads
@@ -430,8 +433,8 @@ Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
   `unparsed`. A thread id under two headings, or headings out of the prompt's order, makes the whole
   round `unparsed`: text may sit under the wrong heading, so none of it goes to a PR. An `unparsed`
   reply is sent nowhere (no PR, no session; kept on the thread only in a round of one thread, since in
-  a larger round it holds other threads' sections — it stays on the round's durable run), does NOT use the thread's one
-  round of questions, and the thread is read again next hour; it counts as one failure. Empty text, a
+  a larger round it holds other threads' sections — it stays on the round's durable run), does NOT use one of the thread's
+  rounds of questions, and the thread is read again next hour; it counts as one failure. Empty text, a
   cut-short turn, or a failed run fails the round: Hub writes a line on each thread, the threads go
   back to `held`, and after 3 failures in a row a thread stays `failed` until a new message arrives on
   it. A run the body never gave a turn (past its GPU admission deadline before any turn, or still
@@ -441,19 +444,22 @@ Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
   prompt budget (floor 8,000 characters; `GET /api/debug/session-threads` shows `budget_chars`).
 - **The PR comment.** For a thread with a pull request and real questions, Hub posts one comment on the
   PR with Orion's GitHub token (`ORION_GITHUB_TOKEN`, user `orion-sapienform`), headed "Orion's
-  questions on this spec (hourly round-up)". Code posts it, not the model. It only ever posts on
+  review questions (session-thread round-up)". Code posts it, not the model. It only ever posts on
   `HUB_SESSION_ROUNDUP_GITHUB_REPO`, and only after it read the PR back: the number must be an open pull
   request whose head branch is the thread's branch. `@name` and `#123` are broken so nobody is pinged
   and no issue is linked. No token or an API error
   is logged and the turn is kept. Off: `HUB_SESSION_ROUNDUP_PR_COMMENTS=false`. Before each round Hub
   reads each thread's PR state; a closed or merged PR gets a `[Hub]` line in the prompt, so Orion knows
   its questions there reach only the session.
-- **One round of questions per thread.** Once Orion asked on a thread
-  (`core.MAX_QUESTION_ROUNDS_PER_THREAD = 1`), a session reply is still read at the next round-up, but
+- **At most 3 rounds of questions per thread** (so Orion writes on a PR at most 3 times). Once
+  Orion has used them on a thread (`core.MAX_QUESTION_ROUNDS_PER_THREAD = 3`), a session reply is still read at the next round-up, but
   the prompt marks the thread ANSWER PHASE (no spec again, no new questions) and whatever Orion writes
   for it is stored as a closing note: status `closed`, never posted on the PR, shown to the session as
   "nothing here needs an answer". Question-like lines Orion wrote anyway are counted in the log line
-  `session_thread_questions_dropped`. A new PR or note gets its own round.
+  `session_thread_questions_dropped`. A new PR or note gets its own rounds. Before its last round, the
+  prompt tells Orion how many rounds are left on the thread.
+- **Lookup by PR.** `GET /api/session-threads?pr=<n>` returns that pull request's thread (the draft
+  gate hook reads it).
 - **Back to the session.** `GET /api/session-threads/pending?session_id=&branch=` returns Orion's turns
   not yet handed back to that session or that branch; `POST /api/session-threads/delivered`
   (`{"turn_ids": [...], "session_id": "..."}`) claims them for that session. A question turn stays
@@ -482,7 +488,7 @@ The hooks are silent when Hub is down. Off for one shell: `ORION_SESSION_THREADS
 | Env key | Default | What changes when it moves |
 |---|---|---|
 | `HUB_SESSION_ROUNDUP_ENABLED` | `true` | `false`: messages are still stored, the receipt says Orion will not read them, no run is submitted |
-| `HUB_SESSION_ROUNDUP_INTERVAL_SEC` | `3600` | how long a message is held; one round-up per bucket |
+| `HUB_SESSION_ROUNDUP_INTERVAL_SEC` | `900` | how long a message is held; one round-up per bucket |
 | `HUB_SESSION_ROUNDUP_TICK_SEC` | `120` | how often Hub checks for a due round or a finished run |
 | `HUB_SESSION_ROUNDUP_ORION_TIMEOUT_SEC` | `1800` | Orion's turn budget per attempt |
 | `HUB_SESSION_ROUNDUP_RUN_DEADLINE_SEC` | `10800` | a round unfinished this long after its hour started is failed by durable-runs; 30 min later Hub stops waiting for it |

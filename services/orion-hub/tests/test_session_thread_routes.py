@@ -16,6 +16,7 @@ for p in (str(HUB_ROOT.parents[1]), str(HUB_ROOT), str(HUB_ROOT / "tests")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from orion.session_threads import core  # noqa: E402
 from scripts import session_roundup_loop as srl  # noqa: E402
 from scripts import session_thread_routes as routes  # noqa: E402
 from session_thread_fakes import Clock, FakeCommenter, FakeDurable, FakeStore  # noqa: E402
@@ -80,7 +81,22 @@ def test_bad_messages_are_refused(world):
     assert client.post("/api/session-threads/message", json=_msg(thread_id="nope")).status_code == 404
 
 
-def test_list_thread_pending_and_delivered(world):
+def test_a_pull_requests_thread_is_found_by_number_and_a_diff_keeps_its_kind(world):
+    client, *_ = world
+    diff = {"path": "1 file(s)", "text": "diff --git a/x.py b/x.py\n+x = 1", "kind": "diff"}
+    tid = client.post("/api/session-threads/message", json=_msg(spec=[diff])).json()["thread"]["thread_id"]
+    client.post("/api/session-threads/message", json=_msg(pr_number=9, pr_url="https://github.com/o/r/pull/9"))
+    [found] = client.get("/api/session-threads?pr=3456").json()["threads"]
+    assert found["thread_id"] == tid and found["pr_number"] == 3456 and found["turns"] == 2
+    assert client.get("/api/session-threads?pr=4242").json()["threads"] == []
+    full = client.get(f"/api/session-threads/{tid}?spec_text=1").json()
+    assert full["turns"][0]["meta"]["spec"][0]["kind"] == "diff"
+    short = client.get(f"/api/session-threads/{tid}").json()
+    assert short["turns"][0]["meta"]["spec"][0]["kind"] == "diff" and "text" not in short["turns"][0]["meta"]["spec"][0]
+
+
+def test_list_thread_pending_and_delivered(world, monkeypatch):
+    monkeypatch.setattr(core, "MAX_QUESTION_ROUNDS_PER_THREAD", 1)   # the answer-phase mechanics, one round
     client, loop, clock, _sink, durable = world
     tid = client.post("/api/session-threads/message", json=_msg()).json()["thread"]["thread_id"]
     note = client.post("/api/session-threads/message",
@@ -124,7 +140,7 @@ def test_list_thread_pending_and_delivered(world):
                         json={"session_id": "sess-A", "thread_id": tid, "title": "reply", "body": "Juniper's rule."})
     assert reply.json()["thread"]["thread_id"] == tid and reply.json()["thread"]["status"] == "held"
     # Orion asked on it already: the session is told this is read as answers, nothing comes back to answer.
-    assert reply.json()["answer_phase"] is True and "one round of questions" in reply.json()["receipt"]["text"]
+    assert reply.json()["answer_phase"] is True and "all 1 rounds of questions" in reply.json()["receipt"]["text"]
     # The note got NO QUESTIONS: its one round is not used.
     again = client.post("/api/session-threads/message",
                         json={"session_id": "sess-B", "thread_id": note, "title": "reply", "body": "more"})

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write to Orion from a coding session, and read Orion's questions back.
 
-    python3 scripts/orion_session_thread.py send --pr 3456               # the PR's design spec(s)
+    python3 scripts/orion_session_thread.py send --pr 3456               # the PR's design spec(s) and code diff
     python3 scripts/orion_session_thread.py send --pr 3456 --note "..."  # with your own words
     python3 scripts/orion_session_thread.py send --note "..."            # a note, no PR
     python3 scripts/orion_session_thread.py reply --thread ID --body "..."
@@ -9,7 +9,7 @@
     python3 scripts/orion_session_thread.py pending                      # Orion's questions for this session
 
 Hub answers a send with a RECEIPT (Hub's, not Orion's). Orion reads every held message together at
-the next hourly round-up and comes back with questions. Hub URL: ORION_HUB_URL (default
+the next round-up (every 15 min) and comes back with questions. Hub URL: ORION_HUB_URL (default
 http://localhost:8080). Design: docs/superpowers/specs/2026-11-15-session-threads-design.md.
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             return 2
         message = lib.build_pr_message(pr, session_id=session_id, worktree=ident["worktree"], note=args.note or "")
         if message is None:
-            print(f"PR #{pr['number']} has no spec file under docs/superpowers/specs/. Nothing sent. "
+            print(f"PR #{pr['number']}: no spec file and no code diff could be read (gh pr diff). Nothing sent. "
                   "Pass --note to send your own words.", file=sys.stderr)
             return 2
     else:
@@ -91,9 +91,9 @@ def cmd_pending(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    send = sub.add_parser("send", help="send a PR's spec, or a note, to Orion")
+    send = sub.add_parser("send", help="send a PR (its specs and code diff), or a note, to Orion")
     send.add_argument("--pr", help="PR number or URL")
-    send.add_argument("--note", help="your own words (with --pr: sent with the spec)")
+    send.add_argument("--note", help="your own words (with --pr: sent with the spec and diff)")
     send.add_argument("--title", help="title for a note thread")
     send.set_defaults(fn=cmd_send)
     rep = sub.add_parser("reply", help="answer Orion on a thread")

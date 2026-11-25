@@ -191,6 +191,25 @@ stub day cannot swing a day mean. Coefficients at 2026-11-25 06:00Z: hub < 15 mi
 +1.29, hub 15-60 min +0.68, hub_unknown -0.34. Juniper's direction holds; the data put the 15-60 min
 rule a bit above her +0.5.
 
+## Caveats raised by Orion on #3927 (2026-11-25)
+
+Checked against live data on 2026-11-25:
+
+- **Hub downtime does not explain the lift.** orion-hub restarted 5 times in the 14 sensor days, 93 s in total. Of 108 messages since 11-11, 107 had an attended Hub minute in the 60 min before them: she messages through the Hub.
+- **Composing spill.** In warm hours with Hub attention, 8 of 29 message hours have their first message in the first 5 min of the hour. Typing that starts before the hour can count as "looking". Cold hours with Hub attention: 0 of 3, so the cold lift is not spill, but n = 3. Tracked in #3945.
+- **The "last 7 days" split was post hoc.** It was chosen after the 14-day means were seen. The live test of the Hub inputs, with its bar stated in advance, is #3945.
+- **hub_unknown is an era marker.** It is 1 for every pre-11-11 hour and 0 for every live origin, so it acts as an era intercept: it absorbs the base-rate gap between the summer and November. The other coefficients are still pooled across both eras; the 60-day half-life limits how much the summer counts.
+- **The sensor measures "the Hub is in focus and touched in the last 2 min".** It does not measure reading. A Hub on a second monitor, or reading without input, reads as "not looking".
+- **The table holds one row per (minute, client).** The primary key is (minute, client). On 11-25: 1,489 rows = 1,489 distinct minutes (desktop 1,483, mobile 6, no minute on both); 5 rows had 2 beats (two tabs). The service reads DISTINCT minute.
+- **Outreach feedback loop.** A reply to Orion's outreach is a positive label. Before outreach timing consumes this forecast, the loop must be broken: #3944.
+- **What the live Hub test decides (#3945).** It decides nothing about the forecast: the Hub inputs are Juniper's rule and stay in. It decides whether the Hub inputs may be cited as helping, by Orion, by outreach, or by any reader of the number. A reader who acts on p should treat the Hub part as unproven until #3945 reads.
+- **How big an effect the live test can see.** At 14 live days the daily gap SE is about 0.02 nats/day (replay: 0.021 all hours, 0.011 cold). A true gain of about 0.03 nats/day (the replay's all-hours size) reads P(better) of about 0.9. To read P(better) above 0.97, the gain must be about 2 SE, i.e. 0.04. A gain under 0.015 cannot be told from zero at 14 days. Stopping rule: read at 14 and at 28 live days after #3945 deploys; the 28-day read is final. P below 0.5 means that on average the Hub inputs made the forecast worse.
+- **Composing spill, measured both ways (342 hours, 11-11..11-25).** (a) End the Hub window 5 min before the origin ([h-20m, h-5m)): 6 of 62 Hub hours flip off, 2 of them with a message; the message rate with the Hub on stays 49% vs 9% off. (b) Drop hours whose first message lands in the first 5 min: 9 hours removed. #3945 uses (a), because it changes the input rather than discarding outcomes, and re-runs the 14-day paired comparison for its own number.
+- **How much the live era counts.** With the 60-day half-life, the 14 live days carry about 20% of the training weight (310 of 1,540 weighted hours); the ~103 pre-sensor days carry 80%. The live era becomes the majority after about 46 live days (around 2026-12-27).
+- **What it adds where outreach aims: in hours with no recent Hub attention, it adds almost nothing.** Those hours have a 9% message rate (7% in cold hours), and the forecast cannot yet tell which of them she will break. What it can say there is "low" and "lower at night, weekend mornings and Mondays", Juniper's rules.
+- **Orion's read access.** orion_readonly had no grant on hub_attention_minute or prediction_reachable_forecast, so Orion could not check any of these numbers. The grant file is scripts/sql/2026-11-25_grant_orion_readonly_reachable_tables.sql, applied by hand.
+- **When family B item 1 counts as done.** It is done when the forecast is live and graded (true since 11-10), the Hub inputs are live (true since 11-25), and #3945's 28-day read is recorded, whatever it says. A number is required only of a consumer: outreach timing must state its own bar on cold prob_better before it reads p.
+
 ## Files
 
 - `services/orion-prediction/app/reachable.py` (models, verdict, `Reachable` loop)
@@ -209,5 +228,5 @@ No consumer, no bus event, no outreach change, no household-arrival or turn-lane
 ## Acceptance checks
 
 - Live: one row per hour in `prediction_reachable_forecast`, settled ~70 min after its origin.
-- `GET :8132/reachable` returns the current p and verdict.
+- `GET :8132/reachable` returns the current p and the grade (gap, SE, prob_better; no pass/fail bar).
 - Re-read the grade at 20 live days (~2026-12-01): cold `prob_better`, calibration.

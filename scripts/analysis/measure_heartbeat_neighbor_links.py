@@ -41,7 +41,13 @@ def _import_runtime():
     else:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "orion-heartbeat"))
     from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
-    from app.substrate.routing import UnroutableAtomTypeError, UnroutableOrganError, route_atom
+    from app.substrate.routing import (
+        SITE_ORGAN_MAP,
+        SkippedInputError,
+        UnroutableAtomTypeError,
+        UnroutableOrganError,
+        route_atom,
+    )
     from app.substrate.neighbor_links import (
         PAIRS,
         V0_ORGANS,
@@ -56,6 +62,8 @@ def _import_runtime():
         "EnsembleSubstrate": EnsembleSubstrate,
         "UnroutableAtomTypeError": UnroutableAtomTypeError,
         "UnroutableOrganError": UnroutableOrganError,
+        "SkippedInputError": SkippedInputError,
+        "SITE_ORGAN_MAP": SITE_ORGAN_MAP,
         "route_atom": route_atom,
         "PAIRS": PAIRS,
         "V0_ORGANS": V0_ORGANS,
@@ -94,27 +102,26 @@ def load_grammar_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def route_rows(rows, mods) -> tuple[list[tuple[Any, str, Any]], dict[str, int]]:
-    stats = {"routed": 0, "skipped_organ": 0, "skipped_atom_type": 0}
+    """Route through production route_atom. Windows count fires per SEAT
+    (2026-11-24, #3838: cortex-orch shares the execution seat)."""
+    stats = {"routed": 0, "skipped_organ": 0, "skipped_atom_type": 0, "skipped_input": 0}
     out = []
     for row in rows:
         source = row["source_service"]
         atom = (row["event_json"] or {}).get("atom") or {}
         try:
-            assignment = mods["route_atom"](
-                source_service=source,
-                atom_type=str(atom.get("atom_type") or ""),
-                confidence=atom.get("confidence"),
-                salience=atom.get("salience"),
-                uncertainty=atom.get("uncertainty"),
-            )
+            assignment = mods["route_atom"](source_service=source, atom=atom)
         except mods["UnroutableOrganError"]:
             stats["skipped_organ"] += 1
             continue
         except mods["UnroutableAtomTypeError"]:
             stats["skipped_atom_type"] += 1
             continue
+        except mods["SkippedInputError"]:
+            stats["skipped_input"] += 1
+            continue
         stats["routed"] += 1
-        out.append((row["emitted_at"], source, assignment))
+        out.append((row["emitted_at"], mods["SITE_ORGAN_MAP"][assignment.site_index], assignment))
     return out, stats
 
 
@@ -256,6 +263,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "n_windows": len(window_rows),
         "skipped_organ": stats["skipped_organ"],
         "skipped_atom_type": stats["skipped_atom_type"],
+        "skipped_input": stats["skipped_input"],
         "pairs": [
             {
                 "organ_a": item["score"].organ_a,

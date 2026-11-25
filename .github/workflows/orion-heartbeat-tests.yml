@@ -1,0 +1,32 @@
+name: orion-heartbeat tests
+
+# 2026-11-24 (#3838, heartbeat input overhaul): no workflow ran this service's
+# tests. They gate the per-role input rules (routing.py), the decay-only
+# dissipation, the seat map, and the input audit's flags. Needs quimb.
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-heartbeat/**"
+      - "scripts/analysis/measure_heartbeat_*.py"
+      - "orion/bus/channels.yaml"
+      - "orion/schemas/grammar.py"
+      - ".github/workflows/orion-heartbeat-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -r services/orion-heartbeat/requirements.txt pytest pytest-asyncio httpx
+      - name: Heartbeat tests
+        run: PYTHONPATH=. python -m pytest -q -p no:cacheprovider services/orion-heartbeat/tests

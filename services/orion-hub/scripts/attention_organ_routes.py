@@ -8,8 +8,8 @@ heartbeat-discrimination-design.md``:
 1. **The organ** -- ``orion-heartbeat``'s N-trajectory tensor-network
    dissipation ensemble (``/h1`` + ``/health``): dark seats, smear,
    organ distinctness, verdict, plus the older mean/std/bulk numbers,
-   intake/backpressure counters, and the real ``bus_synaptic``-driven
-   reheat inputs the dissipation loop last used.
+   intake/backpressure counters, and the live decay tuning. (The
+   ``bus_synaptic``-driven reheat was removed 2026-11-24, #3838.)
 2. **The consumer** -- AST/HOT's ``AttentionSelfModelV1``, read from the
    durable ``substrate_attention_self_model`` table that
    ``orion-substrate-runtime``'s ``_attention_self_model_tick()`` writes,
@@ -32,8 +32,7 @@ Acceptance Checks 1 and 3 ask for and which had no human-visible surface.
 copy of a constant that lives in another service. Ensemble verdict edges
 (``low_ratio`` silence floor, ``high_ratio`` redundant conjunct,
 ``std_mixed`` / ``std_redundant_max``, ``bulk_low`` / ``bulk_redundant_min``)
-and the reheat inputs (``raw_mean_abs_gap_zscore`` -> ``signal`` ->
-``reheat_prob``) are read from ``orion-heartbeat``'s own ``/health`` payload,
+and the decay tuning are read from ``orion-heartbeat``'s own ``/health`` payload,
 which reports the values that service actually used. Mean-ratio color bands
 are not the classifier — ``classify_ensemble_verdict()`` keys on std and
 bulk after the silence floor. A number this tab shows is a number some real

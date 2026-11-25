@@ -1,5 +1,10 @@
 # Heartbeat memory-horizon replay (2026-11-08)
 
+**2026-11-24 (#3838):** the results below are from the build before the input
+overhaul (stamped gate strengths, bus_synaptic reheat). `replay.py` now runs
+against the overhauled build: the CSV gains `semantic_role` as column 4, and
+the reheat is gone. Re-run before reusing these numbers.
+
 Question: what does heartbeat's `mean_ratio` actually carry? Reproducible signal or dice,
 event counts or sequence, and how far back does it remember?
 
@@ -12,7 +17,7 @@ shuffled across the real timestamps.
 Run (throwaway containers, never the live service):
 
 ```bash
-docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "copy (select extract(epoch from emitted_at), source_service, event_json->'atom'->>'atom_type', event_json->'atom'->>'confidence', event_json->'atom'->>'salience', event_json->'atom'->>'uncertainty' from grammar_events where event_json->>'event_kind'='atom_emitted' and source_service in ('orion-hub','orion-biometrics','orion-cortex-exec','orion-bus','orion-cortex-orch') and emitted_at between now()-interval '3 hours' and now()-interval '30 minutes' order by emitted_at) to stdout with csv" > $W/atoms.csv
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "copy (select extract(epoch from emitted_at), source_service, event_json->'atom'->>'atom_type', event_json->'atom'->>'semantic_role', event_json->'atom'->>'confidence', event_json->'atom'->>'salience', event_json->'atom'->>'uncertainty' from grammar_events where event_json->>'event_kind'='atom_emitted' and source_service in ('orion-hub','orion-biometrics','orion-cortex-exec','orion-bus','orion-cortex-orch','orion-harness-governor') and emitted_at between now()-interval '3 hours' and now()-interval '30 minutes' order by emitted_at) to stdout with csv" > $W/atoms.csv
 docker run -d --name hb_real_42 -e PYTHONPATH=/app -e OPENBLAS_NUM_THREADS=1 -v $W:/w -w /app --entrypoint python orion-heartbeat-heartbeat /w/replay.py real 42
 # ... real 142, real 242, organ_shuffle 42, order_shuffle 42 (~30 min each, run in parallel)
 docker run --rm -v $W:/w --entrypoint python orion-heartbeat-heartbeat /w/analyze.py

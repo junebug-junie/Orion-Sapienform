@@ -1,4 +1,7 @@
-"""H1 verdict atoms: debounce, cap, summary, self-skip, per-producer unrouted counts."""
+"""H1 summary atom: labels, absence, self-skip, per-producer unrouted counts.
+
+The settled-transition atom was retired 2026-11-24 (#3838): the verdict class
+is noise (2026-11-08 replay)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -12,15 +15,14 @@ from app.settings import settings
 from app.substrate.ensemble import EnsembleH1ResultV1
 from app.substrate.routing import ORGAN_SITE_MAP, SELF_SOURCE_SERVICE, catalog_grammar_producers
 from app.substrate.verdict_atoms import (
+    MEAN_RATIO_MEANING,
     ROLE_HOURLY_SUMMARY,
-    ROLE_TRANSITION,
     SOURCE_SERVICE,
     TRACE_PREFIX,
+    VERDICT_MEANING,
     H1Tick,
     HourlyWindow,
-    VerdictTransitionTracker,
     build_summary_event,
-    build_transition_event,
 )
 
 T0 = datetime(2026, 10, 7, 0, 0, tzinfo=timezone.utc)
@@ -36,75 +38,27 @@ def _tick(i: int, verdict: str, std: float = 0.04) -> H1Tick:
     )
 
 
-def _run(tracker: VerdictTransitionTracker, verdicts: list[str]):
-    return [t for i, v in enumerate(verdicts) if (t := tracker.observe(_tick(i, v))) is not None]
-
-
-def test_single_tick_flicker_never_emits() -> None:
-    # The live shape: mostly mixed with 1-tick flickers into the other classes.
-    tracker = VerdictTransitionTracker(settle_ticks=3)
-    out = _run(tracker, ["mixed"] * 3 + ["concentrated", "mixed", "redundant", "mixed", "concentrated"] + ["mixed"] * 4)
-    assert [(t.from_verdict, t.to_verdict) for t in out] == [("none", "mixed")]
-
-
-def test_settled_change_emits_once_with_held_window() -> None:
-    tracker = VerdictTransitionTracker(settle_ticks=3)
-    out = _run(tracker, ["mixed"] * 3 + ["concentrated"] * 6)
-    assert [(t.from_verdict, t.to_verdict) for t in out] == [("none", "mixed"), ("mixed", "concentrated")]
-    change = out[1]
-    assert change.held_ticks == 3
-    assert change.held_since == T0 + timedelta(seconds=90)
-    assert change.confirmed_at == T0 + timedelta(seconds=150)
-
-
-def test_return_to_confirmed_class_after_flicker_emits_nothing() -> None:
-    tracker = VerdictTransitionTracker(settle_ticks=3)
-    out = _run(tracker, ["mixed"] * 3 + ["redundant", "redundant"] + ["mixed"] * 5)
-    assert len(out) == 1
-
-
-def test_settle_ticks_must_be_positive() -> None:
-    with pytest.raises(ValueError):
-        VerdictTransitionTracker(settle_ticks=0)
-
-
-def test_long_hold_keeps_constant_state_and_true_held_since() -> None:
-    tracker = VerdictTransitionTracker(settle_ticks=3)
-    _run(tracker, ["mixed"] * 5000)
-    assert tracker._streak_len == 5000
-    assert not hasattr(tracker, "_streak")
-    out = [tracker.observe(_tick(5000 + i, "redundant", std=0.01 * (i + 1))) for i in range(3)]
-    t = out[-1]
-    assert t is not None and t.held_since == T0 + timedelta(seconds=30 * 5000)
-    assert t.mean_std_ratio_while_held == pytest.approx(0.02)
-
-
 def test_settings_reject_degenerate_values(monkeypatch) -> None:
     from pydantic import ValidationError
 
     from app.settings import Settings
 
-    for key, bad in (
-        ("HEARTBEAT_VERDICT_SETTLE_TICKS", "0"),
-        ("HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC", "0"),
-        ("HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR", "0"),
-    ):
+    for key, bad in (("HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC", "0"),):
         monkeypatch.setenv(key, bad)
         with pytest.raises(ValidationError):
             Settings()
         monkeypatch.delenv(key)
 
 
-def test_transition_event_is_a_valid_bounded_grammar_atom() -> None:
-    tracker = VerdictTransitionTracker(settle_ticks=2)
-    t = _run(tracker, ["mixed", "mixed"])[0]
-    event = build_transition_event(node="athena", transition=t)
-    GrammarEventV1.model_validate(event.model_dump(mode="json"))
-    assert event.provenance.source_service == SOURCE_SERVICE == SELF_SOURCE_SERVICE
-    assert event.trace_id.startswith(f"{TRACE_PREFIX}athena:transition:")
-    assert event.atom.semantic_role == ROLE_TRANSITION
-    for key in ("from=none", "to=mixed", "std_ratio=", "mean_ratio=", "held_ticks=2", "held_since="):
-        assert key in event.atom.summary
+def test_settled_transition_atom_is_retired() -> None:
+    import app.substrate.verdict_atoms as va
+    from app.settings import Settings
+
+    for gone in ("ROLE_TRANSITION", "VerdictTransitionTracker", "build_transition_event"):
+        assert not hasattr(va, gone), gone
+    fields = Settings.model_fields
+    assert "verdict_settle_ticks" not in fields
+    assert "verdict_max_transitions_per_hour" not in fields
 
 
 def test_summary_reports_class_ticks_flips_and_unrouted() -> None:
@@ -117,6 +71,13 @@ def test_summary_reports_class_ticks_flips_and_unrouted() -> None:
     event = build_summary_event(node="athena", window=w, end=T0 + timedelta(hours=1))
     s = event.atom.summary
     assert event.atom.semantic_role == ROLE_HOURLY_SUMMARY
+    GrammarEventV1.model_validate(event.model_dump(mode="json"))
+    assert event.provenance.source_service == SOURCE_SERVICE == SELF_SOURCE_SERVICE
+    assert event.trace_id.startswith(f"{TRACE_PREFIX}athena:summary:")
+    # 2026-11-08 replay labels ride on every summary.
+    assert f"verdict_meaning={VERDICT_MEANING}" in s
+    assert f"mean_ratio_meaning={MEAN_RATIO_MEANING}" in s
+    assert "transitions=" not in s
     assert "h1_ticks=4" in s
     assert "verdict_ticks=concentrated:1|mixed:2|redundant:1" in s
     assert "raw_flips=3" in s
@@ -174,54 +135,32 @@ async def _feed(svc: HeartbeatService, verdicts: list[str], start: datetime = T0
 
 
 @pytest.mark.asyncio
-async def test_service_publishes_settled_transition_on_grammar_channel(monkeypatch) -> None:
+async def test_settled_verdict_changes_publish_nothing(monkeypatch) -> None:
     bus = _FakeBus()
     svc = _svc(monkeypatch, bus)
     await _feed(svc, ["mixed"] * 3 + ["concentrated"] + ["mixed"] * 3 + ["redundant"] * 3)
-    roles = [env.payload["atom"]["semantic_role"] for _, env in bus.published]
-    assert [ch for ch, _ in bus.published] == ["orion:grammar:event"] * 2
-    assert roles == [ROLE_TRANSITION, ROLE_TRANSITION]
-    assert "to=redundant" in bus.published[-1][1].payload["atom"]["summary"]
-    assert svc.verdict_atoms_published == 2
+    assert bus.published == []
     assert svc.verdict_window.raw_flips == 3
     assert svc.verdict_window.h1_ticks == 10
 
 
 @pytest.mark.asyncio
-async def test_transition_cap_counts_suppressed(monkeypatch) -> None:
-    bus = _FakeBus()
-    svc = _svc(monkeypatch, bus)
-    monkeypatch.setattr(settings, "verdict_max_transitions_per_hour", 2)
-    await _feed(svc, (["mixed"] * 3 + ["concentrated"] * 3) * 3)
-    assert len(bus.published) == 2
-    assert svc.verdict_window.transitions_emitted == 2
-    assert svc.verdict_window.transitions_suppressed == 4
-
-
-@pytest.mark.asyncio
-async def test_cap_frees_up_after_a_rolling_hour_and_reports_suppressed(monkeypatch) -> None:
-    bus = _FakeBus()
-    svc = _svc(monkeypatch, bus)
-    monkeypatch.setattr(settings, "verdict_max_transitions_per_hour", 1)
-    await _feed(svc, ["mixed"] * 3 + ["concentrated"] * 3)  # 2nd transition capped
-    assert len(bus.published) == 1
-    await _feed(svc, ["redundant"] * 3, start=T0 + timedelta(hours=1, minutes=1))
-    assert len(bus.published) == 2
-    summary = bus.published[-1][1].payload["atom"]["summary"]
-    assert "from=concentrated" in summary and "suppressed_since_last=1" in summary
-
-
-@pytest.mark.asyncio
-async def test_publish_failure_is_counted_not_raised(monkeypatch) -> None:
+async def test_summary_publish_failure_is_counted_not_raised(monkeypatch) -> None:
     bus = _FakeBus(fail=True)
     svc = _svc(monkeypatch, bus)
-    await _feed(svc, ["mixed"] * 3)
+    svc.verdict_window = HourlyWindow(start=T0)
+    await _feed(svc, ["mixed"])
+    await svc._maybe_flush_summary(T0 + timedelta(hours=1))
     assert svc.verdict_atoms_publish_failed == 1
     assert svc.verdict_atoms_published == 0
-    assert svc.verdict_window.transitions_publish_failed == 1
-    bus.fail = False
-    await _feed(svc, ["redundant"] * 3, start=T0 + timedelta(minutes=5))
-    assert "suppressed_since_last=1" in bus.published[-1][1].payload["atom"]["summary"]
+
+
+def test_h1_payload_carries_the_replay_labels() -> None:
+    svc = HeartbeatService()
+    svc.latest_h1 = _h1("mixed")
+    d = svc.latest_h1_dict()
+    assert d["verdict_meaning"] == VERDICT_MEANING
+    assert d["mean_ratio_meaning"] == MEAN_RATIO_MEANING
 
 
 async def _run_h1_loop_once(svc: HeartbeatService, monkeypatch) -> None:
@@ -267,8 +206,6 @@ async def test_h1_loop_publishes_nothing_when_disabled(monkeypatch) -> None:
     svc = _svc(monkeypatch, bus)
     monkeypatch.setattr(settings, "verdict_atoms_enabled", False)
     monkeypatch.setattr(settings, "verdict_summary_interval_sec", 0.001)
-    monkeypatch.setattr(settings, "verdict_settle_ticks", 1)
-    svc.verdict_tracker = VerdictTransitionTracker(settle_ticks=1)
     svc.verdict_window = HourlyWindow(start=T0)
     await _run_h1_loop_once(svc, monkeypatch)
     assert svc.latest_h1 is not None  # H1 itself still ran
@@ -293,7 +230,9 @@ async def test_summary_flushes_once_per_window_and_resets(monkeypatch) -> None:
 async def test_own_published_atom_echo_is_skipped_not_absorbed_or_counted_unrouted(monkeypatch) -> None:
     bus = _FakeBus()
     svc = _svc(monkeypatch, bus)
+    svc.verdict_window = HourlyWindow(start=T0)
     await _feed(svc, ["mixed"] * 3)
+    await svc._maybe_flush_summary(T0 + timedelta(hours=1))
     _, envelope = bus.published[0]
     # Feed back the exact wire payload heartbeat just published.
     await svc._handle_grammar_message(envelope.payload)

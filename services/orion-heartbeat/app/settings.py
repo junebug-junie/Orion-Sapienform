@@ -76,30 +76,14 @@ class Settings(BaseSettings):
     # effective_decay_prob = base_decay_prob * exp(-sensitivity * spread).
     decay_spread_sensitivity: float = Field(4.0, alias="HEARTBEAT_DECAY_SPREAD_SENSITIVITY")
 
-    # Two-site entangling reheat gate strength (rotation angle) -- see
-    # mps_state.py's module docstring for why reheat must be two-site, not
-    # one-site (a one-site gate is provably incapable of moving entanglement
-    # entropy across any cut).
-    reheat_strength: float = Field(0.08, alias="HEARTBEAT_REHEAT_STRENGTH")
-
-    # Scales real live bus_synaptic activity (see falkordb_* settings below)
-    # into a per-bond reheat probability: reheat_prob = reheat_prob_scale *
-    # min(1, raw_mean_abs_gap_zscore / BUS_SYNAPTIC_ZSCORE_SATURATION).
-    reheat_prob_scale: float = Field(0.02, alias="HEARTBEAT_REHEAT_PROB_SCALE")
-
-    # Wall-clock cadence for the decay/reheat dissipation loop -- deliberately
-    # a SEPARATE timer from message consumption (Missing Question 7,
-    # resolved this way): if organs go quiet, real messages stop arriving,
-    # but dissipation must keep running on its own clock or "rest" could
-    # never actually be reached.
-    decay_reheat_interval_sec: float = Field(2.0, alias="HEARTBEAT_DECAY_REHEAT_INTERVAL_SEC")
-
-    # FalkorDB connection for the real bus_synaptic reheat driver -- same
-    # naming convention as services/orion-substrate-runtime's .env_example
-    # (FALKORDB_URI / FALKORDB_BUS_GRAPH), a second, additive, read-only
-    # consumer of the same already-live graph, no new graph/schema.
-    falkordb_uri: str = Field("redis://orion-athena-falkordb:6379", alias="FALKORDB_URI")
-    falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
+    # Wall-clock cadence for the decay dissipation loop -- deliberately a
+    # SEPARATE timer from message consumption: if organs go quiet, real
+    # messages stop arriving, but dissipation must keep running on its own
+    # clock or "rest" could never actually be reached. (Renamed from
+    # HEARTBEAT_DECAY_REHEAT_INTERVAL_SEC when the bus_synaptic reheat and its
+    # FALKORDB_URI / FALKORDB_BUS_GRAPH / HEARTBEAT_REHEAT_* keys were removed,
+    # 2026-11-24, #3838.)
+    decay_interval_sec: float = Field(2.0, alias="HEARTBEAT_DECAY_INTERVAL_SEC")
 
     # Bound on the intake->absorb queue (see service.py's _run()/
     # _absorb_worker_loop() split) -- decouples cheap message intake from
@@ -117,19 +101,14 @@ class Settings(BaseSettings):
     # to tell dark from rare.
     organ_fire_window_sec: float = Field(300.0, alias="HEARTBEAT_ORGAN_FIRE_WINDOW_SEC")
 
-    # --- H1 verdict atoms on orion:grammar:event (2026-10-07) ---
-    # app/substrate/verdict_atoms.py. Heartbeat publishes a grammar atom when
-    # the H1 verdict class changes and has HELD for verdict_settle_ticks
-    # consecutive H1 ticks, plus one summary atom per summary window.
-    # Ledger-only trace: no reducer, field channel or prior reads it.
+    # --- H1 summary atom on orion:grammar:event (2026-10-07) ---
+    # app/substrate/verdict_atoms.py. One summary atom per window, labelled
+    # with the 2026-11-08 replay's reading (verdict class = noise, mean_ratio
+    # = last-3-events sequence meter). Ledger-only trace. The settled
+    # transition atom and its HEARTBEAT_VERDICT_SETTLE_TICKS /
+    # HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR keys were retired 2026-11-24
+    # (#3838).
     verdict_atoms_enabled: bool = Field(True, alias="HEARTBEAT_VERDICT_ATOMS_ENABLED")
-    # 3 ticks (~90 s at the 30 s H1 cadence): on 7 days of recorded verdicts,
-    # 1 -> 31.8 atoms/h (threshold flicker), 2 -> 5.0/h, 3 -> 1.1/h.
-    verdict_settle_ticks: int = Field(3, ge=1, alias="HEARTBEAT_VERDICT_SETTLE_TICKS")
     verdict_summary_interval_sec: float = Field(3600.0, gt=0, alias="HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC")
-    # Hard ceiling on transition atoms per rolling hour; extras are counted in
-    # the summary (transitions_suppressed), not dropped silently.
-    verdict_max_transitions_per_hour: int = Field(12, ge=1, alias="HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR")
-
 
 settings = Settings()

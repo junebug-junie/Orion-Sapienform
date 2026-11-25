@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -12,26 +11,29 @@ from orion.core.bus.codec import OrionCodec
 from orion.grammar.publish import publish_grammar_event
 
 from .settings import settings
-from .substrate.bus_synaptic import BUS_SYNAPTIC_ZSCORE_SATURATION, query_real_bus_synaptic_raw_mean_abs_z
 from .substrate.ensemble import EnsembleConfig, EnsembleH1ResultV1, EnsembleSubstrate
 from .substrate.reconstruction import compute_h1_ensemble, verdict_thresholds
 from .substrate.proprioception import OrganFireWindow
 from .substrate.routing import (
     ORGAN_SITE_MAP,
+    SEAT_ORDER,
     SELF_SOURCE_SERVICE,
     SITE_ORGAN_MAP,
+    UNROUTED_PRODUCERS,
     SiteAssignment,
+    SkippedInputError,
     UnroutableAtomTypeError,
     UnroutableOrganError,
     catalog_grammar_producers,
+    input_rule,
     route_atom,
 )
 from .substrate.verdict_atoms import (
+    MEAN_RATIO_MEANING,
+    VERDICT_MEANING,
     H1Tick,
     HourlyWindow,
-    VerdictTransitionTracker,
     build_summary_event,
-    build_transition_event,
     safe_token,
 )
 
@@ -41,6 +43,13 @@ _GRAMMAR_EVENT_KIND = "grammar.event.v1"  # orion/bus/channels.yaml's
 # orion:grammar:event message_kind -- checked against the live channel
 # registry, not guessed.
 _MAX_UNROUTED_SOURCE_KEYS = 32  # bound on the lifetime per-producer counter
+_MAX_COUNTER_KEYS = 64  # bound on the per-reason / per-role input counters
+
+
+def _bump(counter: dict[str, int], key: str, limit: int = _MAX_COUNTER_KEYS) -> None:
+    if key not in counter and len(counter) >= limit:
+        key = "other"
+    counter[key] = counter.get(key, 0) + 1
 
 
 class HeartbeatService(BaseChassis):
@@ -49,9 +58,9 @@ class HeartbeatService(BaseChassis):
     orion-substrate-runtime's already-solved standardization work instead of
     the 2026-05-01 charter's bespoke per-organ reducers).
 
-    **2026-10-07: publishes bounded H1 verdict atoms back onto
-    orion:grammar:event** (settled class transitions + one summary per
-    window, app/substrate/verdict_atoms.py). Ledger-only: no reducer, field
+    **2026-10-07: publishes a bounded H1 summary atom back onto
+    orion:grammar:event** (one summary per window; settled-transition atoms retired 2026-11-24 --
+    the class is noise, app/substrate/verdict_atoms.py). Ledger-only: no reducer, field
     channel or prior consumes them. Its own atoms come back on the same
     subscription and are skipped by source_service before routing
     (events_skipped_self), so heartbeat can never feed on itself.
@@ -65,14 +74,14 @@ class HeartbeatService(BaseChassis):
     blocked the single asyncio event loop this service runs on for the full
     N-trajectory absorb() duration on every message; now it blocks the
     queue's freshness, not the bus consumer's ability to keep accepting
-    messages). Dissipation (decay + bus_synaptic-driven reheat) runs on its
-    OWN wall-clock timer (`_decay_reheat_loop`), independent of message
+    messages). Dissipation (decay) runs on its OWN wall-clock timer
+    (`_decay_loop`), independent of message
     arrival -- if organs go quiet, real messages stop, but dissipation must
     keep running or "rest" could never actually be reached (Missing
     Question 7, resolved this way).
 
     **`_ensemble_lock` -- caught by review before this was ever merged.**
-    `absorb()`/`decay_reheat_tick()` run via `asyncio.to_thread` (see those
+    `absorb()`/`decay_tick()` run via `asyncio.to_thread` (see those
     methods' docstrings for why -- CPU-bound quimb calls were blocking the
     event loop). Offloading them to threads without also serializing access
     to the shared, mutable `EnsembleSubstrate`/quimb `MatrixProductState`
@@ -80,7 +89,7 @@ class HeartbeatService(BaseChassis):
     thread-offloaded call racing a same-thread read like `stats()`/
     `_h1_loop`) can mutate/read the same tensor network concurrently, with
     no guarantee numpy/BLAS operations are safe to interleave that way. All
-    four places that touch `self.ensemble` -- absorb, decay/reheat, H1
+    four places that touch `self.ensemble` -- absorb, decay, H1
     computation, and stats() -- now hold this lock, so the actual heavy
     quimb work still happens off the event-loop thread (the lock itself
     doesn't block other unrelated coroutines, like message intake, which
@@ -108,8 +117,6 @@ class HeartbeatService(BaseChassis):
                 gamma=settings.decay_gamma,
                 base_decay_prob=settings.base_decay_prob,
                 decay_spread_sensitivity=settings.decay_spread_sensitivity,
-                reheat_strength=settings.reheat_strength,
-                reheat_prob_scale=settings.reheat_prob_scale,
             ),
             base_seed=settings.substrate_seed,
         )
@@ -132,6 +139,15 @@ class HeartbeatService(BaseChassis):
         self.events_skipped_no_atom = 0
         self.events_skipped_malformed = 0
         self.events_skipped_self = 0
+        # Atoms from a routed service that its input rule skips (clockwork,
+        # duplicate, structural floor, ...), counted per rule reason.
+        self.events_skipped_input = 0
+        self.events_skipped_input_by_reason: dict[str, int] = {}
+        # Absorbed atoms per input kind (measured / presence).
+        self.inputs_absorbed_by_kind: dict[str, int] = {}
+        # Roles on a routed service that no ROLE_RULES entry names, so the
+        # service default applied. A new emitter role shows up here.
+        self.inputs_unlisted_role: dict[str, int] = {}
         # Per-producer count of atoms dropped as UnroutableOrganError --
         # previously one anonymous total. Bounded (overflow -> "other").
         self.events_skipped_organ_by_source: dict[str, int] = {}
@@ -139,30 +155,20 @@ class HeartbeatService(BaseChassis):
         # only to NAME what heartbeat does not route; routing stays
         # ORGAN_SITE_MAP (see routing.py for why).
         self.catalog_producers = catalog_grammar_producers()
-        self.verdict_tracker = VerdictTransitionTracker(settle_ticks=settings.verdict_settle_ticks)
         self.verdict_window = HourlyWindow(start=datetime.now(timezone.utc))
-        self._transition_times: deque[datetime] = deque()
-        # Transitions capped or failed since the last one that reached the bus
-        # -- carried on the next published atom so its from= is explicable.
-        self._unpublished_transitions = 0
         self.verdict_atoms_published = 0
         self.verdict_atoms_publish_failed = 0
         self.last_verdict_atom: dict[str, Any] | None = None
-        # Last real dissipation-tick inputs, recorded by _decay_reheat_loop
-        # (2026-07-30). These are the ACTUAL values that loop fed into
-        # decay_reheat_tick(), not a re-derivation -- a read-only surface
-        # that recomputed `reheat_prob` from its own copy of
-        # reheat_prob_scale/BUS_SYNAPTIC_ZSCORE_SATURATION would be showing
-        # a plausible number rather than the one the substrate actually used,
-        # and would drift silently the moment either constant is retuned.
-        # None until the first dissipation tick completes.
-        self.last_reheat: dict[str, Any] | None = None
 
     def latest_h1_dict(self) -> dict[str, Any] | None:
         if self.latest_h1 is None:
             return None
         d = asdict(self.latest_h1)
         d["generated_at"] = self.latest_h1.generated_at.isoformat()
+        # 2026-11-08 replay labels (verdict_atoms.py): read verdict as noise
+        # and mean_ratio as a very-short-memory sequence meter.
+        d["verdict_meaning"] = VERDICT_MEANING
+        d["mean_ratio_meaning"] = MEAN_RATIO_MEANING
         return d
 
     async def stats(self) -> dict[str, Any]:
@@ -188,6 +194,10 @@ class HeartbeatService(BaseChassis):
             "events_skipped_no_atom": self.events_skipped_no_atom,
             "events_skipped_malformed": self.events_skipped_malformed,
             "events_skipped_self": self.events_skipped_self,
+            "events_skipped_input": self.events_skipped_input,
+            "events_skipped_input_by_reason": dict(self.events_skipped_input_by_reason),
+            "inputs_absorbed_by_kind": dict(self.inputs_absorbed_by_kind),
+            "inputs_unlisted_role": dict(self.inputs_unlisted_role),
             "events_skipped_organ_by_source": dict(self.events_skipped_organ_by_source),
             # Catalogued producers heartbeat does not route, and sources seen
             # on the wire that the catalog does not list (catalog drift).
@@ -199,6 +209,8 @@ class HeartbeatService(BaseChassis):
                 if self.catalog_producers
                 else None
             ),
+            # Why each catalogued producer is left off the seats.
+            "unrouted_producer_reasons": dict(UNROUTED_PRODUCERS),
             "uncatalogued_sources_seen": sorted(
                 s for s in self.events_skipped_organ_by_source
                 if self.catalog_producers and s not in self.catalog_producers and s != "other"
@@ -207,7 +219,7 @@ class HeartbeatService(BaseChassis):
                 "enabled": settings.verdict_atoms_enabled,
                 "published": self.verdict_atoms_published,
                 "publish_failed": self.verdict_atoms_publish_failed,
-                "confirmed_verdict": self.verdict_tracker.confirmed,
+                "verdict_meaning": VERDICT_MEANING,
                 "window_start": self.verdict_window.start.isoformat(),
                 "window_h1_ticks": self.verdict_window.h1_ticks,
                 "last": self.last_verdict_atom,
@@ -217,9 +229,9 @@ class HeartbeatService(BaseChassis):
             "absorb_queue_maxsize": settings.absorb_queue_maxsize,
             "allowlisted_organs": sorted(ORGAN_SITE_MAP.keys()),
             "organ_site_map": dict(ORGAN_SITE_MAP),
-            "last_reheat": self.last_reheat,
+            "seat_order": list(SEAT_ORDER),
             # The live tuning actually in force, so a read-only surface can
-            # explain the mechanism (decay rate, spread sensitivity, reheat
+            # explain the mechanism (decay rate, spread sensitivity,
             # scale, band edges) from the running service rather than from a
             # mirrored copy of .env_example that may not match this container.
             "config": {
@@ -227,9 +239,7 @@ class HeartbeatService(BaseChassis):
                 "gamma": settings.decay_gamma,
                 "base_decay_prob": settings.base_decay_prob,
                 "decay_spread_sensitivity": settings.decay_spread_sensitivity,
-                "reheat_strength": settings.reheat_strength,
-                "reheat_prob_scale": settings.reheat_prob_scale,
-                "decay_reheat_interval_sec": settings.decay_reheat_interval_sec,
+                "decay_interval_sec": settings.decay_interval_sec,
                 "h1_interval_sec": settings.h1_interval_sec,
                 **verdict_thresholds(),
             },
@@ -249,20 +259,20 @@ class HeartbeatService(BaseChassis):
         provenance = atom.get("_provenance") or {}
         source_service = str(provenance.get("source_service") or "")
         atom_type = str(atom.get("atom_type") or "")
+        semantic_role = str(atom.get("semantic_role") or "")
 
         if source_service == SELF_SOURCE_SERVICE:
             # Our own verdict atoms echoing back on the shared channel.
             self.events_skipped_self += 1
             return
 
+        if source_service in ORGAN_SITE_MAP:
+            _rule, listed = input_rule(source_service, semantic_role)
+            if not listed:
+                _bump(self.inputs_unlisted_role, f"{safe_token(source_service)}:{safe_token(semantic_role or 'none')}")
+
         try:
-            assignment = route_atom(
-                source_service=source_service,
-                atom_type=atom_type,
-                confidence=atom.get("confidence"),
-                salience=atom.get("salience"),
-                uncertainty=atom.get("uncertainty"),
-            )
+            assignment = route_atom(source_service=source_service, atom=atom)
         except UnroutableOrganError:
             self.events_skipped_organ += 1
             key = safe_token(source_service)
@@ -273,6 +283,10 @@ class HeartbeatService(BaseChassis):
                 key = "other"
             self.events_skipped_organ_by_source[key] = self.events_skipped_organ_by_source.get(key, 0) + 1
             self.verdict_window.record_unrouted(source_service or "unknown")
+            return
+        except SkippedInputError as exc:
+            self.events_skipped_input += 1
+            _bump(self.events_skipped_input_by_reason, exc.reason)
             return
         except UnroutableAtomTypeError:
             self.events_skipped_atom_type += 1
@@ -285,7 +299,7 @@ class HeartbeatService(BaseChassis):
             )
             return
         except (ValueError, TypeError) as exc:
-            # route_atom()'s confidence/salience/uncertainty float() coercion
+            # route_atom()'s measured-field float() coercion
             # can raise these for a malformed atom (heartbeat works directly
             # off the decoded dict, not a re-validated GrammarAtomV1, so a
             # non-numeric value isn't ruled out upstream). Found by review:
@@ -347,12 +361,12 @@ class HeartbeatService(BaseChassis):
         processed before stop is honored, in both real and test operation.
 
         **`ensemble.absorb()` runs via `asyncio.to_thread`, not inline.**
-        Confirmed live 2026-07-28: `ensemble.absorb()`/`decay_reheat_tick()`
+        Confirmed live 2026-07-28: `ensemble.absorb()`/`decay_tick()`
         are synchronous CPU-bound quimb calls (~118ms for N=8) -- running
         them directly on this coroutine blocks the ENTIRE single-threaded
         event loop, not just this worker's own queue draining. Under real
         backlog (confirmed live: `absorb_queue_size` reached 30 under normal
-        traffic) this starved `_decay_reheat_loop`'s own async socket I/O
+        traffic) this starved the dissipation loop (then a FalkorDB reader)'s own async socket I/O
         long enough to produce a spurious `bus_synaptic_query_failed
         err=Timeout connecting to server` -- FalkorDB itself was fine
         (reproduced the identical query manually with zero latency); the
@@ -360,7 +374,7 @@ class HeartbeatService(BaseChassis):
         response while an absorb() burst was running. Offloading to a
         thread lets numpy/scipy's C-level linear algebra proceed while the
         event loop keeps servicing other coroutines (message intake, health
-        endpoint, the dissipation loop's real I/O).
+        endpoint, the dissipation loop).
         """
         while True:
             try:
@@ -376,6 +390,7 @@ class HeartbeatService(BaseChassis):
                 if organ:
                     self.organ_fires.record(organ)
                 self.events_absorbed += 1
+                _bump(self.inputs_absorbed_by_kind, assignment.input_kind)
             except Exception as exc:  # noqa: BLE001 - one bad absorb must not kill the worker
                 logger.warning("heartbeat_absorb_failed err=%s", exc)
             finally:
@@ -397,38 +412,24 @@ class HeartbeatService(BaseChassis):
             if organ:
                 self.organ_fires.record(organ)
             self.events_absorbed += 1
+            _bump(self.inputs_absorbed_by_kind, assignment.input_kind)
             self._absorb_queue.task_done()
             processed += 1
         return processed
 
-    async def _decay_reheat_loop(self) -> None:
+    async def _decay_loop(self) -> None:
         """Wall-clock-driven dissipation tick, independent of message
         arrival -- see class docstring for why this can't be tick-driven.
-        `ensemble.decay_reheat_tick()` runs via `asyncio.to_thread` -- see
+        `ensemble.decay_tick()` runs via `asyncio.to_thread` -- see
         `_absorb_worker_loop`'s docstring for why (same CPU-bound-call-
         blocks-the-event-loop finding, confirmed live 2026-07-28)."""
         while not self._stop.is_set():
-            await asyncio.sleep(settings.decay_reheat_interval_sec)
+            await asyncio.sleep(settings.decay_interval_sec)
             try:
-                raw_z = await query_real_bus_synaptic_raw_mean_abs_z(
-                    settings.falkordb_uri, settings.falkordb_bus_graph
-                )
-                real_signal = min(1.0, raw_z / BUS_SYNAPTIC_ZSCORE_SATURATION)
-                reheat_prob = settings.reheat_prob_scale * real_signal
                 async with self._ensemble_lock:
-                    await asyncio.to_thread(self.ensemble.decay_reheat_tick, reheat_prob)
-                # Recorded AFTER the tick actually applied -- a failed query
-                # or a failed decay_reheat_tick() must not leave a stale
-                # entry claiming the substrate was reheated when it wasn't.
-                self.last_reheat = {
-                    "raw_mean_abs_gap_zscore": raw_z,
-                    "zscore_saturation": BUS_SYNAPTIC_ZSCORE_SATURATION,
-                    "signal": real_signal,
-                    "reheat_prob": reheat_prob,
-                    "at": datetime.now(timezone.utc).isoformat(),
-                }
+                    await asyncio.to_thread(self.ensemble.decay_tick)
             except Exception as exc:  # noqa: BLE001 - must not kill the dissipation loop
-                logger.warning("heartbeat_decay_reheat_failed err=%s", exc)
+                logger.warning("heartbeat_decay_failed err=%s", exc)
 
     async def _publish_verdict_event(self, event, kind: str) -> bool:
         try:
@@ -448,9 +449,9 @@ class HeartbeatService(BaseChassis):
         return True
 
     async def _observe_verdict(self, now: datetime) -> None:
-        """Feed the latest H1 result to the transition tracker and the summary
-        window; publish a settled transition if one confirmed (subject to the
-        per-hour cap)."""
+        """Feed the latest H1 result to the summary window. Settled-transition
+        atoms were retired 2026-11-24 (#3838): the class is noise (11-08
+        replay), see verdict_atoms.py."""
         h1 = self.latest_h1
         if h1 is None:
             return
@@ -462,27 +463,6 @@ class HeartbeatService(BaseChassis):
             bulk_penetration_depth=h1.bulk_penetration_depth,
         )
         self.verdict_window.record_tick(tick)
-        transition = self.verdict_tracker.observe(tick)
-        if transition is None:
-            return
-        while self._transition_times and (now - self._transition_times[0]).total_seconds() >= 3600.0:
-            self._transition_times.popleft()
-        if len(self._transition_times) >= settings.verdict_max_transitions_per_hour:
-            self.verdict_window.transitions_suppressed += 1
-            self._unpublished_transitions += 1
-            return
-        event = build_transition_event(
-            node=settings.node_name or "unknown",
-            transition=transition,
-            suppressed_since_last=self._unpublished_transitions,
-        )
-        if await self._publish_verdict_event(event, "transition"):
-            self._transition_times.append(now)
-            self.verdict_window.transitions_emitted += 1
-            self._unpublished_transitions = 0
-        else:
-            self.verdict_window.transitions_publish_failed += 1
-            self._unpublished_transitions += 1
 
     async def _maybe_flush_summary(self, now: datetime) -> None:
         window = self.verdict_window
@@ -532,9 +512,7 @@ class HeartbeatService(BaseChassis):
     async def _run(self) -> None:
         h1_task = asyncio.create_task(self._h1_loop(), name="heartbeat-h1-loop")
         absorb_task = asyncio.create_task(self._absorb_worker_loop(), name="heartbeat-absorb-worker")
-        decay_reheat_task = asyncio.create_task(
-            self._decay_reheat_loop(), name="heartbeat-decay-reheat-loop"
-        )
+        decay_task = asyncio.create_task(self._decay_loop(), name="heartbeat-decay-loop")
         try:
             async with self.bus.subscribe(settings.channel_grammar_event) as pubsub:
                 async for msg in self.bus.iter_messages(pubsub):
@@ -573,9 +551,9 @@ class HeartbeatService(BaseChassis):
                 logger.warning(
                     "heartbeat_absorb_queue_drain_timeout size=%d", self._absorb_queue.qsize()
                 )
-            for task in (h1_task, absorb_task, decay_reheat_task):
+            for task in (h1_task, absorb_task, decay_task):
                 task.cancel()
-            for task in (h1_task, absorb_task, decay_reheat_task):
+            for task in (h1_task, absorb_task, decay_task):
                 try:
                     await task
                 except asyncio.CancelledError:

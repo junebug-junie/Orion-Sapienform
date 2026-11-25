@@ -603,6 +603,21 @@ def test_attention_organ_js_config_row_lists_ensemble_verdict_edges() -> None:
     assert "config.bulk_redundant_min" in dissipation
 
 
+def test_attention_organ_js_dissipation_panel_has_no_reheat_surface() -> None:
+    """#3838 removed the bus_synaptic reheat from orion-heartbeat; /health no
+    longer carries last_reheat or reheat_* config, so the panel must not read
+    or render them."""
+    dissipation = ORGAN_JS[
+        ORGAN_JS.index("function renderDissipation") : ORGAN_JS.index(
+            "function setStatus"
+        )
+    ]
+    for retired in ("last_reheat", "reheat_strength", "reheat_prob_scale", "decay_reheat_interval_sec"):
+        assert retired not in dissipation, retired
+    assert "config.decay_interval_sec" in dissipation
+    assert 'name === "orion-harness-governor"' in ORGAN_JS
+
+
 def test_attention_organ_routes_doc_does_not_call_mean_ratio_the_verdict_axis() -> None:
     routes_src = (
         Path(__file__).resolve().parents[1] / "scripts" / "attention_organ_routes.py"

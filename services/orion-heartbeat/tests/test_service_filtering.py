@@ -7,11 +7,23 @@ import pytest
 from app.service import HeartbeatService
 
 
+# A role each routed service really emits, with an input rule that absorbs it.
+_DEFAULT_ROLE = {
+    "orion-hub": "repair_pressure_reading",  # measured
+    "orion-biometrics": "gpu_pressure_signal",  # measured
+    "orion-cortex-exec": "exec_step_started",  # presence
+    "orion-cortex-orch": "route_arbitration_decided",  # presence
+    "orion-bus": "rpc_transport_timeout",  # presence
+    "orion-harness-governor": "harness_fcc_step",  # presence
+}
+
+
 def _atom_event(
     *,
     event_kind: str = "atom_emitted",
     source_service: str = "orion-hub",
     atom_type: str = "observation",
+    semantic_role: str | None = None,
     confidence: float | None = 0.8,
     salience: float | None = 0.5,
     uncertainty: float | None = 0.2,
@@ -24,6 +36,7 @@ def _atom_event(
     if include_atom:
         payload["atom"] = {
             "atom_type": atom_type,
+            "semantic_role": semantic_role if semantic_role is not None else _DEFAULT_ROLE.get(source_service, "x"),
             "confidence": confidence,
             "salience": salience,
             "uncertainty": uncertainty,
@@ -100,7 +113,14 @@ async def test_stats_reports_allowlisted_organs_and_substrate_health() -> None:
     stats = await svc.stats()
 
     assert stats["allowlisted_organs"] == sorted(
-        ["orion-hub", "orion-biometrics", "orion-cortex-exec", "orion-bus", "orion-cortex-orch"]
+        [
+            "orion-hub",
+            "orion-biometrics",
+            "orion-cortex-exec",
+            "orion-cortex-orch",
+            "orion-bus",
+            "orion-harness-governor",
+        ]
     )
     assert stats["max_bond"] >= 1
     assert stats["norm"] == pytest.approx(1.0, abs=1e-6)
@@ -153,11 +173,52 @@ async def test_unknown_atom_type_is_skipped_through_full_handler_path() -> None:
 async def test_malformed_numeric_fields_are_skipped_not_raised() -> None:
     svc = HeartbeatService()
 
-    await svc._handle_grammar_message(_atom_event(confidence="not-a-number"))
+    await svc._handle_grammar_message(_atom_event(salience="not-a-number"))
     await svc._drain_absorb_queue()
 
     assert svc.events_absorbed == 0
     assert svc.events_skipped_malformed == 1
+
+
+@pytest.mark.asyncio
+async def test_clockwork_input_is_skipped_and_counted_by_reason() -> None:
+    svc = HeartbeatService()
+    await svc._handle_grammar_message(
+        _atom_event(source_service="orion-bus", atom_type="signal", semantic_role="bus_observer_tick_started")
+    )
+    await svc._handle_grammar_message(
+        _atom_event(source_service="orion-biometrics", atom_type="signal", semantic_role="memory_pressure_signal")
+    )
+    await svc._drain_absorb_queue()
+
+    assert svc.events_absorbed == 0
+    assert svc.events_skipped_input == 2
+    assert sum(svc.events_skipped_input_by_reason.values()) == 2
+    assert any(k.startswith("clockwork") for k in svc.events_skipped_input_by_reason)
+    assert any(k.startswith("structural floor") for k in svc.events_skipped_input_by_reason)
+
+
+@pytest.mark.asyncio
+async def test_cortex_orch_fires_the_execution_seat() -> None:
+    svc = HeartbeatService()
+    await svc._handle_grammar_message(
+        _atom_event(source_service="orion-cortex-orch", atom_type="reasoning_step")
+    )
+    await svc._drain_absorb_queue()
+    assert svc.events_absorbed == 1
+    assert svc.organ_fires.counts()["orion-cortex-exec"] == 1
+    assert svc.inputs_absorbed_by_kind == {"presence": 1}
+
+
+@pytest.mark.asyncio
+async def test_unlisted_role_on_a_routed_service_is_counted() -> None:
+    svc = HeartbeatService()
+    await svc._handle_grammar_message(
+        _atom_event(source_service="orion-cortex-exec", atom_type="signal", semantic_role="brand_new_role")
+    )
+    await svc._drain_absorb_queue()
+    assert svc.events_absorbed == 1  # cortex-exec default is presence
+    assert svc.inputs_unlisted_role == {"orion-cortex-exec:brand_new_role": 1}
 
 
 @pytest.mark.asyncio

@@ -44,6 +44,7 @@ def _import_runtime():
     from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
     from app.substrate.reconstruction import compute_h1_ensemble
     from app.substrate.routing import (
+        SkippedInputError,
         UnroutableAtomTypeError,
         UnroutableOrganError,
         route_atom,
@@ -54,7 +55,7 @@ def _import_runtime():
         decide_probe,
         score_kick,
         score_shuffle,
-        shuffle_source_service,
+        shuffle_site,
     )
     from app.substrate.routing import SiteAssignment
 
@@ -64,6 +65,7 @@ def _import_runtime():
         "compute_h1_ensemble": compute_h1_ensemble,
         "UnroutableAtomTypeError": UnroutableAtomTypeError,
         "UnroutableOrganError": UnroutableOrganError,
+        "SkippedInputError": SkippedInputError,
         "route_atom": route_atom,
         "SiteAssignment": SiteAssignment,
         "KICK_N": PROBE_KICK_N,
@@ -71,7 +73,7 @@ def _import_runtime():
         "decide_probe": decide_probe,
         "score_kick": score_kick,
         "score_shuffle": score_shuffle,
-        "shuffle_source_service": shuffle_source_service,
+        "shuffle_site": shuffle_site,
     }
 
 
@@ -132,30 +134,33 @@ def fetch_grammar_rows(dsn: str, window_hours: float) -> list[dict[str, Any]]:
 
 
 def route_rows(rows, mods, *, shuffle: bool) -> tuple[list[tuple[Any, Any, int]], dict[str, int]]:
+    """Route through production route_atom. Arm B (shuffle=True) moves the
+    routed site one seat right (lattice_probe.shuffle_site), keeping each
+    service's own input rule -- 2026-11-24 (#3838), see lattice_probe.py."""
+    import dataclasses
+
     route_atom = mods["route_atom"]
-    stats = {"routed": 0, "skipped_organ": 0, "skipped_atom_type": 0}
+    stats = {"routed": 0, "skipped_organ": 0, "skipped_atom_type": 0, "skipped_input": 0}
     out: list[tuple[Any, Any, int]] = []
     prev_ts = None
-    shuffle_fn = mods["shuffle_source_service"]
     for row in rows:
         source = row["source_service"]
-        if shuffle:
-            source = shuffle_fn(source)
         atom = (row["event_json"] or {}).get("atom") or {}
         try:
-            assignment = route_atom(
-                source_service=source,
-                atom_type=str(atom.get("atom_type") or ""),
-                confidence=atom.get("confidence"),
-                salience=atom.get("salience"),
-                uncertainty=atom.get("uncertainty"),
-            )
+            assignment = route_atom(source_service=source, atom=atom)
         except mods["UnroutableOrganError"]:
             stats["skipped_organ"] += 1
             continue
         except mods["UnroutableAtomTypeError"]:
             stats["skipped_atom_type"] += 1
             continue
+        except mods["SkippedInputError"]:
+            stats["skipped_input"] += 1
+            continue
+        if shuffle:
+            assignment = dataclasses.replace(
+                assignment, site_index=mods["shuffle_site"](assignment.site_index)
+            )
         emitted_at = row["emitted_at"]
         gap_ticks = 0
         if prev_ts is not None:
@@ -176,13 +181,13 @@ def mean_ratio_profile(ensemble, mods) -> list[float]:
     return [e / MAX_POSSIBLE_ENTROPY for e in mean_entropy]
 
 
-def replay(assignments_with_gaps, mods, *, reheat_prob: float, base_seed: int = 1000):
+def replay(assignments_with_gaps, mods, *, base_seed: int = 1000):
     cfg = mods["EnsembleConfig"]()
     ensemble = mods["EnsembleSubstrate"](config=cfg, base_seed=base_seed)
     n = len(assignments_with_gaps)
     for i, (_ts, assignment, gap_ticks) in enumerate(assignments_with_gaps):
         for _ in range(gap_ticks):
-            ensemble.decay_reheat_tick(reheat_prob)
+            ensemble.decay_tick()
         ensemble.absorb(assignment)
         if (i + 1) % 100 == 0:
             logger.info("replay %d/%d tick_count=%d", i + 1, n, ensemble.tick_count())
@@ -190,30 +195,13 @@ def replay(assignments_with_gaps, mods, *, reheat_prob: float, base_seed: int = 
     return ensemble, h1, mean_ratio_profile(ensemble, mods)
 
 
-def query_reheat_prob(mods, host: str, port: int, scale: float) -> tuple[float, float]:
-    """Return (raw_z, reheat_prob). 0,0 if unreachable — recorded, not guessed."""
-    try:
-        import redis
-        r = redis.Redis(host=host, port=port, decode_responses=True, socket_timeout=5.0)
-        result = r.execute_command(
-            "GRAPH.QUERY",
-            "orion_bus_synapse",
-            "MATCH ()-[rel]->() WHERE rel.count > 5 RETURN avg(abs(rel.gap_zscore))",
-        )
-        raw_z = float(result[1][0][0])
-        return raw_z, scale * min(1.0, raw_z / 3.0)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("bus_synaptic unavailable (%s); reheat_prob=0.0", exc)
-        return 0.0, 0.0
-
-
 def apply_kick(ensemble, mods, n: int) -> None:
+    # Pre-reg: strong chat-site atoms (old strength 0.45 on both gates).
+    # 2026-11-24: a measured hub role at salience 1.0 gives level 1.0, which
+    # is the same 0.45 rotation on both gates.
     assignment = mods["route_atom"](
         source_service="orion-hub",
-        atom_type="signal",
-        confidence=1.0,
-        salience=1.0,
-        uncertainty=0.0,
+        atom={"atom_type": "signal", "semantic_role": "repair_signal", "confidence": 1.0, "salience": 1.0, "uncertainty": 0.0},
     )
     if assignment.site_index != 0:
         raise RuntimeError(f"kick must land on site 0, got {assignment.site_index}")
@@ -232,8 +220,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             "POSTGRES_URI", "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
         ),
     )
-    parser.add_argument("--falkordb-host", default=os.environ.get("FALKORDB_HOST", "orion-athena-falkordb"))
-    parser.add_argument("--falkordb-port", type=int, default=int(os.environ.get("FALKORDB_PORT", "6379")))
     parser.add_argument(
         "--grammar-json",
         default="",
@@ -242,10 +228,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     mods = _import_runtime()
-    raw_z, reheat_prob = query_reheat_prob(
-        mods, args.falkordb_host, args.falkordb_port, mods["EnsembleConfig"]().reheat_prob_scale
-    )
-    logger.info("reheat raw_z=%.4f reheat_prob=%.4f", raw_z, reheat_prob)
+    # Reheat was removed 2026-11-24 (#3838); the pre-reg's "0.0 if
+    # unreachable" branch is now the only case. Recorded, not hidden.
+    raw_z, reheat_prob = 0.0, 0.0
 
     if args.grammar_json:
         raw_rows = load_grammar_rows(Path(args.grammar_json))
@@ -271,8 +256,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         stats_a["skipped_atom_type"],
     )
 
-    ensemble_a, h1_a, profile_a = replay(as_is, mods, reheat_prob=reheat_prob)
-    _, h1_b, profile_b = replay(shuffled, mods, reheat_prob=reheat_prob)
+    ensemble_a, h1_a, profile_a = replay(as_is, mods)
+    _, h1_b, profile_b = replay(shuffled, mods)
 
     profile_before = mean_ratio_profile(ensemble_a, mods)
     apply_kick(ensemble_a, mods, mods["KICK_N"])
@@ -348,7 +333,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"Generated: {payload['generated_at']}\n\n"
         f"- window: {args.window_hours}h, raw atoms {len(raw_rows)}, routed {len(as_is)}, "
         f"800-cap {'yes' if cap_fired else 'no'}\n"
-        f"- reheat_prob={reheat_prob:.4f} (raw_z={raw_z:.4f})\n\n"
+        f"- reheat_prob={reheat_prob:.4f} (reheat removed 2026-11-24, #3838)\n"
+        f"- skipped by input rule (clockwork/floor/duplicate): {stats_a['skipped_input']}\n\n"
         f"## Arm A (as-is)\n\n"
         f"mean={h1_a.mean_ratio:.4f} std={h1_a.std_ratio:.4f} bulk={h1_a.bulk_penetration_depth:.4f} "
         f"verdict={h1_a.verdict}\n\n"

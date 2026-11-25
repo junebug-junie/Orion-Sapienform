@@ -31,7 +31,7 @@ def _import_runtime():
     else:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "orion-heartbeat"))
     from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
-    from app.substrate.routing import UnroutableAtomTypeError, UnroutableOrganError, route_atom
+    from app.substrate.routing import SkippedInputError, UnroutableAtomTypeError, UnroutableOrganError, route_atom
     from app.substrate.surprise_probe import (
         SESSION_ATOMS,
         SNAPSHOT_EVERY,
@@ -47,6 +47,7 @@ def _import_runtime():
         "EnsembleSubstrate": EnsembleSubstrate,
         "UnroutableAtomTypeError": UnroutableAtomTypeError,
         "UnroutableOrganError": UnroutableOrganError,
+        "SkippedInputError": SkippedInputError,
         "route_atom": route_atom,
         "SESSION_ATOMS": SESSION_ATOMS,
         "SNAPSHOT_EVERY": SNAPSHOT_EVERY,
@@ -102,17 +103,14 @@ def load_atoms(path: Path) -> list[dict[str, Any]]:
 
 def route_rows(rows, mods):
     out = []
-    stats = {"routed": 0, "skipped_organ": 0, "skipped_atom_type": 0}
+    stats = {"routed": 0, "skipped_organ": 0, "skipped_atom_type": 0, "skipped_input": 0}
     for row in rows:
         atom = (row["event_json"] or {}).get("atom") or {}
         try:
-            assignment = mods["route_atom"](
-                source_service=row["source_service"],
-                atom_type=str(atom.get("atom_type") or ""),
-                confidence=atom.get("confidence"),
-                salience=atom.get("salience"),
-                uncertainty=atom.get("uncertainty"),
-            )
+            assignment = mods["route_atom"](source_service=row["source_service"], atom=atom)
+        except mods["SkippedInputError"]:
+            stats["skipped_input"] += 1
+            continue
         except mods["UnroutableOrganError"]:
             stats["skipped_organ"] += 1
             continue
@@ -122,23 +120,6 @@ def route_rows(rows, mods):
         stats["routed"] += 1
         out.append((row["emitted_at"], assignment))
     return out, stats
-
-
-def query_reheat_prob(host: str, port: int, scale: float) -> tuple[float, float]:
-    try:
-        import redis
-
-        r = redis.Redis(host=host, port=port, decode_responses=True, socket_timeout=5.0)
-        result = r.execute_command(
-            "GRAPH.QUERY",
-            "orion_bus_synapse",
-            "MATCH ()-[rel]->() WHERE rel.count > 5 RETURN avg(abs(rel.gap_zscore))",
-        )
-        raw_z = float(result[1][0][0])
-        return raw_z, scale * min(1.0, raw_z / 3.0)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("bus_synaptic unavailable (%s); reheat_prob=0.0", exc)
-        return 0.0, 0.0
 
 
 def mean_ratio_profile(ensemble) -> list[float]:
@@ -156,7 +137,7 @@ def in_range(routed, lo: datetime, hi: datetime):
     return [(ts, a) for ts, a in routed if lo <= ts < hi]
 
 
-def replay_window(warmup, body, mods, reheat_prob: float) -> list[float]:
+def replay_window(warmup, body, mods) -> list[float]:
     cfg = mods["EnsembleConfig"]()
     ensemble = mods["EnsembleSubstrate"](config=cfg, base_seed=1000)
     warmup = warmup[-mods["WARMUP_ATOMS"] :]
@@ -167,7 +148,7 @@ def replay_window(warmup, body, mods, reheat_prob: float) -> list[float]:
             gap_sec = (ts - prev_ts).total_seconds()
             ticks = max(0, min(MAX_DECAY_TICKS_PER_GAP, int(gap_sec / SECONDS_PER_DECAY_TICK)))
             for _ in range(ticks):
-                ensemble.decay_reheat_tick(reheat_prob)
+                ensemble.decay_tick()
         ensemble.absorb(assignment)
         prev_ts = ts
     surprises: list[float] = []
@@ -177,7 +158,7 @@ def replay_window(warmup, body, mods, reheat_prob: float) -> list[float]:
             gap_sec = (ts - prev_ts).total_seconds()
             ticks = max(0, min(MAX_DECAY_TICKS_PER_GAP, int(gap_sec / SECONDS_PER_DECAY_TICK)))
             for _ in range(ticks):
-                ensemble.decay_reheat_tick(reheat_prob)
+                ensemble.decay_tick()
         ensemble.absorb(assignment)
         prev_ts = ts
         if i % mods["SNAPSHOT_EVERY"] == 0:
@@ -194,15 +175,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--meta", required=True)
     parser.add_argument("--atoms", required=True)
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
-    parser.add_argument("--falkordb-host", default="orion-athena-falkordb")
-    parser.add_argument("--falkordb-port", type=int, default=6379)
     args = parser.parse_args(argv)
 
     mods = _import_runtime()
-    raw_z, reheat_prob = query_reheat_prob(
-        args.falkordb_host, args.falkordb_port, mods["EnsembleConfig"]().reheat_prob_scale
-    )
-    logger.info("reheat raw_z=%.4f reheat_prob=%.4f", raw_z, reheat_prob)
+    # Reheat removed 2026-11-24 (#3838).
+    raw_z, reheat_prob = 0.0, 0.0
 
     meta = json.loads(Path(args.meta).read_text(encoding="utf-8"))
     atoms = load_atoms(Path(args.atoms))
@@ -228,7 +205,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         warmup = in_range(routed, warmup_lo, start)
         body = in_range(routed, start, stop)
         logger.info("%s %s warmup=%d body=%d", kind, start.isoformat(), len(warmup), len(body))
-        surprises = replay_window(warmup, body, mods, reheat_prob)
+        surprises = replay_window(warmup, body, mods)
         scored = mods["score_window"](kind=kind, surprises=surprises)
         rec = {
             "kind": kind,
@@ -294,7 +271,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"# Heartbeat surprise\n\n"
         f"Pre-reg: `{PRE_REG}`\n\n"
         f"Generated: {payload['generated_at']}\n\n"
-        f"- reheat_prob={reheat_prob:.4f} (raw_z={raw_z:.4f})\n"
+        f"- reheat_prob={reheat_prob:.4f} (reheat removed 2026-11-24, #3838)\n"
         f"- sessions scored={sess_side.n} median_slope={sess_side.median_slope:.4f} "
         f"frac_neg={sess_side.frac_negative:.2f} median_drop={sess_side.median_drop:.4f} "
         f"settles={sess_side.settles}\n"

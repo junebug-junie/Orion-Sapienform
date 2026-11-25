@@ -37,7 +37,8 @@ def test_compute_h1_tick_count_reflects_absorptions() -> None:
     sub = HeartbeatSubstrate(seed=5)
     for _ in range(4):
         assignment = route_atom(
-            source_service="orion-bus", atom_type="signal", confidence=0.7, salience=0.6, uncertainty=0.3
+            source_service="orion-bus",
+            atom={"atom_type": "signal", "semantic_role": "bus_activity_zscore_computed", "confidence": 0.9, "uncertainty": 0.6},
         )
         sub.absorb(assignment)
 
@@ -87,17 +88,17 @@ def test_compute_h1_ensemble_reports_every_trajectory_ratio() -> None:
 def test_compute_h1_ensemble_reports_proprioception_from_fire_counts() -> None:
     from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
     from app.substrate.reconstruction import compute_h1_ensemble
-    from app.substrate.routing import ORGAN_SITE_MAP
+    from app.substrate.routing import SEAT_ORDER
 
     ensemble = EnsembleSubstrate(config=EnsembleConfig(n_trajectories=2), base_seed=400)
-    fire_counts = {name: 0 for name in ORGAN_SITE_MAP}
+    fire_counts = {name: 0 for name in SEAT_ORDER}
     fire_counts["orion-cortex-exec"] = 8
     result = compute_h1_ensemble(ensemble, fire_counts=fire_counts)
 
     assert result.dark_seats == [
         "orion-biometrics",
         "orion-bus",
-        "orion-cortex-orch",
+        "orion-harness-governor",
         "orion-hub",
     ]
     assert result.organ_fire_counts["orion-cortex-exec"] == 8

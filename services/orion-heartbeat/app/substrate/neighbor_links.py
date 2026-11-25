@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from statistics import median
 from typing import Iterable
 
+from .routing import SEAT_ORDER
+
 DELTA_MIN_ABS = 0.05
 REL_DELTA_FRAC = 0.25
 REL_DELTA_FLOOR = 1e-4
@@ -30,13 +32,11 @@ PAIRS: tuple[tuple[str, str, int, int], ...] = (
     ("orion-cortex-exec", "orion-bus", 2, 3),
 )
 
-V0_ORGANS: tuple[str, ...] = (
-    "orion-hub",
-    "orion-biometrics",
-    "orion-cortex-exec",
-    "orion-bus",
-    "orion-cortex-orch",
-)
+# The seats a window's "other traffic" is counted over. 2026-11-24 (#3838):
+# was the five v0 services; now the five seats (cortex-orch counts as the
+# execution seat, the agent harness took site 4). The pairs and every
+# threshold above are unchanged.
+V0_ORGANS: tuple[str, ...] = SEAT_ORDER
 
 
 @dataclass(frozen=True)

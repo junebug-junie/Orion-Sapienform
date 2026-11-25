@@ -4089,7 +4089,7 @@ class BiometricsSubstrateWorker:
         # World-first ranking key (mid-rank: share below + half the share
         # equal), computed from the same window so ceiling ties rank fairly.
         rank_percentiles: dict[str, float | None] = {}
-        from orion.attention.world_first import midrank_percentile
+        from orion.attention.world_first import node_rank_percentile
 
         for node_id, (value, observed_at) in current.items():
             history = list(cache.get(node_id) or ())
@@ -4099,8 +4099,9 @@ class BiometricsSubstrateWorker:
                 history=history,
                 now=now,
                 trend_min_delta=float(s.pe_trend_min_delta),
+                node_id=node_id,
             )
-            rank_percentiles[node_id] = midrank_percentile(value, [v for _, v in history])
+            rank_percentiles[node_id] = node_rank_percentile(node_id, value, [v for _, v in history])
         self._pe_rank_percentiles = rank_percentiles
         logger.info(
             "substrate_pe_history_tick nodes=%d new_samples=%d",

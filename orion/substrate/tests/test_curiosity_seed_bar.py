@@ -1,22 +1,19 @@
 """Per-node curiosity seed bars (#3821): each live node crosses at its own calibrated cut."""
 from __future__ import annotations
 
-import itertools
-import json
 import math
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from orion.substrate import calm_band as cb
 from orion.substrate import curiosity_seed_bar as csb
 from orion.substrate.endogenous_curiosity import (
     EndogenousCuriosityConfig,
     endogenous_curiosity_candidates,
 )
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
 NOW = datetime(2026, 11, 24, 9, 0, tzinfo=timezone.utc)
 FORECAST_BAR = 2.0 / 3.0
 CHAT_BAR = 0.8
@@ -54,24 +51,8 @@ def test_ids_match_the_producers() -> None:
 
 
 def _gamma_tail(n: int, x: float) -> float:
-    """P(Gamma(n, 1) >= x) for integer n (Poisson sum)."""
-    return sum(math.exp(-x) * x**k / math.factorial(k) for k in range(n))
-
-
-def _floored_tail(n: int, zcut: float, samples: int = 60_000) -> float:
-    """room / body: excess = -ln max(p, 0.05) - 0.95 with p uniform, calm var 0.698
-    (prediction_surprise.calm_excess_variance(0.95)). Seeded Monte Carlo."""
-    import random
-
-    from orion.substrate.prediction_surprise import calm_excess_variance
-
-    var = calm_excess_variance(0.95)
-    rng = random.Random(3821 + n)
-    hits = 0
-    for _ in range(samples):
-        s = sum(-math.log(max(rng.random(), 0.05)) - 0.95 for _ in range(n))
-        hits += s / math.sqrt(n * var) >= zcut
-    return hits / samples
+    """P(Gamma(n, 1) >= x) (orion/substrate/calm_band.py, the one copy of this math)."""
+    return cb.gamma_tail(n, x)
 
 
 def test_floored_room_body_cut() -> None:
@@ -79,10 +60,12 @@ def test_floored_room_body_cut() -> None:
     ~7.3 % for a one-outcome window (exact: U <= exp(-(0.95 + 2 sd)))."""
     from orion.substrate.prediction_surprise import calm_excess_variance
 
+    assert cb.calm_excess_variance(cb.P_FLOOR) == pytest.approx(calm_excess_variance(0.95))
     sd = math.sqrt(calm_excess_variance(0.95))
     assert math.exp(-(0.95 + csb.FORECAST_Z_CUT * sd)) == pytest.approx(0.073, abs=0.002)
+    assert cb.standardized_floored_tail(1, csb.FORECAST_Z_CUT) == pytest.approx(0.073, abs=0.002)
     for n in (2, 3, 6):
-        assert _floored_tail(n, csb.FORECAST_Z_CUT) <= 0.05
+        assert cb.standardized_floored_tail(n, csb.FORECAST_Z_CUT) <= 0.05
 
 
 @pytest.mark.parametrize("n", range(1, 13))
@@ -96,26 +79,14 @@ def test_forecast_cut_is_calm_p_005_at_every_window_size(n: int) -> None:
 
 
 def _chat_turn_calm_tail(qs, zcut: float) -> float:
-    """Exact calm P(turn z >= zcut) for one turn's bets at calibrated q's (turn_surprise.py math:
-    excess = -(y - q) logit q, calm_var = q (1 - q) logit(q)^2)."""
-    qs = [q for q in qs if q is not None]
-    total = 0.0
-    for ys in itertools.product((0, 1), repeat=len(qs)):
-        p, e, v = 1.0, 0.0, 0.0
-        for q, y in zip(qs, ys):
-            lg = math.log(q / (1 - q))
-            p *= q if y else 1 - q
-            e += -(y - q) * lg
-            v += q * (1 - q) * lg * lg
-        if e / math.sqrt(v) >= zcut - 1e-12:
-            total += p
-    return total
+    """Exact calm P(turn z >= zcut) for one turn's bets (calm_band.bet_window_tail)."""
+    return cb.bet_window_tail(qs, zcut)
 
 
 def test_chat_cut_mean_calm_rate_on_live_bets() -> None:
     """The 71 settled chat turns of 2026-11-17..24 (their calibrated q's only): mean exact calm
     crossing rate per turn is <= 5 % at the chat bar and > 5 % at the old 0.55."""
-    turns = json.loads((FIXTURES / "chat_turn_calibrated_q_2026-11-24.json").read_text())["turns"]
+    turns = cb.chat_turn_q_mix()
     assert len(turns) == 71
 
     def mean_rate(zcut: float) -> float:

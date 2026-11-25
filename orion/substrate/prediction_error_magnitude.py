@@ -15,6 +15,11 @@ Rules, each pinned by a test in tests/test_prediction_error_magnitude.py:
   value, so an all-zero history with current 0 reads 0.0 (rest).
 - Below ``min_readings`` (default 200) 7-day readings, ``band`` and ``trend``
   are ``insufficient_history``.
+- Exception (#3917): a ``node_id`` with a calm theory
+  (``orion.substrate.calm_band.ATTENTION_BAND_RULE_BY_NODE_ID``: the forecast-surprise nodes) takes
+  ``percentile_now`` and ``band`` from the calm-theory percentile of the current value, with no
+  history floor. A sparse event-written node (chat_turn, ~11 writes a day) would otherwise never
+  reach 200 readings in the 168 h the history keeps. ``trend`` still needs ``min_readings``.
 - ``trend`` describes what HAS happened: median of the last hour minus the
   median of the 24 h before that. Rising/settling only when
   |delta| > max(trend_min_delta, 0.5 * (p90_7d - p50_7d)).
@@ -34,6 +39,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence
 
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
+from orion.substrate.calm_band import calm_percentiles
 
 WINDOW_7D = timedelta(days=7)
 WINDOW_24H = timedelta(hours=24)
@@ -68,6 +74,17 @@ def _median(values: Iterable[float]) -> float | None:
     return _quantile(sorted(values), 0.5)
 
 
+def _band(pct: float, band_cuts: tuple[float, float, float]) -> str:
+    quiet_cut, usual_cut, high_cut = band_cuts
+    if pct < quiet_cut:
+        return "quiet"
+    if pct < usual_cut:
+        return "usual"
+    if pct < high_cut:
+        return "high"
+    return "unusual"
+
+
 def _round(x: float | None) -> float | None:
     return None if x is None else round(float(x), 6)
 
@@ -81,12 +98,16 @@ def compute_prediction_error_magnitude(
     trend_min_delta: float = DEFAULT_TREND_MIN_DELTA,
     min_readings: int = DEFAULT_MIN_READINGS,
     band_cuts: tuple[float, float, float] = DEFAULT_BAND_CUTS,
+    node_id: str | None = None,
 ) -> PredictionErrorMagnitudeV1:
     """Summarize one node's current reading against its stored history.
 
     ``history`` is ``(observed_at, value)`` pairs for this node, any order,
     normally already including the current reading. Readings older than the
     7-day window ending at ``now`` are ignored.
+
+    ``node_id``: when the node has a calm theory (``calm_band.calm_percentiles``), the band is the
+    calm-theory band of ``value`` and needs no history.
     """
     now = _aware(now)
     observed_at = _aware(observed_at)
@@ -120,21 +141,15 @@ def compute_prediction_error_magnitude(
     median_1h = _median(last_1h)
     median_prior_24h = _median(prior_24h)
     percentile_now = (sum(1 for v in values_7d if v < value) / n) if n else None
+    calm = calm_percentiles(node_id, value) if node_id else None
+    if calm is not None:
+        percentile_now = calm[0]
 
     if n < max(1, int(min_readings)):
-        band = "insufficient_history"
         trend = "insufficient_history"
+        band = "insufficient_history" if calm is None else _band(percentile_now, band_cuts)
     else:
-        quiet_cut, usual_cut, high_cut = band_cuts
-        pct = percentile_now or 0.0
-        if pct < quiet_cut:
-            band = "quiet"
-        elif pct < usual_cut:
-            band = "usual"
-        elif pct < high_cut:
-            band = "high"
-        else:
-            band = "unusual"
+        band = _band(percentile_now or 0.0, band_cuts)
 
         if median_1h is None or median_prior_24h is None or p50_7d is None or p90_7d is None:
             # Nothing recorded in one of the two windows (e.g. a stale node

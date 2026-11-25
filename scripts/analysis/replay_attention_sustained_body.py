@@ -49,7 +49,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from orion.attention.world_first import judge_candidate, midrank_percentile, node_candidate  # noqa: E402
+from orion.attention.world_first import judge_candidate, node_candidate, node_rank_percentile  # noqa: E402
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1  # noqa: E402
 from orion.substrate.prediction_error_magnitude import (  # noqa: E402
     WINDOW_7D,
@@ -110,8 +110,9 @@ def rejudge(c, t, series, *, sustain, recompute=False):
     rank = key(c)
     if recompute and hist:
         observed_at, value = hist[-1]
-        mag = compute_prediction_error_magnitude(value=value, observed_at=observed_at, history=hist, now=t)
-        rank = midrank_percentile(value, [v for _, v in hist])
+        mag = compute_prediction_error_magnitude(value=value, observed_at=observed_at, history=hist, now=t,
+                                                 node_id=c["source_id"])
+        rank = node_rank_percentile(c["source_id"], value, [v for _, v in hist])
     else:
         observed_at = None
         mag = PredictionErrorMagnitudeV1(

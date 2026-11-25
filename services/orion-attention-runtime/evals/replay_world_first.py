@@ -96,7 +96,8 @@ def tick(series, turns, staleness_points, t, *, event_decay: bool = True, sustai
         if got is None:
             continue
         value, observed_at, hist = got
-        mag = compute_prediction_error_magnitude(value=value, observed_at=observed_at, history=hist, now=t)
+        mag = compute_prediction_error_magnitude(value=value, observed_at=observed_at, history=hist, now=t,
+                                                 node_id=node_id)
         absent = None
         if node_id == PERCEPTION_NODE_ID and staleness_points is not None:
             st = staleness_at(staleness_points, t)

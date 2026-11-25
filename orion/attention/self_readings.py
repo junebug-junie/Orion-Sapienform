@@ -58,6 +58,7 @@ from orion.attention.world_first import (
     source_kind_for_node,
 )
 from orion.schemas.attention_candidate import AttentionCandidateV1
+from orion.substrate.calm_band import has_calm_band
 from orion.schemas.self_reading import (
     SELF_READINGS_MAX_CHARS,
     SelfReadingsBlockV1,
@@ -443,6 +444,10 @@ def _base_line(r: SelfReadingV1) -> str:
         n = int(r.value)
         return (f"{r.label}: {r.score_0_10}/10 for me (went off {n} time{'s' if n != 1 else ''} in the "
                 f"last hour; more than in {pct}% of my hours this week{trend}) [{r.ref}]")
+    if has_calm_band(r.source_id):
+        # #3917: this node's percentile is against its calm theory, not its own week.
+        return (f"{r.label}: {r.score_0_10}/10 for me (now {r.value:.2f}; higher than "
+                f"{pct}% of calm, well-predicted stretches{trend}) [{r.ref}]")
     return (f"{r.label}: {r.score_0_10}/10 for me (now {r.value:.2f}; higher than "
             f"{pct}% of my last 7 days{trend}) [{r.ref}]")
 

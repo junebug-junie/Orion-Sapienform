@@ -11,6 +11,8 @@ on:
       - "orion/schemas/attention_frame.py"
       - "orion/schemas/attention_candidate.py"
       - "orion/substrate/prediction_error_magnitude.py"
+      - "orion/substrate/calm_band.py"
+      - "orion/substrate/data/**"
       - "orion/cognition/prompts/stance_react.j2"
       - "config/field/field_channel_glossary.v1.yaml"
       - "services/orion-thought/app/**"

@@ -87,7 +87,7 @@ def test_memory_goals_proposed_channel_cataloged() -> None:
     assert entry["schema_id"] == "FieldGoalProvenanceV1"
     assert entry["message_kind"] == "memory.field_goals.proposed.v1"
     assert entry.get("producer_services") == ["orion-attention-runtime"]
-    # #3924: the sql-writer is a real consumer again (field_goal_provenance_log).
+    # #3924: the sql-writer is a real consumer again (field_goal_episode).
     assert "orion-sql-writer" in entry["consumer_services"]
 
 

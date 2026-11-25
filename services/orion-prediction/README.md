@@ -462,6 +462,36 @@ cabinet 15 min -0.072 +-0.167, office 5 min -0.032 +-0.099, office 15 min -0.050
 `evals/run_surprise_node_replay_eval.py --hours 72` replays the event gate and the substrate fold
 over live rows: what the two nodes would have read.
 
+## Street rhythm surprise (`app/street_rhythm.py`, 2026-11-25, shadow)
+
+How surprised the walkway rhythm forecast was by who did or didn't appear. This is Orion's one real
+perception prediction error. The room camera has no forecast, so it has no counterpart. Design:
+`docs/superpowers/specs/2026-11-24-pe-retire-perception-and-alarms-design.md` rev 4, item 5.
+
+- **Source** (read-only): orion-sql-writer's rhythm learner (`vision_rhythm.py`) writes each
+  expectation in `vision_percept_expectation` before its window opens ("this subject appears on the
+  walkway in this window, with probability p"). It scores the expectation after the window closes:
+  met, missed, or unscorable.
+- **Score**: the RAW stated p, clamped to [0.02, 0.98]. Surprisal = -ln p(outcome); excess = surprisal
+  minus the binary entropy of p (mean 0 under calibration); calm variance p(1-p)logit(p)^2. No
+  recalibration: held out, it made log loss worse by 0.0067 nats.
+- **Refused, never scored as misses**: unscorable windows (the camera did not watch), and
+  `individual:` subjects with no sighting in the 7 days before the window (`stale_key`) or no
+  sighting at all (`unknown_key`; a re-anchor can remove a key, #3388). Label subjects
+  (`label:vehicle`, `label:mail truck`) are classes and have no stale rule.
+- **Publish**: every `PREDICTION_STREET_RHYTHM_TICK_SEC` (60 s), each new outcome scored in the last
+  30 min goes out as one `prediction.street_rhythm_surprise.v1` on
+  `orion:prediction:street_rhythm_surprise`. Kill switch `PREDICTION_STREET_RHYTHM_EVENTS_ENABLED` (on).
+  `/health` `street_rhythm` holds the counters (scored / refused by reason / published).
+- **Consumer**: orion-substrate-runtime folds it into `node:prediction.street_rhythm`, a world node.
+  The node is in SHADOW: it is written and recorded, but attention and curiosity skip it until the
+  calm check below passes.
+- **Calm check (the go-live gate)**: `evals/run_street_rhythm_calm_eval.py --days 7 --check`. It passes
+  when the mean-excess 95 % CI covers 0, p99 <= 1.2 nats, max <= 4.0 nats, and there are at most 2
+  misses at stated p >= 0.9. It also reports the refusal rate, n per calibration bucket, excess by key
+  age, and the correlation with walkway scene change and the street alarm. CI runs it on the committed
+  14-day fixture (`evals/fixtures/street_rhythm_2026-11-25.json`, ids hashed, no names).
+
 ## Family A: every body and room reading at once
 
 "What will my body and room read next?" for every raw reading together, 5 and 15 min ahead (spec:

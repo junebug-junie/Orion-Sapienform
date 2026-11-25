@@ -339,6 +339,37 @@ SELECT question_id, thread_id, seed_kind, seed_refs, question, none_reason, refu
   correlation_id, created_at
 FROM reverie_question WHERE created_at >= %(lo)s AND created_at < %(hi)s
 """, optional_table="reverie_question"),
+    # Integration patch 7a (#3429). An intention closing: Prime's closed make intention:<concern_id> act, available
+    # at closed_at. The take act's horizon is the concern's 72 h + 1 h (orion/prime/intention.py; live horizons up to
+    # 3d01h), and an expired take closes at that horizon, so opened_at is widened by four days. The carry run's own act (durable.intention, object_ref
+    # durable_run:intention-<concern_id>) rides along when one ran (a refused order has none).
+    SourceQuery("intention_close", """
+SELECT a.act_id, a.object_ref, a.trace_id, a.correlation_id, a.opened_at, a.closed_at, a.outcome_value,
+  a.outcome_note, a.surprise_nats, r.act_id AS run_act_id, r.outcome_note AS run_outcome_note
+FROM grammar_acts a LEFT JOIN LATERAL (
+  SELECT act_id, outcome_note FROM grammar_acts r
+  WHERE r.verb = 'make' AND r.opened_at >= a.opened_at AND r.opened_at <= a.closed_at AND r.actor = 'durable.intention'
+    AND r.object_ref = 'durable_run:intention-' || substr(a.object_ref, 11)
+  ORDER BY r.opened_at ASC LIMIT 1) r ON true
+WHERE a.actor = 'prime' AND a.verb = 'make' AND a.object_ref LIKE 'intention:%%' AND a.opened_at >= %(lo)s
+  AND a.closed_at >= %(lo)s::timestamptz + interval '4 days' AND a.closed_at < %(hi)s
+""", slack=timedelta(days=4), optional_table="grammar_acts"),
+    # A written day letter: one orion_day_letter row a Denver day, available at created_at. Only the threads
+    # section is read (carry_forward_md); the letter body is counted, never copied.
+    SourceQuery("day_letter", """
+SELECT letter_date, run_id, carry_forward_md, length(note_md) AS note_chars, created_at
+FROM orion_day_letter WHERE created_at >= %(lo)s AND created_at < %(hi)s
+""", optional_table="orion_day_letter"),
+    # A Prime choice the personality loop folded: a personality_evidence row of lane prime, available at
+    # created_at (folded 9-22 min after the choice, live to 11-25). occurred_at (indexed with lane) is widened
+    # by three days, so a personality loop that catches up after a day down still emits. The leaning it folded into joins for its name and status.
+    SourceQuery("personality_choice", """
+SELECT e.evidence_id, e.lane, e.source_ref, e.occurred_at, e.excerpt, e.disposition_id, e.similarity, e.meta,
+  e.created_at, d.name AS disposition_name, d.status AS disposition_status
+FROM personality_evidence e LEFT JOIN personality_disposition d ON d.disposition_id = e.disposition_id
+WHERE e.lane = 'prime' AND e.occurred_at >= %(lo)s
+  AND e.created_at >= %(lo)s::timestamptz + interval '3 days' AND e.created_at < %(hi)s
+""", slack=timedelta(days=3), optional_table="personality_evidence", also_requires=("personality_disposition",)),
 )
 
 TABLE_EXISTS_SQL = "SELECT to_regclass(%(t)s) IS NOT NULL AS present"

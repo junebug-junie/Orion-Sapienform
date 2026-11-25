@@ -17,7 +17,8 @@ on:
       - "services/orion-hub/evals/run_self_question_door_replay.py"
       - "services/orion-sql-db/manual_migration_curiosity_self_question_door_v1.sql"
       - "scripts/self_question_door_backfill.py"
-      - "tests/test_self_question_door_backfill.py"
+      - "tests/test_self_question_door_*.py"
+      - "scripts/analysis/self_question_door_report.py"
       - ".github/workflows/self-question-door-tests.yml"
   push:
     branches: [main]
@@ -55,7 +56,8 @@ jobs:
           ORION_TEST_PG_URI: postgresql://postgres:door-test@127.0.0.1:5432/door_test
         run: |
           python -m pytest -q -p no:cacheprovider orion/curiosity/tests/test_self_question_pool.py \
-            orion/curiosity/tests/test_register.py tests/test_self_question_door_backfill.py
+            orion/curiosity/tests/test_register.py tests/test_self_question_door_backfill.py \
+            tests/test_self_question_door_report.py
           cd services/orion-hub
           python -m pytest -q -p no:cacheprovider \
             tests/test_self_question_door.py \

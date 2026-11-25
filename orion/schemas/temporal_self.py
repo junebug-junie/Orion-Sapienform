@@ -115,7 +115,7 @@ TemporalSourceKind = Literal[
     # Orion's now, patch 1 (docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md
     # A1): experiences only. No arc folds them (arcs._fold_event falls through); they are read back
     # through GET /temporal-self/now. The spec's other three (intention_close, day_letter,
-    # personality_choice) are patch 7 and are not named here until a reader exists.
+    # personality_choice) landed in patch 7a, below.
     # one finished reading: a closed hub.world_pulse_read act on the act ledger (grammar_acts)
     "reading_turn",
     # one scored exceedance forecast (orion-prediction prediction_exceedance), with its surprisal
@@ -136,6 +136,15 @@ TemporalSourceKind = Literal[
     # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
     # orion-prediction) before orion-durable-runs writes the first reverie_question event.
     "reverie_question",
+    # Integration patch 7a (#3429): the last three organs emit. Experience only (no arc folds them).
+    # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
+    # orion-prediction) before orion-durable-runs writes the first of these events.
+    # one intention closing: Prime's closed make intention:<concern_id> act (produced / not_produced)
+    "intention_close",
+    # one written day letter (orion_day_letter), its threads as related refs
+    "day_letter",
+    # one Prime choice the personality loop folded (personality_evidence, lane prime)
+    "personality_choice",
 ]
 
 ArcKind = Literal[

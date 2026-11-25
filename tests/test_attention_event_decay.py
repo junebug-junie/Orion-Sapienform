@@ -103,6 +103,8 @@ def test_event_written_set_comes_from_glossary_semantics() -> None:
         # Family A joint surprise (#3575, successor of node:substrate.biometrics): same, per scored bucket.
         "node:prediction.body_joint": False,
         "node:prediction.room_joint": False,
+        # Walkway rhythm forecast surprise (PE retire Patch 4): written once per scoring pass.
+        "node:prediction.street_rhythm": True,
     }
     from orion.field.channel_glossary import load_glossary
 

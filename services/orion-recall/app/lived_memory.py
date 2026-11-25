@@ -25,7 +25,9 @@ Pipeline, once per chat turn (PCR continuity phase):
    names and rare words are not lost; a query word that is a name (capitalized mid-sentence, or
    a known person's name) counts ``NAME_WEIGHT`` times. All lists merge by reciprocal-rank fusion.
 2. **Gate.** Every candidate must be in the current live snapshot (Postgres, not Chroma): a
-   superseded, rejected, expired or removed record is never served, whatever Chroma still holds.
+   superseded, rejected or removed record is never served, whatever Chroma still holds. An
+   episode memory past its stated end date stays in the snapshot, labelled with the day it ended
+   (``EPISODE_ENDED_SQL``): the trip ended, the memory of it did not. An expired follow-up is gone.
 3. **Link-following** (step 2, ``app/lived_links.py``). Memories that share a referent with the
    top candidates, or with a name in the message, join as extra candidates (two-hop personalized
    PageRank over ``episode_memory_referent``). They only ever reach the prompt through the rerank.
@@ -61,7 +63,7 @@ import re
 import time
 from collections import Counter
 from itertools import zip_longest
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
@@ -321,6 +323,8 @@ def render_line(rec: LivedRecord, tz: str = DEFAULT_TZ) -> str:
     when = rec.date
     if rec.invalid_at is not None:
         when += f" · {AS_OF_LABEL}: changed {rec.invalid_at.astimezone(local_zone(tz)).date().isoformat()}"
+    elif rec.ended_at is not None:
+        when += f" · {AS_OF_LABEL}: ended {rec.ended_at.astimezone(local_zone(tz)).date().isoformat()}"
     return f"- ({label} · {rec.doc_id} · {when}) {text}"
 
 
@@ -450,7 +454,7 @@ class LivedMemoryRecall:
     async def snapshot(self, *, force: bool = False) -> List[LivedRecord]:
         async with self._lock:
             if force or not self._snapshot or time.monotonic() - self._loaded_at > SNAPSHOT_TTL_SEC:
-                recs = await fetch_live_records(self.pool)
+                recs = await fetch_live_records(self.pool, include_ended=True)
                 self._snapshot = recs
                 self._by_doc = {r.doc_id: r for r in recs}
                 self._bm25 = BM25([r.text for r in recs])
@@ -935,6 +939,8 @@ class LivedMemoryRecall:
 
             chosen = await self._recheck(chosen, out, timings, window=window)
             for s in chosen:
+                if as_of is not None and s.rec.ended_at is not None and s.rec.ended_at >= as_of:
+                    s.rec = replace(s.rec, ended_at=None)  # a replay: it had not ended yet then
                 s.dense, s.lexical = dense_best.get(s.rec.doc_id), lexical_best.get(s.rec.doc_id)
                 s.link = s.rec.doc_id in link_ids
             out.chosen = chosen
@@ -1001,8 +1007,10 @@ class LivedMemoryRecall:
                 as_of_ids.append(s.rec.record_id)
             else:
                 ids_by_kind.setdefault(s.rec.kind, []).append(s.rec.record_id)
-        still_live = {r.doc_id for r in await fetch_live_records(self.pool, kinds=list(ids_by_kind),
-                                                                  ids_by_kind=ids_by_kind)} if ids_by_kind else set()
+        live_now = {r.doc_id: r for r in await fetch_live_records(self.pool, kinds=list(ids_by_kind),
+                                                                   ids_by_kind=ids_by_kind,
+                                                                   include_ended=True)} if ids_by_kind else {}
+        still_live = set(live_now)
         reread: Dict[str, LivedRecord] = {}
         if as_of_ids and window is not None:
             try:
@@ -1023,6 +1031,9 @@ class LivedMemoryRecall:
             fresh = reread.get(s.rec.doc_id)
             if fresh is not None and fresh.invalid_at is None:
                 s.rec = fresh  # its retirement was undone since: it is true now, so no "true then" label
+            now_rec = live_now.get(s.rec.doc_id)
+            if now_rec is not None and now_rec.ended_at != s.rec.ended_at:
+                s.rec = now_rec  # its end date passed since the snapshot: label it
         return kept
 
     async def degraded_now(self, query: str, *, reason: str, timeout_sec: float = 0.3) -> LivedRecall:
@@ -1232,9 +1243,10 @@ async def run_index_pass(pool: Any, cfg: SearchConfig, *, client: httpx.AsyncCli
                          batch: int) -> LivedIndexPass:
     """Make the index mirror what may be served: embed and upsert live records Chroma lacks or
     holds stale text for (up to ``batch``), and delete docs whose record is no longer servable
-    (superseded, rejected, expired, removed). Postgres keeps every row; only the index entry, and
-    the private text copied into it, goes. Serving re-gates every hit anyway."""
-    recs = await fetch_live_records(pool)
+    (superseded, rejected, removed, an expired follow-up). Postgres keeps every row; only the index
+    entry, and the private text copied into it, goes. Serving re-gates every hit anyway. A memory
+    past its stated end date is still served (labelled), so it stays indexed."""
+    recs = await fetch_live_records(pool, include_ended=True)
     docs = [index_doc(r) for r in recs]
     result: IndexPass = await index_docs(docs, cfg, client=client, bus=bus, source=source,
                                          doc_prefix="lived-memory", batch=batch, hash_keys=("occurred_ts",))
@@ -1281,7 +1293,8 @@ def items_for(chosen: Sequence[Scored]) -> List[Dict[str, Any]]:
             "ts": s.rec.occurred_at.timestamp() if s.rec.occurred_at else None,
             "snippet": s.rec.text[:LINE_MAX_CHARS],
             "tags": [SOURCE, s.rec.kind, s.rec.purpose] + (["degraded"] if s.degraded else [])
-                    + (["link"] if s.link else []),
+                    + (["link"] if s.link else []) + (["ended"] if s.rec.ended_at is not None else [])
+                    + (["as_of"] if s.rec.invalid_at is not None else []),
         })
     return out
 

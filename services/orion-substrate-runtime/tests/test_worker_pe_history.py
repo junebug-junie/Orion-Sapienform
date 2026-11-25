@@ -95,7 +95,9 @@ def test_flag_on_records_sample_and_attaches_magnitude(monkeypatch):
     assert loop.magnitude is not None
     assert loop.magnitude.value == 0.14
     assert loop.magnitude.n_readings_7d == 1
-    assert loop.magnitude.band == "insufficient_history"
+    # #3917: room has a calm theory, so one reading is enough for a band (0.14 = z 0.42: usual).
+    assert loop.magnitude.band == "usual"
+    assert loop.magnitude.trend == "insufficient_history"
 
 
 def test_stale_node_adds_no_new_rows(monkeypatch):

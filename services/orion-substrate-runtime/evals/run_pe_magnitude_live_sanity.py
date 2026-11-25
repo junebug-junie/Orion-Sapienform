@@ -39,6 +39,7 @@ from orion.substrate.prediction_error_magnitude import (  # noqa: E402
     WINDOW_7D,
     compute_prediction_error_magnitude,
 )
+from orion.substrate.calm_band import has_calm_band  # noqa: E402
 
 # Domains that won the broadcast in the 7 days before 2026-10-02 (spec, live evidence).
 # harness_closure removed 2026-11-11: its producer was retired, so it has no history.
@@ -83,7 +84,8 @@ def evaluate(
             entry["min"] = round(lo, 6)
             entry["share_at_min"] = round(sum(1 for v in in_7d if v == lo) / len(in_7d), 4)
             entry["distinct"] = len(set(in_7d))
-        entry["checks"]["coverage"] = len(in_7d) >= DEFAULT_MIN_READINGS
+        # A calm-theory node (#3917) is banded without history; only empirical nodes need the floor.
+        entry["checks"]["coverage"] = len(in_7d) >= DEFAULT_MIN_READINGS or has_calm_band(node_id)
         entry["checks"]["not_flat"] = entry.get("distinct", 0) > 1
 
         trends: Counter[str] = Counter()
@@ -95,7 +97,7 @@ def evaluate(
                 ts_last, v_last = upto[-1]
                 mag = compute_prediction_error_magnitude(
                     value=v_last, observed_at=ts_last, history=upto, now=t,
-                    trend_min_delta=trend_min_delta,
+                    trend_min_delta=trend_min_delta, node_id=node_id,
                 )
                 trends[mag.trend] += 1
                 bands[mag.band] += 1

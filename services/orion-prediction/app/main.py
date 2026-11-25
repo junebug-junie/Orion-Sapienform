@@ -29,6 +29,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from app.action_bets import ActionBets, ConflictError, WorldModelShadow
 from app.turn_self_bets import TurnSelfBets
 from app.reachable import Reachable
+from app.street_rhythm import StreetRhythmLive
 from app.act_chain import ActChain
 from app.bill_forecast import BillForecast
 from app.causal import CausalError
@@ -65,6 +66,8 @@ family_a: FamilyALive | None = None
 effect_table: EffectTable | None = None   # family C (app/family_c.py), read-only
 _blas_limit: list[Any] = []   # keeps the process-wide BLAS thread limit object alive
 _last_family_a: dict[str, Any] = {"at": None, "ok": None, "error": None}
+street_rhythm: StreetRhythmLive | None = None   # app/street_rhythm.py, read-only
+_last_street_rhythm: dict[str, Any] = {"at": None, "ok": None, "error": None}
 _last_settle: dict[str, Any] = {"at": None, "ok": None, "error": None}
 runner: ExperimentRunner | None = None
 town_hold: TownHoldRunner | None = None   # Family C Experiment 1 (app/town_hold.py)
@@ -135,6 +138,53 @@ async def _publish_joint_surprise() -> int:
         logger.info("joint_surprise_published n=%d excess=%s", sent,
                     [(r["group"], r["horizon_min"], round(r["excess"], 2)) for r in pending])
     return sent
+
+
+async def _publish_street_rhythm() -> int:
+    """Publish the street rhythm surprise events queued by the last pass (app/street_rhythm.py). Never
+    raises; a failed publish drops that event (vision_percept_expectation is the record)."""
+    pending = street_rhythm.take_pending_events()
+    if not pending:
+        return 0
+    if _bus is None or not _settings.publish_enabled:
+        street_rhythm._bump("dropped_publish_disabled", len(pending))
+        return 0
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.prediction import (PREDICTION_STREET_RHYTHM_SURPRISE_CHANNEL,
+                                          PREDICTION_STREET_RHYTHM_SURPRISE_KIND, PredictionStreetRhythmSurpriseV1)
+
+    source = ServiceRef(name=_settings.service_name, version=_settings.service_version, node=_settings.node_name)
+    sent = 0
+    for raw in pending:
+        try:
+            ev = PredictionStreetRhythmSurpriseV1.model_validate(raw)
+            await _bus.publish(PREDICTION_STREET_RHYTHM_SURPRISE_CHANNEL, BaseEnvelope(
+                kind=PREDICTION_STREET_RHYTHM_SURPRISE_KIND, source=source, payload=ev.model_dump(mode="json")))
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            street_rhythm._bump("publish_failed")
+            logger.error("street_rhythm_publish_failed expectation_id=%s err=%s", raw.get("expectation_id"), exc)
+    street_rhythm._bump("published", sent)
+    if sent:
+        logger.info("street_rhythm_published n=%d excess=%s", sent,
+                    [(r["subject_kind"], round(r["p"], 2), r["happened"], round(r["excess"], 3)) for r in pending])
+    return sent
+
+
+async def _street_rhythm_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(street_rhythm.tick)
+            _last_street_rhythm.update(at=datetime.now(timezone.utc), ok=True, error=None)
+            await _publish_street_rhythm()
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_street_rhythm.update(at=datetime.now(timezone.utc), ok=False,
+                                       error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("street_rhythm_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=_settings.street_rhythm_tick_sec)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def _settle_self_bets_forever() -> None:
@@ -232,6 +282,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global street_rhythm
     global engine, effects, action_bets, turn_self_bets, reachable, act_chain, bill_forecast, family_a, effect_table, runner, town_hold, _runner_redis, _store, _bus
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
@@ -342,6 +393,9 @@ async def lifespan(app: FastAPI):
         _tasks.append(asyncio.create_task(_bill_forecast_forever()))
     if family_a is not None:
         _tasks.append(asyncio.create_task(_family_a_forever()))
+    if _settings.street_rhythm_events_enabled:
+        street_rhythm = StreetRhythmLive(_store)
+        _tasks.append(asyncio.create_task(_street_rhythm_forever()))
     try:
         yield
     finally:
@@ -439,6 +493,9 @@ async def health() -> dict[str, Any]:
                               "last_pass": _jsonable(bill_forecast.last_pass if bill_forecast else {})},
             "family_a": {"enabled": _settings.family_a_enabled, **_jsonable(_last_family_a),
                          **(family_a.health() if family_a else {})},
+            "street_rhythm": {"enabled": _settings.street_rhythm_events_enabled, **_jsonable(_last_street_rhythm),
+                              "counts": dict(street_rhythm.counts) if street_rhythm else {},
+                              "last_pass": street_rhythm.last if street_rhythm else {}},
             "experiment_runner": runner.status() if runner else {"enabled": False},
             "town_hold": ({"running": town_hold.running(), "schedule": town_hold.schedule,
                            "night": town_hold.night.public() if town_hold.night else None}

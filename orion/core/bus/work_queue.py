@@ -236,6 +236,7 @@ class RedisStreamWorkQueue:
             self._client = None
 
     async def ensure_group(self, stream: str, group: str, start_id: str = "$", mkstream: bool = True) -> None:
+        await self.connect()   # like every other method here; a URL-only queue was never connected (#3951)
         try:
             await self.client.xgroup_create(stream, group, id=start_id, mkstream=mkstream)
             self.log.info(

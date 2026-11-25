@@ -58,6 +58,7 @@ from orion.attention.world_first import (
     source_kind_for_node,
 )
 from orion.schemas.attention_candidate import AttentionCandidateV1
+from orion.substrate.calm_band import has_calm_band
 from orion.schemas.self_reading import (
     SELF_READINGS_MAX_CHARS,
     SelfReadingsBlockV1,
@@ -115,7 +116,7 @@ _WORDS: dict[str, tuple[str, str]] = {
 PE_LANE_CUTOVER_DATE = datetime(2026, 11, 24, tzinfo=timezone.utc)
 PE_LANE_MARKER_DAYS = 14
 # Display order for the names; membership comes from the glossary.
-_PE_LANE_ORDER = ("room", "body", "room_joint", "body_joint", "chat_turn")
+_PE_LANE_ORDER = ("room", "body", "room_joint", "body_joint", "chat_turn", "street_rhythm")
 
 
 def prediction_error_lane_nodes() -> list[str]:
@@ -151,11 +152,16 @@ def pe_lane_marker_line(now: datetime) -> str | None:
     now = _aware(now)
     if not (PE_LANE_CUTOVER_DATE <= now < PE_LANE_CUTOVER_DATE + timedelta(days=PE_LANE_MARKER_DAYS)):
         return None
-    names = [_lane_name(n) for n in prediction_error_lane_nodes()]
-    if not names:
+    from orion.schemas.attention_candidate import SHADOW_NODE_IDS
+
+    nodes = prediction_error_lane_nodes()
+    if not nodes:
         return None
     rank = {name: i for i, name in enumerate(_PE_LANE_ORDER)}
-    names.sort(key=lambda n: (rank.get(n, len(rank)), n))
+    nodes.sort(key=lambda n: (rank.get(_lane_name(n), len(rank)), _lane_name(n)))
+    # A shadow node is recorded but not yet attended: say so, so the line does not promise Orion a
+    # signal its attention cannot see yet.
+    names = [_lane_name(n) + (" (recorded, not yet attended)" if n in SHADOW_NODE_IDS else "") for n in nodes]
     return (
         f"Since {PE_LANE_CUTOVER_DATE:%Y-%m-%d}, my prediction-error lane holds only forecast misses "
         f"({', '.join(names)}). Camera change and alarms are separate signals now."
@@ -443,6 +449,10 @@ def _base_line(r: SelfReadingV1) -> str:
         n = int(r.value)
         return (f"{r.label}: {r.score_0_10}/10 for me (went off {n} time{'s' if n != 1 else ''} in the "
                 f"last hour; more than in {pct}% of my hours this week{trend}) [{r.ref}]")
+    if has_calm_band(r.source_id):
+        # #3917: this node's percentile is against its calm theory, not its own week.
+        return (f"{r.label}: {r.score_0_10}/10 for me (now {r.value:.2f}; higher than "
+                f"{pct}% of calm, well-predicted stretches{trend}) [{r.ref}]")
     return (f"{r.label}: {r.score_0_10}/10 for me (now {r.value:.2f}; higher than "
             f"{pct}% of my last 7 days{trend}) [{r.ref}]")
 

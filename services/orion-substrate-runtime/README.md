@@ -457,6 +457,18 @@ hints over a fixed 0.30 scale, not a forecast).
 - `/health` `prediction_joint_surprise` (counters, window, top reading); kill switch
   `SUBSTRATE_PREDICTION_JOINT_SURPRISE_NODES_ENABLED` (producer:
   `PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED`).
+- **Street rhythm surprise** (2026-11-25, `orion/substrate/prediction_street_rhythm.py`): subscribes to
+  `orion:prediction:street_rhythm_surprise` and folds the walkway rhythm forecasts scored in the last
+  30 min into `node:prediction.street_rhythm`, as `clip(z / 3, 0, 1)` of their summed excess over its calm
+  spread. It writes once per accepted outcome (about 30 a day); a republished outcome is a duplicate and writes nothing; no outcome means the node ages to absent, never
+  calm. It is a WORLD node (absent in world-first after 600 s). It ships in SHADOW
+  (`orion/schemas/attention_candidate.py` `STREET_RHYTHM_SHADOW = True`): it is written, recorded in the
+  history table and shown in `/health` `prediction_street_rhythm` (with `shadow: true`), but the
+  attention contests and curiosity skip it. Going live is that one line, after
+  `services/orion-prediction/evals/run_street_rhythm_calm_eval.py --days 7 --check` passes and #3917's
+  calm-band table has an entry for it (about 200-250 rows a week sits right at the old 200-reading floor).
+  Kill switch `SUBSTRATE_PREDICTION_STREET_RHYTHM_NODE_ENABLED` (producer:
+  `PREDICTION_STREET_RHYTHM_EVENTS_ENABLED`).
 - The biometrics tick still reduces biometrics grammar into the node projection, pressure organ
   and active pressure; it no longer writes a prediction error (`BIOMETRICS_SILENT_NODE_*` removed
   with it).

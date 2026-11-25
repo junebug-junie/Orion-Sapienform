@@ -190,7 +190,7 @@ Every organ's output is an **experience**: one row in `temporal_self_event`. Eve
 - `reading_turn` from `reading_durable_turn` (one per finished reading);
 - `prediction_surprise` from `prediction_exceedance` and `prediction_joint_surprise` (one per exceedance; the joint surprise row as `related_refs`);
 - `prime_thought` from `grammar_acts` actor `prime` verb `infer` (the outcome note as label);
-- `intention_close` from `durable.intention` act closes;
+- `intention_close` from Prime's `make intention:<concern_id>` act closes (patch 7a: a refused order has no `durable.intention` run, so the take act is the one row per intention; the run's act rides as a ref);
 - `day_letter` from `orion_day_letter` (one per letter; its threads in `related_refs`);
 - `personality_choice` from `personality_evidence` (one per choice point).
 

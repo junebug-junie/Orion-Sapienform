@@ -1,13 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 748,
+  "metric_count": 750,
   "_last_change": {
-    "change_count": 3,
-    "high_severity_count": 1,
+    "change_count": 2,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:event (declared_consumers: \u2026an', 'orion-sql-writer', 'orion-thought', 'o\u2026 -> \u2026an', 'orion-thought', 'o\u2026)",
-      "medium added metric://bus_channel/orion-gpu-pool/orion:stream:gpu_pool:event",
-      "medium added metric://bus_channel/orion-sql-writer/orion:stream:gpu_pool:event:dlq"
+      "medium added metric://bus_channel/orion-prediction/orion:prediction:street_rhythm_surprise",
+      "medium added metric://field_channel/orion-substrate-runtime/node:prediction.street_rhythm.prediction_error"
     ]
   },
   "definitions": {
@@ -2855,6 +2854,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-prediction/orion:prediction:street_rhythm_surprise": {
+      "schema_id": "PredictionStreetRhythmSurpriseV1",
+      "all_producers": [
+        "orion-prediction"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-prediction/orion:prediction:surprise": {
       "schema_id": "PredictionSurpriseV1",
       "all_producers": [
@@ -4747,6 +4757,24 @@
       ],
       "sparsity": "per_tick",
       "absent_means": "written once per scored room-group bucket (about every 5 min). Nothing is written when no row passes (prediction service down, a refused bucket, no adaptive p yet, either kill switch off): the node keeps its last value, read as absent by world-first after 600 s and by every reader after 1800 s, never as calm.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "notes": "category=self_monitoring level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:prediction.street_rhythm.prediction_error": {
+      "meaning": "How surprised the walkway rhythm forecast was by who did or didn't appear: before each window Orion's street rhythm learner states how likely a known subject (a person, a car it knows, the mail truck) is to show up on the walkway, and afterwards the window is scored. This is the forecasts scored in the last 30 minutes, as excess surprise over what the stated probabilities expected, in units of its calm spread (a z-score), 3 sigma = 1.0. 0 = the street went the way the forecast leaned. A window the camera did not watch is not a miss and is not counted. A miss can also mean a subject was re-identified under a new id, not that it stayed away. Until its 7-day calm check passes it is recorded but not attended: attention and curiosity skip it.",
+      "value_kind": "surprise_excess",
+      "rest": "0.0 = the forecasts scored in the last 30 min surprised their stated probabilities no more than calibration predicts (z <= 0). Reachable by theory (calm z about N(0, 1): exact 0 about half the time); 14-day replay (2026-11-11..25, 403 writes): exact 0 on 65 % of writes, p90 0.47, p99 0.82. In SHADOW until its 7-day calm check passes: recorded, not yet competing.",
+      "rest_range": [
+        0.0,
+        0.55
+      ],
+      "sparsity": "event_gated",
+      "absent_means": "written once per scored walkway rhythm forecast whose window carries information (about 30 a day). No scored outcome (night, the prediction service down, either kill switch off) writes nothing: the node keeps its last value, read as absent by world-first after 600 s and by every reader after 1800 s, never as calm. Replay: fresh 15 % of the time.",
       "polarity": "higher_is_worse",
       "declared_consumers": [
         "orion.attention.world_first:judge_candidate",

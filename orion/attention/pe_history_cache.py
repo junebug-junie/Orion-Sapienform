@@ -120,7 +120,7 @@ class NodePeHistoryCache:
         self, *, now: datetime
     ) -> dict[str, tuple[PredictionErrorMagnitudeV1, datetime, float | None]]:
         """node_id -> (magnitude, observed_at, mid-rank percentile)."""
-        from orion.attention.world_first import midrank_percentile
+        from orion.attention.world_first import node_rank_percentile
 
         now = _aware(now)
         bucket = now.replace(second=0, microsecond=0)
@@ -135,9 +135,9 @@ class NodePeHistoryCache:
                 continue
             history = list(window)
             mag = compute_prediction_error_magnitude(
-                value=value, observed_at=observed_at, history=history, now=now
+                value=value, observed_at=observed_at, history=history, now=now, node_id=node_id
             )
-            mid = midrank_percentile(value, [v for ts, v in history if ts >= now - WINDOW_7D])
+            mid = node_rank_percentile(node_id, value, [v for ts, v in history if ts >= now - WINDOW_7D])
             self._memo[node_id] = (key, mag, mid)
             out[node_id] = (mag, observed_at, mid)
         return out

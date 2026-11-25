@@ -63,6 +63,9 @@ class LivedKnowHit(BaseModel):
     date: str
     text: str
     fit: float
+    # The day a memory's stated end date passed ("away till Friday"), else None. Such a hit
+    # was true then, not now.
+    ended: Optional[str] = None
 
 
 class LivedKnowResponseBody(BaseModel):

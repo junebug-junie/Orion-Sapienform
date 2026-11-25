@@ -34,7 +34,6 @@ def test_goal_proposal_schema_in_registry() -> None:
             "kind": "memory.goals.proposed.v1",
             "goal_statement": "Clarify autonomy boundaries without executing any new action.",
             "proposal_signature": "sig-1",
-            "drive_origin": "autonomy",
             "priority": 0.5,
             "provenance": {
                 "intake_channel": "orion:metacognition:tick",
@@ -88,6 +87,8 @@ def test_memory_goals_proposed_channel_cataloged() -> None:
     assert entry["schema_id"] == "FieldGoalProvenanceV1"
     assert entry["message_kind"] == "memory.field_goals.proposed.v1"
     assert entry.get("producer_services") == ["orion-attention-runtime"]
+    # #3924: the sql-writer is a real consumer again (field_goal_provenance_log).
+    assert "orion-sql-writer" in entry["consumer_services"]
 
 
 def test_autonomy_goal_planned_schema_and_channel_cataloged() -> None:

@@ -491,9 +491,9 @@ def test_only_the_where_i_am_now_hop_reads_the_now_and_closes_it_with_its_cites(
                                {"shown_id": "shown-rm", "citing_ref": f"reminiscence:{RUN_ID}",
                                 "cites": ["camera:e1", "invented"]})]
         rec = result["steps"]["hop:where_i_am_now"]
-        assert rec["now_shown_id"] == "shown-rm" and rec["now_cites"] == ["camera:e1", "invented"]
+        assert rec["now_shown_id"] == "shown-rm" and rec["now_cites"] == ["camera:e1"]   # shown ids only
         assert rec["outcome"] == "written"   # the extra line never breaks the receipt check
-        assert finish_detail(result)["steps"]["hop:where_i_am_now"]["now_cites"] == ["camera:e1", "invented"]
+        assert finish_detail(result)["steps"]["hop:where_i_am_now"]["now_cites"] == ["camera:e1"]
     asyncio.run(scenario())
 
 
@@ -552,3 +552,36 @@ def test_switch_off_or_now_unavailable_runs_the_hop_as_before(tmp_path):
             assert all("experience:" not in t.prompt for t in world.turns)
         asyncio.run(scenario())
         assert len(http.gets) == (0 if not enabled else 1)
+
+
+def test_a_reply_with_a_tag_but_no_proven_receipt_closes_with_no_cites(tmp_path):
+    http = FakeNowHttp()
+    bad = "reminisce where_i_am_now saved nothing\n[experience:camera:e1]"
+
+    class W(World):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.bad_once = True
+
+        def default_reply(self, req):
+            if req.source_tag == step_tag("hop:where_i_am_now") and self.bad_once:
+                self.bad_once = False
+                return bad
+            reply = super().default_reply(req)
+            if req.source_tag == step_tag("hop:where_i_am_now"):
+                return reply + "\n[experience:camera:e1]"
+            return reply
+
+    async def scenario():
+        from app.reminiscence_now import ReminiscenceNow
+
+        world, saver = W(tmp_path), InMemorySaver()
+        world.now_reader = ReminiscenceNow(enabled=True, base_url="http://self", client_factory=http)
+        await start_and_grant(world, saver)
+        # The failed attempt: the model ran, so its read is closed, but with no cites (no hop was proven).
+        assert [p[1]["cites"] for p in http.posts] == [[]]
+        result = await after_backoff(world, saver)
+        assert result["status"] == "completed"
+        assert [p[1]["cites"] for p in http.posts] == [[], ["camera:e1"]]
+        assert result["steps"]["hop:where_i_am_now"]["now_cites"] == ["camera:e1"]
+    asyncio.run(scenario())

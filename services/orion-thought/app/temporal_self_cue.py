@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -230,6 +231,8 @@ async def post_now_use(
 # never closed, so the next painting is offered the same experiences (#3498, the reverie's rule).
 
 PAINTING_ORGAN = "painting"
+_LOOSE_TAG_RE = re.compile(r"\[\s*experience\s*:[^\]]*\]", re.IGNORECASE)
+_BARE_TAG_RE = re.compile(r"\bexperience\s*:\s*\S+", re.IGNORECASE)
 
 
 async def read_painting_now(run_ref: str, *, correlation_id: str = "") -> NowRead:
@@ -254,9 +257,13 @@ def painting_cites(text: str, shown_event_ids: Iterable[str]) -> tuple[str, list
 
     raw = [m.group(1) for m in CITE_RE.finditer(text or "")]
     cites = shown_cites(raw, shown_event_ids)
-    clean = CITE_RE.sub("", text or "")
+    # Strip more loosely than cites are read: a malformed tag ("[experience: a b]", "[experience:a, experience:b]",
+    # the prompt's own "[experience:<id>]", a bare "experience:x") must not reach the diffusion prompt either.
+    clean = _LOOSE_TAG_RE.sub("", text or "")
+    clean = _BARE_TAG_RE.sub("", clean)
     clean = " ".join(clean.split())
-    clean = clean.replace(" .", ".").replace(" ,", ",").strip()
+    clean = re.sub(r"\s+([,.;:!?])", r"\1", clean)
+    clean = re.sub(r"[,;:]+(?=[.!?]|$)", "", clean).strip()
     return clean, cites
 
 

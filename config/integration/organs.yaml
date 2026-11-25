@@ -86,7 +86,7 @@ organs:
       office_session: visit_seconds
     families: [vision.council, perception, perception.office, orion.look, orion.look_check, vision.ask]
     reads_now: null
-    # Integration patch 7b looked and kept this exempt: no camera act has a model step of its own that could cite.
+    # Integration patch 7b looked and kept this exempt: no camera model step should cite other organs' experiences.
     exempt_read: "no model step of its own that could cite: a look (orion.look, orion.look_check) is a dig command inside a chat or curiosity turn that copies a frame or files a check, so its read of the now is that turn's organ's; vision.council and perception describe frames, and mixing other organs' experiences into perception would corrupt it; camera asks (vision.ask) are opened by rules in sql-writer. A cite here would be another organ's cite under the camera's name (#3429)"
   body:
     temporal_sources: [body_binding, gpu_wait, arousal_transition]

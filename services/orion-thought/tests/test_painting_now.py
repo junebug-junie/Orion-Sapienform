@@ -74,6 +74,8 @@ async def test_the_interpret_call_sees_the_now_and_its_cites_are_closed_and_stri
     cortex = _Cortex("A lantern over black water by an office window [experience:camera:e1] [experience:bogus]")
 
     plan = await vc.compute_visual_plan(AsyncMock(), chain_id="chain-1", cortex_client=cortex)
+    assert closes == []   # planning never posts: only the plan that will be painted closes its read
+    await vc.close_plan_now(plan, "chain-1")
 
     assert fetched == [("painting", "visual_run:chain-1")]
     shown_to_model = cortex.calls[0].context["orion_now"]
@@ -96,6 +98,7 @@ async def test_no_tag_still_closes_the_read_with_no_cites(monkeypatch):
     closes: list = []
     vc, _cue, _f = _wire(monkeypatch, read=NowRead(reason="ok", now=_now("camera:e1")), closes=closes)
     plan = await vc.compute_visual_plan(AsyncMock(), chain_id="c2", cortex_client=_Cortex("A lantern on a pier"))
+    await vc.close_plan_now(plan, "c2")
     assert closes == [("shown-1", [], "visual_run:c2")]
     assert plan.now_cites == [] and plan.context_slot_interpreted == "A lantern on a pier"
 
@@ -109,6 +112,7 @@ async def test_a_failed_interpret_call_leaves_the_read_open(monkeypatch):
     closes: list = []
     vc, _cue, fetched = _wire(monkeypatch, read=NowRead(reason="ok", now=_now("camera:e1")), closes=closes)
     plan = await vc.compute_visual_plan(AsyncMock(), chain_id="c3", cortex_client=_Cortex(asyncio.TimeoutError()))
+    await vc.close_plan_now(plan, "c3")
     assert fetched and closes == [] and plan.now_shown_id is None and plan.now_cites is None
 
 
@@ -120,6 +124,7 @@ async def test_unavailable_now_runs_the_painting_as_before(monkeypatch):
     vc, _cue, _f = _wire(monkeypatch, read=NowRead(reason="not_found"), closes=closes)
     cortex = _Cortex("A lantern on a pier [experience:camera:e1]")
     plan = await vc.compute_visual_plan(AsyncMock(), chain_id="c4", cortex_client=cortex)
+    await vc.close_plan_now(plan, "c4")
     assert cortex.calls[0].context["orion_now"] is None
     assert closes == [] and plan.now_shown_id is None
     assert plan.context_slot_interpreted == "A lantern on a pier"  # a stray tag never reaches diffusion
@@ -132,8 +137,21 @@ async def test_switch_off_or_no_interpret_call_reads_nothing(monkeypatch):
     for kw in ({"enabled": False}, {"interpret": False}, {"slot": None}):
         closes: list = []
         vc, _cue, fetched = _wire(monkeypatch, read=NowRead(reason="ok", now=_now("camera:e1")), closes=closes, **kw)
-        await vc.compute_visual_plan(AsyncMock(), chain_id="c5", cortex_client=_Cortex("A pier"))
+        plan = await vc.compute_visual_plan(AsyncMock(), chain_id="c5", cortex_client=_Cortex("A pier"))
+        await vc.close_plan_now(plan, "c5")
         assert fetched == [] and closes == [], kw
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_that_was_only_tags_keeps_no_cite(monkeypatch):
+    from app.temporal_self_cue import NowRead
+
+    closes: list = []
+    vc, _cue, _f = _wire(monkeypatch, read=NowRead(reason="ok", now=_now("camera:e1")), closes=closes)
+    plan = await vc.compute_visual_plan(AsyncMock(), chain_id="c6", cortex_client=_Cortex("[experience:camera:e1]"))
+    await vc.close_plan_now(plan, "c6")
+    assert plan.context_slot_interpreted is None and "experience" not in plan.prompt
+    assert closes == [("shown-1", [], "visual_run:c6")]   # the model ran: closed, but nothing it cited was painted
 
 
 def test_painting_cites_keeps_shown_ids_only_and_caps_at_three():
@@ -142,7 +160,18 @@ def test_painting_cites_keeps_shown_ids_only_and_caps_at_three():
     text = "A pier [experience:a] at dusk [experience:b], [experience:c] [experience:d] [experience:zzz]."
     clean, cites = painting_cites(text, ["a", "b", "c", "d"])
     assert cites == ["a", "b", "c"]
-    assert "experience" not in clean and clean == "A pier at dusk,."
+    assert clean == "A pier at dusk."
+
+
+@pytest.mark.parametrize("tail", [
+    "[experience:abc, experience:def]", "[experience: abc def]", "[experience:<id>]", "experience:abc",
+    "[Experience:abc]",
+])
+def test_malformed_tags_never_reach_the_diffusion_prompt(tail):
+    from app.temporal_self_cue import painting_cites
+
+    clean, cites = painting_cites(f"A lantern on a pier {tail}", ["abc"])
+    assert clean == "A lantern on a pier" and "xperience" not in clean
 
 
 def test_the_template_shows_the_now_only_when_there_is_one():

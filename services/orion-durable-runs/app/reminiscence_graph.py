@@ -321,12 +321,21 @@ def build_reminiscence_graph(run_turn: RunTurn, admission: AdmissionDeps, checkp
                 run_turn, held, step_key=step_key, prompt=prompt,
                 correlation_id=correlation_id, timeout_sec=turn_timeout, source_tag=step_tag(step_key),
                 session_id=REMINISCENCE_SESSION_ID)
+            # The turn answered, so its read is closed below either way. Cites are taken from the reply now, before
+            # its words are dropped from the record, and posted only once the receipt is proven.
+            cites = now.cites_in(shown, record["text"]) if shown is not None else []
+            try:
+                proven = await _verify(record)
+            except Exception:
+                if shown is not None:
+                    await now.close(state["run_id"], shown, [])
+                raise
             if shown is not None:
-                # The turn answered: close the read with its cites (possibly none), before the receipt is checked
-                # and before the reply's words are dropped from the record. A read with no items is closed too.
-                cites = await now.close(state["run_id"], shown, record["text"])
                 record["now_shown_id"] = shown.shown_id
-                record["now_cites"] = cites
+                record["now_cites"] = await now.close(state["run_id"], shown, cites)
+            return proven
+
+        async def _verify(record: dict[str, Any]) -> dict[str, Any]:
             # Verified under the hold, before anything is checkpointed: a reply without a receipt the
             # ledger backs is a failed attempt, never a completed step.
             if hop is not None:

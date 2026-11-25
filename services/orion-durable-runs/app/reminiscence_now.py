@@ -13,7 +13,8 @@ so it is the one hop shown the now. The other hops are about a past week; the no
    ``[experience:<id>]`` tags (``render``).
 2. **After the turn** (``close``), only when the turn produced text: the tags in the reply, shown ids first, at
    most 3 (``orion.curiosity.now_section.extract_cites``, the same extractor curiosity uses), go to
-   ``POST /temporal-self/now/use``. No tag: the post is still sent with none, so the shown row reads "read the
+   ``POST /temporal-self/now/use`` once the hop's save receipt is proven. A reply whose receipt fails is closed
+   with no cites (the model ran, but no hop was written for its cites to have shaped). No tag: the post is still sent with none, so the shown row reads "read the
    now, cited nothing". The endpoint keeps only ids that were shown (``record_use``).
 
 A turn that never answered (refusal, timeout) leaves the read open, so the next hop attempt or the next day is
@@ -23,6 +24,7 @@ Log lines: ``reminiscence_now_read``, ``reminiscence_now_unavailable``, ``remini
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Optional
 
@@ -67,14 +69,22 @@ class ReminiscenceNow:
         self.timeout_sec = float(timeout_sec)
         self._client_factory = client_factory or (lambda: httpx.AsyncClient(timeout=self.timeout_sec))
 
+    async def _get(self, run_id: str) -> Any:
+        async with self._client_factory() as client:
+            return await client.get(f"{self.base_url}/temporal-self/now",
+                                    params={"organ": ORGAN, "run_ref": citing_ref(run_id)})
+
+    async def _post(self, body: dict[str, Any]) -> Any:
+        async with self._client_factory() as client:
+            return await client.post(f"{self.base_url}/temporal-self/now/use", json=body)
+
     async def read(self, run_id: str) -> Optional[TemporalNowV1]:
-        """What the hop is shown, or None (off, unreachable, slow, malformed). Never raises."""
+        """What the hop is shown, or None (off, unreachable, slow, malformed). Never raises, never takes longer than
+        ``timeout_sec`` in all (httpx's own timeout is per phase)."""
         if not self.enabled:
             return None
         try:
-            async with self._client_factory() as client:
-                resp = await client.get(f"{self.base_url}/temporal-self/now",
-                                        params={"organ": ORGAN, "run_ref": citing_ref(run_id)})
+            resp = await asyncio.wait_for(self._get(run_id), self.timeout_sec)
             now = parse_now(resp.json()) if resp.status_code == 200 else None
             status = resp.status_code
         except Exception as exc:  # noqa: BLE001 -- the hop runs without the now
@@ -86,15 +96,18 @@ class ReminiscenceNow:
         logger.info("reminiscence_now_read run=%s shown_id=%s items=%d", run_id, now.shown_id, len(now.items))
         return now
 
-    async def close(self, run_id: str, now: TemporalNowV1, text: str) -> Optional[list[str]]:
-        """Post the reply's cites (possibly none) against ``now``; this closes the read. The cites posted, or None
-        when the post failed. Never raises."""
-        cites = extract_cites(text, shown=[i.event_id for i in now.items])
+    @staticmethod
+    def cites_in(now: TemporalNowV1, text: str) -> list[str]:
+        """The reply's tags, shown ids first, at most 3. Invented ids are kept so the endpoint counts them."""
+        return extract_cites(text, shown=[i.event_id for i in now.items])
+
+    async def close(self, run_id: str, now: TemporalNowV1, cites: list[str]) -> Optional[list[str]]:
+        """Post ``cites`` (possibly none) against ``now``; this closes the read. The SHOWN ids among them (what the
+        endpoint can store), or None when the post failed. Never raises, bounded by ``timeout_sec``."""
         try:
-            async with self._client_factory() as client:
-                resp = await client.post(f"{self.base_url}/temporal-self/now/use",
-                                         json={"shown_id": now.shown_id, "citing_ref": citing_ref(run_id),
-                                               "cites": cites})
+            resp = await asyncio.wait_for(
+                self._post({"shown_id": now.shown_id, "citing_ref": citing_ref(run_id), "cites": list(cites)}),
+                self.timeout_sec)
             if resp.status_code != 200:
                 logger.warning("reminiscence_now_cites run=%s posted=false status=%s", run_id, resp.status_code)
                 return None
@@ -105,7 +118,8 @@ class ReminiscenceNow:
             return None
         logger.info("reminiscence_now_cites run=%s shown_id=%s cites=%d stored=%d not_shown=%d", run_id, now.shown_id,
                     len(cites), len(result.get("uses") or []), len(result.get("rejected_not_shown") or []))
-        return cites
+        shown = {i.event_id for i in now.items}
+        return [c for c in cites if c in shown]
 
 
 __all__ = ["HOP", "ORGAN", "ReminiscenceNow", "citing_ref", "render"]

@@ -1149,13 +1149,15 @@ async def compute_visual_plan(
             orion_now=orion_now,
         )
         if context_slot_interpreted is not None:
-            # Tags never reach the diffusion prompt (77-token budget); a sentence that was only tags is none.
+            # Tags never reach the diffusion prompt (77-token budget). A sentence that was only tags is none: the
+            # raw slot text is painted, so nothing shown shaped the picture and no cite is kept.
             shown = [i.event_id for i in now_view.items] if now_view is not None else []
             context_slot_interpreted, cites = cue.painting_cites(context_slot_interpreted, shown)
             context_slot_interpreted = context_slot_interpreted or None
             if now_view is not None:
-                now_shown_id, now_cites = now_view.shown_id, cites
-                await cue.close_painting_now(now_shown_id, cites, chain_id, correlation_id=chain_id)
+                # Kept on the plan, NOT posted here: the caller posts once this plan is the one that will be
+                # painted (close_plan_now; the durable prepare only after its own freeze won).
+                now_shown_id, now_cites = now_view.shown_id, (cites if context_slot_interpreted else [])
     prompt = build_visual_prompt(
         effective_prior, context_slot_used, context_slot_interpreted or context_slot_text
     )
@@ -1178,6 +1180,16 @@ async def compute_visual_plan(
         now_shown_id=now_shown_id,
         now_cites=now_cites,
     )
+
+
+async def close_plan_now(plan: VisualPlan, chain_id: str) -> None:
+    """Integration patch 7b: post the plan's cites (possibly none) against the now its interpret call was shown,
+    which closes that read. Call only for the plan that will be painted. No now on the plan: nothing. Never raises."""
+    if not plan.now_shown_id:
+        return
+    from . import temporal_self_cue as cue
+
+    await cue.close_painting_now(plan.now_shown_id, list(plan.now_cites or []), chain_id, correlation_id=chain_id)
 
 
 # The lease every generate takes (gpu_pool.yaml class `diffusion`): attached under the run's hold, or its own.
@@ -1432,6 +1444,7 @@ async def _run_visual_chain_body(
     chain_id = attempt_id or str(uuid4())
     _visual_chain_body_chain_id = chain_id
     plan = await compute_visual_plan(bus, chain_id=chain_id, cortex_client=cortex_client)
+    await close_plan_now(plan, chain_id)
 
     async def _generation_failed(error: BaseException) -> ReverieVisualChainV1:
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)

@@ -688,6 +688,47 @@ if [ "$DRY_RUN" != "1" ]; then
     rebuild_log "RUN base=$LOG_BASE services=$(printf '%s ' $SERVICES)recreate=$(printf '%s ' $RECREATE)"
 fi
 
+# Stacks a chat turn runs through: Hub holds the browser connection, the
+# governor runs the claude motor. Recreating either kills a chat reply in flight.
+CHAT_DRAIN_SERVICES="orion-hub orion-harness-governor"
+
+is_chat_drain_service() {
+    [ "${ORION_REBUILD_CHAT_DRAIN:-1}" != "0" ] || return 1
+    printf '%s\n' $CHAT_DRAIN_SERVICES | grep -qx "$1"
+}
+
+# wait_for_chat_turns <service>: bounded wait until Hub reports no chat turn
+# running or queued (scripts/wait_for_chat_turns_idle.py). Never fails the run:
+# at the deadline, or with Hub unreachable, the restart goes ahead.
+# Logged as its own step (START/END "<svc> chat-drain") so a run killed during
+# the wait still lists <svc> in check_rebuild_log.py's finish command.
+# Skipped when safe_docker_build.sh would refuse the `up` anyway (deploy pin or
+# migration gate): waiting up to 10 min for a refused restart only holds the lock.
+wait_for_chat_turns() {
+    local line started pre_rc=0 helper="$REPO_ROOT/scripts/wait_for_chat_turns_idle.py"
+    started=$(date +%s) || started=0
+    rebuild_log "START $1 chat-drain"
+    IN_FLIGHT="$1 chat-drain"
+    if [ -n "$ALLOW_SHARED" ]; then
+        ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" ORION_SAFE_BUILD_PREFLIGHT_ONLY=1 \
+            "$SAFE_BUILD" "$1" up -d --no-build </dev/null >/dev/null 2>&1 || pre_rc=$?
+    else
+        ORION_SAFE_BUILD_PREFLIGHT_ONLY=1 "$SAFE_BUILD" "$1" up -d --no-build </dev/null >/dev/null 2>&1 || pre_rc=$?
+    fi
+    if [ "$pre_rc" -ne 0 ]; then
+        line="skipped reason=up_would_be_refused rc=$pre_rc"
+    elif [ ! -f "$helper" ]; then
+        line="unknown reason=helper_missing"
+    else
+        line=$(python3 "$helper" --wait-s "${ORION_REBUILD_CHAT_DRAIN_WAIT_S:-600}" </dev/null 2>/dev/null | tail -n 1) || true
+        [ -n "$line" ] || line="unknown reason=helper_printed_nothing"
+    fi
+    IN_FLIGHT=""
+    echo "rebuild_services_from_git_diff.sh: CHAT_DRAIN $1 $line"
+    rebuild_log "CHAT_DRAIN $1 $line"
+    rebuild_log "END rc=0 seconds=$(($(date +%s) - started)) $1 chat-drain"
+}
+
 # rebuild_one <service>: the full rebuild of one stack; adds it to FAILED,
 # or counts it in REBUILT.
 rebuild_one() {
@@ -740,6 +781,9 @@ rebuild_one() {
             fi
         else
             echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}"
+        fi
+        if is_chat_drain_service "$svc"; then
+            echo "[dry-run] would build $svc, wait for in-flight chat turns (max ${ORION_REBUILD_CHAT_DRAIN_WAIT_S:-600}s), then up -d --no-build"
         fi
         if [ -x "$REPO_ROOT/services/$svc/scripts/pre_rebuild.sh" ]; then
             echo "[dry-run] would run first: services/$svc/scripts/pre_rebuild.sh"
@@ -823,6 +867,15 @@ rebuild_one() {
         # the Curiosity dashboard fail despite a valid compose file.
         # shellcheck disable=SC2086
         run_safe_build "$svc" --profile analytics up -d --build $RECREATE_FLAG
+    elif is_chat_drain_service "$svc"; then
+        # Build while the old container still serves, then restart only once no
+        # chat turn is in flight (bounded), so a pull mid-chat stops killing the reply.
+        run_safe_build "$svc" build
+        if [ "$rc" -eq 0 ]; then
+            wait_for_chat_turns "$svc"
+            # shellcheck disable=SC2086
+            run_safe_build "$svc" up -d --no-build $RECREATE_FLAG
+        fi
     else
         # shellcheck disable=SC2086
         run_safe_build "$svc" up -d --build $RECREATE_FLAG

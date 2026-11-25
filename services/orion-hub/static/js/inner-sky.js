@@ -126,7 +126,7 @@ function buildOrgans(names) { // (re)builds the ring when the set of organs chan
   organBy.clear();
   organs = names.map((name, i) => {
     const th = i / names.length * Math.PI * 2;
-    return { name, pos: new THREE.Vector3(Math.cos(th) * R_RING, Math.sin(th * 2) * 0.6, Math.sin(th) * R_RING), color: new THREE.Color(colorOf(name)), recent: [], flash: 0, total: 0, last: '', alert: 0, alertC: null, trouble: 0 };
+    return { name, pos: new THREE.Vector3(Math.cos(th) * R_RING, Math.sin(th * 2) * 0.6, Math.sin(th) * R_RING), color: new THREE.Color(colorOf(name)), recent: [], flash: 0, total: 0, last: '', alert: 0, alertC: null, trouble: 0, troubleRed: 0 };
   });
   for (const o of organs) organBy.set(o.name, o);
   organPool = new Pool(organs.length * 2);
@@ -175,14 +175,14 @@ const window0 = () => serverNow() - WINDOW_SEC;
 function noteEvent(e) { // counts and side text for an event that has now happened on screen (inside the window)
   if (e.t < window0()) return;
   const o = organBy.get(e.organ);
-  if (o) { o.recent.push(e.t); o.total++; o.flash = Math.max(o.flash, 1); o.last = e.label; if (e.severity) o.trouble++; }
+  if (o) { o.recent.push(e.t); o.total++; o.flash = Math.max(o.flash, 1); o.last = e.label; if (e.severity) { o.trouble++; if (e.severity === 'red') o.troubleRed++; } }
   if (e.severity) nTrouble++;
   if (e.kind === 'field_dominance_run') fieldHeld.textContent = e.label;
   nExp++;
 }
 // Counts from the record itself: everything in [window start, simT]. Touches no comet, arc or feed line.
 function recount() {
-  for (const o of organs) { o.recent = []; o.total = 0; o.last = ''; o.trouble = 0; }
+  for (const o of organs) { o.recent = []; o.total = 0; o.last = ''; o.trouble = 0; o.troubleRed = 0; }
   nExp = 0; nBind = 0; nTrouble = 0; fieldHeld.textContent = '—';
   for (let i = 0; i < evIdx; i++) noteEvent(events[i]);
   for (const o of organs) { o.recent = o.recent.filter((t) => simT - t < 1800); o.flash = 0; o.alert = 0; }
@@ -263,13 +263,15 @@ async function pollEvents() {
 async function pollState() {
   try {
     const res = await fetch('/api/inner-sky/state'); if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const d = await res.json(); stateNow = d.now;
+    const d = await res.json(); const prevNow = stateNow; stateNow = d.now;
     if (d.body) {
       for (const s of d.body.services) {
         if (!services.has(s.id)) { if (services.size >= MAX_SVC) continue; services.set(s.id, { id: s.id, pos: shellPos(s.id), phase: Math.random() * 6.28, rate: null, glow: 0, pending: 0, emit: 0, acc: 0 }); }
-        const sv = services.get(s.id), wasLive = sv.n != null && core.isLive(sv, stateNow, LIVE_SEC);
+        const sv = services.get(s.id), wasLive = sv.n != null && core.isLive(sv, prevNow, LIVE_SEC); // as of the last poll
         Object.assign(sv, { n: s.n, last: s.last });
-        if (wasLive && !core.isLive(sv, d.now, LIVE_SEC)) sv.lost = 1; // it just went silent: fade out through red
+        const liveNow = core.isLive(sv, d.now, LIVE_SEC);
+        if (wasLive && !liveNow) sv.lost = 1; // it just went silent: fade out through red
+        else if (liveNow) sv.lost = 0;       // it spoke again: no red left over
       }
       const sr = core.countRates(serviceRatesPrev, d.body.services, (s) => s.id, d.now); serviceRatesPrev = sr.next;
       for (const [id, r] of Object.entries(sr.rates)) if (services.has(id)) services.get(id).rate = r;
@@ -336,7 +338,7 @@ function hover() {
   if (!best) for (const s of services.values()) { const p = toScreen(s.pos); const d = Math.hypot(p.x - mouse.x, p.y - mouse.y); if (d < bd) { bd = d; best = { s }; } }
   if (!best) { tip.hidden = true; return; }
   if (best.core) { tip.innerHTML = `<b style="color:#fff1c4">Orion's now</b><br>The shared stream of experiences every part of Orion reads (the temporal self). Each comet is one experience landing in it, and the glow flares as they land. ${nExp.toLocaleString()} landed in the window.`; }
-  else if (best.o) { const o = best.o; tip.innerHTML = `<b style="color:${colorOf(o.name)}">${esc(nice(o.name))}</b><br>${o.total} experiences in the window · ${o.recent.length} in the last 30 min${o.trouble ? ` · <span style="color:${SEV.amber}">${o.trouble} with a problem</span>` : ''}${o.last ? `<br><span style="color:var(--muted)">Latest: ${esc(o.last.slice(0, 140))}</span>` : ''}`; }
+  else if (best.o) { const o = best.o; tip.innerHTML = `<b style="color:${colorOf(o.name)}">${esc(nice(o.name))}</b><br>${o.total} experiences in the window · ${o.recent.length} in the last 30 min${o.trouble ? ` · <span style="color:${o.troubleRed ? SEV.red : SEV.amber}">${o.trouble} with a problem${o.troubleRed ? ` (${o.troubleRed} broken)` : ''}</span>` : ''}${o.last ? `<br><span style="color:var(--muted)">Latest: ${esc(o.last.slice(0, 140))}</span>` : ''}`; }
   else {
     const s = best.s, live = core.isLive(s, stateNow, LIVE_SEC);
     tip.innerHTML = `<b>${esc(s.id)}</b><br>${s.last == null ? 'Never published' : live ? `Last spoke ${ago(stateNow - s.last)} ago` : `<span style="color:var(--warn)">Silent for ${ago(stateNow - s.last)}</span>`}<br><span style="color:var(--muted)">${s.rate == null ? 'Rate: measuring (two readings needed)' : `${s.rate.toFixed(s.rate < 1 ? 2 : 0)} messages/s now`} · ${(s.n || 0).toLocaleString()} lifetime</span>`;

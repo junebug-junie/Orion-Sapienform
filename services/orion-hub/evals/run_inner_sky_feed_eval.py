@@ -7,8 +7,8 @@ Reads the running Hub's /api/inner-sky/events and /api/inner-sky/state (read-onl
 * the service graph and the day frame both answered;
 * how many services spoke in the last hour and how many links are live;
 * how many experiences the sky draws as trouble (red/amber), and every verdict word it does NOT sort yet --
-  reported, not failed, so a new outcome word gets a deliberate place in inner_sky_routes.VERDICT_SEVERITY
-  or VERDICT_NORMAL instead of being painted by guess.
+  reported, not failed, so a new outcome word gets a deliberate place in inner_sky_verdicts.VERDICT_SEVERITY
+  or VERDICT_NORMAL (scripts/inner_sky_verdicts.py) instead of being painted by guess.
 
 Exit 1 when the sky would show empty lights or a part is down. Usage:
 
@@ -20,11 +20,18 @@ import argparse
 import collections
 import json
 import sys
+import importlib.util
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+def _verdicts():
+    """The page's own verdict table, loaded by file path: it imports nothing, so no settings or package clash."""
+    path = Path(__file__).resolve().parents[1] / "scripts" / "inner_sky_verdicts.py"
+    spec = importlib.util.spec_from_file_location("inner_sky_verdicts", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
 
 
 def get(url: str) -> dict:
@@ -55,8 +62,7 @@ def evaluate(events_doc: dict, state_doc: dict) -> dict:
         failures.append(f"service graph: {state_doc['body_error']}")
     if state_doc.get("focus_error"):
         failures.append(f"day frame: {state_doc['focus_error']}")
-    from scripts.inner_sky_routes import verdict_is_classified  # the one table the page colours by
-
+    verdict_is_classified = _verdicts().verdict_is_classified  # the one table the page colours by
     unsorted = collections.Counter(str(e.get("verdict")) for e in ev if not verdict_is_classified(e.get("verdict")))
     return {
         "experiences": len(ev),

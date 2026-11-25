@@ -3612,9 +3612,9 @@ stored rows. Every light is one row; nothing is a fused score.
 | "Attending to" | the open attention arc in durable-runs' `/temporal-self/frame` (none = none) | same |
 
 **Red / amber (trouble).** Colour comes only from what a row itself records, never from a guess:
-- an experience whose own `verdict` is in `inner_sky_routes.VERDICT_SEVERITY` (red: `critical`, `broken`; amber:
+- an experience whose own `verdict` is in `inner_sky_verdicts.VERDICT_SEVERITY` (red: `critical`, `broken`; amber:
   `degraded`, `claim_upheld=false`, `refused`, `unavailable`, `miscalibrated`, `unreliable`, `abandoned`, reading
-  `no_read_evidence:*` / `no producer close*`) lands as a red/amber comet and flares its part;
+  `no_read_evidence*`, `no producer close*`, `late:*`) lands as a red/amber comet and flares its part;
 - a link whose latest hop, within the last 10 min, is more than 3 of its own spreads slower than its own running
   average (`latency_zscore > 3`, `count > 5`, the `/anomalies` rule, slower only) turns red with red pulses;
 - a service that was live and goes silent fades out through red.

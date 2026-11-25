@@ -17,6 +17,7 @@ for p in (str(REPO_ROOT), str(HUB_ROOT)):
         sys.path.insert(0, p)
 
 from scripts import inner_sky_routes as isr  # noqa: E402
+from scripts import inner_sky_verdicts as isv  # noqa: E402
 
 ORGAN_OF = {"vision_percept": "camera", "gpu_wait": "body", "curiosity_run": "curiosity", "prime_thought": "prime"}
 T = datetime(2026, 11, 25, 1, 0, tzinfo=timezone.utc)
@@ -213,18 +214,20 @@ def test_cites_carry_a_stable_id_for_dedupe_and_the_cursor_never_moves_back(monk
 @pytest.mark.parametrize("verdict,severity", [
     ("critical", "red"), ("broken", "red"), ("degraded", "amber"), ("claim_upheld=false", "amber"),
     ("refused", "amber"), ("no_read_evidence:http_error", "amber"),
-    ("no producer close within horizon + 120s grace", "amber"),
+    ("no producer close within horizon + 120s grace", "amber"), ("no_read_evidence", "amber"),
+    ("late:717s stage1_completed", "amber"),
+    ("confirmed", None), ("disconfirmed", None), ("unscored", None), ("no_lasting_trace", None),
     # a guard that did not fire, a gate doing its job, a choice not to act: never trouble
     ("not_crossed", None), ("claim_upheld=true", None), ("granted", None), ("decayed_unattended", None), (None, None),
 ])
 def test_severity_comes_only_from_the_rows_own_verdict(verdict, severity):
-    assert isr.severity_of(verdict) == severity
-    assert isr.verdict_is_classified(verdict)
+    assert isv.severity_of(verdict) == severity
+    assert isv.verdict_is_classified(verdict)
 
 
 def test_an_unknown_verdict_is_neutral_and_reported_not_guessed():
-    assert isr.severity_of("total_meltdown") is None
-    assert not isr.verdict_is_classified("total_meltdown")
+    assert isv.severity_of("total_meltdown") is None
+    assert not isv.verdict_is_classified("total_meltdown")
     sys.path.insert(0, str(HUB_ROOT / "evals"))
     from run_inner_sky_feed_eval import evaluate
 

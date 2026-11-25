@@ -16,7 +16,7 @@ into one window, ``[start, end)`` in UTC, resolved against "now" in Juniper's ti
    - ``N <unit> ago`` is a span centred on that point ("a month or so ago", "two weeks ago");
    - ``last/this <unit>`` starts at the beginning of the previous/current calendar unit and runs
      to now ("last week", "this month"), and ``last/this weekend`` is that Saturday and Sunday;
-   - ``last/on <weekday>`` is the most recent such day;
+   - ``last <weekday>`` is the most recent such day ("on Friday" may be the coming one: no window);
 5. a named month or year after a preposition ("in October", "early September", "since August",
    "in 2025"). A bare month name needs a preposition or a qualifier: "May I ask" is not May.
 
@@ -95,7 +95,8 @@ _ROLLING_RE = re.compile(rf"\b(?:the\s+)?(?:last|past)\s+(?:(?P<n>{_NUM})\s+)?(?
                          re.I)
 _AGO_RE = re.compile(rf"\b(?P<n>{_NUM})\s+(?P<unit>{_UNIT})(?P<hedge>{_HEDGE_AFTER})\s+ago\b", re.I)
 _WEEKEND_RE = re.compile(r"\b(?P<which>last|this|past)\s+weekend\b", re.I)
-_WEEKDAY_RE = re.compile(r"\b(?P<which>last|on|this\s+past|past)\s+(?P<wd>" + "|".join(_WEEKDAYS) + r")\b", re.I)
+# "on Friday" may be the coming one (a plan), so only "last"/"this past" name a past weekday.
+_WEEKDAY_RE = re.compile(r"\b(?P<which>last|this\s+past|past)\s+(?P<wd>" + "|".join(_WEEKDAYS) + r")\b", re.I)
 _MONTH_RE = re.compile(
     rf"\b(?P<prep>in|during|since|from|through|until|till|of|early|mid|late|end\s+of|start\s+of|beginning\s+of)"
     rf"\s+(?:the\s+)?(?P<part>early|mid|middle\s+of|late|end\s+of|start\s+of|beginning\s+of)?[\s-]*"
@@ -300,17 +301,15 @@ def _parse(text: str, now: datetime, today: date, z: ZoneInfo) -> Optional[TimeW
         monday = today - timedelta(days=today.weekday())
         if m.group("which").lower() == "this":
             sat = monday + timedelta(days=5)
-            if sat > today:  # "this weekend" before it comes: the one just passed is the past one
-                sat -= timedelta(days=7)
+            if sat > today:  # "this weekend" before it comes is a plan, not a past time
+                return None
         else:
             sat = monday - timedelta(days=2)
         return _days(sat, sat + timedelta(days=1), z, "weekend")
     m = _WEEKDAY_RE.search(text)
     if m:
         wd = _WEEKDAYS[m.group("wd").lower()]
-        back = (today.weekday() - wd) % 7
-        if back == 0 and m.group("which").lower() != "on":
-            back = 7
+        back = (today.weekday() - wd) % 7 or 7
         d = today - timedelta(days=back)
         return _days(d, d, z, "weekday")
     m = _MONTH_RE.search(text)

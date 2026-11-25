@@ -71,6 +71,8 @@ def test_parser_reads_the_common_time_phrases(text, expected):
     "Did I add the second V100 before or after I beat NES Zelda I?",
     "When did I get promoted to Team Lead?",
     "hi Orion, how are you?",
+    "What are we doing this weekend?",          # asked on a Wednesday: a plan, not a past time
+    "What am I doing on Friday?",
 ])
 def test_parser_finds_no_window_where_no_time_is_named(text):
     assert parse_time_window(text, NOW) is None

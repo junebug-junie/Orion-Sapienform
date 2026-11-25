@@ -1472,10 +1472,13 @@ def load_quiet_gate_rows(stretch_start: datetime | None) -> dict[str, Any]:
 
 def load_reverie_seed_state(lapse_days: float) -> dict[str, Any]:
     """What the seed picker needs: when each kind was last used, which refs are spent (used by a
-    reverie in the lapse window), and the thread_id of each thread_key in that window."""
+    reverie in the lapse window), and the thread_id of each thread_key in that window whose thread is not
+    closed (Patch 3: a concluded, exhausted or lapsed thread is never joined; the next seed on that
+    thread_key starts a new thread)."""
     rows = _rows(
-        "SELECT seed_kind, seed_refs, thread_key, thread_id, created_at FROM reverie_question "
-        "WHERE created_at > now() - make_interval(secs => :secs) ORDER BY created_at",
+        "SELECT q.seed_kind, q.seed_refs, q.thread_key, q.thread_id, q.created_at, t.status AS thread_status "
+        "FROM reverie_question q LEFT JOIN reverie_thread t ON t.thread_id = q.thread_id "
+        "WHERE q.created_at > now() - make_interval(secs => :secs) ORDER BY q.created_at",
         {"secs": float(lapse_days) * 86400.0},
     )
     last_used: dict[str, datetime] = {}
@@ -1484,7 +1487,10 @@ def load_reverie_seed_state(lapse_days: float) -> dict[str, Any]:
     for r in rows:
         last_used[str(r["seed_kind"])] = r["created_at"]
         spent.update(str(x) for x in (r.get("seed_refs") or []))
-        threads[str(r["thread_key"])] = str(r["thread_id"])
+        if r.get("thread_status") in (None, "open"):
+            threads[str(r["thread_key"])] = str(r["thread_id"])
+        else:
+            threads.pop(str(r["thread_key"]), None)
     # Last used is read over all time, not only the lapse window: a kind unused for 3 weeks is older
     # than one used 2 weeks ago.
     for r in _rows("SELECT seed_kind, max(created_at) AS at FROM reverie_question GROUP BY 1"):
@@ -1506,8 +1512,10 @@ def load_open_question_texts(lapse_days: float) -> list[str]:
 
 
 def count_reverie_focus_routes_24h() -> int:
+    """Questions that reached the focus slot in the last 24 h, by when they reached it (a re-offered
+    question is routed later than it was written; routed_at is NULL on rows written before Patch 3)."""
     rows = _rows("SELECT count(*) AS n FROM reverie_question WHERE routed_to LIKE 'focus:%' "
-                 "AND created_at > now() - interval '24 hours'")
+                 "AND COALESCE(routed_at, created_at) > now() - interval '24 hours'")
     return int(rows[0]["n"]) if rows else 0
 
 
@@ -1580,18 +1588,164 @@ def persist_reverie_question(question: Any) -> bool:
         return False
 
 
-def update_reverie_question_route(question_id: str, routed_to: str, route_note: str | None) -> bool:
+def update_reverie_question_route(question_id: str, routed_to: str, route_note: str | None,
+                                  offer_status: str | None = None) -> bool:
+    """Where the question went. ``offer_status`` (Patch 3): sent | waiting | dropped | lapsed | None.
+    A route to the focus slot also stamps ``routed_at`` (the cap counts it)."""
     try:
         from sqlalchemy import text
 
         with _get_engine().begin() as conn:
             conn.execute(
-                text("UPDATE reverie_question SET routed_to = :r, route_note = :n, "
+                text("UPDATE reverie_question SET routed_to = :r, route_note = :n, offer_status = :s, "
+                     "routed_at = CASE WHEN :r LIKE 'focus:%' THEN now() ELSE routed_at END, "
                      "question_json = question_json || jsonb_build_object('routed_to', CAST(:r AS text), "
                      "'route_note', CAST(:n AS text)) WHERE question_id = :id"),
-                {"r": routed_to, "n": route_note, "id": question_id},
+                {"r": routed_to, "n": route_note, "s": offer_status, "id": question_id},
             )
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("reverie_question route update failed id=%s err=%s", question_id, exc)
         return False
+
+
+# --- Patch 3: waiting questions, read-back, threads (app/reverie_threads.py) ---------------------------
+# Migration: services/orion-sql-db/manual_migration_reverie_question_threads.sql.
+
+_ACCEPTED = "question IS NOT NULL AND refused_reason IS NULL AND none_reason IS NULL"
+
+
+def sweep_waiting_reverie_questions() -> dict[str, int]:
+    """Adopt rows Hub turned away for a full slot before Patch 3 (their route_note is Hub's refusal and
+    offer_status is NULL): they become ``waiting``. Returns the count. Raises on a DB error. Lapsing a
+    waiting question is decided in app/reverie.py (reoffer_waiting) and written through the route update."""
+    from sqlalchemy import text
+
+    from .reverie_threads import FOCUS_REFUSED_PREFIX, OFFER_WAITING, _slot_full_messages, waiting_note
+
+    patterns = [FOCUS_REFUSED_PREFIX + m + "%" for m in _slot_full_messages()]
+    with _get_engine().begin() as conn:
+        adopted = conn.execute(
+            text(f"UPDATE reverie_question SET offer_status = :w, route_note = :note WHERE offer_status IS NULL "
+                 f"AND routed_to = 'none' AND {_ACCEPTED} AND (route_note LIKE :p0 OR route_note LIKE :p1)"),
+            {"w": OFFER_WAITING, "note": waiting_note(), "p0": patterns[0], "p1": patterns[1]},
+        ).rowcount
+    return {"adopted": int(adopted or 0)}
+
+
+WAITING_SQL = (
+    "SELECT question_id, thread_id, thread_key, seed_kind, seed_refs, seed_material, question, why, refs, cites, "
+    "correlation_id, model_id, created_at, route_note FROM reverie_question "
+    f"WHERE offer_status = 'waiting' AND {_ACCEPTED} ORDER BY created_at, question_id"
+)
+
+
+def load_waiting_reverie_questions() -> list[dict[str, Any]]:
+    return _rows(WAITING_SQL)
+
+
+def focus_slot_pending() -> bool:
+    """True while any curiosity focus is pending (the one slot is held). Raises on a DB error."""
+    return bool(_rows("SELECT 1 AS x FROM curiosity_focus_request WHERE status = 'pending' "
+                      "AND expires_at > now() LIMIT 1"))
+
+
+def load_reoffer_open_texts(question_id: str, lapse_days: float) -> list[str]:
+    """What a waiting question must not repeat at re-offer time: the pending focus, open self-questions,
+    and every OTHER accepted reverie question of the lapse window. A refused row's text does not count
+    (it was refused for repeating something). Raises on a DB error."""
+    out: list[str] = []
+    out += [str(r["question"]) for r in _rows(
+        "SELECT question FROM curiosity_focus_request WHERE status = 'pending' AND expires_at > now()")]
+    out += [str(r["text"]) for r in _rows("SELECT text FROM curiosity_self_questions WHERE status = 'open'")]
+    out += [str(r["question"]) for r in _rows(
+        f"SELECT question FROM reverie_question WHERE {_ACCEPTED} AND question_id <> :id "
+        "AND created_at > now() - make_interval(secs => :secs)",
+        {"id": question_id, "secs": float(lapse_days) * 86400.0})]
+    return out
+
+
+# One row per sent question whose outcome is not written yet: the focus row, the finding register, the
+# run's finish state (continue_line, finding text) and its attention-schema note (predicted_next is the
+# run's own :TurnOutcome.continue_note, written by orion-durable-runs; orion/curiosity/attention_schema.py).
+RECONCILE_SQL = """
+SELECT q.question_id, q.routed_to,
+       f.status AS focus_status, f.status_at, f.offered_run_id, f.disposition,
+       f.refused_reason AS focus_refused_reason,
+       r.register, r.register_reason, r.novelty,
+       fin.detail IS NOT NULL AS finish_found,
+       fin.detail->>'continue_line' AS continue_line,
+       left(fin.detail->>'finding_text', 2000) AS finding_text,
+       (SELECT a.predicted_next FROM substrate_attention_schema a
+         WHERE a.entry_id = 'curiosity-' || f.offered_run_id) AS continue_note
+FROM reverie_question q
+LEFT JOIN curiosity_focus_request f ON f.focus_id::text = substring(q.routed_to from 7)
+LEFT JOIN curiosity_finding_register r ON r.run_id = f.offered_run_id
+LEFT JOIN LATERAL (
+    SELECT s.detail::jsonb AS detail FROM substrate_durable_run_state s
+     WHERE s.run_id = f.offered_run_id AND s.node = 'finish' AND s.status = 'completed'
+     ORDER BY s.created_at DESC LIMIT 1
+) fin ON true
+WHERE q.routed_to LIKE 'focus:%' AND q.outcome IS NULL
+ORDER BY q.created_at
+"""
+
+
+def load_reverie_reconcile_rows() -> list[dict[str, Any]]:
+    return _rows(RECONCILE_SQL)
+
+
+def write_reverie_outcome(question_id: str, outcome: dict[str, Any]) -> bool:
+    """Fill ``outcome`` once (only while it is NULL). False on a miss; never raises."""
+    try:
+        from sqlalchemy import text
+
+        with _get_engine().begin() as conn:
+            conn.execute(
+                text("UPDATE reverie_question SET outcome = CAST(:o AS jsonb), outcome_at = now() "
+                     "WHERE question_id = :id AND outcome IS NULL"),
+                {"o": json.dumps(outcome), "id": question_id},
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reverie_question outcome write failed id=%s err=%s", question_id, exc)
+        return False
+
+
+THREAD_ROWS_SQL = """
+SELECT q.question_id, q.thread_id, q.thread_key, q.seed_kind, q.seed_refs, q.seed_material, q.question,
+       q.none_reason, q.refused_reason, q.outcome, q.offer_status, q.created_at, q.routed_at, q.outcome_at
+FROM reverie_question q LEFT JOIN reverie_thread t ON t.thread_id = q.thread_id
+WHERE t.thread_id IS NULL OR t.status = 'open'
+ORDER BY q.created_at
+"""
+
+
+def load_reverie_thread_rows() -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """(question rows of every open or unrecorded thread, stored reverie_thread rows of those threads)."""
+    rows = _rows(THREAD_ROWS_SQL)
+    stored = {str(r["thread_id"]): r for r in _rows(
+        "SELECT thread_id, status, status_reason, last_question_id FROM reverie_thread WHERE status = 'open'")}
+    return rows, stored
+
+
+def upsert_reverie_threads(statuses: list[Any]) -> int:
+    """Write changed thread statuses (reverie_threads.ThreadStatus). Returns rows written; raises on error."""
+    if not statuses:
+        return 0
+    from sqlalchemy import text
+
+    with _get_engine().begin() as conn:
+        for t in statuses:
+            conn.execute(
+                text("INSERT INTO reverie_thread (thread_id, thread_key, seed_kind, status, status_reason, "
+                     "last_question_id, last_activity_at, status_at, opened_at) VALUES (:id, :key, :kind, :s, "
+                     ":why, :q, :act, now(), now()) ON CONFLICT (thread_id) DO UPDATE SET status = EXCLUDED.status, "
+                     "status_reason = EXCLUDED.status_reason, last_question_id = EXCLUDED.last_question_id, "
+                     "last_activity_at = EXCLUDED.last_activity_at, "
+                     "status_at = CASE WHEN reverie_thread.status = EXCLUDED.status THEN reverie_thread.status_at "
+                     "ELSE now() END"),
+                {"id": t.thread_id, "key": t.thread_key, "kind": t.seed_kind, "s": t.status,
+                 "why": t.reason or None, "q": t.last_question_id, "act": t.last_activity_at},
+            )
+    return len(statuses)

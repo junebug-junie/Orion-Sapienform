@@ -140,6 +140,29 @@ questions, never sends them), `ORION_REVERIE_ENABLED=false` (no worker).
 
 Needs `services/orion-sql-db/manual_migration_reverie_question.sql`.
 
+### Patch 3 (2026-11-25): waiting questions, read-back, threads
+
+`app/reverie_threads.py` (pure), run at the top of every poll, before the quiet gate. Off with
+`ORION_REVERIE_THREADS_ENABLED=false` (Patch 1 behavior).
+
+- **Waiting.** Hub turns a reverie question away while any focus is pending. Such a question is stored
+  `offer_status = waiting` (route note "waiting for the focus slot ..."). When the slot is free and the
+  24 h focus cap has room, the oldest waiting question is offered again: no model call, the quiet stretch is
+  not spent, the near-duplicate rule is checked again (a repeat becomes `dropped`). A question that waited
+  `ORION_REVERIE_THREAD_LAPSE_DAYS` becomes `lapsed`. Rows refused this way before Patch 3 are adopted.
+- **Read-back.** When the curiosity run that took the focus ends, `reverie_question.outcome` is filled from
+  `curiosity_focus_request` (status, disposition, run), `curiosity_finding_register` (register, reason,
+  novelty), the run's finish state in `substrate_durable_run_state` (`continue_line`, finding text) and
+  `substrate_attention_schema.predicted_next` (the run's `:TurnOutcome.continue_note`, mirrored by
+  orion-durable-runs). Logs `reverie_outcome q=... dug=... continue_line=...`.
+- **Threads.** A dig with `continue_line` true makes its thread the next reverie's seed, before the picker
+  rotates kinds; the prompt shows the earlier question, what the dig found and what is still open.
+  `reverie_thread.status`: `open`, `concluded` (dig ended with no continue), `exhausted` (two reveries in a
+  row on the thread left no usable question), `lapsed` (no activity for the lapse window). Logs
+  `reverie_thread thread=... status=...` and `reverie_thread_continue`.
+
+Needs `services/orion-sql-db/manual_migration_reverie_question_threads.sql`.
+
 **Retired 2026-11-24 (kill means kill).** The coalition-narration reverie (`reverie_narrate`, the 4-step
 chain, theme refractory, EMA salience, no-coalition streak), the resonance monitor and its page, the
 room-camera expectations and their judge (`reverie_expectation_judge`), the semantic-lift concern cards,

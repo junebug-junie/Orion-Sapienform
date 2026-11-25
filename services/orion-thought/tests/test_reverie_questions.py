@@ -373,7 +373,7 @@ class Fake:
         async def now_cue(corr, run_ref):
             return r.NowCue(now_block="[experience:e1] x", shown_id="s1", shown_event_ids=("e1",))
 
-        async def ask(seed, corr, now_block):
+        async def ask(seed, corr, now_block, thread=None):
             self.asked += 1
             if self.ask_raises:
                 raise self.ask_raises
@@ -390,7 +390,7 @@ class Fake:
             self.routed.append(q)
             return "focus:f1", "queued"
 
-        async def update(qid, to, note):
+        async def update(qid, to, note, offer_status=None):
             self.updates.append((qid, to, note))
             return True
 
@@ -595,7 +595,7 @@ def test_a_winner_during_a_slow_call_does_not_spend_the_next_stretch(clean_state
 
     slow_ask = deps.ask
 
-    async def ask(seed, corr, now_block):
+    async def ask(seed, corr, now_block, thread=None):
         clock.at += timedelta(minutes=5)  # the model thinks for 5 minutes...
         state["winner"] = clock.at - timedelta(minutes=2)  # ...and something won attention meanwhile
         return await slow_ask(seed, corr, now_block)

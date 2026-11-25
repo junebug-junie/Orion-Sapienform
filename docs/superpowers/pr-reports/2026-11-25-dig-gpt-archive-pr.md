@@ -15,7 +15,7 @@ Before: `orion_readonly` got "permission denied" on every `chat_gpt_*` table, an
 
 ## Architecture touched
 
-`orion/dig` only, plus one hand-applied GRANT file. No service, bus or schema change.
+`orion/dig`, one Hub catalog entry, and one hand-applied GRANT file. No service, bus or schema change.
 
 ## Files changed
 
@@ -25,6 +25,7 @@ Before: `orion_readonly` got "permission denied" on every `chat_gpt_*` table, an
 - `orion/dig/tests/test_dig.py`: help cap 4600 -> 4800 (main was at 4580; the new help is 4759).
 - `orion/dig/README.md`: command row.
 - `scripts/sql/2026-11-25_grant_orion_readonly_chatgpt.sql`: GRANT SELECT on the 5 tables; undo and verify lines.
+- `services/orion-hub/static/catalog/orion-abilities.json`: "Before you: my ChatGPT chats" entry, so Juniper can send Orion a ready ask from Hub (CI requires every dig command in the catalog).
 
 ## Schema / bus / API changes
 
@@ -58,6 +59,10 @@ gpt find "x;drop", gpt conv 6b0             -> refused before SQL
 
 ## Review findings fixed
 
+- Finding (CI): `test_every_dig_command_has_an_entry` failed: `gpt` had no Hub abilities catalog entry.
+  - Fix: added `gpt-archive` to the "Past & history" section.
+  - Evidence: `test_orion_abilities_catalog.py` 10 passed.
+
 - Finding: `find` needed every word in one message, so it missed conversations, and "no conversation has all of these words" overstated what was searched.
   - Fix: each word is checked over the whole conversation (title or any message).
   - Evidence: `test_find_words_may_sit_in_different_messages_or_title`. Live: "orion memory" 386 -> 415.
@@ -74,7 +79,7 @@ gpt find "x;drop", gpt conv 6b0             -> refused before SQL
 ## Restart required
 
 ```text
-No restart required. Orion's turns load orion/ from the FCC sandbox; the post-merge deploy run resets it to origin/main.
+No manual restart. The post-pull rebuild rebuilds orion-hub (catalog file) and resets the FCC sandbox, where Orion's turns load orion/ from.
 ```
 
 ## Risks / concerns
@@ -82,7 +87,7 @@ No restart required. Orion's turns load orion/ from the FCC sandbox; the post-me
 - Severity: low
 - Concern: SQL is built by string formatting (`ReadOnlyPsql` has no bind parameters).
 - Mitigation: words and ids are checked by strict patterns before any SQL; quote and `_` are escaped; the transaction is READ ONLY under a SELECT-only role. Tests prove refused input never reaches SQL.
-- Concern: Orion learns of the command only from `dig help`, not from the every-turn dig brief.
+- Concern: Orion learns of the command from `dig help` and from Juniper's Hub abilities catalog, not from the every-turn dig brief.
 - Issues opened/closed: none.
 
 ## PR link

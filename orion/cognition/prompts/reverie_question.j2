@@ -11,6 +11,16 @@ MATERIAL ({{ seed_kind }}):
 REFS (the material's ids; your question must name at least one of these in "refs", and no other id):
 {% for ref in seed_refs %}- {{ ref }}
 {% endfor %}
+{% if thread_earlier_question %}
+THIS IS A THREAD YOU ARE CONTINUING. You asked about this material before, curiosity dug it, and the dig
+said the line is worth continuing.
+- Your earlier question: {{ thread_earlier_question }}
+- What the dig found: {{ thread_dig_found }}
+- What is still open: {{ thread_still_open }}
+Ask the NEXT question on this line: one that starts from what the dig found and goes at what is still
+open. Do not ask the earlier question again in new words. If nothing worth digging is left, say so in
+"none_reason".
+{% endif %}
 {% if seed_evidence == "unrecognised" %}
 Careful: a person WAS detected in that window, just not recognised. Do not say they did not come. The
 honest question is whether it was them.

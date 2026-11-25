@@ -232,6 +232,16 @@ is still open. It asks the next question on the same `thread_id`.
 `question_ref = reverie:<thread_id>`. `reverie_question` keeps the reverie side only. No second ledger is
 built.
 
+**As built (Patch 3, 2026-11-25).** `services/orion-thought/app/reverie_threads.py`, migration
+`manual_migration_reverie_question_threads.sql` (`offer_status`, `routed_at`, `outcome_at` columns; table
+`reverie_thread`). Differences from the text above: (1) a question Hub turned away only because the focus slot
+was full now waits (`offer_status = waiting`) and is offered again when the slot is free, with no model call;
+(2) `continue_note` comes from `substrate_attention_schema.predicted_next` (orion-durable-runs mirrors the
+run's `:TurnOutcome.continue_note` there); orion-thought has no worldview-graph reader; "an open item" is not a
+separate signal, only `continue_line`; (3) a continuing thread is offered first whatever its seed kind; (4)
+`exhausted` counts a code-refused question like a `none_reason` (two reveries in a row with no usable
+question), so a thread whose follow-ups keep getting refused cannot retry forever.
+
 ## Integration gate
 
 - **Emit.** New `TemporalSourceKind` `reverie_question`: one event per question or none. Its `source_ref` is

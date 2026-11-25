@@ -105,6 +105,11 @@ class ThoughtSettings(BaseSettings):
     # A seed ref used by a reverie in the last N days is spent; two questions on one thread_key inside
     # this window share a thread_id.
     reverie_thread_lapse_days: float = Field(14.0, gt=0.0, alias="ORION_REVERIE_THREAD_LAPSE_DAYS")
+    # Patch 3 (app/reverie_threads.py): a question turned away only because the focus slot was full waits
+    # and is offered again when the slot is free (no model call); the dig's outcome is read back onto the
+    # question; a dig that said continue makes its thread the next reverie's seed. Off = Patch 1 behavior.
+    # Requires services/orion-sql-db/manual_migration_reverie_question_threads.sql.
+    reverie_threads_enabled: bool = Field(True, alias="ORION_REVERIE_THREADS_ENABLED")
     # Chroma that holds the orion_lived_memory index (orion-recall writes it; same URL recall reads).
     reverie_far_memory_chroma_url: str = Field(
         "http://orion-athena-vector-db:8000", alias="ORION_REVERIE_FAR_MEMORY_CHROMA_URL"

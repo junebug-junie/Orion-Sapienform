@@ -66,6 +66,15 @@ REASON_CHARS = 300
 EMBED_CHARS = 2000          # bge-large reads ~512 tokens; the rest is cut by the model anyway
 CORPUS_VERSION = "graph_v1"  # every graph answer node + prior claims + Day letters, minus this run's own
 
+# The question door (docs/superpowers/specs/2026-11-25-orion-self-reflection-drift-design.md): the same
+# judge, prompt v2 unchanged, labels a question Orion wrote for its own self-inquiry BEFORE any sitting
+# answers it. The question text goes in as the item (the FINDING slot) and this line goes in as the
+# QUESTION, saying what the item is. Fixed: a change here is a change in what the door measures.
+QUESTION_LINE = (
+    "(The item below is not a finding. It is a question Orion wrote for itself, to sit with in its own "
+    "self-inquiry. Label what the question is about.)"
+)
+
 # Models that passed the judge-agreement eval. Matched on the served model's file/name, lower case.
 PASSED_JUDGE_MODELS = ("qwen3.8-flash-next",)
 
@@ -240,6 +249,6 @@ def run_question_and_answer(
 
 
 __all__ = ["ANSWER_CHARS", "CORPUS_CYPHER", "CORPUS_VERSION", "EMBED_CHARS", "JUDGE_PROMPT_SHA256", "JUDGE_PROMPT_V2",
-           "PASSED_JUDGE_MODELS", "PHILOSOPHICAL", "PROMPT_VERSION", "REGISTERS", "clean", "corpus_before",
+           "PASSED_JUDGE_MODELS", "PHILOSOPHICAL", "PROMPT_VERSION", "QUESTION_LINE", "REGISTERS", "clean", "corpus_before",
            "corpus_items", "judge_input", "judge_messages", "judge_model_passed", "novelty", "parse_judge_reply",
            "prompt_sha256", "run_question_and_answer", "text_sha256"]

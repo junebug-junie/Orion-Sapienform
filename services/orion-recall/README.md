@@ -1105,6 +1105,43 @@ Code: `app/lived_rewrite.py`, `app/lived_links.py`, wired in `app/lived_memory.p
   A neighbour reaches the prompt only through the rerank and the bar. The graph reloads in the
   background every 10 minutes.
 
+### 17a2) Time windows and past-state recall (issue #3674)
+
+Code: `app/lived_time.py` (the date grammar), wired in `app/lived_memory.py`.
+
+- **Parser first.** Time words in the message become one window, resolved against "now" in
+  `RECALL_LIVED_MEMORY_TIMEZONE` (default `America/Denver`): a date range, one date, yesterday /
+  today, a span relative to now ("over the last month or so", "a month or so ago", "last week"), a
+  weekday or weekend, or a named month or year after a preposition ("in October", "early
+  September", "since August"). A small grammar, not a word list; "May I ask" is not May. The
+  parser never waits on the model.
+- **No model in the window.** Asking the fast-lane rewrite for a `WHEN:` line was measured on the
+  57 scoreboard questions (2026-11-25): every wording tried either stopped it writing searches
+  (0-3 of 57, against 11 with the plain prompt) or was ignored (0 time lines). The rewrite prompt
+  is unchanged; the window never waits on, or times out with, the model.
+- **Before the pool is cut.** With a window, the message's meaning search is also read 256 deep
+  and filtered to the window in recall (a Chroma `where` filter cost ~1 s a query, a plain
+  256-deep query ~20 ms), and one more exact-word search runs over in-window records. In-window
+  candidates fill the rerank pool first; at most 4 from outside the window stay, and the best 2 of
+  those ride in the first rerank chunk so a short deadline still scores them. After the rerank,
+  in-window memories get +1 (logit units, like recency), and when one of them clears the bar at
+  most 2 lines from outside the window are served. A window with nothing in it changes nothing:
+  recall is never emptied by a time word. Windows are padded a day each side. When a message
+  holds two time phrases, the first one wins. "today" and "tonight" are never a window (they are
+  the present); a bare `8/10` or `1/2` is a rating or a fraction, not a date; a month still ahead
+  this year is a plan unless the message is in the past tense.
+- **Past state.** When the window is wholly past and the message asks in the past tense with a
+  state verb ("Where was I in early October?"), recall also reads
+  facts an update has retired since (`orion.memory.lived_memory.fetch_valid_during`, the as-of
+  reader over the window, run alongside the meaning search, at most 0.8 s and 500 rows). At most 4
+  join the rerank. They render as
+  `(... · <date> · true then, not now: changed <date>)` and are re-checked through the same
+  reader before render. A correction's old row is never served: it was never true.
+- **Trace.** `recall_telemetry.lived_trace.window` keeps the window's local dates, its shape,
+  `past_state`, and counts (`in_window`, `as_of_rows`); never the message's words.
+
+Kill switch: `RECALL_LIVED_MEMORY_TIME_WINDOW_ENABLED=false` (recall ignores time words, as before).
+
 ### 17b) Degraded mode (issue #3573)
 
 Recall never silently skips. When the reranker is down, errors or runs past the deadline, the
@@ -1127,7 +1164,8 @@ carries `backend`, `degraded` reasons and the rewritten searches.
 
 Kill switches: `RECALL_LIVED_MEMORY_ENABLED=false` (all lived recall),
 `RECALL_LIVED_MEMORY_REWRITE_ENABLED=false` (rewrite only), `RECALL_LIVED_MEMORY_LINK_TOP_K=0`
-(links only). Restart orion-recall after changing any of them.
+(links only), `RECALL_LIVED_MEMORY_TIME_WINDOW_ENABLED=false` (time windows only). Restart
+orion-recall after changing any of them.
 
 ### Memory scoreboard (issue #3536)
 

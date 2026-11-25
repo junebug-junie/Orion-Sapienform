@@ -1,5 +1,5 @@
 """Compile-time shape checks for the gpu_pool_events write path (no Postgres required).
-Same four guarantees as test_durable_run_state_sql_shape.py: subscribed, routed, every
+Same four guarantees as test_durable_run_state_sql_shape.py: read (from the durable stream, #3920), routed, every
 schema field lands on a column, bounded retention."""
 
 from __future__ import annotations
@@ -29,10 +29,15 @@ def _env_example(key: str):
     return json.loads(raw)
 
 
-def test_the_channel_is_actually_subscribed() -> None:
-    assert GPU_POOL_EVENT_CHANNEL in _env_example("SQL_WRITER_SUBSCRIBE_CHANNELS")
-    stale = Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=["orion:biometrics:summary"])
-    assert GPU_POOL_EVENT_CHANNEL in stale.effective_subscribe_channels
+def test_the_events_are_actually_read_from_the_durable_stream_not_pubsub() -> None:
+    """#3920: pub/sub lost every event published while sql-writer restarted. The stream intake
+    is on by default and the pub/sub channel is gone from both the template and the effective list."""
+    assert GPU_POOL_EVENT_CHANNEL not in _env_example("SQL_WRITER_SUBSCRIBE_CHANNELS")
+    stale = Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=["orion:biometrics:summary", GPU_POOL_EVENT_CHANNEL])
+    assert stale.gpu_pool_event_stream_enabled
+    assert GPU_POOL_EVENT_CHANNEL not in stale.effective_subscribe_channels
+    env_example = (SERVICE_ROOT / ".env_example").read_text()
+    assert "SQL_WRITER_GPU_POOL_EVENT_STREAM_ENABLED=true" in env_example
 
 
 def test_route_map_and_model_map_agree() -> None:

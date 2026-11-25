@@ -97,6 +97,9 @@ services:
       PRIME_HUNGER_READ_SEC: ${PRIME_HUNGER_READ_SEC:-300}
       PRIME_PREDICTION_URL: ${PRIME_PREDICTION_URL-http://orion-athena-prediction:8132}
       PRIME_PERSONALITY_LINE_ENABLED: ${PRIME_PERSONALITY_LINE_ENABLED:-false}
+      # The attention schema line in Prime's frame (orion/prime/attention_line.py); see .env_example.
+      PRIME_ATTENTION_SCHEMA_LINE_ENABLED: ${PRIME_ATTENTION_SCHEMA_LINE_ENABLED:-true}
+      PRIME_ATTENTION_SCHEMA_PG_DSN: ${PRIME_ATTENTION_SCHEMA_PG_DSN:-}
       # Orion's consent to a Claude tool call (app/prime_consent.py); see .env_example.
       PRIME_CONSENT_ENABLED: ${PRIME_CONSENT_ENABLED:-true}
       PRIME_CONSENT_LLM_ROUTE: ${PRIME_CONSENT_LLM_ROUTE:-prime_consent}

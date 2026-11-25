@@ -24,6 +24,8 @@ on:
       - "orion/introspect/semantic_index.py"
       - "services/orion-recall/app/lived_memory.py"
       - "services/orion-recall/app/lived_rewrite.py"
+      - "services/orion-recall/app/lived_time.py"
+      - "services/orion-recall/tests/test_lived_time_window.py"
       - "services/orion-recall/app/lived_links.py"
       - "services/orion-recall/app/lived_entities.py"
       - "services/orion-recall/app/worker.py"
@@ -104,7 +106,7 @@ jobs:
           PYTHONPATH=.:${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
             tests/test_lived_memory.py tests/test_lived_memory_step2.py evals/test_lived_memory_replay_eval.py \
             tests/test_lived_know_and_status.py tests/test_recall_telemetry_persist.py \
-            tests/test_lived_short_gate.py evals/test_dig_know_bank_eval.py
+            tests/test_lived_short_gate.py tests/test_lived_time_window.py evals/test_dig_know_bank_eval.py
       - name: Memory scoreboard fixture eval (issue #3536)
         working-directory: services/orion-recall
         run: |

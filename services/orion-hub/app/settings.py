@@ -1214,6 +1214,15 @@ class Settings(BaseSettings):
     # once per status episode; last-seen statuses persist in Redis. Unknown/stale state: nothing.
     SELF_MONITOR_QUESTIONS_ENABLED: bool = Field(default=True, alias="SELF_MONITOR_QUESTIONS_ENABLED")
     SELF_MONITOR_QUESTIONS_TICK_SEC: float = Field(default=900.0, alias="SELF_MONITOR_QUESTIONS_TICK_SEC")
+    # The self-question door (scripts/self_question_door.py; spec 2026-11-25 self-reflection drift): every
+    # Orion-written self-question is held until the finding-register judge (prompt v2, a passed model only)
+    # labels it. philosophical -> admitted (pickable); operational -> routed (offered to the investigate
+    # line as a self focus when the slot is free); a judge error stays held, unjudged after MAX_ATTEMPTS.
+    # An operational finding demotes the admitted question it answered. false = every Orion question
+    # pickable again, as before the door.
+    CURIOSITY_SELF_QUESTION_DOOR_ENABLED: bool = Field(default=True, alias="CURIOSITY_SELF_QUESTION_DOOR_ENABLED")
+    CURIOSITY_SELF_QUESTION_DOOR_TICK_SEC: float = Field(default=300.0, alias="CURIOSITY_SELF_QUESTION_DOOR_TICK_SEC")
+    CURIOSITY_SELF_QUESTION_DOOR_MAX_ATTEMPTS: int = Field(default=3, alias="CURIOSITY_SELF_QUESTION_DOOR_MAX_ATTEMPTS")
     # A change recorded within this many hours is told (reads up to 7 days old are watched, so a
     # belief a run moves days after the read still counts). Older changes are never messaged.
     HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS: float = Field(

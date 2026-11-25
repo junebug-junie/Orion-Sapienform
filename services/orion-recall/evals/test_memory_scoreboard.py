@@ -554,3 +554,14 @@ def test_lived_local_reads_the_live_settings_and_the_short_gate_switch(monkeypat
     lm = runner.build_local_lived(object(), object(), args)
     assert lm.cfg.min_fit == 0.02 and lm.cfg.short_gate is False and lm._rewriter is None
     assert lm.cfg.rerank_url == "http://r" and lm.cfg.min_query_tokens == 5
+
+
+def test_asked_at_is_noon_in_denver_on_the_items_as_of_day():
+    """Issue #3674: a time item's relative words ("last week") resolve against the day it was written."""
+    from datetime import datetime, timezone
+
+    item = ms.Item(qid="t", category="time", expected="x", targets=("episode_memory:a",), question="q",
+                   as_of="2026-11-25")
+    assert runner.asked_at(item, tz="America/Denver") == datetime(2026, 11, 25, 19, 0, tzinfo=timezone.utc)
+    assert runner.asked_at(ms.Item(qid="e", category="event", expected="x", question="q")) is None
+    assert runner.asked_at(ms.Item(qid="b", category="time", expected="x", question="q", as_of="soon")) is None

@@ -339,7 +339,9 @@ async def queue_focus(
             if current is not None and current["origin"] == ORIGIN_JUNIPER and origin == ORIGIN_SELF:
                 # Raising inside the transaction rolls back the expiry sweep too: nothing written.
                 raise FocusRefused(JUNIPER_PROTECTED + f" (pending: {str(current['question'])[:200]!r})")
-            if current is not None and keep_pending:
+            if current is not None and keep_pending and not _is_door_correlation(current["chat_correlation_id"]):
+                # A focus the self-question door queued is the one pending focus that a question chosen
+                # alone (Prime) may replace: the door only borrows a free slot, it never holds Prime out.
                 raise FocusRefused(PENDING_KEPT + f" (pending: {str(current['question'])[:200]!r})")
             if current is not None:
                 await conn.execute(REPLACE_SQL, current["focus_id"], focus_id)
@@ -562,6 +564,20 @@ def is_prime_focus(focus: FocusRow) -> bool:
     return str(focus.chat_correlation_id or "").startswith(PRIME_CORRELATION_PREFIX)
 
 
+# The self-question door (services/orion-hub/scripts/self_question_door.py) stores
+# "self_question_door:<question_id>" when it routes a question Orion wrote for its own self-inquiry,
+# which the judge read as about how a part of Orion works, to this line instead.
+DOOR_CORRELATION_PREFIX = "self_question_door:"
+
+
+def _is_door_correlation(chat_correlation_id: Any) -> bool:
+    return str(chat_correlation_id or "").startswith(DOOR_CORRELATION_PREFIX)
+
+
+def is_door_focus(focus: FocusRow) -> bool:
+    return _is_door_correlation(focus.chat_correlation_id)
+
+
 def format_focus_section(focus: Optional[FocusRow]) -> list[str]:
     if focus is None:
         return []
@@ -570,6 +586,9 @@ def format_focus_section(focus: Optional[FocusRow]) -> list[str]:
     elif is_prime_focus(focus):
         who = ("Between conversations, in your own slow thinking (Prime), you chose this as what your "
                "next curiosity run should look at")
+    elif is_door_focus(focus):
+        who = ("You wrote this question for your own self-inquiry. The self-question door sent it to this line, "
+               "to be dug into here instead of sat with there")
     else:
         who = "In a conversation with Juniper you chose this as what your next curiosity run should look at"
     return [
@@ -577,7 +596,8 @@ def format_focus_section(focus: Optional[FocusRow]) -> list[str]:
         f"{who}:",
         "",
         f"    {' '.join(focus.question.split())}",
-        f"    Why, in your words then: {' '.join(focus.why.split())}",
+        (f"    Why the door sent it (Hub's words, not yours): {' '.join(focus.why.split())}" if is_door_focus(focus)
+         else f"    Why, in your words then: {' '.join(focus.why.split())}"),
         "",
         *_refs_lines(focus),
         "It is an offer, not an order. You can explore it in this run or set it aside. Either way, "
@@ -611,7 +631,9 @@ def focus_story(focus: FocusRow) -> str:
         return value.strftime("%Y-%m-%d %H:%M UTC") if value is not None else "?"
 
     who = ("Juniper asked" if focus.origin == ORIGIN_JUNIPER
-           else "you chose it between conversations" if is_prime_focus(focus) else "you chose it")
+           else "you chose it between conversations" if is_prime_focus(focus)
+           else "you wrote it for self-inquiry; the door sent it here" if is_door_focus(focus)
+           else "you chose it")
     parts = [f"queued {at(focus.created_at)} ({who})"]
     status = focus.status
     if status == PENDING:

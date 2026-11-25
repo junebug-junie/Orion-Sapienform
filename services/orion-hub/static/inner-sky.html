@@ -8,7 +8,7 @@
   Inner Sky: the Hub's Cognitive EKG. Every light is one stored row (see scripts/inner_sky_routes.py):
   comets = temporal_self_event experiences, gold arcs = experience_use bindings, stars + blue pulses =
   the bus synaptic graph's services and cause-and-effect links at their measured message rates.
-  ?embed=1 is the compact drawer view on the Hub's main page.
+  Narrower than 1100 px (the Hub drawer when open) it shows the compact view; wide, the full one.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -65,14 +65,14 @@ h1 { margin: 0; font-family: var(--f-display); font-weight: 600; font-size: 26px
 #tip b { font-family: var(--f-mono); font-weight: 500; }
 #legend { left: max(18px, env(safe-area-inset-left, 0px)); bottom: 150px; font-size: 12px; color: var(--muted); line-height: 1.7; max-width: 300px; }
 #legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: -1px; }
-#openFull { display: none; right: 12px; bottom: 12px; font: 500 12px var(--f-mono); color: var(--live); background: var(--glass); border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px; text-decoration: none; }
+#openFull { display: none; pointer-events: auto; right: 12px; bottom: 12px; cursor: pointer; font: 500 12px var(--f-mono); color: var(--live); background: var(--glass); border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px; text-decoration: none; }
 #err { position: fixed; z-index: 9; left: 50%; top: 40%; transform: translate(-50%, -50%); max-width: min(560px, calc(100vw - 32px)); background: #1a0f14; border: 1px solid #ff5d73; color: #ffd6dc; border-radius: 10px; padding: 14px 16px; font: 13px/1.5 var(--f-mono); white-space: pre-wrap; }
 body.embed #feed, body.embed #legend, body.embed #bar, body.embed .sub, body.embed #focus { display: none; }
 body.embed #top { top: 10px; left: 12px; }
 body.embed h1 { font-size: 15px; }
 body.embed .stats { margin-top: 6px; gap: 12px; }
 body.embed .stats b { font-size: 15px; }
-body.embed #openFull { display: block; }
+body.embed.framed #openFull { display: block; }
 body.embed .label { font-size: 10px; }
 @media (max-width: 860px) {
   #feed, #legend { display: none; }
@@ -98,8 +98,9 @@ body.embed .label { font-size: 10px; }
 </div>
 
 <div class="hud" id="legend">
-  <div><i style="background:#d6e6ff"></i>Outer stars: services. Dim = silent over an hour.</div>
-  <div><i style="background:#9cc8ff"></i>Blue pulses: cause-and-effect links, at their real message rate.</div>
+  <div><i style="background:#d6e6ff"></i>Outer stars: services. Each flash and spark is one message it sent. Dim = silent over an hour.</div>
+  <div><i style="background:#9cc8ff"></i>Blue pulse: one real hop, a message from one service followed by another's.</div>
+  <div><i style="background:#fff1c4"></i>Center: Orion's now, the shared stream every part reads.</div>
   <div><i style="background:#5cf2c4"></i>Comets: one experience each, flying inward.</div>
   <div><i style="background:#ffc44d"></i>Gold arc: one part used another part's experience.</div>
 </div>
@@ -123,12 +124,34 @@ body.embed .label { font-size: 10px; }
   <div id="clock">--:--</div>
 </div>
 
-<a class="hud" id="openFull" href="/static/inner-sky.html" target="_top">Open full sky ↗</a>
+<a class="hud" id="openFull" href="/static/inner-sky.html" target="_top">Widen ▶</a>
 <div id="tip" hidden></div>
 <div id="err" hidden></div>
 
 <script>
-  if (/[?&]embed=1\b/.test(location.search)) document.body.classList.add('embed');
+  // Layout: in the Hub drawer the Hub says which state it is in (compact unless wide; the widen link only
+  // where widening does something). Opened on its own, or before the Hub answers, it goes by width.
+  (function () {
+    var framed = window.parent !== window, drawerState = null, phone = false;
+    var fit = function () {
+      var compact = drawerState ? drawerState !== 'wide' : innerWidth < 1100;
+      document.body.classList.toggle('embed', compact);
+      document.body.classList.toggle('framed', framed && drawerState !== 'wide' && !phone);
+    };
+    fit(); addEventListener('resize', fit);
+    if (framed) {
+      addEventListener('message', function (ev) {
+        if (ev.origin !== location.origin || ev.source !== window.parent || !ev.data || ev.data.type !== 'orion-inner-sky-drawer') return;
+        drawerState = ev.data.state; phone = !!ev.data.phone; fit();
+      });
+      window.parent.postMessage({ type: 'orion-inner-sky-drawer?' }, location.origin);
+    }
+    document.getElementById('openFull').addEventListener('click', function (ev) {
+      if (!framed) return; // on its own the link simply opens the full page
+      ev.preventDefault();
+      window.parent.postMessage({ type: 'orion-inner-sky-widen' }, location.origin);
+    });
+  })();
   function showErr(msg) { var el = document.getElementById('err'); el.hidden = false; el.textContent = 'The sky could not start:\n' + msg; }
   window.addEventListener('error', function (e) { showErr((e.message || 'script error') + (e.filename ? '\n' + e.filename : '')); });
   window.addEventListener('unhandledrejection', function (e) { showErr(String(e.reason && (e.reason.stack || e.reason.message) || e.reason)); });

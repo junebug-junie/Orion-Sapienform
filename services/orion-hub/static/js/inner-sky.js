@@ -9,10 +9,12 @@ import { UnrealBloomPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/exam
 import { OutputPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/OutputPass.js/+esm';
 
 const core = window.OrionInnerSkyCore;
-const EMBED = document.body.classList.contains('embed');
+const isCompact = () => document.body.classList.contains('embed');
 const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const WINDOW_SEC = 12 * 3600, LIVE_SEC = 3600;
-const EVENTS_POLL_MS = 5000, STATE_POLL_MS = 20000;
+const EVENTS_POLL_MS = 5000, STATE_POLL_MS = 5000;
+// Per poll, at most this many hops per link and messages per service are drawn (the rest are counted, not drawn).
+const MAX_HOPS_DRAWN = 40, MAX_MSGS_DRAWN = 30;
 
 const COL = {camera:'#3fa9ff',body:'#ff8a5c',prediction:'#5cf2c4',metacognition:'#c9d3ff',reverie:'#b48cff',dream:'#7a8cff',memory:'#f2a65a',reading:'#9be564',curiosity:'#ffd166',painting:'#ff7ac6',play:'#ff5d73',chat:'#7cf0ff',prime:'#ffe9a8',intention:'#a0ffea',personality:'#ff9ee5',day_letter:'#d9c49a',unregistered:'#888888'};
 const colorOf = (o) => COL[o] || '#9aa3c7';
@@ -33,7 +35,9 @@ renderer.setSize(innerWidth, innerHeight);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05060d);
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 500);
-camera.position.set(0, EMBED ? 18 : 15, EMBED ? 42 : 34);
+let placedCompact = null; // re-place only when the layout flips, so a resize keeps the viewer's zoom and turn
+const placeCamera = () => { const c = isCompact(); if (c === placedCompact) return; placedCompact = c; camera.position.set(0, c ? 18 : 15, c ? 42 : 34); };
+placeCamera();
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true; controls.autoRotate = !REDUCED; controls.autoRotateSpeed = 0.35;
 controls.minDistance = 12; controls.maxDistance = 80; controls.enablePan = false;
@@ -75,7 +79,7 @@ class Pool {
 // ---------------------------------------------------------------- services shell (bus synaptic graph)
 const R_SHELL = 24, MAX_SVC = 400, SEG = 20;
 const services = new Map(); // id -> {id, n, last, pos, rate, phase}
-let serviceRatesPrev = null, linkRatesPrev = null, stateNow = 0;
+let serviceRatesPrev = null, linkRatesPrev = null, serviceCountPrev = null, linkCountPrev = null, stateNow = 0;
 function hash01(s, salt) { let h = 2166136261 ^ salt; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return ((h >>> 0) % 100000) / 100000; }
 function shellPos(id) { // stable spot on the shell from the service's own name
   const y = hash01(id, 7) * 1.6 - 0.8, th = hash01(id, 13) * Math.PI * 2, r = Math.sqrt(1 - y * y);
@@ -91,7 +95,7 @@ function rebuildLinks(raw, rates) { // rates: measured msgs/s by link key (missi
     if (old) { old.n = l.n; old.last = l.last; old.rate = key in rates ? rates[key] : null; return old; }
     const a = services.get(l.a).pos, b = services.get(l.b).pos, curve = [];
     for (let s = 0; s <= SEG; s++) { const t = s / SEG; curve.push(a.clone().normalize().lerp(b.clone().normalize(), t).normalize().multiplyScalar(R_SHELL * (1 + 0.14 * Math.sin(Math.PI * t)))); }
-    return { key, a: l.a, b: l.b, n: l.n, last: l.last, curve, rate: key in rates ? rates[key] : null, acc: Math.random() };
+    return { key, a: l.a, b: l.b, n: l.n, last: l.last, curve, rate: key in rates ? rates[key] : null, acc: Math.random(), pending: 0, emit: 0 };
   });
   if (linkLines) { scene.remove(linkLines); linkLines.geometry.dispose(); }
   const pos = [], col = [];
@@ -107,6 +111,7 @@ function rebuildLinks(raw, rates) { // rates: measured msgs/s by link key (missi
   scene.add(linkLines);
 }
 const pulsePool = new Pool(700); const pulses = [];
+const sparkPool = new Pool(500); const sparks = []; const C_SPARK = new THREE.Color('#e8f0ff');
 
 // ---------------------------------------------------------------- experience organs (inner ring)
 const R_RING = 9.5; let organs = []; const organBy = new Map(); let organPool = null; let labels = []; let ringLine = null;
@@ -255,13 +260,19 @@ async function pollState() {
     const d = await res.json(); stateNow = d.now;
     if (d.body) {
       for (const s of d.body.services) {
-        if (!services.has(s.id)) { if (services.size >= MAX_SVC) continue; services.set(s.id, { id: s.id, pos: shellPos(s.id), phase: Math.random() * 6.28, rate: null }); }
+        if (!services.has(s.id)) { if (services.size >= MAX_SVC) continue; services.set(s.id, { id: s.id, pos: shellPos(s.id), phase: Math.random() * 6.28, rate: null, glow: 0, pending: 0, emit: 0, acc: 0 }); }
         Object.assign(services.get(s.id), { n: s.n, last: s.last });
       }
       const sr = core.countRates(serviceRatesPrev, d.body.services, (s) => s.id, d.now); serviceRatesPrev = sr.next;
       for (const [id, r] of Object.entries(sr.rates)) if (services.has(id)) services.get(id).rate = r;
       const lr = core.countRates(linkRatesPrev, d.body.links, (l) => `${l.a}>${l.b}`, d.now); linkRatesPrev = lr.next;
       rebuildLinks(d.body.links, lr.rates);
+      // One light per real message: this poll's new counts play out over the next poll window.
+      const win = STATE_POLL_MS / 1000;
+      const sd = core.countDeltas(serviceCountPrev, d.body.services, (s) => s.id); serviceCountPrev = sd.next;
+      for (const [id, n] of Object.entries(sd.deltas)) { const s = services.get(id); if (s) { s.pending = Math.min(n, MAX_MSGS_DRAWN); s.emit = s.pending / win; } }
+      const ld = core.countDeltas(linkCountPrev, d.body.links, (l) => `${l.a}>${l.b}`); linkCountPrev = ld.next;
+      for (const l of links) { const n = ld.deltas[l.key] || 0; l.pending = Math.min(n, MAX_HOPS_DRAWN); l.emit = l.pending / win; }
       const all = [...services.values()];
       document.getElementById('sLive').textContent = `${all.filter((s) => core.isLive(s, d.now, LIVE_SEC)).length}/${all.length}`;
       setProblem('body', null);
@@ -277,7 +288,7 @@ async function pollState() {
 // ---------------------------------------------------------------- timeline + controls
 const tl = document.getElementById('timeline'), tctx = tl.getContext('2d'), clockEl = document.getElementById('clock');
 function drawTimeline() {
-  if (EMBED) return;
+  if (isCompact()) return;
   const w = tl.clientWidth, h = tl.clientHeight, pr = devicePixelRatio || 1; if (!w) return;
   if (tl.width !== Math.round(w * pr)) { tl.width = Math.round(w * pr); tl.height = Math.round(h * pr); }
   tctx.setTransform(pr, 0, 0, pr, 0, 0); tctx.clearRect(0, 0, w, h);
@@ -313,9 +324,11 @@ function hover() {
   if (!mouse) return;
   let best = null, bd = 18;
   for (const o of organs) { const s = toScreen(o.pos); const d = Math.hypot(s.x - mouse.x, s.y - mouse.y); if (d < bd) { bd = d; best = { o }; } }
+  if (!best) { const c = toScreen(ORIGIN); if (Math.hypot(c.x - mouse.x, c.y - mouse.y) < 28) best = { core: true }; }
   if (!best) for (const s of services.values()) { const p = toScreen(s.pos); const d = Math.hypot(p.x - mouse.x, p.y - mouse.y); if (d < bd) { bd = d; best = { s }; } }
   if (!best) { tip.hidden = true; return; }
-  if (best.o) { const o = best.o; tip.innerHTML = `<b style="color:${colorOf(o.name)}">${esc(nice(o.name))}</b><br>${o.total} experiences in the window · ${o.recent.length} in the last 30 min${o.last ? `<br><span style="color:var(--muted)">Latest: ${esc(o.last.slice(0, 140))}</span>` : ''}`; }
+  if (best.core) { tip.innerHTML = `<b style="color:#fff1c4">Orion's now</b><br>The shared stream of experiences every part of Orion reads (the temporal self). Each comet is one experience landing in it, and the glow flares as they land. ${nExp.toLocaleString()} landed in the window.`; }
+  else if (best.o) { const o = best.o; tip.innerHTML = `<b style="color:${colorOf(o.name)}">${esc(nice(o.name))}</b><br>${o.total} experiences in the window · ${o.recent.length} in the last 30 min${o.last ? `<br><span style="color:var(--muted)">Latest: ${esc(o.last.slice(0, 140))}</span>` : ''}`; }
   else {
     const s = best.s, live = core.isLive(s, stateNow, LIVE_SEC);
     tip.innerHTML = `<b>${esc(s.id)}</b><br>${s.last == null ? 'Never published' : live ? `Last spoke ${ago(stateNow - s.last)} ago` : `<span style="color:var(--warn)">Silent for ${ago(stateNow - s.last)}</span>`}<br><span style="color:var(--muted)">${s.rate == null ? 'Rate: measuring (two readings needed)' : `${s.rate.toFixed(s.rate < 1 ? 2 : 0)} messages/s now`} · ${(s.n || 0).toLocaleString()} lifetime</span>`;
@@ -329,23 +342,33 @@ const sExp = document.getElementById('sExp'), sBind = document.getElementById('s
 function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clk.getDelta(), 0.1), now = clk.elapsedTime;
+  placeCamera(); // no-op unless the layout flipped (the Hub can flip it by message, with no resize)
   if (booted) step(dt);
 
   let si = 0;
   for (const s of services.values()) {
     const live = core.isLive(s, stateNow, LIVE_SEC);
-    const sz = live ? 0.32 + (s.rate ? 0.08 * Math.log2(1 + s.rate) : 0) : 0.28;
-    svcPool.set(si++, s.pos, live ? C_LIVE : C_DEAD, Math.min(sz, 0.9), live ? 0.65 + 0.35 * Math.sin(now * 1.3 + s.phase) : 0.55);
+    if (s.pending > 0) { s.acc += dt * s.emit; while (s.acc >= 1 && s.pending > 0) { s.acc -= 1; s.pending--; s.glow = Math.min(3, s.glow + 0.7); if (sparks.length < sparkPool.n) sparks.push({ s, t: 0, dir: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.25) }); } }
+    s.glow *= Math.pow(0.08, dt);
+    const sz = (live ? 0.3 : 0.26) + 0.22 * s.glow;
+    svcPool.set(si++, s.pos, live ? C_LIVE : C_DEAD, Math.min(sz, 1.1), live ? Math.min(1, 0.45 + 0.25 * s.glow + 0.1 * Math.sin(now * 1.3 + s.phase)) : 0.5);
   }
   for (; si < svcPool.n; si++) svcPool.hide(si);
   svcPool.flush();
+  for (let i = sparks.length - 1; i >= 0; i--) { sparks[i].t += dt / 0.9; if (sparks[i].t >= 1) sparks.splice(i, 1); }
+  for (let i = 0; i < sparkPool.n; i++) {
+    const sp = sparks[i]; if (!sp) { sparkPool.hide(i); continue; }
+    tmp.copy(sp.s.pos).multiplyScalar(1 - 0.22 * sp.t).addScaledVector(sp.dir, sp.t * 4);
+    sparkPool.set(i, tmp, C_SPARK, 0.22, (1 - sp.t) * 0.9);
+  }
+  sparkPool.flush();
 
-  for (const l of links) { const pps = core.pulsesPerSecond(l.rate || 0); if (!pps) continue; l.acc += dt * pps; if (l.acc >= 1 && pulses.length < pulsePool.n) { l.acc -= 1; pulses.push({ l, t: 0 }); } }
-  for (let i = pulses.length - 1; i >= 0; i--) { pulses[i].t += dt / 1.8; if (pulses[i].t >= 1) pulses.splice(i, 1); }
+  for (const l of links) { if (l.pending <= 0) continue; l.acc += dt * l.emit; while (l.acc >= 1 && l.pending > 0) { l.acc -= 1; l.pending--; if (pulses.length < pulsePool.n) pulses.push({ l, t: 0 }); } }
+  for (let i = pulses.length - 1; i >= 0; i--) { pulses[i].t += dt / 1.3; if (pulses[i].t >= 1) pulses.splice(i, 1); }
   for (let i = 0; i < pulsePool.n; i++) {
     const p = pulses[i]; if (!p) { pulsePool.hide(i); continue; }
     const f = p.t * SEG, k = Math.floor(f), pts = p.l.curve; tmp.copy(pts[k]).lerp(pts[Math.min(SEG, k + 1)], f - k);
-    pulsePool.set(i, tmp, C_PULSE, 0.38, Math.sin(Math.PI * p.t) * 0.9);
+    pulsePool.set(i, tmp, C_PULSE, 0.5, Math.sin(Math.PI * p.t));
   }
   pulsePool.flush();
 
@@ -385,7 +408,9 @@ function frame() {
   drawTimeline(); hover();
   controls.update(); composer.render();
 }
-addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); updateScale(); });
+const nowLabel = document.createElement('div'); nowLabel.className = 'label'; nowLabel.textContent = 'now'; nowLabel.style.color = '#fff1c4'; document.body.appendChild(nowLabel);
+setInterval(() => { const c = toScreen(ORIGIN); nowLabel.style.left = c.x + 'px'; nowLabel.style.top = (c.y + 46) + 'px'; }, 100);
+addEventListener('resize', () => { placeCamera(); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); updateScale(); });
 
 // Each poll schedules the next only after it finishes, so two never run at once.
 const loop = (fn, ms) => { const tick = async () => { try { await fn(); } finally { setTimeout(tick, ms); } }; setTimeout(tick, ms); };

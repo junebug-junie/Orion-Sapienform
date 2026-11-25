@@ -11,7 +11,7 @@ PAGE = (HUB / "static" / "inner-sky.html").read_text()
 
 
 def test_drawer_embeds_the_inner_sky_not_the_retired_spark_page():
-    assert 'src="/static/inner-sky.html?embed=1&v={{HUB_UI_ASSET_VERSION}}"' in INDEX
+    assert 'src="/static/inner-sky.html?v={{HUB_UI_ASSET_VERSION}}"' in INDEX
     assert "/spark/ui" not in INDEX
     assert 'id="stateVisualizerContainer"' in INDEX  # biometrics toggle still swaps this container
 
@@ -28,9 +28,22 @@ def test_page_reads_only_the_inner_sky_routes():
     assert set(re.findall(r"fetch\(`?'?(/api/[a-z-]+/[a-z-]+)", js)) == {"/api/inner-sky/events", "/api/inner-sky/state"}
 
 
-def test_embed_mode_hides_the_controls_and_links_to_the_full_page():
-    assert "embed=1" in PAGE and "body.embed #bar" in PAGE
-    assert 'href="/static/inner-sky.html" target="_top"' in PAGE
+def test_compact_mode_follows_width_and_widen_asks_the_hub_drawer():
+    assert "drawerState !== 'wide'" in PAGE and "innerWidth < 1100" in PAGE and "body.embed #bar" in PAGE
+    assert "ev.source !== window.parent" in PAGE
+    # the overlay turns pointer events off for .hud; the widen link is itself .hud, so it must turn them back on
+    assert re.search(r"#openFull \{[^}]*pointer-events: auto", PAGE)
+    assert "type: 'orion-inner-sky-widen'" in PAGE
+    drawer_js = (HUB / "static" / "js" / "hub-ekg-drawer.js").read_text()
+    assert "var WIDEN_MESSAGE = 'orion-inner-sky-widen';" in drawer_js
+
+
+def test_drawer_has_a_widen_button_and_wide_hides_chat():
+    assert 'id="ekgDrawerWiden"' in INDEX
+    css = (HUB / "static" / "css" / "style.css").read_text()
+    md = css[css.index("@media (min-width: 768px)"):]
+    md = md[: md.index("\n}\n")]
+    assert ".hub-ekg-drawer.is-wide ~ .hub-chat-card { display: none; }" in md  # never on phones
 
 
 def test_vector_host_no_longer_serves_the_old_page_or_its_socket():

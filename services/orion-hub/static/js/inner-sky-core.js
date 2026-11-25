@@ -25,9 +25,16 @@
     return { rates: rates, next: next };
   }
 
-  // Pulses drawn per second along a link carrying `rate` real messages per second (log scale, capped).
-  function pulsesPerSecond(rate) {
-    return rate > 0 ? Math.min(3, 0.15 * Math.log2(1 + rate)) : 0;
+  // How many new messages each key carried since the last reading (same rules as countRates: a first
+  // reading or a reset counter gives nothing, never a guess). Used to draw one light per real message.
+  function countDeltas(prev, items, keyOf) {
+    var next = {}, deltas = {};
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i], key = keyOf(it), p = prev ? prev[key] : null;
+      next[key] = { n: it.n };
+      if (p && it.n >= p.n) deltas[key] = it.n - p.n;
+    }
+    return { deltas: deltas, next: next };
   }
 
   // Events per bin over [t0, t1). Events outside the range are not counted.
@@ -45,7 +52,7 @@
     return service.last != null && serverNow - service.last < liveSec;
   }
 
-  var api = { insertSorted: insertSorted, countRates: countRates, pulsesPerSecond: pulsesPerSecond, binCounts: binCounts, isLive: isLive };
+  var api = { insertSorted: insertSorted, countRates: countRates, countDeltas: countDeltas, binCounts: binCounts, isLive: isLive };
   global.OrionInnerSkyCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

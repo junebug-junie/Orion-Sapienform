@@ -343,6 +343,15 @@
           >◀</button>
           <button
             type="button"
+            id="ekgDrawerWiden"
+            class="px-2 py-1 rounded-lg border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:bg-gray-700 hover:text-white"
+            title="Widen the Inner Sky across the whole row (hides chat until ◀)"
+            aria-label="Widen Inner Sky and hide chat"
+            aria-pressed="false"
+            aria-controls="ekgDrawer"
+          >▶</button>
+          <button
+            type="button"
             id="ekgViewToggle"
             class="px-2 py-1 rounded-lg border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:bg-gray-700 hover:text-white"
             title="Toggle between the Inner Sky and a Biometrics preview"
@@ -352,7 +361,7 @@
         </div>
 
         <div id="stateVisualizerContainer" class="w-full flex-1 bg-gray-800/50 rounded-lg overflow-hidden border border-gray-800 shadow-inner">
-          <iframe src="/static/inner-sky.html?embed=1&v={{HUB_UI_ASSET_VERSION}}" class="w-full h-full border-0" title="Orion's Inner Sky: experiences, bindings and services, live"></iframe>
+          <iframe src="/static/inner-sky.html?v={{HUB_UI_ASSET_VERSION}}" class="w-full h-full border-0" title="Orion's Inner Sky: experiences, bindings and services, live"></iframe>
         </div>
 
         <div id="biometricsPreviewContainer" class="hidden w-full flex-1 bg-gray-800/50 rounded-lg overflow-hidden border border-gray-800 shadow-inner p-3 cursor-pointer" title="Click to open the full Biometrics view">

@@ -1,5 +1,6 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer
+-- ORION-MIGRATION-REQUIRED-BY: none retired 2026-11-25 (#3924 rework); orion-sql-writer writes field_goal_episode instead and no service reads or writes this table
 -- Goal proposal log, issue #3924.
+-- RETIRED 2026-11-25: no writer. Table and rows kept until Juniper drops them (DROP TABLE field_goal_provenance_log;).
 --
 -- field_goal_provenance_log: one row per goal Orion proposes. Writer: orion-sql-writer off bus
 -- orion:memory:goals:proposed (FieldGoalProvenanceV1, kind memory.field_goals.proposed.v1;

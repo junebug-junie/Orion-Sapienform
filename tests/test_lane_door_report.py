@@ -128,10 +128,99 @@ def test_a_call_sent_again_under_one_lease_does_not_open_a_gap():
 
 
 def test_more_distinct_leases_than_gateway_rows_still_opens_a_gap():
-    """A made-up extra lease, or (benign, not netted out) a context-overflow re-lease: one gateway row, two leases."""
+    """An extra lease the pool never released on a context overflow: one gateway row, two leases."""
     lines = [_line(d, lease=f"L-{d}") for d in _days(15, 7)] + [_line("2026-11-17", lease="L-extra")]
     report, _ = rep.aggregate(lines)
     for d in report["chat"].values():
         d.unmatched_leases, d.gateway_calls = 0, 1
     ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
     assert not ok and "2 distinct leases" in why and "gateway sent 1" in why
+
+
+def _joined_with_overflow(extra_overflowed: int, overflow_rows: int, extra_leases: int = 1):
+    """2026-11-17: one gateway row, 1 + extra_leases distinct leases; extra_overflowed of them released overflow."""
+    lines = [_line(d, lease=f"L-{d}") for d in _days(15, 7)]
+    lines += [_line("2026-11-17", lease=f"L-extra-{i}") for i in range(extra_leases)]
+    report, _ = rep.aggregate(lines)
+    for d in report["chat"].values():
+        d.unmatched_leases, d.gateway_calls, d.overflow_leases, d.overflow_rows = 0, 1, 0, 0
+    day = report["chat"]["2026-11-17"]
+    day.overflow_leases, day.overflow_rows = extra_overflowed, overflow_rows
+    return report
+
+
+def test_an_overflow_re_lease_reads_a_zero_gap():
+    """#3942: the first lease overflowed and was given back; the re-lease wrote the request's only row."""
+    report = _joined_with_overflow(extra_overflowed=1, overflow_rows=0)
+    day = report["chat"]["2026-11-17"]
+    assert rep.overflow_extras(day) == 1 and rep.gap_pct(day) == 0.0
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert ok, why
+
+
+def test_a_final_overflow_has_its_own_row_and_is_not_an_extra():
+    """Live 2026-11-20 agent-gpu2: the overflowed lease ended its request, so the gateway wrote a
+    context_overflow row for it. Netting it again would hide a real extra lease."""
+    report = _joined_with_overflow(extra_overflowed=1, overflow_rows=1)
+    day = report["chat"]["2026-11-17"]
+    assert rep.overflow_extras(day) == 0
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert not ok and "gateway sent 1 (" in why
+
+
+def test_overflow_netting_never_covers_a_lease_that_did_not_overflow():
+    """Two extra leases, only one overflowed: the other still opens the gap, and the message names the netting."""
+    report = _joined_with_overflow(extra_overflowed=1, overflow_rows=0, extra_leases=2)
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert not ok and "3 distinct leases" in why and "gateway sent 1 + 1 overflow re-leases" in why
+
+
+def test_join_db_reads_overflow_releases_and_overflow_rows(monkeypatch):
+    """The SQL wiring: overflowed lease ids come from gpu_pool_events, overflow rows from llm_call_usage."""
+    import types
+
+    class Cur:
+        def __init__(self):
+            self.last, self.params = "", None
+
+        def execute(self, sql, params=None):
+            self.last, self.params = sql, params
+
+        def fetchall(self):
+            assert "context_overflow" in self.last and "gpu_pool_events" in self.last
+            return [(lid, lid == "L-over") for lid in self.params[0] if lid != "L-fake"]
+
+        def fetchone(self):
+            assert "llm_call_usage" in self.last and "FILTER (WHERE outcome = 'context_overflow')" in self.last
+            return (1, 0)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setitem(sys.modules, "psycopg2", types.SimpleNamespace(connect=lambda dsn: Conn()))
+    report, _ = rep.aggregate([_line("2026-11-17", lease="L-main"), _line("2026-11-17", lease="L-over")])
+    rep.join_db(report, "postgresql://fake")
+    day = report["chat"]["2026-11-17"]
+    assert (day.unmatched_leases, day.gateway_calls, day.overflow_leases, day.overflow_rows) == (0, 1, 1, 0)
+    assert rep.gap_pct(day) == 0.0
+    out = rep.render(report, {"chat": (False, "x")}, joined=True)
+    assert "overflow" in out.splitlines()[1]
+    assert out.splitlines()[2].split()[-2:] == ["1", "0.0"]   # overflow column, then gap%
+
+    report, _ = rep.aggregate([_line("2026-11-17", lease="L-main"), _line("2026-11-17", lease="L-fake")])
+    rep.join_db(report, "postgresql://fake")
+    day = report["chat"]["2026-11-17"]
+    assert (day.unmatched_leases, day.overflow_leases) == (1, 0)   # a made-up id is never an overflow

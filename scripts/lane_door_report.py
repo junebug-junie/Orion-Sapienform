@@ -23,7 +23,13 @@ row, each day present in the log (a missing day is unknown, never zero) with:
   benign mismatches remain (#3919): a Strata JSON retry re-sends under the same lease (the door logs it twice;
   counting distinct lease ids nets it out, raw leased calls stay in the table for information), and a context
   overflow gives the lease back and re-leases, up to 3 times per request (one gateway row, several distinct
-  leases, possibly on another lane; NOT netted out, so a lane with overflows can still read a small gap).
+  leases, possibly on another lane). The overflow re-leases are netted out from data that already exists
+  (#3942): the pool records every overflowed lease as ``gpu_pool_events`` released/``context_overflow``, and
+  the request's LAST lease carries the gateway row (pool_role = last grant). So a request whose final lease
+  also overflowed writes a row with ``outcome = 'context_overflow'`` on that lane; every other overflowed
+  lease is an extra with no row. Per lane-day: overflow extras = overflowed leases the door saw minus the
+  lane's ``context_overflow`` rows (never below 0), and the gap compares distinct leases with gateway rows
+  plus those extras (column ``overflow``). An under-count only leaves a gap, so the netting fails safe.
   Counting distinct ids also hides a caller replaying a real lease id; the door guards against accidental
   bypass, not an adversary. Calls an enforcing door
   already refused are listed, not counted against the lane (they never reached the engine).
@@ -62,6 +68,8 @@ class Day:
     refused_from: Counter = field(default_factory=Counter)
     unmatched_leases: Optional[int] = None                   # --dsn: leased ids not in gpu_pool_events
     gateway_calls: Optional[int] = None                      # --dsn: llm_call_usage rows for this lane
+    overflow_leases: Optional[int] = None                    # --dsn: door-seen leases released context_overflow
+    overflow_rows: Optional[int] = None                      # --dsn: gateway rows with outcome context_overflow
 
 
 def iter_lines(sources: list[str]) -> Iterator[str]:
@@ -115,8 +123,16 @@ def aggregate(lines: Iterable[str], counts: Optional[dict] = None) -> tuple[dict
     return out, bad_lines
 
 
+def overflow_extras(d: Day) -> int:
+    """Leases given back on a context overflow and re-leased: no gateway row of their own (#3942).
+
+    Every overflowed lease is released ``context_overflow``; the one that ended its request also has a
+    ``context_overflow`` gateway row on its lane, so the difference is the re-leased ones."""
+    return max(0, (d.overflow_leases or 0) - (d.overflow_rows or 0))
+
+
 def join_db(report: dict[str, dict[str, Day]], dsn: str) -> None:
-    """Fill unmatched_leases and gateway_calls from Postgres (read-only)."""
+    """Fill unmatched_leases, gateway_calls and the overflow counts from Postgres (read-only)."""
     try:
         import psycopg2  # noqa: PLC0415
     except ImportError:   # pragma: no cover
@@ -127,24 +143,35 @@ def join_db(report: dict[str, dict[str, Day]], dsn: str) -> None:
             for day, d in days.items():
                 ids = sorted(d.lease_ids)
                 found: set[str] = set()
+                overflowed: set[str] = set()
                 for i in range(0, len(ids), 5000):
-                    cur.execute("SELECT DISTINCT lease_id FROM gpu_pool_events WHERE lease_id = ANY(%s)",
+                    cur.execute("SELECT lease_id, bool_or(event = 'released' AND reason = 'context_overflow') "
+                                "FROM gpu_pool_events WHERE lease_id = ANY(%s) GROUP BY lease_id",
                                 (ids[i:i + 5000],))
-                    found.update(r[0] for r in cur.fetchall())
+                    for lease_id, was_overflow in cur.fetchall():
+                        found.add(lease_id)
+                        if was_overflow:
+                            overflowed.add(lease_id)
                 d.unmatched_leases = len(set(ids) - found)
+                d.overflow_leases = len(overflowed)
                 # recorded_at = the gateway's close time (indexed), closest to the door's end-of-call ts;
                 # created_at is the sql-writer's insert time and can slip a call ending near 00:00Z into D+1.
-                cur.execute("SELECT count(*) FROM llm_call_usage WHERE pool_role = %s "
+                cur.execute("SELECT count(*), count(*) FILTER (WHERE outcome = 'context_overflow') "
+                            "FROM llm_call_usage WHERE pool_role = %s "
                             "AND recorded_at >= (%s::date)::timestamp AT TIME ZONE 'UTC' "
                             "AND recorded_at < (%s::date + 1)::timestamp AT TIME ZONE 'UTC'", (lane, day, day))
-                d.gateway_calls = int(cur.fetchone()[0])
+                calls, overflow_rows = cur.fetchone()
+                d.gateway_calls, d.overflow_rows = int(calls), int(overflow_rows)
 
 
 def gap_pct(d: Day) -> Optional[float]:
-    """Distinct lease ids vs the gateway's own call count, in %. None without a gateway count."""
+    """Distinct lease ids vs the gateway's own call count plus overflow re-leases, in %.
+
+    None without a gateway count."""
     if not d.gateway_calls:
         return None
-    return abs(len(d.lease_ids) - d.gateway_calls) * 100.0 / d.gateway_calls
+    expected = d.gateway_calls + overflow_extras(d)
+    return abs(len(d.lease_ids) - expected) * 100.0 / expected
 
 
 def verdict(days: dict[str, Day], *, streak_days: int, max_gap_pct: float, joined: bool,
@@ -173,8 +200,10 @@ def verdict(days: dict[str, Day], *, streak_days: int, max_gap_pct: float, joine
             else:
                 gap = gap_pct(d)
                 if gap > max_gap_pct:
+                    extras = overflow_extras(d)
+                    plus = f" + {extras} overflow re-leases" if extras else ""
                     return False, (f"{day}: door saw {len(d.lease_ids)} distinct leases ({d.leased} leased calls), "
-                                   f"gateway sent {d.gateway_calls} ({gap:.1f} % apart)")
+                                   f"gateway sent {d.gateway_calls}{plus} ({gap:.1f} % apart)")
     if not joined:
         return False, (f"{streak_days} clean days ending {end.isoformat()} in the door log, but the lease join was "
                        "not run: add --dsn (READY needs the leases found and the gateway's own count)")
@@ -205,7 +234,7 @@ def render(report: dict[str, dict[str, Day]], verdicts: dict[str, tuple[bool, st
             continue
         head = f"   {'day':10} {'leased':>7} {'unleased':>8} {'invalid':>7} {'refused':>8}"
         if joined:
-            head += f" {'leases':>7} {'no-lease':>9} {'gateway':>8} {'gap%':>6}"
+            head += f" {'leases':>7} {'no-lease':>9} {'gateway':>8} {'overflow':>8} {'gap%':>6}"
         lines.append(head)
         for day in sorted(report[lane]):
             d = report[lane][day]
@@ -213,7 +242,8 @@ def render(report: dict[str, dict[str, Day]], verdicts: dict[str, tuple[bool, st
             if joined:
                 g = gap_pct(d)
                 gap = f"{g:6.1f}" if g is not None else "     -"
-                row += f" {len(d.lease_ids):7d} {d.unmatched_leases or 0:9d} {d.gateway_calls if d.gateway_calls is not None else '-':>8} {gap}"
+                row += (f" {len(d.lease_ids):7d} {d.unmatched_leases or 0:9d} "
+                        f"{d.gateway_calls if d.gateway_calls is not None else '-':>8} {overflow_extras(d):8d} {gap}")
             lines.append(row)
             for who, n in d.unleased_from.most_common(5):
                 lines.append(f"      unleased x{n}: {who}")
@@ -255,7 +285,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             day: {"leased": d.leased, "unleased": d.unleased, "invalid": d.invalid, "refused": d.refused,
                   "unleased_from": dict(d.unleased_from),
                   "refused_from": dict(d.refused_from),
-                  "unmatched_leases": d.unmatched_leases, "gateway_calls": d.gateway_calls}
+                  "unmatched_leases": d.unmatched_leases, "gateway_calls": d.gateway_calls,
+                  "overflow_leases": d.overflow_leases, "overflow_rows": d.overflow_rows,
+                  "overflow_extras": overflow_extras(d) if joined else None}
             for day, d in sorted(days.items())}} for lane, days in report.items()},
             "unreadable_lines": bad_lines, "pre_revision_lines": counts.get("pre_revision", 0),
             "lease_join": joined}, indent=1))

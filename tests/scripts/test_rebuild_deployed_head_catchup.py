@@ -358,3 +358,80 @@ def test_waiting_run_pins_the_head_it_finds_after_the_wait(tmp_path: Path) -> No
     log = h.log.read_text()
     assert "LOCK_WAIT" in log and "LOCK_ACQUIRED" in log and "LOCK_TIMEOUT" not in log
     assert h.state_lines()[0] == h.head()
+
+
+def _pin_capturing_wrapper(h: "Host") -> Path:
+    pins = h.tmp / "pins.txt"
+    safe = h.repo / "scripts" / "safe_docker_build.sh"
+    safe.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "$*" >> "$REBUILD_TEST_CAPTURE"\n'
+        f'printf \'%s\\n\' "$ORION_DEPLOY_PINNED_HEAD" >> "{pins}"\n'
+        "exit 0\n"
+    )
+    safe.chmod(0o755)
+    return pins
+
+
+def _hold_lock(tmp_path: Path, seconds: str) -> subprocess.Popen:
+    lock = tmp_path / "orion" / "post_pull_rebuild.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen(["flock", str(lock), "sleep", seconds])
+    for _ in range(100):
+        if subprocess.run(["flock", "-n", str(lock), "true"]).returncode != 0:
+            break
+        subprocess.run(["sleep", "0.05"])
+    return holder
+
+
+def test_a_merge_during_the_lock_wait_keeps_the_pin(tmp_path: Path) -> None:
+    """#3880 (2026-11-25 00:42Z): a pull in sync with origin/main waited 4 min for the lock; four PRs
+    merged meanwhile; the pin, taken after the wait, saw a stale main and every `up` was refused.
+    The pin is now the head the run started on, before the wait."""
+    import threading
+
+    h = Host(tmp_path)
+    h.merge_upstream("svc-a")
+    started_on = h.pull()
+    pins = _pin_capturing_wrapper(h)
+    holder = _hold_lock(tmp_path, "2")
+    merger = threading.Timer(0.7, lambda: h.merge_upstream("svc-b"))
+    merger.start()
+    try:
+        done, rebuilt = h.rebuild(env_extra={"ORION_REBUILD_LOCK_WAIT_S": "30"})
+    finally:
+        merger.join()
+        holder.kill()
+        holder.wait()
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "LOCK_WAIT" in h.log.read_text()
+    assert h.head() == started_on  # main itself did not move
+    assert rebuilt == ["svc-a"]
+    assert set(pins.read_text().split()) == {started_on}
+
+
+def test_main_moving_during_the_lock_wait_is_rejudged(tmp_path: Path) -> None:
+    """If main itself moved during the wait (a later pull), the old pin is dropped and the run is
+    judged again from now; here main is in sync again, so the new head is pinned."""
+    import threading
+
+    h = Host(tmp_path)
+    h.merge_upstream("svc-a")
+    h.pull()
+    pins = _pin_capturing_wrapper(h)
+    holder = _hold_lock(tmp_path, "2")
+
+    def later_pull() -> None:
+        h.merge_upstream("svc-b")
+        h.pull()
+
+    t = threading.Timer(0.7, later_pull)
+    t.start()
+    try:
+        done, _ = h.rebuild(env_extra={"ORION_REBUILD_LOCK_WAIT_S": "30"})
+    finally:
+        t.join()
+        holder.kill()
+        holder.wait()
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert set(pins.read_text().split()) == {h.head()}

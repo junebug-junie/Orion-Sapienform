@@ -174,7 +174,8 @@ def test_cli_prompt_semantics_gate_passes():
     [
         # The alarms have their own channel since PE retire Patch 2 (2026-11-24).
         ("node:substrate.cabinet", "alarm", "trigger"),
-        ("node:substrate.perception", "prediction_error", "level"),
+        # The cameras have their own channel since PE retire Patch 3 (2026-11-24).
+        ("node:substrate.perception", "scene_change", "scene_change_excess"),
     ],
 )
 def test_node_qualified_prediction_error_entries_carry_semantics(node_id, channel, kind):
@@ -226,7 +227,8 @@ def test_trigger_gets_no_polarity():
     assert derived_channel_polarity("prediction_error", "trigger") is None
     nodes = {n.name: n for n in resolve_field_channels()}
     assert nodes["node:substrate.cabinet.alarm"].polarity is None
-    assert nodes["node:substrate.perception.prediction_error"].polarity == "higher_is_worse"
+    # Camera scene change: more change = the direction that earns attention (PRESSURE_CHANNELS).
+    assert nodes["node:substrate.perception.scene_change"].polarity == "higher_is_worse"
 
 
 def test_glossary_entry_declaring_polarity_is_rejected(tmp_path):

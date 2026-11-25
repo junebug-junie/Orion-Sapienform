@@ -187,7 +187,13 @@ EXTERNAL_ELIGIBLE_BANDS = frozenset({"high", "unusual"})
 # its theoretical rest point 0, every horizon, 2026-11-11). Ranked like a level against its own
 # week. Not in _CONTINUOUS_VALUE_KINDS: the value is already a 30-min mean of outcomes, written
 # once per outcome (~5 min), so a dwell rule over ~2 readings would only delay it.
-MEASUREMENT_VALUE_KINDS = frozenset({"level", "count", "trigger", "binary", "surprise_excess"})
+# scene_change_excess (2026-11-24, PE retire Patch 3): the two cameras' scene change,
+# max(0, -ln p2 - 1) nats of a calibrated two-stage rank (orion/substrate/scene_change.py). Rests at
+# 0 by theory (63% of calm intervals), ranked like a level against its own week (current-scale
+# rows only). Not a forecast miss, so not surprise_excess.
+MEASUREMENT_VALUE_KINDS = frozenset(
+    {"level", "count", "trigger", "binary", "surprise_excess", "scene_change_excess"}
+)
 
 
 class AttentionCandidateSource(Protocol):

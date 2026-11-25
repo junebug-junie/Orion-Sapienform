@@ -138,8 +138,9 @@ def test_bar_table() -> None:
     for nid in (csb.ROOM_NODE_ID, csb.BODY_NODE_ID, csb.ROOM_JOINT_NODE_ID, csb.BODY_JOINT_NODE_ID):
         assert bars[nid] == pytest.approx(FORECAST_BAR)
     assert bars[csb.CHAT_TURN_NODE_ID] == pytest.approx(CHAT_BAR)
-    # camera nodes keep the pre-#3821 bar until Patch 3's scene-change seed
-    assert bars[csb.PERCEPTION_NODE_ID] == bars[csb.PERCEPTION_WALKWAY_NODE_ID] == 0.55
+    # camera scene change (PE retire Patch 3): 2.0 nats, calm crossing e^-3 = 5.0 %
+    assert bars[csb.PERCEPTION_NODE_ID] == bars[csb.PERCEPTION_WALKWAY_NODE_ID] == 2.0
+    assert math.exp(-(2.0 + 1.0)) == pytest.approx(0.0498, abs=1e-4)
     assert csb.seed_bar("node:other", 0.55) == 0.55
 
 
@@ -172,10 +173,94 @@ def test_calm_values_do_not_seed(node_id: str, calm: float) -> None:
     assert _seeded(_node(node_id, calm)) == {}
 
 
-def test_camera_nodes_keep_old_bar_and_strength() -> None:
-    got = _seeded(_node(csb.PERCEPTION_NODE_ID, 0.56), _node(csb.PERCEPTION_WALKWAY_NODE_ID, 0.54))
-    assert set(got) == {csb.PERCEPTION_NODE_ID}
-    assert got[csb.PERCEPTION_NODE_ID] == pytest.approx(0.56)  # identity at a 0.55 bar
+def _camera(node_id: str, nats: float, *, age_s: float = 0.0, stale_pe: float | None = None) -> SimpleNamespace:
+    """A camera node as the Patch 3 writer leaves it: scene change in signal_value (nats)."""
+    md = {"signal_value": nats, "signal_kind": "scene_change", "signal_scale": "v2"}
+    if stale_pe is not None:
+        md["prediction_error"] = stale_pe
+    return SimpleNamespace(
+        node_id=node_id, metadata=md, temporal=SimpleNamespace(observed_at=NOW - timedelta(seconds=age_s))
+    )
+
+
+CAMERAS = (csb.PERCEPTION_NODE_ID, csb.PERCEPTION_WALKWAY_NODE_ID)
+
+
+def test_camera_ceiling_is_the_stage2_cap() -> None:
+    from orion.substrate.scene_change import SCENE_CHANGE_CAP_NATS, STAGE2_MAX_VALUES
+    from orion.substrate.signal_history import SCENE_CHANGE_CAP_NATS as light_cap
+
+    assert SCENE_CHANGE_CAP_NATS == pytest.approx(math.log(STAGE2_MAX_VALUES + 1) - 1.0)
+    assert csb.SCENE_CHANGE_CEILING_NATS == pytest.approx(SCENE_CHANGE_CAP_NATS) == pytest.approx(light_cap)
+    assert csb.SCENE_CHANGE_CEILING_NATS == pytest.approx(4.67, abs=0.005)
+    for nid in CAMERAS:
+        assert csb.seed_ceiling(nid) == pytest.approx(csb.SCENE_CHANGE_CEILING_NATS)
+    for nid in (csb.ROOM_NODE_ID, csb.CHAT_TURN_NODE_ID, "node:other"):
+        assert csb.seed_ceiling(nid) == 1.0
+
+
+def test_seed_strength_with_a_ceiling() -> None:
+    cap = csb.SCENE_CHANGE_CEILING_NATS
+    assert csb.seed_strength(2.0, 2.0, cap) == pytest.approx(0.55)
+    for nats in (2.0, 2.5, 3.0, 4.0, 4.66):
+        assert csb.seed_strength(nats, 2.0, cap) < 1.0
+    assert csb.seed_strength(cap, 2.0, cap) == pytest.approx(1.0)
+    # Without the ceiling the old rule (bar >= 1.0 -> 1.0) would flatten every crossing.
+    assert csb.seed_strength(2.0, 2.0) == 1.0
+    # The default ceiling keeps every forecast node's mapping unchanged.
+    assert csb.seed_strength(0.8, FORECAST_BAR) == csb.seed_strength(0.8, FORECAST_BAR, 1.0)
+
+
+@pytest.mark.parametrize("node_id", CAMERAS)
+def test_both_cameras_seed_from_signal_value_at_their_bar(node_id: str) -> None:
+    got = _seeded(_camera(node_id, 2.0))
+    assert got == {node_id: pytest.approx(0.55)}
+    assert _seeded(_camera(node_id, 3.5))[node_id] < 1.0
+    assert _seeded(_camera(node_id, 1.99)) == {}
+    # nats are never clamped to 0..1 on the way in
+    assert _seeded(_camera(node_id, 4.67))[node_id] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_camera_seed_text_says_scene_change_not_prediction_error() -> None:
+    out = endogenous_curiosity_candidates(
+        nodes=[_camera(csb.PERCEPTION_WALKWAY_NODE_ID, 2.6)],
+        config=EndogenousCuriosityConfig(enabled=True, budget=8), now=NOW,
+    )
+    (c,) = out
+    assert c.evidence_summary == f"unusual scene change on {csb.PERCEPTION_WALKWAY_NODE_ID}"
+    assert "prediction error" not in c.evidence_summary
+    assert "source:scene_change" in c.notes
+
+
+def test_a_camera_stale_prediction_error_key_never_seeds() -> None:
+    """Kill means kill: the old clipped-z key left on a camera node is never read."""
+    assert _seeded(_camera(csb.PERCEPTION_NODE_ID, 0.0, stale_pe=1.0)) == {}
+
+
+def test_camera_seed_decays_with_the_same_1800s_horizon() -> None:
+    # 3.0 nats at 900 s old decays to 1.5 (< 2.0): no seed. At 60 s: 2.9, seeds.
+    assert _seeded(_camera(csb.PERCEPTION_NODE_ID, 3.0, age_s=900)) == {}
+    assert csb.PERCEPTION_NODE_ID in _seeded(_camera(csb.PERCEPTION_NODE_ID, 3.0, age_s=60))
+
+
+def test_a_camera_with_no_frames_for_ten_minutes_cannot_seed() -> None:
+    """A camera with no frames writes the stale placeholder (0.0 + missing reason) every tick;
+    if the tick itself stopped, the last value is 600 s old and decays below the bar."""
+    stale = _camera(csb.PERCEPTION_NODE_ID, 0.0)
+    stale.metadata["prediction_error_missing_reason"] = "stale"
+    assert _seeded(stale) == {}
+    # tick stopped 10 min ago on a 2.9-nat reading: 2.9 * (1 - 600/1800) = 1.93 < 2.0
+    assert _seeded(_camera(csb.PERCEPTION_NODE_ID, 2.9, age_s=600)) == {}
+
+
+def test_forecast_bars_unchanged_by_the_camera_patch() -> None:
+    bars = csb.CURIOSITY_SEED_BAR_BY_NODE_ID
+    assert {n: round(b, 6) for n, b in bars.items() if n not in CAMERAS} == {
+        csb.ROOM_NODE_ID: round(FORECAST_BAR, 6), csb.BODY_NODE_ID: round(FORECAST_BAR, 6),
+        csb.ROOM_JOINT_NODE_ID: round(FORECAST_BAR, 6), csb.BODY_JOINT_NODE_ID: round(FORECAST_BAR, 6),
+        csb.CHAT_TURN_NODE_ID: round(CHAT_BAR, 6),
+    }
+    assert set(csb.CURIOSITY_SEED_CEILING_BY_NODE_ID) == set(CAMERAS)
 
 
 def test_strength_reads_055_at_own_bar_and_invokes() -> None:

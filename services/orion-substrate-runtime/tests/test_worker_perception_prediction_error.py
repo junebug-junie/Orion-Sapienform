@@ -10,7 +10,7 @@ Uses the real OrionCodec to encode/decode a real raw-dict vision-artifact
 payload (matching `_handle_vision_artifact_message`'s own test-free but
 directly-inspected shape), mirroring
 test_worker_codebase_delta_consumer.py's pattern -- store and
-`_write_prediction_error_node` mocked.
+`_write_signal_node` mocked.
 """
 
 from __future__ import annotations
@@ -69,7 +69,10 @@ def _make_worker(*, baseline: PerceptionEmbeddingBaseline | None = None) -> tupl
     worker._settings = MagicMock()
     worker._settings.perception_baseline_retention_days = 30.0
     worker._settings.enable_perception_prediction_error_tick = True
-    worker._write_prediction_error_node = MagicMock()
+    # The legacy clipped-z path (PE retire Patch 3 rollback scorer); rank_v2 is pinned in
+    # test_worker_scene_change.py.
+    worker._settings.perception_scene_change_scorer = "legacy_z"
+    worker._write_signal_node = MagicMock()
     worker._last_perception_prediction_error = None
     worker._last_perception_embedding_at = None
     worker._last_perception_stream_id = None
@@ -175,7 +178,7 @@ def test_tick_disabled_is_noop() -> None:
     worker, fake_store = _make_worker()
     worker._settings.enable_perception_prediction_error_tick = False
     worker._perception_prediction_error_tick()
-    worker._write_prediction_error_node.assert_not_called()
+    worker._write_signal_node.assert_not_called()
     fake_store.save_receipt.assert_not_called()
 
 
@@ -183,7 +186,7 @@ def test_tick_before_any_embedding_and_within_startup_grace_skips_write() -> Non
     worker, _ = _make_worker()
     worker._process_started_at = datetime.now(timezone.utc)  # fresh start, inside grace
     worker._perception_prediction_error_tick()
-    worker._write_prediction_error_node.assert_not_called()
+    worker._write_signal_node.assert_not_called()
 
 
 def test_tick_writes_cached_score_and_zero_staleness_when_fresh() -> None:
@@ -194,13 +197,15 @@ def test_tick_writes_cached_score_and_zero_staleness_when_fresh() -> None:
     worker._last_perception_surprise_n = 3  # confirmed score, not still warming
     worker._perception_prediction_error_tick()
 
-    worker._write_prediction_error_node.assert_called_once()
-    _, kwargs = worker._write_prediction_error_node.call_args
+    worker._write_signal_node.assert_called_once()
+    _, kwargs = worker._write_signal_node.call_args
     assert kwargs["node_id"] == "node:substrate.perception"
     assert kwargs["reducer_key"] == "perception"
-    assert kwargs["error"] == 0.42
+    assert kwargs["value"] == 0.42
+    assert kwargs["signal_scale"] == "v1"  # the legacy scorer's rows are old scale
     assert kwargs["extra_channels"]["embedding_staleness"] == 0.0
-    fake_store.save_receipt.assert_called_once()
+    # No field receipt since PE retire Patch 3: the cameras left the field.
+    fake_store.save_receipt.assert_not_called()
 
 
 def test_tick_still_warming_writes_zero_not_a_stale_cached_score() -> None:
@@ -218,11 +223,11 @@ def test_tick_still_warming_writes_zero_not_a_stale_cached_score() -> None:
     worker._last_perception_surprise_n = 0  # still warming
     worker._perception_prediction_error_tick()
 
-    worker._write_prediction_error_node.assert_called_once()
-    _, kwargs = worker._write_prediction_error_node.call_args
-    assert kwargs["error"] == 0.0
+    worker._write_signal_node.assert_called_once()
+    _, kwargs = worker._write_signal_node.call_args
+    assert kwargs["value"] == 0.0
     assert kwargs["extra_channels"]["embedding_staleness"] == 0.0
-    fake_store.save_receipt.assert_called_once()
+    fake_store.save_receipt.assert_not_called()
 
 
 def test_tick_still_warming_does_not_leak_a_stale_nonzero_cached_score() -> None:
@@ -240,8 +245,8 @@ def test_tick_still_warming_does_not_leak_a_stale_nonzero_cached_score() -> None
     worker._last_perception_surprise_n = 0  # still warming
     worker._perception_prediction_error_tick()
 
-    _, kwargs = worker._write_prediction_error_node.call_args
-    assert kwargs["error"] == 0.0
+    _, kwargs = worker._write_signal_node.call_args
+    assert kwargs["value"] == 0.0
 
 
 def test_tick_still_warming_at_surprise_n_one_does_not_leak_stale_score() -> None:
@@ -265,8 +270,8 @@ def test_tick_still_warming_at_surprise_n_one_does_not_leak_stale_score() -> Non
     worker._last_perception_surprise_n = 1  # still warming -- the case the first fix missed
     worker._perception_prediction_error_tick()
 
-    _, kwargs = worker._write_prediction_error_node.call_args
-    assert kwargs["error"] == 0.0
+    _, kwargs = worker._write_signal_node.call_args
+    assert kwargs["value"] == 0.0
 
 
 def test_tick_at_surprise_n_two_uses_the_real_confirmed_score() -> None:
@@ -282,8 +287,8 @@ def test_tick_at_surprise_n_two_uses_the_real_confirmed_score() -> None:
     worker._last_perception_surprise_n = 2
     worker._perception_prediction_error_tick()
 
-    _, kwargs = worker._write_prediction_error_node.call_args
-    assert kwargs["error"] == 0.17
+    _, kwargs = worker._write_signal_node.call_args
+    assert kwargs["value"] == 0.17
 
 
 def test_tick_zeroes_score_once_staleness_faults() -> None:
@@ -296,26 +301,20 @@ def test_tick_zeroes_score_once_staleness_faults() -> None:
     worker._last_perception_embedding_at = datetime.now(timezone.utc) - timedelta(seconds=120)
     worker._perception_prediction_error_tick()
 
-    _, kwargs = worker._write_prediction_error_node.call_args
-    assert kwargs["error"] == 0.0
+    _, kwargs = worker._write_signal_node.call_args
+    assert kwargs["value"] == 0.0
     assert kwargs["extra_channels"]["embedding_staleness"] == 1.0
-    # Receipt is unconditional every tick (review finding, fixed): the
-    # field-node-vector must not stay stuck at the last nonzero score. Since
-    # 2026-11-10 (PE suite rebuild spec, retire step 8) a stale tick's receipt
-    # carries the missing reason and NO value, so the digester drops the
-    # channel (absent) instead of writing a 0.0 that reads as calm.
-    fake_store.save_receipt.assert_called_once()
-    receipt = fake_store.save_receipt.call_args.args[0]
-    after = receipt.state_deltas[0].after
-    assert "prediction_error" not in after["pressure_hints"]
-    assert after["prediction_error_missing_reason"] == "stale"
+    # The placeholder is marked missing on the graph node; no field receipt at all since PE
+    # retire Patch 3 (the cameras left the field's prediction_error channel).
+    assert kwargs["missing_reason"] == "stale"
+    fake_store.save_receipt.assert_not_called()
 
 
 def test_tick_fails_open_on_unexpected_error() -> None:
     worker, _ = _make_worker()
     worker._last_perception_prediction_error = 0.5
     worker._last_perception_embedding_at = datetime.now(timezone.utc)
-    worker._write_prediction_error_node.side_effect = RuntimeError("boom")
+    worker._write_signal_node.side_effect = RuntimeError("boom")
     worker._perception_prediction_error_tick()  # must not raise
 
 

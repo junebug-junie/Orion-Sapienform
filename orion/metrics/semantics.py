@@ -54,8 +54,12 @@ from typing import Any, Iterable, Mapping
 # surprise_excess  mean excess surprise of scored forecasts (-ln p minus its calibrated
 #             calm point 0.95): rests at 0 by theory, positive = the world did what the
 #             forecast did not expect (node:prediction.*, 2026-11-11)
+# scene_change_excess  camera scene change, max(0, -ln p2 - 1) nats of a calibrated rank of the
+#             camera's own picture change: rests at 0 by theory, NOT a forecast miss
+#             (node:substrate.perception / perception_walkway, 2026-11-24, PE retire Patch 3)
 VALUE_KINDS: frozenset[str] = frozenset(
-    {"level", "trigger", "binary", "count", "bucket", "placeholder", "surprise_excess"}
+    {"level", "trigger", "binary", "count", "bucket", "placeholder", "surprise_excess",
+     "scene_change_excess"}
 )
 
 # per_tick         a reading every producer tick; long zero runs mean calm

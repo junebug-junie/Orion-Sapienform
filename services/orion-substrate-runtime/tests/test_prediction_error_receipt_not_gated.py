@@ -36,23 +36,13 @@ from orion.schemas.grammar import GrammarEventV1, GrammarProvenanceV1
 WORKER_PATH = SUBSTRATE_ROOT / "app" / "worker.py"
 _NOW = datetime(2026, 9, 25, 0, 0, 0, tzinfo=timezone.utc)
 
-# Every node that has a _prediction_error_receipt() call site today.
-_RECEIPT_NODE_IDS = {
-    # node:substrate.execution retired 2026-11-24 (step 6, #3576): no receipt call site.
-    # node:substrate.biometrics retired 2026-11-18 (step 6, #3575): no receipt call site.
-    # node:substrate.route and node:substrate.bus_synaptic retired 2026-11
-    # (PE suite rebuild step 5), node:substrate.chat 2026-11-13 (step 6): no
-    # receipt call site, asserted below. node:substrate.codebase too (retired
-    # 2026-11-13: churn z, not a forecast).
-    # node:substrate.vision's tick was retired 2026-10-02 (vision_organ lane).
-    "node:substrate.perception",
-    # Walkway camera's own surprise node (2026-10-15).
-    "node:substrate.perception_walkway",
-}
-
-# The perception tick writes both of its nodes through one helper, which
-# receives the node id as a module constant rather than a string literal.
-_PER_NODE_HELPERS = {"_publish_perception_group"}
+# Every node that has a _prediction_error_receipt() call site today: none. The two cameras
+# (node:substrate.perception / perception_walkway) were the last ones; since PE retire Patch 3
+# (2026-11-24) their value is camera scene change, which lives on the graph node and in
+# substrate_node_signal_history, and they left the field (orion-field-digester prunes both ids).
+# node:substrate.execution / biometrics / route / bus_synaptic / chat / codebase / vision were
+# retired before that.
+_RECEIPT_NODE_IDS: set[str] = set()
 
 
 def _is_gt_zero(test: ast.expr) -> bool:
@@ -86,16 +76,6 @@ def _node_id(call: ast.Call) -> str:
     return "<unknown>"
 
 
-def _helper_calls(tree: ast.AST) -> list[ast.Call]:
-    return [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _PER_NODE_HELPERS
-    ]
-
-
 def test_no_prediction_error_receipt_is_gated_on_value_greater_than_zero() -> None:
     tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
     gated: list[tuple[int, str]] = []
@@ -114,11 +94,15 @@ def test_no_prediction_error_receipt_is_gated_on_value_greater_than_zero() -> No
     )
 
 
-def test_every_domain_still_has_a_receipt_call() -> None:
+def test_no_node_has_a_receipt_call_since_the_cameras_left_the_field() -> None:
+    """The gating rule above still holds for any future call site; today there is none."""
     tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
-    found = {_node_id(call) for call in (*_receipt_calls(tree), *_helper_calls(tree))}
-    assert _RECEIPT_NODE_IDS <= found, _RECEIPT_NODE_IDS - found
-    assert not ({"node:substrate.route", "node:substrate.bus_synaptic", "node:substrate.chat", "node:substrate.codebase", "node:substrate.biometrics", "node:substrate.execution"} & found)
+    calls = _receipt_calls(tree)
+    assert {_node_id(call) for call in calls} == _RECEIPT_NODE_IDS
+    assert not calls, [c.lineno for c in calls]
+    src = WORKER_PATH.read_text(encoding="utf-8")
+    perception_tick = src[src.index("def _publish_perception_group"):src.index("async def _perception_prediction_error_tick_loop")]
+    assert "save_receipt" not in perception_tick and "_prediction_error_receipt" not in perception_tick
 
 
 def _grammar_event(event_id: str) -> GrammarEventV1:

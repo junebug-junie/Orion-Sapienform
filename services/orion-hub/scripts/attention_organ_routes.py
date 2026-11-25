@@ -53,6 +53,7 @@ from sqlalchemy import create_engine, text
 
 from orion.graph.falkor_client import RedisGraphQueryClient
 from orion.substrate.attention_self_model import ACTIVE_INFERENCE_DOMAINS
+from orion.prediction.signal_history_sql import is_moved_signal_node
 from orion.substrate.prediction_error_freshness import (
     is_alarm_node,
     is_retired_prediction_error_node,
@@ -299,7 +300,9 @@ def build_domain_rows(
             continue
         # A retired node (2026-11: bus_synaptic, route) can linger in the
         # graph; its stored value is not a reading and is not shown.
-        if is_retired_prediction_error_node(node_id) or is_alarm_node(node_id):
+        # A moved signal node (alarms, Patch 2; the two cameras, Patch 3) is not a
+        # prediction-error domain: its prediction_error key is gone.
+        if is_retired_prediction_error_node(node_id) or is_alarm_node(node_id) or is_moved_signal_node(node_id):
             continue
         domain = node_id[len(_NODE_ID_PREFIX) :]
         raw_value = row.get("prediction_error")

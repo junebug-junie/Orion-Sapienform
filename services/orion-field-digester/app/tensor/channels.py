@@ -338,6 +338,21 @@ RETIRED_PSEUDO_NODES: dict[str, str] = {
         "retired 2026-11-24 PE step 6: clipped EWMA z of pressure-hint change, not a forecast; "
         "successor = node:prediction.chat_turn (more-steps bet) / node:prediction.body_joint"
     ),
+    # 2026-11-24 (PE retire Patch 3, docs/superpowers/specs/2026-11-24-pe-retire-perception-and-
+    # alarms-design.md): the two camera nodes left the field. Their value is camera scene change,
+    # not a prediction error; it lives on the graph node (signal_value) and in
+    # substrate_node_signal_history, and substrate-runtime no longer sends a field receipt for
+    # them. Pruned here so the last prediction_error value the field held cannot linger (its
+    # 180 s expiry left decay.py in the same patch), and a late receipt cannot re-create it.
+    # The graph nodes themselves are live.
+    "node:substrate.perception": (
+        "left the field 2026-11-24 PE retire Patch 3: room camera scene change lives on the graph "
+        "node and in substrate_node_signal_history, not in a field channel"
+    ),
+    "node:substrate.perception_walkway": (
+        "left the field 2026-11-24 PE retire Patch 3: walkway camera scene change lives on the graph "
+        "node and in substrate_node_signal_history, not in a field channel"
+    ),
 }
 
 # Every node id reconcile drops wholesale (perturbation refusal covers only

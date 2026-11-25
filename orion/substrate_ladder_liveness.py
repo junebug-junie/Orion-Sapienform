@@ -95,17 +95,21 @@ RUNGS: tuple[Rung, ...] = (
     Rung("receipts:transport_bus_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "transport_bus_reducer"),
     Rung("receipts:biometrics_node_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "biometrics_node_reducer"),
     # receipts:substrate.bus_synaptic removed 2026-11: producer retired (PE step 5).
-    Rung("receipts:substrate.perception", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.perception"),
-    # Walkway camera's own surprise node: same tick, writes every tick whether or
-    # not the walkway camera delivers (0.0 when stale), so it is steady too.
-    Rung("receipts:substrate.perception_walkway", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.perception_walkway"),
+    # The two camera nodes (room, walkway) send no receipt since 2026-11-24 (PE retire
+    # Patch 3: they left the field). Their liveness is their camera scene-change rows:
+    # one per history-sampler pass (~4 min) while the camera is up and the scorer warm.
+    # 60 min = the 30 min stage-1 warm-up after a restart plus sampler slack. On the
+    # FIRST deploy of the scorer these read red for ~4 h (stage 2 needs 48 five-minute
+    # values); after that stage 2 is restored from the DB on restart.
+    Rung("signal:substrate.perception", "substrate_node_signal_history", "observed_at", timedelta(minutes=60), "node_id", "node:substrate.perception"),
+    Rung("signal:substrate.perception_walkway", "substrate_node_signal_history", "observed_at", timedelta(minutes=60), "node_id", "node:substrate.perception_walkway"),
     # The vision organ lane writes one receipt per 60 s router window, and a
     # silence receipt on a clock when the router goes quiet, so it is steady
     # either way. Replaced substrate.vision_channel (tick retired 2026-10-02).
     Rung("receipts:vision_organ_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "vision_organ_reducer"),
-    # Camera INPUT, not the tick (2026-10-21). The perception receipts above
-    # keep arriving while the cameras are dead -- the tick writes a placeholder
-    # every 30 s -- so they could not see 2026-10-18 04:06 -> 10-20 05:51, when
+    # Camera INPUT, not the tick (2026-10-21). The perception receipts (retired
+    # 2026-11-24) kept arriving while the cameras were dead -- the tick wrote a
+    # placeholder every 30 s -- so they could not see 2026-10-18 04:06 -> 10-20 05:51, when
     # no embedding arrived for 49 h and nothing alarmed. These rungs read the
     # per-frame baseline rows the scorer writes for each embedding (index
     # idx_perception_embedding_baseline_stream_generated). Only cameras

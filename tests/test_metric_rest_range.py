@@ -127,7 +127,8 @@ def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     assert ("node:substrate.execution", "prediction_error") not in ranges
     # The alarms moved to their own channel (PE retire Patch 2, 2026-11-24).
     assert ranges[("node:substrate.street", "alarm")] == ("trigger", (0.0, 0.0))
-    assert ranges[("node:substrate.perception_walkway", "prediction_error")][1] == (0.0, 0.0)
+    # The cameras moved to their own channel (PE retire Patch 3, 2026-11-24).
+    assert ranges[("node:substrate.perception_walkway", "scene_change")] == ("scene_change_excess", (0.0, 0.0))
     for key, (kind, rng) in ranges.items():
         assert isinstance(rng, tuple), key
         assert rest_range_problem(rng, kind) is None, key

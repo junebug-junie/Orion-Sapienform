@@ -37,7 +37,13 @@ from orion.schemas.attention_candidate import NO_CURIOSITY_CONSUMER_NODE_IDS
 from orion.substrate.curiosity_seed_bar import (
     CURIOSITY_SEED_BAR_BY_NODE_ID,
     seed_bar,
+    seed_ceiling,
     seed_strength,
+)
+from orion.substrate.signal_history import (
+    SIGNAL_KIND_SCENE_CHANGE,
+    SIGNAL_VALUE_KEY,
+    signal_kind_for,
 )
 from orion.substrate.prediction_error_freshness import (
     is_alarm_node,
@@ -291,6 +297,15 @@ def _clamp01(value: Any) -> float:
         return 0.0
 
 
+def _nonnegative_finite(value: Any) -> float:
+    """A value >= 0 that is a real number, else 0.0 (no upper clamp)."""
+    try:
+        v = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if v == v and v not in (float("inf"),) and v > 0.0 else 0.0
+
+
 def _prediction_error_candidates(
     nodes: Sequence[Any],
     *,
@@ -328,12 +343,19 @@ def _prediction_error_candidates(
     for node in nodes:
         try:
             metadata = dict(getattr(node, "metadata", None) or {})
-            raw_error = _clamp01(metadata.get("prediction_error"))
+            node_id = str(getattr(node, "node_id", "") or "")
+            scene_change = signal_kind_for(node_id) == SIGNAL_KIND_SCENE_CHANGE
+            if scene_change:
+                # Camera scene change (PE retire Patch 3): nats from signal_value, NOT clamped
+                # to 0..1 (its bar is 2.0 nats). Its old prediction_error key is never read.
+                raw_error = _nonnegative_finite(metadata.get(SIGNAL_VALUE_KEY))
+            else:
+                raw_error = _clamp01(metadata.get("prediction_error"))
             if raw_error <= 0.0:
                 continue
-            node_id = str(getattr(node, "node_id", "") or "")
             if not node_id or node_id in NO_CURIOSITY_CONSUMER_NODE_IDS:
                 continue
+            # Same 1800 s age decay for both: a camera whose tick stopped lets go too.
             error = raw_error * _prediction_error_staleness_decay(node, now=now)
             bar = seed_bar(node_id, min_error, bars)
             if error < bar:
@@ -357,10 +379,19 @@ def _prediction_error_candidates(
                     target_zone="concept_graph",
                     task_type_candidate="evidence_gap_scan",
                     focal_node_refs=[node_id],
-                    signal_strength=seed_strength(error, bar) if node_id in bars else error,
-                    evidence_summary=f"sustained prediction error on {node_id}",
+                    signal_strength=(
+                        seed_strength(error, bar, seed_ceiling(node_id)) if node_id in bars else error
+                    ),
+                    evidence_summary=(
+                        f"unusual scene change on {node_id}"
+                        if scene_change
+                        else f"sustained prediction error on {node_id}"
+                    ),
                     confidence=0.7,
-                    notes=["endogenous_seed", "source:prediction_error"],
+                    notes=[
+                        "endogenous_seed",
+                        "source:scene_change" if scene_change else "source:prediction_error",
+                    ],
                 )
             )
         except Exception:

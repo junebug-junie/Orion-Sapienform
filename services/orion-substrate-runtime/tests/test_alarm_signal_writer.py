@@ -53,7 +53,8 @@ def test_prediction_error_writer_refuses_an_alarm(node_id):
 def test_signal_writer_refuses_a_non_moved_node():
     store = _FakeStore()
     w = _make_worker(store)
-    assert w._write_signal_node(node_id="node:substrate.perception", value=0.2, now=NOW) is False
+    # Cameras are moved since PE retire Patch 3; a forecast node is not a signal node.
+    assert w._write_signal_node(node_id="node:prediction.room", value=0.2, now=NOW) is False
     assert w._write_prediction_error_node(node_id="node:prediction.body", error=0.2, now=NOW) is True
     assert "prediction_error" in store.calls[0]["node"].metadata
 

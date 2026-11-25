@@ -21,15 +21,40 @@ PE_HISTORY_TABLE = "substrate_node_prediction_error_history"
 # so a later patch flips one node without touching the readers (design rev 3, PR #3827).
 #   read_both    the signal table plus the node's old PE rows, deduped on (node_id, observed_at),
 #                signal table preferred. Patch 2: the three alarms, until their PE rows age out.
-#   signal_only  the signal table only, never the PE table. Patch 3 moves the two cameras here
-#                (new-scale rows only), because old- and new-scale camera rows must never share a
-#                ranking window -- so the cameras are deliberately NOT in a read-both union.
-# A node absent from the map is read from the PE table only (every real prediction-error node,
-# and the cameras until Patch 3).
+#   signal_only  the signal table only, never the PE table, and only rows of the current scale
+#                (``scale IN ('v2','v2_partial')``). Patch 3 (2026-11-24): the two cameras, because
+#                old- and new-scale camera rows must never share a ranking window -- so the cameras
+#                are deliberately NOT in a read-both union.
+# A node absent from the map is read from the PE table only (every real prediction-error node).
 READ_BOTH = "read_both"
 SIGNAL_ONLY = "signal_only"
 READ_MODES: frozenset[str] = frozenset({READ_BOTH, SIGNAL_ONLY})
-HISTORY_READ_MODE_BY_NODE_ID: dict[str, str] = {node_id: READ_BOTH for node_id in sorted(ALARM_NODE_IDS)}
+
+# The two camera scene-change nodes (PE retire Patch 3). Same ids as
+# orion.schemas.attention_candidate.PERCEPTION_NODE_ID / PERCEPTION_WALKWAY_NODE_ID (pinned by a test).
+PERCEPTION_NODE_ID = "node:substrate.perception"
+PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
+CAMERA_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID})
+
+# substrate_node_signal_history.scale (manual_migration_node_signal_history_scale_v1.sql).
+#   v1          every row from before Patch 3 and every alarm row; for a camera, the old clipped z.
+#   v2_partial  camera scene change while its 24 h stage-2 window is still filling: ranked by the
+#               contests, EXCLUDED from calm checks and win share (eval: scale = 'v2' only).
+#   v2          camera scene change with a full stage-2 window.
+SCALE_V1 = "v1"
+SCALE_V2 = "v2"
+SCALE_V2_PARTIAL = "v2_partial"
+SCALES: frozenset[str] = frozenset({SCALE_V1, SCALE_V2, SCALE_V2_PARTIAL})
+# What a history reader of a signal_only node reads (the contests rank against both).
+CURRENT_SCALES: tuple[str, ...] = (SCALE_V2, SCALE_V2_PARTIAL)
+# What a calm check or a win-share count reads: full-window rows only.
+CALM_CHECK_SCALES: tuple[str, ...] = (SCALE_V2,)
+SCALE_PREDICATE_SQL = "scale IN (" + ", ".join(f"'{s}'" for s in CURRENT_SCALES) + ")"
+
+HISTORY_READ_MODE_BY_NODE_ID: dict[str, str] = {
+    **{node_id: READ_BOTH for node_id in sorted(ALARM_NODE_IDS)},
+    **{node_id: SIGNAL_ONLY for node_id in sorted(CAMERA_NODE_IDS)},
+}
 
 # The signal nodes whose writer has left the prediction-error slot. Every generic prediction-error
 # reader skips these ids' PE side (their stale ``prediction_error`` key, their week of old PE rows)
@@ -44,19 +69,31 @@ def history_read_mode(node_id: object) -> str | None:
 
 
 def is_moved_signal_node(node_id: object) -> bool:
-    """True for a signal node that no longer writes the prediction-error slot (Patch 2: alarms)."""
+    """True for a signal node that no longer writes the prediction-error slot (Patch 2: the three
+    alarms; Patch 3: the two cameras)."""
     return str(node_id or "") in MOVED_SIGNAL_NODE_IDS
 
 
-# The glossary channel of a moved node's entry (config/field/field_channel_glossary.v1.yaml,
-# ``channel: alarm``). Every other node's value is still described under ``prediction_error``.
+def is_camera_scene_change_node(node_id: object) -> bool:
+    """True for the two camera scene-change nodes (room, walkway)."""
+    return str(node_id or "") in CAMERA_NODE_IDS
+
+
+# The glossary channel of a moved node's entry (config/field/field_channel_glossary.v1.yaml):
+# ``channel: alarm`` for the three alarms, ``channel: scene_change`` for the two cameras. Every
+# other node's value is described under ``prediction_error``.
 ALARM_GLOSSARY_CHANNEL = "alarm"
-HISTORY_GLOSSARY_CHANNELS: frozenset[str] = frozenset({"prediction_error", ALARM_GLOSSARY_CHANNEL})
+SCENE_CHANGE_GLOSSARY_CHANNEL = "scene_change"
+HISTORY_GLOSSARY_CHANNELS: frozenset[str] = frozenset(
+    {"prediction_error", ALARM_GLOSSARY_CHANNEL, SCENE_CHANGE_GLOSSARY_CHANNEL}
+)
 
 
 def glossary_channel_for(node_id: object) -> str:
-    """The glossary channel that describes this node's value: ``alarm`` for a moved alarm, else
-    ``prediction_error`` (the cameras until Patch 3, and every real prediction-error node)."""
+    """The glossary channel that describes this node's value: ``scene_change`` for a camera,
+    ``alarm`` for a moved alarm, else ``prediction_error`` (every real prediction-error node)."""
+    if is_camera_scene_change_node(node_id):
+        return SCENE_CHANGE_GLOSSARY_CHANNEL
     return ALARM_GLOSSARY_CHANNEL if is_moved_signal_node(node_id) else "prediction_error"
 
 
@@ -118,9 +155,13 @@ def history_with_moved_source_sql(read_modes: dict[str, str] | None = None) -> s
         ORDER BY node_id, observed_at, pref
     ) read_both_rows""")
     if signal_only:
+        # Current-scale rows only (Patch 3): the cameras' old clipped-z rows (scale 'v1') never
+        # share a ranking window with their scene-change rows. Pinned by a unit test and by
+        # scripts/check_pe_alarm_readers.py (any other SQL naming the signal table with a camera
+        # id must carry a scale predicate too).
         branches.append(f"""    SELECT node_id, observed_at, value
     FROM {SIGNAL_HISTORY_TABLE}
-    WHERE node_id = ANY({_id_array(signal_only)})""")
+    WHERE node_id = ANY({_id_array(signal_only)}) AND {SCALE_PREDICATE_SQL}""")
     return "(\n" + "\n    UNION ALL\n".join(branches) + "\n) node_history"
 
 

@@ -39,18 +39,23 @@ def _alarm_magnitude(value: float = 1.0):
 # --- the moved set --------------------------------------------------------------------------
 
 
-def test_moved_set_is_exactly_the_alarms_and_cameras_stay_on_pe_until_patch_3() -> None:
-    assert sh.MOVED_SIGNAL_NODE_IDS == ALARM_NODE_IDS
+def test_moved_set_is_the_alarms_and_since_patch_3_the_cameras() -> None:
+    assert sh.MOVED_SIGNAL_NODE_IDS == ALARM_NODE_IDS | sh.SCENE_CHANGE_NODE_IDS
     for nid in ALARMS:
         assert sh.is_moved_signal_node(nid)
         assert sh.glossary_channel_for(nid) == "alarm"
         assert sh.node_value_key(nid) == "signal_value"
         assert sh.history_table_for(nid) == "substrate_node_signal_history"
-    for nid in CAMERAS + ["node:prediction.body"]:
-        assert not sh.is_moved_signal_node(nid)
-        assert sh.glossary_channel_for(nid) == "prediction_error"
-        assert sh.node_value_key(nid) == "prediction_error"
-        assert sh.history_table_for(nid) == "substrate_node_prediction_error_history"
+    for nid in CAMERAS:
+        assert sh.is_moved_signal_node(nid)
+        assert sh.glossary_channel_for(nid) == "scene_change"
+        assert sh.node_value_key(nid) == "signal_value"
+        assert sh.history_table_for(nid) == "substrate_node_signal_history"
+    nid = "node:prediction.body"
+    assert not sh.is_moved_signal_node(nid)
+    assert sh.glossary_channel_for(nid) == "prediction_error"
+    assert sh.node_value_key(nid) == "prediction_error"
+    assert sh.history_table_for(nid) == "substrate_node_prediction_error_history"
 
 
 def test_alarm_markers_still_importable_for_every_importer() -> None:
@@ -70,7 +75,7 @@ def test_light_sql_module_does_not_import_orion_substrate() -> None:
     )
     out = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == "3"
+    assert out.stdout.strip() == "5"
 
 
 # --- node values ----------------------------------------------------------------------------
@@ -91,7 +96,8 @@ def test_history_samples_route_alarms_to_signal_table_only() -> None:
         ("node:prediction.body", t, 0.1),
     ]
     pe_rows, sig_rows = sh.split_history_samples(iter(samples))
-    assert [r[0] for r in pe_rows] == ["node:substrate.perception", "node:prediction.body"]
+    # Patch 3: a camera is moved too, so only the forecast node keeps a PE row.
+    assert [r[0] for r in pe_rows] == ["node:prediction.body"]
     assert sorted((r[0], r[3]) for r in sig_rows) == [
         ("node:substrate.perception", "scene_change"), ("node:substrate.strain", "alarm"),
     ]
@@ -230,8 +236,13 @@ def test_history_source_sql_keeps_other_nodes_and_unions_moved_ids() -> None:
     assert ":" not in sql.replace("::text[]", "").replace("node:substrate", "")  # no bind params
     for nid in ALARMS:
         assert f"'{nid}'" in sql
+    # Patch 3: the cameras are read signal_only, current scale only (never in the read-both union).
+    both_part = sql.split("read_both_rows")[0].split("FROM (")[1]
     for nid in CAMERAS:
-        assert nid not in sql
+        assert nid not in both_part
+    signal_only_part = sql.split("read_both_rows")[1]
+    assert all(nid in signal_only_part for nid in CAMERAS)
+    assert "scale IN ('v2', 'v2_partial')" in signal_only_part
 
 
 def test_history_source_sql_compiles_with_only_the_callers_bind_parameter() -> None:
@@ -253,9 +264,11 @@ def test_history_source_sql_refuses_unsafe_literals_and_unknown_modes() -> None:
 def test_read_rule_is_per_node_and_cameras_are_never_read_both() -> None:
     """Design rev 3 (PR #3827): Patch 3 flips the cameras to signal_only (new-scale rows only);
     their old- and new-scale rows must never share a window, so no camera is in a read-both union."""
-    assert sh.HISTORY_READ_MODE_BY_NODE_ID == {nid: sh.READ_BOTH for nid in ALARMS}
+    assert sh.HISTORY_READ_MODE_BY_NODE_ID == {
+        **{nid: sh.READ_BOTH for nid in ALARMS}, **{nid: sh.SIGNAL_ONLY for nid in CAMERAS}
+    }
     for nid in CAMERAS:
-        assert sh.history_read_mode(nid) is None
+        assert sh.history_read_mode(nid) == sh.SIGNAL_ONLY
     sql = sh.history_with_moved_source_sql(
         {"node:substrate.cabinet": sh.READ_BOTH, "node:substrate.perception": sh.SIGNAL_ONLY}
     )

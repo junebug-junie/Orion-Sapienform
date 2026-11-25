@@ -97,10 +97,11 @@ def test_channels_endpoint_returns_38_raw_channels_plus_1_derived(client):
     assert "node:substrate.bus_synaptic" not in by_node and "node:substrate.route" not in by_node
     # harness_closure was retired 2026-11-11: no glossary entry, no variant.
     assert "node:substrate.harness_closure" not in by_node
-    # The perception rest text keeps its caveat: a missing-input 0.0 is not calm.
-    # (Reworded 2026-10 when camera surprise moved to per-frame baselines; it
-    # used to say "does NOT prove".)
-    assert "is NOT a reading" in by_node["node:substrate.perception"]["semantics"]["rest"]
+    # The cameras left the prediction_error channel 2026-11-24 (PE retire Patch 3: camera scene
+    # change, node-qualified `channel: scene_change`), as the alarms did (Patch 2, `alarm`).
+    # Neither channel has a bare field row, so this panel does not list them (#3852).
+    assert "node:substrate.perception" not in by_node
+    assert "node:substrate.cabinet" not in by_node
     assert "contract_pressure" not in {c["channel"] for c in body["channels"]}
     assert "observer_failure_pressure" not in {c["channel"] for c in body["channels"]}
     assert len(body["categories"]) == 7

@@ -123,6 +123,15 @@ def _sanitize_url_stream_id(stream_id: str) -> str:
     return stream_id
 
 
+def _require_read_both(node_id: str) -> None:
+    """The read-both SQL carries no scale predicate, so it is for read_both nodes (the alarms)
+    only. A camera's history is read signal_only, current scale (PE retire Patch 3)."""
+    from orion.prediction.signal_history_sql import READ_BOTH, history_read_mode
+
+    if history_read_mode(node_id) != READ_BOTH:
+        raise ValueError(f"read-both SQL is for read_both nodes only, not {node_id!r}")
+
+
 def _retention_settings_from_app(settings: Settings) -> ReceiptRetentionSettings:
     return ReceiptRetentionSettings(
         success_minutes=settings.receipt_retention_success_minutes,
@@ -947,16 +956,25 @@ class BiometricsSubstrateStore:
     # the read_both helpers union both tables until their old PE rows age out.
 
     def save_signal_history_samples(
-        self, samples: list[tuple[str, datetime, float, str]]
+        self, samples: list[tuple]
     ) -> int:
-        """Append (node_id, observed_at, value, kind) readings; idempotent on the PK."""
+        """Append (node_id, observed_at, value, kind, scale) readings; idempotent on the PK.
+
+        A 4-tuple (no scale) is written as scale 'v1' (an alarm). Patch 3 needs the ``scale``
+        column (manual_migration_node_signal_history_scale_v1.sql)."""
         if not samples:
             return 0
-        from orion.substrate.signal_history import INSERT_SIGNAL_HISTORY_SQL
+        from orion.substrate.signal_history import INSERT_SIGNAL_HISTORY_SQL, SCALE_V1
 
         params = [
-            {"node_id": node_id, "observed_at": observed_at, "value": float(value), "kind": kind}
-            for node_id, observed_at, value, kind in samples
+            {
+                "node_id": row[0],
+                "observed_at": row[1],
+                "value": float(row[2]),
+                "kind": row[3],
+                "scale": row[4] if len(row) > 4 else SCALE_V1,
+            }
+            for row in samples
         ]
         with self._engine.begin() as conn:
             conn.execute(text(INSERT_SIGNAL_HISTORY_SQL), params)
@@ -994,6 +1012,7 @@ class BiometricsSubstrateStore:
         """How many readings one node has since `since`, both tables (strain warm-up count)."""
         from orion.substrate.signal_history import READ_BOTH_COUNT_SQL
 
+        _require_read_both(node_id)
         with self._engine.connect() as conn:
             row = conn.execute(
                 text(READ_BOTH_COUNT_SQL), {"since": since, "node_ids": [node_id]}
@@ -1007,6 +1026,7 @@ class BiometricsSubstrateStore:
         (strain news rebuilds its budget from these after a restart)."""
         from orion.substrate.signal_history import READ_BOTH_EVENT_TIMES_SQL
 
+        _require_read_both(node_id)
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text(READ_BOTH_EVENT_TIMES_SQL), {"since": since, "node_ids": [node_id]}
@@ -1351,6 +1371,73 @@ class BiometricsSubstrateStore:
                     """
                 ),
                 {"stream_id": stream_id},
+            )
+
+    def load_scene_change_stage2(self, node_id: str) -> dict | None:
+        """The saved stage-2 history of a camera scene-change node (PE retire Patch 3), or None.
+
+        Kept in substrate_perception_embedding_baseline under stream_id
+        ``scene_change_stage2|<node_id>`` (orion/substrate/scene_change.py stage2_store_key): one
+        row per node, no schema change. Raises on a DB error, so the caller can tell "nothing
+        saved" (None) from "could not read" and never overwrite a saved history it failed to load."""
+        from orion.substrate.scene_change import stage2_store_key
+
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT baseline_json FROM substrate_perception_embedding_baseline
+                    WHERE stream_id = :stream_id
+                    ORDER BY generated_at DESC LIMIT 1
+                    """
+                ),
+                {"stream_id": stage2_store_key(node_id)},
+            ).mappings().first()
+        if not row:
+            return None
+        payload = row["baseline_json"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return payload if isinstance(payload, dict) else None
+
+    def save_scene_change_stage2(self, node_id: str, payload: dict) -> None:
+        """Replace the saved stage-2 history of a camera node (one row per node: the new row is
+        inserted, then every older row of the same key is deleted, in one transaction)."""
+        from orion.substrate.scene_change import stage2_store_key
+
+        key = stage2_store_key(node_id)
+        generated_at = datetime.now(timezone.utc)
+        digest = hashlib.sha256(
+            f"{key}|{generated_at.isoformat()}".encode("utf-8")
+        ).hexdigest()[:24]
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_perception_embedding_baseline (
+                        baseline_id, stream_id, generated_at, baseline_json, created_at
+                    ) VALUES (
+                        :baseline_id, :stream_id, :generated_at, :baseline_json, :created_at
+                    )
+                    ON CONFLICT (baseline_id) DO NOTHING
+                    """
+                ),
+                {
+                    "baseline_id": f"scene-change-stage2-{digest}",
+                    "stream_id": key,
+                    "generated_at": generated_at,
+                    "baseline_json": Json(payload),
+                    "created_at": generated_at,
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM substrate_perception_embedding_baseline
+                    WHERE stream_id = :stream_id AND generated_at < :generated_at
+                    """
+                ),
+                {"stream_id": key, "generated_at": generated_at},
             )
 
     def save_attention_self_model(

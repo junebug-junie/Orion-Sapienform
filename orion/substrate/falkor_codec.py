@@ -274,6 +274,9 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # world-first broadcast (worker.py, attention_broadcast.world_first_signals), the dynamics
 # pressure seed (orion/substrate/pressure.py). Both encode as None when absent, and the alarm
 # writer no longer sets `prediction_error`, so its first write ON MATCH clears the old key.
+# `signal_scale` added 2026-11-24 (PE retire Patch 3): the two cameras write their scene change
+# (nats) to `signal_value` with `signal_scale` (v2 / v2_partial; v1 under the legacy scorer); the
+# history sampler copies it into substrate_node_signal_history.scale. None when absent.
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
@@ -288,6 +291,7 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "prediction_error_missing_reason",
     "signal_value",
     "signal_kind",
+    "signal_scale",
 )
 
 # Native properties ONLY SubstrateDynamicsEngine.tick() writes on an existing
@@ -367,6 +371,7 @@ EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
         "prediction_error_missing_reason",
         "signal_value",
         "signal_kind",
+        "signal_scale",
     }
 )
 
@@ -467,6 +472,9 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
         "signal_value": _safe_float(meta.get("signal_value"), default=None),
         "signal_kind": (
             str(meta["signal_kind"]).strip() or None if meta.get("signal_kind") is not None else None
+        ),
+        "signal_scale": (
+            str(meta["signal_scale"]).strip() or None if meta.get("signal_scale") is not None else None
         ),
     }
 
@@ -583,6 +591,9 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     signal_kind = row.get("signal_kind")
     if signal_kind:
         metadata["signal_kind"] = str(signal_kind)
+    signal_scale = row.get("signal_scale")
+    if signal_scale:
+        metadata["signal_scale"] = str(signal_scale)
     # Fail-open, matching every other decode field in this function: a
     # malformed contributing_turn_ids_json value (corrupt JSON, wrong shape)
     # must not abort decoding the whole node -- treat it as absent rather

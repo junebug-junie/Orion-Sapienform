@@ -6,7 +6,7 @@ promotes only an allowlist of metadata keys. A marker missing from that list
 vanished even inside substrate-runtime's own process, so the history sampler
 never saw it and placeholder 0.0 rows kept landing in
 substrate_node_prediction_error_history. These tests go through the real
-writer (``_write_prediction_error_node``), the real store and codec (against a
+writer (``_write_signal_node`` since PE retire Patch 3), the real store and codec (against a
 fake graph that applies the generated Cypher SET clauses), and the real
 sampler -- no mocked writer, no hand-built metadata.
 """
@@ -83,25 +83,38 @@ def test_marker_and_staleness_survive_the_store_and_reach_the_sampler(monkeypatc
     )
     worker = _worker(monkeypatch, store)
     now = datetime.now(timezone.utc)
+    # The node as the old writer left it: a prediction_error key (pre PE retire Patch 3).
+    graph.nodes[ROOM] = {"node_id": ROOM, "prediction_error": 0.9}
 
-    worker._write_prediction_error_node(
-        node_id=ROOM, error=0.0, now=now - timedelta(seconds=30), reducer_key="perception",
+    worker._write_signal_node(
+        node_id=ROOM, value=0.0, now=now - timedelta(seconds=30), reducer_key="perception",
         extra_channels={"embedding_staleness": 1.0}, missing_reason="stale",
     )
     node = store.get_node_by_id(ROOM)
     assert missing_input_reason(node) == "stale"
     assert node.metadata["embedding_staleness"] == 1.0
+    # The first camera write clears the old prediction_error key (kill means kill).
+    assert "prediction_error" not in graph.nodes[ROOM]
     worker._prediction_error_magnitudes(nodes=[node], now=now)
     worker._store.save_prediction_error_history_samples.assert_not_called()
+    worker._store.save_signal_history_samples.assert_not_called()
 
-    # The camera comes back: a real reading clears the marker on the same node.
-    worker._write_prediction_error_node(
-        node_id=ROOM, error=0.31, now=now, reducer_key="perception",
-        extra_channels={"embedding_staleness": 0.0}, missing_reason=None,
+    # The camera comes back: a real reading clears the marker on the same node. Scene change is
+    # nats (2.4 > 1: never clamped), and its scale survives the codec into the history row.
+    worker._write_signal_node(
+        node_id=ROOM, value=2.4, now=now, reducer_key="perception",
+        extra_channels={"embedding_staleness": 0.0}, missing_reason=None, signal_scale="v2_partial",
     )
     node = store.get_node_by_id(ROOM)
     assert missing_input_reason(node) is None
     assert "prediction_error_missing_reason" not in graph.nodes[ROOM]
+    assert node.metadata["signal_value"] == 2.4
+    assert node.metadata["signal_kind"] == "scene_change"
+    assert node.metadata["signal_scale"] == "v2_partial"
+    assert node.signals.salience < 1.0  # 0..1 salience from nats / 4.67
     worker._prediction_error_magnitudes(nodes=[node], now=now)
-    saved = worker._store.save_prediction_error_history_samples.call_args.args[0]
-    assert [(n, round(v, 6)) for n, _, v in saved] == [(ROOM, 0.31)]
+    worker._store.save_prediction_error_history_samples.assert_not_called()
+    saved = worker._store.save_signal_history_samples.call_args.args[0]
+    assert [(n, round(v, 6), kind, scale) for n, _, v, kind, scale in saved] == [
+        (ROOM, 2.4, "scene_change", "v2_partial")
+    ]

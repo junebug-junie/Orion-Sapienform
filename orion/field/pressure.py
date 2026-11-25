@@ -59,6 +59,10 @@ PRESSURE_CHANNELS = frozenset({
     "egress_confidence_deficit",
     "prediction_error",
     "field_coherence_warning",
+    # Camera scene change (2026-11-24, PE retire Patch 3): higher = more change = the direction
+    # that earns attention. No field node writes this channel (the cameras left the field); it is
+    # here for the polarity derivation (orion.metrics.semantics.derived_channel_polarity).
+    "scene_change",
 })
 
 # Channels where higher = better (capacity/quality-of-service semantics), the

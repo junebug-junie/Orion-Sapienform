@@ -116,17 +116,12 @@ EXPIRING_NODE_CHANNELS: dict[str, float] = {
 
 # Same rule as EXPIRING_NODE_CHANNELS, scoped to ONE node's channel, for a
 # channel other nodes write on a different cadence (2026-11-10, PE suite
-# rebuild spec retire step 8). The camera surprise tick in
-# orion-substrate-runtime writes these two nodes every 30 s -- a value, or a
-# missing marker that clears the key (state_deltas.py). `prediction_error` is
-# neither decayed nor expired anywhere else, so without this a stopped producer
-# (substrate-runtime down, tick flag off, or a producer newer than this
-# digester's last rebuild) would hold the last spike forever. 180 s = six
-# missed ticks.
-EXPIRING_NODE_CHANNELS_BY_NODE: dict[tuple[str, str], float] = {
-    ("node:substrate.perception", "prediction_error"): 180.0,
-    ("node:substrate.perception_walkway", "prediction_error"): 180.0,
-}
+# rebuild spec retire step 8). Empty since 2026-11-24 (PE retire Patch 3): its
+# only entries were the two camera nodes' `prediction_error` (180 s), and the
+# cameras left the field -- substrate-runtime sends no field receipt for them,
+# and app/tensor/channels.py RETIRED_PSEUDO_NODES prunes both node ids, so no
+# camera value is left to hold. Kept as the seam for the next per-node rule.
+EXPIRING_NODE_CHANNELS_BY_NODE: dict[tuple[str, str], float] = {}
 
 
 def expire_unrefreshed_channels(state: FieldStateV1, *, now: datetime) -> None:

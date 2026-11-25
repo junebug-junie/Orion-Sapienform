@@ -3,7 +3,8 @@
 Source: ``substrate_node_prediction_error_history`` (one row per real ``observed_at`` advance,
 written by orion-substrate-runtime, pruned at SUBSTRATE_PE_HISTORY_RETENTION_HOURS); the three
 alarms (cabinet, strain, street) come from ``substrate_node_signal_history`` (PE retire Patch 2),
-read together with their old PE rows until those age out. Every
+read together with their old PE rows until those age out, and the two cameras (room, walkway) from
+that table only, new scale only (Patch 3). Every
 query is parameterized, bounded to one window and one node, and aggregated in Postgres, so a
 7-day window of a busy node (~14k rows) still returns a few kilobytes.
 
@@ -82,22 +83,47 @@ def sig(value: Any) -> float | None:
     return float(f"{float(value):.4g}")
 
 
+# Frozen copy of the five signal nodes' old PE rows (2026-11-17 .. 2026-11-24), never pruned and
+# readable by orion_readonly: the old-scale side of a re-test (#3807).
+OLD_SCALE_SNAPSHOT_TABLE = "substrate_node_pe_history_snapshot_20261124"
+
+
 def _signal_noun(node_id: str) -> str:
-    """What the stored value is: an alarm (cabinet, strain, street) says which alarm and where
-    it is stored, and never calls itself a prediction error (PE retire Patch 2)."""
+    """What the stored value is: an alarm (cabinet, strain, street; PE retire Patch 2) or a camera
+    scene change (room, walkway; Patch 3) says what it is and where it is stored, and never calls
+    itself a prediction error."""
     # Lazy: orion.substrate's package init is heavy.
-    from orion.substrate.prediction_error_freshness import ALARM_LABELS
-    from orion.prediction.signal_history_sql import SIGNAL_HISTORY_TABLE
+    from orion.substrate.prediction_error_freshness import ALARM_LABELS, node_signal_label
+    from orion.prediction.signal_history_sql import SIGNAL_HISTORY_TABLE, is_camera_scene_change_node
 
     if node_id in ALARM_LABELS:
         return f"({ALARM_LABELS[node_id]}: an alarm, above 0 = it fired; stored in {SIGNAL_HISTORY_TABLE})"
+    if is_camera_scene_change_node(node_id):
+        return (
+            f"({node_signal_label(node_id)}: how unusual the change in this camera's picture over the "
+            f"last 5 minutes is, relative to the last two hours of the same camera, ranked against its "
+            f"own last 24 hours, in nats; 0 = ordinary, above 2.0 = rarer than 1 in 20; stored in "
+            f"{SIGNAL_HISTORY_TABLE}, new scale only. Until 2026-11-24 this node held a clipped z-score; "
+            f"those old rows are in {OLD_SCALE_SNAPSHOT_TABLE})"
+        )
     return "prediction error"
 
 
 def _is_alarm(node_id: str) -> bool:
-    from orion.prediction.signal_history_sql import is_moved_signal_node
+    from orion.prediction.alarm_nodes import is_alarm_node
 
-    return is_moved_signal_node(node_id)
+    return is_alarm_node(node_id)
+
+
+def _history_kind(node_id: str) -> str:
+    """The item kind: an alarm's and a camera's record are not filed as prediction errors."""
+    from orion.prediction.signal_history_sql import is_camera_scene_change_node
+
+    if _is_alarm(node_id):
+        return "node_alarm_history"
+    if is_camera_scene_change_node(node_id):
+        return "node_scene_change_history"
+    return "node_prediction_error_history"
 
 
 def _iso(value: datetime) -> str:
@@ -148,8 +174,8 @@ async def read_node_history(conn: Any, node_id: str, start: datetime, end: datet
     return IntrospectItemV1(
         id=node_id,
         occurred_at=summary["last_at"],
-        # An alarm's record is not filed as a prediction error (PE retire Patch 2).
-        kind="node_alarm_history" if _is_alarm(node_id) else "node_prediction_error_history",
+        # An alarm's or a camera's record is not filed as a prediction error (PE retire Patch 2/3).
+        kind=_history_kind(node_id),
         epistemic_status="record",
         text=text,
         extra={
@@ -184,7 +210,8 @@ async def list_history_nodes(conn: Any, start: datetime, end: datetime) -> Intro
     nodes = [{"node_id": r["node_id"], "count": int(r["n"]), "last_at": _iso(r["last_at"])} for r in rows]
     label = _hours_label(start, end)
     text = (
-        f"{len(nodes)} nodes have readings (alarms for cabinet/strain/street, prediction errors for the rest) "
+        f"{len(nodes)} nodes have readings (alarms for cabinet/strain/street, camera scene change for "
+        f"perception/perception_walkway, prediction errors for the rest) "
         f"in the {label} ending {_iso(end)}: "
         + ", ".join(f"{n['node_id']} ({n['count']})" for n in nodes)
         + ". Pass node_id=<one of these> for its history."

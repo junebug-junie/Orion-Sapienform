@@ -72,6 +72,7 @@ def test_live_field_shape_prunes_both_phantoms_and_keeps_real_nodes() -> None:
             "node:substrate.transport": {"prediction_error": 0.0},
             "node:substrate.bus_synaptic": {"prediction_error": 0.2},
             "node:substrate.perception": {"prediction_error": 0.1},
+            "node:substrate.probe": {"prediction_error": 0.1},
         },
         node_vector_updated_at={
             "node:rpc_timeout": {"reliability_pressure": NOW - timedelta(hours=4)},
@@ -79,11 +80,12 @@ def test_live_field_shape_prunes_both_phantoms_and_keeps_real_nodes() -> None:
         },
     )
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    for gone in ("node:rpc_timeout", "node:substrate.transport", "node:substrate.bus_synaptic"):
+    for gone in ("node:rpc_timeout", "node:substrate.transport", "node:substrate.bus_synaptic",
+                 "node:substrate.perception"):  # the cameras left the field 2026-11-24
         assert gone not in out.node_vectors
         assert gone not in out.node_vector_updated_at
     # Live pseudo-nodes are untouched.
-    assert out.node_vectors["node:substrate.perception"]["prediction_error"] == 0.1
+    assert out.node_vectors["node:substrate.probe"]["prediction_error"] == 0.1
     assert out.node_vectors["node:athena"]["cpu_pressure"] == 0.3
 
 
@@ -101,10 +103,15 @@ def test_real_bus_delta_still_perturbs_athena() -> None:
 def test_pruned_set_is_the_union_and_never_a_live_lattice_node() -> None:
     assert PRUNED_NODE_IDS == frozenset(RETIRED_LATTICE_NODES) | frozenset(RETIRED_PSEUDO_NODES)
     assert not (PRUNED_NODE_IDS & set(_lattice().nodes))
-    # Live prediction-error nodes must never be caught by this.
+    # Live forecast nodes must never be caught by this.
     # (biometrics retired 2026-11-18, #3575, and execution 2026-11-24, #3576: both pruned now.)
-    for live in ("node:substrate.perception", "node:substrate.perception_walkway"):
+    for live in ("node:prediction.room", "node:prediction.body", "node:prediction.chat_turn"):
         assert live not in PRUNED_NODE_IDS
+    # The cameras left the field 2026-11-24 (PE retire Patch 3): pruned, though their graph
+    # nodes are live (camera scene change).
+    for camera in ("node:substrate.perception", "node:substrate.perception_walkway"):
+        assert camera in PRUNED_NODE_IDS
+        assert "PE retire Patch 3" in RETIRED_PSEUDO_NODES[camera]
     assert "node:substrate.biometrics" in PRUNED_NODE_IDS
     assert "node:substrate.execution" in PRUNED_NODE_IDS
 
@@ -140,19 +147,21 @@ def test_pe_step5_retired_nodes_refuse_perturbation_and_drop_tension_baselines()
         generated_at=NOW,
         tick_id="t",
         node_vectors={nid: {"prediction_error": 0.4} for nid in RETIRED_PREDICTION_ERROR_NODE_IDS}
-        | {"node:substrate.perception": {"prediction_error": 0.1}},
+        | {"node:substrate.probe": {"prediction_error": 0.1}},
         tension_baseline_mu={f"{nid}{sep}prediction_error": 0.3 for nid in RETIRED_PREDICTION_ERROR_NODE_IDS}
-        | {f"node:substrate.perception{sep}prediction_error": 0.1},
+        | {f"node:substrate.probe{sep}prediction_error": 0.1},
         tension_baseline_var={f"{nid}{sep}prediction_error": 0.01 for nid in RETIRED_PREDICTION_ERROR_NODE_IDS},
         tension_baseline_n={f"{nid}{sep}prediction_error": 40 for nid in RETIRED_PREDICTION_ERROR_NODE_IDS},
     )
     for node_id in RETIRED_PREDICTION_ERROR_NODE_IDS:
         assert delta_to_perturbations(_pe_delta(node_id)) == []
-    assert delta_to_perturbations(_pe_delta("node:substrate.perception"))
+    assert delta_to_perturbations(_pe_delta("node:substrate.probe"))
+    for camera in ("node:substrate.perception", "node:substrate.perception_walkway"):
+        assert delta_to_perturbations(_pe_delta(camera)) == []  # a late camera receipt cannot resurrect it
 
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
     for node_id in RETIRED_PREDICTION_ERROR_NODE_IDS:
         assert node_id not in out.node_vectors
         for store in (out.tension_baseline_mu, out.tension_baseline_var, out.tension_baseline_n):
             assert f"{node_id}{sep}prediction_error" not in store
-    assert out.tension_baseline_mu == {f"node:substrate.perception{sep}prediction_error": 0.1}
+    assert out.tension_baseline_mu == {f"node:substrate.probe{sep}prediction_error": 0.1}

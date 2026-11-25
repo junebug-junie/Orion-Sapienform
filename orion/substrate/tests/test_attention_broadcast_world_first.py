@@ -57,10 +57,19 @@ def _isolate(monkeypatch):
         yield
 
 
+_CAMERAS = frozenset({"node:substrate.perception", "node:substrate.perception_walkway"})
+
+
 def _node(node_id, label, *, pressure=0.2, pe=0.3, **extra_md):
     md = {"dynamic_pressure": pressure, "dynamic_pressure_reason": "prediction_error_seed"}
     if pe is not None:
-        md["prediction_error"] = pe
+        if node_id in _CAMERAS:
+            # PE retire Patch 3: a camera carries camera scene change in signal_value (nats).
+            md["signal_value"] = pe
+            md["signal_kind"] = "scene_change"
+            md["signal_scale"] = "v2"
+        else:
+            md["prediction_error"] = pe
     md.update(extra_md)
     return SimpleNamespace(
         node_id=node_id, label=label, node_kind="concept", metadata=md,
@@ -299,14 +308,14 @@ def test_walkway_wins_only_in_its_own_p99_band() -> None:
     legacy salience signals, which judge no band."""
     from orion.schemas.attention_candidate import PERCEPTION_WALKWAY_NODE_ID
 
-    walkway = _node(PERCEPTION_WALKWAY_NODE_ID, "Walkway PE", pressure=1.0, pe=1.0, embedding_staleness=0.0)
-    frame = _frame([walkway], {PERCEPTION_WALKWAY_NODE_ID: _mag(0.999, value=1.0)})
+    walkway = _node(PERCEPTION_WALKWAY_NODE_ID, "Walkway PE", pressure=1.0, pe=3.2, embedding_staleness=0.0)
+    frame = _frame([walkway], {PERCEPTION_WALKWAY_NODE_ID: _mag(0.999, value=3.2)})
     proj = ab.broadcast_projection_from_frame(frame)
     assert proj.attended_node_ids == [PERCEPTION_WALKWAY_NODE_ID]
     (cand,) = frame.debug["world_first"]["candidates"]
     assert cand["source_kind"] == "external" and cand["band"] == "unusual" and cand["eligible"]
 
-    frame = _frame([walkway], {PERCEPTION_WALKWAY_NODE_ID: _mag(0.95, value=0.6)})
+    frame = _frame([walkway], {PERCEPTION_WALKWAY_NODE_ID: _mag(0.95, value=1.4)})
     assert frame.open_loops == []
     (cand,) = frame.debug["world_first"]["candidates"]
     assert cand["band"] == "high" and not cand["eligible"]

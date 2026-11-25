@@ -142,17 +142,28 @@ ALARM_LABELS: dict[str, str] = {
 }
 
 
+# What each camera node is called where a person or Orion reads it (PE retire Patch 3). Never
+# "prediction error": its value is camera scene change, not a forecast miss.
+SCENE_CHANGE_LABELS: dict[str, str] = {
+    "node:substrate.perception": "room camera scene change",
+    "node:substrate.perception_walkway": "walkway camera scene change",
+}
+
+# Every signal node's own name (alarms and cameras).
+SIGNAL_NODE_LABELS: dict[str, str] = {**ALARM_LABELS, **SCENE_CHANGE_LABELS}
+
+
 def is_retired_prediction_error_node(node_id: Any) -> bool:
     """True when ``node_id`` names a retired prediction-error node."""
     return str(node_id or "") in RETIRED_PREDICTION_ERROR_NODE_IDS
 
 
 def node_signal_label(node_id: Any, short_name: str | None = None) -> str:
-    """Display label for a node that carries a ``prediction_error`` field:
-    the alarm's own name for an alarm, else "<short name> prediction error"."""
+    """Display label for a value node: the alarm's own name for an alarm, "<room|walkway> camera
+    scene change" for a camera (PE retire Patch 3), else "<short name> prediction error"."""
     nid = str(node_id or "")
-    if nid in ALARM_LABELS:
-        return ALARM_LABELS[nid]
+    if nid in SIGNAL_NODE_LABELS:
+        return SIGNAL_NODE_LABELS[nid]
     name = short_name if short_name is not None else nid
     return f"{name} prediction error"
 

@@ -223,6 +223,8 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # prediction_error, and must survive a rehydrate (falkor_codec DYNAMICS_METADATA_KEYS).
     "signal_value",
     "signal_kind",
+    # Camera scene-change scale (PE retire Patch 3).
+    "signal_scale",
     # L6 (2026-10-06): without this the stamp never survives a rehydrate and
     # every tick falls back to observed_at -- i.e. the compounding decay the
     # stamp exists to remove (falkor_codec._decay_stamp_metadata_from_row).

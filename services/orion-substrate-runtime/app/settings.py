@@ -257,13 +257,10 @@ class Settings(BaseSettings):
     pe_history_retention_hours: float = Field(
         168.0, ge=25.0, alias="SUBSTRATE_PE_HISTORY_RETENTION_HOURS"
     )
-    # Signal history (PR #3781 Patch 1, docs/superpowers/specs/2026-11-24-pe-retire-perception-
-    # and-alarms-design.md). On: the two camera scene-change nodes are ALSO written to
-    # substrate_node_signal_history, beside their PE-table rows. Since Patch 2 the three alarms
-    # (cabinet/strain/street) live ONLY in that table, so their rows and the table's prune run
-    # whatever this says; off stops only the cameras' dual-write. Fails open if
-    # manual_migration_node_signal_history_v1.sql is not applied yet.
-    signal_history_enabled: bool = Field(True, alias="SUBSTRATE_SIGNAL_HISTORY_ENABLED")
+    # Signal history (substrate_node_signal_history) has no flag since PE retire Patch 3
+    # (2026-11-24): all five signal nodes (cabinet/strain/street alarms, room/walkway camera scene
+    # change) live ONLY in that table, so it is always written and pruned at this retention.
+    # SUBSTRATE_SIGNAL_HISTORY_ENABLED (Patch 1's dual-write flag) is gone.
     # Minimum |median_1h - median_prior_24h| before trend reads rising/settling
     # (the effective threshold is max(this, 0.5 * (p90_7d - p50_7d))). A knob,
     # not a finding.
@@ -698,6 +695,19 @@ class Settings(BaseSettings):
     # into "doorbell"; set a name no camera uses (e.g. "none") to disable.
     perception_log_only_stream_ids: str = Field(
         "doorbell", alias="SUBSTRATE_PERCEPTION_LOG_ONLY_STREAM_IDS"
+    )
+    # Camera scene change scorer (PE retire Patch 3, 2026-11-24; design
+    # docs/superpowers/specs/2026-11-24-pe-retire-perception-and-alarms-design.md rev 4).
+    # rank_v2 (default): two-stage rank (orion/substrate/scene_change.py) -- each frame's raw
+    # 1 - cos ranked against the same stream's last 2 h, the trailing 5 min's smallest p ranked
+    # against the node's own 5-min minima over 24 h; value = max(0, -ln p2 - 1) nats, rows
+    # scale v2 / v2_partial. legacy_z: the old clipped EWMA z (clip(z, 0, 3) / 3), written as
+    # scale v1 -- a rollback only: v1 rows are not read by the contests or curiosity's bar, so
+    # under legacy_z both cameras read insufficient_history and never seed curiosity.
+    # Any other value reads as rank_v2 (logged). Deleted with the legacy z path by cleanup step
+    # 5b after the 7-day eval and #3806.
+    perception_scene_change_scorer: str = Field(
+        "rank_v2", alias="SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER"
     )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only

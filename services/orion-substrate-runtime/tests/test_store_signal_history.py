@@ -58,7 +58,28 @@ def test_save_signal_samples_inserts_kind_idempotently():
     sql, params = eng.executed[0]
     assert "INSERT INTO substrate_node_signal_history" in sql
     assert "ON CONFLICT (node_id, observed_at) DO NOTHING" in sql
-    assert params == [{"node_id": "node:substrate.strain", "observed_at": TS, "value": 1.0, "kind": "alarm"}]
+    # A 4-tuple (an alarm) is old scale (PE retire Patch 3 added the scale column).
+    assert params == [{"node_id": "node:substrate.strain", "observed_at": TS, "value": 1.0, "kind": "alarm",
+                       "scale": "v1"}]
+    assert ":scale" in sql
+
+
+def test_save_signal_samples_writes_a_camera_row_scale():
+    eng = _Engine()
+    _store(eng).save_signal_history_samples([("node:substrate.perception", TS, 2.4, "scene_change", "v2")])
+    _, params = eng.executed[0]
+    assert params == [{"node_id": "node:substrate.perception", "observed_at": TS, "value": 2.4,
+                       "kind": "scene_change", "scale": "v2"}]
+
+
+def test_read_both_helpers_refuse_a_camera():
+    """The read-both SQL has no scale predicate: a camera must never go through it."""
+    import pytest
+
+    store = _store(_Engine())
+    for call in (store.count_signal_history_read_both, store.fetch_signal_event_times_read_both):
+        with pytest.raises(ValueError):
+            call(node_id="node:substrate.perception", since=TS)
 
 
 def test_save_empty_skips_db():

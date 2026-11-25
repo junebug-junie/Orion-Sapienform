@@ -73,7 +73,7 @@ TRIGGER_RATE_WINDOW = timedelta(hours=1)
 # Fewer real firings than this in 7 days: "more than usual" has nothing to stand on.
 TRIGGER_MIN_FIRES_7D = 5
 
-_PERCENTILE_KINDS = frozenset({"level", "count", "surprise_excess"})
+_PERCENTILE_KINDS = frozenset({"level", "count", "surprise_excess", "scene_change_excess"})
 _RATE_KINDS = frozenset({"trigger", "binary"})
 # Same set world-first attention judges by; everything else (placeholder, bucket,
 # or no glossary entry at all) is never read as a size.
@@ -105,6 +105,62 @@ _WORDS: dict[str, tuple[str, str]] = {
     "node:prediction.body_joint": ("how much my machines, cabinet and closet together are surprising my own forecast",
                                    "joint surprise z-score / 3, last 30 min"),
 }
+
+# --- Dated marker: what the prediction-error lane holds now (PE retire Patch 3) ---------------
+# For 14 days after the cutover the block carries one line telling Orion that the two cameras and
+# the three alarms left its prediction-error lane (design rev 4, "Dated marker for Orion"). The node
+# list is generated from the glossary (every node-qualified ``channel: prediction_error`` entry with
+# a measurement value_kind), so it cannot drift from what the readers actually treat as a
+# prediction error. After the window it drops; the glossary keeps each node's "until" note.
+PE_LANE_CUTOVER_DATE = datetime(2026, 11, 24, tzinfo=timezone.utc)
+PE_LANE_MARKER_DAYS = 14
+# Display order for the names; membership comes from the glossary.
+_PE_LANE_ORDER = ("room", "body", "room_joint", "body_joint", "chat_turn")
+
+
+def prediction_error_lane_nodes() -> list[str]:
+    """Node ids whose glossary entry is a measured prediction error (the lane after cutover).
+    An unreadable glossary yields []."""
+    try:
+        from orion.field.channel_glossary import load_glossary
+
+        entries = load_glossary()["entries"]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("self_readings_glossary_unreadable err=%s", exc)
+        return []
+    out: list[str] = []
+    for entry in entries:
+        if not entry.node or entry.channel != "prediction_error":
+            continue
+        if dict(entry.semantics).get("value_kind") not in MEASUREMENT_VALUE_KINDS:
+            continue
+        if entry.node not in out:
+            out.append(entry.node)
+    return out
+
+
+def _lane_name(node_id: str) -> str:
+    for prefix in ("node:prediction.", SUBSTRATE_NODE_PREFIX, "node:"):
+        if node_id.startswith(prefix):
+            return node_id[len(prefix):]
+    return node_id
+
+
+def pe_lane_marker_line(now: datetime) -> str | None:
+    """The dated marker line while it is due (cutover .. cutover + 14 days), else None."""
+    now = _aware(now)
+    if not (PE_LANE_CUTOVER_DATE <= now < PE_LANE_CUTOVER_DATE + timedelta(days=PE_LANE_MARKER_DAYS)):
+        return None
+    names = [_lane_name(n) for n in prediction_error_lane_nodes()]
+    if not names:
+        return None
+    rank = {name: i for i, name in enumerate(_PE_LANE_ORDER)}
+    names.sort(key=lambda n: (rank.get(n, len(rank)), n))
+    return (
+        f"Since {PE_LANE_CUTOVER_DATE:%Y-%m-%d}, my prediction-error lane holds only forecast misses "
+        f"({', '.join(names)}). Camera change and alarms are separate signals now."
+    )
+
 
 _STATE_WORDS = {
     "no_reading": "no reading",
@@ -404,8 +460,23 @@ def render_self_readings(
     readings: list[SelfReadingV1], *, now: datetime,
     max_shown: int = MAX_SHOWN, max_chars: int = SELF_READINGS_MAX_CHARS,
 ) -> SelfReadingsBlockV1:
-    """The block stance_react / reverie see. ``text`` is "" unless a reading is unusual."""
-    now = _aware(now)
+    """The block stance_react / reverie see. ``text`` is "" unless a reading is unusual, except
+    that for 14 days after the PE lane cutover it carries the dated marker line
+    (``pe_lane_marker_line``) whatever the readings say."""
+    block = _render_readings(readings, now=_aware(now), max_shown=max_shown, max_chars=max_chars)
+    marker = pe_lane_marker_line(now)
+    if not marker:
+        return block
+    text = f"{block.text}\n{marker}" if block.text else marker
+    if len(text) > max_chars:
+        # The readings win: a marker that does not fit is left out, never a cut reading.
+        return block
+    return block.model_copy(update={"text": text})
+
+
+def _render_readings(
+    readings: list[SelfReadingV1], *, now: datetime, max_shown: int, max_chars: int,
+) -> SelfReadingsBlockV1:
     if not readings:
         return SelfReadingsBlockV1(rendered_at=now, skip_reason="no_history")
     unusual = sorted(

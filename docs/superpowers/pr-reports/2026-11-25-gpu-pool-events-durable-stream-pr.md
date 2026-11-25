@@ -149,6 +149,6 @@ The group should show `lag` near 0 and `pending` 0. After the next sql-writer re
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3938
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

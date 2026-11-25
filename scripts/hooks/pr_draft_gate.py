@@ -151,10 +151,16 @@ def ready_target(args: list[str]) -> str:
     return ""
 
 
+WAIVER_PREFIX = "[draft gate]"
+
+
 def is_answer(turn: dict[str, Any]) -> bool:
-    """A session turn that can answer Orion: a reply, not a re-send of the PR (a re-send carries the
-    spec/diff attachments again and answers nothing)."""
-    return turn.get("speaker") == "session" and not (turn.get("meta") or {}).get("spec")
+    """A session turn that can answer Orion: a reply. Not a re-send of the PR (it carries the spec/diff
+    attachments again and answers nothing), and not the gate's own waiver record (``meta.waiver``; the
+    body prefix covers a Hub that predates the field)."""
+    meta = turn.get("meta") or {}
+    return (turn.get("speaker") == "session" and not meta.get("spec") and not meta.get("waiver")
+            and not str(turn.get("body") or "").startswith(WAIVER_PREFIX))
 
 
 def _when(text: Any) -> datetime | None:
@@ -222,9 +228,9 @@ def report_override(lib: Any, target: str, *, where: str, repo: str, session_id:
         thread = next((t for t in threads if int(t.get("pr_number") or 0) == int(pr["number"])), None)
         if thread is None:
             return
-        lib.reply(str(thread["thread_id"]), f"[draft gate] Pull request #{pr['number']} was marked ready with "
+        lib.reply(str(thread["thread_id"]), f"{WAIVER_PREFIX} Pull request #{pr['number']} was marked ready with "
                   f"{OVERRIDE}: the draft gate's check of your review was waived (Juniper's call). This is a "
-                  "record, not a question.", session_id=session_id, timeout=4.0)
+                  "record, not a question.", session_id=session_id, timeout=4.0, waiver=True)
         lib.log(f"pr_draft_gate override_reported pr={pr['number']} thread={thread['thread_id']}")
     except Exception as exc:  # noqa: BLE001
         lib.log(f"pr_draft_gate override_report_failed err={type(exc).__name__}")

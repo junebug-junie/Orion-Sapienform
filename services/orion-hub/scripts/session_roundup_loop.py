@@ -628,8 +628,9 @@ class SessionRoundupLoop:
     async def intake(self, *, session_id: str, title: str, body: str, spec: Sequence[Dict[str, str]] = (),
                      session_name: Optional[str] = None, worktree: Optional[str] = None, branch: Optional[str] = None,
                      pr_number: Optional[int] = None, pr_url: Optional[str] = None,
-                     thread_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                     thread_id: Optional[str] = None, waiver: bool = False) -> Optional[Dict[str, Any]]:
         """Store one session message with Hub's receipt and show both. None: ``thread_id`` unknown.
+        ``waiver``: the draft gate's record that Orion's review was waived (``meta.waiver``).
         Raises ``ValueError`` for a message with nothing in it. No GPU, no model."""
         pool = self._pool_provider()
         if pool is None:
@@ -694,7 +695,7 @@ class SessionRoundupLoop:
             session_name=core.one_line(session_name, 200) or None, worktree=core.one_line(worktree, 500) or None,
             branch=core.one_line(branch, 300) or None, pr_number=int(pr_number) if pr_number else None,
             pr_url=core.one_line(pr_url, 300) or None, spec_paths=[s["path"] for s in specs], body=body_text,
-            meta={"spec": specs, "digest": digest} if specs else {"digest": digest},
+            meta={**({"spec": specs} if specs else {}), "digest": digest, **({"waiver": True} if waiver else {})},
             receipt=lambda tid: core.receipt_text(thread_id=tid, next_at=next_at, roundup_enabled=self.enabled,
                                                   cut_notes=notes, tz_name=self.tz_name,
                                                   answer_phase=bool(before["answer_phase"]),

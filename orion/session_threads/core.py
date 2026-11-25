@@ -302,6 +302,8 @@ def thread_section(thread: Dict[str, Any], new_turns: Sequence[Dict[str, Any]],
         for t in shown:
             who = {SPEAKER_SESSION: "session", SPEAKER_ORION: "you (Orion), an earlier round-up",
                    SPEAKER_HUB: "Hub"}.get(t.get("speaker"), str(t.get("speaker")))
+            if (t.get("meta") or {}).get("waiver"):
+                who = WAIVER_LABEL
             out.append(f"[{who}] {_quote(cap_text(t.get('body') or '', earlier_cap, what='earlier turn')[0])}")
     out.append("")
     out.append("--- new since your last round-up" + (" (after your question round: usually its answers) ---"
@@ -313,7 +315,8 @@ def thread_section(thread: Dict[str, Any], new_turns: Sequence[Dict[str, Any]],
         text = str(t.get("body") or "")
         if body_cap is not None:
             text, _ = cap_text(text, body_cap, what="message, to fit one round-up prompt,")
-        out.append(f"[session] {_quote(text) or '(no message text)'}")
+        who = WAIVER_LABEL if (t.get("meta") or {}).get("waiver") else "session"
+        out.append(f"[{who}] {_quote(text) or '(no message text)'}")
         specs = list(((t.get("meta") or {}).get("spec")) or []) or specs   # the newest turn that carries specs
     if not specs and not answer_phase:
         # A reply turn carries no spec: show the newest spec the thread ever carried, so Orion still has it.
@@ -335,6 +338,10 @@ def thread_section(thread: Dict[str, Any], new_turns: Sequence[Dict[str, Any]],
         out.append(_quote(text))
     out.append(data_close)
     return "\n".join(out)
+
+
+# A session turn the draft gate wrote when Orion's review was waived (ORION_ALLOW_PR_READY=1). Never an answer.
+WAIVER_LABEL = "draft gate: your review was waived, not an answer"
 
 
 ANSWER_PHASE_NOTE = (

@@ -1,4 +1,4 @@
-"""Juniper's newest answer on a picture wins (2026-11-25, issue #3854).
+"""The newest answer on a picture wins (2026-11-25, issue #3854).
 
 A picture verdict (``vision_ask_picture_verdict``) says a picture is ("same")
 or is not ("different") the person a card asked about. She can answer the same

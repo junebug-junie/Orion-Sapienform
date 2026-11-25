@@ -114,3 +114,23 @@ def test_calls_an_enforcing_door_already_refused_are_shown_but_do_not_block():
     assert (day.refused, day.unleased) == (1, 0)
     ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=False, today="2026-11-22")
     assert "lease join was not run" in why            # the refused call did not block the streak
+
+
+def test_a_call_sent_again_under_one_lease_does_not_open_a_gap():
+    """#3919: the gateway counts one call per lease; a re-send under the same lease reaches the door twice."""
+    lines = [_line(d, lease=f"L-{d}") for d in _days(15, 7)] + [_line("2026-11-17", lease="L-2026-11-17")]
+    report, _ = rep.aggregate(lines)
+    for d in report["chat"].values():
+        d.unmatched_leases, d.gateway_calls = 0, 1
+    assert report["chat"]["2026-11-17"].leased == 2
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert ok, why
+
+
+def test_a_lease_the_gateway_never_recorded_still_opens_a_gap():
+    lines = [_line(d, lease=f"L-{d}") for d in _days(15, 7)] + [_line("2026-11-17", lease="L-extra")]
+    report, _ = rep.aggregate(lines)
+    for d in report["chat"].values():
+        d.unmatched_leases, d.gateway_calls = 0, 1
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert not ok and "2 distinct leases" in why and "gateway sent 1" in why

@@ -18,7 +18,9 @@ the check that the id is real. The door catches accidental bypass by Orion's own
 Then a verdict per lane. READY TO ENFORCE needs, for the last ``--streak-days`` (default 7) UTC days in a
 row, each day present in the log (a missing day is unknown, never zero) with:
   unleased = 0, invalid = 0, leased > 0, and with --dsn: every leased call's id found in gpu_pool_events
-  and the leased count within --max-gap-pct (default 1 %) of the gateway's count. Calls an enforcing door
+  and the number of distinct lease ids within --max-gap-pct (default 1 %) of the gateway's count. The gateway
+  writes one llm_call_usage row per lease, but a call sent again under the same lease reaches the door twice,
+  so raw leased calls overcount (#3919); they stay in the table for information. Calls an enforcing door
   already refused are listed, not counted against the lane (they never reached the engine).
 Without --dsn the verdict says the lease join was not run.
 
@@ -131,6 +133,13 @@ def join_db(report: dict[str, dict[str, Day]], dsn: str) -> None:
                 d.gateway_calls = int(cur.fetchone()[0])
 
 
+def gap_pct(d: Day) -> Optional[float]:
+    """Distinct lease ids vs the gateway's own call count, in %. None without a gateway count."""
+    if not d.gateway_calls:
+        return None
+    return abs(len(d.lease_ids) - d.gateway_calls) * 100.0 / d.gateway_calls
+
+
 def verdict(days: dict[str, Day], *, streak_days: int, max_gap_pct: float, joined: bool,
             today: Optional[str] = None) -> tuple[bool, str]:
     """READY only on ``streak_days`` consecutive complete UTC days, ending yesterday (today is partial)."""
@@ -155,9 +164,10 @@ def verdict(days: dict[str, Day], *, streak_days: int, max_gap_pct: float, joine
                 return False, (f"{day}: door saw {d.leased} leased calls but the gateway recorded none for pool_role "
                                "of the same name (a lane that does not match pool_role?)")
             else:
-                gap = abs(d.leased - d.gateway_calls) * 100.0 / d.gateway_calls
+                gap = gap_pct(d)
                 if gap > max_gap_pct:
-                    return False, f"{day}: door saw {d.leased} leased calls, gateway sent {d.gateway_calls} ({gap:.1f} % apart)"
+                    return False, (f"{day}: door saw {len(d.lease_ids)} distinct leases ({d.leased} leased calls), "
+                                   f"gateway sent {d.gateway_calls} ({gap:.1f} % apart)")
     if not joined:
         return False, (f"{streak_days} clean days ending {end.isoformat()} in the door log, but the lease join was "
                        "not run: add --dsn (READY needs the leases found and the gateway's own count)")
@@ -188,15 +198,15 @@ def render(report: dict[str, dict[str, Day]], verdicts: dict[str, tuple[bool, st
             continue
         head = f"   {'day':10} {'leased':>7} {'unleased':>8} {'invalid':>7} {'refused':>8}"
         if joined:
-            head += f" {'no-lease':>9} {'gateway':>8} {'gap%':>6}"
+            head += f" {'leases':>7} {'no-lease':>9} {'gateway':>8} {'gap%':>6}"
         lines.append(head)
         for day in sorted(report[lane]):
             d = report[lane][day]
             row = f"   {day:10} {d.leased:7d} {d.unleased:8d} {d.invalid:7d} {d.refused:8d}"
             if joined:
-                gap = (f"{abs(d.leased - d.gateway_calls) * 100.0 / d.gateway_calls:6.1f}"
-                       if d.gateway_calls else "     -")
-                row += f" {d.unmatched_leases or 0:9d} {d.gateway_calls if d.gateway_calls is not None else '-':>8} {gap}"
+                g = gap_pct(d)
+                gap = f"{g:6.1f}" if g is not None else "     -"
+                row += f" {len(d.lease_ids):7d} {d.unmatched_leases or 0:9d} {d.gateway_calls if d.gateway_calls is not None else '-':>8} {gap}"
             lines.append(row)
             for who, n in d.unleased_from.most_common(5):
                 lines.append(f"      unleased x{n}: {who}")

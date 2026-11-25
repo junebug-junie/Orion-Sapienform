@@ -130,10 +130,10 @@ scripts/safe_docker_build.sh orion-durable-runs up -d --build
 - Severity: low.
   - Concern: the Inner Sky does not yet know the verdict words `not_produced`, `chose` and `declined_all`. They render neutral, and its feed eval lists them as unclassified.
   - Mitigation: a separate Inner Sky PR (out of scope here).
-- Issues opened: none. Issues closed: none (#3429 stays open for 7b and 7c).
+- Issues opened: #3963 (main is red on the leased lane caller gate because of scripts/analysis/reflection_register_sources.py. It came from the self-question door PR, not this one. This PR inherits that one failing check). Issues closed: none (#3429 stays open for 7b and 7c).
 
 ## PR link
 
-(filled on creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3960
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

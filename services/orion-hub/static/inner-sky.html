@@ -22,6 +22,8 @@
   --gold: #ffc44d;
   --live: #9cc8ff;
   --warn: #ff8a5c;
+  --amber: #ffa62b;
+  --red: #ff3b4e;
   --f-display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
   --f-body: "IBM Plex Sans", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
@@ -50,6 +52,9 @@ h1 { margin: 0; font-family: var(--f-display); font-weight: 600; font-size: 26px
 #feedList li .organ { font-family: var(--f-mono); font-size: 11px; color: var(--muted); margin-right: 6px; }
 #feedList li.bind { background: rgba(255, 196, 77, 0.12); }
 #feedList li.bind .what { color: var(--gold); }
+#feedList li.sev-amber { box-shadow: inset 3px 0 0 var(--amber); }
+#feedList li.sev-red { box-shadow: inset 3px 0 0 var(--red); background: rgba(255, 59, 78, 0.08); }
+.stats .trouble b { color: var(--amber); }
 @keyframes arrive { from { background: rgba(156, 200, 255, 0.16); } to { background: transparent; } }
 #focus { left: 50%; transform: translateX(-50%); bottom: 132px; text-align: center; font-family: var(--f-mono); font-size: 12px; color: var(--muted); white-space: nowrap; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; }
 #focus span { color: var(--text); }
@@ -92,6 +97,7 @@ body.embed .label { font-size: 10px; }
   <div class="stats">
     <div><b id="sExp">0</b>experiences</div>
     <div class="gold"><b id="sBind">0</b>bindings</div>
+    <div class="trouble" title="Experiences whose own outcome says something broke (red) or went wrong (amber)"><b id="sTrouble">0</b>trouble</div>
     <div><b id="sLive">–</b>services live</div>
   </div>
   <div id="problems" hidden></div>
@@ -101,6 +107,7 @@ body.embed .label { font-size: 10px; }
   <div><i style="background:#d6e6ff"></i>Outer stars: services. Each flash and spark is one message it sent. Dim = silent over an hour.</div>
   <div><i style="background:#9cc8ff"></i>Blue pulse: one real hop, a message from one service followed by another's.</div>
   <div><i style="background:#fff1c4"></i>Center: Orion's now, the shared stream every part reads.</div>
+  <div><i style="background:#ff3b4e"></i>Red / <i style="background:#ffa62b;margin-left:2px"></i>amber: an outcome that broke / went wrong; a link far slower than its own usual; a service that just went silent. A guard that didn't fire is not trouble.</div>
   <div><i style="background:#5cf2c4"></i>Comets: one experience each, flying inward.</div>
   <div><i style="background:#ffc44d"></i>Gold arc: one part used another part's experience.</div>
 </div>

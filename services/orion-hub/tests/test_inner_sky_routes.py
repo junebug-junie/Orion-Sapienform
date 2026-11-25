@@ -17,6 +17,7 @@ for p in (str(REPO_ROOT), str(HUB_ROOT)):
         sys.path.insert(0, p)
 
 from scripts import inner_sky_routes as isr  # noqa: E402
+from scripts import inner_sky_verdicts as isv  # noqa: E402
 
 ORGAN_OF = {"vision_percept": "camera", "gpu_wait": "body", "curiosity_run": "curiosity", "prime_thought": "prime"}
 T = datetime(2026, 11, 25, 1, 0, tzinfo=timezone.utc)
@@ -27,7 +28,7 @@ def test_a_blank_label_gets_the_same_words_orion_is_shown():
            "verdict": None, "payload_json": {"entities": ["chair", "desk", "door"]}, "salience": None}
     out = isr.shape_event(row, ORGAN_OF)
     assert out == {"id": "vision_percept:1", "t": T.timestamp(), "organ": "camera", "kind": "vision_percept",
-                   "label": "saw chair, desk, door", "salience": None}
+                   "label": "saw chair, desk, door", "salience": None, "verdict": None, "severity": None}
 
 
 def test_payload_as_json_text_and_unknown_kind_are_handled():
@@ -95,15 +96,24 @@ class FakeGraph:
         if "PUBLISHES" in q:
             return [{"id": "cortex-exec", "n": 10, "last": 100.0}, {"id": "lonely", "n": None, "last": None}, {"id": None}]
         self.params = params
-        return [{"a": "cortex-exec", "b": "hub", "n": 5, "last": 99.0}, {"a": "hub", "b": "hub", "n": 1, "last": 99.0}]
+        return [{"a": "cortex-exec", "b": "hub", "n": 5, "last": 99.0, "z": 9.0},  # too little history to trust
+                {"a": "hub", "b": "hub", "n": 1, "last": 99.0, "z": None},
+                {"a": "bus", "b": "hub", "n": 50, "last": 99.0, "z": 3.5},
+                {"a": "bus", "b": "exec", "n": 50, "last": 99.0, "z": -8.0},  # faster than usual: not trouble
+                {"a": "old", "b": "hub", "n": 50, "last": -500.0, "z": 7.0}]  # slow, but its last hop was long ago
 
 
 def test_body_keeps_never_published_services_and_drops_self_links():
     g = FakeGraph()
-    out = isr.read_body(g, now=1000.0)
+    out = isr.read_body(g, now=600.0)
     assert out["services"] == [{"id": "cortex-exec", "n": 10, "last": 100.0}, {"id": "lonely", "n": 0, "last": None}]
-    assert out["links"] == [{"a": "cortex-exec", "b": "hub", "n": 5, "last": 99.0}]
-    assert g.params == {"cut": 1000.0 - isr.LINK_WINDOW_SEC}
+    assert out["links"] == [
+        {"a": "cortex-exec", "b": "hub", "n": 5, "last": 99.0, "slow": False, "z": 9.0},
+        {"a": "bus", "b": "hub", "n": 50, "last": 99.0, "slow": True, "z": 3.5},
+        {"a": "bus", "b": "exec", "n": 50, "last": 99.0, "slow": False, "z": -8.0},
+        {"a": "old", "b": "hub", "n": 50, "last": -500.0, "slow": False, "z": 7.0},
+    ]
+    assert g.params == {"cut": 600.0 - isr.LINK_WINDOW_SEC}
 
 
 def test_focus_reads_the_open_attention_arc_verbatim():
@@ -199,3 +209,33 @@ def test_cites_carry_a_stable_id_for_dedupe_and_the_cursor_never_moves_back(monk
     c = _client(monkeypatch, [old], [dict(cite, cited_at=T)])
     body = c.get("/api/inner-sky/events", params={"since": T.timestamp() + 30, "cite_since": T.timestamp() + 30}).json()
     assert body["cursor"] == T.timestamp() + 30 and body["cite_cursor"] == T.timestamp() + 30
+
+
+@pytest.mark.parametrize("verdict,severity", [
+    ("critical", "red"), ("broken", "red"), ("degraded", "amber"), ("claim_upheld=false", "amber"),
+    ("refused", "amber"), ("no_read_evidence:http_error", "amber"),
+    ("no producer close within horizon + 120s grace", "amber"), ("no_read_evidence", "amber"),
+    ("late:717s stage1_completed", "amber"),
+    ("confirmed", None), ("disconfirmed", None), ("unscored", None), ("no_lasting_trace", None),
+    # a guard that did not fire, a gate doing its job, a choice not to act: never trouble
+    ("not_crossed", None), ("claim_upheld=true", None), ("granted", None), ("decayed_unattended", None), (None, None),
+])
+def test_severity_comes_only_from_the_rows_own_verdict(verdict, severity):
+    assert isv.severity_of(verdict) == severity
+    assert isv.verdict_is_classified(verdict)
+
+
+def test_an_unknown_verdict_is_neutral_and_reported_not_guessed():
+    assert isv.severity_of("total_meltdown") is None
+    assert not isv.verdict_is_classified("total_meltdown")
+    sys.path.insert(0, str(HUB_ROOT / "evals"))
+    from run_inner_sky_feed_eval import evaluate
+
+    state = {"now": 1.0, "body": {"services": [], "links": [{"slow": True}]}, "focus": {}, "body_error": None, "focus_error": None}
+    ev = {"organs": ["metacognition"], "cites": [], "events": [
+        {"organ": "metacognition", "kind": "metacog_observation", "label": "x", "verdict": "critical", "severity": "red"},
+        {"organ": "metacognition", "kind": "metacog_observation", "label": "y", "verdict": "total_meltdown", "severity": None}]}
+    report = evaluate(ev, state)
+    assert report["trouble"] == {"red": 1}
+    assert report["unsorted_verdicts"] == {"total_meltdown": 1}
+    assert report["slow_links"] == 1 and report["verdict"] == "PASS"

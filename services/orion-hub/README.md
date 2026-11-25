@@ -3611,6 +3611,16 @@ stored rows. Every light is one row; nothing is a fused score.
 | Center ("now") | Orion's now: the shared experience stream every part reads; comets land here | — |
 | "Attending to" | the open attention arc in durable-runs' `/temporal-self/frame` (none = none) | same |
 
+**Red / amber (trouble).** Colour comes only from what a row itself records, never from a guess:
+- an experience whose own `verdict` is in `inner_sky_verdicts.VERDICT_SEVERITY` (red: `critical`, `broken`; amber:
+  `degraded`, `claim_upheld=false`, `refused`, `unavailable`, `miscalibrated`, `unreliable`, `abandoned`, reading
+  `no_read_evidence*`, `no producer close*`, `late:*`) lands as a red/amber comet and flares its part;
+- a link whose latest hop, within the last 10 min, is more than 3 of its own spreads slower than its own running
+  average (`latency_zscore > 3`, `count > 5`, the `/anomalies` rule, slower only) turns red with red pulses;
+- a service that was live and goes silent fades out through red.
+A guard that did not fire (`not_crossed`), a gate doing its job (`granted`) or a choice not to act is normal, not
+trouble. Any other verdict stays neutral; the eval lists it under `unsorted_verdicts` so it is sorted on purpose.
+
 Live by default; **Replay 12 h** scrubs the window at 60/240/960×. Narrower than 1100 px (the drawer when open) the page is compact; the drawer's ▶ (or the sky's own Widen link) takes the whole row and hides chat until ◀.
 Pure helpers: `static/js/inner-sky-core.js` (tested by `inner-sky-core.test.js`).
 

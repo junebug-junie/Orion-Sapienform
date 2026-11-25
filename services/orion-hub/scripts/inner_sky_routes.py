@@ -32,6 +32,7 @@ from orion.integration.organs import load_organs
 from orion.temporal_self.now import now_label
 
 from app.settings import settings
+from scripts.inner_sky_verdicts import severity_of
 from scripts.self_brain_routes import _engine as _pg_engine
 
 logger = logging.getLogger("orion-hub.inner-sky")
@@ -48,6 +49,16 @@ FRAME_TIMEOUT_SEC = 3.0
 # equal timestamps. The page dedupes by id, so the overlap costs only a few repeated rows.
 CURSOR_OVERLAP_SEC = 60
 UNREGISTERED = "unregistered"
+
+# A cause-and-effect link is in trouble when its latest hop is this many of its own spreads slower than its own
+# running average -- the bus mirror's latency_zscore, same threshold and history floor as
+# /api/bus-synaptic-graph/anomalies (slower only: a faster hop is not a failure).
+LINK_SLOW_Z = 3.0
+LINK_MIN_COUNT = 5
+# latency_zscore is the link's LATEST hop: a hop from hours ago must not keep the link red all evening.
+LINK_SLOW_RECENT_SEC = 600
+
+
 
 
 def _epoch(value: Any) -> Optional[float]:
@@ -82,6 +93,8 @@ def shape_event(row: Mapping[str, Any], organ_of: Mapping[str, str]) -> dict[str
         "kind": kind,
         "label": now_label(kind, row.get("label"), row.get("verdict"), _payload(row.get("payload_json"))),
         "salience": row.get("salience"),
+        "verdict": row.get("verdict"),
+        "severity": severity_of(row.get("verdict")),
     }
 
 
@@ -192,7 +205,7 @@ def read_body(client: Any, now: float) -> dict[str, Any]:
         """
         MATCH (a:Organ)-[r:CAUSALLY_FOLLOWED_BY]->(b:Organ)
         WHERE r.last_seen_epoch > $cut
-        RETURN a.organ_id AS a, b.organ_id AS b, r.count AS n, r.last_seen_epoch AS last
+        RETURN a.organ_id AS a, b.organ_id AS b, r.count AS n, r.last_seen_epoch AS last, r.latency_zscore AS z
         """,
         {"cut": now - LINK_WINDOW_SEC},
     )
@@ -203,7 +216,10 @@ def read_body(client: Any, now: float) -> dict[str, Any]:
             if r.get("id")
         ],
         "links": [
-            {"a": str(r["a"]), "b": str(r["b"]), "n": int(r["n"] or 0), "last": float(r["last"] or 0)}
+            {"a": str(r["a"]), "b": str(r["b"]), "n": int(r["n"] or 0), "last": float(r["last"] or 0),
+             "slow": (r.get("z") is not None and float(r["z"]) > LINK_SLOW_Z and int(r["n"] or 0) > LINK_MIN_COUNT
+                      and now - float(r["last"] or 0) < LINK_SLOW_RECENT_SEC),
+             "z": float(r["z"]) if r.get("z") is not None else None}
             for r in links
             if r.get("a") and r.get("b") and r["a"] != r["b"]
         ],

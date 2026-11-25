@@ -18,6 +18,9 @@ const MAX_HOPS_DRAWN = 40, MAX_MSGS_DRAWN = 30;
 
 const COL = {camera:'#3fa9ff',body:'#ff8a5c',prediction:'#5cf2c4',metacognition:'#c9d3ff',reverie:'#b48cff',dream:'#7a8cff',memory:'#f2a65a',reading:'#9be564',curiosity:'#ffd166',painting:'#ff7ac6',play:'#ff5d73',chat:'#7cf0ff',prime:'#ffe9a8',intention:'#a0ffea',personality:'#ff9ee5',day_letter:'#d9c49a',unregistered:'#888888'};
 const colorOf = (o) => COL[o] || '#9aa3c7';
+// A row's own verdict, sorted server-side (inner_sky_routes.VERDICT_SEVERITY): red = broken, amber = a problem.
+const SEV = { red: '#ff3b4e', amber: '#ffa62b' };
+const SEV_C = { red: new THREE.Color(SEV.red), amber: new THREE.Color(SEV.amber) };
 const nice = (s) => String(s).replace(/_/g, ' ');
 const hhmm = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -92,16 +95,16 @@ function rebuildLinks(raw, rates) { // rates: measured msgs/s by link key (missi
   const keep = new Map(links.map((l) => [l.key, l]));
   links = raw.filter((l) => services.has(l.a) && services.has(l.b)).map((l) => {
     const key = `${l.a}>${l.b}`, old = keep.get(key);
-    if (old) { old.n = l.n; old.last = l.last; old.rate = key in rates ? rates[key] : null; return old; }
+    if (old) { old.n = l.n; old.last = l.last; old.slow = !!l.slow; old.z = l.z; old.rate = key in rates ? rates[key] : null; return old; }
     const a = services.get(l.a).pos, b = services.get(l.b).pos, curve = [];
     for (let s = 0; s <= SEG; s++) { const t = s / SEG; curve.push(a.clone().normalize().lerp(b.clone().normalize(), t).normalize().multiplyScalar(R_SHELL * (1 + 0.14 * Math.sin(Math.PI * t)))); }
-    return { key, a: l.a, b: l.b, n: l.n, last: l.last, curve, rate: key in rates ? rates[key] : null, acc: Math.random(), pending: 0, emit: 0 };
+    return { key, a: l.a, b: l.b, n: l.n, last: l.last, slow: !!l.slow, z: l.z, curve, rate: key in rates ? rates[key] : null, acc: Math.random(), pending: 0, emit: 0 };
   });
   if (linkLines) { scene.remove(linkLines); linkLines.geometry.dispose(); }
   const pos = [], col = [];
   for (const l of links) {
     const w = l.rate == null ? 0.25 : Math.min(1, 0.25 + 0.15 * Math.log2(1 + l.rate));
-    const c = new THREE.Color('#345a8c').multiplyScalar(w);
+    const c = l.slow ? SEV_C.red.clone().multiplyScalar(0.7) : new THREE.Color('#345a8c').multiplyScalar(w);
     for (let s = 0; s < SEG; s++) { pos.push(...l.curve[s].toArray(), ...l.curve[s + 1].toArray()); col.push(c.r, c.g, c.b, c.r, c.g, c.b); }
   }
   const g = new THREE.BufferGeometry();
@@ -123,7 +126,7 @@ function buildOrgans(names) { // (re)builds the ring when the set of organs chan
   organBy.clear();
   organs = names.map((name, i) => {
     const th = i / names.length * Math.PI * 2;
-    return { name, pos: new THREE.Vector3(Math.cos(th) * R_RING, Math.sin(th * 2) * 0.6, Math.sin(th) * R_RING), color: new THREE.Color(colorOf(name)), recent: [], flash: 0, total: 0, last: '' };
+    return { name, pos: new THREE.Vector3(Math.cos(th) * R_RING, Math.sin(th * 2) * 0.6, Math.sin(th) * R_RING), color: new THREE.Color(colorOf(name)), recent: [], flash: 0, total: 0, last: '', alert: 0, alertC: null, trouble: 0, troubleRed: 0 };
   });
   for (const o of organs) organBy.set(o.name, o);
   organPool = new Pool(organs.length * 2);
@@ -142,7 +145,9 @@ function spawnComet(e) {
   const o = organBy.get(e.organ); if (!o || !freeComet.length) return; // at the cap a comet is not drawn; it is still counted
   const lift = new THREE.Vector3((Math.random() - 0.5) * 3, 2 + Math.random() * 3, (Math.random() - 0.5) * 3);
   const sal = typeof e.salience === 'number' ? e.salience : 0;
-  comets.push({ slot: freeComet.pop(), p0: o.pos.clone(), p1: o.pos.clone().multiplyScalar(0.5).add(lift), c: o.color, size: 0.55 * (1 + sal), age: 0, life: 2.4 + Math.random() * 0.6 });
+  const sev = e.severity && SEV_C[e.severity];
+  comets.push({ slot: freeComet.pop(), p0: o.pos.clone(), p1: o.pos.clone().multiplyScalar(0.5).add(lift), c: sev || o.color, size: 0.55 * (1 + sal) * (sev ? 1.3 : 1), age: 0, life: 2.4 + Math.random() * 0.6 });
+  if (sev) { o.alert = 2.5; o.alertC = sev; }
 }
 const bez = (p0, p1, t, out) => out.set((1-t)*(1-t)*p0.x + 2*(1-t)*t*p1.x, (1-t)*(1-t)*p0.y + 2*(1-t)*t*p1.y, (1-t)*(1-t)*p0.z + 2*(1-t)*t*p1.z);
 const ARC = 70, MAXA = 8; const arcPool = new Pool(MAXA * ARC); const arcs = [];
@@ -159,27 +164,28 @@ function spawnArc(c) {
 // ---------------------------------------------------------------- feed
 const feedList = document.getElementById('feedList');
 function feedAdd(html, cls) { const li = document.createElement('li'); if (cls) li.className = cls; li.innerHTML = html; feedList.prepend(li); while (feedList.children.length > 40) feedList.lastChild.remove(); }
-function feedEvent(e) { feedAdd(`<span class="dot" style="background:${colorOf(e.organ)}"></span><time>${hhmm(e.t)}</time><span><span class="organ">${esc(nice(e.organ))}</span>${esc(e.label)}</span>`); }
+function feedEvent(e) { feedAdd(`<span class="dot" style="background:${colorOf(e.organ)}"></span><time>${hhmm(e.t)}</time><span><span class="organ">${esc(nice(e.organ))}</span>${esc(e.label)}</span>`, e.severity ? `sev-${e.severity === 'red' ? 'red' : 'amber'}` : ''); }
 function feedCite(c) { feedAdd(`<span class="dot" style="background:var(--gold)"></span><time>${hhmm(c.t)}</time><span class="what"><b>${esc(nice(c.by))}</b> used a ${esc(nice(c.from))} experience${c.label ? `: ${esc(c.label.slice(0, 90))}` : ''}</span>`, 'bind'); }
 
 // ---------------------------------------------------------------- the record + clock
 const events = [], cites = [], seen = new Set(), seenCites = new Set();
-let evIdx = 0, ciIdx = 0, simT = 0, mode = 'live', speed = 240, nExp = 0, nBind = 0;
+let evIdx = 0, ciIdx = 0, simT = 0, mode = 'live', speed = 240, nExp = 0, nBind = 0, nTrouble = 0;
 const fieldHeld = document.getElementById('fieldHeld');
 const window0 = () => serverNow() - WINDOW_SEC;
 function noteEvent(e) { // counts and side text for an event that has now happened on screen (inside the window)
   if (e.t < window0()) return;
   const o = organBy.get(e.organ);
-  if (o) { o.recent.push(e.t); o.total++; o.flash = Math.max(o.flash, 1); o.last = e.label; }
+  if (o) { o.recent.push(e.t); o.total++; o.flash = Math.max(o.flash, 1); o.last = e.label; if (e.severity) { o.trouble++; if (e.severity === 'red') o.troubleRed++; } }
+  if (e.severity) nTrouble++;
   if (e.kind === 'field_dominance_run') fieldHeld.textContent = e.label;
   nExp++;
 }
 // Counts from the record itself: everything in [window start, simT]. Touches no comet, arc or feed line.
 function recount() {
-  for (const o of organs) { o.recent = []; o.total = 0; o.last = ''; }
-  nExp = 0; nBind = 0; fieldHeld.textContent = '—';
+  for (const o of organs) { o.recent = []; o.total = 0; o.last = ''; o.trouble = 0; o.troubleRed = 0; }
+  nExp = 0; nBind = 0; nTrouble = 0; fieldHeld.textContent = '—';
   for (let i = 0; i < evIdx; i++) noteEvent(events[i]);
-  for (const o of organs) { o.recent = o.recent.filter((t) => simT - t < 1800); o.flash = 0; }
+  for (const o of organs) { o.recent = o.recent.filter((t) => simT - t < 1800); o.flash = 0; o.alert = 0; }
   const lo = window0();
   for (let i = 0; i < ciIdx; i++) if (cites[i].t >= lo) nBind++;
 }
@@ -257,11 +263,15 @@ async function pollEvents() {
 async function pollState() {
   try {
     const res = await fetch('/api/inner-sky/state'); if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const d = await res.json(); stateNow = d.now;
+    const d = await res.json(); const prevNow = stateNow; stateNow = d.now;
     if (d.body) {
       for (const s of d.body.services) {
         if (!services.has(s.id)) { if (services.size >= MAX_SVC) continue; services.set(s.id, { id: s.id, pos: shellPos(s.id), phase: Math.random() * 6.28, rate: null, glow: 0, pending: 0, emit: 0, acc: 0 }); }
-        Object.assign(services.get(s.id), { n: s.n, last: s.last });
+        const sv = services.get(s.id), wasLive = sv.n != null && core.isLive(sv, prevNow, LIVE_SEC); // as of the last poll
+        Object.assign(sv, { n: s.n, last: s.last });
+        const liveNow = core.isLive(sv, d.now, LIVE_SEC);
+        if (wasLive && !liveNow) sv.lost = 1; // it just went silent: fade out through red
+        else if (liveNow) sv.lost = 0;       // it spoke again: no red left over
       }
       const sr = core.countRates(serviceRatesPrev, d.body.services, (s) => s.id, d.now); serviceRatesPrev = sr.next;
       for (const [id, r] of Object.entries(sr.rates)) if (services.has(id)) services.get(id).rate = r;
@@ -328,7 +338,7 @@ function hover() {
   if (!best) for (const s of services.values()) { const p = toScreen(s.pos); const d = Math.hypot(p.x - mouse.x, p.y - mouse.y); if (d < bd) { bd = d; best = { s }; } }
   if (!best) { tip.hidden = true; return; }
   if (best.core) { tip.innerHTML = `<b style="color:#fff1c4">Orion's now</b><br>The shared stream of experiences every part of Orion reads (the temporal self). Each comet is one experience landing in it, and the glow flares as they land. ${nExp.toLocaleString()} landed in the window.`; }
-  else if (best.o) { const o = best.o; tip.innerHTML = `<b style="color:${colorOf(o.name)}">${esc(nice(o.name))}</b><br>${o.total} experiences in the window · ${o.recent.length} in the last 30 min${o.last ? `<br><span style="color:var(--muted)">Latest: ${esc(o.last.slice(0, 140))}</span>` : ''}`; }
+  else if (best.o) { const o = best.o; tip.innerHTML = `<b style="color:${colorOf(o.name)}">${esc(nice(o.name))}</b><br>${o.total} experiences in the window · ${o.recent.length} in the last 30 min${o.trouble ? ` · <span style="color:${o.troubleRed ? SEV.red : SEV.amber}">${o.trouble} with a problem${o.troubleRed ? ` (${o.troubleRed} broken)` : ''}</span>` : ''}${o.last ? `<br><span style="color:var(--muted)">Latest: ${esc(o.last.slice(0, 140))}</span>` : ''}`; }
   else {
     const s = best.s, live = core.isLive(s, stateNow, LIVE_SEC);
     tip.innerHTML = `<b>${esc(s.id)}</b><br>${s.last == null ? 'Never published' : live ? `Last spoke ${ago(stateNow - s.last)} ago` : `<span style="color:var(--warn)">Silent for ${ago(stateNow - s.last)}</span>`}<br><span style="color:var(--muted)">${s.rate == null ? 'Rate: measuring (two readings needed)' : `${s.rate.toFixed(s.rate < 1 ? 2 : 0)} messages/s now`} · ${(s.n || 0).toLocaleString()} lifetime</span>`;
@@ -337,8 +347,8 @@ function hover() {
 }
 
 // ---------------------------------------------------------------- frame
-const clk = new THREE.Clock(); const tmp = new THREE.Vector3(); const ORIGIN = new THREE.Vector3();
-const sExp = document.getElementById('sExp'), sBind = document.getElementById('sBind');
+const clk = new THREE.Clock(); const tmp = new THREE.Vector3(); const tmpC = new THREE.Color(); const ORIGIN = new THREE.Vector3();
+const sExp = document.getElementById('sExp'), sBind = document.getElementById('sBind'), sTrouble = document.getElementById('sTrouble');
 function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clk.getDelta(), 0.1), now = clk.elapsedTime;
@@ -350,6 +360,7 @@ function frame() {
     const live = core.isLive(s, stateNow, LIVE_SEC);
     if (s.pending > 0) { s.acc += dt * s.emit; while (s.acc >= 1 && s.pending > 0) { s.acc -= 1; s.pending--; s.glow = Math.min(3, s.glow + 0.7); if (sparks.length < sparkPool.n) sparks.push({ s, t: 0, dir: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.25) }); } }
     s.glow *= Math.pow(0.08, dt);
+    if (s.lost) { s.lost = Math.max(0, s.lost - dt / 20); svcPool.set(si++, s.pos, SEV_C.red, 0.3 + 0.5 * s.lost, 0.5 + 0.5 * s.lost); continue; }
     const sz = (live ? 0.3 : 0.26) + 0.22 * s.glow;
     svcPool.set(si++, s.pos, live ? C_LIVE : C_DEAD, Math.min(sz, 1.1), live ? Math.min(1, 0.45 + 0.25 * s.glow + 0.1 * Math.sin(now * 1.3 + s.phase)) : 0.5);
   }
@@ -368,7 +379,7 @@ function frame() {
   for (let i = 0; i < pulsePool.n; i++) {
     const p = pulses[i]; if (!p) { pulsePool.hide(i); continue; }
     const f = p.t * SEG, k = Math.floor(f), pts = p.l.curve; tmp.copy(pts[k]).lerp(pts[Math.min(SEG, k + 1)], f - k);
-    pulsePool.set(i, tmp, C_PULSE, 0.5, Math.sin(Math.PI * p.t));
+    pulsePool.set(i, tmp, p.l.slow ? SEV_C.red : C_PULSE, p.l.slow ? 0.6 : 0.5, Math.sin(Math.PI * p.t));
   }
   pulsePool.flush();
 
@@ -376,9 +387,11 @@ function frame() {
     organs.forEach((o, i) => {
       while (o.recent.length && simT - o.recent[0] > 1800) o.recent.shift();
       o.flash = Math.max(0, o.flash - dt * 2.2);
+      o.alert = Math.max(0, o.alert - dt * 0.8);
       const sz = 0.7 + 0.55 * Math.log2(1 + o.recent.length) + 0.4 * Math.min(o.flash, 1.5);
+      const halo = o.alert > 0 && o.alertC ? tmpC.copy(o.color).lerp(o.alertC, Math.min(1, o.alert)) : o.color;
       organPool.set(i * 2, o.pos, o.color, sz, o.total ? 1 : 0.35);
-      organPool.set(i * 2 + 1, o.pos, o.color, sz * 3.2, 0.12 + 0.12 * Math.min(o.flash, 2));
+      organPool.set(i * 2 + 1, o.pos, halo, sz * (3.2 + 0.6 * Math.min(o.alert, 1.5)), 0.12 + 0.12 * Math.min(o.flash, 2) + 0.2 * Math.min(o.alert, 1));
       const s = toScreen(o.pos); labels[i].style.left = s.x + 'px'; labels[i].style.top = s.y + 'px'; labels[i].style.opacity = s.z < 1 ? 0.85 : 0;
     });
     organPool.flush();
@@ -404,7 +417,7 @@ function frame() {
   corePool.set(2, ORIGIN, C_HALO, 13 + 3 * coreBoost, 0.06);
   corePool.flush();
 
-  sExp.textContent = nExp.toLocaleString(); sBind.textContent = nBind;
+  sExp.textContent = nExp.toLocaleString(); sBind.textContent = nBind; sTrouble.textContent = nTrouble.toLocaleString();
   drawTimeline(); hover();
   controls.update(); composer.render();
 }

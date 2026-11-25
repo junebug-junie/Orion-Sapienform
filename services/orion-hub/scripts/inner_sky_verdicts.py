@@ -19,6 +19,8 @@ VERDICT_SEVERITY: dict[str, str] = {
     "miscalibrated": "amber",
     "unreliable": "amber",
     "abandoned": "amber",
+    # intention_close (integration patch 7a): a promise Prime took on was not carried
+    "not_produced": "amber",
 }
 # Verdicts that carry a reason after a fixed head (reading_turn): the head decides.
 VERDICT_SEVERITY_PREFIX: dict[str, str] = {
@@ -33,6 +35,8 @@ VERDICT_NORMAL = frozenset({
     "confirmed", "disconfirmed", "unscored",
     # dream_day: a quiet day left nothing to keep
     "no_lasting_trace",
+    # personality_choice (integration patch 7a): Prime chose an option, or chose to wait; both are normal
+    "chose", "declined_all",
 })
 def severity_of(verdict: Any) -> Optional[str]:
     v = str(verdict or "").strip()

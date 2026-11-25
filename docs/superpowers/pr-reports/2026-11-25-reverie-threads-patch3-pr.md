@@ -71,6 +71,9 @@ scripts/check_migration_required_by.py --base origin/main -> OK (1 new migration
 scripts/check_env_template_parity.py -> PASS; check_env_key_single_source.py -> OK
 scripts/check_integration_seam.py --require-base -> OK; check_verb_physiology.py -> OK
 check_scripts_dir_no_stdlib_shadow.py -> clean; git diff --check -> clean
+orion/integration/evals (now-ablation fixtures render reverie_question.j2) -> pass; run_now_ablation_eval --offline -> PASS
+  (first CI run failed here: the new thread block added one blank line to the non-thread prompt; fixed with
+   whitespace so the prompt is byte-identical when no thread is shown)
 ```
 
 ## Evals run

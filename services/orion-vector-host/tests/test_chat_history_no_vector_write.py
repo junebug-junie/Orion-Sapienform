@@ -106,7 +106,7 @@ def test_handle_chat_history_still_embeds_and_feeds_tissue(monkeypatch, _fake_em
 
     async def _spy_feed_tissue(embedding, **kwargs):
         calls.append((embedding, kwargs))
-        return await real_feed_tissue(embedding, broadcast=False, **kwargs)
+        return await real_feed_tissue(embedding, **kwargs)
 
     monkeypatch.setattr(vector_host_main, "feed_tissue", _spy_feed_tissue)
 
@@ -116,7 +116,7 @@ def test_handle_chat_history_still_embeds_and_feeds_tissue(monkeypatch, _fake_em
     assert len(calls) == 1
     embedding_arg, kwargs = calls[0]
     assert embedding_arg == [0.1, 0.2, 0.3, 0.4]
-    assert kwargs["doc_id"] == "msg-1"
+    assert kwargs == {}  # doc_id/correlation_id only fed the retired /ws/tissue broadcast
 
 
 def test_handle_chat_history_skips_non_embed_role(monkeypatch, _fake_embedder):

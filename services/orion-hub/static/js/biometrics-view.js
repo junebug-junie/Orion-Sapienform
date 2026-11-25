@@ -2,7 +2,7 @@
  * Biometrics view -- drives two related surfaces from one module:
  *
  * 1. The Cognitive EKG card's toggle (landing "hub" tab): swaps between the
- *    /spark/ui Substrate Brain State iframe and a compact Athena+Circe+Hecate
+ *    Inner Sky iframe (static/inner-sky.html?embed=1) and a compact Athena+Circe+Hecate
  *    biometrics preview, in the same card slot. Clicking the preview opens
  *    the full modal.
  * 2. The near-fullscreen Biometrics modal: 5 sub-tabs (Athena / Circe / Hecate /

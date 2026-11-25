@@ -326,18 +326,18 @@
           type="button"
           id="ekgDrawerRail"
           class="hub-ekg-drawer__rail"
-          aria-label="Open Cognitive EKG drawer"
-          title="Open Cognitive EKG"
-        ><span>Cognitive EKG</span><span aria-hidden="true">▶</span></button>
+          aria-label="Open Inner Sky drawer"
+          title="Open Inner Sky"
+        ><span>Inner Sky</span><span aria-hidden="true">▶</span></button>
         <div class="flex items-center justify-between mb-1 hub-ekg-drawer__head">
-          <h2 id="ekgCardTitle" class="text-xl font-bold text-white">Cognitive EKG</h2>
+          <h2 id="ekgCardTitle" class="text-xl font-bold text-white">Inner Sky</h2>
           <div class="flex items-center gap-2">
           <button
             type="button"
             id="ekgDrawerToggle"
             class="px-2 py-1 rounded-lg border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:bg-gray-700 hover:text-white"
-            title="Slide the EKG away and give the chat the full width"
-            aria-label="Collapse Cognitive EKG drawer"
+            title="Slide the Inner Sky away and give the chat the full width"
+            aria-label="Collapse Inner Sky drawer"
             aria-expanded="true"
             aria-controls="ekgDrawer"
           >◀</button>
@@ -345,14 +345,14 @@
             type="button"
             id="ekgViewToggle"
             class="px-2 py-1 rounded-lg border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:bg-gray-700 hover:text-white"
-            title="Toggle between Substrate Brain State and a Biometrics preview"
-            aria-label="Toggle Cognitive EKG / Biometrics view"
+            title="Toggle between the Inner Sky and a Biometrics preview"
+            aria-label="Toggle Inner Sky / Biometrics view"
           >Biometrics ⇄</button>
           </div>
         </div>
 
         <div id="stateVisualizerContainer" class="w-full flex-1 bg-gray-800/50 rounded-lg overflow-hidden border border-gray-800 shadow-inner">
-          <iframe src="/spark/ui" class="w-full h-full border-0" title="Orion Cognitive EKG"></iframe>
+          <iframe src="/static/inner-sky.html?embed=1&v={{HUB_UI_ASSET_VERSION}}" class="w-full h-full border-0" title="Orion's Inner Sky: experiences, bindings and services, live"></iframe>
         </div>
 
         <div id="biometricsPreviewContainer" class="hidden w-full flex-1 bg-gray-800/50 rounded-lg overflow-hidden border border-gray-800 shadow-inner p-3 cursor-pointer" title="Click to open the full Biometrics view">

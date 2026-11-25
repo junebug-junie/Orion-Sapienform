@@ -1742,12 +1742,9 @@ substrate-convergence.md`.
 
 Frames live in `substrate_brain_frame_log` (24-hour retention, 5s cadence) and are exposed
 read-only via orion-hub's `/api/self-brain/frames/` endpoints. The Self-Brain tab renders all
-five dimensions above (including the pinned/dead ones, disclosed as such); `services/orion-
-vector-host`'s substrate-state page (`/spark/ui`) renders only the three live-verified signals
-(`honesty_metrics`, `field_anomaly`, plus `frame.spotlight.coalition_stability` --
-`AttentionBroadcastProjectionV1.coalition_stability_score`, confirmed 0.3–0.9 real variance
-over a 7-minute window, already exposed on the frame's existing `spotlight` field with no new
-wiring needed).
+five dimensions above (including the pinned/dead ones, disclosed as such). The old `/spark/ui`
+substrate-state page that drew three of these signals as a synthwave grid was retired 2026-11-25; the
+Hub's drawer is now the Inner Sky (`services/orion-hub/static/inner-sky.html`), which draws stored rows.
 
 **Frame storage / sampling:** Full node/edge graph samples are included (best-effort
 decoration, no continuity guarantee across frames). Regions are the trackable spine.

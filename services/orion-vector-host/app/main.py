@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
-from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -28,7 +24,6 @@ from orion.schemas.chat_gpt_log import ChatGptMessageV1
 from orion.schemas.social_chat import SocialRoomTurnStoredV1
 from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
 
-from .conn_manager import manager as tissue_ws_manager
 from .embedder import Embedder
 from .reranker import MAX_PAIRS as MAX_RERANK_PAIRS, Reranker
 from .settings import settings
@@ -160,11 +155,7 @@ async def _publish_semantic_upsert(
     # a tissue-feed error must never break the real embedding/upsert
     # pipeline it rides on.
     try:
-        await feed_tissue(
-            embedding,
-            doc_id=doc_id,
-            correlation_id=str(env.correlation_id or doc_id),
-        )
+        await feed_tissue(embedding)
     except Exception as exc:
         logger.warning("OrionTissue feed failed doc_id=%s error=%s", doc_id, exc)
 
@@ -216,11 +207,7 @@ async def _handle_chat_history(env: BaseEnvelope) -> None:
         return
 
     try:
-        await feed_tissue(
-            embedding,
-            doc_id=doc_id,
-            correlation_id=str(env.correlation_id or doc_id),
-        )
+        await feed_tissue(embedding)
     except Exception as exc:
         logger.warning("OrionTissue feed failed doc_id=%s error=%s", doc_id, exc)
 
@@ -321,11 +308,7 @@ async def _handle_chat_turn(env: BaseEnvelope) -> None:
         return
 
     try:
-        await feed_tissue(
-            embedding,
-            doc_id=doc_id,
-            correlation_id=str(env.correlation_id or doc_id),
-        )
+        await feed_tissue(embedding)
     except Exception as exc:
         logger.warning("OrionTissue feed failed doc_id=%s error=%s", doc_id, exc)
 
@@ -680,31 +663,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# --- OrionTissue read model / EKG UI ---------------------------------------
-# New home for the "Cognitive EKG" surface (2026-07-28, spark-introspector
-# retirement). Routes are UNPREFIXED here on purpose: the operator's
-# Tailscale Serve mount (`/spark -> http://127.0.0.1:8320`) strips the
-# `/spark` prefix before forwarding -- confirmed live via
-# `/spark/spark/ui` returning 200 and `/spark/health` (an existing
-# unprefixed route) already working. Mounting this router under its own
-# `/spark` prefix double-counted that segment and 404'd every request.
-# The frontend (tissue_viz.js, index.html) is unaffected -- it derives
-# WS/fetch URLs from the browser's visible `window.location.pathname`,
-# which still shows the full `/spark/...` path regardless of how the
-# proxy forwards internally.
+# --- OrionTissue read model ---------------------------------------------------
+# Routes are UNPREFIXED on purpose: the operator's Tailscale Serve mount
+# (`/spark -> http://127.0.0.1:8320`) strips the `/spark` prefix before
+# forwarding. The old `/spark/ui` synthwave page, its `/ws/tissue` socket and
+# the `/api/test-pulse` WS smoke were retired 2026-11-25: the Hub's Cognitive
+# EKG drawer is now the Inner Sky (services/orion-hub/static/inner-sky.html),
+# which draws stored rows instead of three dials.
 spark_router = APIRouter()
-
-
-@spark_router.get("/ui")
-async def spark_ui() -> FileResponse:
-    return FileResponse("app/static/index.html")
 
 
 @spark_router.get("/api/tissue/state")
 async def spark_tissue_state() -> Dict[str, Any]:
-    """Lightweight HTTP read model, equivalent to the WS broadcast's `stats`
-    -- all four fields come straight from OrionTissue.phi() (real tensor
-    state), never injected from self-state or any other source."""
+    """Lightweight HTTP read model of OrionTissue -- all four fields come
+    straight from OrionTissue.phi() (real tensor state), never injected from
+    self-state or any other source."""
     phi_stats = get_phi_stats()
     return {
         "embedding_similarity": phi_stats.get("embedding_similarity", 0.0),
@@ -715,44 +688,7 @@ async def spark_tissue_state() -> Dict[str, Any]:
     }
 
 
-@spark_router.websocket("/ws/tissue")
-async def spark_tissue_ws(websocket: WebSocket) -> None:
-    await tissue_ws_manager.connect(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        tissue_ws_manager.disconnect(websocket)
-    except Exception as exc:
-        logger.warning("tissue websocket error: %s", exc)
-        tissue_ws_manager.disconnect(websocket)
-
-
-@spark_router.post("/api/test-pulse")
-async def spark_test_pulse() -> Dict[str, Any]:
-    """Manual WS-pipe smoke check -- broadcasts a random tissue.update frame
-    without touching real TISSUE state. Ported as-is from the old service's
-    debug endpoint (app/main.py's trigger_test_pulse); useful for verifying
-    the UI/WS wiring survived the move independent of real chat traffic."""
-    payload = {
-        "type": "tissue.update",
-        "telemetry_id": str(uuid4()),
-        "correlation_id": f"TEST-{str(uuid4())[:8]}",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "stats": {
-            "embedding_similarity": random.random(),
-            "novelty_zscore": random.random(),
-            "polarity_diff": random.random(),
-            "mean_abs_activation": random.random(),
-        },
-        "metadata": {"source": "manual_test_pulse"},
-    }
-    await tissue_ws_manager.broadcast(payload)
-    return {"status": "broadcast_sent", "payload": payload}
-
-
 app.include_router(spark_router)
-app.mount("/static", StaticFiles(directory="app/static"), name="spark_static")
 
 
 @app.get("/health")

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orion's Inner Sky</title>
+<!--
+  Inner Sky: the Hub's Cognitive EKG. Every light is one stored row (see scripts/inner_sky_routes.py):
+  comets = temporal_self_event experiences, gold arcs = experience_use bindings, stars + blue pulses =
+  the bus synaptic graph's services and cause-and-effect links at their measured message rates.
+  ?embed=1 is the compact drawer view on the Hub's main page.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --void: #05060d;
+  --glass: rgba(14, 17, 34, 0.72);
+  --line: #262c4a;
+  --text: #dfe5ff;
+  --muted: #8790b8;
+  --gold: #ffc44d;
+  --live: #9cc8ff;
+  --warn: #ff8a5c;
+  --f-display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; margin: 0; }
+body { background: var(--void); color: var(--text); font-family: var(--f-body); overflow: hidden; }
+#sky { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+.hud { position: fixed; z-index: 2; pointer-events: none; }
+.hud > * { pointer-events: auto; }
+#top { top: calc(env(safe-area-inset-top, 0px) + 18px); left: max(18px, env(safe-area-inset-left, 0px)); max-width: min(560px, 60vw); }
+h1 { margin: 0; font-family: var(--f-display); font-weight: 600; font-size: 26px; letter-spacing: 0.06em; text-transform: uppercase; }
+.sub { margin-top: 4px; color: var(--muted); font-size: 13px; }
+.mode { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--live); color: var(--live); font: 500 11px var(--f-mono); letter-spacing: 0.08em; vertical-align: 3px; }
+.mode.replay { border-color: var(--gold); color: var(--gold); }
+.stats { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px; font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.stats b { display: block; font-size: 20px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
+.stats .gold b { color: var(--gold); }
+#problems { margin-top: 10px; font: 12px var(--f-mono); color: var(--warn); }
+#feed { top: calc(env(safe-area-inset-top, 0px) + 18px); right: max(18px, env(safe-area-inset-right, 0px)); bottom: 150px; width: 340px; display: flex; flex-direction: column; background: var(--glass); border: 1px solid var(--line); border-radius: 12px; backdrop-filter: blur(6px); }
+#feed h2 { margin: 0; padding: 12px 14px 8px; font-family: var(--f-display); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+#feedList { list-style: none; margin: 0; padding: 0 8px 8px; overflow-y: auto; min-height: 0; flex: 1; }
+#feedList li { display: grid; grid-template-columns: 10px 44px 1fr; gap: 8px; align-items: baseline; padding: 6px; border-radius: 6px; font-size: 12.5px; line-height: 1.35; animation: arrive 0.6s ease-out; overflow-wrap: anywhere; }
+#feedList li .dot { width: 8px; height: 8px; border-radius: 50%; transform: translateY(1px); }
+#feedList li time { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+#feedList li .organ { font-family: var(--f-mono); font-size: 11px; color: var(--muted); margin-right: 6px; }
+#feedList li.bind { background: rgba(255, 196, 77, 0.12); }
+#feedList li.bind .what { color: var(--gold); }
+@keyframes arrive { from { background: rgba(156, 200, 255, 0.16); } to { background: transparent; } }
+#focus { left: 50%; transform: translateX(-50%); bottom: 132px; text-align: center; font-family: var(--f-mono); font-size: 12px; color: var(--muted); white-space: nowrap; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; }
+#focus span { color: var(--text); }
+#bar { left: max(18px, env(safe-area-inset-left, 0px)); right: max(18px, env(safe-area-inset-right, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); display: flex; gap: 12px; align-items: center; background: var(--glass); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; backdrop-filter: blur(6px); }
+#bar button { font: 500 12px var(--f-mono); color: var(--text); background: #171c38; border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; cursor: pointer; }
+#bar button[aria-pressed="true"] { border-color: var(--live); color: var(--live); }
+#bar button:focus-visible, #timeline:focus-visible, #openFull:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+.speeds { display: flex; gap: 6px; }
+#timeline { flex: 1; min-width: 0; height: 64px; cursor: pointer; display: block; }
+#clock { font: 500 13px var(--f-mono); min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
+.label { position: fixed; z-index: 1; pointer-events: none; transform: translate(-50%, -170%); font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.04em; white-space: nowrap; text-shadow: 0 0 6px #000, 0 0 2px #000; }
+#tip { position: fixed; z-index: 3; pointer-events: none; max-width: 300px; background: rgba(10, 12, 26, 0.94); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.4; }
+#tip b { font-family: var(--f-mono); font-weight: 500; }
+#legend { left: max(18px, env(safe-area-inset-left, 0px)); bottom: 150px; font-size: 12px; color: var(--muted); line-height: 1.7; max-width: 300px; }
+#legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: -1px; }
+#openFull { display: none; right: 12px; bottom: 12px; font: 500 12px var(--f-mono); color: var(--live); background: var(--glass); border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px; text-decoration: none; }
+#err { position: fixed; z-index: 9; left: 50%; top: 40%; transform: translate(-50%, -50%); max-width: min(560px, calc(100vw - 32px)); background: #1a0f14; border: 1px solid #ff5d73; color: #ffd6dc; border-radius: 10px; padding: 14px 16px; font: 13px/1.5 var(--f-mono); white-space: pre-wrap; }
+body.embed #feed, body.embed #legend, body.embed #bar, body.embed .sub, body.embed #focus { display: none; }
+body.embed #top { top: 10px; left: 12px; }
+body.embed h1 { font-size: 15px; }
+body.embed .stats { margin-top: 6px; gap: 12px; }
+body.embed .stats b { font-size: 15px; }
+body.embed #openFull { display: block; }
+body.embed .label { font-size: 10px; }
+@media (max-width: 860px) {
+  #feed, #legend { display: none; }
+  #top { max-width: calc(100vw - 32px); }
+  h1 { font-size: 20px; }
+  .speeds button:first-child { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { #feedList li { animation: none; } }
+</style>
+</head>
+<body>
+<canvas id="sky" aria-label="Orion's experiences, bindings and services, drawn live"></canvas>
+
+<div class="hud" id="top">
+  <h1>Orion's Inner Sky <span id="mode" class="mode">LIVE</span></h1>
+  <div class="sub">Every light is one stored row. Last 12 hours.</div>
+  <div class="stats">
+    <div><b id="sExp">0</b>experiences</div>
+    <div class="gold"><b id="sBind">0</b>bindings</div>
+    <div><b id="sLive">–</b>services live</div>
+  </div>
+  <div id="problems" hidden></div>
+</div>
+
+<div class="hud" id="legend">
+  <div><i style="background:#d6e6ff"></i>Outer stars: services. Dim = silent over an hour.</div>
+  <div><i style="background:#9cc8ff"></i>Blue pulses: cause-and-effect links, at their real message rate.</div>
+  <div><i style="background:#5cf2c4"></i>Comets: one experience each, flying inward.</div>
+  <div><i style="background:#ffc44d"></i>Gold arc: one part used another part's experience.</div>
+</div>
+
+<aside class="hud" id="feed" aria-label="Experience feed">
+  <h2>Experiences as they happen</h2>
+  <ul id="feedList"></ul>
+</aside>
+
+<div class="hud" id="focus">Attending to: <span id="attn">—</span> · field held by: <span id="fieldHeld">—</span></div>
+
+<div class="hud" id="bar">
+  <button id="liveBtn" type="button" aria-pressed="true">Live</button>
+  <button id="replayBtn" type="button" aria-pressed="false">Replay 12 h</button>
+  <div class="speeds" role="group" aria-label="Replay speed">
+    <button type="button" data-speed="60" aria-pressed="false">60×</button>
+    <button type="button" data-speed="240" aria-pressed="true">240×</button>
+    <button type="button" data-speed="960" aria-pressed="false">960×</button>
+  </div>
+  <canvas id="timeline" tabindex="0" aria-label="Last 12 hours. Click to replay from that moment. Bars are experiences per five minutes; gold lines are bindings."></canvas>
+  <div id="clock">--:--</div>
+</div>
+
+<a class="hud" id="openFull" href="/static/inner-sky.html" target="_top">Open full sky ↗</a>
+<div id="tip" hidden></div>
+<div id="err" hidden></div>
+
+<script>
+  if (/[?&]embed=1\b/.test(location.search)) document.body.classList.add('embed');
+  function showErr(msg) { var el = document.getElementById('err'); el.hidden = false; el.textContent = 'The sky could not start:\n' + msg; }
+  window.addEventListener('error', function (e) { showErr((e.message || 'script error') + (e.filename ? '\n' + e.filename : '')); });
+  window.addEventListener('unhandledrejection', function (e) { showErr(String(e.reason && (e.reason.stack || e.reason.message) || e.reason)); });
+  setTimeout(function () { if (!window.__skyStarted) showErr('Nothing started after 15 s. The 3D library or the feed did not load.'); }, 15000);
+</script>
+<script src="/static/js/inner-sky-core.js?v=1"></script>
+<script type="module" src="/static/js/inner-sky.js?v=1"></script>
+</body>
+</html>

@@ -67,33 +67,15 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 `VECTOR_HOST_CHAT_MESSAGE_COLLECTION` / `VECTOR_HOST_CHAT_TURN_COLLECTION` were
 removed 2026-08-14 along with the dead vector-upsert write -- see above.
 
-## Substrate Brain State page (`/spark/ui`)
+## OrionTissue read model (`/spark/api/tissue/state`)
 
-Relocated 2026-07-28 from the retired `orion-spark-introspector` service (see
-`docs/superpowers/specs/2026-07-28-spark-introspector-retirement-and-honest-substrate-
-convergence.md`). Still contains OrionTissue's own real decay/diffusion tensor physics
-(`app/tissue_feed.py`, `orion/spark/orion_tissue.py`) exposed via `GET /api/tissue/state` and
-`WS /ws/tissue` -- fed by real per-turn embedding deltas, honestly labeled
-(`embedding_similarity`/`novelty_zscore`/`polarity_diff`/`mean_abs_activation`, no invented
-mood taxonomy).
+OrionTissue's decay/diffusion tensor (`app/tissue_feed.py`, `orion/spark/orion_tissue.py`) is still fed
+by real per-turn embedding deltas and readable at `GET /api/tissue/state`.
 
-**The page itself (`app/static/index.html` + `tissue_viz.js`) no longer displays those four
-tensor stats.** They're real but theory-orphaned (no independent link to reasoning quality,
-mood, or wellbeing) and, unlike the three signals below, weren't independently verified to
-resist saturation before being wired into a visual driver. The page's synthwave visualizer
-(kept as-is -- same grid/sun/hue mechanics) is now driven by three real signals it polls from
-orion-hub's `GET /api/self-brain/frames/tail` every 5s (`BRAIN_FRAME_INTERVAL_SEC`), each
-individually live-verified against real running data before being wired in:
-
-| Signal | Source | Live-verified range |
-|--------|--------|----------------------|
-| Prediction Confidence | `honesty_metrics` region, `orion-substrate-runtime` | 0.79–0.99 (2min real window) |
-| Coalition Stability | `frame.spotlight.coalition_stability` | 0.3–0.9 (7min real window) |
-| Field Anomaly | `field_anomaly` region, mood-arc encoder recon_loss | confirmed real anomalous→calm transition |
-
-Full candidate-rejection trace (why `self_state`, `node_kind`/`lane` `max()`/`min()`, and raw
-`bus_synaptic` `gap_zscore` were checked and dropped) lives in
-`services/orion-substrate-runtime/README.md`'s Brain Frames section and the spec doc above.
+The `/spark/ui` synthwave page, its `WS /ws/tissue` socket and the `POST /api/test-pulse` smoke were
+**retired 2026-11-25**. The Hub's Cognitive EKG drawer is now the Inner Sky
+(`services/orion-hub/static/inner-sky.html`), which draws stored rows (experiences, bindings, services)
+instead of three dials. Nothing else read the socket.
 
 ## Smoke Tests
 

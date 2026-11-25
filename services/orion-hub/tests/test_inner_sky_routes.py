@@ -152,3 +152,50 @@ def test_feed_eval_fails_an_empty_shell_and_passes_real_rows():
     shell = {"organs": ["camera"], "events": [{"organ": "unregistered", "kind": "x", "label": ""}], "cites": []}
     report = evaluate(shell, dict(state, body_error="down"))
     assert report["verdict"] == "FAIL" and len(report["failures"]) == 3
+
+
+class _FakeConn:
+    def __init__(self, sink):
+        self.sink = sink
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params):
+        self.sink.append((str(sql), dict(params)))
+        return []
+
+
+class _FakeEngine:
+    def __init__(self):
+        self.calls: list = []
+
+    def connect(self):
+        return _FakeConn(self.calls)
+
+
+def test_cursors_reread_an_overlap_so_late_committing_transactions_are_not_lost(monkeypatch):
+    eng = _FakeEngine()
+    monkeypatch.setattr(isr, "_pg_engine", lambda: eng)
+    isr._fetch_event_rows(1000.0, 10)
+    isr._fetch_cite_rows(2000.0, 10)
+    isr._fetch_event_rows(0.0, 10)  # first read: no overlap needed, the whole window comes back
+    (sql_e, p_e), (sql_c, p_c), (_, p_first) = eng.calls
+    assert "- make_interval(secs => :overlap)" in sql_e and "- make_interval(secs => :overlap)" in sql_c
+    assert p_e["overlap"] == p_c["overlap"] == isr.CURSOR_OVERLAP_SEC
+    assert p_first["overlap"] == 0
+    assert "u.use_id" in sql_c
+
+
+def test_cites_carry_a_stable_id_for_dedupe_and_the_cursor_never_moves_back(monkeypatch):
+    cite = {"use_id": "u-1", "event_id": "gpu_wait:1", "citing_organ": "curiosity", "cited_at": T, "source_kind": None}
+    assert isr.shape_cite(cite, ORGAN_OF)["id"] == "u-1"
+    # an overlap read can return only rows older than the cursor: the cursor must hold
+    old = {"event_id": "gpu_wait:1", "occurred_at": T, "source_kind": "gpu_wait", "label": "x", "verdict": None,
+           "payload_json": {}, "salience": None, "ingested_at": T}
+    c = _client(monkeypatch, [old], [dict(cite, cited_at=T)])
+    body = c.get("/api/inner-sky/events", params={"since": T.timestamp() + 30, "cite_since": T.timestamp() + 30}).json()
+    assert body["cursor"] == T.timestamp() + 30 and body["cite_cursor"] == T.timestamp() + 30

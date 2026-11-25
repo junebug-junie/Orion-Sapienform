@@ -109,9 +109,13 @@ function rebuildLinks(raw, rates) { // rates: measured msgs/s by link key (missi
 const pulsePool = new Pool(700); const pulses = [];
 
 // ---------------------------------------------------------------- experience organs (inner ring)
-const R_RING = 9.5; let organs = []; const organBy = new Map(); let organPool = null; let labels = [];
-function buildOrgans(names) {
-  if (organs.length) return;
+const R_RING = 9.5; let organs = []; const organBy = new Map(); let organPool = null; let labels = []; let ringLine = null;
+function buildOrgans(names) { // (re)builds the ring when the set of organs changes; counts are restored by recount()
+  if (organs.length === names.length && names.every((n, i) => organs[i].name === n)) return;
+  if (organPool) { scene.remove(organPool.points); organPool.g.dispose(); }
+  if (ringLine) { scene.remove(ringLine); ringLine.geometry.dispose(); }
+  for (const el of labels) el.remove();
+  organBy.clear();
   organs = names.map((name, i) => {
     const th = i / names.length * Math.PI * 2;
     return { name, pos: new THREE.Vector3(Math.cos(th) * R_RING, Math.sin(th * 2) * 0.6, Math.sin(th) * R_RING), color: new THREE.Color(colorOf(name)), recent: [], flash: 0, total: 0, last: '' };
@@ -119,29 +123,31 @@ function buildOrgans(names) {
   for (const o of organs) organBy.set(o.name, o);
   organPool = new Pool(organs.length * 2);
   const ring = []; for (let i = 0; i <= 128; i++) { const th = i / 128 * Math.PI * 2; ring.push(new THREE.Vector3(Math.cos(th) * R_RING, Math.sin(th * 2) * 0.6, Math.sin(th) * R_RING)); }
-  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring), new THREE.LineBasicMaterial({ color: 0x2a3160, transparent: true, opacity: 0.6 })));
+  ringLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring), new THREE.LineBasicMaterial({ color: 0x2a3160, transparent: true, opacity: 0.6 }));
+  scene.add(ringLine);
   labels = organs.map((o) => { const el = document.createElement('div'); el.className = 'label'; el.textContent = nice(o.name); el.style.color = colorOf(o.name); document.body.appendChild(el); return el; });
 }
 
 // ---------------------------------------------------------------- core, comets, binding arcs
 const corePool = new Pool(3); let coreBoost = 0;
 const C_CORE = new THREE.Color('#fff1c4'), C_HALO = new THREE.Color('#ffd98a');
-const TRAIL = 8, MAXC = 450; const cometPool = new Pool(MAXC * TRAIL); const comets = []; let cometSlot = 0;
+const TRAIL = 8, MAXC = 450; const cometPool = new Pool(MAXC * TRAIL); const comets = [];
+const freeComet = Array.from({ length: MAXC }, (_, i) => MAXC - 1 - i);
 function spawnComet(e) {
-  const o = organBy.get(e.organ); if (!o) return;
+  const o = organBy.get(e.organ); if (!o || !freeComet.length) return; // at the cap a comet is not drawn; it is still counted
   const lift = new THREE.Vector3((Math.random() - 0.5) * 3, 2 + Math.random() * 3, (Math.random() - 0.5) * 3);
   const sal = typeof e.salience === 'number' ? e.salience : 0;
-  comets.push({ slot: cometSlot, p0: o.pos.clone(), p1: o.pos.clone().multiplyScalar(0.5).add(lift), c: o.color, size: 0.55 * (1 + sal), age: 0, life: 2.4 + Math.random() * 0.6 });
-  cometSlot = (cometSlot + 1) % MAXC; if (comets.length > MAXC) comets.shift();
+  comets.push({ slot: freeComet.pop(), p0: o.pos.clone(), p1: o.pos.clone().multiplyScalar(0.5).add(lift), c: o.color, size: 0.55 * (1 + sal), age: 0, life: 2.4 + Math.random() * 0.6 });
 }
 const bez = (p0, p1, t, out) => out.set((1-t)*(1-t)*p0.x + 2*(1-t)*t*p1.x, (1-t)*(1-t)*p0.y + 2*(1-t)*t*p1.y, (1-t)*(1-t)*p0.z + 2*(1-t)*t*p1.z);
-const ARC = 70; const arcPool = new Pool(8 * ARC); const arcs = []; let arcSlot = 0;
+const ARC = 70, MAXA = 8; const arcPool = new Pool(MAXA * ARC); const arcs = [];
+const freeArc = Array.from({ length: MAXA }, (_, i) => MAXA - 1 - i);
 const C_GOLD = new THREE.Color('#ffc44d'), C_GOLDHI = new THREE.Color('#fff1c4');
 function spawnArc(c) {
-  const a = organBy.get(c.from), b = organBy.get(c.by); if (!a || !b) return;
+  const a = organBy.get(c.from), b = organBy.get(c.by); if (!a || !b || !freeArc.length) return;
   const mid = a.pos.clone().add(b.pos).multiplyScalar(0.5).add(new THREE.Vector3(0, 7, 0)); const pts = [];
   for (let i = 0; i < ARC; i++) { const t = i / (ARC - 1); pts.push(new THREE.Vector3((1-t)*(1-t)*a.pos.x + 2*(1-t)*t*mid.x + t*t*b.pos.x, (1-t)*(1-t)*a.pos.y + 2*(1-t)*t*mid.y + t*t*b.pos.y, (1-t)*(1-t)*a.pos.z + 2*(1-t)*t*mid.z + t*t*b.pos.z)); }
-  arcs.push({ slot: arcSlot, pts, age: 0, life: 14 }); arcSlot = (arcSlot + 1) % 8; if (arcs.length > 8) arcs.shift();
+  arcs.push({ slot: freeArc.pop(), pts, age: 0, life: 14 });
   a.flash = 2.5; b.flash = 2.5; coreBoost += 0.6;
 }
 
@@ -152,30 +158,48 @@ function feedEvent(e) { feedAdd(`<span class="dot" style="background:${colorOf(e
 function feedCite(c) { feedAdd(`<span class="dot" style="background:var(--gold)"></span><time>${hhmm(c.t)}</time><span class="what"><b>${esc(nice(c.by))}</b> used a ${esc(nice(c.from))} experience${c.label ? `: ${esc(c.label.slice(0, 90))}` : ''}</span>`, 'bind'); }
 
 // ---------------------------------------------------------------- the record + clock
-const events = [], cites = [], seen = new Set();
+const events = [], cites = [], seen = new Set(), seenCites = new Set();
 let evIdx = 0, ciIdx = 0, simT = 0, mode = 'live', speed = 240, nExp = 0, nBind = 0;
 const fieldHeld = document.getElementById('fieldHeld');
 const window0 = () => serverNow() - WINDOW_SEC;
-function noteEvent(e) { // counts and side text for an event that has now happened on screen
+function noteEvent(e) { // counts and side text for an event that has now happened on screen (inside the window)
+  if (e.t < window0()) return;
   const o = organBy.get(e.organ);
   if (o) { o.recent.push(e.t); o.total++; o.flash = Math.max(o.flash, 1); o.last = e.label; }
   if (e.kind === 'field_dominance_run') fieldHeld.textContent = e.label;
   nExp++;
+}
+// Counts from the record itself: everything in [window start, simT]. Touches no comet, arc or feed line.
+function recount() {
+  for (const o of organs) { o.recent = []; o.total = 0; o.last = ''; }
+  nExp = 0; nBind = 0; fieldHeld.textContent = '—';
+  for (let i = 0; i < evIdx; i++) noteEvent(events[i]);
+  for (const o of organs) { o.recent = o.recent.filter((t) => simT - t < 1800); o.flash = 0; }
+  const lo = window0();
+  for (let i = 0; i < ciIdx; i++) if (cites[i].t >= lo) nBind++;
+}
+// Drop rows that slid out of the 12 h window (they are all behind the playhead), then recount.
+function prune() {
+  const lo = window0() - 60;
+  let k = 0; while (k < events.length && events[k].t < lo) { seen.delete(events[k].id); k++; }
+  if (k) { events.splice(0, k); evIdx = Math.max(0, evIdx - k); }
+  let j = 0; while (j < cites.length && cites[j].t < lo) { seenCites.delete(cites[j].id); j++; }
+  if (j) { cites.splice(0, j); ciIdx = Math.max(0, ciIdx - j); }
+  recount();
 }
 function seek(t) {
   simT = Math.max(window0(), Math.min(serverNow(), t));
   evIdx = 0; while (evIdx < events.length && events[evIdx].t <= simT) evIdx++;
   ciIdx = 0; while (ciIdx < cites.length && cites[ciIdx].t <= simT) ciIdx++;
   comets.length = 0; arcs.length = 0;
+  freeComet.length = 0; for (let i = MAXC - 1; i >= 0; i--) freeComet.push(i);
+  freeArc.length = 0; for (let i = MAXA - 1; i >= 0; i--) freeArc.push(i);
   for (let i = 0; i < cometPool.n; i++) cometPool.hide(i);
   for (let i = 0; i < arcPool.n; i++) arcPool.hide(i);
-  for (const o of organs) { o.recent = []; o.total = 0; o.last = ''; o.flash = 0; }
-  feedList.innerHTML = ''; fieldHeld.textContent = '—'; nExp = 0; nBind = 0;
-  const lo = window0();
-  for (let i = 0; i < evIdx; i++) { const e = events[i]; if (e.t < lo) continue; noteEvent(e); }
-  for (const o of organs) { o.recent = o.recent.filter((t) => simT - t < 1800); o.flash = 0; }
-  for (const e of events.slice(Math.max(0, evIdx - 14), evIdx)) feedEvent(e);
-  for (let i = 0; i < ciIdx; i++) { if (cites[i].t >= lo) nBind++; if (simT - cites[i].t < 3600) feedCite(cites[i]); }
+  feedList.innerHTML = '';
+  recount();
+  for (const e of events.slice(Math.max(0, evIdx - 14), evIdx)) if (e.t >= window0()) feedEvent(e);
+  for (let i = 0; i < ciIdx; i++) if (simT - cites[i].t < 3600) feedCite(cites[i]);
 }
 function setMode(next) {
   mode = next;
@@ -187,7 +211,7 @@ function step(dt) {
   if (mode === 'live') simT = serverNow();
   else { simT += dt * speed; if (simT >= serverNow()) { setMode('live'); simT = serverNow(); } }
   while (evIdx < events.length && events[evIdx].t <= simT) { const e = events[evIdx++]; noteEvent(e); spawnComet(e); feedEvent(e); }
-  while (ciIdx < cites.length && cites[ciIdx].t <= simT) { const c = cites[ciIdx++]; nBind++; spawnArc(c); feedCite(c); }
+  while (ciIdx < cites.length && cites[ciIdx].t <= simT) { const c = cites[ciIdx++]; if (c.t >= window0()) nBind++; spawnArc(c); feedCite(c); }
 }
 
 // ---------------------------------------------------------------- polling
@@ -201,17 +225,24 @@ async function pollEvents() {
       if (!res.ok) throw new Error(`experience feed HTTP ${res.status}`);
       const d = await res.json();
       clockOffset = d.now - Date.now() / 1000;
-      buildOrgans(d.organs);
+      const names = [...d.organs];
+      for (const e of d.events) if (!names.includes(e.organ)) names.push(e.organ);
+      for (const c of d.cites) for (const o of [c.from, c.by]) if (!names.includes(o)) names.push(o);
+      const grew = names.length !== organs.length;
+      buildOrgans(names);
+      if (grew && booted) recount();
       for (const e of d.events) {
         if (seen.has(e.id) || e.t == null) continue; seen.add(e.id);
         const i = core.insertSorted(events, e, (x) => x.t);
-        if (booted && i < evIdx) { evIdx++; if (mode === 'live') { noteEvent(e); spawnComet(e); feedEvent(e); } }
+        // A late row behind the playhead: count it now; draw it only in Live (in Replay it is in the past).
+        if (booted && i < evIdx) { evIdx++; noteEvent(e); if (mode === 'live') { spawnComet(e); feedEvent(e); } }
       }
       for (const c of d.cites) {
+        if (seenCites.has(c.id) || c.t == null) continue; seenCites.add(c.id);
         const i = core.insertSorted(cites, c, (x) => x.t);
-        if (booted && i < ciIdx) { ciIdx++; if (mode === 'live') { nBind++; spawnArc(c); feedCite(c); } }
+        if (booted && i < ciIdx) { ciIdx++; if (c.t >= window0()) nBind++; if (mode === 'live') { spawnArc(c); feedCite(c); } }
       }
-      cursor = d.cursor; citeCursor = d.cite_cursor;
+      cursor = Math.max(cursor, d.cursor); citeCursor = Math.max(citeCursor, d.cite_cursor);
       if (!d.more) break;
     }
     setProblem('events', null);
@@ -330,14 +361,14 @@ function frame() {
     organPool.flush();
   }
 
-  for (let i = comets.length - 1; i >= 0; i--) { const c = comets[i]; c.age += dt; if (c.age >= c.life) { for (let k = 0; k < TRAIL; k++) cometPool.hide(c.slot * TRAIL + k); comets.splice(i, 1); coreBoost += 0.05; } }
+  for (let i = comets.length - 1; i >= 0; i--) { const c = comets[i]; c.age += dt; if (c.age >= c.life) { for (let k = 0; k < TRAIL; k++) cometPool.hide(c.slot * TRAIL + k); freeComet.push(c.slot); comets.splice(i, 1); coreBoost += 0.05; } }
   for (const c of comets) {
     const u = c.age / c.life, fade = 1 - u * u * u;
     for (let k = 0; k < TRAIL; k++) { const t = Math.max(0, u - k * 0.03); bez(c.p0, c.p1, t, tmp); cometPool.set(c.slot * TRAIL + k, tmp, c.c, c.size * (1 - k / TRAIL * 0.75), fade * (1 - k / TRAIL) * (t > 0 ? 1 : 0)); }
   }
   cometPool.flush();
 
-  for (let i = arcs.length - 1; i >= 0; i--) { arcs[i].age += dt; if (arcs[i].age >= arcs[i].life) { for (let k = 0; k < ARC; k++) arcPool.hide(arcs[i].slot * ARC + k); arcs.splice(i, 1); } }
+  for (let i = arcs.length - 1; i >= 0; i--) { arcs[i].age += dt; if (arcs[i].age >= arcs[i].life) { for (let k = 0; k < ARC; k++) arcPool.hide(arcs[i].slot * ARC + k); freeArc.push(arcs[i].slot); arcs.splice(i, 1); } }
   for (const a of arcs) {
     const head = Math.min(1, a.age / 2.2), fade = a.age < a.life - 4 ? 1 : (a.life - a.age) / 4;
     for (let k = 0; k < ARC; k++) { const t = k / (ARC - 1), nearHead = Math.max(0, 1 - Math.abs(t - head) * 12); arcPool.set(a.slot * ARC + k, a.pts[k], nearHead > 0.3 ? C_GOLDHI : C_GOLD, 0.32 + 0.6 * nearHead, t <= head ? fade * (0.55 + 0.45 * nearHead) : 0); }
@@ -356,8 +387,11 @@ function frame() {
 }
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); updateScale(); });
 
+// Each poll schedules the next only after it finishes, so two never run at once.
+const loop = (fn, ms) => { const tick = async () => { try { await fn(); } finally { setTimeout(tick, ms); } }; setTimeout(tick, ms); };
 await Promise.all([pollEvents(), pollState()]);
-setInterval(pollEvents, EVENTS_POLL_MS);
-setInterval(pollState, STATE_POLL_MS);
+loop(pollEvents, EVENTS_POLL_MS);
+loop(pollState, STATE_POLL_MS);
+setInterval(() => { if (booted) prune(); }, 60000);
 frame();
 window.__skyStarted = true;

@@ -43,6 +43,10 @@ EVENT_PAGE = 3000
 CITE_PAGE = 500
 LINK_WINDOW_SEC = 24 * 3600
 FRAME_TIMEOUT_SEC = 3.0
+# Cursors re-read this far back. ingested_at/cited_at are transaction-start times, so a transaction that
+# began earlier can commit after a later one was already polled; and a full page can end inside a group of
+# equal timestamps. The page dedupes by id, so the overlap costs only a few repeated rows.
+CURSOR_OVERLAP_SEC = 60
 UNREGISTERED = "unregistered"
 
 
@@ -91,6 +95,7 @@ def shape_cite(row: Mapping[str, Any], organ_of: Mapping[str, str]) -> dict[str,
         else ""
     )
     return {
+        "id": str(row.get("use_id") or f"{event_id}|{row['citing_organ']}|{_epoch(row['cited_at'])}"),
         "t": _epoch(row["cited_at"]),
         "event_id": event_id,
         "by": str(row["citing_organ"]),
@@ -110,14 +115,14 @@ def _fetch_event_rows(since: float, limit: int) -> list[dict[str, Any]]:
         """
         SELECT event_id, occurred_at, source_kind, label, verdict, payload_json, salience, ingested_at
         FROM temporal_self_event
-        WHERE ingested_at > to_timestamp(:since)
+        WHERE ingested_at > to_timestamp(:since) - make_interval(secs => :overlap)
           AND occurred_at > now() - make_interval(hours => :hours)
         ORDER BY ingested_at, event_id
         LIMIT :limit
         """
     )
     with engine.connect() as conn:
-        return [dict(r._mapping) for r in conn.execute(sql, {"since": since, "hours": WINDOW_HOURS, "limit": limit})]
+        return [dict(r._mapping) for r in conn.execute(sql, {"since": since, "overlap": CURSOR_OVERLAP_SEC if since > 0 else 0, "hours": WINDOW_HOURS, "limit": limit})]
 
 
 def _fetch_cite_rows(since: float, limit: int) -> list[dict[str, Any]]:
@@ -128,17 +133,17 @@ def _fetch_cite_rows(since: float, limit: int) -> list[dict[str, Any]]:
         raise HTTPException(503, "postgres_uri_not_configured")
     sql = text(
         """
-        SELECT u.event_id, u.citing_organ, u.cited_at, e.source_kind, e.label, e.verdict, e.payload_json
+        SELECT u.use_id, u.event_id, u.citing_organ, u.cited_at, e.source_kind, e.label, e.verdict, e.payload_json
         FROM experience_use u
         LEFT JOIN temporal_self_event e ON e.event_id = u.event_id
-        WHERE u.cited_at > to_timestamp(:since)
+        WHERE u.cited_at > to_timestamp(:since) - make_interval(secs => :overlap)
           AND u.cited_at > now() - make_interval(hours => :hours)
         ORDER BY u.cited_at, u.use_id
         LIMIT :limit
         """
     )
     with engine.connect() as conn:
-        return [dict(r._mapping) for r in conn.execute(sql, {"since": since, "hours": WINDOW_HOURS, "limit": limit})]
+        return [dict(r._mapping) for r in conn.execute(sql, {"since": since, "overlap": CURSOR_OVERLAP_SEC if since > 0 else 0, "hours": WINDOW_HOURS, "limit": limit})]
 
 
 @router.get("/events")
@@ -148,8 +153,9 @@ def events(
 ) -> dict[str, Any]:
     """Experiences stored after ``since`` and bindings after ``cite_since``, inside the last 12 hours.
 
-    Cursors move on store time, not occurrence time, so a row that lands late is still delivered once.
-    ``more`` says a page was full: ask again at once with the returned cursors."""
+    Cursors move on store time, not occurrence time, and every read re-covers the last CURSOR_OVERLAP_SEC,
+    so a row whose transaction committed late is still delivered; rows may repeat, and callers dedupe by
+    ``id``. ``more`` says a page was full: ask again at once with the returned cursors."""
     organ_of = load_organs().organ_of
     rows = _fetch_event_rows(since, EVENT_PAGE)
     cites = _fetch_cite_rows(cite_since, CITE_PAGE)
@@ -159,8 +165,8 @@ def events(
         "organs": list(load_organs().organs),
         "events": [shape_event(r, organ_of) for r in rows],
         "cites": [shape_cite(r, organ_of) for r in cites],
-        "cursor": _epoch(rows[-1]["ingested_at"]) if rows else since,
-        "cite_cursor": _epoch(cites[-1]["cited_at"]) if cites else cite_since,
+        "cursor": max(since, _epoch(rows[-1]["ingested_at"])) if rows else since,
+        "cite_cursor": max(cite_since, _epoch(cites[-1]["cited_at"])) if cites else cite_since,
         "more": len(rows) >= EVENT_PAGE or len(cites) >= CITE_PAGE,
     }
 

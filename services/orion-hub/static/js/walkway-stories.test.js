@@ -177,3 +177,11 @@ test('sentence parts: only the recorded ones, and the tally says where each verd
     'half-graded 2 (not counted yet)');
   assert.equal(ws.sourceText({}), '');
 });
+
+test('a link this card made says where it stands', () => {
+  assert.equal(ws.linkState({ applied: true }), 'Linked as the same person on this card.');
+  assert.equal(ws.linkState({ applied: false }), 'Same person: Orion links them on its next pass.');
+  assert.equal(ws.linkState({ undo_requested_at: 't' }), 'Undo asked for; Orion applies it on its next pass.');
+  assert.equal(ws.linkState({ undo_refused: 'still joined' }), 'Undo refused: still joined');
+  assert.equal(ws.linkState({ undone_at: 't', undo_refused: 'x' }), 'Link undone.');
+});

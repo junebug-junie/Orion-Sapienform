@@ -1344,6 +1344,14 @@ def run_one_individuals_cycle(
 
         with engine.begin() as conn:
             summary["answers_applied"] = _apply_answers(conn, ts)
+        # Link undos the Hub's story card asked for (who-card Patch D), under this cycle's lock.
+        try:
+            from app.vision_link_undo import apply_link_undos
+
+            with engine.begin() as conn:
+                summary.update(apply_link_undos(conn, ts))
+        except Exception as exc:
+            logger.warning("vision_link_undo_failed error=%s", exc)
         if cfg.split_on_verdict_enabled:
             from app.vision_split import apply_splits
 

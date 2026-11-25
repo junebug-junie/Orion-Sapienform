@@ -69,6 +69,13 @@
   // X" on a person never answers "Right people?" (Juniper's answer 2). The tally
   // line says how many verdicts came from parts and how many from the old buttons.
   //
+  // Same name, not linked (2026-11-24, who-card redesign Patch D). When Orion has
+  // another camera group with this person's typed name that nobody linked, the
+  // card asks: "Orion has another Sasha group. Same person?" with both pictures.
+  // Never linked without asking (Juniper's answer 4). A link made here shows
+  // "Linked as the same person - Undo" for 7 days; Undo asks Orion's next pass to
+  // remove it, and the card then says whether it was undone or why not.
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
@@ -549,7 +556,69 @@
     box.appendChild(picker);
     box.appendChild(whyInput);
     if (seenAs) box.appendChild(renderNotSame(doc, story, p, ctx.onNotSame));
+    if (p.same_name_other && typeof ctx.onSameName === "function") box.appendChild(renderSameName(doc, story, p, pics, ctx));
+    (Array.isArray(p.card_links) ? p.card_links : []).forEach((l) => box.appendChild(renderCardLink(doc, story, l, ctx)));
     return box;
+  }
+
+  // "Orion has another Sasha group. Same person?" with this person's picture and the other group's.
+  function renderSameName(doc, story, p, pics, ctx) {
+    const other = p.same_name_other;
+    const box = el(doc, "div", "space-y-1 rounded border border-sky-700/60 p-2");
+    box.setAttribute("data-person-same-name", other.individual_id);
+    box.appendChild(el(doc, "div", "text-xs text-sky-200", `Orion has another ${other.label} group. Same person?`));
+    const row = el(doc, "div", "flex flex-wrap items-end gap-2");
+    const mine = pics[0];
+    if (mine) {
+      const img = el(doc, "img", "h-20 w-auto max-w-[4rem] object-contain rounded border border-gray-600");
+      img.setAttribute("src", mine.url);
+      img.setAttribute("alt", `${p.label} on this story`);
+      row.appendChild(img);
+    }
+    if (other.thumb && THUMB_RE.test(other.thumb)) {
+      const img = el(doc, "img", "h-20 w-auto max-w-[4rem] object-contain rounded border border-sky-600");
+      img.setAttribute("src", `/api/vision/crop-thumbs/${other.thumb}`);
+      img.setAttribute("alt", `the other ${other.label} group (${String(other.short_id || "").slice(0, 8)})`);
+      img.setAttribute("data-person-same-name-picture", "1");
+      img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
+      row.appendChild(img);
+    } else {
+      row.appendChild(el(doc, "span", "text-[10px] text-gray-500", "(no picture of the other group)"));
+    }
+    box.appendChild(row);
+    const buttons = el(doc, "div", "flex flex-wrap gap-2");
+    [["same", "Yes, same person"], ["different", "No, different people"]].forEach(([value, label]) => {
+      const b = btnEl(doc, label, "data-person-same-name-answer", value, value === "same");
+      b.addEventListener("click", () => ctx.onSameName(story, p, other.individual_id, value, box));
+      buttons.appendChild(b);
+    });
+    box.appendChild(buttons);
+    return box;
+  }
+
+  // One link this card made: its state, and Undo while it can be undone.
+  function linkState(l) {
+    if (!l) return "";
+    if (l.undone_at) return "Link undone.";
+    if (l.undo_refused) {
+      const via = l.undo_refused_detail && Array.isArray(l.undo_refused_detail.still_joined_by)
+        ? l.undo_refused_detail.still_joined_by : [];
+      return `Undo refused: ${l.undo_refused}${via.length ? ` (joined through ${via.join(", ")})` : ""}`;
+    }
+    if (l.undo_requested_at) return "Undo asked for; Orion applies it on its next pass.";
+    return l.applied ? "Linked as the same person on this card." : "Same person: Orion links them on its next pass.";
+  }
+
+  function renderCardLink(doc, story, l, ctx) {
+    const line = el(doc, "div", "flex flex-wrap items-center gap-2 text-[10px] text-sky-300");
+    line.setAttribute("data-person-card-link", l.ask_id);
+    line.appendChild(el(doc, "span", "", linkState(l)));
+    if (!l.undone_at && !l.undo_requested_at && typeof ctx.onUndoLink === "function") {
+      const undo = btnEl(doc, l.undo_refused ? "Try undo again" : "Undo", "data-person-link-undo", l.ask_id, false);
+      undo.addEventListener("click", () => ctx.onUndoLink(story, l, line));
+      line.appendChild(undo);
+    }
+    return line;
   }
 
   // "These are N camera groups - not the same person?" (Orion's question 1): a wrong link
@@ -847,7 +916,7 @@
     let pending = null;                // a name picked from the list, held for Undo
     let flushing = null;               // that answer while it is being sent (Undo no longer applies)
     const names = [];
-    const ctx = { cursor, names, answer, undo, go, say, onNotSame, onPart,
+    const ctx = { cursor, names, answer, undo, go, say, onNotSame, onPart, onSameName, onUndoLink,
       get pending() { return pending; }, get flushing() { return flushing; } };
 
     function say(text) { if (status) status.textContent = text; }
@@ -1009,6 +1078,50 @@
       }
     }
 
+    async function postJson(url, payload) {
+      const res = await fetchFn(url, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}) });
+      let body = {};
+      try { body = await res.json(); } catch (_) { /* not JSON */ }
+      return { res, body };
+    }
+
+    async function onSameName(story, person, other, answerValue, box) {
+      box.querySelectorAll("[data-person-same-name-answer]").forEach((b) => { b.disabled = true; });
+      const { res, body } = await postJson(
+        `/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/persons/${encodeURIComponent(person.person_key)}/same-name`,
+        { other, answer: answerValue });
+      if (res.status === 409) {
+        await load(false);
+        say("That question is gone (linked or answered since this card loaded). Showing the card again; nothing saved.");
+        return;
+      }
+      if (!res.ok) {
+        say(`Could not save that (${res.status} ${body.detail || ""}). Try again.`);
+        box.querySelectorAll("[data-person-same-name-answer]").forEach((b) => { b.disabled = false; });
+        return;
+      }
+      if (body.tally) showTally(body.tally);
+      rerender(story.story_id, body.story || storyOf(story.story_id) || story);
+      say(answerValue === "same"
+        ? "Saved: same person. Orion links the two groups on its next pass; Undo stays here for 7 days."
+        : "Saved: different people. Orion won't ask about these two again.");
+    }
+
+    async function onUndoLink(story, link, line) {
+      line.querySelectorAll("[data-person-link-undo]").forEach((b) => { b.disabled = true; });
+      const { res, body } = await postJson(`/api/vision/individual-links/${encodeURIComponent(link.ask_id)}/undo`, {});
+      if (!res.ok) {
+        say(`Could not undo that link (${body.detail || res.status}).`);
+        line.querySelectorAll("[data-person-link-undo]").forEach((b) => { b.disabled = false; });
+        return;
+      }
+      link.undo_requested_at = "now";
+      link.undo_refused = null;
+      rerender(story.story_id, storyOf(story.story_id) || story);
+      say("Undo asked for. Orion removes the link on its next pass, or says here why it can't.");
+    }
+
     async function onNotSame(story, person, choice, wrap) {
       const buttons = wrap.querySelectorAll("[data-person-not-same-pair]");
       buttons.forEach((b) => { b.disabled = true; });
@@ -1113,7 +1226,7 @@
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
                 personTitle, actionLine, whyLine, handoffText, renderStory, mount,
                 storyPeople, personPictures, isPictured, cropOwners, boxesText, groupsText, notSameChoices,
-                questionText, nameChoices, answerSpec, pendingText, cursorIndex, sourceText, storyParts };
+                questionText, nameChoices, answerSpec, pendingText, cursorIndex, sourceText, storyParts, linkState };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

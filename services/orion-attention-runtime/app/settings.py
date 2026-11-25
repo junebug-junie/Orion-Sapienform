@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # world:play (game company patch 4, orion.attention.world_first.play_candidate): someone plays on the Retro
     # service. Competes only while Orion watches the open sitting; chat always wins over it.
     attention_world_play_enabled: bool = Field(True, alias="ATTENTION_WORLD_PLAY_ENABLED")
+    # world:play hunger (2026-11-25): while Orion watches, play competes on how long attention has gone
+    # without it in this sitting (orion.attention.world_first.play_hunger, tau PLAY_HUNGER_TAU_SEC), not on the
+    # top tenth of its own week; a win resets it. false = the band rule exactly. Ships on (Juniper's rule).
+    attention_world_play_hunger_enabled: bool = Field(True, alias="ATTENTION_WORLD_PLAY_HUNGER_ENABLED")
     # Event-written body nodes (glossary semantics: one reading per event,
     # carried forward) compete only for 300 s after the event that wrote
     # them, fading in rank (orion.attention.world_first.

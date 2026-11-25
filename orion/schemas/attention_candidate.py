@@ -222,3 +222,11 @@ class AttentionCandidateV1(BaseModel):
     # (no open sitting, the watch is off, or no stored look note in the last 3 minutes). judge_candidate
     # reads it after the history check, so the value, percentile and band are still traced. None = no gate.
     not_eligible_reason: str | None = None
+    # Hunger (world:play only, 2026-11-25): set by a builder whose source competes on how long attention has
+    # gone without it, not on how busy it is for its own week. ``hunger`` is the pull, 0..1
+    # (orion.physiology.appetite.intensity over ``hunger_unfed_sec``); ``hunger_unfed_sec`` is the time since
+    # attention last went to the source in this sitting (or since the sitting began). judge_candidate makes
+    # such a candidate eligible and ranks it by ``hunger``; a builder sets it only while the source may
+    # compete (Orion is watching). Both None = the band rule, exactly as before. In-process only.
+    hunger: float | None = Field(default=None, ge=0.0, le=1.0)
+    hunger_unfed_sec: float | None = Field(default=None, ge=0.0)

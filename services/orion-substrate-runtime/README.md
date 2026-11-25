@@ -1457,7 +1457,12 @@ window against its own seven-day minute grid (`orion/attention/world_first.py` `
 WATCHES the open sitting: the watch in force is not off and a look note was stored in the last 3 minutes (the rule
 the replay chose, `scripts/analysis/replay_world_play.py`). It yields to `world:chat`; nothing makes reading yield to
 it. An unreadable `retro_sitting` makes it absent, never calm. Its signal carries `retro_sitting:<id>`, and a game
-line said while it holds the workspace answers that loop (`orion/grammar/act_ledger.py`).
+line said while it holds the workspace answers that loop (`orion/grammar/act_ledger.py`). **Hunger (2026-11-25):** with
+`ATTENTION_WORLD_PLAY_HUNGER_ENABLED=true` (ships on), a watched sitting does not need to be busy for its own week:
+play is eligible and ranks by its pull, `1 - exp(-t / 90 s)`, t = time since this broadcast last gave play the win
+in this sitting (or since the sitting began). A win resets it, so a short sitting gets a turn and a long one cannot
+take over. The clock is in memory: after a restart a sitting's pull counts from its first input. `false` restores
+the top-tenth rule.
 
 **`world:chat` carries what Juniper said (2026-11-12).** The chat candidate's label is the fixed
 text "Juniper is talking", so its open-loop id stays the same through a conversation (it used to

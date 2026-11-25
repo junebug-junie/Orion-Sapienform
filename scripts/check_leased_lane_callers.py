@@ -8,22 +8,29 @@ lease id. Two committed scripts sent such calls to the agent seat (:8015): an ev
 (scripts/check_circe_worker_refs.py, address literals only) never saw them. Once the door enforces,
 those calls get 401.
 
-What this checks. Scope: every ``.py``/``.sh`` file under an ``evals/``, ``scripts/`` or ``bench/``
-directory (operator tooling: the code a person or agent runs by hand), minus tests (``tests/``,
-``test_*.py``), hidden directories and the port gate's zones (the pool, the gateway, the lane door, the
-workers themselves). A file in scope "makes a model call" when it holds a model-call path literal
-(``/v1/chat/completions``, ``/v1/completions``, ``/v1/messages`` or llama.cpp's quoted ``"/completion"``).
-Each such file must be one of:
+What this checks. Scope: every ``.py``/``.sh`` file under an ``evals/``, ``scripts/``, ``bench/``,
+``tools/`` or ``experiments/`` directory (operator tooling: the code a person or agent runs by hand),
+minus tests (``tests/``, ``test_*.py``), hidden directories and the port gate's zones (the pool, the
+gateway, the lane door, the workers themselves). Service runtime code (``app/``) is out of scope: it
+calls the gateway, and the port gate covers its address literals. A file in scope "makes a model call"
+when it holds an inference path in any string shape (``/chat/completions`` with or without ``/v1``,
+``/v1/completions``, ``/v1/messages``, llama.cpp's ``/completion`` and ``/infill``) or builds an OpenAI
+client (``OpenAI(``, ``.chat.completions.create(``). Each such file must be one of:
 
-1. a LEASED caller: it imports ``orion.evals.leased_llm`` (Python) or runs ``-m orion.evals.leased_llm``
-   (shell). The helper takes a GPU pool operator hold and calls only the gateway, under that hold.
-2. a GATEWAY caller, named below with a reason: it posts to orion-llm-gateway by route (the gateway
-   leases each call itself), or to a local stub, or makes no HTTP call at all.
+1. a LEASED caller: it imports a helper entry point from ``orion.evals.leased_llm``
+   (``operator_lane_sync``, ``operator_lane``, ``OperatorLanes``, ``gateway_call``; importing only an
+   exception class does not count), or a shell line outside a comment runs
+   ``-m orion.evals.leased_llm chat|hold``. The helper takes a GPU pool operator hold and calls only the
+   gateway, under that hold.
+2. a GATEWAY caller, named below with a reason: it posts to orion-llm-gateway (by route, or under a
+   hold it carries itself), or to a local stub, or makes no HTTP call at all.
+3. a reviewed DIRECT caller from the port gate's ``DIRECT_CALLERS`` (circe loopback, by design).
 
 Anything else fails: a new model-calling script must be classified by a reviewer. A file that names a
 circe lane port (``:8011``, ``:8015`` ...; ports read from config/gpu_pool.yaml the same way the port
 gate reads them) and makes a model call must be a leased caller; a GATEWAY_CALLERS entry cannot cover
 it. An entry whose file is gone, no longer makes a model call, or is now leased is stale and fails too.
+The gate reads text, so a path assembled from pieces is not seen; the lane door is the runtime fence.
 
 Usage:
     python3 scripts/check_leased_lane_callers.py           # gate (exit 1 on fail)
@@ -33,6 +40,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import pathlib
@@ -51,7 +59,7 @@ RULE = (
     "or call orion-llm-gateway by route and be named in GATEWAY_CALLERS with a reason"
 )
 
-SCOPE_DIRS = frozenset({"evals", "scripts", "bench"})
+SCOPE_DIRS = frozenset({"evals", "scripts", "bench", "tools", "experiments"})
 SUFFIXES = (".py", ".sh")
 _EXCLUDED_DIRS = {"tests", "docs", "graphify-out", "venv", ".venv", "node_modules", "__pycache__",
                   "site-packages"}
@@ -59,14 +67,44 @@ _EXCLUDED_DIRS = {"tests", "docs", "graphify-out", "venv", ".venv", "node_module
 # The helper itself and this gate name the paths and the import they look for.
 OWNERS = frozenset({"orion/evals/leased_llm.py", "scripts/check_leased_lane_callers.py"})
 
-MODEL_CALL_RE = re.compile(r"""/v1/chat/completions|/v1/completions|/v1/messages|["']/completion["'?]""")
-LEASED_RE = re.compile(r"""^\s*(?:from\s+orion\.evals\.leased_llm\s+import\b|import\s+orion\.evals\.leased_llm\b)"""
-                       r"""|-m\s+orion\.evals\.leased_llm\b""", re.MULTILINE)
+# A model call: an OpenAI/llama.cpp/Anthropic inference path (with or without the /v1 prefix, in any
+# string or f-string shape), or the OpenAI client's chat call.
+MODEL_CALL_RE = re.compile(r"""/chat/completions|/v1/completions|/v1/messages|/completion(?![\w/-])|/infill(?![\w/-])"""
+                           r"""|\.chat\.completions\.create\(|\bAsyncOpenAI\(|\bOpenAI\(""")
+# What makes a file leased: it imports a helper entry point that takes a hold or calls the gateway.
+# Importing only an exception class (LaneCallError) does not count.
+LEASED_NAMES = frozenset({"operator_lane_sync", "operator_lane", "OperatorLanes", "gateway_call"})
+_SH_LEASED_RE = re.compile(r"""-m\s+orion\.evals\.leased_llm\s+(?:chat|hold)\b""")
+
+
+def is_leased(rel: str, text: str) -> bool:
+    if rel.endswith(".sh"):
+        return any(_SH_LEASED_RE.search(line) for line in text.splitlines()
+                   if not line.lstrip().startswith("#"))
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "orion.evals.leased_llm":
+            if any(a.name in LEASED_NAMES for a in node.names):
+                return True
+        elif isinstance(node, ast.Import) and any(a.name == "orion.evals.leased_llm" for a in node.names):
+            return True
+    return False
+
 
 # Model-calling files that are NOT leased callers, each with the reason it needs no operator hold.
 # Keys are repo-relative paths. Reviewed one by one 2026-11-25 (#3921).
 GATEWAY_CALLERS: dict[str, str] = {
-    "orion/integration/evals/run_now_ablation_eval.py": "--model-url defaults to the gateway's OpenAI port (127.0.0.1:8222), by route",
+    "orion/integration/evals/run_now_ablation_eval.py": "--model-url defaults to orion-llm-gateway (127.0.0.1:8210), by route",
+    "orion/evals/model_replay/agent_loop.py": (
+        "HttpMessagesClient posts to orion-llm-gateway with the task's pool hold ref (runner.py gateway_headers)"
+    ),
+    "services/orion-graphiti-adapter/scripts/graphiti_trial_clients.py": (
+        "OpenAI client pointed at orion-llm-gateway's passthrough, with the pool hold header"
+    ),
+    "services/orion-hub/evals/run_reading_message_rewrite_eval.py": "--llm-url is orion-llm-gateway (:8210/v1) by route",
     "orion/thought/evals/stance_task_boundary.py": "posts to --gateway-url (orion-llm-gateway) by route",
     "scripts/analysis/eval_personality_naming_grounding.py": "posts to orion-llm-gateway (:8210) by route",
     "scripts/core_page_dry_run.py": "posts to orion-llm-gateway (--gateway, :8210) by route",
@@ -78,7 +116,7 @@ GATEWAY_CALLERS: dict[str, str] = {
     "services/orion-durable-runs/evals/run_dream_day_eval.py": "posts to orion-llm-gateway (--gateway, :8210) by route",
     "services/orion-fcc/evals/compaction_replay.py": "posts to llm-gateway:8210/v1/messages by route",
     "services/orion-hub/evals/run_reading_link_targets_replay.py": "--llm-url is the gateway (:8210) by route",
-    "services/orion-hub/evals/run_reading_resonance_eval.py": "--judge-url is the gateway's OpenAI port (:8222) by route",
+    "services/orion-hub/evals/run_reading_resonance_eval.py": "--judge-url is orion-llm-gateway (:8210) by route",
     "services/orion-vllm-host/evals/check_deep_protocol.py": "calls the deep-budget handler in process; no HTTP",
 }
 
@@ -117,8 +155,10 @@ def classify_text(rel: str, text: str, port_re: re.Pattern[str]) -> tuple[str, s
     m = MODEL_CALL_RE.search(text)
     if m is None:
         return "none", ""
-    if LEASED_RE.search(text):
+    if is_leased(rel, text):
         return "leased", ""
+    if rel in port_gate.DIRECT_CALLERS:
+        return "direct", port_gate.DIRECT_CALLERS[rel]
     port = port_re.search(text)
     if port is not None:
         line = text.count("\n", 0, port.start()) + 1
@@ -152,6 +192,7 @@ def run(root: pathlib.Path) -> dict:
         "stale_gateway_callers": {rel: kinds.get(rel, "missing or out of scope") for rel in stale},
         "leased": sorted(r for r, k in kinds.items() if k == "leased"),
         "gateway": sorted(r for r, k in kinds.items() if k == "gateway"),
+        "direct": sorted(r for r, k in kinds.items() if k == "direct"),
     }
 
 
@@ -176,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     if not out["ok"]:
         return 1
     print(f"leased lane caller gate: PASS ({len(out['leased'])} leased caller(s), "
-          f"{len(out['gateway'])} gateway caller(s); lane ports {','.join(map(str, out['ports']))})")
+          f"{len(out['gateway'])} gateway caller(s), {len(out['direct'])} reviewed direct; lane ports {','.join(map(str, out['ports']))})")
     return 0
 
 

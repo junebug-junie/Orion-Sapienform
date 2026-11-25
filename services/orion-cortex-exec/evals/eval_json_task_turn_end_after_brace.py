@@ -39,8 +39,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "services" / "orion-cortex-exec"))
 
 from app.executor import JSON_TASK_TURN, SYSTEM_TASK_TURN  # noqa: E402
-from orion.evals.leased_llm import EXIT_RECALLED, EXIT_UNAVAILABLE, LaneRecalled, LaneUnavailable, \
-    operator_lane_sync  # noqa: E402
+from orion.evals.leased_llm import EXIT_RECALLED, EXIT_UNAVAILABLE, OPERATOR_LANES, LaneCallError, \
+    LaneRecalled, LaneUnavailable, operator_lane_sync  # noqa: E402
 
 HOLDER = "operator:eval-json-task-turn-end-after-brace"
 
@@ -80,6 +80,17 @@ def strata_payload(envelope: dict) -> dict:
     return sent
 
 
+def reading(lane, body: dict) -> float | str:
+    """One reading; a failed call or an unreadable reply is a string in the readings, not a crash.
+    A recall (LaneRecalled) propagates so the run stops."""
+    try:
+        return p_end_after_brace(lane, body)
+    except (LaneCallError, RuntimeError) as exc:
+        if isinstance(exc, LaneRecalled):
+            raise
+        return f"error: {exc}"[:160]
+
+
 def p_end_after_brace(lane, body: dict) -> float | str:
     """``lane`` is an orion.evals.leased_llm.OperatorLane (anything with ``chat(body, timeout_sec)``)."""
     b = copy.deepcopy(body)
@@ -96,7 +107,9 @@ def p_end_after_brace(lane, body: dict) -> float | str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("envelope")
-    ap.add_argument("--lane", default="agent", help="operator lane (orion/evals/leased_llm.py OPERATOR_LANES)")
+    ap.add_argument("--lane", default="agent", choices=sorted(OPERATOR_LANES),
+                    help="operator lane; OPEN_BRACE_QUOTE_ID is a qwen3.8-flash-next token id, so the lane "
+                         "must serve that vocabulary (the agent seat does)")
     ap.add_argument("--repeat", type=int, default=3)
     args = ap.parse_args(argv)
     body = strata_payload(json.loads(Path(args.envelope).read_text()))
@@ -109,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             for name, text in (("generic", SYSTEM_TASK_TURN), ("json", JSON_TASK_TURN)):
                 variant = copy.deepcopy(body)
                 variant["messages"][users[-1]]["content"] = text
-                readings = [p_end_after_brace(lane, variant) for _ in range(args.repeat)]
+                readings = [reading(lane, variant) for _ in range(args.repeat)]
                 print(f"{name:8} {text!r}: P(end after '{{') = {readings}")
             print(f"lease {lane.lease_id} ({lane.route}, {lane.role}), {lane.calls} call(s)")
     except LaneRecalled as exc:

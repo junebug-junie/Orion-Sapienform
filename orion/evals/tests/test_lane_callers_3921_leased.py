@@ -108,3 +108,46 @@ def test_judge_failed_call_is_a_row_error_and_recall_stops(judge) -> None:
 def test_judge_lane_names_are_operator_lanes(judge) -> None:
     with pytest.raises(SystemExit):
         judge.main(["--lane", "metacog=http://127.0.0.1:8012", "--out", "/nonexistent"])
+
+
+def test_brace_reading_turns_call_errors_into_strings_but_a_recall_stops(brace) -> None:
+    assert brace.reading(FakeLane(error=LaneCallError("http 502", 502)), {"messages": []}).startswith("error: http 502")
+    assert brace.reading(FakeLane({"choices": [{"logprobs": {"content": [{"token": "x"}]}}]}),
+                         {"messages": []}).startswith("error: first token")
+    with pytest.raises(LaneRecalled):
+        brace.reading(FakeLane(error=LaneRecalled("seat taken")), {"messages": []})
+
+
+def test_brace_lane_must_be_an_operator_lane(brace) -> None:
+    with pytest.raises(SystemExit):
+        brace.main(["envelope.json", "--lane", "nope"])
+
+
+def test_judge_pins_sampling_the_gateway_would_otherwise_default(judge) -> None:
+    lane = FakeLane({"choices": [{"message": {"content": "{}"}}]})
+    judge.judge_one(lane, {"run_id": "r", "question": "q", "answer": "a"})
+    assert lane.bodies[0]["top_p"] == 1.0 and lane.bodies[0]["presence_penalty"] == 0
+
+
+def test_judge_recall_writes_a_partial_report(judge, monkeypatch, tmp_path, capsys) -> None:
+    import contextlib
+
+    its = [{"run_id": f"r{i}", "judge_sonnet": "operational", "question": "q", "answer": "a"} for i in range(3)]
+    good = {"choices": [{"message": {"content": json.dumps({"register": "operational", "reason": "r"})}}]}
+
+    class RecallOnThird(FakeLane):
+        def chat(self, body, timeout_sec=None):
+            if len(self.bodies) == 2:
+                raise LaneRecalled("seat taken")
+            return super().chat(body, timeout_sec)
+
+    @contextlib.contextmanager
+    def fake_lane(name, holder):
+        yield RecallOnThird(good)
+
+    monkeypatch.setattr(judge, "items", lambda: its)
+    monkeypatch.setattr(judge, "operator_lane_sync", fake_lane)
+    assert judge.main(["--lane", "agent", "--out", str(tmp_path)]) == judge.EXIT_RECALLED
+    rows = [json.loads(x) for x in (tmp_path / "labels_agent.partial.jsonl").read_text().splitlines()]
+    assert [r["run_id"] for r in rows] == ["r0", "r1"] and all(r["label"] == "operational" for r in rows)
+    assert '"judged": 2' in capsys.readouterr().out

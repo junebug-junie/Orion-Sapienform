@@ -37,7 +37,7 @@ Periodic and run by hand (weekly, per the spec): nothing schedules it yet. Runni
 Usage:
 
     python -m orion.integration.evals.run_now_ablation_eval --offline
-    python -m orion.integration.evals.run_now_ablation_eval --live --model-url http://127.0.0.1:8222/v1/chat/completions \\
+    python -m orion.integration.evals.run_now_ablation_eval --live --model-url http://127.0.0.1:8210/v1/chat/completions \\
         --model agent --out /path/to/report.json
 """
 
@@ -54,7 +54,7 @@ from typing import Any, Callable, Optional
 
 from orion.integration.evals.now_ablation_fixtures import FIXTURES
 
-DEFAULT_MODEL_URL = "http://127.0.0.1:8222/v1/chat/completions"
+DEFAULT_MODEL_URL = "http://127.0.0.1:8210/v1/chat/completions"
 DEFAULT_THRESHOLD = 0.25
 NOISE_MARGIN = 0.10  # live: a cite must move the output this much past two replays of the same prompt
 

@@ -140,6 +140,9 @@ def judge_one(lane, it: dict, thinking: bool = False) -> dict:
     try:
         body = lane.chat({
             "messages": judge_messages(it["question"], it["answer"]), "temperature": 0,
+            # Pinned: the gateway adds top_p 0.90 / presence_penalty 0.20 on gpu3 operator classes
+            # (operator_metacog) when a body leaves them unset; the direct-call runs used neither.
+            "top_p": 1.0, "presence_penalty": 0,
             "max_tokens": 2048 if thinking else 400,
             "chat_template_kwargs": {"enable_thinking": thinking}}, timeout_sec=300)
         text = body["choices"][0]["message"].get("content") or ""
@@ -152,8 +155,18 @@ def judge_one(lane, it: dict, thinking: bool = False) -> dict:
     return {**it, "label": reg, "reason": reason, "error": err, "model": model}
 
 
-def judge_all(lane, its: list[dict], thinking: bool = False) -> list[dict]:
-    return [judge_one(lane, it, thinking) for it in its]
+def judge_all(lane, its: list[dict], thinking: bool = False, out: list[dict] | None = None) -> list[dict]:
+    """Rows are appended to ``out`` as they are judged, so a recall leaves the partial result there."""
+    res = [] if out is None else out
+    for it in its:
+        res.append(judge_one(lane, it, thinking))
+    return res
+
+
+def write_labels(path: Path, res: list[dict]) -> None:
+    path.write_text("".join(json.dumps(
+        {k: r.get(k) for k in ("run_id", "judge_sonnet", "rater_haiku", "label", "reason", "error", "model")}) + "\n"
+        for r in res))
 
 
 def report(name: str, res: list[dict]) -> dict:
@@ -188,19 +201,22 @@ def main(argv: list[str] | None = None) -> int:
     (args.out / "inputs.jsonl").write_text("".join(json.dumps(i) + "\n" for i in its))
     print(f"reference runs: {len(its)}  missing finish rows: {sum(1 for i in its if i.get('missing'))}")
     for name in args.lane:
+        res: list[dict] = []
         try:
             with operator_lane_sync(name, holder=HOLDER) as lane:
-                res = judge_all(lane, its, args.thinking)
+                judge_all(lane, its, args.thinking, out=res)
                 seat = lane.summary()
         except LaneRecalled as exc:
-            print(f"RECALLED on {name}: {exc}", file=sys.stderr)
+            # Partial report, then stop (leased_llm: nothing resumes on its own).
+            write_labels(args.out / f"labels_{name}.partial.jsonl", res)
+            print(json.dumps({**report(name, res), "recalled": str(exc), "judged": len(res), "of": len(its)},
+                             indent=1))
+            print(f"RECALLED on {name} after {len(res)}/{len(its)} rows: {exc}", file=sys.stderr)
             return EXIT_RECALLED
         except LaneUnavailable as exc:
             print(f"REFUSED on {name}: {exc}", file=sys.stderr)
             return EXIT_UNAVAILABLE
-        (args.out / f"labels_{name}.jsonl").write_text("".join(json.dumps(
-            {k: r.get(k) for k in ("run_id", "judge_sonnet", "rater_haiku", "label", "reason", "error", "model")}) + "\n"
-            for r in res))
+        write_labels(args.out / f"labels_{name}.jsonl", res)
         print(json.dumps({**report(name, res), "seat": seat}, indent=1))
     return 0
 

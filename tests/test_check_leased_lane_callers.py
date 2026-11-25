@@ -56,7 +56,7 @@ def test_real_tree_passes() -> None:
                                  "scripts/analysis/eval_curiosity_register_judge.py"])
 def test_the_two_callers_fixed_by_3921_use_the_helper(rel: str) -> None:
     text = (_REPO / rel).read_text()
-    assert gate.LEASED_RE.search(text)
+    assert gate.is_leased(rel, text)
     port_re = gate.lane_port_re(gate.port_gate.load_identity(_REPO).ports)
     assert gate.classify_text(rel, text, port_re)[0] in ("none", "leased")
 
@@ -88,10 +88,38 @@ def test_unclassified_model_caller_fails_even_without_a_port(tree: Path) -> None
     assert [f["problem"] for f in out["findings"]] == ["unclassified"]
 
 
-@pytest.mark.parametrize("literal", ['"/v1/completions"', '"/v1/messages"', "'/completion'", '"/completion"'])
-def test_every_model_call_path_counts(tree: Path, literal: str) -> None:
-    _write(tree, "bench/x.py", f"URL = base + {literal}\n")
+@pytest.mark.parametrize("line", [
+    'URL = base + "/v1/completions"', 'URL = base + "/v1/messages"', "URL = base + '/completion'",
+    'URL = f"{base}/completion"', 'URL = f"{b}/chat/completions"', 'URL = f"{base}/infill"',
+    'c = OpenAI(base_url=u)', 'r = c.chat.completions.create(model="x", messages=[])',
+])
+def test_every_model_call_shape_counts(tree: Path, line: str) -> None:
+    _write(tree, "bench/x.py", line + "\n")
     assert not gate.run(tree)["ok"]
+
+
+@pytest.mark.parametrize("line", ['p = "/completions_report"', 'p = "/completion/stats"', 'name = "OpenAIish"'])
+def test_near_misses_are_not_model_calls(tree: Path, line: str) -> None:
+    _write(tree, "bench/x.py", line + "\n")
+    assert gate.run(tree)["ok"]
+
+
+def test_importing_only_an_exception_is_not_a_lease(tree: Path) -> None:
+    _write(tree, "scripts/x.py", "from orion.evals.leased_llm import LaneCallError\n" + GATEWAY_EVAL)
+    assert [f["problem"] for f in gate.run(tree)["findings"]] == ["unclassified"]
+
+
+def test_a_commented_shell_cli_call_is_not_a_lease(tree: Path) -> None:
+    _write(tree, "scripts/x.sh", "# python -m orion.evals.leased_llm chat --lane agent\n"
+                                 'curl "$U/v1/chat/completions"\n')
+    assert not gate.run(tree)["ok"]
+
+
+def test_reviewed_direct_caller_passes_even_naming_a_port(tree: Path, monkeypatch) -> None:
+    _write(tree, "scripts/bench_x.py", UNLEASED_EVAL)
+    monkeypatch.setattr(gate.port_gate, "DIRECT_CALLERS", {"scripts/bench_x.py": "loopback on circe"})
+    out = gate.run(tree)
+    assert out["ok"] and out["direct"] == ["scripts/bench_x.py"]
 
 
 def test_leased_caller_passes(tree: Path) -> None:

@@ -4,7 +4,7 @@
     PYTHONPATH=. .venv/bin/python services/orion-hub/evals/run_reading_resonance_eval.py \
         [--days 14] [--out-dir /tmp/reading-resonance-eval] \
         [--labeling-md /tmp/reading-resonance-eval/labeling/2026-10-13-resonance-labeling-set.md] \
-        [--judge-url http://127.0.0.1:8222/v1/chat/completions --judge-model agent]
+        [--judge-url http://127.0.0.1:8210/v1/chat/completions --judge-model agent]
 
 Design: docs/superpowers/specs/2026-10-13-reading-resonance-design.md (PR #2642), patch A.
 

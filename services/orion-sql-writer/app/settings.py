@@ -48,7 +48,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "bus.traffic.rollup.v1": "BusTrafficRollupSQL",
     "heartbeat.seat.rollup.v1": "HeartbeatSeatRollupSQL",
-    "memory.field_goals.proposed.v1": "FieldGoalProvenanceLogSQL",
+    "memory.field_goals.proposed.v1": "FieldGoalEpisodeSQL",
     "spark.telemetry": "SparkTelemetrySQL",
     "spark.state.snapshot.v1": "SparkTelemetrySQL",
     "cognition.trace": "CognitionTraceSQL",
@@ -1131,7 +1131,7 @@ class Settings(BaseSettings):
         if "orion:llm:call:usage" not in channels:
             channels.append("orion:llm:call:usage")
         # Same guarantee, same reason (memory.field_goals.proposed.v1 is a code-default route,
-        # #3924; without the channel field_goal_provenance_log stays empty while the attention
+        # #3924; without the channel field_goal_episode stays empty while the attention
         # runtime keeps proposing goals).
         if "orion:memory:goals:proposed" not in channels:
             channels.append("orion:memory:goals:proposed")

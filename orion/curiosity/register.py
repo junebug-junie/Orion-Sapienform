@@ -70,9 +70,15 @@ CORPUS_VERSION = "graph_v1"  # every graph answer node + prior claims + Day lett
 # judge, prompt v2 unchanged, labels a question Orion wrote for its own self-inquiry BEFORE any sitting
 # answers it. The question text goes in as the item (the FINDING slot) and this line goes in as the
 # QUESTION, saying what the item is. Fixed: a change here is a change in what the door measures.
+# Live check 2026-11-25 (agent seat 8015, all 88 Orion questions): an earlier line ("The item below is not a
+# finding ... label what the question is about") drew no_finding on 26 of 88 (a question states no conclusion,
+# which is prompt v2's no_finding test), which would have left them unjudged. This line, on those 26 plus the 5
+# non-JSON replies: 31 of 31 labelled (26 operational, 5 philosophical); on 19 already-labelled questions, 16
+# kept their label and 3 moved philosophical -> operational.
 QUESTION_LINE = (
-    "(The item below is not a finding. It is a question Orion wrote for itself, to sit with in its own "
-    "self-inquiry. Label what the question is about.)"
+    "(The FINDING below is a question Orion wrote for itself, to sit with in its own self-inquiry. A question "
+    "states no conclusion, so never answer no_finding for it: label it philosophical or operational by what "
+    "the question asks about.)"
 )
 
 # Models that passed the judge-agreement eval. Matched on the served model's file/name, lower case.

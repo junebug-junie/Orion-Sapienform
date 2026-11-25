@@ -1,90 +1,59 @@
-# Lease the reflection-register judge (unblocks main's static gates)
-
 ## Summary
 
-- The reflection-register judge no longer posts straight to a model seat. It now calls only through an operator lane: one GPU pool hold, every call sent to orion-llm-gateway under it (`orion/evals/leased_llm.py`).
-- `judge_one(lane, item)` replaces `judge_one(client, url, item)`. It keeps its return tuple `(label, reason, error, model)` and its passed-model check. A failed call is still an error tuple. A recall of the hold propagates.
-- The three callers take `--lane <operator lane>` (default `agent`, the seat they used) instead of `--judge-url`. Each takes one hold per run. On a recall each writes what it judged so far and exits 3; on a refused hold it exits 2.
-- The judge body pins `top_p` 1.0 and `presence_penalty` 0, so the gateway's operator defaults do not change the sampling.
-- This unblocks main's "Static repo gates" workflow (step "Committed model callers are leased or gateway callers (lane door)"). Relates to #3921.
+- Main already moved the reflection-register judge and its three callers onto an operator lease (`4da8d4f27`, after this PR was opened). This PR is now narrowed to the one gap that commit left open.
+- **The gap:** the lane sends `model=operator_agent`, and the gateway rewrites `model` only for vLLM grants. A llama.cpp/strata seat may echo `operator_agent` back. `judge_one` would then reject every reply as `model_not_evaluated: operator_agent`, so a full run would yield zero labels.
+- **The fix:** `served_model(lane, body)`. A reply model that is the lane's route, or any `operator*` name, is not a model. The pool's grant record (`lease.grant.model_file`) names the seat's model instead. When nothing is known, the row stays `model_not_evaluated: unknown` and is never a label. A real served name in the reply still wins.
+- Tests for the judge itself (pinned sampling, call error, recall, unevaluated model, route echo), plus a source check that none of the four files has a direct URL mode. They are wired into `leased-evals-tests.yml` along with the four paths.
+
+Relates to #3921.
 
 ## Outcome moved
 
-Main's static gates go from red to green. The path that sent 286+ unleased calls to the circe agent seat on 2026-11-25 (`run_self_question_door_replay.py --live --judge-url http://<circe>:8015`) no longer exists; the pool now sees and can recall every judge call.
+A leased judge run on a strata seat produces labels instead of 100 % `model_not_evaluated`. This is UNVERIFIED live: no leased judge call has run against the real agent seat yet.
 
 ## Current architecture
 
-`scripts/analysis/reflection_register_sources.py` (self-question-door work, merged 2026-11-25 before #3930's gate) POSTed to `<url>/v1/chat/completions` with an `httpx.Client` and no lease. Three scripts passed it a seat URL from `--judge-url`.
+On main, `judge_one(lane, item)` calls `lane.chat(...)` and trusts `body["model"]` for the `PASSED_JUDGE_MODELS` check.
 
 ## Architecture touched
 
-Operator scripts and evals only. No service code, no bus, no schema, no env.
+`scripts/analysis/reflection_register_sources.py` only (operator scripts). No service, bus or schema changes.
 
 ## Files changed
 
-- `scripts/analysis/reflection_register_sources.py`: `judge_one` takes a lane; docstring fixed; `DEFAULT_LANE`, `JUDGE_TIMEOUT_SEC`.
-- `scripts/analysis/eval_reflection_register_share.py`: `--lane`, one hold (none when every organ reads stored labels), partial `items.partial.jsonl` / `report.partial.md` on recall.
-- `scripts/analysis/judge_anchor_set.py`: `score --lane`, one hold, partial score printed on recall, `--export` not written then.
-- `services/orion-hub/evals/run_self_question_door_replay.py`: `--live --lane`, one hold, `questions.partial.jsonl` on recall. Fixture mode unchanged.
-- `orion/evals/tests/test_reflection_register_judge_leased.py`: new gate tests (fake lane).
-- `.github/workflows/leased-evals-tests.yml`: runs the new tests; path filters for the four files.
+- `scripts/analysis/reflection_register_sources.py`: `served_model`, used by `judge_one`.
+- `orion/evals/tests/test_reflection_register_judge_leased.py`: the judge-level tests.
+- `.github/workflows/leased-evals-tests.yml`: runs the new test, with the four judge paths as triggers.
 
 ## Schema / bus / API changes
 
-- Added: none
-- Removed: `--judge-url` on the three scripts (replaced by `--lane`)
-- Renamed: none
-- Behavior changed: judge calls go through an operator hold and the gateway
-- Compatibility notes: operator command lines must switch to `--lane agent` (default) and set `ORION_BUS_URL`
+None.
 
 ## Env/config changes
 
-- Added keys: none
-- Removed keys: none
-- Renamed keys: none
-- `.env_example` updated: no
-- local `.env` synced with `python scripts/sync_local_env_from_example.py`: not needed
-- skipped keys requiring operator action: none
+None.
 
 ## Tests run
 
 ```text
-python3 scripts/check_leased_lane_callers.py
-  before: FAIL  scripts/analysis/reflection_register_sources.py [unclassified] line 9: /chat/completions
-  after:  PASS (5 leased caller(s), 17 gateway caller(s), 1 reviewed direct; ...)
-python3 scripts/check_circe_worker_refs.py   PASS
-pytest orion/evals/tests/   60 passed (new file: 20 tests)
+pytest orion/evals/tests/ -> 47 passed
+python3 scripts/check_leased_lane_callers.py -> PASS (5 leased, 17 gateway, 1 reviewed direct)
 ```
 
 ## Evals run
 
-```text
-PYTHONPATH=. python -P services/orion-hub/evals/run_self_question_door_replay.py   PASS: every door gate holds
-```
-
-The live modes (`--live`, share eval, anchor score) were not run: they take a real pool hold. UNVERIFIED live.
+None: there is no live seat call yet. Before a full run, check one row: `judge_anchor_set.py score` on a one-row file.
 
 ## Docker/build/smoke checks
 
-```text
-Not applicable: no service image or compose change.
-Every run step of .github/workflows/orion-static-gates.yml was run locally (see PR comment / CI).
-```
+Not applicable (operator scripts).
 
 ## Review findings fixed
 
-A code review ran in a subagent on `origin/main...HEAD`. It found nothing that blocks the patch. It raised four points, and three are fixed here.
-
-- Finding (medium): the lane sends `model: operator_agent`. The gateway rewrites `model` only for vLLM grants, and the agent seat is strata/llama.cpp. If the seat echoes the request's model name, every reply reads `model_not_evaluated: operator_agent`, and the door replay maps every question to `held`.
-  - Fix: `served_model(lane, body)`. A reply model that is the route name (or any `operator*` name) is not a model. Then the judge reads the seat's model from the pool's grant record (`lease.grant.model_file`). When nothing is known it stays `model_not_evaluated: unknown`, never a label. A real served name in the reply still wins.
-  - Evidence: `test_a_reply_that_echoes_the_route_reads_the_grants_model`. Which name strata actually returns is UNVERIFIED live.
-- Finding (low): the share eval's partial report left out the organ that the recall cut off.
-  - Fix: on a recall, that organ gets a summary row named `<organ> (cut off by recall)`.
-  - Evidence: `test_share_partial_report_counts_the_organ_cut_off`.
-- Finding (low): the replay took the GPU hold before its SELECTs ran. A psql failure therefore held a seat for nothing.
-  - Fix: both SELECTs run first. The hold covers only the judging.
-  - Evidence: `test_replay_reads_before_it_holds_a_seat`.
-- Not changed: the reviewer noted that two tests match strings only. They are kept as cheap guards against the old URL mode coming back. The behavior tests cover the rest.
+- Finding (medium, from the first review of this branch): a route-name echo turns every row into `model_not_evaluated`.
+  - Fix: `served_model`.
+  - Evidence: `test_a_reply_that_echoes_the_route_reads_the_grants_model`.
+- The other findings from that review (partial reports on recall, reading before holding a seat) were about this branch's own caller rewrite. Main's `4da8d4f27` replaced that rewrite, so they are dropped here with it.
 
 ## Restart required
 
@@ -94,14 +63,7 @@ No restart required.
 
 ## Risks / concerns
 
-- Severity: low
-- Concern: anyone with a saved `--judge-url` command line gets an argparse error.
-- Mitigation: the error is loud and the docstrings show the new command.
-- Severity: medium (UNVERIFIED live)
-- Concern: nobody has run a live leased judge call yet. So nobody has seen whether strata returns its real model name or echoes `operator_agent`.
-- Mitigation: `served_model` handles both cases. Before you trust a full run, run `judge_anchor_set.py score` on a one-row file and check the `model` value.
-- Issues: none opened, none closed. Relates to #3921.
+- Severity: low. If strata does return its real model name, `served_model` is a no-op.
+- Issues opened/closed: none.
 
-## PR link
-
-https://github.com/junebug-junie/Orion-Sapienform/pull/3964
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

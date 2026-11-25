@@ -18,17 +18,14 @@ up to ``--total``, default 100), from local data only (``reflection_register_sou
 repo (it holds Orion's own writing, including messages to Juniper): default
 ``~/.orion/judge-anchor/anchor_set_v1.tsv``. It refuses to overwrite a file that already holds labels.
 
-``score``: calls the judge through ONE GPU pool operator hold on ``--lane`` (orion/evals/leased_llm.py,
-default ``agent``; every call goes to orion-llm-gateway under the hold, #3921) for every labelled row, on the exact question and text
+``score``: calls the judge on Orion's own seat (one operator lease through the gateway, ``orion.evals.leased_llm``) for every labelled row, on the exact question and text
 in the file (the item as she read it), and prints three-way agreement and kappa, philosophical-or-not
 kappa, and phil-agree (share of her philosophical rows the judge also calls philosophical), per organ and
 overall. ``--export`` writes the labels without text (``ref``, ``organ``, ``label_juniper``) as a jsonl
 fixture that can be committed, as the 10-20 fixture is.
 
     python3 scripts/analysis/judge_anchor_set.py build [--start 2026-10-01 --end 2026-11-25] [--per-organ 15]
-    ORION_BUS_URL=redis://<tailnet-ip>:6379/0 python3 scripts/analysis/judge_anchor_set.py score [--lane agent] [--export <path>]
-
-A recall of the hold prints the rows scored so far and exits 3; ``--export`` is not written then.
+    python3 scripts/analysis/judge_anchor_set.py score [--lane agent] [--export <path>]
 """
 from __future__ import annotations
 
@@ -41,12 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from reflection_register_sources import DEFAULT_LANE, ORGANS, Item, judge_one, read_items, sample  # noqa: E402
-
-from orion.evals.leased_llm import (EXIT_RECALLED, EXIT_UNAVAILABLE, OPERATOR_LANES, LaneRecalled,  # noqa: E402
-                                    LaneUnavailable, operator_lane_sync)
-
-HOLDER = "operator:judge-anchor-set"
+from reflection_register_sources import ORGANS, Item, judge_one, read_items, sample  # noqa: E402
 
 DEFAULT_PATH = Path.home() / ".orion" / "judge-anchor" / "anchor_set_v1.tsv"
 HEADER = ("label", "n", "organ", "ref", "question", "text")
@@ -147,26 +139,25 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 
 def cmd_score(args: argparse.Namespace) -> int:
+    from orion.evals.leased_llm import EXIT_RECALLED, EXIT_UNAVAILABLE, LaneRecalled, LaneUnavailable, operator_lane_sync
+
     rows = [r for r in read_tsv(args.path) if parse_label(r["label"])]
     if not rows:
         print("no labelled rows yet: the frozen 10-20 fixture stays the agreement check", file=sys.stderr)
         return 1
-    results: list[dict] = []
-    recalled = None
+    results = []
     try:
-        with operator_lane_sync(args.lane, holder=HOLDER) as lane:
+        with operator_lane_sync(args.lane, holder="operator:judge-anchor-score") as lane:
             for r in rows:
                 it = Item(r["organ"], r["ref"], r["question"], r["text"])
                 label, _reason, err, model = judge_one(lane, it)
                 results.append({**r, "juniper": parse_label(r["label"]), "judge": label, "error": err, "model": model})
-    except LaneRecalled as exc:
-        recalled = exc   # score what was judged, then stop (leased_llm: nothing resumes on its own)
     except LaneUnavailable as exc:
-        print(f"REFUSED on {args.lane}: {exc}", file=sys.stderr)
+        print(f"REFUSED: no seat on {args.lane}: {exc}", file=sys.stderr)
         return EXIT_UNAVAILABLE
-    if recalled is not None:
-        print(f"RECALLED on {args.lane} after {len(results)}/{len(rows)} rows: {recalled} (partial score below)",
-              file=sys.stderr)
+    except LaneRecalled as exc:
+        print(f"RECALLED after {len(results)} of {len(rows)} rows: {exc}; nothing scored", file=sys.stderr)
+        return EXIT_RECALLED
     errors = Counter(x["organ"] for x in results if not x["judge"])
     print(f"labelled rows: {len(results)}; judge errors: {sum(errors.values())} (left out)")
     for organ in [None, *sorted({x['organ'] for x in results})]:
@@ -175,8 +166,6 @@ def cmd_score(args: argparse.Namespace) -> int:
         f = (lambda v: "None" if v is None else f"{v:.3f}")
         print(f"{organ or 'ALL':22s} n={s['n']:3d} agree={f(s['agree'])} kappa3={f(s['kappa3'])} "
               f"kappa_phil_vs_not={f(s['kappa_phil_vs_not'])} phil_agree={f(s['phil_agree'])} (n_phil={s['n_phil']})")
-    if recalled is not None:
-        return EXIT_RECALLED
     if args.export:
         args.export.write_text("".join(json.dumps({"ref": x["ref"], "organ": x["organ"], "label_juniper": x["juniper"]}) + "\n"
                                        for x in results))
@@ -196,8 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--total", type=int, default=100)
     s = sub.add_parser("score")
     s.add_argument("--path", type=Path, default=DEFAULT_PATH)
-    s.add_argument("--lane", default=DEFAULT_LANE, choices=sorted(OPERATOR_LANES),
-                   help="operator lane to judge on (one GPU pool hold, through the gateway)")
+    s.add_argument("--lane", default="agent", help="operator lane (one GPU pool hold, through the gateway)")
     s.add_argument("--export", type=Path)
     args = ap.parse_args(argv)
     return cmd_build(args) if args.cmd == "build" else cmd_score(args)

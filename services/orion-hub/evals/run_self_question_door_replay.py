@@ -11,18 +11,14 @@ Design: docs/superpowers/specs/2026-11-25-orion-self-reflection-drift-design.md 
   ``unjudged``; only an operational self-inquiry finding demotes.
 * ``--live [--lane agent]``: every Orion-written question in ``curiosity_self_questions``
   (SELECT only) is judged once with the door's input (``register.QUESTION_LINE`` + the question text,
-  prompt v2, temperature 0, thinking off; compute-only calls through ONE GPU pool operator hold on
-  ``--lane``, orion/evals/leased_llm.py, each call posted to orion-llm-gateway under it (#3921); no
-  direct-URL mode, no outside model) and
+  prompt v2, temperature 0, thinking off; one operator lease on Orion's seat through the gateway, no outside model) and
   given the door that reply would produce (one try). Then every labelled self-inquiry finding in
   ``curiosity_finding_register`` is joined to its question: the philosophical share of findings with
   and without the door, and how often an operational question produced a philosophical finding. No gate:
-  it is a measurement. Writes ``/tmp/self-question-door-replay/<date>/``. A recall of the hold writes
-  ``questions.partial.jsonl`` and exits 3.
+  it is a measurement. Writes ``/tmp/self-question-door-replay/<date>/``.
 
     PYTHONPATH=. python services/orion-hub/evals/run_self_question_door_replay.py
-    ORION_BUS_URL=redis://<tailnet-ip>:6379/0 PYTHONPATH=. \\
-        python services/orion-hub/evals/run_self_question_door_replay.py --live [--lane agent]
+    PYTHONPATH=. python services/orion-hub/evals/run_self_question_door_replay.py --live [--lane agent]
 """
 from __future__ import annotations
 
@@ -42,12 +38,6 @@ sys.path.insert(0, str(_ROOT / "scripts" / "analysis"))
 from orion.curiosity.self_question_pool import SelfQuestion, pick_question, with_ask_recorded  # noqa: E402
 from scripts.curiosity_finding_register import JudgeResult  # noqa: E402
 from scripts.self_question_door import demotion_for, door_verdict  # noqa: E402
-
-from orion.evals.leased_llm import (EXIT_RECALLED, EXIT_UNAVAILABLE, OPERATOR_LANES, LaneRecalled,  # noqa: E402
-                                    LaneUnavailable, operator_lane_sync)
-
-HOLDER = "operator:self-question-door-replay"
-DEFAULT_LANE = "agent"  # the seat this replay called before it was leased (#3921)
 
 NOW = datetime(2026, 11, 25, 12, 0, tzinfo=timezone.utc)
 DOORS = (None, "held", "admitted", "routed", "demoted", "unjudged")
@@ -111,42 +101,28 @@ def fixture() -> dict:
     return {"picks": dict(picks.most_common()), "blocked_picked": blocked, "gates": gates}
 
 
-def judge_questions(lane, qs: list[dict], judged: list[dict]) -> dict[str, str]:
-    """Judge every Orion-written question on ``lane``, appending to ``judged`` as it goes, so a recall
-    (LaneRecalled, propagated) leaves the rows judged so far there. Returns question id -> door."""
-    from reflection_register_sources import Item, ORGAN_LINES, judge_one
-
-    doors: dict[str, str] = {}
-    for q in qs:
-        if q["minted_by"] != "orion":
-            continue
-        label, reason, err, model = judge_one(lane, Item("orion_question", q["id"], ORGAN_LINES["orion_question"],
-                                                         q["text"]))
-        v = door_verdict(JudgeResult(label, reason, err, model), attempts=0, max_attempts=3)
-        doors[q["id"]] = v.door
-        judged.append({"question_id": q["id"], "label": label, "error": err, "model": model, "door": v.door,
-                       "text": q["text"][:200]})
-        print(f"{v.door:9s} {q['id'][:70]}", file=sys.stderr)
-    return doors
-
-
 def live(lane_name: str, out_dir: Path) -> dict:
-    """Read first, then hold the seat only while judging (a psql failure holds nothing)."""
-    from reflection_register_sources import psql_json, wilson
+    from orion.evals.leased_llm import operator_lane_sync
+    from reflection_register_sources import Item, ORGAN_LINES, judge_one, psql_json, wilson
 
     qs = psql_json("SELECT json_build_object('id', question_id, 'text', text, 'minted_by', minted_by, 'status', status) "
                    "FROM curiosity_self_questions")
+    doors: dict[str, str] = {}
+    judged = []
+    with operator_lane_sync(lane_name, holder="operator:self-question-door-replay") as lane:
+        for q in qs:
+            if q["minted_by"] != "orion":
+                continue
+            label, reason, err, model = judge_one(lane, Item("orion_question", q["id"],
+                                                             ORGAN_LINES["orion_question"], q["text"]))
+            v = door_verdict(JudgeResult(label, reason, err, model), attempts=0, max_attempts=3)
+            doors[q["id"]] = v.door
+            judged.append({"question_id": q["id"], "label": label, "error": err, "model": model, "door": v.door,
+                           "text": q["text"][:200]})
+            print(f"{v.door:9s} {q['id'][:70]}", file=sys.stderr)
+    minted = {q["id"]: q["minted_by"] for q in qs}
     findings = psql_json("SELECT json_build_object('run_id', run_id, 'register', register, 'question_ref', question_ref, "
                          "'at', created_at) FROM curiosity_finding_register WHERE line = 'self_inquiry' AND register IS NOT NULL")
-    judged: list[dict] = []
-    try:
-        with operator_lane_sync(lane_name, holder=HOLDER) as lane:
-            doors = judge_questions(lane, qs, judged)
-    except LaneRecalled:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "questions.partial.jsonl").write_text("".join(json.dumps(j) + "\n" for j in judged))
-        raise
-    minted = {q["id"]: q["minted_by"] for q in qs}
     rows = []
     for f in findings:
         qid = str(f.get("question_ref") or "").removeprefix("self_question:")
@@ -179,21 +155,12 @@ def live(lane_name: str, out_dir: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--live", action="store_true")
-    ap.add_argument("--lane", default=DEFAULT_LANE, choices=sorted(OPERATOR_LANES),
-                    help="operator lane for --live (one GPU pool hold, through the gateway)")
+    ap.add_argument("--lane", default="agent", help="operator lane for --live (one GPU pool hold, through the gateway)")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args(argv)
     if args.live:
         out = args.out or Path("/tmp/self-question-door-replay") / datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        try:
-            result = live(args.lane, out)
-        except LaneRecalled as exc:
-            print(f"RECALLED on {args.lane}: {exc}; wrote {out / 'questions.partial.jsonl'}", file=sys.stderr)
-            return EXIT_RECALLED
-        except LaneUnavailable as exc:
-            print(f"REFUSED on {args.lane}: {exc}", file=sys.stderr)
-            return EXIT_UNAVAILABLE
-        print(json.dumps(result, indent=2, default=str))
+        print(json.dumps(live(args.lane, out), indent=2, default=str))
         return 0
     res = fixture()
     print(json.dumps(res["gates"], indent=2))

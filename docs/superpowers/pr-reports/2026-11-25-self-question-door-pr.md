@@ -117,9 +117,21 @@ static gates: check_settings_defaults orion-hub, check_migration_required_by, ch
 ```text
 PYTHONPATH=. python services/orion-hub/evals/run_self_question_door_replay.py      PASS (9 gates)
 PYTHONPATH=. python services/orion-hub/evals/run_self_question_door_replay.py --live --judge-url <agent seat 8015>
-  LIVE_REPLAY_RESULT
+  88 Orion questions judged once (first QUESTION_LINE): admitted 44, routed 13, held 31 (26 no_finding, 5 not one
+  JSON object). Self-inquiry findings (live register, 64 labelled): 45% philosophical (29/64, 95% 34-57%) today;
+  with the door (Juniper's + admitted questions only) 67% (29/43, 53-80%). Juniper's questions 20/24 (83%);
+  admitted Orion 9/19 (47%); routed 0/7; held 0/14. A routed question gave a philosophical finding: 0 times.
+  The 26 no_finding replies were the door's own bug: a question states no conclusion, which is prompt v2's
+  no_finding test, so a third of Orion's questions would have ended unjudged (acceptance check 5 fails).
+  Fixed QUESTION_LINE (tells the judge a question is never no_finding); re-judged the 31 held + 19 labelled:
+  31/31 labelled (26 operational, 5 philosophical); 16/19 kept their label, 3 moved philosophical -> operational.
+  Files: /tmp/self-question-door-replay/2026-11-25/ (result.json, questions.jsonl, sittings.jsonl).
 python3 scripts/analysis/judge_anchor_set.py build      100 unlabelled rows -> ~/.orion/judge-anchor/anchor_set_v1.tsv
-python3 scripts/analysis/eval_reflection_register_share.py   SHARE_EVAL_RESULT
+python3 scripts/analysis/eval_reflection_register_share.py --per-organ 8 (11-11..11-25; small smoke sample, not the baseline)
+  philosophical share: self-inquiry findings 4/8, investigate findings 0/7 (1 judge error), Orion questions 1/8
+  (new QUESTION_LINE), outreach 4/8, reverie thoughts 1/8, reverie questions 0 labelled (1 judge error),
+  day letter paragraphs 5/8. Wide intervals; acceptance check 6 runs it at 30 per organ before and after deploy.
+  Report: /tmp/reflection-register-share/2026-11-25/report.md
 ```
 
 No outside model was called. Every live read was SELECT-only (the analysis sessions run as read-only
@@ -186,12 +198,12 @@ tail -f /tmp/self-question-door-backfill/progress.log
   `unjudged` never admits, acceptance check 5; Juniper's anchor set will check it.
 - Severity: low. Concern: routed questions borrow the one focus slot. Mitigation: 6 h spacing; Prime and
   Juniper replace it.
-- Severity: low. Concern: `QUESTION_LINE` wording is new; the spec's measurement used an unrecorded line.
-  Mitigation: the live replay above uses the shipped line.
+- Severity: low. Concern: `QUESTION_LINE` wording is new (the spec's measurement used an unrecorded line) and
+  was tuned once on live data (see Evals). Mitigation: the anchor set and acceptance check 5 measure it after deploy.
 - Issues opened: #3932 (replica frame door label). Closed: none.
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3933
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

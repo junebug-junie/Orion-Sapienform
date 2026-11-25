@@ -6,10 +6,8 @@ measure for every organ: the finding-register judge (``orion.curiosity.register`
 700 characters of each item, with a question line naming which organ wrote it.
 
 Everything here is SELECT-only (``docker exec orion-athena-sql-db psql``) or ``GRAPH.RO_QUERY``. The judge
-is Orion's own local model, called only through an operator lane (``orion/evals/leased_llm.py``): the
-caller takes ONE GPU pool hold (``operator_lane_sync``) and ``judge_one`` posts each call to
-orion-llm-gateway under it, so the pool sees every call (#3921: this path once sent 286+ unleased calls
-straight to the agent seat). There is no direct-URL mode. No outside model is ever called.
+is Orion's own seat, called under an operator lease through orion-llm-gateway (``orion.evals.leased_llm``: one
+GPU pool hold per run, queued behind Orion's own work). No outside model is ever called.
 
 Sources (``ORGANS``):
 
@@ -48,15 +46,12 @@ from orion.curiosity.register import (  # noqa: E402
     parse_judge_reply,
     run_question_and_answer,
 )
-from orion.evals.leased_llm import LaneCallError  # noqa: E402
 
 # Read-only by the server, not only by convention: every session this opens is a read-only transaction.
 PSQL = ["docker", "exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", "orion-athena-sql-db", "psql",
         "-U", "postgres", "-d", "conjourney", "-Atc"]
 GRAPH_HOST, GRAPH_PORT, GRAPH_NAME = "localhost", 6380, "orion_worldview"
 JUDGE_MAX_TOKENS = 400  # the live register's value (scripts/curiosity_finding_register.py)
-JUDGE_TIMEOUT_SEC = 300
-DEFAULT_LANE = "agent"  # the seat these scripts called before they were leased (#3921)
 LETTER_PARAGRAPH_MIN = 200
 
 ORGAN_LINES = {
@@ -215,19 +210,20 @@ def served_model(lane: Any, body: dict) -> Optional[str]:
 
 
 def judge_one(lane: Any, item: Item) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-    """(label, reason, error, model) from one judge call on ``lane`` (an orion.evals.leased_llm.OperatorLane,
-    ``chat(body, timeout_sec)``). A failed call is an error tuple; a model not in PASSED_JUDGE_MODELS is an
-    error; a recall (``LaneRecalled``) propagates so the caller stops and writes what it has."""
+    """(label, reason, error, model) from Orion's own seat, under an operator lease through the gateway.
+
+    ``lane`` is an ``orion.evals.leased_llm.OperatorLane`` (``with operator_lane_sync("agent", holder=...)``).
+    A model not in PASSED_JUDGE_MODELS is an error. ``LaneRecalled`` propagates so the run stops."""
+    from orion.evals.leased_llm import LaneCallError
+
     try:
         body = lane.chat({
             "messages": judge_messages(item.question, item.text[:ANSWER_CHARS]), "temperature": 0,
-            # Pinned: the gateway adds top_p 0.90 / presence_penalty 0.20 on operator classes when a body
-            # leaves them unset; the live register's judge sends neither.
+            # Pinned: the gateway adds sampling defaults on some operator classes when a body leaves them unset.
             "top_p": 1.0, "presence_penalty": 0,
-            "max_tokens": JUDGE_MAX_TOKENS, "chat_template_kwargs": {"enable_thinking": False}},
-            timeout_sec=JUDGE_TIMEOUT_SEC)
+            "max_tokens": JUDGE_MAX_TOKENS, "chat_template_kwargs": {"enable_thinking": False}}, timeout_sec=300)
+        content = body["choices"][0]["message"].get("content")
         model = served_model(lane, body)
-        content = ((body.get("choices") or [{}])[0].get("message") or {}).get("content")
     except LaneCallError as exc:
         return None, None, f"call: {exc}"[:200], None
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
@@ -238,4 +234,4 @@ def judge_one(lane: Any, item: Item) -> tuple[Optional[str], Optional[str], Opti
     return label, reason, err, model
 
 
-__all__ = ["DEFAULT_LANE", "JUDGE_TIMEOUT_SEC", "ORGANS", "ORGAN_LINES", "Item", "judge_one", "md5_key", "psql_json", "read_items", "sample", "wilson"]
+__all__ = ["ORGANS", "ORGAN_LINES", "Item", "judge_one", "served_model", "md5_key", "psql_json", "read_items", "sample", "wilson"]

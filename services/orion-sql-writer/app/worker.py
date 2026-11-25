@@ -42,7 +42,7 @@ from app.models import (
     CausalGeometrySnapshotSQL,
     BusTrafficRollupSQL,
     HeartbeatSeatRollupSQL,
-    FieldGoalProvenanceLogSQL,
+    FieldGoalEpisodeSQL,
     ChatHistoryLogSQL,
     AitownChatHistoryLogSQL,
     ChatGptLogSQL,
@@ -304,7 +304,6 @@ INSERT_ONLY_MODELS = {
     CausalGeometrySnapshotSQL,
     BusTrafficRollupSQL,
     HeartbeatSeatRollupSQL,
-    FieldGoalProvenanceLogSQL,
     EquilibriumServiceTransitionSQL,
     VisionUnresolvedSQL,
 }
@@ -551,7 +550,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "BusTrafficRollupSQL": (BusTrafficRollupSQL, BusTrafficRollupV1),
     "HeartbeatSeatRollupSQL": (HeartbeatSeatRollupSQL, HeartbeatSeatRollupV1),
-    "FieldGoalProvenanceLogSQL": (FieldGoalProvenanceLogSQL, FieldGoalProvenanceV1),
+    # Not a generic _write_row model: folded into episodes by app/field_goal_episode.py.
+    "FieldGoalEpisodeSQL": (FieldGoalEpisodeSQL, FieldGoalProvenanceV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
     "ThoughtDecisionSQL": (ThoughtDecisionSQL, ThoughtEventV1),
     # schema_cls=None: harness-governor already validated each of the four
@@ -1648,18 +1648,24 @@ def _ensure_chat_history_from_message(
         own_sess.close()
 
 
-def _normalize_field_goal_provenance_payload(write_data: dict) -> dict:
-    """Add ``payload_json`` for FieldGoalProvenanceLogSQL (#3924).
+def _write_field_goal_episode(goal: FieldGoalProvenanceV1, envelope_id: str | None) -> bool:
+    """Fold one validated goal into field_goal_episode (#3924). False = duplicate artifact."""
+    from app.field_goal_episode import fold_goal
 
-    ``payload_json`` holds only the schema's own fields, so envelope extras
-    (``envelope_id``) land in their column and never in the stored payload.
-    It is the schema's own JSON form (same bytes the producer published, e.g.
-    ``ts`` as ``...Z``); ``_write`` already validated these fields.
-    """
-    out = dict(write_data)
-    own = {k: write_data[k] for k in FieldGoalProvenanceV1.model_fields if k in write_data}
-    out["payload_json"] = FieldGoalProvenanceV1.model_validate(own).model_dump(mode="json")
-    return out
+    sess = get_session()
+    try:
+        outcome = fold_goal(sess, goal, envelope_id=envelope_id)
+        sess.commit()
+    except Exception:
+        sess.rollback()
+        raise
+    finally:
+        remove_session()
+    written = outcome != "duplicate"
+    write_health.mark_written(written, FieldGoalEpisodeSQL.__tablename__)
+    if not written:
+        logger.info("field_goal_episode duplicate artifact_id=%s skipped", goal.artifact_id)
+    return written
 
 
 def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
@@ -1851,8 +1857,6 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             write_data = _normalize_office_env_sample_payload(write_data)
         if sql_model_cls is ClosetEnvSampleSQL:
             write_data = _normalize_closet_env_sample_payload(write_data)
-        if sql_model_cls is FieldGoalProvenanceLogSQL:
-            write_data = _normalize_field_goal_provenance_payload(write_data)
 
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)
@@ -3211,16 +3215,19 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 write_ok = await _write(sql_model, None, data_to_process, {}, kind=env.kind)
             elif sql_model is CockpitTurnSightingSQL:
                 write_ok = await _write(sql_model, CockpitHopV1, data_to_process, {}, kind=env.kind)
-            elif sql_model is FieldGoalProvenanceLogSQL:
-                # Only envelope_id from the envelope: the generic extras carry the ENVELOPE
-                # correlation_id (a fresh uuid4 per publish in attention-runtime), which would
-                # overwrite the goal's own correlation_id (#3924).
+            elif sql_model is FieldGoalEpisodeSQL:
                 # No artifact_id = no dedup key (the schema would mint a fresh one per
-                # delivery), so refuse it to the fallback log instead of storing duplicates.
+                # delivery), so refuse it to the fallback log instead of double counting.
                 if not (isinstance(data_to_process, dict) and data_to_process.get("artifact_id")):
                     raise ValueError("field goal payload has no artifact_id")
-                goal_extras = {"envelope_id": str(env.id)} if getattr(env, "id", None) else {}
-                write_ok = await _write(sql_model, schema_model, data_to_process, goal_extras, kind=env.kind)
+                validation_payload, _ = _payload_for_schema_validation(data_to_process, schema_model, kind=env.kind)
+                try:
+                    goal = FieldGoalProvenanceV1.model_validate(validation_payload)
+                except Exception as e:
+                    logger.error("sql_writer_validation_failed kind=%s schema=FieldGoalProvenanceV1 error=%s", env.kind, e)
+                    raise
+                envelope_id = str(env.id) if getattr(env, "id", None) else None
+                write_ok = await asyncio.to_thread(_write_field_goal_episode, goal, envelope_id)
             elif sql_model is LlmCallUsageSQL:
                 # extra_fields={}: the generic extras carry the ENVELOPE correlation_id, which is a
                 # fresh uuid4 whenever the producer had none (or a non-UUID turn id). Merging it

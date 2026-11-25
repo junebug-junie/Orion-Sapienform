@@ -61,6 +61,14 @@
   // Answers carry `card: "one_at_a_time"`: a "not sure" story the server put back
   // in the unchecked queue leaves it on her first answer here.
   //
+  // The sentence graded in parts (2026-11-24, who-card redesign Patch C). Under
+  // the sentence: "Right people?", "Right direction?", "Right place?" -- only the
+  // parts this sentence states (recorded when it was written, never guessed from
+  // its words) -- each Yes / No / Can't tell. The story's verdict is made from
+  // them once every part is answered (people no -> wrong name first). "Yes, that's
+  // X" on a person never answers "Right people?" (Juniper's answer 2). The tally
+  // line says how many verdicts came from parts and how many from the old buttons.
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
@@ -74,6 +82,11 @@
   ];
   // Fifth button: Juniper could not judge it. Never right, never wrong.
   const CANT_TELL = { value: "cant_tell", label: "Can't tell" };
+  const VERDICT_WORDS = { right: "right", wrong_name: "a wrong name", wrong_motion: "a wrong motion",
+    wrong_other: "wrong (other)", cant_tell: "can't tell" };
+  const PART_QUESTIONS = { people: "Right people?", direction: "Right direction?", place: "Right place?" };
+  const PART_ANSWERS = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" },
+    { value: "cant_tell", label: "Can't tell" }];
   const WHY_MAX_CHARS = 1000;
   const CARD = "one_at_a_time";
   const NAMES_LIMIT = 8;
@@ -98,8 +111,31 @@
       `named stories checked ${t.named_checked || 0} · can't tell ${t.cant_tell || 0} (not counted)` +
       // "Can't see them" answers apart: a rising share means the pictures are too small or dark.
       (typeof t.person_answers === "number"
-        ? ` · can't see them ${t.cant_see || 0} of ${t.person_answers} person answers` : "")
+        ? ` · can't see them ${t.cant_see || 0} of ${t.person_answers} person answers` : "") +
+      sourceText(t)
     );
+  }
+
+  // Where the counted verdicts came from (Orion's question 5): the old buttons, the sentence
+  // parts, a name correction; and stories graded in part only, which count for nothing yet.
+  function sourceText(t) {
+    const by = t && t.by_source;
+    if (!by || typeof by !== "object") return "";
+    const n = (src) => Object.keys(by[src] || {}).filter((k) => k !== "cant_tell")
+      .reduce((a, k) => a + Number(by[src][k] || 0), 0);
+    let out = ` · from parts ${n("parts")}, from the old buttons ${n("button")}`;
+    if (n("name_correction")) out += `, from name corrections ${n("name_correction")}`;
+    if (Number(t.wrong_name_from_corrections || 0)) {
+      out += ` · wrong names held by your corrections ${t.wrong_name_from_corrections}`;
+    }
+    if (Number(t.half_graded || 0)) out += ` · half-graded ${t.half_graded} (not counted yet)`;
+    return out;
+  }
+
+  // The parts to grade for a story: the recorded ones, in order; null when not recorded yet.
+  function storyParts(story) {
+    const stated = story && story.parts && Array.isArray(story.parts.stated) ? story.parts.stated : null;
+    return stated ? stated.filter((p) => Object.prototype.hasOwnProperty.call(PART_QUESTIONS, p)) : null;
   }
 
   function gateLine(tally) {
@@ -712,9 +748,15 @@
     }
     item.appendChild(who);
 
+    const parts = storyParts(story);
+    if (parts && parts.length && ctx && typeof ctx.onPart === "function") {
+      item.appendChild(renderParts(doc, story, parts, ctx));
+    }
     const row = el(doc, "div", "flex flex-wrap gap-2");
     // "Can't tell" on every story: an unclear daylight picture must not be forced into "wrong".
-    const buttons = VERDICTS.concat([CANT_TELL]);
+    // With the parts recorded, it is the only whole-story button; without, the old four stay.
+    const buttons = (parts && parts.length && ctx && typeof ctx.onPart === "function" ? [] : VERDICTS)
+      .concat([CANT_TELL]);
     buttons.forEach((v) => {
       const btn = el(doc, "button", "", v.label);
       btn.setAttribute("type", "button");
@@ -725,6 +767,35 @@
     });
     item.appendChild(row);
     return item;
+  }
+
+  // "Right people? / direction? / place?" with Yes / No / Can't tell each.
+  function renderParts(doc, story, parts, ctx) {
+    const box = el(doc, "div", "space-y-1 rounded border border-gray-700 p-2");
+    box.setAttribute("data-story-parts", parts.join(","));
+    box.appendChild(el(doc, "div", "text-[11px] font-semibold text-gray-300", "Is the sentence right? One part at a time:"));
+    const answers = (story.parts && story.parts.answers) || {};
+    parts.forEach((part) => {
+      const row = el(doc, "div", "flex flex-wrap items-center gap-2");
+      row.setAttribute("data-story-part", part);
+      row.appendChild(el(doc, "span", "min-w-[7.5rem] text-xs text-gray-200", PART_QUESTIONS[part]));
+      const said = answers[part] || null;
+      PART_ANSWERS.forEach((a) => {
+        const btn = el(doc, "button", "", a.label);
+        btn.setAttribute("type", "button");
+        btn.setAttribute("data-part-verdict", a.value);
+        setPressed(btn, !!said && said.verdict === a.value);
+        btn.addEventListener("click", () => ctx.onPart(story, part, a.value, box));
+        row.appendChild(btn);
+      });
+      if (said && said.source === "name_correction") {
+        const note = el(doc, "span", "text-[10px] text-amber-300", "(from your name correction)");
+        note.setAttribute("data-part-auto", "1");
+        row.appendChild(note);
+      }
+      box.appendChild(row);
+    });
+    return box;
   }
 
   function setPressed(btn, on) {
@@ -776,7 +847,7 @@
     let pending = null;                // a name picked from the list, held for Undo
     let flushing = null;               // that answer while it is being sent (Undo no longer applies)
     const names = [];
-    const ctx = { cursor, names, answer, undo, go, say, onNotSame,
+    const ctx = { cursor, names, answer, undo, go, say, onNotSame, onPart,
       get pending() { return pending; }, get flushing() { return flushing; } };
 
     function say(text) { if (status) status.textContent = text; }
@@ -910,6 +981,34 @@
       }
     }
 
+    async function onPart(story, part, verdict, box) {
+      const buttons = box.querySelectorAll("[data-part-verdict]");
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        const res = await fetchFn(`/api/vision/motion-stories/${encodeURIComponent(story.story_id)}/parts`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ part, verdict }),
+        });
+        if (!res.ok) {
+          let detail = "";
+          try { detail = (await res.json()).detail || ""; } catch (_) { /* not JSON */ }
+          throw new Error(detail ? `${res.status} ${detail}` : `HTTP ${res.status}`);
+        }
+        const body = await res.json();
+        if (body.tally) showTally(body.tally);
+        rerender(story.story_id, body.story || storyOf(story.story_id) || story);
+        const left = (storyParts(body.story || story) || []).filter((p) => {
+          const a = body.story && body.story.parts && body.story.parts.answers ? body.story.parts.answers[p] : null;
+          return !a;
+        }).length;
+        say(body.story_verdict
+          ? `Saved. Every part answered: this story counts as ${VERDICT_WORDS[body.story_verdict] || body.story_verdict}.`
+          : `Saved. ${left} more ${left === 1 ? "part" : "parts"} to answer before this story counts.`);
+      } catch (err) {
+        say(`Could not save that (${err.message}). Try again.`);
+        buttons.forEach((b) => { b.disabled = false; });
+      }
+    }
+
     async function onNotSame(story, person, choice, wrap) {
       const buttons = wrap.querySelectorAll("[data-person-not-same-pair]");
       buttons.forEach((b) => { b.disabled = true; });
@@ -1014,7 +1113,7 @@
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
                 personTitle, actionLine, whyLine, handoffText, renderStory, mount,
                 storyPeople, personPictures, isPictured, cropOwners, boxesText, groupsText, notSameChoices,
-                questionText, nameChoices, answerSpec, pendingText, cursorIndex };
+                questionText, nameChoices, answerSpec, pendingText, cursorIndex, sourceText, storyParts };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

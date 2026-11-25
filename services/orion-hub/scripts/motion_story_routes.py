@@ -108,6 +108,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from orion.vision import story_persons
+from orion.vision.motion_story_gate import (ACTIVE_CORRECTIONS_SQL, PART_VERDICTS, PARTS, derive_story_verdict,
+                                            gate_verdicts_sql)
 from orion.vision.story_naming import evidence_crops, name_from_crops, rename_subject
 from scripts import ask_routes
 from scripts.ask_routes import _iso, _pool, _raise_store_http, _read_thumb, clean_name
@@ -155,13 +157,32 @@ ORDER BY s.started_at DESC
 LIMIT $3
 """
 
-_TALLY_SQL = """
-SELECT CASE WHEN v.cant_tell THEN 'cant_tell' ELSE v.verdict END AS verdict, count(*) AS n,
-       count(*) FILTER (WHERE s.name_label IS NOT NULL) AS named
+# The gate count, shared with the walkway rollups and the street line (orion/vision/motion_story_gate.py):
+# a story under an active name correction counts as a wrong name whatever its verdict (Orion's question 6).
+_TALLY_SQL = gate_verdicts_sql("$1")
+
+# Who wrote each counted verdict (Orion's question 5): the old buttons (no source row: all verdicts
+# before Patch C), the sentence parts, or a name correction. Plus stories graded in part only.
+_TALLY_BY_SOURCE_SQL = """
+SELECT coalesce(src.source, 'button') AS source,
+       CASE WHEN v.cant_tell THEN 'cant_tell' ELSE v.verdict END AS verdict, count(*) AS n
 FROM vision_motion_story_verdict v
 JOIN vision_motion_story s ON s.story_id = v.story_id
+LEFT JOIN vision_motion_story_verdict_source src ON src.story_id = v.story_id
 WHERE s.published AND s.clean AND s.rules_version = $1
-GROUP BY 1
+GROUP BY 1, 2
+"""
+_TALLY_PARTS_SQL = """
+WITH corrected AS (""" + ACTIVE_CORRECTIONS_SQL + """)
+SELECT
+  (SELECT count(*) FROM corrected c JOIN vision_motion_story s ON s.story_id = c.story_id
+    WHERE s.published AND s.clean AND s.rules_version = $1) AS corrections,
+  (SELECT count(DISTINCT pv.story_id) FROM vision_motion_story_part_verdict pv
+    JOIN vision_motion_story s ON s.story_id = pv.story_id
+    LEFT JOIN vision_motion_story_verdict_source src ON src.story_id = pv.story_id
+    WHERE s.published AND s.clean AND s.rules_version = $1 AND pv.source = 'juniper'
+      AND coalesce(src.source, '') <> 'parts'
+      AND NOT EXISTS (SELECT 1 FROM vision_motion_story_verdict v WHERE v.story_id = pv.story_id)) AS half_graded
 """
 
 
@@ -224,6 +245,12 @@ async def _reopened(conn: Any) -> list[str]:
 _ONE_STORY_SQL = _LIST_SQL.split("FROM vision_motion_story s")[0] + (
     "FROM vision_motion_story s LEFT JOIN vision_motion_story_verdict v ON v.story_id = s.story_id "
     "WHERE s.story_id = $1")
+
+
+_UPSERT_VERDICT_SOURCE = """
+INSERT INTO vision_motion_story_verdict_source (story_id, source) VALUES ($1, $2)
+ON CONFLICT (story_id) DO UPDATE SET source = EXCLUDED.source, updated_at = now()
+"""
 
 
 class VerdictBody(BaseModel):
@@ -311,6 +338,16 @@ async def _tally(conn: Any) -> dict[str, Any]:
     seen = await conn.fetchrow(_CANT_SEE_SQL, version, [WHO_IS_THIS_KIND, STORY_PERSON_KIND])
     out["person_answers"] = int(seen["answers"] or 0)
     out["cant_see"] = int(seen["cant_see"] or 0)
+    # Honest about where the counts come from (Orion's question 5): verdicts per writer, the wrong
+    # names that come from the correction ledger, and stories graded in part only (not counted).
+    by: dict[str, dict[str, int]] = {}
+    for r in await conn.fetch(_TALLY_BY_SOURCE_SQL, version):
+        if r["verdict"]:
+            by.setdefault(r["source"], {})[r["verdict"]] = int(r["n"])
+    out["by_source"] = by
+    extra = await conn.fetchrow(_TALLY_PARTS_SQL, version)
+    out["wrong_name_from_corrections"] = int(extra["corrections"] or 0)
+    out["half_graded"] = int(extra["half_graded"] or 0)
     return out
 
 
@@ -398,6 +435,7 @@ async def record_motion_story_verdict(story_id: str, body: VerdictBody, request:
                     story_id, None if body.verdict == CANT_TELL else body.verdict, version,
                     body.verdict == CANT_TELL,
                 )
+                await conn.execute(_UPSERT_VERDICT_SOURCE, story_id, "button")
             tally = await _tally(conn)
     except HTTPException:
         raise
@@ -709,6 +747,7 @@ async def _enrich(conn: Any, stories: list[dict[str, Any]]) -> None:
             p["story_action"] = latest.get(p["individual_id"])
         s["display_name"], s["display_sentence"], s["name_source"] = story_display(s, labels, mine)
     await _persons(conn, stories)
+    await _story_parts(conn, stories)
 
 
 # --- one person per linked group (who-card redesign Patch A, 2026-11-24) -----------------------------
@@ -774,6 +813,160 @@ async def _persons(conn: Any, stories: list[dict[str, Any]]) -> None:
             logger.warning("motion_story_links_lookup_failed error=%s", exc)
     for s in stories:
         s["persons"] = story_persons.group_people(s.get("people") or [], roots, s.pop("_areas", None), links)
+
+
+# --- the sentence graded in parts (who-card redesign Patch C, 2026-11-24) ------------------------------
+# Juniper (answer 3): people, direction, place. Which parts a story states is recorded when the sentence
+# is composed (vision_motion_story_parts, orion-sql-writer); the card offers exactly those. Her answers
+# go to vision_motion_story_part_verdict. The story verdict is derived from them only when every stated
+# part is answered (orion/vision/motion_story_gate.derive_story_verdict); until then the story stays
+# unchecked and no count moves. "Yes, that's X" on a person never fills "Right people?" (answer 2).
+_PARTS_SQL = """
+SELECT p.story_id, p.parts, p.source AS parts_source,
+       coalesce(jsonb_object_agg(v.part, jsonb_build_object('verdict', v.verdict, 'source', v.source))
+                FILTER (WHERE v.part IS NOT NULL), '{}'::jsonb) AS answers
+FROM vision_motion_story_parts p
+LEFT JOIN vision_motion_story_part_verdict v ON v.story_id = p.story_id
+WHERE p.story_id = ANY($1::text[])
+GROUP BY p.story_id, p.parts, p.source
+"""
+_UPSERT_PART_SQL = """
+INSERT INTO vision_motion_story_part_verdict (story_id, part, verdict, rules_version, source, ask_id, answered_at)
+VALUES ($1, $2, $3, $4, 'juniper', NULL, now())
+ON CONFLICT (story_id, part) DO UPDATE
+  SET verdict = EXCLUDED.verdict, rules_version = EXCLUDED.rules_version, source = 'juniper', ask_id = NULL,
+      answered_at = now()
+"""
+# The "people = no" a name correction implies: only where she has not answered that part herself.
+_AUTO_PEOPLE_NO_SQL = """
+INSERT INTO vision_motion_story_part_verdict AS pv (story_id, part, verdict, rules_version, source, ask_id)
+SELECT $1, 'people', 'no', $2, 'name_correction', $3
+WHERE EXISTS (SELECT 1 FROM vision_motion_story_parts p WHERE p.story_id = $1 AND 'people' = ANY(p.parts))
+ON CONFLICT (story_id, part) DO UPDATE
+  SET verdict = 'no', ask_id = EXCLUDED.ask_id, answered_at = now()
+  WHERE pv.source = 'name_correction'
+"""
+_DROP_AUTO_PEOPLE_NO_SQL = """
+DELETE FROM vision_motion_story_part_verdict WHERE story_id = $1 AND source = 'name_correction'
+"""
+_STORY_CORRECTED_SQL = "SELECT 1 FROM (" + ACTIVE_CORRECTIONS_SQL + ") c WHERE c.story_id = $1"
+
+
+def parts_view(row: Any) -> dict[str, Any]:
+    """``parts`` on a listed story: the parts its sentence states and her answers so far.
+    ``stated`` None: not recorded yet (the card falls back to the old buttons)."""
+    if row is None:
+        return {"stated": None, "answers": {}}
+    answers = row["answers"]
+    if isinstance(answers, str):
+        try:
+            answers = json.loads(answers)
+        except ValueError:
+            answers = {}
+    return {"stated": [p for p in (row["parts"] or []) if p in PARTS], "recorded_by": row["parts_source"],
+            "answers": {k: v for k, v in (answers or {}).items() if k in PARTS}}
+
+
+async def _story_parts(conn: Any, stories: list[dict[str, Any]]) -> None:
+    """``parts`` on each story. Fail-open (savepoint): no parts when the table is missing."""
+    for s in stories:
+        s["parts"] = parts_view(None)
+    if not stories:
+        return
+    try:
+        async with conn.transaction():
+            rows = await conn.fetch(_PARTS_SQL, [s["story_id"] for s in stories])
+    except Exception as exc:  # noqa: BLE001 - the card falls back to the old buttons
+        logger.warning("motion_story_parts_lookup_failed error=%s", exc)
+        return
+    by = {r["story_id"]: r for r in rows}
+    for s in stories:
+        s["parts"] = parts_view(by.get(s["story_id"]))
+
+
+async def _undo_correction(conn: Any, story_id: str, rules_version: int) -> None:
+    """Her correction is undone: its automatic "people = no" goes, and so does the verdict it made --
+    a 'name_correction' verdict is removed (the story is unchecked again); a 'parts' verdict is
+    re-derived, and removed when the parts are no longer complete."""
+    if (await conn.execute(_DROP_AUTO_PEOPLE_NO_SQL, story_id)) == "DELETE 0":
+        return
+    source = await conn.fetchval("SELECT source FROM vision_motion_story_verdict_source WHERE story_id = $1",
+                                 story_id)
+    if source == "parts" and await _rederive(conn, story_id, rules_version) is not None:
+        return
+    if source in ("name_correction", "parts"):
+        await conn.execute("DELETE FROM vision_motion_story_verdict WHERE story_id = $1", story_id)
+        await conn.execute("DELETE FROM vision_motion_story_verdict_source WHERE story_id = $1", story_id)
+
+
+# A wrong name that only an old button or an old (unflagged) correction recorded: no source row.
+_OLD_WRONG_NAME_SQL = """
+SELECT 1 FROM vision_motion_story_verdict v
+WHERE v.story_id = $1 AND v.verdict = 'wrong_name'
+  AND NOT EXISTS (SELECT 1 FROM vision_motion_story_verdict_source s WHERE s.story_id = v.story_id)
+"""
+
+
+async def _rederive(conn: Any, story_id: str, rules_version: int) -> Optional[str]:
+    """Re-derive the story verdict from its part answers; write it only when every stated part is
+    answered (then it replaces the story's verdict, like a button press). Returns what it wrote.
+    Never over a wrong name recorded before Patch C (no source row): those corrections carry no
+    ledger mark, so their verdict is the only thing that keeps them in the gate."""
+    row = (await conn.fetch(_PARTS_SQL, [story_id]) or [None])[0]
+    view = parts_view(row)
+    if view["stated"] is None:
+        return None
+    verdict = derive_story_verdict(view["stated"], {k: v["verdict"] for k, v in view["answers"].items()})
+    if verdict is None:
+        return None
+    if verdict != "wrong_name" and await conn.fetchval(_OLD_WRONG_NAME_SQL, story_id) is not None:
+        logger.info("motion_story_part_kept_old_wrong_name story_id=%s derived=%s", story_id, verdict)
+        return None
+    await conn.execute(_UPSERT_VERDICT, story_id, None if verdict == CANT_TELL else verdict, rules_version,
+                       verdict == CANT_TELL)
+    await conn.execute(_UPSERT_VERDICT_SOURCE, story_id, "parts")
+    return verdict
+
+
+class PartBody(BaseModel):
+    part: Literal["people", "direction", "place"]
+    verdict: Literal["yes", "no", "cant_tell"]
+
+
+@router.post("/api/vision/motion-stories/{story_id}/parts")
+async def record_story_part(story_id: str, body: PartBody, request: Request) -> dict[str, Any]:
+    """One part of the sentence graded: "Right people? / direction? / place?" yes, no or can't tell."""
+    if not _STORY_ID_RE.fullmatch(story_id or ""):
+        raise HTTPException(status_code=400, detail="bad_story_id")
+    pool = _pool(request)
+    derived: Optional[str] = None
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # FOR UPDATE: two quick part clicks on one story derive one after the other.
+                version = await conn.fetchval(
+                    "SELECT rules_version FROM vision_motion_story WHERE story_id = $1 AND published FOR UPDATE",
+                    story_id)
+                if version is None:
+                    raise HTTPException(status_code=404, detail="story_not_found")
+                stated = await conn.fetchval("SELECT parts FROM vision_motion_story_parts WHERE story_id = $1",
+                                             story_id)
+                if stated is None:
+                    raise HTTPException(status_code=409, detail="parts_not_recorded")
+                if body.part not in stated:
+                    # The sentence does not say it: nothing to grade.
+                    raise HTTPException(status_code=422, detail="part_not_in_sentence")
+                await conn.execute(_UPSERT_PART_SQL, story_id, body.part, body.verdict, version)
+                derived = await _rederive(conn, story_id, version)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_motion_http(exc)
+    stories, tally = await _readback(pool, story_id)
+    logger.info("motion_story_part story_id=%s part=%s verdict=%s derived=%s", story_id, body.part,
+                body.verdict, derived or "-")
+    return {"ok": True, "story_id": story_id, "part": body.part, "verdict": body.verdict,
+            "story_verdict": derived, "story": stories[0] if stories else None, "tally": tally}
 
 
 def wrong_name_correction(story_name: Optional[str], role: str, action: str, name: str,
@@ -868,7 +1061,7 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
             async with conn.transaction():
                 story = await conn.fetchrow(
                     "SELECT story_id, kind, name_label, rules_version, evidence, together_story_ids, evidence_strip "
-                    "FROM vision_motion_story WHERE story_id = $1 AND published", story_id)
+                    "FROM vision_motion_story WHERE story_id = $1 AND published FOR UPDATE", story_id)
                 if story is None:
                     raise HTTPException(status_code=404, detail="story_not_found")
                 if body.group:
@@ -909,8 +1102,10 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                 latest = {a["individual_id"]: {"action": a["action"], "name": a["name"], "card": a["card"]}
                           for a in await conn.fetch(_STORY_ACTIONS_SQL, [story_id],
                                                     [WHO_IS_THIS_KIND, STORY_PERSON_KIND])}
+                corrected = False
                 for t in targets:
                     iid = t["individual_id"]
+                    corrects = wrong_name_correction(story["name_label"], t["role"], body.action, name, current[iid])
                     if story_persons.already_said(latest.get(iid), body.action, name,
                                                   card=None if body.card == "list" else body.card):
                         # Idempotent (Orion's question 4): the same answer again writes no second row.
@@ -920,6 +1115,9 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                         action=body.action, name=name, story_id=story_id, picture_crop_ids=t["picture_crop_ids"],
                         why=why, person_key=person_key, group_size=len(targets), dont_know=body.dont_know,
                         card=None if body.card == "list" else body.card)
+                    if corrects:
+                        # The person-correction ledger the gate reads (Orion's question 6).
+                        spec["detail"]["corrects_story_name"] = True
                     thumb = f"thumb:{t['thumb']}" if t.get("thumb") else None
                     refs = [f"motion_story:{story_id}", f"individual:{iid}"]
                     if spec["kind"] == WHO_IS_THIS_KIND:
@@ -930,12 +1128,23 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                         _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}", spec["question"], json.dumps(refs),
                         thumb, json.dumps([thumb] if thumb else []), spec["answer"], spec["kind"], iid,
                         json.dumps(spec["detail"])))
-                    wrong_name = wrong_name or wrong_name_correction(
-                        story["name_label"], t["role"], body.action, name, current[iid])
-                if wrong_name:
+                    if corrects and not corrected:
+                        corrected = True
+                        correction_ask = rows[-1]["ask_id"]
+                if corrected:
                     # Never over a verdict about something else (wrong motion / wrong other).
                     wrong_name = (await conn.fetchval(
                         _WRONG_NAME_VERDICT, story_id, story["rules_version"])) is not None
+                    if wrong_name:
+                        await conn.execute(_UPSERT_VERDICT_SOURCE, story_id, "name_correction")
+                    # "Right people? = no", unless she answered that part herself (design section 2).
+                    await conn.execute(_AUTO_PEOPLE_NO_SQL, story_id, story["rules_version"], correction_ask)
+                    await _rederive(conn, story_id, story["rules_version"])
+                elif rows:
+                    # Her correction is undone (her latest answer no longer corrects the name): its
+                    # automatic "people = no" goes; her own part answers stay.
+                    if await conn.fetchval(_STORY_CORRECTED_SQL, story_id) is None:
+                        await _undo_correction(conn, story_id, story["rules_version"])
     except HTTPException:
         raise
     except Exception as exc:

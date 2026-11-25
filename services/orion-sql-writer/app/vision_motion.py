@@ -62,7 +62,22 @@ from orion.vision.zones import Zone, zone_for_box
 # the per-camera frame size and edges (2026-10-20): on the walkway (the only
 # stream with verdicts) every frame is the old global 2560x1920, so no story
 # reads differently; the new columns are additive facts the tally never reads.
+#
+# What bumps it (who-card Patch C, 2026-11-24): any change to which parts a
+# sentence states (``sentence_parts``) or to how a stated part reads -- the
+# subject (``sentence_for``, ``companion_phrase``, VERBS, NOUNS), the direction
+# (``direction_phrase``) or the place (``zone_phrase``). Juniper grades those
+# parts one by one; a part answer on old wording must never vouch for new
+# wording. tests/test_vision_motion.py pins a hash of exactly these and fails
+# when they change while RULES_VERSION does not. Not a bump: thresholds that
+# decide WHETHER a story is published (they change which stories exist, not
+# what a sentence claims).
 RULES_VERSION = 1
+
+# The parts of a sentence Juniper grades (Juniper, 2026-11-24: people, direction,
+# place; length is left out). Recorded with the story when it is composed
+# (vision_motion_story_parts), never parsed back from the prose.
+SENTENCE_PARTS = ("people", "direction", "place")
 
 EDGES = ("left", "right", "top", "bottom", "inside")
 # Where a story's frame size came from (vision_motion_story.frame_size_source).
@@ -223,6 +238,8 @@ class Story:
     frame_w: Optional[int] = None
     frame_h: Optional[int] = None
     frame_size_source: Optional[str] = None
+    # The parts ``sentence`` states (``sentence_parts``), recorded with it (who-card Patch C).
+    parts: Tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +627,21 @@ def sentence_for(*, kind: str, sc: Optional[str], lat: int, dep: int, zp: Sequen
     return s + "."
 
 
+def sentence_parts(*, kind: str, sc: Optional[str], lat: int, dep: int, zp: Sequence[str]) -> Tuple[str, ...]:
+    """Which gradable parts ``sentence_for`` states for these facts, in SENTENCE_PARTS order.
+
+    - people: always (the subject is always said: a name, or "a person", and who was with them);
+    - direction: only when it moved (not still) and a direction phrase was said;
+    - place: only when a zone phrase was said ("on the porch", "outside the zones").
+    Same inputs as ``sentence_for``, so the stored parts and the sentence cannot disagree."""
+    out = ["people"]
+    if sc is not None and sc not in STILL_CLASSES and direction_phrase(lat, dep):
+        out.append("direction")
+    if zone_phrase(zp):
+        out.append("place")
+    return tuple(out)
+
+
 def companion_phrase(kind: str, companions: Sequence[str], people_together: int) -> str:
     """The others who moved with this one in the same passage, one count per kind:
     "another person and 2 dogs". The same kind as the subject reads "other"
@@ -733,5 +765,6 @@ def build_stories(
             exit_foot_x=round(fx, 4), exit_foot_y=round(fy, 4),
             exit_speed_fw_per_sec=round(xs, 5) if xs is not None else None,
             frame_w=int(round(fw)), frame_h=int(round(fh)), frame_size_source=fsrc,
+            parts=sentence_parts(kind=p.kind, sc=sc, lat=lat, dep=dep, zp=zp),
         ))
     return out

@@ -67,7 +67,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.settings import Settings
 from app.vision_caption_motion import caption_motion_step
-from app.vision_motion import PUBLISH_KINDS, MotionConfig, MotionCrop, Story, build_stories, link_passages
+from app.vision_motion import (PUBLISH_KINDS, RULES_VERSION, MotionConfig, MotionCrop, Story, build_stories,
+                               link_passages)
 from app.vision_story_strip import StripConfig
 
 logger = logging.getLogger("sql-writer.vision_motion_loop")
@@ -319,11 +320,58 @@ INSERT_SQL = _INSERT_TMPL.format(cols="".join(", " + c for c in EDGE_COLUMNS),
 
 def story_params(s: Story, *, edges: bool = True) -> Dict[str, Any]:
     d = dict(s.__dict__)
+    d.pop("parts", None)                     # its own table (vision_motion_story_parts)
     d["evidence"] = json.dumps(s.evidence)
     if not edges:
         for c in EDGE_COLUMNS:
             d.pop(c, None)
     return d
+
+
+# --- the parts each sentence states (who-card Patch C, 2026-11-24) ----------------------------------
+# manual_migration_vision_motion_story_parts_v1.sql. Written when the story is written (source
+# 'composer'); a story written before that has its parts derived ONCE from its stored columns
+# (speed_class, dir_lateral, dir_depth, zone_path: the same facts sentence_for used) by
+# backfill_story_parts (source 'derived'). Fail-open: without the table, stories run as before.
+PARTS_TABLE = "vision_motion_story_parts"
+PARTS_INSERT_SQL = (
+    "INSERT INTO vision_motion_story_parts (story_id, parts, rules_version, source) "
+    "VALUES (:story_id, :parts, :rules_version, :source) ON CONFLICT (story_id) DO NOTHING"
+)
+PARTS_BACKFILL_MAX = 2000
+PARTS_BACKFILL_SQL = (
+    "SELECT s.story_id, s.kind, s.speed_class, s.dir_lateral, s.dir_depth, s.zone_path, s.rules_version "
+    "FROM vision_motion_story s WHERE s.published AND s.rules_version = :v AND NOT EXISTS "
+    "(SELECT 1 FROM vision_motion_story_parts p WHERE p.story_id = s.story_id) "
+    "ORDER BY s.started_at DESC LIMIT :n"
+)
+# Story retention removes the story row; its parts, part answers and verdict source go with it.
+PARTS_PRUNE_SQLS = tuple(
+    f"DELETE FROM {t} x WHERE NOT EXISTS (SELECT 1 FROM vision_motion_story s WHERE s.story_id = x.story_id)"
+    for t in ("vision_motion_story_parts", "vision_motion_story_part_verdict", "vision_motion_story_verdict_source"))
+
+
+def parts_table_present(conn) -> bool:
+    from sqlalchemy import text
+
+    return conn.execute(text("SELECT to_regclass(:t) IS NOT NULL"), {"t": PARTS_TABLE}).scalar() is True
+
+
+def backfill_story_parts(conn, *, limit: int = PARTS_BACKFILL_MAX) -> int:
+    """Stories written before their parts were recorded: derive once from the stored facts.
+    Only rules_version == RULES_VERSION (the parts rule is this version's); older ones keep none."""
+    from sqlalchemy import text
+
+    from app.vision_motion import sentence_parts
+
+    rows = conn.execute(text(PARTS_BACKFILL_SQL), {"n": int(limit), "v": RULES_VERSION}).fetchall()
+    batch = [{"story_id": r.story_id, "rules_version": RULES_VERSION, "source": "derived",
+              "parts": list(sentence_parts(kind=r.kind, sc=r.speed_class, lat=int(r.dir_lateral or 0),
+                                           dep=int(r.dir_depth or 0), zp=list(r.zone_path or [])))}
+             for r in rows]
+    if batch:
+        conn.execute(text(PARTS_INSERT_SQL), batch)      # one executemany
+    return len(batch)
 
 
 def _check_tables(conn) -> None:
@@ -339,7 +387,7 @@ def _check_tables(conn) -> None:
 
 
 def _one_stream(engine, stream_id: str, ts: datetime, cfg: LoopConfig, zones, summary: Dict[str, Any], *,
-                crop_frames: bool = True, story_edges: bool = True) -> None:
+                crop_frames: bool = True, story_edges: bool = True, story_parts: bool = False) -> None:
     from sqlalchemy import text
 
     with engine.begin() as conn:
@@ -361,7 +409,11 @@ def _one_stream(engine, stream_id: str, ts: datetime, cfg: LoopConfig, zones, su
         written = 0
         insert = text(INSERT_SQL if story_edges else INSERT_SQL_NO_EDGES)
         for s in stories:
-            written += conn.execute(insert, story_params(s, edges=story_edges)).rowcount or 0
+            w = conn.execute(insert, story_params(s, edges=story_edges)).rowcount or 0
+            written += w
+            if w and story_parts:
+                conn.execute(text(PARTS_INSERT_SQL), {"story_id": s.story_id, "parts": list(s.parts),
+                                                      "rules_version": s.rules_version, "source": "composer"})
         conn.execute(text(
             "INSERT INTO vision_motion_story_cursor (stream_id, processed_until, updated_at) VALUES (:s, :p, now()) "
             "ON CONFLICT (stream_id) DO UPDATE SET processed_until = EXCLUDED.processed_until, updated_at = now()"),
@@ -685,6 +737,9 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
             missing = strip_columns_missing(conn)
             edge_missing = columns_missing(conn, "vision_motion_story", EDGE_COLUMNS)
             frame_missing = columns_missing(conn, "vision_crop_observation", CROP_FRAME_COLUMNS)
+            parts_on = parts_table_present(conn)
+            if not parts_on:
+                summary["parts"] = "migration missing: " + PARTS_TABLE
             if edge_missing or frame_missing:
                 summary["edges"] = "migration missing: " + ",".join(edge_missing + frame_missing)
                 logger.error("[MOTION_STORY] missing columns %s -- apply %s; stories still run with the "
@@ -711,7 +766,7 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
         for stream_id in cfg.streams:
             try:
                 _one_stream(engine, stream_id, ts, cfg, zones_by_stream.get(stream_id, []), summary,
-                            crop_frames=not frame_missing, story_edges=not edge_missing)
+                            crop_frames=not frame_missing, story_edges=not edge_missing, story_parts=parts_on)
             except Exception as exc:
                 if is_missing_relation(exc):
                     raise MigrationMissing(str(exc)) from exc
@@ -749,6 +804,15 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
                 logger.info("[MOTION_STORY] relinked stories=%d crops=%d", linked["stories"], linked["crops"])
         except Exception as exc:
             logger.warning("motion_story_relink_failed error=%s", exc)
+        if parts_on:
+            try:
+                with engine.begin() as conn:
+                    summary["parts_derived"] = backfill_story_parts(conn)
+                if summary["parts_derived"]:
+                    logger.info("[MOTION_STORY_PARTS] derived=%d (stories written before parts were recorded)",
+                                summary["parts_derived"])
+            except Exception as exc:
+                logger.warning("motion_story_parts_backfill_failed error=%s", exc)
         if strips_on:
             try:
                 summary["strips_pruned"] = prune_strips(engine, ts, cfg)
@@ -759,6 +823,9 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
                 with engine.begin() as conn:
                     summary["pruned"] = conn.execute(text(story_prune_sql(cfg, strip_columns=not missing)),
                         {"cut": ts - timedelta(days=cfg.retention_days)}).rowcount or 0
+                    if parts_on and summary["pruned"]:
+                        for sql in PARTS_PRUNE_SQLS:
+                            conn.execute(text(sql))
             except Exception as exc:
                 logger.warning("motion_story_prune_failed error=%s", exc)
     finally:

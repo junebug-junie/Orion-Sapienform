@@ -166,3 +166,14 @@ test('the cursor is a person: it follows the person, else the first one not yet 
   assert.equal(ws.cursorIndex(askable, undefined), 1);
   assert.equal(ws.cursorIndex([e('a', true)], 'x'), 0);
 });
+
+test('sentence parts: only the recorded ones, and the tally says where each verdict came from', () => {
+  assert.deepEqual(ws.storyParts({ parts: { stated: ['people', 'place', 'length'] } }), ['people', 'place']);
+  assert.equal(ws.storyParts({ parts: { stated: null } }), null);
+  assert.equal(ws.storyParts({}), null);
+  const t = { by_source: { button: { right: 260, wrong_name: 5, cant_tell: 1 }, parts: { right: 3, wrong_motion: 1 } },
+              wrong_name_from_corrections: 1, half_graded: 2 };
+  assert.equal(ws.sourceText(t), ' · from parts 4, from the old buttons 265 · wrong names held by your corrections 1 · ' +
+    'half-graded 2 (not counted yet)');
+  assert.equal(ws.sourceText({}), '');
+});

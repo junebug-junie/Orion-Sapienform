@@ -23,8 +23,7 @@ for p in (str(SERVICE), str(REPO)):
         sys.path.insert(0, p)
 
 PG = os.getenv("ORION_TEST_PG_URI", "")
-pytestmark = [pytest.mark.integration,
-              pytest.mark.skipif(not PG, reason="ORION_TEST_PG_URI not set (throwaway Postgres only)")]
+pytestmark = pytest.mark.skipif(not PG, reason="ORION_TEST_PG_URI not set (throwaway Postgres only)")
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 T0 = NOW - timedelta(days=6)   # every act's 72 h window is closed

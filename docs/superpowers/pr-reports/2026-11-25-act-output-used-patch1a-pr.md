@@ -29,11 +29,12 @@ orion-sql-writer's act resolver (`orion/grammar/act_ledger.py`), the grammar sch
 - `orion/self_monitor/adapters.py`: `act_outcome` returns None for a void close.
 - `services/orion-sql-db/manual_migration_temporal_self_event_correlation_idx_v1.sql`: partial index on `temporal_self_event.correlation_id`. Additive, auto-applied post-pull. REQUIRED-BY orion-sql-writer.
 - `orion/grammar/tests/test_output_used.py`, `services/orion-sql-writer/tests/test_output_used_acts_integration.py`: new tests.
-- `.github/workflows/orion-sql-writer-tests.yml`: the new test and `test_act_downstream_use_pg.py` run in the must-not-skip act ledger step.
+- `.github/workflows/orion-sql-writer-tests.yml`: the new test runs in the must-not-skip act ledger step.
+- `services/orion-sql-writer/tests/conftest.py`: the new integration test skips in the no-database unit job.
 - `services/orion-sql-writer/Dockerfile`: copies `config/integration/organs.yaml`.
 - `services/orion-sql-writer/app/act_downstream_use.py`: an `output_used` act's use window starts at its open.
 - `orion/physiology/weights.py`: `output_used` acts are not reliability evidence (source (d)).
-- `services/orion-sql-writer/tests/test_act_downstream_use_pg.py`: fixture gets `signal_id`, integration mark, window test.
+- `services/orion-sql-writer/tests/test_act_downstream_use_pg.py`: fixture gets `signal_id`; window test.
 - `docs/superpowers/specs/2026-11-25-act-consequence-bets-design.md`: records Juniper's defaults.
 
 ## Schema / bus / API changes
@@ -107,7 +108,7 @@ Code review ran in a subagent (orion-repo-agent) on `git diff origin/main...HEAD
   - Evidence: same cost test.
 - Finding: `act_downstream_use` dated an `output_used` act's output from its graded close, up to a day late.
   - Fix: for `output_used` it dates from the open, the same window the grade reads.
-  - Evidence: `test_output_used_act_window_starts_at_open_not_at_its_graded_close`. This file was silently skipped in CI (no `ORION_TEST_PG_URI`, no integration mark); it now runs in the act ledger step.
+  - Evidence: `test_output_used_act_window_starts_at_open_not_at_its_graded_close`. It runs in CI in its own step (`act_downstream_use_test` database).
 - Also: the promise mutation check targets the exact cost line, so that line keeps its shape. Every mutant is still caught.
 
 ## Restart required

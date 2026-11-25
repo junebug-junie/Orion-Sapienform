@@ -462,6 +462,11 @@ class CandidateVerdict:
             "sustain_window_sec": self.candidate.sustain_window_sec,
             "hot_dwell_sec": None if self.hot_dwell_sec is None else round(self.hot_dwell_sec, 3),
             "sustained": self.sustained,
+            # Hunger sources only (world:play while watching); absent for every other source.
+            **({"hunger": round(self.candidate.hunger, 6),
+                "hunger_unfed_sec": (None if self.candidate.hunger_unfed_sec is None
+                                     else round(self.candidate.hunger_unfed_sec, 1))}
+               if self.candidate.hunger is not None else {}),
         }
 
 
@@ -476,6 +481,19 @@ def judge_candidate(
     if candidate.absent:
         return CandidateVerdict(
             candidate, False, f"absent: {candidate.absent_reason or 'no reading'}", None, "absent"
+        )
+    if candidate.hunger is not None and not candidate.not_eligible_reason:
+        # Hunger (world:play): eligible because the builder says the source may compete; ranked by its
+        # pull, not by how busy it is for its own week. The week's percentile and band stay in the trace.
+        pct = mag.percentile_now
+        band = (mag.band if pct is None or mag.band == "insufficient_history"
+                else _band_for(float(pct), band_cuts))
+        pull = float(candidate.hunger)
+        unfed = candidate.hunger_unfed_sec
+        return CandidateVerdict(
+            candidate, True,
+            f"watching; hunger {pull:.2f} ({unfed if unfed is not None else 0:.0f}s without attention this sitting)",
+            pull, band, pull,
         )
     if mag.band == "insufficient_history" or mag.percentile_now is None:
         return CandidateVerdict(
@@ -1290,6 +1308,14 @@ CHAT_LATEST_TURN_SQL = (
 # (scripts/analysis/replay_world_play.py; numbers in docs/superpowers/pr-reports/2026-11-24-retro-prime-attention-pr.md).
 # Yields to Juniper (YIELDS_TO_CHAT). Absent only when the sitting table cannot be read; a watch that cannot be
 # read holds the candidate out (fail closed), it does not make it absent.
+#
+# Hunger (2026-11-25, ATTENTION_WORLD_PLAY_HUNGER_ENABLED, default on): while Orion is watching, play no longer has
+# to sit in the top tenth of its own week. It is eligible, and it ranks by its pull: the appetite drive
+# ``1 - exp(-t / PLAY_HUNGER_TAU_SEC)`` (orion.physiology.appetite.intensity), t = seconds since attention last
+# went to play in this sitting, or since the sitting began. A win resets t (``PlayHungerClock``, one per contest).
+# Live failure it fixes: two watched 6-minute SimEarth sittings (2026-11-25) read 9 play minutes against a week
+# holding 30s, "usual for itself", and never won. The minutes count stays the reading (value, percentile and band
+# are traced); it no longer decides. Spec section "Patch 4 follow-up: hunger" has the replay and the gate record.
 
 PLAY_RATE_WINDOW = timedelta(minutes=30)
 PLAY_RATE_GRID_STEP = timedelta(minutes=1)
@@ -1306,6 +1332,13 @@ PLAY_RULE_MODE = "mode"   # watching = a sitting is open and the watch in force 
 PLAY_RULE_NOTE = "note"   # ... and a look note was stored in the last PLAY_WATCHING_FRESH_SEC
 PLAY_RULES = (PLAY_RULE_MODE, PLAY_RULE_NOTE)
 PLAY_RULE_DEFAULT = PLAY_RULE_NOTE
+# Hunger (2026-11-25, replaces the top-tenth band for world:play while Orion is watching): the pull's time
+# constant, ``1 - exp(-t / tau)`` (orion.physiology.appetite.intensity). Chosen from the replay
+# (scripts/analysis/replay_world_play.py, 7 days to 2026-11-25): the largest tau that lets tonight's 6-minute
+# sitting win its 366 s tick (needs tau < ~104 s against a 0.970 rival); 30 s and 60 s cost more curiosity seeds
+# (8 vs 6) and win no more short sittings. At the broadcast's median tick gap (218 s) the pull is 0.91: one tick
+# without attention puts play level with a top-tenth source.
+PLAY_HUNGER_TAU_SEC = 90.0
 PLAY_EVIDENCE_KIND = "retro_play"
 PLAY_NOTE_EXCERPT_CHARS = 200
 PLAY_QUIET_LABEL = "nobody is playing"
@@ -1381,6 +1414,56 @@ def play_watch_reason(
     return None
 
 
+def play_hunger(
+    sitting: PlaySitting, last_won_at: datetime | None, *, now: datetime, tau_sec: float = PLAY_HUNGER_TAU_SEC
+) -> tuple[float, float]:
+    """(pull, unfed seconds) for the open sitting: the appetite drive (``orion.physiology.appetite.intensity``,
+    ``1 - exp(-t / tau)``) over the time since attention last went to play IN THIS SITTING, or since the
+    sitting's first input when it never has. A win older than the sitting (a stale record) does not count."""
+    from orion.physiology.appetite import intensity
+
+    now = _aware(now)
+    since = _aware(sitting.started_at)
+    if last_won_at is not None and _aware(last_won_at) >= since:
+        since = min(_aware(last_won_at), now)
+    unfed = max(0.0, (now - since).total_seconds())
+    return intensity(unfed, tau_sec), unfed
+
+
+class PlayHungerClock:
+    """When attention last went to ``world:play``, per sitting, in one contest. In memory: each contest keeps
+    its own (the broadcast and the field contest tick on different clocks). After a restart the clock is
+    empty, so the sitting's pull counts from its first input: at most one early win, never a lost sitting.
+    Only the newest sittings are kept (``max_sittings``)."""
+
+    def __init__(self, max_sittings: int = 16) -> None:
+        self._last_won: dict[str, datetime] = {}
+        self._max = max(1, int(max_sittings))
+
+    def last_won_at(self, sitting_id: str | None) -> datetime | None:
+        return self._last_won.get(str(sitting_id)) if sitting_id else None
+
+    def note_winner(self, winner_source_id: str | None, sitting_id: str | None, *, now: datetime) -> bool:
+        """Record a play win (the contest's winner is ``world:play`` with an open sitting). True if recorded."""
+        if winner_source_id != WORLD_PLAY_SOURCE_ID or not sitting_id:
+            return False
+        self._last_won.pop(str(sitting_id), None)
+        self._last_won[str(sitting_id)] = _aware(now)
+        while len(self._last_won) > self._max:
+            self._last_won.pop(next(iter(self._last_won)))
+        return True
+
+
+def play_sitting_id(candidate: AttentionCandidateV1 | None) -> str | None:
+    """The open sitting a ``world:play`` candidate was built for (its ``retro_sitting:<id>`` ref), else None."""
+    if candidate is None or candidate.source_id != WORLD_PLAY_SOURCE_ID:
+        return None
+    for ref in candidate.evidence_refs:
+        if str(ref).startswith("retro_sitting:"):
+            return str(ref).removeprefix("retro_sitting:") or None
+    return None
+
+
 def play_label(sitting: PlaySitting | None, minutes_in_window: int) -> str:
     """The loop's description (its id is a hash of it, orion/substrate/attention/scoring.py): who and what,
     never a count or an age, so one sitting keeps one loop (the world:chat lesson, CHAT_TALKING_LABEL)."""
@@ -1398,9 +1481,16 @@ def play_candidate(
     watch: PlayWatch | None = None,
     rule: str = PLAY_RULE_DEFAULT,
     absent_reason: str | None = None,
+    hunger: bool = True,
+    last_won_at: datetime | None = None,
+    hunger_tau_sec: float = PLAY_HUNGER_TAU_SEC,
 ) -> AttentionCandidateV1:
     """``world:play``. ``sittings`` None = the table could not be read: absent, never "nobody plays".
-    ``watch`` is the open sitting's watch (None: unread or no sitting); it gates eligibility only."""
+    ``watch`` is the open sitting's watch (None: unread or no sitting); it gates eligibility only.
+
+    ``hunger`` (ATTENTION_WORLD_PLAY_HUNGER_ENABLED, default on): while Orion is watching, the candidate
+    competes on its pull (``play_hunger`` over ``last_won_at``, the contest's last play win in this
+    sitting), not on the top-tenth band of its own week. False restores the band rule exactly."""
     now = _aware(now)
     if sittings is None:
         return AttentionCandidateV1(
@@ -1421,6 +1511,9 @@ def play_candidate(
     n = int(mag.value)
     sitting = open_play_sitting(sittings, now=now)
     gate = play_watch_reason(sitting, watch, now=now, rule=rule) if n else None
+    pull = unfed = None
+    if hunger and n and gate is None and sitting is not None and absent_reason is None:
+        pull, unfed = play_hunger(sitting, last_won_at, now=now, tau_sec=hunger_tau_sec)
     evidence = None
     refs = [WORLD_PLAY_SOURCE_ID]
     if sitting is not None:
@@ -1455,6 +1548,8 @@ def play_candidate(
         evidence_refs=refs,
         evidence=evidence,
         not_eligible_reason=gate,
+        hunger=pull,
+        hunger_unfed_sec=unfed,
     )
 
 

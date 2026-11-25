@@ -77,4 +77,20 @@ def test_main_reads_the_exports(tmp_path, capsys):
     sys.argv = ["x", str(f), str(s), str(tmp_path / "looks.jsonl"), str(tmp_path / "prefs.jsonl"), "--json"]
     assert rp.main() == 0
     out = json.loads(capsys.readouterr().out)
-    assert [r["rule"] for r in out] == list(rp.RULES)
+    assert [r["rule"] for r in out] == list(rp.RULES) + [f"hunger:{rp.PLAY_HUNGER_TAU_SEC:g}"]
+
+
+def test_the_hunger_rule_resets_on_a_win_and_counts_wins_per_sitting():
+    # A look note every 2 minutes keeps Orion watching; reading sits at 0.91 every tick (ticks 5 min apart).
+    looks = [{"sitting_id": "S1", "looked_at": (T + timedelta(minutes=2 * k)).isoformat(), "outcome": "stored",
+              "note": "a hero walks"} for k in range(30)]
+    r = rp.replay(_frames(), _sittings(), looks, [], "hunger:90")
+    # tau 90 s: 300 s after a win the pull is 1 - e^(-300/90) = 0.964 > 0.91, so play wins all 10 non-chat
+    # ticks; the 2 chat ticks yield.
+    assert (r["play_won"], r["yielded_to_chat"], r["reading_lost_to_play"]) == (10, 2, 10)
+    assert r["by_length"]["medium"] == {"sittings": 1, "watched_sittings": 1, "watched_won_once": 1,
+                                        "watched_ticks": 12, "wins": 10, "wins_per_watched_sitting": 10.0}
+    # tau 600 s: the first tick wins on the pull built since the sitting began (40 min). The win resets it, and
+    # it passes 0.91 again only 25 min later (1 - e^(-2.5) = 0.92): 2 wins of 10, reading keeps the other 8.
+    slow = rp.replay(_frames(), _sittings(), looks, [], "hunger:600")
+    assert slow["play_won"] == 2 and slow["reading_lost_to_play"] == 2

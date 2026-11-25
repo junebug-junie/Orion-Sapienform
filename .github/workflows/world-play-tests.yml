@@ -23,6 +23,8 @@ on:
       - "tests/test_line_engagement.py"
       - "services/orion-substrate-runtime/app/worker.py"
       - "services/orion-substrate-runtime/app/store.py"
+      - "services/orion-attention-runtime/app/worker.py"
+      - "orion/physiology/appetite.py"
       - ".github/workflows/world-play-tests.yml"
   push:
     branches: [main]
@@ -43,6 +45,8 @@ on:
       - "tests/test_line_engagement.py"
       - "services/orion-substrate-runtime/app/worker.py"
       - "services/orion-substrate-runtime/app/store.py"
+      - "services/orion-attention-runtime/app/worker.py"
+      - "orion/physiology/appetite.py"
       - ".github/workflows/world-play-tests.yml"
   workflow_dispatch:
 

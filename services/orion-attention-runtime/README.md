@@ -20,6 +20,9 @@ Layer 5 substrate service: polls latest `FieldStateV1` from Postgres and builds 
   play on the Retro service against its own week, eligible only while Orion watches the open sitting, yielding to
   `world:chat`, absent when `retro_sitting` cannot be read. Same read as the substrate broadcast
   (`orion/attention/play_read.py`), cached 30 s. It is a channel target here (no pressure, no field node).
+  With `ATTENTION_WORLD_PLAY_HUNGER_ENABLED=true` (ships on, 2026-11-25), a watched sitting is eligible without
+  being busy for its week and ranks by hunger, `1 - exp(-t / 90 s)`, t = time since this contest last gave play the
+  win in this sitting; a win resets it. This contest keeps its own clock (in memory). `false` = the top-tenth rule.
 
 ## Prerequisites
 

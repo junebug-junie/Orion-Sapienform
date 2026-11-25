@@ -229,6 +229,8 @@ class AttentionRuntimeWorker:
         goal = self._maybe_build_goal(frame)
         self._last_field = field
         winner = frame.dominant_targets[0] if frame.dominant_targets else None
+        if candidates is not None:
+            self._note_world_play_winner(winner.target_id if winner is not None else None, now)
         logger.info(
             "attention_frame_saved frame_id=%s tick_id=%s salience=%.3f world_first=%s "
             "winner=%s",
@@ -346,9 +348,10 @@ class AttentionRuntimeWorker:
 
     # world:play (game company patch 4): read at most every 30 s (this contest ticks every ~2 s).
     _WORLD_PLAY_CACHE_SEC = 30.0
+    _WORLD_PLAY_LOG_TAG = "attention"
 
     def _world_play_candidate(self, now: datetime):
-        from orion.attention.world_first import play_candidate
+        from orion.attention.world_first import open_play_sitting, play_candidate
 
         cache_at = getattr(self, "_world_play_cache_at", None)
         cached = getattr(self, "_world_play_cache", None)
@@ -361,7 +364,35 @@ class AttentionRuntimeWorker:
                 logger.warning("attention_world_first_play_read_failed err=%s", type(exc).__name__)
                 sittings, watch, absent = None, None, f"retro_sitting unreadable ({type(exc).__name__})"
             self._world_play_cache, self._world_play_cache_at = (sittings, watch, absent), now
-        return play_candidate(sittings, now=now, watch=watch, absent_reason=absent)
+        # Hunger (2026-11-25): this contest's own clock of when attention last went to play, per sitting.
+        hunger = bool(getattr(self._settings, "attention_world_play_hunger_enabled", True))
+        clock = self._world_play_hunger_clock()
+        sitting = open_play_sitting(sittings, now=now) if sittings else None
+        cand = play_candidate(
+            sittings, now=now, watch=watch, absent_reason=absent, hunger=hunger,
+            last_won_at=clock.last_won_at(sitting.sitting_id if sitting is not None else None),
+        )
+        self._world_play_last_candidate = cand
+        return cand
+
+    def _world_play_hunger_clock(self):
+        from orion.attention.world_first import PlayHungerClock
+
+        clock = getattr(self, "_world_play_clock", None)
+        if clock is None:
+            clock = self._world_play_clock = PlayHungerClock()
+        return clock
+
+    def _note_world_play_winner(self, winner_source_id: str | None, now: datetime) -> None:
+        """A play win resets that sitting's hunger in this contest. Never raises."""
+        try:
+            from orion.attention.world_first import play_sitting_id
+
+            sid = play_sitting_id(getattr(self, "_world_play_last_candidate", None))
+            if self._world_play_hunger_clock().note_winner(winner_source_id, sid, now=now):
+                logger.debug("%s_world_play_won sitting=%s", self._WORLD_PLAY_LOG_TAG, sid)
+        except Exception:  # noqa: BLE001 -- a hunger record must not cost the tick
+            logger.debug("world_play_winner_note_failed", exc_info=True)
 
     def _maybe_build_goal(
         self, frame: FieldAttentionFrameV1

@@ -324,6 +324,10 @@ readers:
   - module: scripts/analysis/measure_arousal_replay.py
     role: display
     reason: offline arousal replay.
+  # 2026-11-25, world:play hunger: borrows Appetite's pure drive formula, not its state.
+  - module: orion/attention/world_first.py
+    role: display
+    reason: "world:play's pull uses orion.physiology.appetite.intensity (1 - exp(-t / tau), t = time since attention last went to play in this sitting); reads no regulation, thermal or price state and gates nothing on it"
   - module: scripts/analysis/replay_attention_eligibility.py
     role: display
     reason: offline replay of attention eligibility with cabinet heat.

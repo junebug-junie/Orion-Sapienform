@@ -236,3 +236,29 @@ def test_the_field_contest_play_flag_ships_on_and_off_reads_nothing() -> None:
     w = _worker()
     assert "world:play" not in _by_id(w._world_first_candidates(_field(), NOW))
     assert not w._store.fetch_play_inputs.called
+
+
+def test_the_field_contest_records_its_own_play_win_and_resets_the_pull() -> None:
+    """Hunger (2026-11-25): each contest keeps its own clock; a field win resets play's pull there."""
+    from orion.attention.world_first import PlaySitting, PlayWatch
+
+    w = _worker()
+    w._settings = SimpleNamespace(attention_world_first_enabled=True, attention_world_reading_enabled=False,
+                                  attention_world_play_enabled=True, attention_world_play_hunger_enabled=True)
+    live = PlaySitting("S1", NOW - timedelta(minutes=6), NOW - timedelta(seconds=20), game_title="SimEarth")
+    w._store.fetch_play_inputs.return_value = ([live], PlayWatch(mode="on", newest_note_at=NOW), None)
+    first = _by_id(w._world_first_candidates(_field(), NOW))["world:play"]
+    assert first.hunger is not None and first.hunger > 0.9 and first.hunger_unfed_sec == pytest.approx(360.0)
+    w._note_world_play_winner("node:prediction.body", NOW)      # another winner: no reset
+    assert w._world_play_hunger_clock().last_won_at("S1") is None
+    w._note_world_play_winner("world:play", NOW)
+    after = _by_id(w._world_first_candidates(_field(), NOW + timedelta(seconds=2)))["world:play"]
+    assert after.hunger_unfed_sec == pytest.approx(2.0) and after.hunger < 0.05
+    w._settings.attention_world_play_hunger_enabled = False
+    assert _by_id(w._world_first_candidates(_field(), NOW))["world:play"].hunger is None
+
+
+def test_the_field_contest_play_hunger_flag_ships_on() -> None:
+    from app.settings import Settings
+
+    assert Settings().attention_world_play_hunger_enabled is True

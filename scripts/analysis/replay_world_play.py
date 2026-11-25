@@ -21,6 +21,12 @@ Rules compared (each replayed alone):
               (``PLAY_RULE_NOTE``).
   unusual  -- ``mode`` with the stricter "unusual" band only (top 1% of its own week): the obvious way to
               make "top tenth" filter harder. Replay-only; not in production unless chosen.
+  hunger:<tau> -- the 2026-11-25 rule (production since then): while watching (rule ``note``), play is
+              eligible and ranks by its pull, ``1 - exp(-t / tau)``, t = seconds since play last won in this
+              sitting (or since the sitting began). A win resets t. One run per tau (``--taus``).
+
+Per rule it also reports wins per sitting by sitting length (short < 15 min, medium 15 min - 2 h, long >= 2 h)
+and how many watched sittings won at least once, plus each sitting of the last day (``--sittings-since``).
 
 What it reports per rule: ticks play was eligible, ticks it won, ticks ``world:reading`` would have lost to
 it, ticks a CURIOSITY-SEEDING winner would have lost (a winner whose loop carries a ``node:`` ref:
@@ -44,7 +50,14 @@ Inputs (SELECT-only exports, one JSON object per line):
         from retro_watch_look order by looked_at" > looks.jsonl
     $P "select json_build_object('scope',scope,'scope_id',scope_id,'set_by',set_by,'mode',mode,'why',why, \\
         'set_at',set_at) from retro_watch_preference" > prefs.jsonl
-    python scripts/analysis/replay_world_play.py frames.jsonl sittings.jsonl looks.jsonl prefs.jsonl
+    # optional, the field contest during sittings (3 days kept):
+    $P "select json_build_object('t',f.generated_at,'dom',(select json_agg(json_build_object('id', \\
+        t->>'target_id','s',(t->>'salience_score')::float)) from jsonb_array_elements(f.frame_json-> \\
+        'dominant_targets') t)) from substrate_attention_frames f where exists (select 1 from retro_sitting s \\
+        where f.generated_at between s.started_at and s.last_input_at + interval '5 minutes') \\
+        order by f.generated_at" > field_frames.jsonl
+    python scripts/analysis/replay_world_play.py frames.jsonl sittings.jsonl looks.jsonl prefs.jsonl \\
+        --rules note --taus 30,60,90,120,180,300,600 --field-frames field_frames.jsonl
 
 Needs pydantic (the repo venv). No writes anywhere.
 """
@@ -64,6 +77,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from orion.attention.world_first import (  # noqa: E402
+    PLAY_HUNGER_TAU_SEC,
     PLAY_RULE_MODE,
     PLAY_RULE_NOTE,
     PlaySitting,
@@ -76,6 +90,12 @@ from orion.retro.sitting import GAP_SEC_DEFAULT  # noqa: E402
 
 RULES = ("mode", "note", "unusual")
 LONG_SITTING = timedelta(hours=2)
+SHORT_SITTING = timedelta(minutes=15)
+
+
+def length_class(r: dict) -> str:
+    d = r["last_input_at"] - r["started_at"]
+    return "short" if d < SHORT_SITTING else ("long" if d >= LONG_SITTING else "medium")
 GAP = timedelta(seconds=GAP_SEC_DEFAULT)
 
 
@@ -147,7 +167,10 @@ def seeds_curiosity(source_id: str | None) -> bool:
     return bool(source_id) and (source_id.startswith("node:") or source_id == "world:reading")
 
 
-def replay(frames, sittings, looks, prefs, rule: str) -> dict:
+def replay(frames, sittings, looks, prefs, rule: str, recent_since: datetime | None = None) -> dict:
+    tau = float(rule.split(":", 1)[1]) if rule.startswith("hunger:") else None
+    last_won: dict[str, datetime] = {}
+    per_sitting: dict[str, Counter] = {}
     look_times: dict[str, list[tuple[datetime, str]]] = {}
     for lk in looks:
         if lk.get("outcome") == "stored":
@@ -181,9 +204,18 @@ def replay(frames, sittings, looks, prefs, rule: str) -> dict:
             i = bisect.bisect_right(notes, (t, "￿"))
             newest = notes[i - 1] if i else None
             watch = play_watch_from_rows(sitting, [p for p in prefs if p["set_at"] <= t], newest)
-        cand = play_candidate(rows, now=t, watch=watch,
-                              rule=PLAY_RULE_NOTE if rule == "note" else PLAY_RULE_MODE)
-        v = judge_candidate(cand)
+        if tau is not None and sitting is None:
+            cand = None  # no open sitting: never eligible under any rule (skip the slow 7-day grid)
+        else:
+            cand = play_candidate(rows, now=t, watch=watch,
+                                  rule=PLAY_RULE_NOTE if rule in ("note",) or tau is not None else PLAY_RULE_MODE,
+                                  hunger=tau is not None,
+                                  last_won_at=last_won.get(sitting.sitting_id) if sitting is not None else None,
+                                  hunger_tau_sec=tau if tau is not None else PLAY_HUNGER_TAU_SEC)
+        v = judge_candidate(cand) if cand is not None else None
+        if v is None:
+            from types import SimpleNamespace
+            v = SimpleNamespace(eligible=False, score=None, rank_score=None, reason="no sitting open", band="quiet")
         if sitting is not None:
             open_ticks += 1
             open_ticks_backfilled += sitting.sitting_id in backfilled_ids
@@ -199,6 +231,15 @@ def replay(frames, sittings, looks, prefs, rule: str) -> dict:
             yielded += 1
         eligible += bool(vd["eligible"])
         new = pick(cands + [vd])
+        if sitting is not None:
+            ps = per_sitting.setdefault(sitting.sitting_id, Counter())
+            ps["open_ticks"] += 1
+            # Watched under this rule's gate (an open sitting always has >= 1 play minute in the window).
+            ps["watched_ticks"] += bool(cand is not None and cand.not_eligible_reason is None)
+            ps["wins"] += new == "world:play"
+            ps["yielded"] += vd.get("reason") == "yields to Juniper (world:chat eligible)"
+        if new == "world:play" and sitting is not None:
+            last_won[sitting.sitting_id] = t
         if new == "world:play":
             won += 1
             displaced[base or "(no winner)"] += 1
@@ -246,10 +287,90 @@ def replay(frames, sittings, looks, prefs, rule: str) -> dict:
         "looks_began": first_look.isoformat(timespec="minutes") if first_look else None,
         "since_looks_began": {"open_ticks": since_looks["ticks"], "play_won": since_looks["play_after"],
                               "reading_lost": since_looks["reading_lost"]},
+        "by_length": _by_length(per_sitting, sittings),
+        "recent_sittings": {
+            sid: {**dict(c), "minutes": round((r["last_input_at"] - r["started_at"]).total_seconds() / 60, 1)}
+            for r in sittings if recent_since is not None and r["started_at"] >= recent_since
+            for sid, c in [(r["sitting_id"], per_sitting.get(r["sitting_id"], Counter()))]
+        },
         "long_sittings_in_span": sorted(
             r["sitting_id"] for r in sittings if r["sitting_id"] in long_ids
             and r["last_input_at"] >= frames[0][0] and r["started_at"] <= frames[-1][0]),
     }
+
+
+def replay_field(field_frames: list[dict], sittings, looks, prefs, tau: float) -> dict:
+    """APPROXIMATE replay of the field contest (orion-attention-runtime, ~2 s ticks) under hunger.
+
+    ``substrate_attention_frames`` keeps 3 days and stores each attended target's ``salience_score`` (the
+    strict-below percentile), not its ranking key (the mid-rank), so rivals are compared on salience: a
+    slightly LOW rival bar, which favours play. Watching uses the production rule (``play_watch_reason``,
+    rule ``note``) on the sittings and look notes as of each frame; the pull is the production
+    ``play_hunger``. Play yields when ``world:chat`` was attended. Reports the share of watched frames play
+    wins, and how many of those it took from a curiosity-seeding winner (a ``node:`` target or reading)."""
+    from orion.attention.world_first import play_hunger, play_watch_reason
+
+    look_times: dict[str, list[tuple[datetime, str]]] = {}
+    for lk in looks:
+        if lk.get("outcome") == "stored":
+            look_times.setdefault(lk["sitting_id"], []).append((_ts(lk["looked_at"]), str(lk.get("note") or "")))
+    for v in look_times.values():
+        v.sort()
+    prefs = [{**p, "set_at": _ts(p["set_at"])} for p in prefs]
+    last_won: dict[str, datetime] = {}
+    c: Counter = Counter()
+    for row in field_frames:
+        t = _ts(row["t"])
+        rows = as_of(sittings, t)
+        sitting = open_play_sitting(rows, now=t)
+        if sitting is None:
+            continue
+        notes = look_times.get(sitting.sitting_id, [])
+        i = bisect.bisect_right(notes, (t, "\uffff"))
+        watch = play_watch_from_rows(sitting, [p for p in prefs if p["set_at"] <= t], notes[i - 1] if i else None)
+        if play_watch_reason(sitting, watch, now=t) is not None:
+            continue
+        dom = [d for d in (row.get("dom") or []) if d.get("id") != "world:play"]
+        base = dom[0]["id"] if dom else None
+        c["watched_frames"] += 1
+        if any(d.get("id") == "world:chat" for d in dom):
+            c["yielded_to_chat"] += 1
+            continue
+        pull, _ = play_hunger(sitting, last_won.get(sitting.sitting_id), now=t, tau_sec=tau)
+        best = max((float(d.get("s") or 0.0) for d in dom), default=None)
+        if best is None or pull > best:
+            c["play_won"] += 1
+            c["won_from_no_winner"] += base is None
+            c["won_from_rival"] += base is not None
+            c["reading_lost"] += base == "world:reading"
+            c["seed_lost"] += seeds_curiosity(base)
+            last_won[sitting.sitting_id] = t
+        c["seed_before"] += seeds_curiosity(base)
+    w = c["watched_frames"]
+    return {"tau": tau, **dict(c),
+            "play_share_of_watched": round(c["play_won"] / w, 3) if w else None,
+            "seed_share_before": round(c["seed_before"] / w, 3) if w else None,
+            "seed_share_after": round((c["seed_before"] - c["seed_lost"]) / w, 3) if w else None}
+
+
+def _by_length(per_sitting: dict[str, Counter], sittings: list[dict]) -> dict:
+    """Per length class: sittings with an open tick, sittings watched at least one tick, watched sittings
+    that won at least once, wins, and wins per watched sitting."""
+    rows = {r["sitting_id"]: r for r in sittings}
+    out: dict[str, Counter] = {k: Counter() for k in ("short", "medium", "long")}
+    for sid, c in per_sitting.items():
+        k = length_class(rows[sid])
+        out[k]["sittings"] += 1
+        if c["watched_ticks"]:
+            out[k]["watched_sittings"] += 1
+            out[k]["watched_won_once"] += c["wins"] > 0
+            out[k]["watched_ticks"] += c["watched_ticks"]
+        out[k]["wins"] += c["wins"]
+    res = {}
+    for k, c in out.items():
+        res[k] = {**dict(c), "wins_per_watched_sitting": round(c["wins"] / c["watched_sittings"], 2)
+                  if c["watched_sittings"] else None}
+    return res
 
 
 def main() -> int:
@@ -259,6 +380,12 @@ def main() -> int:
     ap.add_argument("looks")
     ap.add_argument("prefs")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--rules", default=",".join(RULES), help="comma list of mode,note,unusual")
+    ap.add_argument("--taus", default=str(int(PLAY_HUNGER_TAU_SEC)),
+                    help="comma list of hunger time constants (s); empty = no hunger runs")
+    ap.add_argument("--sittings-since", default=None, help="ISO time: list each sitting started after it")
+    ap.add_argument("--field-frames", default=None,
+                    help="optional field-contest export (one {t, dom:[{id, s}]} per line): approximate hunger replay")
     args = ap.parse_args()
     frames = load_frames(args.frames)
     if not frames:
@@ -267,7 +394,14 @@ def main() -> int:
     sittings = load_sittings(args.sittings)
     looks = _jsonl(args.looks)
     prefs = _jsonl(args.prefs)
-    results = [replay(frames, sittings, looks, prefs, r) for r in RULES]
+    rules = [r for r in args.rules.split(",") if r]
+    rules += [f"hunger:{float(x):g}" for x in args.taus.split(",") if x.strip()]
+    since = _ts(args.sittings_since) if args.sittings_since else frames[-1][0] - timedelta(days=1)
+    results = [replay(frames, sittings, looks, prefs, r, since) for r in rules]
+    if args.field_frames:
+        ff = _jsonl(args.field_frames)
+        results += [{"rule": f"field_hunger:{float(x):g}", **replay_field(ff, sittings, looks, prefs, float(x))}
+                    for x in args.taus.split(",") if x.strip()]
     if args.json:
         print(json.dumps(results, indent=2, default=str))
         return 0

@@ -52,7 +52,18 @@ The agent lane's door can be flipped to enforce without breaking a committed eva
 ## Tests run
 
 ```text
-SMOKE_TESTS_PLACEHOLDER
+PYTHONPATH=$PWD .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_check_leased_lane_callers.py \
+  orion/evals/tests/test_lane_callers_3921_leased.py tests/test_check_circe_worker_refs.py \
+  orion/evals/tests/test_leased_llm.py orion/harness/evals
+-> 204 passed in 23.15s
+
+python3 scripts/check_leased_lane_callers.py
+-> PASS (5 leased caller(s), 17 gateway caller(s), 1 reviewed direct; lane ports 8011,...,8099)
+python3 scripts/check_circe_worker_refs.py
+-> PASS
+Regression check: the gate run against origin/main's copies of both evals gives
+  eval_json_task_turn_end_after_brace.py -> names_lane_port (line 20, :8015)
+  eval_curiosity_register_judge.py       -> unclassified (line 15, /v1/chat/completions)
 ```
 
 ## Evals run
@@ -65,12 +76,42 @@ orion/evals/tests/test_lane_callers_3921_leased.py. Full runs need private envel
 ## Docker/build/smoke checks
 
 ```text
-LIVE_SMOKE_PLACEHOLDER
+Live smoke: UNVERIFIED. One helper call (python -m orion.evals.leased_llm chat, holder
+operator:smoke-3921-leased-lane-callers) was tried on two lanes. Both refused before any call was sent:
+  --lane agent       --queue-wait-sec 300 -> REFUSED: the GPU pool did not grant operator_agent (deadline)
+  --lane agent-gpu2  --queue-wait-sec 600 -> REFUSED: the GPU pool did not grant operator_agent_gpu2 (deadline)
+Operator work waits behind all of Orion's own work by design, and both seats stayed busy.
+
+Agent door (/door/stats on :8015), shadow mode, read during this session:
+  unleased 239 -> 244 -> 265, all from 100.92.216.81 (athena) on /v1/chat/completions.
+None of these came from this smoke (its calls were refused before sending). Some other athena caller,
+not committed to the repo, is still posting directly. Commented on #3921.
+No Docker build needed: no service code changed.
 ```
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+The code review ran in a subagent against commit abd76f5d3.
+
+- Finding: the gate missed f-string shapes (`f"{base}/completion"`, `/chat/completions` without `/v1`, `/infill`, OpenAI client calls).
+  - Fix: `MODEL_CALL_RE` widened. The port gate's reviewed `DIRECT_CALLERS` (`scripts/gpu_power_bench.py`) are now their own kind, `direct`. The wider pattern found 3 more callers. All 3 go through the gateway, and all 3 are now classified.
+  - Evidence: `test_every_model_call_shape_counts`, `test_near_misses_are_not_model_calls`, `test_reviewed_direct_caller_passes_even_naming_a_port`.
+- Finding: any import of `orion.evals.leased_llm` counted as leased, even an import of an exception class only. A commented-out shell CLI line also counted.
+  - Fix: an AST check now requires an import of `operator_lane_sync`, `operator_lane`, `OperatorLanes` or `gateway_call`. Shell comment lines are ignored. `orion/evals/model_replay/agent_loop.py` imported only `_hold_gone`, so it no longer counts as leased. It is now a reviewed gateway caller: it posts to the gateway with the task's hold ref.
+  - Evidence: `test_importing_only_an_exception_is_not_a_lease`, `test_a_commented_shell_cli_call_is_not_a_lease`.
+- Finding: two allow-list reasons said `:8222` was the gateway's port. Nothing listens there (`curl 127.0.0.1:8222/health` gets no connection), and the gateway publishes only 8210.
+  - Fix: the defaults and docs in `orion/integration/evals/run_now_ablation_eval.py` and `services/orion-hub/evals/run_reading_resonance_eval.py` now use `:8210`. The reasons are corrected.
+- Finding: in the judge, a recall partway through a lane threw away every row already judged.
+  - Fix: rows are added one at a time. On a recall the judge writes `labels_<lane>.partial.jsonl` and a report with `recalled`/`judged`/`of`, then exits 3.
+  - Evidence: `test_judge_recall_writes_a_partial_report`.
+- Finding: on `operator_metacog` the gateway adds `top_p 0.90` / `presence_penalty 0.20` when the body leaves them unset (`with_gpu3_route_defaults`). That changes the judge's measurement.
+  - Fix: the judge body sets `top_p: 1.0` and `presence_penalty: 0` explicitly.
+  - Evidence: `test_judge_pins_sampling_the_gateway_would_otherwise_default`.
+- Finding (nit): the brace eval crashed with a traceback on an unknown lane or a failed call.
+  - Fix: `--lane` accepts only the operator lane names. A failed reading is recorded as a string, and a recall still stops the run. The help text says the token id assumes the flash-next vocabulary.
+- Finding (nit): scope was limited to `evals/`, `scripts/` and `bench/`.
+  - Fix: `tools/` and `experiments/` are added. The docstring names the boundary and the text-only limit.
+- Gateway passthrough check (no change needed): the reviewer confirmed that `logprobs`, `top_logprobs`, `logit_bias` and `chat_template_kwargs` reach the worker unchanged on `operator_agent`. The passthrough does not run the Strata take-over a second time, so the brace eval's number means the same thing it did before.
 
 ## Restart required
 
@@ -89,6 +130,6 @@ No restart required.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3930
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

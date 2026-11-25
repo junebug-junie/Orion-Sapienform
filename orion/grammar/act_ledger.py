@@ -74,6 +74,16 @@ from orion.grammar.promise_acts import (
     promise_condition,
     promise_void_kind,
 )
+from orion.grammar.output_used import (
+    ANY_OPEN_OUTPUT_USED_SQL,
+    DUE_OUTPUT_USED_SQL,
+    NO_OUTPUT_NOTE,
+    OUTPUT_USED_SIGNAL,
+    UNOBSERVABLE_NOTE,
+    UseEvidence,
+    output_used_grade,
+    producer_close_disposition,
+)
 from orion.grammar.line_engagement import LINE_ACTOR, LINE_REPLY_WINDOW_SEC, line_grade, line_id_of
 from orion.grammar.reply_base_rate import ReplyBaseRate, juniper_reply_base_rate
 from orion.grammar.reply_base_rate import applies as reply_base_rate_applies
@@ -537,7 +547,8 @@ def close_act(
     """Close one act by act_id and grade it into L10. First close wins."""
     row = conn.execute(
         text(
-            "SELECT closed_at, predicted, opened_at, horizon_at, workspace_ref, correlation_id, cost_json "
+            "SELECT closed_at, predicted, opened_at, horizon_at, workspace_ref, correlation_id, cost_json, "
+            "signal_id "
             "FROM grammar_acts "
             "WHERE act_id = :a FOR UPDATE"
         ),
@@ -565,16 +576,26 @@ def close_act(
         opened_at_row = None
         correlation_id = params.get("correlation_id")
         stored_cost = None
+        signal_at_open = params.get("signal_id")
     else:
         predicted_at_open = None if row[1] is None else float(row[1])
         workspace_ref = row[4]
         opened_at_row = row[2]
         correlation_id = row[5] or (event.correlation_id if event is not None else None)
         stored_cost = row[6]
+        signal_at_open = row[7]
 
     value = float(outcome.value)
     observed_at = _aware(outcome.observed_at)
     note = outcome.note or ""
+    if signal_at_open == OUTPUT_USED_SIGNAL and outcome.source == "producer":
+        # The producer can only say the output exists. Whether another organ used it is the resolver's
+        # grade (orion/grammar/output_used.py): an "I made it" close leaves the act open; "nothing made"
+        # is a real 0, graded now.
+        if producer_close_disposition(value) == "defer":
+            return CloseResult(act.act_id, False, "awaiting_use")
+        value = 0.0
+        note = f"{NO_OUTPUT_NOTE} {note}".strip()
     horizon_at = None if row is None or row[3] is None else _aware(row[3])
     if horizon_at is not None and observed_at > horizon_at and value == 1.0:
         # The expectation is "by the horizon". A success reported after it is a miss,
@@ -894,6 +915,7 @@ _DUE_SQL = text(
            opened_at, horizon_at, correlation_id, test_before
       FROM grammar_acts
      WHERE closed_at IS NULL AND opened_at IS NOT NULL AND signal_id IS NOT NULL
+       AND signal_id <> 'output_used'
        AND (signal_id IN ('juniper_replied', 'juniper_answered') OR horizon_at < :expired_before)
      ORDER BY opened_at
      LIMIT :limit
@@ -923,6 +945,11 @@ class ResolveSummary:
     # condition scan -> "met", i.e. graded). Counted so a silent fallback shows in the resolver's summary.
     promise_item_unread: int = 0
     promise_condition_unread: int = 0
+    # output_used (act consequence bets, orion/grammar/output_used.py): used by another organ / observable
+    # but unused at the horizon / unobservable (void, not graded).
+    closed_output_used: int = 0
+    closed_output_unused: int = 0
+    closed_output_unobservable: int = 0
 
 
 # A camera ask's act is graded from its orion_ask row (orion/grammar/camera_ask_acts.py ask_grade):
@@ -1071,6 +1098,35 @@ def _one_close(conn: Any, commit: Any, event: GrammarEventV1 | None, act: ActV1,
         return False
 
 
+def _resolve_output_used(conn: Any, *, now: datetime, limit: int, commit: Any) -> dict[str, int]:
+    """Close open ``output_used`` acts that another organ used, or whose horizon (+ grace) passed."""
+    counts = {"examined": 0, "used": 0, "unused": 0, "unobservable": 0}
+    # Cheap gate on grammar_acts alone: no open output_used act (every sweep until a family switches in
+    # Patch 1b) means the experience joins never run.
+    if conn.execute(ANY_OPEN_OUTPUT_USED_SQL).first() is None:
+        return counts
+    rows = conn.execute(
+        DUE_OUTPUT_USED_SQL, {"expired_before": now - timedelta(seconds=EXPIRY_GRACE_SEC), "limit": limit}
+    ).mappings().all()
+    for row in rows:
+        counts["examined"] += 1
+        first = row["first_use_at"]
+        evidence = UseEvidence(first_use_at=_aware(first) if first is not None else None,
+                               use_site=row["use_site"], observable=bool(row["observable"]))
+        outcome = output_used_grade(evidence, horizon_at=_aware(row["horizon_at"]), now=now,
+                                    grace_sec=EXPIRY_GRACE_SEC)
+        if outcome is None:
+            continue
+        if _one_close(conn, commit, None, _act_from_row(row), outcome, f"resolver:{row['act_id']}"):
+            if outcome.value >= 1.0:
+                counts["used"] += 1
+            elif outcome.note == UNOBSERVABLE_NOTE:
+                counts["unobservable"] += 1
+            else:
+                counts["unused"] += 1
+    return counts
+
+
 def resolve_due_acts(
     conn: Any,
     *,
@@ -1180,13 +1236,17 @@ def resolve_due_acts(
                                    note=f"no producer close within horizon + {EXPIRY_GRACE_SEC:.0f}s grace")
             expired += 1
         _one_close(conn, commit, None, act, outcome, f"resolver:{act.act_id}")
-    return ResolveSummary(len(rows), replied, not_replied, expired, recovered, asks_graded, asks_withdrawn,
+    used_counts = _resolve_output_used(conn, now=now, limit=limit, commit=commit)
+    return ResolveSummary(len(rows) + used_counts["examined"], replied, not_replied, expired, recovered, asks_graded, asks_withdrawn,
                           promises_expired, promises_void,
                           closed_promises_not_due=void_kinds.get("not_due", 0),
                           closed_promises_not_chat=void_kinds.get("not_chat", 0),
                           closed_promises_absence_unchecked=void_kinds.get("absence_unchecked", 0),
                           promise_item_unread=unread.get("item", 0),
-                          promise_condition_unread=unread.get("condition", 0))
+                          promise_condition_unread=unread.get("condition", 0),
+                          closed_output_used=used_counts["used"],
+                          closed_output_unused=used_counts["unused"],
+                          closed_output_unobservable=used_counts["unobservable"])
 
 
 # --- late cost fill (attention patch 3a, "reading's real cost") ------------------------------------

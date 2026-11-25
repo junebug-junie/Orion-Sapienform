@@ -105,10 +105,13 @@ def act_faculty(actor: str, verb: str, object_ref: str) -> str:
 
 
 def act_outcome(row: Row) -> Optional[str]:
-    """One grammar_acts close -> upheld | refuted | failed_to_execute | no_change. Also read by the body
-    economy's weights (source (d), ``orion/physiology/weights.py``), so both organs grade an act alike."""
+    """One grammar_acts close -> upheld | refuted | failed_to_execute | no_change, or None for a void close
+    (censored: the outcome was never observable, so it is no grade at all). Also read by the body economy's
+    weights (source (d), ``orion/physiology/weights.py``), so both organs grade an act alike."""
     source = (row.get("outcome_source") or "").strip()
     note = (row.get("outcome_note") or "").strip()
+    if is_void_note(note):
+        return None
     value = _float(row.get("outcome_value"))
     if note.startswith(_EXEC_FAIL_PREFIXES) or note in _EXEC_FAIL_EXACT or note.endswith(" died"):
         return "failed_to_execute"

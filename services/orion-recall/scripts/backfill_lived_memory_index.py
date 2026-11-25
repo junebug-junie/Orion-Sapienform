@@ -77,7 +77,7 @@ async def main() -> int:
     conn = await asyncpg.connect(args.dsn)
     try:
         await conn.execute("SET default_transaction_read_only = on")
-        recs = await fetch_live_records(conn)
+        recs = await fetch_live_records(conn, include_ended=True)  # what the index loop mirrors
     finally:
         await conn.close()
     docs = [index_doc(r) for r in recs]

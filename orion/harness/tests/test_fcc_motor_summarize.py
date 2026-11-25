@@ -142,3 +142,16 @@ def test_pr_title_stream_receipts_carry_tool_evidence() -> None:
     # The PR JSON (number + title) survives — the reflect pass can now see grounding.
     assert "854" in joined
     assert joined.count("fix(action-outcome)") >= 2
+
+
+def test_a_cut_tool_result_says_it_was_cut_and_a_whole_one_does_not() -> None:
+    """corr 8297d0c3 (2026-11-25): a 1,822-char memory lookup reached the finalize judge as its
+    first 600 chars with no sign of a cut. The judge called the draft's facts from the rest
+    "unsupported" and the repair rewrote a right answer into "not in my records"."""
+    long_body = "know: 0 strong, 8 weak\n" + "\n".join(f"- hit {i} " + "y" * 200 for i in range(8))
+    cut = summarize_harness_step(_step({"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": long_body, "tool_use_id": "t1"}]}}), index=3)
+    assert f"[receipt cut: first 600 of {len(long_body)} chars shown; the motor read the full result]" in cut
+    whole = summarize_harness_step(_step({"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": "short result", "tool_use_id": "t2"}]}}), index=4)
+    assert "receipt cut" not in whole

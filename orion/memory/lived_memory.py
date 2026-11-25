@@ -14,6 +14,9 @@ Serving rules (the reader re-applies them at query time; Chroma is an index, nev
 - an ``episode_memory`` row is served only when ``status = 'active'``, it is not rejected, it
   has not expired, and no live row names it in ``supersedes_memory_id`` (a correction
   replaces what it corrects);
+- recall alone (``fetch_live_records(include_ended=True)``) also serves an expired row that is
+  not a follow-up, labelled with the day it ended (``EPISODE_ENDED_SQL``): its end date bounds
+  the state it describes ("away till Friday"), not the memory that it was so;
 - a stance crystallization is served only when ``status = 'active'``;
 - a person fact is served only when ``removed_at IS NULL`` and its person is active.
 """
@@ -52,6 +55,37 @@ WHERE m.status = 'active'
       WHERE c.supersedes_memory_id = m.memory_id AND c.status = 'active'
   )
 """
+
+# Ended, not gone. A non-follow_up row keeps ``expires_at`` only when Juniper named how long it held
+# ("away till Friday", validate.py), so the date ends the state, not the memory: a trip that ended
+# is still the record that answers "when did I go there?". Live 2026-11-25 (corr 8297d0c3): 22
+# expired rows (8 from the July-September backfill) were out of recall and out of the index, 11 of
+# them not follow-ups. Recall reads such rows through this query, labelled "true then,
+# not now" with the end date. A follow-up that expired is a stale task, never served. Same columns
+# as EPISODE_SQL plus ended_at, so ID_FILTER applies.
+EPISODE_ENDED_SQL = """
+SELECT m.memory_id::text AS record_id,
+       m.purpose AS purpose,
+       m.statement AS text,
+       coalesce(m.occurred_at, m.created_at) AS occurred_at,
+       m.strength::float8 AS importance,
+       (m.supersedes_memory_id IS NOT NULL) AS is_correction,
+       (m.confirmation_state = 'confirmed') AS confirmed,
+       NULL::text AS label,
+       m.created_at AS created_at,
+       m.expires_at AS ended_at
+FROM episode_memory m
+WHERE m.status = 'active'
+  AND m.confirmation_state IS DISTINCT FROM 'rejected'
+  AND m.purpose IS DISTINCT FROM 'follow_up'
+  AND m.expires_at IS NOT NULL AND m.expires_at <= now()
+  AND length(trim(m.statement)) > 0
+  AND NOT EXISTS (
+      SELECT 1 FROM episode_memory c
+      WHERE c.supersedes_memory_id = m.memory_id AND c.status = 'active'
+  )
+"""
+
 
 # "What was true then" (issue #3659, bi-temporal validity). EPISODE_SQL above serves only what is
 # currently true. This reader also serves a row an UPDATE retired, when it was still true at $1
@@ -215,6 +249,8 @@ class LivedRecord:
     created_at: datetime | None = None  # when Orion stored it (replay evals filter on this)
     # Set only by the as-of readers: when an update retired this row (true then, not now).
     invalid_at: datetime | None = None
+    # Set only by EPISODE_ENDED_SQL: when the state it describes ended (its expires_at).
+    ended_at: datetime | None = None
 
     @property
     def doc_id(self) -> str:
@@ -270,6 +306,7 @@ def record_from_row(kind: str, row: Mapping[str, Any]) -> LivedRecord | None:
         confirmed=bool(row.get("confirmed")),
         created_at=_aware(row.get("created_at")),
         invalid_at=_aware(row.get("invalid_at")),
+        ended_at=_aware(row.get("ended_at")),
     )
 
 
@@ -292,18 +329,29 @@ def index_doc(rec: LivedRecord) -> tuple[str, str, dict[str, Any]]:
 
 
 async def fetch_live_records(conn: Any, *, kinds: Iterable[str] = KINDS,
-                             ids_by_kind: Mapping[str, list[str]] | None = None) -> list[LivedRecord]:
+                             ids_by_kind: Mapping[str, list[str]] | None = None,
+                             include_ended: bool = False) -> list[LivedRecord]:
     """Every servable record (asyncpg connection or pool). With ``ids_by_kind`` only those ids,
-    still gated: a row superseded or retired since it was indexed comes back missing."""
+    still gated: a row superseded or retired since it was indexed comes back missing.
+
+    ``include_ended`` (lived recall and its index only) adds the episode memories whose stated
+    end date has passed (``EPISODE_ENDED_SQL``), each with ``ended_at`` set."""
     out: list[LivedRecord] = []
+    seen: set[str] = set()  # a row that ends between the two episode reads is kept once
     for kind in kinds:
-        sql = SQL_BY_KIND[kind]
-        if ids_by_kind is not None:
-            ids = list(ids_by_kind.get(kind) or [])
-            if not ids:
-                continue
-            rows = await conn.fetch(sql + ID_FILTER[kind], ids)
-        else:
-            rows = await conn.fetch(sql)
-        out.extend(records_from_rows(kind, [dict(r) for r in rows]))
+        sqls = [SQL_BY_KIND[kind]]
+        if include_ended and kind == KIND_EPISODE:
+            sqls.append(EPISODE_ENDED_SQL)
+        for sql in sqls:
+            if ids_by_kind is not None:
+                ids = list(ids_by_kind.get(kind) or [])
+                if not ids:
+                    continue
+                rows = await conn.fetch(sql + ID_FILTER[kind], ids)
+            else:
+                rows = await conn.fetch(sql)
+            for rec in records_from_rows(kind, [dict(r) for r in rows]):
+                if rec.doc_id not in seen:
+                    seen.add(rec.doc_id)
+                    out.append(rec)
     return out

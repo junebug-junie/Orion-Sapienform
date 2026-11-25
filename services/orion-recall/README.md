@@ -1031,10 +1031,13 @@ finds the few lived memories that fit the turn and appends them to DURABLE MEMOR
 - (episode_memory/happened · episode_memory:<uuid> · 2026-11-11) Juniper told me ...
 ```
 
-Stores: `episode_memory` (active, not rejected, not expired, not superseded by a live
-correction), `memory_crystallizations` kind `stance` (active), `person_fact` (not removed, person
-active). Chroma is only an index: every hit is re-gated against the live snapshot, and the chosen
-ids are re-read from Postgres right before they are served.
+Stores: `episode_memory` (active, not rejected, not superseded by a live correction),
+`memory_crystallizations` kind `stance` (active), `person_fact` (not removed, person active). An
+episode memory past the end date Juniper stated ("back by Friday") is still served and indexed,
+labelled `true then, not now: ended <date>`: the end date bounds the state, not the memory
+(`EPISODE_ENDED_SQL`, live miss 2026-11-25). An expired follow-up is never served. Chroma is only an
+index: every hit is re-gated against the live snapshot, and the chosen ids are re-read from Postgres
+right before they are served.
 
 Pipeline: content-word floor (`RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS`) with the short-message gate
 (below) -> meaning candidates

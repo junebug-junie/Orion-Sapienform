@@ -38,7 +38,9 @@ class FakePool:
         self.live = live
 
     async def fetch(self, sql: str, *args: Any) -> List[Dict[str, Any]]:
-        kind = ("episode_memory" if "FROM episode_memory" in sql else
+        # "episode_ended": rows past their stated end date (EPISODE_ENDED_SQL, read by recall only).
+        kind = ("episode_ended" if "AS ended_at" in sql else
+                "episode_memory" if "FROM episode_memory" in sql else
                 "stance" if "FROM memory_crystallizations" in sql else "person_fact")
         rows = list(self.live.get(kind, []))
         if args:
@@ -283,3 +285,92 @@ def test_worker_skips_lived_memory_past_the_deadline():
     finally:
         worker.set_lived_memory(None)
     assert (count, hit, debug["skipped"]) == (0, True, "timeout") and bundle.rendered == ""
+
+
+# Live 2026-11-25 (corr 8297d0c3): the memory that answered "when did I travel to <city>?" had an
+# end date Juniper stated ("back by Friday"). Once that date passed, recall, its exact-word
+# index and its meaning index all dropped the row, so no search could find it.
+def _ended_row(rid: str, text: str, **kw: Any) -> Dict[str, Any]:
+    row = _row(rid, text, **kw)
+    row["ended_at"] = kw.get("ended", NOW - timedelta(days=40))
+    return row
+
+
+def test_ended_sql_serves_past_end_date_rows_but_never_an_expired_follow_up():
+    sql = store.EPISODE_ENDED_SQL
+    assert "m.expires_at IS NOT NULL AND m.expires_at <= now()" in sql
+    assert "m.purpose IS DISTINCT FROM 'follow_up'" in sql
+    assert "status = 'active'" in sql and "confirmation_state IS DISTINCT FROM 'rejected'" in sql
+    assert "c.supersedes_memory_id = m.memory_id" in sql and "AS ended_at" in sql
+    # The current-truth reader is unchanged: pages and other readers still drop expired rows.
+    assert "(m.expires_at IS NULL OR m.expires_at > now())" in store.EPISODE_SQL
+
+
+def test_fetch_live_records_adds_ended_rows_only_when_asked():
+    pool = FakePool({"episode_memory": [_row("m1", "Biscuit had stitches.")],
+                     "episode_ended": [_ended_row("trip", "Juniper is going to Springfield and is back by Friday.")]})
+    plain = asyncio.run(store.fetch_live_records(pool))
+    assert [r.record_id for r in plain] == ["m1"]
+    both = asyncio.run(store.fetch_live_records(pool, include_ended=True))
+    assert [r.record_id for r in both] == ["m1", "trip"]
+    assert both[1].ended_at is not None and both[0].ended_at is None
+    by_id = asyncio.run(store.fetch_live_records(pool, kinds=["episode_memory"],
+                                                 ids_by_kind={"episode_memory": ["trip"]}, include_ended=True))
+    assert [r.record_id for r in by_id] == ["trip"]
+
+
+def test_a_memory_past_its_end_date_is_found_served_and_labelled(no_dense):
+    pool = FakePool({"episode_memory": [_row("m2", "The office was loud all evening.")],
+                     "episode_ended": [_ended_row("trip", "Juniper is going to Springfield and is back by Friday.",
+                                                  ended=datetime(2026, 10, 1, 5, 59, tzinfo=timezone.utc))]})
+    reader = LivedMemoryRecall(pool, _cfg(min_fit=0.5), reranker=_overlap_reranker, clock=lambda: NOW)
+    out = asyncio.run(reader.recall("Springfield traveled trip back Friday"))
+    assert [s.rec.record_id for s in out.chosen] == ["trip"]  # survives the serving re-check too
+    assert "episode_memory:trip" in out.lines[0] and "true then, not now: ended 2026-09-30" in out.lines[0]
+    know = asyncio.run(reader.know("Springfield traveled trip back Friday"))
+    assert [s.rec.record_id for s in know.strong] == ["trip"]
+
+
+def test_index_pass_keeps_a_memory_past_its_end_date(monkeypatch):
+    from orion.introspect.semantic_index import IndexPass
+
+    calls = {}
+
+    async def index_docs(docs, *_a, **_k):
+        calls["upserted"] = [d[0] for d in docs]
+        return IndexPass(indexed=0, pending=0)
+
+    async def indexed_ids(*_a, **_k):
+        return ["episode_memory:m1", "episode_memory:trip"]
+
+    async def delete_ids(_client, _cfg, ids):
+        calls["deleted"] = list(ids)
+        return len(ids)
+
+    monkeypatch.setattr(lm, "index_docs", index_docs)
+    monkeypatch.setattr(lm, "indexed_ids", indexed_ids)
+    monkeypatch.setattr(lm, "delete_ids", delete_ids)
+    pool = FakePool({"episode_memory": [_row("m1", "Biscuit had stitches.")],
+                     "episode_ended": [_ended_row("trip", "Juniper is headed to Springfield.")]})
+    asyncio.run(lm.run_index_pass(pool, _cfg().search, client=None, bus=None, source=None, batch=5))
+    assert calls["upserted"] == ["episode_memory:m1", "episode_memory:trip"] and calls["deleted"] == []
+
+
+def test_a_row_that_ends_inside_the_snapshot_ttl_is_served_with_its_label(no_dense):
+    pool = FakePool({"episode_memory": [_row("trip", "Juniper is going to Springfield and is back by Friday.")]})
+    reader = LivedMemoryRecall(pool, _cfg(min_fit=0.5), reranker=_overlap_reranker, clock=lambda: NOW)
+    asyncio.run(reader.snapshot(force=True))  # still current when the snapshot was read
+    pool.live["episode_ended"] = [_ended_row("trip", "Juniper is going to Springfield and is back by Friday.")]
+    pool.live["episode_memory"] = []          # its end date passed before the re-check
+    out = asyncio.run(reader.recall("Springfield traveled trip back Friday"))
+    assert [s.rec.record_id for s in out.chosen] == ["trip"] and "ended" in out.lines[0]
+    assert "ended" in lm.items_for(out.chosen)[0]["tags"]
+
+
+def test_a_replay_before_the_end_date_shows_no_ended_label(no_dense):
+    ended = datetime(2026, 10, 1, 5, 59, tzinfo=timezone.utc)
+    pool = FakePool({"episode_ended": [_ended_row("trip", "Juniper is going to Springfield and is back by Friday.",
+                                                  at=ended - timedelta(days=3), ended=ended)]})
+    reader = LivedMemoryRecall(pool, _cfg(min_fit=0.5), reranker=_overlap_reranker, clock=lambda: NOW)
+    out = asyncio.run(reader.recall("Springfield traveled trip back Friday", as_of=ended - timedelta(days=1)))
+    assert [s.rec.record_id for s in out.chosen] == ["trip"] and "ended" not in out.lines[0]

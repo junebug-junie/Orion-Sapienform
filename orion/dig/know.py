@@ -76,7 +76,10 @@ def _line(hit: dict) -> str:
     text = " ".join(str(hit.get("text") or "").split())
     if len(text) > LINE_CHARS:
         text = text[: LINE_CHARS - 1].rstrip() + "…"
-    return f"- ({label} · {hit.get('id')} · {hit.get('date')}) {text}"
+    when = str(hit.get("date"))
+    if hit.get("ended"):
+        when += f" · true then, not now: ended {hit.get('ended')}"
+    return f"- ({label} · {hit.get('id')} · {when}) {text}"
 
 
 def render(words: str, data: dict) -> list[str]:
@@ -110,7 +113,10 @@ def render(words: str, data: dict) -> list[str]:
                      "Strong (cleared recall's bar: the kind of memory recall brings into a chat):")
         lines.extend(_line(h) for h in strong)
     if weak:
-        lines.append("Weak (share words with your search but scored below the bar; check before relying on one):")
+        # corr 8297d0c3 (2026-11-25): a reply used 1 of 8 weak hits and called the rest "not in my
+        # records". A weak hit is a stored memory: unsure fit, never absent.
+        lines.append("Weak (stored memories that share words with your search but scored below the bar; "
+                     "read each one: it may still answer the question, so never call it not recorded):")
         lines.extend(_line(h) for h in weak)
     if (not hits and not unverified and not is_degraded
             and status not in ("timeout", "error", "off", "skipped_short", "busy", "unverified")):

@@ -34,6 +34,7 @@ from .storage.falkor_entity_relatedness import (
     fetch_related_entities,
 )
 from . import worker as _worker
+from .lived_time import local_zone
 from .worker import handle_recall, process_recall, persist_decision_async, set_lived_memory, set_recall_pg_pool
 
 from orion.core.contracts.recall import RecallDecisionV1, RecallQueryV1
@@ -327,7 +328,9 @@ async def lived_know_endpoint(body: LivedKnowRequestBody):
                                                           else f"error:{type(exc).__name__}"}))
     hits = [
         {"strength": strength, "kind": s.rec.kind, "purpose": s.rec.purpose, "id": s.rec.doc_id,
-         "date": s.rec.date, "text": s.rec.text, "fit": round(float(s.fit), 4)}
+         "date": s.rec.date, "text": s.rec.text, "fit": round(float(s.fit), 4),
+         "ended": (s.rec.ended_at.astimezone(local_zone(reader.cfg.timezone)).date().isoformat()
+                   if s.rec.ended_at is not None else None)}
         for strength, group in (("strong", result.strong), ("weak", result.weak))
         for s in group
     ]

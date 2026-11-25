@@ -123,7 +123,8 @@ def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     # -1 +2 2026-11-18 (#3575): node:substrate.biometrics retired; node:prediction.body_joint and
     #   node:prediction.room_joint (family A joint surprise) added.
     # -1 2026-11-24 (#3576): node:substrate.execution retired (the last fake PE node).
-    assert len(ranges) == 12
+    # +1 2026-11-25 (PE retire Patch 4): node:prediction.street_rhythm (walkway rhythm surprise).
+    assert len(ranges) == 13
     assert ("node:substrate.execution", "prediction_error") not in ranges
     # The alarms moved to their own channel (PE retire Patch 2, 2026-11-24).
     assert ranges[("node:substrate.street", "alarm")] == ("trigger", (0.0, 0.0))

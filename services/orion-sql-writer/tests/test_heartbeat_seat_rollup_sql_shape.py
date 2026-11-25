@@ -97,7 +97,8 @@ def test_migration_declares_the_same_columns_header_and_additive_ddl_only() -> N
 
     # v2 (#3901) adds late_count, nullable, with ALTER TABLE ... ADD COLUMN IF NOT EXISTS only.
     text2 = MIGRATION_V2.read_text()
-    assert text2.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer"
+    # The heartbeat is a dependant too: an old sql-writer (extra="forbid") rejects late_count.
+    assert text2.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer, orion-heartbeat"
     statements2 = [s.strip() for s in re.sub(r"--[^\n]*", "", text2).split(";") if s.strip()]
     added = set()
     for stmt in statements2:

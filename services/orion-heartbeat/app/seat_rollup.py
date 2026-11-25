@@ -38,8 +38,8 @@ again at finalize, seconds to minutes later, with the finalize time as emitted_a
 straddle a bucket boundary, a per-bucket dedup counted the second copy in the later bucket. Event
 ids are kept for ``DEDUP_RETENTION_SEC`` after their bucket closes.
 
-Arrival lag (issue #3901): for every first copy with a real emitted_at, the receive time minus
-emitted_at is kept per seat (the last ``LAG_WINDOW`` atoms) for p50/p95/max on /health. A row's
+Arrival lag (issue #3901): for every first copy with a real emitted_at that is counted or late
+(not future), the receive time minus emitted_at is kept per seat (the last ``LAG_WINDOW`` atoms) for p50/p95/max on /health. A row's
 ``late_count`` is the number of its routed atoms that arrived after the bucket ended (inside the
 flush grace). Atoms that arrive after the row was published are dropped and counted on /health
 (``late``, ``late_by_bucket``, ``late_by_seat``), since a stored row is never rewritten.
@@ -177,18 +177,20 @@ class SeatRollupAccumulator:
             self._seen[event_id] = start
             if len(self._seen) > DEDUP_MAX_IDS:
                 del self._seen[next(iter(self._seen))]
-        if record_lag:
-            self._lags[site_index].append(now_epoch - emitted_epoch)
         if start < self._open_from:
             self.late += 1
             self.late_by_bucket[start] = self.late_by_bucket.get(start, 0) + 1
             while len(self.late_by_bucket) > LATE_BY_BUCKET_MAX:
                 self.late_by_bucket.pop(min(self.late_by_bucket))
             self.late_by_seat[site_index] += 1
+            if record_lag:
+                self._lags[site_index].append(now_epoch - emitted_epoch)
             return "late", None
         if start > bucket_start_epoch(now_epoch, self._bucket_sec) + self._bucket_sec:
             self.future += 1
             return "future", None
+        if record_lag:
+            self._lags[site_index].append(now_epoch - emitted_epoch)
         return "counted", self._bucket(start)
 
     def observe_atom(
@@ -240,8 +242,11 @@ class SeatRollupAccumulator:
             self._open_from = max(self._open_from, end)
         self._partial_starts = {s for s in self._partial_starts if s >= self._open_from}
         if out:
+            # Also drop ids stamped far in the future (a source clock days ahead): they would
+            # otherwise stay until the cap evicts them.
             keep_from = self._open_from - DEDUP_RETENTION_SEC
-            self._seen = {k: v for k, v in self._seen.items() if v >= keep_from}
+            keep_to = self._open_from + DEDUP_RETENTION_SEC
+            self._seen = {k: v for k, v in self._seen.items() if keep_from <= v <= keep_to}
         return out
 
     def lag_stats(self) -> dict[str, dict[str, Optional[float]]]:

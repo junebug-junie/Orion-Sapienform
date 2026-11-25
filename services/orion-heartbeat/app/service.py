@@ -13,6 +13,7 @@ from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.codec import OrionCodec
 from orion.grammar.publish import publish_grammar_event
 from orion.schemas.heartbeat_seat_rollup import (
+    HEARTBEAT_SEAT_ROLLUP_BUCKET_SEC,
     HEARTBEAT_SEAT_ROLLUP_CHANNEL,
     HEARTBEAT_SEAT_ROLLUP_KIND,
     HeartbeatSeatRollupV1,
@@ -425,7 +426,7 @@ class HeartbeatService(BaseChassis):
                     record_lag=real_emitted,
                 )
             if outcome == "late":
-                bucket = int(emitted // 300) * 300
+                bucket = int(emitted // HEARTBEAT_SEAT_ROLLUP_BUCKET_SEC) * HEARTBEAT_SEAT_ROLLUP_BUCKET_SEC
                 if rollup.late_by_bucket.get(bucket) == 1:  # once per bucket
                     logger.warning(
                         "heartbeat_seat_rollup_late_atom bucket_start=%s lag_sec=%.1f -- the stored row for "

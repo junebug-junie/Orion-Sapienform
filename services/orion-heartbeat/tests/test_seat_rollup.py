@@ -588,3 +588,43 @@ def test_arrival_lag_per_seat_and_late_count_per_row(svc) -> None:
     assert (row.atom_count, row.late_count) == (4, 1)
     assert rows[(T0, "orion-hub")].late_count == 0
     assert svc._seat_rollup_stats()["late_atoms_dropped_by_seat"]["orion-harness-governor"] == 0
+
+
+def test_future_atoms_do_not_enter_the_lag_and_far_future_ids_are_pruned() -> None:
+    acc = _acc()
+    _listen(acc, T0, T0 + 330)
+    assert acc.observe_atom(site_index=0, level=0.5, emitted_epoch=T0 + 86_400, now_epoch=T0 + 1, event_id="skew") == "future"
+    assert acc.lag_stats()["orion-hub"]["n"] == 0  # a skewed source clock is not a lag sample
+    assert "skew" in acc._seen  # still remembered: the ledger keeps that copy
+    acc.observe_atom(site_index=0, level=0.5, emitted_epoch=T0 + 1, now_epoch=T0 + 2, event_id="ok")
+    acc.flush_closed(T0 + 330, grace_sec=30)
+    assert "skew" not in acc._seen and "ok" in acc._seen
+
+
+def _load_eval():
+    spec = importlib.util.spec_from_file_location(
+        "seat_rollup_match_eval", REPO / "services" / "orion-heartbeat" / "evals" / "seat_rollup_match.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_eval_bus_copies_one_per_trace_never_ahead_of_the_first_copy() -> None:
+    ev = _load_eval()
+    H = ev.HARNESS
+    asm = '{"semantic_role": "exec_result_assembled"}'
+    emi = '{"semantic_role": "exec_result_emitted"}'
+    rows = [
+        ("emit_early", "5", H, emi, "t2"),  # emitted before its trace's assembled: no copy
+        ("a1", "10", H, asm, "t1"),
+        ("a2", "11", H, asm, "t2"),
+        ("a_none", "12", H, asm, ""),  # no trace id: never paired
+        ("e1", "20", H, emi, "t1"),
+        ("e1b", "25", H, emi, "t1"),  # second emitted in the same trace: no second copy
+        ("e_none", "26", H, emi, ""),
+    ]
+    out, copies = ev.with_bus_copies(rows)
+    assert copies == 1
+    assert [r[0] for r in out] == ["emit_early", "a1", "a2", "a_none", "a1", "e1", "e1b", "e_none"]
+    assert out[4][1] == "20"  # the copy carries the finalize (exec_result_emitted) time

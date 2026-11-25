@@ -90,15 +90,17 @@ def with_bus_copies(rows: list) -> tuple[list, int]:
     (event_id, epoch, source_service, atom_json, trace_id), ordered by emitted_at."""
     assembled: dict[str, tuple] = {}
     for row in rows:
-        if row[2] == HARNESS and json.loads(row[3]).get("semantic_role") == "exec_result_assembled":
+        if row[4] and row[2] == HARNESS and json.loads(row[3]).get("semantic_role") == "exec_result_assembled":
             assembled.setdefault(row[4], row)
     out, copies = [], 0
     for row in rows:
-        if row[2] == HARNESS and json.loads(row[3]).get("semantic_role") == "exec_result_emitted":
+        if row[4] and row[2] == HARNESS and json.loads(row[3]).get("semantic_role") == "exec_result_emitted":
             first = assembled.get(row[4])
-            if first is not None:
+            # One copy per trace, never ahead of the ledger's own (first) copy.
+            if first is not None and float(first[1]) <= float(row[1]):
                 out.append((first[0], row[1], first[2], first[3], first[4]))
                 copies += 1
+                del assembled[row[4]]
         out.append(row)
     return out, copies
 

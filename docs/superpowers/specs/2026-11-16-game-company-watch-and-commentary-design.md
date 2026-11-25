@@ -1030,6 +1030,15 @@ rule, replayed over the whole week; live since its deploy it won 0). "No play" i
   At tau 90 s play wins 2,445 (47%): 2,440 of them were no-winner frames, 5 took a curiosity-seeding winner (930 such
   frames, 0.5%), 0 took reading. Tau barely moves this (2,441..2,448): in the field contest the pull mostly fills
   silence.
+- **A consequence, stated plainly (review 2026-11-25).** Play is eligible whenever Orion watches, even at a pull
+  near 0. In the field contest (2 s ticks) a quiet watched frame is now won by play at a salience of about 0.02
+  (`1 - exp(-2 / 90)`, its own previous win reset it), with `suggested_observation_mode` "ignore", where it used to
+  be a no-winner frame (`world_first_no_winner`). The frame is not empty: it carries the sitting and its fresh look
+  note. Nothing downstream counts a field winner as an event: goal provenance follows native prediction-error node
+  targets only, and the self-model reads `dominant_targets` for display (and for a confidence fallback only when
+  the broadcast lane is stale). The same reset means that when a rival appears mid-sitting, play needs about 3.5
+  to 4.5 minutes to pass it in the field contest. Juniper chose "eligible whenever Orion is watching"; a minimum
+  pull (e.g. only beat silence when hungrier than the "high" band) is the lever if this reads wrong.
 - **Not a big share.** Reading loses nothing. Curiosity loses 6 of the week's broadcast seeds, one more than the rule
   it replaces, out of 63 seeding ticks during sittings (27.9% -> 25.2% of those ticks) and about 900 seeding ticks
   in the week (0.7%). The brief's stop condition does not trigger.
@@ -1045,9 +1054,11 @@ So after a win, play waits about one tick against a busy rival and wins back on 
 1. **Provenance.** `pull = orion.physiology.appetite.intensity(t, 90)` in `orion/attention/world_first.py`
    `play_hunger`. t = `now - max(retro_sitting.started_at, last win)`. `started_at` is the sitting's first mask
    change, written by Hub's Retro gateway (`services/orion-hub/scripts/retro_sitting.py` `UPSERT_SQL`). The last
-   win is `PlayHungerClock.note_winner`, fed by each contest's own winner: the broadcast reads
-   `frame.debug["world_first"]["winner"]` in `BiometricsSubstrateWorker._attention_broadcast_tick`; the field
-   contest reads `frame.dominant_targets[0]` in `AttentionRuntimeWorker._tick`.
+   win is `PlayHungerClock.note_winner`, fed by what each contest actually selected: the broadcast reads the
+   selected loop's refs (`projection.attended_node_ids` holds `world:play` and its `retro_sitting:<id>`) in
+   `BiometricsSubstrateWorker._attention_broadcast_tick`, not the ranking's top, which can still lose to a goal
+   loop, a terminal verdict or "none"; the field contest reads `frame.dominant_targets[0]` in
+   `AttentionRuntimeWorker._tick` (ranking order, nothing reorders it).
 2. **Independence.** The pull is a function of the contest's own past decisions and the sitting's start, not of a
    sensor. It shares `retro_sitting` with the minutes count, but the count no longer ranks (traced only). It shares
    nothing with `world:chat` (Juniper's turns), `world:reading` (accepted links) or any body node. The one loop is

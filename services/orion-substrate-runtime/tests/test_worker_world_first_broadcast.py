@@ -248,3 +248,23 @@ def test_the_play_hunger_flag_ships_on_and_off_restores_the_band_rule(monkeypatc
     import app.settings as settings_mod
 
     settings_mod._settings = None
+
+
+def test_play_hunger_does_not_reset_when_the_selected_loop_is_not_play(monkeypatch) -> None:
+    """The ranking's top can still lose the broadcast's selection (a goal loop, a terminal verdict, "none"):
+    hunger resets only on what attention actually selected (``attended_node_ids``)."""
+    import orion.substrate.attention_broadcast as ab
+
+    real = ab.broadcast_projection_from_frame
+
+    def not_play(frame):
+        proj = real(frame)
+        return proj.model_copy(update={"attended_node_ids": ["node:concept.hot"]})
+
+    monkeypatch.setattr(ab, "broadcast_projection_from_frame", not_play)
+    w = _worker(monkeypatch, world_first=True, play=True)
+    w._store.fetch_chat_turn_times.return_value = []
+    w._store.fetch_accepted_reading_link_events.return_value = []
+    w._store.fetch_play_inputs.side_effect = lambda now: _play_inputs(now)
+    _tick(w)
+    assert w._world_play_hunger_clock().last_won_at("S1") is None

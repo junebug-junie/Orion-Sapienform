@@ -193,7 +193,8 @@ def replay(frames, sittings, looks, prefs, rule: str, recent_since: datetime | N
     since_looks = Counter()
     for t, wf in frames:
         n += 1
-        cands = list(wf["candidates"])
+        # The stored play row (live since 2026-11-24) is replaced by the replayed one, never doubled.
+        cands = [c for c in wf["candidates"] if c.get("source_id") != "world:play"]
         base = pick(cands)
         stored_match += base == wf.get("winner")
         rows = as_of(sittings, t)

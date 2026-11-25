@@ -3830,8 +3830,14 @@ class BiometricsSubstrateWorker:
             )
             projection = broadcast_projection_from_frame(frame)
             if world_first:
-                wf_trace = (getattr(frame, "debug", None) or {}).get("world_first") or {}
-                self._note_world_play_winner(wf_trace.get("winner"), tick_now)
+                # Hunger resets only when attention actually went to play: the SELECTED loop carries
+                # world:play (the ranking's top can still lose to a goal loop, a terminal verdict or "none").
+                attended_refs = list(getattr(projection, "attended_node_ids", None) or [])
+                self._note_world_play_winner(
+                    "world:play" if "world:play" in attended_refs else None, tick_now,
+                    sitting_id=next((r.removeprefix("retro_sitting:") for r in attended_refs
+                                     if str(r).startswith("retro_sitting:")), None),
+                )
             try:
                 from orion.substrate.street_attention import STREET_NODE_ID
 
@@ -3970,12 +3976,14 @@ class BiometricsSubstrateWorker:
             clock = self._world_play_clock = PlayHungerClock()
         return clock
 
-    def _note_world_play_winner(self, winner_source_id: str | None, now: datetime) -> None:
+    def _note_world_play_winner(
+        self, winner_source_id: str | None, now: datetime, *, sitting_id: str | None = None
+    ) -> None:
         """A play win resets that sitting's hunger in this contest. Never raises."""
         try:
             from orion.attention.world_first import play_sitting_id
 
-            sid = play_sitting_id(getattr(self, "_world_play_last_candidate", None))
+            sid = sitting_id or play_sitting_id(getattr(self, "_world_play_last_candidate", None))
             if self._world_play_hunger_clock().note_winner(winner_source_id, sid, now=now):
                 logger.debug("%s_world_play_won sitting=%s", self._WORLD_PLAY_LOG_TAG, sid)
         except Exception:  # noqa: BLE001 -- a hunger record must not cost the tick

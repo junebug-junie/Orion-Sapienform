@@ -1,0 +1,513 @@
+{
+ "generated_at": "2026-11-24T22:30:54.525688+00:00",
+ "note": "Counts only. The real producer (orion.memory.episode.confirmation.run_tick) replayed in a throwaway Postgres, one tick per simulated day. 'never_answered': no answers, cards expire after 7 days. 'all_confirmed': every open card confirmed the day it opens. v3_relabel voices are ASSUMED from the category (Orion-self categories = orion_thought), so its framing counts restate that assumption.",
+ "cap": 5,
+ "daily_cap": 3,
+ "ask_ttl_days": 7,
+ "inputs": {
+  "live": {
+   "rows": {
+    "memories": 1372,
+    "by_stakes": {
+     "high:orion_relationship": 43,
+     "low:none": 1004,
+     "high:orion_machinery": 59,
+     "high:juniper_feelings": 82,
+     "high:identity_conclusion_about_juniper": 16,
+     "high:family_relationships": 20,
+     "high:health": 47,
+     "high:orion_asks_direction": 31,
+     "high:ungrounded_name": 40,
+     "low:-": 30
+    },
+    "by_state": {
+     "not_asked": 161,
+     "auto": 1034,
+     "confirmed": 71,
+     "rejected": 55,
+     "corrected": 5,
+     "pending_confirmation": 46
+    },
+    "by_voice_channel": {
+     "juniper_said/chat": 714,
+     "orion_thought/chat": 382,
+     "worked_out_together/chat": 110,
+     "orion_thought/reverie": 141,
+     "worked_out_together/reverie": 6,
+     "orion_thought/curiosity": 15,
+     "orion_thought/dream": 4
+    }
+   },
+   "never_answered": {
+    "cards_opened": 25,
+    "cards_by_category": {
+     "juniper_feelings": 7,
+     "orion_machinery": 1,
+     "orion_relationship": 6,
+     "family_relationships": 4,
+     "ungrounded_name": 1,
+     "health": 4,
+     "identity_conclusion_about_juniper": 2
+    },
+    "cards_framed_as_juniper_said": 24,
+    "cards_framed_as_orions_own_take": 0,
+    "cards_on_orion_thought": 0,
+    "cards_framed_as_internal_channel": 0,
+    "max_open_at_once": 5,
+    "cap_held": true,
+    "high_stakes_end_states": {
+     "not_asked": 106,
+     "confirmed": 71,
+     "rejected": 55,
+     "corrected": 5,
+     "unconfirmed": 23,
+     "pending_confirmation": 2,
+     "own_thought": 76
+    },
+    "ticks_with_activity": [
+     {
+      "day": 0,
+      "expired": 0,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 76,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 0
+     },
+     {
+      "day": 1,
+      "expired": 0,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 2,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 7,
+      "expired": 3,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 8,
+      "expired": 2,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 2,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 14,
+      "expired": 3,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 15,
+      "expired": 2,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 2,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 21,
+      "expired": 3,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 22,
+      "expired": 2,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 2,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 28,
+      "expired": 3,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 29,
+      "expired": 2,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 2,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 35,
+      "expired": 3,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 0,
+      "open_after": 2,
+      "answered": 0
+     }
+    ]
+   },
+   "all_confirmed": {
+    "cards_opened": 25,
+    "cards_by_category": {
+     "juniper_feelings": 7,
+     "orion_machinery": 1,
+     "orion_relationship": 6,
+     "family_relationships": 4,
+     "ungrounded_name": 1,
+     "health": 4,
+     "identity_conclusion_about_juniper": 2
+    },
+    "cards_framed_as_juniper_said": 24,
+    "cards_framed_as_orions_own_take": 0,
+    "cards_on_orion_thought": 0,
+    "cards_framed_as_internal_channel": 0,
+    "max_open_at_once": 3,
+    "cap_held": true,
+    "high_stakes_end_states": {
+     "not_asked": 106,
+     "confirmed": 96,
+     "rejected": 55,
+     "corrected": 5,
+     "own_thought": 76
+    },
+    "ticks_with_activity": [
+     {
+      "day": 0,
+      "expired": 0,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 76,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 1,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 2,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 3,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 4,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 5,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 6,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 7,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 8,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 1,
+      "open_after": 1,
+      "answered": 1
+     },
+     {
+      "day": 9,
+      "expired": 0,
+      "applied": 1,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 0,
+      "open_after": 0,
+      "answered": 0
+     }
+    ]
+   }
+  },
+  "v3_relabel": {
+   "rows": {
+    "memories": 69,
+    "by_stakes": {
+     "high:juniper_feelings": 7,
+     "low:none": 54,
+     "high:orion_asks_direction": 2,
+     "high:orion_relationship": 3,
+     "high:identity_conclusion_about_juniper": 1,
+     "high:family_relationships": 2
+    },
+    "by_state": {
+     "pending_confirmation": 10,
+     "auto": 54,
+     "own_thought": 5
+    },
+    "by_voice_channel": {
+     "juniper_said/chat": 64,
+     "orion_thought/chat": 5
+    }
+   },
+   "never_answered": {
+    "cards_opened": 10,
+    "cards_by_category": {
+     "juniper_feelings": 7,
+     "family_relationships": 2,
+     "identity_conclusion_about_juniper": 1
+    },
+    "cards_framed_as_juniper_said": 10,
+    "cards_framed_as_orions_own_take": 0,
+    "cards_on_orion_thought": 0,
+    "cards_framed_as_internal_channel": 0,
+    "max_open_at_once": 5,
+    "cap_held": true,
+    "high_stakes_end_states": {
+     "own_thought": 5,
+     "unconfirmed": 10
+    },
+    "ticks_with_activity": [
+     {
+      "day": 0,
+      "expired": 0,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 0
+     },
+     {
+      "day": 1,
+      "expired": 0,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 2,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 7,
+      "expired": 3,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 8,
+      "expired": 2,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 2,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 14,
+      "expired": 3,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 0,
+      "open_after": 2,
+      "answered": 0
+     },
+     {
+      "day": 15,
+      "expired": 2,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 0,
+      "open_after": 0,
+      "answered": 0
+     }
+    ]
+   },
+   "all_confirmed": {
+    "cards_opened": 10,
+    "cards_by_category": {
+     "juniper_feelings": 7,
+     "identity_conclusion_about_juniper": 1,
+     "family_relationships": 2
+    },
+    "cards_framed_as_juniper_said": 10,
+    "cards_framed_as_orions_own_take": 0,
+    "cards_on_orion_thought": 0,
+    "cards_framed_as_internal_channel": 0,
+    "max_open_at_once": 3,
+    "cap_held": true,
+    "high_stakes_end_states": {
+     "own_thought": 5,
+     "confirmed": 10
+    },
+    "ticks_with_activity": [
+     {
+      "day": 0,
+      "expired": 0,
+      "applied": 0,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 1,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 2,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 3,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 1,
+      "open_after": 1,
+      "answered": 1
+     },
+     {
+      "day": 4,
+      "expired": 0,
+      "applied": 1,
+      "apply_failed": 0,
+      "own_thought": 0,
+      "reaped": 0,
+      "opened": 0,
+      "open_after": 0,
+      "answered": 0
+     }
+    ]
+   }
+  }
+ }
+}

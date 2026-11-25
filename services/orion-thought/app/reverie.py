@@ -163,8 +163,10 @@ async def build_reverie_now_cue(correlation_id: str, *, run_ref: str) -> NowCue:
 
 
 async def record_reverie_now_use(cue: NowCue, question: ReverieQuestionV1) -> None:
-    """At the question's close: post its cites against the now it was shown. Never raises."""
-    if not cue.shown_id or not question.cites:
+    """Close the read once the model answered: post the question's cites (possibly none) against the now it was
+    shown. Closing moves reverie's cursor past that now (#3498); a read whose model call never ran (a refusal, a
+    timeout) is never closed, so the next reverie is offered the same experiences. Never raises."""
+    if not cue.shown_id:
         return
     try:
         from .temporal_self_cue import post_now_use
@@ -499,6 +501,8 @@ async def _run(deps: ReverieDeps) -> ReverieQuestionV1 | None:
         model_id=model_id, created_at=gate_now, **fields,
     )
     if not await deps.persist(question):
+        # The model did answer: the now was read (#3498), even though the row could not be stored.
+        await deps.record_use(cue, question)
         _count_skip("persist_failed", q=question_id)
         return None
 

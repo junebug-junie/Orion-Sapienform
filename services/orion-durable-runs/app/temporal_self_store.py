@@ -16,7 +16,7 @@ import gzip
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Optional
 
 from orion.schemas.temporal_self import (
@@ -407,7 +407,11 @@ ORDER BY created_at
 HUNGER_CHAT_EVENT_SQL = """
 SELECT event_id FROM temporal_self_event WHERE source_kind = 'chat_turn' AND source_ref = %(ref)s LIMIT 1
 """
-LAST_SHOWN_SQL = "SELECT max(shown_at) AS at FROM experience_shown WHERE reader_organ = %(o)s AND advances_cursor"
+# The organ's cursor (#3498): the cut-off of its newest CLOSED read that advances the cursor. A read is closed by
+# POST /temporal-self/now/use (zero or more cites); an unclosed read (the model never saw it) never moves it, so the
+# next read offers the same rows again. max() over closed rows: closing an older read never moves it backwards.
+LAST_SHOWN_SQL = ("SELECT max(shown_at) AS at FROM experience_shown"
+                  " WHERE reader_organ = %(o)s AND advances_cursor AND closed_at IS NOT NULL")
 INSERT_SHOWN_SQL = """
 INSERT INTO experience_shown (shown_id, reader_organ, reader_run_ref, event_ids, since, shown_at, advances_cursor)
 VALUES (%(shown_id)s, %(reader_organ)s, %(reader_run_ref)s, %(event_ids)s, %(since)s, %(shown_at)s, %(advances_cursor)s)
@@ -416,6 +420,8 @@ SHOWN_BY_ID_SQL = "SELECT shown_id, reader_organ, event_ids, shown_at FROM exper
 # The same row, locked: concurrent cite calls on one shown row are serialized, so the 3-cite cap holds.
 SHOWN_FOR_UPDATE_SQL = SHOWN_BY_ID_SQL + " FOR UPDATE"
 USED_FOR_SHOWN_SQL = "SELECT event_id FROM experience_use WHERE shown_id = %(s)s"
+# Closing a read (#3498): the first close stamps it; a later close of the same row keeps the first time.
+CLOSE_SHOWN_SQL = "UPDATE experience_shown SET closed_at = COALESCE(closed_at, %(at)s) WHERE shown_id = %(s)s"
 INSERT_USE_SQL = """
 INSERT INTO experience_use (use_id, event_id, citing_organ, citing_ref, shown_id, cited_at)
 VALUES (%(use_id)s, %(event_id)s, %(citing_organ)s, %(citing_ref)s, %(shown_id)s, %(cited_at)s)
@@ -516,9 +522,11 @@ class ExperienceStore:
                 "shown_id": shown_id, "reader_organ": reader_organ, "reader_run_ref": reader_run_ref,
                 "event_ids": event_ids, "since": since, "shown_at": shown_at, "advances_cursor": advances_cursor})
 
-    async def record_cites(self, shown_id: str, decide: Callable[[dict, list[str]], Any]) -> Any:
+    async def record_cites(self, shown_id: str, decide: Callable[[dict, list[str]], Any],
+                           closed_at: Optional[datetime] = None) -> Any:
         """One transaction: lock the shown row, read the uses already stored for it, let ``decide(shown,
-        already_used)`` (orion.temporal_self.now.record_use) choose, insert its uses. None: no such row."""
+        already_used)`` (orion.temporal_self.now.record_use) choose, insert its uses, and close the read
+        (``closed_at``, first close wins; #3498: this is what moves the organ's cursor). None: no such row."""
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cur:
@@ -532,6 +540,7 @@ class ExperienceStore:
                     rows = [u.model_dump() for u in result.uses]
                     if rows:
                         await cur.executemany(INSERT_USE_SQL, rows)
+                    await cur.execute(CLOSE_SHOWN_SQL, {"s": shown_id, "at": closed_at or datetime.now(timezone.utc)})
         return result
 
     async def rate_inputs(self, lo: datetime, hi: datetime) -> tuple[dict[str, int], list[tuple[str, str, str]], dict[str, int]]:

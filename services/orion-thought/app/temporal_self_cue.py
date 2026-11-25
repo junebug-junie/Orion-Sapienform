@@ -94,7 +94,8 @@ async def build_stance_cue(correlation_id: str, *, now: datetime | None = None) 
 # Reverie reads GET /temporal-self/now?organ=reverie (the few most salient experiences OTHER organs
 # recorded since reverie last looked; never its own) instead of the day frame's closed arcs, cites
 # what it used, and posts the cites to POST /temporal-self/now/use at the question's close. The
-# server checks every cite against the experience_shown row named by shown_id. The now off (404) or
+# server checks every cite against the experience_shown row named by shown_id. That post (even with
+# no cites) closes the read, and only a closed read moves reverie's cursor (#3498). The now off (404) or
 # unreachable -> the reverie runs on its seed alone, logged reverie_now_unavailable.
 
 NOW_ROUTE = "/temporal-self/now"
@@ -124,8 +125,8 @@ async def _get_now(base_url: str, timeout_sec: float, organ: str, run_ref: Optio
         async with httpx.AsyncClient(
             base_url=base_url.rstrip("/"), timeout=httpx.Timeout(timeout_sec), transport=_transport(),
         ) as client:
-            # No since=: the server then starts from when this organ last looked (its cursor) and moves
-            # the cursor. An explicit since= is an inspection read that never moves it (durable-runs).
+            # No since=: the server starts from this organ's cursor (the cut-off of its last CLOSED read,
+            # #3498); closing this read via post_now_use moves it. An explicit since= never moves it.
             resp = await client.get(NOW_ROUTE, params=params)
     except httpx.HTTPError as exc:
         return NowRead(reason=f"unreachable:{type(exc).__name__}")
@@ -194,7 +195,7 @@ def shown_cites(raw_cites: Iterable[Any], shown_event_ids: Iterable[str], *, cap
 async def post_now_use(
     shown_id: str, cites: list[str], citing_ref: str, timeout_sec: float, *, correlation_id: str = "",
 ) -> Optional[dict[str, Any]]:
-    """POST the cites for one shown now. Returns the server's ``ExperienceUseResultV1`` as a dict, or
+    """POST the cites (possibly none) for one shown now: this closes the read. Returns the server's ``ExperienceUseResultV1`` as a dict, or
     None on any failure (logged). Never raises, never takes longer than ``timeout_sec``."""
 
     async def _post() -> Optional[dict[str, Any]]:

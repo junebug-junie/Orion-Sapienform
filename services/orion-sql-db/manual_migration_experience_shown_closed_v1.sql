@@ -1,0 +1,18 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-durable-runs
+-- Orion's now: a reader's cursor moves when it closes a read, not when it reads (#3498).
+--
+-- experience_shown.closed_at: when the reader closed this read (POST /temporal-self/now/use, with zero or
+-- more cites). NULL: the read was never closed (the model call never ran: a GPU refusal, a timeout, a
+-- preempted turn), so the organ's cursor does not move past it and the next read offers those rows again.
+-- The organ's cursor is max(shown_at) over its closed reads that advance the cursor (no since=).
+--
+-- Rows written before this column existed read as unclosed: each cursor reader's first read after deploy
+-- starts 24 h back (the never-looked default) once, then moves on its own closes.
+--
+-- Apply BEFORE deploying orion-durable-runs (its cursor and close SQL name the column):
+--   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 \
+--     < services/orion-sql-db/manual_migration_experience_shown_closed_v1.sql
+-- Check: python3 scripts/check_sql_migrations_applied.py --file manual_migration_experience_shown_closed_v1.sql
+-- Additive and idempotent; re-running is safe. The cursor read uses the existing
+-- idx_experience_shown_organ_time (reader_organ, shown_at).
+ALTER TABLE experience_shown ADD COLUMN IF NOT EXISTS closed_at timestamptz;

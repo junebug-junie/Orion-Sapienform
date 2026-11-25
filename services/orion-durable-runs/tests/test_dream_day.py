@@ -478,6 +478,8 @@ def test_no_receipt_and_no_answer_are_failed_attempts_never_successes():
         assert result["status"] == "retrying" and "dream_day_no_answer" in result["last_error"]
         result = await after_backoff(world, saver)
         assert result["status"] == "failed" and world.stored is None    # budget spent: nothing written
+        # #3498: no attempt reached a usable answer, so no now read was closed: the next run is offered them again
+        assert world.cites == []
     asyncio.run(scenario())
 
 
@@ -490,6 +492,8 @@ def test_a_night_with_no_memory_grades_no_lasting_trace():
         result = await start_and_grant(world, saver)
         assert result["status"] == "completed" and result["produced"] is False
         assert result["produced_note"] == NO_TRACE_NOTE
+        # the model answered with no experience cite: the read is still closed, empty (#3498)
+        assert world.cites == [("shown-1", [], "dream_day:2026-11-17")] and result["cites"]["sent"] == 0
         fam = run_act_family({"workflow": DREAM_DAY_WORKFLOW})
         ev = closed_event(fam, {**result, "workflow": DREAM_DAY_WORKFLOW}, status="completed", opened_at=T0,
                           grant_entry_id="g1", closed_at=T0 + timedelta(minutes=10))
@@ -551,7 +555,8 @@ def test_a_run_that_lost_the_day_grades_zero():
         result = await start_and_grant(world, saver)
         assert result["status"] == "completed" and result["persist_outcome"] == "already_written"
         assert result["produced"] is False and "already_written by" in result["produced_note"]
-        assert world.cites == []                               # only the winner records cites
+        # only the winner records cites; the loser's model still ran, so it closes its now read empty (#3498)
+        assert world.cites == [("shown-1", [], "dream_day:2026-11-17")]
     asyncio.run(scenario())
 
 

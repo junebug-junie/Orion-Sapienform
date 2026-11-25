@@ -298,7 +298,12 @@ def test_the_asker_selects_only_pending_rows():
     start = src.index("async def open_cards(")
     body = src[start: src.index("\nasync def ", start + 10) if "\nasync def " in src[start + 10:] else None]
     assert "confirmation_state = 'pending_confirmation'" in body
-    assert "not_asked" not in src
+    assert "not_asked" not in body
+    # Elsewhere the module names not_asked only so the own-thought settle can move orion_thought
+    # not_asked rows to own_thought (issue #3840), a state the asker never selects either.
+    from orion.memory.episode import confirmation as C
+
+    assert "not_asked" in C.OWN_THOUGHT_FROM_STATES and "own_thought" not in body
 
 
 def test_not_asked_is_supersedable_but_never_corrects_and_is_hedged():

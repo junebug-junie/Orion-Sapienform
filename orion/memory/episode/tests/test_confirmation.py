@@ -164,7 +164,9 @@ def test_daily_report_names_every_state_the_loop_writes():
     src = inspect.getsource(c)
     # Every state the module sets or filters on (SET and WHERE clauses alike).
     named = set(re.findall(r"confirmation_state = '([a-z_]+)'", src))
-    assert named == {"pending_confirmation", "unconfirmed", "confirmed", "rejected", "corrected"}
+    # f-string SQL (the own-thought settle) is read rendered, so its states count too.
+    named |= set(re.findall(r"confirmation_state = '([a-z_]+)'", c.SETTLE_OWN_THOUGHTS_SQL))
+    assert named == {"pending_confirmation", "unconfirmed", "confirmed", "rejected", "corrected", "own_thought"}
     assert named <= set(CONFIRMATION_FLAG)
     assert "auto" not in CONFIRMATION_FLAG
 
@@ -175,3 +177,32 @@ def test_ungrounded_name_card_says_why_it_is_asking():
     q = _q(stakes_reason="ungrounded_name", voice="juniper_said")
     assert c.WHY_BY_VALIDATOR_LABEL["ungrounded_name"] in q
     assert c.WHY_UNJUDGED not in q
+
+
+def test_settle_own_thoughts_sql_runs_on_both_drivers_and_moves_only_orion_thought():
+    """Issue #3840. No bind parameters and no '%': asyncpg (tick) and psycopg (script) run it as is."""
+    sql = c.SETTLE_OWN_THOUGHTS_SQL
+    assert "%" not in sql and "$" not in sql
+    assert "m.voice = 'orion_thought'" in sql
+    assert "'pending_confirmation', 'unconfirmed', 'not_asked'" in sql
+    assert "SET confirmation_state = 'own_thought'" in sql
+    assert "status = 'withdrawn'" in sql and "'orion_thought_never_asked'" in sql
+    assert "answer_detail" not in sql  # a camera-migration column; not every memory DB has it
+    # Her answer, not yet applied, wins: such rows are left for the applier.
+    assert "FROM attention_loop_outcome o" in sql
+
+
+def test_opener_never_selects_orion_thought():
+    """Backstop: even a row stuck in pending_confirmation in Orion's voice never gets a card."""
+    import inspect
+
+    src = inspect.getsource(c.open_cards)
+    assert "AND voice <> 'orion_thought'" in src
+    assert "AND m.voice <> 'orion_thought'" in c._SKIP_REJECTED_SQL
+
+
+def test_tick_settles_own_thoughts_after_answers_and_before_the_opener():
+    import inspect
+
+    src = inspect.getsource(c.run_tick)
+    assert src.index("pending_outcomes(") < src.index("settle_own_thoughts(") < src.index("open_cards(")

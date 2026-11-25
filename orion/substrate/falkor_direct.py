@@ -245,7 +245,8 @@ class FalkorDirectConceptStore:
     def _node_row(self, node_id: str) -> dict[str, Any] | None:
         rows = self._query(NODE_BY_ID_CYPHER, {"node_id": str(node_id)}, NATIVE_NODE_RETURN_FIELDS)
         if len(rows) != 1:
-            # 0 = absent; 2 = duplicate node_id, which hydration also rejects.
+            # 0 = absent; 2 = duplicate node_id (a corrupt durable twin, #3512;
+            # hydration keeps the newer row and counts it). Ambiguous: None.
             return None
         return rows[0]
 

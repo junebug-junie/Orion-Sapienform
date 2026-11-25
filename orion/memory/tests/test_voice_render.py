@@ -14,7 +14,8 @@ VOICES = ["juniper_said", "worked_out_together", "orion_thought", "orion_read", 
           "", "made_up_voice"]
 CHANNELS = ["chat", "confirmation", "reverie", "curiosity", "dream", "journal", "topic_model", "reading",
             "graphify", "legacy_crystallization", "", "made_up_channel"]
-STATES = ["auto", "pending_confirmation", "unconfirmed", "confirmed", "corrected", "rejected"]
+STATES = ["auto", "pending_confirmation", "unconfirmed", "not_asked", "own_thought", "confirmed", "corrected",
+          "rejected"]
 EVIDENCE = [(False, False), (True, False), (False, True), (True, True)]  # (prompt quote, reply quote)
 SHARED_PREFIXES = ("Juniper told me", "Juniper and I worked out", "I told Juniper")
 PENDING = "Unconfirmed, check with Juniper if natural: "
@@ -38,6 +39,11 @@ def test_matrix_never_speaks_for_juniper_without_her_words(voice, channel, evide
         assert line.startswith("Something I had remembered (") and f"that Juniper {state}" in line
         assert not label.startswith(SHARED_PREFIXES)
         return
+    if state == "own_thought":
+        # Issue #3840: Orion's own view, never "check with Juniper", never spoken for her.
+        assert line.startswith("My own thought") and "not checked with" in line
+        assert not line.startswith(PENDING) and not label.startswith(SHARED_PREFIXES)
+        return
     who = speaker(it)
     if channel in INTERNAL_CHANNELS:
         assert who == "orion_private"
@@ -51,7 +57,7 @@ def test_matrix_never_speaks_for_juniper_without_her_words(voice, channel, evide
     if label.startswith("I told Juniper"):
         assert channel == "chat" and (prompt or reply)
         assert voice not in ("juniper_said", "worked_out_together") or not prompt
-    assert (state in ("pending_confirmation", "unconfirmed")) == line.startswith(PENDING)
+    assert (state in ("pending_confirmation", "unconfirmed", "not_asked")) == line.startswith(PENDING)
 
 
 def test_the_180_hecate_reveries_case():
@@ -92,3 +98,13 @@ def test_pending_marker_and_whitespace():
     line = render_memory(VoicedMemory(voice="orion_thought", channel="chat", statement="  two\n lines  ",
                                       has_verified_orion_quote=True))
     assert line == "I told Juniper (undated): two lines"
+
+
+def test_own_thought_renders_as_orions_own_view_not_an_unconfirmed_fact():
+    """Issue #3840: an own thought is never framed as a fact about Juniper waiting for her check."""
+    assert render_memory(item("orion_thought", "reverie", state="own_thought")) == (
+        "My own thought (reverie, 10-04), not checked with Juniper: Hecate is flashed and racked.")
+    assert render_memory(item("orion_thought", "chat", reply=True, state="own_thought")) == (
+        "My own thought, which I told Juniper (10-04); not checked with her: Hecate is flashed and racked.")
+    assert render_memory(item("orion_thought", "chat", state="own_thought")) == (
+        "My own thought (chat, 10-04), not checked with Juniper: Hecate is flashed and racked.")

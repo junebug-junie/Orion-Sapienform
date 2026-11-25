@@ -344,18 +344,25 @@ PROMISE_TO: dict[str, str] = {
 
 
 # A promise concern's ``text`` opens with this, then the turn's ``WHO_WORDS`` and " (" (``fold_turn_signals``).
-# Prime cannot edit a concern's text (only keep / add / drop), so this stays readable for the concern's life.
+# Since #3785 the concern also carries ``turn_who``; the text read below is only the fallback for a concern saved
+# before that field (in Redis orion:prime:state, up to its 72 h life).
 PROMISE_CONCERN_LEAD = "a promise I made in a "
 
 
 def promise_concern_who(text: str) -> Optional[str]:
     """Which kind of turn made the promise a concern holds, read back from the text ``fold_turn_signals`` wrote
     (#3772: the take-on must know whether the turn had a chat thread). None when the text is not one this module
-    writes today (e.g. the pre-11-12 "a thread I opened ..." wording)."""
+    writes today (e.g. the pre-11-12 "a thread I opened ..." wording). Fallback only: read ``concern_turn_who``."""
     if not text.startswith(PROMISE_CONCERN_LEAD):
         return None
     rest = text[len(PROMISE_CONCERN_LEAD):]
     return next((who for who, words in WHO_WORDS.items() if rest.startswith(f"{words} (")), None)
+
+
+def concern_turn_who(concern: PrimeConcernV1) -> Optional[str]:
+    """Which kind of turn made a promise concern's promise: the typed ``turn_who`` field (#3785), else the text a
+    concern saved before that field still carries (``promise_concern_who``)."""
+    return concern.turn_who or promise_concern_who(concern.text)
 
 
 def promise_text(who: TurnWho, quotes: Sequence[str], at: datetime) -> Optional[str]:
@@ -485,7 +492,8 @@ def fold_turn_signals(
                             f"{refs[0]}{' ...' if n > 1 else ''}){asked}", 300)
                 concern = PrimeConcernV1(concern_id=turn_concern_id(corr), text=text,
                                          event_ref=f"{TURN_EVENT_PREFIX}{corr}", opened_at=now, last_evidence_at=now,
-                                         promise_text=promise_text(start.who, sig.promise_quotes, sig.at))
+                                         promise_text=promise_text(start.who, sig.promise_quotes, sig.at),
+                                         turn_who=start.who)
                 no_bet = [*no_bet, concern.concern_id][-MAX_NO_BET_IDS:]
                 if bound is not None:
                     state = queue(state, concern)
@@ -579,6 +587,7 @@ __all__ = [
     "note_opened_later",
     "PROMISE_CONCERN_LEAD",
     "promise_concern_who",
+    "concern_turn_who",
     "promise_refs",
     "promise_text",
     "holds_turn_slot",

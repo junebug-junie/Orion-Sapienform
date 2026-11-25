@@ -117,11 +117,78 @@ the log covered < 90 % is left out of training, and an uncovered origin serves t
    Claude typing: provenance `orion/dev_economics/claude_code_ingest.py` (human typed turns only, compact
    summaries and tool echoes excluded); live: 1,559 non-empty windows since 08-14, writing every ~15 min.
 
-## Next: Hub attention sensor (separate PR, Juniper's idea 2026-11-10)
+## Hub attention joins the model (2026-11-25, #3578)
 
-A minute is recorded when the Hub page is visible, focused, and had input in the last 2 min. No
-history exists, so it records first; it joins the model after ~2 weeks of live data pass the metric
-gate.
+The sensor (orion-hub #3179) records a minute when the Hub page is visible, focused, and had input in
+the last 2 min (`services/orion-hub/static/js/hub-attention-tracker.js`, written by
+`services/orion-hub/scripts/hub_attention_routes.py` into `hub_attention_minute`). First row
+2026-11-11 03:22Z.
+
+Inputs (`app/reachable.py`, `features`):
+
+- `hub_lt15m`: an attended minute in `[h - 15 min, h)`. A minute row is stamped at its start, so the
+  minute is wholly before the origin. Prior +1.0, strength 1 (Juniper: looking at the Hub means reachable).
+- `hub_15_60m`: an attended minute in `[h - 60 min, h - 15 min)` and none in the last 15. Prior +0.5,
+  strength 1.
+- `hub_unknown`: the hour's 60 min window starts before the sensor's first minute. Both hub inputs are
+  0 there. Prior 0.0, strength 1. These hours are NOT dropped from training (unlike the typing log's
+  coverage mask): that would drop ~3 months of every other rule's data.
+- Any client counts (desktop 1,445 minutes, mobile 6). A Hub that is down reads as "not looking",
+  which is honest: she cannot look at a Hub that is down.
+- Stored per forecast in `prediction_reachable_forecast.features` (jsonb; no migration).
+
+Metric gate:
+
+1. Provenance: the tracker above; one beat per minute at second :30, one row per (minute, client).
+2. Independence: separate sensor from chat_message (the outcome) and the Claude typing log. Not
+   independent of the outcome in spirit (she messages Orion from the Hub), which is why the window is
+   strictly before the origin and the test is "next hour", not "this minute".
+3. Theory: Juniper's rule, and the plain mechanism: she messages Orion through the Hub, so a Hub in
+   view is the strongest available "she is at the keyboard and near Orion" signal.
+4. Live sanity (Juniper's check, 2026-11-25): 1,448 minutes over 15 days, ~1 beat/minute (no double
+   count), 0 minutes 03:00-10:00 Denver: it rests at 0 when she is asleep.
+5. Existing mechanism: none in this forecast; `hub_attention_minute` had no reader in prediction.
+6. Reversibility: three columns of the design matrix and two store reads; delete them.
+
+Evidence before the build (Juniper's stacked check, 2026-11-25): hub features stacked on the LIVE served p
+of 334 settled forecasts, trained on earlier days only:
+
+| | all hours | cold hours |
+|---|---|---|
+| message rate, hub < 15 min vs not | 52 % vs 9 % | 27 % vs 7 % |
+| message rate, hub 15-60 min vs not | 31 % vs 14 % | 30 % vs 5 % |
+| held-out log loss, with hub vs served | 0.3156 vs 0.3500 | 0.2345 vs 0.2620 |
+| gap/day (se), P(helps) | -0.034 (0.016), 0.97 | -0.039 (0.018), 0.97 |
+
+Full fit: hub < 15 min +1.35, hub 15-60 min +0.79 log-odds.
+
+Replay after the build (`evals/run_reachable_replay_eval.py`, 07-31..11-25, 2,814 hours, 115 with a
+message; `--no-hub` for before):
+
+| | before (no hub) | after (hub) |
+|---|---|---|
+| all: log loss model / state / base | 0.1124 / 0.1156 / 0.1623 | 0.1096 / 0.1156 / 0.1623 |
+| all: vs base gap/day (se), P | -0.050 (0.019), 0.99 | -0.052 (0.021), 0.99 |
+| all: vs state gap/day (se), P | -0.003 (0.005), 0.74 | -0.006 (0.006), 0.84 |
+| cold: log loss model / state / base | 0.0708 / 0.0733 / 0.0709 | 0.0700 / 0.0733 / 0.0709 |
+| cold: vs base gap/day (se), P | -0.0001 (0.004), 0.52 | -0.0017 (0.004), 0.65 |
+
+Over 118 days, 104 have no sensor, so the whole-history numbers barely move. The fair comparison is
+the same origins with and without hub, over the sensor's days (each origin refit from scratch, data
+before it only):
+
+| sensor-covered origins | hours / msgs | loss with hub vs without | gap/day (se), P(hub better) |
+|---|---|---|---|
+| all, 14 full days | 335 / 55 | 0.3247 vs 0.3487 (incl. the 2 h stub day) | -0.026 (0.019), 0.91 |
+| all, last 7 days | | | -0.054 (0.023), 0.97 |
+| cold, 14 days | 235 / 18 | 0.2587 vs 0.2679 | -0.013 (0.011), 0.87 |
+| cold, last 7 days | | | -0.027 (0.013), 0.95 |
+
+The first week is about level (the hub coefficients sit at the prior with little sensor data behind
+them); the second week is where it pays. The 2-hour stub day 11-10 (local) is left out of the day
+means: one message there swings a 2-hour mean by +0.28. Coefficients at 2026-11-25 06:00Z: hub < 15 min
++1.29, hub 15-60 min +0.68, hub_unknown -0.34. Juniper's direction holds; the data put the 15-60 min
+rule a bit above her +0.5.
 
 ## Files
 
@@ -131,6 +198,8 @@ gate.
 - `services/orion-prediction/.env_example`, `docker-compose.yml`: `PREDICTION_REACHABLE_ENABLED=true`
   (compose also gains the two turn-self-bet keys it was missing; review catch)
 - `services/orion-prediction/tests/test_reachable.py`, `evals/run_reachable_replay_eval.py`
+- Hub attention (#3578): `app/reachable.py` (`hub_*` inputs), `app/store.py` (`juniper_hub_minutes`,
+  `juniper_hub_since`), replay `--no-hub`
 
 ## Non-goals
 

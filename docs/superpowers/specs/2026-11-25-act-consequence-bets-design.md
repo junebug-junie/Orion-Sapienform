@@ -69,7 +69,7 @@ No new ledger, no new store, no new status words.
   writes past it. Re-announced ~1,700/h (streak > 400 on `world:chat`, 11-25).
   Persisted per message in `field_goal_provenance_log` (#3929, live). Episode table
   `field_goal_episode` (PK `episode_id`, assigned by the writer; new episode on target change or a
-  10-min gap) is being built by orion-sapienform-47 on `feat/goal-episodes`. It is a sink: nothing
+  10-min gap) is built by orion-sapienform-47 in PR #3940 (`feat/goal-episodes`, merge after #3941). It is a sink: nothing
   reads it.
 - **Prime** sees acts only as refs it may cite. It has no line for "how my acts have gone".
   orion-sapienform-87 is adding one attention-schema line to the same frame (Step 2a).
@@ -126,8 +126,11 @@ No new ledger, no new store, no new status words.
 - **Bind.** When an act opens while a field goal is active, `bind_act_to_workspace`'s sibling stamps
   `goal_ref = "field_goal:<artifact_id>"` (artifact_id of the newest active goal announcement).
   Prime concerns and curiosity runs keep their own `goal_ref` and are not overwritten.
-- **Resolve.** The sql-writer maps `field_goal:<artifact_id>` to `episode_id` through
-  `field_goal_episode`'s fold rule (option (i) from orion-sapienform-47: no producer change).
+- **Resolve.** The sql-writer maps `field_goal:<artifact_id>` to `episode_id` by direct lookup in
+  `field_goal_episode_artifact` (artifact_id -> episode_id, kept 48 h; PR #3940,
+  `services/orion-sql-writer/app/field_goal_episode.py`). Acts older than 48 h fall back to
+  `first_artifact_id` plus the fold rule (10-min gap). No producer change (option (i) from
+  orion-sapienform-47). Depends on #3940, which merges after #3941.
 - **Close.** When an episode ends (target change, or 10-min gap), the writer grades it:
   - `completed` if any act with that `goal_ref` closed with outcome 1 inside the episode plus its
     acts' horizons.

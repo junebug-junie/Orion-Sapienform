@@ -41,13 +41,20 @@ organs:
     temporal_sources: [visual_run, visual_deferral]
     families: [thought.painting, thought.dream_hop]
     workflows: [reverie.visual]
-    reads_now: null
-    exempt_read: "not yet migrated; integration patch 7"
+    # Integration patch 7b (#3429): a waking painting's one model step, the interpret call
+    # (services/orion-thought/app/visual_chain.py compute_visual_plan -> interpret_context_for_visual), is shown
+    # GET /temporal-self/now?organ=painting; the [experience:<id>] tags it writes are posted to
+    # /temporal-self/now/use and stripped before the diffusion prompt. The read and the post live in this module
+    # (read_painting_now, close_painting_now). A run with no interpret call reads nothing; dream hop pictures
+    # (thought.dream_hop) are the dream's prompt verbatim and never read.
+    reads_now: services/orion-thought/app/temporal_self_cue.py
   dream:
     # dream_day (the day dream, 2026-11-18): one experience per night's dream_day row; experience only, no
     # magnitude yet (salience NULL). The dream.day run reads the now (app/dream_day_store.py: GET
     # /temporal-self/now?organ=dream at gather, its experience: cites to /temporal-self/now/use at persist).
-    # The sleep cycle and dream.carry still do not read it; they move in integration patch 7 (#3429).
+    # The sleep cycle (dream.cycle) and dream.carry still do not read it: the cycle's replay picks keyed
+    # candidates by code with no model step that could cite, and a carry run's first text hop would need the
+    # shown id carried across its steps (follow-up issue, integration patch 7b).
     temporal_sources: [dream_cycle, dream_hypothesis, dream_day]
     salience_magnitude:
       dream_cycle: dream_hypothesis_count
@@ -79,7 +86,8 @@ organs:
       office_session: visit_seconds
     families: [vision.council, perception, perception.office, orion.look, orion.look_check, vision.ask]
     reads_now: null
-    exempt_read: "not yet migrated: the cameras' look acts read the now in integration patch 7"
+    # Integration patch 7b looked and kept this exempt: no camera act has a model step of its own that could cite.
+    exempt_read: "no model step of its own that could cite: a look (orion.look, orion.look_check) is a dig command inside a chat or curiosity turn that copies a frame or files a check, so its read of the now is that turn's organ's; vision.council and perception describe frames, and mixing other organs' experiences into perception would corrupt it; camera asks (vision.ask) are opened by rules in sql-writer. A cite here would be another organ's cite under the camera's name (#3429)"
   body:
     temporal_sources: [body_binding, gpu_wait, arousal_transition]
     salience_magnitude:
@@ -128,8 +136,11 @@ organs:
     families: [memory.consolidation, durable.reminiscence, actions.journal, durable.journal_compose, compactor.digest,
                topic_foundry.run, concept_induction, durable.pr_field_note]
     workflows: [memory.episode_distill, journal.compose, reminiscence.episode, compactor.digest, pr.field_note]
-    reads_now: null
-    exempt_read: "not yet migrated; integration patch 7"
+    # Integration patch 7b (#3429): reminiscence.episode's where_i_am_now hop (the one hop about the present) is
+    # shown GET /temporal-self/now?organ=memory and posts the reply's [experience:<id>] tags to
+    # /temporal-self/now/use. Episode distill, journal compose and field notes do not read: their evidence is a
+    # conversation, a trigger or a PR, and other organs' experiences would mix into it.
+    reads_now: services/orion-durable-runs/app/reminiscence_now.py
   chat:
     temporal_sources: [chat_turn]
     families: [hub.chat_reply, hub.outreach, durable.consult_orion_turn, durable.session_roundup]

@@ -487,6 +487,7 @@ def build_visual_interpretation_plan_request(
     source_text: str,
     prior_description: str | None,
     correlation_id: str,
+    orion_now: str = "",
 ) -> PlanExecutionRequest:
     """Plan request for the `visual_context_interpret` verb (Patch 8, module
     docstring). Always plain `metacog`, never `metacog_background` -- see
@@ -509,6 +510,9 @@ def build_visual_interpretation_plan_request(
             "source_label": source_label,
             "source_text": source_text,
             "prior_description": (prior_description or "").strip() or None,
+            # Integration patch 7b: the painting's now, rendered (app/temporal_self_cue.py render_now_block),
+            # or None when this run read none. The template shows it with its [experience:<id>] tags.
+            "orion_now": (orion_now or "").strip() or None,
             "options": _METACOG_LLM_LANE_OPTIONS,
         },
     )
@@ -523,6 +527,7 @@ async def interpret_context_for_visual(
     prior_description: str | None,
     correlation_id: str,
     timeout_sec: float,
+    orion_now: str = "",
 ) -> str | None:
     """Turn the selected context-seed clause into a concrete visual metaphor
     via one metacog-routed cortex-exec call (Patch 8, module docstring).
@@ -541,6 +546,7 @@ async def interpret_context_for_visual(
         source_text=slot_text,
         prior_description=prior_description,
         correlation_id=correlation_id,
+        orion_now=orion_now,
     )
     try:
         exec_result = await client.execute_plan(
@@ -967,6 +973,10 @@ class VisualPlan:
     memory_text: str | None
     memory_source_kind: str | None
     context_selection: VisualContextSelectionV1 | None
+    # Integration patch 7b: the now this run's interpret call was shown (its experience_shown id) and the
+    # shown ids the call cited. None/None: no now was read (off, unavailable, no interpret call this run).
+    now_shown_id: str | None = None
+    now_cites: list[str] | None = None
 
     def chain_fields(self) -> dict[str, Any]:
         """The plan keys every chain row that reached a prompt records in chain_json."""
@@ -981,6 +991,8 @@ class VisualPlan:
             "context_slot_interpreted": self.context_slot_interpreted,
             "continuity_streak": self.continuity_streak,
             "continuity_reset": self.continuity_reset,
+            "now_shown_id": self.now_shown_id,
+            "now_cites": list(self.now_cites or []),
         }
 
     def to_json(self) -> dict[str, Any]:
@@ -1116,7 +1128,16 @@ async def compute_visual_plan(
     # gets context_slot_text unchanged, exactly Patch 7's behavior, so a metacog outage
     # degrades this run's imagery, never breaks the chain.
     context_slot_interpreted: str | None = None
+    now_shown_id: str | None = None
+    now_cites: list[str] | None = None
     if context_slot_used and context_slot_text and settings.visual_chain_interpretation_enabled:
+        # Integration patch 7b: the interpret call is the painting's one model step, so it is the one place
+        # the now is shown. Read only when that call runs; closed only when it answered (the reverie's rule).
+        from . import temporal_self_cue as cue
+
+        now_read = await cue.read_painting_now(f"visual_run:{chain_id}", correlation_id=chain_id)
+        now_view = now_read.now if now_read.ok else None
+        orion_now = cue.render_now_block(now_view) if now_view is not None else ""
         context_slot_interpreted = await interpret_context_for_visual(
             bus,
             cortex_client=cortex_client,
@@ -1125,7 +1146,16 @@ async def compute_visual_plan(
             prior_description=effective_prior,
             correlation_id=chain_id,
             timeout_sec=settings.visual_chain_interpretation_timeout_sec,
+            orion_now=orion_now,
         )
+        if context_slot_interpreted is not None:
+            # Tags never reach the diffusion prompt (77-token budget); a sentence that was only tags is none.
+            shown = [i.event_id for i in now_view.items] if now_view is not None else []
+            context_slot_interpreted, cites = cue.painting_cites(context_slot_interpreted, shown)
+            context_slot_interpreted = context_slot_interpreted or None
+            if now_view is not None:
+                now_shown_id, now_cites = now_view.shown_id, cites
+                await cue.close_painting_now(now_shown_id, cites, chain_id, correlation_id=chain_id)
     prompt = build_visual_prompt(
         effective_prior, context_slot_used, context_slot_interpreted or context_slot_text
     )
@@ -1145,6 +1175,8 @@ async def compute_visual_plan(
         memory_text=memory_text,
         memory_source_kind=memory_source_kind if memory_text else None,
         context_selection=context_selection,
+        now_shown_id=now_shown_id,
+        now_cites=now_cites,
     )
 
 

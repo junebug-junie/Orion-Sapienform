@@ -136,7 +136,7 @@ among dropped questions above her overall "no" share. Result: 3 dropped of 222,
 all "no", 0 "yes" lost. Shipped on because it can only remove questions and the
 replay lost no right one.
 
-How thin it is (2026-11-25, per-camera start, #this PR): 10 (person, clue) cells
+How thin it is (2026-11-25, per-camera start, #3905): 10 (person, clue) cells
 clear 10 album passages; only one can veto on a single sighting (a regular never
 seen with a stroller, 0/58; llr -3.08). Dog cells run -1.95 to +1.06 per sighting,
 so a dog alone never reaches -2.3; dog stays in the set because two clues can add.

@@ -66,6 +66,8 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from orion.person_model.picture_verdicts import overridden_sql
+
 logger = logging.getLogger("sql-writer.vision_person_model")
 
 MODEL_VERSION = "median-topk-street-v2-people-split-face90"
@@ -626,7 +628,8 @@ def desired_exemplars(conn, tz: ZoneInfo, picture_same: bool = True) -> Tuple[Li
     for crop_id, ask_id, label in conn.execute(text(
             "SELECT v.crop_id, v.ask_id, i.label FROM vision_ask_picture_verdict v "
             "JOIN vision_individual i ON i.individual_id = v.individual_id "
-            "WHERE v.verdict = 'different' AND v.crop_id IS NOT NULL AND i.label IS NOT NULL")).fetchall():
+            "WHERE v.verdict = 'different' AND v.crop_id IS NOT NULL AND i.label IS NOT NULL "
+            f"AND NOT {overridden_sql('v')}")).fetchall():
         if not label.strip():
             continue
         person = names.get(label.strip().casefold(), label.strip())
@@ -711,6 +714,7 @@ def _picture_same_rows(conn, names: Dict[str, str], rows: List[dict]) -> Tuple[L
         "LEFT JOIN vision_crop_observation c ON c.crop_id = v.crop_id "
         "LEFT JOIN vision_individual ci ON ci.individual_id = c.individual_id "
         "WHERE v.verdict = 'same' AND v.crop_id IS NOT NULL "
+        f"AND NOT {overridden_sql('v')} "
         "ORDER BY v.answered_at, v.ask_id, v.picture_index")).fetchall()
     return picture_same_exemplars([tuple(r) for r in verdicts], names, pos, neg)
 

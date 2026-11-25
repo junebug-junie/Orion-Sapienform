@@ -18,6 +18,8 @@ Hub (asyncpg, ``$1::text[]``). Rows: person_id, image_ref, at -- newest first.
 
 from __future__ import annotations
 
+from orion.person_model.picture_verdicts import overridden_sql
+
 CONFIRM_PICK_YES = "confirm_pick_yes"
 CONFIRM_PICK_NO = "confirm_pick_no"
 
@@ -55,8 +57,9 @@ SELECT person_id, ref AS image_ref, at FROM (
     AND coalesce(p.merged_into, p.person_id) = ANY(@IDS@)
 ) x
 WHERE ref LIKE 'thumb:%'
-  -- A picture later marked "someone else", or "not <name>", never shows.
-  AND NOT EXISTS (SELECT 1 FROM vision_ask_picture_verdict d WHERE d.image_ref = x.ref AND d.verdict = 'different')
+  -- A picture marked "someone else" (unless her newer answer says it is them), or "not <name>", never shows.
+  AND NOT EXISTS (SELECT 1 FROM vision_ask_picture_verdict d WHERE d.image_ref = x.ref AND d.verdict = 'different'
+                  AND NOT @OVERRIDDEN_D@)
   AND NOT EXISTS (
     SELECT 1 FROM vision_person_exemplar n
     JOIN vision_crop_observation nc ON nc.crop_id = n.crop_id
@@ -70,7 +73,7 @@ ORDER BY person_id, at DESC NULLS LAST, ref
 
 def confirmed_pictures_sql(ids_param: str) -> str:
     """The query with its one parameter, e.g. ``":ids"`` or ``"$1::text[]"``."""
-    return _CONFIRMED_PICTURES_SQL.replace("@IDS@", ids_param)
+    return _CONFIRMED_PICTURES_SQL.replace("@IDS@", ids_param).replace("@OVERRIDDEN_D@", overridden_sql("d"))
 
 
 def newest_distinct(rows, limit: int) -> dict:

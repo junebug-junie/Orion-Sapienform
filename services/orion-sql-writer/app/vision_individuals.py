@@ -60,6 +60,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
+from orion.person_model.picture_verdicts import overridden_sql
+
 import numpy as np
 
 from orion.vision.stationary import StillRun, StreamRule, advance, box_iou, is_stationary, stream_rules
@@ -1909,13 +1911,14 @@ def picture_rows(ask_id: str, individual_id: str, detail: Dict[str, Any], answer
 
 # A story-card picture verdict that repeats one already kept (same individual, crop, verdict and name)
 # is not kept twice (who-card Patch A, Orion's question 4: a linked person answered again after a
-# mid-story merge must not double the "same" pictures a later reader counts). Known limit: the check
-# looks at every earlier verdict on that crop, so a repeat after a later correction (the crop split
-# away and back, or a 'same' later contradicted) is also dropped; the earlier row still stands.
+# mid-story merge must not double the "same" pictures a later reader counts). Only an earlier row
+# that still counts is a repeat: her newest answer on a picture wins (#3854), so after "yes, no",
+# a second "yes" is kept (it is the newest answer), not dropped as a copy of the replaced first one.
 _DUPLICATE_STORY_VERDICT_SQL = (
     "AND NOT EXISTS (SELECT 1 FROM vision_ask_picture_verdict d WHERE d.individual_id = :ind "
     "AND d.crop_id = CAST(:crop AS text) AND d.verdict = :v "
-    "AND lower(coalesce(d.name, '')) = lower(coalesce(CAST(:name AS text), ''))) "
+    "AND lower(coalesce(d.name, '')) = lower(coalesce(CAST(:name AS text), '')) "
+    f"AND NOT {overridden_sql('d')}) "
 )
 
 

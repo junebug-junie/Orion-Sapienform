@@ -1,8 +1,29 @@
 # Field demon on a tensor network: one trained lattice that forecasts and shows where Orion comes apart
 
-Status: design, rev 3 (2026-11-25). Juniper asked for this on 2026-11-24 and approved the rev 3
-direction on 2026-11-25 ("sure"). Related: #3296 (integration rung), #3822 (slow test), #3795
-(pipeline coupling floor), #3838 / #3873 (heartbeat overhaul, step 0).
+Status: design, rev 3 (2026-11-25), partly built. Juniper asked for this on 2026-11-24 and
+approved the rev 3 direction on 2026-11-25 ("sure"). Related: #3296 (integration rung), #3822
+(slow test), #3795 (pipeline coupling floor).
+
+**Build state (2026-11-25):**
+- Step 0, the heartbeat overhaul: built in #3873, deployed and verified live (#3871, #3838 closed).
+- The trained network, its known-answer tests and the preview replay: built in #3888. On about 39 h
+  of data it does not beat the linear model (preview only).
+- The lasting seat rollup: built in #3896, deployed 11-25 03:45Z. It needs about 2 weeks of rows
+  before the network re-runs (#3886).
+- Still a plan: the re-run on stable organs (after the ~12-08 slow-test re-run), and the live patch.
+
+**What removing the reheat answered.** It established that the reheat driver was dead (a constant
+hum below its calm floor). The 07-28 thermalization question (can the substrate relax at all
+without it?) was answered **in replay only**. On the new build, `mean_ratio` falls to 0.000 after
+30 minutes with no atoms. Live, the heartbeat never gets 30 silent minutes, because the body and bus
+seats tick all night. So whether it relaxes on a real quiet night is UNVERIFIED.
+
+**Series rule.** A seat means the same thing only within one `routing_version`. The rollup stamps
+every row with it, and the replay does not mix versions unless asked (`--any-routing-version`).
+A routing change starts a new series. Φ and cut costs are never read across a version boundary.
+The routing change on 11-24 (orch folded into execution; the harness took site 4) is the first such
+boundary. Rows before it exist only in `grammar_events`, recomputed with today's rules, and they age
+out in about 3 days.
 
 **Revisions.**
 - **Rev 1** used the heartbeat's per-service seats as the demon's organs.

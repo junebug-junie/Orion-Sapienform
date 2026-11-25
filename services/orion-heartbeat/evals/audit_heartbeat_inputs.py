@@ -15,7 +15,10 @@ instead of silently gating the substrate:
     inputs read calm by going silent, so this check does not apply to them;
   - PRESENCE_CLOCKWORK: a presence input that fires on a fixed clock (hourly
     CV < 0.35), so even its timing carries nothing;
-  - UNLISTED_ROLE: a role on a routed service that no ROLE_RULES entry names.
+  - UNLISTED_ROLE: a role on a routed service that no ROLE_RULES entry names;
+  - SKIP_NOW_VARIES: a skipped role whose salience now varies (more than 50
+    distinct values) and reads calm at night (night p05 <= 0.05) -- a
+    floor went away, so the skip may now be hiding a usable input.
 
 Input: the same 7-column CSV as replay_overhaul_before_after.py, over as long a
 window as grammar_events keeps (about 3 days):
@@ -132,6 +135,15 @@ def audit(rows: list[list[str]]) -> list[dict]:
                 rec["flags"].append("UNLISTED_ROLE")
             if rule.kind == "presence" and cv is not None and cv < CLOCKWORK_CV:
                 rec["flags"].append("PRESENCE_CLOCKWORK")
+            if rule.kind == "skip":
+                night_sal = [
+                    v
+                    for r in grp
+                    if (v := _f(r[5])) is not None
+                    and datetime.fromtimestamp(float(r[0]), timezone.utc).hour in NIGHT_UTC_HOURS
+                ]
+                if distinct["salience"] > 50 and night_sal and _pct(night_sal, 0.05) <= NO_REST_P05:
+                    rec["flags"].append("SKIP_NOW_VARIES")
             if rule.kind == "measured":
                 day, night = [], []
                 for r in grp:

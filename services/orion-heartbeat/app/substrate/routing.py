@@ -129,6 +129,15 @@ ABS_Z_CALM_FLOOR = math.sqrt(2.0 / math.pi)
 ABS_Z_SATURATION = 3.0
 
 
+class SkippedInputError(ValueError):
+    """The (service, role) rule says this atom carries no signal. ``reason``
+    is the rule's reason, used as the per-reason skip counter key."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
@@ -163,11 +172,17 @@ def _bus_activity_level(atom: Mapping[str, Any]) -> Optional[float]:
     With a baseline, uncertainty = min(1, |z| / 3), so |z| = 3 * uncertainty.
     The level subtracts the calm floor, so a calm bus reads 0 on just over
     half of its ticks (P(|z| < 0.798) = 0.575 for a calm z).
+
+    Known transient: on the tracker's second observation orion/bus/ewma.py
+    has no variance yet (1e-6 floor), so |z| saturates and this tick reads
+    level 1.0 once after a bus restart.
     """
     confidence = _num(atom, "confidence")
     uncertainty = _num(atom, "uncertainty")
-    if confidence is None or uncertainty is None or confidence < 0.9:
+    if confidence is None or uncertainty is None:
         return None
+    if confidence < 0.9:
+        raise SkippedInputError("no baseline yet: bus activity tracker is warming up")
     abs_z = ABS_Z_SATURATION * _clamp01(uncertainty)
     return _clamp01((abs_z - ABS_Z_CALM_FLOOR) / (ABS_Z_SATURATION - ABS_Z_CALM_FLOOR))
 
@@ -302,15 +317,6 @@ class UnroutableOrganError(ValueError):
 class UnroutableAtomTypeError(ValueError):
     """atom_type is not in ATOM_TYPE_OPERATOR_KIND -- a fail-loud guard
     against a future orion/schemas/grammar.py addition."""
-
-
-class SkippedInputError(ValueError):
-    """The (service, role) rule says this atom carries no signal. ``reason``
-    is the rule's reason, used as the per-reason skip counter key."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
 
 
 GRAMMAR_EVENT_CHANNEL = "orion:grammar:event"

@@ -182,13 +182,14 @@ def test_bus_activity_level_calm_stream_mostly_reads_rest() -> None:
     assert math.fsum(levels) / len(levels) < 0.12
 
 
-def test_bus_activity_without_baseline_is_skipped() -> None:
+def test_bus_activity_without_baseline_is_skipped_with_its_own_reason() -> None:
     # confidence 0.5 = tracker has no baseline yet; uncertainty is a stamped 0.75.
-    with pytest.raises(SkippedInputError):
+    with pytest.raises(SkippedInputError) as ei:
         route_atom(
             source_service="orion-bus",
             atom=_atom("bus_activity_zscore_computed", confidence=0.5, uncertainty=0.75),
         )
+    assert ei.value.reason.startswith("no baseline yet")
 
 
 def test_rpc_timeout_is_presence() -> None:
@@ -212,8 +213,11 @@ def test_measured_role_missing_its_field_is_skipped_not_defaulted() -> None:
 
 
 def test_measured_role_with_junk_field_raises_value_error() -> None:
-    with pytest.raises(ValueError):
+    # Must be a plain ValueError (counted malformed), not a SkippedInputError,
+    # which subclasses ValueError and would also satisfy pytest.raises.
+    with pytest.raises(ValueError) as ei:
         route_atom(source_service="orion-biometrics", atom=_atom("gpu_pressure_signal", salience="hot"))
+    assert not isinstance(ei.value, SkippedInputError)
 
 
 def test_unlisted_role_falls_back_to_service_default() -> None:

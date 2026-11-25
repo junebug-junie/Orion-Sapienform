@@ -337,6 +337,7 @@ def grammar_event_stream(rows, mods: dict, cfg: EnsembleConfig):
     prev_ts: Optional[datetime] = None
     skipped_organ = 0
     skipped_atom_type = 0
+    skipped_input = 0
     routed = 0
 
     for row in rows:
@@ -345,6 +346,7 @@ def grammar_event_stream(rows, mods: dict, cfg: EnsembleConfig):
         try:
             assignment = route_atom(source_service=row["source_service"], atom=atom)
         except SkippedInputError:
+            skipped_input += 1
             continue
         except UnroutableOrganError:
             skipped_organ += 1
@@ -362,8 +364,8 @@ def grammar_event_stream(rows, mods: dict, cfg: EnsembleConfig):
         yield "grammar", assignment, gap_ticks
 
     logger.info(
-        "grammar_event_stream_summary routed=%d skipped_organ=%d skipped_atom_type=%d",
-        routed, skipped_organ, skipped_atom_type,
+        "grammar_event_stream_summary routed=%d skipped_organ=%d skipped_atom_type=%d skipped_input=%d",
+        routed, skipped_organ, skipped_atom_type, skipped_input,
     )
 
 

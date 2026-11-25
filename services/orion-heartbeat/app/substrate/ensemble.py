@@ -139,6 +139,10 @@ class EnsembleSubstrate:
     def absorb(self, assignment: SiteAssignment) -> None:
         for traj in self.trajectories:
             traj.absorb(assignment)
+        if assignment.level <= 0.0:
+            # A measured input at rest applied no gate: state and spread are
+            # unchanged, so skip the 8 entropy profiles std_ratio() costs.
+            return
         self._recent_spread = self.std_ratio()
 
     def decay_tick(self) -> None:

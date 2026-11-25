@@ -1285,7 +1285,8 @@
         el(
           "div",
           "text-[10px] uppercase tracking-wide text-gray-500 mb-1",
-          "Routed organs (" + organs.length + " sites)"
+          "Routed services (" + organs.length + ") on " +
+            ((health.seat_order && health.seat_order.length) || organs.length) + " seats"
         )
       );
       var chips = el("div", "flex flex-wrap gap-1");

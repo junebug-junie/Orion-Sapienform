@@ -60,3 +60,14 @@ def test_presence_input_on_a_fixed_clock_is_flagged() -> None:
     rows = _clock_rows("orion-cortex-exec", "exec_step_started", "action_candidate", lambda t: 0.85)
     recs = _by_role(audit.audit(rows))
     assert "PRESENCE_CLOCKWORK" in recs[("orion-cortex-exec", "exec_step_started")]["flags"]
+
+
+def test_skipped_gauge_whose_floor_went_away_is_flagged() -> None:
+    audit = _load()
+    # memory_pressure_signal is skipped for a structural floor; here it varies
+    # and reaches 0, so the audit must say the skip may be stale.
+    rows = _clock_rows(
+        "orion-biometrics", "memory_pressure_signal", "signal", lambda t: 0.0 if int(t) % 180 == 0 else (int(t) % 997) / 1000.0
+    )
+    recs = _by_role(audit.audit(rows))
+    assert "SKIP_NOW_VARIES" in recs[("orion-biometrics", "memory_pressure_signal")]["flags"]

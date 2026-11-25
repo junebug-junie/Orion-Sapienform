@@ -321,7 +321,6 @@ class HeartbeatService(BaseChassis):
         try:
             self._absorb_queue.put_nowait(assignment)
             self.events_queued += 1
-            _bump(self.inputs_absorbed_by_kind, assignment.input_kind)
         except asyncio.QueueFull:
             self.events_dropped_queue_full += 1
             logger.warning(
@@ -393,6 +392,7 @@ class HeartbeatService(BaseChassis):
                 if organ:
                     self.organ_fires.record(organ)
                 self.events_absorbed += 1
+                _bump(self.inputs_absorbed_by_kind, assignment.input_kind)
             except Exception as exc:  # noqa: BLE001 - one bad absorb must not kill the worker
                 logger.warning("heartbeat_absorb_failed err=%s", exc)
             finally:
@@ -414,6 +414,7 @@ class HeartbeatService(BaseChassis):
             if organ:
                 self.organ_fires.record(organ)
             self.events_absorbed += 1
+            _bump(self.inputs_absorbed_by_kind, assignment.input_kind)
             self._absorb_queue.task_done()
             processed += 1
         return processed

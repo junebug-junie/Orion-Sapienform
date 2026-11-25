@@ -79,3 +79,27 @@ If **either** fail condition does **not** hold → **still a research instrument
 - `/tmp/heartbeat-lattice-vs-thermometer/report.md`
 - `/tmp/heartbeat-lattice-vs-thermometer/profiles.json`
 - This document's commit hash is the pre-reg. The run report must cite it.
+
+## Amendment 2026-11-24 (#3838, heartbeat input overhaul)
+
+The fail lines above are unchanged. The substrate they test changed:
+
+- **Seats.** cortex-orch now shares the execution seat (site 2). The agent
+  harness (`orion-harness-governor`) has site 4.
+- **Gate strength.** Each atom gates with one `level` (rotation
+  `0.45 * level`) instead of confidence x salience and confidence x
+  (1 - uncertainty). The old 0.05 minimum strength is gone; level 0 applies
+  no gate.
+- **Skipped inputs.** Clockwork atoms, floored gauges and duplicates are not
+  absorbed (`routing.ROLE_RULES`). The 800-atom cap now counts routed atoms
+  after those skips.
+- **Reheat.** Removed. reheat_prob is 0.0 in every run, which this pre-reg
+  already allowed ("0.0 if FalkorDB is unreachable").
+- **Arm B.** The shuffle now moves the routed site one seat right
+  (`lattice_probe.shuffle_site`), instead of renaming source_service. This is
+  the same permutation (site 0 -> 1, ..., 4 -> 0), and each service keeps its
+  own input rule.
+- **Arm C.** The kick atom is hub `repair_signal` at salience 1.0, so level
+  1.0. That is the same 0.45 rotation on both gates as the original kick.
+
+Re-run 2026-11-24 (window 20:51-22:51 UTC): see the PR report for #3838.

@@ -5,6 +5,9 @@ recent absorb window. Smear comes from the current ensemble mean entropy
 profile (same near/far cuts as the lattice kick probe). Occupancy and
 profile are independent inputs — one is a count, the other is geometry.
 
+A seat that only reported calm (measured level 0, no gate) still counts as
+lit: it spoke, and what it said was "at rest". Dark means silent.
+
 Not a heart rate. Not IIT. These answers are: which organs are silent,
 whether coupling already looks the same far away as nearby, and whether
 the seats are speaking as one blob or as distinct organs.

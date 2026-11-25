@@ -76,3 +76,21 @@ Wiring. Chat. Raising χ. Retuning verdict bands. Quietly editing v1 after the f
 - `/tmp/heartbeat-neighbor-links-v2/windows.json`
 - `/tmp/heartbeat-neighbor-links-v2/windows.jsonl`
 - This document is the pre-reg. The run report must cite it.
+
+## Amendment 2026-11-24 (#3838, heartbeat input overhaul)
+
+The fail lines, pairs, bins and cell rules above are unchanged. The
+substrate changed (see the same-dated amendment in
+`2026-09-19-heartbeat-lattice-vs-thermometer.md`: seats, `level` gates,
+skipped inputs, no reheat). Two deviations matter here:
+
+- **"Other" seats.** `n_other` now counts the hub and agent-harness seats
+  (cortex-orch fires count as the execution seat).
+- **A calm reading still counts as a fire.** A measured atom at level 0 (for
+  example a bus tick with |z| under its calm floor) applies no gate, but the
+  harness still counts it toward its seat's `n`. This pads the co-fire cell
+  with windows where a seat said "at rest" and its site was not touched.
+  That most likely lowers the co-fire mean, so it leans the deciding pair
+  toward failing, not toward holding.
+
+Re-run 2026-11-24 (window 20:51-22:51 UTC): see the PR report for #3838.

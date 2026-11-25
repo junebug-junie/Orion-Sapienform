@@ -107,9 +107,11 @@ def _spearman(xs: list[float], ys: list[float]) -> float | None:
         return None
 
 
-def replay(service_root: Path, rows: list[list[str]], *, reheat_prob: float, warmup_sec: float, quiet_sec: float) -> dict:
+def replay(service_root: Path, rows: list[list[str]], *, reheat_prob: float | None, warmup_sec: float, quiet_sec: float) -> dict:
     routing, EnsembleConfig, EnsembleSubstrate, compute_h1_ensemble = _import(service_root)
     new_api = "atom" in inspect.signature(routing.route_atom).parameters
+    if not new_api and reheat_prob is None:
+        raise SystemExit("--reheat-prob is required for a before-overhaul build (it ran with a live reheat)")
     ensemble = EnsembleSubstrate(config=EnsembleConfig(), base_seed=42)
 
     def dissipate() -> None:
@@ -247,7 +249,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--service-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--csv", required=True)
-    parser.add_argument("--reheat-prob", type=float, default=0.0, help="before-build only")
+    parser.add_argument(
+        "--reheat-prob",
+        type=float,
+        default=None,
+        help="before-build only, required there (live value 2026-11-24: ~0.0035)",
+    )
     parser.add_argument("--warmup-sec", type=float, default=1800.0)
     parser.add_argument("--quiet-sec", type=float, default=1800.0)
     parser.add_argument("--out", required=True)

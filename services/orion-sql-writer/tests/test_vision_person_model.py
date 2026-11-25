@@ -687,11 +687,26 @@ def test_her_newest_answer_on_a_picture_wins(pg) -> None:
         at(conn, "yes-2", "mixed-1", "mixed", "same", 0, "Juniper")
         at(conn, "no-2", "mixed-1", "mixed", "different", 22)
         at(conn, "maybe", "mixed-1", "mixed", "unsure", 40)          # unsure never replaces a firm answer
+        # "Same person" also means another group with the same name (any casing).
+        conn.execute(text("UPDATE vision_individual SET label = 'JUNIPER' WHERE individual_id = 'jun3'"))
+        at(conn, "no-3", "mixed-3", "mixed", "different", 0)
+        at(conn, "yes-3", "mixed-3", "jun3", "same", 22, "Juniper")
+        # Story cards, through the real write path: yes, no, then yes again. The third answer is
+        # kept (it is the newest), not dropped as a repeat of the replaced first one.
+        from app import vision_individuals as vi
+
+        for k, (verdict, secs) in enumerate((("same", 0), ("different", 22), ("same", 44))):
+            name = "Juniper" if verdict == "same" else None
+            detail = {"pictures": [{"image_ref": "crop:mixed-2", "index": 0, "verdict": verdict,
+                                    "crop_id": "mixed-2", "name": name}]}
+            assert vi._record_pictures(conn, vi.picture_rows(f"story-{k}", "mixed", detail,
+                                                             t0 + timedelta(seconds=secs)), story_card=True) == 1
         pm.run_person_model(conn, NOW, CFG)
         got = {(r[0], r[1], r[2]) for r in conn.execute(text(
             "SELECT crop_id, polarity, source FROM vision_person_exemplar WHERE revoked_at IS NULL "
-            "AND crop_id IN ('mixed-0', 'mixed-1')"))}
-    assert got == {("mixed-0", 1, "picture_same"), ("mixed-1", -1, "picture_different")}
+            "AND crop_id IN ('mixed-0', 'mixed-1', 'mixed-2', 'mixed-3')"))}
+    assert got == {("mixed-0", 1, "picture_same"), ("mixed-1", -1, "picture_different"),
+                   ("mixed-2", 1, "picture_same"), ("mixed-3", 1, "picture_same")}
 
 
 @needs_pg

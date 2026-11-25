@@ -334,6 +334,15 @@ def _record(conn, *, split_id: str, source: str, ask_id: str, group_key: str, na
 def pending_split_groups(conn) -> List[Tuple[str, str, str, List[PictureVerdict], datetime]]:
     """(ask_id, source individual, group_key, all picture verdicts of that ask,
     answered_at) for every 'different' group with no vision_individual_split row yet."""
+    return _split_groups(conn)[0]
+
+
+def _split_groups(conn) -> Tuple[List[Tuple[str, str, str, List[PictureVerdict], datetime]],
+                                 List[Tuple[str, str, str, Optional[str]]]]:
+    """(pending groups, corrected groups). A corrected group is a 'different'
+    group with no split row yet whose every picture she later said IS the asked
+    person: (ask_id, source, group_key, name). It gets a 'skipped' row so the
+    ask has a visible end state and is not read again every tick."""
     from sqlalchemy import text
 
     rows = conn.execute(text(
@@ -346,7 +355,7 @@ def pending_split_groups(conn) -> List[Tuple[str, str, str, List[PictureVerdict]
     by_ask: Dict[Tuple[str, str], List[Any]] = {}
     for r in rows:
         by_ask.setdefault((r.ask_id, r.individual_id), []).append(r)
-    out = []
+    out, corrected = [], []
     for (ask_id, src), rs in by_ask.items():
         # Her newer answer wins: a "someone else" picture she later said IS the asked person
         # stays with it (a "same" here), never moves.
@@ -358,7 +367,10 @@ def pending_split_groups(conn) -> List[Tuple[str, str, str, List[PictureVerdict]
             {"s": src, "a": ask_id}).fetchall()}
         for gk in sorted({p.group_key for p in pvs if p.verdict == "different"} - done):
             out.append((ask_id, src, gk, pvs, rs[0].answered_at))
-    return out
+        live = {r.gk for r in rs if r.verdict == "different" and not r.overridden}
+        for gk in sorted({r.gk for r in rs if r.verdict == "different"} - live - done):
+            corrected.append((ask_id, src, gk, next((r.name for r in rs if r.gk == gk and r.name), None)))
+    return out, corrected
 
 
 def apply_splits(conn, now: datetime, cfg: IndividualsConfig) -> Dict[str, int]:
@@ -369,7 +381,15 @@ def apply_splits(conn, now: datetime, cfg: IndividualsConfig) -> Dict[str, int]:
     if not cfg.split_on_verdict_enabled:
         return out
     tz = ZoneInfo(cfg.local_tz)
-    for ask_id, src, gk, pvs, answered_at in pending_split_groups(conn):
+    pending, corrected = _split_groups(conn)
+    for ask_id, src, gk, name in corrected:
+        with conn.begin_nested():
+            _record(conn, split_id=f"split-{uuid.uuid4().hex}", source=src, ask_id=ask_id, group_key=gk,
+                    name=name, status="skipped", reason="corrected_by_newer_answer")
+        logger.info("[VISION_SPLIT_SKIPPED] ask_id=%s source=%s group=%r reason=corrected_by_newer_answer",
+                    ask_id, src, gk)
+        out["splits_skipped"] += 1
+    for ask_id, src, gk, pvs, answered_at in pending:
         try:
             with conn.begin_nested():
                 status = split_one(conn, ask_id=ask_id, source_id=src, group_key=gk, verdicts=pvs,

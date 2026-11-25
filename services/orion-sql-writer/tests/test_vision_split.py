@@ -1262,8 +1262,12 @@ def test_someone_else_corrected_22_seconds_later_never_splits(pg) -> None:
         _verdict_at(conn, "ask-yes", "m0", "same", t0 + timedelta(seconds=22), name="Alder")
     with pg.begin() as conn:
         assert vs.pending_split_groups(conn) == []
-        assert vs.apply_splits(conn, NOW, CFG) == {"splits": 0, "splits_refused": 0, "splits_skipped": 0}
+        # A visible end state: one 'skipped' row, so the ask is not read again every tick.
+        assert vs.apply_splits(conn, NOW, CFG) == {"splits": 0, "splits_refused": 0, "splits_skipped": 1}
+        assert _split_row(conn)["reason"] == "corrected_by_newer_answer"
         assert conn.execute(text("SELECT individual_id FROM vision_crop_observation WHERE crop_id='m0'")).scalar() == "src"
+    with pg.begin() as conn:
+        assert vs.apply_splits(conn, NOW, CFG) == {"splits": 0, "splits_refused": 0, "splits_skipped": 0}
 
 
 @needs_pg

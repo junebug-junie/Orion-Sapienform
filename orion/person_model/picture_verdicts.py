@@ -21,9 +21,12 @@ FIRM = ("same", "different")
 
 
 def overridden_sql(alias: str) -> str:
-    """SQL boolean: the verdict row ``alias`` (a ``vision_ask_picture_verdict``
-    alias, verdict 'same' or 'different') has a NEWER opposite firm answer on the
-    same picture for the same person. Readers keep a row only when this is false."""
+    """SQL boolean: a newer opposite firm answer exists for the verdict row
+    ``alias`` (a ``vision_ask_picture_verdict`` alias, verdict 'same' or
+    'different') on the same picture for the same person. Readers keep a row
+    only when this is false; the newest answer is never overridden. Two opposite
+    answers with the same ``answered_at`` both stand (separate clicks, so this
+    does not happen in practice). No bind parameters: safe for SQLAlchemy and asyncpg."""
     a = alias
     return (
         "EXISTS (SELECT 1 FROM vision_ask_picture_verdict o "
@@ -32,5 +35,6 @@ def overridden_sql(alias: str) -> str:
         f"WHERE o.verdict IN ('same', 'different') AND o.verdict <> {a}.verdict "
         f"AND (o.crop_id = {a}.crop_id OR o.image_ref = {a}.image_ref) "
         f"AND o.answered_at > {a}.answered_at "
-        f"AND (o.individual_id = {a}.individual_id OR lower(btrim(oi.label)) = lower(btrim(ai.label))))"
+        f"AND (o.individual_id = {a}.individual_id "
+        "OR (btrim(ai.label) <> '' AND lower(btrim(oi.label)) = lower(btrim(ai.label)))))"
     )

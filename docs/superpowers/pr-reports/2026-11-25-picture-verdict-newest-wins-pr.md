@@ -15,6 +15,7 @@ approved the fix on 2026-11-25: her newest answer wins.
   the three readers that act on who a picture shows: the recognition model's
   examples, the split that moves "someone else" pictures out of a group, and
   the People panel pictures.
+- A split that she cancelled by a newer answer gets a visible "skipped" row.
 - A split that already ran is not undone automatically.
 
 ## Outcome moved
@@ -60,6 +61,13 @@ card. Readers before this patch:
   card still splits.
 - `orion/person_model/pictures.py`: the panel hides a picture only when her
   "someone else" was not replaced.
+- `services/orion-sql-writer/app/vision_individuals.py` (minimal, 1 SQL
+  clause + import): duplicate suppression on story cards ignores an earlier
+  answer she has since replaced. Without this, "yes, no, yes" dropped the
+  last "yes" as a repeat of the first and ended on "no".
+- `services/orion-sql-writer/app/vision_split.py` also writes a `skipped`
+  row (`corrected_by_newer_answer`) for a "someone else" group she fully
+  corrected, so the card has a visible end state.
 - `services/orion-sql-writer/README.md`: the rule.
 - Tests: `test_vision_person_model.py`, `test_vision_split.py`,
   `test_person_record_pg.py`.
@@ -97,9 +105,11 @@ orion-sql-writer suite: 1357 passed, 284 skipped
 Throwaway Postgres 16 with the walkway, split, reanchor, person-model and
 person-record migrations:
   test_vision_person_model, test_vision_split, test_person_record_pg,
-  test_vision_reanchor, test_vision_confirm_asks -> 216 passed
+  test_vision_reanchor, test_vision_confirm_asks, test_vision_individuals
+  -> 243 passed
 Mutation checks: removing the rule from the model, from the split's
-per-picture step, or from the panel each makes a new test fail.
+per-picture step, from the panel, from story-card duplicate suppression, or
+the same-name branch each makes a new test fail.
 orion/person_model/tests: the only failures are linkage tests that need
 rapidfuzz, which is missing from the local venv (same on main).
 ```
@@ -110,6 +120,11 @@ New tests:
 - The split: a corrected picture never splits. On one card, the corrected
   picture stays while the rest splits. No, then yes, then no again: it splits.
 - The panel: the corrected picture shows. The reverse order hides it.
+- Story cards through the real write path: yes, no, yes ends on yes.
+- Another group with the same name (different capitals) counts as the same
+  person.
+- A fully corrected "someone else" group writes one `skipped` row and is not
+  read again.
 
 ## Evals run
 
@@ -130,7 +145,28 @@ cropobs:940f3184-...:0.
 
 ## Review findings fixed
 
-REVIEW_SECTION
+- Finding (material): on story cards, "yes, no, yes" ended on "no". The
+  duplicate check dropped the last "yes" as a repeat of the first one, which
+  had been replaced.
+  - Fix: duplicate suppression ignores replaced answers
+    (`vision_individuals.py`, `_DUPLICATE_STORY_VERDICT_SQL`).
+  - Evidence: a new test goes through `_record_pictures(..., story_card=True)`.
+    The mutant without the fix fails.
+- Finding: a fully corrected "someone else" card was re-read every tick with
+  no visible end state.
+  - Fix: one `skipped` row, reason `corrected_by_newer_answer`.
+  - Evidence: the split test asserts the row and that the next tick does
+    nothing.
+- Finding: no test covered "same name, other group".
+  - Fix: added. Evidence: the mutant without that branch fails.
+- Finding (nits): an empty label matched every unnamed group; the docstring
+  wording; ties.
+  - Fix: guard on an empty label; docstring says "a newer opposite answer
+    exists"; ties documented.
+- Finding: the check has no index and costs about 213 ms on 997 rows today.
+  - Not fixed here (it needs a migration): #3885.
+- Finding: are the new database tests real?
+  - Yes: run against a throwaway Postgres (243 passed above), not skipped.
 
 ## Restart required
 
@@ -152,10 +188,10 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 - Severity: low. Concern: two answers with the exact same timestamp both stay,
   so the "someone else" answer still wins. Mitigation: answers come from
   separate clicks, seconds apart.
-- Issues: Fixes #3854. Opened: none.
+- Issues: Fixes #3854. Opened: #3885 (indexes for the check).
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3884
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

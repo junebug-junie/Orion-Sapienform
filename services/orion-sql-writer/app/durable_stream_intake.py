@@ -20,6 +20,7 @@ import logging
 import time
 from typing import Awaitable, Callable, Optional
 
+from redis.exceptions import ResponseError
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.bus.work_queue import RedisStreamWorkQueue, StreamMessage, WorkQueueDecodeError
 
@@ -82,10 +83,8 @@ class DurableStreamIntake:
 
     async def ensure_ready(self) -> None:
         if not self._group_ready:
-            # The intake owns its queue's connection: main.py builds the queue from a URL only. connect()
-            # is a ping when already connected, and a Redis outage at boot raises here, so run_forever
-            # retries it instead of failing every loop on "not connected" (live 2026-11-25 08:29-10:30Z).
-            await self.queue.connect()
+            # ensure_group connects a URL-only queue (live 2026-11-25 08:29-10:30Z: it did not, and every
+            # loop failed on "not connected"). A Redis outage at boot raises here and run_forever retries.
             await self.queue.ensure_group(self.stream, self.group, start_id=self.start_id, mkstream=True)
             self._group_ready = True
 
@@ -167,6 +166,16 @@ class DurableStreamIntake:
         return len(batch.decode_errors) + await self._handle_batch(batch.messages, where="handle")
 
     async def run_once(self) -> int:
+        try:
+            return await self._run_once()
+        except ResponseError as exc:
+            if "NOGROUP" in str(exc):
+                # The stream key or group was deleted (FLUSHDB, Redis restart without persistence):
+                # recreate the group on the next loop instead of failing on NOGROUP forever.
+                self._group_ready = False
+            raise
+
+    async def _run_once(self) -> int:
         await self.ensure_ready()
         handled = 0
         if not self._recovered:

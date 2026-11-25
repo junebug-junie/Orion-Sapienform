@@ -121,6 +121,27 @@ def test_a_queue_built_from_a_url_alone_is_connected_by_the_intake(table, monkey
     asyncio.run(go())
 
 
+def test_a_deleted_group_is_recreated_instead_of_failing_on_nogroup_forever(table) -> None:
+    """FLUSHDB / a Redis restart without persistence deletes the group; the next loop must recreate it."""
+    from redis.exceptions import ResponseError
+
+    async def go():
+        redis = fakeredis.aioredis.FakeRedis()
+        pool = _queue(redis)
+        first = _event("lease-first")
+        await pool.enqueue(GPU_POOL_EVENT_STREAM, first)
+        intake = _intake(_queue(redis))
+        assert await intake.run_once() == 1
+        await redis.delete(GPU_POOL_EVENT_STREAM)          # group gone with the key
+        after = _event("lease-after-flush")
+        await pool.enqueue(GPU_POOL_EVENT_STREAM, after)  # XADD recreates the stream, not the group
+        with pytest.raises(ResponseError, match="NOGROUP"):
+            await intake.run_once()
+        assert await intake.run_once() == 1               # group recreated at 0, entry written
+        assert table() == [first.payload["event_id"], after.payload["event_id"]]
+    asyncio.run(go())
+
+
 def test_first_boot_writes_entries_streamed_before_the_group_existed_and_dedupes_the_rest(table) -> None:
     """Deploy order: the pool streams first; the old pub/sub writer already wrote some of those rows."""
     async def go():

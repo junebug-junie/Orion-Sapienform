@@ -1170,3 +1170,55 @@ async def test_unknown_open_state_still_publishes_the_zero_close(env, monkeypatc
     monkeypatch.setattr(store_mod, "abandon_visual_attempt", real_abandon)
     await env.steps._mirror_painting_act(bus, _req("abandon", attempt_id=first.attempt_id), out)
     assert bus.act_kinds() == ["act_closed"]
+
+
+# ── integration patch 7b: only the frozen plan closes its now read ──────────
+
+
+def _plan_with_now(env, shown_id):
+    from dataclasses import replace
+
+    async def compute(bus, *, chain_id, cortex_client=None):
+        base = env.vc.VisualPlan(
+            prompt="a pier", prior_description=None, prior_chain_id=None, effective_prior=None,
+            continuity_fallback=None, continuity_streak=0, continuity_reset=False, context_slot_used="context",
+            context_slot_rotation=1, context_slot_interpreted="a pier", context_text="x", self_study_text=None,
+            memory_text=None, memory_source_kind=None, context_selection=None)
+        return replace(base, now_shown_id=shown_id, now_cites=["camera:e1"])
+    return compute
+
+
+@pytest.mark.asyncio
+async def test_prepare_that_wins_the_freeze_closes_its_read(env, monkeypatch):
+    closed: list = []
+
+    async def close(plan, chain_id):
+        closed.append((plan.now_shown_id, chain_id))
+
+    monkeypatch.setattr(env.vc, "compute_visual_plan", _plan_with_now(env, "s-mine"))
+    monkeypatch.setattr(env.vc, "close_plan_now", close)
+    attempt_id = await _prepared(env)
+    assert closed == [("s-mine", attempt_id)]
+    assert env.store.rows[attempt_id]["stage_json"]["plan"]["now_cites"] == ["camera:e1"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_that_loses_the_freeze_posts_nothing(env, monkeypatch):
+    closed: list = []
+
+    async def close(plan, chain_id):
+        closed.append(plan.now_shown_id)
+
+    monkeypatch.setattr(env.vc, "compute_visual_plan", _plan_with_now(env, "s-mine"))
+    monkeypatch.setattr(env.vc, "close_plan_now", close)
+    real = env.store.update_visual_stage
+
+    def other_froze_first(attempt_id, mutate, **kw):
+        # A concurrent prepare for the same dispatch froze its own plan between this one's compute and freeze.
+        row = env.store.rows[attempt_id]
+        row["stage_json"] = {"plan": {"prompt": "theirs", "now_shown_id": "s-other"}, "stage": "prepared"}
+        return real(attempt_id, mutate, **kw)
+
+    monkeypatch.setattr(env.steps.store, "update_visual_stage", other_froze_first)
+    result = await _run(env, _req("prepare"))
+    assert result.status == "done" and closed == []

@@ -62,8 +62,11 @@ def _broker_reply(envelope):
 
 def test_tool_list_is_the_registry_with_reason_required():
     tools = {t["name"]: t for t in m.tool_list()}
-    assert set(tools) == {"prime_now", "body_economy"}
-    assert "reason" in tools["body_economy"]["inputSchema"]["required"]
+    from orion.claude_tools.registry import TOOLS
+
+    assert set(tools) == set(TOOLS)
+    for t in tools.values():
+        assert "reason" in t["inputSchema"]["required"], t["name"]
 
 
 def test_one_call_is_one_bus_request_and_one_log_line(tmp_path):

@@ -3,6 +3,8 @@ reply channel, a malformed request still gets a "not shared" answer, and the bro
 the governor's settings."""
 from __future__ import annotations
 
+from orion.claude_tools.registry import TOOLS
+
 import asyncio
 from types import SimpleNamespace
 
@@ -82,4 +84,4 @@ def test_broker_is_built_from_governor_settings(monkeypatch):
     monkeypatch.setattr(l.settings, "claude_tools_max_asks_per_turn", 2)
     broker = l.build_broker(Bus())
     assert broker.config.enabled is False and broker.config.max_asks_per_turn == 2
-    assert broker.config.consent_deadline_sec == 40.0 and set(broker.readers) == {"prime_now", "body_economy"}
+    assert broker.config.consent_deadline_sec == 40.0 and set(broker.readers) == set(TOOLS)

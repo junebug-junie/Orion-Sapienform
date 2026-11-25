@@ -8,6 +8,8 @@ on:
     paths:
       - 'orion/claude_tools/**'
       - 'orion/schemas/claude_tools.py'
+      - 'orion/schemas/introspect.py'
+      - 'orion/introspect/tools.py'
       - 'orion/prime/consent.py'
       - 'orion/prime/block.py'
       - 'orion/dig/**'

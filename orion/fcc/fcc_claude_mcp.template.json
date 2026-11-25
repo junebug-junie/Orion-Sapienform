@@ -17,7 +17,8 @@
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "__GITHUB_PAT__",
         "GITHUB_TOOLSETS": "__GITHUB_TOOLSETS__",
-        "GITHUB_READ_ONLY": "__GITHUB_READ_ONLY__"
+        "GITHUB_READ_ONLY": "__GITHUB_READ_ONLY__",
+        "DOCKER_HOST": "unix:///var/run/docker.sock"
       }
     },
     "firecrawl": {

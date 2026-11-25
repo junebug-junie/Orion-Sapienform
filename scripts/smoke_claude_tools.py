@@ -5,6 +5,7 @@ companion's MCP server sends it, then the audit rows and the consent act it left
 Run after orion-harness-governor, orion-mind, orion-sql-writer and the gateway/pool are deployed:
 
     .venv/bin/python scripts/smoke_claude_tools.py --tool body_economy --reason "smoke: checking the consent path"
+    .venv/bin/python scripts/smoke_claude_tools.py --tool consults --args '{"consult_id": "23c16e4cb94f"}'
 
 What it proves, each line printed with its evidence:
   1. the broker answered (ClaudeToolResultV1: decision_path, shared, Orion's answer and reason);
@@ -79,12 +80,19 @@ async def one(bus, tool: str, reason: str, args: dict) -> tuple[bool, float | No
 
 async def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tool", default="body_economy", choices=["body_economy", "prime_now"])
+    from orion.claude_tools.registry import TOOLS
+
+    ap.add_argument("--tool", default="body_economy", choices=sorted(TOOLS))
     ap.add_argument("--reason", default="smoke test by an agent: checking that the consent path works; no is fine")
     ap.add_argument("--section", default=None)
+    ap.add_argument("--args", default=None, help='tool arguments as JSON, e.g. \'{"consult_id": "23c16e4cb94f"}\'')
     ap.add_argument("--n", type=int, default=1)
     a = ap.parse_args()
     args = {"section": a.section} if a.section and a.tool == "body_economy" else {}
+    if a.args:
+        import json
+
+        args.update(json.loads(a.args))
     bus = OrionBusAsync(bus_url())
     await bus.connect()
     ok, lat = True, []

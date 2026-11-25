@@ -16,7 +16,8 @@ from contextlib import suppress
 from typing import Any
 
 from orion.claude_tools.broker import BrokerConfig, ClaudeToolBroker, bus_audit_publisher, bus_consent_asker
-from orion.claude_tools.readers import read_body_economy, read_prime_now
+from orion.claude_tools.readers import introspect_reader, read_arc, read_body_economy, read_consults, read_prime_now
+from orion.claude_tools.registry import INTROSPECT_TOOLS
 from orion.claude_tools.render import unavailable_text
 from orion.claude_tools.transport import TOOL_REQUEST_KIND, TOOL_RESULT_KIND, TOOL_RESULT_PREFIX
 from orion.core.bus.async_service import OrionBusAsync
@@ -29,8 +30,18 @@ from .settings import settings
 logger = logging.getLogger("orion-harness-governor.claude_tools")
 
 
+# Claude's introspect reads are not a harness turn; the read responders do not gate on the binding.
+# memory_allowed=False: nothing Claude reads is turned into memory on its behalf.
+CLAUDE_INTROSPECT_BINDING = dict(invocation_context="unified_chat", parent_run_id="claude-tools",
+                                 parent_trace_id="claude-tools", memory_allowed=False)
+
+
 def build_broker(bus: Any) -> ClaudeToolBroker:
+    from orion.introspect.tools import IntrospectTools
+    from orion.schemas.introspect import IntrospectToolBindingV1
+
     source = ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name)
+    introspect = IntrospectTools(bus, IntrospectToolBindingV1(**CLAUDE_INTROSPECT_BINDING))
     return ClaudeToolBroker(
         config=BrokerConfig(
             enabled=settings.claude_tools_enabled,
@@ -43,6 +54,9 @@ def build_broker(bus: Any) -> ClaudeToolBroker:
         readers={
             "prime_now": lambda args: read_prime_now(bus.redis, args),
             "body_economy": read_body_economy,
+            "consults": read_consults,
+            "arc": read_arc,
+            **{name: introspect_reader(introspect, name) for name in INTROSPECT_TOOLS},
         },
         publish_audit=bus_audit_publisher(bus, source),
     )

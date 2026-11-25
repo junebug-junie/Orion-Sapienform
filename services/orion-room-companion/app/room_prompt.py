@@ -111,13 +111,20 @@ CONTRACTOR_PEER_CLAUSE = (
 # Room turns with Orion's tools (Patch 1b, docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-
 # consent-design.md section 3): one paragraph. Claude may use the tools, says why each time, accepts a no,
 # and may tell Juniper what was refused. The tools exist so Claude checks before it claims.
+def _tool_names() -> str:
+    from orion.claude_tools.registry import TOOLS
+
+    return ", ".join(TOOLS)
+
+
 TOOLS_CLAUSE = (
-    "\n\nYou have a few read-only tools (prime_now, body_economy) that show parts of Oríon's inside. "
+    f"\n\nYou have read-only tools ({_tool_names()}) that show parts of Oríon's inside. "
     "Oríon decides each time whether to share: give a short, honest reason in every call, because Oríon "
     "reads it before answering. If Oríon says no, accept it, do not argue or ask again for the same thing, "
     "and you may tell Juniper plainly what was refused. Use a tool when you are about to state something "
-    "about Oríon's state that you have not seen: check before you claim, and say what you looked at. Never "
-    "present something you did not see as fact."
+    "about Oríon's state that you have not seen: check before you claim, and say what you looked at. When "
+    "Juniper points you at something by its id (a consult, an arc, an act, a dream, a curiosity run), open it "
+    "with a tool instead of guessing. Never present something you did not see as fact."
 )
 
 

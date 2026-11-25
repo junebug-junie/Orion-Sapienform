@@ -123,7 +123,7 @@ class World:
             self.turn,
             AdmissionDeps(self.register, self.lease, self.execute, self.release, self.event,
                           now=lambda: self.now, max_attempts=self.max_attempts, retry_base_seconds=10.0),
-            saver, ledger=self.ledger)
+            saver, ledger=self.ledger, now=getattr(self, "now_reader", None))
 
 
 def brief(**kw):
@@ -415,3 +415,173 @@ def test_the_brief_wants_one_whole_week_before_the_episode():
         ReminiscenceRunBriefV1.model_validate(brief(period_end="2025-07-01"))
     with pytest.raises(ValueError):
         ReminiscenceRunBriefV1.model_validate(brief(episode="2025-06-30"))
+
+
+# --- integration patch 7b: the where_i_am_now hop reads Orion's now (app/reminiscence_now.py) --------------------
+
+
+class FakeNowHttp:
+    """Stands in for httpx.AsyncClient against this service's own /temporal-self/now routes."""
+
+    def __init__(self, *, items=("camera:e1", "dream:e2"), status=200):
+        self.items = list(items)
+        self.status = status
+        self.gets: list = []
+        self.posts: list = []
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, params=None):
+        from types import SimpleNamespace
+
+        self.gets.append((url, dict(params or {})))
+        at = "2026-11-08T10:00:00+00:00"
+        body = {"shown_id": "shown-rm", "reader_organ": "memory", "since": at, "as_of": at,
+                "items": [{"event_id": e, "organ": e.split(":")[0], "source_kind": "office_session",
+                           "label": f"label {e}", "occurred_at": at} for e in self.items]}
+        return SimpleNamespace(status_code=self.status, json=lambda: body)
+
+    async def post(self, url, json=None):
+        from types import SimpleNamespace
+
+        self.posts.append((url, json))
+        return SimpleNamespace(status_code=200, json=lambda: {"uses": [{"event_id": c} for c in json["cites"]
+                                                                      if c in self.items]})
+
+
+def _now_world(tmp_path, http, *, enabled=True, replies=None):
+    from app.reminiscence_now import ReminiscenceNow
+
+    world = World(tmp_path, replies=replies)
+    world.now_reader = ReminiscenceNow(enabled=enabled, base_url="http://self", client_factory=http)
+    return world
+
+
+def test_only_the_where_i_am_now_hop_reads_the_now_and_closes_it_with_its_cites(tmp_path):
+    http = FakeNowHttp()
+
+    class W(World):
+        def default_reply(self, req):
+            reply = super().default_reply(req)
+            if req.source_tag == step_tag("hop:where_i_am_now"):
+                return reply + "\n[experience:camera:e1] [experience:invented]"
+            return reply
+
+    async def scenario():
+        from app.reminiscence_now import ReminiscenceNow
+
+        world, saver = W(tmp_path), InMemorySaver()
+        world.now_reader = ReminiscenceNow(enabled=True, base_url="http://self", client_factory=http)
+        result = await start_and_grant(world, saver)
+        assert result["status"] == "completed"
+        assert http.gets == [("http://self/temporal-self/now",
+                              {"organ": "memory", "run_ref": f"reminiscence:{RUN_ID}"})]
+        prompts = {t.source_tag: t.prompt for t in world.turns}
+        assert "[experience:camera:e1]" in prompts[step_tag("hop:where_i_am_now")]
+        assert all("experience:" not in p for tag, p in prompts.items() if tag != step_tag("hop:where_i_am_now"))
+        # Shown ids first; the invented one is still sent so the endpoint counts it.
+        assert http.posts == [("http://self/temporal-self/now/use",
+                               {"shown_id": "shown-rm", "citing_ref": f"reminiscence:{RUN_ID}",
+                                "cites": ["camera:e1", "invented"]})]
+        rec = result["steps"]["hop:where_i_am_now"]
+        assert rec["now_shown_id"] == "shown-rm" and rec["now_cites"] == ["camera:e1"]   # shown ids only
+        assert rec["outcome"] == "written"   # the extra line never breaks the receipt check
+        assert finish_detail(result)["steps"]["hop:where_i_am_now"]["now_cites"] == ["camera:e1"]
+    asyncio.run(scenario())
+
+
+def test_a_reply_with_no_tag_still_closes_the_read(tmp_path):
+    http = FakeNowHttp()
+
+    async def scenario():
+        world, saver = _now_world(tmp_path, http), InMemorySaver()
+        result = await start_and_grant(world, saver)
+        assert result["status"] == "completed"
+        assert [p[1]["cites"] for p in http.posts] == [[]]
+    asyncio.run(scenario())
+
+
+def test_a_turn_that_never_answers_leaves_the_read_open(tmp_path):
+    http = FakeNowHttp()
+    # hop 3 (where_i_am_now) fails once with no text, then answers.
+    replies = [None, None, "", None]
+
+    class W(World):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._script = list(replies)
+
+        async def turn(self, req):
+            if self._script:
+                r = self._script.pop(0)
+                if r is not None:
+                    self.turns.append(req)
+                    return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, text=r,
+                                                 ok=False, error="empty")
+            return await super().turn(req)
+
+    async def scenario():
+        from app.reminiscence_now import ReminiscenceNow
+
+        world, saver = W(tmp_path), InMemorySaver()
+        world.now_reader = ReminiscenceNow(enabled=True, base_url="http://self", client_factory=http)
+        result = await start_and_grant(world, saver)
+        assert result["status"] in ("retrying", "running") or "retry_at" in result
+        assert len(http.gets) == 1 and http.posts == []      # read, never closed: the turn never answered
+        result = await after_backoff(world, saver)
+        assert result["status"] == "completed"
+        assert len(http.gets) == 2 and len(http.posts) == 1  # the answered attempt closes its own read
+    asyncio.run(scenario())
+
+
+def test_switch_off_or_now_unavailable_runs_the_hop_as_before(tmp_path):
+    for http, enabled in ((FakeNowHttp(), False), (FakeNowHttp(status=404), True)):
+        async def scenario():
+            world, saver = _now_world(tmp_path / str(enabled), http, enabled=enabled), InMemorySaver()
+            result = await start_and_grant(world, saver)
+            assert result["status"] == "completed"
+            assert http.posts == []
+            assert "now_shown_id" not in result["steps"]["hop:where_i_am_now"]
+            assert all("experience:" not in t.prompt for t in world.turns)
+        asyncio.run(scenario())
+        assert len(http.gets) == (0 if not enabled else 1)
+
+
+def test_a_reply_with_a_tag_but_no_proven_receipt_closes_with_no_cites(tmp_path):
+    http = FakeNowHttp()
+    bad = "reminisce where_i_am_now saved nothing\n[experience:camera:e1]"
+
+    class W(World):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.bad_once = True
+
+        def default_reply(self, req):
+            if req.source_tag == step_tag("hop:where_i_am_now") and self.bad_once:
+                self.bad_once = False
+                return bad
+            reply = super().default_reply(req)
+            if req.source_tag == step_tag("hop:where_i_am_now"):
+                return reply + "\n[experience:camera:e1]"
+            return reply
+
+    async def scenario():
+        from app.reminiscence_now import ReminiscenceNow
+
+        world, saver = W(tmp_path), InMemorySaver()
+        world.now_reader = ReminiscenceNow(enabled=True, base_url="http://self", client_factory=http)
+        await start_and_grant(world, saver)
+        # The failed attempt: the model ran, so its read is closed, but with no cites (no hop was proven).
+        assert [p[1]["cites"] for p in http.posts] == [[]]
+        result = await after_backoff(world, saver)
+        assert result["status"] == "completed"
+        assert [p[1]["cites"] for p in http.posts] == [[], ["camera:e1"]]
+        assert result["steps"]["hop:where_i_am_now"]["now_cites"] == ["camera:e1"]
+    asyncio.run(scenario())

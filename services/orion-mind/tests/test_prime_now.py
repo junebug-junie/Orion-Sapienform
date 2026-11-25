@@ -78,9 +78,42 @@ def test_the_frame_shows_the_now_with_ids_and_refs_and_reads_since_the_last_thou
     assert q["organ"] == ["prime"]
     assert q["since"] == [(T0 - timedelta(hours=2, seconds=120)).isoformat()]
     assert q["run_ref"][0].startswith("prime_thought:")
-    # Nothing cited: nothing posted (the shown row already says "read, cited nothing").
-    assert posts.calls == []
+    # Nothing cited: the read is still closed, with no cites (#3498: "read, cited nothing", not "never closed").
+    [(url, body)] = posts.calls
+    assert url.endswith("/temporal-self/now/use") and body["shown_id"] == "shown-1" and body["cites"] == []
     assert _infer_close(rt)["value"] == 1.0
+    assert "now_use" not in _infer_close(rt).get("note", "")  # an empty close says nothing on the act note
+
+
+def test_prime_sends_what_it_holds_and_the_frame_marks_an_item_about_a_held_concern():
+    """#3783: the now read carries each held concern's event_ref, arc and own id; an item the server matched to one
+    (``held_refs``) is marked with that concern's id."""
+    from orion.prime.state import PrimeConcernV1
+
+    seed = "world_pulse_read_seed:reading:50753c3f-d556-5a6f-bfa7-b02b95254905"
+    held = PrimeConcernV1(concern_id="520a5a9f8d084495", text="Investigate the MemOnce GitHub read", event_ref=seed,
+                          opened_at=T0 - timedelta(hours=3), last_evidence_at=T0 - timedelta(hours=3))
+    arc = PrimeConcernV1(concern_id="00000000000000aa", text="the heat arc", arc_id="0011223344556677",
+                         opened_at=T0 - timedelta(hours=1), last_evidence_at=T0 - timedelta(hours=1))
+    waiting = PrimeConcernV1(concern_id="00000000000000bb", text="waits", event_ref="dream_day:2026-11-23#new1",
+                             opened_at=T0, last_evidence_at=T0)
+    page = now_page()
+    page["items"][0]["held_refs"] = [seed]
+    rt = runtime(answer=answer(), now_page=page)
+    from orion.prime.thought import held_now_refs
+
+    # A waiting concern has no slot: not held, not sent (checked on the state; a tick may give it a free slot).
+    assert "dream_day:2026-11-23#new1" not in held_now_refs(PrimeStateV1(concerns=[held, arc], waiting=[waiting]))
+    rt.state = PrimeStateV1(concerns=[held, arc], pending_changes=["something"],
+                            last_thought_at=T0 - timedelta(hours=2))
+    asyncio.run(rt.tick())
+    [url] = _now_gets(rt)
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+    assert q["held"] == [seed, "prime_concern:520a5a9f8d084495", "arc:0011223344556677",
+                         "prime_concern:00000000000000aa"]
+    section = rt.llm.calls[0]["user_prompt"].split(SECTION, 1)[1]
+    assert f"[experience:{EIDS[0]}]" in section and "ABOUT YOUR CONCERN 520a5a9f8d084495" in section
+    assert section.count("ABOUT YOUR CONCERN") == 1
 
 
 def test_the_first_thought_ever_reads_without_since():
@@ -159,7 +192,8 @@ def test_an_empty_now_says_so_and_still_offers_nothing_to_cite():
     asyncio.run(rt.tick())
     frame = rt.llm.calls[0]["user_prompt"]
     assert "(nothing new from the other organs since your last thought)" in frame
-    assert posts.calls == []
+    # the model ran on an empty now: the read is closed with no cite (the unshown id is never sent)
+    assert [body["cites"] for _url, body in posts.calls] == [[]]
 
 
 def test_the_frame_no_longer_reads_the_curiosity_dashboard():
@@ -211,6 +245,15 @@ def test_the_next_read_starts_where_the_seen_now_ended_and_a_failed_read_skips_n
     asyncio.run(rt2.tick())
     for url in _now_gets(rt2):
         assert urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["since"] == [(T0 - timedelta(hours=3)).isoformat()]
+
+
+def test_a_try_that_never_reached_the_model_closes_nothing():
+    """#3498: Prime's read is closed only by a thought whose model answered."""
+    posts = Posts()
+    rt = runtime(answer=MOVE, now_page=now_page(shown_id="first"), post_json=posts)
+    rt.llm = SeqLLM([NO_SEAT])
+    asyncio.run(rt.tick())
+    assert len(_now_gets(rt)) == 1 and posts.calls == []
 
 
 def test_the_real_use_client_has_its_own_short_timeout():

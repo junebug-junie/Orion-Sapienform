@@ -178,3 +178,14 @@ def test_a_date_written_from_the_record_stamp_is_backed_by_the_cited_record():
     assert check_page(page, handles).ok, check_page(page, handles).errors
     bad = check_page(page + " On the 21st we talked [S1].", handles)
     assert [e.split(":")[0] for e in bad.errors] == ["unbacked_number"]
+
+
+def test_own_thought_is_labelled_as_orions_own_view():
+    """Issue #3840: Orion's own thought, never asked, is labelled as Orion's view on the page."""
+    assert "e.confirmation_state AS confirmation_state" in EPISODE_SQL
+    mine = {"record_id": "m-mine", "purpose": "orion_view", "stakes": "high", "occurred_at": _t(11, 16),
+            "confirmation_state": "own_thought", "text": "I keep wondering whether the snow changes the camera."}
+    (src,) = sources_from_rows([mine], [])
+    assert "my own thought, not checked with Juniper" in src.label
+    (plain,) = sources_from_rows([{**mine, "confirmation_state": "auto"}], [])
+    assert "my own thought" not in plain.label

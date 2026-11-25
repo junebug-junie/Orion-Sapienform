@@ -34,6 +34,7 @@ CONFIRMATION_FLAG = {
     "pending_confirmation": " (waiting to ask Juniper)",
     "unconfirmed": " (asked, no answer in 7 days: unconfirmed)",
     "not_asked": " (high stakes, backfilled; never asked)",
+    "own_thought": " (Orion's own thought; never asked)",
     "confirmed": " (confirmed by Juniper)",
     "corrected": " (Juniper revised this; superseded)",
     "rejected": " (rejected by Juniper; never recalled)",

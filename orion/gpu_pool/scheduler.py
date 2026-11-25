@@ -602,6 +602,7 @@ def schedule(
     queued: list[LeaseView] = []
     children: list[LeaseView] = []
     backlogged: list[LeaseView] = []
+    expiring: set[str] = set()   # expired this tick: no later step may act on them as granted
     for lease in leases:
         if lease.status == "retry_wait":
             if lease.deadline_at is not None and lease.deadline_at <= now:
@@ -641,6 +642,7 @@ def schedule(
             out.append(Abort(lease.lease_id, PREEMPT) if lease.reason == PREEMPT else Abort(lease.lease_id))
         elif lease.status in ACTIVE and lease.expires_at is not None and lease.expires_at <= now:
             out.append(Expire(lease.lease_id))
+            expiring.add(lease.lease_id)
 
     ctx.wanting = {c.hold_lease_id for c in children}
 
@@ -849,7 +851,11 @@ def schedule(
     # --- 4. recalls ------------------------------------------------------------------
     recalled: set[str] = set()
     # A child is never recalled on its own: its hold is, and the child finishes inside that grace.
-    active = [l for l in leases if l.status == "granted" and l.role and l.hold_lease_id is None]
+    # Not a lease this tick expires: Expire leaves it in retry_wait, where a recall is illegal.
+    # Live 2026-11-24 after a planned outage: a hold came back past both its TTL and
+    # background_max_hold_sec, one tick sent Expire then Recall, and the rejected Recall wedged it.
+    active = [l for l in leases if l.status == "granted" and l.role and l.hold_lease_id is None
+              and l.lease_id not in expiring]
 
     def recall(lease: LeaseView, reason: str) -> None:
         if lease.lease_id not in recalled:
@@ -1046,7 +1052,7 @@ def schedule(
                     out.append(SwapUnload(seat, "operator_released"))
                 elif over and seat not in frozen_seats:   # frozen: its unload cannot happen, keep the holders
                     for l in holders:
-                        if l.status == "granted":
+                        if l.status == "granted" and l.lease_id not in expiring:
                             recall(l, "max_hold")
             elif _warm(spec):
                 pass   # warm standby: stays loaded while idle; only a resident's demand drains it

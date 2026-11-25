@@ -1182,11 +1182,15 @@ Spec: `docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md`
   magnitude. `surprise_nats` is written only where the source carried a real prediction's surprisal.
   Scoring runs off the event loop; a failed history read stores NULL for that window and retries next.
 - `GET /temporal-self/now?organ=<id>[&since=<iso>][&run_ref=<ref>]` -> `TemporalNowV1`: at most 12
-  experiences of other organs ingested since `since` (default: this organ's last default read, else 24 h),
+  experiences of other organs ingested since `since` (default: this organ's cursor, the cut-off of its last
+  CLOSED default read, else 24 h; #3498),
   at most 2 per organ, highest salience first (NULL last, newest first on ties). Every call writes one
   `experience_shown` row. The read cuts 120 s below the clock (`ingested_at` is a commit's start time, so a
   window still committing is read next time, never skipped). A read with an explicit `since=` is an
-  inspection: stored, but it never moves the organ's cursor. `&include=<id>,<id>` (at most 3): rows the reader
+  inspection: stored, but it never moves the organ's cursor. A read moves the cursor only once the reader
+  closes it (`POST /temporal-self/now/use`, even with no cites); a read never closed (its model never ran) is
+  offered again. Bound: never closed -> a rolling 24 h; stopped closing -> since its last close, at most 30
+  days. `&include=<id>,<id>` (at most 3): rows the reader
   shows anyway as a need's content (Prime hunger); pinned first, outside the per-organ cap, so a cite is valid.
 - `GET /temporal-self/hunger?organ=<id>` -> `TemporalHungerInputsV1` (integration design Part B, Prime hunger;
   drives computed in `orion/prime/hunger.py`): other organs' experiences of the last 24 h whose `surprise_nats` is
@@ -1197,14 +1201,19 @@ Spec: `docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md`
 - `POST /temporal-self/now/use` (`ExperienceCitesV1`: `shown_id`, `citing_ref`, `cites`) ->
   `ExperienceUseResultV1`. Cites are checked against the shown row; at most 3 valid ones per shown row,
   across calls (the row is locked while deciding), are stored in `experience_use`; the rest are counted
-  and dropped. Re-sending a stored cite stores nothing.
+  and dropped. Re-sending a stored cite stores nothing. Every call closes the read (`experience_shown.closed_at`,
+  first close wins; `cites` may be empty): it moves the organ's cursor to the read's cut-off, never backwards
+  (max over closed reads; a since= read never moves it). Readers close only when their model call ran: reverie,
+  curiosity, dream, play (retro lines) and Prime (Prime keeps its own since=, so its close only records "read,
+  cited nothing").
 - `GET /temporal-self/integration?hours=24` -> `ExperienceUseRateV1`: the integration metric, the share
   of experiences recorded in the window that a different organ cited, validly, within 24 h, per organ;
   and the closed organs.
 
 Readers (Prime, reveries, curiosity) are patch 3; until then nothing cites and the metric reads 0.
 Tables: `services/orion-sql-db/manual_migration_experience_now_v1.sql` (BEFORE deploy: the chronicle's
-INSERT names the new columns). Retention: `experience_shown`/`experience_use` follow the event horizon.
+INSERT names the new columns) and `manual_migration_experience_shown_closed_v1.sql` (`closed_at`, #3498; BEFORE
+deploy: the cursor and close SQL name it). Retention: `experience_shown`/`experience_use` follow the event horizon.
 Kill switch: `TEMPORAL_SELF_NOW_ENABLED=false` (both now routes 404; salience and the sources stay).
 Eval: `evals/experience_now_live_read.py` (read-only live read: new-source rows, salience distributions
 per kind, Prime's now, the metric's baseline).
@@ -1488,7 +1497,10 @@ Attention as the want competition (docs/superpowers/specs/2026-11-04-attention-a
 - **The menu.** `GET /physiology/event-wants?hours=24&limit=8` returns `FundedEventWantsV1`
   (`orion/schemas/physiology_want.py`): every event want whose LATEST decision is funded and whose event
   has not expired (window end, or an answered camera ask), highest net first, each labelled from its
-  source row. Code: `app/event_wants_menu.py`. Reader: Orion Prime (`PRIME_CONCERNS_FROM_EVENT_WANTS`).
+  source row. `hours` bounds how old a decision may be, but a want whose own window is
+  still open stays on the menu whatever its age, searched back `OPEN_WINDOW_SEARCH_HOURS` (192 h: a camera
+  ask's 7-day window plus a day). Before #3558 a camera ask (decided once, open 7 days) left Prime's
+  `hours=24` frame on day 2 while Juniper could still answer it. Code: `app/event_wants_menu.py`. Reader: Orion Prime (`PRIME_CONCERNS_FROM_EVENT_WANTS`).
   A finished game sitting (`retro_sitting:<id>`, family `hub.retro_sitting`, game company patch 4) is labelled from
   its `retro_sitting` row in counts only: "a game sitting: Juniper played <title> for N min, ended <time>".
 - **Replay.** `evals/event_wants_replay.py [--live --days 14]`: salience per source, the event rank vs

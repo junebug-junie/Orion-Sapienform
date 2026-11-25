@@ -25,7 +25,8 @@ clusters), the populations the accept bar is fitted on. 0.5 = no better than
 chance. A channel that only separates same-day clothes shows ~0.5 here.
 
 Album rule is the live one (``desired_exemplars``: named clusters that pass
-the purity split, plus "different" pictures as -1). READ ONLY on --live unless
+the purity split, plus "different" pictures as -1, plus "same" pictures as +1
+unless --no-picture-same, the rule before 2026-11-24). READ ONLY on --live unless
 --write, which inserts one ``vision_person_model_eval`` row. With a previous
 row of a different model_version, the two are compared on the same clusters
 with an exact McNemar test: a new version must be better at p < 0.05, not
@@ -236,6 +237,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--no-age-veto", action="store_true", help="skip the veto-on arm")
     ap.add_argument("--split-all-labels", action="store_true",
                     help="split alpha across every album label (the pre-v2 rule)")
+    ap.add_argument("--no-picture-same", action="store_true",
+                    help="leave confirmed ('same') pictures out of the album (the pre-2026-11-24 rule)")
     args = ap.parse_args(argv)
     cfg = pm.PersonModelConfig(alpha=args.alpha, top_k=args.top_k, fallback_channel=args.fallback_channel,
                                local_tz=args.tz, face_candidate_days=args.face_candidate_days,
@@ -244,9 +247,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     engine = create_engine(args.live)
     with engine.connect() as conn:
         conn.execute(text("SET TRANSACTION READ ONLY"))
-        rows, stats = pm.desired_exemplars(conn, tz)
+        rows, stats = pm.desired_exemplars(conn, tz, picture_same=not args.no_picture_same)
         ex = [(r["person"], r["crop_id"], r["polarity"]) for r in rows]
-        album = pm.build_album(ex, pm.load_crops_by_id(conn, (r[1] for r in ex), tz))
+        album = pm.build_album(ex, pm.regroup_confirmed_orphans(conn, pm.load_crops_by_id(conn, (r[1] for r in ex), tz)))
         if not album:
             print(json.dumps({"verdict": "nothing to evaluate", **stats}))
             return 2

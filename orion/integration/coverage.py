@@ -26,10 +26,15 @@ RATE_CITES_MADE_SQL = """
 SELECT citing_organ, count(*) AS n FROM experience_use
 WHERE cited_at >= %(lo)s AND cited_at < %(hi)s GROUP BY citing_organ
 """
-# Now reads per reader organ in the window, and how many of them were followed by no cite at all
-# ("read the now and cited nothing" vs "did not read": the metric's 0 split into its two causes).
+# Now reads per reader organ in the window, split three ways (#3498): cited (a valid use), closed with no cite
+# ("read the now and cited nothing": the reader's model ran and used none of it), and never closed (the model never
+# saw it: a refusal, a timeout, a preempted turn; or a reader that does not close). A row with a use counts as
+# cited even if it predates closed_at.
 NOW_READS_SQL = """
 SELECT s.reader_organ, count(*) AS reads,
-  count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM experience_use u WHERE u.shown_id = s.shown_id)) AS reads_no_cite
+  count(*) FILTER (WHERE s.closed_at IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM experience_use u WHERE u.shown_id = s.shown_id)) AS reads_no_cite,
+  count(*) FILTER (WHERE s.closed_at IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM experience_use u WHERE u.shown_id = s.shown_id)) AS reads_unclosed
 FROM experience_shown s WHERE s.shown_at >= %(lo)s AND s.shown_at < %(hi)s GROUP BY s.reader_organ
 """

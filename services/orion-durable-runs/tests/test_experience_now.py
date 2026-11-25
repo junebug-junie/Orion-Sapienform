@@ -123,7 +123,7 @@ class MemDB(FakeStore):
     # ExperienceStore's contract
     async def last_shown(self, organ):
         ats = [r["shown_at"] for r in self.shown_rows.values()
-               if r["reader_organ"] == organ and r.get("advances_cursor", True)]
+               if r["reader_organ"] == organ and r.get("advances_cursor", True) and r.get("closed_at") is not None]
         return max(ats) if ats else None
 
     async def candidates(self, *, since, as_of, own_kinds, per_kind):
@@ -142,16 +142,35 @@ class MemDB(FakeStore):
                             "surprise_nats": m["surprise_nats"]})
         return out, len(rows)
 
+    async def held_candidates(self, *, keys, lo, as_of, own_kinds, window_lo=None, limit=50):
+        import json
+
+        ks = set(keys)
+        rows = [m for m in self.meta.values() if lo < m["ingested_at"] <= as_of and m["source_kind"] not in own_kinds
+                and ({m["event_id"], m["source_ref"], m["correlation_id"], m["subject_ref"]} | set(m["related_refs"])) & ks]
+        rows.sort(key=lambda m: (-m["occurred_at"].timestamp(), m["event_id"]))
+        return [{"event_id": m["event_id"], "source_kind": m["source_kind"], "occurred_at": m["occurred_at"],
+                 "label": m["label"], "verdict": m["verdict"], "related_refs": m["related_refs"],
+                 "payload": json.loads(m["payload"]), "salience": m["salience"], "surprise_nats": m["surprise_nats"],
+                 "source_ref": m["source_ref"], "correlation_id": m["correlation_id"], "subject_ref": m["subject_ref"],
+                 "before_window": m["ingested_at"] <= (window_lo or lo)}
+                for m in rows[:limit]]
+
+    async def arc_subjects(self, arc_ids):
+        return {a: s for a, s in getattr(self, "arcs", {}).items() if a in set(arc_ids)}
+
     async def insert_shown(self, **row):
         self.shown_rows[row["shown_id"]] = row
 
-    async def record_cites(self, shown_id, decide):
+    async def record_cites(self, shown_id, decide, closed_at=None):
         shown = self.shown_rows.get(shown_id)
         if shown is None:
             return None
         result = decide(shown, [u["event_id"] for u in self.use_rows.values() if u["shown_id"] == shown_id])
         for u in result.uses:
             self.use_rows.setdefault(u.use_id, u.model_dump())
+        if shown.get("closed_at") is None:  # CLOSE_SHOWN_SQL: the first close wins
+            shown["closed_at"] = closed_at
         return result
 
     async def rate_inputs(self, lo, hi):
@@ -321,6 +340,7 @@ def test_a_read_skips_nothing_still_committing_and_inspection_reads_keep_the_cur
 
     w.now = T0 + timedelta(hours=1)
     first = client.get("/temporal-self/now", params={"organ": "prime"}).json()
+    client.post("/temporal-self/now/use", json={"shown_id": first["shown_id"], "citing_ref": "r", "cites": []})
     # a window whose commit started 30 s before that read and committed after it
     land(1, w.now - timedelta(seconds=30))
     client.get("/temporal-self/now", params={"organ": "prime", "since": (T0 - timedelta(days=1)).isoformat()})
@@ -346,3 +366,179 @@ def test_a_salience_history_failure_stores_null_and_never_stalls_the_chronicle()
         w.now += STEP
         assert asyncio.run(ch.step())["error"] is None
     assert db.meta["gpu_wait:g1"]["salience"] is None and len(calls) >= 1
+
+
+def test_held_refs_bring_a_concerns_reading_from_before_the_window_first_and_mark_it(routes, monkeypatch):
+    """#3783: Prime held a concern about one reading (its seed's event_ref). The reading landed before this read's
+    window and has no salience; 12 scored gpu waits landed inside it. With ``held=`` the reading comes first and
+    names the ref; without it the body is the old shape (no ``held_refs`` key anywhere)."""
+    from datetime import datetime as real_datetime
+
+    import app.temporal_self_store as store_mod
+
+    main, client = routes
+    w = World(T0)
+    db = MemDB(w)
+    monkeypatch.setattr(store_mod, "ExperienceStore", lambda _pool: db)
+
+    class Clock:
+        @staticmethod
+        def now(tz=None):
+            return w.now.astimezone(tz) if tz else w.now
+
+    monkeypatch.setattr("datetime.datetime", type("DT", (real_datetime,), {"now": Clock.now}))
+    seed_uuid = "50753c3f-d556-5a6f-bfa7-b02b95254905"
+    r = S.reading_turn(dict(reading(7, T0), correlation_id=seed_uuid))
+    db.meta[r.event_id] = dict(event_row(r), ingested_at=T0)
+    for i in range(12):
+        g = S.gpu_wait(gpu(i, T0 + timedelta(hours=5), 900.0 + i))
+        db.meta[g.event_id] = dict(event_row(g, salience=0.5 + i / 30), ingested_at=T0 + timedelta(hours=5))
+    w.now = T0 + timedelta(hours=6)
+    since = (T0 + timedelta(hours=4)).isoformat()
+    held = f"world_pulse_read_seed:reading:{seed_uuid}"
+    got = client.get("/temporal-self/now", params=[("organ", "prime"), ("since", since), ("held", held),
+                                                    ("held", "prime_concern:520a5a9f8d084495")]).json()
+    assert got["items"][0]["event_id"] == r.event_id and got["items"][0]["held_refs"] == [held]
+    assert got["items"][0]["salience"] is None
+    # the reading from before the window is counted as a candidate: shown + dropped never exceeds candidates
+    assert got["candidates"] == 13
+    assert len(got["items"]) + got["dropped_by_organ_cap"] + got["dropped_by_total_cap"] <= got["candidates"]
+    assert db.shown_rows[got["shown_id"]]["event_ids"][0] == r.event_id  # so a cite of it is valid
+    plain = client.get("/temporal-self/now", params={"organ": "prime", "since": since}).json()
+    assert r.event_id not in [i["event_id"] for i in plain["items"]]  # outside the window and not held
+    assert all("held_refs" not in i for i in plain["items"])
+
+
+def test_the_now_route_can_be_called_directly_without_held(routes):
+    """test_experience_now_postgres.py calls the route function directly (no FastAPI), so ``held`` must default to
+    None, not to a Query object (CI caught `'Query' object is not iterable`)."""
+    import inspect
+
+    main, _client = routes
+    assert inspect.signature(main.temporal_self_now).parameters["held"].default is None
+
+
+# --- #3498: the cursor moves when the reader closes the read, not when it reads ----------------------
+
+
+def _span(now: dict) -> timedelta:
+    from datetime import datetime
+
+    def at(v):
+        return datetime.fromisoformat(v.replace("Z", "+00:00"))
+
+    return at(now["as_of"]) - at(now["since"])
+
+
+def _cursor_world(routes, monkeypatch):
+    from datetime import datetime as real_datetime
+
+    import app.temporal_self_store as store_mod
+
+    main, client = routes
+    w = World(T0)
+    db = MemDB(w)
+    monkeypatch.setattr(store_mod, "ExperienceStore", lambda _pool: db)
+
+    class Clock:
+        @staticmethod
+        def now(tz=None):
+            return w.now.astimezone(tz) if tz else w.now
+
+    monkeypatch.setattr("datetime.datetime", type("DT", (real_datetime,), {"now": Clock.now}))
+
+    def land(i, ingested):
+        e = S.gpu_wait(gpu(i, ingested, 900.0))
+        db.meta[e.event_id] = dict(event_row(e), ingested_at=ingested)
+        return e.event_id
+
+    def read(**params):
+        return client.get("/temporal-self/now", params={"organ": "reverie", **params}).json()
+
+    def close(shown_id, cites=()):
+        r = client.post("/temporal-self/now/use", json={"shown_id": shown_id, "citing_ref": "reverie_question:q",
+                                                         "cites": list(cites)})
+        assert r.status_code == 200
+        return r.json()
+
+    return w, db, land, read, close
+
+
+def test_an_unclosed_read_leaves_the_cursor_and_its_rows_are_offered_again(routes, monkeypatch):
+    """A read the model never saw (a GPU refusal, a client timeout, a preempted turn): nothing closes it."""
+    w, db, land, read, close = _cursor_world(routes, monkeypatch)
+    w.now = T0 + timedelta(hours=1)
+    close(read()["shown_id"])  # an earlier read the model saw: the cursor sits at its cut-off
+    a = land(1, w.now)
+    w.now += timedelta(hours=1)
+    first = read()
+    assert [i["event_id"] for i in first["items"]] == [a]
+    w.now += timedelta(minutes=10)
+    again = read()  # first was never closed
+    assert again["since"] == first["since"] and [i["event_id"] for i in again["items"]] == [a]
+    assert db.shown_rows[first["shown_id"]].get("closed_at") is None
+
+
+def test_a_closed_read_with_no_cites_moves_the_cursor_and_reads_as_cited_nothing(routes, monkeypatch):
+    w, db, land, read, close = _cursor_world(routes, monkeypatch)
+    a = land(1, T0 + timedelta(minutes=10))
+    w.now = T0 + timedelta(hours=1)
+    first = read()
+    res = close(first["shown_id"])  # the model ran, cited nothing
+    assert res["uses"] == [] and res["rejected_not_shown"] == []
+    assert db.shown_rows[first["shown_id"]]["closed_at"] is not None and db.use_rows == {}
+    w.now += timedelta(minutes=10)
+    nxt = read()
+    assert nxt["since"] == first["as_of"] and a not in [i["event_id"] for i in nxt["items"]]
+
+
+def test_closing_a_stale_read_after_a_newer_one_never_moves_the_cursor_backwards(routes, monkeypatch):
+    w, db, land, read, close = _cursor_world(routes, monkeypatch)
+    land(1, T0 + timedelta(minutes=10))
+    w.now = T0 + timedelta(hours=1)
+    old = read()
+    land(2, T0 + timedelta(minutes=50))
+    w.now += timedelta(minutes=30)
+    new = read()
+    close(new["shown_id"])
+    close(old["shown_id"])  # the stale read closes late
+    w.now += timedelta(minutes=10)
+    assert read()["since"] == new["as_of"]
+    # and closing the same row again keeps its first close time
+    first_close = db.shown_rows[new["shown_id"]]["closed_at"]
+    w.now += timedelta(minutes=10)
+    close(new["shown_id"])
+    assert db.shown_rows[new["shown_id"]]["closed_at"] == first_close
+
+
+def test_closing_a_since_read_never_moves_the_cursor(routes, monkeypatch):
+    """Prime reads with since= (its own cursor). Closing those reads records "read, cited nothing" but never
+    moves the organ's server cursor."""
+    w, db, land, read, close = _cursor_world(routes, monkeypatch)
+    land(1, T0 + timedelta(minutes=10))
+    w.now = T0 + timedelta(hours=1)
+    insp = read(since=(T0 - timedelta(hours=1)).isoformat())
+    close(insp["shown_id"])
+    assert db.shown_rows[insp["shown_id"]]["closed_at"] is not None
+    assert db.shown_rows[insp["shown_id"]]["advances_cursor"] is False
+    w.now += timedelta(minutes=10)
+    dflt = read()  # still the never-closed default: a rolling day back from the cut-off
+    assert _span(dflt) == timedelta(hours=routes[0].NOW_DEFAULT_LOOKBACK_HOURS)
+
+
+def test_an_organ_that_never_closes_sees_a_rolling_day_not_an_ever_growing_window(routes, monkeypatch):
+    """The bound on re-offer: never closed -> the last NOW_DEFAULT_LOOKBACK_HOURS; stopped closing -> since its
+    last close, at most NOW_MAX_LOOKBACK_DAYS."""
+    main = routes[0]
+    w, db, land, read, close = _cursor_world(routes, monkeypatch)
+    old = land(1, T0 + timedelta(minutes=10))
+    w.now = T0 + timedelta(hours=1)
+    read()
+    w.now = T0 + timedelta(hours=30)  # never closed, a day and more later
+    later = read()
+    assert old not in [i["event_id"] for i in later["items"]]
+    assert _span(later) == timedelta(hours=main.NOW_DEFAULT_LOOKBACK_HOURS)
+    close(later["shown_id"])
+    w.now += timedelta(days=60)  # closed once, then stopped closing for two months
+    far = read()
+    assert _span(far) == timedelta(days=main.NOW_MAX_LOOKBACK_DAYS)

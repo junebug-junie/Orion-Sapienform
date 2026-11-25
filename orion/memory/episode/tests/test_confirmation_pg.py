@@ -106,7 +106,8 @@ def test_high_stakes_memory_gets_one_card_and_low_gets_none():
         high = await _memory(pool, reason="health")
         low = await _memory(pool, stakes="low", reason="none")
         summary = await c.run_tick(pool, now=T0)
-        assert summary == {"expired": 0, "applied": 0, "apply_failed": 0, "reaped": 0, "opened": 1}
+        assert summary == {"expired": 0, "applied": 0, "apply_failed": 0, "own_thought": 0, "reaped": 0,
+                           "opened": 1}
         ask = await pool.fetchrow("SELECT * FROM orion_ask")
         assert ask["source_kind"] == "memory_confirmation"
         assert ask["source_ref"] == c.loop_id_for(high) and ask["ask_id"] == c.ask_id_for(c.loop_id_for(high))
@@ -136,7 +137,8 @@ def test_cap_of_five_open_cards_and_the_queue_behind_it():
                            "VALUES ('v', 'q', 'vision_individual', 'ind')")
         await _answer(pool, mids[0], "confirmed")
         summary = await c.run_tick(pool, now=T0, daily_cap=99)
-        assert summary == {"expired": 0, "applied": 1, "apply_failed": 0, "reaped": 0, "opened": 1}
+        assert summary == {"expired": 0, "applied": 1, "apply_failed": 0, "own_thought": 0, "reaped": 0,
+                           "opened": 1}
         assert await pool.fetchval("SELECT count(*) FROM orion_ask WHERE status='open' "
                                    "AND source_kind='memory_confirmation'") == 5
         assert (await _mem(pool, mids[5]))["confirmation_loop_id"] == c.loop_id_for(mids[5])
@@ -336,8 +338,15 @@ def test_revise_without_a_note_is_invalid_and_leaves_the_memory_pending():
 
 def test_reverie_memory_card_is_never_framed_as_something_juniper_said():
     async def body(pool):
-        await _memory(pool, voice="orion_thought", channel="reverie", reason="orion_relationship")
+        # Orion's own reverie thought is never asked at all (issue #3840).
+        mine = await _memory(pool, voice="orion_thought", channel="reverie", reason="orion_relationship")
+        # A reverie row mislabelled in Juniper's voice (the validator refuses these) still gets a card,
+        # and the card is framed by its channel, never as something she said.
+        await _memory(pool, voice="juniper_said", channel="reverie", reason="orion_relationship",
+                      created=T0 + timedelta(minutes=1))
         await c.run_tick(pool, now=T0)
+        assert (await _mem(pool, mine))["confirmation_state"] == "own_thought"
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == 1
         q = await pool.fetchval("SELECT question FROM orion_ask")
         frame = q.split("“")[0]
         assert "You told me something" not in frame and "not from anything you told me" in frame
@@ -457,4 +466,78 @@ def test_an_invalid_revise_that_slipped_past_the_hub_is_refused_and_reasked():
         assert s["reaped"] == 1 and s["opened"] == 1  # asked again, fresh card
         assert await pool.fetchval("SELECT count(*) FROM orion_ask WHERE status='open' AND source_ref=$1",
                                    c.loop_id_for(mid)) == 1
+    run(body)
+
+
+def test_own_thought_is_never_asked_and_old_asking_rows_are_settled():
+    """Issue #3840. A new own_thought row gets no card. An orion_thought row an older writer left in
+    an asking state is moved to own_thought and its open card withdrawn with the reason; a row whose
+    answer is waiting is left for the applier; juniper_said is untouched. Idempotent."""
+    async def body(pool):
+        new_own = await _memory(pool, voice="orion_thought", channel="reverie", state="own_thought")
+        stuck = await _memory(pool, voice="orion_thought", state="pending_confirmation",
+                              created=T0 + timedelta(minutes=1))
+        backfilled = await _memory(pool, voice="orion_thought", state="not_asked", created=T0 + timedelta(minutes=2))
+        expired = await _memory(pool, voice="orion_thought", state="unconfirmed", created=T0 + timedelta(minutes=3))
+        hers = await _memory(pool, voice="juniper_said", created=T0 + timedelta(minutes=4))
+        # An older opener already gave the stuck row a card (no voice guard then).
+        loop = c.loop_id_for(stuck)
+        await pool.execute(
+            "INSERT INTO orion_ask (ask_id, question, status, created_at, expires_at, source_kind, source_ref) "
+            "VALUES ($1, 'q', 'open', $2, $3, $4, $5)",
+            c.ask_id_for(loop), T0, T0 + c.ASK_TTL, c.SOURCE_KIND, loop)
+        await pool.execute("UPDATE episode_memory SET confirmation_loop_id = $2 WHERE memory_id = $1",
+                           uuid.UUID(stuck), loop)
+
+        summary = await c.run_tick(pool, now=T0, daily_cap=99)
+        assert summary["own_thought"] == 3 and summary["opened"] == 1
+        for mid in (new_own, stuck, backfilled, expired):
+            assert (await _mem(pool, mid))["confirmation_state"] == "own_thought"
+        assert await pool.fetchval("SELECT status FROM orion_ask WHERE ask_id = $1", c.ask_id_for(loop)) == "withdrawn"
+        ev = await pool.fetchrow("SELECT reason, evidence FROM episode_memory_event WHERE memory_id = $1 "
+                                 "AND op = 'own_thought'", uuid.UUID(stuck))
+        assert ev["reason"] == "orion_thought_never_asked"
+        assert json.loads(ev["evidence"])["prior_state"] == "pending_confirmation"
+        assert json.loads(ev["evidence"])["withdrawn_ask_ids"] == [c.ask_id_for(loop)]
+        # Only Juniper's memory was asked.
+        asked = {r["source_ref"] for r in await pool.fetch("SELECT source_ref FROM orion_ask WHERE status = 'open'")}
+        assert asked == {c.loop_id_for(hers)}
+        assert (await _mem(pool, hers))["confirmation_state"] == "pending_confirmation"
+        # Idempotent: nothing moves twice, no second event.
+        assert (await c.run_tick(pool, now=T0, daily_cap=99))["own_thought"] == 0
+        assert await pool.fetchval("SELECT count(*) FROM episode_memory_event WHERE op = 'own_thought'") == 3
+    run(body)
+
+
+def test_settle_leaves_a_row_whose_answer_is_still_waiting():
+    """Her answer wins: an outcome not yet applied keeps the row out of the settle until it is."""
+    async def body(pool):
+        mid = await _memory(pool, voice="orion_thought")
+        await pool.execute("UPDATE episode_memory SET voice = 'juniper_said' WHERE memory_id = $1", uuid.UUID(mid))
+        async with pool.acquire() as conn:
+            await c.open_cards(conn, now=T0)  # opened while it was juniper_said
+        await pool.execute("UPDATE episode_memory SET voice = 'orion_thought' WHERE memory_id = $1", uuid.UUID(mid))
+        await _answer(pool, mid, "confirmed")
+        async with pool.acquire() as conn:
+            assert await c.settle_own_thoughts(conn) == []
+        assert (await _mem(pool, mid))["confirmation_state"] == "pending_confirmation"
+        await c.run_tick(pool, now=T0)  # applies her answer first
+        assert (await _mem(pool, mid))["confirmation_state"] == "confirmed"
+    run(body)
+
+
+def test_her_answer_still_applies_when_settle_moved_the_row_mid_resolve():
+    """Review race: the Hub's resolve commits while the settle runs, so the settle cannot see her
+    outcome and moves the row to own_thought anyway. Her answer must still apply."""
+    async def body(pool):
+        mid = await _memory(pool, voice="juniper_said")
+        async with pool.acquire() as conn:
+            await c.open_cards(conn, now=T0)
+        await _answer(pool, mid, "confirmed")
+        # The end state of the race: row moved, outcome committed, not yet applied.
+        await pool.execute("UPDATE episode_memory SET voice = 'orion_thought', confirmation_state = 'own_thought' "
+                           "WHERE memory_id = $1", uuid.UUID(mid))
+        await c.run_tick(pool, now=T0)
+        m = await _mem(pool, mid)
+        assert (m["confirmation_state"], m["voice"]) == ("confirmed", "worked_out_together")
     run(body)

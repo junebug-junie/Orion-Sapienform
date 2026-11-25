@@ -105,6 +105,7 @@ def person_model_config(settings: Settings) -> Optional[PersonModelConfig]:
         alpha_split_people_only=bool(settings.vision_person_alpha_split_people_only),
         age_veto_enabled=bool(getattr(settings, "vision_person_age_veto_enabled", True)),
         clue_veto_enabled=bool(getattr(settings, "vision_person_clue_veto_enabled", True)),
+        picture_same_positives=bool(getattr(settings, "vision_person_picture_same_positives", True)),
     )
 
 

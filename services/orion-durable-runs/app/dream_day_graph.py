@@ -30,7 +30,9 @@ The night tick (app/dream_day_poll.py) and POST /dream-day/run submit these runs
   ``grounding`` column, never written); at most 5 memories go through
   orion.memory.episode.validate and are written with the ``dream_day`` row in ONE transaction (first run to
   persist a day wins). ``produced`` = at least one memory row written and read back. The now's ``experience:``
-  cites go to ``POST /temporal-self/now/use`` (record_use keeps only shown ids).
+  cites go to ``POST /temporal-self/now/use`` (record_use keeps only shown ids). The post is sent even with no
+  cite: it closes the now read, which moves the dream organ's cursor (#3498). An attempt that never reaches
+  persist (no answer, a refusal) closes nothing, so its retry's fresh read is offered the same rows.
 
 The act (app/run_acts.py, actor ``dream.cycle``, verb make) closes with ``produced``, so a night with no memory
 grades 0 with the note "no lasting trace".
@@ -119,6 +121,7 @@ class DreamDayState(TypedDict, total=False):
     produced_note: str | None
     summary: dict[str, Any]
     pending_cites: list[str]          # experience refs to record once the row exists (cleared when sent)
+    now_closed: bool                  # the now read was closed (POST /temporal-self/now/use, #3498)
     cites: dict[str, Any] | None
 
 
@@ -566,20 +569,23 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             }
             state.update(update)
         cites = list(state.get("pending_cites") or [])
-        if cites and material.now_shown_id:
+        # The model answered (this node runs after it): close the now read even with no cites (#3498), so the dream
+        # organ's cursor moves past it and the read counts as "read, cited nothing" rather than "never closed".
+        if material.now_shown_id and not state.get("now_closed"):
             try:
                 res = await deps.record_cites(material.now_shown_id, cites, f"dream_day:{brief.day.isoformat()}")
                 update["cites"] = {"sent": len(cites), "used": len(res.get("uses") or []),
                                    "not_shown": len(res.get("rejected_not_shown") or []),
                                    "over_cap": len(res.get("rejected_over_cap") or [])}
+                update["now_closed"] = True
             except Exception as exc:  # noqa: BLE001 -- the row exists: cites never fail the run
                 attempts["cites"] = attempts.get("cites", 0) + 1
                 if attempts["cites"] < CITES_MAX_ATTEMPTS:
                     return {**update, "status": "retrying", "tail_attempts": attempts, "retry_node": "persist",
                             "retry_at": backoff(attempts["cites"]), "last_error": f"cites: {exc}"[:300]}
                 update["cites"] = {"sent": len(cites), "error": f"{type(exc).__name__}: {exc}"[:200]}
-        else:
-            update["cites"] = {"sent": 0, "reason": "no_shown_now" if cites else "no_experience_cite"}
+        elif not material.now_shown_id:
+            update["cites"] = {"sent": 0, "reason": "no_shown_now"}
         return {**update, "pending_cites": [], "status": "running", "tail_attempts": attempts, "retry_node": None,
                 "last_error": None}
 

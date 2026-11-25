@@ -39,6 +39,12 @@ fitted from the album itself:
   bar is applied to a cluster median against the full album, which only
   makes rejects rarer (conservative).
 
+A picture Juniper confirmed is the person (a ``same`` picture verdict, e.g.
+"Yes, that's X" on a walkway story card) is a +1 for the group's name on its
+own (source ``picture_same``), even when the group looks like two people and so
+adds nothing as a whole; never twice for a picture the group already counts,
+never for a picture she said is not X (2026-11-24).
+
 A person with no armed bar still gets ``unsure`` guesses: those are the
 input to the capped "Is this X?" asks, the way albums grow.
 
@@ -64,7 +70,11 @@ logger = logging.getLogger("sql-writer.vision_person_model")
 
 MODEL_VERSION = "median-topk-street-v2-people-split-face90"
 CHANNELS = ("face", "body", "osnet")
-RECONCILED_SOURCES = ("cluster_label", "pair_same", "picture_different")
+# picture_same: a picture Juniper confirmed is the named person (a "same" picture
+# verdict, e.g. "Yes, that's X" on a walkway story card). Always reconciled, so
+# turning VISION_PERSON_PICTURE_SAME_POSITIVES off revokes every such row.
+PICTURE_SAME_SOURCE = "picture_same"
+RECONCILED_SOURCES = ("cluster_label", "pair_same", "picture_different", PICTURE_SAME_SOURCE)
 PEOPLE_KINDS = ("person", "man", "woman", "child", "kid")
 PERSON_TABLES = ("vision_person_exemplar", "vision_person_bar", "vision_person_attribution",
                  "vision_person_model_eval")
@@ -109,6 +119,10 @@ class PersonModelConfig:
     clue_veto_llr: float = 2.3
     # A person's clue rates count only with this many album passages.
     clue_min_passages: int = 10
+    # Each picture Juniper confirmed with a "same" verdict is a +1 example for
+    # the group's name, even when the group looks like two people. False = only
+    # whole named groups teach positives (the rule before 2026-11-24).
+    picture_same_positives: bool = True
 
 
 @dataclass(frozen=True)
@@ -563,14 +577,18 @@ def _load_crops(conn, where: str, params: dict, tz: ZoneInfo) -> List[Crop]:
             f"embedding_model_id FROM vision_crop_observation c WHERE {where}"), params).fetchall():
         vecs = {ch: unit(v) for ch, v in zip(("body", "osnet", "face"), (r[3], r[4], r[5])) if v}
         if vecs:
-            out.append(Crop(r[0], r[1] or "", r[2].astimezone(tz).date().isoformat(), vecs, r[6] or "",
+            # A crop no longer in any group (a confirmed picture can outlive its
+            # group's membership) is its own group: never pooled with other such
+            # crops, which may be other people.
+            out.append(Crop(r[0], r[1] or f"orphan:{r[0]}", r[2].astimezone(tz).date().isoformat(), vecs, r[6] or "",
                             r[7] or ""))
     return out
 
 
-def desired_exemplars(conn, tz: ZoneInfo) -> Tuple[List[dict], dict]:
+def desired_exemplars(conn, tz: ZoneInfo, picture_same: bool = True) -> Tuple[List[dict], dict]:
     """The album implied by Juniper's answers right now (reconciled sources only).
-    Returns (rows, stats)."""
+    ``picture_same``: also turn her "same" picture verdicts into +1 exemplars
+    (``PersonModelConfig.picture_same_positives``). Returns (rows, stats)."""
     from sqlalchemy import text
 
     named = conn.execute(text(
@@ -614,7 +632,87 @@ def desired_exemplars(conn, tz: ZoneInfo) -> Tuple[List[dict], dict]:
         person = names.get(label.strip().casefold(), label.strip())
         rows.append({"person": person, "crop_id": crop_id, "polarity": -1, "source": "picture_different",
                      "ask_id": ask_id})
+    if picture_same:
+        same_rows, same_stats = _picture_same_rows(conn, names, rows)
+        rows += same_rows
+        stats.update(same_stats)
     return rows, stats
+
+
+def picture_same_exemplars(verdicts: Iterable[Tuple[Optional[str], ...]],
+                           names: Dict[str, str], positives: AbstractSet[Tuple[str, str]],
+                           negatives: AbstractSet[Tuple[str, str]]) -> Tuple[List[dict], dict]:
+    """Picture verdicts -> +1 ``picture_same`` exemplars (pure).
+
+    ``verdicts``: (crop_id, ask_id, verdict, verdict_name, group_label, group_kind
+    [, crop_group_label]), oldest answer first. ``crop_group_label``: the name of
+    the group the crop sits in NOW (None = unnamed or no group). ``names``: casefolded name -> display form.
+    ``positives`` / ``negatives``: (casefolded person, crop_id) already +1 / -1
+    for that person from any other source.
+
+    Only ``same`` counts; ``different`` and ``unsure`` never make a positive. The
+    person is the group's name NOW; when the picture's own name disagrees with
+    it (the group was renamed since she answered) the picture is skipped: it is
+    not clear which name she meant. A picture already +1 for that person (its
+    named group already counts it) is not counted twice; a picture she also
+    said is NOT that person is never a positive. A picture that has since moved
+    into a group carrying another name is skipped: that group would hold two
+    people's truths."""
+    rows: List[dict] = []
+    stats = {"picture_same_seen": 0, "picture_same_positives": 0, "picture_same_already_counted": 0,
+             "picture_same_ruled_out": 0, "picture_same_name_changed": 0, "picture_same_not_person": 0,
+             "picture_same_moved": 0}
+    taken = set(positives)
+    for crop_id, ask_id, verdict, vname, label, kind, *rest in verdicts:
+        if verdict != "same" or not crop_id:
+            continue
+        stats["picture_same_seen"] += 1
+        group = (label or "").strip()
+        if not group or (kind or "") not in PEOPLE_KINDS:
+            stats["picture_same_not_person"] += 1
+            continue
+        said = (vname or "").strip()
+        if said and said.casefold() != group.casefold():
+            stats["picture_same_name_changed"] += 1
+            continue
+        now_in = ((rest[0] if rest else None) or "").strip()
+        if now_in and now_in.casefold() != group.casefold():
+            stats["picture_same_moved"] += 1
+            continue
+        key = (group.casefold(), crop_id)
+        if key in negatives:
+            stats["picture_same_ruled_out"] += 1
+            continue
+        if key in taken:
+            stats["picture_same_already_counted"] += 1
+            continue
+        taken.add(key)
+        rows.append({"person": names.get(group.casefold(), group), "crop_id": crop_id, "polarity": 1,
+                     "source": PICTURE_SAME_SOURCE, "ask_id": ask_id})
+        stats["picture_same_positives"] += 1
+    return rows, stats
+
+
+def _picture_same_rows(conn, names: Dict[str, str], rows: List[dict]) -> Tuple[List[dict], dict]:
+    """The ``picture_same`` exemplars implied by Juniper's "same" picture verdicts,
+    deduped against ``rows`` (this pass's other sources) and against active
+    exemplars written outside the reconcile (confirm_pick_yes, confirm_no, ...)."""
+    from sqlalchemy import text
+
+    pos = {(r["person"].strip().casefold(), r["crop_id"]) for r in rows if r["polarity"] == 1}
+    neg = {(r["person"].strip().casefold(), r["crop_id"]) for r in rows if r["polarity"] == -1}
+    for person, crop_id, pol in conn.execute(text(
+            "SELECT person_label, crop_id, polarity FROM vision_person_exemplar "
+            "WHERE revoked_at IS NULL AND NOT (source = ANY(:s))"), {"s": list(RECONCILED_SOURCES)}).fetchall():
+        (pos if int(pol) == 1 else neg).add((person.strip().casefold(), crop_id))
+    verdicts = conn.execute(text(
+        "SELECT v.crop_id, v.ask_id, v.verdict, v.name, i.label, i.kind, ci.label FROM vision_ask_picture_verdict v "
+        "JOIN vision_individual i ON i.individual_id = v.individual_id "
+        "LEFT JOIN vision_crop_observation c ON c.crop_id = v.crop_id "
+        "LEFT JOIN vision_individual ci ON ci.individual_id = c.individual_id "
+        "WHERE v.verdict = 'same' AND v.crop_id IS NOT NULL "
+        "ORDER BY v.answered_at, v.ask_id, v.picture_index")).fetchall()
+    return picture_same_exemplars([tuple(r) for r in verdicts], names, pos, neg)
 
 
 def reconcile_exemplars(conn, rows: List[dict], now: datetime) -> Tuple[int, int]:
@@ -663,6 +761,27 @@ def load_crops_by_id(conn, crop_ids: Iterable[str], tz: ZoneInfo) -> Dict[str, C
     return {c.crop_id: c for c in _load_crops(conn, "crop_id = ANY(:i)", {"i": ids}, tz)} if ids else {}
 
 
+def regroup_confirmed_orphans(conn, crops: Dict[str, Crop]) -> Dict[str, Crop]:
+    """An album crop that is no longer in any group (``orphan:<crop_id>``) goes
+    back to the group Juniper confirmed it in (its newest "same" picture
+    verdict), so one walk-past stays one group in the bars and the eval rather
+    than one group per picture. Orphans with no such verdict stay alone."""
+    from dataclasses import replace
+
+    from sqlalchemy import text
+
+    orphans = sorted(k for k, c in crops.items() if c.cluster.startswith("orphan:"))
+    if not orphans:
+        return crops
+    out = dict(crops)
+    for crop_id, iid in conn.execute(text(
+            "SELECT DISTINCT ON (crop_id) crop_id, individual_id FROM vision_ask_picture_verdict "
+            "WHERE crop_id = ANY(:i) AND verdict = 'same' ORDER BY crop_id, answered_at DESC"),
+            {"i": orphans}).fetchall():
+        out[crop_id] = replace(out[crop_id], cluster=iid)
+    return out
+
+
 def load_album(conn, tz: ZoneInfo) -> Tuple[Dict[str, Dict[int, List[Crop]]], str]:
     """Active exemplars with their vectors, and a fingerprint of the album."""
     from sqlalchemy import text
@@ -672,7 +791,8 @@ def load_album(conn, tz: ZoneInfo) -> Tuple[Dict[str, Dict[int, List[Crop]]], st
         "WHERE revoked_at IS NULL ORDER BY exemplar_id")).fetchall()
     fingerprint = hashlib.md5(("|".join(r[0] for r in ex) + "|" + MODEL_VERSION).encode()).hexdigest()
     rows = [(r[1], r[2], int(r[3])) for r in ex]
-    return build_album(rows, load_crops_by_id(conn, (r[1] for r in rows), tz)), fingerprint
+    crops = regroup_confirmed_orphans(conn, load_crops_by_id(conn, (r[1] for r in rows), tz))
+    return build_album(rows, crops), fingerprint
 
 
 def fit_all(album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig,
@@ -995,7 +1115,7 @@ def run_person_model(conn, now: datetime, cfg: PersonModelConfig) -> dict:
     tz = ZoneInfo(cfg.local_tz)
     if not tables_present(conn):
         return {"person_model": "skipped: apply services/orion-sql-db/manual_migration_vision_person_album_v1.sql"}
-    rows, stats = desired_exemplars(conn, tz)
+    rows, stats = desired_exemplars(conn, tz, picture_same=cfg.picture_same_positives)
     added, revoked = reconcile_exemplars(conn, rows, now)
     album, fingerprint = load_album(conn, tz)
     street, face_street = street_pools(conn, now, cfg, tz)
@@ -1047,6 +1167,7 @@ def run_person_model(conn, now: datetime, cfg: PersonModelConfig) -> dict:
     return {
         "person_exemplars_added": added, "person_exemplars_revoked": revoked,
         "person_impure_clusters": stats["impure_clusters"],
+        "person_picture_same_exemplars": stats.get("picture_same_positives", 0),
         "person_people": len(album), "person_split_people": people_count(album, cfg, not_people),
         "person_street_clusters": len(street), "person_face_street_clusters": len(face_street),
         "person_accept_bars": sum(1 for b in bars.values() if b.accept_at is not None), "person_guesses": n,

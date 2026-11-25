@@ -35,29 +35,40 @@ The separate grading-side Cursor caller (`orion/curiosity/supervisor.py`,
 3. Exactly one Claude request. Reply → `ok` / `empty` brief; error or
    timeout → `failed` brief.
 
-## Claude budget
+## Claude budget: try, back off on refusal (#3655)
 
-Claude quota is shared with Juniper, so every hire is gated on the Claude
-meter (`orion.dev_economics.rate_limit_events.observe`), which fails closed on
-anything short of a fresh, observed `clear`. The meter reads Claude Code
-transcripts under `CURIOSITY_PEER_CLAUDE_PROJECTS_PATH`; compose mounts that
-host directory read-only at the same path inside the container (absolute
-symlinks in the tree must still resolve). Only an in-memory limit state is
-computed; transcript text never leaves the container.
+Claude quota is shared with Juniper. Two inputs gate a hire:
 
-Before this mount existed the container could not see the meter, and every
-hire was refused `claude_budget_unobserved` (live 2026-11-14..16).
+1. **Claude's own last answer.** When a Claude call fails with "You've hit
+   your session/weekly/usage limit · resets 12:10pm (UTC)", every later hire
+   is refused (`refused_budget`, code `claude_limit_backoff`) until the reset
+   Claude named, with no Claude call. No reset time in the text: wait
+   `CURIOSITY_PEER_CLAUDE_LIMIT_BACKOFF_DEFAULT_SEC` (default 3600). Any later
+   Claude outcome (ok, or a non-limit failure) clears it. The hold lives in
+   process memory; on boot it is seeded from the newest `claude_room`
+   PeerBrief in the worldview graph from the last 5 h.
+2. **The transcript meter** (`orion.dev_economics.rate_limit_events.observe`)
+   over Claude Code transcripts under `CURIOSITY_PEER_CLAUDE_PROJECTS_PATH`
+   (compose mounts that host directory read-only at the same path). A
+   transcript-observed `limited` refuses (`claude_budget_limited`). `unknown`
+   (no Claude Code session in 5 h, so the account is idle) tries Claude.
+
+Why: the meter alone was wrong both ways. 2026-11-19..23 it read `unknown`
+and 13 hires were refused while nobody used Claude. 2026-11-17 and 11-24 it
+read `clear` while Claude was at its session limit, and the 11-24 11:23Z hire
+repeated the 09:12Z failure. `observe()` and `ask_claude_trigger._budget_refusal`
+are unchanged for their other callers.
 
 ### What a refusal says
 
 `refusal_reason` is a plain sentence, then a code block:
 
 ```text
-Claude helper refused: this service cannot see Claude's usage meter, so it
-refuses rather than spend blind. [claude_budget_unobserved]
+Claude helper refused: Claude said at 09:12Z that its usage limit was hit and
+resets at 2026-11-24 12:10Z, so this hire waits until then. [claude_limit_backoff]
 ```
 
-Codes: `claude_budget_*` (meter), `claude_failed` (Claude was asked and the
+Codes: `claude_limit_backoff` (Claude said limit), `claude_budget_*` (meter), `claude_failed` (Claude was asked and the
 request failed or timed out), `claude_unwired` (no bus in this process).
 Orion reads the plain part in the kickoff "COULD NOT HIRE" section
 (`format_soft_nudge`) and, for `refused_budget`, in the role-teach progress

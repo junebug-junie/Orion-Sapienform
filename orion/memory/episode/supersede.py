@@ -101,6 +101,9 @@ CORRECTION_STATES = frozenset({"auto", "confirmed"})
 # nobody will ever settle it, so it is NOT open -- a later settled correction may retire it (with the
 # same eval gate, and the hand-run pass's per-pair review). It is not settled either, so it is not in
 # CORRECTION_STATES: it never retires anything itself.
+# ``own_thought`` (Orion's own thought, never asked: issue #3840) follows the same two rules for the
+# same reason: nobody will settle it, so a settled correction may retire it; and it is unsettled, so
+# it never retires anything itself. (A ``orion_view`` row stays protected by purpose either way.)
 SKIPPED_PURPOSES = frozenset({"follow_up"})                     # neither side
 NOT_SUPERSEDABLE_PURPOSES = SKIPPED_PURPOSES | {"orion_view"}   # never the old side
 

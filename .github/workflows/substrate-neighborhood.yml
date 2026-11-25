@@ -199,6 +199,16 @@ jobs:
             echo "assertion-core store tests skipped -- the Falkor/Postgres service wiring is broken" >&2
             exit 1
           fi
+      - name: upsert_node never mints a second node for one node_id (real FalkorDB, must not skip)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs orion/substrate/tests/test_falkor_node_identity_live.py | tee node_identity.out
+          if grep -q "SKIPPED" node_identity.out; then
+            echo "node identity live tests skipped -- the Falkor service wiring is broken" >&2
+            exit 1
+          fi
       - name: Curiosity seeds pick up accepted reading links only (fixture eval)
         run: python services/orion-substrate-runtime/evals/run_curiosity_seed_neighborhood_eval.py
       - name: Hub-heavy budget and coverage eval

@@ -55,6 +55,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
+from orion.grammar.camera_ask_acts import is_juniper_card
 from orion.grammar.promise_acts import is_shadow_signal, is_void_note
 from orion.schemas.self_monitor import SettledBetV1
 
@@ -347,6 +348,10 @@ def camera_ask(row: Row) -> Optional[SettledBetV1]:
     faculty = CAMERA_ASK_FACULTIES.get(row.get("source_kind") or "")
     answered = _aware(row.get("answered_at"))
     if faculty is None or answered is None or row.get("status") != "answered":
+        return None
+    if is_juniper_card(row.get("evidence_refs"), row.get("answer_detail")):
+        # Juniper's own "not the same person" on a walkway story card (who-card Patch A): she
+        # answered no guess of Orion's, so it grades no faculty.
         return None
     outcome = camera_ask_outcome(row)
     if outcome is None:

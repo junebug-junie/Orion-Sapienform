@@ -160,6 +160,6 @@ Optional, needs Juniper's yes: `scripts/sql/2026-11-25_grant_orion_readonly_reve
 
 ## PR link
 
-https://github.com/junebug-junie/Orion-Sapienform/pull/3997
+https://github.com/junebug-junie/Orion-Sapienform/pull/3997 (Patch 3), https://github.com/junebug-junie/Orion-Sapienform/pull/4003 (review findings)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

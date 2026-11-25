@@ -1083,6 +1083,113 @@ def reverie_question(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1
     )
 
 
+# --- Orion's now, patch 7a (integration design A1, #3429): the last three organs emit. Experience only.
+
+INTENTION_REF_PREFIX = "intention:"
+# orion/prime/day_letter.py LETTER_EVENT_PREFIX: a thread's Prime concern carries event_ref
+# "orion_day_letter:<day>#thread<i>" (thread_concern_id). Restated, not imported: sources.py stays free of Prime.
+LETTER_THREAD_REF = "orion_day_letter:{day}#thread{i}"
+
+
+def intention_close(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One intention closing: Prime's CLOSED ``make intention:<concern_id>`` act (grammar_acts, orion/schemas/
+    intention.py). Time: opened_at .. closed_at (available at closed_at). Verdict: produced (outcome 1, the reply
+    was stored on its route) | not_produced. Label: the act's own outcome note ("carried: ..." or why Hub
+    refused). related_refs: the act, the intention, its trace, and the carry run with its own act when one ran.
+    ``surprise_nats``: the act close's own (no magnitude rule: salience NULL)."""
+    if row.get("closed_at") is None:
+        return None
+    obj = str(row.get("object_ref") or "")
+    if not obj.startswith(INTENTION_REF_PREFIX):
+        return None
+    concern = obj[len(INTENTION_REF_PREFIX):]
+    outcome = _finite(row.get("outcome_value"))
+    produced = outcome is not None and outcome >= 1.0
+    word = "carried" if produced else "not carried"
+    note = clip(row.get("outcome_note") or "")
+    refs = [f"act:{row.get('act_id')}", obj]
+    trace = str(row.get("trace_id") or "")
+    if trace and trace != refs[0]:  # live (to 11-25) an intention act's trace_id is its own "act:<act_id>"
+        refs.append(f"trace:{trace}")
+    if row.get("run_act_id"):
+        refs += [f"durable_run:intention-{concern}", f"act:{row['run_act_id']}"]
+    return _event(
+        kind="intention_close", table="grammar_acts", ref=row.get("act_id"), at=row.get("opened_at"),
+        ended=row.get("closed_at"), tz_name=tz_name, subject_ref=None, correlation_id=row.get("correlation_id") or None,
+        related_refs=refs[:8], label=note or f"intention {word}",
+        verdict="produced" if produced else "not_produced",
+        payload={"concern_id": concern, "outcome_value": outcome, "run_outcome": row.get("run_outcome_note"),
+                 "surprise_nats": _finite(row.get("surprise_nats"))},
+    )
+
+
+def letter_threads(carry_forward_md: Any) -> list[str]:
+    """The letter's threads, in order, from ``orion_day_letter.carry_forward_md`` (orion/orion_day/letter_turn.py
+    ``split_letter`` writes one ``- <thread>`` bullet each, or NO_THREADS_MD, which has no bullet)."""
+    out = []
+    for line in str(carry_forward_md or "").splitlines():
+        s = line.strip()
+        if s.startswith("- ") and s[2:].strip():
+            out.append(" ".join(s[2:].split()))
+    return out
+
+
+def day_letter(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One written day letter: an ``orion_day_letter`` row (one per Denver day). Time: created_at, when it was
+    written. Label: the day, how many threads Orion carried forward, and the first thread. related_refs: the run
+    that wrote it, then each thread as its Prime concern's event ref (``orion_day_letter:<day>#thread<i>``, the
+    ref orion/prime/day_letter.py thread_concerns gives the concern). No magnitude: salience NULL."""
+    if row.get("created_at") is None or not row.get("letter_date"):
+        return None
+    d = row["letter_date"]
+    day = d if isinstance(d, str) else d.isoformat()
+    threads = letter_threads(row.get("carry_forward_md"))
+    head = f"wrote the letter for {day}, carrying {len(threads)} thread{'' if len(threads) == 1 else 's'}"
+    return _event(
+        kind="day_letter", table="orion_day_letter", ref=day, at=row.get("created_at"), tz_name=tz_name,
+        subject_ref=None,
+        related_refs=([f"durable_run:{row['run_id']}"] if row.get("run_id") else [])
+        + [LETTER_THREAD_REF.format(day=day, i=i) for i in range(len(threads))][:7],
+        label=clip(f"{head}; first: {threads[0]}" if threads else head),
+        payload={"letter_date": day, "run_id": row.get("run_id"), "note_chars": row.get("note_chars"),
+                 "threads": [clip(t, 240) for t in threads]},
+    )
+
+
+def personality_choice(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One choice Prime made that the personality loop folded: a ``personality_evidence`` row of lane ``prime``
+    (one per Prime choice point, live). Time: created_at, when it was folded (~15-21 min after the choice; the
+    choice's own time rides in the payload). Label: the evidence excerpt (what was picked over what, or "Prime
+    waits instead of acting"), how many options there were, and the leaning it was folded into when that leaning
+    has a name. Verdict: chose | declined_all. No magnitude: salience NULL."""
+    if row.get("created_at") is None or row.get("lane") != "prime":
+        return None
+    meta = _json(row.get("meta")) or {}
+    if not isinstance(meta, Mapping):
+        meta = {}
+    declined = bool(meta.get("declined_all"))
+    n = meta.get("alternatives")
+    excerpt = " ".join(str(row.get("excerpt") or "").split()) or "a choice"
+    where = ""
+    if isinstance(n, int) and not isinstance(n, bool):
+        where = f"declined all {n} options" if declined else f"picked from {n} options"
+    name = " ".join(str(row.get("disposition_name") or "").split())
+    label = excerpt + (f" ({where})" if where else "") + (f'; folded into my leaning "{name}"' if name else "")
+    choice_id, disp = meta.get("choice_id"), row.get("disposition_id")
+    act = meta.get("act_id") or row.get("source_ref")
+    refs = ([f"act:{act}"] if act else []) + ([f"personality_choice:{choice_id}"] if choice_id else []) \
+        + ([f"personality_disposition:{disp}"] if disp else [])
+    return _event(
+        kind="personality_choice", table="personality_evidence", ref=row.get("evidence_id"),
+        at=row.get("created_at"), tz_name=tz_name, subject_ref=None,
+        correlation_id=meta.get("correlation_id") or None, related_refs=refs,
+        label=clip(label), verdict="declined_all" if declined else "chose",
+        payload={"chosen_at": _iso(row.get("occurred_at")), "choice_id": choice_id, "disposition_id": disp,
+                 "disposition_status": row.get("disposition_status"), "similarity": _finite(row.get("similarity")),
+                 "alternatives": n, "declined_all": declined},
+    )
+
+
 ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "chat_turn": chat_turn,
     "curiosity_run": curiosity_run,
@@ -1114,6 +1221,9 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "experiment_result": experiment_result,
     "dream_day": dream_day,
     "reverie_question": reverie_question,
+    "intention_close": intention_close,
+    "day_letter": day_letter,
+    "personality_choice": personality_choice,
 }
 
 
@@ -1125,9 +1235,10 @@ RETIRED_KINDS = frozenset({"reverie_chain", "expectation_verdict"})
 # Orion's now: kinds that are experiences only (no arc folds them), and the tables their events name.
 # A row of these tables is never arc evidence (orion-sql-writer act_downstream_use ARC_SOURCE_TABLES).
 EXPERIENCE_ONLY_KINDS = frozenset({"reading_turn", "prediction_surprise", "prime_thought", "experiment_result",
-                                   "dream_day", "reverie_question"})
+                                   "dream_day", "reverie_question", "intention_close", "day_letter",
+                                   "personality_choice"})
 EXPERIENCE_ONLY_TABLES = frozenset({"grammar_acts", "prediction_exceedance", "prediction_effect_estimate",
-                                    "dream_day", "reverie_question"})
+                                    "dream_day", "reverie_question", "orion_day_letter", "personality_evidence"})
 
 
 def adapt(kind: str, rows: Iterable[Row], tz_name: str = DEFAULT_TZ) -> list[TemporalSelfEventV1]:

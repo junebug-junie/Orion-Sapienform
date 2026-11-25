@@ -230,6 +230,12 @@ _TEMPLATES: dict[str, Callable[[Mapping[str, Any]], str]] = {
     "attention_row": lambda p: f"attention: {p.get('process')} {p.get('reason') or ''}".rstrip(),
     "visual_deferral": lambda p: f"painting deferred ({p.get('reason') or p.get('thermal_state') or 'no reason'})",
     "field_dominance_run": lambda p: f"held attention for {p.get('tick_count')} ticks",
+    # Integration patch 7a: used only when a stored row carries no label of its own.
+    "intention_close": lambda p: f"intention {p.get('concern_id')} closed",
+    "day_letter": lambda p: (f"wrote the letter for {p.get('letter_date')}, carrying "
+                             f"{len(p.get('threads') or [])} threads"),
+    "personality_choice": lambda p: ("Prime declined every option" if p.get("declined_all")
+                                     else f"Prime chose one of {p.get('alternatives')} options"),
 }
 
 

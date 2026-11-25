@@ -136,6 +136,15 @@ TemporalSourceKind = Literal[
     # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
     # orion-prediction) before orion-durable-runs writes the first reverie_question event.
     "reverie_question",
+    # Integration patch 7a (#3429): the last three organs emit. Experience only (no arc folds them).
+    # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
+    # orion-prediction) before orion-durable-runs writes the first of these events.
+    # one intention closing: Prime's closed make intention:<concern_id> act (produced / not_produced)
+    "intention_close",
+    # one written day letter (orion_day_letter), its threads as related refs
+    "day_letter",
+    # one Prime choice the personality loop folded (personality_evidence, lane prime)
+    "personality_choice",
 ]
 
 ArcKind = Literal[

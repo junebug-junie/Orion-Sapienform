@@ -170,16 +170,18 @@ organs:
     families: [prime]
     reads_now: services/orion-mind/app/prime_loop.py
   intention:
-    temporal_sources: []
-    exempt_emit: "intention_close is integration patch 7 (one intention ever, 2026-11-13)"
+    # intention_close (integration patch 7a, #3429): one experience per closed Prime make intention:<id> act,
+    # produced / not_produced, with the act, its trace and the carry run as refs. No magnitude: salience NULL.
+    temporal_sources: [intention_close]
     families: [durable.intention]
     workflows: [intention.carry]
     intention_sources: [turn_promise]
     reads_now: null
     exempt_read: "a carry turn reads its own promise's thread only (intention design; design call, #3457)"
   day_letter:
-    temporal_sources: []
-    exempt_emit: "day_letter is integration patch 7"
+    # day_letter (integration patch 7a, #3429): one experience per written letter, its threads as refs
+    # (orion_day_letter:<day>#thread<i>, the ref each thread's Prime concern carries). No magnitude.
+    temporal_sources: [day_letter]
     workflows: [orion_day.letter]
     reads_now: null
     # Integration patch 4: the letter's input carries the daily organ roundup (orion/dig/organs.py), with the
@@ -188,8 +190,9 @@ organs:
     # writes no experience_shown row a cite could be checked against.
     exempt_read: "reads the daily organ roundup, not GET /temporal-self/now; cites counted in finish detail note_roundup_refs, not as experience_use (integration patch 4)"
   personality:
-    temporal_sources: []
-    exempt_emit: "personality_choice is integration patch 7"
+    # personality_choice (integration patch 7a, #3429): one experience per Prime choice the personality loop
+    # folded (personality_evidence lane prime), with the leaning it joined. No magnitude: salience NULL.
+    temporal_sources: [personality_choice]
     reads_now: null
     exempt_read: "choices are made by Prime; the personality loop folds them and reads no other organ (design call, #3457)"
 

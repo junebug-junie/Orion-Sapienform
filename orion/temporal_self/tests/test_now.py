@@ -3,6 +3,7 @@ and the integration metric. Pure: no database, no clock."""
 
 from __future__ import annotations
 
+import json
 import math
 from datetime import date, datetime, timedelta, timezone
 from typing import get_args
@@ -20,6 +21,7 @@ from orion.temporal_self.now import (
     magnitude,
     normalize_cite,
     now_label,
+    stored_payload_surprise,
     parse_organs,
     record_use,
     salience_of,
@@ -62,13 +64,15 @@ def test_registry_refuses_a_kind_claimed_twice_an_unknown_kind_and_an_unknown_ru
 
 def test_new_kinds_never_fold_into_an_arc():
     assert S.EXPERIENCE_ONLY_KINDS == {"reading_turn", "prediction_surprise", "prime_thought", "experiment_result",
-                                       "dream_day", "reverie_question"}
+                                       "dream_day", "reverie_question", "intention_close", "day_letter",
+                                       "personality_choice"}
     for k in S.EXPERIENCE_ONLY_KINDS:
         assert k not in PROCESS_KINDS and k not in CONTEXT_KINDS and k not in CONSTRAINT_KINDS
 
 
 def test_experience_only_tables_are_exactly_the_new_kinds_tables():
-    base = {"act_id": "act_" + "c" * 24, "opened_at": T, "closed_at": T + timedelta(seconds=5), "object_ref": "x",
+    base = {"act_id": "act_" + "c" * 24, "opened_at": T, "closed_at": T + timedelta(seconds=5),
+            "object_ref": "intention:d8db9d7b1bba4cf7", "letter_date": "2026-11-24", "lane": "prime", "evidence_id": "ev1",
             "exceedance_id": 1, "scored_at": T, "hit_raw": False, "probability": 0.1, "n_paths": 40,
             "estimate_id": "e1", "created_at": T, "details": {"estimator": "family_c_pooled_run", "effect_z": 2.0},
             "day": "2026-11-17", "question_id": "q1"}
@@ -536,3 +540,84 @@ def test_a_sparse_kind_under_twenty_past_events_reaches_the_now():
     assert "office_session:visit" in ids
     assert next(i for i in now.items if i.event_id == "office_session:visit").salience is None
     assert ids.index("office_session:visit") < ids.index("prediction_surprise:0")
+
+
+# --- integration patch 7a (#3429): intention, day letter and personality emit -----------------------------------
+
+
+def test_intention_close_is_one_closed_take_on_with_its_trace_and_run():
+    row = {"act_id": "act_0418ced14d2fa1b989fe4086", "object_ref": "intention:d8db9d7b1bba4cf7", "trace_id": "tr1",
+           "correlation_id": None, "opened_at": T, "closed_at": T + timedelta(hours=3), "outcome_value": 1.0,
+           "outcome_note": "carried: the reply is in the chat thread 9c91 (608 chars; Juniper was not pinged)",
+           "surprise_nats": 0.1126, "run_act_id": "act_9bd65d5db4e3bfb4612d03e1", "run_outcome_note": "completed"}
+    e = S.intention_close(row)
+    assert e.source_kind == "intention_close" and e.event_id == "intention_close:act_0418ced14d2fa1b989fe4086"
+    assert e.source_table == "grammar_acts" and e.verdict == "produced" and e.subject_ref is None
+    assert e.label.startswith("carried: the reply is in the chat thread")
+    assert e.related_refs == ["act:act_0418ced14d2fa1b989fe4086", "intention:d8db9d7b1bba4cf7", "trace:tr1",
+                              "durable_run:intention-d8db9d7b1bba4cf7", "act:act_9bd65d5db4e3bfb4612d03e1"]
+    assert e.ended_at == T + timedelta(hours=3) and e.payload["concern_id"] == "d8db9d7b1bba4cf7"
+    assert stored_payload_surprise(e.payload) == pytest.approx(0.1126)
+    refused = S.intention_close({**row, "outcome_value": 0.0, "run_act_id": None,
+                                 "outcome_note": "Hub refused the order: there is no thread to answer in"})
+    assert refused.verdict == "not_produced" and "durable_run:intention-d8db9d7b1bba4cf7" not in refused.related_refs
+    assert now_label("intention_close", refused.label, refused.verdict, refused.payload) == (
+        "intention close: Hub refused the order: there is no thread to answer in [not_produced]")
+    # an unscored close (expired, no outcome) is not produced; no note falls back to plain words
+    bare = S.intention_close({**row, "outcome_value": None, "outcome_note": None})
+    assert bare.verdict == "not_produced" and bare.label == "intention not carried"
+    own_trace = S.intention_close({**row, "trace_id": "act:act_0418ced14d2fa1b989fe4086"})
+    assert not any(r.startswith("trace:") for r in own_trace.related_refs)  # never the act twice
+    assert S.intention_close({**row, "closed_at": None}) is None
+    assert S.intention_close({**row, "object_ref": "concern:x"}) is None
+
+
+def test_day_letter_is_one_letter_with_its_threads_as_concern_refs():
+    md = "- The drain-blind learner [cu…\n- PR #3828: open, unmerged [juniper_chat:6eb9]\n"
+    row = {"letter_date": date(2026, 11, 24), "run_id": "orion-day-2026-11-24-1", "carry_forward_md": md,
+           "note_chars": 18787, "created_at": T}
+    e = S.day_letter(row)
+    assert e.source_kind == "day_letter" and e.event_id == "day_letter:2026-11-24" and e.source_table == "orion_day_letter"
+    assert e.label == "wrote the letter for 2026-11-24, carrying 2 threads; first: The drain-blind learner [cu…"
+    assert e.related_refs == ["durable_run:orion-day-2026-11-24-1", "orion_day_letter:2026-11-24#thread0",
+                              "orion_day_letter:2026-11-24#thread1"]
+    assert e.payload["threads"][1] == "PR #3828: open, unmerged [juniper_chat:6eb9]"
+    none = S.day_letter({**row, "carry_forward_md": "No threads were named in this letter."})
+    assert none.label == "wrote the letter for 2026-11-24, carrying 0 threads" and none.related_refs == [
+        "durable_run:orion-day-2026-11-24-1"]
+    assert S.day_letter({**row, "created_at": None}) is None
+
+
+def test_day_letter_thread_refs_are_the_refs_prime_gives_the_thread_concerns():
+    from orion.prime import day_letter as DL
+
+    assert S.LETTER_THREAD_REF.format(day="2026-11-24", i=3) == f"{DL.LETTER_EVENT_PREFIX}2026-11-24#thread3"
+
+
+def test_personality_choice_is_one_folded_prime_choice():
+    meta = {"act_id": "act_1e2b", "choice_id": "prime:efd5", "alternatives": 2, "declined_all": False,
+            "correlation_id": None}
+    row = {"evidence_id": "ev-1", "lane": "prime", "source_ref": "act_1e2b", "occurred_at": T - timedelta(minutes=16),
+           "excerpt": "My act horizons are barely claims over Consult with Claude promise", "disposition_id": "disp-ad56",
+           "similarity": 0.99, "meta": meta, "created_at": T, "disposition_name": None, "disposition_status": "candidate"}
+    e = S.personality_choice(row)
+    assert e.source_kind == "personality_choice" and e.event_id == "personality_choice:ev-1"
+    assert e.source_table == "personality_evidence" and e.occurred_at == T and e.verdict == "chose"
+    assert e.label == "My act horizons are barely claims over Consult with Claude promise (picked from 2 options)"
+    assert e.related_refs == ["act:act_1e2b", "personality_choice:prime:efd5", "personality_disposition:disp-ad56"]
+    assert e.payload["chosen_at"] == (T - timedelta(minutes=16)).isoformat()
+    waits = S.personality_choice({**row, "excerpt": "Prime waits instead of acting", "disposition_name": "patience",
+                                  "meta": json.dumps({**meta, "alternatives": 3, "declined_all": True})})
+    assert waits.verdict == "declined_all"
+    assert waits.label == 'Prime waits instead of acting (declined all 3 options); folded into my leaning "patience"'
+    assert S.personality_choice({**row, "lane": "reading"}) is None  # only Prime's choices are this organ's
+    assert S.personality_choice({**row, "created_at": None}) is None
+
+
+def test_patch7a_labels_fall_back_to_plain_words_without_a_stored_label():
+    assert now_label("day_letter", "", None, {"letter_date": "2026-11-24", "threads": ["a", "b"]}) == (
+        "wrote the letter for 2026-11-24, carrying 2 threads")
+    assert now_label("personality_choice", "", "declined_all", {"declined_all": True}) == (
+        "Prime declined every option [declined_all]")
+    assert now_label("intention_close", "", None, {"concern_id": "d8db"}) == "intention d8db closed"
+

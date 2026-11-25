@@ -92,7 +92,9 @@ def test_a_registered_channel_passes(real):
 
 def test_an_organ_must_emit_or_say_why_and_read_or_say_why(real):
     inp = planted(real)
-    del inp.registry["organs"]["personality"]["exempt_emit"]
+    # Since integration patch 7a every organ emits: plant an organ that emits nothing and gives no reason.
+    inp.registry["organs"]["personality"]["temporal_sources"] = []
+    inp.registry["organs"]["personality"].pop("exempt_emit", None)
     del inp.registry["organs"]["painting"]["exempt_read"]
     errs = seam.check(inp)
     assert any("organ 'personality' emits no TemporalSourceKind" in e for e in errs)

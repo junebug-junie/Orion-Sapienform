@@ -2,21 +2,30 @@
 
 Orion's turns may look (every GET/HEAD) and may ``docker exec`` into an organ, but may not change
 containers (create, start, stop, restart, remove, build, pull, ...), and may not exec into a
-container that leads back to the host (one that holds the Docker socket, runs privileged, shares
-the host PID namespace, or bind-mounts a host root path). Every request is appended to a JSONL
+container that leads back to the host (see ``host_reach``). Every request is appended to a JSONL
 record on the host. Design: docs/superpowers/specs/2026-11-24-orion-safe-autonomy-in-place-design.md.
 
-Stdlib only. One request per client connection: the door forwards the request with
-``Connection: close`` (the daemon then closes after its response), so a client cannot slip a second,
-unchecked request down the same connection. An exec start that upgrades to a raw stream keeps its
-``Upgrade`` headers; after the upgrade the connection carries only that exec's stdin/stdout.
+Stdlib only. The safety rule, from the 2026-11-24 code review: parse strictly, read the whole
+request before deciding, one request per connection, always close, and refuse anything the door
+cannot fully read.
+
+- The head must use CRLF only (no bare LF, no stray CR, no folded lines), HTTP/1.0 or 1.1, a plain
+  upper-case method and token header names. Docker's own parser accepts a bare LF, so a lenient
+  parse here would let one checked request hide a second, unchecked one.
+- The body is read in full before forwarding (``Content-Length`` only, at most 1 MB; no
+  ``Transfer-Encoding``, no ``Expect``). The door forwards exactly head + body, always with
+  ``Connection: close``. Nothing else the client sends reaches the daemon, except after a
+  non-detached exec start, where Docker hijacks the connection and later bytes are that exec's stdin.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 import os
+import posixpath
 import re
 import socket
 import time
@@ -24,23 +33,57 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
+from urllib.parse import quote, unquote
+
+logger = logging.getLogger("orion.docker_door")
 
 MAX_HEADER_BYTES = 64 * 1024
-MAX_EXEC_BODY_BYTES = 1024 * 1024
-HOST_ROOT_SOURCES = frozenset({"/", "/run", "/var/run", "/var/lib/docker",
-                               "/var/run/docker.sock", "/run/docker.sock"})
+MAX_BODY_BYTES = 1024 * 1024
+HEAD_TIMEOUT_SEC = 10.0
+BODY_TIMEOUT_SEC = 30.0
+DAEMON_TIMEOUT_SEC = 10.0
+ALLOWED_VERSIONS = frozenset({"HTTP/1.0", "HTTP/1.1"})
+# Exact sources that are the host itself (named volumes live under /var/lib/docker/volumes/...,
+# so /var/lib/docker matches exactly, not as a prefix).
+HOST_ROOT_SOURCES = frozenset({"/", "/run", "/var/run", "/var/lib/docker"})
+# Any bind of these, or of anything under them, reaches the host.
+HOST_PATH_PREFIXES = ("/proc", "/sys", "/dev", "/etc", "/root")
+RUNTIME_SOCKET_NAMES = frozenset({"docker.sock", "containerd.sock"})
 REFUSE_CHANGE = "Orion's Docker door: changing containers is off (Juniper, 2026-11-24)."
 REFUSE_HOST = "Orion's Docker door: exec into a container that leads back to the host is off."
 REFUSE_CALLER = "Orion's Docker door: this caller is not allowed."
+REFUSE_RECORD = "Orion's Docker door: could not write the record, so nothing passes."
 
+_METHOD = re.compile(r"^[A-Z]{1,16}$")
+_TOKEN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_TARGET = re.compile(r"^/[\x21-\x7e]*$")
+_LENGTH = re.compile(r"^[0-9]{1,9}$")
+_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$")
 _VERSION_PREFIX = re.compile(r"^/v\d+(?:\.\d+)*(/.*)$")
 _EXEC_CREATE = re.compile(r"^/containers/([^/]+)/exec$")
 _EXEC_RUN = re.compile(r"^/exec/([^/]+)/(start|resize)$")
 
 
+class BadRequest(ValueError):
+    """The door cannot read this request exactly, so it refuses it."""
+
+
 def normalize_path(target: str) -> str:
-    """Request target -> API path without the query string and the /vX.YZ prefix."""
-    path = target.split("?", 1)[0]
+    """Request target -> decoded API path, without the query string and the /vX.YZ prefix.
+
+    Docker decodes the path once before routing, so the door decodes once too. A path that still
+    holds ``%`` after that (double encoding), a control byte, an empty segment or a ``.``/``..``
+    segment is refused: Docker's CLI never sends one.
+    """
+    raw = target.split("?", 1)[0]
+    try:
+        path = unquote(raw, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise BadRequest("path_encoding") from exc
+    if "%" in path or any(ord(ch) < 0x21 or ord(ch) == 0x7F for ch in path):
+        raise BadRequest("path_encoding")
+    if path != "/" and any(seg in ("", ".", "..") for seg in path.split("/")[1:]):
+        raise BadRequest("path_segments")
     m = _VERSION_PREFIX.match(path)
     return m.group(1) if m else path
 
@@ -51,11 +94,11 @@ class Route:
 
     kind: str  # "look" | "exec_create" | "exec_run" | "change"
     ref: str = ""  # container ref (exec_create) or exec id (exec_run)
+    action: str = ""  # exec_run only: "start" | "resize"
 
 
 def classify(method: str, path: str) -> Route:
-    method = method.upper()
-    if "/attach" in path:  # attach (incl. GET .../attach/ws) writes to a container's main process
+    if "attach" in path.split("/"):  # attach (incl. GET .../attach/ws) writes to a main process
         return Route("change")
     if method in ("GET", "HEAD"):
         return Route("look")
@@ -65,8 +108,15 @@ def classify(method: str, path: str) -> Route:
             return Route("exec_create", m.group(1))
         m = _EXEC_RUN.match(path)
         if m:
-            return Route("exec_run", m.group(1))
+            return Route("exec_run", m.group(1), m.group(2))
     return Route("change")
+
+
+def _runtime_socket(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    if name in RUNTIME_SOCKET_NAMES:
+        return True
+    return name.endswith(".sock") and any(path.startswith(p + "/") for p in ("/run", "/var/run"))
 
 
 def host_reach(inspect: dict[str, Any]) -> Optional[str]:
@@ -74,13 +124,23 @@ def host_reach(inspect: dict[str, Any]) -> Optional[str]:
     host = inspect.get("HostConfig") or {}
     if host.get("Privileged"):
         return "privileged"
-    if str(host.get("PidMode") or "") == "host":
-        return "pid_host"
+    for key, label in (("PidMode", "pid_host"), ("NetworkMode", "network_host"),
+                       ("IpcMode", "ipc_host"), ("UsernsMode", "userns_host")):
+        if str(host.get(key) or "") == "host":
+            return label
+    if host.get("CapAdd"):
+        return "cap_add:" + ",".join(str(c) for c in host["CapAdd"])
+    if host.get("Devices"):
+        return "devices"
     for mount in inspect.get("Mounts") or []:
-        src = str(mount.get("Source") or "").rstrip("/") or "/"
-        dst = str(mount.get("Destination") or "")
-        if src in HOST_ROOT_SOURCES or dst.endswith("/docker.sock"):
+        src = posixpath.normpath(str(mount["Source"])) if mount.get("Source") else ""
+        dst = posixpath.normpath(str(mount.get("Destination") or "/"))
+        if src in HOST_ROOT_SOURCES:
             return f"mount:{src}"
+        if src and any(src == p or src.startswith(p + "/") for p in HOST_PATH_PREFIXES):
+            return f"mount:{src}"
+        if (src and _runtime_socket(src)) or dst.rsplit("/", 1)[-1] in RUNTIME_SOCKET_NAMES:
+            return f"socket:{src or dst}"
     return None
 
 
@@ -90,44 +150,77 @@ class Request:
     target: str
     version: str
     headers: list[tuple[str, str]]
-    raw_head: bytes
+
+    def values(self, name: str) -> list[str]:
+        name = name.lower()
+        return [value for key, value in self.headers if key.lower() == name]
 
     def header(self, name: str) -> str:
-        name = name.lower()
-        for key, value in self.headers:
-            if key.lower() == name:
-                return value
-        return ""
+        found = self.values(name)
+        return found[0] if found else ""
 
 
 def parse_head(head: bytes) -> Request:
-    text = head.decode("latin-1")
-    lines = text.split("\r\n")
-    method, target, version = lines[0].split(" ", 2)
+    """Strict parse of a head that ends with CRLF CRLF. Raises BadRequest on anything loose."""
+    if not head.endswith(b"\r\n\r\n"):
+        raise BadRequest("head_end")
+    lines = head[:-4].split(b"\r\n")
+    for line in lines:
+        if any(b < 0x20 and b != 0x09 or b == 0x7F for b in line):  # bare LF, stray CR, NUL, ...
+            raise BadRequest("control_byte")
+    parts = lines[0].decode("latin-1").split(" ")
+    if len(parts) != 3:
+        raise BadRequest("request_line")
+    method, target, version = parts
+    if not _METHOD.match(method) or not _TARGET.match(target) or version not in ALLOWED_VERSIONS:
+        raise BadRequest("request_line")
     headers: list[tuple[str, str]] = []
-    for line in lines[1:]:
-        if not line:
-            continue
-        key, _, value = line.partition(":")
-        headers.append((key.strip(), value.strip()))
-    return Request(method, target, version, headers, head)
+    for raw in lines[1:]:
+        line = raw.decode("latin-1")
+        if not line or line[0] in " \t":
+            raise BadRequest("folded_header")
+        key, sep, value = line.partition(":")
+        if not sep or not _TOKEN.match(key):
+            raise BadRequest("header_name")
+        headers.append((key, value.strip(" \t")))
+    return Request(method, target, version, headers)
 
 
-def rebuild_head(req: Request, *, keep_upgrade: bool) -> bytes:
-    """Same request line and headers, with Connection: close unless this is an upgrade."""
+def body_length(req: Request) -> Optional[int]:
+    """The body length the door will read, or None when there is no Content-Length."""
+    if req.values("transfer-encoding"):
+        raise BadRequest("transfer_encoding")
+    if req.values("expect"):
+        raise BadRequest("expect")
+    found = req.values("content-length")
+    if not found:
+        return None
+    if len(found) > 1 or not _LENGTH.match(found[0]):
+        raise BadRequest("content_length")
+    length = int(found[0])
+    if length > MAX_BODY_BYTES:
+        raise BadRequest("body_too_large")
+    return length
+
+
+def rebuild_head(req: Request) -> bytes:
+    """Same request line and headers, always with Connection: close.
+
+    ``Upgrade`` is kept: Docker decides on a hijack from the exec start body and the ``Upgrade``
+    header alone, and a hijacked stream no longer reads HTTP, so ``close`` never breaks it.
+    """
     out = [f"{req.method} {req.target} {req.version}"]
     for key, value in req.headers:
-        if key.lower() in ("connection", "keep-alive", "proxy-connection") and not keep_upgrade:
+        if key.lower() in ("connection", "keep-alive", "proxy-connection"):
             continue
         out.append(f"{key}: {value}")
-    if not keep_upgrade:
-        out.append("Connection: close")
+    out.append("Connection: close")
     return ("\r\n".join(out) + "\r\n\r\n").encode("latin-1")
 
 
-def refusal(message: str) -> bytes:
+def refusal(message: str, status: str = "403 Forbidden") -> bytes:
     body = json.dumps({"message": message}).encode()
-    return (b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\n"
+    return (f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n".encode()
             + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
 
 
@@ -170,6 +263,22 @@ async def docker_get_json(socket_path: str, path: str, timeout: float = 5.0) -> 
     return data if isinstance(data, dict) else None
 
 
+def _exec_spec(body: bytes) -> Optional[dict[str, Any]]:
+    try:
+        spec = json.loads(body)
+    except ValueError:
+        return None
+    return spec if isinstance(spec, dict) else None
+
+
+def _streams_stdin(route: Route, body: bytes) -> bool:
+    """Only a non-detached exec start hijacks the connection; its later bytes are the exec's stdin."""
+    if route.kind != "exec_run" or route.action != "start":
+        return False
+    spec = _exec_spec(body) if body else {}
+    return not (spec or {}).get("Detach")
+
+
 @dataclass
 class Door:
     socket_path: str
@@ -178,6 +287,8 @@ class Door:
     _caller_ips: set[str] = field(default_factory=set)
     _caller_ips_at: float = 0.0
     get_json: Callable[[str, str], Awaitable[Optional[dict[str, Any]]]] = docker_get_json
+    head_timeout: float = HEAD_TIMEOUT_SEC
+    body_timeout: float = BODY_TIMEOUT_SEC
 
     async def caller_allowed(self, ip: str) -> bool:
         if not self.allowed_callers:
@@ -187,92 +298,150 @@ class Door:
             ips: set[str] = set()
             for name in self.allowed_callers:
                 try:
-                    for info in await loop.getaddrinfo(name, None, family=socket.AF_INET):
-                        ips.add(info[4][0])
-                except OSError:
+                    infos = await asyncio.wait_for(loop.getaddrinfo(name, None, family=socket.AF_INET), 5)
+                except (OSError, asyncio.TimeoutError):
                     continue
+                ips.update(info[4][0] for info in infos)
             self._caller_ips, self._caller_ips_at = ips, time.monotonic()
         return ip in self._caller_ips
 
     async def target_reach(self, container_ref: str) -> tuple[str, Optional[str]]:
         """(container name, reason it leads to the host or None). Unknown container -> refuse."""
-        data = await self.get_json(self.socket_path, f"/containers/{container_ref}/json")
+        if not _REF.match(container_ref):
+            return container_ref, "bad_ref"
+        data = await self.get_json(self.socket_path, f"/containers/{quote(container_ref)}/json")
         if data is None:
             return container_ref, "inspect_failed"
         return str(data.get("Name") or container_ref).lstrip("/"), host_reach(data)
 
-    async def decide(self, route: Route, body: bytes) -> tuple[bool, str, dict[str, Any]]:
+    async def decide(self, route: Route, body: bytes, has_length: bool) -> tuple[bool, str, dict[str, Any]]:
         """(allow, reason, extra record fields)."""
         if route.kind == "look":
             return True, "look", {}
         if route.kind == "exec_create":
+            spec = _exec_spec(body) if has_length else None
+            if spec is None:
+                return False, "exec_body_unreadable", {}
+            extra: dict[str, Any] = {"exec_cmd": spec.get("Cmd"), "exec_user": spec.get("User") or ""}
+            if spec.get("Privileged"):
+                return False, "exec_privileged", extra
             name, why = await self.target_reach(route.ref)
-            extra: dict[str, Any] = {"container": name}
-            try:
-                spec = json.loads(body or b"{}")
-                extra["exec_cmd"] = spec.get("Cmd")
-                extra["exec_user"] = spec.get("User") or ""
-            except ValueError:
-                extra["exec_cmd"] = None
+            extra["container"] = name
             return (why is None), (why or "exec"), extra
         if route.kind == "exec_run":
-            info = await self.get_json(self.socket_path, f"/exec/{route.ref}/json")
+            if not _REF.match(route.ref):
+                return False, "bad_ref", {}
+            info = await self.get_json(self.socket_path, f"/exec/{quote(route.ref)}/json")
             if info is None:
                 return False, "exec_inspect_failed", {}
-            name, why = await self.target_reach(str(info.get("ContainerID") or ""))
+            if (info.get("ProcessConfig") or {}).get("privileged"):
+                return False, "exec_privileged", {}
+            container = str(info.get("ContainerID") or "")
+            if not container:
+                return False, "exec_inspect_failed", {}
+            name, why = await self.target_reach(container)
             return (why is None), (why or "exec"), {"container": name}
         return False, "change", {}
 
-    async def handle(self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
-        peer = client_w.get_extra_info("peername") or ("?", 0)
-        entry: dict[str, Any] = {"caller_ip": peer[0]}
+    def _write_record(self, entry: dict[str, Any]) -> bool:
         try:
-            head = await client_r.readuntil(b"\r\n\r\n")
-            if len(head) > MAX_HEADER_BYTES:
-                raise ValueError("header too large")
-            req = parse_head(head)
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ValueError):
-            client_w.close()
+            self.record.write(entry)
+            return True
+        except (OSError, ValueError, TypeError) as exc:
+            logger.error("DOCKER_DOOR record_write_failed error=%r entry=%r", exc, entry)
+            return False
+
+    async def _send(self, client_w: asyncio.StreamWriter, data: bytes) -> None:
+        client_w.write(data)
+        with contextlib.suppress(OSError, asyncio.TimeoutError):
+            await asyncio.wait_for(client_w.drain(), self.head_timeout)
+
+    async def _refuse(self, client_w: asyncio.StreamWriter, entry: dict[str, Any], message: str,
+                      status: str = "403 Forbidden") -> None:
+        self._write_record({**entry, "decision": "refuse"})
+        await self._send(client_w, refusal(message, status))
+
+    async def handle(self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
+        writers = [client_w]
+        try:
+            await self._handle(client_r, client_w, writers)
+        except Exception:  # noqa: BLE001 -- one bad connection must never stop the door
+            logger.exception("DOCKER_DOOR handler_error")
+        finally:
+            for writer in writers:
+                with contextlib.suppress(Exception):
+                    writer.close()
+
+    async def _handle(self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter,
+                      writers: list[asyncio.StreamWriter]) -> None:
+        peer = client_w.get_extra_info("peername") or ("?", 0)
+        entry: dict[str, Any] = {"caller_ip": str(peer[0])}
+        if not await self.caller_allowed(str(peer[0])):
+            await self._refuse(client_w, {**entry, "reason": "caller"}, REFUSE_CALLER)
             return
-        path = normalize_path(req.target)
-        entry.update(method=req.method, path=path)
-        if not await self.caller_allowed(peer[0]):
-            self.record.write({**entry, "decision": "refuse", "reason": "caller"})
-            client_w.write(refusal(REFUSE_CALLER))
-            await client_w.drain()
-            client_w.close()
+        try:
+            head = await asyncio.wait_for(client_r.readuntil(b"\r\n\r\n"), self.head_timeout)
+            if len(head) > MAX_HEADER_BYTES:
+                raise BadRequest("head_too_large")
+            req = parse_head(head)
+            entry.update(method=req.method, path=req.target)
+            path = normalize_path(req.target)
+            entry["path"] = path
+            length = body_length(req)
+            body = b""
+            if length:
+                body = await asyncio.wait_for(client_r.readexactly(length), self.body_timeout)
+        except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError):
+            return  # client gone or too slow; nothing was forwarded (a door probe lands here too)
+        except asyncio.LimitOverrunError:
+            await self._refuse(client_w, {**entry, "reason": "bad_request:head_too_large"},
+                               "Orion's Docker door: request head too large.", "400 Bad Request")
+            return
+        except BadRequest as exc:
+            await self._refuse(client_w, {**entry, "reason": f"bad_request:{exc}"},
+                               f"Orion's Docker door: cannot read this request exactly ({exc}).",
+                               "400 Bad Request")
             return
         route = classify(req.method, path)
-        body = b""
-        if route.kind == "exec_create":
-            length = int(req.header("content-length") or 0)
-            if length > MAX_EXEC_BODY_BYTES:
-                length = 0
-            if length:
-                body = await client_r.readexactly(length)
         try:
-            allow, reason, extra = await self.decide(route, body)
+            allow, reason, extra = await asyncio.wait_for(
+                self.decide(route, body, length is not None), DAEMON_TIMEOUT_SEC)
         except (OSError, asyncio.TimeoutError) as exc:
             allow, reason, extra = False, f"daemon_error:{type(exc).__name__}", {}
         entry.update(extra)
-        self.record.write({**entry, "decision": "allow" if allow else "refuse", "reason": reason})
+        entry["reason"] = reason
         if not allow:
             message = REFUSE_HOST if route.kind in ("exec_create", "exec_run") else REFUSE_CHANGE
-            if reason.startswith("daemon_error") or reason.endswith("_failed"):
+            if reason.startswith("daemon_error") or reason.endswith(("_failed", "_unreadable")) or reason == "bad_ref":
                 message = f"Orion's Docker door: could not check the target ({reason})."
-            client_w.write(refusal(message))
-            await client_w.drain()
-            client_w.close()
+            elif reason == "exec_privileged":
+                message = "Orion's Docker door: a privileged exec is off."
+            await self._refuse(client_w, entry, message)
             return
-        keep_upgrade = bool(req.header("upgrade")) and route.kind == "exec_run"
+        if not self._write_record({**entry, "decision": "allow"}):
+            await self._send(client_w, refusal(REFUSE_RECORD, "503 Service Unavailable"))
+            return
         try:
-            up_r, up_w = await asyncio.open_unix_connection(self.socket_path)
-        except OSError:
-            client_w.close()
+            up_r, up_w = await asyncio.wait_for(asyncio.open_unix_connection(self.socket_path),
+                                                DAEMON_TIMEOUT_SEC)
+        except (OSError, asyncio.TimeoutError):
+            await self._send(client_w, refusal("Orion's Docker door: the daemon did not answer.",
+                                               "502 Bad Gateway"))
             return
-        up_w.write(rebuild_head(req, keep_upgrade=keep_upgrade) + body)
+        writers.append(up_w)
+        up_w.write(rebuild_head(req) + body)
         await up_w.drain()
-        await asyncio.gather(_pipe(client_r, up_w), _pipe(up_r, client_w))
+        down = asyncio.ensure_future(_pipe(up_r, client_w))
+        if not _streams_stdin(route, body):
+            await down
+            return
+        up = asyncio.ensure_future(_pipe(client_r, up_w))
+        try:
+            await down  # the exec's output ending ends the session, even if stdin stays open
+        finally:
+            up.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await up
 
 
 async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
@@ -286,13 +455,9 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
     except (ConnectionError, OSError):
         pass
     finally:
-        try:
+        with contextlib.suppress(OSError, RuntimeError):
             if dst.can_write_eof():
                 dst.write_eof()
-            else:
-                dst.close()
-        except (OSError, RuntimeError):
-            dst.close()
 
 
 async def serve(door: Door, host: str, port: int) -> None:
@@ -302,6 +467,7 @@ async def serve(door: Door, host: str, port: int) -> None:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     callers = tuple(c.strip() for c in os.environ.get("DOCKER_DOOR_ALLOWED_CALLERS", "").split(",") if c.strip())
     if not callers:
         raise SystemExit("DOCKER_DOOR_ALLOWED_CALLERS is empty: refusing to serve every container on the network")

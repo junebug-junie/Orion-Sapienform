@@ -6,9 +6,13 @@ Design: `docs/superpowers/specs/2026-11-24-orion-safe-autonomy-in-place-design.m
 ## What it does
 
 - **Passes looking:** every `GET`/`HEAD` (`docker ps`, `logs`, `inspect`, `stats`, `info`, `events`).
-- **Passes exec** (`docker exec`), unless the target container leads back to the host: it mounts
-  the Docker socket, runs privileged, uses `pid: host`, or bind-mounts `/`, `/run`, `/var/run` or
-  `/var/lib/docker`. The door inspects the target live on every exec, so no list to keep.
+- **Passes exec** (`docker exec`), unless the target container leads back to the host: it runs
+  privileged; uses host PID, network, IPC or user namespaces; adds capabilities (`cap_add`); maps
+  devices; mounts a runtime socket (`docker.sock`, `containerd.sock`, any `*.sock` under `/run` or
+  `/var/run`; matched by source and destination); or bind-mounts `/`, `/run`, `/var/run`,
+  `/var/lib/docker`, or anything under `/proc`, `/sys`, `/dev`, `/etc`, `/root`. The door
+  inspects the target live on every exec, so no list to keep. An exec that asks for
+  `"Privileged": true` is refused too.
 - **Refuses changing containers:** every other `POST`/`PUT`/`DELETE` (run, create, start, stop,
   restart, rm, build, pull, compose up, prune, ...) and every attach. The CLI prints
   "Orion's Docker door: changing containers is off".
@@ -17,8 +21,14 @@ Design: `docs/superpowers/specs/2026-11-24-orion-safe-autonomy-in-place-design.m
   host (time, caller, method, path, container, exec command and user, decision, reason). Orion's
   turns cannot exec into this container (it holds the socket), so they cannot change the record.
 
-One request per connection: the door forwards with `Connection: close`, so a second request
-cannot ride an already-checked connection.
+Strict by design (code review, 2026-11-24): the door reads the whole request before it decides,
+and refuses (400) anything it cannot read exactly: a bare LF or stray CR in the head, folded
+headers, any version but HTTP/1.0 and 1.1, `Transfer-Encoding`, `Expect`, a missing or bad
+`Content-Length` on an exec create, a body over 1 MB, an encoded or dotted path. It forwards
+exactly that one request, always with `Connection: close`. Later bytes from the client reach the
+daemon only after a non-detached exec start, where Docker has already turned the connection into
+that exec's stdin. Slow or broken clients are dropped by read timeouts. If the record cannot be
+written, nothing passes (503).
 
 ## Canary
 

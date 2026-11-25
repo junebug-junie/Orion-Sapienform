@@ -45,6 +45,7 @@ from orion.fcc.context_budget import (
 
 from orion.harness.cut_short import FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE
 from orion.harness.structured_output import is_structured_output
+from orion.harness.docker_door_canary import door_docker_host_async
 
 logger = logging.getLogger("orion.harness.fcc_motor")
 
@@ -833,7 +834,7 @@ def _build_subprocess_env(
     gpu_lease: dict | None = None,
     chat_reply: bool = False,
     correlation_id: Optional[str] = None,
-    docker_door: bool = True,
+    docker_host: Optional[str] = None,
 ) -> Dict[str, str]:
     env = os.environ.copy()
     from orion.harness.fcc_warm_relay import CORRELATION_HEADER
@@ -968,15 +969,11 @@ def _build_subprocess_env(
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     else:
         env.pop("CLAUDE_CODE_DISABLE_AUTO_MEMORY", None)
-    # Docker-door canary (orion/harness/docker_door_canary.py): inside a scheduled window this
-    # turn's docker CLI talks to the door instead of the socket. Warm slots pass
-    # docker_door=False and get it per turn through their env file instead.
-    if docker_door:
-        from orion.harness.docker_door_canary import door_docker_host
-
-        door = door_docker_host(correlation_id=corr)
-        if door:
-            env["DOCKER_HOST"] = door
+    # Docker-door canary (orion/harness/docker_door_canary.py): inside a scheduled window the
+    # caller passes the door URL (probed off the event loop), and this turn's docker CLI talks to
+    # the door instead of the socket. Warm slots get it per turn through their env file instead.
+    if docker_host:
+        env["DOCKER_HOST"] = docker_host
     return env
 
 
@@ -1301,6 +1298,7 @@ async def run_fcc_turn(
                             n_ctx=lane_n_ctx, fcc_server_url=fcc_server_url, auth_token=auth_token,
                             fcc_env=None if reading_only else env, turn_budget_sec=float(timeout_sec),
                             turn_deadline_epoch=deadline_epoch, turn_step_stall_sec=stall_timeout_sec,
+                            docker_host=await door_docker_host_async(correlation_id=correlation_id),
                         )
                     except Exception:  # noqa: BLE001 -- never lose the held final
                         logger.warning("fcc_warm_resume_env_failed corr=%s", correlation_id, exc_info=True)
@@ -1385,6 +1383,7 @@ async def run_fcc_turn(
         turn_budget_sec=float(timeout_sec),
         turn_deadline_epoch=deadline_epoch,
         turn_step_stall_sec=stall_timeout_sec,
+        docker_host=await door_docker_host_async(correlation_id=correlation_id),
     )
     io = _SpawnTurnIO(argv, cwd=workspace, env=spawn_env, limit=stream_read_limit, claude_bin=claude_bin)
     held_final: Optional[Dict[str, object]] = None

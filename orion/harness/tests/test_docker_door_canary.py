@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,20 +56,55 @@ def test_turn_docker_host_falls_back_to_container_value() -> None:
     assert canary.turn_docker_host(environ=env(), now=INSIDE, answers=lambda _u: True) == "tcp://door:2375"
 
 
-def test_build_subprocess_env_uses_door_only_in_window(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_subprocess_env_takes_the_door_from_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
     from orion.harness import fcc_motor
 
     monkeypatch.delenv("DOCKER_HOST", raising=False)
-    monkeypatch.setattr(canary, "door_answers", lambda _u, timeout=0.5: True)
-    monkeypatch.setenv(canary.WINDOWS_ENV, "2000-01-01T00:00Z/2100-01-01T00:00Z")
-    monkeypatch.setenv(canary.URL_ENV, "tcp://door:2375")
-    on = fcc_motor._build_subprocess_env(fcc_server_url="http://fcc", auth_token="t")
+    # The env builder never probes (finding 6): the caller passes the door URL, or nothing.
+    monkeypatch.setattr(canary, "door_answers", lambda *_a, **_k: pytest.fail("probe inside env build"))
+    on = fcc_motor._build_subprocess_env(fcc_server_url="http://fcc", auth_token="t", docker_host="tcp://door:2375")
     assert on["DOCKER_HOST"] == "tcp://door:2375"
-    warm = fcc_motor._build_subprocess_env(fcc_server_url="http://fcc", auth_token="t", docker_door=False)
-    assert "DOCKER_HOST" not in warm
-    monkeypatch.setenv(canary.WINDOWS_ENV, "2000-01-01T00:00Z/2000-01-02T00:00Z")
     off = fcc_motor._build_subprocess_env(fcc_server_url="http://fcc", auth_token="t")
     assert "DOCKER_HOST" not in off
+
+
+def test_async_probe_does_not_block_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    def slow(_url: str, timeout: float = 0.5) -> bool:
+        time.sleep(0.3)
+        return True
+
+    monkeypatch.setattr(canary, "door_answers", slow)
+
+    async def main() -> tuple[str, float]:
+        ticks: list[float] = []
+
+        async def ticker() -> None:
+            for _ in range(6):
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.05)
+
+        tick = asyncio.ensure_future(ticker())
+        host = await canary.turn_docker_host_async(environ=env(), now=INSIDE)
+        await tick
+        return host, max(b - a for a, b in zip(ticks, ticks[1:]))
+
+    host, worst_gap = asyncio.run(main())
+    assert host == "tcp://door:2375" and worst_gap < 0.2
+
+
+def test_async_probe_gives_up_and_keeps_the_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    monkeypatch.setattr(canary, "PROBE_WAIT_SEC", 0.1)
+    monkeypatch.setattr(canary, "door_answers", lambda _u, timeout=0.5: time.sleep(0.4) or True)
+    host = asyncio.run(canary.turn_docker_host_async(environ=env(DOCKER_HOST="unix:///s.sock"), now=INSIDE))
+    assert host == "unix:///s.sock"
+
+
+def test_async_probe_outside_window_returns_container_value() -> None:
+    assert asyncio.run(canary.turn_docker_host_async(environ=env(), now=OUTSIDE)) == ""
 
 
 def test_github_mcp_stays_on_the_real_socket() -> None:

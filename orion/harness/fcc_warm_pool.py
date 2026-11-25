@@ -447,11 +447,12 @@ class WarmPool:
             from orion.harness.fcc_motor import TURN_CORRELATION_ENV
 
             # The warm process env predates this turn; the env file is sourced by every Bash call.
-            from orion.harness.docker_door_canary import turn_docker_host
+            from orion.harness.docker_door_canary import turn_docker_host_async
 
             # Docker-door canary: the door inside a scheduled window, else the socket. Always
             # written, so a slot that served a canary turn goes back to the socket next turn.
-            per_turn = {**turn_env, "DOCKER_HOST": turn_docker_host(correlation_id=correlation_id or "")}
+            # The probe runs off the event loop and is capped, so it cannot stall other turns.
+            per_turn = {**turn_env, "DOCKER_HOST": await turn_docker_host_async(correlation_id=correlation_id or "")}
             write_turn_env_file(slot.env_file, {**per_turn, TURN_CORRELATION_ENV: correlation_id}
                                 if correlation_id else per_turn)
             if slot.reading_tools:
@@ -583,7 +584,6 @@ class WarmPool:
             turn_budget_sec=None,
             turn_deadline_epoch=None,
             turn_step_stall_sec=None,
-            docker_door=False,
         )
         # The relay supplies the real credential per turn.
         env.pop("ANTHROPIC_API_KEY", None)

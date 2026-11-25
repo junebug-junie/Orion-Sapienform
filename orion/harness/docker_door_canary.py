@@ -14,6 +14,7 @@ Design: docs/superpowers/specs/2026-11-24-orion-safe-autonomy-in-place-design.md
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
@@ -26,6 +27,9 @@ logger = logging.getLogger("orion.harness.docker_door_canary")
 WINDOWS_ENV = "ORION_DOCKER_DOOR_CANARY_WINDOWS"
 URL_ENV = "ORION_DOCKER_DOOR_URL"
 DEFAULT_URL = "tcp://orion-athena-docker-door:2375"
+# The probe runs in a thread; this caps how long a turn waits on it (DNS is not under the
+# socket timeout), so a broken door can never stall a turn or keep a warm slot busy.
+PROBE_WAIT_SEC = 2.0
 
 Window = tuple[datetime, datetime]
 
@@ -100,3 +104,17 @@ def turn_docker_host(environ: Mapping[str, str] = os.environ, **kwargs) -> str:
     An empty value makes the docker CLI use its default socket, the same as unset.
     """
     return door_docker_host(environ=environ, **kwargs) or str(environ.get("DOCKER_HOST") or "")
+
+
+async def door_docker_host_async(**kwargs) -> Optional[str]:
+    """``door_docker_host`` off the event loop: the probe is a blocking connect."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(door_docker_host, **kwargs), PROBE_WAIT_SEC)
+    except asyncio.TimeoutError:
+        logger.warning("DOCKER_DOOR_CANARY corr=%s door=probe_timeout (socket kept)", kwargs.get("correlation_id", ""))
+        return None
+
+
+async def turn_docker_host_async(environ: Mapping[str, str] = os.environ, **kwargs) -> str:
+    """``turn_docker_host`` off the event loop."""
+    return await door_docker_host_async(environ=environ, **kwargs) or str(environ.get("DOCKER_HOST") or "")

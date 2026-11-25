@@ -166,6 +166,7 @@ def _start_lived_memory(pool, bus, stop: "asyncio.Event"):
             route=settings.RECALL_LIVED_MEMORY_REWRITE_ROUTE,
             timeout_sec=settings.RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC,
             source=source,
+            tz=settings.RECALL_LIVED_MEMORY_TIMEZONE,
         )
     set_lived_memory(
         LivedMemoryRecall(
@@ -180,6 +181,8 @@ def _start_lived_memory(pool, bus, stop: "asyncio.Event"):
                 short_gate=settings.RECALL_LIVED_MEMORY_SHORT_GATE_ENABLED,
                 rewrite_timeout_sec=settings.RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC,
                 link_top_k=settings.RECALL_LIVED_MEMORY_LINK_TOP_K,
+                time_window=settings.RECALL_LIVED_MEMORY_TIME_WINDOW_ENABLED,
+                timezone=settings.RECALL_LIVED_MEMORY_TIMEZONE,
             ),
             rewriter=rewriter,
         )

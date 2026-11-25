@@ -182,7 +182,8 @@ def build_local_lived(pool: Any, bus: Any, args: argparse.Namespace) -> Any:
         rewriter = BusRewriter(bus, channel=os.getenv("CHANNEL_LLM_INTAKE", "orion:exec:request:LLMGatewayService"),
                                route=os.getenv("RECALL_LIVED_MEMORY_REWRITE_ROUTE", "quick_turn"),
                                timeout_sec=rewrite_timeout,
-                               source=ServiceRef(name="orion-recall", version="scoreboard-local", node="eval"))
+                               source=ServiceRef(name="orion-recall", version="scoreboard-local", node="eval"),
+                               tz=os.getenv("RECALL_LIVED_MEMORY_TIMEZONE", "America/Denver"))
     cfg = LivedMemoryConfig(
         search=SearchConfig(chroma_url=args.lived_chroma_url, embed_url=args.lived_embed_url,
                             collection=os.getenv("RECALL_LIVED_MEMORY_COLLECTION", COLLECTION), min_similarity=0.0),
@@ -193,8 +194,26 @@ def build_local_lived(pool: Any, bus: Any, args: argparse.Namespace) -> Any:
         min_query_tokens=int(_env_float("RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS", 5)),
         short_gate=args.lived_local_short_gate == "on",
         rewrite_timeout_sec=rewrite_timeout,
-        link_top_k=int(_env_float("RECALL_LIVED_MEMORY_LINK_TOP_K", 2)))
+        link_top_k=int(_env_float("RECALL_LIVED_MEMORY_LINK_TOP_K", 2)),
+        time_window=str(os.getenv("RECALL_LIVED_MEMORY_TIME_WINDOW_ENABLED", "true")).lower() not in ("0", "false", "no"),
+        timezone=os.getenv("RECALL_LIVED_MEMORY_TIMEZONE", "America/Denver"))
     return LivedMemoryRecall(pool, cfg, rewriter=rewriter)
+
+
+def asked_at(item: Item, tz: str | None = None) -> Optional[datetime]:
+    """Noon on the item's ``as_of`` day in Juniper's zone: "now" for its relative time words
+    (--lived-local only; the deployed service always reads the real clock)."""
+    if not item.as_of:
+        return None
+    from datetime import date, time as dtime
+    from zoneinfo import ZoneInfo
+
+    try:
+        day = date.fromisoformat(str(item.as_of)[:10])
+    except ValueError:
+        return None
+    zone = ZoneInfo(tz or os.getenv("RECALL_LIVED_MEMORY_TIMEZONE") or "America/Denver")
+    return datetime.combine(day, dtime(12, 0), tzinfo=zone).astimezone(timezone.utc)
 
 
 def swap_lived_lines(bundle_items: List[Dict[str, Any]], local_ids: List[str]) -> set[str]:
@@ -214,6 +233,7 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
     await bus.connect()
     local = build_local_lived(pool, bus, args) if getattr(args, "lived_local", False) else None
     local_rows: Dict[str, Dict[str, Any]] = {}   # qid -> the local lived search's status and trace
+    local_traces: Dict[str, Dict[str, Any]] = {}  # qid -> the local lived trace (kept for the report)
     local_ms: Dict[str, List[int]] = {}   # gate -> lived-recall total ms
     gates: Dict[str, int] = {}
     observations: Dict[str, RetrievalObservation] = {}
@@ -239,10 +259,12 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
                 if local is not None:
                     from app.lived_memory import status_of, trace_of
 
-                    out = await local.recall(text, session_id=SESSION_ID)
+                    # A time item's relative words ("last week") refer to the day it was written.
+                    out = await local.recall(text, session_id=SESSION_ID, now=asked_at(it))
                     ids = [s.rec.doc_id for s in out.chosen]
                     local_rows[it.qid] = {"lived_status": status_of(out.debug, len(ids), backend=out.backend),
                                           "lived_trace": trace_of(out.debug), "served": len(ids)}
+                    local_traces[it.qid] = dict(local_rows[it.qid]["lived_trace"])
                     g = str(out.debug.get("gate") or "none")
                     local_ms.setdefault(g, []).append(int((out.debug.get("timings_ms") or {}).get("total") or 0))
                     gates[g] = gates.get(g, 0) + 1
@@ -306,8 +328,17 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
             return {"p50": ms[len(ms) // 2], "p90": ms[min(len(ms) - 1, int(0.9 * len(ms)))],
                     "max": ms[-1]} if ms else None
 
+        rewrites: Dict[str, int] = {}
+        for row in local_traces.values():
+            k = str(row.get("rewrite") or "none")
+            rewrites[k] = rewrites.get(k, 0) + 1
         report["lived_local"] = {
             "short_gate": args.lived_local_short_gate, "gates": gates,
+            # Rewrite outcomes per run (ok/none/timeout/...): the run-to-run noise source (#3674).
+            "rewrite": dict(sorted(rewrites.items())),
+            # Per item: rewrite outcome, the time window read, pool size. Ids and dates only.
+            "traces": {q: {k: v for k, v in t.items() if k in ("rewrite", "window", "rewrite_window", "gate")}
+                       | {"candidates": len(t.get("candidate_ids") or [])} for q, t in sorted(local_traces.items())},
             "total_ms": pcts([m for vals in local_ms.values() for m in vals]),
             "total_ms_by_gate": {g: pcts(v) for g, v in sorted(local_ms.items())},
         }

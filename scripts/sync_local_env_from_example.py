@@ -418,6 +418,9 @@ SYNC_PREFIXES = (
     # invisible to `should_sync_key()`, missing-key or not, despite this
     # module's own docstring claiming missing keys are "always" auto-added).
     "FIELD_DIGESTER_",
+    # Lived-memory recall (orion-recall, issues #3533/#3613/#3674). Same blind spot: the time-window
+    # keys (RECALL_LIVED_MEMORY_TIME_WINDOW_ENABLED, _TIMEZONE) were invisible to default sync.
+    "RECALL_LIVED_MEMORY_",
     # Queue contention EWMA (hire weather, 2026-09-20). Same blind spot:
     # FIELD_QUEUE_CONTENTION_* is outside FIELD_DIGESTER_ / FIELD_CHANNEL_,
     # so without this prefix default sync reports "no changes" and the

@@ -54,6 +54,7 @@ for p in (str(SERVICE), str(REPO)):
         sys.path.insert(0, p)
 
 from app.lived_memory import LivedMemoryConfig, LivedMemoryRecall, rank  # noqa: E402
+from app.lived_rewrite import RewriteResult, as_result  # noqa: E402
 from orion.introspect.semantic_index import SearchConfig  # noqa: E402
 from orion.memory.lived_memory import COLLECTION  # noqa: E402
 from orion.memory.low_info_social import is_low_info_social  # noqa: E402
@@ -133,11 +134,14 @@ VARIANTS = {
 
 
 class _CachedRewriter:
-    """Calls the real rewriter once per message; later variants reuse the answer."""
+    """Calls the real rewriter once per message; later variants reuse the answer. The answer may
+    carry a time window (issue #3674); a cache file keeps only the queries."""
+
+    wants_now = True
 
     def __init__(self, inner: Any, seed: Dict[str, List[str]] | None = None) -> None:
         self.inner = inner
-        self.cache: Dict[str, List[str]] = dict(seed or {})
+        self.cache: Dict[str, Any] = dict(seed or {})
         self.errors = 0
 
     @staticmethod
@@ -145,16 +149,22 @@ class _CachedRewriter:
         # The short-message prompt (issue #3613) is a different question: its own cache entry.
         return ("short:" if short else "") + hashlib.sha256(message.encode("utf-8")).hexdigest()
 
-    async def __call__(self, message: str, context: Any, *, short: bool = False) -> List[str]:
+    def queries_only(self) -> Dict[str, List[str]]:
+        return {k: list(as_result(v).queries) for k, v in self.cache.items()}
+
+    async def __call__(self, message: str, context: Any, *, short: bool = False, now: Any = None) -> Any:
         key = self.key(message, short)
         if key in self.cache:
             return self.cache[key]
+        kw: Dict[str, Any] = {"short": True} if short else {}
+        if getattr(self.inner, "wants_now", False):
+            kw["now"] = now
         try:
-            out = await (self.inner(message, context, short=True) if short else self.inner(message, context))
+            out = await self.inner(message, context, **kw)
         except Exception:
             self.errors += 1
             raise
-        self.cache[key] = list(out)
+        self.cache[key] = out if isinstance(out, RewriteResult) else list(out)
         return out
 
 
@@ -293,7 +303,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
         # Same rewrites on the next run, so a before/after compares the code, not the LLM's
         # run-to-run variance. Private (Orion's searches over Juniper's messages): host-side, 600.
         path = Path(args.rewrite_cache).expanduser()
-        path.write_text(json.dumps(rewriter.cache), encoding="utf-8")
+        path.write_text(json.dumps(rewriter.queries_only()), encoding="utf-8")
         os.chmod(path, 0o600)
     if rewriter is not None:
         report["rewrite_calls"] = len(rewriter.cache)

@@ -108,7 +108,7 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/pr_draft_gate.py\"",
-            "timeout": 25
+            "timeout": 45
           }
         ]
       },

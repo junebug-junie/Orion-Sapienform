@@ -546,6 +546,21 @@ def test_persist_retries_without_a_second_turn_and_cites_give_up_without_failing
     asyncio.run(scenario())
 
 
+def test_a_run_whose_persist_gives_up_still_closes_the_now_read():
+    """Review of #3866: the model answered but persist failed every attempt: the read is closed empty."""
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    async def scenario():
+        world, saver = World(persist_fail=99), InMemorySaver()
+        result = await start_and_grant(world, saver)
+        while result["status"] == "retrying":
+            result = await after_backoff(world, saver)
+        assert result["status"] == "failed" and world.stored is None
+        assert world.cites == [("shown-1", [], "dream_day:2026-11-17")]
+    asyncio.run(scenario())
+
+
 def test_a_run_that_lost_the_day_grades_zero():
     pytest.importorskip("langgraph")
     from langgraph.checkpoint.memory import InMemorySaver

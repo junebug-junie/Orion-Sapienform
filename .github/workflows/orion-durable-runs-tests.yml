@@ -51,6 +51,9 @@ on:
       - "orion/autonomy/contrast.py"
       - "orion/autonomy/prediction.py"
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
+      - "services/orion-sql-db/manual_migration_experience_now_v1.sql"   # Orion's now (experience_shown/_use)
+      - "services/orion-sql-db/manual_migration_experience_shown_closed_v1.sql"   # #3498: closed_at, the cursor
+      - "orion/integration/coverage.py"   # NOW_READS_SQL: checked by test_experience_now_postgres.py
       - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"
@@ -228,6 +231,9 @@ on:
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-sql-db/manual_migration_durable_resource_abandon_pending_v1.sql"
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
+      - "services/orion-sql-db/manual_migration_experience_now_v1.sql"   # Orion's now (experience_shown/_use)
+      - "services/orion-sql-db/manual_migration_experience_shown_closed_v1.sql"   # #3498: closed_at, the cursor
+      - "orion/integration/coverage.py"   # NOW_READS_SQL: checked by test_experience_now_postgres.py
       - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"

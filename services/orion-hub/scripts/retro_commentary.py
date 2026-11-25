@@ -581,18 +581,21 @@ class CommentaryService:
             # The Hub stopped waiting; the motor may still run on the governor. Stop it (the hold is released).
             with contextlib.suppress(Exception):
                 await self._cancel_motor(corr)
-        if run.yielded:
-            result.update(outcome="yielded", failure="yielded")
-            return
-        if not str(text or "").strip():
-            result.update(outcome="failed", failure=str(debug.get("error") or "empty_generation"))
-            return  # the model never answered: the now read stays open, so the next line is offered it again
-
         async def close_now(cites_: list) -> None:
             """The model answered: close the now read (#3498), with the line's cites when it was said, else none.
             Closing moves the play organ's cursor; a read never closed is offered again."""
             if getattr(now_obj, "shown_id", None):
                 await self._record_use(now_obj.shown_id, f"{CITING_PREFIX}:{line_id}", list(cites_))
+
+        answered = bool(str(text or "").strip())
+        if run.yielded:
+            result.update(outcome="yielded", failure="yielded")
+            if answered:  # the turn finished in a race with the yield: the model did read the now
+                await close_now([])
+            return
+        if not answered:
+            result.update(outcome="failed", failure=str(debug.get("error") or "empty_generation"))
+            return  # the model never answered: the now read stays open, so the next line is offered it again
 
         staged = debug.get("staged_attachment_count")
         if not isinstance(staged, int) or staged < len(refs):
@@ -642,9 +645,10 @@ class CommentaryService:
         elif sent.get("reason") == "yielded":
             result.update(outcome="yielded", failure="yielded_before_delivery")
             await close_now([])  # the model wrote it; nothing was said, so nothing is cited
-        elif not run.claimed:
-            result.update(outcome="failed", failure=str(sent.get("reason") or "not_sent"))
-            await close_now([])
+        else:
+            if not run.claimed:
+                result.update(outcome="failed", failure=str(sent.get("reason") or "not_sent"))
+            await close_now([])  # claimed then not sent, or never claimed: the model ran, nothing was said
 
     async def _settle(self, settlements: list, line_id: str) -> None:
         if not settlements:

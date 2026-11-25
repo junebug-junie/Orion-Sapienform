@@ -103,6 +103,36 @@ numbers as fixed. Dog clues can point either way and stay low weight.
 Clothes, hair and build still have no answer key: they wait for a labelled
 set, and the SigLIP plan below applies only to them.
 
+### Clothes and hair, measured (2026-11-25): not usable yet
+
+`services/orion-sql-writer/evals/run_clothing_clue_eval.py` scores six generic phrases
+from her reasons (puffy purple jacket, red hair, tight ponytail, blue denim shirt,
+tights, shorts) against the SigLIP vectors already stored for every crop (minus a
+neutral "a photo of a person"), per passage, person album vs street (AUC; 0.5 =
+nothing). Answer key = the album, no new labels. Height and build are not
+readable from one crop vector and were not tested.
+
+Live, last 30 days (2,375 street passages, 14 album labels with >= 10 passages,
+one of them a decoration kept as a control):
+
+- No measurable lead. A person's own stated phrases, combined, reach AUC 0.67
+  (110 passages; rank 1 of 14, next 0.59) over 30 days and tie at 0.64 over 14
+  days; another stated set reaches 0.61-0.70 (rank 2). With 10-110 album passages a
+  single AUC has a standard error of ~0.05-0.15, rank 1 of 14 happens by chance at
+  p ~ 1/14, and "best case" is picked from several sets: none of this is
+  distinguishable from 0.5.
+- A summer phrase in November scores 0.33 for its person (31-433 passages): clothes
+  clues are seasonal.
+- The decoration scores 0.70 on "red hair": part of the read is light / camera.
+- Conservative biases: the street side is the newest 20 crops of each unnamed
+  cluster and can hold unnamed sightings of the same people (both pull AUC toward
+  0.5); album crops with no cluster count each frame as a passage (n is smaller
+  than printed).
+
+For comparison the stroller clue is ~30:1 against a regular per sighting. So
+clothes and hair are NOT wired into guesses. Re-run the eval as albums grow or the
+season changes; a phrase needs a clear per-person lead before it is considered.
+
 ### Patch 2 (original plan): a clue list per person, read from pictures
 
 - `orion/person_model/clues.yaml` (committed, generic): the clue kinds that

@@ -1,0 +1,13 @@
+{
+  "_doc": "Generic clothing / hair phrases from Juniper's 'How could you tell?' reasons (2026-11-25). No names. Text side for run_clothing_clue_eval.py; regenerate vectors with scripts/generate_clothing_phrase_vectors.py.",
+  "model_id": "google/siglip-so400m-patch14-384",
+  "neutral": ["a photo of a person", "a photo of a person walking", "a person on a sidewalk"],
+  "phrases": {
+    "puffy_purple_jacket": ["a person wearing a puffy purple jacket", "a person in a purple down jacket", "a person in a purple puffer coat"],
+    "red_hair": ["a person with red hair", "a person with ginger hair", "a redhead walking"],
+    "tight_ponytail": ["a person with their hair in a tight ponytail", "a person with a high ponytail", "a woman with a slicked back ponytail"],
+    "blue_denim_shirt": ["a person wearing a blue denim shirt", "a person in a chambray shirt", "a person in a jean shirt"],
+    "tights": ["a person wearing tights", "a person wearing leggings", "a person in black leggings"],
+    "shorts": ["a person wearing short shorts", "a person in shorts", "a person wearing very short shorts"]
+  }
+}

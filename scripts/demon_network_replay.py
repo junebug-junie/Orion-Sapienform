@@ -55,10 +55,12 @@ DB_CONTAINER = "orion-athena-sql-db"
 
 def _psql(sql: str) -> list[list[str]]:
     out = subprocess.run(
-        ["docker", "exec", DB_CONTAINER, "psql", "-U", "postgres", "-d", "conjourney", "-AtF", "\t", "-c", sql],
+        ["docker", "exec", DB_CONTAINER, "psql", "-U", "postgres", "-d", "conjourney", "-v", "ON_ERROR_STOP=1",
+         "-AtF", "\t", "-c", "set default_transaction_read_only = on; " + sql],
         check=True, capture_output=True, text=True,
     ).stdout
-    return [line.split("\t") for line in out.splitlines() if line]
+    # The first output line is the SET command's tag (-At still prints it).
+    return [line.split("\t") for line in out.splitlines() if line and line != "SET"]
 
 
 def _routed_roles() -> tuple[list[str], dict[str, list[str]]]:
@@ -86,6 +88,8 @@ def load() -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
         "from grammar_events where event_kind = 'atom_emitted' and (" + " or ".join(clauses) + ")"
     )
     rows = _psql(sql)
+    if not rows:
+        raise SystemExit("demon_network_replay: no routed seat atoms in grammar_events")
     b0 = min(int(r[0]) for r in rows)
     b1 = max(int(r[0]) for r in rows)
     level = np.zeros((b1 - b0 + 1, len(routing.SEAT_ORDER)))
@@ -153,6 +157,10 @@ def main() -> int:
     x, raw_run, idx_run = res[lo:hi], raw[lo:hi], idx[lo:hi]
     first = datetime.fromtimestamp(int(idx_run[0]) * BUCKET, timezone.utc).isoformat()
     last = datetime.fromtimestamp(int(idx_run[-1]) * BUCKET, timezone.utc).isoformat()
+    refusal = demon.refusal_reason(raw_run, names)
+    if refusal:
+        print(f"{LABEL}\nREFUSED by the hygiene gate: {refusal}. Nothing scored.")
+        return 2
     out: dict = {
         "label": LABEL,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -161,7 +169,7 @@ def main() -> int:
         "load": stats,
         "scored_span": {"first": first, "last": last, "rows": int(len(x)),
                         "hours": round(len(x) / 12, 1)},
-        "refusal_reason_raw": demon.refusal_reason(raw_run, names),
+        "refusal_reason_raw": refusal,
         "lags_steps": list(LAGS),
     }
     train_rows = int(TRAIN_FRACTION * len(x))
@@ -169,12 +177,13 @@ def main() -> int:
     # 1. Skill by k: one refit through the rolling-errors interface (window = training rows).
     errs = demon.network_rolling_errors(x, window=train_rows, step=len(x), lags=LAGS)
     skill = {}
+    level_best = demon._best_of(errs.clock, errs.persistence)
     for name, base in (("clock", errs.clock), ("persistence", errs.persistence), ("linear", errs.linear),
-                       ("best_level_baseline", errs.baseline)):
+                       ("best_of_clock_persistence", level_best), ("best_of_all_three", errs.baseline)):
         s = demon.skill_spread(errs.whole, base, block=12, n_boot=2000, rng=rng)
         skill[name] = {"skill": _r(s.skill), "bits_per_row": _r(s.bits), "p10": _r(s.p10), "p90": _r(s.p90),
                        "p_real": _r(s.p_real, 3)}
-    lin_vs_base = demon.skill_spread(errs.linear, errs.baseline, block=12, n_boot=2000, rng=rng)
+    lin_vs_base = demon.skill_spread(errs.linear, level_best, block=12, n_boot=2000, rng=rng)
     out["skill"] = {
         "scored_rows": int(errs.whole.shape[0]),
         "network_bits_per_row": _r(errs.whole.mean(0)),
@@ -182,7 +191,7 @@ def main() -> int:
         "persistence_bits_per_row": _r(errs.persistence.mean(0)),
         "linear_bits_per_row": _r(errs.linear.mean(0)),
         "network_vs": skill,
-        "linear_vs_best_level_baseline": {"skill": _r(lin_vs_base.skill), "p10": _r(lin_vs_base.p10),
+        "linear_vs_best_of_clock_persistence": {"skill": _r(lin_vs_base.skill), "p10": _r(lin_vs_base.p10),
                                           "p90": _r(lin_vs_base.p90), "p_real": _r(lin_vs_base.p_real, 3)},
     }
 
@@ -191,6 +200,7 @@ def main() -> int:
                                 guard=NULL_GUARD, rng=rng)
     obs = lat.observed
     p_real, p_real_lin = lat.p_real, lat.p_real_linear
+    p_mip, p_mip_lin = lat.p_real_mip("network"), lat.p_real_mip("linear")
     null_mean, null_sd = lat.null_network_bits.mean(0), lat.null_network_bits.std(0, ddof=1)
 
     def label(p):
@@ -211,15 +221,22 @@ def main() -> int:
         mips.append({
             "k": k, "network_mip": label(obs.partitions[mn]), "network_mip_bits": round(float(obs.network_bits[mn, c]), 4),
             "network_mip_null_mean": round(float(null_mean[mn, c]), 4), "network_mip_null_sd": round(float(null_sd[mn, c]), 4),
-            "network_mip_p_real": round(float(p_real[mn, c]), 3),
+            "network_mip_p_real_at_that_partition": round(float(p_real[mn, c]), 3),
+            "network_mip_score_bits_per_bit": round(demon.mip_index(obs.network_bits, obs.normalization, c)[1], 4),
+            "network_mip_p_real_vs_null_mips": round(float(p_mip[c]), 3),
             "linear_mip": label(obs.partitions[ml]), "linear_mip_bits": round(float(obs.linear_bits[ml, c]), 4),
-            "linear_mip_p_real": round(float(p_real_lin[ml, c]), 3),
+            "linear_mip_p_real_at_that_partition": round(float(p_real_lin[ml, c]), 3),
+            "linear_mip_p_real_vs_null_mips": round(float(p_mip_lin[c]), 3),
             "agree": mn == ml,
             "linear_mip_rank_in_network_order": int(np.argsort(np.argsort(np.where(obs.normalization > 0, obs.network_bits[:, c] / np.where(obs.normalization > 0, obs.normalization, 1), np.inf)))[ml]) + 1,
         })
-    pipe = obs.partitions.index(tuple(tuple(sorted(a)) for a in sorted(PIPELINE)))
+    pipe_key = frozenset(map(frozenset, PIPELINE))
+    pipe = next(i for i, p in enumerate(obs.partitions) if frozenset(map(frozenset, p)) == pipe_key)
     out["lattice"] = {
-        "train_rows": int(train_rows), "test_rows": obs.n_test, "n_null": args.n_null, "null_guard_steps": NULL_GUARD,
+        "note": "scored on the first rows of the same length a shifted null copy keeps (75%)",
+        "rows": int(len(x) - int(demon.DEFAULT_NULL_SPAN_FRACTION * len(x))),
+        "train_rows": int(TRAIN_FRACTION * (len(x) - int(demon.DEFAULT_NULL_SPAN_FRACTION * len(x)))),
+        "test_rows": obs.n_test, "n_null": args.n_null, "null_guard_steps": NULL_GUARD,
         "network_whole_bits_per_row": _r(obs.whole_bits), "linear_whole_bits_per_row": _r(obs.linear_whole_bits),
         "mip_by_k": mips,
         "pipeline_block": parts[pipe],
@@ -227,11 +244,11 @@ def main() -> int:
     }
 
     # Entanglement against classical mutual information, per contiguous cut of each trained chain.
-    _, fc = demon.held_out_lattice(x, lags=LAGS, train_rows=train_rows, partitions=[[list(range(len(names)))]])
+    fc = lat.forecaster
     site_names = [f"{n.replace('orion-', '')}:{w}" for n in names for w in ("now", "later")]
     tangling = []
     for k in LAGS:
-        ci = demon.cut_information(fc.machines[k])
+        ci = demon.cut_information(fc.machines[k], rng=rng)
         sel = fc.selections[k]
         tangling.append({
             "k": k, "bond_dim": sel.bond_dim, "sweeps": sel.n_sweeps,
@@ -246,7 +263,8 @@ def main() -> int:
     (args.out / "results.json").write_text(json.dumps(out, indent=2) + "\n")
 
     print(LABEL)
-    print(f"scored {first} .. {last}: {len(x)} rows; train {train_rows}, test {obs.n_test}; raw refusal: {out['refusal_reason_raw']}")
+    print(f"scored {first} .. {last}: {len(x)} rows; skill: train {train_rows}, test {errs.whole.shape[0]}; "
+          f"lattice: test {obs.n_test}; hygiene gate passed")
     for c, k in enumerate(LAGS):
         s = skill["linear"]
         print(f"k={k:2d}: network {errs.whole.mean(0)[c]:.3f} bits, linear {errs.linear.mean(0)[c]:.3f}, "
@@ -254,7 +272,7 @@ def main() -> int:
               f"vs linear skill {s['skill'][c]:+.3f} [{s['p10'][c]:+.3f}, {s['p90'][c]:+.3f}] P(real) {s['p_real'][c]:.2f}")
     for m in mips:
         print(f"k={m['k']:2d} MIP network: {m['network_mip']} ({m['network_mip_bits']:+.3f} bits, null "
-              f"{m['network_mip_null_mean']:+.3f}±{m['network_mip_null_sd']:.3f}, P(real) {m['network_mip_p_real']:.2f}); "
+              f"{m['network_mip_null_mean']:+.3f}±{m['network_mip_null_sd']:.3f}, P(real vs null MIPs) {m['network_mip_p_real_vs_null_mips']:.2f}); "
               f"linear: {m['linear_mip']}; agree={m['agree']}")
     print("pipeline block:", json.dumps(parts[pipe]))
     for tg in tangling:

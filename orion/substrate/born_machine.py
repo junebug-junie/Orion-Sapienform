@@ -44,6 +44,7 @@ LL_FLOOR = 1e-6
 MAX_EXACT_CONFIGS = 3 ** 12
 _PSI_FLOOR = 1e-150
 _SV_CUTOFF = 1e-12
+_MAX_STEP = 0.5  # largest gradient step norm; b itself has norm 1
 
 
 @dataclass(frozen=True)
@@ -314,7 +315,11 @@ def _sweep_trace(
             # sum over rows of outer(L_n, R_n) / psi_n, scattered to that row's (s, t) slot.
             np.add.at(g, pidx, np.einsum("na,nc->nac", lv * w[:, None], rv))
             grad = b - np.transpose(g, (1, 0, 2)).reshape(dl, d, d, dr) / N
-            b = b - lr * grad
+            # A row the chain gives a tiny psi has a huge 1/psi weight. Cap the step's size, so one
+            # such row cannot collapse b onto its own outer product before renormalising.
+            gnorm = np.linalg.norm(grad)
+            step = lr if lr * gnorm <= _MAX_STEP else _MAX_STEP / gnorm
+            b = b - step * grad
             b /= np.linalg.norm(b)
         u, s, vt = np.linalg.svd(b.reshape(dl * d, d * dr), full_matrices=False)
         chi = max(1, min(bond_dim, int((s > _SV_CUTOFF * s[0]).sum())))
@@ -373,14 +378,20 @@ def select_and_fit(
     val_fraction: float = VAL_FRACTION,
     lr: float = DEFAULT_LR,
     steps_per_bond: int = DEFAULT_STEPS_PER_BOND,
+    gap: int = 0,
 ) -> tuple[BornMachine, Selection]:
     """Choose D and the sweep count by held-out log-likelihood on the last ``val_fraction`` of rows
-    (time order kept), then refit on every row with that choice."""
+    (time order kept), then refit on every row with that choice.
+
+    ``gap`` rows between the fit and validation rows are left out of both. Pass the lag when rows
+    are (now, now + k) pairs: otherwise the last fit rows' "later" values are the first validation
+    rows' "now" values.
+    """
     data = np.asarray(data, dtype=np.int64)
     n_val = int(round(val_fraction * len(data)))
-    if n_val < 1 or len(data) - n_val < 2:
+    if n_val < 1 or len(data) - n_val - gap < 2:
         raise ValueError(f"select_and_fit: {len(data)} rows is too few to hold out {val_fraction:.0%}")
-    fit_rows, val_rows = data[:-n_val], data[-n_val:]
+    fit_rows, val_rows = data[:len(data) - n_val - gap], data[-n_val:]
     best = (-np.inf, bond_dims[0], 1)
     val_ll: dict[int, float] = {}
     for D in bond_dims:

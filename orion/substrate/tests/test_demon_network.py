@@ -133,8 +133,8 @@ def test_network_is_within_spread_of_linear_on_var1_data():
     errs = demon.network_rolling_errors(x, window=1800, step=600, lags=(1,), bond_dims=FAST_DIMS)
     s = demon.skill_spread(errs.whole, errs.linear, block=12, n_boot=300, rng=np.random.default_rng(0))
     assert s.p10[0] <= 0.0 <= s.p90[0] or abs(s.skill[0]) < 0.01
-    # Both carry real foresight against the level baselines.
-    assert demon.skill_curve(errs.whole, errs.baseline)[0] > 0.05
+    # Real foresight against the level baselines (errs.baseline now includes linear, too).
+    assert demon.skill_curve(errs.whole, demon._best_of(errs.clock, errs.persistence))[0] > 0.05
 
 
 def test_network_clearly_beats_linear_on_a_threshold_switch():
@@ -155,6 +155,18 @@ def test_mutation_linear_in_place_of_network_fails_the_threshold_test(monkeypatc
     ok, s = network_clearly_beats_linear(errs)
     assert not ok
     assert abs(s.skill[0]) < 1e-12  # it is the linear forecast, so it scores exactly the same
+
+
+def test_mutation_product_chain_fails_the_threshold_test():
+    """A non-tautological mutation: cap the chain at bond dimension 1 (no coupling between sites).
+
+    The threshold test must fail, so its pass comes from the trained coupling, not from anything
+    else in the pipeline (levels, floor, baselines).
+    """
+    errs = demon.network_rolling_errors(simulate_switch(2400, seed=2), window=1800, step=600, lags=(1,), bond_dims=(1,))
+    ok, s = network_clearly_beats_linear(errs)
+    assert not ok, s
+    assert s.skill[0] < 0
 
 
 def test_independent_blocks_cost_about_zero_and_are_the_mip():
@@ -189,10 +201,30 @@ def test_lattice_vs_null_marks_a_real_cut_real():
     assert res.null_network_bits.shape == (5, 2, 1)
     assert res.p_real[1, 0] == 1.0  # the full cut, against 5 shifted refits
     assert abs(res.null_network_bits[:, 1, 0]).max() < 0.05
+    # The MIP gate compares minimum against minimum: each null draw takes its own MIP.
+    assert res.p_real_mip("network")[0] == 1.0
+    # Observed is scored on the same 1,125 rows a shifted copy keeps: 750 train, 374 scored origins.
+    assert res.observed.n_test == 374
+
+
+def test_mip_ignores_negative_noise():
+    norm = np.array([0.0, np.log2(3), 2 * np.log2(3)])
+    # The cheap-normalization cut reads slightly negative (noise); the other reads 0.
+    i, score = demon.mip_index(np.array([[0.0], [-0.02], [-0.01]]), norm, 0)
+    assert score == 0.0 and i == 1  # both clip to 0; the tie goes to the more negative per bit
+    i, _ = demon.mip_index(np.array([[0.0], [0.3], [0.2]]), norm, 0)
+    assert i == 2
+
+
+def test_bootstrap_horizon_refuses_non_contiguous_lags():
+    x = simulate_switch(1200, seed=9)
+    errs = demon.network_rolling_errors(x, window=900, step=300, lags=(1, 3), bond_dims=(2,))
+    with pytest.raises(ValueError):
+        demon.bootstrap_horizon(errs, n_boot=10)
 
 
 def test_existing_readouts_work_unchanged_on_network_errors():
-    x = simulate_var([[0.5, 0.6], [0.0, 0.5]], 1400, seed=8)
+    x = simulate_switch(1400, seed=8)  # the network beats every baseline, linear included
     kw = dict(window=900, step=250, horizon=2)
     errs = demon.network_rolling_errors(x, partitions={"cut": demon.full_cut(2)}, bond_dims=(2, 4), **kw)
     assert errs.whole.shape == errs.linear.shape == (498, 2) and errs.lags == (1, 2)

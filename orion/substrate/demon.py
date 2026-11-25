@@ -170,9 +170,18 @@ class RollingErrors:
 
     @property
     def baseline(self) -> np.ndarray:
-        """Per-origin errors of the baseline that wins (lower total MSE) at each k."""
-        use_clock = self.clock.sum(axis=0) <= self.persistence.sum(axis=0)
-        return np.where(use_clock[None, :], self.clock, self.persistence)
+        """Per-origin errors of the baseline that wins (lower total loss) at each k.
+
+        Candidates: clock and persistence, plus linear when it is set (network errors).
+        """
+        return _best_of(self.clock, self.persistence, self.linear)
+
+
+def _best_of(*candidates: np.ndarray | None) -> np.ndarray:
+    """Per column, the candidate with the lowest total. Ties go to the earlier one."""
+    stack = np.stack([c for c in candidates if c is not None])  # (C, m, K)
+    pick = np.argmin(stack.sum(axis=1), axis=0)  # (K,)
+    return np.take_along_axis(stack, pick[None, None, :].repeat(stack.shape[1], axis=1), axis=0)[0]
 
 
 def rolling_errors(
@@ -286,7 +295,10 @@ def bootstrap_horizon(
 ) -> HorizonEstimate:
     """Horizon with a moving-block bootstrap over origins (block = one refit's origins)."""
     rng = rng if rng is not None else np.random.default_rng()
-    stacked = np.stack([errors.whole, errors.clock, errors.persistence])  # (3, m, K)
+    if errors.lags is not None and tuple(errors.lags) != tuple(range(1, len(errors.lags) + 1)):
+        raise ValueError(f"bootstrap_horizon: lags {errors.lags} are not 1..K, so columns are not steps")
+    base = [errors.clock, errors.persistence] + ([errors.linear] if errors.linear is not None else [])
+    stacked = np.stack([errors.whole, *base])  # (1 + baselines, m, K)
     m = stacked.shape[1]
     block = max(1, min(errors.block, m))
     n_blocks = int(np.ceil(m / block))
@@ -295,9 +307,8 @@ def bootstrap_horizon(
     for b in range(n_boot):
         starts = rng.integers(0, m - block + 1, size=n_blocks)
         idx = (starts[:, None] + np.arange(block)[None, :]).ravel()[:m]
-        w, c, p = stacked[:, idx]
-        use_clock = c.sum(axis=0) <= p.sum(axis=0)
-        s = skill_curve(w, np.where(use_clock[None, :], c, p))
+        w, *bs = stacked[:, idx]
+        s = skill_curve(w, _best_of(*bs))
         steps[b] = horizon_steps(s)
         positive += s > 0
     point = skill_curve(errors.whole, errors.baseline)
@@ -517,17 +528,6 @@ def gaussian_level_probs(mean: np.ndarray, var: np.ndarray, edges: np.ndarray) -
     return np.stack([c1, np.clip(c2 - c1, 0.0, None), 1.0 - c2], axis=2)
 
 
-def _var1_forecast_var(model: Var1, k: int) -> np.ndarray:
-    """Per-organ variance of the k-step VAR(1) forecast: diag(sum_j A^j Σ A^jᵀ), j < k."""
-    n = model.A.shape[0]
-    cov = np.zeros((n, n))
-    Aj = np.eye(n)
-    for _ in range(k):
-        cov += Aj @ model.sigma @ Aj.T
-        Aj = model.A @ Aj
-    return np.diag(cov).copy()
-
-
 def _pairs(levels: np.ndarray, k: int) -> np.ndarray:
     """(T-k, 2n) training samples, sites interleaved: o1(t), o1(t+k), o2(t), o2(t+k), ..."""
     now, later = levels[:-k], levels[k:]
@@ -545,10 +545,14 @@ class NetworkForecaster:
     edges: np.ndarray  # (n, 2), on the standardized training window
     machines: dict[int, born_machine.BornMachine]
     selections: dict[int, born_machine.Selection]
-    clock: np.ndarray  # (n, 3) level shares over the training window
+    # (n, 3) level shares over the training window. The input is already a time-of-day residual,
+    # so these are "the usual level for this time of day"; they are not split by hour.
+    clock: np.ndarray
     stay: dict[int, np.ndarray]  # lag -> (n,) share of training pairs whose level did not change
-    var1: Var1  # fitted on the level-coded training window
-    var1_continuous: Var1  # fitted on the standardized values themselves
+    # lag -> (mean, A_k, per-organ forecast variance): the direct lag-k linear model
+    # (``lag_k_model``) on the level-coded training window. Direct, like the network's one chain
+    # per lag, so "network beats linear" at k > 1 is not "direct beats iterated".
+    linear: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]
     level_means: np.ndarray  # (n, 3): mean standardized value of each level, training window
     _tables: dict = field(default_factory=dict, repr=False)  # (k, part, organ) -> table, on use
 
@@ -591,22 +595,16 @@ class NetworkForecaster:
         return out
 
     def linear_probs(self, now: np.ndarray, k: int) -> np.ndarray:
-        """The VAR(1) k-step Gaussian forecast integrated into the same 3 levels, from the same
+        """The linear (Gaussian) lag-k forecast integrated into the same 3 levels, from the same
         3-level "now" the network sees (each level coded as its training-window mean).
 
         Same input for both models, so "network beats linear" measures the model class, not the
-        input resolution.
+        input resolution. (Fed the full-resolution values instead, the linear model beat the
+        network on true VAR(1) data by ~5% only because it knew more about "now".)
         """
         coded = np.take_along_axis(self.level_means[None], np.asarray(now)[:, :, None], axis=2)[:, :, 0]
-        return gaussian_level_probs(
-            self.var1.forecast(coded, k), _var1_forecast_var(self.var1, k), self.edges
-        )
-
-    def linear_continuous_probs(self, z0: np.ndarray, k: int) -> np.ndarray:
-        """The same VAR(1) forecast fitted on, and fed, the full-resolution values. Context only:
-        it knows more about "now" than the network does."""
-        m = self.var1_continuous
-        return gaussian_level_probs(m.forecast(z0, k), _var1_forecast_var(m, k), self.edges)
+        mean, Ak, var = self.linear[k]
+        return gaussian_level_probs(mean + (coded - mean) @ Ak.T, var, self.edges)
 
 
 def fit_network(
@@ -633,16 +631,17 @@ def fit_network(
             # An empty level (tied edges) gets its nearest edge as its code.
             level_means[i, lvl] = z_train[hit, i].mean() if hit.any() else edges[i, min(lvl, 1)]
     coded = np.take_along_axis(level_means, levels.T, axis=1).T
-    machines, selections, stay = {}, {}, {}
+    machines, selections, stay, linear = {}, {}, {}, {}
     for k in lags:
         machines[k], selections[k] = born_machine.select_and_fit(
-            _pairs(levels, k), d=N_LEVELS, bond_dims=bond_dims, max_sweeps=max_sweeps
+            _pairs(levels, k), d=N_LEVELS, bond_dims=bond_dims, max_sweeps=max_sweeps, gap=k
         )
         stay[k] = (levels[:-k] == levels[k:]).mean(axis=0)
+        Ak, sigma_k, _ = lag_k_model(coded, k)
+        linear[k] = (coded.mean(axis=0), Ak, np.diag(sigma_k).copy())
     return NetworkForecaster(
         lags=lags, edges=edges, machines=machines, selections=selections, clock=clock, stay=stay,
-        var1=fit_var1(coded),
-        var1_continuous=fit_var1(z_train),
+        linear=linear,
         level_means=level_means,
     )
 
@@ -826,19 +825,36 @@ class LatticeCosts:
 
     partitions: tuple[tuple[tuple[int, ...], ...], ...]
     lags: tuple[int, ...]
-    network_bits: np.ndarray  # (P, K): mean held-out log-loss(cut) - log-loss(whole), bits per row
-    linear_bits: np.ndarray  # (P, K): closed form on the training rows, bits
+    # (P, K): mean held-out log-loss(cut) - log-loss(whole), bits per row, on 3-level organs.
+    network_bits: np.ndarray
+    # (P, K): ``linear_cut_bits`` -- in-sample (training rows), full-resolution values, direct
+    # lag-k Gaussian. A different number from ``linear_whole_bits``; compare it only with its null.
+    linear_bits: np.ndarray
     normalization: np.ndarray  # (P,)
     whole_bits: np.ndarray  # (K,) network held-out log-loss per row (bits, summed over organs)
-    linear_whole_bits: np.ndarray  # (K,) VAR(1) in 3 levels, same rows
+    # (K,) held-out log-loss of the 3-level linear forecast (``linear_probs``), same rows as
+    # ``whole_bits``.
+    linear_whole_bits: np.ndarray
     n_test: int
 
     def mip(self, which: str, col: int) -> int:
         """Index of the minimum-information partition (the whole system is never a candidate)."""
-        cost = self.network_bits if which == "network" else self.linear_bits
-        ok = self.normalization > 0
-        score = np.where(ok, cost[:, col] / np.where(ok, self.normalization, 1.0), np.inf)
-        return int(np.argmin(score))
+        return mip_index(self.network_bits if which == "network" else self.linear_bits, self.normalization, col)[0]
+
+
+def mip_index(cost: np.ndarray, normalization: np.ndarray, col: int) -> tuple[int, float]:
+    """(index, score) of the minimum-information partition: least cost / normalization.
+
+    A negative cost (held-out noise: the cut forecast better than the whole) counts as 0, so noise
+    near zero does not pick the partition with the smallest normalization. Ties at 0 are broken by
+    the unclipped value. The whole system (normalization 0) is never a candidate.
+    """
+    ok = normalization > 0
+    safe = np.where(ok, normalization, 1.0)
+    raw = np.where(ok, cost[:, col] / safe, np.inf)
+    clipped = np.where(ok, np.maximum(cost[:, col], 0.0) / safe, np.inf)
+    i = int(np.lexsort((raw, clipped))[0])
+    return i, float(clipped[i])
 
 
 def held_out_lattice(
@@ -902,6 +918,23 @@ class LatticeVsNull:
     observed: LatticeCosts
     null_network_bits: np.ndarray  # (n_null, P, K), each draw a chain refit on shifted data
     null_linear_bits: np.ndarray  # (n_null, P, K)
+    forecaster: NetworkForecaster  # the observed fit (its chains, for ``cut_information``)
+
+    def p_real_mip(self, which: str = "network") -> np.ndarray:
+        """(K,): share of null draws whose own minimum-information score is below the observed one.
+
+        Each null draw is minimised over partitions too, so both sides of the comparison are a
+        minimum (comparing the observed minimum with the null at that one fixed partition would be
+        biased in its favour).
+        """
+        obs = self.observed.network_bits if which == "network" else self.observed.linear_bits
+        null = self.null_network_bits if which == "network" else self.null_linear_bits
+        norm = self.observed.normalization
+        out = np.zeros(obs.shape[1])
+        for c in range(obs.shape[1]):
+            o = mip_index(obs, norm, c)[1]
+            out[c] = np.mean([mip_index(nb, norm, c)[1] < o for nb in null])
+        return out
 
     @property
     def p_real(self) -> np.ndarray:
@@ -927,19 +960,27 @@ def lattice_vs_null(
 ) -> LatticeVsNull:
     """``held_out_lattice`` on the data and on ``n_null`` time-shifted copies (``time_shift_null``).
 
-    Each copy refits its chains, so the null carries the same fitting noise as the observed cost.
+    Each copy refits its chains. A shifted copy keeps ``1 - DEFAULT_NULL_SPAN_FRACTION`` of the
+    rows, and held-out cut cost depends on how many rows the whole model trained on (it overfits
+    less with more). So the observed lattice is scored on the first rows of the same length, with
+    the same train/test split, and both sides carry the same fitting noise.
     """
     rng = rng if rng is not None else np.random.default_rng()
     x = np.asarray(x, dtype=float)
-    kw = dict(lags=lags, partitions=partitions, bond_dims=bond_dims, max_sweeps=max_sweeps)
-    observed, _ = held_out_lattice(x, train_rows=int(train_fraction * len(x)), **kw)
+    length = len(x) - int(DEFAULT_NULL_SPAN_FRACTION * len(x))
+    train_rows = int(train_fraction * length)
+    kw = dict(lags=lags, partitions=partitions, bond_dims=bond_dims, max_sweeps=max_sweeps, train_rows=train_rows)
+    observed, fc = held_out_lattice(x[:length], **kw)
     null_net, null_lin = [], []
     for _ in range(n_null):
         xs = time_shift_null(x, guard=guard, rng=rng)
-        res, _ = held_out_lattice(xs, train_rows=int(train_fraction * len(xs)), **kw)
+        res, _ = held_out_lattice(xs, **kw)
         null_net.append(res.network_bits)
         null_lin.append(res.linear_bits)
-    return LatticeVsNull(observed=observed, null_network_bits=np.stack(null_net), null_linear_bits=np.stack(null_lin))
+    return LatticeVsNull(
+        observed=observed, null_network_bits=np.stack(null_net), null_linear_bits=np.stack(null_lin),
+        forecaster=fc,
+    )
 
 
 @dataclass(frozen=True)

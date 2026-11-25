@@ -700,16 +700,33 @@ is_chat_drain_service() {
 # wait_for_chat_turns <service>: bounded wait until Hub reports no chat turn
 # running or queued (scripts/wait_for_chat_turns_idle.py). Never fails the run:
 # at the deadline, or with Hub unreachable, the restart goes ahead.
+# Logged as its own step (START/END "<svc> chat-drain") so a run killed during
+# the wait still lists <svc> in check_rebuild_log.py's finish command.
+# Skipped when safe_docker_build.sh would refuse the `up` anyway (deploy pin or
+# migration gate): waiting up to 10 min for a refused restart only holds the lock.
 wait_for_chat_turns() {
-    local line helper="$REPO_ROOT/scripts/wait_for_chat_turns_idle.py"
-    if [ ! -f "$helper" ]; then
+    local line started pre_rc=0 helper="$REPO_ROOT/scripts/wait_for_chat_turns_idle.py"
+    started=$(date +%s) || started=0
+    rebuild_log "START $1 chat-drain"
+    IN_FLIGHT="$1 chat-drain"
+    if [ -n "$ALLOW_SHARED" ]; then
+        ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" ORION_SAFE_BUILD_PREFLIGHT_ONLY=1 \
+            "$SAFE_BUILD" "$1" up -d --no-build </dev/null >/dev/null 2>&1 || pre_rc=$?
+    else
+        ORION_SAFE_BUILD_PREFLIGHT_ONLY=1 "$SAFE_BUILD" "$1" up -d --no-build </dev/null >/dev/null 2>&1 || pre_rc=$?
+    fi
+    if [ "$pre_rc" -ne 0 ]; then
+        line="skipped reason=up_would_be_refused rc=$pre_rc"
+    elif [ ! -f "$helper" ]; then
         line="unknown reason=helper_missing"
     else
         line=$(python3 "$helper" --wait-s "${ORION_REBUILD_CHAT_DRAIN_WAIT_S:-600}" </dev/null 2>/dev/null | tail -n 1) || true
         [ -n "$line" ] || line="unknown reason=helper_printed_nothing"
     fi
+    IN_FLIGHT=""
     echo "rebuild_services_from_git_diff.sh: CHAT_DRAIN $1 $line"
     rebuild_log "CHAT_DRAIN $1 $line"
+    rebuild_log "END rc=0 seconds=$(($(date +%s) - started)) $1 chat-drain"
 }
 
 # rebuild_one <service>: the full rebuild of one stack; adds it to FAILED,

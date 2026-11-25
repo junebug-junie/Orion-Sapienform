@@ -103,6 +103,9 @@ reconnect and the retry progress frame, then cutover.
 first, then waits (max `ORION_REBUILD_CHAT_DRAIN_WAIT_S`, default 600 s) until Hub's
 `/api/runtime-activity` shows no `source == "chat"` turn running or queued, then
 `up -d --no-build`. It never fails the run: a timeout or an unreachable Hub logs a
-`CHAT_DRAIN` line and restarts anyway. Kill switch `ORION_REBUILD_CHAT_DRAIN=0`.
+`CHAT_DRAIN` line and restarts anyway. It skips the wait when `safe_docker_build.sh`'s new
+check-only mode (`ORION_SAFE_BUILD_PREFLIGHT_ONLY=1`) says the `up` would be refused, and logs
+the wait as its own START/END step so a killed run still lists the service to finish.
+Kill switch `ORION_REBUILD_CHAT_DRAIN=0`.
 Gap it leaves: a turn that starts in the seconds between the check and the restart, and
 Hub's pre-handoff phase (stance/recall, seconds) are not covered. Patch 1 covers both.

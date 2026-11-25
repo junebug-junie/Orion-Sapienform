@@ -100,3 +100,15 @@ def test_session_start_payload_and_silence(tmp_path, capsys, monkeypatch) -> Non
     assert "orion-harness-governor" in payload["hookSpecificOutput"]["additionalContext"]
     crl.main(["--log", str(tmp_path / "missing"), "--session-start"])
     assert capsys.readouterr().out == ""
+
+
+def test_a_run_killed_during_the_chat_drain_still_lists_the_service() -> None:
+    """The drain waits up to 10 min between build and up; a SIGKILL there must not drop orion-hub."""
+    lines = """\
+2026-11-25T07:00:00Z pid=42 head=abc RUN base=default services=orion-hub orion-thought recreate=
+2026-11-25T07:00:00Z pid=42 head=abc START orion-hub build
+2026-11-25T07:03:00Z pid=42 head=abc END rc=0 seconds=180 orion-hub build
+2026-11-25T07:03:00Z pid=42 head=abc START orion-hub chat-drain
+""".splitlines(keepends=True)
+    [run] = crl.died_runs(lines, now=NOW + 40 * 86400, max_age_hours=72 * 30, alive=_dead)
+    assert run.unfinished() == ["orion-hub", "orion-thought"]

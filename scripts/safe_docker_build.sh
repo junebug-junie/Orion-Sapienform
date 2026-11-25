@@ -266,6 +266,14 @@ if [ "$_GATE_UP" = "1" ] && [ -f "scripts/check_sql_migrations_applied.py" ]; th
     fi
 fi
 
+# Check-only: every refusal above ran (deploy pin, migration gate); stop before
+# compose. rebuild_services_from_git_diff.sh asks this before it waits for chat
+# turns to drain, so it never waits for an `up` that would be refused.
+if [ "${ORION_SAFE_BUILD_PREFLIGHT_ONLY:-}" = "1" ]; then
+    echo "safe_docker_build.sh: preflight only ($SERVICE $*): allowed" >&2
+    exit 0
+fi
+
 # --- 3. Run docker compose with this repo's mandatory dual --env-file  -----
 # AGENTS.md section 8 requires every docker compose invocation in this repo
 # to load BOTH the root .env and the service's own .env, root first --

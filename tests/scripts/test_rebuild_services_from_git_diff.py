@@ -111,6 +111,9 @@ def _run(
     safe_build.write_text(
         "#!/bin/sh\n"
         + ("cat >/dev/null\n" if safe_build_reads_stdin else "")
+        + 'if [ "$ORION_SAFE_BUILD_PREFLIGHT_ONLY" = "1" ]; then\n'
+        + '  printf "PREFLIGHT %s\\n" "$*" >> "$REBUILD_TEST_CAPTURE"; exit "${FAKE_PREFLIGHT_RC:-0}"\n'
+        + 'fi\n'
         + "printf '%s\\n' \"$*\" >> \"$REBUILD_TEST_CAPTURE\"\n"
         + 'case "$*" in *" build") exit "${FAKE_BUILD_RC:-0}";; esac\n'
         + (safe_build_body or "")
@@ -1024,7 +1027,8 @@ def test_hub_is_built_then_drained_then_restarted(tmp_path: Path) -> None:
     """A pull mid-chat must not recreate Hub until no chat turn is in flight."""
     completed, calls = _run(tmp_path, plan="orion-hub,build", chat_drain_helper=_FAKE_DRAIN)
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert calls == ["orion-hub build", "DRAIN --wait-s 600", "orion-hub up -d --no-build"]
+    assert calls == ["orion-hub build", "PREFLIGHT orion-hub up -d --no-build", "DRAIN --wait-s 600",
+                     "orion-hub up -d --no-build"]
     assert "CHAT_DRAIN orion-hub drained waited_s=12" in completed.stdout
     assert "CHAT_DRAIN orion-hub drained waited_s=12" in (tmp_path / "post_pull_rebuild.log").read_text()
 
@@ -1033,7 +1037,8 @@ def test_governor_drains_and_keeps_force_recreate(tmp_path: Path) -> None:
     completed, calls = _run(tmp_path, plan="orion-harness-governor,recreate", chat_drain_helper=_FAKE_DRAIN,
                             env_extra={"ORION_REBUILD_CHAT_DRAIN_WAIT_S": "30"})
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert calls == ["orion-harness-governor build", "DRAIN --wait-s 30",
+    assert calls == ["orion-harness-governor build", "PREFLIGHT orion-harness-governor up -d --no-build",
+                     "DRAIN --wait-s 30",
                      "orion-harness-governor up -d --no-build --force-recreate"]
 
 
@@ -1046,7 +1051,7 @@ def test_failed_build_never_waits_or_restarts(tmp_path: Path) -> None:
 def test_missing_drain_helper_still_restarts(tmp_path: Path) -> None:
     completed, calls = _run(tmp_path, plan="orion-hub,build", env_extra={"ORION_REBUILD_CHAT_DRAIN": "1"})
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert calls == ["orion-hub build", "orion-hub up -d --no-build"]
+    assert calls == ["orion-hub build", "PREFLIGHT orion-hub up -d --no-build", "orion-hub up -d --no-build"]
     assert "CHAT_DRAIN orion-hub unknown reason=helper_missing" in completed.stdout
 
 
@@ -1068,3 +1073,21 @@ def test_dry_run_names_the_chat_drain(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert calls == []
     assert "wait for in-flight chat turns (max 600s)" in completed.stdout
+
+
+def test_drain_is_skipped_when_the_up_would_be_refused(tmp_path: Path) -> None:
+    """A deferred migration or a moved deploy pin refuses the `up`: never wait 10 min for it."""
+    completed, calls = _run(tmp_path, plan="orion-hub,build", chat_drain_helper=_FAKE_DRAIN,
+                            env_extra={"FAKE_PREFLIGHT_RC": "1"})
+    assert "DRAIN --wait-s 600" not in calls
+    assert calls[:2] == ["orion-hub build", "PREFLIGHT orion-hub up -d --no-build"]
+    assert "CHAT_DRAIN orion-hub skipped reason=up_would_be_refused rc=1" in completed.stdout
+
+
+def test_drain_is_logged_as_its_own_step(tmp_path: Path) -> None:
+    """A SIGKILL during the wait must leave orion-hub in check_rebuild_log's finish command."""
+    _run(tmp_path, plan="orion-hub,build", chat_drain_helper=_FAKE_DRAIN)
+    log = (tmp_path / "post_pull_rebuild.log").read_text().splitlines()
+    starts = [i for i, l in enumerate(log) if l.endswith("START orion-hub chat-drain")]
+    ends = [i for i, l in enumerate(log) if l.endswith("orion-hub chat-drain") and " END rc=0 " in l]
+    assert len(starts) == 1 and len(ends) == 1 and starts[0] < ends[0]

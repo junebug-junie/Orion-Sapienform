@@ -77,4 +77,6 @@ After deploy: remove 6f1b49c6 from Redis `orion:retro:leisure:unplayable_saves` 
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3974
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
